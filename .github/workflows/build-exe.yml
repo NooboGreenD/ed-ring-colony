@@ -10,6 +10,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,13 +37,15 @@ jobs:
           name: ColonialHelper-Windows
           path: uploader/dist/ColonialHelper.exe
 
-      - name: Copy to public for deployment
-        run: |
-          Copy-Item uploader\dist\ColonialHelper.exe public\ColonialHelper\ColonialHelper.exe -Force
-
-      - name: Commit built EXE
-        run: |
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add public/ColonialHelper/ColonialHelper.exe
-          git diff --cached --quiet || (git commit -m "ci: auto-build ColonialHelper.exe" && git push)
+      - name: Upload to Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: colonial-helper-latest
+          name: "Colonial Helper (Latest Build)"
+          body: "Автоматическая сборка ColonialHelper.exe"
+          files: uploader/dist/ColonialHelper.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
