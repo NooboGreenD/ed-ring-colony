@@ -1,0 +1,47 @@
+name: Build Colonial Helper EXE
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'uploader/**'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r uploader/requirements.txt
+
+      - name: Build EXE with PyInstaller
+        run: |
+          cd uploader
+          python build_exe.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColonialHelper-Windows
+          path: uploader/dist/ColonialHelper.exe
+
+      - name: Copy to public for deployment
+        run: |
+          Copy-Item uploader\dist\ColonialHelper.exe public\ColonialHelper\ColonialHelper.exe -Force
+
+      - name: Commit built EXE
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add public/ColonialHelper/ColonialHelper.exe
+          git diff --cached --quiet || (git commit -m "ci: auto-build ColonialHelper.exe" && git push)

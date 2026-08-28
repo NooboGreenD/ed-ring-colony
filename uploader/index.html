@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Colonial Helper</title>
+<style>
+:root{--bg:#1e2022;--panel:#2a2d30;--line:#3a3d40;--text:#eeeeee;--muted:#9ca3af;--orange:#e67e22;--cyan:#3498db;--green:#2ecc71;--red:#e74c3c}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;line-height:1.5;min-height:100vh}
+.container{max-width:900px;margin:0 auto;padding:20px}
+h1{font-family:ui-monospace,monospace;letter-spacing:4px;text-transform:uppercase;font-size:18px;color:var(--orange);margin-bottom:4px}
+.subtitle{color:var(--muted);font-size:13px;margin-bottom:12px}
+.status-bar{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:4px;font-size:13px;font-family:ui-monospace,monospace}
+.status-dot{width:10px;height:10px;border-radius:50%;background:var(--muted);box-shadow:0 0 6px var(--muted);transition:all .3s}
+.status-dot.online{background:var(--green);box-shadow:0 0 8px var(--green)}
+.status-dot.offline{background:var(--red);box-shadow:0 0 8px var(--red)}
+.status-text{color:var(--muted);transition:color .3s}
+.status-text.online{color:var(--green)}
+.status-text.offline{color:var(--red)}
+.status-detail{color:var(--muted);font-size:12px;margin-left:auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:20px;margin-bottom:16px}
+.tabs{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.tab{border:1px solid var(--line);color:var(--muted);background:transparent;border-radius:2px;cursor:pointer;padding:8px 16px;font-family:ui-monospace,monospace;font-size:12px;letter-spacing:2px;text-transform:uppercase}
+.tab:hover{background:rgba(255,157,46,0.05);color:var(--text)}
+.tab-active{border-color:var(--orange)!important;color:var(--orange)!important}
+label{display:block;margin-bottom:12px;font-size:13px;color:var(--muted)}
+input,select,textarea{width:100%;padding:9px 12px;border-radius:2px;border:1px solid var(--line);background:#25282b;color:var(--text);font-size:14px;margin-top:6px}
+button{padding:10px 20px;border-radius:2px;border:1px solid var(--orange);background:transparent;color:var(--orange);font-family:ui-monospace,monospace;letter-spacing:2px;text-transform:uppercase;font-size:12px;cursor:pointer;transition:background .2s}
+button:hover{background:rgba(255,157,46,0.12)}
+button:disabled{opacity:.5;cursor:not-allowed}
+button.btn-cyan{border-color:var(--cyan);color:var(--cyan)}
+button.btn-cyan:hover{background:rgba(45,212,238,0.12)}
+button.btn-green{border-color:var(--green);color:var(--green)}
+button.btn-green:hover{background:rgba(46,204,113,0.12)}
+.auth-result{padding:12px 14px;border-radius:4px;margin-top:12px;font-size:13px;display:none}
+.auth-result.ok{background:rgba(46,204,113,0.08);border:1px solid rgba(46,204,113,0.3);color:var(--green)}
+.auth-result.err{background:rgba(231,76,60,0.08);border:1px solid rgba(231,76,60,0.3);color:var(--red)}
+.auth-result.show{display:block}
+.log-window{background:#15171a;border:1px solid var(--line);border-radius:4px;padding:12px;height:280px;overflow-y:auto;font-family:ui-monospace,monospace;font-size:12px;line-height:1.6}
+.log-entry{margin-bottom:4px}
+.log-time{color:var(--muted);margin-right:8px}
+.log-info{color:var(--cyan)}
+.log-success{color:var(--green)}
+.log-error{color:var(--red)}
+.log-warn{color:var(--orange)}
+.route-table{width:100%;border-collapse:collapse;font-size:13px}
+.route-table th,.route-table td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left}
+.route-table th{font-family:ui-monospace,monospace;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+.status-badge{display:inline-block;padding:2px 8px;border-radius:2px;font-size:11px;font-family:ui-monospace,monospace}
+.status-visited{background:rgba(46,204,113,0.15);color:var(--green)}
+.status-current{background:rgba(230,126,34,0.15);color:var(--orange)}
+.status-pending{background:rgba(156,163,175,0.15);color:var(--muted)}
+.hidden{display:none}
+::-webkit-scrollbar{width:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>◆ Colonial Helper</h1>
+<p class="subtitle">Standalone uploader for ED Ring Colony</p>
+<div class="status-bar" id="statusBar">
+<span class="status-dot" id="statusDot"></span>
+<span class="status-text" id="statusText">Не подключено</span>
+<span class="status-detail" id="statusDetail">—</span>
+</div>
+<div class="tabs">
+<button class="tab tab-active" data-tab="auth">Подключение</button>
+<button class="tab" data-tab="upload">Загрузка логов</button>
+<button class="tab" data-tab="route">Маршрут</button>
+<button class="tab" data-tab="logs">Лог</button>
+</div>
+<div id="tab-auth" class="card">
+<h3 style="margin-bottom:12px;font-size:14px">API Токен</h3>
+<label>Вставьте API токен из профиля на сайте:<input type="password" id="apiToken" placeholder="rc_..."/></label>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+<button onclick="validateToken()">Проверить токен</button>
+</div>
+<div class="auth-result" id="authResult"></div>
+</div>
+<div id="tab-upload" class="card hidden">
+<h3 style="margin-bottom:12px;font-size:14px">Загрузка журналов</h3>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+<label class="btn-cyan" style="cursor:pointer;display:inline-block;padding:10px 20px;border:1px solid var(--cyan);color:var(--cyan);border-radius:2px;font-family:ui-monospace,monospace;font-size:12px;letter-spacing:2px;text-transform:uppercase">Выбрать файлы .log<input type="file" id="logFiles" multiple accept=".log" style="display:none" onchange="onFilesSelected()"/></label>
+<button onclick="uploadLogs()" id="uploadBtn" disabled>Загрузить</button>
+<button onclick="toggleWatcher()" id="watchBtn" class="btn-green">▶ Следить за игрой</button>
+</div>
+<p id="fileCount" style="font-size:12px;color:var(--muted)"></p>
+<div id="uploadProgress" style="margin-top:12px"></div>
+</div>
+<div id="tab-route" class="card hidden">
+<h3 style="margin-bottom:12px;font-size:14px">Отслеживание маршрута</h3>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+<input type="file" id="routeFile" accept=".json,.csv" style="display:none" onchange="onRouteFileSelected()"/>
+<button onclick="document.getElementById('routeFile').click()" class="btn-cyan">Импорт маршрута</button>
+<button onclick="exportRouteCSV()">Экспорт CSV</button>
+<button onclick="clearRoute()" class="btn-green">Очистить</button>
+</div>
+<p style="font-size:12px;color:var(--muted);margin-bottom:12px">Импортируйте маршрут из NavRoute.json или CSV. При включённом watcher'е системы будут отмечаться автоматически.</p>
+<div style="max-height:400px;overflow:auto">
+<table class="route-table">
+<thead><tr><th>#</th><th>Система</th><th>Статус</th><th>Посещена</th></tr></thead>
+<tbody id="routeTableBody"><tr><td colspan="4" style="text-align:center;color:var(--muted)">Маршрут не загружен</td></tr></tbody>
+</table>
+</div>
+</div>
+<div id="tab-logs" class="card hidden">
+<h3 style="margin-bottom:12px;font-size:14px">Информационное окно</h3>
+<div class="log-window" id="logWindow"><div class="log-entry"><span class="log-time">[--:--:--]</span>Colonial Helper готов к работе</div></div>
+<button onclick="clearLogs()" style="margin-top:8px;font-size:11px">Очистить лог</button>
+</div>
+</div>
+<script>
+const API_BASE='https://ed-ring-colony.vercel.app/api';
+let apiToken=localStorage.getItem('rc_api_token')||'';
+let isWatching=false;
+let watchInterval=null;
+let currentSystem=null;
+let routeSystems=[];
+let visitedSystems=new Set();
+let selectedFiles=[];
+
+document.querySelectorAll('.tab').forEach(tab=>{
+  tab.addEventListener('click',()=>{
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('tab-active'));
+    tab.classList.add('tab-active');
+    document.querySelectorAll('.card').forEach(c=>c.classList.add('hidden'));
+    document.getElementById('tab-'+tab.dataset.tab).classList.remove('hidden');
+  });
+});
+
+function setStatus(state,detail){
+  const dot=document.getElementById('statusDot');
+  const text=document.getElementById('statusText');
+  const det=document.getElementById('statusDetail');
+  dot.className='status-dot';
+  text.className='status-text';
+  if(state==='online'){
+    dot.classList.add('online');
+    text.classList.add('online');
+    text.textContent='● Подключено';
+    det.textContent=detail||'Готов к работе';
+  }else if(state==='offline'){
+    dot.classList.add('offline');
+    text.classList.add('offline');
+    text.textContent='○ Не подключено';
+    det.textContent=detail||'Введите API токен';
+  }else{
+    dot.classList.add('offline');
+    text.classList.add('offline');
+    text.textContent='○ Не подключено';
+    det.textContent=detail||'Ошибка подключения';
+  }
+}
+
+if(apiToken){
+  document.getElementById('apiToken').value=apiToken;
+  validateToken();
+}else{
+  setStatus('offline');
+}
+
+function log(msg,type='info'){
+  const win=document.getElementById('logWindow');
+  const time=new Date().toLocaleTimeString('ru');
+  const colors={info:'log-info',success:'log-success',error:'log-error',warn:'log-warn'};
+  win.innerHTML+='<div class="log-entry"><span class="log-time">['+time+']</span><span class="'+(colors[type]||'log-info')+'">'+escapeHtml(msg)+'</span></div>';
+  win.scrollTop=win.scrollHeight;
+}
+
+function clearLogs(){
+  document.getElementById('logWindow').innerHTML='';
+}
+
+function escapeHtml(text){
+  const div=document.createElement('div');
+  div.textContent=text;
+  return div.innerHTML;
+}
+
+function showAuthResult(ok,msg){
+  const el=document.getElementById('authResult');
+  el.className='auth-result '+(ok?'ok':'err')+' show';
+  el.textContent=msg;
+}
+
+async function validateToken(){
+  const token=document.getElementById('apiToken').value.trim();
+  if(!token){
+    showAuthResult(false,'Введите API токен');
+    setStatus('offline','Токен не введён');
+    return;
+  }
+  showAuthResult(false,'');
+  log('Проверка токена...');
+  try{
+    const res=await fetch(API_BASE+'/auth/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({token})
+    });
+    const json=await res.json();
+    if(!res.ok){
+      showAuthResult(false,'✗ '+json.error);
+      setStatus('offline','Неверный или отозванный токен');
+      log('Ошибка: '+json.error,'error');
+      return;
+    }
+    apiToken=token;
+    localStorage.setItem('rc_api_token',token);
+    showAuthResult(true,'✓ Токен верный. Подключено как '+(json.cmdr_name||json.email));
+    setStatus('online',(json.cmdr_name||json.email||'Пользователь'));
+    log('Авторизован как '+(json.cmdr_name||json.email),'success');
+  }catch(e){
+    showAuthResult(false,'✗ Ошибка сети: '+e.message);
+    setStatus('offline','Ошибка сети');
+    log('Ошибка сети: '+e.message,'error');
+  }
+}
+
+function onFilesSelected(){
+  const input=document.getElementById('logFiles');
+  selectedFiles=Array.from(input.files);
+  document.getElementById('fileCount').textContent='Выбрано файлов: '+selectedFiles.length;
+  document.getElementById('uploadBtn').disabled=selectedFiles.length===0||!apiToken;
+}
+
+async function uploadLogs(){
+  if(!apiToken){log('Сначала введите API токен','error');return;}
+  if(selectedFiles.length===0)return;
+  document.getElementById('uploadBtn').disabled=true;
+  log('Начинаю обработку '+selectedFiles.length+' файлов...');
+  let allDeliveries=[];
+  let cmdrName=null;
+  for(let i=0;i<selectedFiles.length;i++){
+    const f=selectedFiles[i];
+    log('Чтение '+f.name+'...');
+    const text=await f.text();
+    log('Разбор '+f.name+'...');
+    const result=parseJournal(text);
+    if(result.cmdrName&&!cmdrName)cmdrName=result.cmdrName;
+    allDeliveries.push(...result.deliveries);
+    log(f.name+': найдено '+result.deliveries.length+' доставок','success');
+  }
+  if(allDeliveries.length===0){
+    log('Доставки не найдены','warn');
+    document.getElementById('uploadBtn').disabled=false;
+    return;
+  }
+  log('Всего доставок: '+allDeliveries.length+'. Отправка...');
+  const CHUNK=500;
+  let inserted=0;
+  for(let i=0;i<allDeliveries.length;i+=CHUNK){
+    const chunk=allDeliveries.slice(i,i+CHUNK);
+    try{
+      const res=await fetch(API_BASE+'/logs/upload',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({token:apiToken,cmdr:cmdrName,deliveries:chunk})
+      });
+      const json=await res.json();
+      if(!res.ok){log('Ошибка загрузки: '+json.error,'error');break;}
+      inserted+=json.inserted||0;
+      log('Пакет '+(Math.floor(i/CHUNK)+1)+': +'+json.inserted+' записей','success');
+    }catch(e){
+      log('Ошибка сети: '+e.message,'error');
+      break;
+    }
+  }
+  log('Готово! Всего загружено: '+inserted+' записей','success');
+  document.getElementById('uploadBtn').disabled=false;
+}
+
+function parseJournal(text){
+  let cmdrName=null;
+  let currentSystem=null;
+  let lastCargo=null;
+  let skipNextCargo=false;
+  const deliveries=[];
+  const lines=text.split(/\r?\n/);
+  for(let li=0;li<lines.length;li++){
+    const t=lines[li].trim();
+    if(!t||t[0]!=='{')continue;
+    let ev;
+    try{ev=JSON.parse(t);}catch(e){continue;}
+    switch(ev.event){
+      case 'Commander':if(ev.Name)cmdrName=ev.Name;break;
+      case 'LoadGame':if(!cmdrName&&ev.Commander)cmdrName=ev.Commander;break;
+      case 'Location':
+      case 'FSDJump':
+      case 'Docked':
+      case 'CarrierJump':
+        if(ev.StarSystem)currentSystem=ev.StarSystem;
+        break;
+      case 'MarketBuy':
+      case 'MarketSell':
+      case 'BuyDrones':
+      case 'SellDrones':
+      case 'MiningRefined':
+      case 'EjectCargo':
+      case 'CollectCargo':
+        skipNextCargo=true;
+        break;
+      case 'Cargo':{
+        if(skipNextCargo){skipNextCargo=false;lastCargo=buildInventory(ev.Inventory);break;}
+        const inv=buildInventory(ev.Inventory);
+        if(lastCargo&&currentSystem){
+          for(const key in lastCargo){
+            const prev=lastCargo[key];
+            const now=inv[key];
+            const nowCount=now?now.count:0;
+            if(nowCount<prev.count){
+              deliveries.push({
+                system_name:currentSystem,
+                commodity:prev.display,
+                amount:prev.count-nowCount,
+                delivered_at:ev.timestamp,
+                is_hub:null,
+                route_system_id:null,
+                source_hash:''
+              });
+              markSystemVisited(currentSystem);
+            }
+          }
+        }
+        lastCargo=inv;
+        break;
+      }
+    }
+  }
+  return{cmdrName,deliveries};
+}
+
+function buildInventory(inventory){
+  const inv={};
+  if(Array.isArray(inventory)){
+    for(const it of inventory){
+      const key=String(it.Name||'').toLowerCase();
+      if(key&&it.Count>0){
+        inv[key]={count:it.Count,display:String(it.Name_Localised||it.Name||key)};
+      }
+    }
+  }
+  return inv;
+}
+
+function toggleWatcher(){
+  const btn=document.getElementById('watchBtn');
+  if(isWatching){
+    stopWatcher();
+    btn.textContent='▶ Следить за игрой';
+    btn.className='btn-green';
+    btn.style.borderColor='';
+    btn.style.color='';
+    log('Watcher остановлен');
+  }else{
+    if(!apiToken){log('Сначала введите API токен','error');return;}
+    startWatcher();
+    btn.textContent='⏹ Остановить';
+    btn.className='';
+    btn.style.borderColor='var(--red)';
+    btn.style.color='var(--red)';
+    log('Watcher запущен. Мониторинг журналов...');
+  }
+}
+
+function startWatcher(){
+  isWatching=true;
+  watchInterval=setInterval(()=>{
+    log('Проверка новых записей... (демо-режим)');
+  },30000);
+}
+
+function stopWatcher(){
+  isWatching=false;
+  if(watchInterval)clearInterval(watchInterval);
+}
+
+function onRouteFileSelected(){
+  const input=document.getElementById('routeFile');
+  const file=input.files[0];
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=(e)=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      if(data.Route&&Array.isArray(data.Route)){
+        routeSystems=data.Route.map((r,i)=>({index:i+1,name:r.StarSystem,status:'pending',visitedAt:null}));
+        renderRoute();
+        log('Маршрут загружен: '+routeSystems.length+' систем','success');
+      }else{
+        parseCSV(e.target.result);
+      }
+    }catch(err){
+      parseCSV(e.target.result);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function parseCSV(text){
+  const lines=text.split(/\r?\n/).filter(l=>l.trim());
+  if(lines.length<2){log('CSV пуст или некорректен','error');return;}
+  const headers=lines[0].split(',').map(h=>h.trim().toLowerCase());
+  const nameIdx=headers.indexOf('system')!==-1?headers.indexOf('system'):headers.indexOf('name');
+  if(nameIdx===-1){log('CSV должен содержать колонку system или name','error');return;}
+  routeSystems=[];
+  for(let i=1;i<lines.length;i++){
+    const cols=lines[i].split(',');
+    const name=cols[nameIdx]?cols[nameIdx].trim():'';
+    if(name){
+      routeSystems.push({index:i,name:name,status:'pending',visitedAt:null});
+    }
+  }
+  renderRoute();
+  log('Маршрут загружен из CSV: '+routeSystems.length+' систем','success');
+}
+
+function renderRoute(){
+  const tbody=document.getElementById('routeTableBody');
+  if(routeSystems.length===0){
+    tbody.innerHTML='<tr><td colspan="4" style="text-align:center;color:var(--muted)">Маршрут не загружен</td></tr>';
+    return;
+  }
+  let html='';
+  for(const s of routeSystems){
+    const statusLabel=s.status==='visited'?'✓ Посещена':s.status==='current'?'● Текущая':'○ Ожидает';
+    const visitedStr=s.visitedAt?new Date(s.visitedAt).toLocaleString('ru'):'—';
+    html+='<tr><td>'+s.index+'</td><td>'+escapeHtml(s.name)+'</td><td><span class="status-badge status-'+s.status+'">'+statusLabel+'</span></td><td>'+visitedStr+'</td></tr>';
+  }
+  tbody.innerHTML=html;
+}
+
+function exportRouteCSV(){
+  if(routeSystems.length===0){log('Нет данных для экспорта','warn');return;}
+  let csv='index,system,status,visited_at\n';
+  for(const s of routeSystems){
+    csv+=s.index+',"'+s.name+'",'+s.status+','+(s.visitedAt||'')+'\n';
+  }
+  downloadFile(csv,'route_export.csv','text/csv');
+  log('Маршрут экспортирован в route_export.csv','success');
+}
+
+function clearRoute(){
+  routeSystems=[];
+  visitedSystems.clear();
+  renderRoute();
+  log('Маршрут очищен');
+}
+
+function downloadFile(content,filename,type){
+  const blob=new Blob([content],{type});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function markSystemVisited(systemName){
+  const sys=routeSystems.find(s=>s.name.toLowerCase()===systemName.toLowerCase());
+  if(sys&&sys.status!=='visited'){
+    sys.status='visited';
+    sys.visitedAt=new Date().toISOString();
+    visitedSystems.add(systemName.toLowerCase());
+    renderRoute();
+    log('Система отмечена как посещённая: '+systemName,'success');
+  }
+}
+</script>
+</body>
+</html>
