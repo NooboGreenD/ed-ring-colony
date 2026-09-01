@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createServiceClient } from "@/lib/supabaseServer";
 import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request) {
@@ -6,7 +7,8 @@ export async function GET(request: Request) {
   const q = searchParams.get('q') || '';
   if (!q || q.length < 2) return NextResponse.json({ results: [] });
 
-  const { user, supabase } = await authFromRequest(request);
+  const { user } = await authFromRequest(request);
+  const supabase = createServiceClient();
   const { data, error } = await supabase
     .from('wiki_articles')
     .select('id, title, slug, category_id, wiki_categories(name, slug)')
