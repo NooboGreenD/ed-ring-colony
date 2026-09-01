@@ -3,9 +3,10 @@ import Link from 'next/link';
 import { IconWiki, IconStats, IconActivity } from '@/components/Icons';
 import WikiSearchBox from '@/components/Wiki/WikiSearchBox';
 
+export const dynamic = 'force-dynamic';
 
 export default async function WikiPage() {
-  const supabase = await createClient();
+  const supabase = createClient();
 
   const { data: categories } = await supabase
     .from('wiki_categories')
