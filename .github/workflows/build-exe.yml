@@ -1,0 +1,49 @@
+name: Build Colonial Helper EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r uploader/requirements.txt
+
+      - name: Build EXE with PyInstaller
+        run: |
+          cd uploader
+          python build_exe.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ColonialHelper-Windows
+          path: uploader/dist/ColonialHelper.exe
+
+      - name: Upload to Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: colonial-helper-latest
+          name: "Colonial Helper (Latest Build)"
+          body: "Автоматическая сборка ColonialHelper.exe"
+          files: uploader/dist/ColonialHelper.exe
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

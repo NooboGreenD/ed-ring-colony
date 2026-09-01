@@ -1,0 +1,22 @@
+name: Auto Translate News & Galnet
+
+on:
+  schedule:
+    # Every 30 minutes
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger translation endpoint
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            https://ed-ring-colony.vercel.app/api/cron/translate \
+            -w "\nHTTP_CODE: %{http_code}\n" \
+            --max-time 60
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}

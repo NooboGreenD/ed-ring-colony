@@ -1,0 +1,315 @@
+/* ED Ring Colony — Forum Extra Styles (inara.cz inspired) */
+
+.forum-cat-card:hover {
+  border-color: var(--orange) !important;
+  background: var(--panel-hover) !important;
+}
+
+.skeleton-line {
+  background: linear-gradient(90deg, #25282b 25%, #323538 50%, #25282b 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 3px;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.post-content p { margin: 0 0 8px; }
+.post-content blockquote {
+  border-left: 3px solid var(--orange);
+  padding-left: 12px;
+  margin: 8px 0;
+  color: var(--muted);
+}
+.post-content code {
+  background: #25282b;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 13px;
+}
+.post-content pre {
+  background: #25282b;
+  padding: 12px;
+  border-radius: 3px;
+  overflow-x: auto;
+}
+.post-content ul, .post-content ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.post-content a {
+  color: var(--orange);
+  text-decoration: none;
+}
+.post-content a:hover {
+  text-decoration: underline;
+}
+
+/* Forum Table */
+.forum-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.forum-table th {
+  background: #25282b;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+  text-align: left;
+}
+.forum-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.forum-table tr:hover td {
+  background: var(--panel-hover);
+}
+.forum-table .col-topic { min-width: 280px; }
+.forum-table .col-author { width: 140px; }
+.forum-table .col-replies { width: 80px; text-align: center; }
+.forum-table .col-views { width: 80px; text-align: center; }
+.forum-table .col-last { width: 180px; }
+
+.forum-topic-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+}
+.forum-topic-title:hover {
+  color: var(--orange);
+  text-decoration: none;
+}
+.forum-topic-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.forum-pin-badge {
+  font-size: 10px;
+  color: var(--orange);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 6px;
+}
+.forum-lock-badge {
+  font-size: 10px;
+  color: var(--red);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 6px;
+}
+.forum-author-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.forum-author-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--line);
+}
+.forum-author-name {
+  font-size: 12px;
+  color: var(--text);
+}
+.forum-replies-cell, .forum-views-cell {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.forum-last-cell {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.forum-last-author {
+  color: var(--text);
+  font-size: 12px;
+}
+.forum-last-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Recent Posts Sidebar */
+.recent-posts-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 14px;
+}
+.recent-posts-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--orange);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.recent-post-item {
+  display: flex;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.recent-post-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.recent-post-item:first-child {
+  padding-top: 0;
+}
+.recent-post-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.recent-post-body {
+  min-width: 0;
+  flex: 1;
+}
+.recent-post-thread {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+  line-height: 1.3;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-post-thread:hover {
+  color: var(--orange);
+  text-decoration: none;
+}
+.recent-post-author {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.recent-post-time {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Forum Layout */
+.forum-layout {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.forum-main {
+  flex: 1;
+  min-width: 0;
+}
+.forum-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+}
+@media (max-width: 900px) {
+  .forum-layout {
+    flex-direction: column;
+  }
+  .forum-sidebar {
+    width: 100%;
+  }
+}
+
+/* Category Rows */
+.forum-cat-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  transition: background 0.15s;
+}
+.forum-cat-row:hover {
+  background: var(--panel-hover);
+}
+.forum-cat-row:last-child {
+  border-bottom: none;
+}
+.forum-cat-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 3px;
+  background: #25282b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--orange);
+  flex-shrink: 0;
+}
+.forum-cat-info {
+  flex: 1;
+  min-width: 0;
+}
+.forum-cat-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+}
+.forum-cat-name:hover {
+  color: var(--orange);
+  text-decoration: none;
+}
+.forum-cat-desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+.forum-cat-stats {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+.forum-cat-stats b {
+  color: var(--orange);
+  font-weight: 600;
+}
+
+/* Forum Home — inara.cz inspired layout */
+.forum-layout-inner {
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+}
+.forum-main {
+  flex: 1;
+  min-width: 0;
+}
+.forum-sidebar {
+  width: 300px;
+  flex-shrink: 0;
+}
+@media (max-width: 900px) {
+  .forum-layout-inner {
+    flex-direction: column;
+  }
+  .forum-sidebar {
+    width: 100%;
+  }
+}
