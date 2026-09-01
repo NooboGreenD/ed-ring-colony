@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createRouteClient } from '@/lib/supabaseServer';
 
-export async function GET(_request: Request, { params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+export async function GET(request: Request, { params }: { params: { slug: string } }) {
+  const supabase = createRouteClient(request);
 
   const { data: category } = await supabase
     .from('wiki_categories')

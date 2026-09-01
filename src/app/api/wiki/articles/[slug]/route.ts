@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createRouteClient } from '@/lib/supabaseServer';
 
-export async function GET(_request: Request, { params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+export async function GET(request: Request, { params }: { params: { slug: string } }) {
+  const supabase = createRouteClient(request);
 
   // Check redirect first
   const { data: redirect } = await supabase
@@ -43,7 +43,7 @@ export async function GET(_request: Request, { params }: { params: { slug: strin
 }
 
 export async function PATCH(request: Request, { params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+  const supabase = createRouteClient(request);
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -87,8 +87,8 @@ export async function PATCH(request: Request, { params }: { params: { slug: stri
   return NextResponse.json(data);
 }
 
-export async function DELETE(_request: Request, { params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+export async function DELETE(request: Request, { params }: { params: { slug: string } }) {
+  const supabase = createRouteClient(request);
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
