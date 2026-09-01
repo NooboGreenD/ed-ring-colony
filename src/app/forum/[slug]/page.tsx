@@ -42,13 +42,15 @@ export default async function CategoryPage({ params, searchParams }: Props) {
     author: profileMap.get(t.author_id) ?? { cmdr_name: 'Unknown', avatar_url: null },
   }));
 
+  const totalPages = Math.ceil((count || 0) / limit);
+
   return (
     <CategoryPageClient
       category={category}
       threads={threadsWithAuthors}
       totalCount={count || 0}
-      page={page}
-      limit={limit}
+      totalPages={totalPages}
+      currentPage={page}
     />
   );
 }

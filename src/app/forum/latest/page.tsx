@@ -1,86 +1,76 @@
-import { createClient } from '@/lib/supabaseServer';
-import Link from 'next/link';
-import { ForumBreadcrumbs } from '@/components/Forum/ForumBreadcrumbs';
+"use client";
 
-export const revalidate = 60;
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
-export default async function ForumLatestPage() {
-  const supabase = await createClient();
+interface Post {
+  id: number;
+  content: string;
+  created_at: string;
+  author_name: string;
+  thread_id: number;
+  thread_title: string;
+  category_slug?: string;
+  category_name?: string;
+}
 
-  const { data: recentPosts } = await supabase
-    .from('forum_posts')
-    .select('id, content, created_at, author_id, thread_id')
-    .eq('is_deleted', false)
-    .order('created_at', { ascending: false })
-    .limit(30);
+export default function LatestPage() {
+  const { t } = useI18n();
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const threadIds = [...new Set((recentPosts || []).map((p: any) => p.thread_id).filter(Boolean))];
-  const { data: postThreads } = threadIds.length
-    ? await supabase.from('forum_threads').select('id, title, category_id, forum_categories!inner(slug, name)').in('id', threadIds)
-    : { data: [] };
-  const threadMap = new Map((postThreads || []).map((t: any) => [t.id, t]));
+  useEffect(() => {
+    fetch('/api/forum/latest')
+      .then(r => r.json())
+      .then(data => {
+        setPosts(data.posts || []);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
 
-  const authorIds = [...new Set((recentPosts || []).map((p: any) => p.author_id).filter(Boolean))];
-  const { data: profilesData } = authorIds.length
-    ? await supabase.from('profiles').select('id, cmdr_name, avatar_url').in('id', authorIds)
-    : { data: [] };
-  const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
+  if (loading) return <main className="card"><p>{t('common.loading')}</p></main>;
 
   return (
-    <main className="forum-layout" style={{ padding: '24px 28px', maxWidth: 1200, margin: '0 auto' }}>
-      <ForumBreadcrumbs items={[
-        { label: 'Форум', href: '/forum' },
-        { label: 'Последние' },
-      ]} />
-
-      <h1 style={{ margin: '0 0 20px', fontSize: 20, color: 'var(--orange)', letterSpacing: 3, textTransform: 'uppercase' }}>
-        Последние сообщения
+    <main className="card">
+      <h1>
+        <Link href="/forum" style={{ color: "#e67e22", textDecoration: "none" }}>{t('forum.title')}</Link>
+        <span style={{ color: "#9ca3af", margin: "0 8px" }}>/</span>
+        {t('forum.latest')}
       </h1>
 
-      <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-        <table className="forum-table">
-          <thead>
-            <tr>
-              <th className="col-topic">Тема / Сообщение</th>
-              <th className="col-replies">Автор</th>
-              <th className="col-last">Дата</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(recentPosts || []).map((post: any) => {
-              const author = profileMap.get(post.author_id);
-              const thread = threadMap.get(post.thread_id);
-              const cat = thread?.forum_categories;
-              return (
-                <tr key={post.id}>
-                  <td className="col-topic">
-                    <Link href={`/forum/thread/${thread?.id}#post-${post.id}`} className="forum-topic-title">
-                      {thread?.title || '…'}
+      <h2 style={{ marginTop: 16, fontSize: 18 }}>{t('forum.latestMessages')}</h2>
+
+      {!posts?.length ? (
+        <p style={{ color: "#9ca3af", textAlign: "center", padding: 40 }}>{t('forum.noMessages')}</p>
+      ) : (
+        <div className="forum-latest-posts">
+          {posts.map((post) => (
+            <div key={post.id} className="forum-latest-post">
+              <div className="forum-latest-post-thread">
+                <Link href={`/forum/thread/${post.thread_id}`} style={{ color: "#e67e22", textDecoration: "none", fontWeight: 500 }}>
+                  {post.thread_title || t('forum.noTopicsYet')}
+                </Link>
+                {post.category_name && (
+                  <span style={{ fontSize: 12, color: "#9ca3af" }}>
+                    {" "}·{" "}
+                    <Link href={`/forum/${post.category_slug}`} style={{ color: "#9ca3af" }}>
+                      {post.category_name}
                     </Link>
-                    {cat && (
-                      <div className="forum-cat-desc">
-                        <Link href={`/forum/${cat.slug}`} style={{ color: 'var(--orange)' }}>{cat.name}</Link>
-                      </div>
-                    )}
-                    <div style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
-                      {post.content.slice(0, 200)}{post.content.length > 200 ? '…' : ''}
-                    </div>
-                  </td>
-                  <td className="col-replies" style={{ whiteSpace: 'nowrap' }}>
-                    <span style={{ color: 'var(--text)' }}>{author?.cmdr_name || 'Unknown'}</span>
-                  </td>
-                  <td className="col-last" style={{ whiteSpace: 'nowrap' }}>
-                    <span className="forum-last-time">{new Date(post.created_at).toLocaleDateString('ru-RU')}</span>
-                  </td>
-                </tr>
-              );
-            })}
-            {(!recentPosts || recentPosts.length === 0) && (
-              <tr><td colSpan={3} style={{ textAlign: 'center', color: 'var(--muted)', padding: 40 }}>Пока нет сообщений</td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+                  </span>
+                )}
+              </div>
+              <div className="forum-latest-post-content">
+                {post.content.slice(0, 200)}{post.content.length > 200 ? "…" : ""}
+              </div>
+              <div className="forum-latest-post-meta">
+                {post.author_name || "Unknown"} · {new Date(post.created_at).toLocaleDateString("ru-RU")}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </main>
   );
 }

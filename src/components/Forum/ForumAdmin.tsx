@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface Category {
   id: number;
@@ -41,6 +42,7 @@ interface Stats {
 }
 
 export default function ForumAdmin() {
+  const { t } = useI18n();
   const [categories, setCategories] = useState<Category[]>([]);
   const [threads, setThreads] = useState<Thread[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
@@ -74,9 +76,9 @@ export default function ForumAdmin() {
         supabase.from("forum_reactions").select("*", { count: "exact", head: true }),
       ]);
 
-      if (eCats) throw new Error(`Категории: ${eCats.message}`);
-      if (eThs) throw new Error(`Темы: ${eThs.message}`);
-      if (ePs) throw new Error(`Сообщения: ${ePs.message}`);
+      if (eCats) throw new Error(`${t('forum.category')}: ${eCats.message}`);
+      if (eThs) throw new Error(`${t('forum.threads')}: ${eThs.message}`);
+      if (ePs) throw new Error(`${t('forum.posts')}: ${ePs.message}`);
 
       setCategories(cats ?? []);
       setThreads(ths ?? []);
@@ -88,7 +90,7 @@ export default function ForumAdmin() {
         reactions: cRe ?? 0,
       });
     } catch (e: any) {
-      setLoadError(e.message || "Ошибка загрузки данных форума");
+      setLoadError(e.message || t('forum.errorLoading'));
       console.error("ForumAdmin load error:", e);
     } finally {
       setLoading(false);
@@ -104,12 +106,12 @@ export default function ForumAdmin() {
       description: catForm.description.trim(),
       sort_order: catForm.sort_order,
     };
-    if (!payload.name || !payload.slug) { setMsg("Заполните название и slug"); return; }
+    if (!payload.name || !payload.slug) { setMsg(t('forum.fillNameSlug')); return; }
     const { error } = editingCat
       ? await supabase.from("forum_categories").update(payload).eq("id", editingCat)
       : await supabase.from("forum_categories").insert(payload);
     if (error) { setMsg(error.message); return; }
-    setMsg(editingCat ? "Категория обновлена" : "Категория создана");
+    setMsg(editingCat ? t('forum.categoryUpdated') : t('forum.categoryCreated'));
     setCatForm({ name: "", slug: "", description: "", sort_order: 0 });
     setEditingCat(null);
     load();
@@ -121,7 +123,7 @@ export default function ForumAdmin() {
   };
 
   const deleteCategory = async (id: number) => {
-    if (!confirm("Удалить категорию и все темы в ней?")) return;
+    if (!confirm(t('forum.deleteCategoryConfirm'))) return;
     await supabase.from("forum_categories").delete().eq("id", id);
     load();
   };
@@ -137,13 +139,13 @@ export default function ForumAdmin() {
   };
 
   const deleteThread = async (id: number) => {
-    if (!confirm("Удалить тему?")) return;
+    if (!confirm(t('forum.deleteThreadConfirm'))) return;
     await supabase.from("forum_threads").delete().eq("id", id);
     load();
   };
 
   const deletePost = async (id: number) => {
-    if (!confirm("Удалить сообщение?")) return;
+    if (!confirm(t('forum.deletePostConfirm'))) return;
     await supabase.from("forum_posts").update({ is_deleted: true }).eq("id", id);
     load();
   };
@@ -159,13 +161,13 @@ export default function ForumAdmin() {
 
   return (
     <div>
-      <h2>Статистика форума</h2>
+      <h2>{t('forum.statsTitle')}</h2>
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
         {[
-          { label: "Тем", value: stats.threads },
-          { label: "Сообщений", value: stats.posts },
-          { label: "Пилотов", value: stats.users },
-          { label: "Реакций", value: stats.reactions },
+          { label: t('forum.threads'), value: stats.threads },
+          { label: t('forum.posts'), value: stats.posts },
+          { label: t('forum.pilots'), value: stats.users },
+          { label: t('forum.reactions'), value: stats.reactions },
         ].map((s) => (
           <div key={s.label} style={{ padding: "12px 20px", background: "#25282b", border: "1px solid #323538", borderRadius: 8, minWidth: 120, textAlign: "center" }}>
             <div style={{ fontSize: 22, fontWeight: 700, color: "#e67e22" }}>{s.value}</div>
@@ -174,19 +176,19 @@ export default function ForumAdmin() {
         ))}
       </div>
 
-      <h2>Управление категориями</h2>
+      <h2>{t('forum.manageCategories')}</h2>
       {msg && <p style={{ color: "#e67e22" }}>{msg}</p>}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <input placeholder="Название" value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} />
-        <input placeholder="slug" value={catForm.slug} onChange={(e) => setCatForm({ ...catForm, slug: e.target.value })} />
-        <input placeholder="Описание" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} style={{ width: 240 }} />
-        <input type="number" placeholder="Порядок" value={catForm.sort_order} onChange={(e) => setCatForm({ ...catForm, sort_order: +e.target.value })} style={{ width: 80 }} />
-        <button onClick={saveCategory}>{editingCat ? "Обновить" : "Создать"}</button>
-        {editingCat && <button onClick={() => { setEditingCat(null); setCatForm({ name: "", slug: "", description: "", sort_order: 0 }); }}>Отмена</button>}
+        <input placeholder={t('forum.name')} value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} />
+        <input placeholder={t('forum.slug')} value={catForm.slug} onChange={(e) => setCatForm({ ...catForm, slug: e.target.value })} />
+        <input placeholder={t('forum.description')} value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} style={{ width: 240 }} />
+        <input type="number" placeholder={t('forum.order')} value={catForm.sort_order} onChange={(e) => setCatForm({ ...catForm, sort_order: +e.target.value })} style={{ width: 80 }} />
+        <button onClick={saveCategory}>{editingCat ? t('forum.update') : t('forum.create')}</button>
+        {editingCat && <button onClick={() => { setEditingCat(null); setCatForm({ name: "", slug: "", description: "", sort_order: 0 }); }}>{t('forum.cancel')}</button>}
       </div>
 
       <table>
-        <thead><tr><th>Название</th><th>Slug</th><th>Описание</th><th>Порядок</th><th></th></tr></thead>
+        <thead><tr><th>{t('forum.name')}</th><th>{t('forum.slug')}</th><th>{t('forum.description')}</th><th>{t('forum.order')}</th><th></th></tr></thead>
         <tbody>
           {categories.map((cat) => (
             <tr key={cat.id}>
@@ -195,47 +197,47 @@ export default function ForumAdmin() {
               <td>{cat.description}</td>
               <td>{cat.sort_order}</td>
               <td>
-                <button onClick={() => editCategory(cat)} style={{ fontSize: 11 }}>Редактировать</button>
-                <button onClick={() => deleteCategory(cat.id)} style={{ fontSize: 11, background: "#e74c3c" }}>Удалить</button>
+                <button onClick={() => editCategory(cat)} style={{ fontSize: 11 }}>{t('forum.edit')}</button>
+                <button onClick={() => deleteCategory(cat.id)} style={{ fontSize: 11, background: "#e74c3c" }}>{t('admin.deleteBtn')}</button>
               </td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <h2 style={{ marginTop: 32 }}>Модерация тем</h2>
-      <input placeholder="Поиск тем..." value={threadQuery} onChange={(e) => setThreadQuery(e.target.value)} style={{ width: 300, marginBottom: 12 }} />
+      <h2 style={{ marginTop: 32 }}>{t('forum.moderateThreads')}</h2>
+      <input placeholder={t('forum.searchThreads')} value={threadQuery} onChange={(e) => setThreadQuery(e.target.value)} style={{ width: 300, marginBottom: 12 }} />
 
-      {loading && <p style={{ color: "#9ca3af" }}>Загрузка тем…</p>}
-      {loadError && <p style={{ color: "#e74c3c" }}>Ошибка: {loadError}</p>}
+      {loading && <p style={{ color: "#9ca3af" }}>{t('forum.loadingThreads')}</p>}
+      {loadError && <p style={{ color: "#e74c3c" }}>{t('forum.errorLoading')} {loadError}</p>}
 
       {!loading && !loadError && (
         <div className="table-scroll">
           {filteredThreads.length === 0 ? (
-            <p style={{ color: "#9ca3af" }}>Тем не найдено.</p>
+            <p style={{ color: "#9ca3af" }}>{t('forum.noThreadsFound')}</p>
           ) : (
             <table>
-              <thead><tr><th>ID</th><th>Название</th><th>Автор</th><th>Просмотры</th><th>Последний ответ</th><th>Статус</th><th></th></tr></thead>
+              <thead><tr><th>ID</th><th>{t('forum.topic')}</th><th>{t('forum.author')}</th><th>{t('forum.views')}</th><th>{t('forum.lastReply')}</th><th>{t('forum.status')}</th><th></th></tr></thead>
               <tbody>
-                {filteredThreads.map((t) => (
-                  <tr key={t.id}>
-                    <td>{t.id}</td>
-                    <td><a href={`/forum/thread/${t.id}`} target="_blank" style={{ color: "#e67e22" }}>{t.title}</a></td>
-                    <td>{t.author_name}</td>
-                    <td>{t.views}</td>
-                    <td>{t.last_post_author ? `${t.last_post_author} · ${new Date(t.last_post_at || "").toLocaleDateString("ru-RU")}` : "—"}</td>
+                {filteredThreads.map((th) => (
+                  <tr key={th.id}>
+                    <td>{th.id}</td>
+                    <td><a href={`/forum/thread/${th.id}`} target="_blank" style={{ color: "#e67e22" }}>{th.title}</a></td>
+                    <td>{th.author_name}</td>
+                    <td>{th.views}</td>
+                    <td>{th.last_post_author ? `${th.last_post_author} · ${new Date(th.last_post_at || "").toLocaleDateString("ru-RU")}` : "—"}</td>
                     <td>
-                      {t.is_pinned ? "📌 " : ""}
-                      {t.is_locked ? "🔒" : "Открыта"}
+                      {th.is_pinned ? "📌 " : ""}
+                      {th.is_locked ? "🔒" : t('forum.open')}
                     </td>
                     <td>
-                      <button onClick={() => toggleThreadPin(t.id, t.is_pinned)} style={{ fontSize: 11 }}>
-                        {t.is_pinned ? "Открепить" : "Закрепить"}
+                      <button onClick={() => toggleThreadPin(th.id, th.is_pinned)} style={{ fontSize: 11 }}>
+                        {th.is_pinned ? t('forum.unpin') : t('forum.pin')}
                       </button>
-                      <button onClick={() => toggleThreadLock(t.id, t.is_locked)} style={{ fontSize: 11 }}>
-                        {t.is_locked ? "Открыть" : "Закрыть"}
+                      <button onClick={() => toggleThreadLock(th.id, th.is_locked)} style={{ fontSize: 11 }}>
+                        {th.is_locked ? t('forum.unlock') : t('forum.lock')}
                       </button>
-                      <button onClick={() => deleteThread(t.id)} style={{ fontSize: 11, background: "#e74c3c" }}>Удалить</button>
+                      <button onClick={() => deleteThread(th.id)} style={{ fontSize: 11, background: "#e74c3c" }}>{t('admin.deleteBtn')}</button>
                     </td>
                   </tr>
                 ))}
@@ -245,13 +247,13 @@ export default function ForumAdmin() {
         </div>
       )}
 
-      <h2 style={{ marginTop: 32 }}>Модерация сообщений</h2>
+      <h2 style={{ marginTop: 32 }}>{t('forum.moderatePosts')}</h2>
       {!loading && !loadError && posts.length === 0 && (
-        <p style={{ color: "#9ca3af" }}>Сообщений не найдено.</p>
+        <p style={{ color: "#9ca3af" }}>{t('forum.noPostsFound')}</p>
       )}
       <div className="table-scroll">
         <table>
-          <thead><tr><th>ID</th><th>Автор</th><th>Содержание</th><th>Статус</th><th></th></tr></thead>
+          <thead><tr><th>ID</th><th>{t('forum.author')}</th><th>{t('forum.content')}</th><th>{t('forum.status')}</th><th></th></tr></thead>
           <tbody>
             {posts.map((p) => (
               <tr key={p.id}>
@@ -260,12 +262,12 @@ export default function ForumAdmin() {
                 <td style={{ maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {p.content}
                 </td>
-                <td>{p.is_deleted ? "Удалено" : "Активно"}</td>
+                <td>{p.is_deleted ? t('forum.deleted') : t('forum.active')}</td>
                 <td>
                   {p.is_deleted ? (
-                    <button onClick={() => restorePost(p.id)} style={{ fontSize: 11 }}>Восстановить</button>
+                    <button onClick={() => restorePost(p.id)} style={{ fontSize: 11 }}>{t('forum.restore')}</button>
                   ) : (
-                    <button onClick={() => deletePost(p.id)} style={{ fontSize: 11, background: "#e74c3c" }}>Удалить</button>
+                    <button onClick={() => deletePost(p.id)} style={{ fontSize: 11, background: "#e74c3c" }}>{t('admin.deleteBtn')}</button>
                   )}
                 </td>
               </tr>

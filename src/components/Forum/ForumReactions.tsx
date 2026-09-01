@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useI18n } from "@/lib/i18n/I18nContext";
 
 const EMOJIS = ["👍", "❤️", "🔥", "🚀"];
 
@@ -11,6 +12,7 @@ interface ForumReactionsProps {
 }
 
 export function ForumReactions({ postId, userId }: ForumReactionsProps) {
+  const { t } = useI18n();
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [userReactions, setUserReactions] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -70,7 +72,7 @@ export function ForumReactions({ postId, userId }: ForumReactionsProps) {
               opacity: loading ? 0.6 : 1,
               transition: "all 0.2s",
             }}
-            title={userId ? (active ? "Убрать реакцию" : "Добавить реакцию") : "Войдите, чтобы реагировать"}
+            title={userId ? (active ? t('forum.removeReaction') : t('forum.addReaction')) : t('forum.loginToReact')}
           >
             <span>{emoji}</span>
             {count > 0 && <span style={{ fontSize: 11, fontWeight: 600 }}>{count}</span>}
