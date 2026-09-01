@@ -13,13 +13,15 @@ export default function NewsDetailPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/news/${params.id}?locale=${locale}`)
+    const ctrl = new AbortController();
+    fetch(`/api/news/${params.id}?locale=${locale}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(data => {
         setItem(data.item || null);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => { if (err.name !== 'AbortError') setLoading(false); });
+    return () => ctrl.abort();
   }, [params.id, locale]);
 
   if (loading) return <main className="card"><p>{t('common.loading')}</p></main>;

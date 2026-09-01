@@ -10,13 +10,15 @@ export default function GalnetPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/galnet?locale=${locale}`)
+    const ctrl = new AbortController();
+    fetch(`/api/galnet?locale=${locale}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(data => {
         setArticles(data.articles || []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch((err) => { if (err.name !== 'AbortError') setLoading(false); });
+    return () => ctrl.abort();
   }, [locale]);
 
   if (loading) return <main className="card"><p>{t('common.loading')}</p></main>;

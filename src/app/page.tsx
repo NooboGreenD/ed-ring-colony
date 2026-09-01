@@ -10,10 +10,14 @@ export default function Home() {
   const [data, setData] = useState<any>(null);
 
   useEffect(() => {
-    fetch(`/api/home-data?locale=${locale}`)
+    const ctrl = new AbortController();
+    fetch(`/api/home-data?locale=${locale}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(setData)
-      .catch(() => setData({}));
+      .catch((err) => {
+        if (err.name !== 'AbortError') setData({});
+      });
+    return () => ctrl.abort();
   }, [locale]);
 
   const c = data?.content ?? {};

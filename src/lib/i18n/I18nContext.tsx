@@ -4,6 +4,7 @@ import React, { createContext, useContext, useCallback, useState, useEffect } fr
 import { translations, SUPPORTED_LOCALES, LOCALE_NAMES, LOCALE_FLAGS } from './translations';
 
 const STORAGE_KEY = 'ed-ring-locale';
+const COOKIE_KEY = 'ed-ring-locale';
 
 function normalizeLocale(raw: string | null): string {
   if (!raw) return 'ru';
@@ -16,6 +17,11 @@ function getLocaleFromStorage(): string {
   if (typeof window === 'undefined') return 'ru';
   const stored = localStorage.getItem(STORAGE_KEY);
   return normalizeLocale(stored);
+}
+
+function setLocaleCookie(locale: string) {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${COOKIE_KEY}=${locale};path=/;max-age=${60 * 60 * 24 * 365};SameSite=Lax`;
 }
 
 interface I18nContextType {
@@ -37,17 +43,14 @@ const I18nContext = createContext<I18nContextType>({
 });
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [locale, setLocaleState] = useState('ru');
+  const [locale, setLocaleState] = useState(() => getLocaleFromStorage());
 
   useEffect(() => {
-    const stored = getLocaleFromStorage();
-    if (stored !== 'ru') {
-      setLocaleState(stored);
-    }
-
     const handler = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY) {
-        setLocaleState(normalizeLocale(e.newValue));
+        const next = normalizeLocale(e.newValue);
+        setLocaleState(next);
+        setLocaleCookie(next);
       }
     };
     window.addEventListener('storage', handler);
@@ -58,6 +61,7 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
     const normalized = normalizeLocale(newLocale);
     if (typeof window !== 'undefined') {
       localStorage.setItem(STORAGE_KEY, normalized);
+      setLocaleCookie(normalized);
       setLocaleState(normalized);
     }
   }, []);

@@ -9,10 +9,12 @@ export default function NewsPage() {
   const [news, setNews] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch(`/api/news?locale=${locale}`)
+    const ctrl = new AbortController();
+    fetch(`/api/news?locale=${locale}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(data => setNews(data.news || []))
-      .catch(() => setNews([]));
+      .catch((err) => { if (err.name !== 'AbortError') setNews([]); });
+    return () => ctrl.abort();
   }, [locale]);
 
   return (
