@@ -2,14 +2,14 @@ import { createClient } from '@/lib/supabaseServer';
 import { notFound, redirect } from 'next/navigation';
 import WikiArticleContent from '@/components/Wiki/WikiArticleContent';
 
-export const revalidate = 60;
+export const dynamic = 'force-dynamic';
 
 export async function generateMetadata({ params }: { params: { slug: string } }) {
   return { title: `${params.slug} — ED Ring Colony Wiki` };
 }
 
 export default async function WikiArticlePage({ params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+  const supabase = createClient();
 
   // Check redirect
   const { data: redirectData } = await supabase

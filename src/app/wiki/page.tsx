@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { IconWiki, IconStats, IconActivity } from '@/components/Icons';
 import WikiSearchBox from '@/components/Wiki/WikiSearchBox';
 
-export const revalidate = 60;
 
 export default async function WikiPage() {
   const supabase = await createClient();

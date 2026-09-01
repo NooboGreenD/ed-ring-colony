@@ -2,10 +2,10 @@ import { createClient } from '@/lib/supabaseServer';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
-export const revalidate = 60;
+export const dynamic = 'force-dynamic';
 
 export default async function WikiCategoryPage({ params }: { params: { slug: string } }) {
-  const supabase = await createClient();
+  const supabase = createClient();
 
   const { data: category } = await supabase
     .from('wiki_categories')
