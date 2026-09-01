@@ -9,15 +9,21 @@ export default function WikiHistoryPage({ params }: { params: { slug: string } }
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/wiki/articles/${params.slug}`, { headers: getWikiAuthHeaders() })
-      .then(r => r.json())
-      .then(data => { if (!data.error) setArticle(data); })
-      .catch(() => {});
-
-    fetch(`/api/wiki/articles/${params.slug}/revisions`, { headers: getWikiAuthHeaders() })
-      .then(r => r.json())
-      .then(data => { setRevisions(data || []); setLoading(false); })
-      .catch(() => { setLoading(false); });
+    async function load() {
+      try {
+        const h = await getWikiAuthHeaders();
+        const [ar, rr] = await Promise.all([
+          fetch(`/api/wiki/articles/${params.slug}`, { headers: h }),
+          fetch(`/api/wiki/articles/${params.slug}/revisions`, { headers: h })
+        ]);
+        const ad = await ar.json();
+        const rd = await rr.json();
+        if (!ad.error) setArticle(ad);
+        setRevisions(rd || []);
+      } catch {}
+      finally { setLoading(false); }
+    }
+    load();
   }, [params.slug]);
 
   if (loading) return <main style={{ padding: 40 }}><div style={{ color: 'var(--muted)' }}>Загрузка...</div></main>;

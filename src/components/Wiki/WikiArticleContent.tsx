@@ -18,21 +18,25 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
   const [favId, setFavId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/wiki/favorites', { headers: getWikiAuthHeaders() })
-      .then(r => r.json())
-      .then(data => {
+    async function loadFav() {
+      try {
+        const h = await getWikiAuthHeaders();
+        const r = await fetch('/api/wiki/favorites', { headers: h });
+        const data = await r.json();
         const fav = (data || []).find((f: any) => f.article_id === article.id);
         if (fav) { setIsFav(true); setFavId(fav.id); }
-      })
-      .catch(() => {});
+      } catch {}
+    }
+    loadFav();
   }, [article.id]);
 
   async function toggleFav() {
     if (isFav && favId) {
+      await fetch(`/api/wiki/favorites/${favId}`, { method: 'DELETE', headers: await getWikiAuthHeaders() });
       setIsFav(false); setFavId(null);
     } else {
       const res = await fetch('/api/wiki/favorites', {
-        method: 'POST', headers: getWikiAuthHeaders(),
+        method: 'POST', headers: await getWikiAuthHeaders(),
         body: JSON.stringify({ article_id: article.id })
       });
       const data = await res.json();
@@ -40,9 +44,10 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
     }
   }
 
+  const content = typeof article.content === 'string' ? article.content : String(article.content || '');
+
   return (
     <div>
-      {/* Breadcrumbs */}
       <div style={{ marginBottom: 16, fontSize: 11, fontFamily: 'ui-monospace', letterSpacing: '1px', textTransform: 'uppercase', color: 'var(--muted)' }}>
         <Link href="/wiki" style={{ color: 'var(--muted)' }}>Вики</Link>
         {' / '}
@@ -53,7 +58,6 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
         )}
       </div>
 
-      {/* Header */}
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 'clamp(24px, 5vw, 42px)', fontWeight: 800, letterSpacing: '3px', textTransform: 'uppercase', margin: '0 0 12px 0' }}>
           {article.title}
@@ -80,7 +84,6 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
         </div>
       </div>
 
-      {/* Tags */}
       {tags.length > 0 && (
         <div style={{ marginBottom: 20, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {tags.map((tag: any) => (
@@ -94,14 +97,12 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
         </div>
       )}
 
-      {/* Content */}
       <div className="wiki-content" style={{ lineHeight: 1.7, fontSize: 15, color: 'var(--text)' }}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-          {article.content}
+          {content}
         </ReactMarkdown>
       </div>
 
-      {/* Related */}
       {related.length > 0 && (
         <div style={{ marginTop: 40, paddingTop: 24, borderTop: '1px solid var(--line)' }}>
           <h3 style={{ fontSize: 14, color: 'var(--orange)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 12 }}>

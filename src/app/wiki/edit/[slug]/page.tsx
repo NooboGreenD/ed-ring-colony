@@ -42,7 +42,7 @@ export default function WikiEditPage({ params }: { params: { slug: string } }) {
     setSaving(true); setError('');
     const res = await fetch(`/api/wiki/articles/${params.slug}`, {
       method: 'PATCH',
-      headers: getWikiAuthHeaders(),
+      headers: await getWikiAuthHeaders(),
       body: JSON.stringify({ title, content, category_id: categoryId || null, change_summary: summary }),
     });
     const data = await res.json();

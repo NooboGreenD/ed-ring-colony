@@ -12,12 +12,18 @@ function SearchResults() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!q || q.length < 2) { setResults([]); return; }
-    setLoading(true);
-    fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`, { headers: getWikiAuthHeaders() })
-      .then(r => r.json())
-      .then(data => { setResults(data.results || []); setLoading(false); })
-      .catch(() => { setLoading(false); });
+    async function doSearch() {
+      if (!q || q.length < 2) { setResults([]); return; }
+      setLoading(true);
+      try {
+        const h = await getWikiAuthHeaders();
+        const r = await fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`, { headers: h });
+        const data = await r.json();
+        setResults(data.results || []);
+      } catch {}
+      setLoading(false);
+    }
+    doSearch();
   }, [q]);
 
   return (
