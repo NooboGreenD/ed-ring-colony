@@ -4,16 +4,45 @@ import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const SITE_CONTENT_TRANS_COLS = [
+  'kicker', 'title1', 'title2', 'manifest',
+  'footer_copyright', 'footer_discord', 'footer_edsm', 'footer_inara',
+  'kicker_ru', 'kicker_en', 'kicker_de', 'kicker_it', 'kicker_ko', 'kicker_zh', 'kicker_ja',
+  'title1_ru', 'title1_en', 'title1_de', 'title1_it', 'title1_ko', 'title1_zh', 'title1_ja',
+  'title2_ru', 'title2_en', 'title2_de', 'title2_it', 'title2_ko', 'title2_zh', 'title2_ja',
+  'manifest_ru', 'manifest_en', 'manifest_de', 'manifest_it', 'manifest_ko', 'manifest_zh', 'manifest_ja',
+  'footer_copyright_ru', 'footer_copyright_en', 'footer_copyright_de', 'footer_copyright_it', 'footer_copyright_ko', 'footer_copyright_zh', 'footer_copyright_ja',
+  'footer_discord_ru', 'footer_discord_en', 'footer_discord_de', 'footer_discord_it', 'footer_discord_ko', 'footer_discord_zh', 'footer_discord_ja',
+  'footer_edsm_ru', 'footer_edsm_en', 'footer_edsm_de', 'footer_edsm_it', 'footer_edsm_ko', 'footer_edsm_zh', 'footer_edsm_ja',
+  'footer_inara_ru', 'footer_inara_en', 'footer_inara_de', 'footer_inara_it', 'footer_inara_ko', 'footer_inara_zh', 'footer_inara_ja',
+].join(',');
+
+const SITE_CONTENT_BASIC_COLS = 'kicker,title1,title2,manifest,footer_copyright,footer_discord,footer_edsm,footer_inara';
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const locale = searchParams.get('locale') || 'ru';
 
   const supabase = await createClient();
-  const { data: c } = await supabase
+
+  // Try with translation columns; fallback to basic columns if schema is missing them
+  let c: any = null;
+  const { data: cTrans, error: cTransErr } = await supabase
     .from('site_content')
-    .select('*')
+    .select(SITE_CONTENT_TRANS_COLS)
     .eq('id', 1)
     .maybeSingle();
+
+  if (cTransErr) {
+    const { data: cBasic } = await supabase
+      .from('site_content')
+      .select(SITE_CONTENT_BASIC_COLS)
+      .eq('id', 1)
+      .maybeSingle();
+    c = cBasic;
+  } else {
+    c = cTrans;
+  }
 
   const { data: news } = await supabase
     .from('news')
