@@ -3,14 +3,14 @@
 import { useRef } from "react";
 
 interface MarkdownToolbarProps {
-  textareaRef: React.RefObject<HTMLTextAreaElement>;
+  textareaRef?: React.RefObject<HTMLTextAreaElement> | null;
   onChange: (value: string) => void;
   getValue: () => string;
 }
 
 export function MarkdownToolbar({ textareaRef, onChange, getValue }: MarkdownToolbarProps) {
   const insert = (before: string, after: string = "") => {
-    const el = textareaRef.current;
+    const el = textareaRef?.current;
     if (!el) return;
     const start = el.selectionStart;
     const end = el.selectionEnd;
