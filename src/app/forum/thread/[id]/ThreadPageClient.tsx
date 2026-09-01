@@ -16,6 +16,7 @@ interface Post {
   id: number;
   content: string;
   author_id: string;
+  
   created_at: string;
   updated_at: string;
   is_deleted: boolean;
@@ -27,6 +28,7 @@ interface Thread {
   title: string;
   category_id: number;
   author_id: string;
+  
   is_pinned: boolean;
   is_locked: boolean;
   views: number;
@@ -73,6 +75,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
         });
       }
     });
+    // Загружаем имя автора темы
     if (thread.author_id) {
       supabase.from("profiles").select("cmdr_name").eq("id", thread.author_id).maybeSingle().then(({ data: p }) => {
         setThreadAuthorName(p?.cmdr_name || "Unknown");
@@ -88,6 +91,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
       .order("created_at", { ascending: true });
 
     const postList = rawPosts ?? [];
+
     const authorIds = [...new Set(postList.map((p: any) => p.author_id).filter(Boolean))];
     let profileMap = new Map<string, { cmdr_name: string; avatar_url: string | null }>();
     if (authorIds.length > 0) {
@@ -111,8 +115,31 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
 
   const quotePost = (post: Post) => {
     const lines = post.content.split("\n").map((l) => `> ${l}`).join("\n");
-    setQuote(`> **${post.author?.cmdr_name || "Unknown"}** ${t('forum.wrote')}\n${lines}\n\n`);
+    setQuote(`> **${post.author?.cmdr_name || "Unknown"}** ${t("forum.wrote")}\n${lines}\n\n`);
     setTimeout(() => boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight, behavior: "smooth" }), 100);
+  };
+
+  const sendReply = async (text: string) => {
+    if (!text.trim() || !user || currentThread.is_locked) return;
+    
+    const { error } = await supabase.from("forum_posts").insert({
+      thread_id: thread.id,
+      author_id: user.id,
+      
+      content: text.trim(),
+    });
+    if (error) { alert(error.message); return; }
+    setQuote("");
+    await loadPosts();
+    await loadThread();
+    setTimeout(() => {
+      boxRef.current?.scrollTo({ top: boxRef.current.scrollHeight, behavior: "smooth" });
+    }, 100);
+  };
+
+  const startEdit = (post: Post) => {
+    setEditingPost(post.id);
+    setEditContent(post.content);
   };
 
   const saveEdit = async (postId: number) => {
@@ -122,13 +149,13 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
       body: JSON.stringify({ post_id: postId, content: editContent.trim() }),
     });
     const result = await res.json();
-    if (!res.ok) { alert(result.error || t('forum.errorSave')); return; }
+    if (!res.ok) { alert(result.error || 'Ошибка сохранения'); return; }
     setEditingPost(null);
     loadPosts();
   };
 
   const deletePost = async (postId: number) => {
-    if (!confirm(t('forum.deletePostConfirm'))) return;
+    if (!confirm("Удалить сообщение?")) return;
     await supabase.from("forum_posts").update({ is_deleted: true }).eq("id", postId);
     loadPosts();
   };
@@ -147,7 +174,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
 
   const deleteThread = async () => {
     if (!isAdmin) return;
-    if (!confirm(t('forum.deleteThreadConfirm'))) return;
+    if (!confirm("Удалить всю тему?")) return;
     await supabase.from("forum_threads").delete().eq("id", thread.id);
     window.location.href = `/forum/${category?.slug ?? ""}`;
   };
@@ -171,7 +198,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
   return (
     <main className="card">
       <ForumBreadcrumbs items={[
-        { label: t('forum.title'), href: "/forum" },
+        { label: t("forum.title"), href: "/forum" },
         category ? { label: category.name, href: `/forum/${category.slug}` } : { label: "…" },
         { label: currentThread.title },
       ]} />
@@ -181,19 +208,19 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {user && (
             <button onClick={toggleSubscribe} style={{ fontSize: 12, padding: "4px 10px", background: isSubscribed ? "rgba(230,126,34,0.15)" : "transparent", borderColor: isSubscribed ? "var(--orange)" : "var(--line)", color: isSubscribed ? "var(--orange)" : "var(--muted)" }}>
-              {isSubscribed ? t('forum.subscriptionActive') : t('forum.subscribe')}
+              {isSubscribed ? t("forum.subscriptionActive") : t("forum.subscribe")}
             </button>
           )}
           {isAdmin && (
             <>
               <button onClick={togglePin} style={{ fontSize: 12, padding: "4px 10px" }}>
-                {currentThread.is_pinned ? t('forum.unpin') : t('forum.pin')}
+                {currentThread.is_pinned ? t("forum.unpin") : t("forum.pin")}
               </button>
               <button onClick={toggleLock} style={{ fontSize: 12, padding: "4px 10px" }}>
-                {currentThread.is_locked ? t('forum.unlock') : t('forum.lock')}
+                {currentThread.is_locked ? t("forum.unlock") : t("forum.lock")}
               </button>
               <button onClick={deleteThread} style={{ fontSize: 12, padding: "4px 10px", background: "var(--red)", borderColor: "var(--red)" }}>
-                {t('forum.deleteThread')}
+                {t("forum.deleteThread")}
               </button>
             </>
           )}
@@ -201,9 +228,9 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
       </div>
 
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>
-        {threadAuthorName} · {new Date(currentThread.created_at).toLocaleDateString("ru-RU")} · {t('forum.viewsCount')} {currentThread.views}
-        {currentThread.is_pinned && <span style={{ color: "var(--orange)", marginLeft: 8 }}>{t('forum.pinned')}</span>}
-        {currentThread.is_locked && <span style={{ color: "var(--red)", marginLeft: 8 }}>{t('forum.locked')}</span>}
+        {threadAuthorName} · {new Date(currentThread.created_at).toLocaleDateString("ru-RU")} · {t("forum.viewsCount")} {currentThread.views}
+        {currentThread.is_pinned && <span style={{ color: "var(--orange)", marginLeft: 8 }}>{t("forum.pinned")}</span>}
+        {currentThread.is_locked && <span style={{ color: "var(--red)", marginLeft: 8 }}>{t("forum.locked")}</span>}
       </div>
 
       <div
@@ -218,7 +245,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
         }}
       >
         {posts.length === 0 && (
-          <p style={{ color: "var(--muted)" }}>{t('forum.noMessagesYet')}</p>
+          <p style={{ color: "var(--muted)" }}>{t("forum.noMessagesYet")}</p>
         )}
         {posts.map((post) => (
           <div
@@ -243,7 +270,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
                 </span>
                 <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>
                   {new Date(post.created_at).toLocaleString("ru-RU")}
-                  {post.updated_at !== post.created_at && ` ${t('forum.edited')}`}
+                  {post.updated_at !== post.created_at && ` ${t("forum.edited")}`}
                 </span>
               </div>
             </div>
@@ -257,14 +284,14 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
                 />
                 <textarea ref={editTextareaRef} value={editContent} onChange={(e) => setEditContent(e.target.value)} style={{ minHeight: 80 }} />
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => saveEdit(post.id)} style={{ fontSize: 12 }}>{t('forum.save')}</button>
-                  <button onClick={() => setEditingPost(null)} style={{ fontSize: 12, background: "transparent", color: "var(--muted)", borderColor: "var(--line)" }}>{t('forum.cancel')}</button>
+                  <button onClick={() => saveEdit(post.id)} style={{ fontSize: 12 }}>{t("forum.save")}</button>
+                  <button onClick={() => setEditingPost(null)} style={{ fontSize: 12, background: "transparent", color: "var(--muted)", borderColor: "var(--line)" }}>{t("forum.cancel")}</button>
                 </div>
               </div>
             ) : (
               <div style={{ fontSize: 14, color: "var(--text)", lineHeight: 1.6 }}>
                 {post.is_deleted ? (
-                  <span style={{ fontStyle: "italic", color: "var(--muted)" }}>{t('forum.messageDeleted')}</span>
+                  <span style={{ fontStyle: "italic", color: "var(--muted)" }}>{t("forum.messageDeleted")}</span>
                 ) : (
                   <MarkdownRenderer content={post.content} />
                 )}
@@ -276,15 +303,15 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
                 <ForumReactions postId={post.id} userId={user?.id} />
                 {user && (
                   <button onClick={() => quotePost(post)} style={{ fontSize: 11, padding: "3px 8px", background: "transparent", color: "var(--muted)", borderColor: "var(--line)" }}>
-                    {t('forum.quoteBtn')}
+                    {t("forum.quoteBtn")}
                   </button>
                 )}
                 {(post.author_id === user?.id || isAdmin) && (
                   <>
                     {post.author_id === user?.id && (
-                      <button onClick={() => { setEditingPost(post.id); setEditContent(post.content); }} style={{ fontSize: 11, padding: "3px 8px" }}>{t('forum.edit')}</button>
+                      <button onClick={() => startEdit(post)} style={{ fontSize: 11, padding: "3px 8px" }}>{t("forum.edit")}</button>
                     )}
-                    <button onClick={() => deletePost(post.id)} style={{ fontSize: 11, padding: "3px 8px", background: "var(--red)", borderColor: "var(--red)" }}>{t('admin.deleteBtn')}</button>
+                    <button onClick={() => deletePost(post.id)} style={{ fontSize: 11, padding: "3px 8px", background: "var(--red)", borderColor: "var(--red)" }}>{t("admin.deleteBtn")}</button>
                   </>
                 )}
               </div>

@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useI18n } from "@/lib/i18n/I18nContext";
 
 interface Thread {
   id: number;
@@ -12,8 +11,7 @@ interface Thread {
 }
 
 export function RecentPosts({ threads }: { threads: Thread[] }) {
-  const { t } = useI18n();
-  if (!threads.length) return <p style={{ color: "var(--muted)" }}>{t('forum.noTopicsYet')}</p>;
+  if (!threads.length) return <p style={{ color: "var(--muted)" }}>Пока нет тем.</p>;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
