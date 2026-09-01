@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createRouteClient } from '@/lib/supabaseServer';
+import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request) {
-  const supabase = createRouteClient(request);
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await authFromRequest(request);
+  
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { data, error } = await supabase
@@ -17,8 +17,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const supabase = createRouteClient(request);
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await authFromRequest(request);
+  
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { article_id } = await request.json();

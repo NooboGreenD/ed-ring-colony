@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { createRouteClient } from '@/lib/supabaseServer';
+import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const q = searchParams.get('q') || '';
   if (!q || q.length < 2) return NextResponse.json({ results: [] });
 
-  const supabase = createRouteClient(request);
+  const { user, supabase } = await authFromRequest(request);
   const { data, error } = await supabase
     .from('wiki_articles')
     .select('id, title, slug, category_id, wiki_categories(name, slug)')

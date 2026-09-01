@@ -79,3 +79,22 @@ export function createServiceClient() {
 
 // Backward compatibility alias
 export { createClient as createServerClient };
+
+// For API routes — try Authorization header first, then cookies
+export async function authFromRequest(request: Request) {
+  const supabase = createRouteClient(request);
+  
+  // Try Authorization Bearer token first (from localStorage on client)
+  const authHeader = request.headers.get('authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    if (user && !error) {
+      return { user, supabase };
+    }
+  }
+  
+  // Fallback to cookies
+  const { data: { user } } = await supabase.auth.getUser();
+  return { user, supabase };
+}

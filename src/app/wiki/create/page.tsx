@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -37,8 +38,7 @@ export default function WikiCreatePage() {
     setSaving(true); setError('');
     const res = await fetch('/api/wiki/articles', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
+      headers: getWikiAuthHeaders(),
       body: JSON.stringify({ title, slug, content, category_id: categoryId || null }),
     });
     const data = await res.json();

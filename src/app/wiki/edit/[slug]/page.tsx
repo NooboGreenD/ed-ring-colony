@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 import Link from 'next/link';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,8 +42,7 @@ export default function WikiEditPage({ params }: { params: { slug: string } }) {
     setSaving(true); setError('');
     const res = await fetch(`/api/wiki/articles/${params.slug}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
+      headers: getWikiAuthHeaders(),
       body: JSON.stringify({ title, content, category_id: categoryId || null, change_summary: summary }),
     });
     const data = await res.json();

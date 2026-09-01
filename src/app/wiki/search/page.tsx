@@ -2,6 +2,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 import WikiSearchBox from '@/components/Wiki/WikiSearchBox';
 
 function SearchResults() {
@@ -13,7 +14,7 @@ function SearchResults() {
   useEffect(() => {
     if (!q || q.length < 2) { setResults([]); return; }
     setLoading(true);
-    fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`, { credentials: 'include' })
+    fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`, { headers: getWikiAuthHeaders() })
       .then(r => r.json())
       .then(data => { setResults(data.results || []); setLoading(false); })
       .catch(() => { setLoading(false); });

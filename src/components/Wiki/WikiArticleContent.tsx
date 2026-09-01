@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { IconHistory, IconStar } from '@/components/Icons';
 import { useState, useEffect } from 'react';
+import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 
 interface WikiArticleContentProps {
   article: any;
@@ -17,7 +18,7 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
   const [favId, setFavId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/wiki/favorites', { credentials: 'include' })
+    fetch('/api/wiki/favorites', { headers: getWikiAuthHeaders() })
       .then(r => r.json())
       .then(data => {
         const fav = (data || []).find((f: any) => f.article_id === article.id);
@@ -28,12 +29,10 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
 
   async function toggleFav() {
     if (isFav && favId) {
-      await fetch(`/api/wiki/favorites/${favId}`, { method: 'DELETE', credentials: 'include' });
       setIsFav(false); setFavId(null);
     } else {
       const res = await fetch('/api/wiki/favorites', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
+        method: 'POST', headers: getWikiAuthHeaders(),
         body: JSON.stringify({ article_id: article.id })
       });
       const data = await res.json();

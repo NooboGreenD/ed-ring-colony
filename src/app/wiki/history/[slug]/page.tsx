@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect } from 'react';
+import { getWikiAuthHeaders } from '@/lib/wikiAuth';
 import Link from 'next/link';
 
 export default function WikiHistoryPage({ params }: { params: { slug: string } }) {
@@ -8,12 +9,12 @@ export default function WikiHistoryPage({ params }: { params: { slug: string } }
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/wiki/articles/${params.slug}`, { credentials: 'include' })
+    fetch(`/api/wiki/articles/${params.slug}`, { headers: getWikiAuthHeaders() })
       .then(r => r.json())
       .then(data => { if (!data.error) setArticle(data); })
       .catch(() => {});
 
-    fetch(`/api/wiki/articles/${params.slug}/revisions`, { credentials: 'include' })
+    fetch(`/api/wiki/articles/${params.slug}/revisions`, { headers: getWikiAuthHeaders() })
       .then(r => r.json())
       .then(data => { setRevisions(data || []); setLoading(false); })
       .catch(() => { setLoading(false); });

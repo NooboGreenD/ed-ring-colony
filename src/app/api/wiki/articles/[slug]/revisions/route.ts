@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createRouteClient } from '@/lib/supabaseServer';
+import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request, { params }: { params: { slug: string } }) {
-  const supabase = createRouteClient(request);
+  const { user, supabase } = await authFromRequest(request);
 
   const { data: article } = await supabase
     .from('wiki_articles')

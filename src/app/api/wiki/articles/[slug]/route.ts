@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createRouteClient } from '@/lib/supabaseServer';
+import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request, { params }: { params: { slug: string } }) {
-  const supabase = createRouteClient(request);
+  const { user, supabase } = await authFromRequest(request);
 
   // Check redirect first
   const { data: redirect } = await supabase
@@ -43,8 +43,8 @@ export async function GET(request: Request, { params }: { params: { slug: string
 }
 
 export async function PATCH(request: Request, { params }: { params: { slug: string } }) {
-  const supabase = createRouteClient(request);
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await authFromRequest(request);
+  
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await request.json();
@@ -88,8 +88,8 @@ export async function PATCH(request: Request, { params }: { params: { slug: stri
 }
 
 export async function DELETE(request: Request, { params }: { params: { slug: string } }) {
-  const supabase = createRouteClient(request);
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await authFromRequest(request);
+  
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { error } = await supabase.from('wiki_articles').delete().eq('slug', params.slug);

@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { createRouteClient } from '@/lib/supabaseServer';
+import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function DELETE(request: Request, { params }: { params: { id: string } }) {
-  const supabase = createRouteClient(request);
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user, supabase } = await authFromRequest(request);
+  
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { error } = await supabase
