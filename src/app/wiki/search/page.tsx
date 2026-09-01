@@ -13,7 +13,7 @@ function SearchResults() {
   useEffect(() => {
     if (!q || q.length < 2) { setResults([]); return; }
     setLoading(true);
-    fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`)
+    fetch(`/api/wiki/search?q=${encodeURIComponent(q)}`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { setResults(data.results || []); setLoading(false); })
       .catch(() => { setLoading(false); });

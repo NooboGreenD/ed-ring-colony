@@ -42,6 +42,7 @@ export default function WikiEditPage({ params }: { params: { slug: string } }) {
     const res = await fetch(`/api/wiki/articles/${params.slug}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ title, content, category_id: categoryId || null, change_summary: summary }),
     });
     const data = await res.json();

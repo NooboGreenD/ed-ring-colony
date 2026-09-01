@@ -38,6 +38,7 @@ export default function WikiCreatePage() {
     const res = await fetch('/api/wiki/articles', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ title, slug, content, category_id: categoryId || null }),
     });
     const data = await res.json();

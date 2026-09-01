@@ -8,12 +8,12 @@ export default function WikiHistoryPage({ params }: { params: { slug: string } }
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/wiki/articles/${params.slug}`)
+    fetch(`/api/wiki/articles/${params.slug}`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { if (!data.error) setArticle(data); })
       .catch(() => {});
 
-    fetch(`/api/wiki/articles/${params.slug}/revisions`)
+    fetch(`/api/wiki/articles/${params.slug}/revisions`, { credentials: 'include' })
       .then(r => r.json())
       .then(data => { setRevisions(data || []); setLoading(false); })
       .catch(() => { setLoading(false); });

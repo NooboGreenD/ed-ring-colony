@@ -17,7 +17,7 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
   const [favId, setFavId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch('/api/wiki/favorites')
+    fetch('/api/wiki/favorites', { credentials: 'include' })
       .then(r => r.json())
       .then(data => {
         const fav = (data || []).find((f: any) => f.article_id === article.id);
@@ -28,11 +28,12 @@ export default function WikiArticleContent({ article, tags, related }: WikiArtic
 
   async function toggleFav() {
     if (isFav && favId) {
-      await fetch(`/api/wiki/favorites/${favId}`, { method: 'DELETE' });
+      await fetch(`/api/wiki/favorites/${favId}`, { method: 'DELETE', credentials: 'include' });
       setIsFav(false); setFavId(null);
     } else {
       const res = await fetch('/api/wiki/favorites', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ article_id: article.id })
       });
       const data = await res.json();
