@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createServiceClient } from "@/lib/supabaseServer";
 import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request, { params }: { params: { slug: string } }) {
-  const { user } = await authFromRequest(request);
-  const supabase = createServiceClient();
+  const { user, supabase } = await authFromRequest(request);
 
   const { data: category } = await supabase
     .from('wiki_categories')

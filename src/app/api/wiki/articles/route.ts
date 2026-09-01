@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import { createServiceClient } from "@/lib/supabaseServer";
 import { authFromRequest } from '@/lib/supabaseServer';
 
 export async function GET(request: Request) {
@@ -11,8 +10,7 @@ export async function GET(request: Request) {
   const limit = parseInt(searchParams.get('limit') || '20');
   const offset = (page - 1) * limit;
 
-  const { user } = await authFromRequest(request);
-  const supabase = createServiceClient();
+  const { user, supabase } = await authFromRequest(request);
   let query = supabase
     .from('wiki_articles')
     .select('id, title, slug, category_id, author_id, status, is_featured, view_count, version, created_at, updated_at, wiki_categories(name, slug)', { count: 'exact' })
@@ -30,8 +28,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const { user } = await authFromRequest(request);
-  const supabase = createServiceClient();
+  const { user, supabase } = await authFromRequest(request);
   
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 

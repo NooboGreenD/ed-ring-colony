@@ -77,12 +77,32 @@ export function createServiceClient() {
   );
 }
 
+// User client for API routes — passes Authorization header through to PostgREST
+// This makes RLS work correctly because PostgREST reads JWT from the header
+export function createUserClient(request: Request) {
+  const authHeader = request.headers.get('authorization') || '';
+  
+  return createJsClient(
+    assertEnv('NEXT_PUBLIC_SUPABASE_URL', process.env.NEXT_PUBLIC_SUPABASE_URL),
+    assertEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+    {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+      global: {
+        headers: authHeader ? { Authorization: authHeader } : {},
+      },
+    }
+  );
+}
+
 // Backward compatibility alias
 export { createClient as createServerClient };
 
 // For API routes — try Authorization header first, then cookies
 export async function authFromRequest(request: Request) {
-  const supabase = createRouteClient(request);
+  const supabase = createUserClient(request);
   
   // Try Authorization Bearer token first (from localStorage on client)
   const authHeader = request.headers.get('authorization');
