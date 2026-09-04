@@ -19,6 +19,12 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Atlas** — System search, favorites, and route finder
 - **Notifications** — Real-time in-app and push notifications
 - **Direct Chat** — Peer-to-peer messaging between players
+- **Journal Import** — Parse Elite Dangerous Player Journal for colonisation events
+- **Frontier CAPI** — OAuth sync of CMDR profile, ranks, ships, and location
+- **Live Squadron Map** — Real-time member tracking on the Galaxy Map
+- **Market Search** — Find best commodity prices via EDDN integration
+- **Community Goals** — Track active CGs with colonisation filter
+- **Fleet Carriers** — Manage squadron fleet carriers and their markets
 
 ## Tech Stack
 
@@ -30,6 +36,49 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **3D**: Three.js + React Three Fiber
 - **Push**: web-push
 - **Markdown**: react-markdown + remark-gfm
+
+## Elite Dangerous API Integration
+
+The platform integrates with multiple Elite Dangerous APIs:
+
+| API | Purpose | Setup |
+|-----|---------|-------|
+| **Frontier CAPI** | CMDR profile, journal, fleet carrier sync | [Get credentials](https://auth.frontierstore.net/client/request) |
+| **Inara** | Community Goals, CMDR lookup | [Get API key](https://inara.cz) → Profile → Settings → API |
+| **EDDN** | Real-time market prices | Runs as standalone worker |
+| **EDSM** | System coordinates, bodies | Already integrated |
+
+### Required Environment Variables
+
+Copy `.env.example` to `.env.local` and fill in:
+
+```bash
+# Frontier CAPI (required for profile sync)
+FRONTIER_CLIENT_ID=your-frontier-client-id
+FRONTIER_CLIENT_SECRET=your-frontier-client-secret
+FRONTIER_REDIRECT_URI=https://ed-ring-colony.vercel.app/api/capi/callback
+
+# Inara (required for Community Goals)
+INARA_API_KEY=your-inara-api-key
+
+# Security (generate with: openssl rand -hex 32)
+CRON_SECRET=random-64-char-hex
+EDDN_INGEST_SECRET=random-64-char-hex
+```
+
+### GitHub Actions Cron Jobs
+
+Cron jobs are configured via GitHub Actions (see `.github/workflows/`):
+
+| Workflow | Schedule | Purpose |
+|----------|----------|---------|
+| `cron-capi-sync.yml` | Every 5 min | Sync connected CMDR profiles |
+| `cron-cg-check.yml` | Every 6 hours | Update Community Goals from Inara |
+| `cron-eddn-cleanup.yml` | Every 6 hours | Clean old market price data |
+
+Add these secrets to your GitHub repository:
+- `CRON_SECRET` — same as in Vercel env
+- `VERCEL_URL` — `https://ed-ring-colony.vercel.app`
 
 ## Quick Start
 
