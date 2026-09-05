@@ -65,6 +65,7 @@ function AtlasPageInner() {
   const [routeFinderPoints, setRouteFinderPoints] = useState<RoutePoint[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [marketScanSystems, setMarketScanSystems] = useState<Array<{ system_name: string; x?: number; y?: number; z?: number; status: string }>>([]);
+  const [marketResults, setMarketResults] = useState<Array<{ system_name: string; distance: number; station_name?: string; commodities_found?: number }>>([]);
 
   /* ── load projects ── */
   useEffect(() => {
@@ -376,7 +377,12 @@ function AtlasPageInner() {
           )}
 
           {/* Tab: Market */}
-          {activeTab === 'market' && <AtlasMarketSearch onScanUpdate={setMarketScanSystems} />}
+          {activeTab === 'market' && (
+            <AtlasMarketSearch
+              onScanUpdate={setMarketScanSystems}
+              onMarketResults={setMarketResults}
+            />
+          )}
         </div>
       </div>
 
@@ -384,8 +390,9 @@ function AtlasPageInner() {
       <div className="atlas-map-area">
         <GalaxyMap
           atlasCandidates={candidates}
-          squadronRoutePoints={allRoutePoints}
+          squadronRouteSystems={allRoutePoints}
           noMarketSystems={noMarketSystems}
+          marketResults={marketResults}
         />
       </div>
     </div>

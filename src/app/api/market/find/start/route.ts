@@ -66,10 +66,8 @@ export async function POST(request: Request) {
     let rawSystems: EDSMSystem[] = [];
 
     if (radius <= SPHERE_MAX) {
-      // Fast path: sphere-systems already filters by radius and returns distance
       rawSystems = await getSystemsInSphere(ref_system, radius);
     } else {
-      // Slow path: cube-systems for larger radii, then filter by sphere distance
       const refCoords = await getSystemCoords(ref_system);
       if (!refCoords) {
         return NextResponse.json(
@@ -107,8 +105,6 @@ export async function POST(request: Request) {
 
     const svc = createServiceClient();
 
-    // Light cache check: only query systems that are likely cached (recent checks)
-    // Skip heavy IN() for large lists — cache is checked per-system in /step
     const { data: job, error } = await svc
       .from('market_search_jobs')
       .insert({

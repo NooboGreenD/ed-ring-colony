@@ -59,9 +59,10 @@ interface ScanLogEntry {
 
 interface AtlasMarketSearchProps {
   onScanUpdate?: (systems: Array<{ system_name: string; x?: number; y?: number; z?: number; status: string }>) => void;
+  onMarketResults?: (results: Array<{ system_name: string; distance: number; station_name?: string; commodities_found?: number }>) => void;
 }
 
-export default function AtlasMarketSearch({ onScanUpdate }: AtlasMarketSearchProps) {
+export default function AtlasMarketSearch({ onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
   const [refSystem, setRefSystem] = useState('Sol');
   const [commodity, setCommodity] = useState('Steel');
   const [radius, setRadius] = useState(50);
@@ -154,17 +155,30 @@ export default function AtlasMarketSearch({ onScanUpdate }: AtlasMarketSearchPro
 
           if (stepData.is_done) {
             stopSearch();
+            const results = stepData.result || [];
+            const uniqueSystems = new Map<string, { system_name: string; distance: number; station_name?: string; commodities_found?: number }>();
+            for (const r of results) {
+              if (!uniqueSystems.has(r.system_name)) {
+                uniqueSystems.set(r.system_name, {
+                  system_name: r.system_name,
+                  distance: r.distance,
+                  station_name: r.station_name,
+                  commodities_found: r.commodities_found || 1,
+                });
+              }
+            }
+            onMarketResults?.(Array.from(uniqueSystems.values()));
             if (mode === 'build') {
-              setBuildResults(stepData.result || []);
+              setBuildResults(results);
               toast(
-                `Поиск завершён! Найдено ${stepData.result?.length || 0} станций`,
-                stepData.result?.length > 0 ? 'success' : 'info'
+                `Поиск завершён! Найдено ${results.length} станций`,
+                results.length > 0 ? 'success' : 'info'
               );
             } else {
-              setSingleResults(stepData.result || []);
+              setSingleResults(results);
               toast(
-                `Поиск завершён! Найдено ${stepData.result?.length || 0} станций`,
-                stepData.result?.length > 0 ? 'success' : 'info'
+                `Поиск завершён! Найдено ${results.length} станций`,
+                results.length > 0 ? 'success' : 'info'
               );
             }
           }

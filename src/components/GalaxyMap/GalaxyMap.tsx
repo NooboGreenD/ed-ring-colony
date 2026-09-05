@@ -1,521 +1,277 @@
-"use client";
+'use client';
 
-import { Suspense, useState, useMemo, useCallback, useEffect } from "react";
-import { Canvas } from "@react-three/fiber";
-import { useProgress, Html as DreiHtml } from "@react-three/drei";
-import { GalaxyScene } from "./GalaxyScene";
-import { useGalaxyData } from "./useGalaxyData";
-import { eliteToThreeCentered, dist3, SAGA, SOL } from "@/lib/ed3dCanon";
-import type { Hub, RoutePoint } from "./useGalaxyData";
-import type { AtlasCandidate } from "@/types/atlas";
-import type { Pilot } from "./PilotMarkers";
-import * as THREE from "three";
+import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
+import dynamic from 'next/dynamic';
+import * as THREE from 'three';
+import { Hub, RouteSystem } from '@/types/hub';
+import { AtlasCandidate } from '@/types/atlas';
 
-function Loader() {
-  const { progress } = useProgress();
-  return (
-    <DreiHtml center>
-      <div className="map-loader">
-        <div className="map-loader-spinner" />
-        <div className="map-loader-text">Загрузка галактики...</div>
-        <div className="map-loader-percent">{progress.toFixed(0)}%</div>
-      </div>
-    </DreiHtml>
-  );
-}
-
-type NavTab = "hubs" | "route" | "atlas" | "pilots";
-
-const STATUS_LABELS: Record<string, string> = {
-  planned: "Запланирован",
-  building: "Строительство",
-  done: "Завершён",
-};
-
-const STATUS_COLORS: Record<string, string> = {
-  planned: "#888888",
-  building: "#e67e22",
-  done: "#4caf50",
-};
-
-const ATLAS_TYPE_LABELS: Record<string, string> = {
-  earth_like: "🌍 Earth-like",
-  water_world: "💧 Water",
-  ammonia: "🟠 Ammonia",
-  terraformable: "🌱 Terraformable",
-  neutron_star: "⚡ Neutron",
-  black_hole: "🕳️ Black Hole",
-  white_dwarf: "⚪ White Dwarf",
-  wolf_rayet: "🔥 Wolf-Rayet",
-  herbig_ae_be: "⭐ Herbig",
-  t_tauri: "⭐ T Tauri",
-  proto_star: "⭐ Proto",
-  carbon_star: "🔴 Carbon",
-  supergiant: "🔴 Supergiant",
-  giant: "🟠 Giant",
-  rocky_atmosphere: "🪨 Rocky + Atm",
-  rocky_bio: "🌿 Rocky + Bio",
-};
-
-const ATLAS_TYPE_COLORS: Record<string, string> = {
-  earth_like: "#4caf50",
-  water_world: "#2196f3",
-  ammonia: "#ff9800",
-  terraformable: "#8bc34a",
-  neutron_star: "#00bcd4",
-  black_hole: "#9c27b0",
-  white_dwarf: "#e0e0e0",
-  wolf_rayet: "#ff5722",
-  rocky_atmosphere: "#a1887f",
-  rocky_bio: "#66bb6a",
-  default: "#9ca3af",
-};
+const GalaxyScene = dynamic(
+  () => import('./GalaxyScene').then((m) => m.GalaxyScene),
+  { ssr: false }
+);
 
 export interface GalaxyMapProps {
   atlasCandidates?: AtlasCandidate[];
-  squadronRoutePoints?: RoutePoint[];
+  squadronRouteSystems?: RouteSystem[];
   showOnlyMainRoute?: boolean;
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
+  marketResults?: Array<{ system_name: string; distance: number; station_name?: string; commodities_found?: number }>;
 }
 
-export default function GalaxyMap({ atlasCandidates = [], squadronRoutePoints = [], showOnlyMainRoute = false, noMarketSystems = [] }: GalaxyMapProps) {
-  const { hubs, allRoutePoints, error } = useGalaxyData();
-
-  // На основной карте показываем только основной маршрут (sort_order > 0)
-  // Проектные системы имеют sort_order = 0
-  const displayRoutePoints = useMemo(() => {
-    if (showOnlyMainRoute) {
-      return allRoutePoints.filter((p) => p.sort_order > 0);
-    }
-    return allRoutePoints;
-  }, [allRoutePoints, showOnlyMainRoute]);
-
+export default function GalaxyMap({
+  atlasCandidates = [],
+  squadronRouteSystems = [],
+  showOnlyMainRoute = false,
+  noMarketSystems = [],
+  marketResults = [],
+}: GalaxyMapProps) {
+  const [hubs, setHubs] = useState<Hub[]>([]);
+  const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
+  const [pilots, setPilots] = useState<any[]>([]);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
-  const [selectedRoutePoint, setSelectedRoutePoint] = useState<RoutePoint | null>(null);
+  const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
-  const [selectedPilot, setSelectedPilot] = useState<Pilot | null>(null);
-  const [pilots, setPilots] = useState<Pilot[]>([]);
-
-  const [navTab, setNavTab] = useState<NavTab>("hubs");
-  const [navQuery, setNavQuery] = useState("");
-  const [navOpen, setNavOpen] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
-  const [atlasTypeFilter, setAtlasTypeFilter] = useState<string | null>(null);
+  const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
+  const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
   const [resetCamera, setResetCamera] = useState(0);
 
-  /* ── слушаем события фокуса из sidebar ── */
+  const [showKnownSystems, setShowKnownSystems] = useState(true);
+  const [showMarketResults, setShowMarketResults] = useState(true);
+  const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
+
   useEffect(() => {
-    const onFocusCandidate = (e: Event) => {
-      const candidate = (e as CustomEvent).detail as AtlasCandidate;
-      setSelectedAtlasCandidate(candidate);
-      setSelectedHub(null);
-      setSelectedRoutePoint(null);
-      setSelectedPilot(null);
-    };
-    const onFocusRoutePoint = (e: Event) => {
-      const point = (e as CustomEvent).detail as RoutePoint;
-      setSelectedRoutePoint(point);
-      setSelectedHub(null);
-      setSelectedAtlasCandidate(null);
-      setSelectedPilot(null);
-    };
-    window.addEventListener('atlas-focus-candidate', onFocusCandidate);
-    window.addEventListener('atlas-focus-route-point', onFocusRoutePoint);
-    return () => {
-      window.removeEventListener('atlas-focus-candidate', onFocusCandidate);
-      window.removeEventListener('atlas-focus-route-point', onFocusRoutePoint);
-    };
+    fetch('/api/hubs')
+      .then((r) => r.json())
+      .then((data) => setHubs(data.hubs || []))
+      .catch(() => {});
   }, []);
 
-  /* ── загрузка пилотов ── */
   useEffect(() => {
-    fetch('/api/map/pilots')
-      .then(r => r.json())
-      .then(d => setPilots(d.pilots || []))
-      .catch(console.error);
+    fetch('/api/route')
+      .then((r) => r.json())
+      .then((data) => setAllRouteSystems(data.points || []))
+      .catch(() => {});
   }, []);
 
-  const focusTarget = useMemo(() => {
-    if (selectedHub) return eliteToThreeCentered(selectedHub);
-    if (selectedRoutePoint) return eliteToThreeCentered(selectedRoutePoint);
-    if (selectedAtlasCandidate) return eliteToThreeCentered(selectedAtlasCandidate);
-    if (selectedPilot) return eliteToThreeCentered(selectedPilot);
-    return null;
-  }, [selectedHub, selectedRoutePoint, selectedAtlasCandidate, selectedPilot]);
+  useEffect(() => {
+    fetch('/api/pilots')
+      .then((r) => r.json())
+      .then((data) => setPilots(data.pilots || []))
+      .catch(() => {});
+  }, []);
 
   const handleSelectHub = useCallback((hub: Hub | null) => {
     setSelectedHub(hub);
-    if (hub) { setSelectedRoutePoint(null); setSelectedAtlasCandidate(null); setSelectedPilot(null); }
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    if (hub) {
+      setFocusTarget(new THREE.Vector3(hub.x, hub.y, hub.z));
+    }
   }, []);
 
-  const handleSelectRoutePoint = useCallback((point: RoutePoint | null) => {
-    setSelectedRoutePoint(point);
-    if (point) { setSelectedHub(null); setSelectedAtlasCandidate(null); setSelectedPilot(null); }
+  const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
+    setSelectedRouteSystem(point);
+    setSelectedHub(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    if (point) {
+      setFocusTarget(new THREE.Vector3(point.x, point.y, point.z));
+    }
   }, []);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
     setSelectedAtlasCandidate(candidate);
-    if (candidate) { setSelectedHub(null); setSelectedRoutePoint(null); setSelectedPilot(null); }
-  }, []);
-
-  const handleSelectPilot = useCallback((pilot: Pilot | null) => {
-    setSelectedPilot(pilot);
-    if (pilot) { setSelectedHub(null); setSelectedRoutePoint(null); setSelectedAtlasCandidate(null); }
-  }, []);
-
-  const handleNavClickHub = useCallback((hub: Hub) => {
-    setSelectedHub(hub);
-    setSelectedRoutePoint(null);
-    setSelectedAtlasCandidate(null);
-    setSelectedPilot(null);
-  }, []);
-
-  const handleNavClickRoute = useCallback((point: RoutePoint) => {
-    setSelectedRoutePoint(point);
     setSelectedHub(null);
-    setSelectedAtlasCandidate(null);
+    setSelectedRouteSystem(null);
     setSelectedPilot(null);
+    if (candidate) {
+      setFocusTarget(new THREE.Vector3(candidate.x, candidate.y, candidate.z));
+    }
   }, []);
 
-  const handleNavClickAtlas = useCallback((candidate: AtlasCandidate) => {
-    setSelectedAtlasCandidate(candidate);
-    setSelectedHub(null);
-    setSelectedRoutePoint(null);
-    setSelectedPilot(null);
-  }, []);
-
-  const handleNavClickPilot = useCallback((pilot: Pilot) => {
+  const handleSelectPilot = useCallback((pilot: any | null) => {
     setSelectedPilot(pilot);
     setSelectedHub(null);
-    setSelectedRoutePoint(null);
+    setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
+    if (pilot) {
+      setFocusTarget(new THREE.Vector3(pilot.x, pilot.y, pilot.z));
+    }
   }, []);
 
   const handleResetView = useCallback(() => {
+    setFocusTarget(null);
+    setResetCamera((n) => n + 1);
     setSelectedHub(null);
-    setSelectedRoutePoint(null);
+    setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
-    setResetCamera((v) => v + 1);
   }, []);
 
-  const filteredHubs = useMemo(() => {
-    let result = hubs;
-    if (statusFilter) result = result.filter((h) => h.status === statusFilter);
-    const q = navQuery.trim().toLowerCase();
-    if (!q) return result;
-    return result.filter(
-      (h) =>
-        h.system_name.toLowerCase().includes(q) ||
-        h.name?.toLowerCase().includes(q)
-    );
-  }, [hubs, navQuery, statusFilter]);
+  const displayRouteSystems = showOnlyMainRoute
+    ? allRouteSystems.filter((p) => p.status === 'done' || p.status === 'building')
+    : allRouteSystems;
 
-  const filteredRoute = useMemo(() => {
-    let result = displayRoutePoints.filter((p) => !p.isHub);
-    if (statusFilter) result = result.filter((p) => p.status === statusFilter);
-    const q = navQuery.trim().toLowerCase();
-    if (!q) return result;
-    return result.filter((p) => p.system_name.toLowerCase().includes(q));
-  }, [displayRoutePoints, navQuery, statusFilter]);
-
-  const filteredAtlas = useMemo(() => {
-    let result = atlasCandidates;
-    if (atlasTypeFilter) result = result.filter((c) => c.world_type === atlasTypeFilter);
-    const q = navQuery.trim().toLowerCase();
-    if (!q) return result;
-    return result.filter((c) => c.system_name.toLowerCase().includes(q));
-  }, [atlasCandidates, navQuery, atlasTypeFilter]);
-
-  const filteredPilots = useMemo(() => {
-    const q = navQuery.trim().toLowerCase();
-    if (!q) return pilots;
-    return pilots.filter((p) =>
-      p.cmdr_name.toLowerCase().includes(q) ||
-      p.system_name.toLowerCase().includes(q)
-    );
-  }, [pilots, navQuery]);
-
-  const atlasTypes = useMemo(() => {
-    const types = new Set<string>();
-    atlasCandidates.forEach((c) => types.add(c.world_type));
-    return Array.from(types);
-  }, [atlasCandidates]);
-
-  if (error) {
-    return (
-      <div className="galaxy-map-error">
-        <div className="galaxy-map-error-title">Ошибка загрузки карты</div>
-        <div className="galaxy-map-error-msg">{error}</div>
-      </div>
-    );
-  }
+  const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
 
   return (
-    <div className="galaxy-map-container">
-      {/* Навпанель */}
-      <div className={`map-nav-panel ${navOpen ? "open" : "closed"}`}>
-        <button
-          className="map-nav-toggle"
-          onClick={() => setNavOpen((v) => !v)}
-          title={navOpen ? "Скрыть панель" : "Показать панель"}
-        >
-          {navOpen ? "◀" : "▶"}
-        </button>
-
-        {navOpen && (
-          <div className="map-nav-content">
-            <div className="map-nav-header">Навигация</div>
-
-            <div className="map-nav-tabs">
-              <button className={navTab === "hubs" ? "active" : ""} onClick={() => setNavTab("hubs")}>
-                Хабы ({hubs.length})
-              </button>
-              <button className={navTab === "route" ? "active" : ""} onClick={() => setNavTab("route")}>
-                Маршрут ({displayRoutePoints.filter((p) => !p.isHub).length})
-              </button>
-              {atlasCandidates.length > 0 && (
-                <button className={navTab === "atlas" ? "active" : ""} onClick={() => setNavTab("atlas")}>
-                  Atlas ({atlasCandidates.length})
-                </button>
-              )}
-              {pilots.length > 0 && (
-                <button className={navTab === "pilots" ? "active" : ""} onClick={() => setNavTab("pilots")}>
-                  Пилоты ({pilots.length})
-                </button>
-              )}
-            </div>
-
-            <input
-              className="map-nav-search"
-              type="text"
-              placeholder="Поиск системы..."
-              value={navQuery}
-              onChange={(e) => setNavQuery(e.target.value)}
-            />
-
-            {navTab !== "atlas" && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
-                {(["planned", "building", "done"] as const).map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => setStatusFilter((prev) => (prev === s ? null : s))}
-                    style={{
-                      padding: "3px 8px", borderRadius: 4, border: "1px solid",
-                      borderColor: statusFilter === s ? STATUS_COLORS[s] : "#3a3d40",
-                      background: statusFilter === s ? STATUS_COLORS[s] + "22" : "transparent",
-                      color: statusFilter === s ? STATUS_COLORS[s] : "#9ca3af",
-                      fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                    }}
-                  >
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_COLORS[s], display: "inline-block" }} />
-                    {STATUS_LABELS[s]}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {navTab === "atlas" && atlasTypes.length > 0 && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "8px 0" }}>
-                {atlasTypes.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setAtlasTypeFilter((prev) => (prev === t ? null : t))}
-                    style={{
-                      padding: "3px 8px", borderRadius: 4, border: "1px solid",
-                      borderColor: atlasTypeFilter === t ? (ATLAS_TYPE_COLORS[t] || "#3a3d40") : "#3a3d40",
-                      background: atlasTypeFilter === t ? (ATLAS_TYPE_COLORS[t] || "#9ca3af") + "22" : "transparent",
-                      color: atlasTypeFilter === t ? (ATLAS_TYPE_COLORS[t] || "#9ca3af") : "#9ca3af",
-                      fontSize: 11, cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
-                    }}
-                  >
-                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: ATLAS_TYPE_COLORS[t] || "#9ca3af", display: "inline-block" }} />
-                    {ATLAS_TYPE_LABELS[t] || t}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="map-nav-list">
-              {navTab === "hubs"
-                ? filteredHubs.map((hub) => (
-                    <div key={hub.id} className={`map-nav-item ${selectedHub?.id === hub.id ? "selected" : ""}`} onClick={() => handleNavClickHub(hub)}>
-                      <span className={`nav-dot status-${hub.status}`} />
-                      <span className="nav-name">{hub.system_name}</span>
-                      <span className="nav-meta">{hub.name || ""}</span>
-                    </div>
-                  ))
-                : navTab === "route"
-                ? filteredRoute.map((point) => (
-                    <div key={point.id} className={`map-nav-item ${selectedRoutePoint?.id === point.id ? "selected" : ""}`} onClick={() => handleNavClickRoute(point)}>
-                      <span className={`nav-dot status-${point.status}`} />
-                      <span className="nav-name">{point.system_name}</span>
-                      <span className="nav-meta">#{point.sort_order}</span>
-                    </div>
-                  ))
-                : navTab === "atlas"
-                ? filteredAtlas.map((candidate) => (
-                    <div key={candidate.id} className={`map-nav-item ${selectedAtlasCandidate?.id === candidate.id ? "selected" : ""}`} onClick={() => handleNavClickAtlas(candidate)}>
-                      <span className="nav-dot" style={{ background: ATLAS_TYPE_COLORS[candidate.world_type] || "#9ca3af" }} />
-                      <span className="nav-name">{candidate.system_name}</span>
-                      <span className="nav-meta">{candidate.distance_from_ref?.toFixed(0)} ly</span>
-                    </div>
-                  ))
-                : filteredPilots.map((pilot) => (
-                    <div key={pilot.user_id} className={`map-nav-item ${selectedPilot?.user_id === pilot.user_id ? "selected" : ""}`} onClick={() => handleNavClickPilot(pilot)}>
-                      <span className="nav-dot" style={{ background: "#00bcd4" }} />
-                      <span className="nav-name">{pilot.cmdr_name}</span>
-                      <span className="nav-meta">{pilot.system_name}</span>
-                    </div>
-                  ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* HUD */}
-      <div className="galaxy-map-hud">
-        <div className="hud-header">
-          <div className="hud-title">КАРТА КОЛЬЦА</div>
-          <div className="hud-subtitle">
-            Хабов: <span className="hud-accent">{hubs.length}</span> · Точек маршрута:{" "}
-            <span className="hud-accent">{displayRoutePoints.filter((p) => !p.isHub).length}</span>
-            {atlasCandidates.length > 0 && (
-              <> · Atlas: <span className="hud-accent">{atlasCandidates.length}</span></>
-            )}
-            {pilots.length > 0 && (
-              <> · Пилотов: <span className="hud-accent">{pilots.length}</span></>
-            )}
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 8, pointerEvents: "auto" }}>
-          <button onClick={handleResetView} style={{ background: "rgba(30,41,59,0.8)", border: "1px solid #3a3d40", color: "#9ca3af", padding: "4px 10px", borderRadius: 4, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div
+        style={{
+          position: 'absolute',
+          top: 12,
+          right: 12,
+          zIndex: 10,
+          background: 'rgba(13,15,17,0.85)',
+          backdropFilter: 'blur(8px)',
+          border: '1px solid #2d2f33',
+          borderRadius: 8,
+          padding: 12,
+          minWidth: 180,
+          maxWidth: 260,
+          pointerEvents: 'none',
+        }}
+      >
+        <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
+          <button
+            onClick={handleResetView}
+            style={{
+              background: 'rgba(30,41,59,0.8)',
+              border: '1px solid #3a3d40',
+              color: '#9ca3af',
+              padding: '4px 10px',
+              borderRadius: 4,
+              fontSize: 12,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
             ⟲ Сброс вида
           </button>
         </div>
 
-        {selectedHub && (
-          <div className="hud-panel">
-            <div className="hud-panel-name">{selectedHub.system_name}</div>
-            <div className={`hud-panel-status status-${selectedHub.status}`}>{STATUS_LABELS[selectedHub.status]}</div>
-            <div className="hud-panel-progress">
-              <div className="hud-progress-bar"><div className="hud-progress-fill" style={{ width: `${selectedHub.progress}%` }} /></div>
-              <div className="hud-progress-text">{selectedHub.progress}%</div>
-            </div>
-            <div className="hud-panel-coords">X:{selectedHub.x.toFixed(2)} · Y:{selectedHub.y.toFixed(2)} · Z:{selectedHub.z.toFixed(2)}</div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af", fontFamily: "ui-monospace, monospace", lineHeight: 1.6 }}>
-              <div>До SAG A*: {Math.round(dist3(selectedHub, SAGA)).toLocaleString("ru")} св.лет</div>
-              <div>До Sol: {Math.round(dist3(selectedHub, SOL)).toLocaleString("ru")} св.лет</div>
-            </div>
-            <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center" }}>
-              <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(selectedHub.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> EDSM
-              </a>
-              <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(selectedHub.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 22h16"/><path d="M2 22V10l10-6 10 6v12"/><path d="M12 22V12"/></svg> RavenColonial
-              </a>
-            </div>
-          </div>
-        )}
+        <div style={{ marginBottom: 8, pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 11, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showKnownSystems} onChange={(e) => setShowKnownSystems(e.target.checked)} />
+            Все известные системы
+          </label>
+          <label style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showMarketResults} onChange={(e) => setShowMarketResults(e.target.checked)} />
+            Системы с маркетами для стройки
+          </label>
+          <label style={{ fontSize: 11, color: '#8b0000', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showNoMarketSystems} onChange={(e) => setShowNoMarketSystems(e.target.checked)} />
+            Системы без рынков
+          </label>
+        </div>
 
-        {selectedRoutePoint && (
-          <div className="hud-panel">
-            <div className="hud-panel-name">{selectedRoutePoint.system_name}</div>
-            <div className={`hud-panel-status status-${selectedRoutePoint.status}`}>{STATUS_LABELS[selectedRoutePoint.status]}</div>
-            <div className="hud-panel-progress">
-              <div className="hud-progress-bar"><div className="hud-progress-fill" style={{ width: `${selectedRoutePoint.progress}%` }} /></div>
-              <div className="hud-progress-text">{selectedRoutePoint.progress}%</div>
-            </div>
-            <div className="hud-panel-coords">X:{selectedRoutePoint.x.toFixed(2)} · Y:{selectedRoutePoint.y.toFixed(2)} · Z:{selectedRoutePoint.z.toFixed(2)}</div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af", fontFamily: "ui-monospace, monospace", lineHeight: 1.6 }}>
-              <div>До SAG A*: {Math.round(dist3(selectedRoutePoint, SAGA)).toLocaleString("ru")} св.лет</div>
-              <div>До Sol: {Math.round(dist3(selectedRoutePoint, SOL)).toLocaleString("ru")} св.лет</div>
-            </div>
-            <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center" }}>
-              <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(selectedRoutePoint.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> EDSM
-              </a>
-              <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(selectedRoutePoint.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 22h16"/><path d="M2 22V10l10-6 10 6v12"/><path d="M12 22V12"/></svg> RavenColonial
-              </a>
-            </div>
-          </div>
-        )}
-
-        {selectedAtlasCandidate && (
-          <div className="hud-panel">
-            <div className="hud-panel-name">{selectedAtlasCandidate.system_name}</div>
-            <div style={{ color: ATLAS_TYPE_COLORS[selectedAtlasCandidate.world_type] || "#9ca3af", fontSize: 12, marginTop: 4 }}>
-              {ATLAS_TYPE_LABELS[selectedAtlasCandidate.world_type] || selectedAtlasCandidate.world_type}
-              {selectedAtlasCandidate.body_name && selectedAtlasCandidate.body_name !== selectedAtlasCandidate.system_name ? ` — ${selectedAtlasCandidate.body_name}` : ""}
-            </div>
-            <div className="hud-panel-coords" style={{ marginTop: 8 }}>X:{selectedAtlasCandidate.x.toFixed(2)} · Y:{selectedAtlasCandidate.y.toFixed(2)} · Z:{selectedAtlasCandidate.z.toFixed(2)}</div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af", fontFamily: "ui-monospace, monospace", lineHeight: 1.6 }}>
-              <div>От референса: {selectedAtlasCandidate.distance_from_ref?.toFixed(1)} ly</div>
-              {selectedAtlasCandidate.distance_to_arrival && <div>До прибытия: {selectedAtlasCandidate.distance_to_arrival.toFixed(0)} LS</div>}
-              {selectedAtlasCandidate.estimated_value && <div>Стоимость скана: {selectedAtlasCandidate.estimated_value.toLocaleString("ru")} CR</div>}
-            </div>
-            <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center" }}>
-              <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(selectedAtlasCandidate.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> EDSM
-              </a>
-              <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(selectedAtlasCandidate.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 22h16"/><path d="M2 22V10l10-6 10 6v12"/><path d="M12 22V12"/></svg> RavenColonial
-              </a>
-            </div>
-          </div>
-        )}
-
-        {selectedPilot && (
-          <div className="hud-panel">
-            <div className="hud-panel-name">{selectedPilot.cmdr_name}</div>
-            <div style={{ color: "#00bcd4", fontSize: 12, marginTop: 4 }}>{selectedPilot.system_name}</div>
-            {selectedPilot.ship_name && <div style={{ marginTop: 4, fontSize: 12, color: "#9ca3af" }}>Корабль: {selectedPilot.ship_name}</div>}
-            <div className="hud-panel-coords" style={{ marginTop: 8 }}>X:{selectedPilot.x.toFixed(2)} · Y:{selectedPilot.y.toFixed(2)} · Z:{selectedPilot.z.toFixed(2)}</div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "#9ca3af", fontFamily: "ui-monospace, monospace", lineHeight: 1.6 }}>
-              <div>До SAG A*: {Math.round(dist3(selectedPilot, SAGA)).toLocaleString("ru")} св.лет</div>
-              <div>До Sol: {Math.round(dist3(selectedPilot, SOL)).toLocaleString("ru")} св.лет</div>
-            </div>
-            <div style={{ display: "flex", gap: 14, marginTop: 10, alignItems: "center" }}>
-              <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(selectedPilot.system_name)}`} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "#9ca3af", fontSize: 12, textDecoration: "none" }} onMouseEnter={(e) => { e.currentTarget.style.color = "#e67e22"; }} onMouseLeave={(e) => { e.currentTarget.style.color = "#9ca3af"; }}>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> EDSM
-              </a>
-            </div>
-          </div>
-        )}
-
-        <div className="hud-legend">
-          <div className="hud-legend-item"><span className="dot planned" /> Запланирован</div>
-          <div className="hud-legend-item"><span className="dot building" /> Строительство</div>
-          <div className="hud-legend-item"><span className="dot done" /> Завершён</div>
-          <div className="hud-legend-item"><span className="dot landmark" /> Ключевая точка</div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+          <span style={{ color: '#22c55e' }}>●</span> Завершён
+          <span style={{ marginLeft: 8, color: '#e67e22' }}>●</span> Строительство
+          <span style={{ marginLeft: 8, color: '#9ca3af' }}>●</span> Запланирован
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+          <span style={{ color: '#3b82f6' }}>●</span> Маршрут эскадры
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+          <span style={{ color: '#e91e63' }}>●</span> Atlas-кандидаты
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+          <span style={{ color: '#00bcd4' }}>●</span> Пилоты
         </div>
       </div>
 
-      <Canvas
-        camera={{ position: [0, 35000, 0], fov: 45, near: 1, far: 200000 }}
-        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-        style={{ background: "#000000" }}
-        frameloop="demand"
-      >
-        <Suspense fallback={<Loader />}>
+      {selected && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 12,
+            left: 12,
+            zIndex: 10,
+            background: 'rgba(13,15,17,0.9)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid #2d2f33',
+            borderRadius: 8,
+            padding: 12,
+            minWidth: 200,
+            maxWidth: 280,
+            pointerEvents: 'auto',
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#eeeeee' }}>
+            {(selected as any).system_name || (selected as any).name}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+            📍 {(selected as any).x?.toFixed(1) || '?'}, {(selected as any).y?.toFixed(1) || '?'}, {(selected as any).z?.toFixed(1) || '?'}
+          </div>
+          {(selected as any).status && (
+            <div style={{ marginTop: 4, fontSize: 12 }}>
+              Статус:{' '}
+              <span
+                style={{
+                  color:
+                    (selected as any).status === 'done'
+                      ? '#22c55e'
+                      : (selected as any).status === 'building'
+                      ? '#e67e22'
+                      : '#9ca3af',
+                }}
+              >
+                {(selected as any).status === 'done'
+                  ? 'Завершён'
+                  : (selected as any).status === 'building'
+                  ? 'Строительство'
+                  : 'Запланирован'}
+              </span>
+            </div>
+          )}
+          {(selected as any).progress != null && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>
+              Прогресс: {(selected as any).progress}%
+            </div>
+          )}
+          {(selected as any).total_delivered != null && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+              Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')} т
+            </div>
+          )}
+          {(selected as any).distance != null && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+              Расстояние: {(selected as any).distance.toFixed(1)} св.лет
+            </div>
+          )}
+          {(selected as any).type && (
+            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+              Тип: {(selected as any).type}
+            </div>
+          )}
+        </div>
+      )}
+
+      <Suspense fallback={<div style={{ width: '100%', height: '100%', background: '#0a0c0e' }} />}>
+        <div style={{ width: '100%', height: '100%' }}>
           <GalaxyScene
             hubs={hubs}
-            allRoutePoints={displayRoutePoints}
-            squadronRoutePoints={squadronRoutePoints}
+            allRouteSystems={displayRouteSystems}
+            squadronRouteSystems={squadronRouteSystems}
             atlasCandidates={atlasCandidates}
             pilots={pilots}
             noMarketSystems={noMarketSystems}
+            marketResults={marketResults}
+            showKnownSystems={showKnownSystems}
+            showMarketResults={showMarketResults}
+            showNoMarketSystems={showNoMarketSystems}
             onSelectHub={handleSelectHub}
-            onSelectRoutePoint={handleSelectRoutePoint}
+            onSelectRouteSystem={handleSelectRouteSystem}
             onSelectAtlasCandidate={handleSelectAtlasCandidate}
             onSelectPilot={handleSelectPilot}
             focusTarget={focusTarget}
             resetCamera={resetCamera}
           />
-        </Suspense>
-      </Canvas>
+        </div>
+      </Suspense>
     </div>
   );
 }
