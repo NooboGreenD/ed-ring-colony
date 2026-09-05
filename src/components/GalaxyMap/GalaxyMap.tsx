@@ -111,9 +111,7 @@ export default function GalaxyMap({
     setSelectedPilot(null);
   }, []);
 
-  const displayRouteSystems = showOnlyMainRoute
-    ? allRouteSystems.filter((p) => p.status === 'done' || p.status === 'building')
-    : allRouteSystems;
+  const displayRouteSystems = allRouteSystems;
 
   const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
 
