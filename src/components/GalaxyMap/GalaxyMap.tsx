@@ -2,9 +2,11 @@
 
 import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Hub, RouteSystem } from '@/types/hub';
 import { AtlasCandidate } from '@/types/atlas';
+import { GalaxyBackground } from './GalaxyBackground';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((m) => m.GalaxyScene),
@@ -252,24 +254,31 @@ export default function GalaxyMap({
 
       <Suspense fallback={<div style={{ width: '100%', height: '100%', background: '#0a0c0e' }} />}>
         <div style={{ width: '100%', height: '100%' }}>
-          <GalaxyScene
-            hubs={hubs}
-            allRouteSystems={displayRouteSystems}
-            squadronRouteSystems={squadronRouteSystems}
-            atlasCandidates={atlasCandidates}
-            pilots={pilots}
-            noMarketSystems={noMarketSystems}
-            marketResults={marketResults}
-            showKnownSystems={showKnownSystems}
-            showMarketResults={showMarketResults}
-            showNoMarketSystems={showNoMarketSystems}
-            onSelectHub={handleSelectHub}
-            onSelectRouteSystem={handleSelectRouteSystem}
-            onSelectAtlasCandidate={handleSelectAtlasCandidate}
-            onSelectPilot={handleSelectPilot}
-            focusTarget={focusTarget}
-            resetCamera={resetCamera}
-          />
+          <Canvas
+            camera={{ position: [0, 80, 120], fov: 60, near: 0.1, far: 10000 }}
+            style={{ background: '#0a0c0e' }}
+            gl={{ antialias: true, alpha: false }}
+          >
+            <GalaxyBackground />
+            <GalaxyScene
+              hubs={hubs}
+              allRouteSystems={displayRouteSystems}
+              squadronRouteSystems={squadronRouteSystems}
+              atlasCandidates={atlasCandidates}
+              pilots={pilots}
+              noMarketSystems={noMarketSystems}
+              marketResults={marketResults}
+              showKnownSystems={showKnownSystems}
+              showMarketResults={showMarketResults}
+              showNoMarketSystems={showNoMarketSystems}
+              onSelectHub={handleSelectHub}
+              onSelectRouteSystem={handleSelectRouteSystem}
+              onSelectAtlasCandidate={handleSelectAtlasCandidate}
+              onSelectPilot={handleSelectPilot}
+              focusTarget={focusTarget}
+              resetCamera={resetCamera}
+            />
+          </Canvas>
         </div>
       </Suspense>
     </div>
