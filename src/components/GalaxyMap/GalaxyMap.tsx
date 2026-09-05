@@ -6,6 +6,7 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Hub, RouteSystem } from '@/types/hub';
 import { AtlasCandidate } from '@/types/atlas';
+import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((m) => m.GalaxyScene),
@@ -75,7 +76,7 @@ export default function GalaxyMap({
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
-    if (hub) setFocusTarget(new THREE.Vector3(hub.x, hub.y, hub.z));
+    if (hub) setFocusTarget(eliteToThreeCentered(hub));
   }, []);
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
@@ -83,7 +84,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
-    if (point) setFocusTarget(new THREE.Vector3(point.x, point.y, point.z));
+    if (point) setFocusTarget(eliteToThreeCentered(point));
   }, []);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
@@ -91,7 +92,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedPilot(null);
-    if (candidate) setFocusTarget(new THREE.Vector3(candidate.x, candidate.y, candidate.z));
+    if (candidate) setFocusTarget(eliteToThreeCentered(candidate));
   }, []);
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
@@ -99,7 +100,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
-    if (pilot) setFocusTarget(new THREE.Vector3(pilot.x, pilot.y, pilot.z));
+    if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
   }, []);
 
   const handleResetView = useCallback(() => {
