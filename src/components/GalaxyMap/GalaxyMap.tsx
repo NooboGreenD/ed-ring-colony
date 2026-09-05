@@ -50,25 +50,45 @@ export default function GalaxyMap({
   const [showMarketResults, setShowMarketResults] = useState(true);
   const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
 
+  const [lastUpdated, setLastUpdated] = useState(Date.now());
+
   useEffect(() => {
-    fetch('/api/hubs')
-      .then((r) => r.json())
-      .then((data) => setHubs(data.hubs || []))
-      .catch(() => {});
+    const loadHubs = () => {
+      fetch('/api/hubs?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => setHubs(data.hubs || []))
+        .catch(() => {});
+    };
+    loadHubs();
+    const interval = setInterval(loadHubs, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    fetch('/api/route')
-      .then((r) => r.json())
-      .then((data) => setAllRouteSystems(data.points || []))
-      .catch(() => {});
+    const loadRoute = () => {
+      fetch('/api/route?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => {
+          setAllRouteSystems(data.points || []);
+          setLastUpdated(Date.now());
+        })
+        .catch(() => {});
+    };
+    loadRoute();
+    const interval = setInterval(loadRoute, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    fetch('/api/pilots')
-      .then((r) => r.json())
-      .then((data) => setPilots(data.pilots || []))
-      .catch(() => {});
+    const loadPilots = () => {
+      fetch('/api/pilots?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => setPilots(data.pilots || []))
+        .catch(() => {});
+    };
+    loadPilots();
+    const interval = setInterval(loadPilots, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleSelectHub = useCallback((hub: Hub | null) => {
