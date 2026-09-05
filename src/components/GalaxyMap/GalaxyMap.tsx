@@ -6,12 +6,19 @@ import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Hub, RouteSystem } from '@/types/hub';
 import { AtlasCandidate } from '@/types/atlas';
-import { GalaxyBackground } from './GalaxyBackground';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((m) => m.GalaxyScene),
   { ssr: false }
 );
+
+function Loader() {
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e67e22', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2, zIndex: 5 }}>
+      Загрузка галактики...
+    </div>
+  );
+}
 
 export interface GalaxyMapProps {
   atlasCandidates?: AtlasCandidate[];
@@ -68,9 +75,7 @@ export default function GalaxyMap({
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
-    if (hub) {
-      setFocusTarget(new THREE.Vector3(hub.x, hub.y, hub.z));
-    }
+    if (hub) setFocusTarget(new THREE.Vector3(hub.x, hub.y, hub.z));
   }, []);
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
@@ -78,9 +83,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
-    if (point) {
-      setFocusTarget(new THREE.Vector3(point.x, point.y, point.z));
-    }
+    if (point) setFocusTarget(new THREE.Vector3(point.x, point.y, point.z));
   }, []);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
@@ -88,9 +91,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedPilot(null);
-    if (candidate) {
-      setFocusTarget(new THREE.Vector3(candidate.x, candidate.y, candidate.z));
-    }
+    if (candidate) setFocusTarget(new THREE.Vector3(candidate.x, candidate.y, candidate.z));
   }, []);
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
@@ -98,9 +99,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
-    if (pilot) {
-      setFocusTarget(new THREE.Vector3(pilot.x, pilot.y, pilot.z));
-    }
+    if (pilot) setFocusTarget(new THREE.Vector3(pilot.x, pilot.y, pilot.z));
   }, []);
 
   const handleResetView = useCallback(() => {
@@ -120,40 +119,13 @@ export default function GalaxyMap({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      <div
-        style={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          zIndex: 10,
-          background: 'rgba(13,15,17,0.85)',
-          backdropFilter: 'blur(8px)',
-          border: '1px solid #2d2f33',
-          borderRadius: 8,
-          padding: 12,
-          minWidth: 180,
-          maxWidth: 260,
-          pointerEvents: 'none',
-        }}
-      >
+      {/* HUD */}
+      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 180, maxWidth: 260, pointerEvents: 'none' }}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
-          <button
-            onClick={handleResetView}
-            style={{
-              background: 'rgba(30,41,59,0.8)',
-              border: '1px solid #3a3d40',
-              color: '#9ca3af',
-              padding: '4px 10px',
-              borderRadius: 4,
-              fontSize: 12,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
+          <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
             ⟲ Сброс вида
           </button>
         </div>
-
         <div style={{ marginBottom: 8, pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={showKnownSystems} onChange={(e) => setShowKnownSystems(e.target.checked)} />
@@ -168,7 +140,6 @@ export default function GalaxyMap({
             Системы без рынков
           </label>
         </div>
-
         <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
           <span style={{ color: '#22c55e' }}>●</span> Завершён
           <span style={{ marginLeft: 8, color: '#e67e22' }}>●</span> Строительство
@@ -186,103 +157,53 @@ export default function GalaxyMap({
       </div>
 
       {selected && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 12,
-            left: 12,
-            zIndex: 10,
-            background: 'rgba(13,15,17,0.9)',
-            backdropFilter: 'blur(8px)',
-            border: '1px solid #2d2f33',
-            borderRadius: 8,
-            padding: 12,
-            minWidth: 200,
-            maxWidth: 280,
-            pointerEvents: 'auto',
-          }}
-        >
-          <div style={{ fontWeight: 700, fontSize: 15, color: '#eeeeee' }}>
-            {(selected as any).system_name || (selected as any).name}
-          </div>
+        <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 200, maxWidth: 280, pointerEvents: 'auto' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: '#eeeeee' }}>{(selected as any).system_name || (selected as any).name}</div>
           <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
             📍 {(selected as any).x?.toFixed(1) || '?'}, {(selected as any).y?.toFixed(1) || '?'}, {(selected as any).z?.toFixed(1) || '?'}
           </div>
           {(selected as any).status && (
             <div style={{ marginTop: 4, fontSize: 12 }}>
               Статус:{' '}
-              <span
-                style={{
-                  color:
-                    (selected as any).status === 'done'
-                      ? '#22c55e'
-                      : (selected as any).status === 'building'
-                      ? '#e67e22'
-                      : '#9ca3af',
-                }}
-              >
-                {(selected as any).status === 'done'
-                  ? 'Завершён'
-                  : (selected as any).status === 'building'
-                  ? 'Строительство'
-                  : 'Запланирован'}
+              <span style={{ color: (selected as any).status === 'done' ? '#22c55e' : (selected as any).status === 'building' ? '#e67e22' : '#9ca3af' }}>
+                {(selected as any).status === 'done' ? 'Завершён' : (selected as any).status === 'building' ? 'Строительство' : 'Запланирован'}
               </span>
             </div>
           )}
-          {(selected as any).progress != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>
-              Прогресс: {(selected as any).progress}%
-            </div>
-          )}
-          {(selected as any).total_delivered != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
-              Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')} т
-            </div>
-          )}
-          {(selected as any).distance != null && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
-              Расстояние: {(selected as any).distance.toFixed(1)} св.лет
-            </div>
-          )}
-          {(selected as any).type && (
-            <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
-              Тип: {(selected as any).type}
-            </div>
-          )}
+          {(selected as any).progress != null && <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>Прогресс: {(selected as any).progress}%</div>}
+          {(selected as any).total_delivered != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')} т</div>}
+          {(selected as any).distance != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Расстояние: {(selected as any).distance.toFixed(1)} св.лет</div>}
+          {(selected as any).type && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Тип: {(selected as any).type}</div>}
         </div>
       )}
 
-      <Suspense fallback={<div style={{ width: '100%', height: '100%', background: '#0a0c0e' }} />}>
-        <div style={{ width: '100%', height: '100%' }}>
-          <Canvas
-            camera={{ position: [0, 80, 120], fov: 60, near: 0.1, far: 10000 }}
-            style={{ width: '100%', height: '100%', background: '#0a0c0e' }}
-            gl={{ antialias: true, alpha: false }}
-          >
-            <Suspense fallback={null}>
-              <GalaxyBackground />
-            </Suspense>
-            <GalaxyScene
-              hubs={hubs}
-              allRouteSystems={displayRouteSystems}
-              squadronRouteSystems={squadronRouteSystems}
-              atlasCandidates={atlasCandidates}
-              pilots={pilots}
-              noMarketSystems={noMarketSystems}
-              marketResults={marketResults}
-              showKnownSystems={showKnownSystems}
-              showMarketResults={showMarketResults}
-              showNoMarketSystems={showNoMarketSystems}
-              onSelectHub={handleSelectHub}
-              onSelectRouteSystem={handleSelectRouteSystem}
-              onSelectAtlasCandidate={handleSelectAtlasCandidate}
-              onSelectPilot={handleSelectPilot}
-              focusTarget={focusTarget}
-              resetCamera={resetCamera}
-            />
-          </Canvas>
-        </div>
-      </Suspense>
+      <Canvas
+        camera={{ position: [0, 35000, 0], fov: 45, near: 1, far: 200000 }}
+        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+        style={{ background: "#000000", width: '100%', height: '100%' }}
+        frameloop="demand"
+      >
+        <Suspense fallback={null}>
+          <GalaxyScene
+            hubs={hubs}
+            allRouteSystems={displayRouteSystems}
+            squadronRouteSystems={squadronRouteSystems}
+            atlasCandidates={atlasCandidates}
+            pilots={pilots}
+            noMarketSystems={noMarketSystems}
+            marketResults={marketResults}
+            showKnownSystems={showKnownSystems}
+            showMarketResults={showMarketResults}
+            showNoMarketSystems={showNoMarketSystems}
+            onSelectHub={handleSelectHub}
+            onSelectRouteSystem={handleSelectRouteSystem}
+            onSelectAtlasCandidate={handleSelectAtlasCandidate}
+            onSelectPilot={handleSelectPilot}
+            focusTarget={focusTarget}
+            resetCamera={resetCamera}
+          />
+        </Suspense>
+      </Canvas>
     </div>
   );
 }
