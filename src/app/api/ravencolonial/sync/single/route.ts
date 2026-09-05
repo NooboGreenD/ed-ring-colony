@@ -20,9 +20,27 @@ export async function POST(req: Request) {
 
     // Обновляем route_systems
     if (data.progress != null) {
-      await supabase.from('route_systems')
-        .update({ progress: data.progress, status })
-        .ilike('system_name', system_name);
+      const normalizedName = system_name.trim();
+      const { data: existing } = await supabase.from('route_systems')
+        .select('id')
+        .eq('system_name', normalizedName)
+        .maybeSingle();
+      
+      if (existing) {
+        await supabase.from('route_systems')
+          .update({ progress: data.progress, status, updated_at: new Date().toISOString() })
+          .eq('id', existing.id);
+      } else {
+        const { data: existingCI } = await supabase.from('route_systems')
+          .select('id')
+          .ilike('system_name', normalizedName)
+          .maybeSingle();
+        if (existingCI) {
+          await supabase.from('route_systems')
+            .update({ progress: data.progress, status, updated_at: new Date().toISOString() })
+            .eq('id', existingCI.id);
+        }
+      }
     }
 
     // Логируем

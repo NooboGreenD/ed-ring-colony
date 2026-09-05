@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
 import * as THREE from 'three';
 import { Hub, RouteSystem } from '@/types/hub';
@@ -139,12 +140,31 @@ export default function GalaxyMap({
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       {/* HUD */}
-      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 180, maxWidth: 260, pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 200, maxWidth: 280, pointerEvents: 'none' }}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
-          <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
+          <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             ⟲ Сброс вида
           </button>
         </div>
+
+        {/* Выбор системы из списка */}
+        <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4, textTransform: 'uppercase' }}>Выбор системы</div>
+          <select
+            value={selectedRouteSystem?.system_name || ''}
+            onChange={(e) => {
+              const sys = allRouteSystems.find(s => s.system_name === e.target.value);
+              if (sys) handleSelectRouteSystem(sys);
+            }}
+            style={{ background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '6px 8px', borderRadius: 4, fontSize: 12, width: '100%', cursor: 'pointer' }}
+          >
+            <option value="">Выберите систему...</option>
+            {allRouteSystems.map(s => (
+              <option key={s.id} value={s.system_name}>{s.sort_order}. {s.system_name}</option>
+            ))}
+          </select>
+        </div>
+
         <div style={{ marginBottom: 8, pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             <input type="checkbox" checked={showKnownSystems} onChange={(e) => setShowKnownSystems(e.target.checked)} />
@@ -176,8 +196,16 @@ export default function GalaxyMap({
       </div>
 
       {selected && (
-        <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 200, maxWidth: 280, pointerEvents: 'auto' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, color: '#eeeeee' }}>{(selected as any).system_name || (selected as any).name}</div>
+        <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'auto' }}>
+          <Link
+            href={`/system/${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+            style={{ textDecoration: 'none' }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#e67e22', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {(selected as any).system_name || (selected as any).name}
+              <span style={{ fontSize: 12 }}>↗</span>
+            </div>
+          </Link>
           <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
             📍 {(selected as any).x?.toFixed(1) || '?'}, {(selected as any).y?.toFixed(1) || '?'}, {(selected as any).z?.toFixed(1) || '?'}
           </div>
@@ -193,6 +221,28 @@ export default function GalaxyMap({
           {(selected as any).total_delivered != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')} т</div>}
           {(selected as any).distance != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Расстояние: {(selected as any).distance.toFixed(1)} св.лет</div>}
           {(selected as any).type && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Тип: {(selected as any).type}</div>}
+
+          {/* Ссылки на внешние ресурсы */}
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a
+              href={`https://ravencolonial.com/#sys=${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none', padding: '3px 8px', background: 'rgba(230,126,34,0.1)', borderRadius: 4, border: '1px solid rgba(230,126,34,0.3)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              🦅 Raven ↗
+            </a>
+            <a
+              href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none', padding: '3px 8px', background: 'rgba(59,130,246,0.1)', borderRadius: 4, border: '1px solid rgba(59,130,246,0.3)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              🌌 EDSM ↗
+            </a>
+          </div>
         </div>
       )}
 
