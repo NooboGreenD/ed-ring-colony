@@ -256,10 +256,12 @@ export default function GalaxyMap({
         <div style={{ width: '100%', height: '100%' }}>
           <Canvas
             camera={{ position: [0, 80, 120], fov: 60, near: 0.1, far: 10000 }}
-            style={{ background: '#0a0c0e' }}
+            style={{ width: '100%', height: '100%', background: '#0a0c0e' }}
             gl={{ antialias: true, alpha: false }}
           >
-            <GalaxyBackground />
+            <Suspense fallback={null}>
+              <GalaxyBackground />
+            </Suspense>
             <GalaxyScene
               hubs={hubs}
               allRouteSystems={displayRouteSystems}

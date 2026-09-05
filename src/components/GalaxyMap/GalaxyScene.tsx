@@ -42,8 +42,14 @@ function CameraController({
 }) {
   const { camera } = useThree();
   const targetRef = useRef<THREE.Vector3 | null>(null);
-  const initialPosition = useRef(camera.position.clone());
+  const initialPosition = useRef<THREE.Vector3 | null>(null);
   const initialTarget = useRef(new THREE.Vector3(0, 0, 0));
+
+  useEffect(() => {
+    if (camera && !initialPosition.current) {
+      initialPosition.current = camera.position.clone();
+    }
+  }, [camera]);
 
   useEffect(() => {
     if (focusTarget) {
@@ -58,6 +64,7 @@ function CameraController({
   }, [resetCamera]);
 
   useFrame(() => {
+    if (!initialPosition.current) return;
     if (targetRef.current) {
       const desiredPos = targetRef.current.clone().add(new THREE.Vector3(0, 80, 120));
       camera.position.lerp(desiredPos, 0.05);
