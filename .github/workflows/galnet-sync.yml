@@ -1,0 +1,21 @@
+name: Galnet Sync
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync Galnet
+        run: |
+          curl -s -X POST "https://ed-ring-colony.vercel.app/api/galnet" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -d '{}' \
+            -w "\nHTTP_CODE: %{http_code}\n" \
+            --max-time 30
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
