@@ -1,6 +1,25 @@
 """Парсер журналов Elite Dangerous."""
-import json
+import json as _std_json
 from typing import List, Dict, Any, Optional, Tuple
+
+# Опциональный быстрый JSON-декодер. orjson может давать заметное ускорение
+# на файлах с большим числом строк (например, ColonisationConstructionDepot
+# сыпется каждые несколько секунд рядом со стройплощадкой и может составлять
+# многие тысячи строк в одном journal-файле). Если orjson не установлен —
+# просто используем стандартный json, поведение не меняется.
+try:
+    import orjson as _fast_json
+
+    def _loads(s: str):
+        return _fast_json.loads(s)
+except ImportError:
+    def _loads(s: str):
+        return _std_json.loads(s)
+
+json = _std_json  # для обратной совместимости импортов (json.JSONDecodeError и т.п.)
+# И orjson.JSONDecodeError, и json.JSONDecodeError — подклассы ValueError,
+# поэтому ловим по нему, чтобы код одинаково работал с обоими декодерами.
+_JSON_ERROR = ValueError
 
 
 def build_inventory(inventory: list) -> dict:
@@ -45,11 +64,11 @@ def parse_journal(
     last_contribution_state: dict = None,
     seen_events: set = None,
     current_system_address: int = 0,
-) -> Tuple[Optional[str], List[dict], dict, dict, dict, set]:
+) -> Tuple[Optional[str], List[dict], dict, dict, dict, set, Dict[str, int]]:
     """Разобрать текст Journal.*.log.
 
     Возвращает (cmdr_name, deliveries, last_cargo, last_depot_state,
-                last_contribution_state, seen_events).
+                last_contribution_state, seen_events, event_counts).
 
     Args:
         text: Текст журнала.
@@ -65,6 +84,10 @@ def parse_journal(
             доставка привязана к системе, в которой она реально произошла,
             а не к "текущей" системе на момент отправки батча на сервер
             (которая может быть уже другой, если игрок успел прыгнуть).
+
+    event_counts — счётчик событий по типам (только реально обработанные,
+    без дублей, отфильтрованных через seen_events) — используется для
+    итоговой сводной таблицы после импорта.
     """
     cmdr_name = None
     if last_cargo is None:
@@ -78,6 +101,7 @@ def parse_journal(
     skip_next_cargo = False
     deliveries = []
     cargo_depot_items: set = set()
+    event_counts: Dict[str, int] = {}
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -85,8 +109,8 @@ def parse_journal(
             continue
 
         try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
+            ev = _loads(line)
+        except _JSON_ERROR:
             continue
 
         # Дедупликация по событию (timestamp + market_id + amount), не по строке
@@ -96,6 +120,7 @@ def parse_journal(
         seen_events.add(ekey)
 
         event = ev.get("event")
+        event_counts[event] = event_counts.get(event, 0) + 1
         if event == "Commander" and ev.get("Name"):
             cmdr_name = ev["Name"]
         elif event == "LoadGame" and not cmdr_name and ev.get("Commander"):
@@ -203,7 +228,7 @@ def parse_journal(
             last_cargo = inv
             cargo_depot_items.clear()
 
-    return cmdr_name, deliveries, last_cargo, last_depot_state, last_contribution_state, seen_events
+    return cmdr_name, deliveries, last_cargo, last_depot_state, last_contribution_state, seen_events, event_counts
 
 
 def parse_file(
@@ -214,7 +239,7 @@ def parse_file(
     last_contribution_state: dict = None,
     seen_events: set = None,
     current_system_address: int = 0,
-) -> Tuple[Optional[str], List[dict], dict, dict, dict, set]:
+) -> Tuple[Optional[str], List[dict], dict, dict, dict, set, Dict[str, int]]:
     """Разобрать файл журнала."""
     with open(filepath, "r", encoding="utf-8") as f:
         return parse_journal(

@@ -16,7 +16,9 @@ from tkinter import filedialog, messagebox, ttk
 from datetime import datetime
 from pathlib import Path
 import traceback
-from typing import Optional
+from typing import Optional, List
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # -- Проверка tkinter --
 try:
@@ -1014,7 +1016,15 @@ class ColonialHelperApp:
             filetypes=[("Journal logs", "*.log"), ("All files", "*.*")],
         )
         if files:
-            self.selected_files = [Path(f) for f in files]
+            # Диалог выбора файлов не гарантирует хронологический порядок
+            # (зависит от порядка клика/ОС), а последовательный diff
+            # (Cargo/ColonisationContribution/CargoDepot) обязан обрабатывать
+            # файлы строго по времени — иначе снапшоты состояния (last_cargo,
+            # last_depot_state, last_contribution_state) собьются и часть
+            # доставок будет посчитана неверно или пропущена. Имена файлов
+            # журнала ED (Journal.YYYY-MM-DDThhmmss.NN.log) сортируются
+            # лексикографически так же, как и хронологически.
+            self.selected_files = sorted((Path(f) for f in files), key=lambda p: p.name)
             self.files_label.config(text=f"Выбрано файлов: {len(self.selected_files)}")
             self.upload_btn.config(state=NORMAL)
             self.log(f"Выбрано {len(self.selected_files)} файлов", "info")
@@ -1033,20 +1043,115 @@ class ColonialHelperApp:
 
         threading.Thread(target=self._do_upload_thread, daemon=True).start()
 
+    def _read_file_text(self, filepath: Path) -> str:
+        with open(filepath, "r", encoding="utf-8") as fh:
+            return fh.read()
+
+    def _format_import_summary(self, files_count: int, event_counts: "Counter", deliveries: list, elapsed: float) -> str:
+        """Собрать текст итоговой таблицы импорта (моноширинный текст)."""
+        total_events = sum(event_counts.values())
+        total_tons = sum(d.get("amount", 0) for d in deliveries)
+        width = 44
+        lines = []
+        lines.append("═" * width)
+        lines.append(" ИТОГИ ИМПОРТА")
+        lines.append("─" * width)
+        lines.append(f" Файлов обработано:      {files_count}")
+        lines.append(f" Событий прочитано:      {total_events}")
+        lines.append(f" Найдено доставок:       {len(deliveries)}")
+        lines.append(f" Общий вес доставок:     {total_tons:.0f} t")
+        lines.append(f" Время обработки:        {elapsed:.1f} с")
+        if event_counts:
+            lines.append("─" * width)
+            lines.append(" События по типам:")
+            name_width = min(34, max((len(k) for k in event_counts), default=10) + 1)
+            for name, count in sorted(event_counts.items(), key=lambda kv: (-kv[1], kv[0])):
+                lines.append(f"   {name:<{name_width}} {count:>7}")
+        lines.append("═" * width)
+        return "\n".join(lines)
+
+    def log_block(self, text: str, level: str = "info"):
+        """Вставить многострочный блок текста в лог одним куском, без
+        временной метки на каждой строке (в отличие от log()) — используется
+        для итоговой таблицы импорта."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        colors = {
+            "info": COLOR_CYAN,
+            "success": COLOR_GREEN,
+            "error": COLOR_RED,
+            "warn": COLOR_ORANGE,
+        }
+        color = colors.get(level, COLOR_TEXT)
+        block = f"[{timestamp}]\n{text}\n"
+
+        self.log_text.text.config(state=NORMAL)
+        self.log_text.text.insert(END, block)
+        end_idx = self.log_text.text.index(END)
+        line_count = block.count("\n")
+        start_idx = f"{end_idx} linestart -{line_count} lines"
+        tag_name = f"log_{level}_{timestamp.replace(':', '')}_block"
+        self.log_text.text.tag_add(tag_name, start_idx, f"{start_idx} lineend +{line_count - 1} lines")
+        self.log_text.text.tag_config(tag_name, foreground=color)
+        self.log_text.text.see(END)
+        self.log_text.text.config(state=DISABLED)
+
     def _do_upload_thread(self):
         all_deliveries = []
         cmdr_name = None
-        total = len(self.selected_files)
+        total_event_counts: Counter = Counter()
+        files_processed = 0
+        t_start = time.time()
 
-        for i, filepath in enumerate(self.selected_files):
-            self.root.after(0, lambda n=filepath.name: self.log(f"Чтение {n}...", "info"))
+        # Хронологический порядок уже гарантирован сортировкой в
+        # _on_select_files, но подстрахуемся и здесь на случай, если
+        # selected_files когда-нибудь будет заполняться иначе.
+        files = sorted(self.selected_files, key=lambda p: p.name)
+        total = len(files)
+
+        # 1) Параллельно читаем содержимое файлов с диска — это чисто
+        # I/O-bound операция (особенно медленная, если папка Saved Games
+        # синхронизируется через OneDrive/облако), поэтому её можно
+        # безопасно распараллелить потоками, не трогая сам парсинг.
+        self.root.after(0, lambda t=total: self.log(f"Чтение {t} файлов с диска...", "info"))
+        file_texts: List[Optional[str]] = [None] * total
+        with ThreadPoolExecutor(max_workers=min(8, total) or 1) as pool:
+            future_to_idx = {
+                pool.submit(self._read_file_text, f): i for i, f in enumerate(files)
+            }
+            for fut in as_completed(future_to_idx):
+                idx = future_to_idx[fut]
+                try:
+                    file_texts[idx] = fut.result()
+                except Exception as e:
+                    self.root.after(
+                        0,
+                        lambda n=files[idx].name, e=e: self.log(f"Ошибка чтения {n}: {e}", "error"),
+                    )
+                self.root.after(
+                    0,
+                    lambda v=(sum(1 for t in file_texts if t is not None) / total * 25): self.progress.config(value=v),
+                )
+
+        # 2) Сам разбор — CPU-bound и стейтфул (Cargo/ColonisationContribution
+        # diff зависят от порядка), поэтому строго последовательно, в
+        # хронологическом порядке файлов.
+        for i, filepath in enumerate(files):
+            text = file_texts[i]
+            if text is None:
+                continue  # ошибка чтения уже залогирована выше
+            self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
             try:
                 current_system = self.ship.state.current_system if self.ship.state else None
                 current_system_address = self.ship.state.system_address if self.ship.state else 0
-                cname, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events = parse_file(
-                    str(filepath), current_system, self._last_cargo, self._last_depot_state,
+                (
+                    cname, deliveries, self._last_cargo, self._last_depot_state,
+                    self._last_contribution_state, self._seen_events, event_counts,
+                ) = parse_journal(
+                    text, current_system, self._last_cargo, self._last_depot_state,
                     self._last_contribution_state, self._seen_events, current_system_address,
                 )
+                total_event_counts.update(event_counts)
+                files_processed += 1
                 # Проверка: все файлы от одного командира
                 if cname:
                     if cmdr_name is None:
@@ -1063,8 +1168,8 @@ class ColonialHelperApp:
                 all_deliveries.extend(deliveries)
                 self.root.after(
                     0,
-                    lambda n=filepath.name, d=len(deliveries): self.log(
-                        f"{n}: найдено {d} доставок", "success"
+                    lambda n=filepath.name, d=len(deliveries), e=sum(event_counts.values()): self.log(
+                        f"{n}: {e} событий, найдено {d} доставок", "success"
                     ),
                 )
                 for d in deliveries:
@@ -1072,11 +1177,15 @@ class ColonialHelperApp:
                         self.root.after(0, self._refresh_route_tree)
             except Exception as e:
                 self.root.after(
-                    0, lambda n=filepath.name, e=e: self.log(f"Ошибка чтения {n}: {e}", "error")
+                    0, lambda n=filepath.name, e=e: self.log(f"Ошибка обработки {n}: {e}", "error")
                 )
 
-            progress_val = (i + 1) / total * 50
+            progress_val = 25 + (i + 1) / total * 25
             self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
+
+        elapsed = time.time() - t_start
+        summary_text = self._format_import_summary(files_processed, total_event_counts, all_deliveries, elapsed)
+        self.root.after(0, lambda s=summary_text: self.log_block(s, "info"))
 
         if not all_deliveries:
             self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
@@ -1127,7 +1236,6 @@ class ColonialHelperApp:
             self.root.after(
                 0, lambda: self.progress_label.config(text="Ошибка загрузки")
             )
-
         self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
 
     # ============================================================
@@ -1481,7 +1589,7 @@ class ColonialHelperApp:
 
         current_system = self.ship.state.current_system if self.ship.state else None
         current_system_address = self.ship.state.system_address if self.ship.state else 0
-        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events = parse_journal(
+        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_journal(
             new_text, current_system, self._last_cargo, self._last_depot_state,
             self._last_contribution_state, self._seen_events, current_system_address,
         )
