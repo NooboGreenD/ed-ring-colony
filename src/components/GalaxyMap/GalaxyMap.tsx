@@ -1,0 +1,279 @@
+'use client';
+import { IconMapPin, IconPlane, IconGlobe, IconRefresh, IconCircleFill, IconExternalLink } from "@/components/Icons";
+
+import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
+import dynamic from 'next/dynamic';
+import Link from 'next/link';
+import { Canvas } from '@react-three/fiber';
+import * as THREE from 'three';
+import { Hub, RouteSystem } from '@/types/hub';
+import { AtlasCandidate } from '@/types/atlas';
+import { eliteToThreeCentered } from '@/lib/ed3dCanon';
+
+const GalaxyScene = dynamic(
+  () => import('./GalaxyScene').then((m) => m.GalaxyScene),
+  { ssr: false }
+);
+
+function Loader() {
+  return (
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#e67e22', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2, zIndex: 5 }}>
+      Загрузка галактики...
+    </div>
+  );
+}
+
+export interface GalaxyMapProps {
+  atlasCandidates?: AtlasCandidate[];
+  squadronRouteSystems?: RouteSystem[];
+  showOnlyMainRoute?: boolean;
+  noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
+  marketResults?: Array<{ system_name: string; distance: number; station_name?: string; commodities_found?: number }>;
+}
+
+export default function GalaxyMap({
+  atlasCandidates = [],
+  squadronRouteSystems = [],
+  showOnlyMainRoute = false,
+  noMarketSystems = [],
+  marketResults = [],
+}: GalaxyMapProps) {
+  const [hubs, setHubs] = useState<Hub[]>([]);
+  const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
+  const [pilots, setPilots] = useState<any[]>([]);
+  const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
+  const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
+  const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
+  const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
+  const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
+  const [resetCamera, setResetCamera] = useState(0);
+
+  const [showKnownSystems, setShowKnownSystems] = useState(true);
+  const [showMarketResults, setShowMarketResults] = useState(true);
+  const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
+
+  const [lastUpdated, setLastUpdated] = useState(Date.now());
+
+  useEffect(() => {
+    const loadHubs = () => {
+      fetch('/api/hubs?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => setHubs(data.hubs || []))
+        .catch(() => {});
+    };
+    loadHubs();
+    const interval = setInterval(loadHubs, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const loadRoute = () => {
+      fetch('/api/route?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => {
+          setAllRouteSystems(data.points || []);
+          setLastUpdated(Date.now());
+        })
+        .catch(() => {});
+    };
+    loadRoute();
+    const interval = setInterval(loadRoute, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    const loadPilots = () => {
+      fetch('/api/pilots?t=' + Date.now())
+        .then((r) => r.json())
+        .then((data) => setPilots(data.pilots || []))
+        .catch(() => {});
+    };
+    loadPilots();
+    const interval = setInterval(loadPilots, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleSelectHub = useCallback((hub: Hub | null) => {
+    setSelectedHub(hub);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    if (hub) setFocusTarget(eliteToThreeCentered(hub));
+  }, []);
+
+  const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
+    setSelectedRouteSystem(point);
+    setSelectedHub(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    if (point) setFocusTarget(eliteToThreeCentered(point));
+  }, []);
+
+  const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
+    setSelectedAtlasCandidate(candidate);
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedPilot(null);
+    if (candidate) setFocusTarget(eliteToThreeCentered(candidate));
+  }, []);
+
+  const handleSelectPilot = useCallback((pilot: any | null) => {
+    setSelectedPilot(pilot);
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    setFocusTarget(null);
+    setResetCamera((n) => n + 1);
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+  }, []);
+
+  const displayRouteSystems = allRouteSystems;
+
+  const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
+
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* HUD */}
+      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 200, maxWidth: 280, pointerEvents: 'none' }}>
+        <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
+          <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
+            <IconRefresh size={12} /> Сброс вида
+          </button>
+        </div>
+
+        {/* Выбор системы из списка */}
+        <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4, textTransform: 'uppercase' }}>Выбор системы</div>
+          <select
+            value={selectedRouteSystem?.system_name || ''}
+            onChange={(e) => {
+              const sys = allRouteSystems.find(s => s.system_name === e.target.value);
+              if (sys) handleSelectRouteSystem(sys);
+            }}
+            style={{ background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '6px 8px', borderRadius: 4, fontSize: 12, width: '100%', cursor: 'pointer' }}
+          >
+            <option value="">Выберите систему...</option>
+            {allRouteSystems.map(s => (
+              <option key={s.id} value={s.system_name}>{s.sort_order}. {s.system_name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 8, pointerEvents: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <label style={{ fontSize: 11, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showKnownSystems} onChange={(e) => setShowKnownSystems(e.target.checked)} />
+            Все известные системы
+          </label>
+          <label style={{ fontSize: 11, color: '#22c55e', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showMarketResults} onChange={(e) => setShowMarketResults(e.target.checked)} />
+            Системы с маркетами для стройки
+          </label>
+          <label style={{ fontSize: 11, color: '#8b0000', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+            <input type="checkbox" checked={showNoMarketSystems} onChange={(e) => setShowNoMarketSystems(e.target.checked)} />
+            Системы без рынков
+          </label>
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>
+          <span style={{ color: '#22c55e' }}><IconCircleFill size={8} /></span> Завершён
+          <span style={{ marginLeft: 8, color: '#e67e22' }}><IconCircleFill size={8} /></span> Строительство
+          <span style={{ marginLeft: 8, color: '#9ca3af' }}><IconCircleFill size={8} /></span> Запланирован
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+          <span style={{ color: '#3b82f6' }}><IconCircleFill size={8} /></span> Маршрут эскадры
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+          <span style={{ color: '#e91e63' }}><IconCircleFill size={8} /></span> Atlas-кандидаты
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+          <span style={{ color: '#00bcd4' }}><IconCircleFill size={8} /></span> Пилоты
+        </div>
+      </div>
+
+      {selected && (
+        <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'auto' }}>
+          <Link
+            href={`/system/${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+            style={{ textDecoration: 'none' }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#e67e22', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {(selected as any).system_name || (selected as any).name}
+              <span style={{ fontSize: 12 }}><IconExternalLink size={12} /></span>
+            </div>
+          </Link>
+          <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>
+            <IconMapPin size={12} /> {(selected as any).x?.toFixed(1) || '?'}, {(selected as any).y?.toFixed(1) || '?'}, {(selected as any).z?.toFixed(1) || '?'}
+          </div>
+          {(selected as any).status && (
+            <div style={{ marginTop: 4, fontSize: 12 }}>
+              Статус:{' '}
+              <span style={{ color: (selected as any).status === 'done' ? '#22c55e' : (selected as any).status === 'building' ? '#e67e22' : '#9ca3af' }}>
+                {(selected as any).status === 'done' ? 'Завершён' : (selected as any).status === 'building' ? 'Строительство' : 'Запланирован'}
+              </span>
+            </div>
+          )}
+          {(selected as any).progress != null && <div style={{ marginTop: 4, fontSize: 12, color: '#eeeeee' }}>Прогресс: {(selected as any).progress}%</div>}
+          {(selected as any).total_delivered != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Доставлено: {Number((selected as any).total_delivered).toLocaleString('ru')} т</div>}
+          {(selected as any).distance != null && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Расстояние: {(selected as any).distance.toFixed(1)} св.лет</div>}
+          {(selected as any).type && <div style={{ marginTop: 4, fontSize: 12, color: '#9ca3af' }}>Тип: {(selected as any).type}</div>}
+
+          {/* Ссылки на внешние ресурсы */}
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a
+              href={`https://ravencolonial.com/#sys=${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none', padding: '3px 8px', background: 'rgba(230,126,34,0.1)', borderRadius: 4, border: '1px solid rgba(230,126,34,0.3)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <IconPlane size={10} /> Raven <IconExternalLink size={12} />
+            </a>
+            <a
+              href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent((selected as any).system_name || (selected as any).name)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none', padding: '3px 8px', background: 'rgba(59,130,246,0.1)', borderRadius: 4, border: '1px solid rgba(59,130,246,0.3)' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <IconGlobe size={10} /> EDSM <IconExternalLink size={12} />
+            </a>
+          </div>
+        </div>
+      )}
+
+      <Canvas
+        camera={{ position: [0, 35000, 0], fov: 45, near: 1, far: 200000 }}
+        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+        style={{ background: "#000000", width: '100%', height: '100%' }}
+        frameloop="demand"
+      >
+        <Suspense fallback={null}>
+          <GalaxyScene
+            hubs={hubs}
+            allRouteSystems={displayRouteSystems}
+            squadronRouteSystems={squadronRouteSystems}
+            atlasCandidates={atlasCandidates}
+            pilots={pilots}
+            noMarketSystems={noMarketSystems}
+            marketResults={marketResults}
+            showKnownSystems={showKnownSystems}
+            showMarketResults={showMarketResults}
+            showNoMarketSystems={showNoMarketSystems}
+            onSelectHub={handleSelectHub}
+            onSelectRouteSystem={handleSelectRouteSystem}
+            onSelectAtlasCandidate={handleSelectAtlasCandidate}
+            onSelectPilot={handleSelectPilot}
+            focusTarget={focusTarget}
+            resetCamera={resetCamera}
+          />
+        </Suspense>
+      </Canvas>
+    </div>
+  );
+}
