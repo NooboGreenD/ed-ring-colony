@@ -123,7 +123,7 @@ export default function UserMenu() {
     if (!user || !supabaseRef.current) { setMsgCount(0); return; }
     try {
       const res = await fetch("/api/friends?status=accepted", { credentials: "include" });
-      if (!res.ok) return;
+      if (!res.ok) { setMsgCount(0); return; }
       const { count } = await supabaseRef.current
         .from("messages")
         .select("id", { count: "exact", head: true })
