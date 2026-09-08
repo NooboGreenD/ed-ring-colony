@@ -43,7 +43,13 @@ export async function upsertProfile({
   avatar_url?: string | null;
 }): Promise<{ error?: string }> {
   const data: any = { id, email: email ?? null };
-  if (cmdr_name !== undefined) data.cmdr_name = cmdr_name;
+  
+  // Если передан cmdr_name (включая пустую строку или null), используем его
+  // Иначе не трогаем существующее значение
+  if (cmdr_name !== undefined) {
+    data.cmdr_name = cmdr_name === '' ? null : cmdr_name;
+  }
+  
   if (avatar_url !== undefined) data.avatar_url = avatar_url;
 
   const { error } = await supabaseAdmin

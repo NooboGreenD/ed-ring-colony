@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunk_N_E=self.webpackChunk_N_E||[]).push([[7654],{7654:function(u,e,n){n.r(e),n.d(e,{GalaxyScene:function(){return t.GalaxyScene},NebulaClouds:function(){return l.NebulaClouds},default:function(){return a.default}});var a=n(2464),t=n(1393),l=n(6662)}}]);
