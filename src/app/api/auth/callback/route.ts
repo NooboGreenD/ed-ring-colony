@@ -32,7 +32,7 @@ export async function GET(request: Request) {
             return { name, value: decodeURIComponent(rest.join('=') || '') };
           }).filter((c) => c.name);
         },
-        setAll(cookiesToSet) {
+        setAll(cookiesToSet: { name: string; value: string; options: any }[]) {
           cookiesToSet.forEach(({ name, value, options }) => {
             response.cookies.set(name, value, options);
           });
