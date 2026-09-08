@@ -5,6 +5,26 @@ import hashlib
 API_BASE = "https://ed-ring-colony.vercel.app/api"
 
 
+def _safe_json(resp: requests.Response) -> dict:
+    """Безопасно распарсить JSON-ответ.
+
+    Если сервер вернул не-JSON (HTML-страница ошибки 500/502/504,
+    "413 Payload Too Large" от Vercel, обрыв serverless-функции по таймауту,
+    пустое тело и т.п.) — resp.json() кидает json.JSONDecodeError, который
+    раньше НИКЕМ не ловился (только requests.RequestException) и падал как
+    необработанное исключение прямо в фоновом потоке загрузки, оставляя UI
+    в подвешенном состоянии без понятной ошибки пользователю.
+    """
+    try:
+        return resp.json()
+    except ValueError:
+        snippet = (resp.text or "")[:200].replace("\n", " ").strip()
+        return {
+            "ok": False,
+            "error": f"Сервер вернул некорректный ответ (HTTP {resp.status_code}): {snippet or 'пустое тело'}",
+        }
+
+
 class ApiClient:
     def __init__(self, token: str = ""):
         self.token = token
@@ -22,7 +42,7 @@ class ApiClient:
                 json={"token": token},
                 timeout=15,
             )
-            data = resp.json()
+            data = _safe_json(resp)
             if resp.ok and data.get("ok"):
                 self.token = token
                 self.user_id = data.get("user_id")
@@ -51,16 +71,23 @@ class ApiClient:
                     json={"token": self.token, "cmdr": cmdr, "deliveries": chunk},
                     timeout=30,
                 )
-                data = resp.json()
+                data = _safe_json(resp)
                 if not resp.ok:
                     failed_chunks += 1
-                    last_error = data.get("error", "Upload failed")
+                    last_error = data.get("error", f"Upload failed (HTTP {resp.status_code})")
                     continue
                 total_inserted += data.get("inserted", 0)
                 total_events += data.get("eventsFound", 0)
             except requests.RequestException as e:
                 failed_chunks += 1
                 last_error = f"Сетевая ошибка: {e}"
+                continue
+            except Exception as e:
+                # Подстраховка: любая другая неожиданная ошибка на чанке не
+                # должна ронять весь процесс загрузки (и оставлять UI
+                # в подвешенном состоянии) — считаем чанк неудачным и идём дальше.
+                failed_chunks += 1
+                last_error = f"Неожиданная ошибка: {e}"
                 continue
         if failed_chunks > 0:
             return {

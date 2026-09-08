@@ -1203,7 +1203,19 @@ class ColonialHelperApp:
             lambda: self.progress_label.config(text=f"Отправка {len(all_deliveries)} записей..."),
         )
 
-        result = self.api.upload_deliveries(all_deliveries, cmdr_name)
+        try:
+            result = self.api.upload_deliveries(all_deliveries, cmdr_name)
+        except Exception as e:
+            # Подстраховка: api_client уже ловит сетевые и JSON-ошибки сам,
+            # но если сюда всё же прилетит что-то неожиданное — не оставляем
+            # кнопку/прогресс-бар в подвешенном состоянии.
+            self.root.after(
+                0, lambda e=e: self.log(f"Непредвиденная ошибка при отправке: {e}", "error")
+            )
+            self.root.after(0, lambda: self.progress_label.config(text="Ошибка загрузки"))
+            self.root.after(0, lambda: self.progress.config(value=0))
+            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            return
 
         self.root.after(0, lambda: self.progress.config(value=100))
 
