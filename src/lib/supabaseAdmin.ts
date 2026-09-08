@@ -44,10 +44,10 @@ export async function upsertProfile({
 }): Promise<{ error?: string }> {
   const data: any = { id, email: email ?? null };
   
-  // Если передан cmdr_name (включая пустую строку или null), используем его
-  // Иначе не трогаем существующее значение
-  if (cmdr_name !== undefined) {
-    data.cmdr_name = cmdr_name === '' ? null : cmdr_name;
+  // Только если cmdr_name передан и не пустой — используем его
+  // Если передана пустая строка или null — не обновляем существующее значение
+  if (cmdr_name !== undefined && cmdr_name !== null && cmdr_name.trim() !== '') {
+    data.cmdr_name = cmdr_name.trim();
   }
   
   if (avatar_url !== undefined) data.avatar_url = avatar_url;

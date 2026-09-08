@@ -27,25 +27,38 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setBusy(true);
-    const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
-    if (err || !data.user) {
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data.user) {
       setBusy(false);
-      setError(err?.message === 'Invalid login credentials' ? 'Неверный логин или пароль.' : err?.message || 'Ошибка входа');
+      setError(error?.message === 'Invalid login credentials' ? 'Неверный логин или пароль.' : error?.message || 'Ошибка входа');
       return;
     }
-    
+
     // Создаём профиль если его нет, используя данные из метаданных пользователя
-    const cmdrName = data.user.user_metadata?.cmdr_name || '';
-    await fetch('/api/auth/ensure-profile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        id: data.user.id, 
-        email: data.user.email,
-        cmdr_name: cmdrName || null
-      }),
-    });
-    
+    // Важно: передаём cmdr_name только если он есть в метаданных
+    const cmdrName = data.user.user_metadata?.cmdr_name;
+    if (cmdrName) {
+      await fetch('/api/auth/ensure-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: data.user.id,
+          email: data.user.email,
+          cmdr_name: cmdrName
+        }),
+      });
+    } else {
+      // Если cmdr_name нет в метаданных, просто проверяем существование профиля
+      await fetch('/api/auth/ensure-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: data.user.id,
+          email: data.user.email
+        }),
+      });
+    }
+
     setBusy(false);
     router.push('/account');
     router.refresh();
