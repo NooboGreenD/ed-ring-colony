@@ -119,7 +119,7 @@ def parse_journal(
             continue
         seen_events.add(ekey)
 
-        event = ev.get("event")
+        event = ev.get("event") or "Unknown"
         event_counts[event] = event_counts.get(event, 0) + 1
         if event == "Commander" and ev.get("Name"):
             cmdr_name = ev["Name"]

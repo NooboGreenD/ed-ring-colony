@@ -1047,6 +1047,31 @@ class ColonialHelperApp:
         with open(filepath, "r", encoding="utf-8") as fh:
             return fh.read()
 
+    @staticmethod
+    def _delivery_for_api(d: dict) -> dict:
+        """Payload для основного API (/api/logs/upload).
+
+        `system_address` — поле, добавленное локально для группировки
+        доставок по Raven Colonial (сторонний API, raven-colonial.com), и
+        никогда не было частью схемы, которую ожидает основной сервер
+        (ed-ring-colony.vercel.app). Если там Zod-схема строгая
+        (.strict()) — отправка неизвестного поля роняет запрос целиком
+        ошибкой валидации, что выглядит как "ошибка загрузки логов".
+        Поэтому наружу уходит только исторически ожидаемый набор полей, а
+        system_address остаётся только во внутреннем представлении
+        (используется для Raven Colonial и не покидает этот процесс).
+        """
+        return {
+            "system_name": d.get("system_name"),
+            "commodity": d.get("commodity"),
+            "amount": d.get("amount"),
+            "delivered_at": d.get("delivered_at"),
+            "market_id": d.get("market_id"),
+            "is_hub": d.get("is_hub"),
+            "route_system_id": d.get("route_system_id"),
+            "source_hash": d.get("source_hash"),
+        }
+
     def _format_import_summary(self, files_count: int, event_counts: "Counter", deliveries: list, elapsed: float) -> str:
         """Собрать текст итоговой таблицы импорта (моноширинный текст)."""
         total_events = sum(event_counts.values())
@@ -1184,8 +1209,13 @@ class ColonialHelperApp:
             self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
 
         elapsed = time.time() - t_start
-        summary_text = self._format_import_summary(files_processed, total_event_counts, all_deliveries, elapsed)
-        self.root.after(0, lambda s=summary_text: self.log_block(s, "info"))
+        try:
+            summary_text = self._format_import_summary(files_processed, total_event_counts, all_deliveries, elapsed)
+            self.root.after(0, lambda s=summary_text: self.log_block(s, "info"))
+        except Exception as e:
+            # Сама таблица — это просто отображение в логе; ошибка её
+            # форматирования не должна прерывать процесс загрузки доставок.
+            self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
         if not all_deliveries:
             self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
@@ -1204,7 +1234,9 @@ class ColonialHelperApp:
         )
 
         try:
-            result = self.api.upload_deliveries(all_deliveries, cmdr_name)
+            result = self.api.upload_deliveries(
+                [self._delivery_for_api(d) for d in all_deliveries], cmdr_name
+            )
         except Exception as e:
             # Подстраховка: api_client уже ловит сетевые и JSON-ошибки сам,
             # но если сюда всё же прилетит что-то неожиданное — не оставляем
@@ -1650,7 +1682,9 @@ class ColonialHelperApp:
 
         # Отдельно — аплоад доставок, если они есть
         if deliveries:
-            result = self.api.upload_deliveries(deliveries, cmdr_name)
+            result = self.api.upload_deliveries(
+                [self._delivery_for_api(d) for d in deliveries], cmdr_name
+            )
             if result["ok"]:
                 inserted = result['inserted']
                 self._session_deliveries += inserted
