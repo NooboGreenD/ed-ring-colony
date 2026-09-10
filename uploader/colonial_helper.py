@@ -1120,6 +1120,14 @@ class ColonialHelperApp:
         self.log_text.text.see(END)
         self.log_text.text.config(state=DISABLED)
 
+    # Сколько файлов держим в памяти одновременно (текст файла + пул чтения).
+    # При выборе всей истории журналов (сотни файлов) чтение и хранение ВСЕХ
+    # текстов разом могло съедать сотни МБ/несколько ГБ памяти одновременно —
+    # с большим количеством файлов это может быть первопричиной сбоя загрузки
+    # на менее мощных машинах. Обрабатываем файлы пачками: пока парсится
+    # текущая пачка, read-память предыдущей уже освобождена.
+    _UPLOAD_BATCH_SIZE = 40
+
     def _do_upload_thread(self):
         all_deliveries = []
         cmdr_name = None
@@ -1132,81 +1140,95 @@ class ColonialHelperApp:
         # selected_files когда-нибудь будет заполняться иначе.
         files = sorted(self.selected_files, key=lambda p: p.name)
         total = len(files)
+        batch_size = self._UPLOAD_BATCH_SIZE
 
-        # 1) Параллельно читаем содержимое файлов с диска — это чисто
-        # I/O-bound операция (особенно медленная, если папка Saved Games
-        # синхронизируется через OneDrive/облако), поэтому её можно
-        # безопасно распараллелить потоками, не трогая сам парсинг.
-        self.root.after(0, lambda t=total: self.log(f"Чтение {t} файлов с диска...", "info"))
-        file_texts: List[Optional[str]] = [None] * total
-        with ThreadPoolExecutor(max_workers=min(8, total) or 1) as pool:
-            future_to_idx = {
-                pool.submit(self._read_file_text, f): i for i, f in enumerate(files)
-            }
-            for fut in as_completed(future_to_idx):
-                idx = future_to_idx[fut]
-                try:
-                    file_texts[idx] = fut.result()
-                except Exception as e:
-                    self.root.after(
-                        0,
-                        lambda n=files[idx].name, e=e: self.log(f"Ошибка чтения {n}: {e}", "error"),
-                    )
-                self.root.after(
-                    0,
-                    lambda v=(sum(1 for t in file_texts if t is not None) / total * 25): self.progress.config(value=v),
-                )
+        self.root.after(
+            0,
+            lambda t=total: self.log(
+                f"Начинаю обработку {t} файлов" + (f" (пачками по {batch_size})" if t > batch_size else "") + "...",
+                "info",
+            ),
+        )
 
-        # 2) Сам разбор — CPU-bound и стейтфул (Cargo/ColonisationContribution
-        # diff зависят от порядка), поэтому строго последовательно, в
-        # хронологическом порядке файлов.
-        for i, filepath in enumerate(files):
-            text = file_texts[i]
-            if text is None:
-                continue  # ошибка чтения уже залогирована выше
-            self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
-            try:
-                current_system = self.ship.state.current_system if self.ship.state else None
-                current_system_address = self.ship.state.system_address if self.ship.state else 0
-                (
-                    cname, deliveries, self._last_cargo, self._last_depot_state,
-                    self._last_contribution_state, self._seen_events, event_counts,
-                ) = parse_journal(
-                    text, current_system, self._last_cargo, self._last_depot_state,
-                    self._last_contribution_state, self._seen_events, current_system_address,
-                )
-                total_event_counts.update(event_counts)
-                files_processed += 1
-                # Проверка: все файлы от одного командира
-                if cname:
-                    if cmdr_name is None:
-                        cmdr_name = cname
-                    elif cname != cmdr_name:
+        processed_count = 0
+        for batch_start in range(0, total, batch_size):
+            batch_files = files[batch_start: batch_start + batch_size]
+
+            # 1) Параллельно читаем содержимое файлов ТЕКУЩЕЙ ПАЧКИ с диска —
+            # I/O-bound операция (особенно медленная, если папка Saved Games
+            # синхронизируется через OneDrive/облако). Пачками — чтобы не
+            # держать в памяти сразу тексты всех выбранных файлов, если их
+            # сотни (например, вся история игры).
+            batch_texts: List[Optional[str]] = [None] * len(batch_files)
+            with ThreadPoolExecutor(max_workers=min(8, len(batch_files)) or 1) as pool:
+                future_to_idx = {
+                    pool.submit(self._read_file_text, f): i for i, f in enumerate(batch_files)
+                }
+                for fut in as_completed(future_to_idx):
+                    idx = future_to_idx[fut]
+                    try:
+                        batch_texts[idx] = fut.result()
+                    except Exception as e:
                         self.root.after(
                             0,
-                            lambda n=filepath.name, c=cname, expected=cmdr_name: self.log(
-                                f"Предупреждение: {n} принадлежит CMDR '{c}', ожидался '{expected}'. Файл пропущен.",
-                                "warn",
-                            ),
+                            lambda n=batch_files[idx].name, e=e: self.log(f"Ошибка чтения {n}: {e}", "error"),
                         )
-                        continue
-                all_deliveries.extend(deliveries)
-                self.root.after(
-                    0,
-                    lambda n=filepath.name, d=len(deliveries), e=sum(event_counts.values()): self.log(
-                        f"{n}: {e} событий, найдено {d} доставок", "success"
-                    ),
-                )
-                for d in deliveries:
-                    if self.route.mark_visited(d["system_name"]):
-                        self.root.after(0, self._refresh_route_tree)
-            except Exception as e:
-                self.root.after(
-                    0, lambda n=filepath.name, e=e: self.log(f"Ошибка обработки {n}: {e}", "error")
-                )
 
-            progress_val = 25 + (i + 1) / total * 25
-            self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
+            # 2) Сам разбор ТЕКУЩЕЙ ПАЧКИ — CPU-bound и стейтфул
+            # (Cargo/ColonisationContribution diff зависят от порядка),
+            # поэтому строго последовательно, в хронологическом порядке.
+            for offset, filepath in enumerate(batch_files):
+                text = batch_texts[offset]
+                processed_count += 1
+                if text is None:
+                    continue  # ошибка чтения уже залогирована выше
+                self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
+                try:
+                    current_system = self.ship.state.current_system if self.ship.state else None
+                    current_system_address = self.ship.state.system_address if self.ship.state else 0
+                    (
+                        cname, deliveries, self._last_cargo, self._last_depot_state,
+                        self._last_contribution_state, self._seen_events, event_counts,
+                    ) = parse_journal(
+                        text, current_system, self._last_cargo, self._last_depot_state,
+                        self._last_contribution_state, self._seen_events, current_system_address,
+                    )
+                    total_event_counts.update(event_counts)
+                    files_processed += 1
+                    # Проверка: все файлы от одного командира
+                    if cname:
+                        if cmdr_name is None:
+                            cmdr_name = cname
+                        elif cname != cmdr_name:
+                            self.root.after(
+                                0,
+                                lambda n=filepath.name, c=cname, expected=cmdr_name: self.log(
+                                    f"Предупреждение: {n} принадлежит CMDR '{c}', ожидался '{expected}'. Файл пропущен.",
+                                    "warn",
+                                ),
+                            )
+                            continue
+                    all_deliveries.extend(deliveries)
+                    self.root.after(
+                        0,
+                        lambda n=filepath.name, d=len(deliveries), e=sum(event_counts.values()): self.log(
+                            f"{n}: {e} событий, найдено {d} доставок", "success"
+                        ),
+                    )
+                    for d in deliveries:
+                        if self.route.mark_visited(d["system_name"]):
+                            self.root.after(0, self._refresh_route_tree)
+                except Exception as e:
+                    self.root.after(
+                        0, lambda n=filepath.name, e=e: self.log(f"Ошибка обработки {n}: {e}", "error")
+                    )
+
+                # Отдаём под загрузку/парсинг 0-90%, оставшиеся 10% — под отправку на сервер.
+                progress_val = processed_count / total * 90
+                self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
+
+            # Освобождаем память пачки явно перед чтением следующей.
+            del batch_texts
 
         elapsed = time.time() - t_start
         try:
@@ -1244,7 +1266,9 @@ class ColonialHelperApp:
             self.root.after(
                 0, lambda e=e: self.log(f"Непредвиденная ошибка при отправке: {e}", "error")
             )
-            self.root.after(0, lambda: self.progress_label.config(text="Ошибка загрузки"))
+            self.root.after(
+                0, lambda e=str(e): self.progress_label.config(text=f"Ошибка: {e[:100]}")
+            )
             self.root.after(0, lambda: self.progress.config(value=0))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             return
@@ -1273,12 +1297,30 @@ class ColonialHelperApp:
                 ),
             )
         else:
+            # result может быть "partial" (часть чанков доставок всё же
+            # загрузилась) — не теряем эту информацию молча и хотя бы
+            # засчитываем то, что реально попало на сервер.
+            inserted = result.get("inserted", 0) or 0
+            if inserted:
+                self._session_deliveries += inserted
+            error_text = str(result.get("error", "неизвестная ошибка"))
             self.root.after(
                 0,
-                lambda e=result.get("error"): self.log(f"Ошибка загрузки: {e}", "error"),
+                lambda e=error_text, ins=inserted: self.log(
+                    f"Ошибка загрузки"
+                    + (f" (частично загружено {ins} записей)" if ins else "")
+                    + f": {e}",
+                    "error",
+                ),
             )
+            # Раньше здесь была нераскрывающая суть надпись "Ошибка загрузки" —
+            # с ней в интерфейсе не видно, что именно пошло не так, не открывая
+            # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
-                0, lambda: self.progress_label.config(text="Ошибка загрузки")
+                0,
+                lambda e=error_text: self.progress_label.config(
+                    text=f"Ошибка: {e[:100]}"
+                ),
             )
         self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
 

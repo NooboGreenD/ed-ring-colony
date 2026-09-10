@@ -1,6 +1,7 @@
 """HTTP клиент для ED Ring Colony API."""
 import requests
 import hashlib
+import time
 
 API_BASE = "https://ed-ring-colony.vercel.app/api"
 
@@ -59,36 +60,53 @@ class ApiClient:
         if not self.token:
             return {"ok": False, "error": "Нет токена"}
         chunk_size = 500
+        max_attempts = 3
         total_inserted = 0
         total_events = 0
         failed_chunks = 0
         last_error = ""
         for i in range(0, len(deliveries), chunk_size):
             chunk = deliveries[i : i + chunk_size]
-            try:
-                resp = self._session.post(
-                    f"{API_BASE}/logs/upload",
-                    json={"token": self.token, "cmdr": cmdr, "deliveries": chunk},
-                    timeout=30,
-                )
-                data = _safe_json(resp)
-                if not resp.ok:
-                    failed_chunks += 1
-                    last_error = data.get("error", f"Upload failed (HTTP {resp.status_code})")
-                    continue
-                total_inserted += data.get("inserted", 0)
-                total_events += data.get("eventsFound", 0)
-            except requests.RequestException as e:
+            chunk_ok = False
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    resp = self._session.post(
+                        f"{API_BASE}/logs/upload",
+                        json={"token": self.token, "cmdr": cmdr, "deliveries": chunk},
+                        timeout=30,
+                    )
+                    data = _safe_json(resp)
+                    # Повторяем только на "временных" сбоях: 429 (rate limit) и
+                    # 5xx (сервер/таймаут serverless-функции). 4xx (400/401/403)
+                    # — это ошибка валидации/авторизации, повтор не поможет и
+                    # только тратит время впустую при большом импорте.
+                    if resp.status_code == 429 or resp.status_code >= 500:
+                        last_error = data.get("error", f"Upload failed (HTTP {resp.status_code})")
+                        if attempt < max_attempts:
+                            time.sleep(0.5 * attempt)
+                            continue
+                        break
+                    if not resp.ok:
+                        last_error = data.get("error", f"Upload failed (HTTP {resp.status_code})")
+                        break
+                    total_inserted += data.get("inserted", 0)
+                    total_events += data.get("eventsFound", 0)
+                    chunk_ok = True
+                    break
+                except requests.RequestException as e:
+                    last_error = f"Сетевая ошибка: {e}"
+                    if attempt < max_attempts:
+                        time.sleep(0.5 * attempt)
+                        continue
+                    break
+                except Exception as e:
+                    # Подстраховка: любая другая неожиданная ошибка на чанке не
+                    # должна ронять весь процесс загрузки (и оставлять UI
+                    # в подвешенном состоянии) — считаем чанк неудачным и идём дальше.
+                    last_error = f"Неожиданная ошибка: {e}"
+                    break
+            if not chunk_ok:
                 failed_chunks += 1
-                last_error = f"Сетевая ошибка: {e}"
-                continue
-            except Exception as e:
-                # Подстраховка: любая другая неожиданная ошибка на чанке не
-                # должна ронять весь процесс загрузки (и оставлять UI
-                # в подвешенном состоянии) — считаем чанк неудачным и идём дальше.
-                failed_chunks += 1
-                last_error = f"Неожиданная ошибка: {e}"
-                continue
         if failed_chunks > 0:
             return {
                 "ok": False,
