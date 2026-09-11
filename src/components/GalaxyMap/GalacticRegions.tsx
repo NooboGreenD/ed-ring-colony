@@ -189,6 +189,8 @@ function RegionMesh({
       ref={meshRef}
       geometry={geometry}
       material={material}
+      // Region fills are visual only; route and system markers must receive clicks.
+      raycast={() => null}
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, 0, 0]}
       onPointerOver={handlePointerOver}
@@ -284,10 +286,6 @@ export function GalacticRegions({
 
   return (
     <group>
-      {/* Декоративная сетка */}
-      <RingGrid />
-      <RadialGrid />
-
       {/* Регионы */}
       {REGIONS.map((region) => (
         <RegionMesh
