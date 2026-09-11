@@ -102,6 +102,10 @@ export default function GalaxyMap({
   const [pilots, setPilots] = useState<any[]>([]);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
+  const [searchSystem, setSearchSystem] = useState<RouteSystem | null>(null);
+  const [systemSearch, setSystemSearch] = useState('');
+  const [systemSearchLoading, setSystemSearchLoading] = useState(false);
+  const [systemSearchError, setSystemSearchError] = useState('');
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
   const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
   const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
@@ -201,10 +205,10 @@ export default function GalaxyMap({
     [uniqueRouteSystems, hubSystemNames],
   );
   const visibleRouteMarkers = useMemo(
-    () => routeMarkerSystems
+    () => [...routeMarkerSystems, ...(searchSystem ? [searchSystem] : [])]
       .filter((system) => statusFilters[mapStatus(system)])
       .map((system) => ({ ...system, status: mapStatus(system) })),
-    [routeMarkerSystems, statusFilters],
+    [routeMarkerSystems, searchSystem, statusFilters],
   );
   const visibleHubs = useMemo(
     () => uniqueHubs
@@ -297,6 +301,26 @@ export default function GalaxyMap({
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
   }, []);
 
+  const searchForSystem = useCallback(async () => {
+    const query = systemSearch.trim();
+    if (!query) return;
+    setSystemSearchLoading(true); setSystemSearchError('');
+    const key = systemNameKey(query);
+    const knownRoute = uniqueRouteSystems.find((point) => systemNameKey(point.system_name) === key);
+    const knownHub = uniqueHubs.find((hub) => systemNameKey(hub.system_name) === key);
+    if (knownHub) { handleSelectHub(knownHub); setSystemSearchLoading(false); return; }
+    if (knownRoute) { handleSelectRouteSystem({ ...knownRoute, status: mapStatus(knownRoute) }); setSystemSearchLoading(false); return; }
+    try {
+      const response = await fetch(`/api/edsm/system?name=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      if (!response.ok || !data.coords) throw new Error(data.error || 'Система не найдена');
+      const point: RouteSystem = { id: -900000 - Date.now() % 100000, system_name: data.name || query, sort_order: -1, status: 'planned', x: Number(data.coords.x), y: Number(data.coords.y), z: Number(data.coords.z), isHub: false };
+      setSearchSystem(point);
+      handleSelectRouteSystem(point);
+    } catch (error) { setSystemSearchError(error instanceof Error ? error.message : 'Система не найдена'); }
+    finally { setSystemSearchLoading(false); }
+  }, [handleSelectHub, handleSelectRouteSystem, systemSearch, uniqueHubs, uniqueRouteSystems]);
+
   const handleClearSelection = useCallback(() => {
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -375,6 +399,11 @@ export default function GalaxyMap({
           <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconMapPin size={12} /> Последняя стройка
           </button>
+          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+            <input value={systemSearch} onChange={(event) => setSystemSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void searchForSystem(); }} placeholder="Поиск системы..." style={{ minWidth: 0, flex: 1, background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '5px 7px', borderRadius: 4, fontSize: 11 }} />
+            <button onClick={() => void searchForSystem()} disabled={systemSearchLoading} style={{ background: 'rgba(59,130,246,.18)', border: '1px solid rgba(59,130,246,.5)', color: '#8bbcff', padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>{systemSearchLoading ? '…' : 'Найти'}</button>
+          </div>
+          {systemSearchError && <div style={{ color: '#f87171', fontSize: 10, marginTop: 4 }}>{systemSearchError}</div>}
         </div>
 
         <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>
