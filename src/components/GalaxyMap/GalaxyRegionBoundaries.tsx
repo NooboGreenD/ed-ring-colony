@@ -25,7 +25,13 @@ function centered(x: number, z: number) {
  */
 export function GalaxyRegionBoundaries() {
   const [vertices, setVertices] = useState<Float32Array | null>(null);
-  const material = useMemo(() => new THREE.LineBasicMaterial({ color: '#477bbd', transparent: true, opacity: 0.52, depthWrite: false }), []);
+  const material = useMemo(() => new THREE.LineBasicMaterial({
+    color: '#00e5ff',
+    transparent: true,
+    opacity: 0.96,
+    depthWrite: false,
+    depthTest: false,
+  }), []);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,5 +80,5 @@ export function GalaxyRegionBoundaries() {
   if (!vertices) return null;
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-  return <lineSegments geometry={geometry} material={material} frustumCulled={false} />;
+  return <lineSegments geometry={geometry} material={material} renderOrder={20} frustumCulled={false} />;
 }
