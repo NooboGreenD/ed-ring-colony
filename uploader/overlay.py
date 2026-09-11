@@ -482,6 +482,30 @@ class RouteOverlay(OverlayWindow):
 
 
 # ============================================================
+#  SessionEventsOverlay
+# ============================================================
+class SessionEventsOverlay(OverlayWindow):
+    def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
+        super().__init__(master, "SESSION EVENTS", settings.get("events_x", 740), settings.get("events_y", 50), settings.get("events_width", 360), settings.get("events_height", 260), settings, "events")
+        ff = settings.get("font_family", "Consolas")
+        fs = settings.get("font_size", 9)
+        self.text = tk.Text(self.content, height=12, font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_BG, wrap=tk.WORD, state=tk.DISABLED, highlightthickness=0, borderwidth=0, padx=6, pady=4)
+        self.text.pack(fill=tk.BOTH, expand=True)
+
+    def add_event(self, message: str, level: str = "info"):
+        colors = {"info": COLOR_TEXT, "success": COLOR_GREEN_TEXT, "warn": COLOR_YELLOW, "error": COLOR_RED_TEXT}
+        self.text.config(state=tk.NORMAL)
+        tag = f"event_{int(time.time() * 1000) % 100000}"
+        self.text.insert(tk.END, f"{time.strftime('%H:%M:%S')}  {message}\n", tag)
+        self.text.tag_config(tag, foreground=colors.get(level, COLOR_TEXT))
+        lines = int(self.text.index("end-1c").split(".")[0])
+        if lines > 100:
+            self.text.delete("1.0", "21.0")
+        self.text.see(tk.END)
+        self.text.config(state=tk.DISABLED)
+
+
+# ============================================================
 #  StatusOverlay
 # ============================================================
 class StatusOverlay(OverlayWindow):
@@ -1121,6 +1145,7 @@ class OverlayManager:
         self.ship_overlay: Optional[ShipOverlay] = None
         self.cargo_overlay: Optional[CargoOverlay] = None
         self.session_overlay: Optional[SessionOverlay] = None
+        self.events_overlay: Optional[SessionEventsOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -1151,12 +1176,17 @@ class OverlayManager:
         self.ship_overlay = ShipOverlay(self.master, self.settings)
         self.cargo_overlay = CargoOverlay(self.master, self.settings)
         self.session_overlay = SessionOverlay(self.master, self.settings)
+        self.events_overlay = SessionEventsOverlay(self.master, self.settings)
 
         for ov, key in [(self.route_overlay, "route"), (self.status_overlay, "status"),
                         (self.ship_overlay, "ship"), (self.cargo_overlay, "cargo"),
                         (self.session_overlay, "session")]:
             ov.set_on_move(getattr(self, f"_on_{key}_moved"))
             ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
+        self.events_overlay.set_on_move(self._on_events_moved)
+        self.events_overlay.set_on_resize(lambda w, h: self._on_resized("events", w, h))
+        if not self.settings.get("show_events", True):
+            self.events_overlay.hide()
 
         for ov, key in [(self.route_overlay, "show_route"), (self.status_overlay, "show_status"),
                         (self.ship_overlay, "show_ship"), (self.cargo_overlay, "show_cargo"),
@@ -1187,6 +1217,10 @@ class OverlayManager:
     def _on_session_moved(self, x: int, y: int):
         self.settings["session_x"] = x
         self.settings["session_y"] = y
+
+    def _on_events_moved(self, x: int, y: int):
+        self.settings["events_x"] = x
+        self.settings["events_y"] = y
 
     def _update_loop(self):
         last_data_hash = None
@@ -1234,6 +1268,7 @@ class OverlayManager:
             "ship": "show_ship",
             "cargo": "show_cargo",
             "session": "show_session",
+            "events": "show_events",
         }
         overlays = [
             (self.route_overlay, "route"),
@@ -1241,6 +1276,7 @@ class OverlayManager:
             (self.ship_overlay, "ship"),
             (self.cargo_overlay, "cargo"),
             (self.session_overlay, "session"),
+            (self.events_overlay, "events"),
         ]
         for ov, key in overlays:
             if ov:
@@ -1359,11 +1395,15 @@ class OverlayManager:
         with self._log_lock:
             self._pending_logs.append((message, level))
 
+    def log_session_event(self, message: str, level: str = "info"):
+        if self.events_overlay:
+            self.master.after(0, lambda m=message, l=level: self.events_overlay.add_event(m, l))
+
     def stop(self):
         self.enabled = False
         self._stop.set()
         self.save_settings()
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
             if ov:
                 self.master.after(0, ov.destroy)
         self.route_overlay = None
@@ -1371,6 +1411,7 @@ class OverlayManager:
         self.ship_overlay = None
         self.cargo_overlay = None
         self.session_overlay = None
+        self.events_overlay = None
 
     def toggle(self, update_callback: Callable):
         if self.enabled:
@@ -1379,7 +1420,7 @@ class OverlayManager:
             self.start(update_callback)
 
     def toggle_visibility(self):
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
             if ov:
                 ov.toggle()
 
@@ -1453,6 +1494,7 @@ DEFAULT_SETTINGS = {
     "show_ship": True,
     "show_cargo": True,
     "show_session": True,
+    "show_events": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,

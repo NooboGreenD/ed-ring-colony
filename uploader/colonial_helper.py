@@ -75,6 +75,7 @@ from journal_parser import parse_file, parse_journal
 from route_tracker import RouteTracker
 from overlay import OverlayManager
 from edsm_api import EDSMAPI
+from inara_api import InaraAPI
 from ship_tracker import ShipTracker
 
 # -- Константы --
@@ -143,7 +144,12 @@ class ColonialHelperApp:
             self.config.get("edsm_api_key", ""),
             self.config.get("edsm_commander_name", ""),
         )
+        self.inara_api = InaraAPI(
+            self.config.get("inara_api_key", ""),
+            self.config.get("inara_commander_name", ""),
+        )
         self._edsm_seen_events: set = set()
+        self._inara_seen_events: set = set()
         # Восстанавливаем ключ из конфига (load_config вызывался раньше создания raven_api)
         raven_key = self.config.get("raven_colonial_key", "")
         if raven_key:
@@ -397,6 +403,28 @@ class ColonialHelperApp:
         tb.Button(frame, text="Сохранить EDSM настройки", command=self._save_edsm_settings, bootstyle="info-outline", width=28).pack(anchor=W)
         self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
         self.edsm_status_label.pack(anchor=W, pady=(5, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
+        tb.Label(frame, text="Inara API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Необязательно: отправка навигации, стыковок, сканирования и грузовых событий в Inara.", foreground=COLOR_MUTED).pack(anchor=W)
+        tb.Label(frame, text="Inara API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
+        self.inara_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
+        self.inara_key_entry.pack(fill=X, pady=(4, 5))
+        self.inara_key_entry.insert(0, self.inara_api.api_key)
+        tb.Label(frame, text="Имя командира в Inara", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
+        self.inara_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
+        self.inara_name_entry.pack(fill=X, pady=(4, 8))
+        self.inara_name_entry.insert(0, self.inara_api.commander_name)
+        tb.Button(frame, text="Сохранить Inara настройки", command=self._save_inara_settings, bootstyle="info-outline", width=28).pack(anchor=W)
+        self.inara_status_label = tb.Label(frame, text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена", foreground=COLOR_MUTED)
+        self.inara_status_label.pack(anchor=W, pady=(5, 0))
+
+    def _save_inara_settings(self):
+        self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+        self.config["inara_api_key"] = self.inara_api.api_key
+        self.config["inara_commander_name"] = self.inara_api.commander_name
+        self.save_config()
+        self.inara_status_label.config(text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена")
 
     def _save_edsm_settings(self):
         self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
@@ -769,7 +797,8 @@ class ColonialHelperApp:
             "status_detail": (
                 f"{self.api.display_name} | ED Ring: {'ON' if self.api.is_connected else 'OFF'} | "
                 f"Raven: {'ON' if self.raven_api.is_connected else 'OFF'} | "
-                f"EDSM: {'ON' if self.edsm_api.enabled else 'OFF'}"
+                f"EDSM: {'ON' if self.edsm_api.enabled else 'OFF'} | "
+                f"Inara: {'ON' if self.inara_api.enabled else 'OFF'}"
             ),
             "watcher_active": self.watcher_active,
             "progress": self.progress_label.cget("text") or "",
@@ -943,6 +972,10 @@ class ColonialHelperApp:
             self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
         self.config["edsm_api_key"] = self.edsm_api.api_key
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
+        if hasattr(self, "inara_key_entry"):
+            self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+        self.config["inara_api_key"] = self.inara_api.api_key
+        self.config["inara_commander_name"] = self.inara_api.commander_name
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2)
@@ -1473,13 +1506,55 @@ class ColonialHelperApp:
         self._load_latest_loadout()
         self._load_current_state_files()
 
+    def _log_session_event(self, event: dict):
+        event_name = str(event.get("event", ""))
+        tracked = {
+            "Location", "FSDJump", "Docked", "Undocked", "CarrierJump", "Market", "MarketBuy", "MarketSell",
+            "Cargo", "CargoDepot", "ColonisationContribution", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+            "Loadout", "ModuleInfo", "ModuleDamage", "Repair", "RepairAll", "HullDamage", "ShieldState",
+        }
+        if event_name not in tracked:
+            return
+        system = event.get("StarSystem") or self.ship.state.current_system or "?"
+        details = []
+        if event.get("Count") is not None:
+            details.append(f"{event.get('Type_Localised') or event.get('Type') or 'cargo'} x{event.get('Count')}")
+        if event_name == "ColonisationContribution":
+            details.append(", ".join(f"{c.get('Name_Localised') or c.get('Name')}: {c.get('Amount', 0)}" for c in event.get("Contributions", [])))
+        if event_name in ("FSDJump", "Location", "Docked", "CarrierJump"):
+            details.append(system)
+        self.overlay_manager.log_session_event(f"{event_name}: {' | '.join(details) if details else system}")
+
+    def _send_inara_event(self, event: dict):
+        if not self.inara_api.enabled:
+            return
+        event_name = str(event.get("event", ""))
+        names = {
+            "Location": "cmdrLocation", "FSDJump": "cmdrFSDJump", "Docked": "cmdrDock",
+            "Scan": "cmdrScan", "FSSDiscoveryScan": "cmdrFSSDiscoveryScan",
+            "MarketSell": "cmdrMarketSell", "MarketBuy": "cmdrMarketBuy",
+            "ColonisationContribution": "cmdrTrade",
+        }
+        inara_name = names.get(event_name)
+        if not inara_name:
+            return
+        key = f"{event.get('timestamp', '')}:{event_name}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}:{event.get('MarketID', '')}"
+        if key in self._inara_seen_events:
+            return
+        self._inara_seen_events.add(key)
+        data = dict(event)
+        data.pop("event", None)
+        self.inara_api.submit(inara_name, data, str(event.get("timestamp", "")))
+
     def _send_edsm_text(self, text: str):
         if not self.edsm_api.enabled:
             return
         for line in text.splitlines():
             try:
                 event = json.loads(line)
+                self._log_session_event(event)
                 self._send_edsm_event(event)
+                self._send_inara_event(event)
                 self._send_carrier_event_to_raven(event)
             except (ValueError, TypeError):
                 continue
@@ -1740,13 +1815,38 @@ class ColonialHelperApp:
         self.bottom_status.config(text="Готов")
         self.overlay_manager.log("Watcher остановлен", "info")
 
+    def _load_journal_offsets(self) -> dict:
+        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_journal_offsets(self):
+        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        tmp = path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.last_file_mtimes, fh)
+            tmp.replace(path)
+        except OSError as exc:
+            self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить состояние журналов: {e}", "warn"))
+
     def _watcher_loop(self):
+        offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
+        first_reconciliation = not bool(offsets)
         for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime):
             try:
-                self.last_file_mtimes[str(f)] = f.stat().st_size
-            except Exception:
+                # Первый запуск проверяет историю с начала файлов; после этого
+                # сохраняются byte offsets, как в EDDiscovery.
+                self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
+            except (OSError, ValueError):
                 pass
+        if first_reconciliation:
+            self.root.after(0, lambda: self.log("Проверка ранее не отправленных журналов...", "info"))
 
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
@@ -1763,10 +1863,14 @@ class ColonialHelperApp:
                     except Exception:
                         continue
                     last_size = self.last_file_mtimes.get(fpath, 0)
+                    if current_size < last_size:
+                        # Новый файл/ротация журнала.
+                        last_size = 0
                     if current_size > last_size:
                         processed = self._process_journal_changes(f, last_size, current_size)
                         # Обновляем только на фактически обработанные байты (полные строки)
                         self.last_file_mtimes[fpath] = last_size + processed
+                        self._save_journal_offsets()
             except Exception as e:
                 self.root.after(0, lambda e=e: self.log(f"Watcher ошибка: {e}", "error"))
 
@@ -1888,7 +1992,9 @@ class ColonialHelperApp:
                 continue
             try:
                 ev = json.loads(line)
+                self._log_session_event(ev)
                 self._send_edsm_event(ev)
+                self._send_inara_event(ev)
                 self._send_carrier_event_to_raven(ev)
                 if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
                     sys_name = ev.get("StarSystem")
