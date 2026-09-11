@@ -448,9 +448,22 @@ class RouteOverlay(OverlayWindow):
         self.remaining_list = tk.Label(self.content, text="", font=(ff, fs - 3), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W, wraplength=260)
         self.remaining_list.pack(fill=tk.X, pady=(2, 0))
 
-    def update_route(self, current: str, next_system: str, visited: int, total: int, remaining: Optional[list] = None):
+    def update_route(self, current: str, next_system: str, visited: int, total: int, remaining: Optional[list] = None, next_info: Optional[dict] = None):
         self.current_label.config(text=current[:30])
         self.next_label.config(text=next_system[:30])
+        if next_info and next_info.get("name") == next_system:
+            if not next_info.get("known"):
+                self.next_label.config(text=f"{next_system[:24]}  [EDSM нет данных]")
+            else:
+                bodies = next_info.get("bodies")
+                population = next_info.get("population")
+                details = []
+                if bodies is not None:
+                    details.append(f"{bodies} тел")
+                if population:
+                    details.append(f"нас. {population:g}")
+                if details:
+                    self.next_label.config(text=f"{next_system[:20]}  ({', '.join(details)})")
         self.progress_label.config(text=f"{visited} / {total}")
         if total > 0:
             pct = visited / total
@@ -1281,6 +1294,7 @@ class OverlayManager:
         parts.append(str(data.get("online", False)))
         parts.append(str(data.get("watcher_active", False)))
         parts.append(str(data.get("progress", "")))
+        parts.append(str(data.get("next_system_info", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
@@ -1288,6 +1302,7 @@ class OverlayManager:
             self.route_overlay.update_route(
                 data.get("current", "-"), data.get("next", "-"),
                 data.get("visited", 0), data.get("total", 0), data.get("remaining"),
+                data.get("next_system_info"),
             )
         if self.status_overlay:
             self.status_overlay.set_status(data.get("online", False), data.get("status_detail", ""))

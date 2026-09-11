@@ -6,6 +6,7 @@ Endpoint и формат из SRV Survey:
 - Contribute: Dictionary<string, int> (не JSON с commodity/amount)
 """
 import requests
+import time
 from typing import Dict, Any, Optional
 
 
@@ -47,17 +48,29 @@ class RavenColonialAPI:
             cmdr: Имя командира
             commodities: {resource_name: amount} (Dictionary<string, int>)
         """
-        try:
-            resp = self._session.post(
-                f"{self.base_url}/project/{build_id}/contribute/{cmdr}",
-                headers=self._headers(),
-                json=commodities,
-                timeout=15,
-            )
-            return {"ok": resp.ok, "data": resp.json() if resp.ok else None,
-                    "error": resp.text if not resp.ok else None}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        last_error = "Raven Colonial request failed"
+        for attempt in range(1, 4):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/project/{build_id}/contribute/{cmdr}",
+                    headers=self._headers(),
+                    json=commodities,
+                    timeout=15,
+                )
+                if resp.ok:
+                    try:
+                        payload = resp.json()
+                    except ValueError:
+                        payload = None
+                    return {"ok": True, "data": payload, "error": None}
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if resp.status_code not in (408, 429) and resp.status_code < 500:
+                    break
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            if attempt < 3:
+                time.sleep(attempt)
+        return {"ok": False, "error": last_error}
 
     def update_supply(self, build_id: str, resources: dict) -> dict:
         """Обновить supply проекта."""

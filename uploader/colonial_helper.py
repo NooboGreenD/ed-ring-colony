@@ -74,6 +74,7 @@ from api_client import ApiClient
 from journal_parser import parse_file, parse_journal
 from route_tracker import RouteTracker
 from overlay import OverlayManager
+from edsm_api import EDSMAPI
 from ship_tracker import ShipTracker
 
 # -- Константы --
@@ -136,6 +137,11 @@ class ColonialHelperApp:
         # Raven Colonial API
         from raven_colonial_api import RavenColonialAPI
         self.raven_api = RavenColonialAPI(self.config.get("raven_colonial_key", ""))
+        self.edsm_api = EDSMAPI(
+            self.config.get("edsm_api_key", ""),
+            self.config.get("edsm_commander_name", ""),
+        )
+        self._edsm_seen_events: set = set()
         # Восстанавливаем ключ из конфига (load_config вызывался раньше создания raven_api)
         raven_key = self.config.get("raven_colonial_key", "")
         if raven_key:
@@ -358,6 +364,26 @@ class ColonialHelperApp:
 
         self.raven_status_label = tb.Label(frame, text="Raven Colonial: не подключено", font=("Segoe UI", 11), foreground=COLOR_MUTED)
         self.raven_status_label.pack(anchor=W, pady=(5, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
+        tb.Label(frame, text="EDSM Journal API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
+        self.edsm_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
+        self.edsm_key_entry.pack(fill=X, pady=(5, 5))
+        self.edsm_key_entry.insert(0, self.edsm_api.api_key)
+        self.edsm_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
+        self.edsm_name_entry.pack(fill=X, pady=(0, 8))
+        self.edsm_name_entry.insert(0, self.edsm_api.commander_name)
+        tb.Button(frame, text="Сохранить EDSM настройки", command=self._save_edsm_settings, bootstyle="info-outline", width=28).pack(anchor=W)
+        self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
+        self.edsm_status_label.pack(anchor=W, pady=(5, 0))
+
+    def _save_edsm_settings(self):
+        self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+        self.config["edsm_api_key"] = self.edsm_api.api_key
+        self.config["edsm_commander_name"] = self.edsm_api.commander_name
+        self.save_config()
+        self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -725,6 +751,7 @@ class ColonialHelperApp:
             "visited": 0,
             "total": 0,
             "remaining": [],
+            "next_system_info": self.route.get_next_system_info(),
             "new_deliveries": 0,
             "cargo_total_tons": self._session_cargo_tons,
         }
@@ -883,6 +910,10 @@ class ColonialHelperApp:
             if entry_key and entry_key != self.raven_api.api_key:
                 self.raven_api.set_key(entry_key)
         self.config["raven_colonial_key"] = self.raven_api.api_key
+        if hasattr(self, "edsm_key_entry"):
+            self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+        self.config["edsm_api_key"] = self.edsm_api.api_key
+        self.config["edsm_commander_name"] = self.edsm_api.commander_name
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2)
@@ -1197,6 +1228,7 @@ class ColonialHelperApp:
                     continue  # ошибка чтения уже залогирована выше
                 self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
                 try:
+                    self._send_edsm_text(text)
                     current_system = self.ship.state.current_system if self.ship.state else None
                     current_system_address = self.ship.state.system_address if self.ship.state else 0
                     (
@@ -1372,6 +1404,8 @@ class ColonialHelperApp:
         self._watcher_cmdr_name = self.api.cmdr_name
         self._pending_watcher_deliveries = []
 
+        self._auto_load_navroute()
+
         # Определяем текущую систему CMDR ДО старта потока watcher'а.
         # Иначе, если приложение запущено, когда игрок уже находится в
         # системе (нет свежих FSDJump/Location/Docked с момента запуска),
@@ -1404,6 +1438,46 @@ class ColonialHelperApp:
         # если он новее данных из журнала).
         self._load_latest_loadout()
         self._load_current_state_files()
+
+    def _send_edsm_text(self, text: str):
+        if not self.edsm_api.enabled:
+            return
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+                self._send_edsm_event(event)
+            except (ValueError, TypeError):
+                continue
+
+    def _send_edsm_event(self, event: dict):
+        if not self.edsm_api.enabled or event.get("event") not in {
+            "Location", "FSDJump", "Docked", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+        }:
+            return
+        key = f"{event.get('timestamp', '')}:{event.get('event', '')}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}"
+        if key in self._edsm_seen_events:
+            return
+        self._edsm_seen_events.add(key)
+        threading.Thread(target=self.edsm_api.submit_event, args=(dict(event),), daemon=True).start()
+
+    def _auto_load_navroute(self) -> bool:
+        """Автоматически загрузить свежий NavRoute.json из папки журналов."""
+        candidates = [self.journal_path / "NavRoute.json", self.journal_path.parent / "NavRoute.json"]
+        for path in candidates:
+            try:
+                if path.exists():
+                    with open(path, "r", encoding="utf-8-sig") as fh:
+                        payload = json.load(fh)
+                    route = payload.get("Route", []) if isinstance(payload, dict) else []
+                    if route:
+                        self.route.load_from_navroute(payload)
+                        self.root.after(0, self._refresh_route_tree)
+                        self.route.refresh_next_system_info(force=True)
+                        self.root.after(0, lambda n=len(route), p=path: self.log(f"NavRoute загружен автоматически: {n} систем ({p.name})", "success"))
+                        return True
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: self.log(f"Не удалось загрузить NavRoute: {e}", "warn"))
+        return False
 
     def _determine_cmdr_system(self) -> tuple:
         """Найти последнюю известную систему CMDR, просматривая journal-файлы
@@ -1655,6 +1729,7 @@ class ColonialHelperApp:
 
             # 2. Потом читаем JSON-файлы — НЕ перезаписываем health модулей
             self._load_current_state_files()
+            self.route.refresh_next_system_info()
 
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
@@ -1714,6 +1789,7 @@ class ColonialHelperApp:
                 continue
             try:
                 ev = json.loads(line)
+                self._send_edsm_event(ev)
                 if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
                     sys_name = ev.get("StarSystem")
                     if sys_name:
