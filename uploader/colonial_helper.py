@@ -766,7 +766,11 @@ class ColonialHelperApp:
         """Собрать данные для обновления оверлея."""
         data = {
             "online": self.api.is_connected,
-            "status_detail": self.api.display_name or ("Online" if self.api.is_connected else "Offline"),
+            "status_detail": (
+                f"{self.api.display_name} | ED Ring: {'ON' if self.api.is_connected else 'OFF'} | "
+                f"Raven: {'ON' if self.raven_api.is_connected else 'OFF'} | "
+                f"EDSM: {'ON' if self.edsm_api.enabled else 'OFF'}"
+            ),
             "watcher_active": self.watcher_active,
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
@@ -971,6 +975,8 @@ class ColonialHelperApp:
             self.set_connection_status(True, self.api.display_name)
             self.log(f"Авторизован как {self.api.display_name}", "success")
             self.save_config()
+            if not self.watcher_active:
+                self.root.after(300, self._auto_start_watcher)
         else:
             self.set_connection_status(False, result.get("error", "Ошибка"))
             self.log(f"Ошибка: {result.get('error')}", "error")
@@ -979,6 +985,11 @@ class ColonialHelperApp:
 
     def _auto_validate(self):
         self._on_validate_token()
+
+    def _auto_start_watcher(self):
+        if self.watcher_active or not self.api.is_connected:
+            return
+        self._start_watcher()
 
     def _on_paste_token(self):
         if pyperclip is None:
@@ -1358,6 +1369,7 @@ class ColonialHelperApp:
                 d.get("amount", 0) for d in all_deliveries
                 if d.get("source") == "colonisation_contribution"
             )
+            self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.log(
@@ -1772,6 +1784,30 @@ class ColonialHelperApp:
             self._auto_load_navroute()
             self.route.refresh_next_system_info()
 
+    def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
+        if not self.raven_api.is_connected:
+            return
+        batches = {}
+        for delivery in deliveries:
+            market_id = delivery.get("market_id")
+            if not market_id:
+                continue
+            address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
+            if not address:
+                continue
+            project = self.raven_api.get_project(address, market_id)
+            if not project or not project.get("buildId"):
+                continue
+            build_id = project["buildId"]
+            commodity = delivery.get("commodity", "Unknown")
+            batches.setdefault(build_id, {})[commodity] = batches.setdefault(build_id, {}).get(commodity, 0) + int(delivery.get("amount", 0))
+        for build_id, commodities in batches.items():
+            result = self.raven_api.contribute(build_id, cmdr_name or "Unknown", commodities)
+            if result.get("ok"):
+                self.root.after(0, lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"))
+            else:
+                self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"))
+
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
 
@@ -1889,7 +1925,7 @@ class ColonialHelperApp:
                 if self.raven_api.is_connected:
                     # Группируем доставки по build_id (как в SRV Survey)
                     raven_batches: dict = {}  # build_id -> {commodity: amount}
-                    for d in deliveries:
+                    for d in upload_deliveries:
                         market_id = d.get("market_id")
                         if not market_id:
                             continue

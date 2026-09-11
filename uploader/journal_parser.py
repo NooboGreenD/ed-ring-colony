@@ -143,8 +143,32 @@ def parse_journal(
             sys_addr = ev.get("SystemAddress")
             if sys_addr:
                 current_system_address = int(sys_addr)
+            if ev.get("StationType"):
+                last_depot_state["_station_type"] = ev.get("StationType")
+        elif event == "MarketSell":
+            # Продажа груза на Fleet Carrier — это фактическая отгрузка.
+            # Раньше MarketSell всегда подавлял следующий Cargo-снимок и
+            # поэтому не попадал ни в основной uploader, ни в Raven Colonial.
+            station_type = str(ev.get("StationType", "") or last_depot_state.get("_station_type", ""))
+            is_carrier = bool(ev.get("CarrierID")) or "carrier" in station_type.lower()
+            count = ev.get("Count", 0)
+            if current_system and is_carrier and count > 0:
+                commodity = ev.get("Type_Localised") or _normalize_name(ev.get("Type", "Unknown"))
+                deliveries.append({
+                    "system_name": current_system,
+                    "commodity": commodity,
+                    "amount": int(count),
+                    "delivered_at": ev.get("timestamp"),
+                    "market_id": ev.get("MarketID", 0),
+                    "system_address": current_system_address,
+                    "is_hub": None,
+                    "route_system_id": None,
+                    "source": "carrier_delivery",
+                    "source_hash": _source_hash("carrier", line, commodity, count),
+                })
+            skip_next_cargo = True
         elif event in (
-            "MarketBuy", "MarketSell", "BuyDrones", "SellDrones",
+            "MarketBuy", "BuyDrones", "SellDrones",
             "MiningRefined", "EjectCargo", "CollectCargo",
             "MissionCompleted", "Died", "Interdicted", "Interdiction",
             "TransferMicroResources", "TransferCargo", "CargoTransfer",
