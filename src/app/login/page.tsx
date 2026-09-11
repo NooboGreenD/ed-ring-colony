@@ -45,8 +45,9 @@ export default function LoginPage() {
 
       // The browser client has now persisted the standard Supabase cookie
       // session. Send its current Bearer token so profile creation works even
-      // before a subsequent request has picked up that cookie.
-      const cmdrName = data.user.user_metadata?.cmdr_name;
+      // before a subsequent request has picked up that cookie. A nickname is
+      // deliberately not sent here: an existing profile is the source of
+      // truth after a user has edited it.
       try {
         const profileResponse = await authFetch('/api/auth/ensure-profile', {
           method: 'POST',
@@ -54,7 +55,6 @@ export default function LoginPage() {
           body: JSON.stringify({
             id: data.user.id,
             email: data.user.email,
-            ...(cmdrName ? { cmdr_name: cmdrName } : {}),
           }),
         });
 
