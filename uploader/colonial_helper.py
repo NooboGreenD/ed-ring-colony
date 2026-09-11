@@ -120,6 +120,7 @@ class ColonialHelperApp:
         self._session_cargo_tons = 0.0
         self._session_route_deliveries = 0  # доставки только в системы маршрута
         self._session_route_cargo_tons = 0.0  # тонны только в системы маршрута
+        self._session_construction_cargo_tons = 0.0  # ColonisationContribution за сессию
         self._session_systems_visited = set()
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
@@ -785,6 +786,7 @@ class ColonialHelperApp:
         data["cargo_total_tons"] = self._session_cargo_tons
         data["route_deliveries_count"] = self._session_route_deliveries
         data["route_cargo_tons"] = self._session_route_cargo_tons
+        data["construction_cargo_tons"] = self._session_construction_cargo_tons
         data["last_delivery_system"] = self._last_delivery_system
         return data
 
@@ -1329,6 +1331,10 @@ class ColonialHelperApp:
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
             self._session_route_deliveries += len(route_deliveries)
             self._session_route_cargo_tons += route_tons
+            self._session_construction_cargo_tons += sum(
+                d.get("amount", 0) for d in all_deliveries
+                if d.get("source") == "colonisation_contribution"
+            )
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.log(
@@ -1393,6 +1399,7 @@ class ColonialHelperApp:
         self._session_cargo_tons = 0.0
         self._session_route_deliveries = 0
         self._session_route_cargo_tons = 0.0
+        self._session_construction_cargo_tons = 0.0
         self._session_systems_visited.clear()
         self._last_cargo = {}
         self._last_depot_state = {}
@@ -1831,6 +1838,10 @@ class ColonialHelperApp:
                 route_tons = sum(d.get("amount", 0) for d in route_deliveries)
                 self._session_route_deliveries += len(route_deliveries)
                 self._session_route_cargo_tons += route_tons
+                self._session_construction_cargo_tons += sum(
+                    d.get("amount", 0) for d in upload_deliveries
+                    if d.get("source") == "colonisation_contribution"
+                )
                 # Сохраняем последнюю систему доставки для оверлея
                 if deliveries:
                     self._last_delivery_system = deliveries[-1]["system_name"]

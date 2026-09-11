@@ -995,6 +995,7 @@ class SessionOverlay(OverlayWindow):
         self.deliveries_label = self._make_stat_row(self.stats_grid, "Deliveries:", "0", COLOR_GREEN_TEXT)
         self.cargo_label = self._make_stat_row(self.stats_grid, "Cargo (t):", "0", COLOR_ACCENT)
         self.route_cargo_label = self._make_stat_row(self.stats_grid, "Route (t):", "0", COLOR_YELLOW)
+        self.construction_cargo_label = self._make_stat_row(self.stats_grid, "Build (t):", "0", COLOR_CYAN)
         self.time_label = self._make_stat_row(self.stats_grid, "Time:", "00:00", COLOR_TEXT_MUTED)
 
         self.route_system_label = tk.Label(self.content, text="", font=(ff, fs - 1), fg=COLOR_YELLOW, bg=COLOR_PANEL, anchor=tk.W)
@@ -1038,6 +1039,8 @@ class SessionOverlay(OverlayWindow):
 
         route_cargo = data.get("route_cargo_tons", 0)
         self.route_cargo_label.config(text=f"{route_cargo:.1f}")
+        construction_cargo = data.get("construction_cargo_tons", 0)
+        self.construction_cargo_label.config(text=f"{construction_cargo:.1f}")
 
         elapsed = int(time.time() - self.session_start)
         hours = elapsed // 3600
@@ -1293,6 +1296,10 @@ class OverlayManager:
         parts.append(str(data.get("current", "")))
         parts.append(str(data.get("online", False)))
         parts.append(str(data.get("watcher_active", False)))
+        parts.append(str(data.get("deliveries_count", 0)))
+        parts.append(str(data.get("cargo_total_tons", 0)))
+        parts.append(str(data.get("route_cargo_tons", 0)))
+        parts.append(str(data.get("construction_cargo_tons", 0)))
         parts.append(str(data.get("progress", "")))
         parts.append(str(data.get("next_system_info", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
@@ -1332,6 +1339,7 @@ class OverlayManager:
             self._session_stats["cargo_total_tons"] = float(data.get("cargo_total_tons", 0) or 0)
             self._session_stats["route_deliveries_count"] = int(data.get("route_deliveries_count", 0) or 0)
             self._session_stats["route_cargo_tons"] = float(data.get("route_cargo_tons", 0) or 0)
+            self._session_stats["construction_cargo_tons"] = float(data.get("construction_cargo_tons", 0) or 0)
 
             ship = data.get("ship", {})
             self._session_stats["cargo_count"] = ship.get("cargo_count", 0)
