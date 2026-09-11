@@ -264,31 +264,14 @@ export default function ProjectPage() {
 
         const coords = json.results?.[s.system_name];
         if (coords) {
-          let { data: rsRecord } = await supabase
-            .from("route_systems")
-            .select("id")
-            .eq("system_name", s.system_name)
-            .single();
-
-          if (rsRecord) {
-            await supabase.from("route_systems").update({
-              x: coords.x, y: coords.y, z: coords.z,
-            }).eq("system_name", s.system_name);
-          } else {
-            const { data: newRs } = await supabase.from("route_systems").insert({
-              system_name: s.system_name,
-              x: coords.x, y: coords.y, z: coords.z,
-              sort_order: 0,
-            }).select("id").single();
-            if (newRs) rsRecord = newRs;
-          }
-
-          if (rsRecord && !s.route_system_id) {
-            await supabase.from("project_systems")
-              .update({ route_system_id: rsRecord.id })
-              .eq("id", s.id);
-          }
-          updated++;
+          // Project coordinates belong only to project_systems. Never create
+          // or update route_systems here: that table is the global Atlas
+          // route and made EDSM imports leak project systems onto the map.
+          const { error: coordinateError } = await supabase.from("project_systems")
+            .update({ x: coords.x, y: coords.y, z: coords.z })
+            .eq("id", s.id)
+            .eq("project_id", id);
+          if (!coordinateError) updated++;
         }
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -304,16 +287,11 @@ export default function ProjectPage() {
   };
 
   const addBulkSystems = async (names: string[]) => {
-    const { data: routeSystems } = await supabase
-      .from("route_systems")
-      .select("id, system_name")
-      .in("system_name", names.map((n) => n.trim()));
-    const routeMap = new Map((routeSystems || []).map((r: any) => [r.system_name.toLowerCase(), r.id]));
-
     const rows = names.map((n, i) => ({
       project_id: id,
       system_name: n.trim(),
-      route_system_id: routeMap.get(n.trim().toLowerCase()) || null,
+      // Squadron project systems are independent from the global route.
+      route_system_id: null,
       sort_order: systems.length + i + 1,
     }));
 
