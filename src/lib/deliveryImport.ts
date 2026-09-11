@@ -28,7 +28,7 @@ type DeliveryRow = {
 // deliberately small: after the source-hash index rollout, a failed request
 // can be retried safely and never turns one large INSERT/RETURNING statement
 // into a database statement timeout.
-export const DELIVERY_IMPORT_WRITE_BATCH_SIZE = 100;
+export const DELIVERY_IMPORT_WRITE_BATCH_SIZE = 25;
 // Keep compatibility lookups small as well. On databases where the placement
 // indexes are not applied yet, one exact-name query can otherwise scan the
 // complete table for every uploaded system in a single statement.
@@ -369,7 +369,7 @@ async function persistDeliveryChunk(
 
 /**
  * Persist arbitrary client-sized batches safely. Older desktop helpers used
- * 500-item requests; processing them in 100-row writes prevents a single
+ * 500-item requests; processing them in small 25-row writes prevents a single
  * long-running statement while retaining compatibility with those releases.
  */
 export async function persistImportedDeliveries(
