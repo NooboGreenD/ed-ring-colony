@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
-import { parseJournal } from "@/lib/journalParser";
+import { createJournalParseState, parseJournal } from "@/lib/journalParser";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import { SQUADRON_MEMBER_LIMIT } from "@/lib/squadronConstants";
@@ -266,111 +266,142 @@ export default function AccountPage() {
 
   const upload = async () => {
     if (!files?.length) return;
+
     setBusy(true);
     setSummary(null);
+    setMsg("");
 
-    const list = Array.from(files);
-    const allDeliveries: any[] = [];
-    let cmdr: string | null = null;
-    const allStats = {
-      eventsParsed: 0,
-      cargoEvents: 0,
-      deliveriesFound: 0,
-      skippedNoSystem: 0,
-      skippedMarketTrade: 0,
-      skippedMining: 0,
-      skippedEject: 0,
-    };
-    setProgress({ current: 0, total: list.length, phase: t('account.loadingSystems'), pct: 2 });
-    const client = createSupabaseClient();
-    const [{ data: hubsData }, { data: routeSystemsData }] = await Promise.all([
-      client.from('hubs').select('system_name'),
-      client.from('route_systems').select('id, system_name'),
-    ]);
-    const lookup = {
-      hubs: new Set((hubsData || []).map((h: any) => String(h.system_name).toLowerCase())),
-      routeSystems: new Map((routeSystemsData || []).map((r: any) => [String(r.system_name).toLowerCase(), r.id])),
-    };
+    try {
+      // Journal filenames contain their UTC start time (Journal.YYYY-MM-DD...),
+      // which is a more dependable order than the browser's selection order.
+      const list = Array.from(files).sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+        || left.lastModified - right.lastModified,
+      );
+      const allDeliveries: Array<{
+        systemName: string;
+        commodity: string;
+        amount: number;
+        timestamp: string;
+        sourceHash: string;
+        source: string;
+      }> = [];
+      let cmdr: string | null = null;
+      const allStats = {
+        eventsParsed: 0,
+        cargoEvents: 0,
+        deliveriesFound: 0,
+        colonisationDeliveries: 0,
+        cargoDepotDeliveries: 0,
+        cargoDeltaDeliveries: 0,
+        skippedNoSystem: 0,
+        skippedMarketTrade: 0,
+        skippedMining: 0,
+        skippedEject: 0,
+        skippedDuplicates: 0,
+      };
 
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      setProgress({
-        current: i + 1,
-        total: list.length,
-        phase: t('account.readingFile') + ' ' + f.name,
-        pct: Math.round((i / list.length) * 90),
-      });
-      const text = await f.text();
-      setProgress({
-        current: i + 1,
-        total: list.length,
-        phase: t('account.parsingFile') + ' ' + f.name,
-        pct: Math.round(((i + 0.5) / list.length) * 90),
-      });
-      const { cmdrName, deliveries, stats } = parseJournal(text, lookup);
-      if (!cmdr && cmdrName) cmdr = cmdrName;
-      allDeliveries.push(...deliveries);
-      if (stats) {
+      setProgress({ current: 0, total: list.length, phase: t('account.loadingSystems'), pct: 2 });
+      const client = createSupabaseClient();
+      const [{ data: hubsData }, { data: routeSystemsData }] = await Promise.all([
+        client.from('hubs').select('system_name'),
+        client.from('route_systems').select('id, system_name'),
+      ]);
+      const normaliseSystem = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+      const lookup = {
+        hubs: new Set((hubsData || []).map((hub: any) => normaliseSystem(hub.system_name))),
+        routeSystems: new Map((routeSystemsData || []).map((routeSystem: any) => [normaliseSystem(routeSystem.system_name), routeSystem.id])),
+      };
+      const parserState = createJournalParseState();
+
+      for (let index = 0; index < list.length; index += 1) {
+        const file = list[index];
+        setProgress({
+          current: index + 1,
+          total: list.length,
+          phase: `${t('account.readingFile')} ${file.name}`,
+          pct: Math.round((index / list.length) * 82),
+        });
+        const journalText = await file.text();
+        setProgress({
+          current: index + 1,
+          total: list.length,
+          phase: `${t('account.parsingFile')} ${file.name}`,
+          pct: Math.round(((index + 0.5) / list.length) * 82),
+        });
+
+        // Keep parserState between files: a Cargo snapshot and a cumulative
+        // ColonisationContribution amount commonly straddle file rotation.
+        const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState);
+        if (!cmdr && cmdrName) cmdr = cmdrName;
+        allDeliveries.push(...deliveries);
         allStats.eventsParsed += stats.eventsParsed;
         allStats.cargoEvents += stats.cargoEvents;
         allStats.deliveriesFound += stats.deliveriesFound;
+        allStats.colonisationDeliveries += stats.colonisationDeliveries;
+        allStats.cargoDepotDeliveries += stats.cargoDepotDeliveries;
+        allStats.cargoDeltaDeliveries += stats.cargoDeltaDeliveries;
         allStats.skippedNoSystem += stats.skippedNoSystem;
         allStats.skippedMarketTrade += stats.skippedMarketTrade;
         allStats.skippedMining += stats.skippedMining;
         allStats.skippedEject += stats.skippedEject;
+        allStats.skippedDuplicates += stats.skippedDuplicates;
+
+        // Let React paint progress while a large multi-file upload is parsed.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      await new Promise((r) => setTimeout(r, 30));
-    }
-    const CHUNK = 500;
-    const chunks = Math.max(1, Math.ceil(allDeliveries.length / CHUNK));
-    let inserted = 0;
-    let duplicates = 0;
-    let eventsFound = 0;
-    for (let c = 0; c < chunks; c++) {
-      setProgress({
-        current: list.length,
-        total: list.length,
-        phase: t('account.sendingBatch') + ' ' + (c + 1) + ' ' + t('account.of') + ' ' + chunks,
-        pct: 90 + Math.round(((c + 1) / chunks) * 10),
-      });
-      const chunk = allDeliveries
-        .slice(c * CHUNK, (c + 1) * CHUNK)
-        .filter((d) => d.systemName && d.systemName.trim().length > 0)
-        .map((d) => ({
-          system_name: d.systemName,
-          commodity: d.commodity,
-          amount: d.amount,
-          timestamp: d.timestamp,
-          is_hub: d.isHub,
-          route_system_id: d.routeSystemId,
-        }));
-      const res = await authFetch("/api/logs/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cmdr, deliveries: chunk }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        setSummary({ error: json.error || t('account.serverError') });
-        setProgress(null);
-        setBusy(false);
-        return;
+
+      const CHUNK_SIZE = 500;
+      const chunks = Math.ceil(allDeliveries.length / CHUNK_SIZE);
+      let inserted = 0;
+      let duplicates = allStats.skippedDuplicates;
+      let eventsFound = 0;
+
+      for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
+        setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} ${chunkIndex + 1} ${t('account.of')} ${chunks}`,
+          pct: 82 + Math.round(((chunkIndex + 1) / Math.max(chunks, 1)) * 18),
+        });
+        const chunk = allDeliveries
+          .slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE)
+          .map((delivery) => ({
+            system_name: delivery.systemName,
+            commodity: delivery.commodity,
+            amount: delivery.amount,
+            timestamp: delivery.timestamp,
+            source_hash: delivery.sourceHash,
+            source: delivery.source,
+          }));
+        const response = await authFetch('/api/logs/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmdr, deliveries: chunk }),
+        });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(json.error || t('account.serverError'));
+        inserted += json.inserted ?? 0;
+        duplicates += json.duplicates ?? 0;
+        eventsFound += json.eventsFound ?? 0;
       }
-      inserted += json.inserted ?? 0;
-      duplicates += json.duplicates ?? 0;
-      eventsFound += json.eventsFound ?? 0;
+
+      setSummary({
+        ok: true,
+        filesProcessed: list.length,
+        eventsFound,
+        inserted,
+        duplicates,
+        cmdr,
+        parserStats: allStats,
+      });
+    } catch (error) {
+      console.error('[Account] Journal import failed:', error);
+      setSummary({ error: error instanceof Error ? error.message : t('account.serverError') });
+    } finally {
+      setProgress(null);
+      setBusy(false);
     }
-    setSummary({
-      ok: true,
-      filesProcessed: list.length,
-      eventsFound,
-      inserted,
-      duplicates,
-      cmdr,
-      parserStats: allStats,
-    });
-    setProgress(null);
-    setBusy(false);
   };
 
   const loadTokens = async () => {

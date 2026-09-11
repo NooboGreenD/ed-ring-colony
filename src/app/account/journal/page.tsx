@@ -7,16 +7,28 @@ import { authFetch } from '@/lib/supabaseClient';
 interface ParsedDepot {
   timestamp: string;
   systemName: string;
+  marketId: string | null;
   constructionName: string;
   constructionProgress: number;
   resourcesRequired: { nameLocalised: string; requiredAmount: number; providedAmount: number }[];
+}
+
+interface ParsedContribution {
+  timestamp: string;
+  systemName: string;
+  marketId: string | null;
+  commodity: string;
+  commodityLocalised: string;
+  amount: number;
+  total: number;
 }
 
 interface ParseResult {
   filename: string;
   cmdrName: string | null;
   depotEvents: ParsedDepot[];
-  stats: { eventsParsed: number; depotEventsFound: number; fsdJumps: number };
+  contributionEvents: ParsedContribution[];
+  stats: { eventsParsed: number; depotEventsFound: number; contributionEventsFound: number; fsdJumps: number };
 }
 
 export default function JournalPage() {
@@ -94,7 +106,7 @@ export default function JournalPage() {
         body: JSON.stringify({
           filename: result.filename,
           depotEvents: result.depotEvents,
-          contributionEvents: [],
+          contributionEvents: result.contributionEvents,
         }),
       });
 
@@ -167,6 +179,10 @@ export default function JournalPage() {
             <div className="lbl">Строек</div>
           </div>
           <div className="stat-box">
+            <div className="num">{result.stats.contributionEventsFound}</div>
+            <div className="lbl">Взносов</div>
+          </div>
+          <div className="stat-box">
             <div className="num">{result.stats.fsdJumps}</div>
             <div className="lbl">Прыжков</div>
           </div>
@@ -180,7 +196,7 @@ export default function JournalPage() {
       )}
 
       {/* Import button */}
-      {result && result.depotEvents.length > 0 && !imported && (
+      {result && (result.depotEvents.length > 0 || result.contributionEvents.length > 0) && !imported && (
         <button className="btn btn-orange" onClick={handleImport} disabled={importing} style={{ marginBottom: 24 }}>
           {importing ? 'Импорт...' : 'Импортировать в проект'}
         </button>
@@ -240,6 +256,38 @@ export default function JournalPage() {
                     </td>
                     <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
                       {new Date(ev.timestamp).toLocaleString('ru-RU')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {result && result.contributionEvents.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 16, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#60a5fa', margin: '24px 0 12px' }}>
+            Взносы в строительство
+          </h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Система</th>
+                  <th>Товар</th>
+                  <th>Сумма в журнале</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.contributionEvents.map((event, index) => (
+                  <tr key={`${event.timestamp}-${event.marketId ?? ''}-${event.commodity}-${index}`}>
+                    <td>{event.systemName || '—'}</td>
+                    <td>{event.commodityLocalised || event.commodity}</td>
+                    <td style={{ fontFamily: 'ui-monospace', color: '#60a5fa' }}>{event.amount.toLocaleString('ru-RU')} т</td>
+                    <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
+                      {event.timestamp ? new Date(event.timestamp).toLocaleString('ru-RU') : '—'}
                     </td>
                   </tr>
                 ))}

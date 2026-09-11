@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useMemo, useState, useCallback } from "react";
+import { useRef, useMemo, useState, useCallback, useEffect } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
@@ -77,8 +77,9 @@ interface AtlasMarkersProps {
   selectedId?: string | null;
 }
 
-export function AtlasMarkers({ candidates, onSelect }: AtlasMarkersProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export function AtlasMarkers({ candidates, onSelect, selectedId: controlledSelectedId }: AtlasMarkersProps) {
+  const [uncontrolledSelectedId, setUncontrolledSelectedId] = useState<string | null>(null);
+  const selectedId = controlledSelectedId === undefined ? uncontrolledSelectedId : controlledSelectedId;
 
   const atlasSprites = useMemo(() => {
     return candidates.map((candidate) => {
@@ -96,13 +97,24 @@ export function AtlasMarkers({ candidates, onSelect }: AtlasMarkersProps) {
     });
   }, [candidates]);
 
+  useEffect(() => {
+    return () => {
+      for (const sprite of atlasSprites) {
+        sprite.material.map?.dispose();
+        sprite.material.dispose();
+      }
+    };
+  }, [atlasSprites]);
+
   const handleClick = useCallback(
     (candidate: AtlasCandidate) => {
       const isSame = selectedId === candidate.id;
-      setSelectedId(isSame ? null : candidate.id);
+      if (controlledSelectedId === undefined) {
+        setUncontrolledSelectedId(isSame ? null : candidate.id);
+      }
       onSelect?.(isSame ? null : candidate);
     },
-    [selectedId, onSelect]
+    [selectedId, controlledSelectedId, onSelect]
   );
 
   const selectedCandidate =
@@ -130,7 +142,7 @@ export function AtlasMarkers({ candidates, onSelect }: AtlasMarkersProps) {
         <AtlasTooltip
           candidate={selectedCandidate}
           onClose={() => {
-            setSelectedId(null);
+            if (controlledSelectedId === undefined) setUncontrolledSelectedId(null);
             onSelect?.(null);
           }}
         />
@@ -170,14 +182,16 @@ function AtlasSprite({
       ref={spriteRef}
       position={[position.x, position.y, position.z]}
       material={material}
-      onClick={(e) => {
-        e.stopPropagation();
+      onClick={(event) => {
+        event.stopPropagation();
         onClick();
       }}
-      onPointerOver={() => {
+      onPointerOver={(event) => {
+        event.stopPropagation();
         document.body.style.cursor = "pointer";
       }}
-      onPointerOut={() => {
+      onPointerOut={(event) => {
+        event.stopPropagation();
         document.body.style.cursor = "auto";
       }}
     />
@@ -187,7 +201,7 @@ function AtlasSprite({
 /** Кольцо-контур при выделении */
 function SelectionRing({ position, color }: { position: THREE.Vector3; color: string }) {
   return (
-    <mesh position={[position.x, position.y, position.z]} rotation={[Math.PI / 2, 0, 0]}>
+    <mesh position={[position.x, position.y, position.z]} rotation={[Math.PI / 2, 0, 0]} raycast={() => null}>
       <ringGeometry args={[25, 35, 64]} />
       <meshBasicMaterial color={color} transparent opacity={0.9} side={THREE.DoubleSide} />
     </mesh>

@@ -1,59 +1,47 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
+import { mergeProgressIntoMap } from '@/lib/systemProgress';
 
 export const dynamic = 'force-dynamic';
+
 export async function GET() {
   const supabase = await createClient();
-  const { data: hubs, error: hubsError } = await supabase
-    .from('hubs')
-    .select('*')
-    .order('id');
+  const [{ data: hubs, error: hubsError }, { data: goals, error: goalsError }, { data: progressData, error: progressError }] = await Promise.all([
+    supabase.from('hubs').select('*').order('id'),
+    supabase.from('hub_goals').select('*'),
+    supabase.from('system_progress').select('system_name, progress, updated_at'),
+  ]);
 
   if (hubsError) return NextResponse.json({ error: hubsError.message }, { status: 500 });
-
-  const { data: goals, error: goalsError } = await supabase
-    .from('hub_goals')
-    .select('*');
-
   if (goalsError) return NextResponse.json({ error: goalsError.message }, { status: 500 });
 
-  // Подтягиваем актуальные статусы из system_progress (RavenColonial)
-  const { data: progressData, error: progressError } = await supabase
-    .from('system_progress')
-    .select('system_name, progress');
-
-  const progressMap = new Map<string, number | null>();
-  if (!progressError && Array.isArray(progressData)) {
-    for (const row of progressData) {
-      progressMap.set(String(row.system_name).toLowerCase(), row.progress);
-    }
+  if (progressError) {
+    console.warn('[hubs] Failed to read system_progress:', progressError.message);
   }
 
   const goalsByHub = new Map<number, typeof goals>();
-  for (const g of (goals || [])) {
-    if (!goalsByHub.has(g.hub_id)) goalsByHub.set(g.hub_id, []);
-    goalsByHub.get(g.hub_id)!.push(g);
+  for (const goal of goals || []) {
+    if (!goalsByHub.has(goal.hub_id)) goalsByHub.set(goal.hub_id, []);
+    goalsByHub.get(goal.hub_id)!.push(goal);
   }
 
-  const enriched = (hubs || []).map(h => {
-    const freshProgress = progressMap.get(h.system_name.toLowerCase());
-    const status = freshProgress == null ? h.status : freshProgress >= 100 ? 'done' : freshProgress > 0 ? 'building' : 'planned';
-    return {
-      ...h,
-      status,
-      progress: freshProgress ?? h.progress ?? 0,
-      goals: goalsByHub.get(h.id) || [],
-      overall_progress: calculateOverallProgress(goalsByHub.get(h.id) || []),
-    };
-  });
+  const withProgress = mergeProgressIntoMap(hubs, progressError ? [] : progressData);
+  const enriched = withProgress.map((hub) => ({
+    ...hub,
+    goals: goalsByHub.get(hub.id) || [],
+    overall_progress: calculateOverallProgress(goalsByHub.get(hub.id) || []),
+  }));
 
-  return NextResponse.json({ hubs: enriched });
+  return NextResponse.json(
+    { hubs: enriched },
+    { headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
 }
 
 function calculateOverallProgress(goals: any[]): number {
   if (!goals.length) return 0;
-  const totalTarget = goals.reduce((sum, g) => sum + g.target_amount, 0);
-  const totalCurrent = goals.reduce((sum, g) => sum + g.current_amount, 0);
+  const totalTarget = goals.reduce((sum, goal) => sum + goal.target_amount, 0);
+  const totalCurrent = goals.reduce((sum, goal) => sum + goal.current_amount, 0);
   if (totalTarget === 0) return 0;
   return Math.min(100, Math.round((totalCurrent / totalTarget) * 100));
 }

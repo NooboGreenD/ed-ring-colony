@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
+import { persistImportedDeliveries } from '@/lib/deliveryImport';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -72,50 +73,11 @@ export async function POST(req: Request) {
     }
   }
 
-  // Filter out deliveries without a valid system name
-  const validDeliveries = deliveries.filter(
-    (d) => d.system_name && String(d.system_name).trim().length > 0
-  );
-
-  if (validDeliveries.length === 0) {
-    return NextResponse.json({ inserted: 0, duplicates: 0, eventsFound: 0 });
+  try {
+    const outcome = await persistImportedDeliveries(svc, userId, deliveries);
+    return NextResponse.json(outcome);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not import deliveries';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  // Fallback lookup: если клиент не прислал is_hub/route_system_id, определяем на сервере
-  const systemNames = [...new Set(validDeliveries.map((d) => d.system_name).filter(Boolean))];
-  let hubSet = new Set<string>();
-  let routeMap = new Map<string, number>();
-  if (systemNames.length > 0) {
-    const [{ data: hubs }, { data: routeSystems }] = await Promise.all([
-      svc.from('hubs').select('system_name').in('system_name', systemNames),
-      svc.from('route_systems').select('id, system_name').in('system_name', systemNames),
-    ]);
-    hubSet = new Set((hubs || []).map((h: any) => String(h.system_name).toLowerCase()));
-    routeMap = new Map((routeSystems || []).map((r: any) => [String(r.system_name).toLowerCase(), r.id]));
-  }
-
-  const toInsert = validDeliveries.map((d) => {
-    const systemKey = String(d.system_name || '').toLowerCase();
-    return {
-      user_id: userId,
-      system_name: d.system_name,
-      commodity: d.commodity,
-      amount: d.amount,
-      delivered_at: d.delivered_at || d.timestamp,
-      is_hub: d.is_hub ?? hubSet.has(systemKey),
-      route_system_id: d.route_system_id ?? routeMap.get(systemKey) ?? null,
-      source_hash: d.source_hash || '',
-    };
-  });
-
-  const { data, error } = await svc.from('deliveries').insert(toInsert).select();
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({
-    inserted: data?.length ?? 0,
-    duplicates: 0,
-    eventsFound: validDeliveries.length,
-  });
 }

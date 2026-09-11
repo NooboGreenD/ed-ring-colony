@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemV2 } from '@/lib/ravenColonial';
 import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
+import { persistRavenSystemProgress, statusFromProgress } from '@/lib/systemProgress';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -20,6 +21,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
     const results: any[] = [];
     const batchSize = 3;
+    const mapCache = createServiceClient();
 
     for (let i = 0; i < systems.length; i += batchSize) {
       const batch = systems.slice(i, i + batchSize);
@@ -43,22 +45,41 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             synced_at: new Date().toISOString(),
           };
 
+          const projectSystemUpdate: { notes: string; planned_status?: 'planned' | 'building' | 'done' } = {
+            notes: JSON.stringify(ravenCache),
+          };
+          if (raven.progress != null) {
+            projectSystemUpdate.planned_status = statusFromProgress(raven.progress);
+          }
+
           await supabase
             .from('project_systems')
-            .update({ 
-              notes: JSON.stringify(ravenCache),
-              planned_status: raven.progress === 100 ? 'done' : raven.progress && raven.progress > 0 ? 'building' : undefined
-            })
+            .update(projectSystemUpdate)
             .eq('id', sys.id);
+
+          const found = raven.progress != null || raven.projects.length > 0;
+          let cacheWarnings: string[] = [];
+          if (found) {
+            // The system detail read is authoritative for this response. A
+            // transient map-cache write failure must not turn it into a false
+            // “not found” result for the project UI.
+            try {
+              const mapCacheResult = await persistRavenSystemProgress(mapCache, sys.system_name, raven);
+              cacheWarnings = mapCacheResult.warnings;
+            } catch (cacheError) {
+              cacheWarnings = [cacheError instanceof Error ? cacheError.message : 'Could not update map progress cache.'];
+            }
+          }
 
           results.push({
             system_name: sys.system_name,
-            found: raven.progress != null || raven.projects.length > 0,
+            found,
             progress: raven.progress,
             projects_count: raven.projects.length,
             totalRequired: raven.totalRequired,
             totalProvided: raven.totalProvided,
             totalRemaining: raven.totalRemaining,
+            ...(cacheWarnings.length ? { cacheWarnings } : {}),
           });
         } catch (err: any) {
           results.push({

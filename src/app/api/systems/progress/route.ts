@@ -1,27 +1,33 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemProgress, deriveStatusFromProgress } from '@/lib/ravenColonial';
 import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
+import {
+  latestProgressBySystem,
+  persistRavenSystemProgress,
+  readableProgress,
+  statusFromProgress,
+  systemNameKey,
+} from '@/lib/systemProgress';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
 function mergeCached(
   names: { system_name: string; hub_name?: string; status?: string }[],
-  cached: { system_name: string; progress: number | null; updated_at: string | null }[] | null,
+  cached: { system_name: string; progress: unknown; updated_at: string | null }[] | null,
 ) {
-  const byName = new Map(
-    (cached ?? []).map((r) => [String(r.system_name).toLowerCase(), r] as const),
-  );
-  return names.map((n) => {
-    const row = byName.get(n.system_name.toLowerCase());
+  const byName = latestProgressBySystem(cached);
+  return names.map((system) => {
+    const row = byName.get(systemNameKey(system.system_name));
+    const progress = row?.progress ?? null;
     return {
-      system_name: n.system_name,
-      hub_name: n.hub_name,
-      status: n.status,
-      progress: row?.progress ?? null,
+      system_name: system.system_name,
+      hub_name: system.hub_name,
+      status: progress == null ? system.status ?? 'planned' : statusFromProgress(progress),
+      progress,
       updated_at: row?.updated_at ?? null,
-      found: row?.progress != null,
+      found: progress != null,
       data: null,
     };
   });
@@ -35,7 +41,29 @@ export async function GET(req: Request) {
   if (name) {
     // 1. Пробуем RavenColonial напрямую
     const ravenData = await fetchRavenSystemProgress(name, enrichRavenSystemWithJournalSnapshots);
-    if (ravenData.found && !ravenData.error?.includes('не ответил')) {
+    if (ravenData.found && !ravenData.error) {
+      // A system detail page is also a live Raven read. Store that same read
+      // in the map cache so returning to /map cannot show an older 0% row.
+      // Cache failures must not make the public detail page unavailable.
+      try {
+        const cacheResult = await persistRavenSystemProgress(createServiceClient(), name, {
+          systemName: ravenData.system_name,
+          progress: ravenData.progress,
+          siteName: ravenData.data?.siteName || null,
+          architectName: ravenData.data?.architectName || null,
+          projects: ravenData.data?.projects || [],
+          resources: ravenData.data?.resources || [],
+          totalRequired: ravenData.data?.totalRequired ?? null,
+          totalProvided: ravenData.data?.totalProvided ?? null,
+          totalRemaining: ravenData.data?.totalRemaining ?? 0,
+        });
+        if (cacheResult.warnings.length > 0) {
+          console.warn('[systems/progress] Raven result could only be partially cached:', cacheResult.warnings.join(' | '));
+        }
+      } catch (cacheError: any) {
+        console.warn('[systems/progress] Failed to update map cache:', cacheError?.message || cacheError);
+      }
+
       // Раскладываем вложенные data.* на верхний уровень для совместимости с UI
       return NextResponse.json({
         system_name: ravenData.system_name,
@@ -54,44 +82,69 @@ export async function GET(req: Request) {
       });
     }
 
-    // 2. Fallback на кэш system_progress
-    const { data: cached } = await supabase
+    // 2. Fallback to the newest normalized cache row. Legacy case variants
+    // can coexist in this table, so `maybeSingle()` would be ambiguous.
+    const { data: cachedRows } = await supabase
       .from('system_progress')
       .select('system_name,progress,updated_at,data')
       .ilike('system_name', name)
-      .maybeSingle();
+      .order('updated_at', { ascending: false })
+      .limit(20);
+    const cachedByName = latestProgressBySystem(cachedRows);
+    const cachedProgress = cachedByName.get(systemNameKey(name));
+    const cached = (cachedRows || []).find((row) =>
+      systemNameKey(row.system_name) === systemNameKey(name)
+      && row.updated_at === cachedProgress?.updated_at,
+    ) ?? (cachedRows || []).find((row) => systemNameKey(row.system_name) === systemNameKey(name));
 
-    if (cached && cached.data) {
+    if (cached) {
+      const cachedData = cached.data && typeof cached.data === 'object' ? cached.data as Record<string, any> : {};
+      const progress = cachedProgress?.progress ?? cached.progress;
       return NextResponse.json({
         system_name: cached.system_name,
-        progress: cached.progress,
-        status: deriveStatusFromProgress(cached.progress),
-        found: cached.progress != null || (Array.isArray(cached.data.projects) && cached.data.projects.length > 0),
-        siteName: cached.data.siteName || null,
-        architectName: cached.data.architectName || null,
-        projects: cached.data.projects || [],
-        resources: cached.data.resources || [],
-        totalRequired: cached.data.totalRequired ?? null,
-        totalProvided: cached.data.totalProvided ?? null,
-        totalRemaining: cached.data.totalRemaining ?? 0,
-        updated_at: cached.updated_at,
+        progress,
+        status: statusFromProgress(progress),
+        found: progress != null || (Array.isArray(cachedData.projects) && cachedData.projects.length > 0),
+        siteName: cachedData.siteName || null,
+        architectName: cachedData.architectName || null,
+        projects: cachedData.projects || [],
+        resources: cachedData.resources || [],
+        totalRequired: cachedData.totalRequired ?? null,
+        totalProvided: cachedData.totalProvided ?? null,
+        totalRemaining: cachedData.totalRemaining ?? 0,
+        updated_at: cachedProgress?.updated_at ?? cached.updated_at,
         error: ravenData.error ? ravenData.error + ' Показаны сохранённые данные.' : undefined,
       });
     }
 
-    // 3. Fallback на route_systems (базовые данные)
-    const { data: routeSys } = await supabase
-      .from('route_systems')
-      .select('system_name,status,progress')
-      .ilike('system_name', name)
-      .maybeSingle();
+    // 3. Fallback to the map source record. Query an array rather than
+    // `maybeSingle()` because old data can contain case variants, and include
+    // hubs so a hub marker's detail link behaves just like a route marker.
+    const [{ data: routeRows }, { data: hubRows }] = await Promise.all([
+      supabase
+        .from('route_systems')
+        .select('system_name,status,progress')
+        .ilike('system_name', name)
+        .limit(20),
+      supabase
+        .from('hubs')
+        .select('system_name,status,progress')
+        .ilike('system_name', name)
+        .limit(20),
+    ]);
+    const requestedKey = systemNameKey(name);
+    const mapSystem = [...(routeRows || []), ...(hubRows || [])]
+      .find((row) => systemNameKey(row.system_name) === requestedKey);
 
-    if (routeSys) {
+    if (mapSystem) {
+      const progress = readableProgress(mapSystem.progress);
       return NextResponse.json({
-        system_name: routeSys.system_name,
-        progress: routeSys.progress,
-        status: routeSys.status,
-        found: routeSys.progress != null,
+        system_name: mapSystem.system_name,
+        progress,
+        // When a numeric value is present, use the identical status rule as
+        // the map rather than retaining a legacy status column value.
+        status: progress == null ? mapSystem.status : statusFromProgress(progress),
+        found: progress != null,
         siteName: null,
         architectName: null,
         projects: [],
@@ -129,8 +182,8 @@ export async function GET(req: Request) {
     ]);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    const hubSet = new Set((hubs ?? []).map((h) => String(h.system_name).toLowerCase()));
-    const listed = (route ?? []).filter((r) => !hubSet.has(String(r.system_name).toLowerCase()));
+    const hubSet = new Set((hubs ?? []).map((hub) => systemNameKey(hub.system_name)));
+    const listed = (route ?? []).filter((routeSystem) => !hubSet.has(systemNameKey(routeSystem.system_name)));
     const { data: cached } = await supabase
       .from('system_progress')
       .select('system_name,progress,updated_at');

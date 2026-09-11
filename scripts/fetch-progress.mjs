@@ -177,7 +177,9 @@ for (const h of hubs ?? []) {
   const row = await fetchSystem(h.system_name);
   await upsertProgress(row);
   if (row.progress != null) {
-    const status = row.progress >= 100 ? 'done' : row.progress > 0 ? 'building' : h.status;
+    // Keep 0% consistent with the live detail-page status instead of
+    // preserving a stale manually-set `done`/`building` value.
+    const status = row.progress >= 100 ? 'done' : row.progress > 0 ? 'building' : 'planned';
     await supabase.from('hubs').update({ progress: row.progress, status }).eq('id', h.id);
   }
 }
@@ -197,7 +199,8 @@ if (routeErr) {
     const row = await fetchSystem(r.system_name);
     await upsertProgress(row);
     if (row.progress != null) {
-      const status = row.progress >= 100 ? 'done' : row.progress > 0 ? 'building' : (r.status || 'planned');
+      // Match deriveStatusFromProgress used by the live system endpoint.
+      const status = row.progress >= 100 ? 'done' : row.progress > 0 ? 'building' : 'planned';
       await supabase.from('route_systems').update({ progress: row.progress, status }).eq('id', r.id);
       console.log('  route:', r.system_name, status, row.progress + '%');
     }

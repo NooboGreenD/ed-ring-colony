@@ -81,7 +81,10 @@ export async function POST(request: Request) {
           found: job.found_stations,
           current: job.current_system,
         },
+        scan_log: (job.scan_log || []).slice(-20),
         result: job.result || [],
+        is_done: job.status === 'done',
+        ...(job.status === 'error' ? { error: 'Search job failed' } : {}),
       });
     }
 
@@ -273,7 +276,10 @@ export async function POST(request: Request) {
     const newScanned = endIdx;
     const isDone = newScanned >= systemsList.length;
 
-    await svc
+    // A slow EDSM request can outlive the browser polling interval. Claim the
+    // snapshot optimistically so two overlapping /step calls cannot append the
+    // same five systems and create duplicate market/map results.
+    const { data: savedJob, error: saveError } = await svc
       .from('market_search_jobs')
       .update({
         status: isDone ? 'done' : 'scanning',
@@ -284,20 +290,53 @@ export async function POST(request: Request) {
         scan_log: scanLog,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', job_id);
+      .eq('id', job_id)
+      .eq('scanned_systems', startIdx)
+      .select()
+      .maybeSingle();
+
+    if (saveError) {
+      return NextResponse.json({ error: saveError.message }, { status: 500 });
+    }
+
+    if (!savedJob) {
+      // Another request won the optimistic update. Return its current state;
+      // importantly, do not return this request's uncommitted duplicate list.
+      const { data: currentJob, error: currentError } = await svc
+        .from('market_search_jobs')
+        .select('*')
+        .eq('id', job_id)
+        .maybeSingle();
+      if (currentError || !currentJob) {
+        return NextResponse.json({ error: currentError?.message || 'Search job disappeared' }, { status: 409 });
+      }
+      return NextResponse.json({
+        job_id,
+        status: currentJob.status,
+        progress: {
+          total: currentJob.total_systems,
+          scanned: currentJob.scanned_systems,
+          found: currentJob.found_stations,
+          current: currentJob.current_system,
+        },
+        scan_log: (currentJob.scan_log || []).slice(-20),
+        result: currentJob.result || [],
+        is_done: currentJob.status === 'done',
+      });
+    }
 
     return NextResponse.json({
       job_id,
-      status: isDone ? 'done' : 'scanning',
+      status: savedJob.status,
       progress: {
-        total: job.total_systems,
-        scanned: newScanned,
-        found: foundStations,
-        current: currentSystem,
+        total: savedJob.total_systems,
+        scanned: savedJob.scanned_systems,
+        found: savedJob.found_stations,
+        current: savedJob.current_system,
       },
-      scan_log: scanLog.slice(-20),
-      result: results,
-      is_done: isDone,
+      scan_log: (savedJob.scan_log || []).slice(-20),
+      result: savedJob.result || [],
+      is_done: savedJob.status === 'done',
     });
   } catch (e: any) {
     console.error('[Market Step] Error:', e);

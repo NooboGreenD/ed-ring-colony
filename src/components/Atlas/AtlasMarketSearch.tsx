@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { toast } from '@/components/ui/Toaster';
 import { IconXCircle, IconMapPin, IconPackage, IconSave, IconStore, IconCoins, IconRocket } from '@/components/Icons';
 
@@ -58,12 +58,32 @@ interface ScanLogEntry {
   timestamp: string;
 }
 
-interface AtlasMarketSearchProps {
-  onScanUpdate?: (systems: Array<{ system_name: string; x?: number; y?: number; z?: number; status: string }>) => void;
-  onMarketResults?: (results: Array<{ system_name: string; distance: number; station_name?: string; commodities_found?: number }>) => void;
+interface MapSystem {
+  system_name: string;
+  x?: number;
+  y?: number;
+  z?: number;
+  status: string;
 }
 
-export default function AtlasMarketSearch({ onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
+interface MapMarketResult {
+  system_name: string;
+  distance: number;
+  x?: number;
+  y?: number;
+  z?: number;
+  station_name?: string;
+  commodities_found?: number;
+}
+
+interface AtlasMarketSearchProps {
+  /** Clears stale overlays when a new market scan starts. */
+  onScanStart?: () => void;
+  onScanUpdate?: (systems: MapSystem[]) => void;
+  onMarketResults?: (results: MapMarketResult[]) => void;
+}
+
+export default function AtlasMarketSearch({ onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
   const [refSystem, setRefSystem] = useState('Sol');
   const [commodity, setCommodity] = useState('Steel');
   const [radius, setRadius] = useState(50);
@@ -72,123 +92,204 @@ export default function AtlasMarketSearch({ onScanUpdate, onMarketResults }: Atl
   const [buildResults, setBuildResults] = useState<StationBuildResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<SearchProgress | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
   const [scanLog, setScanLog] = useState<ScanLogEntry[]>([]);
-  const [systemsList, setSystemsList] = useState<Array<{ name: string; distance: number; x: number; y: number; z: number }>>([]);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<number | null>(null);
+  const startAbortRef = useRef<AbortController | null>(null);
+  const scanGenerationRef = useRef(0);
 
-  const stopSearch = useCallback(() => {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
+  const clearPolling = useCallback(() => {
+    if (intervalRef.current != null) {
+      window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     }
-    setLoading(false);
   }, []);
+
+  const stopSearch = useCallback(() => {
+    // Invalidate callbacks already waiting on /step or /start before clearing
+    // their timer. This prevents a stopped/old scan from repainting the map.
+    scanGenerationRef.current += 1;
+    startAbortRef.current?.abort();
+    startAbortRef.current = null;
+    clearPolling();
+    setLoading(false);
+  }, [clearPolling]);
+
+  useEffect(() => {
+    return () => {
+      scanGenerationRef.current += 1;
+      startAbortRef.current?.abort();
+      startAbortRef.current = null;
+      clearPolling();
+    };
+  }, [clearPolling]);
 
   const handleSearch = async () => {
     stopSearch();
+    const generation = scanGenerationRef.current;
+    const searchMode = mode;
     setSingleResults([]);
     setBuildResults([]);
     setScanLog([]);
     setProgress(null);
-    setJobId(null);
+    onScanStart?.();
     setLoading(true);
+
+    const controller = new AbortController();
+    startAbortRef.current = controller;
 
     try {
       const res = await fetch('/api/market/find/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           ref_system: refSystem,
           radius,
-          mode,
-          commodity: mode === 'single' ? commodity : undefined,
+          mode: searchMode,
+          commodity: searchMode === 'single' ? commodity : undefined,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (scanGenerationRef.current !== generation) return;
       if (!res.ok) throw new Error(data.error || 'Failed to start search');
 
-      setJobId(data.job_id);
-      setSystemsList(data.systems_list || []);
+      const rawScanSystems = Array.isArray(data.systems_list) ? data.systems_list : [];
+      const scanSystems: Array<{ name: string; distance: number; x: number; y: number; z: number }> = [];
+      const coordinatesBySystem = new Map<string, { name: string; distance: number; x: number; y: number; z: number }>();
+      for (const rawSystem of rawScanSystems) {
+        if (!rawSystem || typeof rawSystem !== 'object') continue;
+        const system = rawSystem as Record<string, unknown>;
+        const name = String(system.name ?? '').trim().replace(/\s+/g, ' ');
+        const x = Number(system.x);
+        const y = Number(system.y);
+        const z = Number(system.z);
+        if (!name || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        const positioned = {
+          name,
+          distance: Number.isFinite(Number(system.distance)) ? Number(system.distance) : 0,
+          x,
+          y,
+          z,
+        };
+        const key = name.toLowerCase();
+        if (!coordinatesBySystem.has(key)) {
+          coordinatesBySystem.set(key, positioned);
+          scanSystems.push(positioned);
+        }
+      }
+
       setProgress({
-        total: data.total_systems,
+        total: Number(data.total_systems) || scanSystems.length,
         scanned: 0,
         found: 0,
         current: '',
       });
 
-      intervalRef.current = setInterval(async () => {
+      let requestInFlight = false;
+      const finishCurrentSearch = () => {
+        if (scanGenerationRef.current !== generation) return;
+        clearPolling();
+        if (startAbortRef.current === controller) startAbortRef.current = null;
+        setLoading(false);
+      };
+
+      const poll = async () => {
+        if (requestInFlight || scanGenerationRef.current !== generation) return;
+        requestInFlight = true;
         try {
           const stepRes = await fetch('/api/market/find/step', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ job_id: data.job_id }),
           });
-          const stepData = await stepRes.json();
-          if (!stepRes.ok) {
-            console.error('Step error:', stepData.error);
-            return;
+          const stepData = await stepRes.json().catch(() => ({}));
+          if (scanGenerationRef.current !== generation) return;
+          if (!stepRes.ok) throw new Error(stepData.error || 'Search step failed');
+
+          if (stepData.progress) {
+            setProgress({
+              total: Number(stepData.progress.total) || scanSystems.length,
+              scanned: Number(stepData.progress.scanned) || 0,
+              found: Number(stepData.progress.found) || 0,
+              current: String(stepData.progress.current || ''),
+            });
           }
 
-          setProgress({
-            total: stepData.progress.total,
-            scanned: stepData.progress.scanned,
-            found: stepData.progress.found,
-            current: stepData.progress.current,
-          });
-
-          if (stepData.scan_log) {
+          if (Array.isArray(stepData.scan_log)) {
             setScanLog(stepData.scan_log);
-            if (onScanUpdate && systemsList.length > 0) {
-              const updated = stepData.scan_log.map((entry: ScanLogEntry) => {
-                const sys = systemsList.find((s) => s.name === entry.system);
-                return {
-                  system_name: entry.system,
-                  status: entry.status,
-                  x: sys?.x,
-                  y: sys?.y,
-                  z: sys?.z,
-                };
-              });
+            if (onScanUpdate && scanSystems.length > 0) {
+              const logEntries: unknown[] = stepData.scan_log;
+              const updated: MapSystem[] = logEntries
+                .filter((entry): entry is ScanLogEntry => !!entry && typeof entry === 'object' && typeof (entry as ScanLogEntry).system === 'string')
+                .map((entry) => {
+                  const system = coordinatesBySystem.get(entry.system.trim().replace(/\s+/g, ' ').toLowerCase());
+                  return {
+                    system_name: entry.system,
+                    status: entry.status,
+                    x: system?.x,
+                    y: system?.y,
+                    z: system?.z,
+                  };
+                });
               onScanUpdate(updated);
             }
           }
 
-          if (stepData.is_done) {
-            stopSearch();
-            const results = stepData.result || [];
-            const uniqueSystems = new Map<string, { system_name: string; distance: number; station_name?: string; commodities_found?: number }>();
-            for (const r of results) {
-              if (!uniqueSystems.has(r.system_name)) {
-                uniqueSystems.set(r.system_name, {
-                  system_name: r.system_name,
-                  distance: r.distance,
-                  station_name: r.station_name,
-                  commodities_found: r.commodities_found || 1,
-                });
-              }
+          const isDone = stepData.is_done === true || stepData.status === 'done';
+          if (isDone) {
+            const results = Array.isArray(stepData.result) ? stepData.result : [];
+            const uniqueSystems = new Map<string, MapMarketResult>();
+            for (const result of results) {
+              if (!result || typeof result !== 'object') continue;
+              const row = result as Record<string, any>;
+              const systemName = String(row.system_name ?? '').trim().replace(/\s+/g, ' ');
+              const key = systemName.toLowerCase();
+              if (!key || uniqueSystems.has(key)) continue;
+              const system = coordinatesBySystem.get(key);
+              // A result without a known position remains in the textual list,
+              // but is rejected by the map marker layer instead of appearing
+              // as a false stack at the galactic origin.
+              uniqueSystems.set(key, {
+                system_name: systemName,
+                distance: Number.isFinite(Number(row.distance)) ? Number(row.distance) : 0,
+                x: system?.x,
+                y: system?.y,
+                z: system?.z,
+                station_name: typeof row.station_name === 'string' ? row.station_name : undefined,
+                commodities_found: Number.isFinite(Number(row.commodities_found)) ? Number(row.commodities_found) : 1,
+              });
             }
             onMarketResults?.(Array.from(uniqueSystems.values()));
-            if (mode === 'build') {
-              setBuildResults(results);
-              toast(
-                `Поиск завершён! Найдено ${results.length} станций`,
-                results.length > 0 ? 'success' : 'info'
-              );
-            } else {
-              setSingleResults(results);
-              toast(
-                `Поиск завершён! Найдено ${results.length} станций`,
-                results.length > 0 ? 'success' : 'info'
-              );
-            }
+            if (searchMode === 'build') setBuildResults(results);
+            else setSingleResults(results);
+            finishCurrentSearch();
+            toast(
+              `Поиск завершён! Найдено ${results.length} станций`,
+              results.length > 0 ? 'success' : 'info',
+            );
+          } else if (stepData.status === 'error') {
+            finishCurrentSearch();
+            throw new Error(stepData.error || 'Search failed');
           }
-        } catch (e: any) {
-          console.error('Polling error:', e);
+        } catch (error) {
+          if (scanGenerationRef.current === generation) {
+            finishCurrentSearch();
+            console.error('Market-search polling error:', error);
+            toast(error instanceof Error ? error.message : 'Ошибка сканирования', 'error');
+          }
+        } finally {
+          requestInFlight = false;
         }
-      }, 2000);
-    } catch (e: any) {
-      toast(e.message, 'error');
+      };
+
+      intervalRef.current = window.setInterval(() => { void poll(); }, 2000);
+      void poll();
+    } catch (error) {
+      if (scanGenerationRef.current !== generation || (error instanceof DOMException && error.name === 'AbortError')) return;
+      console.error('Market-search start error:', error);
+      toast(error instanceof Error ? error.message : 'Не удалось начать поиск', 'error');
+      clearPolling();
+      if (startAbortRef.current === controller) startAbortRef.current = null;
       setLoading(false);
     }
   };

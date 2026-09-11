@@ -1,68 +1,88 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
+import { latestProgressBySystem, readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 
 export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   const admin = createAdminClient();
+  const projectId = Number.parseInt(params.id, 10);
+  if (!Number.isSafeInteger(projectId)) {
+    return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
+  }
 
-  // Упрощённый select без relationships (избегаем PostgREST relationship errors)
-  const { data: systems, error: sErr } = await admin
+  // Keep project-system metadata independent from PostgREST relationships;
+  // those relations are optional in older deployments.
+  const { data: systems, error: systemsError } = await admin
     .from('project_systems')
     .select('*')
-    .eq('project_id', parseInt(params.id))
+    .eq('project_id', projectId)
     .order('sort_order');
-  if (sErr) console.error('[systems GET] systems error:', sErr);
-
-  // Подтягиваем route_systems координаты отдельно
-  const systemNames = (systems || []).map((s: any) => s.system_name);
-  let routeMap = new Map();
-  if (systemNames.length) {
-    const { data: routeSystems } = await admin
-      .from('route_systems')
-      .select('id, system_name, x, y, z, status, progress')
-      .in('system_name', systemNames);
-    routeMap = new Map((routeSystems || []).map((r: any) => [r.system_name, r]));
+  if (systemsError) {
+    console.error('[project systems] Could not load systems:', systemsError);
+    return NextResponse.json({ error: systemsError.message }, { status: 500 });
   }
 
-  // Подтягиваем hubs отдельно
-  let hubMap = new Map();
-  if (systemNames.length) {
-    const { data: hubs } = await admin
-      .from('hubs')
-      .select('id, system_name, x, y, z, status, progress')
-      .in('system_name', systemNames);
-    hubMap = new Map((hubs || []).map((h: any) => [h.system_name, h]));
-  }
+  const requestedKeys = new Set((systems || []).map((system: any) => systemNameKey(system.system_name)).filter(Boolean));
+  const [{ data: routeRows, error: routeError }, { data: hubRows, error: hubError }, { data: cacheRows, error: cacheError }] = await Promise.all([
+    admin.from('route_systems').select('id, system_name, x, y, z, status, progress'),
+    admin.from('hubs').select('id, system_name, x, y, z, status, progress'),
+    admin.from('system_progress').select('system_name, progress, updated_at'),
+  ]);
+  if (routeError) console.warn('[project systems] Could not load route rows:', routeError.message);
+  if (hubError) console.warn('[project systems] Could not load hub rows:', hubError.message);
+  if (cacheError) console.warn('[project systems] Could not load Raven cache:', cacheError.message);
 
-  // Подтягиваем assignee имена отдельно
-  const assigneeIds = (systems || []).map((s: any) => s.assigned_to).filter(Boolean);
-  let assigneeMap = new Map();
-  if (assigneeIds.length) {
-    const { data: profiles } = await admin
+  const routeMap = new Map(
+    (routeRows || [])
+      .filter((routeSystem: any) => requestedKeys.has(systemNameKey(routeSystem.system_name)))
+      .map((routeSystem: any) => [systemNameKey(routeSystem.system_name), routeSystem]),
+  );
+  const hubMap = new Map(
+    (hubRows || [])
+      .filter((hub: any) => requestedKeys.has(systemNameKey(hub.system_name)))
+      .map((hub: any) => [systemNameKey(hub.system_name), hub]),
+  );
+  const progressBySystem = latestProgressBySystem(cacheError ? [] : cacheRows);
+
+  const assigneeIds = Array.from(new Set((systems || []).map((system: any) => system.assigned_to).filter(Boolean)));
+  let assigneeMap = new Map<string, string>();
+  if (assigneeIds.length > 0) {
+    const { data: profiles, error: profilesError } = await admin
       .from('profiles')
       .select('id, cmdr_name')
       .in('id', assigneeIds);
-    assigneeMap = new Map((profiles || []).map((p: any) => [p.id, p.cmdr_name]));
+    if (profilesError) console.warn('[project systems] Could not load assignees:', profilesError.message);
+    assigneeMap = new Map((profiles || []).map((profile: any) => [profile.id, profile.cmdr_name]));
   }
 
-  const enriched = (systems || []).map((s: any) => {
-    const rs = routeMap.get(s.system_name);
-    const h = hubMap.get(s.system_name);
+  const enriched = (systems || []).map((system: any) => {
+    const key = systemNameKey(system.system_name);
+    const routeSystem = routeMap.get(key);
+    const hub = hubMap.get(key);
+    const cached = progressBySystem.get(key);
+    const baseProgress = readableProgress(hub?.progress ?? routeSystem?.progress);
+    const progress = cached?.progress ?? baseProgress;
+    const baseStatus = hub?.status ?? routeSystem?.status ?? system.planned_status ?? 'planned';
+
     return {
-      ...s,
-      x: h?.x ?? rs?.x ?? s.x ?? null,
-      y: h?.y ?? rs?.y ?? s.y ?? null,
-      z: h?.z ?? rs?.z ?? s.z ?? null,
-      status: h?.status ?? rs?.status ?? s.planned_status ?? 'planned',
-      progress: h?.progress ?? rs?.progress ?? 0,
-      route_system: rs || null,
-      hub: h || null,
-      assignee: s.assigned_to ? { cmdr_name: assigneeMap.get(s.assigned_to) || 'Unknown' } : null,
+      ...system,
+      // Use the map table's canonical spelling/coordinates where available.
+      x: hub?.x ?? routeSystem?.x ?? system.x ?? null,
+      y: hub?.y ?? routeSystem?.y ?? system.y ?? null,
+      z: hub?.z ?? routeSystem?.z ?? system.z ?? null,
+      status: progress == null ? baseStatus : statusFromProgress(progress),
+      progress: progress ?? 0,
+      route_system: routeSystem || null,
+      hub: hub || null,
+      assignee: system.assigned_to ? { cmdr_name: assigneeMap.get(system.assigned_to) || 'Unknown' } : null,
     };
   });
 
-  return NextResponse.json({ systems: enriched });
+  return NextResponse.json(
+    { systems: enriched },
+    { headers: { 'Cache-Control': 'no-store, max-age=0' } },
+  );
 }
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {

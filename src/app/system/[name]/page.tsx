@@ -80,7 +80,7 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/systems/progress?name=${encodeURIComponent(systemName)}`)
+    fetch(`/api/systems/progress?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
       .then((response) => response.json())
       .then((data) => setSystem(data))
       .catch(() => setSystem(null))

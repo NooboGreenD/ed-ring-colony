@@ -1,4 +1,5 @@
 'use client';
+
 import React, { useMemo } from 'react';
 import { Text } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
@@ -12,30 +13,33 @@ interface RouteMarkersProps {
   selectedPointId?: number | null;
 }
 
+function smoothScale(mesh: THREE.Object3D | null, target: number, delta: number) {
+  if (!mesh) return;
+  // `delta * rate` can be greater than 1 while the heavy 3D scene is loading.
+  // Vector3.lerp then overshoots, which made one hovered marker balloon far
+  // beyond the intended size. Exponential damping is always in [0, 1].
+  const alpha = 1 - Math.exp(-8 * delta);
+  mesh.scale.lerp(new THREE.Vector3(target, target, target), alpha);
+}
+
 function RoutePoint({ point, isSelected, onClick }: { point: RouteSystem; isSelected: boolean; onClick: () => void }) {
   const meshRef = React.useRef<THREE.Mesh>(null);
   const glowRef = React.useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = React.useState(false);
-  const baseScale = 2.5;
+  const pos = eliteToThreeCentered(point);
+  const color = point.status === 'done' ? '#22c55e' : point.status === 'building' ? '#e67e22' : '#9ca3af';
 
   useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    const targetScale = isSelected ? 1.6 : hovered ? 1.3 : 1;
-    meshRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 6);
-    if (glowRef.current) {
-      glowRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 6);
-    }
+    const targetScale = isSelected ? 1.45 : hovered ? 1.2 : 1;
+    smoothScale(meshRef.current, targetScale, delta);
+    smoothScale(glowRef.current, targetScale, delta);
   });
-
-  // Цвет пересчитывается при изменении статуса — ключ тоже меняется, компонент пересоздаётся
-  const color = point.status === 'done' ? '#22c55e' : point.status === 'building' ? '#e67e22' : '#9ca3af';
-  const pos = eliteToThreeCentered(point);
 
   return (
     <group position={[pos.x, pos.y, pos.z]}>
-      {/* Свечение — не ловит события */}
+      {/* Visual-only meshes must not participate in raycasting. */}
       <mesh ref={glowRef} raycast={() => null}>
-        <sphereGeometry args={[5, 16, 16]} />
+        <sphereGeometry args={[4.5, 16, 16]} />
         <meshBasicMaterial
           color={color}
           transparent
@@ -44,27 +48,29 @@ function RoutePoint({ point, isSelected, onClick }: { point: RouteSystem; isSele
           depthWrite={false}
         />
       </mesh>
-      {/* Основная сфера */}
       <mesh
         ref={meshRef}
-        onClick={onClick}
-        onPointerOver={(e) => {
-          e.stopPropagation();
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        onPointerOver={(event) => {
+          event.stopPropagation();
           setHovered(true);
           document.body.style.cursor = 'pointer';
         }}
-        onPointerOut={(e) => {
-          e.stopPropagation();
+        onPointerOut={(event) => {
+          event.stopPropagation();
           setHovered(false);
           document.body.style.cursor = 'auto';
         }}
       >
-        <sphereGeometry args={[baseScale, 16, 16]} />
+        <sphereGeometry args={[2.5, 16, 16]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} transparent opacity={0.85} />
       </mesh>
       {isSelected && (
         <mesh raycast={() => null}>
-          <ringGeometry args={[5, 6, 32]} />
+          <ringGeometry args={[5, 5.8, 32]} />
           <meshBasicMaterial color="#e67e22" side={THREE.DoubleSide} transparent opacity={0.7} />
         </mesh>
       )}
@@ -84,16 +90,18 @@ function RoutePoint({ point, isSelected, onClick }: { point: RouteSystem; isSele
 }
 
 export function RouteMarkers({ points, onSelectPoint, selectedPointId }: RouteMarkersProps) {
-  const byId = useMemo(() => new Map(points.map((r) => [r.id, r])), [points]);
+  const byId = useMemo(() => new Map(points.map((point) => [point.id, point])), [points]);
 
   return (
     <group>
       {points.map((point) => (
         <RoutePoint
-          key={`${point.id}-${point.status}-${point.progress ?? 'null'}`}
+          // A stable key keeps a selected/hovered marker from being recreated
+          // during each 30-second data refresh.
+          key={point.id}
           point={point}
           isSelected={selectedPointId === point.id}
-          onClick={() => onSelectPoint?.(byId.get(point.id) || point)}
+          onClick={() => onSelectPoint?.(selectedPointId === point.id ? null : (byId.get(point.id) || point))}
         />
       ))}
     </group>
