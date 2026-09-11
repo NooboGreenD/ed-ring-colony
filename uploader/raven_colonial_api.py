@@ -40,6 +40,29 @@ class RavenColonialAPI:
             pass
         return None
 
+    def supply_fc(self, market_id: int, commodity: str, delta: int) -> dict:
+        """Обновить груз Fleet Carrier по модели SrvSurvey/Raven Colonial.
+
+        Positive delta — груз выгружен на FC, отрицательный — куплен/забран с FC.
+        Raven использует PATCH /api/fc/{marketId}/cargo и заголовок rcc-key.
+        """
+        if not self.api_key:
+            return {"ok": False, "error": "Raven Colonial API key is empty"}
+        try:
+            response = self._session.patch(
+                f"{self.base_url}/fc/{int(market_id)}/cargo",
+                headers=self._headers(),
+                json={commodity: int(delta)},
+                timeout=15,
+            )
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            return {"ok": response.ok, "data": payload, "error": response.text[:300] if not response.ok else None}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": str(exc)}
+
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
 

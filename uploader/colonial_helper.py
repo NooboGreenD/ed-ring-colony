@@ -1320,6 +1320,7 @@ class ColonialHelperApp:
             # форматирования не должна прерывать процесс загрузки доставок.
             self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
+        self._record_session_deliveries(all_deliveries)
         if not all_deliveries:
             self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
@@ -1358,17 +1359,8 @@ class ColonialHelperApp:
 
         if result["ok"]:
             inserted = result['inserted']
-            self._session_deliveries += inserted
-            tons = sum(d.get("amount", 0) for d in all_deliveries)
-            self._session_cargo_tons += tons
             route_deliveries = [d for d in all_deliveries if self.route.is_on_route(d["system_name"])]
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
-            self._session_route_deliveries += len(route_deliveries)
-            self._session_route_cargo_tons += route_tons
-            self._session_construction_cargo_tons += sum(
-                d.get("amount", 0) for d in all_deliveries
-                if d.get("source") == "colonisation_contribution"
-            )
             self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
             self.root.after(
                 0,
@@ -1488,6 +1480,7 @@ class ColonialHelperApp:
             try:
                 event = json.loads(line)
                 self._send_edsm_event(event)
+                self._send_carrier_event_to_raven(event)
             except (ValueError, TypeError):
                 continue
 
@@ -1784,6 +1777,35 @@ class ColonialHelperApp:
             self._auto_load_navroute()
             self.route.refresh_next_system_info()
 
+    def _record_session_deliveries(self, deliveries: list):
+        """Учесть событие в SESSION сразу после разбора, независимо от ответа API."""
+        if not deliveries:
+            return
+        self._session_deliveries += len(deliveries)
+        self._session_cargo_tons += sum(float(d.get("amount", 0) or 0) for d in deliveries)
+        route_deliveries = [d for d in deliveries if self.route.is_on_route(d.get("system_name", ""))]
+        self._session_route_deliveries += len(route_deliveries)
+        self._session_route_cargo_tons += sum(float(d.get("amount", 0) or 0) for d in route_deliveries)
+        self._session_construction_cargo_tons += sum(
+            float(d.get("amount", 0) or 0) for d in deliveries
+            if d.get("source") in ("colonisation_contribution", "carrier_delivery")
+        )
+        self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
+
+    def _send_carrier_event_to_raven(self, event: dict):
+        if not self.raven_api.is_connected or event.get("event") not in ("MarketSell", "MarketBuy"):
+            return
+        market_id = event.get("MarketID")
+        count = event.get("Count")
+        commodity = event.get("Type_Localised") or event.get("Type")
+        if not market_id or not count or not commodity:
+            return
+        # As in SrvSurvey: selling to the FC adds cargo, buying from it removes cargo.
+        delta = int(count) if event.get("event") == "MarketSell" else -int(count)
+        result = self.raven_api.supply_fc(int(market_id), str(commodity), delta)
+        if not result.get("ok"):
+            self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven FC cargo: {e}", "warn"))
+
     def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
         if not self.raven_api.is_connected:
             return
@@ -1867,6 +1889,7 @@ class ColonialHelperApp:
             try:
                 ev = json.loads(line)
                 self._send_edsm_event(ev)
+                self._send_carrier_event_to_raven(ev)
                 if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
                     sys_name = ev.get("StarSystem")
                     if sys_name:
@@ -1889,6 +1912,8 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
+        self._record_session_deliveries(deliveries)
+
         # Отдельно — аплоад доставок. Не теряем распарсенные строки, если
         # сервер временно занят: парсер уже пометил события как обработанные,
         # поэтому следующий тик сам по себе их больше не повторит.
@@ -1900,18 +1925,8 @@ class ColonialHelperApp:
             )
             if result["ok"]:
                 inserted = result['inserted']
-                self._session_deliveries += inserted
-                tons = sum(d.get("amount", 0) for d in upload_deliveries)
-                self._session_cargo_tons += tons
-                # Доставки только в системы маршрута
                 route_deliveries = [d for d in upload_deliveries if self.route.is_on_route(d["system_name"])]
                 route_tons = sum(d.get("amount", 0) for d in route_deliveries)
-                self._session_route_deliveries += len(route_deliveries)
-                self._session_route_cargo_tons += route_tons
-                self._session_construction_cargo_tons += sum(
-                    d.get("amount", 0) for d in upload_deliveries
-                    if d.get("source") == "colonisation_contribution"
-                )
                 # Сохраняем последнюю систему доставки для оверлея
                 if deliveries:
                     self._last_delivery_system = deliveries[-1]["system_name"]

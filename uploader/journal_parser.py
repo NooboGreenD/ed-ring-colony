@@ -145,6 +145,9 @@ def parse_journal(
                 current_system_address = int(sys_addr)
             if ev.get("StationType"):
                 last_depot_state["_station_type"] = ev.get("StationType")
+        elif event == "Market":
+            last_depot_state["_station_type"] = ev.get("StationType", "")
+            last_depot_state["_market_id"] = ev.get("MarketID", 0)
         elif event == "MarketSell":
             # Продажа груза на Fleet Carrier — это фактическая отгрузка.
             # Раньше MarketSell всегда подавлял следующий Cargo-снимок и
@@ -231,7 +234,11 @@ def parse_journal(
             # Обновляем snapshot для отображения прогресса, НО НЕ создаём доставки.
             # ProvidedAmount включает груз ВСЕХ игроков — diff считал бы чужой груз.
             if current_system:
-                new_depot_state = {}
+                new_depot_state = {
+                    key: last_depot_state[key]
+                    for key in ("_station_type", "_market_id")
+                    if key in last_depot_state
+                }
                 resources = ev.get("ResourcesRequired", [])
                 for res in resources:
                     name = res.get("Name_Localised") or _normalize_name(res.get("Name", ""))
