@@ -182,7 +182,7 @@ export function GalaxyScene({
       <NebulaClouds />
       <GalaxyNebulaSprites />
       <RingZone />
-      <LandmarkMarkers />
+      <LandmarkMarkers onSelect={onSelectRouteSystem} />
       <GalacticRegions />
       <GalaxyRegionMarkers />
       <GalaxyRegionBoundaries />
