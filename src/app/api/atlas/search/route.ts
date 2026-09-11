@@ -220,6 +220,10 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
       }
     }
 
+    if (starTypes.length > 0) {
+      await supabaseAdmin.from('atlas_searches').update({ total_found: candidates.length }).eq('id', sessionId);
+    }
+
     if (planetTypes.length > 0) {
       for (const worldType of planetTypes) {
         const mapping = WORLD_TYPE_TO_SPANSH_FILTER[worldType];

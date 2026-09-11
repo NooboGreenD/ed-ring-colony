@@ -58,6 +58,8 @@ function AtlasPageInner() {
   const [selectedCandidate, setSelectedCandidate] = useState<AtlasCandidate | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [isSearching, setIsSearching] = useState(false);
+  const [candidateSearchProgress, setCandidateSearchProgress] = useState({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'idle' });
+  const [candidateSearchStartedAt, setCandidateSearchStartedAt] = useState<number | null>(null);
   const initialMarketSystem = searchParams.get('system') || '';
   const requestedTab = searchParams.get('tab');
   const [activeTab, setActiveTab] = useState<AtlasTab>(
@@ -86,6 +88,16 @@ function AtlasPageInner() {
       })
       .catch(() => setProjectsLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!isSearching || !candidateSearchStartedAt) return;
+    const timer = window.setInterval(() => {
+      const elapsedMs = Date.now() - candidateSearchStartedAt;
+      const phase = elapsedMs < 1500 ? 'Проверка параметров' : elapsedMs < 8000 ? 'Поиск в Spansh' : elapsedMs < 18000 ? 'Сверка координат EDSM' : elapsedMs < 30000 ? 'Фильтрация кандидатов' : 'Сохранение результатов';
+      setCandidateSearchProgress((current) => ({ ...current, elapsedMs, phase, status: 'running' }));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [isSearching, candidateSearchStartedAt]);
 
   /* ── focus camera helpers ── */
   const focusCandidateOnMap = useCallback((candidate: AtlasCandidate | null) => {
@@ -188,6 +200,8 @@ function AtlasPageInner() {
       setActiveFilter('all');
       setSelectedCandidate(null);
       setIsSearching(true);
+      setCandidateSearchStartedAt(Date.now());
+      setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'pending' });
       try {
         const res = await fetch('/api/atlas/search', {
           method: 'POST',
@@ -203,20 +217,27 @@ function AtlasPageInner() {
         const poll = setInterval(async () => {
           const check = await fetch(`/api/atlas/search?session_id=${json.session_id}`);
           const data = await check.json();
+          setCandidateSearchProgress((current) => ({ ...current, found: Number(data.session?.total_found || 0), status: data.session?.status || current.status }));
           if (data.session.status === 'completed') {
             clearInterval(poll);
             setCandidates(data.candidates || []);
             setIsSearching(false);
+            setCandidateSearchStartedAt(null);
+            setCandidateSearchProgress((current) => ({ ...current, found: Number(data.total_candidates || current.found), status: 'completed', phase: 'Готово' }));
             toast(`Найдено ${data.total_candidates} объектов`, 'success');
           } else if (data.session.status === 'failed') {
             clearInterval(poll);
             toast(data.session.error_message || 'Search failed', 'error');
             setIsSearching(false);
+            setCandidateSearchStartedAt(null);
+            setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
           }
         }, 2000);
       } catch (err: any) {
         toast(err.message, 'error');
         setIsSearching(false);
+        setCandidateSearchStartedAt(null);
+        setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
       }
     },
     [setCandidates]
@@ -323,7 +344,7 @@ function AtlasPageInner() {
           {/* Tab: Search */}
           {activeTab === 'search' && (
             <>
-              <AtlasSearchPanel onSearch={handleSearch} loading={isSearching} />
+              <AtlasSearchPanel onSearch={handleSearch} loading={isSearching} progress={candidateSearchProgress} />
               {error && <div className="atlas-error">{error}</div>}
               <AtlasSearchHistory onSelectSession={handleSelectSession} />
               <AtlasFavorites onSelect={(f) => focusCandidateOnMap(f as any)} />
