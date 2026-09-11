@@ -319,7 +319,7 @@ class OverlayWindow:
         defaults = {
             "route": (280, 160),
             "status": (280, 220),
-            "ship": (360, 540),
+            "ship": (340, 420),
             "cargo": (300, 340),
             "session": (320, 300),
         }
@@ -548,7 +548,9 @@ class StatusOverlay(OverlayWindow):
 # ============================================================
 class ShipOverlay(OverlayWindow):
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
-        h = max(settings.get("ship_height", 540), 540)
+        # The module list has its own scrollbar, so the whole ship overlay
+        # does not need to occupy half of a 1080p screen.
+        h = max(settings.get("ship_height", 420), 300)
         super().__init__(
             master, "SHIP",
             settings.get("ship_x", 50), settings.get("ship_y", 440),
@@ -1474,7 +1476,7 @@ DEFAULT_SETTINGS = {
     "ship_x": 50,
     "ship_y": 440,
     "ship_width": 360,
-    "ship_height": 540,
+    "ship_height": 420,
     "ship_locked": False,
     "ship_anchor": "custom",
     "cargo_x": 50,

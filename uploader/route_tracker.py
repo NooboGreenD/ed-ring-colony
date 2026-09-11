@@ -17,13 +17,27 @@ class RouteTracker:
         self._last_info_at = 0.0
 
     def load_from_navroute(self, data: dict):
-        """Загрузить из NavRoute.json."""
-        route = data.get("Route", [])
-        self.systems = [
-            {"index": i + 1, "name": r.get("StarSystem", ""), "status": "pending", "visited_at": None}
-            for i, r in enumerate(route)
-            if r.get("StarSystem")
-        ]
+        """Загрузить из NavRoute.json, сохранив уже посещённые системы."""
+        route = data.get("Route") or data.get("NavRoute") or []
+        previous = {s["name"].casefold(): s for s in self.systems}
+        loaded = []
+        seen = set()
+        for item in route:
+            name = str(item.get("StarSystem", "")).strip()
+            key = name.casefold()
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            old = previous.get(key, {})
+            loaded.append({
+                "index": len(loaded) + 1,
+                "name": name,
+                "status": old.get("status", "pending"),
+                "visited_at": old.get("visited_at"),
+                "system_address": item.get("SystemAddress", 0),
+                "star_pos": item.get("StarPos"),
+            })
+        self.systems = loaded
 
     def load_from_csv(self, text: str):
         """Загрузить из CSV."""

@@ -129,6 +129,7 @@ class ColonialHelperApp:
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
         self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
+        self._navroute_mtime = 0.0
 
         # Конфиг
         self.config = {}
@@ -689,6 +690,10 @@ class ColonialHelperApp:
         ).pack(anchor=W)
 
     def _on_toggle_overlay(self):
+        # NavRoute.json is produced by the game independently of Watcher.
+        # Load it when the HUD is enabled as well, so ROUTE works on its own.
+        if not self.overlay_manager.enabled:
+            self._auto_load_navroute()
         self.overlay_manager.toggle(self._get_overlay_data)
         if self.overlay_manager.enabled:
             self.overlay_toggle_btn.config(text="⏹ Выключить оверлей", bootstyle="danger-outline")
@@ -1491,10 +1496,14 @@ class ColonialHelperApp:
         for path in candidates:
             try:
                 if path.exists():
+                    mtime = path.stat().st_mtime
+                    if mtime == self._navroute_mtime:
+                        return bool(self.route.systems)
                     with open(path, "r", encoding="utf-8-sig") as fh:
                         payload = json.load(fh)
-                    route = payload.get("Route", []) if isinstance(payload, dict) else []
+                    route = (payload.get("Route") or payload.get("NavRoute") or []) if isinstance(payload, dict) else []
                     if route:
+                        self._navroute_mtime = mtime
                         self.route.load_from_navroute(payload)
                         self.root.after(0, self._refresh_route_tree)
                         self.route.refresh_next_system_info(force=True)
@@ -1614,6 +1623,10 @@ class ColonialHelperApp:
                     power = m.get("Power")
                     if power is not None:
                         st.modules[slot].power = float(power)
+                    if m.get("On") is not None:
+                        st.modules[slot].on = bool(m.get("On"))
+                    if m.get("Engineering") is not None:
+                        st.modules[slot].engineered = bool(m.get("Engineering"))
                     priority = m.get("Priority")
                     if priority is not None:
                         st.modules[slot].priority = int(priority)
@@ -1754,6 +1767,9 @@ class ColonialHelperApp:
 
             # 2. Потом читаем JSON-файлы — НЕ перезаписываем health модулей
             self._load_current_state_files()
+            # Frontier перезаписывает NavRoute.json при построении нового
+            # маршрута. Подхватываем изменение без ручного импорта.
+            self._auto_load_navroute()
             self.route.refresh_next_system_info()
 
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
