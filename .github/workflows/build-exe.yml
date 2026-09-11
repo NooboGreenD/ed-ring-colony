@@ -2,8 +2,16 @@ name: Build Colonial Helper EXE
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - arena/01a09030-ed-ring-colony
   workflow_dispatch:
+    inputs:
+      upload_release:
+        description: "Upload the EXE to the latest Colonial Helper release"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build-windows:
@@ -24,6 +32,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r uploader/requirements.txt
 
+      - name: Validate uploader sources
+        run: |
+          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py
+
       - name: Build EXE with PyInstaller
         run: |
           cd uploader
@@ -36,7 +48,7 @@ jobs:
           path: uploader/dist/ColonialHelper.exe
 
       - name: Upload to Release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.upload_release == true)
         uses: softprops/action-gh-release@v1
         with:
           tag_name: colonial-helper-latest
