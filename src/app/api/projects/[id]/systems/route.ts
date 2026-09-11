@@ -13,14 +13,23 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
   // Keep project-system metadata independent from PostgREST relationships;
   // those relations are optional in older deployments.
-  const { data: systems, error: systemsError } = await admin
-    .from('project_systems')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('sort_order');
-  if (systemsError) {
-    console.error('[project systems] Could not load systems:', systemsError);
-    return NextResponse.json({ error: systemsError.message }, { status: 500 });
+  // PostgREST commonly caps one response at 1,000 rows. Page explicitly so
+  // large squadron projects can display up to 15,000 systems.
+  const systems: any[] = [];
+  const PAGE_SIZE = 1000;
+  for (let offset = 0; offset < 15_000; offset += PAGE_SIZE) {
+    const { data: page, error: systemsError } = await admin
+      .from('project_systems')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('sort_order')
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (systemsError) {
+      console.error('[project systems] Could not load systems:', systemsError);
+      return NextResponse.json({ error: systemsError.message }, { status: 500 });
+    }
+    systems.push(...(page || []));
+    if (!page || page.length < PAGE_SIZE) break;
   }
 
   const requestedKeys = new Set((systems || []).map((system: any) => systemNameKey(system.system_name)).filter(Boolean));
