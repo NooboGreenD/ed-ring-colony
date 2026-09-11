@@ -92,16 +92,35 @@ export async function POST(request: Request) {
       );
     }
 
-    const inSphere = rawSystems
-      .filter((sys) => sys.coords)
-      .map((sys) => ({
-        name: sys.name,
-        distance: sys.distance || 0,
-        x: sys.coords!.x,
-        y: sys.coords!.y,
-        z: sys.coords!.z,
-      }))
-      .sort((a, b) => a.distance - b.distance);
+    // Keep only real, positioned systems and collapse EDSM aliases before a
+    // job is stored. Otherwise a duplicate coordinate can later become two
+    // interactive markers at one point in the galaxy map.
+    const systemsByName = new Map<string, { name: string; distance: number; x: number; y: number; z: number }>();
+    for (const rawSystem of rawSystems) {
+      const name = String(rawSystem.name || '').trim().replace(/\s+/g, ' ');
+      const x = Number(rawSystem.coords?.x);
+      const y = Number(rawSystem.coords?.y);
+      const z = Number(rawSystem.coords?.z);
+      if (!name || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+      const positioned = {
+        name,
+        distance: Number.isFinite(Number(rawSystem.distance)) ? Number(rawSystem.distance) : 0,
+        x,
+        y,
+        z,
+      };
+      const key = name.toLowerCase();
+      const existing = systemsByName.get(key);
+      if (!existing || positioned.distance < existing.distance) systemsByName.set(key, positioned);
+    }
+    const inSphere = Array.from(systemsByName.values()).sort((left, right) => left.distance - right.distance);
+
+    if (inSphere.length === 0) {
+      return NextResponse.json(
+        { error: `No positioned systems found near ${ref_system} within ${radius} ly` },
+        { status: 404 },
+      );
+    }
 
     const svc = createServiceClient();
 

@@ -2,21 +2,34 @@
 
 import { useState, useCallback } from 'react';
 import { IconJournal, IconCheck, IconError, IconBuilding } from '@/components/Icons';
-import { getAccessToken } from '@/lib/supabaseClient';
+import { authFetch } from '@/lib/supabaseClient';
 
 interface ParsedDepot {
   timestamp: string;
   systemName: string;
+  marketId: string | null;
   constructionName: string;
+  constructionId: string | null;
   constructionProgress: number;
   resourcesRequired: { nameLocalised: string; requiredAmount: number; providedAmount: number }[];
+}
+
+interface ParsedContribution {
+  timestamp: string;
+  systemName: string;
+  marketId: string | null;
+  commodity: string;
+  commodityLocalised: string;
+  amount: number;
+  total: number;
 }
 
 interface ParseResult {
   filename: string;
   cmdrName: string | null;
   depotEvents: ParsedDepot[];
-  stats: { eventsParsed: number; depotEventsFound: number; fsdJumps: number };
+  contributionEvents: ParsedContribution[];
+  stats: { eventsParsed: number; depotEventsFound: number; contributionEventsFound: number; fsdJumps: number };
 }
 
 export default function JournalPage() {
@@ -25,6 +38,7 @@ export default function JournalPage() {
   const [parseProgress, setParseProgress] = useState(0);
   const [result, setResult] = useState<ParseResult | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [imported, setImported] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,10 +74,8 @@ export default function JournalPage() {
     formData.append('file', file);
 
     try {
-      const token = getAccessToken();
-      const res = await fetch('/api/journal/parse', {
+      const res = await authFetch('/api/journal/parse', {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
 
@@ -90,29 +102,48 @@ export default function JournalPage() {
     setError(null);
 
     try {
-      const token = getAccessToken();
-      const res = await fetch('/api/journal/import', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          filename: result.filename,
-          depotEvents: result.depotEvents,
-          contributionEvents: [],
-        }),
-      });
+      // Construction-depot logs can contain thousands of status snapshots.
+      // Send small incremental chunks instead of one giant JSON body/INSERT so
+      // a single slow database statement cannot cancel the entire import.
+      const BATCH_SIZE = 100;
+      const batchCount = Math.max(
+        1,
+        Math.ceil(result.depotEvents.length / BATCH_SIZE),
+        Math.ceil(result.contributionEvents.length / BATCH_SIZE),
+      );
+      let importId: number | null = null;
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Import failed');
+      for (let batchIndex = 0; batchIndex < batchCount; batchIndex += 1) {
+        setImportProgress({ current: batchIndex + 1, total: batchCount });
+        const res = await authFetch('/api/journal/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            filename: result.filename,
+            importId,
+            totalEvents: result.depotEvents.length + result.contributionEvents.length,
+            finalize: batchIndex === batchCount - 1,
+            depotEvents: result.depotEvents.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE),
+            contributionEvents: result.contributionEvents.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE),
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Import failed');
+        }
+        if (!importId && typeof data.importId === 'number') {
+          importId = data.importId;
+        }
+        if (!importId) {
+          throw new Error('Сервер не вернул идентификатор импорта');
+        }
       }
 
       setImported(true);
     } catch (err: any) {
-      setError(err.message);
+      setError(err instanceof Error ? err.message : 'Import failed');
     } finally {
+      setImportProgress(null);
       setImporting(false);
     }
   }
@@ -153,6 +184,20 @@ export default function JournalPage() {
         </div>
       )}
 
+      {importProgress && (
+        <div style={{ margin: '24px 0' }}>
+          <div className="journal-progress-bar">
+            <div
+              className="journal-progress-fill"
+              style={{ width: `${Math.round((importProgress.current / importProgress.total) * 100)}%` }}
+            />
+          </div>
+          <p style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af', marginTop: 8, letterSpacing: '2px', textTransform: 'uppercase' }}>
+            Импорт пакета {importProgress.current} из {importProgress.total}...
+          </p>
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div className="journal-error-box" style={{ margin: '24px 0' }}>
@@ -173,6 +218,10 @@ export default function JournalPage() {
             <div className="lbl">Строек</div>
           </div>
           <div className="stat-box">
+            <div className="num">{result.stats.contributionEventsFound}</div>
+            <div className="lbl">Взносов</div>
+          </div>
+          <div className="stat-box">
             <div className="num">{result.stats.fsdJumps}</div>
             <div className="lbl">Прыжков</div>
           </div>
@@ -186,7 +235,7 @@ export default function JournalPage() {
       )}
 
       {/* Import button */}
-      {result && result.depotEvents.length > 0 && !imported && (
+      {result && (result.depotEvents.length > 0 || result.contributionEvents.length > 0) && !imported && (
         <button className="btn btn-orange" onClick={handleImport} disabled={importing} style={{ marginBottom: 24 }}>
           {importing ? 'Импорт...' : 'Импортировать в проект'}
         </button>
@@ -246,6 +295,38 @@ export default function JournalPage() {
                     </td>
                     <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
                       {new Date(ev.timestamp).toLocaleString('ru-RU')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {result && result.contributionEvents.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 16, fontWeight: 600, letterSpacing: '2px', textTransform: 'uppercase', color: '#60a5fa', margin: '24px 0 12px' }}>
+            Взносы в строительство
+          </h3>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Система</th>
+                  <th>Товар</th>
+                  <th>Сумма в журнале</th>
+                  <th>Дата</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.contributionEvents.map((event, index) => (
+                  <tr key={`${event.timestamp}-${event.marketId ?? ''}-${event.commodity}-${index}`}>
+                    <td>{event.systemName || '—'}</td>
+                    <td>{event.commodityLocalised || event.commodity}</td>
+                    <td style={{ fontFamily: 'ui-monospace', color: '#60a5fa' }}>{event.amount.toLocaleString('ru-RU')} т</td>
+                    <td style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af' }}>
+                      {event.timestamp ? new Date(event.timestamp).toLocaleString('ru-RU') : '—'}
                     </td>
                   </tr>
                 ))}

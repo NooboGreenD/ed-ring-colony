@@ -1,4 +1,5 @@
 'use client';
+
 import React, { useMemo } from 'react';
 import { Text } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
@@ -16,24 +17,23 @@ function HubSphere({ hub, isSelected, onClick }: { hub: Hub; isSelected: boolean
   const meshRef = React.useRef<THREE.Mesh>(null);
   const glowRef = React.useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = React.useState(false);
+  const pos = eliteToThreeCentered(hub);
+  const color = hub.status === 'done' ? '#22c55e' : hub.status === 'building' ? '#e67e22' : '#3b82f6';
 
   useFrame((_, delta) => {
-    if (!meshRef.current) return;
-    const targetScale = isSelected ? 1.6 : hovered ? 1.3 : 1;
-    meshRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 6);
-    if (glowRef.current) {
-      glowRef.current.scale.lerp(new THREE.Vector3(targetScale, targetScale, targetScale), delta * 6);
-    }
+    // The previous `delta * 6` lerp factor could exceed 1 on a slow frame and
+    // overshoot dramatically. This damping factor never overshoots.
+    const alpha = 1 - Math.exp(-8 * delta);
+    const target = isSelected ? 1.45 : hovered ? 1.2 : 1;
+    const targetScale = new THREE.Vector3(target, target, target);
+    meshRef.current?.scale.lerp(targetScale, alpha);
+    glowRef.current?.scale.lerp(targetScale, alpha);
   });
-
-  const color = hub.status === 'done' ? '#22c55e' : hub.status === 'building' ? '#e67e22' : '#3b82f6';
-  const pos = eliteToThreeCentered(hub);
 
   return (
     <group position={[pos.x, pos.y, pos.z]}>
-      {/* Свечение (ореол) */}
-      <mesh ref={glowRef}>
-        <sphereGeometry args={[isSelected ? 8 : 6, 16, 16]} />
+      <mesh ref={glowRef} raycast={() => null}>
+        <sphereGeometry args={[5.5, 16, 16]} />
         <meshBasicMaterial
           color={color}
           transparent
@@ -42,18 +42,41 @@ function HubSphere({ hub, isSelected, onClick }: { hub: Hub; isSelected: boolean
           depthWrite={false}
         />
       </mesh>
-      {/* Основная сфера */}
-      <mesh ref={meshRef} onClick={onClick} onPointerOver={() => setHovered(true)} onPointerOut={() => setHovered(false)}>
-        <sphereGeometry args={[isSelected ? 5 : 3, 16, 16]} />
+      <mesh
+        ref={meshRef}
+        onClick={(event) => {
+          event.stopPropagation();
+          onClick();
+        }}
+        onPointerOver={(event) => {
+          event.stopPropagation();
+          setHovered(true);
+          document.body.style.cursor = 'pointer';
+        }}
+        onPointerOut={(event) => {
+          event.stopPropagation();
+          setHovered(false);
+          document.body.style.cursor = 'auto';
+        }}
+      >
+        <sphereGeometry args={[3, 16, 16]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.6} transparent opacity={0.9} />
       </mesh>
       {isSelected && (
-        <mesh>
-          <ringGeometry args={[6, 7, 32]} />
+        <mesh raycast={() => null}>
+          <ringGeometry args={[5.5, 6.4, 32]} />
           <meshBasicMaterial color="#e67e22" side={THREE.DoubleSide} transparent opacity={0.8} />
         </mesh>
       )}
-      <Text position={[0, 6, 0]} fontSize={3} color="#eeeeee" anchorX="center" anchorY="bottom" visible={hovered || isSelected}>
+      <Text
+        position={[0, 6, 0]}
+        fontSize={3}
+        color="#eeeeee"
+        anchorX="center"
+        anchorY="bottom"
+        visible={hovered || isSelected}
+        raycast={() => null}
+      >
         {hub.name}
       </Text>
     </group>
@@ -61,16 +84,16 @@ function HubSphere({ hub, isSelected, onClick }: { hub: Hub; isSelected: boolean
 }
 
 export function HubMarkers({ hubs, onSelectHub, selectedHubId }: HubMarkersProps) {
-  const byId = useMemo(() => new Map(hubs.map((h) => [h.id, h])), [hubs]);
+  const byId = useMemo(() => new Map(hubs.map((hub) => [hub.id, hub])), [hubs]);
 
   return (
     <group>
       {hubs.map((hub) => (
         <HubSphere
-          key={`${hub.id}-${hub.status}-${hub.progress ?? 'null'}`}
+          key={hub.id}
           hub={hub}
           isSelected={selectedHubId === hub.id}
-          onClick={() => onSelectHub?.(byId.get(hub.id) || hub)}
+          onClick={() => onSelectHub?.(selectedHubId === hub.id ? null : (byId.get(hub.id) || hub))}
         />
       ))}
     </group>
@@ -93,9 +116,9 @@ export function HubTooltip({ hub }: { hub: Hub }) {
       {hub.goals && hub.goals.length > 0 && (
         <div style={{ marginTop: 8, borderTop: '1px solid #3a3d40', paddingTop: 6 }}>
           <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 4 }}>Цели:</div>
-          {hub.goals.map((g: any) => (
-            <div key={g.id} style={{ fontSize: 12, color: '#eeeeee', marginBottom: 2 }}>
-              {g.commodity}: {g.current_amount}/{g.target_amount} {g.unit}
+          {hub.goals.map((goal: any) => (
+            <div key={goal.id} style={{ fontSize: 12, color: '#eeeeee', marginBottom: 2 }}>
+              {goal.commodity}: {goal.current_amount}/{goal.target_amount} {goal.unit}
             </div>
           ))}
         </div>

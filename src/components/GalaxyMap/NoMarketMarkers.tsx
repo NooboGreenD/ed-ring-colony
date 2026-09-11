@@ -41,7 +41,7 @@ export function NoMarketMarkers({ systems }: NoMarketMarkersProps) {
       {systems.map((sys) => {
         const pos = eliteToThreeCentered(sys);
         return (
-          <sprite key={sys.system_name} position={[pos.x, pos.y, pos.z]} scale={[8, 8, 1]}>
+          <sprite key={sys.system_name} position={[pos.x, pos.y, pos.z]} scale={[8, 8, 1]} raycast={() => null}>
             <spriteMaterial map={texture} color="#8b0000" transparent opacity={0.7} depthWrite={false} />
           </sprite>
         );

@@ -1,50 +1,61 @@
 import { NextResponse } from 'next/server'
 import { createClient, authFromRequest } from '@/lib/supabaseServer'
 import { NAME_CHANGE_COOLDOWN_DAYS } from '@/lib/squadronConstants'
+import { getSquadronMembership, loadSquadronMembers, loadSquadronProjects } from '@/lib/squadronData'
 
 export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = Number.parseInt(params.id, 10)
+    if (!Number.isSafeInteger(squadronId) || squadronId <= 0) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
     const supabase = await createClient()
 
-    // Проект
     const { data: squadron, error: sErr } = await supabase
       .from('squadrons')
       .select('*')
       .eq('id', squadronId)
-      .single()
+      .maybeSingle()
     if (sErr || !squadron) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
-    // Участники с профилями и званиями
-    const { data: members } = await supabase
-      .from('squadron_member_detail')
-      .select('*')
-      .eq('squadron_id', squadronId)
-      .order('rank_order', { ascending: true })
-
-    // Звания
-    const { data: ranks } = await supabase
-      .from('squadron_ranks')
-      .select('*')
-      .eq('squadron_id', squadronId)
-      .order('sort_order', { ascending: true })
-
-    // Проекты эскадрильи
-    const { data: projects } = await supabase
-      .from('project_summary')
-      .select('*')
-      .eq('squadron_id', squadronId)
-      .order('created_at', { ascending: false })
+    // Associated collections are enrichments of the public squadron record.
+    // Do not blank the entire detail page while an older installation is
+    // missing a related table/view or a supplemental query is temporarily slow.
+    const [membersResult, ranksResult, projectsResult] = await Promise.allSettled([
+      loadSquadronMembers(supabase, squadronId),
+      supabase
+        .from('squadron_ranks')
+        .select('*')
+        .eq('squadron_id', squadronId)
+        .order('sort_order', { ascending: true }),
+      loadSquadronProjects(supabase, squadronId),
+    ])
+    if (membersResult.status === 'rejected') {
+      console.warn('[squadrons/:id GET] Could not load members:', membersResult.reason)
+    }
+    if (projectsResult.status === 'rejected') {
+      console.warn('[squadrons/:id GET] Could not load projects:', projectsResult.reason)
+    }
+    const ranks = ranksResult.status === 'fulfilled' && !ranksResult.value.error
+      ? ranksResult.value.data || []
+      : []
+    if (ranksResult.status === 'rejected') {
+      console.warn('[squadrons/:id GET] Could not load ranks:', ranksResult.reason)
+    } else if (ranksResult.value.error) {
+      console.warn('[squadrons/:id GET] Could not load ranks:', ranksResult.value.error.message)
+    }
 
     return NextResponse.json({
       squadron,
-      members: members || [],
-      ranks: ranks || [],
-      projects: projects || [],
+      members: membersResult.status === 'fulfilled' ? membersResult.value : [],
+      ranks,
+      projects: projectsResult.status === 'fulfilled' ? projectsResult.value : [],
     })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not load squadron'
+    console.error('[squadrons/:id GET]', message)
+    return NextResponse.json({ error: 'Could not load squadron' }, { status: 500 })
   }
 }
 
@@ -55,13 +66,9 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-    // Проверка прав: can_edit_squadron
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_edit_squadron')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    // Read rank permissions from the base tables so editing keeps working if
+    // the optional squadron_member_detail view is absent.
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_edit_squadron) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

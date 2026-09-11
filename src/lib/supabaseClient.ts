@@ -3,6 +3,7 @@ import { createBrowserClient } from "@supabase/ssr";
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
+// One browser client owns the Supabase SSR cookie session for the whole app.
 export const supabase = createBrowserClient(url, key);
 
 export function createSupabaseClient() {
@@ -14,30 +15,57 @@ export function getAuthenticatedSupabase() {
 }
 
 export async function getAccessToken(): Promise<string | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.access_token || null;
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  return session?.access_token ?? null;
 }
 
-export function getAuthHeaders(): Record<string, string> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem('sb-sgukfplhxdhmkqponwft-auth-token');
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    const token = Array.isArray(parsed) ? parsed[0] : parsed?.access_token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
-    return {};
-  }
+/**
+ * Resolve the active user through the Supabase session instead of reading a
+ * project-specific storage key. Falling back to the session user keeps the UI
+ * usable during a transient getUser network failure, while a missing session
+ * is always treated as signed out.
+ */
+export async function getCurrentUser() {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) return null;
+
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+
+  return user ?? (error ? session.user : null);
 }
 
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/**
+ * Fetch an app endpoint with the current Supabase access token. Cookie
+ * credentials are retained as a fallback for routes rendered around an SSR
+ * session, but callers no longer depend on a hard-coded localStorage key.
+ */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const authHeaders = getAuthHeaders();
-  const headers = new Headers();
-  if (init?.headers) {
-    const existing = new Headers(init.headers);
-    existing.forEach((v, k) => headers.set(k, v));
+  const headers = new Headers(init?.headers);
+  const token = await getAccessToken();
+
+  // Allow an explicit caller-provided Authorization header (for example, an
+  // integration token) to take precedence.
+  if (token && !headers.has("authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
-  Object.entries(authHeaders).forEach(([k, v]) => headers.set(k, v));
-  return fetch(input, { ...init, headers, credentials: 'include' });
+
+  return fetch(input, {
+    ...init,
+    headers,
+    credentials: init?.credentials ?? "include",
+  });
 }

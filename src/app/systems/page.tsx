@@ -4,17 +4,24 @@ import { supabase } from '@/lib/supabaseClient';
 import { Toaster, toast } from '@/components/ui/Toaster';
 import { IconRocket, IconRingPlanet, IconGlobe, IconChevronUp, IconChevronDown, IconSearch, IconCheck, IconMapPin, IconSun, IconLock, IconExternalLink } from '@/components/Icons';
 
-type Resource = { name: string; key?: string; required: number; provided: number; remaining?: number };
+type Resource = {
+  name: string;
+  key?: string;
+  required?: number | null;
+  provided?: number | null;
+  remaining?: number;
+  exact?: boolean;
+};
 type Project = {
   buildId: string;
   buildName: string;
   buildType: string | null;
   complete: boolean;
   progress: number;
-  sumNeed: number;
-  sumTotal: number;
-  architectName: string | null;
   bodyName: string | null;
+  totalRequired?: number | null;
+  totalProvided?: number | null;
+  totalRemaining?: number;
   resources: Resource[];
 };
 type DeliveryStat = { system_name: string; total_delivered: number; unique_cmdrs: number; top_commodity: string };
@@ -26,11 +33,21 @@ type ProgressRow = {
   updated_at: string | null;
   found?: boolean;
   error?: string;
-  data: {
+  siteName?: string | null;
+  architectName?: string | null;
+  projects?: Project[];
+  resources?: Resource[];
+  totalRequired?: number | null;
+  totalProvided?: number | null;
+  totalRemaining?: number;
+  data?: {
     siteName?: string | null;
     architectName?: string | null;
     projects?: Project[];
     resources?: Resource[];
+    totalRequired?: number | null;
+    totalProvided?: number | null;
+    totalRemaining?: number;
   } | null;
 };
 
@@ -458,13 +475,33 @@ export default function SystemsPage() {
       .finally(() => setLoading(false));
   }, [current, listRows]);
 
-  const resources: Resource[] = Array.isArray(info?.data?.resources) ? info!.data!.resources! : [];
-  const projects: Project[] = Array.isArray(info?.data?.projects) ? info!.data!.projects! : [];
-  const pct = (r: Resource) => {
-    if (typeof r.remaining === 'number' && r.required > 0) {
-      return Math.min(100, Math.round(((r.required - r.remaining) / r.required) * 100));
-    }
-    return r.required > 0 ? Math.min(100, Math.round((r.provided / r.required) * 100)) : 0;
+  // A direct system lookup returns the Raven payload at the top level, while
+  // list rows carry the cached payload under `data`. Support both shapes.
+  const resources: Resource[] = Array.isArray(info?.resources)
+    ? info.resources
+    : Array.isArray(info?.data?.resources)
+      ? info.data.resources
+      : [];
+  const projects: Project[] = Array.isArray(info?.projects)
+    ? info.projects
+    : Array.isArray(info?.data?.projects)
+      ? info.data.projects
+      : [];
+  const totalRequired = info?.totalRequired ?? info?.data?.totalRequired ?? null;
+  const totalProvided = info?.totalProvided ?? info?.data?.totalProvided ?? null;
+  const totalRemaining = info?.totalRemaining ?? info?.data?.totalRemaining ?? 0;
+  const systemProgress = typeof info?.progress === 'number' && Number.isFinite(info.progress)
+    ? Math.min(100, Math.max(0, info.progress))
+    : null;
+  const siteName = info?.siteName ?? info?.data?.siteName ?? null;
+  const architectName = info?.architectName ?? info?.data?.architectName ?? null;
+  const hasExactAmounts = (resource: Resource): resource is Resource & { required: number; provided: number } =>
+    resource.exact === true
+    && typeof resource.required === 'number'
+    && typeof resource.provided === 'number';
+  const pct = (resource: Resource): number | null => {
+    if (!hasExactAmounts(resource) || resource.required <= 0) return null;
+    return Math.min(100, Math.round((resource.provided / resource.required) * 100));
   };
 
   const bySystem = useMemo(() => {
@@ -1151,30 +1188,36 @@ export default function SystemsPage() {
         <div>
           <h2>
             {info.system_name}
-            {info.data?.siteName ? ' — ' + info.data.siteName : ''}
+            {siteName ? ' — ' + siteName : ''}
           </h2>
-          {info.data?.architectName && (
-            <p style={{ color: '#9ca3af' }}>Архитектор: {info.data.architectName}</p>
+          {architectName && (
+            <p style={{ color: '#9ca3af' }}>Архитектор: {architectName}</p>
           )}
           {info.error && <p style={{ color: '#e74c3c' }}>{info.error}</p>}
           <div style={{ background: '#323538', borderRadius: 8, height: 22 }}>
             <div
               style={{
-                width: (info.progress ?? 0) + '%',
-                background: '#22c55e',
+                width: systemProgress == null ? '100%' : systemProgress + '%',
+                background: systemProgress == null ? '#3a3d40' : '#22c55e',
                 height: '100%',
                 borderRadius: 8,
                 transition: 'width 0.5s',
                 textAlign: 'center',
-                color: '#052e16',
+                color: systemProgress == null ? '#9ca3af' : '#052e16',
                 fontSize: 13,
                 lineHeight: '22px',
                 fontWeight: 700,
               }}
             >
-              {info.progress ?? 0}%
+              {systemProgress == null ? '—' : `${systemProgress}%`}
             </div>
           </div>
+          {typeof totalRequired === 'number' && typeof totalProvided === 'number' && (
+            <p style={{ color: '#d1d5db', fontSize: 13 }}>
+              Доставлено: <strong>{totalProvided.toLocaleString('ru-RU')} / {totalRequired.toLocaleString('ru-RU')} т</strong>
+              {' · '}Осталось: {Number(totalRemaining).toLocaleString('ru-RU')} т
+            </p>
+          )}
           {info.updated_at && (
             <p style={{ color: '#9ca3af', fontSize: 13 }}>
               Обновлено: {new Date(info.updated_at).toLocaleString('ru-RU')} · источник: Raven
@@ -1200,7 +1243,7 @@ export default function SystemsPage() {
                       <td>{p.buildName}</td>
                       <td>{p.buildType ?? '—'}</td>
                       <td>{p.bodyName ?? '—'}</td>
-                      <td>{p.complete ? 'готово' : p.progress + '%'}</td>
+                      <td>{p.complete ? 'готово' : typeof p.progress === 'number' ? `${p.progress}%` : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1220,19 +1263,19 @@ export default function SystemsPage() {
                 </tr>
               </thead>
               <tbody>
-                {resources.map((r) => (
-                  <tr key={r.key || r.name}>
-                    <td>{r.name}</td>
-                    <td>{Number(r.provided).toLocaleString('ru-RU')}</td>
-                    <td>{Number(r.required).toLocaleString('ru-RU')}</td>
-                    <td>
-                      {Number(
-                        Math.max(0, r.remaining ?? r.required - r.provided),
-                      ).toLocaleString('ru-RU')}
-                    </td>
-                    <td>{pct(r)}%</td>
-                  </tr>
-                ))}
+                {resources.map((resource) => {
+                  const exact = hasExactAmounts(resource);
+                  const progress = pct(resource);
+                  return (
+                    <tr key={resource.key || resource.name}>
+                      <td>{resource.name}</td>
+                      <td>{exact ? resource.provided.toLocaleString('ru-RU') : '—'}</td>
+                      <td>{exact ? resource.required.toLocaleString('ru-RU') : '—'}</td>
+                      <td>{Number(resource.remaining ?? 0).toLocaleString('ru-RU')}</td>
+                      <td>{progress == null ? '—' : `${progress}%`}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           ) : (

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { z } from 'zod';
+import { loadProjectSummaries } from '@/lib/squadronData';
 
 export const dynamic = 'force-dynamic';
 const createSchema = z.object({
@@ -18,18 +19,9 @@ export async function GET(req: Request) {
     const offset = parseInt(searchParams.get('offset') || '0');
 
     const supabase = await createClient();
-    let query = supabase
-      .from('project_summary')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const projects = await loadProjectSummaries(supabase, { status, limit, offset });
 
-    if (status) query = query.eq('status', status);
-
-    const { data, error } = await query;
-    if (error) throw error;
-
-    return NextResponse.json({ projects: data });
+    return NextResponse.json({ projects });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

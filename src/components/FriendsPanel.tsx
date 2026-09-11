@@ -18,7 +18,7 @@ type Props = { userId: string; myName: string; myAvatar: string | null };
 export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   const {
     friends, pendingIncoming, pendingOutgoing,
-    loading, sendRequest, acceptRequest, rejectRequest, removeFriend
+    loading, error, sendRequest, acceptRequest, rejectRequest, removeFriend
   } = useFriends(userId);
 
   const [search, setSearch] = useState("");
@@ -59,6 +59,12 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
             Запросы {pendingIncoming.length > 0 && `(${pendingIncoming.length})`}
           </button>
         </div>
+
+        {error && (
+          <p role="alert" style={{ color: "#f59e0b", fontSize: 12, margin: "0 0 10px" }}>
+            {error}. Показаны последние успешно загруженные данные.
+          </p>
+        )}
 
         {tab === "friends" && (
           <>

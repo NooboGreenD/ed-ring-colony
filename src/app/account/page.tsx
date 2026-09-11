@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
-import { createSupabaseClient, authFetch } from "@/lib/supabaseClient";
+import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
-import { parseJournal } from "@/lib/journalParser";
+import { createJournalParseState, parseJournal } from "@/lib/journalParser";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import { SQUADRON_MEMBER_LIMIT } from "@/lib/squadronConstants";
@@ -25,74 +25,6 @@ import {
   IconCircle,
 } from "@/components/Icons";
 
-function getCookie(name: string) {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-  return match ? decodeURIComponent(match[2]) : null;
-}
-
-const LS_KEY = 'sb-sgukfplhxdhmkqponwft-auth-token';
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://sgukfplhxdhmkqponwft.supabase.co';
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-
-function decodeJwt(token: string): any {
-  try {
-    const base64 = token.split('.')[1];
-    const json = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-async function restoreSession(): Promise<any | null> {
-  // 1. OAuth callback cookie (one-time)
-  const sessionCookie = getCookie('sb-session');
-  if (sessionCookie) {
-    try {
-      const session = JSON.parse(sessionCookie);
-      const user = decodeJwt(session.access_token);
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        expires_in: 3600,
-        token_type: 'bearer',
-        user: user,
-      }));
-      document.cookie = 'sb-session=; path=/; max-age=0; SameSite=Lax; Secure';
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // 2. Check localStorage and verify token via direct fetch
-  const lsToken = localStorage.getItem(LS_KEY);
-  if (!lsToken) return null;
-
-  let session: any;
-  try {
-    session = JSON.parse(lsToken);
-  } catch {
-    return null;
-  }
-
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-        'apikey': ANON_KEY,
-      },
-    });
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  return null;
-}
 
 type Progress = { current: number; total: number; phase: string; pct: number };
 type Tab = "profile" | "squadron" | "journals" | "tokens";
@@ -100,6 +32,7 @@ type Tab = "profile" | "squadron" | "journals" | "tokens";
 export default function AccountPage() {
   const { t, setLocale } = useI18n();
   const [user, setUser] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [files, setFiles] = useState<FileList | null>(null);
   const [summary, setSummary] = useState<any>(null);
@@ -135,32 +68,49 @@ export default function AccountPage() {
   }, [user]);
 
   const load = async () => {
-    const u = await restoreSession();
-    setUser(u);
-    if (u) {
+    try {
+      const currentUser = await getCurrentUser();
+      setUser(currentUser);
+
+      if (!currentUser) {
+        setProfile(null);
+        return;
+      }
+
       const client = createSupabaseClient();
-      const { data: p } = await client
+      const { data: profileData } = await client
         .from("profiles")
         .select("*")
-        .eq("id", u.id)
+        .eq("id", currentUser.id)
         .maybeSingle();
-      if (!p) {
-        await fetch("/api/auth/ensure-profile", { method: "POST" });
-        const again = await client
+
+      if (!profileData) {
+        await authFetch("/api/auth/ensure-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const { data: ensuredProfile } = await client
           .from("profiles")
           .select("*")
-          .eq("id", u.id)
+          .eq("id", currentUser.id)
           .maybeSingle();
-        setProfile(again.data);
-        setCmdrEdit(again.data?.cmdr_name ?? "");
-        setLanguage(again.data?.language ?? "ru");
-        setLocale(again.data?.language ?? "ru");
+        setProfile(ensuredProfile);
+        setCmdrEdit(ensuredProfile?.cmdr_name ?? "");
+        setLanguage(ensuredProfile?.language ?? "ru");
+        setLocale(ensuredProfile?.language ?? "ru");
       } else {
-        setProfile(p);
-        setCmdrEdit(p?.cmdr_name ?? "");
-        setLanguage(p?.language ?? "ru");
-        setLocale(p?.language ?? "ru");
+        setProfile(profileData);
+        setCmdrEdit(profileData.cmdr_name ?? "");
+        setLanguage(profileData.language ?? "ru");
+        setLocale(profileData.language ?? "ru");
       }
+    } catch (loadError) {
+      console.error("[Account] Could not load session:", loadError);
+      setUser(null);
+      setProfile(null);
+    } finally {
+      setAuthReady(true);
     }
   };
 
@@ -169,13 +119,34 @@ export default function AccountPage() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    (async () => {
-      const res = await authFetch(`/api/squadrons/my`);
-      const json = await res.json();
-      if (json.squadron) setMySquadron(json);
+    if (!user) {
+      setMySquadron(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const res = await authFetch('/api/squadrons/my', { cache: 'no-store' });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'Could not load squadron');
+        // The endpoint returns the whole detail object, not json.squadron.
+        // Clear stale state only after a successful authoritative no-membership
+        // response; retain it on a transient request failure.
+        if (active) setMySquadron(json.squadron ? json : null);
+      } catch (error) {
+        console.warn('[Account] Could not load squadron:', error);
+      }
     })();
+    return () => { active = false; };
   }, [user]);
+
+  if (!authReady) {
+    return (
+      <main className="card auth-card">
+        <p>Загрузка...</p>
+      </main>
+    );
+  }
 
   if (!user) {
     return (
@@ -308,189 +279,214 @@ export default function AccountPage() {
 
   const upload = async () => {
     if (!files?.length) return;
+
     setBusy(true);
     setSummary(null);
+    setMsg("");
 
-    const lsToken = localStorage.getItem(LS_KEY);
-    let accessToken = "";
     try {
-      const s = JSON.parse(lsToken || '{}');
-      accessToken = s.access_token;
-    } catch { /* ignore */ }
-    if (!accessToken) {
-      setSummary({ error: t('account.sessionExpired') });
-      setBusy(false);
-      return;
-    }
+      // Journal filenames contain their UTC start time (Journal.YYYY-MM-DD...),
+      // which is a more dependable order than the browser's selection order.
+      const list = Array.from(files).sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+        || left.lastModified - right.lastModified,
+      );
+      const allDeliveries: Array<{
+        systemName: string;
+        commodity: string;
+        amount: number;
+        timestamp: string;
+        sourceHash: string;
+        source: string;
+      }> = [];
+      let cmdr: string | null = null;
+      const allStats = {
+        eventsParsed: 0,
+        cargoEvents: 0,
+        deliveriesFound: 0,
+        colonisationDeliveries: 0,
+        cargoDepotDeliveries: 0,
+        cargoDeltaDeliveries: 0,
+        skippedNoSystem: 0,
+        skippedMarketTrade: 0,
+        skippedMining: 0,
+        skippedEject: 0,
+        skippedDuplicates: 0,
+      };
 
-    const list = Array.from(files);
-    const allDeliveries: any[] = [];
-    let cmdr: string | null = null;
-    const allStats = {
-      eventsParsed: 0,
-      cargoEvents: 0,
-      deliveriesFound: 0,
-      skippedNoSystem: 0,
-      skippedMarketTrade: 0,
-      skippedMining: 0,
-      skippedEject: 0,
-    };
-    setProgress({ current: 0, total: list.length, phase: t('account.loadingSystems'), pct: 2 });
-    const client = createSupabaseClient();
-    const [{ data: hubsData }, { data: routeSystemsData }] = await Promise.all([
-      client.from('hubs').select('system_name'),
-      client.from('route_systems').select('id, system_name'),
-    ]);
-    const lookup = {
-      hubs: new Set((hubsData || []).map((h: any) => String(h.system_name).toLowerCase())),
-      routeSystems: new Map((routeSystemsData || []).map((r: any) => [String(r.system_name).toLowerCase(), r.id])),
-    };
+      // Hub/route classification is resolved server-side for each bounded
+      // upload batch. Downloading every system to the browser here was both
+      // expensive and stale; parsing only needs a stable event context.
+      setProgress({ current: 0, total: list.length, phase: t('account.parsingFile'), pct: 2 });
+      const lookup = {
+        hubs: new Set<string>(),
+        routeSystems: new Map<string, number>(),
+      };
+      const parserState = createJournalParseState();
 
-    for (let i = 0; i < list.length; i++) {
-      const f = list[i];
-      setProgress({
-        current: i + 1,
-        total: list.length,
-        phase: t('account.readingFile') + ' ' + f.name,
-        pct: Math.round((i / list.length) * 90),
-      });
-      const text = await f.text();
-      setProgress({
-        current: i + 1,
-        total: list.length,
-        phase: t('account.parsingFile') + ' ' + f.name,
-        pct: Math.round(((i + 0.5) / list.length) * 90),
-      });
-      const { cmdrName, deliveries, stats } = parseJournal(text, lookup);
-      if (!cmdr && cmdrName) cmdr = cmdrName;
-      allDeliveries.push(...deliveries);
-      if (stats) {
+      for (let index = 0; index < list.length; index += 1) {
+        const file = list[index];
+        setProgress({
+          current: index + 1,
+          total: list.length,
+          phase: `${t('account.readingFile')} ${file.name}`,
+          pct: Math.round((index / list.length) * 82),
+        });
+        const journalText = await file.text();
+        setProgress({
+          current: index + 1,
+          total: list.length,
+          phase: `${t('account.parsingFile')} ${file.name}`,
+          pct: Math.round(((index + 0.5) / list.length) * 82),
+        });
+
+        // Keep parserState between files: a Cargo snapshot and a cumulative
+        // ColonisationContribution amount commonly straddle file rotation.
+        const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState);
+        if (!cmdr && cmdrName) cmdr = cmdrName;
+        allDeliveries.push(...deliveries);
         allStats.eventsParsed += stats.eventsParsed;
         allStats.cargoEvents += stats.cargoEvents;
         allStats.deliveriesFound += stats.deliveriesFound;
+        allStats.colonisationDeliveries += stats.colonisationDeliveries;
+        allStats.cargoDepotDeliveries += stats.cargoDepotDeliveries;
+        allStats.cargoDeltaDeliveries += stats.cargoDeltaDeliveries;
         allStats.skippedNoSystem += stats.skippedNoSystem;
         allStats.skippedMarketTrade += stats.skippedMarketTrade;
         allStats.skippedMining += stats.skippedMining;
         allStats.skippedEject += stats.skippedEject;
+        allStats.skippedDuplicates += stats.skippedDuplicates;
+
+        // Let React paint progress while a large multi-file upload is parsed.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      await new Promise((r) => setTimeout(r, 30));
-    }
-    const CHUNK = 500;
-    const chunks = Math.max(1, Math.ceil(allDeliveries.length / CHUNK));
-    let inserted = 0;
-    let duplicates = 0;
-    let eventsFound = 0;
-    for (let c = 0; c < chunks; c++) {
-      setProgress({
-        current: list.length,
-        total: list.length,
-        phase: t('account.sendingBatch') + ' ' + (c + 1) + ' ' + t('account.of') + ' ' + chunks,
-        pct: 90 + Math.round(((c + 1) / chunks) * 10),
-      });
-      const chunk = allDeliveries
-        .slice(c * CHUNK, (c + 1) * CHUNK)
-        .filter((d) => d.systemName && d.systemName.trim().length > 0)
-        .map((d) => ({
-          system_name: d.systemName,
-          commodity: d.commodity,
-          amount: d.amount,
-          timestamp: d.timestamp,
-          is_hub: d.isHub,
-          route_system_id: d.routeSystemId,
-        }));
-      const res = await fetch("/api/logs/import", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({ cmdr, deliveries: chunk }),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        setSummary({ error: json.error || t('account.serverError') });
-        setProgress(null);
-        setBusy(false);
-        return;
+
+      // Keep browser requests comfortably below the server's bounded
+      // PostgREST write size. Older desktop helpers may still send 500 rows;
+      // the API splits those safely as well.
+      const CHUNK_SIZE = 100;
+      const chunks = Math.ceil(allDeliveries.length / CHUNK_SIZE);
+      let inserted = 0;
+      let duplicates = allStats.skippedDuplicates;
+      let eventsFound = 0;
+
+      const uploadChunk = async (deliveries: unknown[]) => {
+        let lastError = new Error(t('account.serverError'));
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          let response: Response;
+          try {
+            response = await authFetch('/api/logs/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cmdr, deliveries }),
+            });
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(t('account.serverError'));
+            if (attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+            throw lastError;
+          }
+
+          const json = await response.json().catch(() => ({}));
+          if (response.ok) return json;
+          lastError = new Error(json.error || t('account.serverError'));
+          // Retry only temporary rate-limit/server failures. Every delivery
+          // has a stable source hash, so after the matching database index is
+          // deployed a request committed just before a dropped response is
+          // safe to send again.
+          if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+            continue;
+          }
+          throw lastError;
+        }
+        throw lastError;
+      };
+
+      for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
+        setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} ${chunkIndex + 1} ${t('account.of')} ${chunks}`,
+          pct: 82 + Math.round(((chunkIndex + 1) / Math.max(chunks, 1)) * 18),
+        });
+        const chunk = allDeliveries
+          .slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE)
+          .map((delivery) => ({
+            system_name: delivery.systemName,
+            commodity: delivery.commodity,
+            amount: delivery.amount,
+            timestamp: delivery.timestamp,
+            source_hash: delivery.sourceHash,
+            source: delivery.source,
+          }));
+        const json = await uploadChunk(chunk);
+        inserted += json.inserted ?? 0;
+        duplicates += json.duplicates ?? 0;
+        eventsFound += json.eventsFound ?? 0;
       }
-      inserted += json.inserted ?? 0;
-      duplicates += json.duplicates ?? 0;
-      eventsFound += json.eventsFound ?? 0;
+
+      setSummary({
+        ok: true,
+        filesProcessed: list.length,
+        eventsFound,
+        inserted,
+        duplicates,
+        cmdr,
+        parserStats: allStats,
+      });
+    } catch (error) {
+      console.error('[Account] Journal import failed:', error);
+      setSummary({ error: error instanceof Error ? error.message : t('account.serverError') });
+    } finally {
+      setProgress(null);
+      setBusy(false);
     }
-    setSummary({
-      ok: true,
-      filesProcessed: list.length,
-      eventsFound,
-      inserted,
-      duplicates,
-      cmdr,
-      parserStats: allStats,
-    });
-    setProgress(null);
-    setBusy(false);
   };
 
   const loadTokens = async () => {
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
-    const res = await fetch('/api/auth/tokens', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const res = await authFetch('/api/auth/tokens');
+    if (!res.ok) {
+      setTokens([]);
+      return;
+    }
+
     const json = await res.json();
     setTokens(json.tokens || []);
   };
 
   const createToken = async () => {
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
     setTokenMsg("");
     setGeneratedToken(null);
-    const res = await fetch('/api/auth/tokens', {
+
+    const res = await authFetch('/api/auth/tokens', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ name: newTokenName || 'Colonial Helper Token' })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newTokenName || 'Colonial Helper Token' }),
     });
     const json = await res.json();
+
     if (!res.ok) {
       setTokenMsg(json.error || t('account.error'));
       return;
     }
+
     setGeneratedToken(json.token);
     setNewTokenName("");
-    loadTokens();
+    void loadTokens();
   };
 
   const revokeToken = async (id: string) => {
     if (!confirm(t('account.revokeTokenConfirm'))) return;
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
-    await fetch('/api/auth/tokens', {
+
+    await authFetch('/api/auth/tokens', {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ id })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
     });
-    loadTokens();
+    void loadTokens();
   };
 
   const allegianceIcon = (a: string | null) => {
@@ -597,7 +593,10 @@ export default function AccountPage() {
           </form>
 
           <div style={{ marginTop: 32 }}>
-            <button onClick={() => { createSupabaseClient().auth.signOut(); localStorage.removeItem(LS_KEY); }} className="btn danger-btn">{t('account.logout')}</button>
+            <button onClick={async () => {
+              await createSupabaseClient().auth.signOut();
+              window.location.assign('/');
+            }} className="btn danger-btn">{t('account.logout')}</button>
           </div>
         </div>
       )}

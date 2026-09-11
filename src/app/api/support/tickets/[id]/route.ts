@@ -1,1 +1,283 @@
-import { NextRequest, NextResponse } from 'next/server' ; import { authFromRequest, createServiceClient } from '@/lib/supabaseServer' ; export const dynamic = 'force-dynamic' ; const STAFF_ROLES = ['admin', 'moderator', 'support_manager'] ; export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) { const { id } = await params ; const { user } = await authFromRequest(req) ; if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) ; const service = createServiceClient() ; const { data: profile } = await service.from('profiles').select('role').eq('id', user.id).maybeSingle() ; const isStaff = STAFF_ROLES.includes(profile?.role || '') ; const { data: ticket } = await service.from('support_tickets').select('*, user:profiles!support_tickets_user_id_fkey(cmdr_name, avatar_url, email), assigned:profiles!support_tickets_assigned_to_fkey(cmdr_name)').eq('id', id).maybeSingle() ; if (!ticket) return NextResponse.json({ error: 'Not found' }, { status: 404 }) ; if (!isStaff && ticket.user_id !== user.id) return NextResponse.json({ error: 'Forbidden' }, { status: 403 }) ; const msgQuery = service.from('support_messages').select('*, sender:profiles!support_messages_sender_id_fkey(cmdr_name, avatar_url)').eq('ticket_id', id).order('created_at', { ascending: true }) ; if (!isStaff) msgQuery.eq('is_internal', false) ; const { data: messages } = await msgQuery ; const { data: attachments } = await service.from('support_attachments').select('*').eq('ticket_id', id).order('created_at', { ascending: true }) ; return NextResponse.json({ ticket, messages: messages || [], attachments: attachments || [] }) } export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) { const { id } = await params ; const { user } = await authFromRequest(req) ; if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) ; let body ; try { body = await req.json() } catch { return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 }) } const { status, assigned_to, priority } = body ; const service = createServiceClient() ; const { data: profile } = await service.from('profiles').select('role').eq('id', user.id).maybeSingle() ; const isStaff = STAFF_ROLES.includes(profile?.role || '') ; if (!isStaff) return NextResponse.json({ error: 'Forbidden' }, { status: 403 }) ; const updates: any = {} ; if (status) updates.status = status ; if (assigned_to !== undefined) updates.assigned_to = assigned_to || null ; if (priority) updates.priority = priority ; if (status === 'resolved') updates.resolved_at = new Date().toISOString() ; if (status === 'closed') updates.closed_at = new Date().toISOString() ; if (Object.keys(updates).length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 }) ; updates.updated_at = new Date().toISOString() ; const { data: ticket, error } = await service.from('support_tickets').update(updates).eq('id', id).select('*').single() ; if (error) { console.error('[support/tickets PATCH]', error) ; return NextResponse.json({ error: error.message }, { status: 500 }) } return NextResponse.json({ ticket }) }
+import { NextRequest, NextResponse } from "next/server";
+import {
+  getSupportRequestContext,
+  loadSupportProfiles,
+} from "@/lib/supportTickets";
+
+export const dynamic = "force-dynamic";
+
+const TICKET_STATUSES = new Set([
+  "open",
+  "in_progress",
+  "waiting_user",
+  "resolved",
+  "closed",
+]);
+const TICKET_PRIORITIES = new Set(["low", "normal", "high", "critical"]);
+
+function response(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", "no-store, max-age=0");
+  return NextResponse.json(body, { ...init, headers });
+}
+
+function profileLabel(
+  profile:
+    | {
+        cmdr_name: string | null;
+        avatar_url: string | null;
+        email?: string | null;
+      }
+    | undefined,
+  includeEmail: boolean,
+) {
+  if (!profile) return null;
+  return {
+    cmdr_name: profile.cmdr_name,
+    avatar_url: profile.avatar_url,
+    ...(includeEmail ? { email: profile.email ?? null } : {}),
+  };
+}
+
+export async function GET(
+  req: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const context = await getSupportRequestContext(req);
+    if (!context.user || !context.db) {
+      return response({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const id = params.id;
+    const { data: ticket, error: ticketError } = await context.db
+      .from("support_tickets")
+      .select("*")
+      .eq("id", id)
+      .maybeSingle();
+    if (ticketError) {
+      console.error(
+        "[support/ticket GET] Ticket query failed:",
+        ticketError.message,
+      );
+      return response(
+        { error: "Could not load support ticket" },
+        { status: 500 },
+      );
+    }
+    if (!ticket) {
+      return response({ error: "Not found" }, { status: 404 });
+    }
+    if (!context.isStaff && ticket.user_id !== context.user.id) {
+      return response({ error: "Forbidden" }, { status: 403 });
+    }
+
+    let messageQuery = context.db
+      .from("support_messages")
+      .select("*")
+      .eq("ticket_id", id)
+      .order("created_at", { ascending: true });
+    if (!context.isStaff) {
+      messageQuery = messageQuery.eq("is_internal", false);
+    }
+
+    const [
+      { data: messageRows, error: messagesError },
+      { data: attachmentRows, error: attachmentsError },
+    ] = await Promise.all([
+      messageQuery,
+      context.db
+        .from("support_attachments")
+        .select("*")
+        .eq("ticket_id", id)
+        .order("created_at", { ascending: true }),
+    ]);
+    if (messagesError) {
+      console.error(
+        "[support/ticket GET] Messages query failed:",
+        messagesError.message,
+      );
+      return response(
+        { error: "Could not load ticket messages" },
+        { status: 500 },
+      );
+    }
+    if (attachmentsError) {
+      console.error(
+        "[support/ticket GET] Attachments query failed:",
+        attachmentsError.message,
+      );
+      return response(
+        { error: "Could not load ticket attachments" },
+        { status: 500 },
+      );
+    }
+
+    const profiles = await loadSupportProfiles(
+      context.db,
+      [
+        ticket.user_id,
+        ticket.assigned_to,
+        ...(messageRows || []).map((message: any) => message.sender_id),
+      ],
+      context.isStaff,
+    );
+    const reporter = profiles.get(ticket.user_id);
+    const enrichedTicket = {
+      ...ticket,
+      user: profileLabel(reporter, context.isStaff),
+      assigned: profileLabel(profiles.get(ticket.assigned_to), false),
+    };
+    const messages = (messageRows || []).map((message: any) => ({
+      ...message,
+      sender: profileLabel(profiles.get(message.sender_id), false),
+    }));
+
+    return response({
+      ticket: enrichedTicket,
+      messages,
+      attachments: attachmentRows || [],
+    });
+  } catch (error) {
+    console.error("[support/ticket GET] Unexpected error:", error);
+    return response(
+      { error: "Could not load support ticket" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } },
+) {
+  try {
+    const context = await getSupportRequestContext(req);
+    if (!context.user || !context.db) {
+      return response({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await req.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return response({ error: "Invalid JSON body" }, { status: 400 });
+    }
+
+    const updates: Record<string, string | null> = {};
+    if (context.isStaff) {
+      if (body.status !== undefined) {
+        if (
+          typeof body.status !== "string" ||
+          !TICKET_STATUSES.has(body.status)
+        ) {
+          return response({ error: "Invalid ticket status" }, { status: 400 });
+        }
+        updates.status = body.status;
+        if (body.status === "resolved") {
+          updates.resolved_at = new Date().toISOString();
+        }
+        if (body.status === "closed") {
+          updates.closed_at = new Date().toISOString();
+        }
+      }
+      if (body.priority !== undefined) {
+        if (
+          typeof body.priority !== "string" ||
+          !TICKET_PRIORITIES.has(body.priority)
+        ) {
+          return response(
+            { error: "Invalid ticket priority" },
+            { status: 400 },
+          );
+        }
+        updates.priority = body.priority;
+      }
+      if (body.assigned_to !== undefined) {
+        if (body.assigned_to !== null && typeof body.assigned_to !== "string") {
+          return response({ error: "Invalid assignee" }, { status: 400 });
+        }
+        updates.assigned_to = body.assigned_to || null;
+      }
+    } else {
+      // The public UI offers ticket owners a close action. Allow only that
+      // narrow transition and explicitly verify ownership because the service
+      // client, when present, bypasses the table's normal RLS policy.
+      if (
+        body.status !== "closed" ||
+        Object.keys(body).some((key) => key !== "status")
+      ) {
+        return response({ error: "Forbidden" }, { status: 403 });
+      }
+
+      const { data: existingTicket, error: existingTicketError } =
+        await context.db
+          .from("support_tickets")
+          .select("user_id,status")
+          .eq("id", params.id)
+          .maybeSingle();
+      if (existingTicketError) {
+        console.error(
+          "[support/ticket PATCH] Ticket ownership query failed:",
+          existingTicketError.message,
+        );
+        return response(
+          { error: "Could not load support ticket" },
+          { status: 500 },
+        );
+      }
+      if (!existingTicket) {
+        return response({ error: "Not found" }, { status: 404 });
+      }
+      if (existingTicket.user_id !== context.user.id) {
+        return response({ error: "Forbidden" }, { status: 403 });
+      }
+      if (!["open", "waiting_user"].includes(existingTicket.status)) {
+        return response(
+          { error: "Only open tickets can be closed by their owner" },
+          { status: 409 },
+        );
+      }
+
+      updates.status = "closed";
+      updates.closed_at = new Date().toISOString();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return response({ error: "Nothing to update" }, { status: 400 });
+    }
+    updates.updated_at = new Date().toISOString();
+
+    let updateQuery = context.db
+      .from("support_tickets")
+      .update(updates)
+      .eq("id", params.id);
+    if (!context.isStaff) {
+      updateQuery = updateQuery
+        .eq("user_id", context.user.id)
+        .in("status", ["open", "waiting_user"]);
+    }
+    const { data: ticket, error: updateError } = await updateQuery
+      .select("*")
+      .maybeSingle();
+    if (updateError) {
+      console.error(
+        "[support/ticket PATCH] Ticket update failed:",
+        updateError.message,
+      );
+      return response(
+        { error: "Could not update support ticket" },
+        { status: 500 },
+      );
+    }
+    if (!ticket) {
+      return response({ error: "Not found" }, { status: 404 });
+    }
+
+    return response({ ticket });
+  } catch (error) {
+    console.error("[support/ticket PATCH] Unexpected error:", error);
+    return response(
+      { error: "Could not update support ticket" },
+      { status: 500 },
+    );
+  }
+}

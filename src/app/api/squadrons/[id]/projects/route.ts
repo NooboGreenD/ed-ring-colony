@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabaseServer'
+import { createClient, authFromRequest } from '@/lib/supabaseServer'
 import { z } from 'zod'
+import { getSquadronMembership, loadSquadronProjects } from '@/lib/squadronData'
 
 export const dynamic = 'force-dynamic';
 const createSchema = z.object({
@@ -12,18 +13,17 @@ const createSchema = z.object({
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = Number.parseInt(params.id, 10)
+    if (!Number.isSafeInteger(squadronId) || squadronId <= 0) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
     const supabase = await createClient()
-
-    const { data: projects } = await supabase
-      .from('project_summary')
-      .select('*')
-      .eq('squadron_id', squadronId)
-      .order('created_at', { ascending: false })
-
-    return NextResponse.json({ projects: projects || [] })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    const projects = await loadSquadronProjects(supabase, squadronId)
+    return NextResponse.json({ projects })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not load squadron projects'
+    console.error('[squadrons/:id/projects GET]', message)
+    return NextResponse.json({ error: 'Could not load squadron projects' }, { status: 500 })
   }
 }
 
@@ -32,18 +32,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const squadronId = parseInt(params.id)
     const body = await req.json()
     const parsed = createSchema.parse(body)
-    const supabase = await createClient()
-
-    const { data: { user } } = await supabase.auth.getUser()
+    const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав: can_manage_projects
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_projects')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_projects) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

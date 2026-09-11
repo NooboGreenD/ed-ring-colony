@@ -1,12 +1,14 @@
-import { NextResponse } from 'next/server'
-import { authFromRequest, createClient, createServiceClient } from '@/lib/supabaseServer'
-import { z } from 'zod'
-import { SQUADRON_MEMBER_LIMIT } from '@/lib/squadronConstants'
+import { NextResponse } from 'next/server';
+import { authFromRequest, createClient, createServiceClient } from '@/lib/supabaseServer';
+import { z } from 'zod';
+import { SQUADRON_MEMBER_LIMIT } from '@/lib/squadronConstants';
+import { loadSquadronSummaries } from '@/lib/squadronData';
 
 export const dynamic = 'force-dynamic';
+
 const createSchema = z.object({
-  name: z.string().min(1).max(100),
-  tag: z.string().min(2).max(10).regex(/^[A-Za-z0-9]+$/).optional(),
+  name: z.string().trim().min(1).max(100),
+  tag: z.string().trim().min(2).max(10).regex(/^[A-Za-z0-9]+$/).optional(),
   description: z.string().max(1000).optional(),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
   icon: z.string().max(50).optional(),
@@ -23,54 +25,65 @@ const createSchema = z.object({
   home_system: z.string().max(100).optional(),
 });
 
+function boundedInteger(value: string | null, fallback: number, min: number, max: number) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isSafeInteger(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
 export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(req.url)
-    const status = searchParams.get('status')
-    const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
-    const offset = parseInt(searchParams.get('offset') || '0')
+    const { searchParams } = new URL(req.url);
+    const status = searchParams.get('status')?.trim() || null;
+    const limit = boundedInteger(searchParams.get('limit'), 50, 1, 100);
+    const offset = boundedInteger(searchParams.get('offset'), 0, 0, 100_000);
+    const supabase = await createClient();
 
-    const supabase = await createClient()
-    let query = supabase
-      .from('squadron_summary')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1)
-
-    if (status) query = query.eq('status', status)
-
-    const { data, error } = await query
-    if (error) throw error
-
-    return NextResponse.json({ squadrons: data })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    // Build the small public read model from base tables instead of depending
+    // on an untracked PostgREST view. A migration recreates the view too, but
+    // this endpoint remains available before its schema cache is refreshed.
+    const squadrons = await loadSquadronSummaries(supabase, { status, limit, offset });
+    return NextResponse.json({ squadrons });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not load squadrons';
+    console.error('[squadrons GET]', message);
+    return NextResponse.json({ error: 'Could not load squadrons' }, { status: 500 });
   }
 }
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json()
-    const parsed = createSchema.parse(body)
+    const body = await req.json();
+    const parsed = createSchema.parse(body);
 
-    const { user, supabase } = await authFromRequest(req)
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const { user } = await authFromRequest(req);
+    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    // Проверка: пилот уже в эскадрилье?
-    const { data: existing } = await supabase
-      .from('squadron_members')
-      .select('squadron_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-
-    if (existing) {
-      return NextResponse.json({ error: 'Вы уже состоите в эскадрилье. Сначала покиньте текущую.' }, { status: 409 })
+    // A member relation is authoritative, while created_by covers legacy
+    // squadrons made before the automatic membership trigger was available.
+    // Use the server-side reader after authenticating so an outdated RLS policy
+    // cannot make a commander accidentally create a second squadron.
+    const service = createServiceClient();
+    const [membershipResponse, createdResponse] = await Promise.all([
+      service
+        .from('squadron_members')
+        .select('squadron_id')
+        .eq('user_id', user.id)
+        .limit(1)
+        .maybeSingle(),
+      service
+        .from('squadrons')
+        .select('id')
+        .eq('created_by', user.id)
+        .limit(1)
+        .maybeSingle(),
+    ]);
+    if (membershipResponse.error) throw membershipResponse.error;
+    if (createdResponse.error) throw createdResponse.error;
+    if (membershipResponse.data || createdResponse.data) {
+      return NextResponse.json({ error: 'Вы уже состоите в эскадрилье. Сначала покиньте текущую.' }, { status: 409 });
     }
 
-    // Используем service client для создания эскадрильи,
-    // чтобы триггер on_squadron_created мог создать звания и добавить создателя
-    // (RLS на squadron_ranks/squadron_members требует членства, которого ещё нет)
-    const service = createServiceClient()
+
     const { data: squadron, error } = await service
       .from('squadrons')
       .insert({
@@ -93,14 +106,16 @@ export async function POST(req: Request) {
         created_by: user.id,
       })
       .select()
-      .single()
+      .single();
 
-    if (error) throw error
-
-    // Триггер автоматически создаст звания и назначит командира
-
-    return NextResponse.json({ squadron })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+    if (error || !squadron) throw error || new Error('Could not create squadron');
+    return NextResponse.json({ squadron });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: 'Некорректные данные эскадрильи' }, { status: 400 });
+    }
+    const message = error instanceof Error ? error.message : 'Could not create squadron';
+    console.error('[squadrons POST]', message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

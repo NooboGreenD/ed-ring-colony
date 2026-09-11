@@ -1,15 +1,22 @@
 import { NextResponse } from 'next/server'
 import { createClient, authFromRequest } from '@/lib/supabaseServer'
+import { getSquadronMembership, loadSquadronMembers } from '@/lib/squadronData'
 
 export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: { id: string } }) {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from('squadron_member_detail')
-    .select('*')
-    .eq('squadron_id', parseInt(params.id))
-    .order('rank_order', { ascending: true })
-  return NextResponse.json({ members: data || [] })
+  try {
+    const squadronId = Number.parseInt(params.id, 10)
+    if (!Number.isSafeInteger(squadronId) || squadronId <= 0) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    }
+    const supabase = await createClient()
+    const members = await loadSquadronMembers(supabase, squadronId)
+    return NextResponse.json({ members })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not load squadron members'
+    console.error('[squadrons/:id/members GET]', message)
+    return NextResponse.json({ error: 'Could not load squadron members' }, { status: 500 })
+  }
 }
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
@@ -20,12 +27,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав приглашающего: can_manage_members
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_members')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_members) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -80,12 +82,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав: can_manage_members
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_members')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_members) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -136,15 +133,10 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Можно удалить себя или быть удалённым с правами can_manage_members
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_members')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     const isSelf = user.id === user_id
-    const canManage = membership && membership.can_manage_members
+    const canManage = membership?.can_manage_members === true
 
     if (!isSelf && !canManage) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

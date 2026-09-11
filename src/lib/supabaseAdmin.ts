@@ -30,7 +30,7 @@ export function createAdminClient() {
   return getAdminClient();
 }
 
-/** Upsert user profile into the profiles table — preserves existing cmdr_name and avatar_url */
+/** Upsert user profile into the profiles table during an explicit setup/update flow. */
 export async function upsertProfile({
   id,
   email,

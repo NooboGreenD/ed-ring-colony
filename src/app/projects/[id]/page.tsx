@@ -213,20 +213,32 @@ export default function ProjectPage() {
   useEffect(() => { load(); }, [id]);
 
   const syncAllProgress = async () => {
-    setProgress({ current: 0, total: systems.length, phase: "Синхронизация...", pct: 0 });
-    for (let i = 0; i < systems.length; i++) {
-      const s = systems[i];
-      setProgress({ current: i + 1, total: systems.length, phase: s.system_name, pct: Math.round(((i + 1) / systems.length) * 100) });
-      try {
-        await fetch("/api/route/progress", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ system_name: s.system_name }),
-        });
-      } catch (e) { console.error(e); }
+    if (!systems.length) return;
+
+    // The project endpoint owns project_systems notes and now updates the
+    // shared map cache as well. The old loop posted { system_name } to the
+    // route endpoint, whose contract requires an ids array, so every request
+    // was rejected and the map was left with stale planned points.
+    setProgress({ current: 0, total: systems.length, phase: "Синхронизация RavenColonial...", pct: 5 });
+    try {
+      const response = await fetch(`/api/projects/${id}/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || "Не удалось синхронизировать прогресс");
+      }
+      setProgress({ current: payload.synced ?? systems.length, total: systems.length, phase: "Кэш карты обновлён", pct: 100 });
+    } catch (error: any) {
+      console.error(error);
+      alert(error?.message || "Не удалось синхронизировать прогресс");
+    } finally {
+      // Keep the completed state visible briefly so the action does not look
+      // like a no-op when the server answers quickly.
+      window.setTimeout(() => setProgress(null), 250);
+      load();
     }
-    setProgress(null);
-    load();
   };
 
   const fetchEdsmCoords = async () => {

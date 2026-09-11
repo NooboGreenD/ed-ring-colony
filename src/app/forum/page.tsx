@@ -19,6 +19,8 @@ interface Thread {
   category_id: number;
   updated_at: string;
   author_name: string;
+  /** Number of posts in this thread, supplied by the category API. */
+  post_count: number;
 }
 
 interface Post {
@@ -69,8 +71,10 @@ export default function ForumPage() {
   const profileMap = new Map(profiles.map((p) => [p.id, p]));
 
   const topicsByCat = new Map<number, number>();
+  const postsByCat = new Map<number, number>();
   allThreads.forEach((t) => {
     topicsByCat.set(t.category_id, (topicsByCat.get(t.category_id) || 0) + 1);
+    postsByCat.set(t.category_id, (postsByCat.get(t.category_id) || 0) + (t.post_count || 0));
   });
 
   const lastByCat = new Map<number, Thread>();
@@ -137,7 +141,7 @@ export default function ForumPage() {
                         <span style={{ color: "var(--orange)", fontWeight: 600 }}>{topicsByCat.get(cat.id) || 0}</span>
                       </td>
                       <td className="col-views" style={{ textAlign: "center" }}>
-                        <span style={{ color: "var(--muted)" }}>—</span>
+                        <span style={{ color: "var(--orange)", fontWeight: 600 }}>{postsByCat.get(cat.id) || 0}</span>
                       </td>
                       <td className="col-last">
                         {last ? (

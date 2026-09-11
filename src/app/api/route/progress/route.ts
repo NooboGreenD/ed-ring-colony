@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemV2, deriveStatusFromProgress } from '@/lib/ravenColonial';
+import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
+import { persistRavenSystemProgress } from '@/lib/systemProgress';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -27,72 +29,56 @@ export async function POST(req: Request) {
     if (!routeSystems?.length) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const results: any[] = [];
-    for (const r of routeSystems) {
+    for (const routeSystem of routeSystems) {
       try {
-        const data = await fetchRavenSystemV2(r.system_name);
+        const data = await enrichRavenSystemWithJournalSnapshots(
+          await fetchRavenSystemV2(routeSystem.system_name),
+        );
+        const systemFound = data.progress != null || data.projects.length > 0;
+        const status = data.progress != null
+          ? deriveStatusFromProgress(data.progress)
+          : routeSystem.status;
 
-        // Upsert в кэш-таблицу system_progress
-        const { error: upsertErr } = await supabase.from('system_progress').upsert({
-          system_name: r.system_name,
+        let cacheWarnings: string[] = [];
+        if (systemFound) {
+          const cacheResult = await persistRavenSystemProgress(supabase, routeSystem.system_name, data);
+          cacheWarnings = cacheResult.warnings;
+        }
+
+        results.push({
+          system_name: routeSystem.system_name,
           progress: data.progress,
-          updated_at: new Date().toISOString(),
-          data: {
-            siteName: data.siteName,
-            architectName: data.architectName,
-            projects: data.projects,
-            resources: data.resources,
-          },
+          status,
+          found: systemFound,
+          siteName: data.siteName,
+          architectName: data.architectName,
+          projects: data.projects,
+          resources: data.resources,
+          totalRequired: data.totalRequired,
+          totalProvided: data.totalProvided,
+          totalRemaining: data.totalRemaining,
+          error: data.error,
+          ...(cacheWarnings.length > 0 ? { cacheWarnings } : {}),
         });
-        if (upsertErr) {
-          console.warn('[route/progress] system_progress upsert skipped:', upsertErr.message);
-        }
-
-        if (data.progress != null) {
-          const status = deriveStatusFromProgress(data.progress);
-          await supabase.from('route_systems').update({ progress: data.progress, status, updated_at: new Date().toISOString() }).eq('id', r.id);
-          results.push({ 
-            system_name: r.system_name, 
-            progress: data.progress, 
-            status, 
-            found: true,
-            siteName: data.siteName,
-            architectName: data.architectName,
-            projects: data.projects,
-            resources: data.resources,
-            error: data.error 
-          });
-        } else {
-          results.push({ 
-            system_name: r.system_name, 
-            progress: null, 
-            status: r.status, 
-            found: false, 
-            siteName: null,
-            architectName: null,
-            projects: [],
-            resources: [],
-            error: data.error 
-          });
-        }
       } catch (innerErr: any) {
-        console.error(`[route/progress] Error processing ${r.system_name}:`, innerErr);
-        results.push({ 
-          system_name: r.system_name, 
-          progress: null, 
-          status: r.status, 
-          found: false, 
+        console.error(`[route/progress] Error processing ${routeSystem.system_name}:`, innerErr);
+        results.push({
+          system_name: routeSystem.system_name,
+          progress: null,
+          status: routeSystem.status,
+          found: false,
           siteName: null,
           architectName: null,
           projects: [],
           resources: [],
-          error: innerErr.message || 'Internal error' 
+          error: innerErr.message || 'Internal error',
         });
       }
     }
 
-    return NextResponse.json({ results, updated: results.filter((r) => r.found).length });
-  } catch (e: any) {
-    console.error('[route/progress] Unhandled error:', e);
-    return NextResponse.json({ error: e.message || 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ results, updated: results.filter((result) => result.found).length });
+  } catch (error: any) {
+    console.error('[route/progress] Unhandled error:', error);
+    return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 });
   }
 }

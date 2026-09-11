@@ -38,15 +38,21 @@ export async function startDiscordOAuthAction(mode: 'login' | 'link') {
     skipBrowserRedirect: true,
   };
 
-  console.log('[ServerAction] Discord OAuth mode:', mode, 'redirectTo:', redirectTo);
+  // A browser can still reach /login with an active email/password session.
+  // In that situation Discord is an additional identity for the same account,
+  // not an instruction to create/sign into a second account. Never merge a
+  // different account solely because Discord returns a matching email.
+  const { data: { user } } = await supabase.auth.getUser();
+  const shouldLinkIdentity = mode === 'link' || Boolean(user);
 
-  if (mode === 'link') {
+  console.log('[ServerAction] Discord OAuth mode:', shouldLinkIdentity ? 'link' : 'login');
+
+  if (shouldLinkIdentity) {
     const { data, error } = await supabase.auth.linkIdentity({ provider: 'discord', options });
     if (error) {
       console.error('[ServerAction] linkIdentity error:', error.message);
       throw new Error(error.message);
     }
-    console.log('[ServerAction] linkIdentity URL:', data?.url ? 'present' : 'missing');
     return data?.url;
   }
 

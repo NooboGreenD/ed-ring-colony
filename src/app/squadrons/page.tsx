@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, authFetch } from "@/lib/supabaseClient";
 import { Toaster, toast } from "@/components/ui/Toaster";
 import { useRouter } from "next/navigation";
 import {
@@ -105,7 +105,7 @@ export default function SquadronsListPage() {
       toast("Введите название эскадрильи", "error");
       return;
     }
-    const res = await fetch("/api/squadrons", {
+    const res = await authFetch("/api/squadrons", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(createForm),
@@ -137,7 +137,7 @@ export default function SquadronsListPage() {
       toast("Вы уже состоите в эскадрилье. Сначала покиньте текущую.", "error");
       return;
     }
-    const res = await fetch(`/api/squadrons/${squadronId}/members`, {
+    const res = await authFetch(`/api/squadrons/${squadronId}/members`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: user.id }),
@@ -154,7 +154,7 @@ export default function SquadronsListPage() {
   const leaveSquadron = async () => {
     if (!user || !mySquadronId) return;
     if (!confirm("Покинуть эскадрилью?")) return;
-    const res = await fetch(`/api/squadrons/${mySquadronId}/members`, {
+    const res = await authFetch(`/api/squadrons/${mySquadronId}/members`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: user.id }),

@@ -1,16 +1,16 @@
-import { NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
+import { NextResponse } from "next/server";
+import { createServerClient } from "@supabase/ssr";
 
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url);
-  const code = searchParams.get('code');
-  const error = searchParams.get('error');
-  const errorDescription = searchParams.get('error_description');
+  const code = searchParams.get("code");
+  const error = searchParams.get("error");
+  const errorDescription = searchParams.get("error_description");
 
   if (error || errorDescription) {
-    const msg = errorDescription || error || 'Unknown OAuth error';
+    const msg = errorDescription || error || "Unknown OAuth error";
     return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(msg)}`, 302);
   }
 
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
     return NextResponse.redirect(`${origin}/login?error=no_code`, 302);
   }
 
-  const cookieHeader = request.headers.get('cookie') || '';
+  const cookieHeader = request.headers.get("cookie") || "";
   const response = NextResponse.redirect(`${origin}/account`, 302);
 
   const supabase = createServerClient(
@@ -27,10 +27,23 @@ export async function GET(request: Request) {
     {
       cookies: {
         getAll() {
-          return cookieHeader.split(';').map((c) => {
-            const [name, ...rest] = c.trim().split('=');
-            return { name, value: decodeURIComponent(rest.join('=') || '') };
-          }).filter((c) => c.name);
+          return cookieHeader
+            .split(";")
+            .map((part) => {
+              const separator = part.indexOf("=");
+              if (separator < 1) return null;
+
+              const name = part.slice(0, separator).trim();
+              const encodedValue = part.slice(separator + 1).trim();
+              if (!name) return null;
+
+              try {
+                return { name, value: decodeURIComponent(encodedValue) };
+              } catch {
+                return { name, value: encodedValue };
+              }
+            })
+            .filter((cookie): cookie is { name: string; value: string } => cookie !== null);
         },
         setAll(cookiesToSet: { name: string; value: string; options: any }[]) {
           cookiesToSet.forEach(({ name, value, options }) => {
@@ -38,36 +51,41 @@ export async function GET(request: Request) {
           });
         },
       },
-    }
+    },
   );
 
   const { data, error: sessionError } = await supabase.auth.exchangeCodeForSession(code);
 
   if (sessionError) {
-    return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(sessionError.message)}`, 302);
+    return NextResponse.redirect(
+      `${origin}/login?error=${encodeURIComponent(sessionError.message)}`,
+      302,
+    );
   }
 
-  if (data?.session) {
-    // Pass tokens to client via non-HttpOnly cookie so createClient (localStorage) can pick them up
-    response.cookies.set('sb-session', JSON.stringify({
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-    }), {
-      path: '/',
-      maxAge: 60,
-      sameSite: 'lax',
-      secure: true,
-      httpOnly: false,
-    });
+  const session = data.session;
+  if (session) {
+    // exchangeCodeForSession above writes the normal Supabase SSR cookies onto
+    // this redirect response. The browser client reads the same session for
+    // both OAuth and email/password logins; no duplicate JS-readable token
+    // cookie is needed.
+    response.cookies.delete("sb-session");
 
     try {
-      await fetch(`${origin}/api/auth/ensure-profile`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: data.session.user.id, email: data.session.user.email }),
+      const profileResponse = await fetch(`${origin}/api/auth/ensure-profile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ id: session.user.id, email: session.user.email }),
       });
-    } catch (e) {
-      console.error('[Auth Callback] ensure-profile error:', e);
+
+      if (!profileResponse.ok) {
+        console.error("[Auth Callback] ensure-profile failed:", profileResponse.status);
+      }
+    } catch (profileError) {
+      console.error("[Auth Callback] ensure-profile error:", profileError);
     }
   }
 

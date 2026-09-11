@@ -98,6 +98,7 @@ export default function SupportAdmin() {
   const [filterCategory, setFilterCategory] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [msg, setMsg] = useState("");
   const [unreadCount, setUnreadCount] = useState(0);
@@ -107,14 +108,19 @@ export default function SupportAdmin() {
   const loadTickets = useCallback(async () => {
     setLoading(true);
     try {
-      const statusParam = filterStatus !== "all" ? `&status=${filterStatus}` : "";
+      const statusParam = filterStatus !== "all" ? `&status=${encodeURIComponent(filterStatus)}` : "";
       const res = await authFetch(`/api/support/tickets?limit=100${statusParam}`, {
         credentials: "include",
+        cache: "no-store",
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось загрузить тикеты");
       setTickets(data.tickets || []);
-    } catch {
-      setTickets([]);
+      setLoadError(null);
+    } catch (error) {
+      // Keep the last successful list visible during a transient API failure;
+      // previously both staff and users saw a misleading empty state here.
+      setLoadError(error instanceof Error ? error.message : "Не удалось загрузить тикеты");
     } finally {
       setLoading(false);
     }
@@ -122,10 +128,12 @@ export default function SupportAdmin() {
 
   const loadUnread = useCallback(async () => {
     try {
-      const res = await fetch("/api/support/unread", { credentials: "include" });
-      const data = await res.json();
+      const res = await authFetch("/api/support/unread", { credentials: "include", cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось загрузить счётчик тикетов");
       setUnreadCount(data.count || 0);
     } catch {
+      // The ticket list remains usable even if the optional badge fails.
       setUnreadCount(0);
     }
   }, []);
@@ -147,14 +155,19 @@ export default function SupportAdmin() {
     try {
       const res = await authFetch(`/api/support/tickets/${id}`, {
         credentials: "include",
+        cache: "no-store",
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось загрузить тикет");
       if (data.ticket) {
         setSelected(data.ticket);
         setMessages(data.messages || []);
         setAttachments(data.attachments || []);
+        setMsg("");
       }
-    } catch {}
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Не удалось загрузить тикет");
+    }
   }, []);
 
   useEffect(() => {
@@ -183,7 +196,8 @@ export default function SupportAdmin() {
         credentials: "include",
         body: JSON.stringify({ content: reply, is_internal: isInternal }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось отправить ответ");
       if (data.message) {
         setReply("");
         setIsInternal(false);
@@ -191,10 +205,10 @@ export default function SupportAdmin() {
         await loadTickets();
         await loadUnread();
       } else {
-        setMsg(data.error || "Ошибка");
+        setMsg(data.error || "Не удалось отправить ответ");
       }
-    } catch (e: any) {
-      setMsg(e.message || "Ошибка сети");
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : "Ошибка сети");
     } finally {
       setSending(false);
     }
@@ -209,12 +223,15 @@ export default function SupportAdmin() {
         credentials: "include",
         body: JSON.stringify(updates),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось обновить тикет");
       if (data.ticket) {
         await loadDetails(selected.id);
         await loadTickets();
       }
-    } catch {}
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Не удалось обновить тикет");
+    }
   };
 
   const uploadFile = async (file: File) => {
@@ -223,16 +240,19 @@ export default function SupportAdmin() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("ticket_id", selected.id);
-      const res = await fetch("/api/support/upload", {
+      const res = await authFetch("/api/support/upload", {
         method: "POST",
         credentials: "include",
         body: formData,
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Не удалось загрузить файл");
       if (data.attachment) {
         await loadDetails(selected.id);
       }
-    } catch {}
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Не удалось загрузить файл");
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -295,12 +315,20 @@ export default function SupportAdmin() {
             </select>
           </div>
           <input placeholder="Поиск по тикетам..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", margin: 0 }} />
+          {loadError && (
+            <div role="alert" className="card" style={{ padding: 10, color: "#e74c3c", fontSize: 12 }}>
+              Не удалось обновить тикеты: {loadError}{" "}
+              <button type="button" onClick={loadTickets} style={{ fontSize: 11, padding: "3px 7px", marginLeft: 4 }}>Повторить</button>
+            </div>
+          )}
 
-          {loading ? (
+          {loading && tickets.length === 0 ? (
             <p style={{ color: "var(--muted)" }}>Загрузка...</p>
           ) : filteredTickets.length === 0 ? (
             <div className="card" style={{ textAlign: "center", padding: 24 }}>
-              <p style={{ color: "var(--muted)" }}>Тикетов не найдено</p>
+              <p style={{ color: loadError ? "#e74c3c" : "var(--muted)" }}>
+                {loadError ? "Список тикетов недоступен. Повторите попытку." : "Тикетов не найдено"}
+              </p>
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: "70vh", overflowY: "auto" }}>
@@ -328,6 +356,7 @@ export default function SupportAdmin() {
         </aside>
 
         <section style={{ flex: 1, minWidth: 0 }}>
+          {msg && !selected && <p role="alert" style={{ color: "#e74c3c", fontSize: 12 }}>{msg}</p>}
           {selected ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <div className="card" style={{ padding: "14px 18px" }}>
