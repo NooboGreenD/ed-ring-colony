@@ -1588,8 +1588,19 @@
   }
 
   .project-link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
     background: rgba(255, 255, 255, 0.03);
+    border: 1px solid #38bdf8 !important;
+    border-radius: 4px !important;
     cursor: pointer;
+  }
+
+  .project-link-button:hover {
+    background: rgba(56, 189, 248, 0.12);
+    box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.2);
   }
 
   .project-link-button:active {
