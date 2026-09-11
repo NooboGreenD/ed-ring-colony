@@ -10,6 +10,11 @@
 -- type conversion, and leave internal FK triggers untouched.  The DO block is
 -- atomic: if a conversion or recreation fails, PostgreSQL restores both the
 -- original column type and the trigger definitions.
+--
+-- raven_sync_log is intentionally not converted here. It is an audit table,
+-- not a source for map/detail progress, and deployments can expose it through
+-- views such as latest_raven_sync. Its full project payload remains in JSON;
+-- avoiding a view drop/recreate preserves that view's grants and definition.
 DO $$
 DECLARE
   target RECORD;
@@ -23,9 +28,7 @@ BEGIN
       VALUES
         ('system_progress', 'progress'),
         ('route_systems', 'progress'),
-        ('hubs', 'progress'),
-        ('raven_sync_log', 'progress'),
-        ('raven_sync_log', 'system_progress')
+        ('hubs', 'progress')
     ) AS affected(table_name, column_name)
   LOOP
     -- It is safe to rerun after a partially attempted deployment.  Do not
