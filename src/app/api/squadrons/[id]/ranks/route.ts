@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabaseServer'
+import { createClient, authFromRequest } from '@/lib/supabaseServer'
 import { z } from 'zod'
+import { getSquadronMembership } from '@/lib/squadronData'
 
 export const dynamic = 'force-dynamic';
 const rankSchema = z.object({
@@ -27,18 +28,11 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const squadronId = parseInt(params.id)
     const body = await req.json()
     const parsed = rankSchema.parse(body)
-    const supabase = await createClient()
-
-    const { data: { user } } = await supabase.auth.getUser()
+    const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав: can_manage_ranks
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_ranks')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_ranks) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -80,18 +74,11 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   try {
     const squadronId = parseInt(params.id)
     const { rank_id, ...updates } = await req.json()
-    const supabase = await createClient()
-
-    const { data: { user } } = await supabase.auth.getUser()
+    const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав: can_manage_ranks
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_ranks')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_ranks) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
@@ -139,18 +126,11 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
   try {
     const squadronId = parseInt(params.id)
     const { rank_id } = await req.json()
-    const supabase = await createClient()
-
-    const { data: { user } } = await supabase.auth.getUser()
+    const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
     // Проверка прав: can_manage_ranks
-    const { data: membership } = await supabase
-      .from('squadron_member_detail')
-      .select('can_manage_ranks')
-      .eq('squadron_id', squadronId)
-      .eq('user_id', user.id)
-      .single()
+    const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
     if (!membership || !membership.can_manage_ranks) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })

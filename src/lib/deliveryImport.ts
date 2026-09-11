@@ -24,6 +24,38 @@ type DeliveryRow = {
   source_hash: string;
 };
 
+// A Journal can contain thousands of events. Keep each PostgREST mutation
+// deliberately small: after the source-hash index rollout, a failed request
+// can be retried safely and never turns one large INSERT/RETURNING statement
+// into a database statement timeout.
+export const DELIVERY_IMPORT_WRITE_BATCH_SIZE = 100;
+const PLACEMENT_LOOKUP_BATCH_SIZE = 50;
+
+// A deployment can add source_hash before its optional concurrent unique index
+// is built. Remember that capability per warm server instance so every 100-row
+// batch does not first issue a deliberately failing UPSERT. Compatibility
+// results deliberately expire: a warm server must discover a completed schema
+// rollout without requiring a restart/redeploy.
+type SourceHashWriteMode = 'unknown' | 'unique-index' | 'column-without-index' | 'no-column';
+const SOURCE_HASH_CAPABILITY_REPROBE_MS = 2 * 60_000;
+let sourceHashWriteMode: SourceHashWriteMode = 'unknown';
+let sourceHashWriteModeExpiresAt = 0;
+
+function rememberSourceHashWriteMode(mode: SourceHashWriteMode) {
+  sourceHashWriteMode = mode;
+  sourceHashWriteModeExpiresAt = mode === 'unique-index'
+    ? 0
+    : Date.now() + SOURCE_HASH_CAPABILITY_REPROBE_MS;
+}
+
+function shouldTryAtomicSourceHashWrite(): boolean {
+  return (
+    sourceHashWriteMode === 'unknown'
+    || sourceHashWriteMode === 'unique-index'
+    || Date.now() >= sourceHashWriteModeExpiresAt
+  );
+}
+
 function normalized(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -43,19 +75,31 @@ function safeSourceHash(value: unknown, fallback: string): string {
   return fallbackHash(fallback);
 }
 
-async function loadPlacementLookup(svc: SupabaseClient): Promise<Map<string, SystemPlacement>> {
-  // Do not use a case-sensitive `in(system_name, ...)` lookup here. Journal
-  // names often differ only in case/whitespace from stored route and hub rows.
-  const [{ data: hubs, error: hubsError }, { data: routeSystems, error: routesError }] = await Promise.all([
-    svc.from('hubs').select('system_name'),
-    svc.from('route_systems').select('id, system_name'),
-  ]);
-  // Placement only enriches leaderboard statistics. A deployment that is in
-  // the middle of a route-table migration can still retain a valid personal
-  // delivery rather than rejecting the entire Journal batch.
-  if (hubsError) console.warn('[delivery import] Could not load hubs:', hubsError.message);
-  if (routesError) console.warn('[delivery import] Could not load route systems:', routesError.message);
+function chunk<T>(values: T[], size: number): T[][] {
+  const result: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
+}
 
+function placementCandidates(deliveries: unknown[]): string[] {
+  const names = new Map<string, string>();
+  for (const raw of deliveries) {
+    if (!raw || typeof raw !== 'object') continue;
+    const name = String((raw as Record<string, unknown>).system_name ?? '')
+      .trim()
+      .replace(/\s+/g, ' ');
+    const key = normalized(name);
+    if (name && name.length <= 250 && key && !names.has(key)) names.set(key, name);
+  }
+  return Array.from(names.values());
+}
+
+function placementMap(
+  hubs: Array<{ system_name?: unknown }> | null | undefined,
+  routeSystems: Array<{ id?: unknown; system_name?: unknown }> | null | undefined,
+): Map<string, SystemPlacement> {
   const placements = new Map<string, SystemPlacement>();
   for (const routeSystem of routeSystems || []) {
     const key = normalized(routeSystem.system_name);
@@ -78,6 +122,82 @@ async function loadPlacementLookup(svc: SupabaseClient): Promise<Map<string, Sys
     });
   }
   return placements;
+}
+
+function isMissingPlacementResolver(error: { code?: string; message?: string }): boolean {
+  return (
+    error.code === 'PGRST202'
+    || /resolve_delivery_system_placements|could not find the function/i.test(error.message || '')
+  );
+}
+
+async function loadExactPlacementLookup(
+  svc: SupabaseClient,
+  candidateNames: string[],
+): Promise<Map<string, SystemPlacement>> {
+  const hubs: Array<{ system_name?: unknown }> = [];
+  const routeSystems: Array<{ id?: unknown; system_name?: unknown }> = [];
+
+  // The compatibility path intentionally only reads names present in this
+  // upload. It keeps installations that have not yet run the resolver
+  // migration from repeatedly downloading every hub and route system.
+  for (const names of chunk(candidateNames, PLACEMENT_LOOKUP_BATCH_SIZE)) {
+    const [hubsResponse, routesResponse] = await Promise.all([
+      svc.from('hubs').select('system_name').in('system_name', names),
+      svc.from('route_systems').select('id, system_name').in('system_name', names),
+    ]);
+    if (hubsResponse.error) {
+      console.warn('[delivery import] Could not load matching hubs:', hubsResponse.error.message);
+    } else if (hubsResponse.data) {
+      hubs.push(...hubsResponse.data);
+    }
+    if (routesResponse.error) {
+      console.warn('[delivery import] Could not load matching route systems:', routesResponse.error.message);
+    } else if (routesResponse.data) {
+      routeSystems.push(...routesResponse.data);
+    }
+  }
+
+  return placementMap(hubs, routeSystems);
+}
+
+async function loadPlacementLookup(
+  svc: SupabaseClient,
+  deliveries: unknown[],
+): Promise<Map<string, SystemPlacement>> {
+  const candidateNames = placementCandidates(deliveries);
+  if (candidateNames.length === 0) return new Map();
+
+  // The SQL resolver added with the import-performance migration matches the
+  // same case/whitespace-normalized key as the Journal parser and uses
+  // expression indexes. Do not scan the complete hubs/route_systems tables on
+  // every batch.
+  const { data, error } = await svc.rpc('resolve_delivery_system_placements', {
+    system_names: candidateNames,
+  });
+  if (!error) {
+    const placements = new Map<string, SystemPlacement>();
+    for (const row of data || []) {
+      const key = normalized(row?.input_system_name);
+      const routeSystemId = row?.route_system_id == null ? null : Number(row.route_system_id);
+      const systemName = String(row?.system_name ?? '').trim();
+      if (!key || !systemName || (routeSystemId !== null && !Number.isSafeInteger(routeSystemId))) continue;
+      placements.set(key, {
+        systemName,
+        isHub: Boolean(row?.is_hub),
+        routeSystemId,
+      });
+    }
+    return placements;
+  }
+
+  // During a rolling deployment the API can run before Supabase migrations are
+  // applied or before PostgREST reloads its schema cache. The exact-name
+  // fallback remains bounded and avoids making journal imports unavailable.
+  if (!isMissingPlacementResolver(error)) {
+    console.warn('[delivery import] Placement resolver failed; using bounded fallback:', error.message);
+  }
+  return loadExactPlacementLookup(svc, candidateNames);
 }
 
 function validRows(userId: string, deliveries: unknown[], placements: Map<string, SystemPlacement>): DeliveryRow[] {
@@ -142,42 +262,71 @@ function isMissingConflictTarget(error: { code?: string; message?: string }): bo
   return error.code === '42P10' || /no unique or exclusion constraint|there is no unique or exclusion constraint/i.test(error.message || '');
 }
 
-/**
- * Persist a batch idempotently. The normal path uses the unique
- * (user_id, source_hash) index from the delivery-idempotency migration. The
- * fallback keeps current installations usable until that migration is applied.
- */
-export async function persistImportedDeliveries(
+function isMissingSourceHash(error: { code?: string; message?: string }): boolean {
+  return (
+    error.code === '42703'
+    || error.code === 'PGRST204'
+    || /source_hash.*(?:does not exist|could not find)|could not find.*source_hash/i.test(error.message || '')
+  );
+}
+
+async function persistDeliveryChunk(
   svc: SupabaseClient,
   userId: string,
   incomingDeliveries: unknown[],
 ): Promise<DeliveryImportOutcome> {
-  const placements = await loadPlacementLookup(svc);
+  const placements = await loadPlacementLookup(svc, incomingDeliveries);
   const initialRows = validRows(userId, incomingDeliveries, placements);
   const collapsed = collapseBatchDuplicates(initialRows);
   if (collapsed.rows.length === 0) {
     return { inserted: 0, duplicates: collapsed.duplicates, eventsFound: 0 };
   }
 
-  const { data, error } = await svc
-    .from('deliveries')
-    .upsert(collapsed.rows, { onConflict: 'user_id,source_hash', ignoreDuplicates: true })
-    .select('id');
+  if (shouldTryAtomicSourceHashWrite()) {
+    const { data, error } = await svc
+      .from('deliveries')
+      .upsert(collapsed.rows, { onConflict: 'user_id,source_hash', ignoreDuplicates: true })
+      .select('id');
 
-  if (!error) {
-    const inserted = data?.length ?? 0;
+    if (!error) {
+      rememberSourceHashWriteMode('unique-index');
+      const inserted = data?.length ?? 0;
+      return {
+        inserted,
+        duplicates: collapsed.duplicates + Math.max(0, collapsed.rows.length - inserted),
+        eventsFound: initialRows.length,
+      };
+    }
+
+    if (isMissingSourceHash(error)) {
+      rememberSourceHashWriteMode('no-column');
+    } else if (isMissingConflictTarget(error)) {
+      rememberSourceHashWriteMode('column-without-index');
+    } else {
+      throw new Error(error.message);
+    }
+  }
+
+  if (sourceHashWriteMode === 'no-column') {
+    // A rolling deploy can serve the API before ADD COLUMN source_hash reaches
+    // PostgREST. Retain valid deliveries rather than rejecting the upload;
+    // retries become idempotent after the column/index rollout completes.
+    const legacyRows = collapsed.rows.map(({ source_hash: _sourceHash, ...row }) => row);
+    const { data: insertedRows, error: insertError } = await svc
+      .from('deliveries')
+      .insert(legacyRows)
+      .select('id');
+    if (insertError) throw new Error(insertError.message);
     return {
-      inserted,
-      duplicates: collapsed.duplicates + Math.max(0, collapsed.rows.length - inserted),
+      inserted: insertedRows?.length ?? legacyRows.length,
+      duplicates: collapsed.duplicates,
       eventsFound: initialRows.length,
     };
   }
 
-  if (!isMissingConflictTarget(error)) throw new Error(error.message);
-
-  // Compatibility path for a deployment which has not run the migration yet.
-  // It is not race-proof (the migration path is), but still makes repeated
-  // uploads in an existing installation idempotent instead of failing.
+  // Compatibility path for a deployment with source_hash but before the
+  // optional concurrent unique index. It is not race-proof, but each lookup
+  // and write stays bounded and repeated sequential imports remain safe.
   const hashes = collapsed.rows.map((row) => row.source_hash);
   const { data: existing, error: existingError } = await svc
     .from('deliveries')
@@ -206,4 +355,28 @@ export async function persistImportedDeliveries(
     duplicates: collapsed.duplicates + existingHashes.size + Math.max(0, missing.length - inserted),
     eventsFound: initialRows.length,
   };
+}
+
+/**
+ * Persist arbitrary client-sized batches safely. Older desktop helpers used
+ * 500-item requests; processing them in 100-row writes prevents a single
+ * long-running statement while retaining compatibility with those releases.
+ */
+export async function persistImportedDeliveries(
+  svc: SupabaseClient,
+  userId: string,
+  incomingDeliveries: unknown[],
+): Promise<DeliveryImportOutcome> {
+  let inserted = 0;
+  let duplicates = 0;
+  let eventsFound = 0;
+
+  for (const deliveryChunk of chunk(incomingDeliveries, DELIVERY_IMPORT_WRITE_BATCH_SIZE)) {
+    const outcome = await persistDeliveryChunk(svc, userId, deliveryChunk);
+    inserted += outcome.inserted;
+    duplicates += outcome.duplicates;
+    eventsFound += outcome.eventsFound;
+  }
+
+  return { inserted, duplicates, eventsFound };
 }

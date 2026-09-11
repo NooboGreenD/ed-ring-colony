@@ -1,4 +1,3 @@
-```
 # Dependencies
 node_modules/
 
@@ -6,6 +5,7 @@ node_modules/
 dist/
 build/
 target/
+.next/
 
 # TypeScript/JavaScript build outputs
 *.js.map
@@ -17,6 +17,7 @@ target/
 *.tmp
 *.swp
 *.swo
+supabase/.temp/
 
 # Logs
 *.log
@@ -50,4 +51,3 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
-```

@@ -1,19 +1,30 @@
+/*
+ * Local, one-off profile repair utility.
+ *
+ * Run only in a trusted shell with explicit environment variables, for example:
+ *   node --env-file=.env.local fix-supabase.js
+ *
+ * Never paste credentials into this file or commit them to the repository.
+ */
 const { createClient } = require('@supabase/supabase-js');
 const ws = require('ws');
 
-const supabaseUrl = 'https://sgukfplhxdhmkqponwft.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNndWtmcGxoeGRobWtxcG9ud2Z0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4Njg4OTg1NywiZXhwIjoyMTAyNDY1ODU3fQ.XjPlqGTwT55I-Wc8qW9HvDLLKrhhIj48noAoiHFD27I';
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+  console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.');
+  console.error('Use a local ignored environment file or export both values before running this maintenance utility.');
+  process.exit(1);
+}
 
 const supabase = createClient(supabaseUrl, supabaseKey, {
-  realtime: {
-    transport: ws
-  }
+  realtime: { transport: ws },
 });
 
 async function fixDatabase() {
   console.log('🔍 Анализ ситуации...');
 
-  // 1. Получаем всех пользователей из auth
   const { data: users, error: usersError } = await supabase.auth.admin.listUsers();
   if (usersError) {
     console.error('❌ Ошибка получения пользователей:', usersError.message);
@@ -29,20 +40,21 @@ async function fixDatabase() {
   for (const user of users.users) {
     const cmdrNameFromMeta = user.user_metadata?.cmdr_name;
     const cmdrNameFromEmail = user.email ? user.email.split('@')[0] : 'UnknownCommander';
-    
-    // Приоритет: метаданные -> email -> дефолт
-    let finalCmdrName = cmdrNameFromMeta || cmdrNameFromEmail;
-    
-    // Проверка существования профиля
+    const finalCmdrName = cmdrNameFromMeta || cmdrNameFromEmail;
+
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, cmdr_name')
       .eq('id', user.id)
-      .single();
+      .maybeSingle();
 
-    if (profileError && profileError.code === 'PGRST116') {
-      // Профиль не найден, создаем
-      missingProfileCount++;
+    if (profileError) {
+      console.error(`⚠️ Ошибка проверки профиля для ${user.id}: ${profileError.message}`);
+      continue;
+    }
+
+    if (!profile) {
+      missingProfileCount += 1;
       const { error: insertError } = await supabase
         .from('profiles')
         .insert({
@@ -50,33 +62,26 @@ async function fixDatabase() {
           cmdr_name: finalCmdrName,
           email: user.email,
           avatar_url: user.user_metadata?.avatar_url,
-          discord_id: user.user_metadata?.sub,
-          updated_at: new Date().toISOString()
+          updated_at: new Date().toISOString(),
         });
-      
+
       if (insertError) {
-        console.error(`⚠️ Ошибка создания профиля для ${user.email}: ${insertError.message}`);
+        console.error(`⚠️ Ошибка создания профиля для ${user.id}: ${insertError.message}`);
       } else {
-        console.log(`➕ Создан профиль для: ${user.email} (CMDR: ${finalCmdrName})`);
-        createdCount++;
+        console.log(`➕ Создан профиль для: ${user.id}`);
+        createdCount += 1;
       }
-    } else if (profile) {
-      // Профиль есть, но возможно имя пустое или null
-      const currentName = profile.cmdr_name;
-      if (!currentName || currentName.trim() === '' || currentName === 'UnknownCommander') {
-        const { error: updateError } = await supabase
-          .from('profiles')
-          .update({ cmdr_name: finalCmdrName })
-          .eq('id', user.id);
-        
-        if (updateError) {
-          console.error(`⚠️ Ошибка обновления имени для ${user.email}: ${updateError.message}`);
-        } else {
-          console.log(`✏️ Обновлено имя для: ${user.email} (${currentName} -> ${finalCmdrName})`);
-          fixedCount++;
-        }
+    } else if (!profile.cmdr_name || profile.cmdr_name.trim() === '' || profile.cmdr_name === 'UnknownCommander') {
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ cmdr_name: finalCmdrName })
+        .eq('id', user.id);
+
+      if (updateError) {
+        console.error(`⚠️ Ошибка обновления имени профиля ${user.id}: ${updateError.message}`);
       } else {
-        console.log(`✅ OK: ${user.email} (CMDR: ${currentName})`);
+        console.log(`✏️ Обновлено имя профиля: ${user.id}`);
+        fixedCount += 1;
       }
     }
   }
@@ -86,8 +91,9 @@ async function fixDatabase() {
   console.log(`🆕 Создано профилей: ${createdCount}`);
   console.log(`🔧 Исправлено имен: ${fixedCount}`);
   console.log(`❓ Было без профиля: ${missingProfileCount}`);
-  
-  console.log('\n💡 Следующий шаг: Очистите LocalStorage в браузере и войдите снова.');
 }
 
-fixDatabase().catch(console.error);
+fixDatabase().catch((error) => {
+  console.error('❌ Неожиданная ошибка:', error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation';
-import { createClient, createServiceClient } from '@/lib/supabaseServer';
+import { createClient } from '@/lib/supabaseServer';
 import { fetchRavenColonialData } from '@/lib/ravenColonial';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconProfile, IconSquadron, IconLeaderboard } from '@/components/Icons';
@@ -87,30 +87,41 @@ export default async function CmdrPage({ params }: { params: { name: string } })
     trackTons[r.system_name] = (trackTons[r.system_name] || 0) + r.amount;
   });
 
-  // Эскадрилья — используем service client чтобы гарантированно получить данные
+  // Squadron membership is public data. Read the base tables directly rather
+  // than depending on a service key and the untracked squadron_summary view.
+  // This keeps the squadron label visible on a commander's profile even while
+  // database views are being restored.
   let squadron = null;
   if (profileId) {
-    const service = createServiceClient();
-    const { data: membership } = await service
+    const { data: membership, error: membershipError } = await supabase
       .from('squadron_members')
       .select('squadron_id')
       .eq('user_id', profileId)
+      .order('id', { ascending: false })
+      .limit(1)
       .maybeSingle();
-    if (membership) {
-      const { data: sq } = await service
-        .from('squadron_summary')
+    if (membershipError) {
+      console.warn('[cmdr profile] Could not load squadron membership:', membershipError.message);
+    }
+    if (membership?.squadron_id) {
+      const { data: memberSquadron, error: squadronError } = await supabase
+        .from('squadrons')
         .select('*')
         .eq('id', membership.squadron_id)
         .maybeSingle();
-      squadron = sq;
+      if (squadronError) console.warn('[cmdr profile] Could not load squadron:', squadronError.message);
+      squadron = memberSquadron;
     }
     if (!squadron) {
-      const { data: sq } = await service
-        .from('squadron_summary')
+      const { data: createdSquadron, error: squadronError } = await supabase
+        .from('squadrons')
         .select('*')
         .eq('created_by', profileId)
+        .order('created_at', { ascending: false })
+        .limit(1)
         .maybeSingle();
-      squadron = sq;
+      if (squadronError) console.warn('[cmdr profile] Could not load created squadron:', squadronError.message);
+      squadron = createdSquadron;
     }
   }
 

@@ -67,9 +67,12 @@ export async function GET(req: NextRequest) {
       100_000,
     );
 
+    // An exact count makes PostgREST run an additional full count query. The
+    // client does not consume a cross-page total, and this inexpensive list
+    // endpoint must remain available while the tickets table grows.
     let query = context.db
       .from("support_tickets")
-      .select("*", { count: "exact" });
+      .select("*");
 
     // Service-role access intentionally bypasses RLS for reliable staff
     // listing, so enforce the owner restriction in the route for everyone
@@ -84,7 +87,6 @@ export async function GET(req: NextRequest) {
     const {
       data: ticketRows,
       error,
-      count,
     } = await query
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
@@ -114,7 +116,7 @@ export async function GET(req: NextRequest) {
       assigned: publicProfile(profiles.get(ticket.assigned_to)),
     }));
 
-    return response({ tickets, total: count ?? tickets.length });
+    return response({ tickets, total: tickets.length });
   } catch (error) {
     console.error("[support/tickets GET] Unexpected error:", error);
     return response(

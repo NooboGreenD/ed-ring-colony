@@ -119,12 +119,25 @@ export default function AccountPage() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-    (async () => {
-      const res = await authFetch(`/api/squadrons/my`);
-      const json = await res.json();
-      if (json.squadron) setMySquadron(json);
+    if (!user) {
+      setMySquadron(null);
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        const res = await authFetch('/api/squadrons/my', { cache: 'no-store' });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'Could not load squadron');
+        // The endpoint returns the whole detail object, not json.squadron.
+        // Clear stale state only after a successful authoritative no-membership
+        // response; retain it on a transient request failure.
+        if (active) setMySquadron(json.squadron ? json : null);
+      } catch (error) {
+        console.warn('[Account] Could not load squadron:', error);
+      }
     })();
+    return () => { active = false; };
   }, [user]);
 
   if (!authReady) {
@@ -301,16 +314,13 @@ export default function AccountPage() {
         skippedDuplicates: 0,
       };
 
-      setProgress({ current: 0, total: list.length, phase: t('account.loadingSystems'), pct: 2 });
-      const client = createSupabaseClient();
-      const [{ data: hubsData }, { data: routeSystemsData }] = await Promise.all([
-        client.from('hubs').select('system_name'),
-        client.from('route_systems').select('id, system_name'),
-      ]);
-      const normaliseSystem = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+      // Hub/route classification is resolved server-side for each bounded
+      // upload batch. Downloading every system to the browser here was both
+      // expensive and stale; parsing only needs a stable event context.
+      setProgress({ current: 0, total: list.length, phase: t('account.parsingFile'), pct: 2 });
       const lookup = {
-        hubs: new Set((hubsData || []).map((hub: any) => normaliseSystem(hub.system_name))),
-        routeSystems: new Map((routeSystemsData || []).map((routeSystem: any) => [normaliseSystem(routeSystem.system_name), routeSystem.id])),
+        hubs: new Set<string>(),
+        routeSystems: new Map<string, number>(),
       };
       const parserState = createJournalParseState();
 
@@ -351,11 +361,49 @@ export default function AccountPage() {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
 
-      const CHUNK_SIZE = 500;
+      // Keep browser requests comfortably below the server's bounded
+      // PostgREST write size. Older desktop helpers may still send 500 rows;
+      // the API splits those safely as well.
+      const CHUNK_SIZE = 100;
       const chunks = Math.ceil(allDeliveries.length / CHUNK_SIZE);
       let inserted = 0;
       let duplicates = allStats.skippedDuplicates;
       let eventsFound = 0;
+
+      const uploadChunk = async (deliveries: unknown[]) => {
+        let lastError = new Error(t('account.serverError'));
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          let response: Response;
+          try {
+            response = await authFetch('/api/logs/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cmdr, deliveries }),
+            });
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(t('account.serverError'));
+            if (attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+            throw lastError;
+          }
+
+          const json = await response.json().catch(() => ({}));
+          if (response.ok) return json;
+          lastError = new Error(json.error || t('account.serverError'));
+          // Retry only temporary rate-limit/server failures. Every delivery
+          // has a stable source hash, so after the matching database index is
+          // deployed a request committed just before a dropped response is
+          // safe to send again.
+          if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+            continue;
+          }
+          throw lastError;
+        }
+        throw lastError;
+      };
 
       for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
         setProgress({
@@ -374,13 +422,7 @@ export default function AccountPage() {
             source_hash: delivery.sourceHash,
             source: delivery.source,
           }));
-        const response = await authFetch('/api/logs/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cmdr, deliveries: chunk }),
-        });
-        const json = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(json.error || t('account.serverError'));
+        const json = await uploadChunk(chunk);
         inserted += json.inserted ?? 0;
         duplicates += json.duplicates ?? 0;
         eventsFound += json.eventsFound ?? 0;

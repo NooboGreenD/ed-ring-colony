@@ -59,7 +59,10 @@ class ApiClient:
         """Загрузить список доставок. Возвращает {inserted, eventsFound, error, partial}."""
         if not self.token:
             return {"ok": False, "error": "Нет токена"}
-        chunk_size = 500
+        # Keep each server request small enough that the database can resolve
+        # route/hub placement and persist it without hitting its statement
+        # timeout. The API also splits legacy 500-row callers defensively.
+        chunk_size = 100
         max_attempts = 3
         total_inserted = 0
         total_events = 0

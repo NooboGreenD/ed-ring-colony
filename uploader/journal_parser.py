@@ -1,4 +1,5 @@
 """Парсер журналов Elite Dangerous."""
+import hashlib as _hashlib
 import json as _std_json
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -54,6 +55,17 @@ def _event_key(ev: dict) -> str:
     elif event == "CargoDepot":
         return f"CD:{ts}:{ev.get('CargoType', '')}:{ev.get('Count', 0)}"
     return f"{event}:{ts}"
+
+
+def _source_hash(kind: str, line: str, *parts: object) -> str:
+    """Stable, opaque id for one emitted delivery.
+
+    The API can safely retry a bounded upload when a network/serverless request
+    is interrupted. Include the raw journal line plus the emitted commodity
+    context: a single ColonisationContribution event can emit several rows.
+    """
+    value = "\0".join([kind, line, *(str(part) for part in parts)])
+    return "journal-v2-" + _hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def parse_journal(
@@ -168,7 +180,8 @@ def parse_journal(
                             "system_address": current_system_address,
                             "is_hub": None,
                             "route_system_id": None,
-                            "source_hash": "",
+                            "source": "colonisation_contribution",
+                            "source_hash": _source_hash("contribution", line, name, delta),
                         })
                     last_contribution_state[key] = amount
         elif event == "CargoDepot":
@@ -186,7 +199,8 @@ def parse_journal(
                         "system_address": current_system_address,
                         "is_hub": None,
                         "route_system_id": None,
-                        "source_hash": "",
+                        "source": "cargo_depot",
+                        "source_hash": _source_hash("cargo-depot", line, cargo_type, count),
                     })
                     cargo_depot_items.add(str(ev.get("CargoType", "")).lower())
         elif event == "ColonisationConstructionDepot":
@@ -223,7 +237,8 @@ def parse_journal(
                             "system_address": current_system_address,
                             "is_hub": None,
                             "route_system_id": None,
-                            "source_hash": "",
+                            "source": "cargo_delta",
+                            "source_hash": _source_hash("cargo-delta", line, key, prev["count"], now_count),
                         })
             last_cargo = inv
             cargo_depot_items.clear()
