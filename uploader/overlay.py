@@ -500,13 +500,11 @@ class StatusOverlay(OverlayWindow):
         self.progress_text.pack(fill=tk.X, pady=(4, 0))
 
         _make_separator(self.content).pack(fill=tk.X, pady=6)
-        tk.Label(self.content, text="EVENT LOG", font=(ff, fs - 2, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(anchor=tk.W)
-
-        self.log_text = tk.Text(
-            self.content, height=6, font=(ff, fs - 2), fg=COLOR_TEXT, bg=COLOR_BG,
-            wrap=tk.WORD, state=tk.DISABLED, highlightthickness=0, borderwidth=0, padx=6, pady=4,
+        self.detail_text = tk.Label(
+            self.content, text="Ошибок нет", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED,
+            bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT, wraplength=250,
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.detail_text.pack(fill=tk.X, pady=(2, 0))
 
     def set_status(self, online: bool, detail: str = ""):
         if online:
@@ -524,21 +522,12 @@ class StatusOverlay(OverlayWindow):
         self.progress_text.config(text=text)
 
     def add_log(self, message: str, level: str = "info"):
-        color = {"success": COLOR_GREEN_TEXT, "error": COLOR_RED_TEXT, "warn": COLOR_YELLOW, "info": COLOR_TEXT}.get(level, COLOR_TEXT)
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"[{timestamp}] ")
-        tag_name = f"log_{level}_{int(time.time()*1000)%10000}"
-        start_idx = self.log_text.index("end-1c linestart")
-        self.log_text.insert(tk.END, f"{message}\n")
-        end_idx = self.log_text.index("end-2c")
-        self.log_text.tag_add(tag_name, start_idx, end_idx)
-        self.log_text.tag_config(tag_name, foreground=color)
-        self.log_text.see(tk.END)
-        lines = int(self.log_text.index("end-1c").split(".")[0])
-        if lines > 60:
-            self.log_text.delete("1.0", "7.0")
-        self.log_text.config(state=tk.DISABLED)
+        # STATUS is deliberately a compact health indicator, not a second
+        # journal window. Keep only actionable warnings/errors.
+        if level not in ("warn", "error"):
+            return
+        color = COLOR_RED_TEXT if level == "error" else COLOR_YELLOW
+        self.detail_text.config(text=f"{level.upper()}: {message[-180:]}", fg=color)
 
 
 # ============================================================
@@ -1221,10 +1210,25 @@ class OverlayManager:
 
     def _set_all_visibility(self, show: bool):
         """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order."""
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        overlay_settings = {
+            "route": "show_route",
+            "status": "show_status",
+            "ship": "show_ship",
+            "cargo": "show_cargo",
+            "session": "show_session",
+        }
+        overlays = [
+            (self.route_overlay, "route"),
+            (self.status_overlay, "status"),
+            (self.ship_overlay, "ship"),
+            (self.cargo_overlay, "cargo"),
+            (self.session_overlay, "session"),
+        ]
+        for ov, key in overlays:
             if ov:
                 try:
-                    if show:
+                    should_show = show and self.settings.get(overlay_settings[key], True)
+                    if should_show:
                         if not ov.window.winfo_viewable():
                             ov.show()
                         ov.window.lift()
@@ -1306,13 +1310,13 @@ class OverlayManager:
                 self._session_stats["systems_visited"] += 1
                 self._session_stats["current_system"] = current_sys
 
-            deliveries = data.get("new_deliveries", 0)
-            if deliveries:
-                self._session_stats["deliveries_count"] += deliveries
-
-            cargo_tons = data.get("cargo_total_tons", 0)
-            if cargo_tons:
-                self._session_stats["cargo_total_tons"] += cargo_tons
+            # These values are already session totals supplied by the helper.
+            # Adding them on every overlay tick made the counters grow again
+            # even when no new journal event arrived.
+            self._session_stats["deliveries_count"] = int(data.get("deliveries_count", 0) or 0)
+            self._session_stats["cargo_total_tons"] = float(data.get("cargo_total_tons", 0) or 0)
+            self._session_stats["route_deliveries_count"] = int(data.get("route_deliveries_count", 0) or 0)
+            self._session_stats["route_cargo_tons"] = float(data.get("route_cargo_tons", 0) or 0)
 
             ship = data.get("ship", {})
             self._session_stats["cargo_count"] = ship.get("cargo_count", 0)

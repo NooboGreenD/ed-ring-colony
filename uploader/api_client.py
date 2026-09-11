@@ -62,7 +62,10 @@ class ApiClient:
         # Keep each server request small enough that the database can resolve
         # route/hub placement and persist it without hitting its statement
         # timeout. The API also splits legacy 500-row callers defensively.
-        chunk_size = 100
+        # Smaller requests keep placement resolution and deduplication bounded
+        # on the server. This also prevents one slow statement from stopping
+        # the watcher after several deliveries.
+        chunk_size = 25
         max_attempts = 3
         total_inserted = 0
         total_events = 0

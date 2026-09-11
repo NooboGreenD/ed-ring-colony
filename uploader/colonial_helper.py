@@ -126,6 +126,7 @@ class ColonialHelperApp:
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
+        self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
 
         # Конфиг
         self.config = {}
@@ -485,8 +486,20 @@ class ColonialHelperApp:
     #  Вкладка: Оверлей
     # ============================================================
     def _build_tab_overlay(self):
-        frame = tb.Frame(self.tab_overlay, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        # The overlay settings contain more controls than a small window can
+        # display. Put the whole settings panel in a scrollable canvas.
+        viewport = tb.Frame(self.tab_overlay)
+        viewport.pack(fill=BOTH, expand=True)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        frame = tb.Frame(canvas, padding=15)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
 
         tb.Label(frame, text="Настройки оверлея HUD", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(
@@ -1357,6 +1370,7 @@ class ColonialHelperApp:
         # CMDR из уже проверенного токена (если сервер его вернул) — используется
         # как основа для всех тиков watcher'а, пока журнал не назовёт другого CMDR.
         self._watcher_cmdr_name = self.api.cmdr_name
+        self._pending_watcher_deliveries = []
 
         # Определяем текущую систему CMDR ДО старта потока watcher'а.
         # Иначе, если приложение запущено, когда игрок уже находится в
@@ -1722,18 +1736,22 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
-        # Отдельно — аплоад доставок, если они есть
-        if deliveries:
+        # Отдельно — аплоад доставок. Не теряем распарсенные строки, если
+        # сервер временно занят: парсер уже пометил события как обработанные,
+        # поэтому следующий тик сам по себе их больше не повторит.
+        upload_deliveries = self._pending_watcher_deliveries + deliveries
+        self._pending_watcher_deliveries = []
+        if upload_deliveries:
             result = self.api.upload_deliveries(
-                [self._delivery_for_api(d) for d in deliveries], cmdr_name
+                [self._delivery_for_api(d) for d in upload_deliveries], cmdr_name
             )
             if result["ok"]:
                 inserted = result['inserted']
                 self._session_deliveries += inserted
-                tons = sum(d.get("amount", 0) for d in deliveries)
+                tons = sum(d.get("amount", 0) for d in upload_deliveries)
                 self._session_cargo_tons += tons
                 # Доставки только в системы маршрута
-                route_deliveries = [d for d in deliveries if self.route.is_on_route(d["system_name"])]
+                route_deliveries = [d for d in upload_deliveries if self.route.is_on_route(d["system_name"])]
                 route_tons = sum(d.get("amount", 0) for d in route_deliveries)
                 self._session_route_deliveries += len(route_deliveries)
                 self._session_route_cargo_tons += route_tons
@@ -1794,6 +1812,9 @@ class ColonialHelperApp:
                                 ),
                             )
             else:
+                # Оставляем события в очереди: следующий тик повторит отправку
+                # с тем же source_hash, а сервер безопасно устранит дубли.
+                self._pending_watcher_deliveries = upload_deliveries + self._pending_watcher_deliveries
                 msg = f"[Watcher] Upload error: {result.get('error')}"
                 self.root.after(0, lambda m=msg: self.log(m, "error"))
                 self.overlay_manager.log(f"Error: {result.get('error')}", "error")
