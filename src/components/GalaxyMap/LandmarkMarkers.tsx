@@ -48,7 +48,7 @@ function LandmarkSprite({ landmark }: { landmark: typeof LANDMARKS[number] }) {
         <div style={{
           color: landmark.color,
           fontFamily: '"Courier New", monospace',
-          fontSize: "13px",
+          fontSize: "18px",
           fontWeight: "bold",
           textShadow: `0 0 6px ${landmark.color}`,
           whiteSpace: "nowrap",

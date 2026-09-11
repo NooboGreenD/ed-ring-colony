@@ -42,7 +42,7 @@ function NebulaSprite({ nebula }: { nebula: GalaxyNebula }) {
   return <group position={position}>
     <sprite material={material} scale={[nebula.size, nebula.size, 1]} renderOrder={5} raycast={() => null} />
     <Html position={[0, nebula.size * 0.48, 0]} distanceFactor={1250} center style={{ pointerEvents: 'none' }}>
-      <div style={{ color: nebula.color, fontFamily: 'ui-monospace, monospace', fontSize: 9, whiteSpace: 'nowrap', textShadow: `0 0 5px ${nebula.color}, 0 0 8px #000`, opacity: 0.9 }}>{nebula.name}</div>
+      <div style={{ color: nebula.color, fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', textShadow: `0 0 6px ${nebula.color}, 0 0 12px #000`, opacity: 0.96 }}>{nebula.name}</div>
     </Html>
   </group>;
 }

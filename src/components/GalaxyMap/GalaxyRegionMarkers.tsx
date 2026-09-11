@@ -16,10 +16,10 @@ function RegionMarker({ region }: { region: (typeof REGIONS)[number] }) {
       <sprite material={material} scale={[75, 75, 1]} />
       <Html position={[0, 65, 0]} distanceFactor={950} center style={{ pointerEvents: 'none' }}>
         <div style={{
-          color: '#a9caff', fontFamily: 'ui-monospace, monospace', fontSize: 10,
-          letterSpacing: '.4px', whiteSpace: 'nowrap', textShadow: '0 0 5px #07152d',
-          background: 'rgba(3, 10, 24, .72)', border: '1px solid rgba(130,184,255,.35)',
-          borderRadius: 3, padding: '2px 5px', transform: 'translateX(-50%)',
+          color: '#b9d5ff', fontFamily: 'ui-monospace, monospace', fontSize: 14,
+          fontWeight: 700, letterSpacing: '.5px', whiteSpace: 'nowrap', textShadow: '0 0 6px #07152d, 0 0 12px #000',
+          background: 'rgba(3, 10, 24, .82)', border: '1px solid rgba(130,184,255,.55)',
+          borderRadius: 3, padding: '3px 7px', transform: 'translateX(-50%)',
         }}>
           {region.name}
         </div>
