@@ -50,8 +50,11 @@ def _event_key(ev: dict) -> str:
     ts = ev.get("timestamp", "")
     if event == "ColonisationContribution":
         market_id = ev.get("MarketID", 0)
-        total = sum(c.get("Amount", 0) for c in ev.get("Contributions", []))
-        return f"CC:{ts}:{market_id}:{total}"
+        contributions = ",".join(
+            f"{c.get('Name', c.get('Name_Localised', ''))}:{c.get('Amount', 0)}"
+            for c in ev.get("Contributions", [])
+        )
+        return f"CC:{ts}:{market_id}:{contributions}"
     elif event == "CargoDepot":
         return f"CD:{ts}:{ev.get('CargoType', '')}:{ev.get('Count', 0)}"
     return f"{event}:{ts}"
@@ -191,26 +194,25 @@ def parse_journal(
                 contributions = ev.get("Contributions", [])
                 for contrib in contributions:
                     name = contrib.get("Name_Localised") or _normalize_name(contrib.get("Name", "Unknown"))
-                    amount = contrib.get("Amount", 0)
+                    amount = int(contrib.get("Amount", 0) or 0)
                     if amount <= 0:
                         continue
-                    key = (market_id, name)
-                    prev_amount = last_contribution_state.get(key, 0)
-                    delta = amount - prev_amount
-                    if delta > 0:
-                        deliveries.append({
-                            "system_name": current_system,
-                            "commodity": name,
-                            "amount": delta,
-                            "delivered_at": ev.get("timestamp"),
-                            "market_id": market_id,
-                            "system_address": current_system_address,
-                            "is_hub": None,
-                            "route_system_id": None,
-                            "source": "colonisation_contribution",
-                            "source_hash": _source_hash("contribution", line, name, delta),
-                        })
-                    last_contribution_state[key] = amount
+                    # SrvSurvey confirms that ColonisationContribution.Amount
+                    # is the amount contributed by this event, not a cumulative
+                    # project total. Subtracting the previous event caused the
+                    # second and subsequent deliveries to disappear.
+                    deliveries.append({
+                        "system_name": current_system,
+                        "commodity": name,
+                        "amount": amount,
+                        "delivered_at": ev.get("timestamp"),
+                        "market_id": market_id,
+                        "system_address": current_system_address,
+                        "is_hub": None,
+                        "route_system_id": None,
+                        "source": "colonisation_contribution",
+                        "source_hash": _source_hash("contribution", line, name, amount),
+                    })
         elif event == "CargoDepot":
             # Wing mission delivery
             if current_system:

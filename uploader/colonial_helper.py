@@ -1788,7 +1788,7 @@ class ColonialHelperApp:
         self._session_route_cargo_tons += sum(float(d.get("amount", 0) or 0) for d in route_deliveries)
         self._session_construction_cargo_tons += sum(
             float(d.get("amount", 0) or 0) for d in deliveries
-            if d.get("source") in ("colonisation_contribution", "carrier_delivery")
+            if d.get("source") == "colonisation_contribution"
         )
         self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
 
@@ -1941,6 +1941,10 @@ class ColonialHelperApp:
                     # Группируем доставки по build_id (как в SRV Survey)
                     raven_batches: dict = {}  # build_id -> {commodity: amount}
                     for d in upload_deliveries:
+                        # Fleet Carrier cargo is sent through /api/fc/.../cargo,
+                        # not as a construction contribution.
+                        if d.get("source") == "carrier_delivery":
+                            continue
                         market_id = d.get("market_id")
                         if not market_id:
                             continue
