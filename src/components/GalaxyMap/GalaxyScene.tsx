@@ -10,6 +10,7 @@ import { RingZone } from './RingZone';
 import { LandmarkMarkers } from './LandmarkMarkers';
 import { GalaxyRegionMarkers } from './GalaxyRegionMarkers';
 import { GalaxyRegionBoundaries } from './GalaxyRegionBoundaries';
+import { GalacticRegions } from './GalacticRegions';
 import { RouteLine } from './RouteLine';
 import { RouteMarkers } from './RouteMarkers';
 import { HubMarkers } from './HubMarkers';
@@ -180,6 +181,7 @@ export function GalaxyScene({
       <NebulaClouds />
       <RingZone />
       <LandmarkMarkers />
+      <GalacticRegions />
       <GalaxyRegionMarkers />
       <GalaxyRegionBoundaries />
 

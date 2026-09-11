@@ -187,7 +187,7 @@ function RegionMesh({
       geometry={geometry}
       material={material}
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[0, 8, 0]}
+      position={[0, 0, 0]}
       onPointerOver={handlePointerOver}
       onPointerOut={handlePointerOut}
       onClick={handleClick}
