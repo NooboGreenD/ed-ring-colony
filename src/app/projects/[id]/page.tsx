@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, authFetch } from "@/lib/supabaseClient";
 import Link from "next/link";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
 
@@ -258,11 +258,16 @@ export default function ProjectPage() {
           // Project coordinates belong only to project_systems. Never create
           // or update route_systems here: that table is the global Atlas
           // route and made EDSM imports leak project systems onto the map.
-          const { error: coordinateError } = await supabase.from("project_systems")
-            .update({ x: coords.x, y: coords.y, z: coords.z })
-            .eq("id", s.id)
-            .eq("project_id", id);
-          if (!coordinateError) updated++;
+          const coordinateResponse = await authFetch(`/api/projects/${id}/systems`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ system_id: s.id, x: coords.x, y: coords.y, z: coords.z }),
+          });
+          if (coordinateResponse.ok) updated++;
+          else {
+            const errorBody = await coordinateResponse.json().catch(() => ({}));
+            console.warn("[EDSM] Could not save coordinates:", errorBody.error || coordinateResponse.status);
+          }
         }
         await new Promise((r) => setTimeout(r, 50));
       }
