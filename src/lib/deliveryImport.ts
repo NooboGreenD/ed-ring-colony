@@ -29,7 +29,10 @@ type DeliveryRow = {
 // can be retried safely and never turns one large INSERT/RETURNING statement
 // into a database statement timeout.
 export const DELIVERY_IMPORT_WRITE_BATCH_SIZE = 100;
-const PLACEMENT_LOOKUP_BATCH_SIZE = 50;
+// Keep compatibility lookups small as well. On databases where the placement
+// indexes are not applied yet, one exact-name query can otherwise scan the
+// complete table for every uploaded system in a single statement.
+const PLACEMENT_LOOKUP_BATCH_SIZE = 10;
 
 // A deployment can add source_hash before its optional concurrent unique index
 // is built. Remember that capability per warm server instance so every 100-row
@@ -172,32 +175,39 @@ async function loadPlacementLookup(
   // same case/whitespace-normalized key as the Journal parser and uses
   // expression indexes. Do not scan the complete hubs/route_systems tables on
   // every batch.
-  const { data, error } = await svc.rpc('resolve_delivery_system_placements', {
-    system_names: candidateNames,
-  });
-  if (!error) {
-    const placements = new Map<string, SystemPlacement>();
-    for (const row of data || []) {
-      const key = normalized(row?.input_system_name);
-      const routeSystemId = row?.route_system_id == null ? null : Number(row.route_system_id);
-      const systemName = String(row?.system_name ?? '').trim();
-      if (!key || !systemName || (routeSystemId !== null && !Number.isSafeInteger(routeSystemId))) continue;
-      placements.set(key, {
-        systemName,
-        isHub: Boolean(row?.is_hub),
-        routeSystemId,
-      });
+  const placements = new Map<string, SystemPlacement>();
+  // Resolve small groups instead of passing the whole upload to one SQL
+  // statement. This is important during rollout: an installation without the
+  // expression indexes must still be able to import a log without one large
+  // resolver statement exceeding statement_timeout.
+  for (const names of chunk(candidateNames, PLACEMENT_LOOKUP_BATCH_SIZE)) {
+    const { data, error } = await svc.rpc('resolve_delivery_system_placements', {
+      system_names: names,
+    });
+    if (!error) {
+      for (const row of data || []) {
+        const key = normalized(row?.input_system_name);
+        const routeSystemId = row?.route_system_id == null ? null : Number(row.route_system_id);
+        const systemName = String(row?.system_name ?? '').trim();
+        if (!key || !systemName || (routeSystemId !== null && !Number.isSafeInteger(routeSystemId))) continue;
+        placements.set(key, {
+          systemName,
+          isHub: Boolean(row?.is_hub),
+          routeSystemId,
+        });
+      }
+      continue;
     }
-    return placements;
-  }
 
-  // During a rolling deployment the API can run before Supabase migrations are
-  // applied or before PostgREST reloads its schema cache. The exact-name
-  // fallback remains bounded and avoids making journal imports unavailable.
-  if (!isMissingPlacementResolver(error)) {
-    console.warn('[delivery import] Placement resolver failed; using bounded fallback:', error.message);
+    // During a rolling deployment the API can run before Supabase migrations
+    // are applied or before PostgREST reloads its schema cache. The exact-name
+    // fallback remains bounded and avoids making journal imports unavailable.
+    if (!isMissingPlacementResolver(error)) {
+      console.warn('[delivery import] Placement resolver failed; using bounded fallback:', error.message);
+    }
+    return loadExactPlacementLookup(svc, candidateNames);
   }
-  return loadExactPlacementLookup(svc, candidateNames);
+  return placements;
 }
 
 function validRows(userId: string, deliveries: unknown[], placements: Map<string, SystemPlacement>): DeliveryRow[] {
