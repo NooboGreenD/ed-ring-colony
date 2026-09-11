@@ -168,17 +168,36 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .eq('user_id', user.id)
       .single();
 
-    if (!membership || !['leader', 'officer'].includes(membership.role)) {
+    const { data: project } = await supabase
+      .from('projects')
+      .select('created_by')
+      .eq('id', projectId)
+      .maybeSingle();
+    const canManage = Boolean(
+      (membership && ['leader', 'officer'].includes(membership.role))
+      || project?.created_by === user.id,
+    );
+    if (!canManage) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const allowed = ['planned_status', 'priority', 'notes', 'assigned_to', 'target_date', 'sort_order'];
+    const allowed = ['planned_status', 'priority', 'notes', 'assigned_to', 'target_date', 'sort_order', 'x', 'y', 'z'];
     const update: Record<string, any> = {};
     for (const key of allowed) {
       if (updates[key] !== undefined) update[key] = updates[key];
     }
+    for (const axis of ['x', 'y', 'z']) {
+      if (update[axis] !== undefined) {
+        const value = Number(update[axis]);
+        if (!Number.isFinite(value)) {
+          return NextResponse.json({ error: `Invalid coordinate ${axis}` }, { status: 400 });
+        }
+        update[axis] = value;
+      }
+    }
 
-    const { data, error } = await supabase
+    const admin = createAdminClient();
+    const { data, error } = await admin
       .from('project_systems')
       .update(update)
       .eq('id', system_id)
