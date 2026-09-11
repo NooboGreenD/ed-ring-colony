@@ -181,6 +181,7 @@ export function GalaxyScene({
       <RingZone />
       <LandmarkMarkers />
       <GalaxyRegionMarkers />
+      <GalaxyRegionBoundaries />
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (
