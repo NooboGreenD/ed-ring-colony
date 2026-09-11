@@ -69,6 +69,10 @@ interface GalaxySceneProps {
   showPilots?: boolean;
   showMarketResults?: boolean;
   showNoMarketSystems?: boolean;
+  showRegionLabels?: boolean;
+  showRegionBoundaries?: boolean;
+  showNebulae?: boolean;
+  showRingZone?: boolean;
   onSelectHub?: (hub: Hub | null) => void;
   onSelectRouteSystem?: (point: RouteSystem | null) => void;
   onSelectAtlasCandidate?: (candidate: AtlasCandidate | null) => void;
@@ -96,6 +100,10 @@ export function GalaxyScene({
   showPilots = true,
   showMarketResults = true,
   showNoMarketSystems = true,
+  showRegionLabels = true,
+  showRegionBoundaries = true,
+  showNebulae = true,
+  showRingZone = true,
   onSelectHub,
   onSelectRouteSystem,
   onSelectAtlasCandidate,
@@ -180,12 +188,12 @@ export function GalaxyScene({
 
       <GalaxyBackground />
       <NebulaClouds />
-      <GalaxyNebulaSprites />
-      <RingZone />
+      {showNebulae && <GalaxyNebulaSprites />}
+      {showRingZone && <RingZone />}
       <LandmarkMarkers onSelect={onSelectRouteSystem} />
       <GalacticRegions />
-      <GalaxyRegionMarkers />
-      <GalaxyRegionBoundaries />
+      <GalaxyRegionMarkers showLabels={showRegionLabels} />
+      {showRegionBoundaries && <GalaxyRegionBoundaries />}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (

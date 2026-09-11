@@ -119,6 +119,10 @@ export default function GalaxyMap({
   const [showPilots, setShowPilots] = useState(true);
   const [showMarketResults, setShowMarketResults] = useState(true);
   const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
+  const [showRegionLabels, setShowRegionLabels] = useState(true);
+  const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
+  const [showNebulae, setShowNebulae] = useState(true);
+  const [showRingZone, setShowRingZone] = useState(true);
   const [statusFilters, setStatusFilters] = useState<StatusFilters>({
     planned: true,
     building: true,
@@ -450,6 +454,12 @@ export default function GalaxyMap({
                 <input type="checkbox" checked={showNoMarketSystems} onChange={(event) => setShowNoMarketSystems(event.target.checked)} />
                 Системы без рынков ({visibleNoMarketSystems.length})
               </label>
+              <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
+                <label style={{ fontSize: 11, color: '#d8e8ff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionLabels} onChange={(event) => setShowRegionLabels(event.target.checked)} /> Имена секторов</label>
+                <label style={{ fontSize: 11, color: '#ff9a3d', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionBoundaries} onChange={(event) => setShowRegionBoundaries(event.target.checked)} /> Границы секторов</label>
+                <label style={{ fontSize: 11, color: '#b48cff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showNebulae} onChange={(event) => setShowNebulae(event.target.checked)} /> Туманности</label>
+                <label style={{ fontSize: 11, color: '#e67e22', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRingZone} onChange={(event) => setShowRingZone(event.target.checked)} /> Оранжевый пояс</label>
+              </div>
             </>
           )}
         </div>
@@ -562,6 +572,10 @@ export default function GalaxyMap({
             showPilots={!compactMap && showPilots}
             showMarketResults={!compactMap && showMarketResults}
             showNoMarketSystems={!compactMap && showNoMarketSystems}
+            showRegionLabels={showRegionLabels}
+            showRegionBoundaries={showRegionBoundaries}
+            showNebulae={showNebulae}
+            showRingZone={showRingZone}
             onSelectHub={handleSelectHub}
             onSelectRouteSystem={handleSelectRouteSystem}
             onSelectAtlasCandidate={handleSelectAtlasCandidate}

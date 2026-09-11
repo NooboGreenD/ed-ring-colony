@@ -8,7 +8,7 @@ import regionPack from '@/lib/galacticRegions.json';
 
 const REGIONS = (regionPack as { regions: Array<{ id: number; name: string; cx: number; cz: number }> }).regions;
 
-function RegionMarker({ region }: { region: (typeof REGIONS)[number] }) {
+function RegionMarker({ region, showLabel }: { region: (typeof REGIONS)[number]; showLabel: boolean }) {
   const router = useRouter();
   const position = useMemo(() => new THREE.Vector3(region.cx, 0, -region.cz), [region]);
   const material = useMemo(() => new THREE.SpriteMaterial({ color: '#82b8ff', transparent: true, opacity: 0.92, depthWrite: false, depthTest: false }), []);
@@ -16,7 +16,7 @@ function RegionMarker({ region }: { region: (typeof REGIONS)[number] }) {
   return (
     <group position={[position.x, position.y, position.z]}>
       <sprite material={material} scale={[75, 75, 1]} />
-      <Html position={[0, 65, 0]} center style={{ pointerEvents: 'auto', cursor: 'pointer' }} zIndexRange={[100, 0]}>
+      {showLabel && <Html position={[0, 65, 0]} center style={{ pointerEvents: 'auto', cursor: 'pointer' }} zIndexRange={[100, 0]}>
         <div onClick={(event) => { event.stopPropagation(); router.push(`/atlas/sector/${region.id}`); }} style={{
           color: '#d8e8ff', fontFamily: '"Eurostile", "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif', fontSize: 16,
           fontWeight: 700, letterSpacing: '1.2px', whiteSpace: 'nowrap', textTransform: 'uppercase',
@@ -25,12 +25,12 @@ function RegionMarker({ region }: { region: (typeof REGIONS)[number] }) {
         }}>
           {region.name}
         </div>
-      </Html>
+      </Html>}
     </group>
   );
 }
 
 /** Names and canonical centroid markers for the 42 official codex regions. */
-export function GalaxyRegionMarkers() {
-  return <group>{REGIONS.map((region) => <RegionMarker key={region.id} region={region} />)}</group>;
+export function GalaxyRegionMarkers({ showLabels = true }: { showLabels?: boolean }) {
+  return <group>{REGIONS.map((region) => <RegionMarker key={region.id} region={region} showLabel={showLabels} />)}</group>;
 }
