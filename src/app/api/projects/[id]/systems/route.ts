@@ -210,22 +210,25 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // Если передан system_id — удаляем одну систему, иначе — очищаем весь маршрут
+    // The API authorizes both leaders and officers. Use the admin client for
+    // the actual delete because older RLS policies allowed only leaders and
+    // otherwise made the UI report a generic "clear route" error.
+    const admin = createAdminClient();
     if (body.system_id) {
-      await supabase
+      const { error } = await admin
         .from('project_systems')
         .delete()
         .eq('id', body.system_id)
         .eq('project_id', projectId);
-      return NextResponse.json({ success: true, deleted: 1 });
-    } else {
-      const { error } = await supabase
-        .from('project_systems')
-        .delete()
-        .eq('project_id', projectId);
       if (error) throw error;
-      return NextResponse.json({ success: true, cleared: true });
+      return NextResponse.json({ success: true, deleted: 1 });
     }
+    const { error } = await admin
+      .from('project_systems')
+      .delete()
+      .eq('project_id', projectId);
+    if (error) throw error;
+    return NextResponse.json({ success: true, cleared: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

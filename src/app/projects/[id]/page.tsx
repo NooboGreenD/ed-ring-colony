@@ -377,7 +377,7 @@ export default function ProjectPage() {
       body: JSON.stringify({ system_id: systemId }),
     });
     if (res.ok) load();
-    else alert("Ошибка удаления");
+    else { const data = await res.json().catch(() => ({})); alert(`Ошибка удаления: ${data.error || res.statusText}`); }
   };
 
   const clearRoute = async () => {
@@ -388,7 +388,7 @@ export default function ProjectPage() {
       body: JSON.stringify({}),
     });
     if (res.ok) load();
-    else alert("Ошибка очистки маршрута");
+    else { const data = await res.json().catch(() => ({})); alert(`Ошибка очистки маршрута: ${data.error || res.statusText}`); }
   };
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}>Загрузка...</div>;
