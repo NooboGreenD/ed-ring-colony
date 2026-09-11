@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemV2, deriveStatusFromProgress } from '@/lib/ravenColonial';
+import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -29,7 +30,9 @@ export async function POST(req: Request) {
     const results: any[] = [];
     for (const r of routeSystems) {
       try {
-        const data = await fetchRavenSystemV2(r.system_name);
+        const data = await enrichRavenSystemWithJournalSnapshots(
+          await fetchRavenSystemV2(r.system_name),
+        );
 
         // Upsert в кэш-таблицу system_progress
         const { error: upsertErr } = await supabase.from('system_progress').upsert({
@@ -41,24 +44,36 @@ export async function POST(req: Request) {
             architectName: data.architectName,
             projects: data.projects,
             resources: data.resources,
+            totalRequired: data.totalRequired,
+            totalProvided: data.totalProvided,
+            totalRemaining: data.totalRemaining,
           },
         });
         if (upsertErr) {
           console.warn('[route/progress] system_progress upsert skipped:', upsertErr.message);
         }
 
-        if (data.progress != null) {
-          const status = deriveStatusFromProgress(data.progress);
-          await supabase.from('route_systems').update({ progress: data.progress, status, updated_at: new Date().toISOString() }).eq('id', r.id);
+        const systemFound = data.progress != null || data.projects.length > 0;
+        if (systemFound) {
+          const status = data.progress != null ? deriveStatusFromProgress(data.progress) : r.status;
+          if (data.progress != null) {
+            await supabase
+              .from('route_systems')
+              .update({ progress: data.progress, status, updated_at: new Date().toISOString() })
+              .eq('id', r.id);
+          }
           results.push({ 
             system_name: r.system_name, 
-            progress: data.progress, 
-            status, 
+            progress: data.progress,
+            status,
             found: true,
             siteName: data.siteName,
             architectName: data.architectName,
             projects: data.projects,
             resources: data.resources,
+            totalRequired: data.totalRequired,
+            totalProvided: data.totalProvided,
+            totalRemaining: data.totalRemaining,
             error: data.error 
           });
         } else {
@@ -66,7 +81,7 @@ export async function POST(req: Request) {
             system_name: r.system_name, 
             progress: null, 
             status: r.status, 
-            found: false, 
+            found: false,
             siteName: null,
             architectName: null,
             projects: [],

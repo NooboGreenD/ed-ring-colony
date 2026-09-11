@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemV2, deriveStatusFromProgress } from '@/lib/ravenColonial';
+import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
 import { checkSyncRateLimit } from '@/lib/rateLimit';
 
 export const maxDuration = 60;
@@ -53,7 +54,9 @@ export async function POST(req: Request) {
 
     for (const name of system_names) {
       try {
-        const data = await fetchRavenSystemV2(name);
+        const data = await enrichRavenSystemWithJournalSnapshots(
+          await fetchRavenSystemV2(name),
+        );
 
         const status = deriveStatusFromProgress(data.progress);
 
@@ -67,6 +70,9 @@ export async function POST(req: Request) {
             architectName: data.architectName,
             projects: data.projects,
             resources: data.resources,
+            totalRequired: data.totalRequired,
+            totalProvided: data.totalProvided,
+            totalRemaining: data.totalRemaining,
           },
         });
 
@@ -171,6 +177,9 @@ export async function POST(req: Request) {
             architectName: data.architectName,
             projects: data.projects,
             resources: data.resources,
+            totalRequired: data.totalRequired,
+            totalProvided: data.totalProvided,
+            totalRemaining: data.totalRemaining,
             error: data.error
           },
           error_message: data.error || null,
@@ -187,6 +196,9 @@ export async function POST(req: Request) {
           architectName: data.architectName,
           projects: data.projects,
           resources: data.resources,
+          totalRequired: data.totalRequired,
+          totalProvided: data.totalProvided,
+          totalRemaining: data.totalRemaining,
           error: data.error,
         });
       } catch (inner: any) {

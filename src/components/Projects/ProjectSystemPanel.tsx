@@ -10,6 +10,23 @@ interface Props {
   canEdit: boolean;
 }
 
+function hasExactResourceAmounts(resource: any): boolean {
+  return resource?.exact === true
+    && typeof resource.required === 'number'
+    && typeof resource.provided === 'number';
+}
+
+function resourceProgress(resource: any): number {
+  if (!hasExactResourceAmounts(resource) || resource.required <= 0) return 0;
+  return Math.min(100, (resource.provided / resource.required) * 100);
+}
+
+function resourceAmountLabel(resource: any): string {
+  return hasExactResourceAmounts(resource)
+    ? `${resource.provided.toLocaleString()}/${resource.required.toLocaleString()} т`
+    : `Осталось: ${Number(resource?.remaining || 0).toLocaleString()} т`;
+}
+
 export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -122,6 +139,12 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                   </div>
                 )}
               </div>
+              {typeof ravenData.totalRequired === 'number' && typeof ravenData.totalProvided === 'number' && (
+                <div style={{ color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
+                  Доставлено: <strong>{ravenData.totalProvided.toLocaleString()} / {ravenData.totalRequired.toLocaleString()} т</strong>
+                  {' · '}Осталось: {Number(ravenData.totalRemaining ?? 0).toLocaleString()} т
+                </div>
+              )}
 
               {ravenData.projects?.length > 0 && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -135,24 +158,36 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                         <span style={{ color: '#eeeeee', fontWeight: 600 }}>{proj.buildName}</span>
                         <span style={{ color: proj.complete ? '#22c55e' : '#e67e22', fontWeight: 600 }}>
-                          {proj.complete ? '<IconCheckCircle size={12} />' : `${proj.progress}%`}
+                          {proj.complete ? <IconCheckCircle size={12} /> : typeof proj.progress === 'number' ? `${proj.progress}%` : '—'}
                         </span>
                       </div>
+                      {typeof proj.totalRequired === 'number' && typeof proj.totalProvided === 'number' && (
+                        <div style={{ color: '#d1d5db', fontSize: 11, marginTop: 5 }}>
+                          Доставлено: <strong>{proj.totalProvided.toLocaleString()} / {proj.totalRequired.toLocaleString()} т</strong>
+                          {' · '}Осталось: {Number(proj.totalRemaining ?? 0).toLocaleString()} т
+                        </div>
+                      )}
                       {proj.resources?.length > 0 && (
                         <div style={{ marginTop: 6 }}>
                           {proj.resources.map((r: any) => (
                             <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
                               <span style={{ color: '#9ca3af', minWidth: 100, fontSize: 11 }}>{r.name}</span>
-                              <div style={{ flex: 1, background: '#3a3d40', borderRadius: 3, height: 5 }}>
-                                <div style={{
-                                  width: `${Math.min(100, (r.provided / Math.max(r.required, 1)) * 100)}%`,
-                                  background: r.remaining === 0 ? '#22c55e' : '#3b82f6',
-                                  height: '100%',
-                                  borderRadius: 3,
-                                }} />
-                              </div>
-                              <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 70, textAlign: 'right' }}>
-                                {r.provided.toLocaleString()}/{r.required.toLocaleString()}
+                              {hasExactResourceAmounts(r) ? (
+                                <div style={{ flex: 1, background: '#3a3d40', borderRadius: 3, height: 5 }}>
+                                  <div style={{
+                                    width: `${resourceProgress(r)}%`,
+                                    background: r.remaining === 0 ? '#22c55e' : '#3b82f6',
+                                    height: '100%',
+                                    borderRadius: 3,
+                                  }} />
+                                </div>
+                              ) : (
+                                <span style={{ flex: 1, color: '#7a7d80', fontSize: 10 }}>
+                                  Нет точных данных о доставке
+                                </span>
+                              )}
+                              <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 118, textAlign: 'right' }}>
+                                {resourceAmountLabel(r)}
                               </span>
                             </div>
                           ))}
@@ -176,7 +211,7 @@ export default function ProjectSystemPanel({ system, onUpdate, canEdit }: Props)
                     }}>
                       <span style={{ color: '#eeeeee' }}>{r.name}</span>
                       <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontWeight: 600 }}>
-                        {r.provided}/{r.required}
+                        {resourceAmountLabel(r)}
                       </span>
                     </div>
                   ))}

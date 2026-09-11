@@ -33,19 +33,47 @@ async function ravenGet(path) {
   return { ok: res.ok, json, status: res.status };
 }
 
+function nonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
+}
+
+function firstPositiveNumber(...values) {
+  for (const value of values) {
+    const number = nonNegativeNumber(value);
+    if (number != null && number > 0) return number;
+  }
+  return null;
+}
+
 function compute(project) {
   const commodities = project?.commodities && typeof project.commodities === 'object' ? project.commodities : {};
-  const remaining = Object.values(commodities).reduce((s, n) => s + (Number(n) || 0), 0);
-  const sumNeed = Number(project.sumNeed ?? remaining) || remaining;
-  const sumTotal = Number(project.sumTotal ?? project.maxNeed ?? 0) || 0;
-  const total = sumTotal > 0 ? sumTotal : sumNeed;
-  const complete = Boolean(project.complete || project.status === 'done');
+  const commoditiesRemaining = Object.values(commodities)
+    .reduce((sum, value) => sum + (nonNegativeNumber(value) ?? 0), 0);
+  // Raven's commodities/sumNeed fields describe cargo still needed, not the
+  // original amount for each commodity. Do not turn them into an invented
+  // commodity-level required/provided split.
+  const sumNeed = nonNegativeNumber(project?.sumNeed ?? project?.remainingNeed) ?? commoditiesRemaining;
+  const sumTotal = firstPositiveNumber(project?.sumTotal, project?.maxNeed, project?.maxRequired);
+  const status = typeof project?.status === 'string' ? project.status.toLowerCase() : '';
+  const complete = Boolean(project?.complete || project?.ConstructionComplete || ['done', 'complete', 'completed'].includes(status));
+  const totalRemaining = complete ? 0 : sumNeed;
+  const totalProvided = sumTotal == null ? null : Math.max(0, sumTotal - totalRemaining);
   const progress = complete
     ? 100
-    : total > 0
-      ? Math.min(100, Math.round(((total - sumNeed) / total) * 10000) / 100)
+    : sumTotal != null && sumTotal > 0
+      ? Math.min(100, Math.round((totalProvided / sumTotal) * 10000) / 100)
       : null;
-  return { progress, sumNeed, sumTotal: total, complete, commodities };
+  return {
+    progress,
+    sumNeed: totalRemaining,
+    sumTotal,
+    totalRequired: sumTotal,
+    totalProvided,
+    totalRemaining,
+    complete,
+    commodities,
+  };
 }
 
 async function fetchSystem(systemName) {
@@ -76,14 +104,22 @@ async function fetchSystem(systemName) {
     projects.push({ ...row, ...c });
   }
 
-  const need = projects.reduce((s, p) => s + (p.sumNeed || 0), 0);
-  const total = projects.reduce((s, p) => s + (p.sumTotal || p.sumNeed || 0), 0);
+  const totalRemaining = projects.reduce((sum, project) => sum + project.totalRemaining, 0);
+  const hasKnownTotals = projects.length > 0 && projects.every(
+    (project) => project.totalRequired != null && project.totalProvided != null,
+  );
+  const totalRequired = hasKnownTotals
+    ? projects.reduce((sum, project) => sum + project.totalRequired, 0)
+    : null;
+  const totalProvided = hasKnownTotals
+    ? projects.reduce((sum, project) => sum + project.totalProvided, 0)
+    : null;
 
   let progress;
-  if (systemIsComplete || (projects.length && projects.every((p) => p.complete))) {
+  if (systemIsComplete || (projects.length && projects.every((project) => project.complete))) {
     progress = 100;
-  } else if (total > 0) {
-    progress = Math.min(100, Math.round(((total - need) / total) * 10000) / 100);
+  } else if (totalRequired != null && totalRequired > 0 && totalProvided != null) {
+    progress = Math.min(100, Math.round((totalProvided / totalRequired) * 10000) / 100);
   } else {
     progress = null;
   }
@@ -97,17 +133,27 @@ async function fetchSystem(systemName) {
       architectName: projects.find((p) => p.architectName)?.architectName ?? active.json?.architectName ?? done.json?.architectName ?? null,
       projects: projects.map((p) => ({
         buildId: p.buildId || p.id || '',
+        marketId: p.marketId == null ? null : String(p.marketId),
         buildName: p.buildName || p.name || 'Unknown',
         buildType: p.buildType ?? null,
         complete: p.complete,
         progress: p.progress ?? 0,
         bodyName: p.bodyName ?? null,
-        resources: Object.entries(p.commodities || {}).map(([name, remaining]) => {
-          const rest = Number(remaining) || 0;
-          const req = p.sumTotal > 0 && p.sumNeed > 0 ? Math.round(p.sumTotal * (rest / p.sumNeed)) : rest;
-          return { name, key: name, required: req || rest, provided: Math.max(0, req - rest), remaining: rest };
-        }),
+        totalRequired: p.totalRequired,
+        totalProvided: p.totalProvided,
+        totalRemaining: p.totalRemaining,
+        resources: Object.entries(p.commodities || {}).map(([name, remaining]) => ({
+          name,
+          key: name,
+          required: null,
+          provided: null,
+          remaining: nonNegativeNumber(remaining) ?? 0,
+          exact: false,
+        })),
       })),
+      totalRequired,
+      totalProvided,
+      totalRemaining,
       source: 'ravencolonial',
     },
   };

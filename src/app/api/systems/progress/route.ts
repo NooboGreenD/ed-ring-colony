@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemProgress, deriveStatusFromProgress } from '@/lib/ravenColonial';
+import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -33,7 +34,7 @@ export async function GET(req: Request) {
 
   if (name) {
     // 1. Пробуем RavenColonial напрямую
-    const ravenData = await fetchRavenSystemProgress(name);
+    const ravenData = await fetchRavenSystemProgress(name, enrichRavenSystemWithJournalSnapshots);
     if (ravenData.found && !ravenData.error?.includes('не ответил')) {
       // Раскладываем вложенные data.* на верхний уровень для совместимости с UI
       return NextResponse.json({
@@ -45,6 +46,9 @@ export async function GET(req: Request) {
         architectName: ravenData.data?.architectName || null,
         projects: ravenData.data?.projects || [],
         resources: ravenData.data?.resources || [],
+        totalRequired: ravenData.data?.totalRequired ?? null,
+        totalProvided: ravenData.data?.totalProvided ?? null,
+        totalRemaining: ravenData.data?.totalRemaining ?? 0,
         updated_at: ravenData.updated_at,
         error: ravenData.error,
       });
@@ -62,11 +66,14 @@ export async function GET(req: Request) {
         system_name: cached.system_name,
         progress: cached.progress,
         status: deriveStatusFromProgress(cached.progress),
-        found: cached.progress != null,
+        found: cached.progress != null || (Array.isArray(cached.data.projects) && cached.data.projects.length > 0),
         siteName: cached.data.siteName || null,
         architectName: cached.data.architectName || null,
         projects: cached.data.projects || [],
         resources: cached.data.resources || [],
+        totalRequired: cached.data.totalRequired ?? null,
+        totalProvided: cached.data.totalProvided ?? null,
+        totalRemaining: cached.data.totalRemaining ?? 0,
         updated_at: cached.updated_at,
         error: ravenData.error ? ravenData.error + ' Показаны сохранённые данные.' : undefined,
       });
@@ -89,6 +96,9 @@ export async function GET(req: Request) {
         architectName: null,
         projects: [],
         resources: [],
+        totalRequired: null,
+        totalProvided: null,
+        totalRemaining: 0,
         error: ravenData.error || 'Данные о постройках не найдены.',
       });
     }
@@ -102,6 +112,9 @@ export async function GET(req: Request) {
       architectName: ravenData.data?.architectName || null,
       projects: ravenData.data?.projects || [],
       resources: ravenData.data?.resources || [],
+      totalRequired: ravenData.data?.totalRequired ?? null,
+      totalProvided: ravenData.data?.totalProvided ?? null,
+      totalRemaining: ravenData.data?.totalRemaining ?? 0,
       updated_at: ravenData.updated_at,
       error: ravenData.error,
     });

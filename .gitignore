@@ -11,6 +11,7 @@ target/
 *.js.map
 *.d.ts
 *.d.ts.map
+*.tsbuildinfo
 
 # Temporary files
 *.tmp

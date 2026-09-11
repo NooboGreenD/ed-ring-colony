@@ -13,6 +13,9 @@ interface SyncResult {
   architectName: string | null;
   projects: any[];
   resources: any[];
+  totalRequired?: number | null;
+  totalProvided?: number | null;
+  totalRemaining?: number;
   error?: string;
 }
 
@@ -38,6 +41,23 @@ interface RouteSystem {
   x?: number;
   y?: number;
   z?: number;
+}
+
+function hasExactResourceAmounts(resource: any): boolean {
+  return resource?.exact === true
+    && typeof resource.required === 'number'
+    && typeof resource.provided === 'number';
+}
+
+function resourceAmountLabel(resource: any): string {
+  return hasExactResourceAmounts(resource)
+    ? `${resource.provided.toLocaleString()} / ${resource.required.toLocaleString()} т`
+    : `Осталось: ${Number(resource?.remaining || 0).toLocaleString()} т`;
+}
+
+function resourceProgress(resource: any): number {
+  if (!hasExactResourceAmounts(resource) || resource.required <= 0) return 0;
+  return Math.min(100, (resource.provided / resource.required) * 100);
 }
 
 export default function RavenSyncTab() {
@@ -242,7 +262,11 @@ export default function RavenSyncTab() {
                     <div style={{ fontWeight: 600, color: '#eeeeee', fontSize: 14 }}>{res.system_name}</div>
                     <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 2 }}>
                       {res.found ? (
-                        <span>{res.siteName && `<IconMapPin size={12} /> ${res.siteName} · `}{res.architectName && `<IconUserWorker size={12} /> ${res.architectName} · `}<IconPackage size={12} /> Проектов: {res.projects?.length || 0}</span>
+                        <span>
+                          {res.siteName && <><IconMapPin size={12} /> {res.siteName} · </>}
+                          {res.architectName && <><IconUserWorker size={12} /> {res.architectName} · </>}
+                          <IconPackage size={12} /> Проектов: {res.projects?.length || 0}
+                        </span>
                       ) : (
                         <span style={{ color: '#e74c3c' }}><IconXCircle size={14} color='#e74c3c' /> {res.error || 'Не найдено'}</span>
                       )}
@@ -251,7 +275,9 @@ export default function RavenSyncTab() {
                   <div style={{ textAlign: 'right' }}>
                     {res.found && (
                       <>
-                        <div style={{ fontSize: 18, fontWeight: 700, color: res.progress === 100 ? '#22c55e' : '#e67e22' }}>{res.progress}%</div>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: res.progress === 100 ? '#22c55e' : '#e67e22' }}>
+                          {typeof res.progress === 'number' ? `${res.progress}%` : '—'}
+                        </div>
                         <div style={{ fontSize: 10, textTransform: 'uppercase', color: res.status === 'done' ? '#22c55e' : '#9ca3af' }}>{res.status === 'done' ? 'Завершён' : res.status === 'building' ? 'Строительство' : 'Запланирован'}</div>
                       </>
                     )}
@@ -260,6 +286,12 @@ export default function RavenSyncTab() {
 
                 {detailSystem === res.system_name && res.found && (
                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #323538' }}>
+                    {typeof res.totalRequired === 'number' && typeof res.totalProvided === 'number' && (
+                      <div style={{ color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
+                        Доставлено: <strong>{res.totalProvided.toLocaleString()} / {res.totalRequired.toLocaleString()} т</strong>
+                        {' · '}Осталось: {Number(res.totalRemaining ?? 0).toLocaleString()} т
+                      </div>
+                    )}
                     {res.projects && res.projects.length > 0 && (
                       <div style={{ marginBottom: 12 }}>
                         <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 6, fontWeight: 600 }}><IconConstruction size={12} /> Проекты</div>
@@ -267,20 +299,32 @@ export default function RavenSyncTab() {
                           <div key={proj.buildId} style={{ background: '#323538', borderRadius: 6, padding: 10, marginBottom: 8, fontSize: 12 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                               <span style={{ color: '#eeeeee', fontWeight: 600 }}>{proj.buildName}</span>
-                              <span style={{ color: proj.complete ? '#22c55e' : '#e67e22', fontWeight: 600 }}>{proj.complete ? <><IconCheckCircle size={14} /> Завершён</> : `${proj.progress}%`}</span>
+                              <span style={{ color: proj.complete ? '#22c55e' : '#e67e22', fontWeight: 600 }}>
+                                {proj.complete ? <><IconCheckCircle size={14} /> Завершён</> : typeof proj.progress === 'number' ? `${proj.progress}%` : '—'}
+                              </span>
                             </div>
                             {proj.buildType && <div style={{ color: '#9ca3af', fontSize: 11 }}>Тип: {proj.buildType}</div>}
                             {proj.bodyName && <div style={{ color: '#9ca3af', fontSize: 11 }}>Тело: {proj.bodyName}</div>}
+                            {typeof proj.totalRequired === 'number' && typeof proj.totalProvided === 'number' && (
+                              <div style={{ color: '#d1d5db', fontSize: 11, marginTop: 4 }}>
+                                Доставлено: <strong>{proj.totalProvided.toLocaleString()} / {proj.totalRequired.toLocaleString()} т</strong>
+                                {' · '}Осталось: {Number(proj.totalRemaining ?? 0).toLocaleString()} т
+                              </div>
+                            )}
                             {proj.resources && proj.resources.length > 0 && (
                               <div style={{ marginTop: 8 }}>
                                 <div style={{ fontSize: 10, color: '#9ca3af', marginBottom: 4 }}>Ресурсы:</div>
                                 {proj.resources.map((r: any) => (
                                   <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
                                     <span style={{ color: '#eeeeee', minWidth: 100 }}>{r.name}</span>
-                                    <div style={{ flex: 1, background: '#3a3d40', borderRadius: 3, height: 6, overflow: 'hidden' }}>
-                                      <div style={{ width: `${Math.min(100, (r.provided / Math.max(r.required, 1)) * 100)}%`, background: r.remaining === 0 ? '#22c55e' : '#3b82f6', height: '100%' }} />
-                                    </div>
-                                    <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 80, textAlign: 'right' }}>{r.provided.toLocaleString()} / {r.required.toLocaleString()}</span>
+                                    {hasExactResourceAmounts(r) ? (
+                                      <div style={{ flex: 1, background: '#3a3d40', borderRadius: 3, height: 6, overflow: 'hidden' }}>
+                                        <div style={{ width: `${resourceProgress(r)}%`, background: r.remaining === 0 ? '#22c55e' : '#3b82f6', height: '100%' }} />
+                                      </div>
+                                    ) : (
+                                      <span style={{ flex: 1, color: '#7a7d80', fontSize: 10 }}>Нет точных данных о доставке</span>
+                                    )}
+                                    <span style={{ color: '#9ca3af', fontSize: 10, minWidth: 118, textAlign: 'right' }}>{resourceAmountLabel(r)}</span>
                                   </div>
                                 ))}
                               </div>
@@ -297,7 +341,7 @@ export default function RavenSyncTab() {
                           {res.resources.map((r: any) => (
                             <div key={r.key} style={{ background: '#323538', borderRadius: 6, padding: '8px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                               <span style={{ color: '#eeeeee', fontSize: 12 }}>{r.name}</span>
-                              <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontSize: 12, fontWeight: 600 }}>{r.provided.toLocaleString()} / {r.required.toLocaleString()}</span>
+                              <span style={{ color: r.remaining === 0 ? '#22c55e' : '#e67e22', fontSize: 12, fontWeight: 600 }}>{resourceAmountLabel(r)}</span>
                             </div>
                           ))}
                         </div>

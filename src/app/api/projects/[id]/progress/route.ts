@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemV2 } from '@/lib/ravenColonial';
+import { enrichRavenSystemWithJournalSnapshots } from '@/lib/ravenDepotSnapshots';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -25,7 +26,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
       await Promise.all(batch.map(async (sys) => {
         try {
-          const raven = await fetchRavenSystemV2(sys.system_name);
+          const raven = await enrichRavenSystemWithJournalSnapshots(
+            await fetchRavenSystemV2(sys.system_name),
+          );
 
           // Сохраняем в project_systems.notes как JSON для кэширования
           const ravenCache = {
@@ -34,6 +37,9 @@ export async function POST(req: Request, { params }: { params: { id: string } })
             architectName: raven.architectName,
             projects: raven.projects,
             resources: raven.resources,
+            totalRequired: raven.totalRequired,
+            totalProvided: raven.totalProvided,
+            totalRemaining: raven.totalRemaining,
             synced_at: new Date().toISOString(),
           };
 
@@ -47,9 +53,12 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
           results.push({
             system_name: sys.system_name,
-            found: raven.progress != null,
+            found: raven.progress != null || raven.projects.length > 0,
             progress: raven.progress,
             projects_count: raven.projects.length,
+            totalRequired: raven.totalRequired,
+            totalProvided: raven.totalProvided,
+            totalRemaining: raven.totalRemaining,
           });
         } catch (err: any) {
           results.push({
