@@ -11,12 +11,13 @@ function createNebulaTexture(color: string) {
   canvas.width = 256; canvas.height = 256;
   const ctx = canvas.getContext('2d')!;
   const rgb = new THREE.Color(color);
-  const c = `rgb(${Math.round(rgb.r * 255)},${Math.round(rgb.g * 255)},${Math.round(rgb.b * 255)})`;
+  const channels = `${Math.round(rgb.r * 255)},${Math.round(rgb.g * 255)},${Math.round(rgb.b * 255)}`;
+  const rgba = (alpha: number) => `rgba(${channels},${alpha})`;
   const glow = ctx.createRadialGradient(128, 128, 8, 128, 128, 122);
-  glow.addColorStop(0, `${c}`);
-  glow.addColorStop(0.18, `${c}cc`);
-  glow.addColorStop(0.48, `${c}55`);
-  glow.addColorStop(0.78, `${c}18`);
+  glow.addColorStop(0, rgba(1));
+  glow.addColorStop(0.18, rgba(0.8));
+  glow.addColorStop(0.48, rgba(0.33));
+  glow.addColorStop(0.78, rgba(0.09));
   glow.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = glow; ctx.fillRect(0, 0, 256, 256);
   // Soft irregular wisps give the marker the cloudy appearance of the game map.
@@ -25,7 +26,7 @@ function createNebulaTexture(color: string) {
     const y = 35 + ((i * 47) % 190);
     const radius = 12 + ((i * 19) % 42);
     const wisp = ctx.createRadialGradient(x, y, 0, x, y, radius);
-    wisp.addColorStop(0, `${c}55`); wisp.addColorStop(1, 'rgba(0,0,0,0)');
+    wisp.addColorStop(0, rgba(0.33)); wisp.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = wisp; ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
   }
   const texture = new THREE.CanvasTexture(canvas);
