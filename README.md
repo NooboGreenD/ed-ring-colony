@@ -66,6 +66,8 @@ cp .env.example .env.local
 
 ### Environment Variables
 
+The repository includes a safe, placeholder-only [`.env.example`](.env.example). Copy it to the ignored `.env.local` file and keep all real or temporary credentials there. Never expose a service-role, CLI access token, or database password through a `NEXT_PUBLIC_` variable.
+
 ```env
 # Required
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
@@ -96,15 +98,33 @@ pnpm build      # Production build
 
 ## Database Setup
 
-```bash
-# Link your project
-npx supabase link --project-ref your-project-ref
+For a remote migration deployment, set these temporary, **server-only** values in `.env.local` in addition to the application values:
 
-# Apply migrations
-npx supabase db push
+```env
+SUPABASE_PROJECT_REF=your-project-ref
+SUPABASE_ACCESS_TOKEN=temporary-cli-access-token
+SUPABASE_DB_PASSWORD=temporary-database-password
+# Or use SUPABASE_DB_URL for a direct, percent-encoded connection URL.
 ```
 
-Migrations are in `supabase/migrations/`. Enable Realtime for: `squadron_chat_messages`, `user_notifications`, `forum_threads`, `forum_posts`.
+Load the ignored local configuration into the current shell without printing it, then link and push:
+
+```bash
+set -a
+. ./.env.local
+set +a
+
+# Link your project (only needed once per checkout)
+npx supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+# Preview pending migrations first
+npx supabase db push --dry-run --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+
+# Apply migrations only after reviewing the dry run
+npx supabase db push --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
+```
+
+If using a direct database connection instead, use `npx supabase db push --db-url "$SUPABASE_DB_URL"`. Migrations are in `supabase/migrations/`. Enable Realtime for: `squadron_chat_messages`, `user_notifications`, `forum_threads`, `forum_posts`.
 
 ## Project Structure
 

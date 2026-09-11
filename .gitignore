@@ -25,6 +25,8 @@ target/
 .env
 .env.local
 *.env.*
+# Keep the safe, placeholder-only setup template in the distribution.
+!.env.example
 
 # IDE specific
 .vscode/
