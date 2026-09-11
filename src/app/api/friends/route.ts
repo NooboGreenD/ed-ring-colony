@@ -12,8 +12,8 @@ type FriendRow = Record<string, any>;
 // relationship and has no request state at all.
 type FriendSchema = "modern" | "legacy-with-status" | "legacy";
 
-function apiError(message: string, status: number) {
-  return NextResponse.json({ error: message }, { status });
+function apiError(message: string, status: number, details?: string) {
+  return NextResponse.json({ error: message, ...(details ? { details } : {}) }, { status });
 }
 
 async function getFriendsRequestContext(req: NextRequest) {
@@ -25,7 +25,21 @@ async function getFriendsRequestContext(req: NextRequest) {
   // has no service key, retain normal authenticated/RLS access rather than
   // making a user's saved list disappear.
   try {
-    return { user, supabase: createServiceClient() };
+    const serviceClient = createServiceClient();
+    // A malformed/expired service key does not throw while constructing a
+    // Supabase client; it only fails on the first request. Probe a harmless
+    // authenticated-user profile read so the compatibility route can fall
+    // back to the caller client instead of returning a misleading 500.
+    const probe = await serviceClient
+      .from("profiles")
+      .select("id")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (probe.error) {
+      console.warn("[friends] Service client probe failed; using authenticated access:", probe.error.message);
+      return { user, supabase: authenticatedClient };
+    }
+    return { user, supabase: serviceClient };
   } catch {
     console.warn("[friends] Service client is unavailable; using authenticated access.");
     return { user, supabase: authenticatedClient };
@@ -115,7 +129,9 @@ async function listRelationships(
   if (!modernResponse.error && (modernResponse.data?.length || status !== "accepted")) {
     return { rows: modernResponse.data || [], schema: "modern" };
   }
-  if (modernResponse.error && !isLegacyColumnError(modernResponse.error)) throw modernResponse.error;
+  // A deployed PostgREST schema can report missing legacy columns with
+  // different error codes/messages. Always try the original layout before
+  // surfacing an error; this is a read-only compatibility probe.
 
   // Compatibility with the original friends(user_id, friend_id) schema. Some
   // deployments also have its status column, so preserve pending requests
@@ -159,7 +175,8 @@ async function findRelationship(
   if (!modernResponse.error && modernResponse.data?.length) {
     return { row: modernResponse.data[0], schema: "modern" };
   }
-  if (modernResponse.error && !isLegacyColumnError(modernResponse.error)) throw modernResponse.error;
+  // Try the legacy shape even when PostgREST used a non-standard schema
+  // error response.
 
   const legacyResponse = await supabase
     .from("friends")
@@ -205,7 +222,9 @@ async function findRelationshipByBody(
     : modernQuery.eq("requester_id", requesterId).eq("addressee_id", addresseeId);
   const modernResponse = await modernQuery.maybeSingle();
   if (!modernResponse.error && modernResponse.data) return { row: modernResponse.data, schema: "modern" };
-  if (modernResponse.error && !isLegacyColumnError(modernResponse.error)) throw modernResponse.error;
+  // Fall through to the original user_id/friend_id layout for all modern
+  // query failures; deployed schema caches do not use one consistent error
+  // code for missing columns.
 
   let legacyQuery = supabase.from("friends").select("*");
   legacyQuery = id
@@ -266,7 +285,7 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[friends GET] Failed:", message);
-    return apiError("Could not load friends", 500);
+    return apiError("Could not load friends", 500, message);
   }
 }
 

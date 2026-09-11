@@ -8,6 +8,8 @@ import { GalaxyBackground } from './GalaxyBackground';
 import { NebulaClouds } from './NebulaClouds';
 import { RingZone } from './RingZone';
 import { LandmarkMarkers } from './LandmarkMarkers';
+import { GalaxyRegionMarkers } from './GalaxyRegionMarkers';
+import { GalaxyRegionBoundaries } from './GalaxyRegionBoundaries';
 import { RouteLine } from './RouteLine';
 import { RouteMarkers } from './RouteMarkers';
 import { HubMarkers } from './HubMarkers';
@@ -178,10 +180,18 @@ export function GalaxyScene({
       <NebulaClouds />
       <RingZone />
       <LandmarkMarkers />
+      <GalaxyRegionMarkers />
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (
         <RouteLine points={squadronRouteSystems} color="#3b82f6" opacity={0.6} />
+      )}
+      {showSquadronRoute && squadronRouteSystems.length > 0 && (
+        <RouteMarkers
+          points={squadronRouteSystems}
+          selectedPointId={selectedRouteSystemId}
+          onSelectPoint={onSelectRouteSystem}
+        />
       )}
       {showKnownSystems && (
         <RouteMarkers

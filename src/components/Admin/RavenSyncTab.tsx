@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase, authFetch } from '@/lib/supabaseClient';
 import { IconCheckCircle, IconXCircle, IconMapPin, IconSatellite, IconRefresh, IconPackage, IconUserWorker, IconChart, IconClock, IconConstruction } from '@/components/Icons';
 
 interface SyncResult {
@@ -76,7 +76,7 @@ export default function RavenSyncTab() {
     const sup = supabase;
     const [{ data: rs }, logRes] = await Promise.all([
       sup.from('route_systems').select('id,system_name,status,progress,x,y,z').order('sort_order'),
-      fetch('/api/ravencolonial/sync/log?limit=100').then(r => r.json()).catch(() => ({ logs: [] }))
+      authFetch('/api/ravencolonial/sync/log?limit=100', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ logs: [] }))
     ]);
 
     setRouteSystems(rs || []);
@@ -179,7 +179,7 @@ export default function RavenSyncTab() {
       const errorCount = allResults.filter(r => r.error).length;
       setMessage(`Синхронизация завершена. Найдено: ${foundCount}, обновлено: ${updated}, ошибок: ${errorCount}`);
       setIsError(false);
-      loadData();
+      await loadData();
     } catch (e: any) {
       setMessage('Ошибка: ' + e.message);
       setIsError(true);

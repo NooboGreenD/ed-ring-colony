@@ -9,8 +9,9 @@ import { AtlasSearchPanel } from '@/components/Atlas/AtlasSearchPanel';
 import { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';
 import { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';
 import { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';
-import AtlasRouteFinder from '@/components/Atlas/AtlasRouteFinder';
+import AtlasRouteFinder, { type RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import AtlasMarketSearch from '@/components/Atlas/AtlasMarketSearch';
+import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
 import { Toaster, toast } from '@/components/ui/Toaster';
 import type { AtlasCandidate, AtlasSearchSession } from '@/types/atlas';
 import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
@@ -33,7 +34,7 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'market';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market';
 
 export default function AtlasPage() {
   return (
@@ -57,12 +58,19 @@ function AtlasPageInner() {
   const [selectedCandidate, setSelectedCandidate] = useState<AtlasCandidate | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [isSearching, setIsSearching] = useState(false);
-  const [activeTab, setActiveTab] = useState<AtlasTab>('search');
+  const initialMarketSystem = searchParams.get('system') || '';
+  const requestedTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<AtlasTab>(
+    requestedTab === 'market' || requestedTab === 'route' || requestedTab === 'route-finder' || requestedTab === 'ring-route' ? requestedTab : 'search'
+  );
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [squadronRoutePoints, setSquadronRoutePoints] = useState<RoutePoint[]>([]);
   const [routeFinderPoints, setRouteFinderPoints] = useState<RoutePoint[]>([]);
+  const [routeSearchProgress, setRouteSearchProgress] = useState<RouteSearchProgress>({
+    active: false, stage: 'idle', percent: 0, message: '', elapsedMs: 0,
+  });
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [marketScanSystems, setMarketScanSystems] = useState<Array<{ system_name: string; x?: number; y?: number; z?: number; status: string }>>([]);
   const [marketResults, setMarketResults] = useState<Array<{ system_name: string; distance: number; x?: number; y?: number; z?: number; station_name?: string; commodities_found?: number }>>([]);
@@ -139,9 +147,9 @@ function AtlasPageInner() {
   }, []);
 
   /* ── handle route-finder result ── */
-  const handleRouteFound = useCallback((route: RoutePoint[]) => {
+  const handleRouteFound = useCallback((route: RoutePoint[], tab: AtlasTab = 'route-finder') => {
     setRouteFinderPoints(route);
-    setActiveTab('route-finder');
+    setActiveTab(tab);
     toast(`Маршрут построен: ${route.length} систем`, 'success');
   }, []);
 
@@ -298,6 +306,12 @@ function AtlasPageInner() {
             Поиск маршрута
           </button>
           <button
+            className={`atlas-tab${activeTab === 'ring-route' ? ' active' : ''}`}
+            onClick={() => setActiveTab('ring-route')}
+          >
+            Галактическое кольцо
+          </button>
+          <button
             className={`atlas-tab${activeTab === 'market' ? ' active' : ''}`}
             onClick={() => setActiveTab('market')}
           >
@@ -413,12 +427,16 @@ function AtlasPageInner() {
 
           {/* Tab: Route Finder */}
           {activeTab === 'route-finder' && (
-            <AtlasRouteFinder onRouteFound={handleRouteFound} />
+            <AtlasRouteFinder onRouteFound={handleRouteFound} onProgress={setRouteSearchProgress} />
           )}
 
+          {activeTab === 'ring-route' && (
+            <AtlasRingRouteFinder onRouteFound={(route) => handleRouteFound(route, 'ring-route')} />
+          )}
           {/* Tab: Market */}
           {activeTab === 'market' && (
             <AtlasMarketSearch
+              initialSystem={initialMarketSystem}
               onScanStart={resetMarketMapLayers}
               onScanUpdate={mergeMarketScanUpdate}
               onMarketResults={setMarketResults}
@@ -436,6 +454,7 @@ function AtlasPageInner() {
           squadronRouteSystems={allRoutePoints}
           noMarketSystems={noMarketSystems}
           marketResults={marketResults}
+          routeSearchProgress={routeSearchProgress}
         />
       </div>
     </div>

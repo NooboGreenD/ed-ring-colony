@@ -24,6 +24,7 @@ export default function UserMenu() {
   const [open, setOpen] = useState(false);
   const [msgCount, setMsgCount] = useState(0);
   const [friendRequestCount, setFriendRequestCount] = useState(0);
+  const [mySquadron, setMySquadron] = useState<{ id: number; name: string; tag?: string | null } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const supabaseRef = useRef<ReturnType<typeof createSupabaseClient> | null>(null);
 
@@ -34,6 +35,7 @@ export default function UserMenu() {
 
       if (!u) {
         setProfile(null);
+        setMySquadron(null);
         return;
       }
 
@@ -47,6 +49,22 @@ export default function UserMenu() {
         .eq("id", u.id)
         .maybeSingle();
       setProfile(profileData);
+
+      // Load the same compatibility endpoint as the account page. The profile
+      // menu previously had no squadron entry at all, and querying the old
+      // read-model directly made the membership look absent on older schemas.
+      try {
+        const squadronResponse = await authFetch("/api/squadrons/my", { cache: "no-store" });
+        const squadronData = await squadronResponse.json().catch(() => ({}));
+        const squadron = squadronResponse.ok ? squadronData.squadron : null;
+        setMySquadron(squadron?.id ? {
+          id: Number(squadron.id),
+          name: String(squadron.name || "Эскадрилья"),
+          tag: squadron.tag ?? null,
+        } : null);
+      } catch {
+        setMySquadron(null);
+      }
     } catch (loadError) {
       console.error("[UserMenu] Could not load session:", loadError);
       setUser(null);
@@ -145,6 +163,11 @@ export default function UserMenu() {
       {open && (
         <div className="user-menu-drop">
           <Link href="/account" className="user-menu-item" onClick={() => setOpen(false)}>{t('account.profile')}</Link>
+          {mySquadron && (
+            <Link href={`/squadrons/${mySquadron.id}`} className="user-menu-item" onClick={() => setOpen(false)}>
+              <span>{mySquadron.tag ? `[${mySquadron.tag}] ` : ""}{mySquadron.name}</span>
+            </Link>
+          )}
           <Link href="/account/friends" className="user-menu-item" onClick={() => setOpen(false)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <span>{t('account.friends') || 'Друзья'}</span>
             {friendRequestCount > 0 && (

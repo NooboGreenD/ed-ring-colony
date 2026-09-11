@@ -45,12 +45,24 @@ interface RouteResult {
     total_distance: number;
     max_jump: number;
     avg_jump: number;
+    synthetic_waypoints?: boolean;
   };
   process?: SearchProcess;
 }
 
+export interface RouteSearchProgress {
+  active: boolean;
+  stage: 'idle' | 'coords' | 'scan' | 'astar' | 'done';
+  percent: number;
+  message: string;
+  elapsedMs: number;
+  systemsScanned?: number;
+  systemsUsed?: number;
+}
+
 interface Props {
   onRouteFound: (route: RoutePoint[]) => void;
+  onProgress?: (progress: RouteSearchProgress) => void;
 }
 
 type SearchPhase =
@@ -72,36 +84,49 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)} с`;
 }
 
-export default function AtlasRouteFinder({ onRouteFound }: Props) {
+export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
   const [fromSystem, setFromSystem] = useState("");
   const [toSystem, setToSystem] = useState("");
-  const [maxJump, setMaxJump] = useState(15);
+  const [maxJump, setMaxJump] = useState(14.99);
   const [radius, setRadius] = useState(30);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<RouteResult | null>(null);
   const [phase, setPhase] = useState<SearchPhase>({ stage: 'idle' });
 
-  const animatePhases = useCallback(() => {
+  const animatePhases = useCallback((startedAt: number) => {
     let i = 0;
+    const percentages = [8, 35, 72, 92];
     const run = () => {
       if (i >= PHASES.length) return;
       const p = PHASES[i];
       setPhase({ stage: p.stage, message: p.message, current: i + 1, total: PHASES.length - 1 } as SearchPhase);
+      onProgress?.({ active: true, stage: p.stage, percent: percentages[i], message: p.message, elapsedMs: Date.now() - startedAt });
       i++;
       setTimeout(run, p.delay);
     };
     run();
-  }, []);
+  }, [onProgress]);
 
   const findRoute = useCallback(async () => {
     if (!fromSystem.trim() || !toSystem.trim()) {
       toast("Укажите обе системы", "error");
       return;
     }
+    const startedAt = Date.now();
+    let progressTimer: number | null = null;
     setLoading(true);
     setResult(null);
     setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM...' });
-    animatePhases();
+    onProgress?.({ active: true, stage: 'coords', percent: 4, message: 'Получение координат систем из EDSM...', elapsedMs: 0 });
+    animatePhases(startedAt);
+    // The route endpoint performs the EDSM scan in one request. Keep the map
+    // informed while it is running, then replace this estimate with the exact
+    // server-side count returned in `process`.
+    progressTimer = window.setInterval(() => {
+      const elapsedMs = Date.now() - startedAt;
+      const estimatedScanned = Math.max(1, Math.floor(elapsedMs / 180));
+      onProgress?.({ active: true, stage: 'scan', percent: Math.min(88, 35 + Math.floor(estimatedScanned / 10)), message: 'Перебор систем EDSM вдоль трассы...', elapsedMs, systemsScanned: estimatedScanned });
+    }, 400);
     try {
       const res = await fetch("/api/atlas/route-finder", {
         method: "POST",
@@ -113,15 +138,31 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
           radius_around_path: radius,
         }),
       });
-      const data = await res.json();
+      const responseText = await res.text();
+      let data: any;
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        throw new Error(`Сервер вернул некорректный ответ (${res.status}). Уменьшите радиус или повторите поиск.`);
+      }
       setPhase({ stage: 'done', message: 'Готово!' });
       if (!res.ok) {
+        onProgress?.({ active: false, stage: 'idle', percent: 0, message: data.error || 'Маршрут не найден', elapsedMs: Date.now() - startedAt });
         toast(data.error || "Маршрут не найден", "error");
         setLoading(false);
         setPhase({ stage: 'idle' });
         return;
       }
       setResult(data);
+      onProgress?.({
+        active: false,
+        stage: 'done',
+        percent: 100,
+        message: data.process?.synthetic_waypoints ? 'Маршрут готов, добавлены триангулированные точки' : 'Маршрут построен',
+        elapsedMs: Date.now() - startedAt,
+        systemsScanned: data.process?.systems_scanned,
+        systemsUsed: data.process?.systems_used,
+      });
       const mappedRoute: RoutePoint[] = data.route.map((rp: ApiRoutePoint, i: number) => ({
         id: -(i + 1),
         system_name: rp.name,
@@ -134,18 +175,37 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
       onRouteFound(mappedRoute);
       toast(`Маршрут найден: ${data.summary.total_jumps} прыжков`, "success");
     } catch (err: any) {
+      onProgress?.({ active: false, stage: 'idle', percent: 0, message: err.message || 'Ошибка поиска', elapsedMs: Date.now() - startedAt });
       toast(err.message || "Ошибка поиска", "error");
     } finally {
+      if (progressTimer != null) window.clearInterval(progressTimer);
       setLoading(false);
       setTimeout(() => setPhase({ stage: 'idle' }), 800);
     }
-  }, [fromSystem, toSystem, maxJump, radius, onRouteFound, animatePhases]);
+  }, [fromSystem, toSystem, maxJump, radius, onRouteFound, onProgress, animatePhases]);
 
-  const radiusLabel = radius <= 100
-    ? `${radius} св.г. (сфера)`
-    : radius <= 200
-      ? `${radius} св.г. (куб)`
-      : `${radius} св.г. (куб, шаг ~${Math.round(radius * 0.7)} св.г.)`;
+  const downloadCsv = useCallback(() => {
+    if (!result?.route?.length) return;
+    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const lines = [
+      ['Порядок', 'Система', 'X', 'Y', 'Z', 'Прыжок от предыдущей, св.л.'].map(escape).join(';'),
+      ...result.route.map((point, index) => [
+        index + 1,
+        point.name,
+        point.x.toFixed(6), point.y.toFixed(6), point.z.toFixed(6),
+        index === 0 ? '' : result.jumps[index - 1]?.distance?.toFixed(2) || '',
+      ].map(escape).join(';')),
+    ];
+    const blob = new Blob([`\\ufeff${lines.join('\\n')}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `route-${fromSystem.trim()}-${toSystem.trim()}.csv`.replace(/[^\\w.-]+/g, '_');
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [fromSystem, result, toSystem]);
+
+  const radiusLabel = `${radius} св.г. (сфера EDSM)`;
 
   return (
     <div className="atlas-route-finder">
@@ -181,12 +241,12 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
 
         <div className="atlas-two-col">
           <div className="atlas-search-field">
-            <label>Макс. прыжок: {maxJump} св.г. (макс. 15 для колонизации)</label>
+            <label>Макс. прыжок: {maxJump.toFixed(2)} св.г. (лимит 14,99 для колонизации)</label>
             <input
               type="range"
               min={5}
-              max={15}
-              step={1}
+              max={14.99}
+              step={0.01}
               value={maxJump}
               onChange={(e) => setMaxJump(Number(e.target.value))}
             />
@@ -196,15 +256,13 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
             <input
               type="range"
               min={10}
-              max={50000}
-              step={radius < 100 ? 5 : radius < 1000 ? 50 : 500}
+              max={100}
+              step={5}
               value={radius}
               onChange={(e) => setRadius(Number(e.target.value))}
             />
             <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-              {radius <= 100
-                ? 'Режим sphere-systems: сканирует сферу вокруг ближайшей системы'
-                : 'Режим cube-systems: сканирует кубы вдоль линии маршрута с перекрытием'}
+              Поиск систем в сфере вокруг трассы маршрута. Максимум: 100 св.л.
             </div>
           </div>
         </div>
@@ -283,6 +341,14 @@ export default function AtlasRouteFinder({ onRouteFound }: Props) {
               <div className="lbl">Средний</div>
             </div>
           </div>
+          <button onClick={downloadCsv} className="atlas-scan-btn" style={{ marginTop: 12, width: '100%' }}>
+            Скачать маршрут CSV
+          </button>
+          {result.summary.synthetic_waypoints && (
+            <div style={{ marginTop: 8, color: '#fbbf24', fontSize: 12 }}>
+              Часть точек триангулирована: EDSM не вернул подходящие известные системы.
+            </div>
+          )}
 
           {/* Детали процесса поиска */}
           {result.process && (

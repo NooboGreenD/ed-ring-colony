@@ -11,6 +11,7 @@ import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
+import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((module) => module.GalaxyScene),
@@ -85,6 +86,7 @@ export interface GalaxyMapProps {
   showOnlyMainRoute?: boolean;
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
   marketResults?: MarketResult[];
+  routeSearchProgress?: RouteSearchProgress;
 }
 
 export default function GalaxyMap({
@@ -93,6 +95,7 @@ export default function GalaxyMap({
   showOnlyMainRoute = false,
   noMarketSystems = [],
   marketResults = [],
+  routeSearchProgress,
 }: GalaxyMapProps) {
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
@@ -307,6 +310,20 @@ export default function GalaxyMap({
     handleClearSelection();
   }, [handleClearSelection]);
 
+  const focusLastProgressPoint = useCallback(() => {
+    const progressed = uniqueRouteSystems
+      .filter((point) => mapStatus(point) !== 'planned' || readableProgress(point.progress) != null)
+      .sort((left, right) => Number((right as any).sort_order ?? 0) - Number((left as any).sort_order ?? 0));
+    const point = progressed[0] || uniqueRouteSystems[uniqueRouteSystems.length - 1];
+    if (point) handleSelectRouteSystem({ ...point, status: mapStatus(point) });
+  }, [handleSelectRouteSystem, uniqueRouteSystems]);
+
+  useEffect(() => {
+    const focusLast = () => focusLastProgressPoint();
+    window.addEventListener('atlas-focus-last-route', focusLast);
+    return () => window.removeEventListener('atlas-focus-last-route', focusLast);
+  }, [focusLastProgressPoint]);
+
   // Atlas sidebar rows dispatch these events so their advertised “focus on
   // map” behavior works without threading callbacks through every tab.
   useEffect(() => {
@@ -333,10 +350,30 @@ export default function GalaxyMap({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {routeSearchProgress?.active && (
+        <div style={{ position: 'absolute', top: 14, left: 14, zIndex: 12, width: 290, padding: 12, borderRadius: 8, background: 'rgba(13,15,17,0.92)', border: '1px solid rgba(230,126,34,0.55)', boxShadow: '0 8px 24px rgba(0,0,0,0.35)', pointerEvents: 'none' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: '#eeeeee', fontSize: 12, fontWeight: 700 }}>
+            <span>ПОИСК МАРШРУТА</span><span style={{ color: '#e67e22' }}>{routeSearchProgress.percent}%</span>
+          </div>
+          <div style={{ height: 6, margin: '9px 0 8px', borderRadius: 4, background: '#323538', overflow: 'hidden' }}>
+            <div style={{ width: `${routeSearchProgress.percent}%`, height: '100%', background: 'linear-gradient(90deg,#e67e22,#22c55e)', transition: 'width .35s ease' }} />
+          </div>
+          <div style={{ color: '#d1d5db', fontSize: 11 }}>{routeSearchProgress.message}</div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 7, color: '#9ca3af', fontSize: 10, flexWrap: 'wrap' }}>
+            <span>Этап: {routeSearchProgress.stage}</span>
+            <span>{(routeSearchProgress.elapsedMs / 1000).toFixed(1)} с</span>
+            {routeSearchProgress.systemsScanned != null && <span>Проверено: {routeSearchProgress.systemsScanned.toLocaleString('ru-RU')}</span>}
+          </div>
+          <div style={{ marginTop: 8, color: '#6b7280', fontSize: 10 }}>Карта обновится после получения координат EDSM</div>
+        </div>
+      )}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'none' }}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
           <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconRefresh size={12} /> Сброс вида
+          </button>
+          <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
+            <IconMapPin size={12} /> Последняя стройка
           </button>
         </div>
 

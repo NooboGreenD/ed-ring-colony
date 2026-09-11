@@ -320,7 +320,35 @@ export async function loadSquadronForUser(db: SupabaseClient, userId: string) {
     .eq("user_id", userId)
     .limit(1)
     .maybeSingle();
-  if (membershipError) throw new Error(asErrorMessage(membershipError, "Could not load squadron membership"));
+  if (membershipError) {
+    // Older profiles stored the squadron name directly and may not yet have
+    // the membership relation or its refreshed PostgREST schema cache.
+    const { data: legacyProfile } = await db
+      .from("profiles")
+      .select("squadron")
+      .eq("id", userId)
+      .maybeSingle();
+    const legacyName = typeof legacyProfile?.squadron === "string"
+      ? legacyProfile.squadron.trim()
+      : "";
+    if (legacyName) {
+      const { data: legacySquadron } = await db
+        .from("squadrons")
+        .select("*")
+        .or(`name.eq.${legacyName},tag.eq.${legacyName}`)
+        .limit(1)
+        .maybeSingle();
+      if (legacySquadron) {
+        return {
+          squadron: legacySquadron,
+          members: [],
+          ranks: [],
+          projects: [],
+        };
+      }
+    }
+    throw new Error(asErrorMessage(membershipError, "Could not load squadron membership"));
+  }
 
   let squadronId = (membershipData as { squadron_id?: number } | null)?.squadron_id ?? null;
   let squadron: Record<string, any> | null = null;
