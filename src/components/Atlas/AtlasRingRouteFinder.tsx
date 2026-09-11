@@ -5,14 +5,15 @@ import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
 import { toast } from '@/components/ui/Toaster';
 
 interface Props { onRouteFound: (route: RoutePoint[]) => void; }
-type RingResult = { route: Array<{ name: string; x: number; y: number; z: number; source?: string }>; ring_radius: number; search_radius: number; max_jump: number; discovered_count: number; synthetic_count: number; anchors: Array<{ name: string }> };
+type RingResult = { route: Array<{ name: string; x: number; y: number; z: number; source?: string }>; center?: { name?: string; x: number; y: number; z: number }; ring_radius: number; search_radius: number; max_jump: number; discovered_count: number; synthetic_count: number; anchors: Array<{ name: string }> };
 
 export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const [startSystem, setStartSystem] = useState('Sol');
   const [ringRadius, setRingRadius] = useState(23000);
   const [searchRadius, setSearchRadius] = useState(500);
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState({ percent: 0, stage: '', message: '', sector: 0, sectors: 0, found: 0, cached: false, deviation: 0 });
+  const [refining, setRefining] = useState(false);
+  const [progress, setProgress] = useState({ percent: 0, stage: '', message: '', sector: 0, sectors: 0, found: 0, cached: false, deviation: 0, point: 0, total: 0, replacements: 0 });
   const [result, setResult] = useState<RingResult | null>(null);
 
   const downloadCsv = () => {
@@ -33,7 +34,7 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
 
   const search = async () => {
     if (!startSystem.trim()) return;
-    setLoading(true); setResult(null); setProgress({ percent: 0, stage: 'start', message: 'Запуск поиска кольцевого маршрута', sector: 0, sectors: 0, found: 0, cached: false, deviation: 0 });
+    setLoading(true); setResult(null); setProgress({ percent: 0, stage: 'start', message: 'Запуск поиска кольцевого маршрута', sector: 0, sectors: 0, found: 0, cached: false, deviation: 0, point: 0, total: 0, replacements: 0 });
     try {
       const res = await fetch('/api/atlas/ring-route', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_system: startSystem, ring_radius: ringRadius, search_radius: searchRadius }) });
       if (!res.ok || !res.body) throw new Error('Не удалось запустить поиск кольца');
@@ -65,6 +66,33 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
     finally { setLoading(false); }
   };
 
+  const refine = async () => {
+    if (!result || refining) return;
+    setRefining(true); setProgress((current) => ({ ...current, percent: 0, stage: 'refine', message: 'Подготовка уточнения маршрута', point: 0, total: result.route.length - 2, replacements: 0 }));
+    try {
+      const res = await fetch('/api/atlas/ring-route/refine', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ route: result.route, center: result.center || { x: 25.21875, y: -20.90625, z: 25899.96875 }, ring_radius: result.ring_radius }) });
+      if (!res.ok || !res.body) throw new Error('Не удалось запустить уточнение маршрута');
+      const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let refined: any = null;
+      const handlePacket = (line: string) => {
+        if (!line.trim()) return;
+        const packet = JSON.parse(line);
+        if (packet.event === 'progress') setProgress((current) => ({ ...current, ...packet.data }));
+        if (packet.event === 'error') throw new Error(packet.data?.message || 'Ошибка уточнения маршрута');
+        if (packet.event === 'result') refined = packet.data;
+      };
+      while (true) {
+        const chunk = await reader.read(); buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+        const lines = buffer.split('\n'); buffer = lines.pop() || ''; lines.forEach(handlePacket); if (chunk.done) break;
+      }
+      buffer += decoder.decode(); if (buffer.trim()) handlePacket(buffer);
+      if (!refined?.route) throw new Error('Уточнение не вернуло маршрут');
+      const mapped: RoutePoint[] = refined.route.map((point: any, index: number) => ({ id: -(index + 1), system_name: point.name, x: point.x, y: point.y, z: point.z, sort_order: index, status: 'planned', isHub: false }));
+      setResult({ ...result, route: refined.route }); onRouteFound(mapped);
+      toast(`Маршрут уточнён: заменено ${refined.replacements} точек`, 'success');
+    } catch (error) { toast(error instanceof Error ? error.message : 'Ошибка уточнения маршрута', 'error'); }
+    finally { setRefining(false); }
+  };
+
   return <div className="atlas-route-finder">
     <div className="atlas-search-panel">
       <h3>Галактическое кольцо колонизации</h3>
@@ -88,6 +116,12 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
         <div className="stat-box"><div className="num">{result.synthetic_count}</div><div className="lbl">Триангуляций</div></div>
       </div>
       <button className="atlas-scan-btn" style={{ width: '100%', marginTop: 12 }} onClick={downloadCsv}>Скачать кольцо CSV</button>
+      <button className="atlas-scan-btn" style={{ width: '100%', marginTop: 8 }} onClick={refine} disabled={refining}>
+        {refining ? `Уточнение маршрута: ${progress.percent}%` : 'Уточнить маршрут по известным системам'}
+      </button>
+      {refining && <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+        {progress.message} · проверено точек: {progress.point} из {progress.total} · заменено: {progress.replacements} · радиус проверки: 30 св.л.
+      </div>}
     </div>}
   </div>;
 }
