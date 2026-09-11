@@ -264,14 +264,27 @@ class ColonialHelperApp:
     #  Вкладка: Подключение
     # ============================================================
     def _build_tab_auth(self):
-        frame = tb.Frame(self.tab_auth, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        # Вкладка содержит несколько API и полей. На небольших окнах вся
+        # форма должна прокручиваться, а не обрезаться снизу.
+        viewport = tb.Frame(self.tab_auth)
+        viewport.pack(fill=BOTH, expand=True)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        frame = tb.Frame(canvas, padding=15)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
 
-        tb.Label(frame, text="API Токен", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Основной API ED Ring Colony", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
+        tb.Label(frame, text="API-токен сайта", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
-            text="Вставьте API токен из профиля на сайте (вкладка 'API Токен'):",
+            text="Поле для API-токена ED Ring Colony из профиля сайта. Используется для загрузки журналов.",
             foreground=COLOR_MUTED,
         ).pack(anchor=W)
 
@@ -341,9 +354,10 @@ class ColonialHelperApp:
 
         tb.Label(frame, text="Raven Colonial API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
+        tb.Label(frame, text="API-ключ Raven Colonial", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
-            text="Вставьте API ключ из профиля Raven Colonial (ravencolonial.com):",
+            text="Вставьте сюда ключ из профиля ravencolonial.com. Нажмите «Проверить ключ» и сохраните настройки.",
             foreground=COLOR_MUTED,
         ).pack(anchor=W)
 
@@ -369,11 +383,15 @@ class ColonialHelperApp:
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
         tb.Label(frame, text="EDSM Journal API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(frame, text="Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
+        tb.Label(frame, text="EDSM API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
+        tb.Label(frame, text="Ключ EDSM API для отправки событий журнала. Можно оставить пустым.", foreground=COLOR_MUTED).pack(anchor=W)
         self.edsm_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
-        self.edsm_key_entry.pack(fill=X, pady=(5, 5))
+        self.edsm_key_entry.pack(fill=X, pady=(4, 5))
         self.edsm_key_entry.insert(0, self.edsm_api.api_key)
+        tb.Label(frame, text="Имя командира в EDSM", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
+        tb.Label(frame, text="Точное имя CMDR, зарегистрированное в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
         self.edsm_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
-        self.edsm_name_entry.pack(fill=X, pady=(0, 8))
+        self.edsm_name_entry.pack(fill=X, pady=(4, 8))
         self.edsm_name_entry.insert(0, self.edsm_api.commander_name)
         tb.Button(frame, text="Сохранить EDSM настройки", command=self._save_edsm_settings, bootstyle="info-outline", width=28).pack(anchor=W)
         self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
