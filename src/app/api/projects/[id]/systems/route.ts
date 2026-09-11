@@ -76,10 +76,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     return {
       ...system,
-      // Use the map table's canonical spelling/coordinates where available.
-      x: hub?.x ?? routeSystem?.x ?? system.x ?? null,
-      y: hub?.y ?? routeSystem?.y ?? system.y ?? null,
-      z: hub?.z ?? routeSystem?.z ?? system.z ?? null,
+      // Project coordinates are authoritative for project systems. Global map
+      // coordinates are only a fallback for legacy rows that do not have their
+      // own coordinates yet. Keeping this order lets the project EDSM updater
+      // correctly detect and fill missing project coordinates.
+      x: system.x ?? hub?.x ?? routeSystem?.x ?? null,
+      y: system.y ?? hub?.y ?? routeSystem?.y ?? null,
+      z: system.z ?? hub?.z ?? routeSystem?.z ?? null,
       status: progress == null ? baseStatus : statusFromProgress(progress),
       progress: progress ?? 0,
       route_system: routeSystem || null,

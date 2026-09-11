@@ -141,20 +141,11 @@ export default function ProjectPage() {
     }
 
     if (finalProject) {
-      let enrichedSystems = finalSystems;
-      try {
-        const { data: routeSystems } = await supabase
-          .from("route_systems")
-          .select("system_name, x, y, z, status, progress, is_hub")
-          .order("sort_order");
-        if (routeSystems && enrichedSystems.length) {
-          const routeMap = new Map(routeSystems.map((r: any) => [r.system_name, r]));
-          enrichedSystems = enrichedSystems.map((s: any) => {
-            const r = routeMap.get(s.system_name);
-            return r ? { ...s, ...r } : s;
-          });
-        }
-      } catch (e) { /* ignore */ }
+      // The project systems API already enriches legacy rows with global map
+      // data while preserving project_systems coordinates as authoritative.
+      // Do not merge route_systems here: spreading a global row over the
+      // project row made EDSM coordinates appear present and prevented the
+      // project updater from filling missing coordinates.
 
       if (finalMembers.length) {
         const userIds = finalMembers.map((m: any) => m.user_id);
@@ -181,7 +172,7 @@ export default function ProjectPage() {
         } catch (e) { /* ignore */ }
       }
 
-      setData({ project: finalProject, members: finalMembers, systems: enrichedSystems, route: finalRoute });
+      setData({ project: finalProject, members: finalMembers, systems: finalSystems, route: finalRoute });
       setDescDraft(finalProject.description || "");
 
       if (currentUser) {
