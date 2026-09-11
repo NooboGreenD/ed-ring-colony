@@ -32,13 +32,25 @@ export function GalaxyRegionBoundaries() {
     return result;
   }, []);
 
-  const material = useMemo(() => new THREE.LineBasicMaterial({
-    color: '#00e5ff',
+  const glowMaterial = useMemo(() => new THREE.LineBasicMaterial({
+    color: '#ff7a24',
     transparent: true,
-    opacity: 0.98,
+    opacity: 0.28,
     depthWrite: false,
     depthTest: false,
+    blending: THREE.AdditiveBlending,
+  }), []);
+  const material = useMemo(() => new THREE.LineBasicMaterial({
+    color: '#ff9a3d',
+    transparent: true,
+    opacity: 0.96,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
   }), []);
 
-  return <lineSegments geometry={geometry} material={material} renderOrder={20} frustumCulled={false} />;
+  return <group>
+    <lineSegments geometry={geometry} material={glowMaterial} renderOrder={19} frustumCulled={false} />
+    <lineSegments geometry={geometry} material={material} renderOrder={20} frustumCulled={false} />
+  </group>;
 }
