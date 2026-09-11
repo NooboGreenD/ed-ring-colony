@@ -8,9 +8,10 @@ const MAX_JUMP = 14.99;
 const MIN_RING_RADIUS = 100;
 const MAX_RING_RADIUS = 45_000;
 const MAX_SEARCH_RADIUS = 3_000;
-// 720 sectors keeps the angular gap small; interpolation fills each gap
-// while keeping the complete route below the 30,000-point UI/export limit.
-const SECTORS = 720;
+// 360 sectors keeps the angular gap small while halving external requests;
+// interpolation fills every gap and stays below the 30,000-point limit even at
+// the maximum 45,000 ly ring radius.
+const SECTORS = 360;
 const EDSM_UA = 'ED-Ring-Colony/1.0 (galactic-ring-route)';
 
 type Point = { name: string; x: number; y: number; z: number; source?: string };
@@ -33,24 +34,39 @@ async function edsmCoords(name: string): Promise<Point | null> {
 }
 
 async function systemsNear(point: Point, radius: number): Promise<Point[]> {
-  // EDSM accepts coordinate-based cube queries and returns real named systems.
-  // Keep the requested radius bounded; the final distance filter removes cube corners.
-  const size = Math.min(radius * 2, 6000);
-  const url = new URL('https://www.edsm.net/api-v1/cube-systems');
-  url.searchParams.set('x', String(point.x));
-  url.searchParams.set('y', String(point.y));
-  url.searchParams.set('z', String(point.z));
-  url.searchParams.set('size', String(size));
-  url.searchParams.set('showCoordinates', '1');
-  const res = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': EDSM_UA } });
-  const data = await json(res);
-  if (!Array.isArray(data)) return [];
-  return data.flatMap((row: any) => {
-    const c = row?.coords;
-    if (!row?.name || !c) return [];
-    const candidate = { name: String(row.name), x: Number(c.x), y: Number(c.y), z: Number(c.z), source: 'edsm' };
-    return [candidate].filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z) && distance(item, point) <= radius);
-  });
+  // A slow/rate-limited EDSM tile must not abort the whole ring. Missing
+  // sectors are deliberately returned as empty and become triangulated
+  // anchors later in the same pass.
+  try {
+    // EDSM accepts coordinate-based cube queries and returns real named systems.
+    // Keep the requested radius bounded; the final distance filter removes cube corners.
+    const size = Math.min(radius * 2, 6000);
+    const url = new URL('https://www.edsm.net/api-v1/cube-systems');
+    url.searchParams.set('x', String(point.x));
+    url.searchParams.set('y', String(point.y));
+    url.searchParams.set('z', String(point.z));
+    url.searchParams.set('size', String(size));
+    url.searchParams.set('showCoordinates', '1');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+    let res: Response;
+    try {
+      res = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': EDSM_UA }, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+    const data = await json(res);
+    if (!Array.isArray(data)) return [];
+    return data.flatMap((row: any) => {
+      const c = row?.coords;
+      if (!row?.name || !c) return [];
+      const candidate = { name: String(row.name), x: Number(c.x), y: Number(c.y), z: Number(c.z), source: 'edsm' };
+      return [candidate].filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y) && Number.isFinite(item.z) && distance(item, point) <= radius);
+    });
+  } catch (error) {
+    console.warn('[Atlas ring] EDSM sector skipped:', error instanceof Error ? error.message : error);
+    return [];
+  }
 }
 
 function ringBasis(start: Point, center: Point) {
