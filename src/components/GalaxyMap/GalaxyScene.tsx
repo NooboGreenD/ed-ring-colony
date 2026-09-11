@@ -6,6 +6,7 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { GalaxyBackground } from './GalaxyBackground';
 import { NebulaClouds } from './NebulaClouds';
+import { GalaxyNebulaSprites } from './GalaxyNebulaSprites';
 import { RingZone } from './RingZone';
 import { LandmarkMarkers } from './LandmarkMarkers';
 import { GalaxyRegionMarkers } from './GalaxyRegionMarkers';
@@ -179,6 +180,7 @@ export function GalaxyScene({
 
       <GalaxyBackground />
       <NebulaClouds />
+      <GalaxyNebulaSprites />
       <RingZone />
       <LandmarkMarkers />
       <GalacticRegions />
