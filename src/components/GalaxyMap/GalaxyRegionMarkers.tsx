@@ -3,12 +3,13 @@
 import { Html } from '@react-three/drei';
 import { useMemo } from 'react';
 import * as THREE from 'three';
-import { eliteToThreeCentered } from '@/lib/ed3dCanon';
-import { GALAXY_REGIONS, type GalaxyRegion } from '@/lib/galaxyRegions';
+import regionPack from '@/lib/galacticRegions.json';
 
-function RegionMarker({ region }: { region: GalaxyRegion }) {
-  const position = useMemo(() => eliteToThreeCentered(region), [region]);
-  const material = useMemo(() => new THREE.SpriteMaterial({ color: '#82b8ff', transparent: true, opacity: 0.9, depthWrite: false }), []);
+const REGIONS = (regionPack as { regions: Array<{ id: number; name: string; cx: number; cz: number }> }).regions;
+
+function RegionMarker({ region }: { region: (typeof REGIONS)[number] }) {
+  const position = useMemo(() => new THREE.Vector3(region.cx, 0, -region.cz), [region]);
+  const material = useMemo(() => new THREE.SpriteMaterial({ color: '#82b8ff', transparent: true, opacity: 0.92, depthWrite: false, depthTest: false }), []);
 
   return (
     <group position={[position.x, position.y, position.z]}>
@@ -27,7 +28,7 @@ function RegionMarker({ region }: { region: GalaxyRegion }) {
   );
 }
 
-/** Names and centroid markers for the 42 official Elite Dangerous codex regions. */
+/** Names and canonical centroid markers for the 42 official codex regions. */
 export function GalaxyRegionMarkers() {
-  return <group>{GALAXY_REGIONS.map((region) => <RegionMarker key={region.id} region={region} />)}</group>;
+  return <group>{REGIONS.map((region) => <RegionMarker key={region.id} region={region} />)}</group>;
 }
