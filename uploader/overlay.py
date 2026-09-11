@@ -1298,6 +1298,7 @@ class OverlayManager:
         parts.append(str(data.get("current", "")))
         parts.append(str(data.get("online", False)))
         parts.append(str(data.get("watcher_active", False)))
+        parts.append(str(data.get("systems_visited", 0)))
         parts.append(str(data.get("deliveries_count", 0)))
         parts.append(str(data.get("cargo_total_tons", 0)))
         parts.append(str(data.get("route_cargo_tons", 0)))
@@ -1330,8 +1331,10 @@ class OverlayManager:
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
-            if current_sys != "-" and current_sys != self._session_stats["current_system"]:
-                self._session_stats["systems_visited"] += 1
+            # The helper tracks visited systems independently of the route;
+            # use that authoritative counter instead of counting route redraws.
+            self._session_stats["systems_visited"] = int(data.get("systems_visited", 0) or 0)
+            if current_sys != "-":
                 self._session_stats["current_system"] = current_sys
 
             # These values are already session totals supplied by the helper.
