@@ -222,21 +222,27 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     // The API authorizes both leaders and officers. Use the admin client for
     // the actual delete because older RLS policies allowed only leaders and
     // otherwise made the UI report a generic "clear route" error.
-    if (body.system_id) {
-      const { error } = await admin
-        .from('project_systems')
-        .delete()
-        .eq('id', body.system_id)
-        .eq('project_id', projectId);
-      if (error) throw error;
-      return NextResponse.json({ success: true, deleted: 1 });
-    }
-    const { error } = await admin
-      .from('project_systems')
-      .delete()
-      .eq('project_id', projectId);
+    const linkedQuery = admin.from('project_systems').select('id, route_system_id').eq('project_id', projectId);
+    const { data: linkedRows, error: linkedError } = body.system_id
+      ? await linkedQuery.eq('id', body.system_id)
+      : await linkedQuery.limit(15_000);
+    if (linkedError) throw linkedError;
+    const routeIds = (linkedRows || []).map((row: any) => row.route_system_id).filter(Boolean);
+
+    const deleteQuery = admin.from('project_systems').delete().eq('project_id', projectId);
+    const { error } = body.system_id
+      ? await deleteQuery.eq('id', body.system_id)
+      : await deleteQuery;
     if (error) throw error;
-    return NextResponse.json({ success: true, cleared: true });
+
+    // Remove orphaned route rows too, otherwise the global Atlas map keeps
+    // drawing systems that were just removed from the project.
+    if (routeIds.length) {
+      const { data: stillLinked } = await admin.from('project_systems').select('route_system_id').in('route_system_id', routeIds);
+      const orphaned = routeIds.filter((routeId: number) => !(stillLinked || []).some((row: any) => row.route_system_id === routeId));
+      if (orphaned.length) await admin.from('route_systems').delete().in('id', orphaned);
+    }
+    return NextResponse.json({ success: true, deleted: linkedRows?.length || 0, cleared: !body.system_id });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
