@@ -17,13 +17,17 @@ export function GalaxyRegionBoundaries() {
     const positions: number[] = [];
     for (const region of REGIONS) {
       const path = region.path || [];
-      if (path.length < 2) continue;
-      for (let index = 0; index < path.length; index++) {
-        const current = path[index];
-        const next = path[(index + 1) % path.length];
-        // Region paths are relative to SAGA. The project map's canonical
-        // transform is x unchanged, z negated, and no vertical offset.
-        positions.push(current[0], 0, -current[1], next[0], 0, -next[1]);
+      if (path.length < 3) continue;
+      // The source map is quantised to a 394/395 ly stair-step grid. Draw a
+      // centripetal spline through those exact vertices so the visual border is
+      // smooth rather than showing every raster corner as a jagged step.
+      const controlPoints = path.map((point) => new THREE.Vector3(point[0], 0, -point[1]));
+      const curve = new THREE.CatmullRomCurve3(controlPoints, true, 'centripetal', 0.15);
+      const smoothPoints = curve.getPoints(Math.max(128, path.length * 3));
+      for (let index = 0; index < smoothPoints.length - 1; index++) {
+        const current = smoothPoints[index];
+        const next = smoothPoints[index + 1];
+        positions.push(current.x, 0, current.z, next.x, 0, next.z);
       }
     }
     const result = new THREE.BufferGeometry();
