@@ -69,6 +69,13 @@ const sysStatusClass = (s: string) => {
   return "status-planned";
 };
 
+const formatCoordinates = (system: { x?: unknown; y?: unknown; z?: unknown }) => {
+  const coordinates = [system.x, system.y, system.z].map(Number);
+  return coordinates.every(Number.isFinite)
+    ? coordinates.map((value) => value.toFixed(2)).join(", ")
+    : "Координаты не загружены";
+};
+
 export default function ProjectPage() {
   const params = useParams();
   const id = parseInt(params.id as string);
@@ -546,11 +553,26 @@ export default function ProjectPage() {
                     {s.target_date && <span>&#8594; {new Date(s.target_date).toLocaleDateString("ru-RU")}</span>}
                     {s.assignee?.cmdr_name && <span style={{ color: "#60a5fa" }}>@{s.assignee.cmdr_name}</span>}
                   </span>
+                  <span className="project-system-coordinates" title="Координаты проекта">
+                    {formatCoordinates(s)}
+                  </span>
                   <div className="sys-links">
-                    <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(s.system_name)}`} target="_blank" rel="noreferrer">
+                    <a
+                      className="project-link-button"
+                      href={`https://ravencolonial.com/#sys=${encodeURIComponent(s.system_name)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       RC
                     </a>
-                    <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(s.system_name)}`} target="_blank" rel="noreferrer">
+                    <a
+                      className="project-link-button"
+                      href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(s.system_name)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       EDSM
                     </a>
                   </div>

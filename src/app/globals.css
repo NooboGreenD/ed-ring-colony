@@ -1564,6 +1564,14 @@
     gap: 8px;
   }
 
+  .project-system-coordinates {
+    min-width: 150px;
+    color: var(--muted);
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    text-align: right;
+  }
+
   .system-row .sys-links a {
     font-size: 11px;
     color: var(--muted);
@@ -1577,6 +1585,15 @@
   .system-row .sys-links a:hover {
     color: var(--orange);
     border-color: var(--orange);
+  }
+
+  .project-link-button {
+    background: rgba(255, 255, 255, 0.03);
+    cursor: pointer;
+  }
+
+  .project-link-button:active {
+    transform: translateY(1px);
   }
 
   .member-row {
@@ -1994,6 +2011,10 @@
     .system-row .sys-links {
       width: 100%;
       justify-content: flex-end;
+    }
+    .project-system-coordinates {
+      min-width: 0;
+      text-align: left;
     }
     .member-row {
       flex-wrap: wrap;
