@@ -204,16 +204,24 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       .select('role')
       .eq('project_id', projectId)
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
+    const admin = createAdminClient();
+    const { data: project } = await admin
+      .from('projects')
+      .select('created_by')
+      .eq('id', projectId)
+      .maybeSingle();
+    const isProjectOwner = project?.created_by === user.id;
 
-    if (!membership || !['leader', 'officer'].includes(membership.role)) {
+    // Project owners can administer their own route even when a legacy
+    // deployment has no corresponding project_members row.
+    if ((!membership || !['leader', 'officer'].includes(membership.role)) && !isProjectOwner) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     // The API authorizes both leaders and officers. Use the admin client for
     // the actual delete because older RLS policies allowed only leaders and
     // otherwise made the UI report a generic "clear route" error.
-    const admin = createAdminClient();
     if (body.system_id) {
       const { error } = await admin
         .from('project_systems')
