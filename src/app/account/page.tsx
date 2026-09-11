@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
-import { createSupabaseClient, authFetch } from "@/lib/supabaseClient";
+import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
 import { parseJournal } from "@/lib/journalParser";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
@@ -25,74 +25,6 @@ import {
   IconCircle,
 } from "@/components/Icons";
 
-function getCookie(name: string) {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-  return match ? decodeURIComponent(match[2]) : null;
-}
-
-const LS_KEY = 'sb-sgukfplhxdhmkqponwft-auth-token';
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://sgukfplhxdhmkqponwft.supabase.co';
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-
-function decodeJwt(token: string): any {
-  try {
-    const base64 = token.split('.')[1];
-    const json = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-async function restoreSession(): Promise<any | null> {
-  // 1. OAuth callback cookie (one-time)
-  const sessionCookie = getCookie('sb-session');
-  if (sessionCookie) {
-    try {
-      const session = JSON.parse(sessionCookie);
-      const user = decodeJwt(session.access_token);
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        expires_in: 3600,
-        token_type: 'bearer',
-        user: user,
-      }));
-      document.cookie = 'sb-session=; path=/; max-age=0; SameSite=Lax; Secure';
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // 2. Check localStorage and verify token via direct fetch
-  const lsToken = localStorage.getItem(LS_KEY);
-  if (!lsToken) return null;
-
-  let session: any;
-  try {
-    session = JSON.parse(lsToken);
-  } catch {
-    return null;
-  }
-
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-        'apikey': ANON_KEY,
-      },
-    });
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  return null;
-}
 
 type Progress = { current: number; total: number; phase: string; pct: number };
 type Tab = "profile" | "squadron" | "journals" | "tokens";
@@ -100,6 +32,7 @@ type Tab = "profile" | "squadron" | "journals" | "tokens";
 export default function AccountPage() {
   const { t, setLocale } = useI18n();
   const [user, setUser] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<any>(null);
   const [files, setFiles] = useState<FileList | null>(null);
   const [summary, setSummary] = useState<any>(null);
@@ -135,32 +68,49 @@ export default function AccountPage() {
   }, [user]);
 
   const load = async () => {
-    const u = await restoreSession();
-    setUser(u);
-    if (u) {
+    try {
+      const currentUser = await getCurrentUser();
+      setUser(currentUser);
+
+      if (!currentUser) {
+        setProfile(null);
+        return;
+      }
+
       const client = createSupabaseClient();
-      const { data: p } = await client
+      const { data: profileData } = await client
         .from("profiles")
         .select("*")
-        .eq("id", u.id)
+        .eq("id", currentUser.id)
         .maybeSingle();
-      if (!p) {
-        await fetch("/api/auth/ensure-profile", { method: "POST" });
-        const again = await client
+
+      if (!profileData) {
+        await authFetch("/api/auth/ensure-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const { data: ensuredProfile } = await client
           .from("profiles")
           .select("*")
-          .eq("id", u.id)
+          .eq("id", currentUser.id)
           .maybeSingle();
-        setProfile(again.data);
-        setCmdrEdit(again.data?.cmdr_name ?? "");
-        setLanguage(again.data?.language ?? "ru");
-        setLocale(again.data?.language ?? "ru");
+        setProfile(ensuredProfile);
+        setCmdrEdit(ensuredProfile?.cmdr_name ?? "");
+        setLanguage(ensuredProfile?.language ?? "ru");
+        setLocale(ensuredProfile?.language ?? "ru");
       } else {
-        setProfile(p);
-        setCmdrEdit(p?.cmdr_name ?? "");
-        setLanguage(p?.language ?? "ru");
-        setLocale(p?.language ?? "ru");
+        setProfile(profileData);
+        setCmdrEdit(profileData.cmdr_name ?? "");
+        setLanguage(profileData.language ?? "ru");
+        setLocale(profileData.language ?? "ru");
       }
+    } catch (loadError) {
+      console.error("[Account] Could not load session:", loadError);
+      setUser(null);
+      setProfile(null);
+    } finally {
+      setAuthReady(true);
     }
   };
 
@@ -176,6 +126,14 @@ export default function AccountPage() {
       if (json.squadron) setMySquadron(json);
     })();
   }, [user]);
+
+  if (!authReady) {
+    return (
+      <main className="card auth-card">
+        <p>Загрузка...</p>
+      </main>
+    );
+  }
 
   if (!user) {
     return (
@@ -311,18 +269,6 @@ export default function AccountPage() {
     setBusy(true);
     setSummary(null);
 
-    const lsToken = localStorage.getItem(LS_KEY);
-    let accessToken = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      accessToken = s.access_token;
-    } catch { /* ignore */ }
-    if (!accessToken) {
-      setSummary({ error: t('account.sessionExpired') });
-      setBusy(false);
-      return;
-    }
-
     const list = Array.from(files);
     const allDeliveries: any[] = [];
     let cmdr: string | null = null;
@@ -398,12 +344,9 @@ export default function AccountPage() {
           is_hub: d.isHub,
           route_system_id: d.routeSystemId,
         }));
-      const res = await fetch("/api/logs/import", {
+      const res = await authFetch("/api/logs/import", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${accessToken}`,
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cmdr, deliveries: chunk }),
       });
       const json = await res.json();
@@ -431,66 +374,46 @@ export default function AccountPage() {
   };
 
   const loadTokens = async () => {
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
-    const res = await fetch('/api/auth/tokens', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const res = await authFetch('/api/auth/tokens');
+    if (!res.ok) {
+      setTokens([]);
+      return;
+    }
+
     const json = await res.json();
     setTokens(json.tokens || []);
   };
 
   const createToken = async () => {
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
     setTokenMsg("");
     setGeneratedToken(null);
-    const res = await fetch('/api/auth/tokens', {
+
+    const res = await authFetch('/api/auth/tokens', {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ name: newTokenName || 'Colonial Helper Token' })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newTokenName || 'Colonial Helper Token' }),
     });
     const json = await res.json();
+
     if (!res.ok) {
       setTokenMsg(json.error || t('account.error'));
       return;
     }
+
     setGeneratedToken(json.token);
     setNewTokenName("");
-    loadTokens();
+    void loadTokens();
   };
 
   const revokeToken = async (id: string) => {
     if (!confirm(t('account.revokeTokenConfirm'))) return;
-    const lsToken = localStorage.getItem(LS_KEY);
-    let token = "";
-    try {
-      const s = JSON.parse(lsToken || '{}');
-      token = s.access_token;
-    } catch { return; }
-    if (!token) return;
-    await fetch('/api/auth/tokens', {
+
+    await authFetch('/api/auth/tokens', {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ id })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
     });
-    loadTokens();
+    void loadTokens();
   };
 
   const allegianceIcon = (a: string | null) => {
@@ -597,7 +520,10 @@ export default function AccountPage() {
           </form>
 
           <div style={{ marginTop: 32 }}>
-            <button onClick={() => { createSupabaseClient().auth.signOut(); localStorage.removeItem(LS_KEY); }} className="btn danger-btn">{t('account.logout')}</button>
+            <button onClick={async () => {
+              await createSupabaseClient().auth.signOut();
+              window.location.assign('/');
+            }} className="btn danger-btn">{t('account.logout')}</button>
           </div>
         </div>
       )}

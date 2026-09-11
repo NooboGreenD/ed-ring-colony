@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { IconError, IconSync } from '@/components/Icons';
-import { getAccessToken } from '@/lib/supabaseClient';
+import { authFetch } from '@/lib/supabaseClient';
 
 interface CapiProfileData {
   cmdr_name: string | null;
@@ -30,28 +30,31 @@ export default function CapiPage() {
   useEffect(() => { fetchProfile(); }, []);
 
   async function fetchProfile() {
-    const token = getAccessToken();
-    const res = await fetch('/api/capi/profile', {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setProfile(data.profile);
+    try {
+      const res = await authFetch('/api/capi/profile');
+      if (res.ok) {
+        const data = await res.json();
+        setProfile(data.profile);
+      }
+    } catch (profileError) {
+      setError(profileError instanceof Error ? profileError.message : 'Could not load profile');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   async function handleSync() {
     setSyncing(true); setError(null);
-    const token = getAccessToken();
-    const res = await fetch('/api/capi/sync', {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    const data = await res.json();
-    if (res.ok) fetchProfile();
-    else setError(data.error || 'Sync failed');
-    setSyncing(false);
+    try {
+      const res = await authFetch('/api/capi/sync', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) void fetchProfile();
+      else setError(data.error || 'Sync failed');
+    } catch (syncError) {
+      setError(syncError instanceof Error ? syncError.message : 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
   }
 
   if (loading) return <div style={{ padding: 24, color: 'var(--muted)' }}>Загрузка...</div>;

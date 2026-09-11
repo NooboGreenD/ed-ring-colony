@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { authFetch, supabase } from '@/lib/supabaseClient';
 import { startDiscordOAuthAction } from './actions';
 
 export default function LoginPage() {
@@ -27,41 +27,54 @@ export default function LoginPage() {
     e.preventDefault();
     setError('');
     setBusy(true);
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error || !data.user) {
+
+    try {
+      const { data, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (signInError || !data.session || !data.user) {
+        setError(
+          signInError?.message === 'Invalid login credentials'
+            ? 'Неверный логин или пароль.'
+            : signInError?.message || 'Не удалось создать сессию. Попробуйте ещё раз.',
+        );
+        return;
+      }
+
+      // The browser client has now persisted the standard Supabase cookie
+      // session. Send its current Bearer token so profile creation works even
+      // before a subsequent request has picked up that cookie.
+      const cmdrName = data.user.user_metadata?.cmdr_name;
+      try {
+        const profileResponse = await authFetch('/api/auth/ensure-profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: data.user.id,
+            email: data.user.email,
+            ...(cmdrName ? { cmdr_name: cmdrName } : {}),
+          }),
+        });
+
+        if (!profileResponse.ok) {
+          console.warn('[Login] Could not ensure profile:', profileResponse.status);
+        }
+      } catch (profileError) {
+        // A profile retry is available from /account. Do not turn a valid
+        // Supabase login into a failed login because this best-effort request
+        // is temporarily unavailable.
+        console.warn('[Login] Could not ensure profile:', profileError);
+      }
+
+      router.replace('/account');
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Ошибка входа');
+    } finally {
       setBusy(false);
-      setError(error?.message === 'Invalid login credentials' ? 'Неверный логин или пароль.' : error?.message || 'Ошибка входа');
-      return;
     }
-
-    // Создаём профиль если его нет, используя данные из метаданных пользователя
-    // Важно: передаём cmdr_name только если он есть в метаданных
-    const cmdrName = data.user.user_metadata?.cmdr_name;
-    if (cmdrName) {
-      await fetch('/api/auth/ensure-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: data.user.id,
-          email: data.user.email,
-          cmdr_name: cmdrName
-        }),
-      });
-    } else {
-      // Если cmdr_name нет в метаданных, просто проверяем существование профиля
-      await fetch('/api/auth/ensure-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: data.user.id,
-          email: data.user.email
-        }),
-      });
-    }
-
-    setBusy(false);
-    router.push('/account');
-    router.refresh();
   };
 
   return (
@@ -98,7 +111,7 @@ export default function LoginPage() {
         Нет аккаунта? <Link href="/register">Регистрация</Link>
       </p>
       <div className="auth-or">или</div>
-      <button type="button" onClick={discord}>
+      <button type="button" onClick={discord} disabled={busy}>
         Войти через Discord
       </button>
     </main>

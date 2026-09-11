@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { IconJournal, IconCheck, IconError, IconBuilding } from '@/components/Icons';
-import { getAccessToken } from '@/lib/supabaseClient';
+import { authFetch } from '@/lib/supabaseClient';
 
 interface ParsedDepot {
   timestamp: string;
@@ -60,10 +60,8 @@ export default function JournalPage() {
     formData.append('file', file);
 
     try {
-      const token = getAccessToken();
-      const res = await fetch('/api/journal/parse', {
+      const res = await authFetch('/api/journal/parse', {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,
       });
 
@@ -90,13 +88,9 @@ export default function JournalPage() {
     setError(null);
 
     try {
-      const token = getAccessToken();
-      const res = await fetch('/api/journal/import', {
+      const res = await authFetch('/api/journal/import', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           filename: result.filename,
           depotEvents: result.depotEvents,

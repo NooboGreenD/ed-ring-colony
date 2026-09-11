@@ -1,10 +1,10 @@
 "use client";
-import { IconMessage, IconBell, IconGear, IconLogOut, IconShield, IconHeadphones } from "@/components/Icons";
+import { IconHeadphones } from "@/components/Icons";
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createSupabaseClient } from "@/lib/supabaseClient";
+import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { avatarFromUser, nickFromUser } from "@/lib/authProfile";
 import { useI18n } from "@/lib/i18n/I18nContext";
 
@@ -14,74 +14,6 @@ type Profile = {
   role?: string | null;
 };
 
-function getCookie(name: string) {
-  if (typeof document === 'undefined') return null;
-  const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-  return match ? decodeURIComponent(match[2]) : null;
-}
-
-const LS_KEY = 'sb-sgukfplhxdhmkqponwft-auth-token';
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://sgukfplhxdhmkqponwft.supabase.co';
-const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
-
-function decodeJwt(token: string): any {
-  try {
-    const base64 = token.split('.')[1];
-    const json = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-async function restoreSession(): Promise<any | null> {
-  // 1. OAuth callback cookie (one-time)
-  const sessionCookie = getCookie('sb-session');
-  if (sessionCookie) {
-    try {
-      const session = JSON.parse(sessionCookie);
-      const user = decodeJwt(session.access_token);
-      localStorage.setItem(LS_KEY, JSON.stringify({
-        access_token: session.access_token,
-        refresh_token: session.refresh_token,
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-        expires_in: 3600,
-        token_type: 'bearer',
-        user: user,
-      }));
-      document.cookie = 'sb-session=; path=/; max-age=0; SameSite=Lax; Secure';
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // 2. Check localStorage and verify token via direct fetch
-  const lsToken = localStorage.getItem(LS_KEY);
-  if (!lsToken) return null;
-
-  let session: any;
-  try {
-    session = JSON.parse(lsToken);
-  } catch {
-    return null;
-  }
-
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-        'apikey': ANON_KEY,
-      },
-    });
-    if (res.ok) {
-      return await res.json();
-    }
-  } catch {
-    /* ignore */
-  }
-
-  return null;
-}
 
 export default function UserMenu() {
   const router = useRouter();
@@ -95,34 +27,39 @@ export default function UserMenu() {
   const boxRef = useRef<HTMLDivElement>(null);
   const supabaseRef = useRef<ReturnType<typeof createSupabaseClient> | null>(null);
 
-  const load = async () => {
-    console.log('[UserMenu] load() start');
-    const u = await restoreSession();
-    console.log('[UserMenu] restoreSession returned:', u ? u.id : 'null');
-    setUser(u);
-    if (!u) {
+  const load = useCallback(async () => {
+    try {
+      const u = await getCurrentUser();
+      setUser(u);
+
+      if (!u) {
+        setProfile(null);
+        return;
+      }
+
+      if (!supabaseRef.current) {
+        supabaseRef.current = createSupabaseClient();
+      }
+
+      const { data: profileData } = await supabaseRef.current
+        .from("profiles")
+        .select("cmdr_name, avatar_url, role")
+        .eq("id", u.id)
+        .maybeSingle();
+      setProfile(profileData);
+    } catch (loadError) {
+      console.error("[UserMenu] Could not load session:", loadError);
+      setUser(null);
       setProfile(null);
+    } finally {
       setReady(true);
-      return;
     }
-    
-    // Create client for DB queries
-    if (!supabaseRef.current) {
-      supabaseRef.current = createSupabaseClient();
-    }
-    const { data: p } = await supabaseRef.current
-      .from("profiles")
-      .select("cmdr_name, avatar_url, role")
-      .eq("id", u.id)
-      .maybeSingle();
-    setProfile(p);
-    setReady(true);
-  };
+  }, []);
 
   const loadUnread = useCallback(async () => {
     if (!user || !supabaseRef.current) { setMsgCount(0); return; }
     try {
-      const res = await fetch("/api/friends?status=accepted", { credentials: "include" });
+      const res = await authFetch("/api/friends?status=accepted");
       if (!res.ok) { setMsgCount(0); return; }
       const { count } = await supabaseRef.current
         .from("messages")
@@ -136,7 +73,7 @@ export default function UserMenu() {
   const loadFriendRequests = useCallback(async () => {
     if (!user || !supabaseRef.current) { setFriendRequestCount(0); return; }
     try {
-      const res = await fetch("/api/friends?status=pending", { credentials: "include" });
+      const res = await authFetch("/api/friends?status=pending");
       if (!res.ok) { setFriendRequestCount(0); return; }
       const json = await res.json();
       const allPending = json.friends || [];
@@ -146,8 +83,14 @@ export default function UserMenu() {
   }, [user]);
 
   useEffect(() => {
-    load();
-  }, []);
+    void load();
+    const { data: { subscription } } = createSupabaseClient().auth.onAuthStateChange(() => {
+      // Avoid re-entering Supabase auth while it is notifying subscribers.
+      window.setTimeout(() => void load(), 0);
+    });
+
+    return () => subscription.unsubscribe();
+  }, [load]);
 
   useEffect(() => {
     loadUnread();
@@ -186,10 +129,9 @@ export default function UserMenu() {
 
   const logout = async () => {
     setOpen(false);
-    if (supabaseRef.current) {
-      await supabaseRef.current.auth.signOut();
-    }
-    localStorage.removeItem(LS_KEY);
+    await createSupabaseClient().auth.signOut();
+    setUser(null);
+    setProfile(null);
     router.push("/");
     router.refresh();
   };
