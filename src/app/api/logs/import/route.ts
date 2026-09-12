@@ -20,6 +20,8 @@ function getAdminClient() {
 }
 
 export const dynamic = 'force-dynamic';
+// A large Journal is intentionally uploaded as many small requests. Allow one
+// request enough wall-clock time for auth plus bounded database operations.
 export const maxDuration = 60;
 
 export async function POST(req: Request) {

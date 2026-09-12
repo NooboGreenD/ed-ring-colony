@@ -11,6 +11,7 @@ import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
+import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((module) => module.GalaxyScene),
@@ -85,6 +86,7 @@ export interface GalaxyMapProps {
   showOnlyMainRoute?: boolean;
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
   marketResults?: MarketResult[];
+  routeSearchProgress?: RouteSearchProgress;
 }
 
 export default function GalaxyMap({
@@ -93,12 +95,17 @@ export default function GalaxyMap({
   showOnlyMainRoute = false,
   noMarketSystems = [],
   marketResults = [],
+  routeSearchProgress,
 }: GalaxyMapProps) {
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
   const [pilots, setPilots] = useState<any[]>([]);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
+  const [searchSystem, setSearchSystem] = useState<RouteSystem | null>(null);
+  const [systemSearch, setSystemSearch] = useState('');
+  const [systemSearchLoading, setSystemSearchLoading] = useState(false);
+  const [systemSearchError, setSystemSearchError] = useState('');
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
   const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
   const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
@@ -112,6 +119,10 @@ export default function GalaxyMap({
   const [showPilots, setShowPilots] = useState(true);
   const [showMarketResults, setShowMarketResults] = useState(true);
   const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
+  const [showRegionLabels, setShowRegionLabels] = useState(true);
+  const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
+  const [showNebulae, setShowNebulae] = useState(true);
+  const [showRingZone, setShowRingZone] = useState(true);
   const [statusFilters, setStatusFilters] = useState<StatusFilters>({
     planned: true,
     building: true,
@@ -198,10 +209,10 @@ export default function GalaxyMap({
     [uniqueRouteSystems, hubSystemNames],
   );
   const visibleRouteMarkers = useMemo(
-    () => routeMarkerSystems
+    () => [...routeMarkerSystems, ...(searchSystem ? [searchSystem] : [])]
       .filter((system) => statusFilters[mapStatus(system)])
       .map((system) => ({ ...system, status: mapStatus(system) })),
-    [routeMarkerSystems, statusFilters],
+    [routeMarkerSystems, searchSystem, statusFilters],
   );
   const visibleHubs = useMemo(
     () => uniqueHubs
@@ -294,6 +305,26 @@ export default function GalaxyMap({
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
   }, []);
 
+  const searchForSystem = useCallback(async () => {
+    const query = systemSearch.trim();
+    if (!query) return;
+    setSystemSearchLoading(true); setSystemSearchError('');
+    const key = systemNameKey(query);
+    const knownRoute = uniqueRouteSystems.find((point) => systemNameKey(point.system_name) === key);
+    const knownHub = uniqueHubs.find((hub) => systemNameKey(hub.system_name) === key);
+    if (knownHub) { handleSelectHub(knownHub); setSystemSearchLoading(false); return; }
+    if (knownRoute) { handleSelectRouteSystem({ ...knownRoute, status: mapStatus(knownRoute) }); setSystemSearchLoading(false); return; }
+    try {
+      const response = await fetch(`/api/edsm/system?name=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      if (!response.ok || !data.coords) throw new Error(data.error || 'Система не найдена');
+      const point: RouteSystem = { id: -900000 - Date.now() % 100000, system_name: data.name || query, sort_order: -1, status: 'planned', x: Number(data.coords.x), y: Number(data.coords.y), z: Number(data.coords.z), isHub: false };
+      setSearchSystem(point);
+      handleSelectRouteSystem(point);
+    } catch (error) { setSystemSearchError(error instanceof Error ? error.message : 'Система не найдена'); }
+    finally { setSystemSearchLoading(false); }
+  }, [handleSelectHub, handleSelectRouteSystem, systemSearch, uniqueHubs, uniqueRouteSystems]);
+
   const handleClearSelection = useCallback(() => {
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -306,6 +337,20 @@ export default function GalaxyMap({
     setResetCamera((value) => value + 1);
     handleClearSelection();
   }, [handleClearSelection]);
+
+  const focusLastProgressPoint = useCallback(() => {
+    const progressed = uniqueRouteSystems
+      .filter((point) => mapStatus(point) !== 'planned' || readableProgress(point.progress) != null)
+      .sort((left, right) => Number((right as any).sort_order ?? 0) - Number((left as any).sort_order ?? 0));
+    const point = progressed[0] || uniqueRouteSystems[uniqueRouteSystems.length - 1];
+    if (point) handleSelectRouteSystem({ ...point, status: mapStatus(point) });
+  }, [handleSelectRouteSystem, uniqueRouteSystems]);
+
+  useEffect(() => {
+    const focusLast = () => focusLastProgressPoint();
+    window.addEventListener('atlas-focus-last-route', focusLast);
+    return () => window.removeEventListener('atlas-focus-last-route', focusLast);
+  }, [focusLastProgressPoint]);
 
   // Atlas sidebar rows dispatch these events so their advertised “focus on
   // map” behavior works without threading callbacks through every tab.
@@ -333,11 +378,36 @@ export default function GalaxyMap({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {routeSearchProgress?.active && (
+        <div style={{ position: 'absolute', top: 14, left: 14, zIndex: 12, width: 290, padding: 12, borderRadius: 8, background: 'rgba(13,15,17,0.92)', border: '1px solid rgba(230,126,34,0.55)', boxShadow: '0 8px 24px rgba(0,0,0,0.35)', pointerEvents: 'none' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: '#eeeeee', fontSize: 12, fontWeight: 700 }}>
+            <span>ПОИСК МАРШРУТА</span><span style={{ color: '#e67e22' }}>{routeSearchProgress.percent}%</span>
+          </div>
+          <div style={{ height: 6, margin: '9px 0 8px', borderRadius: 4, background: '#323538', overflow: 'hidden' }}>
+            <div style={{ width: `${routeSearchProgress.percent}%`, height: '100%', background: 'linear-gradient(90deg,#e67e22,#22c55e)', transition: 'width .35s ease' }} />
+          </div>
+          <div style={{ color: '#d1d5db', fontSize: 11 }}>{routeSearchProgress.message}</div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 7, color: '#9ca3af', fontSize: 10, flexWrap: 'wrap' }}>
+            <span>Этап: {routeSearchProgress.stage}</span>
+            <span>{(routeSearchProgress.elapsedMs / 1000).toFixed(1)} с</span>
+            {routeSearchProgress.systemsScanned != null && <span>Проверено: {routeSearchProgress.systemsScanned.toLocaleString('ru-RU')}</span>}
+          </div>
+          <div style={{ marginTop: 8, color: '#6b7280', fontSize: 10 }}>Карта обновится после получения координат EDSM</div>
+        </div>
+      )}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'none' }}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
           <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconRefresh size={12} /> Сброс вида
           </button>
+          <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
+            <IconMapPin size={12} /> Последняя стройка
+          </button>
+          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+            <input value={systemSearch} onChange={(event) => setSystemSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void searchForSystem(); }} placeholder="Поиск системы..." style={{ minWidth: 0, flex: 1, background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '5px 7px', borderRadius: 4, fontSize: 11 }} />
+            <button onClick={() => void searchForSystem()} disabled={systemSearchLoading} style={{ background: 'rgba(59,130,246,.18)', border: '1px solid rgba(59,130,246,.5)', color: '#8bbcff', padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>{systemSearchLoading ? '…' : 'Найти'}</button>
+          </div>
+          {systemSearchError && <div style={{ color: '#f87171', fontSize: 10, marginTop: 4 }}>{systemSearchError}</div>}
         </div>
 
         <div style={{ marginBottom: 12, pointerEvents: 'auto' }}>
@@ -384,6 +454,12 @@ export default function GalaxyMap({
                 <input type="checkbox" checked={showNoMarketSystems} onChange={(event) => setShowNoMarketSystems(event.target.checked)} />
                 Системы без рынков ({visibleNoMarketSystems.length})
               </label>
+              <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
+                <label style={{ fontSize: 11, color: '#d8e8ff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionLabels} onChange={(event) => setShowRegionLabels(event.target.checked)} /> Имена секторов</label>
+                <label style={{ fontSize: 11, color: '#ff9a3d', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionBoundaries} onChange={(event) => setShowRegionBoundaries(event.target.checked)} /> Границы секторов</label>
+                <label style={{ fontSize: 11, color: '#b48cff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showNebulae} onChange={(event) => setShowNebulae(event.target.checked)} /> Туманности</label>
+                <label style={{ fontSize: 11, color: '#e67e22', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRingZone} onChange={(event) => setShowRingZone(event.target.checked)} /> Оранжевый пояс</label>
+              </div>
             </>
           )}
         </div>
@@ -496,6 +572,10 @@ export default function GalaxyMap({
             showPilots={!compactMap && showPilots}
             showMarketResults={!compactMap && showMarketResults}
             showNoMarketSystems={!compactMap && showNoMarketSystems}
+            showRegionLabels={showRegionLabels}
+            showRegionBoundaries={showRegionBoundaries}
+            showNebulae={showNebulae}
+            showRingZone={showRingZone}
             onSelectHub={handleSelectHub}
             onSelectRouteSystem={handleSelectRouteSystem}
             onSelectAtlasCandidate={handleSelectAtlasCandidate}

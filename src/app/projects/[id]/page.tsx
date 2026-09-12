@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, authFetch } from "@/lib/supabaseClient";
 import Link from "next/link";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
 
@@ -67,6 +67,13 @@ const sysStatusClass = (s: string) => {
   if (s === "done") return "status-done";
   if (s === "building") return "status-building";
   return "status-planned";
+};
+
+const formatCoordinates = (system: { x?: unknown; y?: unknown; z?: unknown }) => {
+  const coordinates = [system.x, system.y, system.z].map(Number);
+  return coordinates.every(Number.isFinite)
+    ? coordinates.map((value) => value.toFixed(2)).join(", ")
+    : "Координаты не загружены";
 };
 
 export default function ProjectPage() {
@@ -141,20 +148,11 @@ export default function ProjectPage() {
     }
 
     if (finalProject) {
-      let enrichedSystems = finalSystems;
-      try {
-        const { data: routeSystems } = await supabase
-          .from("route_systems")
-          .select("system_name, x, y, z, status, progress, is_hub")
-          .order("sort_order");
-        if (routeSystems && enrichedSystems.length) {
-          const routeMap = new Map(routeSystems.map((r: any) => [r.system_name, r]));
-          enrichedSystems = enrichedSystems.map((s: any) => {
-            const r = routeMap.get(s.system_name);
-            return r ? { ...s, ...r } : s;
-          });
-        }
-      } catch (e) { /* ignore */ }
+      // The project systems API already enriches legacy rows with global map
+      // data while preserving project_systems coordinates as authoritative.
+      // Do not merge route_systems here: spreading a global row over the
+      // project row made EDSM coordinates appear present and prevented the
+      // project updater from filling missing coordinates.
 
       if (finalMembers.length) {
         const userIds = finalMembers.map((m: any) => m.user_id);
@@ -181,7 +179,7 @@ export default function ProjectPage() {
         } catch (e) { /* ignore */ }
       }
 
-      setData({ project: finalProject, members: finalMembers, systems: enrichedSystems, route: finalRoute });
+      setData({ project: finalProject, members: finalMembers, systems: finalSystems, route: finalRoute });
       setDescDraft(finalProject.description || "");
 
       if (currentUser) {
@@ -264,31 +262,19 @@ export default function ProjectPage() {
 
         const coords = json.results?.[s.system_name];
         if (coords) {
-          let { data: rsRecord } = await supabase
-            .from("route_systems")
-            .select("id")
-            .eq("system_name", s.system_name)
-            .single();
-
-          if (rsRecord) {
-            await supabase.from("route_systems").update({
-              x: coords.x, y: coords.y, z: coords.z,
-            }).eq("system_name", s.system_name);
-          } else {
-            const { data: newRs } = await supabase.from("route_systems").insert({
-              system_name: s.system_name,
-              x: coords.x, y: coords.y, z: coords.z,
-              sort_order: 0,
-            }).select("id").single();
-            if (newRs) rsRecord = newRs;
+          // Project coordinates belong only to project_systems. Never create
+          // or update route_systems here: that table is the global Atlas
+          // route and made EDSM imports leak project systems onto the map.
+          const coordinateResponse = await authFetch(`/api/projects/${id}/systems`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ system_id: s.id, x: coords.x, y: coords.y, z: coords.z }),
+          });
+          if (coordinateResponse.ok) updated++;
+          else {
+            const errorBody = await coordinateResponse.json().catch(() => ({}));
+            console.warn("[EDSM] Could not save coordinates:", errorBody.error || coordinateResponse.status);
           }
-
-          if (rsRecord && !s.route_system_id) {
-            await supabase.from("project_systems")
-              .update({ route_system_id: rsRecord.id })
-              .eq("id", s.id);
-          }
-          updated++;
         }
         await new Promise((r) => setTimeout(r, 50));
       }
@@ -304,16 +290,11 @@ export default function ProjectPage() {
   };
 
   const addBulkSystems = async (names: string[]) => {
-    const { data: routeSystems } = await supabase
-      .from("route_systems")
-      .select("id, system_name")
-      .in("system_name", names.map((n) => n.trim()));
-    const routeMap = new Map((routeSystems || []).map((r: any) => [r.system_name.toLowerCase(), r.id]));
-
     const rows = names.map((n, i) => ({
       project_id: id,
       system_name: n.trim(),
-      route_system_id: routeMap.get(n.trim().toLowerCase()) || null,
+      // Squadron project systems are independent from the global route.
+      route_system_id: null,
       sort_order: systems.length + i + 1,
     }));
 
@@ -377,7 +358,7 @@ export default function ProjectPage() {
       body: JSON.stringify({ system_id: systemId }),
     });
     if (res.ok) load();
-    else alert("Ошибка удаления");
+    else { const data = await res.json().catch(() => ({})); alert(`Ошибка удаления: ${data.error || res.statusText}`); }
   };
 
   const clearRoute = async () => {
@@ -388,7 +369,7 @@ export default function ProjectPage() {
       body: JSON.stringify({}),
     });
     if (res.ok) load();
-    else alert("Ошибка очистки маршрута");
+    else { const data = await res.json().catch(() => ({})); alert(`Ошибка очистки маршрута: ${data.error || res.statusText}`); }
   };
 
   if (loading) return <div style={{ padding: 40, textAlign: "center" }}>Загрузка...</div>;
@@ -572,11 +553,26 @@ export default function ProjectPage() {
                     {s.target_date && <span>&#8594; {new Date(s.target_date).toLocaleDateString("ru-RU")}</span>}
                     {s.assignee?.cmdr_name && <span style={{ color: "#60a5fa" }}>@{s.assignee.cmdr_name}</span>}
                   </span>
+                  <span className="project-system-coordinates" title="Координаты проекта">
+                    {formatCoordinates(s)}
+                  </span>
                   <div className="sys-links">
-                    <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(s.system_name)}`} target="_blank" rel="noreferrer">
+                    <a
+                      className="project-link-button"
+                      href={`https://ravencolonial.com/#sys=${encodeURIComponent(s.system_name)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       RC
                     </a>
-                    <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(s.system_name)}`} target="_blank" rel="noreferrer">
+                    <a
+                      className="project-link-button"
+                      href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(s.system_name)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(event) => event.stopPropagation()}
+                    >
                       EDSM
                     </a>
                   </div>

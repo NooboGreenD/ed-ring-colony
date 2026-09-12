@@ -1,7 +1,8 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-04.
+> Last updated: 2026-09-12.
+> Uploader release: 2.0.0.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -246,6 +247,8 @@ Applied via `npx supabase db push`.
 | `/api/eddn` | POST | None | EDDN ingestion |
 | `/api/ravencolonial/sync` | POST | Admin | Raven sync |
 | `/api/ravencolonial/sync/log` | GET | Admin | Sync log |
+| `/api/logs/upload` | POST | API token | Deliveries and construction snapshots from Colonial Helper |
+| `/api/journal/import` | POST | Auth | Browser/CAPI Journal import |
 | `/api/translate` | POST | Auth | Translate content |
 | `/api/cron/translate` | POST | Cron | Auto-translation job |
 | `/api/comments` | GET | None | List comments |
@@ -343,7 +346,41 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sync API: `/api/ravencolonial/sync`
 - Used for: Colonial data synchronization
 
-### 8.6 Yandex Translate
+### 8.6 Colonial Helper uploader 2.0
+- Source: `uploader/colonial_helper.py`
+- Version: `2.0.0`
+- Desktop token endpoint: `POST /api/logs/upload`
+- Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
+- Sends `ColonisationConstructionDepot` snapshots through the same endpoint
+  into `colonisation_events` and `construction_depot_snapshots`.
+- Delivery semantics:
+  - `ColonisationContribution` is a direct per-event construction delta;
+  - Fleet Carrier `MarketSell` is FC cargo `+Count`;
+  - Fleet Carrier `MarketBuy` is FC cargo `-Count` and is not a project delivery;
+  - ordinary station sales are not construction deliveries.
+- The uploader never sends raw Journal files to the website. It sends structured
+  delivery/snapshot records and keeps local byte offsets in
+  `.colonial_helper_journal_offsets.json`.
+- Startup reconciliation processes unhandled bytes and shows byte/file progress
+  in the desktop progress bar. Rotation is detected when file size decreases.
+- `source_hash` and server upsert keys make retries idempotent.
+- EDSM and Inara are independent external integrations and do not use the ED
+  Ring Colony token.
+- API credentials are also mirrored to the local runtime-only file
+  `.colonial_helper_credentials.json` in the user's home directory. This
+  protects them from HUD settings saves and EXE upgrades; no credentials belong
+  in source control.
+
+### 8.7 Pilot infographic tab
+- The uploader has a `Пилот` tab with local, live-updating cards.
+- It displays commander/connection state, current system and ship, route
+  progress, hull/shields/fuel/power, modules, cargo, balance/rebuy/legal state,
+  session delivery totals, visited systems and last journal event.
+- Refresh runs on the Tk main loop every second and never performs network
+  requests. It is deliberately tolerant of incomplete state while the first
+  Journal reconciliation is running.
+
+### 8.8 Yandex Translate
 - API: `src/lib/translate.ts`
 - Used for: Automatic content translation
 - Cron endpoint: `/api/cron/translate`

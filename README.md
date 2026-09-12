@@ -215,8 +215,34 @@ ed-ring-colony/
 - `POST /api/push/subscribe` — Push subscription
 - `POST /api/eddn` — EDDN ingestion
 - `POST /api/ravencolonial/sync` — Raven sync
+- `POST /api/logs/upload` — token-authenticated uploader deliveries and construction snapshots
+- `POST /api/journal/import` — authenticated browser/CAPI Journal import
 - `POST /api/translate` — Translate content
 - `POST /api/cron/translate` — Cron translation job
+
+## Colonial Helper uploader 2.0
+
+В репозитории находится Windows/Python uploader `uploader/colonial_helper.py`
+для загрузки данных Elite Dangerous на ED Ring Colony.
+
+### Какие данные принимает сайт
+
+- персональные доставки для leaderboard: прямые
+  `ColonisationContribution`, `CargoDepot`, доставка на Fleet Carrier и
+  подтверждённые уменьшения корабельного Cargo;
+- общие события `ColonisationConstructionDepot`: состояние стройки,
+  требования ресурсов, прогресс, construction ID, MarketID, система и время;
+- повторные доставки не дублируются благодаря `source_hash`, а события
+  стройки используют серверную дедупликацию.
+
+`MarketBuy` с Fleet Carrier уменьшает его запас и не считается доставкой на
+проект. Обычные продажи на станции не загружаются как construction delivery.
+Ключи Raven Colonial, EDSM и Inara хранятся только локально у пользователя.
+
+Для Journal reconciliation uploader хранит только локальные byte offsets:
+`.colonial_helper_journal_offsets.json`. Сырые журналы на сайт не передаются;
+передаются только необходимые структурированные данные. При первичной загрузке
+progress bar показывает процент по байтам, файлы, объём и текущий журнал.
 
 ## Deployment
 

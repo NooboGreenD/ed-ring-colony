@@ -41,7 +41,7 @@ export function useFriends(userId: string | null) {
       const errors: string[] = [];
 
       if (!acceptedResponse.ok) {
-        const message = typeof acceptedJson.error === "string" ? acceptedJson.error : "Не удалось загрузить список друзей";
+        const message = [acceptedJson.error, acceptedJson.details].filter((value): value is string => typeof value === "string" && value.length > 0).join(": ") || "Не удалось загрузить список друзей";
         console.error("[useFriends] GET accepted error:", message);
         errors.push(message);
       } else {
@@ -49,7 +49,7 @@ export function useFriends(userId: string | null) {
       }
 
       if (!pendingResponse.ok) {
-        const message = typeof pendingJson.error === "string" ? pendingJson.error : "Не удалось загрузить запросы в друзья";
+        const message = [pendingJson.error, pendingJson.details].filter((value): value is string => typeof value === "string" && value.length > 0).join(": ") || "Не удалось загрузить запросы в друзья";
         console.error("[useFriends] GET pending error:", message);
         errors.push(message);
       } else {

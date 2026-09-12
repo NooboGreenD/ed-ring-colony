@@ -364,7 +364,10 @@ export default function AccountPage() {
       // Keep browser requests comfortably below the server's bounded
       // PostgREST write size. Older desktop helpers may still send 500 rows;
       // the API splits those safely as well.
-      const CHUNK_SIZE = 100;
+      // Keep each request small enough that compatibility deduplication and
+      // placement resolution remain bounded even while indexes are rolling out.
+      // Stable source hashes make retries safe.
+      const CHUNK_SIZE = 25;
       const chunks = Math.ceil(allDeliveries.length / CHUNK_SIZE);
       let inserted = 0;
       let duplicates = allStats.skippedDuplicates;

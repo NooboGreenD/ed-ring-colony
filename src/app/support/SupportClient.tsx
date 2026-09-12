@@ -1,8 +1,11 @@
 'use client' ; import { useEffect, useState, useRef, useCallback } from 'react' ; import { useRouter, useSearchParams } from 'next/navigation' ; import { authFetch, getCurrentUser } from '@/lib/supabaseClient' ; import { useI18n } from '@/lib/i18n/I18nContext' ; import Link from 'next/link' ; import { IconImage, IconPaperclip, IconExternalLink } from '@/components/Icons' ; type Ticket = { id: string ; title: string ; category: string ; priority: string ; status: string ; page_url: string | null ; created_at: string ; updated_at: string ; user?: { cmdr_name: string | null ; avatar_url: string | null } ; assigned?: { cmdr_name: string | null } ; } ; type Message = { id: string ; ticket_id: string ; sender_id: string ; content: string ; is_internal: boolean ; created_at: string ; sender?: { cmdr_name: string | null ; avatar_url: string | null } ; } ; type Attachment = { id: string ; ticket_id: string ; file_name: string ; file_type: string ; public_url: string ; created_at: string ; } ; const CATEGORIES = [ { value: 'bug', label: 'Bug Report' }, { value: 'feature_request', label: 'Feature Request' }, { value: 'account_issue', label: 'Account Issue' }, { value: 'other', label: 'Other' }, ] ; const PRIORITIES = [ { value: 'low', label: 'Low' }, { value: 'normal', label: 'Normal' }, { value: 'high', label: 'High' }, { value: 'critical', label: 'Critical' }, ] ; const STATUSES = [ { value: 'open', label: 'Open', color: '#e74c3c' }, { value: 'in_progress', label: 'In Progress', color: '#e67e22' }, { value: 'waiting_user', label: 'Waiting for User', color: '#3498db' }, { value: 'resolved', label: 'Resolved', color: '#2ecc71' }, { value: 'closed', label: 'Closed', color: '#9ca3af' }, ] ; function formatDate(d: string) { return new Date(d).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) } function categoryLabel(v: string) { return CATEGORIES.find(c => c.value === v)?.label || v } function priorityLabel(v: string) { return PRIORITIES.find(p => p.value === v)?.label || v } function priorityColor(v: string) { switch (v) { case 'critical': return '#e74c3c' ; case 'high': return '#e67e22' ; case 'low': return '#9ca3af' ; default: return '#3498db' } } function statusLabel(v: string) { return STATUSES.find(s => s.value === v)?.label || v } function statusColor(v: string) { return STATUSES.find(s => s.value === v)?.color || '#9ca3af' } export default function SupportClient() { const { t } = useI18n() ; const router = useRouter() ; const searchParams = useSearchParams() ; const ticketId = searchParams.get('t') ; const [user, setUser] = useState<{ id: string } | null>(null) ; const [authLoading, setAuthLoading] = useState(true) ; const [tickets, setTickets] = useState<Ticket[]>([]) ; const [ticketsError, setTicketsError] = useState<string | null>(null) ; const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null) ; const [detailError, setDetailError] = useState<string | null>(null) ; const [actionError, setActionError] = useState<string | null>(null) ; const [messages, setMessages] = useState<Message[]>([]) ; const [attachments, setAttachments] = useState<Attachment[]>([]) ; const [loading, setLoading] = useState(true) ; const [msgLoading, setMsgLoading] = useState(false) ; const [newMsg, setNewMsg] = useState('') ; const [showForm, setShowForm] = useState(false) ; const [formTitle, setFormTitle] = useState('') ; const [formCategory, setFormCategory] = useState('other') ; const [formPriority, setFormPriority] = useState('normal') ; const [formContent, setFormContent] = useState('') ; const [formPageUrl, setFormPageUrl] = useState('') ; const [formBusy, setFormBusy] = useState(false) ; const [uploading, setUploading] = useState(false) ; const fileInputRef = useRef<HTMLInputElement>(null) ; const messagesEndRef = useRef<HTMLDivElement>(null) ; const loadUser = async () => {
     try {
-      setUser(await getCurrentUser())
+      const currentUser = await getCurrentUser()
+      setUser(currentUser)
+      return currentUser
     } catch {
       setUser(null)
+      return null
     } finally {
       setAuthLoading(false)
     }
@@ -11,7 +14,7 @@
     try {
       const res = await authFetch('/api/support/tickets', { cache: 'no-store' })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'Не удалось загрузить обращения')
+      if (!res.ok) throw new Error([data.error, data.details].filter(Boolean).join(': ') || 'Не удалось загрузить обращения')
       setTickets(Array.isArray(data.tickets) ? data.tickets : [])
       setTicketsError(null)
     } catch (error) {
@@ -36,7 +39,16 @@
     } finally {
       setMsgLoading(false)
     }
-  }, []) ; useEffect(() => { loadUser() ; loadTickets() ; }, [loadTickets]) ; useEffect(() => { if (ticketId) { loadTicketDetails(ticketId) } }, [ticketId, loadTicketDetails]) ; useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) ; }, [messages])
+  }, []) ; useEffect(() => {
+    let active = true
+    void loadUser().then((currentUser) => {
+      // Do not race the first tickets request against Supabase session
+      // hydration. The old code could send an unauthenticated request, then
+      // leave the page stuck on an empty list after the session became ready.
+      if (active && currentUser) void loadTickets()
+    })
+    return () => { active = false }
+  }, [loadTickets]) ; useEffect(() => { if (ticketId) { loadTicketDetails(ticketId) } }, [ticketId, loadTicketDetails]) ; useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) ; }, [messages])
 
   // Auto-refresh ticket details every 15 seconds when a ticket is open
   useEffect(() => {

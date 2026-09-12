@@ -763,6 +763,21 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
     onUpdate();
   };
 
+  const editName = async (rank: SquadronRank) => {
+    if (rank.is_default) return;
+    const name = window.prompt("Название звания", rank.name)?.trim();
+    if (!name || name === rank.name) return;
+    const res = await authFetch(`/api/squadrons/${squadronId}/ranks`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rank_id: rank.id, name }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) { setMsg(json.error || "Ошибка изменения звания"); return; }
+    setMsg("Звание изменено");
+    onUpdate();
+  };
+
   const remove = async (rank_id: number) => {
     if (!confirm("Удалить звание?")) return;
     const res = await authFetch(`/api/squadrons/${squadronId}/ranks`, {
@@ -817,7 +832,12 @@ function SquadronRanksTab({ squadronId, ranks, canManage, onUpdate, setMsg }: an
             {ranks.map((r: SquadronRank) => (
               <tr key={r.id}>
                 <td style={{ fontFamily: "ui-monospace, monospace", color: "var(--muted)" }}>{r.sort_order}</td>
-                <td style={{ fontWeight: 600, color: "var(--text)" }}>{r.name}</td>
+                <td style={{ fontWeight: 600, color: "var(--text)" }}>
+                  {r.name}
+                  {canManage && !r.is_default && (
+                    <button onClick={() => editName(r)} className="btn" style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px" }}>Изменить</button>
+                  )}
+                </td>
                 <td style={{ color: r.can_manage_projects ? "#22c55e" : "var(--muted)" }}>{r.can_manage_projects ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
                 <td style={{ color: r.can_manage_members ? "#22c55e" : "var(--muted)" }}>{r.can_manage_members ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>
                 <td style={{ color: r.can_manage_ranks ? "#22c55e" : "var(--muted)" }}>{r.can_manage_ranks ? <IconCheck size={14} color="#22c55e" /> : "—"}</td>

@@ -6,8 +6,12 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { GalaxyBackground } from './GalaxyBackground';
 import { NebulaClouds } from './NebulaClouds';
+import { GalaxyNebulaSprites } from './GalaxyNebulaSprites';
 import { RingZone } from './RingZone';
 import { LandmarkMarkers } from './LandmarkMarkers';
+import { GalaxyRegionMarkers } from './GalaxyRegionMarkers';
+import { GalaxyRegionBoundaries } from './GalaxyRegionBoundaries';
+import { GalacticRegions } from './GalacticRegions';
 import { RouteLine } from './RouteLine';
 import { RouteMarkers } from './RouteMarkers';
 import { HubMarkers } from './HubMarkers';
@@ -65,6 +69,10 @@ interface GalaxySceneProps {
   showPilots?: boolean;
   showMarketResults?: boolean;
   showNoMarketSystems?: boolean;
+  showRegionLabels?: boolean;
+  showRegionBoundaries?: boolean;
+  showNebulae?: boolean;
+  showRingZone?: boolean;
   onSelectHub?: (hub: Hub | null) => void;
   onSelectRouteSystem?: (point: RouteSystem | null) => void;
   onSelectAtlasCandidate?: (candidate: AtlasCandidate | null) => void;
@@ -92,6 +100,10 @@ export function GalaxyScene({
   showPilots = true,
   showMarketResults = true,
   showNoMarketSystems = true,
+  showRegionLabels = true,
+  showRegionBoundaries = true,
+  showNebulae = true,
+  showRingZone = true,
   onSelectHub,
   onSelectRouteSystem,
   onSelectAtlasCandidate,
@@ -176,12 +188,23 @@ export function GalaxyScene({
 
       <GalaxyBackground />
       <NebulaClouds />
-      <RingZone />
-      <LandmarkMarkers />
+      {showNebulae && <GalaxyNebulaSprites />}
+      {showRingZone && <RingZone />}
+      <LandmarkMarkers onSelect={onSelectRouteSystem} />
+      <GalacticRegions />
+      <GalaxyRegionMarkers showLabels={showRegionLabels} />
+      {showRegionBoundaries && <GalaxyRegionBoundaries />}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (
         <RouteLine points={squadronRouteSystems} color="#3b82f6" opacity={0.6} />
+      )}
+      {showSquadronRoute && squadronRouteSystems.length > 0 && (
+        <RouteMarkers
+          points={squadronRouteSystems}
+          selectedPointId={selectedRouteSystemId}
+          onSelectPoint={onSelectRouteSystem}
+        />
       )}
       {showKnownSystems && (
         <RouteMarkers

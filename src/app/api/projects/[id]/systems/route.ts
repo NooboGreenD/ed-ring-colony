@@ -13,14 +13,23 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
   // Keep project-system metadata independent from PostgREST relationships;
   // those relations are optional in older deployments.
-  const { data: systems, error: systemsError } = await admin
-    .from('project_systems')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('sort_order');
-  if (systemsError) {
-    console.error('[project systems] Could not load systems:', systemsError);
-    return NextResponse.json({ error: systemsError.message }, { status: 500 });
+  // PostgREST commonly caps one response at 1,000 rows. Page explicitly so
+  // large squadron projects can display up to 15,000 systems.
+  const systems: any[] = [];
+  const PAGE_SIZE = 1000;
+  for (let offset = 0; offset < 15_000; offset += PAGE_SIZE) {
+    const { data: page, error: systemsError } = await admin
+      .from('project_systems')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('sort_order')
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (systemsError) {
+      console.error('[project systems] Could not load systems:', systemsError);
+      return NextResponse.json({ error: systemsError.message }, { status: 500 });
+    }
+    systems.push(...(page || []));
+    if (!page || page.length < PAGE_SIZE) break;
   }
 
   const requestedKeys = new Set((systems || []).map((system: any) => systemNameKey(system.system_name)).filter(Boolean));
@@ -67,10 +76,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
     return {
       ...system,
-      // Use the map table's canonical spelling/coordinates where available.
-      x: hub?.x ?? routeSystem?.x ?? system.x ?? null,
-      y: hub?.y ?? routeSystem?.y ?? system.y ?? null,
-      z: hub?.z ?? routeSystem?.z ?? system.z ?? null,
+      // Project coordinates are authoritative for project systems. Global map
+      // coordinates are only a fallback for legacy rows that do not have their
+      // own coordinates yet. Keeping this order lets the project EDSM updater
+      // correctly detect and fill missing project coordinates.
+      x: system.x ?? hub?.x ?? routeSystem?.x ?? null,
+      y: system.y ?? hub?.y ?? routeSystem?.y ?? null,
+      z: system.z ?? hub?.z ?? routeSystem?.z ?? null,
       status: progress == null ? baseStatus : statusFromProgress(progress),
       progress: progress ?? 0,
       route_system: routeSystem || null,
@@ -156,17 +168,36 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
       .eq('user_id', user.id)
       .single();
 
-    if (!membership || !['leader', 'officer'].includes(membership.role)) {
+    const { data: project } = await supabase
+      .from('projects')
+      .select('created_by')
+      .eq('id', projectId)
+      .maybeSingle();
+    const canManage = Boolean(
+      (membership && ['leader', 'officer'].includes(membership.role))
+      || project?.created_by === user.id,
+    );
+    if (!canManage) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const allowed = ['planned_status', 'priority', 'notes', 'assigned_to', 'target_date', 'sort_order'];
+    const allowed = ['planned_status', 'priority', 'notes', 'assigned_to', 'target_date', 'sort_order', 'x', 'y', 'z'];
     const update: Record<string, any> = {};
     for (const key of allowed) {
       if (updates[key] !== undefined) update[key] = updates[key];
     }
+    for (const axis of ['x', 'y', 'z']) {
+      if (update[axis] !== undefined) {
+        const value = Number(update[axis]);
+        if (!Number.isFinite(value)) {
+          return NextResponse.json({ error: `Invalid coordinate ${axis}` }, { status: 400 });
+        }
+        update[axis] = value;
+      }
+    }
 
-    const { data, error } = await supabase
+    const admin = createAdminClient();
+    const { data, error } = await admin
       .from('project_systems')
       .update(update)
       .eq('id', system_id)
@@ -195,28 +226,45 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
       .select('role')
       .eq('project_id', projectId)
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
+    const admin = createAdminClient();
+    const { data: project } = await admin
+      .from('projects')
+      .select('created_by')
+      .eq('id', projectId)
+      .maybeSingle();
+    const isProjectOwner = project?.created_by === user.id;
 
-    if (!membership || !['leader', 'officer'].includes(membership.role)) {
+    // Project owners can administer their own route even when a legacy
+    // deployment has no corresponding project_members row.
+    if ((!membership || !['leader', 'officer'].includes(membership.role)) && !isProjectOwner) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    // Если передан system_id — удаляем одну систему, иначе — очищаем весь маршрут
-    if (body.system_id) {
-      await supabase
-        .from('project_systems')
-        .delete()
-        .eq('id', body.system_id)
-        .eq('project_id', projectId);
-      return NextResponse.json({ success: true, deleted: 1 });
-    } else {
-      const { error } = await supabase
-        .from('project_systems')
-        .delete()
-        .eq('project_id', projectId);
-      if (error) throw error;
-      return NextResponse.json({ success: true, cleared: true });
+    // The API authorizes both leaders and officers. Use the admin client for
+    // the actual delete because older RLS policies allowed only leaders and
+    // otherwise made the UI report a generic "clear route" error.
+    const linkedQuery = admin.from('project_systems').select('id, route_system_id').eq('project_id', projectId);
+    const { data: linkedRows, error: linkedError } = body.system_id
+      ? await linkedQuery.eq('id', body.system_id)
+      : await linkedQuery.limit(15_000);
+    if (linkedError) throw linkedError;
+    const routeIds = (linkedRows || []).map((row: any) => row.route_system_id).filter(Boolean);
+
+    const deleteQuery = admin.from('project_systems').delete().eq('project_id', projectId);
+    const { error } = body.system_id
+      ? await deleteQuery.eq('id', body.system_id)
+      : await deleteQuery;
+    if (error) throw error;
+
+    // Remove orphaned route rows too, otherwise the global Atlas map keeps
+    // drawing systems that were just removed from the project.
+    if (routeIds.length) {
+      const { data: stillLinked } = await admin.from('project_systems').select('route_system_id').in('route_system_id', routeIds);
+      const orphaned = routeIds.filter((routeId: number) => !(stillLinked || []).some((row: any) => row.route_system_id === routeId));
+      if (orphaned.length) await admin.from('route_systems').delete().in('id', orphaned);
     }
+    return NextResponse.json({ success: true, deleted: linkedRows?.length || 0, cleared: !body.system_id });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

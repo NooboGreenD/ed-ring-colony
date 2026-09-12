@@ -6,6 +6,7 @@ Endpoint и формат из SRV Survey:
 - Contribute: Dictionary<string, int> (не JSON с commodity/amount)
 """
 import requests
+import time
 from typing import Dict, Any, Optional
 
 
@@ -39,6 +40,42 @@ class RavenColonialAPI:
             pass
         return None
 
+    def supply_fc(self, market_id: int, commodity: str, delta: int) -> dict:
+        """Обновить груз Fleet Carrier по модели SrvSurvey/Raven Colonial.
+
+        Positive delta — груз выгружен на FC, отрицательный — куплен/забран с FC.
+        Raven использует PATCH /api/fc/{marketId}/cargo и заголовок rcc-key.
+        """
+        if not self.api_key:
+            return {"ok": False, "error": "Raven Colonial API key is empty"}
+        try:
+            response = self._session.patch(
+                f"{self.base_url}/fc/{int(market_id)}/cargo",
+                headers=self._headers(),
+                json={commodity: int(delta)},
+                timeout=15,
+            )
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            # Raven is backed by Azure storage and can answer 409 when the
+            # requested FC commodity entity was already created by another
+            # client (SrvSurvey, EDDiscovery, or a previous uploader retry).
+            # For an idempotent signed cargo delta this is not a fatal upload
+            # error; the entity already exists and the caller must not retry it
+            # indefinitely.
+            response_text = response.text[:500]
+            already_exists = response.status_code == 409 and "already exists" in response_text.lower()
+            return {
+                "ok": response.ok or already_exists,
+                "already_exists": already_exists,
+                "data": payload,
+                "error": None if (response.ok or already_exists) else response_text,
+            }
+        except requests.RequestException as exc:
+            return {"ok": False, "error": str(exc)}
+
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
 
@@ -47,17 +84,29 @@ class RavenColonialAPI:
             cmdr: Имя командира
             commodities: {resource_name: amount} (Dictionary<string, int>)
         """
-        try:
-            resp = self._session.post(
-                f"{self.base_url}/project/{build_id}/contribute/{cmdr}",
-                headers=self._headers(),
-                json=commodities,
-                timeout=15,
-            )
-            return {"ok": resp.ok, "data": resp.json() if resp.ok else None,
-                    "error": resp.text if not resp.ok else None}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        last_error = "Raven Colonial request failed"
+        for attempt in range(1, 4):
+            try:
+                resp = self._session.post(
+                    f"{self.base_url}/project/{build_id}/contribute/{cmdr}",
+                    headers=self._headers(),
+                    json=commodities,
+                    timeout=15,
+                )
+                if resp.ok:
+                    try:
+                        payload = resp.json()
+                    except ValueError:
+                        payload = None
+                    return {"ok": True, "data": payload, "error": None}
+                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                if resp.status_code not in (408, 429) and resp.status_code < 500:
+                    break
+            except requests.RequestException as exc:
+                last_error = str(exc)
+            if attempt < 3:
+                time.sleep(attempt)
+        return {"ok": False, "error": last_error}
 
     def update_supply(self, build_id: str, resources: dict) -> dict:
         """Обновить supply проекта."""

@@ -110,6 +110,10 @@ export default function SystemPage() {
   const hasSystemCargoTotals = typeof system.totalRequired === 'number'
     && typeof system.totalProvided === 'number';
   const resourceRowsAreApproximate = system.resources.some((resource) => !hasExactAmounts(resource));
+  const importedCargo = system.resources.reduce((total, resource) => (
+    total + (hasExactAmounts(resource) ? resource.provided : 0)
+  ), 0);
+  const hasImportedCargo = hasSystemCargoTotals || importedCargo > 0;
 
   return (
     <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 32 }}>
@@ -140,6 +144,17 @@ export default function SystemPage() {
         >
           <IconPlane size={12} /> RavenColonial <IconExternalLink size={10} />
         </a>
+        <Link
+          href={`/atlas?tab=market&system=${encodeURIComponent(systemName)}`}
+          style={{
+            padding: '8px 16px', background: 'rgba(34,197,94,0.12)',
+            border: '1px solid rgba(34,197,94,0.4)', color: '#22c55e',
+            borderRadius: 6, textDecoration: 'none', fontSize: 13,
+            fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6,
+          }}
+        >
+          <IconPackage size={12} /> Рынки рядом в Atlas
+        </Link>
         <a
           href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(systemName)}`}
           target="_blank"
@@ -184,11 +199,11 @@ export default function SystemPage() {
               {system.status === 'done' ? <><IconCheckCircle size={16} /> Завершён</> : system.status === 'building' ? <><IconConstruction size={16} /> Строительство</> : <><IconCheck size={16} /> Запланирован</>}
             </div>
           </div>
-          {hasSystemCargoTotals && (
+          {hasImportedCargo && (
             <div>
               <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Груз доставлен</div>
               <div style={{ fontSize: 16, color: '#eeeeee', fontWeight: 600 }}>
-                {formatCargo(system.totalProvided)} / {formatCargo(system.totalRequired)} т
+                {formatCargo(hasSystemCargoTotals ? system.totalProvided : importedCargo)} / {formatCargo(system.totalRequired)} т
               </div>
               <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
                 Осталось: {formatCargo(system.totalRemaining)} т

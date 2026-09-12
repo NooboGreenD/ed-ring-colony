@@ -94,7 +94,10 @@ function createRegionGeometry(path: number[][]): THREE.ShapeGeometry {
     y: 0,
     z: SAGA.z + path[0][1],
   });
-  shape.moveTo(first.x, first.z);
+  // ShapeGeometry is rotated onto the X/Z plane below. Negating the
+  // already-centered Three Z value keeps the final world Z equal to
+  // eliteToThreeCentered (the previous sign mirrored polygons).
+  shape.moveTo(first.x, -first.z);
 
   for (let i = 1; i < path.length; i++) {
     const pt = eliteToThreeCentered({
@@ -102,7 +105,7 @@ function createRegionGeometry(path: number[][]): THREE.ShapeGeometry {
       y: 0,
       z: SAGA.z + path[i][1],
     });
-    shape.lineTo(pt.x, pt.z);
+    shape.lineTo(pt.x, -pt.z);
   }
   shape.closePath();
 
@@ -186,8 +189,10 @@ function RegionMesh({
       ref={meshRef}
       geometry={geometry}
       material={material}
+      // Region fills are visual only; route and system markers must receive clicks.
+      raycast={() => null}
       rotation={[-Math.PI / 2, 0, 0]}
-      position={[0, 8, 0]}
+      position={[0, 0, 0]}
       onPointerOver={handlePointerOver}
       onPointerOut={handlePointerOut}
       onClick={handleClick}
@@ -281,10 +286,6 @@ export function GalacticRegions({
 
   return (
     <group>
-      {/* Декоративная сетка */}
-      <RingGrid />
-      <RadialGrid />
-
       {/* Регионы */}
       {REGIONS.map((region) => (
         <RegionMesh
