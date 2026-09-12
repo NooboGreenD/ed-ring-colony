@@ -123,6 +123,34 @@ class ApiClient:
             }
         return {"ok": True, "inserted": total_inserted, "eventsFound": total_events}
 
+    def upload_construction_events(self, events: list, cmdr: str = None) -> dict:
+        """Загрузить snapshots ColonisationConstructionDepot.
+
+        Это отдельный поток данных от deliveries: snapshots описывают общий
+        прогресс стройки и не должны увеличивать личный тоннаж командира.
+        """
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        if not events:
+            return {"ok": True, "inserted": 0}
+        total_inserted = 0
+        total_snapshots = 0
+        for start in range(0, len(events), 100):
+            try:
+                resp = self._session.post(
+                    f"{API_BASE}/logs/upload",
+                    json={"token": self.token, "cmdr": cmdr, "construction_events": events[start:start + 100]},
+                    timeout=30,
+                )
+                data = _safe_json(resp)
+                if not resp.ok:
+                    return {"ok": False, "error": data.get("error", f"Upload failed (HTTP {resp.status_code})")}
+                total_inserted += int(data.get("constructionInserted", 0) or 0)
+                total_snapshots += int(data.get("snapshotInserted", 0) or 0)
+            except requests.RequestException as e:
+                return {"ok": False, "error": f"Сетевая ошибка: {e}"}
+        return {"ok": True, "constructionInserted": total_inserted, "snapshotInserted": total_snapshots}
+
     @property
     def is_connected(self) -> bool:
         return bool(self.token and self.user_id)

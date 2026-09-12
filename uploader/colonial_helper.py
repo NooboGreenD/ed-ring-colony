@@ -71,7 +71,7 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
-from journal_parser import parse_file, parse_journal
+from journal_parser import parse_file, parse_journal, extract_construction_events
 from route_tracker import RouteTracker
 from overlay import OverlayManager
 from edsm_api import EDSMAPI
@@ -80,7 +80,7 @@ from ship_tracker import ShipTracker
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "1.2.0"
+VERSION = "2.0.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -1243,6 +1243,7 @@ class ColonialHelperApp:
 
     def _do_upload_thread(self):
         all_deliveries = []
+        all_construction_events = []
         cmdr_name = None
         total_event_counts: Counter = Counter()
         files_processed = 0
@@ -1308,6 +1309,7 @@ class ColonialHelperApp:
                         self._last_contribution_state, self._seen_events, current_system_address,
                     )
                     total_event_counts.update(event_counts)
+                    all_construction_events.extend(extract_construction_events(text))
                     files_processed += 1
                     # Проверка: все файлы от одного командира
                     if cname:
@@ -1354,8 +1356,16 @@ class ColonialHelperApp:
             self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
         self._record_session_deliveries(all_deliveries)
-        if not all_deliveries:
-            self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
+        construction_result = self.api.upload_construction_events(all_construction_events, cmdr_name)
+        if construction_result.get("ok") and all_construction_events:
+            self.root.after(0, lambda n=len(all_construction_events): self.log(
+                f"Прогресс строек: отправлено snapshots — {n}", "info"
+            ))
+        elif all_construction_events:
+            self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
+                self.log(f"Прогресс строек не отправлен: {e}", "warn"))
+        if not all_deliveries and not all_construction_events:
+            self.root.after(0, lambda: self.log("Доставки и события строительства не найдены", "warn"))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             self.root.after(0, lambda: self.progress.config(value=0))
             self.root.after(0, lambda: self.progress_label.config(text=""))
@@ -2089,6 +2099,12 @@ class ColonialHelperApp:
                 pass
 
         self._record_session_deliveries(deliveries)
+        construction_events = extract_construction_events(new_text)
+        if construction_events and self.api.is_connected:
+            construction_result = self.api.upload_construction_events(construction_events, cmdr_name)
+            if not construction_result.get("ok"):
+                self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
+                    self.log(f"[Watcher] Прогресс строек не отправлен: {e}", "warn"))
 
         # Отдельно — аплоад доставок. Не теряем распарсенные строки, если
         # сервер временно занят: парсер уже пометил события как обработанные,

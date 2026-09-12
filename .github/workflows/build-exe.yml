@@ -34,7 +34,7 @@ jobs:
 
       - name: Validate uploader sources
         run: |
-          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py
+          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py
 
       - name: Build EXE with PyInstaller
         run: |

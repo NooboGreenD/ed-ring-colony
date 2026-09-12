@@ -279,6 +279,48 @@ def parse_journal(
     return cmdr_name, deliveries, last_cargo, last_depot_state, last_contribution_state, seen_events, event_counts
 
 
+def extract_construction_events(text: str) -> List[dict]:
+    """Извлечь публичные snapshots строительства для ED Ring Colony.
+
+    Это не доставки игрока: ConstructionDepot содержит общий прогресс
+    стройплощадки и может использоваться сайтом для графика проекта.
+    Дубликаты оставляются API, где они атомарно upsert-ятся по ключу события.
+    """
+    result = []
+    current_system = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            ev = _loads(line)
+        except _JSON_ERROR:
+            continue
+        event_name = ev.get("event")
+        if event_name in ("Location", "FSDJump", "Docked", "CarrierJump"):
+            if ev.get("StarSystem"):
+                current_system = ev.get("StarSystem")
+        if event_name != "ColonisationConstructionDepot":
+            continue
+        system = ev.get("StarSystem") or current_system
+        if not system:
+            continue
+        resources = ev.get("ResourcesRequired")
+        if not isinstance(resources, list):
+            resources = []
+        result.append({
+            "timestamp": ev.get("timestamp"),
+            "system_name": str(system),
+            "market_id": ev.get("MarketID"),
+            "construction_name": ev.get("ConstructionName") or ev.get("Name"),
+            "construction_id": ev.get("ConstructionID"),
+            "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
+            "resources_total": resources,
+            "raw_event": ev,
+        })
+    return result
+
+
 def parse_file(
     filepath: str,
     current_system: str = None,

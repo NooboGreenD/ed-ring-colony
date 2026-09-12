@@ -7,6 +7,7 @@ import { persistImportedDeliveries } from '@/lib/deliveryImport';
 // older helpers, while preventing an unbounded legacy payload from turning one
 // serverless request into many sequential database batches.
 const MAX_DELIVERIES_PER_REQUEST = 500;
+const MAX_CONSTRUCTION_EVENTS_PER_REQUEST = 100;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -88,7 +89,64 @@ export async function POST(req: Request) {
     }
 
     const outcome = await persistImportedDeliveries(svc, userId, deliveries);
-    return NextResponse.json(outcome);
+
+    // Journal snapshots describe the shared construction state, not the
+    // commander's personal delivery total. Keep them in the project-history
+    // tables so graphs and Raven/project views can use the same source.
+    const constructionEvents = Array.isArray(body.construction_events) ? body.construction_events : [];
+    if (constructionEvents.length > MAX_CONSTRUCTION_EVENTS_PER_REQUEST) {
+      return NextResponse.json(
+        { error: `Too many construction events in one request (max ${MAX_CONSTRUCTION_EVENTS_PER_REQUEST})` },
+        { status: 413 },
+      );
+    }
+    let constructionInserted = 0;
+    let snapshotInserted = 0;
+    if (constructionEvents.length > 0) {
+      const eventRows = constructionEvents
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((event) => ({
+          user_id: userId,
+          event_timestamp: typeof event.timestamp === 'string' ? event.timestamp : new Date().toISOString(),
+          system_name: String(event.system_name ?? '').trim().slice(0, 250),
+          market_id: event.market_id == null ? null : Number(event.market_id),
+          construction_name: event.construction_name == null ? null : String(event.construction_name).slice(0, 500),
+          construction_id: event.construction_id == null ? null : Number(event.construction_id),
+          construction_progress: event.construction_progress == null ? null : Number(event.construction_progress),
+          resources_total: Array.isArray(event.resources_total) ? event.resources_total : [],
+          raw_event: event.raw_event && typeof event.raw_event === 'object' ? event.raw_event : event,
+        }))
+        .filter((event) => event.system_name && Number.isFinite(new Date(event.event_timestamp).getTime()));
+
+      if (eventRows.length > 0) {
+        const { data, error } = await svc
+          .from('colonisation_events')
+          .upsert(eventRows, {
+            onConflict: 'user_id,event_timestamp,system_name,construction_id',
+            ignoreDuplicates: true,
+          })
+          .select('id');
+        if (error) throw new Error(`Could not save construction events: ${error.message}`);
+        constructionInserted = data?.length ?? 0;
+
+        const snapshots = eventRows.map((event) => ({
+          system_name: event.system_name,
+          construction_id: event.construction_id,
+          construction_name: event.construction_name,
+          progress: event.construction_progress,
+          resources_total: event.resources_total,
+          snapshot_at: event.event_timestamp,
+          source: 'journal',
+        }));
+        const { error: snapshotError } = await svc
+          .from('construction_depot_snapshots')
+          .insert(snapshots);
+        if (snapshotError) throw new Error(`Could not save construction snapshots: ${snapshotError.message}`);
+        snapshotInserted = snapshots.length;
+      }
+    }
+
+    return NextResponse.json({ ...outcome, constructionInserted, snapshotInserted });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/upload] Failed:', message);
