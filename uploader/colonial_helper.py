@@ -128,6 +128,8 @@ class ColonialHelperApp:
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
+        self._session_event_count = 0
+        self._last_session_event = ""
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
         self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
         self._navroute_mtime = 0.0
@@ -250,6 +252,10 @@ class ColonialHelperApp:
         self.tab_auth = tb.Frame(self.notebook)
         self.notebook.add(self.tab_auth, text=" Подключение ")
         self._build_tab_auth()
+
+        self.tab_pilot = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_pilot, text=" Пилот ")
+        self._build_tab_pilot()
 
         self.tab_upload = tb.Frame(self.notebook)
         self.notebook.add(self.tab_upload, text=" Загрузка логов ")
@@ -432,6 +438,188 @@ class ColonialHelperApp:
         self.config["edsm_commander_name"] = self.edsm_api.commander_name
         self.save_config()
         self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
+
+    # ============================================================
+    #  Вкладка: Инфографика пилота
+    # ============================================================
+    def _pilot_card(self, parent, title: str, row: int, column: int):
+        card = tb.LabelFrame(parent, text=title, padding=12, bootstyle="secondary")
+        card.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
+        return card
+
+    def _pilot_value(self, parent, key: str, text: str = "—", color=COLOR_TEXT):
+        label = tb.Label(parent, text=text, font=("Segoe UI", 14, "bold"), foreground=color)
+        label.pack(anchor=W, pady=(2, 5))
+        self._pilot_values[key] = label
+        return label
+
+    def _pilot_metric(self, parent, key: str, title: str, color=COLOR_CYAN):
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=3)
+        tb.Label(row, text=title, foreground=COLOR_MUTED, width=23, anchor=W).pack(side=LEFT)
+        value = tb.Label(row, text="—", font=("Consolas", 10, "bold"), foreground=color, anchor=E)
+        value.pack(side=RIGHT)
+        self._pilot_values[key] = value
+
+    def _pilot_bar(self, parent, key: str, title: str, color="info"):
+        tb.Label(parent, text=title, foreground=COLOR_MUTED).pack(anchor=W, pady=(5, 1))
+        bar = tb.Progressbar(parent, mode="determinate", maximum=100, bootstyle=color)
+        bar.pack(fill=X, pady=(0, 4))
+        self._pilot_bars[key] = bar
+
+    def _build_tab_pilot(self):
+        self._pilot_values = {}
+        self._pilot_bars = {}
+        viewport = tb.Frame(self.tab_pilot)
+        viewport.pack(fill=BOTH, expand=True)
+
+        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
+        header.pack(fill=X)
+        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"), foreground=COLOR_ORANGE).pack(side=LEFT)
+        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic, bootstyle="info-outline", width=12).pack(side=RIGHT)
+        self._pilot_values["updated"] = tb.Label(header, text="", foreground=COLOR_MUTED)
+        self._pilot_values["updated"].pack(side=RIGHT, padx=(0, 12))
+
+        subtitle = tb.Label(
+            viewport,
+            text="Живые данные из Journal, Ship Tracker, маршрута и текущей сессии. Сетевые запросы для инфографики не выполняются.",
+            foreground=COLOR_MUTED,
+            wraplength=850,
+        )
+        subtitle.pack(anchor=W, padx=15, pady=(0, 8))
+
+        grid = tb.Frame(viewport, padding=(9, 0, 9, 9))
+        grid.pack(fill=BOTH, expand=True)
+        for column in range(2):
+            grid.columnconfigure(column, weight=1, uniform="pilot")
+        for row in range(3):
+            grid.rowconfigure(row, weight=1)
+
+        identity = self._pilot_card(grid, "ПИЛОТ И ПОДКЛЮЧЕНИЯ", 0, 0)
+        self._pilot_value(identity, "commander", "CMDR не определён", COLOR_ORANGE)
+        self._pilot_metric(identity, "system", "Система")
+        self._pilot_metric(identity, "ship", "Корабль")
+        self._pilot_metric(identity, "watcher", "Watcher")
+        self._pilot_metric(identity, "services", "Сервисы")
+
+        route = self._pilot_card(grid, "МАРШРУТ", 0, 1)
+        self._pilot_value(route, "route_status", "Маршрут не загружен", COLOR_CYAN)
+        self._pilot_metric(route, "route_current", "Текущая")
+        self._pilot_metric(route, "route_next", "Следующая")
+        self._pilot_metric(route, "route_remaining", "Осталось")
+        self._pilot_bar(route, "route_progress", "Прогресс маршрута", "info")
+
+        ship = self._pilot_card(grid, "СОСТОЯНИЕ КОРАБЛЯ", 1, 0)
+        self._pilot_metric(ship, "hull", "Корпус")
+        self._pilot_metric(ship, "shield", "Щиты")
+        self._pilot_metric(ship, "fuel", "Топливо")
+        self._pilot_metric(ship, "power", "Энергия")
+        self._pilot_metric(ship, "modules", "Модули")
+        self._pilot_bar(ship, "hull_bar", "Корпус", "success")
+        self._pilot_bar(ship, "fuel_bar", "Топливо", "warning")
+
+        cargo = self._pilot_card(grid, "ГРУЗ И ЭКОНОМИКА", 1, 1)
+        self._pilot_value(cargo, "cargo", "0 / 0 t", COLOR_GREEN)
+        self._pilot_bar(cargo, "cargo_bar", "Заполнение трюма", "warning")
+        self._pilot_metric(cargo, "balance", "Баланс")
+        self._pilot_metric(cargo, "rebuy", "Страховка")
+        self._pilot_metric(cargo, "legal", "Правовой статус")
+        self._pilot_metric(cargo, "last_delivery", "Последняя доставка")
+
+        session = self._pilot_card(grid, "ТЕКУЩАЯ СЕССИЯ", 2, 0)
+        self._pilot_value(session, "session_tons", "0 t", COLOR_GREEN)
+        self._pilot_metric(session, "session_deliveries", "Доставки")
+        self._pilot_metric(session, "session_route", "На маршруте")
+        self._pilot_metric(session, "session_construction", "На стройки")
+        self._pilot_metric(session, "session_systems", "Системы посещены")
+
+        activity = self._pilot_card(grid, "АКТИВНОСТЬ И ДАННЫЕ", 2, 1)
+        self._pilot_value(activity, "event_summary", "Ожидание событий", COLOR_CYAN)
+        self._pilot_metric(activity, "journal_state", "Журналы")
+        self._pilot_metric(activity, "raven", "Raven Colonial")
+        self._pilot_metric(activity, "edsm", "EDSM")
+        self._pilot_metric(activity, "inara", "Inara")
+        self._pilot_metric(activity, "last_event", "Последнее событие")
+
+        self._refresh_pilot_infographic()
+
+    @staticmethod
+    def _pilot_percent(value) -> float:
+        try:
+            return max(0.0, min(100.0, float(value or 0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _refresh_pilot_infographic(self):
+        """Обновить инфографику только локальным состоянием приложения."""
+        if not hasattr(self, "_pilot_values"):
+            return
+        try:
+            state = self.ship.get_state_dict()
+            route_total = len(self.route.systems)
+            visited = self.route.visited_count
+            route_percent = (visited / route_total * 100) if route_total else 0
+            current = self.ship.state.current_system or "—"
+            ship_name = state.get("ship_type") or "Корабль не определён"
+            services = " / ".join(name for name, enabled in (
+                ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
+                ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
+            ) if enabled) or "нет подключений"
+            cargo = float(state.get("cargo_count", 0) or 0)
+            capacity = float(state.get("cargo_capacity", 0) or 0)
+            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0
+            damaged = int(state.get("damaged_count", 0) or 0)
+            total_modules = len(state.get("modules", []))
+            event_count = self._session_event_count
+
+            values = {
+                "commander": self.api.display_name if self.api.cmdr_name or self.api.email else (self._watcher_cmdr_name or "CMDR не определён"),
+                "system": current,
+                "ship": ship_name,
+                "watcher": "АКТИВЕН" if self.watcher_active else "остановлен",
+                "services": services,
+                "route_status": f"{visited}/{route_total} систем" if route_total else "Маршрут не загружен",
+                "route_current": self._get_overlay_data().get("current", "—"),
+                "route_next": self._get_overlay_data().get("next", "—"),
+                "route_remaining": str(max(0, route_total - visited)),
+                "hull": f"{self._pilot_percent(state.get('hull_percent')):.0f}%",
+                "shield": f"{self._pilot_percent(state.get('shield_percent')):.0f}%",
+                "fuel": f"{state.get('fuel_level', 0):.1f} / {state.get('fuel_capacity', 0):.1f} t",
+                "power": f"{self._pilot_percent(state.get('power_percent')):.0f}%",
+                "modules": f"{total_modules - damaged}/{total_modules} исправны",
+                "cargo": f"{cargo:.0f} / {capacity:.0f} t",
+                "balance": f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "),
+                "rebuy": f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "),
+                "legal": state.get("legal_state") or "неизвестно",
+                "last_delivery": self._last_delivery_system or "—",
+                "session_tons": f"{self._session_cargo_tons:.0f} t",
+                "session_deliveries": str(self._session_deliveries),
+                "session_route": f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t",
+                "session_construction": f"{self._session_construction_cargo_tons:.0f} t",
+                "session_systems": str(len(self._session_systems_visited)),
+                "event_summary": f"{event_count} событий" if event_count else "Ожидание событий",
+                "journal_state": "watcher читает" if self.watcher_active else "ожидание",
+                "raven": "подключён" if self.raven_api.is_connected else "выключен",
+                "edsm": "подключён" if self.edsm_api.enabled else "выключен",
+                "inara": "подключена" if self.inara_api.enabled else "выключена",
+                "last_event": self._last_session_event or "—",
+            }
+            for key, text in values.items():
+                if key in self._pilot_values:
+                    self._pilot_values[key].configure(text=text)
+            for key, value in {
+                "route_progress": route_percent, "hull_bar": self._pilot_percent(state.get("hull_percent")),
+                "fuel_bar": self._pilot_percent(state.get("fuel_percent")), "cargo_bar": cargo_percent,
+            }.items():
+                if key in self._pilot_bars:
+                    self._pilot_bars[key].configure(value=value)
+            self._pilot_values["updated"].configure(text=datetime.now().strftime("%H:%M:%S"))
+        except Exception:
+            # Инфографика не должна мешать watcher/UI при неполном состоянии
+            # трекера во время самого первого чтения Journal.
+            pass
+        if self.root.winfo_exists():
+            self.root.after(1000, self._refresh_pilot_infographic)
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -1476,6 +1664,8 @@ class ColonialHelperApp:
         self._last_contribution_state = {}
         self._seen_events = set()
         self._last_delivery_system = ""
+        self._session_event_count = 0
+        self._last_session_event = ""
         # CMDR из уже проверенного токена (если сервер его вернул) — используется
         # как основа для всех тиков watcher'а, пока журнал не назовёт другого CMDR.
         self._watcher_cmdr_name = self.api.cmdr_name
@@ -1533,7 +1723,10 @@ class ColonialHelperApp:
             details.append(", ".join(f"{c.get('Name_Localised') or c.get('Name')}: {c.get('Amount', 0)}" for c in event.get("Contributions", [])))
         if event_name in ("FSDJump", "Location", "Docked", "CarrierJump"):
             details.append(system)
-        self.overlay_manager.log_session_event(f"{event_name}: {' | '.join(details) if details else system}")
+        message = f"{event_name}: {' | '.join(details) if details else system}"
+        self._session_event_count += 1
+        self._last_session_event = message
+        self.overlay_manager.log_session_event(message)
 
     def _send_inara_event(self, event: dict):
         if not self.inara_api.enabled:

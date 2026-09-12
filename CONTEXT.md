@@ -367,7 +367,16 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
 
-### 8.7 Yandex Translate
+### 8.7 Pilot infographic tab
+- The uploader has a `Пилот` tab with local, live-updating cards.
+- It displays commander/connection state, current system and ship, route
+  progress, hull/shields/fuel/power, modules, cargo, balance/rebuy/legal state,
+  session delivery totals, visited systems and last journal event.
+- Refresh runs on the Tk main loop every second and never performs network
+  requests. It is deliberately tolerant of incomplete state while the first
+  Journal reconciliation is running.
+
+### 8.8 Yandex Translate
 - API: `src/lib/translate.ts`
 - Used for: Automatic content translation
 - Cron endpoint: `/api/cron/translate`
