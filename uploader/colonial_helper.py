@@ -1834,6 +1834,36 @@ class ColonialHelperApp:
         except OSError as exc:
             self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить состояние журналов: {e}", "warn"))
 
+    def _show_journal_reconciliation_progress(
+        self, done_bytes: int, total_files: int, total_bytes: int, done_files: int, current_file: str
+    ):
+        """Обновить общий progressbar из фонового watcher-потока.
+
+        Объём считается по байтам, поэтому большой журнал занимает на шкале
+        столько же, сколько несколько маленьких, и пользователь видит не
+        только номер текущего файла, но и фактически прочитанный объём.
+        """
+        if total_bytes:
+            percent = min(100.0, done_bytes * 100.0 / total_bytes)
+            done_mb = done_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            detail = (
+                f"Первичная загрузка: {percent:.1f}% | "
+                f"файлы {done_files}/{total_files} | "
+                f"{done_mb:.1f}/{total_mb:.1f} MB | {current_file}"
+            )
+        else:
+            percent = 100.0
+            detail = f"Первичная загрузка: файлов для чтения нет | {done_files}/{total_files}"
+        self.progress.configure(value=percent, maximum=100)
+        self.progress_label.configure(text=detail)
+
+    def _finish_journal_reconciliation(self, message: str):
+        """Оставить результат первичной сверки в UI, не стирая прогресс."""
+        self.progress.configure(value=100, maximum=100)
+        self.progress_label.configure(text=message)
+        self.log(message, "success")
+
     def _watcher_loop(self):
         offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
@@ -1845,8 +1875,48 @@ class ColonialHelperApp:
                 self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
             except (OSError, ValueError):
                 pass
-        if first_reconciliation:
+        startup_reconciliation = first_reconciliation or any(
+            self.last_file_mtimes.get(str(f), 0) < f.stat().st_size
+            for f in self.journal_path.glob("Journal.*.log")
+            if f.exists()
+        )
+        if startup_reconciliation:
             self.root.after(0, lambda: self.log("Проверка ранее не отправленных журналов...", "info"))
+            # Первичная сверка выполняется отдельным проходом, чтобы в UI был
+            # виден реальный прогресс, а не только сообщение "обработка".
+            reconciliation_files = []
+            total_bytes = 0
+            for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda p: p.stat().st_mtime):
+                try:
+                    size = f.stat().st_size
+                    start = max(0, int(self.last_file_mtimes.get(str(f), 0)))
+                    if size > start:
+                        reconciliation_files.append((f, start, size))
+                        total_bytes += size - start
+                except OSError:
+                    continue
+            done_bytes = 0
+            total_files = len(reconciliation_files)
+            self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
+                0, n, b, 0, "Подготовка журналов..."
+            ))
+            for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
+                if self.watcher_stop_event.is_set():
+                    break
+                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                    self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
+                )
+                processed = self._process_journal_changes(f, start, size)
+                self.last_file_mtimes[str(f)] = start + processed
+                done_bytes += processed
+                self._save_journal_offsets()
+                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                    self._show_journal_reconciliation_progress(d, n, t, i, p)
+                )
+            if total_files == 0:
+                self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
+            elif not self.watcher_stop_event.is_set():
+                self.root.after(0, lambda: self._finish_journal_reconciliation("Первичная загрузка журналов завершена"))
 
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
