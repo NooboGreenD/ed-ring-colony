@@ -1,4 +1,4 @@
-import { authFromRequest, createServiceClient } from "@/lib/supabaseServer";
+import { authFromRequest } from "@/lib/supabaseServer";
 
 export const SUPPORT_STAFF_ROLES = [
   "admin",
@@ -47,14 +47,12 @@ export async function getSupportRequestContext(
     await authFromRequest(request);
   if (!user) return { user: null, db: null, isStaff: false };
 
+  // Use the verified caller client for normal support operations. It keeps the
+  // user's JWT/RLS context intact and avoids deployments where a legacy
+  // SUPABASE_SERVICE_ROLE_KEY (or a newer sb_secret key) is present but is not
+  // accepted by PostgREST. The policies already grant owners and support staff
+  // the required access.
   let db: SupportDatabaseClient = authenticatedClient;
-  try {
-    db = createServiceClient();
-  } catch (error) {
-    console.warn(
-      "[support] Service client is unavailable; using the authenticated client instead.",
-    );
-  }
 
   let profileResponse = await db
     .from("profiles")

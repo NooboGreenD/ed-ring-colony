@@ -82,8 +82,10 @@ function bearerToken(authorization: string | null): string | null {
 function createBearerClient(url: string, key: string, accessToken: string) {
   return createJsClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
-    // Ensure PostgREST/RLS queries use the same verified user token.
-    accessToken: async () => accessToken,
+    // Keep the bearer token on PostgREST requests, but do not configure the
+    // Supabase client's accessToken option. That option creates a token-only
+    // client and makes auth.getUser() throw; request authentication still
+    // needs getUser(token) to verify the caller before applying RLS queries.
     global: { headers: { Authorization: `Bearer ${accessToken}` } },
   });
 }

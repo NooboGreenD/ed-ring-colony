@@ -29,9 +29,10 @@ interface AtlasSearchPanelProps {
     max_distance_to_arrival?: number;
   }) => void;
   loading?: boolean;
+  progress?: { elapsedMs: number; phase: string; found: number; status: string };
 }
 
-export function AtlasSearchPanel({ onSearch, loading }: AtlasSearchPanelProps) {
+export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPanelProps) {
   const [refSystem, setRefSystem] = useState('Sol');
   const [cubeSize, setCubeSize] = useState(500);
   const [selectedTypes, setSelectedTypes] = useState<WorldType[]>(['earth_like']);
@@ -125,6 +126,12 @@ export function AtlasSearchPanel({ onSearch, loading }: AtlasSearchPanelProps) {
         </div>
       </div>
 
+      {loading && progress && <div style={{ margin: '14px 0', padding: 12, border: '1px solid rgba(230,126,34,.45)', background: 'rgba(230,126,34,.08)', borderRadius: 6 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#e67e22', fontSize: 11, fontWeight: 700 }}><span>ATLAS SEARCH · {progress.phase}</span><span>{(progress.elapsedMs / 1000).toFixed(1)} с</span></div>
+        <div style={{ height: 7, margin: '9px 0', background: '#2b3036', borderRadius: 5, overflow: 'hidden' }}><div style={{ height: '100%', width: `${Math.min(96, 12 + (progress.elapsedMs / 45000) * 70)}%`, background: 'linear-gradient(90deg,#e67e22,#8bc34a)', transition: 'width .4s' }} /></div>
+        <div style={{ color: '#cbd5e1', fontSize: 11 }}>Найдено кандидатов: <strong>{progress.found.toLocaleString('ru-RU')}</strong></div>
+        <div style={{ color: '#718096', fontSize: 10, marginTop: 5 }}>Spansh/EDSM → фильтрация → проверка координат → сохранение результатов</div>
+      </div>}
       <button
         onClick={handleSubmit}
         disabled={loading || selectedTypes.length === 0 || !refSystem.trim()}

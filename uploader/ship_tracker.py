@@ -387,6 +387,10 @@ class ShipTracker:
             power = m.get("Power")
             if power is not None:
                 self.state.modules[slot].power = float(power)
+            if m.get("On") is not None:
+                self.state.modules[slot].on = bool(m.get("On"))
+            if m.get("Engineering") is not None:
+                self.state.modules[slot].engineered = bool(m.get("Engineering"))
             priority = m.get("Priority")
             if priority is not None:
                 self.state.modules[slot].priority = int(priority)
@@ -464,8 +468,10 @@ class ShipTracker:
         # Slot — основной идентификатор, Module — fallback
         slot = ev.get("Slot") or ev.get("Module")
         health = ev.get("Health")
-        if slot and slot in self.state.modules and health is not None:
-            self.state.modules[slot].health = float(health)
+        if slot and health is not None:
+            if slot not in self.state.modules:
+                self.state.modules[slot] = ShipModule(slot=str(slot), name=str(ev.get("Module", slot)))
+            self.state.modules[slot].health = max(0.0, min(1.0, float(health)))
             return True
         return False
 

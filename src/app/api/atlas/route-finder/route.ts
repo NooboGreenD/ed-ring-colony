@@ -8,6 +8,17 @@ const MAX_SCAN_POINTS = 30;
 
 async function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
+async function parseJsonResponse(response: Response): Promise<any | null> {
+  const body = await response.text();
+  try {
+    return body ? JSON.parse(body) : null;
+  } catch {
+    // EDSM occasionally returns an HTML/rate-limit body. Treat that scan tile
+    // as empty instead of crashing the complete route request with JSON.parse.
+    return null;
+  }
+}
+
 async function fetchEdsmCoords(name: string, attempt = 1): Promise<{ x: number; y: number; z: number } | null> {
   const params = new URLSearchParams();
   params.append('systemName', name);
@@ -18,7 +29,7 @@ async function fetchEdsmCoords(name: string, attempt = 1): Promise<{ x: number; 
       next: { revalidate: 86400 },
     });
     if (!res.ok) throw new Error(`EDSM HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data?.coords) return { x: data.coords.x, y: data.coords.y, z: data.coords.z };
     return null;
   } catch (err: any) {
@@ -37,7 +48,7 @@ async function fetchEdsmSphere(centerName: string, radius: number) {
       headers: { Accept: 'application/json' },
       next: { revalidate: 86400 },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     return (data || [])
       .filter((s: any) => s?.name && s.coords)
       .map((s: any) => ({ name: s.name, x: s.coords.x, y: s.coords.y, z: s.coords.z }));
@@ -59,7 +70,7 @@ async function fetchEdsmCube(coords: { x: number; y: number; z: number }, size: 
       headers: { Accept: 'application/json' },
       next: { revalidate: 86400 },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     return (data || [])
       .filter((s: any) => s?.name && s.coords)
       .map((s: any) => ({ name: s.name, x: s.coords.x, y: s.coords.y, z: s.coords.z }));
@@ -77,7 +88,8 @@ function findRouteAStar(
   start: { x: number; y: number; z: number },
   goal: { x: number; y: number; z: number },
   systems: { name: string; x: number; y: number; z: number }[],
-  maxJump: number
+  maxJump: number,
+  syntheticPenalty = 0
 ) {
   const nodes = [
     { name: '__START__', x: start.x, y: start.y, z: start.z },
@@ -116,7 +128,8 @@ function findRouteAStar(
     }
     openSet.delete(current);
     for (const neighbor of edges[current]) {
-      const tentativeG = (gScore.get(current) ?? Infinity) + dist(nodes[current], nodes[neighbor]);
+      const syntheticCost = nodes[neighbor].name.startsWith('TRIANGULATED') ? syntheticPenalty : 0;
+      const tentativeG = (gScore.get(current) ?? Infinity) + dist(nodes[current], nodes[neighbor]) + syntheticCost;
       if (tentativeG < (gScore.get(neighbor) ?? Infinity)) {
         cameFrom.set(neighbor, current);
         gScore.set(neighbor, tentativeG);
@@ -132,7 +145,10 @@ export async function POST(req: Request) {
   const startTime = Date.now();
   try {
     const body = await req.json();
-    const { from_system, to_system, max_jump = 15, radius_around_path = 30 } = body;
+    const { from_system, to_system, max_jump = 14.99, radius_around_path = 30 } = body;
+    // Colonisation chains must never exceed the 15 ly placement limit.
+    const effectiveMaxJump = Math.min(14.99, Math.max(1, Number(max_jump) || 14.99));
+    const effectiveRadius = Math.min(100, Math.max(5, Number(radius_around_path) || 30));
     if (!from_system || !to_system) {
       return NextResponse.json({ error: 'from_system and to_system required' }, { status: 400 });
     }
@@ -148,8 +164,8 @@ export async function POST(req: Request) {
     const directDist = dist(fromCoords, toCoords);
 
     /* ── 2. Стратегия сканирования ── */
-    const useCube = radius_around_path > EDSM_SPHERE_MAX;
-    const cubeSize = useCube ? Math.min(radius_around_path, EDSM_CUBE_MAX) : 0;
+    const useCube = effectiveRadius > EDSM_SPHERE_MAX;
+    const cubeSize = useCube ? Math.min(effectiveRadius, EDSM_CUBE_MAX) : 0;
     const scanStep = useCube
       ? Math.max(cubeSize * 0.7, 50)
       : Math.max(max_jump, 10);
@@ -183,7 +199,7 @@ export async function POST(req: Request) {
         apiRequests++;
         if (nearest) {
           scanPoints++;
-          systemsBatch = await fetchEdsmSphere(nearest.name, radius_around_path);
+          systemsBatch = await fetchEdsmSphere(nearest.name, effectiveRadius);
           apiRequests++;
         }
       }
@@ -195,15 +211,52 @@ export async function POST(req: Request) {
     allSystems.delete(from_system);
     allSystems.delete(to_system);
     const systems = Array.from(allSystems.values());
+    // A 100 ly sphere can contain many thousands of systems. Keep the
+    // catalogue scan complete, but bound the graph to the systems nearest the
+    // straight corridor so A* does not build an O(n²) graph over the entire
+    // volume. This preserves the densest/useful known systems.
+    const distanceToCorridor = (system: { x: number; y: number; z: number }) => {
+      const dx = toCoords.x - fromCoords.x;
+      const dy = toCoords.y - fromCoords.y;
+      const dz = toCoords.z - fromCoords.z;
+      const lengthSquared = dx * dx + dy * dy + dz * dz;
+      const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((system.x - fromCoords.x) * dx + (system.y - fromCoords.y) * dy + (system.z - fromCoords.z) * dz) / lengthSquared));
+      return dist(system, { x: fromCoords.x + dx * t, y: fromCoords.y + dy * t, z: fromCoords.z + dz * t });
+    };
+    const graphSystems = systems.length > 1800
+      ? [...systems].sort((a, b) => distanceToCorridor(a) - distanceToCorridor(b)).slice(0, 1800)
+      : systems;
 
     /* ── 3. A* ── */
-    const route = findRouteAStar(fromCoords, toCoords, systems, max_jump);
-    const graphNodes = systems.length + 2;
+    let route = findRouteAStar(fromCoords, toCoords, graphSystems, effectiveMaxJump);
+    let syntheticWaypoints = false;
+    if (!route) {
+      // EDSM can have catalogue gaps. First add synthetic bridge points to the
+      // graph, rather than replacing the known systems entirely. A* will then
+      // use every reachable real system it can, and only fill disconnected
+      // gaps with deterministic triangulated coordinates.
+      const segments = Math.ceil(directDist / effectiveMaxJump);
+      const triangulated = Array.from({ length: Math.max(0, segments - 1) }, (_, index) => {
+        const t = (index + 1) / segments;
+        return {
+          name: `TRIANGULATED ${index + 1}`,
+          x: fromCoords.x + (toCoords.x - fromCoords.x) * t,
+          y: fromCoords.y + (toCoords.y - fromCoords.y) * t,
+          z: fromCoords.z + (toCoords.z - fromCoords.z) * t,
+        };
+      });
+      route = findRouteAStar(fromCoords, toCoords, [...graphSystems, ...triangulated], effectiveMaxJump, 100);
+      // The final fallback is only possible for an unusually sparse/invalid
+      // catalogue; the normal path above still prefers known EDSM systems.
+      if (!route) route = triangulated;
+      syntheticWaypoints = route.some((point) => point.name.startsWith('TRIANGULATED'));
+    }
+    const graphNodes = graphSystems.length + 2;
     let graphEdges = 0;
     for (let i = 0; i < graphNodes; i++) {
       for (let j = i + 1; j < graphNodes; j++) {
-        const a = i === 0 ? fromCoords : i === 1 ? toCoords : systems[i - 2];
-        const b = j === 0 ? fromCoords : j === 1 ? toCoords : systems[j - 2];
+        const a = i === 0 ? fromCoords : i === 1 ? toCoords : graphSystems[i - 2];
+        const b = j === 0 ? fromCoords : j === 1 ? toCoords : graphSystems[j - 2];
         if (dist(a, b) <= max_jump) graphEdges++;
       }
     }
@@ -247,16 +300,18 @@ export async function POST(req: Request) {
         total_distance: Math.round(directDist * 100) / 100,
         max_jump: Math.max(...jumps.map(j => j.distance)),
         avg_jump: Math.round((jumps.reduce((s, j) => s + j.distance, 0) / jumps.length) * 100) / 100,
+        synthetic_waypoints: syntheticWaypoints,
       },
       process: {
         from_system,
         to_system,
         direct_distance: Math.round(directDist * 100) / 100,
-        max_jump,
-        radius_around_path,
+        max_jump: effectiveMaxJump,
+        radius_around_path: effectiveRadius,
+        synthetic_waypoints: syntheticWaypoints,
         scan_points: scanPoints,
         systems_scanned: systems.length,
-        systems_used: systems.length,
+        systems_used: graphSystems.length,
         estimated_steps: steps,
         actual_step: Math.round(actualStep * 100) / 100,
         api_requests: apiRequests,
@@ -285,7 +340,7 @@ async function findNearestSystem(coords: { x: number; y: number; z: number }) {
       headers: { Accept: 'application/json' },
       next: { revalidate: 86400 },
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     const systems = (data || [])
       .filter((s: any) => s?.name && s.coords)
       .map((s: any) => ({

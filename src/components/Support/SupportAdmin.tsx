@@ -114,7 +114,7 @@ export default function SupportAdmin() {
         cache: "no-store",
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Не удалось загрузить тикеты");
+      if (!res.ok) throw new Error([data.error, data.details].filter(Boolean).join(": ") || "Не удалось загрузить тикеты");
       setTickets(data.tickets || []);
       setLoadError(null);
     } catch (error) {

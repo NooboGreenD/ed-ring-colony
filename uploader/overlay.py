@@ -319,7 +319,7 @@ class OverlayWindow:
         defaults = {
             "route": (280, 160),
             "status": (280, 220),
-            "ship": (360, 540),
+            "ship": (340, 420),
             "cargo": (300, 340),
             "session": (320, 300),
         }
@@ -448,9 +448,22 @@ class RouteOverlay(OverlayWindow):
         self.remaining_list = tk.Label(self.content, text="", font=(ff, fs - 3), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W, wraplength=260)
         self.remaining_list.pack(fill=tk.X, pady=(2, 0))
 
-    def update_route(self, current: str, next_system: str, visited: int, total: int, remaining: Optional[list] = None):
+    def update_route(self, current: str, next_system: str, visited: int, total: int, remaining: Optional[list] = None, next_info: Optional[dict] = None):
         self.current_label.config(text=current[:30])
         self.next_label.config(text=next_system[:30])
+        if next_info and next_info.get("name") == next_system:
+            if not next_info.get("known"):
+                self.next_label.config(text=f"{next_system[:24]}  [EDSM нет данных]")
+            else:
+                bodies = next_info.get("bodies")
+                population = next_info.get("population")
+                details = []
+                if bodies is not None:
+                    details.append(f"{bodies} тел")
+                if population:
+                    details.append(f"нас. {population:g}")
+                if details:
+                    self.next_label.config(text=f"{next_system[:20]}  ({', '.join(details)})")
         self.progress_label.config(text=f"{visited} / {total}")
         if total > 0:
             pct = visited / total
@@ -466,6 +479,30 @@ class RouteOverlay(OverlayWindow):
         else:
             text = ""
         self.remaining_list.config(text=text)
+
+
+# ============================================================
+#  SessionEventsOverlay
+# ============================================================
+class SessionEventsOverlay(OverlayWindow):
+    def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
+        super().__init__(master, "SESSION EVENTS", settings.get("events_x", 740), settings.get("events_y", 50), settings.get("events_width", 360), settings.get("events_height", 260), settings, "events")
+        ff = settings.get("font_family", "Consolas")
+        fs = settings.get("font_size", 9)
+        self.text = tk.Text(self.content, height=12, font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_BG, wrap=tk.WORD, state=tk.DISABLED, highlightthickness=0, borderwidth=0, padx=6, pady=4)
+        self.text.pack(fill=tk.BOTH, expand=True)
+
+    def add_event(self, message: str, level: str = "info"):
+        colors = {"info": COLOR_TEXT, "success": COLOR_GREEN_TEXT, "warn": COLOR_YELLOW, "error": COLOR_RED_TEXT}
+        self.text.config(state=tk.NORMAL)
+        tag = f"event_{int(time.time() * 1000) % 100000}"
+        self.text.insert(tk.END, f"{time.strftime('%H:%M:%S')}  {message}\n", tag)
+        self.text.tag_config(tag, foreground=colors.get(level, COLOR_TEXT))
+        lines = int(self.text.index("end-1c").split(".")[0])
+        if lines > 100:
+            self.text.delete("1.0", "21.0")
+        self.text.see(tk.END)
+        self.text.config(state=tk.DISABLED)
 
 
 # ============================================================
@@ -500,13 +537,11 @@ class StatusOverlay(OverlayWindow):
         self.progress_text.pack(fill=tk.X, pady=(4, 0))
 
         _make_separator(self.content).pack(fill=tk.X, pady=6)
-        tk.Label(self.content, text="EVENT LOG", font=(ff, fs - 2, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(anchor=tk.W)
-
-        self.log_text = tk.Text(
-            self.content, height=6, font=(ff, fs - 2), fg=COLOR_TEXT, bg=COLOR_BG,
-            wrap=tk.WORD, state=tk.DISABLED, highlightthickness=0, borderwidth=0, padx=6, pady=4,
+        self.detail_text = tk.Label(
+            self.content, text="Ошибок нет", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED,
+            bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT, wraplength=250,
         )
-        self.log_text.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+        self.detail_text.pack(fill=tk.X, pady=(2, 0))
 
     def set_status(self, online: bool, detail: str = ""):
         if online:
@@ -524,21 +559,12 @@ class StatusOverlay(OverlayWindow):
         self.progress_text.config(text=text)
 
     def add_log(self, message: str, level: str = "info"):
-        color = {"success": COLOR_GREEN_TEXT, "error": COLOR_RED_TEXT, "warn": COLOR_YELLOW, "info": COLOR_TEXT}.get(level, COLOR_TEXT)
-        timestamp = time.strftime("%H:%M:%S")
-        self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, f"[{timestamp}] ")
-        tag_name = f"log_{level}_{int(time.time()*1000)%10000}"
-        start_idx = self.log_text.index("end-1c linestart")
-        self.log_text.insert(tk.END, f"{message}\n")
-        end_idx = self.log_text.index("end-2c")
-        self.log_text.tag_add(tag_name, start_idx, end_idx)
-        self.log_text.tag_config(tag_name, foreground=color)
-        self.log_text.see(tk.END)
-        lines = int(self.log_text.index("end-1c").split(".")[0])
-        if lines > 60:
-            self.log_text.delete("1.0", "7.0")
-        self.log_text.config(state=tk.DISABLED)
+        # STATUS is deliberately a compact health indicator, not a second
+        # journal window. Keep only actionable warnings/errors.
+        if level not in ("warn", "error"):
+            return
+        color = COLOR_RED_TEXT if level == "error" else COLOR_YELLOW
+        self.detail_text.config(text=f"{level.upper()}: {message[-180:]}", fg=color)
 
 
 # ============================================================
@@ -546,7 +572,9 @@ class StatusOverlay(OverlayWindow):
 # ============================================================
 class ShipOverlay(OverlayWindow):
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
-        h = max(settings.get("ship_height", 540), 540)
+        # The module list has its own scrollbar, so the whole ship overlay
+        # does not need to occupy half of a 1080p screen.
+        h = max(settings.get("ship_height", 420), 300)
         super().__init__(
             master, "SHIP",
             settings.get("ship_x", 50), settings.get("ship_y", 440),
@@ -993,6 +1021,7 @@ class SessionOverlay(OverlayWindow):
         self.deliveries_label = self._make_stat_row(self.stats_grid, "Deliveries:", "0", COLOR_GREEN_TEXT)
         self.cargo_label = self._make_stat_row(self.stats_grid, "Cargo (t):", "0", COLOR_ACCENT)
         self.route_cargo_label = self._make_stat_row(self.stats_grid, "Route (t):", "0", COLOR_YELLOW)
+        self.construction_cargo_label = self._make_stat_row(self.stats_grid, "Build (t):", "0", COLOR_CYAN)
         self.time_label = self._make_stat_row(self.stats_grid, "Time:", "00:00", COLOR_TEXT_MUTED)
 
         self.route_system_label = tk.Label(self.content, text="", font=(ff, fs - 1), fg=COLOR_YELLOW, bg=COLOR_PANEL, anchor=tk.W)
@@ -1036,6 +1065,8 @@ class SessionOverlay(OverlayWindow):
 
         route_cargo = data.get("route_cargo_tons", 0)
         self.route_cargo_label.config(text=f"{route_cargo:.1f}")
+        construction_cargo = data.get("construction_cargo_tons", 0)
+        self.construction_cargo_label.config(text=f"{construction_cargo:.1f}")
 
         elapsed = int(time.time() - self.session_start)
         hours = elapsed // 3600
@@ -1114,6 +1145,7 @@ class OverlayManager:
         self.ship_overlay: Optional[ShipOverlay] = None
         self.cargo_overlay: Optional[CargoOverlay] = None
         self.session_overlay: Optional[SessionOverlay] = None
+        self.events_overlay: Optional[SessionEventsOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -1144,12 +1176,17 @@ class OverlayManager:
         self.ship_overlay = ShipOverlay(self.master, self.settings)
         self.cargo_overlay = CargoOverlay(self.master, self.settings)
         self.session_overlay = SessionOverlay(self.master, self.settings)
+        self.events_overlay = SessionEventsOverlay(self.master, self.settings)
 
         for ov, key in [(self.route_overlay, "route"), (self.status_overlay, "status"),
                         (self.ship_overlay, "ship"), (self.cargo_overlay, "cargo"),
                         (self.session_overlay, "session")]:
             ov.set_on_move(getattr(self, f"_on_{key}_moved"))
             ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
+        self.events_overlay.set_on_move(self._on_events_moved)
+        self.events_overlay.set_on_resize(lambda w, h: self._on_resized("events", w, h))
+        if not self.settings.get("show_events", True):
+            self.events_overlay.hide()
 
         for ov, key in [(self.route_overlay, "show_route"), (self.status_overlay, "show_status"),
                         (self.ship_overlay, "show_ship"), (self.cargo_overlay, "show_cargo"),
@@ -1180,6 +1217,10 @@ class OverlayManager:
     def _on_session_moved(self, x: int, y: int):
         self.settings["session_x"] = x
         self.settings["session_y"] = y
+
+    def _on_events_moved(self, x: int, y: int):
+        self.settings["events_x"] = x
+        self.settings["events_y"] = y
 
     def _update_loop(self):
         last_data_hash = None
@@ -1221,10 +1262,27 @@ class OverlayManager:
 
     def _set_all_visibility(self, show: bool):
         """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order."""
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        overlay_settings = {
+            "route": "show_route",
+            "status": "show_status",
+            "ship": "show_ship",
+            "cargo": "show_cargo",
+            "session": "show_session",
+            "events": "show_events",
+        }
+        overlays = [
+            (self.route_overlay, "route"),
+            (self.status_overlay, "status"),
+            (self.ship_overlay, "ship"),
+            (self.cargo_overlay, "cargo"),
+            (self.session_overlay, "session"),
+            (self.events_overlay, "events"),
+        ]
+        for ov, key in overlays:
             if ov:
                 try:
-                    if show:
+                    should_show = show and self.settings.get(overlay_settings[key], True)
+                    if should_show:
                         if not ov.window.winfo_viewable():
                             ov.show()
                         ov.window.lift()
@@ -1276,7 +1334,13 @@ class OverlayManager:
         parts.append(str(data.get("current", "")))
         parts.append(str(data.get("online", False)))
         parts.append(str(data.get("watcher_active", False)))
+        parts.append(str(data.get("systems_visited", 0)))
+        parts.append(str(data.get("deliveries_count", 0)))
+        parts.append(str(data.get("cargo_total_tons", 0)))
+        parts.append(str(data.get("route_cargo_tons", 0)))
+        parts.append(str(data.get("construction_cargo_tons", 0)))
         parts.append(str(data.get("progress", "")))
+        parts.append(str(data.get("next_system_info", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
@@ -1284,6 +1348,7 @@ class OverlayManager:
             self.route_overlay.update_route(
                 data.get("current", "-"), data.get("next", "-"),
                 data.get("visited", 0), data.get("total", 0), data.get("remaining"),
+                data.get("next_system_info"),
             )
         if self.status_overlay:
             self.status_overlay.set_status(data.get("online", False), data.get("status_detail", ""))
@@ -1302,17 +1367,20 @@ class OverlayManager:
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
-            if current_sys != "-" and current_sys != self._session_stats["current_system"]:
-                self._session_stats["systems_visited"] += 1
+            # The helper tracks visited systems independently of the route;
+            # use that authoritative counter instead of counting route redraws.
+            self._session_stats["systems_visited"] = int(data.get("systems_visited", 0) or 0)
+            if current_sys != "-":
                 self._session_stats["current_system"] = current_sys
 
-            deliveries = data.get("new_deliveries", 0)
-            if deliveries:
-                self._session_stats["deliveries_count"] += deliveries
-
-            cargo_tons = data.get("cargo_total_tons", 0)
-            if cargo_tons:
-                self._session_stats["cargo_total_tons"] += cargo_tons
+            # These values are already session totals supplied by the helper.
+            # Adding them on every overlay tick made the counters grow again
+            # even when no new journal event arrived.
+            self._session_stats["deliveries_count"] = int(data.get("deliveries_count", 0) or 0)
+            self._session_stats["cargo_total_tons"] = float(data.get("cargo_total_tons", 0) or 0)
+            self._session_stats["route_deliveries_count"] = int(data.get("route_deliveries_count", 0) or 0)
+            self._session_stats["route_cargo_tons"] = float(data.get("route_cargo_tons", 0) or 0)
+            self._session_stats["construction_cargo_tons"] = float(data.get("construction_cargo_tons", 0) or 0)
 
             ship = data.get("ship", {})
             self._session_stats["cargo_count"] = ship.get("cargo_count", 0)
@@ -1327,11 +1395,15 @@ class OverlayManager:
         with self._log_lock:
             self._pending_logs.append((message, level))
 
+    def log_session_event(self, message: str, level: str = "info"):
+        if self.events_overlay:
+            self.master.after(0, lambda m=message, l=level: self.events_overlay.add_event(m, l))
+
     def stop(self):
         self.enabled = False
         self._stop.set()
         self.save_settings()
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
             if ov:
                 self.master.after(0, ov.destroy)
         self.route_overlay = None
@@ -1339,6 +1411,7 @@ class OverlayManager:
         self.ship_overlay = None
         self.cargo_overlay = None
         self.session_overlay = None
+        self.events_overlay = None
 
     def toggle(self, update_callback: Callable):
         if self.enabled:
@@ -1347,7 +1420,7 @@ class OverlayManager:
             self.start(update_callback)
 
     def toggle_visibility(self):
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
+        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
             if ov:
                 ov.toggle()
 
@@ -1421,6 +1494,7 @@ DEFAULT_SETTINGS = {
     "show_ship": True,
     "show_cargo": True,
     "show_session": True,
+    "show_events": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -1447,7 +1521,7 @@ DEFAULT_SETTINGS = {
     "ship_x": 50,
     "ship_y": 440,
     "ship_width": 360,
-    "ship_height": 540,
+    "ship_height": 420,
     "ship_locked": False,
     "ship_anchor": "custom",
     "cargo_x": 50,
@@ -1481,10 +1555,34 @@ def load_overlay_settings(config_path: Path) -> dict:
 
 
 def save_overlay_settings(config_path: Path, settings: dict):
+    """Сохранить только HUD-настройки, не затирая API credentials.
+
+    До версии 2.0 overlay сохранял весь словарь settings обратно в общий
+    config-файл. При этом в него иногда попадали только параметры overlay,
+    и ключи Raven/EDSM/Inara исчезали при закрытии или обновлении программы.
+    Общий файл оставляем для совместимости, но делаем merge только известных
+    HUD-ключей.
+    """
     try:
         import json
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
+        existing = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except (OSError, ValueError):
+                existing = {}
+        overlay_keys = set(DEFAULT_SETTINGS)
+        overlay_keys.update(key for key in settings if key.startswith((
+            "route_", "status_", "ship_", "cargo_", "session_", "events_",
+        )))
+        existing.update({key: settings[key] for key in overlay_keys if key in settings})
+        tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+        tmp.replace(config_path)
     except Exception:
         pass

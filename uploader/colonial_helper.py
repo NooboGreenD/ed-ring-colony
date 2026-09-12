@@ -71,14 +71,16 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
-from journal_parser import parse_file, parse_journal
+from journal_parser import parse_file, parse_journal, extract_construction_events
 from route_tracker import RouteTracker
 from overlay import OverlayManager
+from edsm_api import EDSMAPI
+from inara_api import InaraAPI
 from ship_tracker import ShipTracker
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "1.2.0"
+VERSION = "2.0.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -119,22 +121,41 @@ class ColonialHelperApp:
         self._session_cargo_tons = 0.0
         self._session_route_deliveries = 0  # доставки только в системы маршрута
         self._session_route_cargo_tons = 0.0  # тонны только в системы маршрута
+        self._session_construction_cargo_tons = 0.0  # ColonisationContribution за сессию
         self._session_systems_visited = set()
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
+        self._session_event_count = 0
+        self._last_session_event = ""
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
+        self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
+        self._navroute_mtime = 0.0
 
         # Конфиг
         self.config = {}
         self.config_path = Path.home() / ".colonial_helper.json"
+        # Отдельное хранилище credentials переживает обновление приложения и
+        # не может быть затёрто настройками HUD/overlay.
+        self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
         self.load_config()
 
         # Raven Colonial API
         from raven_colonial_api import RavenColonialAPI
         self.raven_api = RavenColonialAPI(self.config.get("raven_colonial_key", ""))
+        self.edsm_api = EDSMAPI(
+            self.config.get("edsm_api_key", ""),
+            self.config.get("edsm_commander_name", ""),
+        )
+        self.inara_api = InaraAPI(
+            self.config.get("inara_api_key", ""),
+            self.config.get("inara_commander_name", ""),
+        )
+        self._edsm_seen_events: set = set()
+        self._inara_seen_events: set = set()
+        self._raven_seen_carrier_events: set = set()
         # Восстанавливаем ключ из конфига (load_config вызывался раньше создания raven_api)
         raven_key = self.config.get("raven_colonial_key", "")
         if raven_key:
@@ -236,6 +257,10 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_auth, text=" Подключение ")
         self._build_tab_auth()
 
+        self.tab_pilot = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_pilot, text=" Пилот ")
+        self._build_tab_pilot()
+
         self.tab_upload = tb.Frame(self.notebook)
         self.notebook.add(self.tab_upload, text=" Загрузка логов ")
         self._build_tab_upload()
@@ -256,14 +281,27 @@ class ColonialHelperApp:
     #  Вкладка: Подключение
     # ============================================================
     def _build_tab_auth(self):
-        frame = tb.Frame(self.tab_auth, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        # Вкладка содержит несколько API и полей. На небольших окнах вся
+        # форма должна прокручиваться, а не обрезаться снизу.
+        viewport = tb.Frame(self.tab_auth)
+        viewport.pack(fill=BOTH, expand=True)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        frame = tb.Frame(canvas, padding=15)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
 
-        tb.Label(frame, text="API Токен", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Основной API ED Ring Colony", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
+        tb.Label(frame, text="API-токен сайта", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
-            text="Вставьте API токен из профиля на сайте (вкладка 'API Токен'):",
+            text="Поле для API-токена ED Ring Colony из профиля сайта. Используется для загрузки журналов.",
             foreground=COLOR_MUTED,
         ).pack(anchor=W)
 
@@ -333,9 +371,10 @@ class ColonialHelperApp:
 
         tb.Label(frame, text="Raven Colonial API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
+        tb.Label(frame, text="API-ключ Raven Colonial", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
-            text="Вставьте API ключ из профиля Raven Colonial (ravencolonial.com):",
+            text="Вставьте сюда ключ из профиля ravencolonial.com. Нажмите «Проверить ключ» и сохраните настройки.",
             foreground=COLOR_MUTED,
         ).pack(anchor=W)
 
@@ -357,6 +396,234 @@ class ColonialHelperApp:
 
         self.raven_status_label = tb.Label(frame, text="Raven Colonial: не подключено", font=("Segoe UI", 11), foreground=COLOR_MUTED)
         self.raven_status_label.pack(anchor=W, pady=(5, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
+        tb.Label(frame, text="EDSM Journal API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Необязательно: отправка событий FSDJump, Location, Docked и Scan в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
+        tb.Label(frame, text="EDSM API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
+        tb.Label(frame, text="Ключ EDSM API для отправки событий журнала. Можно оставить пустым.", foreground=COLOR_MUTED).pack(anchor=W)
+        self.edsm_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
+        self.edsm_key_entry.pack(fill=X, pady=(4, 5))
+        self.edsm_key_entry.insert(0, self.edsm_api.api_key)
+        tb.Label(frame, text="Имя командира в EDSM", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
+        tb.Label(frame, text="Точное имя CMDR, зарегистрированное в EDSM.", foreground=COLOR_MUTED).pack(anchor=W)
+        self.edsm_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
+        self.edsm_name_entry.pack(fill=X, pady=(4, 8))
+        self.edsm_name_entry.insert(0, self.edsm_api.commander_name)
+        tb.Button(frame, text="Сохранить EDSM настройки", command=self._save_edsm_settings, bootstyle="info-outline", width=28).pack(anchor=W)
+        self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
+        self.edsm_status_label.pack(anchor=W, pady=(5, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
+        tb.Label(frame, text="Inara API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Необязательно: отправка навигации, стыковок, сканирования и грузовых событий в Inara.", foreground=COLOR_MUTED).pack(anchor=W)
+        tb.Label(frame, text="Inara API key", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(8, 2))
+        self.inara_key_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="*")
+        self.inara_key_entry.pack(fill=X, pady=(4, 5))
+        self.inara_key_entry.insert(0, self.inara_api.api_key)
+        tb.Label(frame, text="Имя командира в Inara", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(3, 2))
+        self.inara_name_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
+        self.inara_name_entry.pack(fill=X, pady=(4, 8))
+        self.inara_name_entry.insert(0, self.inara_api.commander_name)
+        tb.Button(frame, text="Сохранить Inara настройки", command=self._save_inara_settings, bootstyle="info-outline", width=28).pack(anchor=W)
+        self.inara_status_label = tb.Label(frame, text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена", foreground=COLOR_MUTED)
+        self.inara_status_label.pack(anchor=W, pady=(5, 0))
+
+    def _save_inara_settings(self):
+        self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+        self.config["inara_api_key"] = self.inara_api.api_key
+        self.config["inara_commander_name"] = self.inara_api.commander_name
+        self.save_config()
+        self.inara_status_label.config(text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена")
+
+    def _save_edsm_settings(self):
+        self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+        self.config["edsm_api_key"] = self.edsm_api.api_key
+        self.config["edsm_commander_name"] = self.edsm_api.commander_name
+        self.save_config()
+        self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
+
+    # ============================================================
+    #  Вкладка: Инфографика пилота
+    # ============================================================
+    def _pilot_card(self, parent, title: str, row: int, column: int):
+        card = tb.LabelFrame(parent, text=title, padding=12, bootstyle="secondary")
+        card.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
+        return card
+
+    def _pilot_value(self, parent, key: str, text: str = "—", color=COLOR_TEXT):
+        label = tb.Label(parent, text=text, font=("Segoe UI", 14, "bold"), foreground=color)
+        label.pack(anchor=W, pady=(2, 5))
+        self._pilot_values[key] = label
+        return label
+
+    def _pilot_metric(self, parent, key: str, title: str, color=COLOR_CYAN):
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=3)
+        tb.Label(row, text=title, foreground=COLOR_MUTED, width=23, anchor=W).pack(side=LEFT)
+        value = tb.Label(row, text="—", font=("Consolas", 10, "bold"), foreground=color, anchor=E)
+        value.pack(side=RIGHT)
+        self._pilot_values[key] = value
+
+    def _pilot_bar(self, parent, key: str, title: str, color="info"):
+        tb.Label(parent, text=title, foreground=COLOR_MUTED).pack(anchor=W, pady=(5, 1))
+        bar = tb.Progressbar(parent, mode="determinate", maximum=100, bootstyle=color)
+        bar.pack(fill=X, pady=(0, 4))
+        self._pilot_bars[key] = bar
+
+    def _build_tab_pilot(self):
+        self._pilot_values = {}
+        self._pilot_bars = {}
+        viewport = tb.Frame(self.tab_pilot)
+        viewport.pack(fill=BOTH, expand=True)
+
+        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
+        header.pack(fill=X)
+        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"), foreground=COLOR_ORANGE).pack(side=LEFT)
+        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic, bootstyle="info-outline", width=12).pack(side=RIGHT)
+        self._pilot_values["updated"] = tb.Label(header, text="", foreground=COLOR_MUTED)
+        self._pilot_values["updated"].pack(side=RIGHT, padx=(0, 12))
+
+        subtitle = tb.Label(
+            viewport,
+            text="Живые данные из Journal, Ship Tracker, маршрута и текущей сессии. Сетевые запросы для инфографики не выполняются.",
+            foreground=COLOR_MUTED,
+            wraplength=850,
+        )
+        subtitle.pack(anchor=W, padx=15, pady=(0, 8))
+
+        grid = tb.Frame(viewport, padding=(9, 0, 9, 9))
+        grid.pack(fill=BOTH, expand=True)
+        for column in range(2):
+            grid.columnconfigure(column, weight=1, uniform="pilot")
+        for row in range(3):
+            grid.rowconfigure(row, weight=1)
+
+        identity = self._pilot_card(grid, "ПИЛОТ И ПОДКЛЮЧЕНИЯ", 0, 0)
+        self._pilot_value(identity, "commander", "CMDR не определён", COLOR_ORANGE)
+        self._pilot_metric(identity, "system", "Система")
+        self._pilot_metric(identity, "ship", "Корабль")
+        self._pilot_metric(identity, "watcher", "Watcher")
+        self._pilot_metric(identity, "services", "Сервисы")
+
+        route = self._pilot_card(grid, "МАРШРУТ", 0, 1)
+        self._pilot_value(route, "route_status", "Маршрут не загружен", COLOR_CYAN)
+        self._pilot_metric(route, "route_current", "Текущая")
+        self._pilot_metric(route, "route_next", "Следующая")
+        self._pilot_metric(route, "route_remaining", "Осталось")
+        self._pilot_bar(route, "route_progress", "Прогресс маршрута", "info")
+
+        ship = self._pilot_card(grid, "СОСТОЯНИЕ КОРАБЛЯ", 1, 0)
+        self._pilot_metric(ship, "hull", "Корпус")
+        self._pilot_metric(ship, "shield", "Щиты")
+        self._pilot_metric(ship, "fuel", "Топливо")
+        self._pilot_metric(ship, "power", "Энергия")
+        self._pilot_metric(ship, "modules", "Модули")
+        self._pilot_bar(ship, "hull_bar", "Корпус", "success")
+        self._pilot_bar(ship, "fuel_bar", "Топливо", "warning")
+
+        cargo = self._pilot_card(grid, "ГРУЗ И ЭКОНОМИКА", 1, 1)
+        self._pilot_value(cargo, "cargo", "0 / 0 t", COLOR_GREEN)
+        self._pilot_bar(cargo, "cargo_bar", "Заполнение трюма", "warning")
+        self._pilot_metric(cargo, "balance", "Баланс")
+        self._pilot_metric(cargo, "rebuy", "Страховка")
+        self._pilot_metric(cargo, "legal", "Правовой статус")
+        self._pilot_metric(cargo, "last_delivery", "Последняя доставка")
+
+        session = self._pilot_card(grid, "ТЕКУЩАЯ СЕССИЯ", 2, 0)
+        self._pilot_value(session, "session_tons", "0 t", COLOR_GREEN)
+        self._pilot_metric(session, "session_deliveries", "Доставки")
+        self._pilot_metric(session, "session_route", "На маршруте")
+        self._pilot_metric(session, "session_construction", "На стройки")
+        self._pilot_metric(session, "session_systems", "Системы посещены")
+
+        activity = self._pilot_card(grid, "АКТИВНОСТЬ И ДАННЫЕ", 2, 1)
+        self._pilot_value(activity, "event_summary", "Ожидание событий", COLOR_CYAN)
+        self._pilot_metric(activity, "journal_state", "Журналы")
+        self._pilot_metric(activity, "raven", "Raven Colonial")
+        self._pilot_metric(activity, "edsm", "EDSM")
+        self._pilot_metric(activity, "inara", "Inara")
+        self._pilot_metric(activity, "last_event", "Последнее событие")
+
+        self._refresh_pilot_infographic()
+
+    @staticmethod
+    def _pilot_percent(value) -> float:
+        try:
+            return max(0.0, min(100.0, float(value or 0)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _refresh_pilot_infographic(self):
+        """Обновить инфографику только локальным состоянием приложения."""
+        if not hasattr(self, "_pilot_values"):
+            return
+        try:
+            state = self.ship.get_state_dict()
+            route_total = len(self.route.systems)
+            visited = self.route.visited_count
+            route_percent = (visited / route_total * 100) if route_total else 0
+            current = self.ship.state.current_system or "—"
+            ship_name = state.get("ship_type") or "Корабль не определён"
+            services = " / ".join(name for name, enabled in (
+                ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
+                ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
+            ) if enabled) or "нет подключений"
+            cargo = float(state.get("cargo_count", 0) or 0)
+            capacity = float(state.get("cargo_capacity", 0) or 0)
+            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0
+            damaged = int(state.get("damaged_count", 0) or 0)
+            total_modules = len(state.get("modules", []))
+            event_count = self._session_event_count
+
+            values = {
+                "commander": self.api.display_name if self.api.cmdr_name or self.api.email else (self._watcher_cmdr_name or "CMDR не определён"),
+                "system": current,
+                "ship": ship_name,
+                "watcher": "АКТИВЕН" if self.watcher_active else "остановлен",
+                "services": services,
+                "route_status": f"{visited}/{route_total} систем" if route_total else "Маршрут не загружен",
+                "route_current": self._get_overlay_data().get("current", "—"),
+                "route_next": self._get_overlay_data().get("next", "—"),
+                "route_remaining": str(max(0, route_total - visited)),
+                "hull": f"{self._pilot_percent(state.get('hull_percent')):.0f}%",
+                "shield": f"{self._pilot_percent(state.get('shield_percent')):.0f}%",
+                "fuel": f"{state.get('fuel_level', 0):.1f} / {state.get('fuel_capacity', 0):.1f} t",
+                "power": f"{self._pilot_percent(state.get('power_percent')):.0f}%",
+                "modules": f"{total_modules - damaged}/{total_modules} исправны",
+                "cargo": f"{cargo:.0f} / {capacity:.0f} t",
+                "balance": f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "),
+                "rebuy": f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "),
+                "legal": state.get("legal_state") or "неизвестно",
+                "last_delivery": self._last_delivery_system or "—",
+                "session_tons": f"{self._session_cargo_tons:.0f} t",
+                "session_deliveries": str(self._session_deliveries),
+                "session_route": f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t",
+                "session_construction": f"{self._session_construction_cargo_tons:.0f} t",
+                "session_systems": str(len(self._session_systems_visited)),
+                "event_summary": f"{event_count} событий" if event_count else "Ожидание событий",
+                "journal_state": "watcher читает" if self.watcher_active else "ожидание",
+                "raven": "подключён" if self.raven_api.is_connected else "выключен",
+                "edsm": "подключён" if self.edsm_api.enabled else "выключен",
+                "inara": "подключена" if self.inara_api.enabled else "выключена",
+                "last_event": self._last_session_event or "—",
+            }
+            for key, text in values.items():
+                if key in self._pilot_values:
+                    self._pilot_values[key].configure(text=text)
+            for key, value in {
+                "route_progress": route_percent, "hull_bar": self._pilot_percent(state.get("hull_percent")),
+                "fuel_bar": self._pilot_percent(state.get("fuel_percent")), "cargo_bar": cargo_percent,
+            }.items():
+                if key in self._pilot_bars:
+                    self._pilot_bars[key].configure(value=value)
+            self._pilot_values["updated"].configure(text=datetime.now().strftime("%H:%M:%S"))
+        except Exception:
+            # Инфографика не должна мешать watcher/UI при неполном состоянии
+            # трекера во время самого первого чтения Journal.
+            pass
+        if self.root.winfo_exists():
+            self.root.after(1000, self._refresh_pilot_infographic)
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -485,8 +752,20 @@ class ColonialHelperApp:
     #  Вкладка: Оверлей
     # ============================================================
     def _build_tab_overlay(self):
-        frame = tb.Frame(self.tab_overlay, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        # The overlay settings contain more controls than a small window can
+        # display. Put the whole settings panel in a scrollable canvas.
+        viewport = tb.Frame(self.tab_overlay)
+        viewport.pack(fill=BOTH, expand=True)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        frame = tb.Frame(canvas, padding=15)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
 
         tb.Label(frame, text="Настройки оверлея HUD", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(
@@ -631,6 +910,10 @@ class ColonialHelperApp:
         ).pack(anchor=W)
 
     def _on_toggle_overlay(self):
+        # NavRoute.json is produced by the game independently of Watcher.
+        # Load it when the HUD is enabled as well, so ROUTE works on its own.
+        if not self.overlay_manager.enabled:
+            self._auto_load_navroute()
         self.overlay_manager.toggle(self._get_overlay_data)
         if self.overlay_manager.enabled:
             self.overlay_toggle_btn.config(text="⏹ Выключить оверлей", bootstyle="danger-outline")
@@ -703,7 +986,12 @@ class ColonialHelperApp:
         """Собрать данные для обновления оверлея."""
         data = {
             "online": self.api.is_connected,
-            "status_detail": self.api.display_name or ("Online" if self.api.is_connected else "Offline"),
+            "status_detail": (
+                f"{self.api.display_name} | ED Ring: {'ON' if self.api.is_connected else 'OFF'} | "
+                f"Raven: {'ON' if self.raven_api.is_connected else 'OFF'} | "
+                f"EDSM: {'ON' if self.edsm_api.enabled else 'OFF'} | "
+                f"Inara: {'ON' if self.inara_api.enabled else 'OFF'}"
+            ),
             "watcher_active": self.watcher_active,
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
@@ -712,6 +1000,7 @@ class ColonialHelperApp:
             "visited": 0,
             "total": 0,
             "remaining": [],
+            "next_system_info": self.route.get_next_system_info(),
             "new_deliveries": 0,
             "cargo_total_tons": self._session_cargo_tons,
         }
@@ -745,6 +1034,7 @@ class ColonialHelperApp:
         data["cargo_total_tons"] = self._session_cargo_tons
         data["route_deliveries_count"] = self._session_route_deliveries
         data["route_cargo_tons"] = self._session_route_cargo_tons
+        data["construction_cargo_tons"] = self._session_construction_cargo_tons
         data["last_delivery_system"] = self._last_delivery_system
         return data
 
@@ -854,6 +1144,22 @@ class ColonialHelperApp:
         else:
             self.config = {}
 
+        # Сначала используем legacy-конфиг, затем накладываем отдельное
+        # credentials-хранилище. Это даёт бесшовную миграцию для старых
+        # установок и сохраняет ключи при обновлении EXE.
+        try:
+            with open(self.credentials_path, "r", encoding="utf-8") as f:
+                credentials = json.load(f)
+            if isinstance(credentials, dict):
+                for key in (
+                    "token", "raven_colonial_key", "edsm_api_key",
+                    "edsm_commander_name", "inara_api_key", "inara_commander_name",
+                ):
+                    if credentials.get(key):
+                        self.config[key] = credentials[key]
+        except (OSError, ValueError):
+            pass
+
     def save_config(self):
         self.config["token"] = self.api.token
         self.config["journal_path"] = str(self.journal_path)
@@ -870,11 +1176,35 @@ class ColonialHelperApp:
             if entry_key and entry_key != self.raven_api.api_key:
                 self.raven_api.set_key(entry_key)
         self.config["raven_colonial_key"] = self.raven_api.api_key
+        if hasattr(self, "edsm_key_entry"):
+            self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())
+        self.config["edsm_api_key"] = self.edsm_api.api_key
+        self.config["edsm_commander_name"] = self.edsm_api.commander_name
+        if hasattr(self, "inara_key_entry"):
+            self.inara_api.set_credentials(self.inara_key_entry.get(), self.inara_name_entry.get())
+        self.config["inara_api_key"] = self.inara_api.api_key
+        self.config["inara_commander_name"] = self.inara_api.commander_name
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2)
         except Exception as e:
             self.log(f"Не удалось сохранить конфиг: {e}", "warn")
+        # Дублируем только credentials в отдельном state-файле. Он не зависит
+        # от формата общего config-файла и не затирается OverlayManager.
+        credentials = {
+            key: self.config.get(key, "")
+            for key in (
+                "token", "raven_colonial_key", "edsm_api_key",
+                "edsm_commander_name", "inara_api_key", "inara_commander_name",
+            )
+        }
+        try:
+            tmp = self.credentials_path.with_suffix(self.credentials_path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(credentials, f, indent=2, ensure_ascii=False)
+            tmp.replace(self.credentials_path)
+        except Exception as e:
+            self.log(f"Не удалось сохранить credentials: {e}", "warn")
         # Сохраняем и настройки оверлея
         self.overlay_manager.save_settings()
 
@@ -902,6 +1232,8 @@ class ColonialHelperApp:
             self.set_connection_status(True, self.api.display_name)
             self.log(f"Авторизован как {self.api.display_name}", "success")
             self.save_config()
+            if not self.watcher_active:
+                self.root.after(300, self._auto_start_watcher)
         else:
             self.set_connection_status(False, result.get("error", "Ошибка"))
             self.log(f"Ошибка: {result.get('error')}", "error")
@@ -910,6 +1242,11 @@ class ColonialHelperApp:
 
     def _auto_validate(self):
         self._on_validate_token()
+
+    def _auto_start_watcher(self):
+        if self.watcher_active or not self.api.is_connected:
+            return
+        self._start_watcher()
 
     def _on_paste_token(self):
         if pyperclip is None:
@@ -1130,6 +1467,7 @@ class ColonialHelperApp:
 
     def _do_upload_thread(self):
         all_deliveries = []
+        all_construction_events = []
         cmdr_name = None
         total_event_counts: Counter = Counter()
         files_processed = 0
@@ -1184,6 +1522,7 @@ class ColonialHelperApp:
                     continue  # ошибка чтения уже залогирована выше
                 self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
                 try:
+                    self._send_edsm_text(text)
                     current_system = self.ship.state.current_system if self.ship.state else None
                     current_system_address = self.ship.state.system_address if self.ship.state else 0
                     (
@@ -1194,6 +1533,7 @@ class ColonialHelperApp:
                         self._last_contribution_state, self._seen_events, current_system_address,
                     )
                     total_event_counts.update(event_counts)
+                    all_construction_events.extend(extract_construction_events(text))
                     files_processed += 1
                     # Проверка: все файлы от одного командира
                     if cname:
@@ -1239,8 +1579,17 @@ class ColonialHelperApp:
             # форматирования не должна прерывать процесс загрузки доставок.
             self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
-        if not all_deliveries:
-            self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
+        self._record_session_deliveries(all_deliveries)
+        construction_result = self.api.upload_construction_events(all_construction_events, cmdr_name)
+        if construction_result.get("ok") and all_construction_events:
+            self.root.after(0, lambda n=len(all_construction_events): self.log(
+                f"Прогресс строек: отправлено snapshots — {n}", "info"
+            ))
+        elif all_construction_events:
+            self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
+                self.log(f"Прогресс строек не отправлен: {e}", "warn"))
+        if not all_deliveries and not all_construction_events:
+            self.root.after(0, lambda: self.log("Доставки и события строительства не найдены", "warn"))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             self.root.after(0, lambda: self.progress.config(value=0))
             self.root.after(0, lambda: self.progress_label.config(text=""))
@@ -1277,13 +1626,9 @@ class ColonialHelperApp:
 
         if result["ok"]:
             inserted = result['inserted']
-            self._session_deliveries += inserted
-            tons = sum(d.get("amount", 0) for d in all_deliveries)
-            self._session_cargo_tons += tons
             route_deliveries = [d for d in all_deliveries if self.route.is_on_route(d["system_name"])]
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
-            self._session_route_deliveries += len(route_deliveries)
-            self._session_route_cargo_tons += route_tons
+            self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.log(
@@ -1348,15 +1693,22 @@ class ColonialHelperApp:
         self._session_cargo_tons = 0.0
         self._session_route_deliveries = 0
         self._session_route_cargo_tons = 0.0
+        self._session_construction_cargo_tons = 0.0
         self._session_systems_visited.clear()
         self._last_cargo = {}
         self._last_depot_state = {}
         self._last_contribution_state = {}
         self._seen_events = set()
         self._last_delivery_system = ""
+        self._session_event_count = 0
+        self._last_session_event = ""
         # CMDR из уже проверенного токена (если сервер его вернул) — используется
         # как основа для всех тиков watcher'а, пока журнал не назовёт другого CMDR.
         self._watcher_cmdr_name = self.api.cmdr_name
+        self._pending_watcher_deliveries = []
+        self._raven_seen_carrier_events = set()
+
+        self._auto_load_navroute()
 
         # Определяем текущую систему CMDR ДО старта потока watcher'а.
         # Иначе, если приложение запущено, когда игрок уже находится в
@@ -1390,6 +1742,96 @@ class ColonialHelperApp:
         # если он новее данных из журнала).
         self._load_latest_loadout()
         self._load_current_state_files()
+
+    def _log_session_event(self, event: dict):
+        event_name = str(event.get("event", ""))
+        tracked = {
+            "Location", "FSDJump", "Docked", "Undocked", "CarrierJump", "Market", "MarketBuy", "MarketSell",
+            "Cargo", "CargoDepot", "ColonisationContribution", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+            "Loadout", "ModuleInfo", "ModuleDamage", "Repair", "RepairAll", "HullDamage", "ShieldState",
+        }
+        if event_name not in tracked:
+            return
+        system = event.get("StarSystem") or self.ship.state.current_system or "?"
+        details = []
+        if event.get("Count") is not None:
+            details.append(f"{event.get('Type_Localised') or event.get('Type') or 'cargo'} x{event.get('Count')}")
+        if event_name == "ColonisationContribution":
+            details.append(", ".join(f"{c.get('Name_Localised') or c.get('Name')}: {c.get('Amount', 0)}" for c in event.get("Contributions", [])))
+        if event_name in ("FSDJump", "Location", "Docked", "CarrierJump"):
+            details.append(system)
+        message = f"{event_name}: {' | '.join(details) if details else system}"
+        self._session_event_count += 1
+        self._last_session_event = message
+        self.overlay_manager.log_session_event(message)
+
+    def _send_inara_event(self, event: dict):
+        if not self.inara_api.enabled:
+            return
+        event_name = str(event.get("event", ""))
+        names = {
+            "Location": "cmdrLocation", "FSDJump": "cmdrFSDJump", "Docked": "cmdrDock",
+            "Scan": "cmdrScan", "FSSDiscoveryScan": "cmdrFSSDiscoveryScan",
+            "MarketSell": "cmdrMarketSell", "MarketBuy": "cmdrMarketBuy",
+            "ColonisationContribution": "cmdrTrade",
+        }
+        inara_name = names.get(event_name)
+        if not inara_name:
+            return
+        key = f"{event.get('timestamp', '')}:{event_name}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}:{event.get('MarketID', '')}"
+        if key in self._inara_seen_events:
+            return
+        self._inara_seen_events.add(key)
+        data = dict(event)
+        data.pop("event", None)
+        self.inara_api.submit(inara_name, data, str(event.get("timestamp", "")))
+
+    def _send_edsm_text(self, text: str):
+        if not self.edsm_api.enabled:
+            return
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+                self._log_session_event(event)
+                self._send_edsm_event(event)
+                self._send_inara_event(event)
+                self._send_carrier_event_to_raven(event)
+            except (ValueError, TypeError):
+                continue
+
+    def _send_edsm_event(self, event: dict):
+        if not self.edsm_api.enabled or event.get("event") not in {
+            "Location", "FSDJump", "Docked", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+        }:
+            return
+        key = f"{event.get('timestamp', '')}:{event.get('event', '')}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}"
+        if key in self._edsm_seen_events:
+            return
+        self._edsm_seen_events.add(key)
+        threading.Thread(target=self.edsm_api.submit_event, args=(dict(event),), daemon=True).start()
+
+    def _auto_load_navroute(self) -> bool:
+        """Автоматически загрузить свежий NavRoute.json из папки журналов."""
+        candidates = [self.journal_path / "NavRoute.json", self.journal_path.parent / "NavRoute.json"]
+        for path in candidates:
+            try:
+                if path.exists():
+                    mtime = path.stat().st_mtime
+                    if mtime == self._navroute_mtime:
+                        return bool(self.route.systems)
+                    with open(path, "r", encoding="utf-8-sig") as fh:
+                        payload = json.load(fh)
+                    route = (payload.get("Route") or payload.get("NavRoute") or []) if isinstance(payload, dict) else []
+                    if route:
+                        self._navroute_mtime = mtime
+                        self.route.load_from_navroute(payload)
+                        self.root.after(0, self._refresh_route_tree)
+                        self.route.refresh_next_system_info(force=True)
+                        self.root.after(0, lambda n=len(route), p=path: self.log(f"NavRoute загружен автоматически: {n} систем ({p.name})", "success"))
+                        return True
+            except Exception as exc:
+                self.root.after(0, lambda e=exc: self.log(f"Не удалось загрузить NavRoute: {e}", "warn"))
+        return False
 
     def _determine_cmdr_system(self) -> tuple:
         """Найти последнюю известную систему CMDR, просматривая journal-файлы
@@ -1501,6 +1943,10 @@ class ColonialHelperApp:
                     power = m.get("Power")
                     if power is not None:
                         st.modules[slot].power = float(power)
+                    if m.get("On") is not None:
+                        st.modules[slot].on = bool(m.get("On"))
+                    if m.get("Engineering") is not None:
+                        st.modules[slot].engineered = bool(m.get("Engineering"))
                     priority = m.get("Priority")
                     if priority is not None:
                         st.modules[slot].priority = int(priority)
@@ -1609,13 +2055,108 @@ class ColonialHelperApp:
         self.bottom_status.config(text="Готов")
         self.overlay_manager.log("Watcher остановлен", "info")
 
+    def _load_journal_offsets(self) -> dict:
+        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_journal_offsets(self):
+        path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
+        tmp = path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.last_file_mtimes, fh)
+            tmp.replace(path)
+        except OSError as exc:
+            self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить состояние журналов: {e}", "warn"))
+
+    def _show_journal_reconciliation_progress(
+        self, done_bytes: int, total_files: int, total_bytes: int, done_files: int, current_file: str
+    ):
+        """Обновить общий progressbar из фонового watcher-потока.
+
+        Объём считается по байтам, поэтому большой журнал занимает на шкале
+        столько же, сколько несколько маленьких, и пользователь видит не
+        только номер текущего файла, но и фактически прочитанный объём.
+        """
+        if total_bytes:
+            percent = min(100.0, done_bytes * 100.0 / total_bytes)
+            done_mb = done_bytes / (1024 * 1024)
+            total_mb = total_bytes / (1024 * 1024)
+            detail = (
+                f"Первичная загрузка: {percent:.1f}% | "
+                f"файлы {done_files}/{total_files} | "
+                f"{done_mb:.1f}/{total_mb:.1f} MB | {current_file}"
+            )
+        else:
+            percent = 100.0
+            detail = f"Первичная загрузка: файлов для чтения нет | {done_files}/{total_files}"
+        self.progress.configure(value=percent, maximum=100)
+        self.progress_label.configure(text=detail)
+
+    def _finish_journal_reconciliation(self, message: str):
+        """Оставить результат первичной сверки в UI, не стирая прогресс."""
+        self.progress.configure(value=100, maximum=100)
+        self.progress_label.configure(text=message)
+        self.log(message, "success")
+
     def _watcher_loop(self):
+        offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
+        first_reconciliation = not bool(offsets)
         for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime):
             try:
-                self.last_file_mtimes[str(f)] = f.stat().st_size
-            except Exception:
+                # Первый запуск проверяет историю с начала файлов; после этого
+                # сохраняются byte offsets, как в EDDiscovery.
+                self.last_file_mtimes[str(f)] = int(offsets.get(str(f), 0)) if not first_reconciliation else 0
+            except (OSError, ValueError):
                 pass
+        startup_reconciliation = first_reconciliation or any(
+            self.last_file_mtimes.get(str(f), 0) < f.stat().st_size
+            for f in self.journal_path.glob("Journal.*.log")
+            if f.exists()
+        )
+        if startup_reconciliation:
+            self.root.after(0, lambda: self.log("Проверка ранее не отправленных журналов...", "info"))
+            # Первичная сверка выполняется отдельным проходом, чтобы в UI был
+            # виден реальный прогресс, а не только сообщение "обработка".
+            reconciliation_files = []
+            total_bytes = 0
+            for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda p: p.stat().st_mtime):
+                try:
+                    size = f.stat().st_size
+                    start = max(0, int(self.last_file_mtimes.get(str(f), 0)))
+                    if size > start:
+                        reconciliation_files.append((f, start, size))
+                        total_bytes += size - start
+                except OSError:
+                    continue
+            done_bytes = 0
+            total_files = len(reconciliation_files)
+            self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
+                0, n, b, 0, "Подготовка журналов..."
+            ))
+            for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
+                if self.watcher_stop_event.is_set():
+                    break
+                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                    self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
+                )
+                processed = self._process_journal_changes(f, start, size)
+                self.last_file_mtimes[str(f)] = start + processed
+                done_bytes += processed
+                self._save_journal_offsets()
+                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                    self._show_journal_reconciliation_progress(d, n, t, i, p)
+                )
+            if total_files == 0:
+                self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
+            elif not self.watcher_stop_event.is_set():
+                self.root.after(0, lambda: self._finish_journal_reconciliation("Первичная загрузка журналов завершена"))
 
         while not self.watcher_stop_event.is_set():
             time.sleep(5)
@@ -1632,15 +2173,94 @@ class ColonialHelperApp:
                     except Exception:
                         continue
                     last_size = self.last_file_mtimes.get(fpath, 0)
+                    if current_size < last_size:
+                        # Новый файл/ротация журнала.
+                        last_size = 0
                     if current_size > last_size:
                         processed = self._process_journal_changes(f, last_size, current_size)
                         # Обновляем только на фактически обработанные байты (полные строки)
                         self.last_file_mtimes[fpath] = last_size + processed
+                        self._save_journal_offsets()
             except Exception as e:
                 self.root.after(0, lambda e=e: self.log(f"Watcher ошибка: {e}", "error"))
 
             # 2. Потом читаем JSON-файлы — НЕ перезаписываем health модулей
             self._load_current_state_files()
+            # Frontier перезаписывает NavRoute.json при построении нового
+            # маршрута. Подхватываем изменение без ручного импорта.
+            self._auto_load_navroute()
+            self.route.refresh_next_system_info()
+
+    def _record_session_deliveries(self, deliveries: list):
+        """Учесть событие в SESSION сразу после разбора, независимо от ответа API."""
+        if not deliveries:
+            return
+        self._session_deliveries += len(deliveries)
+        self._session_cargo_tons += sum(float(d.get("amount", 0) or 0) for d in deliveries)
+        route_deliveries = [d for d in deliveries if self.route.is_on_route(d.get("system_name", ""))]
+        self._session_route_deliveries += len(route_deliveries)
+        self._session_route_cargo_tons += sum(float(d.get("amount", 0) or 0) for d in route_deliveries)
+        self._session_construction_cargo_tons += sum(
+            float(d.get("amount", 0) or 0) for d in deliveries
+            if d.get("source") == "colonisation_contribution"
+        )
+        self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
+
+    def _send_carrier_event_to_raven(self, event: dict):
+        if not self.raven_api.is_connected or event.get("event") not in ("MarketSell", "MarketBuy"):
+            return
+        market_id = event.get("MarketID")
+        count = event.get("Count")
+        commodity = event.get("Type_Localised") or event.get("Type")
+        station_type = str(event.get("StationType", "") or self._last_depot_state.get("_station_type", ""))
+        # Только Fleet Carrier transactions относятся к FC cargo. Обычные
+        # station MarketBuy/MarketSell нельзя отправлять в /api/fc/...
+        is_carrier = bool(event.get("CarrierID")) or "carrier" in station_type.lower()
+        if not market_id or not count or not commodity or not is_carrier:
+            return
+        # Не отправляем один и тот же journal event повторно в рамках сессии.
+        # Такое могло возникать, когда один и тот же MarketSell/MarketBuy
+        # присутствовал в reconciliation и в следующем watcher-чанке.
+        event_key = "|".join(str(event.get(key, "")) for key in (
+            "event", "timestamp", "MarketID", "Type", "Type_Localised", "Count", "CarrierID",
+        ))
+        if event_key in self._raven_seen_carrier_events:
+            return
+        # As in SrvSurvey: selling to the FC adds cargo, buying from it removes cargo.
+        delta = int(count) if event.get("event") == "MarketSell" else -int(count)
+        result = self.raven_api.supply_fc(int(market_id), str(commodity), delta)
+        if result.get("ok"):
+            self._raven_seen_carrier_events.add(event_key)
+            if result.get("already_exists"):
+                self.root.after(0, lambda: self.log(
+                    f"Raven FC cargo: событие уже было принято ранее ({commodity} {delta:+d})", "info"
+                ))
+        else:
+            self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven FC cargo: {e}", "warn"))
+
+    def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
+        if not self.raven_api.is_connected:
+            return
+        batches = {}
+        for delivery in deliveries:
+            market_id = delivery.get("market_id")
+            if not market_id:
+                continue
+            address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
+            if not address:
+                continue
+            project = self.raven_api.get_project(address, market_id)
+            if not project or not project.get("buildId"):
+                continue
+            build_id = project["buildId"]
+            commodity = delivery.get("commodity", "Unknown")
+            batches.setdefault(build_id, {})[commodity] = batches.setdefault(build_id, {}).get(commodity, 0) + int(delivery.get("amount", 0))
+        for build_id, commodities in batches.items():
+            result = self.raven_api.contribute(build_id, cmdr_name or "Unknown", commodities)
+            if result.get("ok"):
+                self.root.after(0, lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"))
+            else:
+                self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"))
 
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
@@ -1700,6 +2320,10 @@ class ColonialHelperApp:
                 continue
             try:
                 ev = json.loads(line)
+                self._log_session_event(ev)
+                self._send_edsm_event(ev)
+                self._send_inara_event(ev)
+                self._send_carrier_event_to_raven(ev)
                 if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
                     sys_name = ev.get("StarSystem")
                     if sys_name:
@@ -1722,21 +2346,27 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
-        # Отдельно — аплоад доставок, если они есть
-        if deliveries:
+        self._record_session_deliveries(deliveries)
+        construction_events = extract_construction_events(new_text)
+        if construction_events and self.api.is_connected:
+            construction_result = self.api.upload_construction_events(construction_events, cmdr_name)
+            if not construction_result.get("ok"):
+                self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
+                    self.log(f"[Watcher] Прогресс строек не отправлен: {e}", "warn"))
+
+        # Отдельно — аплоад доставок. Не теряем распарсенные строки, если
+        # сервер временно занят: парсер уже пометил события как обработанные,
+        # поэтому следующий тик сам по себе их больше не повторит.
+        upload_deliveries = self._pending_watcher_deliveries + deliveries
+        self._pending_watcher_deliveries = []
+        if upload_deliveries:
             result = self.api.upload_deliveries(
-                [self._delivery_for_api(d) for d in deliveries], cmdr_name
+                [self._delivery_for_api(d) for d in upload_deliveries], cmdr_name
             )
             if result["ok"]:
                 inserted = result['inserted']
-                self._session_deliveries += inserted
-                tons = sum(d.get("amount", 0) for d in deliveries)
-                self._session_cargo_tons += tons
-                # Доставки только в системы маршрута
-                route_deliveries = [d for d in deliveries if self.route.is_on_route(d["system_name"])]
+                route_deliveries = [d for d in upload_deliveries if self.route.is_on_route(d["system_name"])]
                 route_tons = sum(d.get("amount", 0) for d in route_deliveries)
-                self._session_route_deliveries += len(route_deliveries)
-                self._session_route_cargo_tons += route_tons
                 # Сохраняем последнюю систему доставки для оверлея
                 if deliveries:
                     self._last_delivery_system = deliveries[-1]["system_name"]
@@ -1750,7 +2380,11 @@ class ColonialHelperApp:
                 if self.raven_api.is_connected:
                     # Группируем доставки по build_id (как в SRV Survey)
                     raven_batches: dict = {}  # build_id -> {commodity: amount}
-                    for d in deliveries:
+                    for d in upload_deliveries:
+                        # Fleet Carrier cargo is sent through /api/fc/.../cargo,
+                        # not as a construction contribution.
+                        if d.get("source") == "carrier_delivery":
+                            continue
                         market_id = d.get("market_id")
                         if not market_id:
                             continue
@@ -1794,6 +2428,9 @@ class ColonialHelperApp:
                                 ),
                             )
             else:
+                # Оставляем события в очереди: следующий тик повторит отправку
+                # с тем же source_hash, а сервер безопасно устранит дубли.
+                self._pending_watcher_deliveries = upload_deliveries + self._pending_watcher_deliveries
                 msg = f"[Watcher] Upload error: {result.get('error')}"
                 self.root.after(0, lambda m=msg: self.log(m, "error"))
                 self.overlay_manager.log(f"Error: {result.get('error')}", "error")

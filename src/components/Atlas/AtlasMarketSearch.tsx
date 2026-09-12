@@ -77,14 +77,15 @@ interface MapMarketResult {
 }
 
 interface AtlasMarketSearchProps {
+  initialSystem?: string;
   /** Clears stale overlays when a new market scan starts. */
   onScanStart?: () => void;
   onScanUpdate?: (systems: MapSystem[]) => void;
   onMarketResults?: (results: MapMarketResult[]) => void;
 }
 
-export default function AtlasMarketSearch({ onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
-  const [refSystem, setRefSystem] = useState('Sol');
+export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
+  const [refSystem, setRefSystem] = useState(initialSystem || 'Sol');
   const [commodity, setCommodity] = useState('Steel');
   const [radius, setRadius] = useState(50);
   const [mode, setMode] = useState<'single' | 'build'>('single');

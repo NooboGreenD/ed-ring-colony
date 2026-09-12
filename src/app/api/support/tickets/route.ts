@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
         error.message,
       );
       return response(
-        { error: "Could not load support tickets" },
+        { error: "Could not load support tickets", details: error.message },
         { status: 500 },
       );
     }
@@ -182,7 +182,7 @@ export async function POST(req: NextRequest) {
         ticketError?.message,
       );
       return response(
-        { error: "Could not create support ticket" },
+        { error: "Could not create support ticket", details: ticketError?.message || "unknown database error" },
         { status: 500 },
       );
     }

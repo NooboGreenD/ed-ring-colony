@@ -1,4 +1,33 @@
-# Uploader — исправления (раунд 7)
+# Uploader — исправления (раунд 9, версия 2.0.0)
+
+## Raven Fleet Carrier: обработка HTTP 409
+
+Raven Colonial может вернуть Azure-ошибку `409 Conflict` с текстом
+`The specified entity already exists`, если тот же FC commodity/event уже
+был создан другим клиентом или предыдущей попыткой uploader. Такой ответ
+теперь считается идемпотентным успехом, а не ошибкой в логах. Дополнительно
+одинаковые MarketSell/MarketBuy journal events не отправляются повторно в
+рамках watcher-сессии.
+
+
+## Загрузка данных на ED Ring Colony
+
+Проверен серверный контракт `/api/logs/upload` и добавлен второй поток
+данных, который ранее оставался только локальным: `ColonisationConstructionDepot`.
+Uploader теперь отправляет структурированные snapshots стройплощадки в
+`colonisation_events` и `construction_depot_snapshots`, включая систему,
+MarketID, ConstructionID, прогресс, ресурсы и время. Это общий прогресс
+проекта, поэтому он не увеличивает личные leaderboard deliveries.
+
+Основные доставки по-прежнему отправляются только через серверный
+`persistImportedDeliveries`; внутренний `system_address` Raven Colonial в
+payload сайта не попадает. Повторные запросы deliveries и construction events
+обрабатываются серверными upsert/deduplication ключами.
+
+Добавлен подробный startup reconciliation progress bar: процент по байтам,
+файлы, объём и имя текущего журнала. Обновлены `README.md`,
+`uploader/README.md` и `CONTEXT.md`.
+
 
 По скриншоту: выбрано 808 файлов, прогресс-бар заполнен, статус —
 голое "Ошибка загрузки" без деталей. Два вывода из этого:

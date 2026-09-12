@@ -38,6 +38,45 @@ async function getSystemsInCube(systemName: string, size: number): Promise<EDSMS
   return Array.isArray(data) ? data : [];
 }
 
+async function getSystemsInCubeAtCoords(coords: EDSMCoords, size: number): Promise<EDSMSystem[]> {
+  const params = new URLSearchParams({ x: String(coords.x), y: String(coords.y), z: String(coords.z), size: String(Math.min(size, 200)), showCoordinates: '1' });
+  const res = await fetch(`https://www.edsm.net/api-v1/cube-systems?${params.toString()}`, { headers: { 'User-Agent': EDSM_UA } });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+async function getSystemsInRange(systemName: string, radius: number): Promise<EDSMSystem[]> {
+  if (radius <= SPHERE_MAX) return getSystemsInSphere(systemName, radius);
+  const center = await getSystemCoords(systemName);
+  if (!center) return [];
+  // EDSM limits a cube request to roughly 200 ly. Tile the requested volume
+  // instead of silently searching only the central ~100 ly.
+  const cubeSize = 200;
+  const step = 180;
+  const offsets: number[] = [];
+  for (let offset = -Math.ceil(radius / step) * step; offset <= Math.ceil(radius / step) * step; offset += step) offsets.push(offset);
+  const requests: Promise<EDSMSystem[]>[] = [];
+  for (const dx of offsets) for (const dy of offsets) for (const dz of offsets) {
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (distance <= radius + cubeSize * 0.9) {
+      requests.push(getSystemsInCubeAtCoords({ x: center.x + dx, y: center.y + dy, z: center.z + dz }, cubeSize));
+    }
+  }
+  const responses: EDSMSystem[][] = [];
+  for (let index = 0; index < requests.length; index += 8) {
+    responses.push(...await Promise.all(requests.slice(index, index + 8)));
+  }
+  const unique = new Map<string, EDSMSystem>();
+  for (const system of responses.flat()) {
+    if (system?.name && system.coords) {
+      const distance = dist3d(center, system.coords);
+      if (distance <= radius) unique.set(system.name.toLowerCase(), { ...system, distance });
+    }
+  }
+  return Array.from(unique.values());
+}
+
 async function getSystemCoords(systemName: string): Promise<EDSMCoords | null> {
   const res = await fetch(
     `https://www.edsm.net/api-v1/system?systemName=${encodeURIComponent(systemName)}&showCoordinates=1`,
@@ -63,27 +102,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'ref_system is required' }, { status: 400 });
     }
 
-    let rawSystems: EDSMSystem[] = [];
-
-    if (radius <= SPHERE_MAX) {
-      rawSystems = await getSystemsInSphere(ref_system, radius);
-    } else {
-      const refCoords = await getSystemCoords(ref_system);
-      if (!refCoords) {
-        return NextResponse.json(
-          { error: `Cannot find coordinates for ${ref_system}` },
-          { status: 404 }
-        );
-      }
-      const cubeSystems = await getSystemsInCube(ref_system, radius * 2);
-      rawSystems = cubeSystems
-        .filter((sys) => sys.coords)
-        .map((sys) => ({
-          ...sys,
-          distance: dist3d(refCoords, sys.coords!),
-        }))
-        .filter((sys) => (sys.distance || 0) <= radius);
-    }
+    const rawSystems = await getSystemsInRange(ref_system, radius);
 
     if (rawSystems.length === 0) {
       return NextResponse.json(

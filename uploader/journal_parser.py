@@ -50,8 +50,11 @@ def _event_key(ev: dict) -> str:
     ts = ev.get("timestamp", "")
     if event == "ColonisationContribution":
         market_id = ev.get("MarketID", 0)
-        total = sum(c.get("Amount", 0) for c in ev.get("Contributions", []))
-        return f"CC:{ts}:{market_id}:{total}"
+        contributions = ",".join(
+            f"{c.get('Name', c.get('Name_Localised', ''))}:{c.get('Amount', 0)}"
+            for c in ev.get("Contributions", [])
+        )
+        return f"CC:{ts}:{market_id}:{contributions}"
     elif event == "CargoDepot":
         return f"CD:{ts}:{ev.get('CargoType', '')}:{ev.get('Count', 0)}"
     return f"{event}:{ts}"
@@ -143,8 +146,35 @@ def parse_journal(
             sys_addr = ev.get("SystemAddress")
             if sys_addr:
                 current_system_address = int(sys_addr)
+            if ev.get("StationType"):
+                last_depot_state["_station_type"] = ev.get("StationType")
+        elif event == "Market":
+            last_depot_state["_station_type"] = ev.get("StationType", "")
+            last_depot_state["_market_id"] = ev.get("MarketID", 0)
+        elif event == "MarketSell":
+            # Продажа груза на Fleet Carrier — это фактическая отгрузка.
+            # Раньше MarketSell всегда подавлял следующий Cargo-снимок и
+            # поэтому не попадал ни в основной uploader, ни в Raven Colonial.
+            station_type = str(ev.get("StationType", "") or last_depot_state.get("_station_type", ""))
+            is_carrier = bool(ev.get("CarrierID")) or "carrier" in station_type.lower()
+            count = ev.get("Count", 0)
+            if current_system and is_carrier and count > 0:
+                commodity = ev.get("Type_Localised") or _normalize_name(ev.get("Type", "Unknown"))
+                deliveries.append({
+                    "system_name": current_system,
+                    "commodity": commodity,
+                    "amount": int(count),
+                    "delivered_at": ev.get("timestamp"),
+                    "market_id": ev.get("MarketID", 0),
+                    "system_address": current_system_address,
+                    "is_hub": None,
+                    "route_system_id": None,
+                    "source": "carrier_delivery",
+                    "source_hash": _source_hash("carrier", line, commodity, count),
+                })
+            skip_next_cargo = True
         elif event in (
-            "MarketBuy", "MarketSell", "BuyDrones", "SellDrones",
+            "MarketBuy", "BuyDrones", "SellDrones",
             "MiningRefined", "EjectCargo", "CollectCargo",
             "MissionCompleted", "Died", "Interdicted", "Interdiction",
             "TransferMicroResources", "TransferCargo", "CargoTransfer",
@@ -164,26 +194,25 @@ def parse_journal(
                 contributions = ev.get("Contributions", [])
                 for contrib in contributions:
                     name = contrib.get("Name_Localised") or _normalize_name(contrib.get("Name", "Unknown"))
-                    amount = contrib.get("Amount", 0)
+                    amount = int(contrib.get("Amount", 0) or 0)
                     if amount <= 0:
                         continue
-                    key = (market_id, name)
-                    prev_amount = last_contribution_state.get(key, 0)
-                    delta = amount - prev_amount
-                    if delta > 0:
-                        deliveries.append({
-                            "system_name": current_system,
-                            "commodity": name,
-                            "amount": delta,
-                            "delivered_at": ev.get("timestamp"),
-                            "market_id": market_id,
-                            "system_address": current_system_address,
-                            "is_hub": None,
-                            "route_system_id": None,
-                            "source": "colonisation_contribution",
-                            "source_hash": _source_hash("contribution", line, name, delta),
-                        })
-                    last_contribution_state[key] = amount
+                    # SrvSurvey confirms that ColonisationContribution.Amount
+                    # is the amount contributed by this event, not a cumulative
+                    # project total. Subtracting the previous event caused the
+                    # second and subsequent deliveries to disappear.
+                    deliveries.append({
+                        "system_name": current_system,
+                        "commodity": name,
+                        "amount": amount,
+                        "delivered_at": ev.get("timestamp"),
+                        "market_id": market_id,
+                        "system_address": current_system_address,
+                        "is_hub": None,
+                        "route_system_id": None,
+                        "source": "colonisation_contribution",
+                        "source_hash": _source_hash("contribution", line, name, amount),
+                    })
         elif event == "CargoDepot":
             # Wing mission delivery
             if current_system:
@@ -207,7 +236,11 @@ def parse_journal(
             # Обновляем snapshot для отображения прогресса, НО НЕ создаём доставки.
             # ProvidedAmount включает груз ВСЕХ игроков — diff считал бы чужой груз.
             if current_system:
-                new_depot_state = {}
+                new_depot_state = {
+                    key: last_depot_state[key]
+                    for key in ("_station_type", "_market_id")
+                    if key in last_depot_state
+                }
                 resources = ev.get("ResourcesRequired", [])
                 for res in resources:
                     name = res.get("Name_Localised") or _normalize_name(res.get("Name", ""))
@@ -244,6 +277,48 @@ def parse_journal(
             cargo_depot_items.clear()
 
     return cmdr_name, deliveries, last_cargo, last_depot_state, last_contribution_state, seen_events, event_counts
+
+
+def extract_construction_events(text: str) -> List[dict]:
+    """Извлечь публичные snapshots строительства для ED Ring Colony.
+
+    Это не доставки игрока: ConstructionDepot содержит общий прогресс
+    стройплощадки и может использоваться сайтом для графика проекта.
+    Дубликаты оставляются API, где они атомарно upsert-ятся по ключу события.
+    """
+    result = []
+    current_system = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            ev = _loads(line)
+        except _JSON_ERROR:
+            continue
+        event_name = ev.get("event")
+        if event_name in ("Location", "FSDJump", "Docked", "CarrierJump"):
+            if ev.get("StarSystem"):
+                current_system = ev.get("StarSystem")
+        if event_name != "ColonisationConstructionDepot":
+            continue
+        system = ev.get("StarSystem") or current_system
+        if not system:
+            continue
+        resources = ev.get("ResourcesRequired")
+        if not isinstance(resources, list):
+            resources = []
+        result.append({
+            "timestamp": ev.get("timestamp"),
+            "system_name": str(system),
+            "market_id": ev.get("MarketID"),
+            "construction_name": ev.get("ConstructionName") or ev.get("Name"),
+            "construction_id": ev.get("ConstructionID"),
+            "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
+            "resources_total": resources,
+            "raw_event": ev,
+        })
+    return result
 
 
 def parse_file(
