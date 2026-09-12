@@ -137,6 +137,9 @@ class ColonialHelperApp:
         # Конфиг
         self.config = {}
         self.config_path = Path.home() / ".colonial_helper.json"
+        # Отдельное хранилище credentials переживает обновление приложения и
+        # не может быть затёрто настройками HUD/overlay.
+        self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
         self.load_config()
 
         # Raven Colonial API
@@ -1140,6 +1143,22 @@ class ColonialHelperApp:
         else:
             self.config = {}
 
+        # Сначала используем legacy-конфиг, затем накладываем отдельное
+        # credentials-хранилище. Это даёт бесшовную миграцию для старых
+        # установок и сохраняет ключи при обновлении EXE.
+        try:
+            with open(self.credentials_path, "r", encoding="utf-8") as f:
+                credentials = json.load(f)
+            if isinstance(credentials, dict):
+                for key in (
+                    "token", "raven_colonial_key", "edsm_api_key",
+                    "edsm_commander_name", "inara_api_key", "inara_commander_name",
+                ):
+                    if credentials.get(key):
+                        self.config[key] = credentials[key]
+        except (OSError, ValueError):
+            pass
+
     def save_config(self):
         self.config["token"] = self.api.token
         self.config["journal_path"] = str(self.journal_path)
@@ -1169,6 +1188,22 @@ class ColonialHelperApp:
                 json.dump(self.config, f, indent=2)
         except Exception as e:
             self.log(f"Не удалось сохранить конфиг: {e}", "warn")
+        # Дублируем только credentials в отдельном state-файле. Он не зависит
+        # от формата общего config-файла и не затирается OverlayManager.
+        credentials = {
+            key: self.config.get(key, "")
+            for key in (
+                "token", "raven_colonial_key", "edsm_api_key",
+                "edsm_commander_name", "inara_api_key", "inara_commander_name",
+            )
+        }
+        try:
+            tmp = self.credentials_path.with_suffix(self.credentials_path.suffix + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(credentials, f, indent=2, ensure_ascii=False)
+            tmp.replace(self.credentials_path)
+        except Exception as e:
+            self.log(f"Не удалось сохранить credentials: {e}", "warn")
         # Сохраняем и настройки оверлея
         self.overlay_manager.save_settings()
 

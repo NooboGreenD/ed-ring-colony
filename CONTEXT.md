@@ -366,6 +366,10 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - `source_hash` and server upsert keys make retries idempotent.
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
+- API credentials are also mirrored to the local runtime-only file
+  `.colonial_helper_credentials.json` in the user's home directory. This
+  protects them from HUD settings saves and EXE upgrades; no credentials belong
+  in source control.
 
 ### 8.7 Pilot infographic tab
 - The uploader has a `Пилот` tab with local, live-updating cards.

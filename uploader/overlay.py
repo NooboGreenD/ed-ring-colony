@@ -1555,10 +1555,34 @@ def load_overlay_settings(config_path: Path) -> dict:
 
 
 def save_overlay_settings(config_path: Path, settings: dict):
+    """Сохранить только HUD-настройки, не затирая API credentials.
+
+    До версии 2.0 overlay сохранял весь словарь settings обратно в общий
+    config-файл. При этом в него иногда попадали только параметры overlay,
+    и ключи Raven/EDSM/Inara исчезали при закрытии или обновлении программы.
+    Общий файл оставляем для совместимости, но делаем merge только известных
+    HUD-ключей.
+    """
     try:
         import json
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
+        existing = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    existing = loaded
+            except (OSError, ValueError):
+                existing = {}
+        overlay_keys = set(DEFAULT_SETTINGS)
+        overlay_keys.update(key for key in settings if key.startswith((
+            "route_", "status_", "ship_", "cargo_", "session_", "events_",
+        )))
+        existing.update({key: settings[key] for key in overlay_keys if key in settings})
+        tmp = config_path.with_suffix(config_path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+        tmp.replace(config_path)
     except Exception:
         pass
