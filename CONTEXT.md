@@ -1,8 +1,8 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-12.
-> Uploader release: 2.2.1.
+> Last updated: 2026-09-13.
+> Uploader release: 2.3.0.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -348,7 +348,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 
 ### 8.6 Colonial Helper uploader 2.2
 - Source: `uploader/colonial_helper.py`
-- Version: `2.2.1`
+- Version: `2.3.0`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -393,8 +393,20 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - HUD layout in `uploader/overlay.py`: blocks snap to edges/corners of a layout
   area (screen, or the monitor with the game window when "attach to game" is
   on) via `compute_anchored_position()`, with a configurable margin and
-  clamping. Named layout profiles (positions, sizes, visibility, alpha, font)
-  are stored in `config.json` under `profiles`.
+  clamping. Named layout profiles (positions, sizes, visibility, alpha, font,
+  per-block behaviour, hotkeys) are stored in `config.json` under `profiles`.
+- HUD block management (2.3.0): each of the seven blocks (`route`, `status`,
+  `ship`, `cargo`, `session`, `events`, `exobio`) has its own visibility,
+  position lock, click-through (`WS_EX_TRANSPARENT` via ctypes), alpha, font
+  size, size preset (XS/S/M/L/XL), auto-show rule and hotkey. Everything is
+  pushed into the **live** windows (`apply_block_style()`), so changing the
+  font, alpha or profile never recreates the overlay. Behaviour rules
+  (`auto_rule_matches()`) and the idle timeout decide visibility together with
+  the user's checkboxes in `evaluate_block_visibility()`.
+- Global hotkeys live in `uploader/hotkeys.py`: `RegisterHotKey` in a dedicated
+  message-loop thread (Tk bindings only fire while the app window is focused,
+  which is useless in game). Callbacks are marshalled back through
+  `master.after(0, ...)`; outside Windows the manager stays inert.
 - Exobiology lives in `uploader/exobiology.py`: journal-only tracking (Scan,
   SAAScanComplete, FSSBodySignals, ScanOrganic, CodexEntry) plus a deliberately
   simplified **genus-level** prediction model (`GENUS_RULES`). Precise
@@ -426,11 +438,20 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   when extraction rules change.
 
 ### 8.7 Pilot infographic tab
-- The uploader has a `Пилот` tab with local, live-updating cards.
+- The uploader has a `Пилот` tab with a **reworked infographic** (2.3.0): a KPI
+  row (session tons, deliveries, cargo, systems) plus a responsive grid of six
+  tiles — session dynamics with a Canvas sparkline, ship state bars, route,
+  top systems by tonnage, status/connections, journals/economy.
+- Layout is adaptive: column count is derived from window width (1-3, up to 4 in
+  compact mode) and rebuilt on a debounced `<Configure>`; compact mode persists
+  as `pilot_compact` in the config. Charts are drawn on plain `tk.Canvas`
+  (no matplotlib), series are sampled every 2 s into deques of 180 points.
 - It displays commander/connection state, current system and ship, route
   progress, hull/shields/fuel/power, modules, cargo, balance/rebuy/legal state,
-  session delivery totals, visited systems and last journal event.
-- Refresh runs on the Tk main loop every second and never performs network
+  session delivery totals, visited systems, per-system tonnage and last journal
+  event.
+- Refresh runs on the Tk main loop every second (a single `after()` chain, so
+  manual refreshes cannot spawn parallel timers) and never performs network
   requests. It is deliberately tolerant of incomplete state while the first
   Journal reconciliation is running.
 

@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 import traceback
 from typing import Optional, List
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # -- Проверка tkinter --
@@ -81,7 +81,10 @@ from journal_parser import (
     PARSER_VERSION,
 )
 from route_tracker import RouteTracker
-from overlay import OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS
+from overlay import (
+    OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
+    SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
+)
 from exobiology import ExobiologyTracker
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
@@ -90,7 +93,7 @@ from event_dispatch import ThirdPartyDispatcher
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -133,6 +136,7 @@ class ColonialHelperApp:
         self._session_route_cargo_tons = 0.0  # тонны только в системы маршрута
         self._session_construction_cargo_tons = 0.0  # ColonisationContribution за сессию
         self._session_systems_visited = set()
+        self._session_tons_by_system: dict = {}  # тонны по системам (для инфографики)
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
         self.exobiology = ExobiologyTracker()  # тела, биосигналы, образцы (только свой журнал)
@@ -527,108 +531,11 @@ class ColonialHelperApp:
         self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
 
     # ============================================================
-    #  Вкладка: Инфографика пилота
+    #  Инфографика пилота: крупные плитки, спарклайны, компактный режим
     # ============================================================
-    def _pilot_card(self, parent, title: str, row: int, column: int):
-        card = tb.LabelFrame(parent, text=title, padding=12, bootstyle="secondary")
-        card.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
-        return card
-
-    def _pilot_value(self, parent, key: str, text: str = "—", color=COLOR_TEXT):
-        label = tb.Label(parent, text=text, font=("Segoe UI", 14, "bold"), foreground=color)
-        label.pack(anchor=W, pady=(2, 5))
-        self._pilot_values[key] = label
-        return label
-
-    def _pilot_metric(self, parent, key: str, title: str, color=COLOR_CYAN):
-        row = tb.Frame(parent)
-        row.pack(fill=X, pady=3)
-        tb.Label(row, text=title, foreground=COLOR_MUTED, width=23, anchor=W).pack(side=LEFT)
-        value = tb.Label(row, text="—", font=("Consolas", 10, "bold"), foreground=color, anchor=E)
-        value.pack(side=RIGHT)
-        self._pilot_values[key] = value
-
-    def _pilot_bar(self, parent, key: str, title: str, color="info"):
-        tb.Label(parent, text=title, foreground=COLOR_MUTED).pack(anchor=W, pady=(5, 1))
-        bar = tb.Progressbar(parent, mode="determinate", maximum=100, bootstyle=color)
-        bar.pack(fill=X, pady=(0, 4))
-        self._pilot_bars[key] = bar
-
-    def _build_tab_pilot(self):
-        self._pilot_values = {}
-        self._pilot_bars = {}
-        viewport = tb.Frame(self.tab_pilot)
-        viewport.pack(fill=BOTH, expand=True)
-
-        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
-        header.pack(fill=X)
-        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"), foreground=COLOR_ORANGE).pack(side=LEFT)
-        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic, bootstyle="info-outline", width=12).pack(side=RIGHT)
-        self._pilot_values["updated"] = tb.Label(header, text="", foreground=COLOR_MUTED)
-        self._pilot_values["updated"].pack(side=RIGHT, padx=(0, 12))
-
-        subtitle = tb.Label(
-            viewport,
-            text="Живые данные из Journal, Ship Tracker, маршрута и текущей сессии. Сетевые запросы для инфографики не выполняются.",
-            foreground=COLOR_MUTED,
-            wraplength=850,
-        )
-        subtitle.pack(anchor=W, padx=15, pady=(0, 8))
-
-        grid = tb.Frame(viewport, padding=(9, 0, 9, 9))
-        grid.pack(fill=BOTH, expand=True)
-        for column in range(2):
-            grid.columnconfigure(column, weight=1, uniform="pilot")
-        for row in range(3):
-            grid.rowconfigure(row, weight=1)
-
-        identity = self._pilot_card(grid, "ПИЛОТ И ПОДКЛЮЧЕНИЯ", 0, 0)
-        self._pilot_value(identity, "commander", "CMDR не определён", COLOR_ORANGE)
-        self._pilot_metric(identity, "system", "Система")
-        self._pilot_metric(identity, "ship", "Корабль")
-        self._pilot_metric(identity, "watcher", "Watcher")
-        self._pilot_metric(identity, "services", "Сервисы")
-
-        route = self._pilot_card(grid, "МАРШРУТ", 0, 1)
-        self._pilot_value(route, "route_status", "Маршрут не загружен", COLOR_CYAN)
-        self._pilot_metric(route, "route_current", "Текущая")
-        self._pilot_metric(route, "route_next", "Следующая")
-        self._pilot_metric(route, "route_remaining", "Осталось")
-        self._pilot_bar(route, "route_progress", "Прогресс маршрута", "info")
-
-        ship = self._pilot_card(grid, "СОСТОЯНИЕ КОРАБЛЯ", 1, 0)
-        self._pilot_metric(ship, "hull", "Корпус")
-        self._pilot_metric(ship, "shield", "Щиты")
-        self._pilot_metric(ship, "fuel", "Топливо")
-        self._pilot_metric(ship, "power", "Энергия")
-        self._pilot_metric(ship, "modules", "Модули")
-        self._pilot_bar(ship, "hull_bar", "Корпус", "success")
-        self._pilot_bar(ship, "fuel_bar", "Топливо", "warning")
-
-        cargo = self._pilot_card(grid, "ГРУЗ И ЭКОНОМИКА", 1, 1)
-        self._pilot_value(cargo, "cargo", "0 / 0 t", COLOR_GREEN)
-        self._pilot_bar(cargo, "cargo_bar", "Заполнение трюма", "warning")
-        self._pilot_metric(cargo, "balance", "Баланс")
-        self._pilot_metric(cargo, "rebuy", "Страховка")
-        self._pilot_metric(cargo, "legal", "Правовой статус")
-        self._pilot_metric(cargo, "last_delivery", "Последняя доставка")
-
-        session = self._pilot_card(grid, "ТЕКУЩАЯ СЕССИЯ", 2, 0)
-        self._pilot_value(session, "session_tons", "0 t", COLOR_GREEN)
-        self._pilot_metric(session, "session_deliveries", "Доставки")
-        self._pilot_metric(session, "session_route", "На маршруте")
-        self._pilot_metric(session, "session_construction", "На стройки")
-        self._pilot_metric(session, "session_systems", "Системы посещены")
-
-        activity = self._pilot_card(grid, "АКТИВНОСТЬ И ДАННЫЕ", 2, 1)
-        self._pilot_value(activity, "event_summary", "Ожидание событий", COLOR_CYAN)
-        self._pilot_metric(activity, "journal_state", "Журналы")
-        self._pilot_metric(activity, "raven", "Raven Colonial")
-        self._pilot_metric(activity, "edsm", "EDSM")
-        self._pilot_metric(activity, "inara", "Inara")
-        self._pilot_metric(activity, "last_event", "Последнее событие")
-
-        self._refresh_pilot_infographic()
+    # Сколько точек держим в спарклайнах (при шаге 2 с — около 6 минут).
+    PILOT_SERIES_LIMIT = 180
+    PILOT_SAMPLE_SECONDS = 2.0
 
     @staticmethod
     def _pilot_percent(value) -> float:
@@ -637,76 +544,463 @@ class ColonialHelperApp:
         except (TypeError, ValueError):
             return 0.0
 
+    def _pilot_init_state(self):
+        self._pilot_compact = bool(self.config.get("pilot_compact", False))
+        self._pilot_series = {
+            "tons": deque(maxlen=self.PILOT_SERIES_LIMIT),
+            "cargo": deque(maxlen=self.PILOT_SERIES_LIMIT),
+            "hull": deque(maxlen=self.PILOT_SERIES_LIMIT),
+        }
+        self._pilot_tiles = {}
+        self._pilot_bars = {}
+        self._pilot_canvases = {}
+        self._pilot_columns = 0
+        self._pilot_last_sample = 0.0
+        self._pilot_resize_job = None
+        self._pilot_refresh_job = None
+        self._pilot_journal_cache = ("", 0.0)
+
+    def _build_tab_pilot(self):
+        self._pilot_init_state()
+        viewport = tb.Frame(self.tab_pilot)
+        viewport.pack(fill=BOTH, expand=True)
+
+        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
+        header.pack(fill=X)
+        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"),
+                 foreground=COLOR_ORANGE).pack(side=LEFT)
+        self._pilot_compact_var = tk.BooleanVar(value=self._pilot_compact)
+        tb.Checkbutton(header, text="Компактный режим", variable=self._pilot_compact_var,
+                       command=self._on_pilot_compact_changed).pack(side=RIGHT)
+        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic,
+                  bootstyle="info-outline", width=12).pack(side=RIGHT, padx=(0, 12))
+        self._pilot_updated_label = tb.Label(header, text="", foreground=COLOR_MUTED)
+        self._pilot_updated_label.pack(side=RIGHT, padx=(0, 12))
+
+        tb.Label(
+            viewport,
+            text="Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
+                 "Сетевых запросов инфографика не делает.",
+            foreground=COLOR_MUTED,
+            wraplength=900,
+        ).pack(anchor=W, padx=15, pady=(0, 8))
+
+        self._pilot_body = tb.Frame(viewport, padding=(9, 0, 9, 9))
+        self._pilot_body.pack(fill=BOTH, expand=True)
+        # Раскладка пересобирается при изменении ширины окна: на узком окне
+        # три колонки превращаются в две и в одну, а не «сплющиваются».
+        self.tab_pilot.bind("<Configure>", self._on_pilot_resize)
+
+        self._rebuild_pilot_layout()
+        self._refresh_pilot_infographic()
+
+    # -- раскладка ---------------------------------------------------------
+    def _on_pilot_compact_changed(self):
+        self._pilot_compact = bool(self._pilot_compact_var.get())
+        self.config["pilot_compact"] = self._pilot_compact
+        self.save_config()
+        self._rebuild_pilot_layout()
+        self._refresh_pilot_infographic()
+
+    def _on_pilot_resize(self, _event=None):
+        if self._pilot_resize_job:
+            try:
+                self.root.after_cancel(self._pilot_resize_job)
+            except Exception:
+                pass
+        self._pilot_resize_job = self.root.after(250, self._rebuild_pilot_layout_if_needed)
+
+    def _rebuild_pilot_layout_if_needed(self):
+        self._pilot_resize_job = None
+        if self._pilot_column_count() != self._pilot_columns:
+            self._rebuild_pilot_layout()
+            self._refresh_pilot_infographic()
+
+    def _pilot_window_width(self) -> int:
+        try:
+            width = int(self.root.winfo_width())
+        except Exception:
+            width = 0
+        return width if width > 0 else 1100
+
+    def _pilot_column_count(self) -> int:
+        width = self._pilot_window_width()
+        if self._pilot_compact:
+            if width >= 1180:
+                return 4
+            if width >= 880:
+                return 3
+            return 2 if width >= 620 else 1
+        if width >= 1300:
+            return 3
+        if width >= 840:
+            return 2
+        return 1
+
+    def _rebuild_pilot_layout(self):
+        for child in list(self._pilot_body.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        self._pilot_tiles.clear()
+        self._pilot_bars.clear()
+        self._pilot_canvases.clear()
+
+        compact = self._pilot_compact
+        columns = self._pilot_column_count()
+        self._pilot_columns = columns
+        pad = (6, 4) if compact else (10, 8)
+
+        # 1. Крупные показатели — вся ширина окна
+        kpi_row = tb.Frame(self._pilot_body)
+        kpi_row.pack(fill=X, pady=(0, 8))
+        for index in range(4):
+            kpi_row.columnconfigure(index, weight=1, uniform="pilot_kpi")
+        self._pilot_kpi(kpi_row, "kpi_tons", "ТОННЫ ЗА СЕССИЮ", COLOR_GREEN, index=0, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_deliveries", "ДОСТАВКИ", COLOR_CYAN, index=1, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_cargo", "ГРУЗ", COLOR_ORANGE, index=2, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_systems", "СИСТЕМЫ", COLOR_CYAN, index=3, pad=pad)
+
+        # 2. Плитки с деталями — сетка, число колонок зависит от ширины
+        grid = tb.Frame(self._pilot_body)
+        grid.pack(fill=BOTH, expand=True)
+        for index in range(columns):
+            grid.columnconfigure(index, weight=1, uniform="pilot_grid")
+
+        tiles = [
+            ("session", self._pilot_tile_session),
+            ("ship", self._pilot_tile_ship),
+            ("route", self._pilot_tile_route),
+            ("systems", self._pilot_tile_systems),
+            ("status", self._pilot_tile_status),
+            ("journal", self._pilot_tile_journal),
+        ]
+        for index, (_key, builder) in enumerate(tiles):
+            row, column = divmod(index, columns)
+            grid.rowconfigure(row, weight=1)
+            builder(grid, row=row, column=column, pad=pad)
+
+    # -- строители плиток --------------------------------------------------
+    def _pilot_card(self, parent, title, row=None, column=None, pad=(10, 8), columnspan=1):
+        """Рамка плитки с заголовком; возвращает внутренний контейнер."""
+        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
+        if row is None:
+            card.pack(fill=BOTH, expand=True, padx=6, pady=6)
+        else:
+            card.grid(row=row, column=column, columnspan=columnspan,
+                      sticky="nsew", padx=6, pady=6)
+        title_font = ("Consolas", 9 if self._pilot_compact else 10, "bold")
+        tb.Label(card, text=title, font=title_font, foreground=COLOR_ORANGE).pack(anchor=W)
+        body = tb.Frame(card)
+        body.pack(fill=BOTH, expand=True, pady=(4, 0))
+        return body
+
+    def _pilot_kpi(self, parent, key, title, color, index=0, pad=(10, 8)):
+        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
+        card.grid(row=0, column=index, sticky="nsew", padx=6, pady=2)
+        tb.Label(card, text=title, font=("Consolas", 9, "bold"),
+                 foreground=COLOR_MUTED).pack(anchor=W)
+        value_font = ("Consolas", 20 if self._pilot_compact else 28, "bold")
+        self._pilot_tiles[key] = tb.Label(card, text="—", font=value_font, foreground=color)
+        self._pilot_tiles[key].pack(anchor=W)
+        self._pilot_tiles[f"{key}_sub"] = tb.Label(
+            card, text="", font=("Consolas", 9), foreground=COLOR_MUTED, wraplength=260)
+        self._pilot_tiles[f"{key}_sub"].pack(anchor=W)
+
+    def _pilot_row(self, parent, key, label, value="—", color=None):
+        """Строка «подпись … значение» внутри плитки."""
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=1)
+        tb.Label(row, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(side=LEFT)
+        value_label = tb.Label(
+            row, text=value, font=("Consolas", 10, "bold"),
+            foreground=color or COLOR_CYAN)
+        value_label.pack(side=RIGHT)
+        self._pilot_tiles[key] = value_label
+        return value_label
+
+    def _pilot_bar(self, parent, key, label):
+        frame = tb.Frame(parent)
+        frame.pack(fill=X, pady=(4, 0))
+        tb.Label(frame, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(anchor=W)
+        bar = tb.Progressbar(frame, mode="determinate", length=100)
+        bar.pack(fill=X)
+        self._pilot_bars[key] = bar
+
+    def _pilot_canvas(self, parent, key, height=70):
+        canvas = tk.Canvas(parent, height=height, highlightthickness=0, borderwidth=0)
+        canvas.pack(fill=X, pady=(4, 2))
+        self._pilot_canvases[key] = canvas
+        return canvas
+
+    def _pilot_tile_session(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ДИНАМИКА СЕССИИ", row=row, column=column, pad=pad)
+        self._pilot_canvas(body, "spark_tons", height=64)
+        self._pilot_row(body, "session_rate", "Темп")
+        self._pilot_row(body, "session_construction", "На стройки")
+        self._pilot_row(body, "session_route", "На маршруте")
+
+    def _pilot_tile_ship(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "КОРАБЛЬ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "ship", "Корабль")
+        self._pilot_bar(body, "hull_bar", "Корпус")
+        self._pilot_bar(body, "shield_bar", "Щиты")
+        self._pilot_bar(body, "fuel_bar", "Топливо")
+        self._pilot_bar(body, "power_bar", "Энергия")
+        self._pilot_row(body, "modules", "Модули")
+
+    def _pilot_tile_route(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "МАРШРУТ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "route_status", "Пройдено")
+        self._pilot_bar(body, "route_progress", "Прогресс")
+        self._pilot_row(body, "route_current", "Текущая")
+        self._pilot_row(body, "route_next", "Следующая")
+        self._pilot_row(body, "route_remaining", "Осталось")
+        self._pilot_row(body, "last_delivery", "Последняя доставка")
+
+    def _pilot_tile_systems(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ТОП СИСТЕМ ПО ТОННАМ", row=row, column=column, pad=pad)
+        self._pilot_canvas(body, "bars_systems", height=110)
+
+    def _pilot_tile_status(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "СТАТУС И ПОДКЛЮЧЕНИЯ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "commander", "CMDR")
+        self._pilot_row(body, "system", "Система")
+        self._pilot_row(body, "game", "Игра")
+        self._pilot_row(body, "watcher", "Watcher")
+        self._pilot_row(body, "services", "Сервисы")
+        self._pilot_row(body, "exobio", "Экзобиология")
+
+    def _pilot_tile_journal(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ЖУРНАЛЫ И ЭКОНОМИКА", row=row, column=column, pad=pad)
+        self._pilot_row(body, "balance", "Баланс")
+        self._pilot_row(body, "rebuy", "Страховка")
+        self._pilot_row(body, "legal", "Правовой статус")
+        self._pilot_row(body, "journal_state", "Журналы")
+        self._pilot_row(body, "event_summary", "События")
+        self._pilot_row(body, "last_event", "Последнее", color=COLOR_MUTED)
+
+    # -- отрисовка графиков ------------------------------------------------
+    def _pilot_draw_sparkline(self, canvas, values, color, label=""):
+        """Спарклайн: линия с заливкой. Без внешних библиотек — чистый Canvas."""
+        try:
+            canvas.delete("all")
+            width = int(canvas.winfo_width()) or 240
+            height = int(canvas.winfo_height()) or 60
+            if width < 10 or height < 10:
+                return
+            points = [float(v) for v in values]
+            if len(points) < 2:
+                canvas.create_text(6, height // 2, anchor="w", fill=COLOR_MUTED,
+                                   text=label or "накопление данных…", font=("Consolas", 8))
+                return
+            low, high = min(points), max(points)
+            if high - low < 1e-9:
+                low, high = low - 1.0, high + 1.0
+            pad_y = 4
+            usable = max(1, height - pad_y * 2)
+            step_x = width / float(len(points) - 1)
+            coords = []
+            for index, value in enumerate(points):
+                x = index * step_x
+                y = pad_y + (1.0 - (value - low) / (high - low)) * usable
+                coords.extend((x, y))
+            canvas.create_polygon([coords[0], height] + coords + [coords[-2], height],
+                                  fill=color, stipple="gray50", outline="")
+            canvas.create_line(*coords, fill=color, width=2, smooth=True)
+            canvas.create_text(4, 10, anchor="w", fill=color, font=("Consolas", 9, "bold"),
+                               text=f"{points[-1]:.0f}")
+        except Exception:
+            pass
+
+    def _pilot_draw_bars(self, canvas, rows, color):
+        """Горизонтальные полосы: [(подпись, значение), ...]."""
+        try:
+            canvas.delete("all")
+            width = int(canvas.winfo_width()) or 240
+            height = int(canvas.winfo_height()) or 100
+            if width < 10 or height < 10 or not rows:
+                canvas.create_text(6, height // 2 or 10, anchor="w", fill=COLOR_MUTED,
+                                   text="данных пока нет", font=("Consolas", 8))
+                return
+            maximum = max(value for _label, value in rows) or 1
+            row_height = max(14, min(26, height // max(1, len(rows))))
+            for index, (label, value) in enumerate(rows[:8]):
+                top = index * row_height + 2
+                bar_width = int((width - 90) * (value / maximum))
+                canvas.create_rectangle(0, top, max(2, bar_width), top + row_height - 6,
+                                        fill=color, outline="")
+                canvas.create_text(2, top + row_height - 4, anchor="sw", fill=COLOR_MUTED,
+                                   font=("Consolas", 8), text=str(label)[:28])
+                canvas.create_text(width - 2, top + row_height - 4, anchor="se",
+                                   fill=COLOR_TEXT, font=("Consolas", 8, "bold"),
+                                   text=f"{value:.0f} t")
+        except Exception:
+            return
+
+    # -- обновление --------------------------------------------------------
+    def _pilot_sample_series(self, state: dict):
+        """Снять точку для спарклайнов (не чаще раза в PILOT_SAMPLE_SECONDS)."""
+        now = time.monotonic()
+        if now - self._pilot_last_sample < self.PILOT_SAMPLE_SECONDS:
+            return
+        self._pilot_last_sample = now
+        self._pilot_series["tons"].append(float(self._session_cargo_tons or 0))
+        self._pilot_series["cargo"].append(float(state.get("cargo_count", 0) or 0))
+        self._pilot_series["hull"].append(self._pilot_percent(state.get("hull_percent")))
+
+    def _pilot_rate(self) -> float:
+        """Тонн в час по последним точкам серии."""
+        series = self._pilot_series["tons"]
+        if len(series) < 2:
+            return 0.0
+        delta = float(series[-1]) - float(series[0])
+        minutes = max(1.0, (len(series) - 1) * self.PILOT_SAMPLE_SECONDS / 60.0)
+        return delta / minutes * 60.0
+
     def _refresh_pilot_infographic(self):
         """Обновить инфографику только локальным состоянием приложения."""
-        if not hasattr(self, "_pilot_values"):
+        if not hasattr(self, "_pilot_tiles"):
             return
         try:
             state = self.ship.get_state_dict()
             route_total = len(self.route.systems)
             visited = self.route.visited_count
-            route_percent = (visited / route_total * 100) if route_total else 0
+            route_percent = (visited / route_total * 100) if route_total else 0.0
             current = self.ship.state.current_system or "—"
             ship_name = state.get("ship_type") or "Корабль не определён"
-            services = " / ".join(name for name, enabled in (
-                ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
-                ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
-            ) if enabled) or "нет подключений"
+            services = " / ".join(
+                name for name, enabled in (
+                    ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
+                    ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
+                ) if enabled
+            ) or "нет подключений"
             cargo = float(state.get("cargo_count", 0) or 0)
             capacity = float(state.get("cargo_capacity", 0) or 0)
-            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0
+            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0.0
             damaged = int(state.get("damaged_count", 0) or 0)
             total_modules = len(state.get("modules", []))
             event_count = self._session_event_count
+            game_state = self.overlay_manager.game_state()
+            exobio = self.exobiology.current_body_state() if hasattr(self, "exobiology") else None
 
-            values = {
-                "commander": self.api.display_name if self.api.cmdr_name or self.api.email else (self._watcher_cmdr_name or "CMDR не определён"),
-                "system": current,
-                "ship": ship_name,
-                "watcher": "АКТИВЕН" if self.watcher_active else "остановлен",
-                "services": services,
-                "route_status": f"{visited}/{route_total} систем" if route_total else "Маршрут не загружен",
-                "route_current": self._get_overlay_data().get("current", "—"),
-                "route_next": self._get_overlay_data().get("next", "—"),
-                "route_remaining": str(max(0, route_total - visited)),
-                "hull": f"{self._pilot_percent(state.get('hull_percent')):.0f}%",
-                "shield": f"{self._pilot_percent(state.get('shield_percent')):.0f}%",
-                "fuel": f"{state.get('fuel_level', 0):.1f} / {state.get('fuel_capacity', 0):.1f} t",
-                "power": f"{self._pilot_percent(state.get('power_percent')):.0f}%",
-                "modules": f"{total_modules - damaged}/{total_modules} исправны",
-                "cargo": f"{cargo:.0f} / {capacity:.0f} t",
-                "balance": f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "),
-                "rebuy": f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "),
-                "legal": state.get("legal_state") or "неизвестно",
-                "last_delivery": self._last_delivery_system or "—",
-                "session_tons": f"{self._session_cargo_tons:.0f} t",
-                "session_deliveries": str(self._session_deliveries),
-                "session_route": f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t",
-                "session_construction": f"{self._session_construction_cargo_tons:.0f} t",
-                "session_systems": str(len(self._session_systems_visited)),
-                "event_summary": f"{event_count} событий" if event_count else "Ожидание событий",
-                "journal_state": "watcher читает" if self.watcher_active else "ожидание",
-                "raven": "подключён" if self.raven_api.is_connected else "выключен",
-                "edsm": "подключён" if self.edsm_api.enabled else "выключен",
-                "inara": "подключена" if self.inara_api.enabled else "выключена",
-                "last_event": self._last_session_event or "—",
-            }
-            for key, text in values.items():
-                if key in self._pilot_values:
-                    self._pilot_values[key].configure(text=text)
+            self._pilot_sample_series(state)
+
+            # --- крупные показатели ---
+            self._pilot_set("kpi_tons", f"{self._session_cargo_tons:.0f} t")
+            self._pilot_set("kpi_tons_sub", f"на маршрут {self._session_route_cargo_tons:.0f} t · на стройки {self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("kpi_deliveries", str(self._session_deliveries))
+            self._pilot_set("kpi_deliveries_sub", f"событий в сессии: {event_count}")
+            self._pilot_set("kpi_cargo", f"{cargo:.0f} / {capacity:.0f} t")
+            self._pilot_set("kpi_cargo_sub", f"трюм заполнен на {cargo_percent:.0f}%")
+            self._pilot_set("kpi_systems", str(len(self._session_systems_visited)))
+            self._pilot_set("kpi_systems_sub", f"маршрут: {visited}/{route_total}" if route_total else "маршрут не загружен")
+
+            # --- динамика ---
+            self._pilot_set("session_rate", f"{self._pilot_rate():.0f} t/час")
+            self._pilot_set("session_construction", f"{self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("session_route", f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t")
+
+            # --- корабль ---
+            self._pilot_set("ship", ship_name)
+            self._pilot_set("modules", f"{total_modules - damaged}/{total_modules} исправны")
             for key, value in {
-                "route_progress": route_percent, "hull_bar": self._pilot_percent(state.get("hull_percent")),
-                "fuel_bar": self._pilot_percent(state.get("fuel_percent")), "cargo_bar": cargo_percent,
+                "hull_bar": self._pilot_percent(state.get("hull_percent")),
+                "shield_bar": self._pilot_percent(state.get("shield_percent")),
+                "fuel_bar": self._pilot_percent(state.get("fuel_percent")),
+                "power_bar": self._pilot_percent(state.get("power_percent")),
             }.items():
                 if key in self._pilot_bars:
                     self._pilot_bars[key].configure(value=value)
-            self._pilot_values["updated"].configure(text=datetime.now().strftime("%H:%M:%S"))
+
+            # --- маршрут ---
+            self._pilot_set("route_status", f"{visited}/{route_total} систем" if route_total else "не загружен")
+            if "route_progress" in self._pilot_bars:
+                self._pilot_bars["route_progress"].configure(value=route_percent)
+            overlay_data = self._get_overlay_data()
+            self._pilot_set("route_current", str(overlay_data.get("current", "—")))
+            self._pilot_set("route_next", str(overlay_data.get("next", "—")))
+            self._pilot_set("route_remaining", str(max(0, route_total - visited)))
+            self._pilot_set("last_delivery", self._last_delivery_system or "—")
+
+            # --- статус и подключения ---
+            self._pilot_set("commander", self._current_cmdr_name() or "CMDR не определён")
+            self._pilot_set("system", current)
+            game_text = "запущена (в фокусе)" if game_state.focused else ("запущена" if game_state.running else "не запущена")
+            if game_state.error:
+                game_text = f"нет данных ({game_state.error})"
+            self._pilot_set("game", game_text)
+            self._pilot_set("watcher", "АКТИВЕН" if self.watcher_active else "остановлен")
+            self._pilot_set("services", services)
+            if exobio:
+                genera = ", ".join(row["genus"] for row in (exobio.get("predictions") or [])[:3])
+                exobio_text = f"{exobio.get('body')}: {exobio.get('bio_signals', 0)} сигналов"
+                if genera:
+                    exobio_text += f" · {genera}"
+            else:
+                exobio_text = "тело не отсканировано"
+            self._pilot_set("exobio", exobio_text)
+
+            # --- журналы и экономика ---
+            self._pilot_set("balance", f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "))
+            self._pilot_set("rebuy", f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "))
+            self._pilot_set("legal", state.get("legal_state") or "неизвестно")
+            self._pilot_set("journal_state", self._pilot_journal_state())
+            self._pilot_set("event_summary", f"{event_count} событий" if event_count else "ожидание событий")
+            self._pilot_set("last_event", (self._last_session_event or "—")[:48])
+
+            # --- графики ---
+            if "spark_tons" in self._pilot_canvases:
+                self._pilot_draw_sparkline(self._pilot_canvases["spark_tons"],
+                                           self._pilot_series["tons"], COLOR_GREEN,
+                                           "журнал пока пуст")
+            if "bars_systems" in self._pilot_canvases:
+                rows = sorted(getattr(self, "_session_tons_by_system", {}).items(),
+                              key=lambda item: item[1], reverse=True)
+                self._pilot_draw_bars(self._pilot_canvases["bars_systems"], rows, COLOR_CYAN)
+
+            self._pilot_updated_label.configure(text=datetime.now().strftime("%H:%M:%S"))
         except Exception:
             # Инфографика не должна мешать watcher/UI при неполном состоянии
             # трекера во время самого первого чтения Journal.
             pass
-        if self.root.winfo_exists():
-            self.root.after(1000, self._refresh_pilot_infographic)
+        # Обновление идёт ровно одной цепочкой: кнопка «Обновить» и смена
+        # раскладки не должны плодить параллельные таймеры.
+        if self._pilot_refresh_job is None and self.root.winfo_exists():
+            self._pilot_refresh_job = self.root.after(1000, self._pilot_tick)
+
+    def _pilot_tick(self):
+        """Плановый тик автообновления (освобождает слот таймера)."""
+        self._pilot_refresh_job = None
+        self._refresh_pilot_infographic()
+
+    def _pilot_set(self, key: str, text: str):
+        label = self._pilot_tiles.get(key)
+        if label is not None:
+            try:
+                label.configure(text=text)
+            except Exception:
+                pass
+
+    def _pilot_journal_count(self) -> int:
+        """Сколько файлов журналов в папке (сканируем не чаще раза в 15 с)."""
+        text, stamp = self._pilot_journal_cache
+        if text and time.monotonic() - stamp < 15:
+            return int(text)
+        try:
+            files = list(self.journal_path.glob("Journal.*.log")) if self.journal_path else []
+        except OSError:
+            files = []
+        self._pilot_journal_cache = (str(len(files)), time.monotonic())
+        return len(files)
+
+    def _pilot_journal_state(self) -> str:
+        """Короткая сводка по журналам: сколько файлов и отслеживается ли."""
+        count = self._pilot_journal_count()
+        if not count:
+            return "папка журналов не выбрана"
+        return f"{count} файлов · {'слежение' if self.watcher_active else 'ожидание'}"
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -1437,46 +1731,95 @@ class ColonialHelperApp:
         self.size_label = tb.Label(size_frame, text=str(self.font_size_var.get()))
         self.size_label.pack(side=LEFT, padx=(10, 0))
 
-        # Чекбоксы оверлеев
-        tb.Label(frame, text="Активные оверлеи:", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
-        ov_frame = tb.Frame(frame)
-        ov_frame.pack(fill=X, pady=5)
+        # ---- Блоки HUD: вид и поведение ----
+        tb.Label(frame, text="Блоки HUD: вид и поведение", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
+        tb.Label(
+            frame,
+            text="Каждый блок настраивается отдельно: показывать ли его, можно ли перетаскивать, "
+                 "своя прозрачность и свой размер шрифта, размер окна, «клик насквозь» и правило "
+                 "«показывать по ситуации». Всё применяется сразу — оверлей перезапускать не нужно.",
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        ).pack(anchor=W, pady=(0, 8))
 
-        self.show_route_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_route", True))
-        tb.Checkbutton(ov_frame, text="ROUTE — маршрут", variable=self.show_route_var,
-                       command=self._on_show_route_changed).pack(anchor=W, pady=2)
+        head = tb.Frame(frame)
+        head.pack(fill=X, pady=(0, 2))
+        for column_text, column_width in (
+            ("Блок", 20), ("Показ", 6), ("Блокир.", 8), ("Сквозь", 7),
+            ("Прозр.", 8), ("Шрифт", 7), ("Размер", 10), ("Показывать", 24), ("Клавиша", 8),
+        ):
+            tb.Label(head, text=column_text, width=column_width, anchor=W,
+                     font=("Consolas", 8), foreground=COLOR_MUTED).pack(side=LEFT, padx=(0, 4))
 
-        self.show_status_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_status", True))
-        tb.Checkbutton(ov_frame, text="STATUS — статус подключения", variable=self.show_status_var,
-                       command=self._on_show_status_changed).pack(anchor=W, pady=2)
+        self._overlay_block_vars = {}
+        for block_key in self.overlay_manager.BLOCKS:
+            self._build_overlay_block_row(frame, block_key)
 
-        self.show_ship_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_ship", True))
-        tb.Checkbutton(ov_frame, text="SHIP — состояние корабля", variable=self.show_ship_var,
-                       command=self._on_show_ship_changed).pack(anchor=W, pady=2)
+        # Общий размер всех блоков
+        all_size_frame = tb.Frame(frame)
+        all_size_frame.pack(fill=X, pady=(8, 0))
+        tb.Label(all_size_frame, text="Размер всех блоков:", width=20, anchor=W).pack(side=LEFT)
+        self.all_size_var = tk.StringVar(value="M — 100%")
+        all_size_combo = tb.Combobox(
+            all_size_frame, textvariable=self.all_size_var, width=10, state="readonly",
+            values=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
+        )
+        all_size_combo.pack(side=LEFT, padx=(0, 4))
+        all_size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_all_size_preset_changed())
+        tb.Button(all_size_frame, text="Применить", command=self._on_all_size_preset_changed,
+                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(6, 0))
 
-        self.show_cargo_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_cargo", True))
-        tb.Checkbutton(ov_frame, text="CARGO — товары в трюме", variable=self.show_cargo_var,
-                       command=self._on_show_cargo_changed).pack(anchor=W, pady=2)
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
 
-        self.show_session_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_session", True))
-        tb.Checkbutton(ov_frame, text="SESSION — статистика сессии + график", variable=self.show_session_var,
-                       command=self._on_show_session_changed).pack(anchor=W, pady=2)
+        # ---- Поведение оверлея ----
+        tb.Label(frame, text="Поведение оверлея", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
 
-        self.show_events_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_events", True))
-        tb.Checkbutton(ov_frame, text="EVENTS — события сессии", variable=self.show_events_var,
-                       command=self._on_show_events_changed).pack(anchor=W, pady=2)
+        self.click_through_var = tk.BooleanVar(
+            value=bool(self.overlay_manager.settings.get("click_through", False))
+        )
+        tb.Checkbutton(
+            frame,
+            text="Клик-сквозь для всех блоков (HUD только для глаз, мышь работает в игре)",
+            variable=self.click_through_var,
+            command=self._on_click_through_changed,
+        ).pack(anchor=W, pady=2)
 
-        self.show_exobio_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_exobio", True))
-        tb.Checkbutton(ov_frame, text="EXOBIO — экзобиология (тело, сигналы, образцы)",
-                       variable=self.show_exobio_var,
-                       command=self._on_show_exobio_changed).pack(anchor=W, pady=2)
+        self.auto_rules_var = tk.BooleanVar(
+            value=bool(self.overlay_manager.settings.get("auto_rules_enabled", False))
+        )
+        tb.Checkbutton(
+            frame,
+            text="Показывать блоки по ситуации (правила заданы в таблице выше)",
+            variable=self.auto_rules_var,
+            command=self._on_auto_rules_changed,
+        ).pack(anchor=W, pady=2)
 
-        tb.Separator(ov_frame, orient=HORIZONTAL).pack(fill=X, pady=6)
+        self.attach_game_var = tk.BooleanVar(
+            value=self.overlay_manager.settings.get("attach_to_game", True)
+        )
+        tb.Checkbutton(
+            frame,
+            text="Привязать оверлей к окну Elite Dangerous (только поверх игры)",
+            variable=self.attach_game_var,
+            command=self._on_attach_game_changed,
+        ).pack(anchor=W, pady=2)
 
-        self.attach_game_var = tk.BooleanVar(value=self.overlay_manager.settings.get("attach_to_game", True))
-        tb.Checkbutton(ov_frame, text="Привязать оверлей к окну Elite Dangerous (только поверх игры)",
-                       variable=self.attach_game_var,
-                       command=self._on_attach_game_changed).pack(anchor=W, pady=2)
+        idle_frame = tb.Frame(frame)
+        idle_frame.pack(fill=X, pady=(6, 0))
+        tb.Label(idle_frame, text="Скрывать при простое:", width=20, anchor=W).pack(side=LEFT)
+        current_idle = int(self.overlay_manager.settings.get("idle_timeout", 0) or 0)
+        self.idle_var = tk.StringVar(value=self._idle_label(current_idle))
+        idle_combo = tb.Combobox(
+            idle_frame, textvariable=self.idle_var, width=14, state="readonly",
+            values=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
+        )
+        idle_combo.pack(side=LEFT, padx=(0, 4))
+        idle_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_idle_changed())
+        tb.Label(
+            idle_frame,
+            text="простой = нет новых событий в журнале",
+            foreground=COLOR_MUTED,
+        ).pack(side=LEFT, padx=(10, 0))
 
         # Чекбоксы блоков ShipOverlay
         tb.Label(frame, text="Блоки корабля (SHIP):", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
@@ -1599,19 +1942,307 @@ class ColonialHelperApp:
 
         # Горячие клавиши подсказка
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+        tb.Label(frame, text="Горячие клавиши", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        self.hotkey_hint_label = tb.Label(
+            frame,
+            text="",
+            foreground=COLOR_MUTED,
+            font=("Consolas", 9),
+            wraplength=700,
+            justify=LEFT,
+        )
+        self.hotkey_hint_label.pack(anchor=W, pady=(0, 6))
         tb.Label(
             frame,
             text="Управление оверлеями:\n"
-                 "  • Перетаскивайте за заголовок (если не заблокировано)\n"
-                 "  • ПКМ по [L/U] — блокировка позиции\n"
-                 "  • ПКМ по [*] — меню: привязка, размер, прозрачность\n"
+                 "  • Перетаскивайте за заголовок (если блок не заблокирован)\n"
+                 "  • [L/U] в шапке — блокировка позиции\n"
+                 "  • [<] / [>] в шапке — клик-сквозь для этого блока\n"
+                 "  • [*] в шапке — меню: привязка, размер, прозрачность\n"
                  "  • Потяните за угол — изменение размера\n"
-                 "  • F12 — показать/скрыть все оверлеи\n"
-                 "  • Ctrl+O — включить/выключить оверлей",
+                 "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
+                 "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
             foreground=COLOR_MUTED,
             font=("Consolas", 10),
             justify=LEFT,
         ).pack(anchor=W)
+
+        # Изменения из оверлея (горячие клавиши, профиль) должны догонять
+        # виджеты вкладки, иначе галочки врут.
+        self.overlay_manager.on_settings_changed = self._on_overlay_settings_changed
+        self._update_overlay_hotkey_hint()
+
+    # ---------- Блоки: персональные настройки ----------
+    OVERLAY_ALPHA_CHOICES = ("общая", "40%", "55%", "70%", "85%", "100%")
+    OVERLAY_FONT_CHOICES = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
+    OVERLAY_HOTKEY_CHOICES = ("—", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
+                              "F9", "F10", "F11", "F12")
+
+    def _idle_label(self, seconds: int) -> str:
+        """Подпись для выбора таймера простоя."""
+        seconds = int(seconds or 0)
+        if seconds <= 0:
+            return "не скрывать"
+        if seconds < 60:
+            return f"{seconds} с"
+        return f"{seconds // 60} мин"
+
+    def _idle_seconds(self, label: str) -> int:
+        """Обратно: подпись -> секунды."""
+        text = (label or "").strip().lower()
+        if not text or text.startswith("не "):
+            return 0
+        if "мин" in text:
+            digits = "".join(ch for ch in text if ch.isdigit())
+            return int(digits or 0) * 60
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return int(digits or 0)
+
+    def _block_size_preset(self, key: str) -> str:
+        """Ближайший пресет к текущему размеру блока."""
+        from overlay import DEFAULT_BLOCK_POSITIONS
+
+        default = DEFAULT_BLOCK_POSITIONS.get(key)
+        width = self.overlay_manager.settings.get(f"{key}_width")
+        if not default or not width:
+            return "M"
+        try:
+            ratio = float(width) / float(default[2])
+        except (TypeError, ValueError, ZeroDivisionError):
+            return "M"
+        return min(SIZE_PRESETS, key=lambda item: abs(item[1] - ratio))[0]
+
+    def _build_overlay_block_row(self, parent, key: str):
+        """Строка настроек одного блока HUD."""
+        settings = self.overlay_manager.settings
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=1)
+        widgets = {}
+
+        tb.Label(row, text=BLOCK_LABELS.get(key, key), width=20, anchor=W).pack(side=LEFT, padx=(0, 4))
+
+        # Показ
+        visible_var = tk.BooleanVar(value=bool(settings.get(f"show_{key}", True)))
+        setattr(self, f"show_{key}_var", visible_var)   # совместимость со старыми обработчиками
+        widgets["visible"] = visible_var
+        tb.Checkbutton(row, variable=visible_var, width=3,
+                       command=lambda: self._on_block_visible_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Блокировка позиции
+        lock_var = tk.BooleanVar(value=bool(settings.get(f"{key}_locked", False)))
+        widgets["locked"] = lock_var
+        tb.Checkbutton(row, variable=lock_var, width=3,
+                       command=lambda: self._on_block_lock_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Клик-сквозь
+        through_var = tk.BooleanVar(value=self._block_through_value(key))
+        widgets["click_through"] = through_var
+        tb.Checkbutton(row, variable=through_var, width=3,
+                       command=lambda: self._on_block_through_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Прозрачность
+        alpha_var = tk.StringVar(value=self._block_alpha_label(key))
+        widgets["alpha"] = alpha_var
+        alpha_combo = tb.Combobox(row, textvariable=alpha_var, width=8, state="readonly",
+                                  values=list(self.OVERLAY_ALPHA_CHOICES))
+        alpha_combo.pack(side=LEFT, padx=(0, 4))
+        alpha_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_alpha_changed(key))
+
+        # Шрифт
+        font_var = tk.StringVar(value=self._block_font_label(key))
+        widgets["font_size"] = font_var
+        font_combo = tb.Combobox(row, textvariable=font_var, width=7, state="readonly",
+                                 values=list(self.OVERLAY_FONT_CHOICES))
+        font_combo.pack(side=LEFT, padx=(0, 4))
+        font_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_font_changed(key))
+
+        # Размер
+        size_var = tk.StringVar(value=SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+        widgets["size"] = size_var
+        size_combo = tb.Combobox(row, textvariable=size_var, width=10, state="readonly",
+                                 values=[SIZE_PRESET_LABELS[name] for name, _f in SIZE_PRESETS])
+        size_combo.pack(side=LEFT, padx=(0, 4))
+        size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_size_changed(key))
+
+        # Правило показа
+        rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
+        rule_var = tk.StringVar(value=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+        widgets["auto_rule"] = rule_var
+        rule_combo = tb.Combobox(row, textvariable=rule_var, width=24, state="readonly",
+                                 values=[AUTO_RULE_LABELS[name] for name in AUTO_RULES])
+        rule_combo.pack(side=LEFT, padx=(0, 4))
+        rule_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_rule_changed(key))
+
+        # Горячая клавиша
+        hotkey_var = tk.StringVar(value=str(settings.get(f"{key}_hotkey", "") or "—") or "—")
+        widgets["hotkey"] = hotkey_var
+        hotkey_combo = tb.Combobox(row, textvariable=hotkey_var, width=8, state="readonly",
+                                   values=list(self.OVERLAY_HOTKEY_CHOICES))
+        hotkey_combo.pack(side=LEFT, padx=(0, 4))
+        hotkey_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_hotkey_changed(key))
+
+        tb.Button(row, text="сброс", width=7, bootstyle="secondary-outline",
+                  command=lambda: self._on_block_reset(key)).pack(side=LEFT)
+
+        self._overlay_block_vars[key] = widgets
+
+    # -- подписи и разбор значений --
+    def _block_through_value(self, key: str) -> bool:
+        from overlay import block_click_through
+
+        return block_click_through(self.overlay_manager.settings, key)
+
+    def _block_alpha_label(self, key: str) -> str:
+        value = self.overlay_manager.settings.get(f"{key}_alpha")
+        return "общая" if value is None else f"{int(round(float(value) * 100))}%"
+
+    def _block_font_label(self, key: str) -> str:
+        value = self.overlay_manager.settings.get(f"{key}_font_size")
+        return "общий" if value in (None, "") else str(int(value))
+
+    def _rule_key_by_label(self, label: str) -> str:
+        for rule_key, text in AUTO_RULE_LABELS.items():
+            if text == label:
+                return rule_key
+        return "always"
+
+    def _preset_key_by_label(self, label: str) -> str:
+        for name, text in SIZE_PRESET_LABELS.items():
+            if text == label:
+                return name
+        return "M"
+
+    # -- обработчики строки блока --
+    def _on_block_visible_changed(self, key: str):
+        show = bool(self._overlay_block_vars[key]["visible"].get())
+        self.overlay_manager.set_block_visible(key, show)
+
+    def _on_block_lock_changed(self, key: str):
+        self.overlay_manager.set_block_locked(key, self._overlay_block_vars[key]["locked"].get())
+
+    def _on_block_through_changed(self, key: str):
+        enabled = bool(self._overlay_block_vars[key]["click_through"].get())
+        self.overlay_manager.set_click_through(enabled, key=key)
+        self.log(
+            f"{BLOCK_LABELS.get(key, key)}: клик-сквозь {'включён' if enabled else 'выключен'}",
+            "info",
+        )
+
+    def _on_block_alpha_changed(self, key: str):
+        label = self._overlay_block_vars[key]["alpha"].get()
+        if label == "общая":
+            self.overlay_manager.set_block_alpha(key, None)
+        else:
+            digits = "".join(ch for ch in label if ch.isdigit())
+            self.overlay_manager.set_block_alpha(key, int(digits or 100) / 100.0)
+
+    def _on_block_font_changed(self, key: str):
+        label = self._overlay_block_vars[key]["font_size"].get()
+        if label == "общий":
+            self.overlay_manager.set_block_font_size(key, None)
+        else:
+            digits = "".join(ch for ch in label if ch.isdigit())
+            if digits:
+                self.overlay_manager.set_block_font_size(key, int(digits))
+
+    def _on_block_size_changed(self, key: str):
+        preset = self._preset_key_by_label(self._overlay_block_vars[key]["size"].get())
+        self.overlay_manager.apply_size_preset(preset, key)
+
+    def _on_block_rule_changed(self, key: str):
+        rule = self._rule_key_by_label(self._overlay_block_vars[key]["auto_rule"].get())
+        self.overlay_manager.set_auto_rule(key, rule)
+        if not self.overlay_manager.settings.get("auto_rules_enabled", False):
+            self.auto_rules_var.set(True)
+            self.overlay_manager.set_auto_rules_enabled(True)
+
+    def _on_block_hotkey_changed(self, key: str):
+        value = self._overlay_block_vars[key]["hotkey"].get().strip()
+        combo = "" if value in ("", "—") else value
+        self.overlay_manager.set_block_hotkey(key, combo)
+        self._update_overlay_hotkey_hint()
+        if combo and not self.overlay_manager.hotkeys.available:
+            self.log(
+                f"Горячая клавиша {combo} сохранена, но системные горячие клавиши "
+                f"доступны только в Windows.",
+                "warn",
+            )
+        elif combo:
+            self.log(f"{BLOCK_LABELS.get(key, key)}: горячая клавиша {combo}", "success")
+
+    def _on_block_reset(self, key: str):
+        self.overlay_manager.reset_block(key)
+        self._sync_overlay_block_rows()
+        self.log(f"{BLOCK_LABELS.get(key, key)}: настройки сброшены", "info")
+
+    def _on_all_size_preset_changed(self):
+        preset = self._preset_key_by_label(self.all_size_var.get())
+        if self.overlay_manager.apply_size_preset(preset):
+            self._sync_overlay_block_rows()
+            self.log(f"Размер всех блоков: {SIZE_PRESET_LABELS.get(preset, preset)}", "info")
+
+    def _on_click_through_changed(self):
+        enabled = bool(self.click_through_var.get())
+        self.overlay_manager.set_click_through(enabled)
+        self._sync_overlay_block_rows()
+        self.log(
+            "Клик-сквозь включён: HUD не перехватывает мышь" if enabled
+            else "Клик-сквозь выключен",
+            "info",
+        )
+
+    def _on_auto_rules_changed(self):
+        self.overlay_manager.set_auto_rules_enabled(bool(self.auto_rules_var.get()))
+
+    def _on_idle_changed(self):
+        seconds = self._idle_seconds(self.idle_var.get())
+        self.overlay_manager.set_idle_timeout(seconds)
+
+    def _sync_overlay_block_rows(self):
+        """Перечитать настройки в виджеты (после сброса, профиля, горячей клавиши)."""
+        settings = self.overlay_manager.settings
+        for key, widgets in getattr(self, "_overlay_block_vars", {}).items():
+            widgets["visible"].set(bool(settings.get(f"show_{key}", True)))
+            widgets["locked"].set(bool(settings.get(f"{key}_locked", False)))
+            widgets["click_through"].set(self._block_through_value(key))
+            widgets["alpha"].set(self._block_alpha_label(key))
+            widgets["font_size"].set(self._block_font_label(key))
+            widgets["size"].set(SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+            rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
+            widgets["auto_rule"].set(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+            widgets["hotkey"].set(str(settings.get(f"{key}_hotkey", "") or "—") or "—")
+        if hasattr(self, "idle_var"):
+            self.idle_var.set(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
+        if hasattr(self, "click_through_var"):
+            self.click_through_var.set(bool(settings.get("click_through", False)))
+        if hasattr(self, "auto_rules_var"):
+            self.auto_rules_var.set(bool(settings.get("auto_rules_enabled", False)))
+        if hasattr(self, "all_size_var"):
+            self.all_size_var.set("M — 100%")
+
+    def _on_overlay_settings_changed(self, key: str, name: str, _value):
+        """Настройка изменилась из оверлея (например, по горячей клавише)."""
+        self._sync_overlay_block_rows()
+
+    def _update_overlay_hotkey_hint(self):
+        """Строка подсказки: какие клавиши за чем закреплены."""
+        if not hasattr(self, "hotkey_hint_label"):
+            return
+        lines = []
+        for key in self.overlay_manager.BLOCKS:
+            combo = str(self.overlay_manager.settings.get(f"{key}_hotkey", "") or "")
+            if combo:
+                lines.append(f"{combo} — {BLOCK_LABELS.get(key, key)}")
+        all_combo = str(self.overlay_manager.settings.get("toggle_all_hotkey", "F12") or "")
+        if all_combo:
+            lines.append(f"{all_combo} — показать/скрыть все блоки")
+        hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
+        if not self.overlay_manager.hotkeys.available:
+            hint += "  (системные горячие клавиши работают только в Windows)"
+        try:
+            self.hotkey_hint_label.config(text=hint)
+        except Exception:
+            pass
 
     def _on_toggle_overlay(self):
         # NavRoute.json is produced by the game independently of Watcher.
@@ -1636,8 +2267,19 @@ class ColonialHelperApp:
             self.log("Оверлей выключён", "info")
 
     def _on_toggle_overlay_visibility(self):
-        self.overlay_manager.toggle_visibility()
-        state = "visible" if (self.overlay_manager.route_overlay and self.overlay_manager.enabled) else "hidden"
+        """F12: показать/скрыть все блоки.
+
+        Когда системные горячие клавиши зарегистрированы, нажатие обрабатывает
+        отдельный поток (`HotkeyManager`) — иначе блоки переключились бы
+        дважды: и по привязке Tk, и по глобальной клавише.
+        """
+        if self.overlay_manager.hotkeys.running:
+            return
+        self.overlay_manager.toggle_all_blocks()
+        state = "visible" if any(
+            self.overlay_manager.settings.get(f"show_{key}", True)
+            for key in self.overlay_manager.BLOCKS
+        ) else "hidden"
         self.log(f"Overlay toggled: {state} (F12)", "info")
 
     # ---------- Раскладка: профили, отступы, якоря ----------
@@ -1680,8 +2322,8 @@ class ColonialHelperApp:
         self.font_size_var.set(int(self.overlay_manager.settings.get("font_size", 10)))
         self.size_label.config(text=str(self.font_size_var.get()))
         self._refresh_profile_combo(name)
-        if self.overlay_manager.enabled:
-            self._restart_overlay()
+        self._sync_overlay_block_rows()
+        self._update_overlay_hotkey_hint()
         self.log(f"Профиль раскладки «{name}» применён.", "success")
 
     def _on_profile_delete(self):
@@ -1759,38 +2401,28 @@ class ColonialHelperApp:
         self.overlay_manager.set_font(self.font_var.get(), value)
 
     def _on_show_route_changed(self):
-        self.overlay_manager.set_show_route(self.show_route_var.get())
+        self.overlay_manager.set_block_visible("route", self.show_route_var.get())
 
     def _on_show_status_changed(self):
-        self.overlay_manager.set_show_status(self.show_status_var.get())
+        self.overlay_manager.set_block_visible("status", self.show_status_var.get())
 
     def _on_show_ship_changed(self):
-        self.overlay_manager.set_show_ship(self.show_ship_var.get())
+        self.overlay_manager.set_block_visible("ship", self.show_ship_var.get())
 
     def _on_show_cargo_changed(self):
-        self.overlay_manager.set_show_cargo(self.show_cargo_var.get())
+        self.overlay_manager.set_block_visible("cargo", self.show_cargo_var.get())
 
     def _on_show_session_changed(self):
-        self.overlay_manager.set_show_session(self.show_session_var.get())
+        self.overlay_manager.set_block_visible("session", self.show_session_var.get())
 
     def _on_show_events_changed(self):
         """EVENTS создаётся вместе с остальными окнами, поэтому просто
         показываем/прячем существующее окно."""
-        show = bool(self.show_events_var.get())
-        self.overlay_manager.settings["show_events"] = show
-        self.overlay_manager.save_settings()
-        overlay = self.overlay_manager.events_overlay
-        if overlay:
-            overlay.show() if show else overlay.hide()
+        self.overlay_manager.set_block_visible("events", self.show_events_var.get())
 
     def _on_show_exobio_changed(self):
         """Блок экзобиологии показывает данные по текущему телу из журнала."""
-        show = bool(self.show_exobio_var.get())
-        self.overlay_manager.settings["show_exobio"] = show
-        self.overlay_manager.save_settings()
-        overlay = self.overlay_manager.exobio_overlay
-        if overlay:
-            overlay.show() if show else overlay.hide()
+        self.overlay_manager.set_block_visible("exobio", self.show_exobio_var.get())
 
     def _on_attach_game_changed(self):
         self.overlay_manager.set_attach_to_game(self.attach_game_var.get())
@@ -1802,9 +2434,9 @@ class ColonialHelperApp:
 
     def _on_reset_overlay_positions(self):
         self.overlay_manager.reset_positions()
+        self.overlay_manager.apply_block_style()
         self._refresh_profile_combo()
-        if self.overlay_manager.enabled:
-            self._restart_overlay()
+        self._sync_overlay_block_rows()
         self.log("Позиции оверлея сброшены на стандартные.", "info")
 
     def _get_overlay_data(self) -> dict:
@@ -2788,6 +3420,7 @@ class ColonialHelperApp:
         self._session_route_cargo_tons = 0.0
         self._session_construction_cargo_tons = 0.0
         self._session_systems_visited.clear()
+        self._session_tons_by_system.clear()
         self._last_cargo = {}
         self._last_depot_state = {}
         self._last_contribution_state = {}
@@ -3424,6 +4057,12 @@ class ColonialHelperApp:
             float(d.get("amount", 0) or 0) for d in deliveries
             if d.get("source") == "colonisation_contribution"
         )
+        for delivery in deliveries:
+            system = delivery.get("system_name") or "—"
+            self._session_tons_by_system[system] = (
+                self._session_tons_by_system.get(system, 0.0)
+                + float(delivery.get("amount", 0) or 0)
+            )
         self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
 
     def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):

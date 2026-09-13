@@ -9,6 +9,7 @@ from collections import deque
 
 from ship_tracker import decode_status_flags
 from game_monitor import GameMonitor, GameState
+from hotkeys import HotkeyManager
 
 
 # ============================================================
@@ -79,6 +80,40 @@ def _set_window_topmost(hwnd: int, topmost: bool):
     pass
 
 
+def _hwnd_of(window) -> Optional[int]:
+    """HWND окна Tk (frame id -> parent window handle)."""
+    try:
+        import ctypes
+        return ctypes.windll.user32.GetParent(window.winfo_id())
+    except Exception:
+        return None
+
+
+def _set_click_through(hwnd: int, enabled: bool) -> bool:
+    """Сделать окно прозрачным для мыши (WS_EX_TRANSPARENT | WS_EX_LAYERED).
+
+    Нужен именно Win32: tkinter не умеет «клик насквозь». Окно остаётся
+    видимым и поверх игры, но все щелчки уходят в игру.
+    """
+    if not hwnd:
+        return False
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE = -20
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_LAYERED = 0x00080000
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        if enabled:
+            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
+        else:
+            style &= ~WS_EX_TRANSPARENT
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================
 #  Цветовая схема в стиле ED Ring Colony сайта
 # ============================================================
@@ -106,6 +141,136 @@ COLOR_LINE = "#21262d"
 def _make_separator(parent, color=COLOR_LINE) -> tk.Frame:
     sep = tk.Frame(parent, bg=color, height=1)
     return sep
+
+
+# ============================================================
+#  Настройки блоков: размеры, шрифт, прозрачность, поведение
+# ============================================================
+BLOCK_LABELS = {
+    "route": "ROUTE — маршрут",
+    "status": "STATUS — статус",
+    "ship": "SHIP — корабль",
+    "cargo": "CARGO — трюм",
+    "session": "SESSION — сессия",
+    "events": "EVENTS — события",
+    "exobio": "EXOBIO — экзобиология",
+}
+
+#: Размеры по умолчанию (используются и «Сбросить позиции», и пресетами).
+DEFAULT_BLOCK_POSITIONS = {
+    "route": (50, 50, 280, 160),
+    "status": (50, 220, 280, 220),
+    "ship": (50, 450, 360, 420),
+    "cargo": (400, 450, 300, 340),
+    "session": (400, 50, 320, 300),
+    "events": (730, 50, 320, 260),
+    "exobio": (1060, 50, 330, 360),
+}
+
+#: Пресеты размера: множитель к стандартному размеру блока.
+SIZE_PRESETS = (("XS", 0.75), ("S", 0.85), ("M", 1.0), ("L", 1.25), ("XL", 1.5))
+SIZE_PRESET_LABELS = {
+    "XS": "XS — 75%",
+    "S": "S — 85%",
+    "M": "M — 100%",
+    "L": "L — 125%",
+    "XL": "XL — 150%",
+}
+
+#: Когда блок показывать самому (поверх ручного включения).
+AUTO_RULES = (
+    "always", "never", "game_focused", "docked", "in_space",
+    "in_srv", "on_foot", "has_cargo", "has_bio", "has_route",
+)
+AUTO_RULE_LABELS = {
+    "always": "всегда",
+    "never": "никогда (только вручную)",
+    "game_focused": "когда игра в фокусе",
+    "docked": "на станции / у дока",
+    "in_space": "в полёте (не на станции)",
+    "in_srv": "в SRV",
+    "on_foot": "пешком (OnFoot)",
+    "has_cargo": "когда есть груз",
+    "has_bio": "когда есть биосигналы",
+    "has_route": "когда задан маршрут",
+}
+
+#: Через сколько секунд без событий прятать HUD; 0 — не прятать.
+IDLE_TIMEOUTS = (0, 30, 60, 120, 300, 600)
+
+
+def preset_size(key: str, preset: str) -> Optional[Tuple[int, int]]:
+    """Размер блока для пресета (M — стандартный)."""
+    base = DEFAULT_BLOCK_POSITIONS.get(key)
+    if not base:
+        return None
+    factor = dict(SIZE_PRESETS).get(preset)
+    if not factor:
+        return None
+    _x, _y, width, height = base
+    return int(round(width * factor)), int(round(height * factor))
+
+
+def resolve_block_alpha(settings: dict, key: str) -> float:
+    """Прозрачность блока: своя, если задана, иначе общая."""
+    value = settings.get(f"{key}_alpha")
+    if value is None:
+        return float(settings.get("alpha", 0.90) or 0.90)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(settings.get("alpha", 0.90) or 0.90)
+
+
+def resolve_block_font_size(settings: dict, key: str) -> int:
+    """Размер шрифта блока: свой, если задан, иначе общий."""
+    value = settings.get(f"{key}_font_size")
+    if value in (None, ""):
+        return int(settings.get("font_size", 10) or 10)
+    try:
+        return max(6, min(28, int(value)))
+    except (TypeError, ValueError):
+        return int(settings.get("font_size", 10) or 10)
+
+
+def block_click_through(settings: dict, key: str) -> bool:
+    """Клик-сквозь: своё значение, если задано, иначе общее."""
+    value = settings.get(f"{key}_click_through")
+    if value is None:
+        return bool(settings.get("click_through", False))
+    return bool(value)
+
+
+def auto_rule_matches(rule: str, context: dict) -> bool:
+    """Подходит ли текущая ситуация под правило автопоказа.
+
+    Чистая функция: контекст собирает менеджер из состояния игры, корабля и
+    данных маршрута, а здесь решается только «показывать или нет».
+    """
+    rule = rule or "always"
+    if rule == "always":
+        return True
+    if rule == "never":
+        return False
+    flags = set(context.get("flags") or ())
+    game_running = bool(context.get("game_running"))
+    if rule == "game_focused":
+        return game_running and bool(context.get("game_focused"))
+    if rule == "docked":
+        return "Docked" in flags
+    if rule == "in_space":
+        return game_running and not ({"Docked", "Landed", "SRV", "OnFoot"} & flags)
+    if rule == "in_srv":
+        return "SRV" in flags
+    if rule == "on_foot":
+        return "OnFoot" in flags
+    if rule == "has_cargo":
+        return float(context.get("cargo_count") or 0) > 0
+    if rule == "has_bio":
+        return int(context.get("bio_signals") or 0) > 0
+    if rule == "has_route":
+        return int(context.get("route_total") or 0) > 0
+    return True
 
 
 # ============================================================
@@ -199,6 +364,14 @@ def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dic
             "height": settings.get(f"{key}_height"),
             "anchor": settings.get(f"{key}_anchor", "custom"),
             "visible": settings.get(f"show_{key}", True),
+            # Настройки вида и поведения блока — тоже часть раскладки:
+            # «Хаул» и «Эксобиология» отличаются не только позициями.
+            "alpha": settings.get(f"{key}_alpha"),
+            "font_size": settings.get(f"{key}_font_size"),
+            "locked": settings.get(f"{key}_locked", False),
+            "click_through": settings.get(f"{key}_click_through"),
+            "auto_rule": settings.get(f"{key}_auto_rule", "always"),
+            "hotkey": settings.get(f"{key}_hotkey", ""),
         }
         if overlay is not None:
             # Живое окно: его фактическая геометрия актуальнее сохранённой.
@@ -211,8 +384,10 @@ def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dic
             except Exception:
                 pass
         snapshot[key] = entry
-    # Общие настройки вида тоже часть раскладки.
-    for key in ("alpha", "font_family", "font_size"):
+    # Общие настройки вида и поведения тоже часть раскладки.
+    for key in ("alpha", "font_family", "font_size", "layout_margin",
+                "click_through", "idle_timeout", "auto_rules_enabled",
+                "hide_when_game_off", "attach_to_game"):
         if key in settings:
             snapshot[key] = settings[key]
     return snapshot
@@ -224,12 +399,24 @@ def apply_layout_snapshot(settings: dict, snapshot: dict, blocks: tuple) -> None
         entry = snapshot.get(key)
         if not isinstance(entry, dict):
             continue
-        for suffix in ("x", "y", "width", "height", "anchor"):
+        for suffix in (
+            "x", "y", "width", "height", "anchor",
+            # None означает «как везде» — важно уметь вернуть общее значение,
+            # поэтому сбрасываем ключ, а не пишем None.
+            "alpha", "font_size", "click_through",
+        ):
             if entry.get(suffix) is not None:
+                settings[f"{key}_{suffix}"] = entry[suffix]
+            elif f"{key}_{suffix}" in settings:
+                settings.pop(f"{key}_{suffix}", None)
+        for suffix in ("locked", "auto_rule", "hotkey"):
+            if suffix in entry:
                 settings[f"{key}_{suffix}"] = entry[suffix]
         if entry.get("visible") is not None:
             settings[f"show_{key}"] = bool(entry["visible"])
-    for key in ("alpha", "font_family", "font_size"):
+    for key in ("alpha", "font_family", "font_size", "layout_margin",
+                "click_through", "idle_timeout", "auto_rules_enabled",
+                "hide_when_game_off", "attach_to_game"):
         if key in snapshot and snapshot[key] is not None:
             settings[key] = snapshot[key]
 
@@ -267,6 +454,17 @@ class OverlayWindow:
         self._anchor = settings.get(f"{overlay_key}_anchor", "custom")
         self._min_width = 200
         self._min_height = 100
+        # Клик-сквозь: окно видно, но мышь работает в игре. Включается через
+        # Win32, поэтому применяется после того, как окно реально создано.
+        self._click_through = block_click_through(settings, overlay_key)
+        # Шрифты виджетов запоминаем после сборки contents (см. _register_fonts):
+        # живая смена размера шрифта не должна пересоздавать окно.
+        self._font_specs: dict = {}
+        # Размер, под который собрано содержимое: от него считаем масштаб при
+        # живой смене шрифта (у заголовка, строк и значений разные размеры).
+        self._font_base = int(settings.get("font_size", 10) or 10)
+        self._applied_font = (settings.get("font_family", "Consolas"),
+                              resolve_block_font_size(settings, overlay_key))
 
         self.window = tk.Toplevel(master)
         self.window.title(title)
@@ -325,7 +523,113 @@ class OverlayWindow:
         self._on_resize_callback: Optional[Callable] = None
 
         self._area_provider: Optional[Callable[[], Optional[Tuple[int, int, int, int]]]] = None
+        if self._click_through:
+            self.window.after_idle(self._sync_click_through)
         self._apply_anchor()
+
+    # -- обход виджетов ----------------------------------------------------
+    @staticmethod
+    def _iter_widgets(widget):
+        """Все виджеты поддерева (для живой смены шрифта)."""
+        pending = [widget]
+        while pending:
+            current = pending.pop()
+            yield current
+            try:
+                pending.extend(current.winfo_children())
+            except Exception:
+                pass
+
+    @staticmethod
+    def _parse_font(font) -> Optional[Tuple[str, int, tuple]]:
+        """Разобрать шрифт Tk: кортеж (семейство, размер[, стили])."""
+        if isinstance(font, str):
+            return None
+        try:
+            values = tuple(font)
+        except TypeError:
+            return None
+        if len(values) < 2:
+            return None
+        try:
+            size = int(values[1])
+        except (TypeError, ValueError):
+            return None
+        return str(values[0]), size, tuple(str(v) for v in values[2:])
+
+    def _register_fonts(self):
+        """Запомнить исходные шрифты виджетов.
+
+        Вызывается после сборки содержимого: у заголовка, строк и значений
+        разные размеры, и при смене размера шрифта все они должны сдвинуться
+        пропорционально, а не сравниваться.
+        """
+        specs = {}
+        for widget in self._iter_widgets(self.window):
+            try:
+                font = widget.cget("font")
+            except Exception:
+                continue
+            parsed = self._parse_font(font)
+            if parsed is None:
+                continue
+            _family, size, styles = parsed
+            specs[widget] = (size, styles)
+        self._font_specs = specs
+
+    def apply_font(self, family: str, size: int):
+        """Живая смена шрифта без пересоздания окна.
+
+        Все виджеты масштабируются от исходных размеров: у блока может быть
+        свой размер шрифта, а общий размер мог меняться уже не раз.
+        """
+        try:
+            size = max(6, min(28, int(size)))
+        except (TypeError, ValueError):
+            return
+        if not self._font_specs:
+            self._register_fonts()
+            self._font_base = max(1, size)
+        base = self._font_base or 10
+        factor = float(size) / float(base)
+        for widget, (original, styles) in self._font_specs.items():
+            try:
+                new_size = max(6, min(40, int(round(original * factor))))
+                widget.configure(font=(family, new_size, *styles))
+            except Exception:
+                pass
+        self._applied_font = (family, size)
+
+    def _sync_click_through(self):
+        """Применить режим «клик насквозь» (после создания окна)."""
+        hwnd = self._hwnd or _hwnd_of(self.window)
+        if hwnd:
+            self._hwnd = hwnd
+        _set_click_through(hwnd, self._click_through)
+
+    def set_click_through(self, enabled: bool, save_key: Optional[str] = None):
+        """Включить/выключить клик-сквозь.
+
+        `save_key` — ключ настройки: свой у блока (`{key}_click_through`)
+        или общий (`click_through`). None — в настройки не пишем.
+        """
+        self._click_through = bool(enabled)
+        if save_key:
+            self.settings[save_key] = bool(enabled)
+        try:
+            self.through_btn.config(
+                text=">" if self._click_through else "<",
+                fg=COLOR_CYAN if self._click_through else COLOR_TEXT_MUTED,
+            )
+        except Exception:
+            pass
+        self.window.after_idle(self._sync_click_through)
+        self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
+
+    def _toggle_click_through(self):
+        """Переключатель «клик-сквозь» из меню шапки."""
+        self.set_click_through(not self._click_through,
+                               f"{self.overlay_key}_click_through")
 
     def _build_control_buttons(self):
         btn_frame = tk.Frame(self.header, bg=COLOR_BG)
@@ -339,6 +643,15 @@ class OverlayWindow:
         )
         self.lock_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.lock_btn.bind("<Button-1>", lambda e: self._toggle_lock())
+
+        self.through_btn = tk.Label(
+            btn_frame, text=">" if self._click_through else "<",
+            font=("Consolas", 8), fg=COLOR_CYAN if self._click_through else COLOR_TEXT_MUTED,
+            bg=COLOR_BG, cursor="hand2", width=2
+        )
+        self.through_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self.through_btn.bind("<Button-1>", lambda e: self.set_click_through(
+            not self._click_through, f"{self.overlay_key}_click_through"))
 
         self.edit_btn = tk.Label(
             btn_frame, text="*",
@@ -359,13 +672,15 @@ class OverlayWindow:
             self.drag_label.bind("<Button-1>", self._on_drag_start)
             self.drag_label.bind("<B1-Motion>", self._on_drag_motion)
 
-    def _toggle_lock(self):
-        self._locked = not self._locked
+    def set_locked(self, locked: bool):
+        """Заблокировать/разблокировать позицию окна (без пересоздания)."""
+        self._locked = bool(locked)
         self.settings[f"{self.overlay_key}_locked"] = self._locked
-        lock_text = "L" if self._locked else "U"
-        self.lock_btn.config(text=lock_text)
-        cursor = "no" if self._locked else "fleur"
-        self.drag_label.config(cursor=cursor)
+        try:
+            self.lock_btn.config(text="L" if self._locked else "U")
+            self.drag_label.config(cursor="no" if self._locked else "fleur")
+        except Exception:
+            pass
         if self._locked:
             self.drag_label.unbind("<Button-1>")
             self.drag_label.unbind("<B1-Motion>")
@@ -373,6 +688,9 @@ class OverlayWindow:
             self.drag_label.bind("<Button-1>", self._on_drag_start)
             self.drag_label.bind("<B1-Motion>", self._on_drag_motion)
         self._flash_indicator(COLOR_GREEN_TEXT if self._locked else COLOR_ACCENT)
+
+    def _toggle_lock(self):
+        self.set_locked(not self._locked)
 
     def _flash_indicator(self, color: str, duration_ms: int = 300):
         self.header_indicator.config(bg=color)
@@ -396,6 +714,10 @@ class OverlayWindow:
         menu.add_command(label=f"Width: {self.window.winfo_width()}px", state="disabled")
         menu.add_command(label=f"Height: {self.window.winfo_height()}px", state="disabled")
         menu.add_command(label="Reset size", command=self._reset_size)
+        menu.add_command(
+            label=f"{'[x] ' if self._click_through else '[ ] '}Клик-сквозь",
+            command=self._toggle_click_through,
+        )
         menu.add_separator()
         alpha_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
                              activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
@@ -405,7 +727,31 @@ class OverlayWindow:
                 command=lambda v=a: self.set_alpha(v)
             )
         menu.add_cascade(label="Alpha", menu=alpha_menu)
+        # Персональный размер шрифта: '' — как у всех блоков.
+        font_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                            activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
+        own_font = self.settings.get(f"{self.overlay_key}_font_size")
+        font_menu.add_command(
+            label=f"{'[x] ' if own_font in (None, '') else '[ ] '}Как у всех ({int(self.settings.get('font_size', 10) or 10)})",
+            command=lambda: self._set_own_font(None),
+        )
+        for value in (8, 9, 10, 11, 12, 14, 16, 18):
+            font_menu.add_command(
+                label=f"{'[x] ' if own_font == value else '[ ] '}{value}",
+                command=lambda v=value: self._set_own_font(v),
+            )
+        menu.add_cascade(label="Font size", menu=font_menu)
         menu.post(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
+
+    def _set_own_font(self, size: Optional[int]):
+        """Свой размер шрифта блока (None — общий)."""
+        if size is None:
+            self.settings.pop(f"{self.overlay_key}_font_size", None)
+        else:
+            self.settings[f"{self.overlay_key}_font_size"] = int(size)
+        self.apply_font(self.settings.get("font_family", "Consolas"),
+                        int(self.settings.get(f"{self.overlay_key}_font_size",
+                                              self.settings.get("font_size", 10)) or 10))
 
     def _set_anchor(self, position: str):
         self._anchor = position
@@ -484,18 +830,26 @@ class OverlayWindow:
         """Функция, возвращающая область для якорей (экран или окно игры)."""
         self._area_provider = provider
 
+    def set_size(self, width: int, height: int, save: bool = True):
+        """Задать размер окна прямо сейчас (без пересоздания)."""
+        try:
+            width = max(self._min_width, int(width))
+            height = max(self._min_height, int(height))
+        except (TypeError, ValueError):
+            return
+        try:
+            self.window.geometry(
+                f"{width}x{height}+{self.window.winfo_x()}+{self.window.winfo_y()}"
+            )
+        except Exception:
+            pass
+        if save:
+            self.settings[f"{self.overlay_key}_width"] = width
+            self.settings[f"{self.overlay_key}_height"] = height
+
     def _reset_size(self):
-        defaults = {
-            "route": (280, 160),
-            "status": (280, 220),
-            "ship": (340, 420),
-            "cargo": (300, 340),
-            "session": (320, 300),
-        }
-        default = defaults.get(self.overlay_key, (280, 200))
-        self.window.geometry(f"{default[0]}x{default[1]}+{self.window.winfo_x()}+{self.window.winfo_y()}")
-        self.settings[f"{self.overlay_key}_width"] = default[0]
-        self.settings[f"{self.overlay_key}_height"] = default[1]
+        default = DEFAULT_BLOCK_POSITIONS.get(self.overlay_key, (280, 200))
+        self.set_size(default[2], default[3])
 
     def set_on_move(self, callback: Callable):
         self._on_move_callback = callback
@@ -542,10 +896,19 @@ class OverlayWindow:
         if self._on_resize_callback:
             self._on_resize_callback(new_w, new_h)
 
-    def set_alpha(self, alpha: float):
+    def set_alpha(self, alpha: float, save: bool = True):
+        """Задать прозрачность окна.
+
+        `save=False` — когда значение уже записано в настройки менеджером
+        (общую или блока): окно не должно перетирать чужой ключ.
+        """
         self._alpha = alpha
-        self.settings["alpha"] = alpha
-        self.window.attributes("-alpha", alpha)
+        if save:
+            self.settings["alpha"] = alpha
+        try:
+            self.window.attributes("-alpha", alpha)
+        except Exception:
+            pass
 
     def set_topmost(self, topmost: bool):
         """Установить/снять topmost через tkinter (безопасно для overrideredirect)."""
@@ -1455,15 +1818,7 @@ class OverlayManager:
     BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
-    DEFAULT_POSITIONS = {
-        "route": (50, 50, 280, 160),
-        "status": (50, 220, 280, 220),
-        "ship": (50, 450, 360, 420),
-        "cargo": (400, 450, 300, 340),
-        "session": (400, 50, 320, 300),
-        "events": (730, 50, 320, 260),
-        "exobio": (1060, 50, 330, 360),
-    }
+    DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
 
     def __init__(self, master: tk.Tk, config_path: Path, game_monitor=None):
         self.master = master
@@ -1491,12 +1846,21 @@ class OverlayManager:
             "current_system": "",
             "cargo_count": 0,
         }
+        # Контекст для правил автопоказа (обновляется в _apply_update).
+        self._context_state: Dict[str, Any] = {}
+        # Активность для автоскрытия при простое: любое изменение данных или
+        # возврат фокуса игре продлевает показ HUD.
+        self._last_activity = time.monotonic()
+        self._hidden_by_idle = False
+        self.hotkeys = HotkeyManager(master, logger=self.log)
 
     def start(self, update_callback: Callable):
         if self.enabled:
             return
         self.enabled = True
         self._update_callback = update_callback
+        self._last_activity = time.monotonic()
+        self._hidden_by_idle = False
         self.master.after(0, self._create_windows)
         self._stop.clear()
         self._thread = threading.Thread(target=self._update_loop, daemon=True)
@@ -1516,11 +1880,18 @@ class OverlayManager:
             ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
             # Якоря считаем относительно экрана или окна игры — см. overlay_area().
             ov.set_area_provider(self.overlay_area)
+            # Содержимое уже собрано — запоминаем шрифты и применяем
+            # персональные настройки блока (свой размер шрифта/прозрачность).
+            ov._register_fonts()
+            ov.apply_font(self.settings.get("font_family", "Consolas"),
+                          resolve_block_font_size(self.settings, key))
+            ov.set_alpha(resolve_block_alpha(self.settings, key), save=False)
             if not self.settings.get(f"show_{key}", True):
                 ov.hide()
 
         # Применяем якоря после того, как все окна созданы и знают свой размер.
         self.master.after(60, self.apply_anchors)
+        self.register_hotkeys()
 
     # ============================================================
     #  Блоки, геометрия, раскладка
@@ -1654,8 +2025,10 @@ class OverlayManager:
     def apply_layout(self, name: str) -> bool:
         """Применить сохранённую раскладку.
 
-        Шрифт/прозрачность могут отличаться от текущих, поэтому окна
-        пересоздаём — так настройки применяются гарантированно и одинаково.
+        Шрифт, прозрачность, размер и поведение блоков могут отличаться от
+        текущих, но окна НЕ пересоздаются: настройки проталкиваются в живые
+        окна (`apply_block_style`), поэтому переключение профиля не заставляет
+        оверлей мигать и терять позицию.
         """
         profiles = self.settings.get("profiles") or {}
         snapshot = profiles.get(name) if isinstance(profiles, dict) else None
@@ -1679,6 +2052,11 @@ class OverlayManager:
                     overlay.hide()
             except Exception:
                 pass
+        # Персональные настройки и горячие клавиши тоже приехали из профиля —
+        # проталкиваем их в живые окна, а не пересоздаём оверлей.
+        self.apply_block_style()
+        if self.enabled:
+            self.register_hotkeys()
         self.master.after(60, self.apply_anchors)
         self.save_settings()
         return True
@@ -1739,6 +2117,9 @@ class OverlayManager:
             if self.settings.get("hide_when_game_off", True) and not game.running:
                 self.master.after(0, lambda: self._set_all_visibility(False))
                 last_game_running = False
+                # Пока игры нет — простой не копим: вернулись в игру, HUD
+                # должен появиться сразу, а не через таймер автоскрытия.
+                self.mark_activity()
                 time.sleep(1.0)
                 continue
             if not last_game_running:
@@ -1756,6 +2137,8 @@ class OverlayManager:
                     ed_active = game.focused or _is_ed_foreground()
                     if ed_active:
                         ed_active_counter = 3  # держим visible ещё 3 цикла после потери фокуса
+                        if game.focused:
+                            self.mark_activity()
                     elif ed_active_counter > 0:
                         ed_active_counter -= 1
                     should_show = ed_active_counter > 0
@@ -1784,30 +2167,27 @@ class OverlayManager:
             time.sleep(1.0)
 
     def _set_all_visibility(self, show: bool):
-        """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order."""
-        overlay_settings = {
-            "route": "show_route",
-            "status": "show_status",
-            "ship": "show_ship",
-            "cargo": "show_cargo",
-            "session": "show_session",
-            "events": "show_events",
-            "exobio": "show_exobio",
-        }
-        overlays = list(self._blocks())
-        for ov, key in overlays:
-            if ov:
-                try:
-                    should_show = show and self.settings.get(overlay_settings[key], True)
-                    if should_show:
-                        if not ov.window.winfo_viewable():
-                            ov.show()
-                        ov.window.lift()
-                        ov.window.attributes("-topmost", True)
-                    else:
-                        ov.hide()
-                except Exception:
-                    pass
+        """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order.
+
+        Итоговая видимость блока складывается из четырёх условий: HUD вообще
+        нужен (`show` — есть игра/фокус), пользователь включил блок, сработало
+        правило «по ситуации» и не истёк таймер простоя.
+        """
+        visibility = self.evaluate_block_visibility(game_visible=show)
+        for key, ov in self._blocks():
+            if not ov:
+                continue
+            try:
+                should_show = visibility.get(key, show)
+                if should_show:
+                    if not ov.window.winfo_viewable():
+                        ov.show()
+                    ov.window.lift()
+                    ov.window.attributes("-topmost", True)
+                else:
+                    ov.hide()
+            except Exception:
+                pass
 
     def _hash_data(self, data: dict) -> str:
         """Хеш данных для сравнения изменений между тиками.
@@ -1866,6 +2246,10 @@ class OverlayManager:
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
+        # Данные изменились — значит, в журнале есть жизнь: продлеваем показ
+        # HUD и пересчитываем контекст для правил «показывать по ситуации».
+        self.mark_activity()
+        self.update_context(data)
         if self.route_overlay:
             self.route_overlay.update_route(
                 data.get("current", "-"), data.get("next", "-"),
@@ -1932,6 +2316,7 @@ class OverlayManager:
     def stop(self):
         self.enabled = False
         self._stop.set()
+        self.hotkeys.stop()
         self.save_settings()
         for _key, ov in self._blocks():
             self.master.after(0, ov.destroy)
@@ -1959,40 +2344,43 @@ class OverlayManager:
             ov.set_alpha(alpha)
 
     def set_font(self, family: str, size: int):
+        """Смена шрифта на лету: окна не пересоздаются.
+
+        Раньше здесь перезапускался весь оверлей — окна мигали и теряли
+        позицию. Теперь каждый блок сам перекрашивает свои виджеты
+        (`OverlayWindow.apply_font`), а у блоков с собственным размером
+        шрифта он сохраняется.
+        """
+        try:
+            self.settings["font_size"] = max(6, min(28, int(size)))
+        except (TypeError, ValueError):
+            return
         self.settings["font_family"] = family
-        self.settings["font_size"] = size
-        was_enabled = self.enabled
-        cb = self._update_callback
-        self.stop()
-        if was_enabled and cb:
-            self.start(cb)
+        self.apply_block_style()
+        self.save_settings()
 
     def set_show_route(self, show: bool):
-        self.settings["show_route"] = show
-        if self.route_overlay:
-            self.route_overlay.show() if show else self.route_overlay.hide()
+        self.set_block_visible("route", show)
 
     def set_show_status(self, show: bool):
-        self.settings["show_status"] = show
-        if self.status_overlay:
-            self.status_overlay.show() if show else self.status_overlay.hide()
+        self.set_block_visible("status", show)
 
     def set_show_ship(self, show: bool):
-        self.settings["show_ship"] = show
-        if self.ship_overlay:
-            self.ship_overlay.show() if show else self.ship_overlay.hide()
+        self.set_block_visible("ship", show)
 
     def set_show_cargo(self, show: bool):
-        self.settings["show_cargo"] = show
-        if self.cargo_overlay:
-            self.cargo_overlay.show() if show else self.cargo_overlay.hide()
+        self.set_block_visible("cargo", show)
 
     def set_show_session(self, show: bool):
-        self.settings["show_session"] = show
-        if self.session_overlay:
-            self.session_overlay.show() if show else self.session_overlay.hide()
+        self.set_block_visible("session", show)
 
     def set_ship_block(self, block: str, show: bool):
+        """Внутренние блоки SHIP (pips, щиты, модули…).
+
+        Содержимое окна собирается при создании, поэтому окно пересоздаётся,
+        но позицию, прозрачность, шрифт и блокировку возвращаем сразу же —
+        для пользователя это выглядит как мгновенная перерисовка одного блока.
+        """
         self.settings[f"show_{block}"] = show
         if self.ship_overlay and self.enabled:
             was_visible = self.ship_overlay.window.winfo_viewable()
@@ -2001,12 +2389,313 @@ class OverlayManager:
             self.ship_overlay.set_on_move(self._on_ship_moved)
             self.ship_overlay.set_on_resize(lambda w, h: self._on_resized("ship", w, h))
             self.ship_overlay.set_area_provider(self.overlay_area)
+            self.ship_overlay._register_fonts()
             self.ship_overlay._apply_anchor(self.overlay_area())
+            self.apply_block_style("ship")
             if not was_visible or not self.settings.get("show_ship", True):
                 self.ship_overlay.hide()
 
     def set_attach_to_game(self, attach: bool):
         self.settings["attach_to_game"] = attach
+
+    # ============================================================
+    #  Настройки блоков: вид, размер, поведение — всё на лету
+    # ============================================================
+    def _overlay_for(self, key: str):
+        """Живое окно блока или None (оверлей выключен)."""
+        for block_key, overlay in self._blocks():
+            if block_key == key:
+                return overlay
+        return None
+
+    def _notify_block(self, key: str, name: str, value: Any):
+        """Сообщить UI об изменении настройки (в т.ч. по горячей клавише)."""
+        callback = getattr(self, "on_settings_changed", None)
+        if callback:
+            try:
+                callback(key, name, value)
+            except Exception:
+                pass
+
+    def set_block_visible(self, key: str, show: bool, save: bool = True):
+        """Показать/скрыть блок сразу (без пересоздания окна)."""
+        self.settings[f"show_{key}"] = bool(show)
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            try:
+                overlay.show() if show else overlay.hide()
+            except Exception:
+                pass
+        if save:
+            self.save_settings()
+        self._notify_block(key, "visible", bool(show))
+
+    def toggle_block(self, key: str):
+        """Переключить блок (горячая клавиша)."""
+        show = not bool(self.settings.get(f"show_{key}", True))
+        self.set_block_visible(key, show)
+        label = BLOCK_LABELS.get(key, key)
+        self.log(f"{label}: {'показан' if show else 'скрыт'} (горячая клавиша)", "info")
+
+    def toggle_all_blocks(self):
+        """Показать все блоки или спрятать все (F12 и т.п.)."""
+        any_visible = any(self.settings.get(f"show_{key}", True) for key in self.BLOCKS)
+        for key in self.BLOCKS:
+            self.set_block_visible(key, not any_visible, save=False)
+        self.save_settings()
+        self._notify_block("", "visible", not any_visible)
+
+    def set_block_locked(self, key: str, locked: bool):
+        self.settings[f"{key}_locked"] = bool(locked)
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            overlay.set_locked(bool(locked))
+        self.save_settings()
+        self._notify_block(key, "locked", bool(locked))
+
+    def set_block_alpha(self, key: str, alpha: Optional[float]):
+        """Прозрачность блока. `None` — вернуть общую настройку."""
+        if alpha is None:
+            self.settings.pop(f"{key}_alpha", None)
+            value = float(self.settings.get("alpha", 0.90) or 0.90)
+        else:
+            try:
+                value = max(0.1, min(1.0, float(alpha)))
+            except (TypeError, ValueError):
+                return
+            self.settings[f"{key}_alpha"] = value
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            overlay.set_alpha(value, save=False)
+        self.save_settings()
+        self._notify_block(key, "alpha", value)
+
+    def set_block_font_size(self, key: str, size: Optional[int]):
+        """Размер шрифта блока. `None` — вернуть общий размер."""
+        if size in (None, ""):
+            self.settings.pop(f"{key}_font_size", None)
+            value = int(self.settings.get("font_size", 10) or 10)
+        else:
+            try:
+                value = max(6, min(28, int(size)))
+            except (TypeError, ValueError):
+                return
+            self.settings[f"{key}_font_size"] = value
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            overlay.apply_font(self.settings.get("font_family", "Consolas"), value)
+        self.save_settings()
+        self._notify_block(key, "font_size", value)
+
+    def set_block_size(self, key: str, width: int, height: int):
+        """Размер блока прямо сейчас."""
+        try:
+            width = max(120, int(width))
+            height = max(80, int(height))
+        except (TypeError, ValueError):
+            return
+        self.settings[f"{key}_width"] = width
+        self.settings[f"{key}_height"] = height
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            overlay.set_size(width, height)
+        self.save_settings()
+        self._notify_block(key, "size", (width, height))
+
+    def apply_size_preset(self, preset: str, key: Optional[str] = None):
+        """Пресет размера для одного блока или для всех сразу."""
+        keys = (key,) if key else self.BLOCKS
+        changed = False
+        for block_key in keys:
+            size = preset_size(block_key, preset)
+            if not size:
+                continue
+            width, height = size
+            self.settings[f"{block_key}_width"] = width
+            self.settings[f"{block_key}_height"] = height
+            overlay = self._overlay_for(block_key)
+            if overlay is not None:
+                overlay.set_size(width, height)
+            self._notify_block(block_key, "size", (width, height))
+            changed = True
+        if changed:
+            self.save_settings()
+        return changed
+
+    def set_click_through(self, enabled: bool, key: Optional[str] = None):
+        """Клик-сквозь: для одного блока или для всех (`key=None`)."""
+        if key:
+            self.settings[f"{key}_click_through"] = bool(enabled)
+            overlay = self._overlay_for(key)
+            if overlay is not None:
+                overlay.set_click_through(bool(enabled), save_key=None)
+            self._notify_block(key, "click_through", bool(enabled))
+        else:
+            self.settings["click_through"] = bool(enabled)
+            for block_key, overlay in self._blocks():
+                if self.settings.get(f"{block_key}_click_through") is not None:
+                    continue  # у блока своё значение — общую правку не применяем
+                overlay.set_click_through(bool(enabled), save_key=None)
+                self._notify_block(block_key, "click_through", bool(enabled))
+        self.save_settings()
+
+    def set_auto_rule(self, key: str, rule: str):
+        """Правило автопоказа: `always`, `docked`, `has_cargo`, ..."""
+        if rule not in AUTO_RULES:
+            rule = "always"
+        self.settings[f"{key}_auto_rule"] = rule
+        self.save_settings()
+        self._notify_block(key, "auto_rule", rule)
+
+    def set_auto_rules_enabled(self, enabled: bool):
+        self.settings["auto_rules_enabled"] = bool(enabled)
+        self.save_settings()
+        self.log("Показ блоков по ситуации включён" if enabled
+                 else "Показ блоков по ситуации выключен", "info")
+
+    def set_idle_timeout(self, seconds: int):
+        """Через сколько секунд без событий прятать HUD (0 — не прятать)."""
+        try:
+            self.settings["idle_timeout"] = max(0, int(seconds))
+        except (TypeError, ValueError):
+            self.settings["idle_timeout"] = 0
+        self._last_activity = time.monotonic()
+        self.save_settings()
+
+    def reset_block(self, key: str):
+        """Вернуть блок к стандарту: позиция, размер, вид, поведение."""
+        x, y, width, height = DEFAULT_BLOCK_POSITIONS.get(key, (50, 50, 280, 200))
+        for suffix in ("alpha", "font_size", "click_through"):
+            self.settings.pop(f"{key}_{suffix}", None)
+        self.settings[f"{key}_locked"] = False
+        self.settings[f"{key}_auto_rule"] = "always"
+        self.settings[f"{key}_anchor"] = "custom"
+        self.settings[f"{key}_x"] = x
+        self.settings[f"{key}_y"] = y
+        self.settings[f"{key}_width"] = width
+        self.settings[f"{key}_height"] = height
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            try:
+                overlay._anchor = "custom"
+                overlay.set_geometry(x, y, width, height)
+                overlay.set_locked(False)
+                overlay.set_alpha(resolve_block_alpha(self.settings, key), save=False)
+                overlay.apply_font(self.settings.get("font_family", "Consolas"),
+                                   resolve_block_font_size(self.settings, key))
+                overlay.set_click_through(block_click_through(self.settings, key),
+                                          save_key=None)
+                overlay.show() if self.settings.get(f"show_{key}", True) else overlay.hide()
+            except Exception:
+                pass
+        self.save_settings()
+        self._notify_block(key, "reset", True)
+
+    def apply_block_style(self, key: Optional[str] = None):
+        """Протолкнуть все персональные настройки в живые окна."""
+        family = self.settings.get("font_family", "Consolas")
+        for block_key, overlay in self._blocks():
+            if key and block_key != key:
+                continue
+            try:
+                overlay.set_alpha(resolve_block_alpha(self.settings, block_key), save=False)
+                overlay.apply_font(family, resolve_block_font_size(self.settings, block_key))
+                overlay.set_locked(bool(self.settings.get(f"{block_key}_locked", False)))
+                overlay.set_click_through(block_click_through(self.settings, block_key),
+                                          save_key=None)
+            except Exception:
+                pass
+
+    # ============================================================
+    #  Поведение: автопоказ по ситуации и автоскрытие при простое
+    # ============================================================
+    def mark_activity(self):
+        """Отметить активность: HUD не должен прятаться, пока идут события."""
+        self._last_activity = time.monotonic()
+        self._hidden_by_idle = False
+
+    def idle_timeout(self) -> int:
+        try:
+            return max(0, int(self.settings.get("idle_timeout", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def update_context(self, data: Optional[dict] = None):
+        """Собрать контекст ситуации из последних данных и состояния игры."""
+        data = data or {}
+        ship = data.get("ship") or {}
+        flags = ship.get("flags_list")
+        if not flags and (ship.get("flags") or ship.get("flags2")):
+            flags = decode_status_flags(int(ship.get("flags") or 0),
+                                        int(ship.get("flags2") or 0))
+        flags = list(flags or [])
+        exobio = data.get("exobiology") or {}
+        game = self.game_state()
+        context = {
+            "flags": flags,
+            "docked": "Docked" in flags,
+            "cargo_count": float(ship.get("cargo_count")
+                                 or (data.get("cargo") or {}).get("cargo_count") or 0),
+            "bio_signals": int((exobio.get("bio_signals") if isinstance(exobio, dict) else 0) or 0),
+            "route_total": int(data.get("total") or 0),
+            "game_running": bool(data.get("game_running", game.running)),
+            "game_focused": bool(data.get("game_focused", game.focused)),
+        }
+        self._context_state = context
+        return context
+
+    def evaluate_block_visibility(self, context: Optional[dict] = None,
+                                  game_visible: bool = True) -> Dict[str, bool]:
+        """Кому из блоков сейчас можно быть на экране.
+
+        Складывается из четырёх условий: игра показывает HUD вообще,
+        пользователь включил блок, сработало правило «по ситуации» и не
+        истёк таймер простоя.
+        """
+        ctx = context if context is not None else (self._context_state or {})
+        timeout = self.idle_timeout()
+        idle_hidden = timeout > 0 and (time.monotonic() - self._last_activity) > timeout
+        self._hidden_by_idle = idle_hidden
+        rules_on = bool(self.settings.get("auto_rules_enabled", False))
+        result: Dict[str, bool] = {}
+        for key in self.BLOCKS:
+            visible = bool(game_visible) and bool(self.settings.get(f"show_{key}", True))
+            if visible and idle_hidden:
+                visible = False
+            if visible and rules_on:
+                visible = auto_rule_matches(self.settings.get(f"{key}_auto_rule", "always"), ctx)
+            result[key] = visible
+        return result
+
+    # ============================================================
+    #  Горячие клавиши
+    # ============================================================
+    def register_hotkeys(self):
+        """Зарегистрировать системные горячие клавиши блоков."""
+        if not self.enabled:
+            self.hotkeys.stop()
+            return
+        self.hotkeys.clear()
+        for key in self.BLOCKS:
+            combo = str(self.settings.get(f"{key}_hotkey", "") or "").strip()
+            if combo:
+                self.hotkeys.register(combo, lambda k=key: self.toggle_block(k))
+        all_combo = str(self.settings.get("toggle_all_hotkey", "F12") or "").strip()
+        if all_combo:
+            self.hotkeys.register(all_combo, self.toggle_all_blocks)
+        self.hotkeys.start()
+
+    def set_block_hotkey(self, key: str, combo: str) -> bool:
+        """Назначить блоку горячую клавишу ('' — снять)."""
+        combo = (combo or "").strip()
+        if combo:
+            self.settings[f"{key}_hotkey"] = combo
+        else:
+            self.settings.pop(f"{key}_hotkey", None)
+        self.save_settings()
+        if self.enabled:
+            self.register_hotkeys()
+        return True
 
     def save_settings(self):
         save_overlay_settings(self.config_path, self.settings)
@@ -2084,6 +2773,14 @@ DEFAULT_SETTINGS = {
     "layout_margin": 24,
     # Прятать HUD, когда игра не запущена
     "hide_when_game_off": True,
+    # Клик-сквозь по умолчанию для всех блоков (мышь работает в игре)
+    "click_through": False,
+    # Скрывать HUD, если в журнале нет событий дольше N секунд (0 — не скрывать)
+    "idle_timeout": 0,
+    # Учитывать правила «показывать блок по ситуации»
+    "auto_rules_enabled": False,
+    # Горячая клавиша «показать/скрыть все блоки»
+    "toggle_all_hotkey": "F12",
     # Профили раскладки: {имя: {блок: {x,y,width,height,anchor,visible}, ...}}
     "profiles": {},
     "active_profile": "",
