@@ -40,6 +40,7 @@ jobs:
           python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py
 
       - name: Run uploader tests
+        shell: bash
         run: |
           set +e
           python -m unittest discover -s uploader/tests -v > ci-tests.log 2>&1
