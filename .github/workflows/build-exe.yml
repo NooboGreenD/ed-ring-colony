@@ -39,9 +39,33 @@ jobs:
         run: |
           python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py
 
-      - name: Run uploader tests
-        run: |
-          python -m unittest discover -s uploader/tests -v
+      - name: Bisect: colony_tab
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_colony_tab -v
+      - name: Bisect: exobiology
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_exobiology -v
+      - name: Bisect: initial_upload_flow
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_initial_upload_flow -v
+      - name: Bisect: overlay_layout
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_overlay_layout -v
+      - name: Bisect: overlay_management
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_overlay_management -v
+      - name: Bisect: pilot_infographic
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_pilot_infographic -v
+      - name: Bisect: third_party_api
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_third_party_api -v
+      - name: Bisect: upload_performance
+        continue-on-error: true
+        run: cd uploader && python -m unittest tests.test_upload_performance -v
+      - name: Bisect: discover
+        continue-on-error: true
+        run: python -m unittest discover -s uploader/tests -v
 
       - name: Build EXE with PyInstaller
         run: |
