@@ -913,5 +913,138 @@ class HotkeyBindingTests(_ManagerTestCase):
         self.assertFalse(self.manager.settings["show_route"])
 
 
+class _FakeEditMenu:
+    """Меню-заглушка: видно, чем его показывали и уничтожали ли."""
+
+    created: list = []
+
+    def __init__(self, parent=None, **kwargs):
+        self.parent = parent
+        self.commands = []
+        self.cascades = []
+        self.popup_at = None
+        self.posted_at = None
+        self.destroyed = False
+        _FakeEditMenu.created.append(self)
+
+    def add_command(self, **kwargs):
+        self.commands.append(kwargs)
+
+    def add_cascade(self, **kwargs):
+        self.cascades.append(kwargs)
+
+    def add_separator(self):
+        pass
+
+    def tk_popup(self, x, y, entry=None):
+        self.popup_at = (x, y)
+
+    def post(self, x, y, entry=None):
+        self.posted_at = (x, y)
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class _FakeEditButton:
+    def winfo_rootx(self):
+        return 120
+
+    def winfo_rooty(self):
+        return 40
+
+
+class _FakeEditWindow(_FakeWindow):
+    """_FakeWindow + destroy(): destroy окна снимает и меню."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.destroyed = False
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class OverlayEditMenuTests(unittest.TestCase):
+    """Клик по «*» в шапке блока не должен вешать приложение.
+
+    Раньше меню создавалось локальной переменной и показывалось через
+    `post()`: Tk забирал граббер мыши, меню тут же уничтожалось сборщиком,
+    граббер не снимался — и программа переставала отвечать на клики.
+    """
+
+    def setUp(self):
+        _ensure_gui_stubs()
+        for name in ("overlay", "hotkeys", "game_monitor"):
+            sys.modules.pop(name, None)
+        _FakeEditMenu.created.clear()
+
+    def _overlay(self):
+        import overlay as overlay_module
+
+        window = _FakeEditWindow(x=10, y=20, width=280, height=160)
+        block = overlay_module.OverlayWindow.__new__(overlay_module.OverlayWindow)
+        block.window = window
+        block.overlay_key = "route"
+        block.settings = {"font_size": 10}
+        block._anchor = "custom"
+        block._click_through = False
+        block._alpha = 0.9
+        block.edit_btn = _FakeEditButton()
+        block._edit_menu = None
+        block._edit_submenus = []
+        return overlay_module, block
+
+    def test_menu_is_shown_with_tk_popup_and_kept_alive(self):
+        overlay_module, block = self._overlay()
+        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
+            block._show_edit_menu()
+
+        self.assertEqual(len(_FakeEditMenu.created), 4)   # меню + 3 подменю
+        menu = _FakeEditMenu.created[0]
+        self.assertEqual(menu.popup_at, (120, 60))
+        self.assertIsNone(menu.posted_at, "post() оставляет граббер мыши — им пользоваться нельзя")
+        # Ссылка сохранена: сборщик не уничтожит меню под открытым граббером.
+        self.assertIs(block._edit_menu, menu)
+        self.assertFalse(menu.destroyed)
+        self.assertEqual(len(block._edit_submenus), 3)
+
+    def test_reopening_menu_destroys_previous_one(self):
+        overlay_module, block = self._overlay()
+        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
+            block._show_edit_menu()
+            first = _FakeEditMenu.created[0]
+            block._show_edit_menu()
+            second = _FakeEditMenu.created[4]
+
+        self.assertTrue(first.destroyed, "прошлое меню должно сниматься")
+        self.assertFalse(second.destroyed)
+        self.assertIs(block._edit_menu, second)
+        self.assertEqual(len(_FakeEditMenu.created), 8)
+
+    def test_destroy_window_releases_menu(self):
+        overlay_module, block = self._overlay()
+        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
+            block._show_edit_menu()
+        menu = _FakeEditMenu.created[0]
+        block.destroy()
+        self.assertTrue(menu.destroyed)
+        self.assertTrue(block.window.destroyed)
+        self.assertIsNone(block._edit_menu)
+        self.assertEqual(block._edit_submenus, [])
+
+    def test_menu_commands_do_not_need_live_tk(self):
+        """Пункты меню вызываются по колбэкам — проверяем, что они собираются."""
+        overlay_module, block = self._overlay()
+        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
+            block._show_edit_menu()
+        menu = _FakeEditMenu.created[0]
+        labels = [item.get("label") for item in menu.commands]
+        self.assertTrue(any("Клик-сквозь" in str(label) for label in labels))
+        self.assertTrue(any("Reset size" in str(label) for label in labels))
+        self.assertEqual([c.get("label") for c in menu.cascades],
+                         ["Anchor", "Alpha", "Font size"])
+
+
 if __name__ == "__main__":
     unittest.main()

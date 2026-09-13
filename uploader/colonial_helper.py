@@ -99,7 +99,7 @@ from raven_colonial_api import RavenColonialAPI, project_url
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.4.0"
+VERSION = "2.4.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"

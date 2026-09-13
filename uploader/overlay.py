@@ -476,6 +476,10 @@ class OverlayWindow:
         self.window.configure(bg=COLOR_BG)
         self._hwnd: Optional[int] = None
         self._is_topmost = True
+        # Меню шапки держим в атрибутах: локальный tk.Menu уничтожился бы под
+        # открытым граббером мыши и приложение перестало бы отвечать на клики.
+        self._edit_menu: Optional[tk.Menu] = None
+        self._edit_submenus: list = []
 
         # Главный контейнер с границей
         self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=1)
@@ -696,7 +700,32 @@ class OverlayWindow:
         self.header_indicator.config(bg=color)
         self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
 
+    def _destroy_edit_menu(self):
+        """Снять и уничтожить меню шапки, если оно ещё живо.
+
+        Меню ОБЯЗАТЕЛЬНО держим в атрибуте. Локальный `tk.Menu` уничтожается
+        сборщиком сразу после возврата из `_show_edit_menu`, а Tk к этому
+        моменту уже забрал граббер мыши — в результате ни одно окно
+        приложения больше не получало клики, и программа «зависала»
+        (помогали только снятие процесса или Escape).
+        """
+        for submenu in getattr(self, "_edit_submenus", None) or []:
+            try:
+                submenu.destroy()
+            except Exception:
+                pass
+        self._edit_submenus = []
+        menu = getattr(self, "_edit_menu", None)
+        self._edit_menu = None
+        if menu is not None:
+            try:
+                menu.destroy()
+            except Exception:
+                pass
+
     def _show_edit_menu(self):
+        # Повторный клик по «*» не должен оставлять предыдущее меню висеть.
+        self._destroy_edit_menu()
         menu = tk.Menu(self.window, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
                        activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT,
                        borderwidth=1, relief="solid")
@@ -741,7 +770,14 @@ class OverlayWindow:
                 command=lambda v=value: self._set_own_font(v),
             )
         menu.add_cascade(label="Font size", menu=font_menu)
-        menu.post(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
+
+        # Ссылки храним до закрытия меню (см. _destroy_edit_menu).
+        self._edit_menu = menu
+        self._edit_submenus = [anchor_menu, alpha_menu, font_menu]
+        # `tk_popup`, а не `post`: Tk сам снимает граббер и прячет меню после
+        # выбора пункта или клика мимо. У `post` этого нет — по документации
+        # Tk закрыть такое меню обязано приложение, иначе граббер остаётся.
+        menu.tk_popup(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
 
     def _set_own_font(self, size: Optional[int]):
         """Свой размер шрифта блока (None — общий)."""
@@ -930,6 +966,8 @@ class OverlayWindow:
             self.show()
 
     def destroy(self):
+        # Недоуничтоженное меню оставляет граббер — снимаем его первыми.
+        self._destroy_edit_menu()
         self.window.destroy()
 
 
