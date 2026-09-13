@@ -430,5 +430,102 @@ class EdsmTransientStateTests(unittest.TestCase):
         self.assertLessEqual(len(dispatcher._seen["edsm"]), dispatcher.max_seen)
 
 
+class InaraEventMappingTests(unittest.TestCase):
+    """Поля Inara API: имена из журнала не совпадают с именами Inara.
+
+    Документация: https://inara.cz/elite/inara-api-docs/. Раньше уходили
+    `StarSystem`/`StationName` и не уходили координаты, тело и `shipGameID`,
+    а посадки (Touchdown) не отправлялись вовсе.
+    """
+
+    def _submit(self, event: dict) -> tuple:
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append((event_name, event_data, timestamp))
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        dispatcher.submit(event, live=True)
+        dispatcher.flush(timeout=2)
+        return sent
+
+    def test_dock_sends_coords_body_and_ship(self):
+        sent = self._submit({
+            "event": "Docked", "timestamp": "2025-01-01T00:00:00Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0], "Body": "Kuma 3 a",
+            "StationName": "Hestia Depot", "MarketID": 3951663874,
+            "ShipType": "Type9", "ShipID": 12,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelDock")
+        self.assertEqual(data["starsystemName"], "Kuma")
+        self.assertEqual(data["starsystemCoords"], [1.0, 2.0, 3.0])
+        self.assertEqual(data["starsystemBodyName"], "Kuma 3 a")
+        self.assertEqual(data["stationName"], "Hestia Depot")
+        self.assertEqual(data["marketID"], 3951663874)
+        self.assertEqual(data["shipType"], "Type9")
+        self.assertEqual(data["shipGameID"], 12)
+
+    def test_carrier_jump_sends_station_and_market(self):
+        sent = self._submit({
+            "event": "CarrierJump", "timestamp": "2025-01-01T00:00:01Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0],
+            "StationName": "The Last Word", "MarketID": 3700005632,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelCarrierJump")
+        self.assertEqual(data["stationName"], "The Last Word")
+        self.assertEqual(data["marketID"], 3700005632)
+
+    def test_touchdown_is_sent_as_travel_land(self):
+        """Посадка на стройплощадку — главное событие колонизатора."""
+        sent = self._submit({
+            "event": "Touchdown", "timestamp": "2025-01-01T00:00:02Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0],
+            "Body": "Kuma 3 a", "Latitude": 24.66, "Longitude": -107.5,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelLand")
+        self.assertEqual(data["starsystemName"], "Kuma")
+        self.assertEqual(data["starsystemBodyName"], "Kuma 3 a")
+        self.assertEqual(data["starsystemBodyCoords"], [24.66, -107.5])
+
+    def test_touchdown_without_system_uses_known_position(self):
+        """Touchdown приходит без системы — подставляем известное положение."""
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append((event_name, event_data))
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        dispatcher.submit({"event": "Location", "timestamp": "2025-01-01T00:00:00Z",
+                           "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0]}, live=True)
+        dispatcher.submit({"event": "Touchdown", "timestamp": "2025-01-01T00:00:03Z"}, live=True)
+        dispatcher.flush(timeout=2)
+        land = [item for item in sent if item[0] == "addCommanderTravelLand"]
+        self.assertEqual(len(land), 1)
+        self.assertEqual(land[0][1]["starsystemName"], "Kuma")
+        self.assertEqual(land[0][1]["starsystemCoords"], [1.0, 2.0, 3.0])
+
+    def test_scans_are_not_sent_to_inara(self):
+        """Событий сканирования в Inara API нет."""
+        from event_dispatch import INARA_EVENTS
+
+        for event in ("Scan", "FSSDiscoveryScan", "SAAScanComplete"):
+            self.assertNotIn(event, INARA_EVENTS)
+
+
 if __name__ == "__main__":
     unittest.main()

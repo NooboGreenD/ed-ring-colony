@@ -4,11 +4,39 @@ Endpoint и формат из SRV Survey:
 - Base URL: https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api
 - Auth header: rcc-key (не Authorization: Bearer)
 - Contribute: Dictionary<string, int> (не JSON с commodity/amount)
+
+Схемы запросов сверены с официальным OpenAPI
+(`https://ravencolonial100-…/openapi/v1.json`): `PUT /api/project` принимает
+схему `ProjectCreate`, где обязательны ровно три поля — `marketId`,
+`systemAddress` и `buildName`. Всё остальное (`buildType`, `systemName`,
+`starPos`, `bodyNum`, `bodyName`, `architectName`, `commodities`, `maxNeed`,
+`commanders`, `colonisationConstructionDepot`, `systemSiteId`, `notes`,
+`isPrimaryPort`, `discordLink`) опционально.
 """
 import requests
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+# Адрес сайта Raven Colonial. Страница проекта открывается как
+# `https://ravencolonial.com/#build={buildId}` — так же её открывает сам
+# SrvSurvey после создания проекта.
+UX_URL = "https://ravencolonial.com"
+
+# Поля, без которых Raven Colonial проект не создаст (схема ProjectCreate).
+REQUIRED_PROJECT_FIELDS = ("marketId", "systemAddress", "buildName")
+
+
+def project_url(build_id: str) -> str:
+    """Ссылка на страницу проекта в Raven Colonial."""
+    return f"{UX_URL}/#build={build_id}"
+
+
+def system_url(system_name: str) -> str:
+    """Ссылка на страницу системы в Raven Colonial."""
+    from urllib.parse import quote
+
+    return f"{UX_URL}/#sys={quote(str(system_name or ''), safe='')}"
 
 
 class RavenColonialAPI:
@@ -230,14 +258,57 @@ class RavenColonialAPI:
         """GET /api/cmdr/{cmdr}/primary — текущий основной проект."""
         return self._request("GET", f"/cmdr/{self._esc(cmdr)}/primary")
 
+    # -- v2: данные системы (тела, планы площадок, архитектор) --------------
+    #
+    # Эти методы нужны форме создания проекта: Raven Colonial знает, какие
+    # площадки в системе уже запланированы и кто архитектор системы. Оттуда
+    # берутся `systemSiteId`, `buildType` плана и `architectName` — то, чего
+    # нет в журнале игрока.
+    def get_system_sites(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address}/sites — площадки системы (планы и стройки)."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}/sites")
+
+    def get_system_architect(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address}/architect — архитектор системы."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}/architect")
+
+    def get_system_v2(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address} — система целиком (тела, площадки)."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}")
+
     # -- запись ------------------------------------------------------------
     def create_project(self, project: dict) -> dict:
         """PUT /api/project — создать проект.
 
-        Ожидаемые поля (ProjectCore/ProjectCreate): systemName, buildName,
-        buildType, marketId, systemAddress, starPos, bodyNum, bodyName,
-        factionName, architectName, maxNeed, notes, isPrimaryPort, commodities.
+        Ожидаемые поля (схема ProjectCreate): обязательные `marketId`,
+        `systemAddress`, `buildName`; опциональные `systemName`, `buildType`,
+        `starPos`, `bodyNum`, `bodyName`, `architectName`, `maxNeed`, `notes`,
+        `isPrimaryPort`, `commodities`, `commanders`, `discordLink`,
+        `systemSiteId`, `colonisationConstructionDepot`.
+
+        Обязательные поля проверяются здесь, до запроса: без них Raven
+        отвечает 400, а в логе это выглядит как «неизвестная ошибка».
         """
+        if not self.api_key:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Ключ Raven Colonial (RCC) не задан"}
+        missing = [
+            field for field in REQUIRED_PROJECT_FIELDS
+            if project.get(field) in (None, "", 0)
+        ]
+        if missing:
+            return {
+                "ok": False,
+                "data": None,
+                "status": 0,
+                "error": "Не заполнены обязательные поля: " + ", ".join(missing),
+            }
         body = {key: value for key, value in project.items() if value is not None}
         return self._request("PUT", "/project/", json_body=body)
 

@@ -52,7 +52,7 @@ class RavenColonialApiTests(unittest.TestCase):
     def test_create_project_uses_put_and_key(self):
         result = self.api.create_project({
             "systemName": "Sol", "buildName": "Alpha", "buildType": "Coriolis",
-            "marketId": 123, "notes": None,
+            "marketId": 123, "systemAddress": 456, "notes": None,
         })
         self.assertTrue(result["ok"])
         call = self.calls[0]
@@ -62,7 +62,34 @@ class RavenColonialApiTests(unittest.TestCase):
         # None-поля не должны уезжать на сервер: PATCH-подобный merge ломается
         # от явных null'ов.
         self.assertEqual(call["json"], {"systemName": "Sol", "buildName": "Alpha",
-                                        "buildType": "Coriolis", "marketId": 123})
+                                        "buildType": "Coriolis", "marketId": 123,
+                                        "systemAddress": 456})
+
+    def test_create_project_requires_api_fields(self):
+        """Обязательные поля ProjectCreate — marketId, systemAddress, buildName.
+
+        Без них Raven отвечает 400, а в логе это выглядит как «неизвестная
+        ошибка». Проверяем их до запроса и называем конкретные поля.
+        """
+        result = self.api.create_project({"systemName": "Sol", "buildType": "Coriolis"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.calls, [])  # запрос не уходил
+        for field in ("marketId", "systemAddress", "buildName"):
+            self.assertIn(field, result["error"])
+
+        # Одного marketId мало: без systemAddress проект создать нельзя.
+        result = self.api.create_project({"buildName": "Alpha", "marketId": 1})
+        self.assertFalse(result["ok"])
+        self.assertIn("systemAddress", result["error"])
+        self.assertEqual(self.calls, [])
+
+    def test_project_page_url(self):
+        """После создания проект открывается как ravencolonial.com/#build=..."""
+        from raven_colonial_api import project_url, system_url
+
+        self.assertEqual(project_url("abc-123"), "https://ravencolonial.com/#build=abc-123")
+        self.assertEqual(system_url("Arietis Sector AG-W b2-1"),
+                         "https://ravencolonial.com/#sys=Arietis%20Sector%20AG-W%20b2-1")
 
     def test_update_project_uses_patch(self):
         self.api.update_project("abc-123", {"buildName": "Beta", "maxNeed": None})

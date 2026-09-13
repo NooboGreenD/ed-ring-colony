@@ -125,12 +125,39 @@ def is_fleet_carrier(event: dict, station_type: str = "") -> bool:
 #  https://inara.cz/elite/inara-api-docs/ и с EDDiscovery (InaraSync.cs):
 #  событий сканирования Inara не принимает вовсе.
 # ---------------------------------------------------------------------------
+def _coords(event: dict):
+    """Координаты системы для Inara: массив [X, Y, Z] или ничего."""
+    star_pos = event.get("StarPos")
+    if isinstance(star_pos, (list, tuple)) and len(star_pos) == 3:
+        return list(star_pos)
+    return None
+
+
+def _body_coords(event: dict):
+    """Координаты посадки [LAT, LON] — Inara зовёт их starsystemBodyCoords."""
+    latitude, longitude = event.get("Latitude"), event.get("Longitude")
+    if latitude is None or longitude is None:
+        return None
+    try:
+        return [float(latitude), float(longitude)]
+    except (TypeError, ValueError):
+        return None
+
+
 def _inara_location(event: dict) -> dict:
     data = {"starsystemName": event.get("StarSystem") or event.get("SystemName")}
     if event.get("StationName"):
         data["stationName"] = event["StationName"]
     if event.get("MarketID"):
         data["marketID"] = event["MarketID"]
+    coords = _coords(event)
+    if coords:
+        data["starsystemCoords"] = coords
+    if event.get("Body"):
+        data["starsystemBodyName"] = event["Body"]
+    body_coords = _body_coords(event)
+    if body_coords:
+        data["starsystemBodyCoords"] = body_coords
     return {key: value for key, value in data.items() if value not in (None, "")}
 
 
@@ -138,17 +165,56 @@ def _inara_dock(event: dict) -> dict:
     data = _inara_location(event)
     if event.get("ShipType"):
         data["shipType"] = event["ShipType"]
+    # shipGameID — внутренний номер корабля из журнала. Без него Inara не
+    # может привязать стыковку к конкретному кораблю командира.
+    if event.get("ShipID") is not None:
+        data["shipGameID"] = event["ShipID"]
     return data
 
 
 def _inara_jump(event: dict) -> dict:
     data = {"starsystemName": event.get("StarSystem")}
-    if event.get("StarPos"):
-        data["starsystemCoords"] = event["StarPos"]
+    coords = _coords(event)
+    if coords:
+        data["starsystemCoords"] = coords
     if event.get("JumpDist"):
         data["jumpDistance"] = event["JumpDist"]
     if event.get("ShipType"):
         data["shipType"] = event["ShipType"]
+    if event.get("ShipID") is not None:
+        data["shipGameID"] = event["ShipID"]
+    return {key: value for key, value in data.items() if value not in (None, "")}
+
+
+def _inara_carrier_jump(event: dict) -> dict:
+    """CarrierJump: Inara ждёт ещё и имя авианосца с его MarketID."""
+    data = _inara_jump(event)
+    if event.get("StationName"):
+        data["stationName"] = event["StationName"]
+    if event.get("MarketID"):
+        data["marketID"] = event["MarketID"]
+    return data
+
+
+def _inara_land(event: dict) -> dict:
+    """Touchdown/DropShipDeploy -> addCommanderTravelLand.
+
+    Раньше посадки в Inara не уходили вовсе: для колонизатора это самое
+    заметное событие полёта — именно посадкой на площадку начинается сдача
+    груза.
+    """
+    data = {"starsystemName": event.get("StarSystem")}
+    coords = _coords(event)
+    if coords:
+        data["starsystemCoords"] = coords
+    body = event.get("NearestDestination") or event.get("Body")
+    if body:
+        data["starsystemBodyName"] = body
+    body_coords = _body_coords(event)
+    if body_coords:
+        data["starsystemBodyCoords"] = body_coords
+    if event.get("ShipID") is not None:
+        data["shipGameID"] = event["ShipID"]
     return {key: value for key, value in data.items() if value not in (None, "")}
 
 
@@ -166,12 +232,17 @@ INARA_EVENTS = {
     "Location": ("setCommanderTravelLocation", _inara_location),
     "FSDJump": ("addCommanderTravelFSDJump", _inara_jump),
     "Docked": ("addCommanderTravelDock", _inara_dock),
-    "CarrierJump": ("addCommanderTravelCarrierJump", _inara_jump),
+    "CarrierJump": ("addCommanderTravelCarrierJump", _inara_carrier_jump),
+    # Посадка на тело: Touchdown пишет игра, DropShipDeploy — высадка из
+    # десантного корабля (Odyssey).
+    "Touchdown": ("addCommanderTravelLand", _inara_land),
+    "DropShipDeploy": ("addCommanderTravelLand", _inara_land),
     # Покупка кладёт товар в трюм, продажа — забирает: дельтовые события
     # точнее, чем set-события (не нужно знать остаток по каждому товару).
     "MarketBuy": ("addCommanderInventoryCargoItem", _inara_cargo_item),
     "MarketSell": ("delCommanderInventoryCargoItem", _inara_cargo_item),
 }
+
 
 # Результат постановки события в очередь.
 _QUEUED = "queued"
@@ -425,6 +496,16 @@ class ThirdPartyDispatcher:
         if self._remember_seen("inara", key):
             return _SKIPPED
         event_api_name, builder = INARA_EVENTS[event_name]
+        # Часть событий (Touchdown, DropShipDeploy) приходит без системы и
+        # координат: Inara такие отклоняет. Подставляем известное нам текущее
+        # положение — оно уже отслеживается для EDSM.
+        if not event.get("StarSystem") or not event.get("StarPos"):
+            enriched = dict(event)
+            if not enriched.get("StarSystem") and self._game_state["system_name"]:
+                enriched["StarSystem"] = self._game_state["system_name"]
+            if not enriched.get("StarPos") and self._game_state["coordinates"]:
+                enriched["StarPos"] = self._game_state["coordinates"]
+            event = enriched
         try:
             data = builder(event)
         except Exception:
