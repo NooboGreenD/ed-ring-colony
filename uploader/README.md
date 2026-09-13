@@ -56,7 +56,7 @@ python build_exe.py
   раскладки уходят в живые окна — оверлей больше не мигает и не теряет
   позицию (раньше смена шрифта или профиля пересоздавала окна).
 - **Профили раскладки** сохраняют и вид, и поведение блоков.
-- Тесты: 181 (добавлены `tests/test_pilot_infographic.py` и
+- Тесты: 186 (добавлены `tests/test_pilot_infographic.py` и
   `tests/test_overlay_management.py`).
 
 ## Версия 2.2.1 — исправлена отправка в EDSM / Inara / Raven Colonial

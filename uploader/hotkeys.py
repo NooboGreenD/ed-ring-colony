@@ -241,7 +241,6 @@ class HotkeyManager:
         user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_NOREMOVE)
 
         registered: Dict[int, str] = {}  # id -> combo
-        next_id = 1
 
         def register_all() -> None:
             """Перерегистрировать весь набор (после изменения привязок)."""
