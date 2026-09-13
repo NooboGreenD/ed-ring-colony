@@ -86,6 +86,7 @@ from overlay import (
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
 from exobiology import ExobiologyTracker
+from carrier import CarrierTracker
 from colonisation import (
     ConstructionSiteTracker,
     build_project_draft,
@@ -99,7 +100,7 @@ from raven_colonial_api import RavenColonialAPI, project_url
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -146,6 +147,10 @@ class ColonialHelperApp:
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
         self.exobiology = ExobiologyTracker()  # тела, биосигналы, образцы (только свой журнал)
+        # Груз на авианосце: сколько завезено и сколько осталось завезти
+        # (блок CARRIER в оверлее, см. carrier.py).
+        self.carrier = CarrierTracker()
+        self._carrier_remote_market = 0  # по какому FC уже запросили Raven
         # Стройплощадки колонизации: из них вкладка «Колонизатор» заполняет
         # форму создания проекта (см. colonisation.py).
         self.construction = ConstructionSiteTracker()
@@ -2956,6 +2961,9 @@ class ColonialHelperApp:
         data["route_deliveries_count"] = self._session_route_deliveries
         data["route_cargo_tons"] = self._session_route_cargo_tons
         data["construction_cargo_tons"] = self._session_construction_cargo_tons
+        # Авианосец: тоннаж из CarrierStats + товары поимённо + остаток до
+        # потребности стройплощадки, у которой мы сейчас стоим.
+        data["carrier"] = self.carrier.get_state_dict(self._carrier_need())
         data["last_delivery_system"] = self._last_delivery_system
         return data
 
@@ -4604,6 +4612,9 @@ class ColonialHelperApp:
         self._feed_construction_site(ev, live=live)
         # Отслеживание корабля
         self.ship.parse_event(ev)
+        # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
+        # только считаются локально для блока CARRIER в оверлее.
+        self._feed_carrier(ev, live=live)
         ev_name = ev.get("event")
         if live and ev_name in (
             "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
@@ -4621,6 +4632,86 @@ class ColonialHelperApp:
     # ============================================================
     #  Стройплощадки колонизации (для вкладки «Колонизатор»)
     # ============================================================
+    # ============================================================
+    #  Груз на авианосце (блок CARRIER в оверлее)
+    # ============================================================
+    def _carrier_need(self) -> dict:
+        """Потребность стройплощадки, к которой привязан авианосец.
+
+        Берём текущую площадку из трекера колонизации: именно туда commander
+        завозит груз со своего FC. Если площадки нет — потребность пуста, и
+        блок покажет только то, что лежит на борту.
+        """
+        site = self.construction.site
+        if site is None:
+            return {}
+        try:
+            need = site.remaining_by_commodity()
+        except Exception:
+            return {}
+        return {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
+
+    def _feed_carrier(self, event: dict, live: bool = False):
+        """Передать событие журнала трекеру авианосца.
+
+        Вызывается из того же однопроходного разбора, что и стройплощадки:
+        отдельных чтений журнала не добавляет. В историческом разборе
+        (`live=False`) Raven не опрашиваем — там десятки тысяч событий.
+        """
+        try:
+            changed = self.carrier.handle(event)
+        except Exception:
+            return
+        if not changed or not live:
+            return
+        market_id = int(self.carrier.state.market_id or 0)
+        if not market_id:
+            return
+        # Товары поимённо журнал не отдаёт: считаем дельты сами, а точную
+        # картину (груз всех клиентов) берём из Raven Colonial один раз на FC.
+        if self.raven_api.is_connected and market_id != self._carrier_remote_market:
+            self._carrier_remote_market = market_id
+            threading.Thread(
+                target=self._load_carrier_cargo, args=(market_id,), daemon=True
+            ).start()
+        self.overlay_manager.log(self.carrier.state.summary(), "info")
+
+    def _load_carrier_cargo(self, market_id: int):
+        """Фоновый запрос: поимённый груз авианосца из Raven Colonial.
+
+        Ничего не блокирует и не падает: нет ключа/сети — останемся на
+        локальном учёте по дельтам журнала.
+        """
+        try:
+            result = self.raven_api.get_fc_cargo(market_id)
+        except Exception as exc:
+            self.log(f"Raven Colonial: груз авианосца не получен ({exc})", "warning")
+            return
+        if not result.get("ok"):
+            self.log(
+                f"Raven Colonial: груз авианосца {market_id} не получен "
+                f"({result.get('error') or 'нет данных'})", "info")
+            return
+        # Raven может отдать и объект с полем `cargo`, и саму карту
+        # «товар -> тонны» (это под-ресурс /api/fc/{id}/cargo). Принимаем оба
+        # варианта: числовые значения и есть груз, остальное — служебные поля.
+        data = result.get("data")
+        if isinstance(data, dict) and isinstance(data.get("cargo"), dict):
+            cargo = data["cargo"]
+        elif isinstance(data, dict):
+            cargo = {
+                key: value for key, value in data.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+        else:
+            cargo = data
+        if not isinstance(cargo, dict) or not cargo:
+            return
+        if self.carrier.merge_remote(cargo):
+            self.log(
+                f"Авианосец {market_id}: груз по товарам получен из Raven Colonial "
+                f"({len(cargo)} позиц.)", "info")
+
     def _feed_construction_site(self, event: dict, live: bool = False):
         """Передать событие журнала трекеру стройплощадок.
 

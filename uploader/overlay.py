@@ -89,26 +89,68 @@ def _hwnd_of(window) -> Optional[int]:
         return None
 
 
-def _set_click_through(hwnd: int, enabled: bool) -> bool:
+#: Флаги Win32 для режима «клик насквозь».
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_LAYERED = 0x00080000
+LWA_ALPHA = 0x00000002
+SWP_FRAMECHANGED = 0x0020
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+
+
+def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0) -> bool:
     """Сделать окно прозрачным для мыши (WS_EX_TRANSPARENT | WS_EX_LAYERED).
 
     Нужен именно Win32: tkinter не умеет «клик насквозь». Окно остаётся
     видимым и поверх игры, но все щелчки уходят в игру.
+
+    Тонкости, без которых окно мигает при редактировании:
+
+    * после смены расширенного стиля Windows требует
+      ``SetWindowPos(..., SWP_FRAMECHANGED)`` — без него новое оформление
+      применяется «когда получится», и окно дёргается;
+    * ``WS_EX_LAYERED`` снимаем симметрично: раньше он оставался навсегда,
+      и любое последующее действие с окном (``lift()``, смена размера,
+      перетаскивание) пересобирало слоистое окно — отсюда мерцание;
+    * включив ``WS_EX_LAYERED``, сразу задаём альфу через
+      ``SetLayeredWindowAttributes``: слоистое окно без атрибутов Windows
+      считает полностью прозрачным, и блок на долю секунды пропадал.
+      При alpha < 1.0 слой нужен самому Tk, поэтому при выключении
+      «клик насквозь» его не трогаем.
     """
     if not hwnd:
         return False
     try:
         import ctypes
         user32 = ctypes.windll.user32
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        # На 64-битных сборках стили живут в LONG_PTR.
+        get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        try:
+            transparency = max(0.0, min(1.0, float(alpha)))
+        except (TypeError, ValueError):
+            transparency = 1.0
+        style = get_style(hwnd, GWL_EXSTYLE)
         if enabled:
-            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
+            new_style = style | WS_EX_TRANSPARENT | WS_EX_LAYERED
+            set_style(hwnd, GWL_EXSTYLE, new_style)
+            # Слоистое окно обязано иметь атрибуты, иначе оно не рисуется.
+            user32.SetLayeredWindowAttributes(
+                hwnd, 0, int(round(transparency * 255)), LWA_ALPHA
+            )
         else:
-            style &= ~WS_EX_TRANSPARENT
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            new_style = style & ~WS_EX_TRANSPARENT
+            if transparency >= 1.0:
+                new_style &= ~WS_EX_LAYERED
+            set_style(hwnd, GWL_EXSTYLE, new_style)
+        if new_style != style:
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
         return True
     except Exception:
         return False
@@ -154,6 +196,7 @@ BLOCK_LABELS = {
     "session": "SESSION — сессия",
     "events": "EVENTS — события",
     "exobio": "EXOBIO — экзобиология",
+    "carrier": "CARRIER — авианосец",
 }
 
 #: Размеры по умолчанию (используются и «Сбросить позиции», и пресетами).
@@ -165,6 +208,7 @@ DEFAULT_BLOCK_POSITIONS = {
     "session": (400, 50, 320, 300),
     "events": (730, 50, 320, 260),
     "exobio": (1060, 50, 330, 360),
+    "carrier": (1060, 430, 330, 300),
 }
 
 #: Пресеты размера: множитель к стандартному размеру блока.
@@ -181,6 +225,7 @@ SIZE_PRESET_LABELS = {
 AUTO_RULES = (
     "always", "never", "game_focused", "docked", "in_space",
     "in_srv", "on_foot", "has_cargo", "has_bio", "has_route",
+    "at_carrier",
 )
 AUTO_RULE_LABELS = {
     "always": "всегда",
@@ -193,10 +238,16 @@ AUTO_RULE_LABELS = {
     "has_cargo": "когда есть груз",
     "has_bio": "когда есть биосигналы",
     "has_route": "когда задан маршрут",
+    "at_carrier": "когда вы на авианосце",
 }
 
 #: Через сколько секунд без событий прятать HUD; 0 — не прятать.
 IDLE_TIMEOUTS = (0, 30, 60, 120, 300, 600)
+
+#: Как часто на всякий случай переподнимать блоки в Z-order (секунды).
+#: Раз в секунду (частота цикла обновления) — слишком часто: Windows
+#: пересобирает layered-окна, и HUD заметно мерцает при редактировании.
+ZORDER_REFRESH_SECONDS = 15.0
 
 
 def preset_size(key: str, preset: str) -> Optional[Tuple[int, int]]:
@@ -270,6 +321,8 @@ def auto_rule_matches(rule: str, context: dict) -> bool:
         return int(context.get("bio_signals") or 0) > 0
     if rule == "has_route":
         return int(context.get("route_total") or 0) > 0
+    if rule == "at_carrier":
+        return bool(context.get("at_carrier"))
     return True
 
 
@@ -480,6 +533,12 @@ class OverlayWindow:
         # открытым граббером мыши и приложение перестало бы отвечать на клики.
         self._edit_menu: Optional[tk.Menu] = None
         self._edit_submenus: list = []
+        # Какой режим «клик насквозь» реально применён к окну. None — ещё не
+        # применяли. Нужен, чтобы не дёргать Win32-стили по десять раз в
+        # секунду: каждая такая правка пересобирает окно (мерцание).
+        self._applied_through: Optional[bool] = None
+        # Идёт ли сейчас перетаскивание/ресайз: пока да, Z-order не трогаем.
+        self._dragging = False
 
         # Главный контейнер с границей
         self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=1)
@@ -510,8 +569,10 @@ class OverlayWindow:
         # Drag area
         self.header.bind("<Button-1>", self._on_drag_start)
         self.header.bind("<B1-Motion>", self._on_drag_motion)
+        self.header.bind("<ButtonRelease-1>", self._on_drag_release)
         self.title_label.bind("<Button-1>", self._on_drag_start)
         self.title_label.bind("<B1-Motion>", self._on_drag_motion)
+        self.title_label.bind("<ButtonRelease-1>", self._on_drag_release)
 
         # Content
         self.content = tk.Frame(self.outer, bg=COLOR_PANEL)
@@ -522,6 +583,7 @@ class OverlayWindow:
         self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
         self.resize_handle.bind("<Button-1>", self._on_resize_start)
         self.resize_handle.bind("<B1-Motion>", self._on_resize_motion)
+        self.resize_handle.bind("<ButtonRelease-1>", self._on_drag_release)
 
         self._on_move_callback: Optional[Callable] = None
         self._on_resize_callback: Optional[Callable] = None
@@ -604,12 +666,20 @@ class OverlayWindow:
                 pass
         self._applied_font = (family, size)
 
-    def _sync_click_through(self):
-        """Применить режим «клик насквозь» (после создания окна)."""
+    def _sync_click_through(self, force: bool = False):
+        """Применить режим «клик насквозь» (после создания окна).
+
+        Если состояние не менялось — ничего не делаем. Раньше каждая правка
+        стиля через Win32 пересобирала окно: при редактировании (перетаскивание,
+        ресайз, смена прозрачности) это выглядело как мерцание блока.
+        """
+        if not force and self._applied_through == self._click_through:
+            return
         hwnd = self._hwnd or _hwnd_of(self.window)
         if hwnd:
             self._hwnd = hwnd
-        _set_click_through(hwnd, self._click_through)
+        if _set_click_through(hwnd, self._click_through, self._alpha):
+            self._applied_through = self._click_through
 
     def set_click_through(self, enabled: bool, save_key: Optional[str] = None):
         """Включить/выключить клик-сквозь.
@@ -617,9 +687,11 @@ class OverlayWindow:
         `save_key` — ключ настройки: свой у блока (`{key}_click_through`)
         или общий (`click_through`). None — в настройки не пишем.
         """
-        self._click_through = bool(enabled)
+        enabled = bool(enabled)
+        changed = self._click_through != enabled
+        self._click_through = enabled
         if save_key:
-            self.settings[save_key] = bool(enabled)
+            self.settings[save_key] = enabled
         try:
             self.through_btn.config(
                 text=">" if self._click_through else "<",
@@ -627,8 +699,9 @@ class OverlayWindow:
             )
         except Exception:
             pass
-        self.window.after_idle(self._sync_click_through)
-        self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
+        if changed:
+            self.window.after_idle(self._sync_click_through)
+            self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
 
     def _toggle_click_through(self):
         """Переключатель «клик-сквозь» из меню шапки."""
@@ -814,8 +887,19 @@ class OverlayWindow:
             self._on_move_callback(int(x), int(y))
 
     def size(self) -> Tuple[int, int]:
-        """Фактический размер окна (с откатом к сохранённому, если Tk молчит)."""
+        """Фактический размер окна (с откатом к сохранённому, если Tk молчит).
+
+        `update_idletasks()` зовём только когда Tk ещё не знает размер:
+        принудительный проход по отложенным задачам внутри обработчика
+        события (ползунок «отступ», смена якоря) перерисовывает окно, а при
+        раскладке восьми блоков это восемь перерисовок на каждый тик —
+        ровно то мерцание, на которое жаловались при редактировании.
+        """
         try:
+            w = self.window.winfo_width()
+            h = self.window.winfo_height()
+            if w > 1 and h > 1:
+                return int(w), int(h)
             self.window.update_idletasks()
             w = self.window.winfo_width()
             h = self.window.winfo_height()
@@ -896,8 +980,17 @@ class OverlayWindow:
     def _on_drag_start(self, event):
         if self._locked:
             return
+        self._dragging = True
         self._drag_data["x"] = event.x_root - self.window.winfo_x()
         self._drag_data["y"] = event.y_root - self.window.winfo_y()
+
+    def _on_drag_release(self, event=None):
+        """Кнопка отпущена: перетаскивание/ресайз закончились.
+
+        Пока флаг поднят, OverlayManager не поднимает окно в Z-order —
+        иначе ежесекундный lift() борется с курсором и блок мигает.
+        """
+        self._dragging = False
 
     def _on_drag_motion(self, event):
         if self._locked:
@@ -914,6 +1007,7 @@ class OverlayWindow:
     def _on_resize_start(self, event):
         if self._locked:
             return
+        self._dragging = True
         self._resize_data["x"] = event.x_root
         self._resize_data["y"] = event.y_root
         self._resize_data["w"] = self.window.winfo_width()
@@ -945,6 +1039,16 @@ class OverlayWindow:
             self.window.attributes("-alpha", alpha)
         except Exception:
             pass
+        # У слоистого окна (режим «клик насквозь») альфу задаём мы сами через
+        # SetLayeredWindowAttributes, поэтому после смены прозрачности режим
+        # надо применить заново — иначе блок останется полупрозрачным на глаз
+        # не тем, каким его выставили.
+        if self._click_through:
+            self._applied_through = None
+            try:
+                self.window.after_idle(self._sync_click_through)
+            except Exception:
+                pass
 
     def set_topmost(self, topmost: bool):
         """Установить/снять topmost через tkinter (безопасно для overrideredirect)."""
@@ -1589,6 +1693,167 @@ class CargoOverlay(OverlayWindow):
 
 
 # ============================================================
+#  CarrierOverlay — груз на авианосце
+# ============================================================
+class CarrierOverlay(OverlayWindow):
+    """Груз Fleet Carrier: сколько завезено и сколько осталось завезти.
+
+    Слева — тоннаж из `CarrierStats` (достоверный), справа список товаров:
+    сколько лежит на борту и сколько ещё не хватает до потребности
+    стройплощадки колонизации. Данные собирает `carrier.CarrierTracker`.
+    """
+
+    def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
+        super().__init__(
+            master, "CARRIER",
+            settings.get("carrier_x", 1060), settings.get("carrier_y", 430),
+            settings.get("carrier_width", 330), settings.get("carrier_height", 300),
+            settings, "carrier",
+        )
+        ff = settings.get("font_family", "Consolas")
+        fs = settings.get("font_size", 10)
+
+        header = tk.Frame(self.content, bg=COLOR_PANEL)
+        header.pack(fill=tk.X, pady=(4, 0))
+        self.name_label = tk.Label(header, text="Fleet Carrier", font=(ff, fs + 1, "bold"),
+                                   fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
+        self.name_label.pack(side=tk.LEFT)
+        self.callsign_label = tk.Label(header, text="", font=(ff, fs - 1),
+                                       fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E)
+        self.callsign_label.pack(side=tk.RIGHT)
+
+        self.total_label = tk.Label(self.content, text="— / — t", font=(ff, fs),
+                                    fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.total_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.cargo_bar_bg = tk.Frame(self.content, bg=COLOR_LINE, height=6)
+        self.cargo_bar_bg.pack(fill=tk.X, pady=(4, 2))
+        self.cargo_bar_fill = tk.Frame(self.cargo_bar_bg, bg=COLOR_ACCENT, height=6, width=0)
+        self.cargo_bar_fill.place(x=0, y=0)
+
+        self.detail_label = tk.Label(self.content, text="", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT)
+        self.detail_label.pack(fill=tk.X, pady=(0, 2))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=2)
+
+        self.canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=150)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.inner = tk.Frame(self.canvas, bg=COLOR_PANEL)
+        self.canvas.create_window((0, 0), window=self.inner, anchor=tk.NW, width=300)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+
+        self.summary_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT)
+        self.summary_label.pack(fill=tk.X, pady=(2, 4))
+
+        self.update_carrier({})
+
+    def update_carrier(self, data: Optional[dict]):
+        """Обновить блок. `data` — `CarrierState.get_state_dict(need)`."""
+        data = data or {}
+        ff = self.settings.get("font_family", "Consolas")
+        fs = self.settings.get("font_size", 10)
+
+        name = str(data.get("name") or "").strip()
+        self.name_label.config(text=name or "Fleet Carrier")
+        callsign = str(data.get("callsign") or "").strip()
+        system = str(data.get("system_name") or "").strip()
+        self.callsign_label.config(text=callsign or system)
+
+        stored = int(data.get("stored") or 0)
+        capacity = int(data.get("cargo_capacity") or 0)
+        pct = int(data.get("fill_percent") or 0)
+        stats_seen = bool(data.get("stats_seen"))
+
+        if stats_seen and capacity > 0:
+            self.total_label.config(text=f"{stored} / {capacity} t")
+            self.cargo_bar_fill.config(width=int((pct / 100) * 300))
+            self.cargo_bar_fill.config(
+                bg=COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT)
+            )
+        else:
+            # Без CarrierStats тоннаж неизвестен: показываем только учтённое
+            # поимённо и честно пишем, откуда цифра.
+            tracked = int(data.get("tracked_total") or 0)
+            self.total_label.config(
+                text=f"{tracked} t (учтено по журналу)" if tracked else "Тоннаж неизвестен"
+            )
+            self.cargo_bar_fill.config(width=0)
+
+        details = []
+        if stats_seen:
+            details.append(f"свободно {int(data.get('free') or 0)} t")
+            if int(data.get("reserved") or 0):
+                details.append(f"резерв {int(data.get('reserved') or 0)} t")
+        if bool(data.get("pending_decommission")):
+            details.append("списывается!")
+        if bool(data.get("at_carrier")):
+            details.append("вы на борту")
+        self.detail_label.config(text="  ·  ".join(details))
+
+        rows = list(data.get("commodities") or [])
+        for widget in self.inner.winfo_children():
+            widget.destroy()
+
+        if not rows:
+            tk.Label(
+                self.inner,
+                text="[ Нет данных по товарам ]\nОткройте Carrier Management\nили пристыкуйтесь к авианосцу",
+                font=(ff, fs - 1), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, justify=tk.LEFT,
+            ).pack(pady=18, anchor=tk.W)
+        else:
+            for row in rows:
+                line = tk.Frame(self.inner, bg=COLOR_PANEL)
+                line.pack(fill=tk.X, pady=1)
+                label = str(row.get("name") or row.get("key") or "")[:20]
+                amount = int(row.get("amount") or 0)
+                need = int(row.get("need") or 0)
+                remaining = int(row.get("remaining") or 0)
+                tk.Label(line, text=label, font=(ff, fs - 1), fg=COLOR_TEXT,
+                         bg=COLOR_PANEL, anchor=tk.W, width=20).pack(side=tk.LEFT)
+                if need > 0:
+                    value = f"{amount}/{need}"
+                    color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
+                else:
+                    value = f"{amount}"
+                    color = COLOR_TEXT
+                tk.Label(line, text=value, font=(ff, fs - 1, "bold"), fg=color,
+                         bg=COLOR_PANEL, anchor=tk.E, width=11).pack(side=tk.RIGHT)
+                if need > 0:
+                    tail = f"-{remaining}" if remaining > 0 else "OK"
+                    tk.Label(line, text=tail, font=(ff, fs - 1),
+                             fg=COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT,
+                             bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
+
+        need_total = int(data.get("need_total") or 0)
+        tracked_total = int(data.get("tracked_total") or 0)
+        if need_total > 0:
+            left = sum(int(r.get("remaining") or 0) for r in rows)
+            summary = f"Завезено {tracked_total} / {need_total} t · осталось {left} t"
+            color = COLOR_GREEN_TEXT if left == 0 else COLOR_CYAN
+        elif stats_seen:
+            summary = f"На борту {stored} t · свободно {int(data.get('free') or 0)} t"
+            color = COLOR_ACCENT
+        else:
+            summary = ""
+            color = COLOR_CYAN
+        self.summary_label.config(text=summary, fg=color)
+
+        if bool(data.get("remote_seen")):
+            self.summary_label.config(text=(summary + "  ·  Raven") if summary else "Raven Colonial")
+
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+
+# ============================================================
 #  ExobiologyOverlay
 # ============================================================
 class ExobiologyOverlay(OverlayWindow):
@@ -1853,7 +2118,7 @@ class SessionOverlay(OverlayWindow):
 # ============================================================
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
-    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio")
+    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio", "carrier")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
@@ -1871,6 +2136,7 @@ class OverlayManager:
         self.session_overlay: Optional[SessionOverlay] = None
         self.events_overlay: Optional[SessionEventsOverlay] = None
         self.exobio_overlay: Optional[ExobiologyOverlay] = None
+        self.carrier_overlay: Optional[CarrierOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -1890,6 +2156,9 @@ class OverlayManager:
         # возврат фокуса игре продлевает показ HUD.
         self._last_activity = time.monotonic()
         self._hidden_by_idle = False
+        # Когда в последний раз переставляли блоки в Z-order (см.
+        # _set_all_visibility и ZORDER_REFRESH_SECONDS).
+        self._zorder_at = 0.0
         self.hotkeys = HotkeyManager(master, logger=self.log)
 
     def start(self, update_callback: Callable):
@@ -1912,6 +2181,7 @@ class OverlayManager:
         self.session_overlay = SessionOverlay(self.master, self.settings)
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
         self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
+        self.carrier_overlay = CarrierOverlay(self.master, self.settings)
 
         for ov, key in self._blocks():
             ov.set_on_move(self._make_moved_handler(key))
@@ -1944,6 +2214,7 @@ class OverlayManager:
             "session": self.session_overlay,
             "events": self.events_overlay,
             "exobio": self.exobio_overlay,
+            "carrier": self.carrier_overlay,
         }
         return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
 
@@ -2207,25 +2478,41 @@ class OverlayManager:
     def _set_all_visibility(self, show: bool):
         """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order.
 
+        Z-order поднимаем не на каждом тике (цикл работает раз в секунду),
+        а только когда это действительно нужно: блок только что появился,
+        у него слетел topmost или прошло больше ZORDER_REFRESH_SECONDS с
+        прошлой перестановки. Ежесекундный lift() по всем окнам — главный
+        источник мерцания при редактировании: Windows каждый раз
+        пересобирает layered-окна, а во время перетаскивания ещё и борется
+        с курсором за позицию окна.
+
         Итоговая видимость блока складывается из четырёх условий: HUD вообще
         нужен (`show` — есть игра/фокус), пользователь включил блок, сработало
         правило «по ситуации» и не истёк таймер простоя.
         """
         visibility = self.evaluate_block_visibility(game_visible=show)
+        now = time.monotonic()
+        refresh_due = (now - self._zorder_at) >= ZORDER_REFRESH_SECONDS
         for key, ov in self._blocks():
             if not ov:
                 continue
             try:
                 should_show = visibility.get(key, show)
                 if should_show:
-                    if not ov.window.winfo_viewable():
+                    just_shown = not ov.window.winfo_viewable()
+                    if just_shown:
                         ov.show()
-                    ov.window.lift()
-                    ov.window.attributes("-topmost", True)
+                    # Пока блок тянут мышью, порядок окон не трогаем.
+                    if getattr(ov, "_dragging", False):
+                        continue
+                    if just_shown or refresh_due or not ov._is_topmost:
+                        ov.set_topmost(True)
+                        ov.window.lift()
                 else:
                     ov.hide()
             except Exception:
                 pass
+        self._zorder_at = now
 
     def _hash_data(self, data: dict) -> str:
         """Хеш данных для сравнения изменений между тиками.
@@ -2281,6 +2568,8 @@ class OverlayManager:
         parts.append(str(data.get("game_focused", False)))
         parts.append(str(data.get("game_detail", "")))
         parts.append(str(data.get("exobiology", {})))
+        # Груз авианосца: тоннаж, товары и остаток до потребности площадки.
+        parts.append(str(data.get("carrier", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
@@ -2316,6 +2605,11 @@ class OverlayManager:
 
         if self.exobio_overlay:
             self.exobio_overlay.update_exobiology(data.get("exobiology"))
+
+        if self.carrier_overlay:
+            carrier_data = data.get("carrier")
+            if carrier_data:
+                self.carrier_overlay.update_carrier(carrier_data)
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
@@ -2365,6 +2659,7 @@ class OverlayManager:
         self.session_overlay = None
         self.events_overlay = None
         self.exobio_overlay = None
+        self.carrier_overlay = None
 
     def toggle(self, update_callback: Callable):
         if self.enabled:
@@ -2419,7 +2714,13 @@ class OverlayManager:
         но позицию, прозрачность, шрифт и блокировку возвращаем сразу же —
         для пользователя это выглядит как мгновенная перерисовка одного блока.
         """
+        show = bool(show)
+        previous = bool(self.settings.get(f"show_{block}", True))
         self.settings[f"show_{block}"] = show
+        if previous == show:
+            # Значение не изменилось — пересоздавать окно незачем: это и есть
+            # та самая вспышка, которую пользователь видит при редактировании.
+            return
         if self.ship_overlay and self.enabled:
             was_visible = self.ship_overlay.window.winfo_viewable()
             self.ship_overlay.destroy()
@@ -2676,6 +2977,8 @@ class OverlayManager:
                                  or (data.get("cargo") or {}).get("cargo_count") or 0),
             "bio_signals": int((exobio.get("bio_signals") if isinstance(exobio, dict) else 0) or 0),
             "route_total": int(data.get("total") or 0),
+            # Стоит ли командир сейчас на авианосце (правило at_carrier).
+            "at_carrier": bool((data.get("carrier") or {}).get("at_carrier")),
             "game_running": bool(data.get("game_running", game.running)),
             "game_focused": bool(data.get("game_focused", game.focused)),
         }
@@ -2753,6 +3056,7 @@ DEFAULT_SETTINGS = {
     "show_session": True,
     "show_events": True,
     "show_exobio": True,
+    "show_carrier": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -2806,6 +3110,12 @@ DEFAULT_SETTINGS = {
     "exobio_height": 360,
     "exobio_locked": False,
     "exobio_anchor": "custom",
+    "carrier_x": 1060,
+    "carrier_y": 430,
+    "carrier_width": 330,
+    "carrier_height": 300,
+    "carrier_locked": False,
+    "carrier_anchor": "custom",
     "attach_to_game": True,
     # Раскладка: отступ от края области (экрана или окна игры)
     "layout_margin": 24,
@@ -2863,6 +3173,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
             "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
+            "carrier_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         tmp = config_path.with_suffix(config_path.suffix + ".tmp")

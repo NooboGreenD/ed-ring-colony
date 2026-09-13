@@ -146,6 +146,23 @@ class RavenColonialAPI:
         except requests.RequestException as exc:
             return {"ok": False, "error": str(exc)}
 
+    def get_fc_cargo(self, market_id: int) -> dict:
+        """Поимённый груз Fleet Carrier: GET /api/fc/{marketId}/cargo.
+
+        Raven хранит груз авианосца как карту «товар -> тонны» в нижнем
+        регистре (`steel`, а не `Steel` и не `$steel_name;`) — ровно в том
+        виде, в каком его отправляют клиенты через PATCH того же пути.
+        Журнал таких данных не даёт: `CarrierStats` сообщает только общий
+        тоннаж (`SpaceUsage.Cargo`), без разбивки по товарам.
+        """
+        try:
+            market_id = int(market_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        if market_id <= 0:
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        return self._request("GET", f"api/fc/{market_id}/cargo")
+
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
 
