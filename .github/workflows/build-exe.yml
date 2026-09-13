@@ -41,30 +41,19 @@ jobs:
           python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py
 
       - name: Run uploader tests
-        if: always()
         run: |
           set +e
           python -m unittest discover -s uploader/tests -v > tests.log 2>&1
           code=$?
-          tail -n 40 tests.log
+          tail -n 60 tests.log
           if [ "$code" -ne 0 ]; then
-            {
-              echo "### Падение тестов в CI (run $GITHUB_RUN_ID)"
-              echo ""
-              echo "Коммит: $GITHUB_SHA"
-              echo ""
-              echo '```'
-              grep -E "^(FAIL|ERROR|OK|Ran |FAILED)" tests.log | tail -n 30
-              echo '```'
-            } > failure.md
-            gh issue create --title "CI: падение тестов ($GITHUB_RUN_ID)" \
-              --label "ci-debug" --body-file failure.md || true
-            gh issue create --title "CI: полный лог ($GITHUB_RUN_ID)" \
-              --label "ci-debug" --body-file tests.log || true
+            git config user.email "ci-bot@users.noreply.github.com"
+            git config user.name "ci-bot"
+            git add -f tests.log
+            git commit -m "ci-debug: лог упавших тестов ($GITHUB_RUN_ID)" || true
+            git push origin "HEAD:$GITHUB_REF_NAME" || true
           fi
           exit $code
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build EXE with PyInstaller
         run: |
