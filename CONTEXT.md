@@ -1,8 +1,8 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-12.
-> Uploader release: 2.0.0.
+> Last updated: 2026-09-13.
+> Uploader release: 2.3.0.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -346,9 +346,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sync API: `/api/ravencolonial/sync`
 - Used for: Colonial data synchronization
 
-### 8.6 Colonial Helper uploader 2.0
+### 8.6 Colonial Helper uploader 2.2
 - Source: `uploader/colonial_helper.py`
-- Version: `2.0.0`
+- Version: `2.3.0`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -366,17 +366,92 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - `source_hash` and server upsert keys make retries idempotent.
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
+- EDSM requires `fromSoftware`, `fromSoftwareVersion`, `fromGameVersion` and
+  `fromGameBuild`, and reports per-event status in the JSON body (`msgnum`,
+  100-104 accepted, >= 200 rejected) even when HTTP is 200.
+- Inara endpoint is `https://inara.cz/inapi/v1/` with Inara event names
+  (`addCommanderTravelFSDJump`, `setCommanderTravelLocation`,
+  `addCommanderInventoryCargoItem`, ...) and Inara-style property names
+  (`starsystemName`, `stationName`, `marketID`); per-event status arrives in
+  `events[].eventStatus`.
+- Fleet carrier cargo is reported to Raven Colonial from both `MarketSell`/
+  `MarketBuy` and `CargoTransfer` (loading via the Transfer screen). The carrier
+  is detected by MarketID in 3 700 000 000-3 800 000 000, by `CarrierID`, or by
+  station type; commodity names are normalised to lower-case FDNames.
 - API credentials are also mirrored to the local runtime-only file
   `.colonial_helper_credentials.json` in the user's home directory. This
   protects them from HUD settings saves and EXE upgrades; no credentials belong
   in source control.
+- Third-party APIs (EDSM, Inara, Raven Colonial FC cargo) are dispatched from a
+  background queue in `uploader/event_dispatch.py`: one bounded queue with a
+  small worker pool, so journal parsing never waits on the network.
+- Game detection lives in `uploader/game_monitor.py`: it finds the game process
+  (`EliteDangerous64.exe` and legacy names), its window rectangle and the work
+  area of the monitor the game runs on. The UI header, the STATUS overlay and
+  the HUD auto-hide all read this single cached state (1 s TTL); outside
+  Windows it reports `unsupported platform` instead of a false negative.
+- HUD layout in `uploader/overlay.py`: blocks snap to edges/corners of a layout
+  area (screen, or the monitor with the game window when "attach to game" is
+  on) via `compute_anchored_position()`, with a configurable margin and
+  clamping. Named layout profiles (positions, sizes, visibility, alpha, font,
+  per-block behaviour, hotkeys) are stored in `config.json` under `profiles`.
+- HUD block management (2.3.0): each of the seven blocks (`route`, `status`,
+  `ship`, `cargo`, `session`, `events`, `exobio`) has its own visibility,
+  position lock, click-through (`WS_EX_TRANSPARENT` via ctypes), alpha, font
+  size, size preset (XS/S/M/L/XL), auto-show rule and hotkey. Everything is
+  pushed into the **live** windows (`apply_block_style()`), so changing the
+  font, alpha or profile never recreates the overlay. Behaviour rules
+  (`auto_rule_matches()`) and the idle timeout decide visibility together with
+  the user's checkboxes in `evaluate_block_visibility()`.
+- Global hotkeys live in `uploader/hotkeys.py`: `RegisterHotKey` in a dedicated
+  message-loop thread (Tk bindings only fire while the app window is focused,
+  which is useless in game). Callbacks are marshalled back through
+  `master.after(0, ...)`; outside Windows the manager stays inert.
+- Exobiology lives in `uploader/exobiology.py`: journal-only tracking (Scan,
+  SAAScanComplete, FSSBodySignals, ScanOrganic, CodexEntry) plus a deliberately
+  simplified **genus-level** prediction model (`GENUS_RULES`). Precise
+  species/variant criteria exist only in SrvSurvey (GPL-3.0), and this repo has
+  no license, so nothing was copied from it — the overlay states this.
+  Rendered by `ExobiologyOverlay` (HUD block `exobio`).
+- The "Колонизатор" tab drives the full Raven Colonial project cycle through
+  `uploader/raven_colonial_api.py`: `GET /api/cmdr/{cmdr}/active`,
+  `PUT /api/project` (create), `PATCH /api/project/{buildId}` (update),
+  `POST /api/project/{buildId}/complete`, `PUT|DELETE /api/cmdr/{cmdr}/primary`,
+  link/assign/ready. Write calls need the RCC key; every call runs in a worker
+  thread and never raises.
+- Journal history (initial reconciliation and manual file import) is parsed with
+  `live=False` and is **not** forwarded to EDSM/Inara/Raven by default. Only
+  live watcher ticks are. Users may opt in per UI toggle
+  (`backfill_send_third_party` in the config).
+- Journal files are parsed once per pass: `iter_journal_events()` +
+  `parse_events(..., hooks=[...])` feed deliveries, construction snapshots, ship
+  tracking and third-party dispatch from the same stream.
+- Repeated `ColonisationConstructionDepot` snapshots with an unchanged state are
+  dropped before upload (`ConstructionSnapshotCollector`).
+- Site uploads are chunked and parallel: 100 deliveries per request / 100
+  snapshots per request (server limit), up to 4 concurrent requests, with a
+  progress callback. Startup reconciliation defers uploads and flushes them once
+  at the end instead of per file.
+- Uploaded-file cache `.colonial_helper_imported_files.json` stores
+  `path -> {size, mtime, parser}` so repeated imports skip unchanged files. The
+  parser version (`PARSER_VERSION` in `journal_parser.py`) invalidates the cache
+  when extraction rules change.
 
 ### 8.7 Pilot infographic tab
-- The uploader has a `Пилот` tab with local, live-updating cards.
+- The uploader has a `Пилот` tab with a **reworked infographic** (2.3.0): a KPI
+  row (session tons, deliveries, cargo, systems) plus a responsive grid of six
+  tiles — session dynamics with a Canvas sparkline, ship state bars, route,
+  top systems by tonnage, status/connections, journals/economy.
+- Layout is adaptive: column count is derived from window width (1-3, up to 4 in
+  compact mode) and rebuilt on a debounced `<Configure>`; compact mode persists
+  as `pilot_compact` in the config. Charts are drawn on plain `tk.Canvas`
+  (no matplotlib), series are sampled every 2 s into deques of 180 points.
 - It displays commander/connection state, current system and ship, route
   progress, hull/shields/fuel/power, modules, cargo, balance/rebuy/legal state,
-  session delivery totals, visited systems and last journal event.
-- Refresh runs on the Tk main loop every second and never performs network
+  session delivery totals, visited systems, per-system tonnage and last journal
+  event.
+- Refresh runs on the Tk main loop every second (a single `after()` chain, so
+  manual refreshes cannot spawn parallel timers) and never performs network
   requests. It is deliberately tolerant of incomplete state while the first
   Journal reconciliation is running.
 

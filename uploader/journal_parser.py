@@ -22,6 +22,14 @@ json = _std_json  # для обратной совместимости импо�
 # поэтому ловим по нему, чтобы код одинаково работал с обоими декодерами.
 _JSON_ERROR = ValueError
 
+# Версия правил извлечения данных из журнала.
+#
+# Используется uploader'ом как часть ключа в локальном кэше «уже загруженных
+# файлов»: если правила разбора меняются (новые/исправленные источники
+# доставок), версия растёт, и старые записи кэша перестают подходить — файлы
+# будут пере-импортированы, а не молча пропущены.
+PARSER_VERSION = 2
+
 
 def build_inventory(inventory: list) -> dict:
     inv = {}
@@ -71,22 +79,57 @@ def _source_hash(kind: str, line: str, *parts: object) -> str:
     return "journal-v2-" + _hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def parse_journal(
-    text: str,
+def iter_journal_events(text: str):
+    """Однопроходный генератор пар ``(line, event)`` по тексту журнала.
+
+    Зачем: раньше один и тот же текст журнала разбирался до трёх раз подряд —
+    `parse_journal()` для доставок, `extract_construction_events()` для
+    snapshots стройки и отдельный построчный цикл для отправки в EDSM/Inara.
+    На первичной загрузке всей истории (сотни файлов) это многократно
+    повторяло самую дорогую часть работы — JSON-разбор. Теперь файл
+    разбирается один раз, и один и тот же поток событий отдаётся всем
+    потребителям через hooks.
+    """
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            ev = _loads(line)
+        except _JSON_ERROR:
+            continue
+        if isinstance(ev, dict):
+            yield line, ev
+
+
+def parse_events(
+    events,
     current_system: str = None,
     last_cargo: dict = None,
     last_depot_state: dict = None,
     last_contribution_state: dict = None,
     seen_events: set = None,
     current_system_address: int = 0,
+    hooks: list = None,
 ) -> Tuple[Optional[str], List[dict], dict, dict, dict, set, Dict[str, int]]:
-    """Разобрать текст Journal.*.log.
+    """Разобрать поток уже распарсенных событий журнала.
 
     Возвращает (cmdr_name, deliveries, last_cargo, last_depot_state,
                 last_contribution_state, seen_events, event_counts).
 
+    Отличается от `parse_journal()` только источником: сюда передаётся
+    итерируемый объект пар ``(line, event)`` (например, результат
+    `iter_journal_events()`), поэтому разбор JSON происходит один раз на всё
+    приложение, а не по разу на каждого потребителя.
+
     Args:
-        text: Текст журнала.
+        events: Итератор пар ``(line, event)`` — см. `iter_journal_events`.
+        hooks: Необязательный список callable ``hook(line, event)``, которые
+            вызываются для КАЖДОГО корректного события журнала (до фильтрации
+            дублей — так же, как раньше работали отдельные проходы по тексту).
+            Используется, чтобы собрать snapshots стройки и отправить события
+            во внешние API за тот же один проход. Исключение из hook'а не
+            должно ломать разбор, поэтому гасится здесь.
         current_system: Текущая система из внешнего трекера (ship_tracker).
         last_cargo: Предыдущий инвентарь для разностного метода Cargo.
         last_depot_state: Snapshot ColonisationConstructionDepot для отображения прогресса.
@@ -118,15 +161,16 @@ def parse_journal(
     cargo_depot_items: set = set()
     event_counts: Dict[str, int] = {}
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or not line.startswith("{"):
-            continue
-
-        try:
-            ev = _loads(line)
-        except _JSON_ERROR:
-            continue
+    for line, ev in events:
+        # Хуки вызываются до фильтрации дублей — ровно так же, как раньше
+        # работали отдельные проходы по тексту (extract_construction_events и
+        # цикл отправки в EDSM/Inara видели все строки файла).
+        if hooks:
+            for hook in hooks:
+                try:
+                    hook(line, ev)
+                except Exception:
+                    continue
 
         # Дедупликация по событию (timestamp + market_id + amount), не по строке
         ekey = _event_key(ev)
@@ -279,46 +323,142 @@ def parse_journal(
     return cmdr_name, deliveries, last_cargo, last_depot_state, last_contribution_state, seen_events, event_counts
 
 
+def parse_journal(
+    text: str,
+    current_system: str = None,
+    last_cargo: dict = None,
+    last_depot_state: dict = None,
+    last_contribution_state: dict = None,
+    seen_events: set = None,
+    current_system_address: int = 0,
+    hooks: list = None,
+) -> Tuple[Optional[str], List[dict], dict, dict, dict, set, Dict[str, int]]:
+    """Разобрать текст Journal.*.log (совместимая обёртка над parse_events)."""
+    return parse_events(
+        iter_journal_events(text),
+        current_system,
+        last_cargo,
+        last_depot_state,
+        last_contribution_state,
+        seen_events,
+        current_system_address,
+        hooks,
+    )
+
+
+def _construction_signature(event: dict) -> tuple:
+    """Сигнатура состояния стройплощадки для отсева одинаковых snapshots."""
+    resources = event.get("resources_total")
+    if isinstance(resources, list):
+        fingerprint = "|".join(
+            "{0}:{1}:{2}".format(
+                res.get("Name") if isinstance(res, dict) else res,
+                res.get("RequiredAmount") if isinstance(res, dict) else "",
+                res.get("ProvidedAmount") if isinstance(res, dict) else "",
+            )
+            for res in resources
+        )
+    else:
+        fingerprint = ""
+    return (
+        event.get("system_name"),
+        event.get("market_id"),
+        event.get("construction_id"),
+        event.get("construction_progress"),
+        event.get("construction_name"),
+        fingerprint,
+    )
+
+
+class ConstructionSnapshotCollector:
+    """Собирает snapshots `ColonisationConstructionDepot`, отбрасывая дубли.
+
+    Пока игрок находится у стройплощадки, журнал пишет это событие каждые
+    несколько секунд. В реальном журнале из обращения пользователя их было
+    4990 штук в ОДНОМ файле, а по всей истории — многие тысячи, при этом само
+    состояние (прогресс + объёмы ресурсов) меняется в разы реже. Каждый такой
+    snapshot уходил на сайт отдельной строкой (лимит API — 100 за запрос, т.е.
+    десятки последовательных запросов только под это).
+
+    Здесь остаются только те snapshots, у которых реально изменилось состояние
+    стройки: система, MarketID, ConstructionID, прогресс, имя или объёмы
+    ресурсов. Остальное — шум, который сервер всё равно схлопывает upsert'ом
+    по (user, timestamp, system, construction_id).
+    """
+
+    def __init__(self):
+        self.events: List[dict] = []
+        self.duplicates = 0
+        self.seen = 0
+        self._current_system = None
+        self._last_signature = None
+
+    def __call__(self, line: str, ev: dict):
+        event_name = ev.get("event")
+        # Систему отслеживаем так же, как extract_construction_events():
+        # она нужна как fallback, если в самом событии поля StarSystem нет.
+        if event_name in ("Location", "FSDJump", "Docked", "CarrierJump") and ev.get("StarSystem"):
+            self._current_system = ev.get("StarSystem")
+        if event_name != "ColonisationConstructionDepot":
+            return
+        self.seen += 1
+        event = _construction_event_from(ev, self._current_system)
+        if event is None:
+            return
+        signature = _construction_signature(event)
+        if signature == self._last_signature:
+            self.duplicates += 1
+            return
+        self._last_signature = signature
+        self.events.append(event)
+
+
+def _construction_event_from(ev: dict, current_system: str = None) -> Optional[dict]:
+    """Собрать один snapshot стройплощадки из события журнала."""
+    system = ev.get("StarSystem") or current_system
+    if not system:
+        return None
+    resources = ev.get("ResourcesRequired")
+    if not isinstance(resources, list):
+        resources = []
+    return {
+        "timestamp": ev.get("timestamp"),
+        "system_name": str(system),
+        "market_id": ev.get("MarketID"),
+        "construction_name": ev.get("ConstructionName") or ev.get("Name"),
+        "construction_id": ev.get("ConstructionID"),
+        "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
+        "resources_total": resources,
+        "raw_event": ev,
+    }
+
+
+def extract_construction_events_from_events(events) -> List[dict]:
+    """Извлечь snapshots строительства из уже распарсенных событий.
+
+    `events` — итератор пар (line, event), как у `parse_events()`.
+    """
+    result: List[dict] = []
+    current_system = None
+    for _line, ev in events:
+        event_name = ev.get("event")
+        if event_name in ("Location", "FSDJump", "Docked", "CarrierJump") and ev.get("StarSystem"):
+            current_system = ev.get("StarSystem")
+        if event_name != "ColonisationConstructionDepot":
+            continue
+        event = _construction_event_from(ev, current_system)
+        if event is not None:
+            result.append(event)
+    return result
+
+
 def extract_construction_events(text: str) -> List[dict]:
     """Извлечь публичные snapshots строительства для ED Ring Colony.
 
     Это не доставки игрока: ConstructionDepot содержит общий прогресс
     стройплощадки и может использоваться сайтом для графика проекта.
-    Дубликаты оставляются API, где они атомарно upsert-ятся по ключу события.
     """
-    result = []
-    current_system = None
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or not line.startswith("{"):
-            continue
-        try:
-            ev = _loads(line)
-        except _JSON_ERROR:
-            continue
-        event_name = ev.get("event")
-        if event_name in ("Location", "FSDJump", "Docked", "CarrierJump"):
-            if ev.get("StarSystem"):
-                current_system = ev.get("StarSystem")
-        if event_name != "ColonisationConstructionDepot":
-            continue
-        system = ev.get("StarSystem") or current_system
-        if not system:
-            continue
-        resources = ev.get("ResourcesRequired")
-        if not isinstance(resources, list):
-            resources = []
-        result.append({
-            "timestamp": ev.get("timestamp"),
-            "system_name": str(system),
-            "market_id": ev.get("MarketID"),
-            "construction_name": ev.get("ConstructionName") or ev.get("Name"),
-            "construction_id": ev.get("ConstructionID"),
-            "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
-            "resources_total": resources,
-            "raw_event": ev,
-        })
-    return result
+    return extract_construction_events_from_events(iter_journal_events(text))
 
 
 def parse_file(

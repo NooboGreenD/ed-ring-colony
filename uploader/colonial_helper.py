@@ -12,12 +12,12 @@ import json
 import time
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from datetime import datetime
 from pathlib import Path
 import traceback
 from typing import Optional, List
-from collections import Counter
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # -- Проверка tkinter --
@@ -71,16 +71,29 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
-from journal_parser import parse_file, parse_journal, extract_construction_events
+from journal_parser import (
+    parse_file,          # noqa: F401 — оставлен как публичный API парсера
+    parse_journal,       # noqa: F401
+    parse_events,
+    iter_journal_events,
+    extract_construction_events,  # noqa: F401
+    ConstructionSnapshotCollector,
+    PARSER_VERSION,
+)
 from route_tracker import RouteTracker
-from overlay import OverlayManager
+from overlay import (
+    OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
+    SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
+)
+from exobiology import ExobiologyTracker
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
+from event_dispatch import ThirdPartyDispatcher
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.0.0"
+VERSION = "2.3.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -123,8 +136,10 @@ class ColonialHelperApp:
         self._session_route_cargo_tons = 0.0  # тонны только в системы маршрута
         self._session_construction_cargo_tons = 0.0  # ColonisationContribution за сессию
         self._session_systems_visited = set()
+        self._session_tons_by_system: dict = {}  # тонны по системам (для инфографики)
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
+        self.exobiology = ExobiologyTracker()  # тела, биосигналы, образцы (только свой журнал)
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
@@ -132,6 +147,11 @@ class ColonialHelperApp:
         self._last_session_event = ""
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
         self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
+        # Накопители для первичной сверки: доставки/snapshots не уходят на сайт
+        # после каждого файла (сотни запросов), а отправляются одним пакетом.
+        self._defer_uploads = False
+        self._backfill_deliveries: list = []
+        self._backfill_construction: list = []
         self._navroute_mtime = 0.0
 
         # Конфиг
@@ -148,18 +168,53 @@ class ColonialHelperApp:
         self.edsm_api = EDSMAPI(
             self.config.get("edsm_api_key", ""),
             self.config.get("edsm_commander_name", ""),
+            app_version=VERSION,
         )
         self.inara_api = InaraAPI(
             self.config.get("inara_api_key", ""),
             self.config.get("inara_commander_name", ""),
+            app_version=VERSION,
         )
-        self._edsm_seen_events: set = set()
-        self._inara_seen_events: set = set()
-        self._raven_seen_carrier_events: set = set()
+        # Дедупликация событий для внешних API живёт в self.dispatcher
+        # (event_dispatch.py), а не в приложении.
         # Восстанавливаем ключ из конфига (load_config вызывался раньше создания raven_api)
         raven_key = self.config.get("raven_colonial_key", "")
         if raven_key:
             self.raven_api.set_key(raven_key)
+
+        # Внешние API (EDSM / Inara / Raven Colonial) отправляются из
+        # фонового диспетчера: см. комментарии в event_dispatch.py. Раньше
+        # каждое событие журнала уходило синхронным HTTP-запросом прямо из
+        # потока обработки, из-за чего первичная загрузка истории занимала
+        # часы при подключённых API.
+        self.dispatcher = ThirdPartyDispatcher(
+            edsm_api=self.edsm_api,
+            inara_api=self.inara_api,
+            raven_api=self.raven_api,
+            logger=lambda message: self.root.after(0, lambda m=message: self.log(m, "info")),
+            # Историю (первичную загрузку) во внешние сервисы не отправляем,
+            # если пользователь это явно не включил в настройках.
+            backfill_enabled=bool(self.config.get("backfill_send_third_party", False)),
+        )
+        self.dispatcher.on_result = self._on_third_party_result
+
+        # EDSM требует версию и сборку игры (иначе msgnum 207/208 и событие
+        # никуда не попадает). Fileheader стоит в самом начале журнала и в
+        # live-тиках уже не встретится, поэтому читаем его отдельно.
+        self._detect_game_version()
+
+        # Кэш уже загруженных файлов журнала (локальный, рядом с конфигом).
+        # Позволяет не переразбирать и не переотправлять файлы, которые уже
+        # были успешно импортированы — повторная первичная загрузка вместо
+        # десятков минут занимает секунды.
+        self.imported_files_path = self.config_path.with_name(".colonial_helper_imported_files.json")
+        self.imported_files: dict = self._load_imported_files()
+        self.skip_imported_files = bool(self.config.get("skip_imported_files", True))
+        # Прогресс обновляем не чаще, чем раз в _PROGRESS_MIN_INTERVAL секунд:
+        # на 800 файлов постоянные root.after() забивали очередь Tkinter и
+        # сами по себе тормозили загрузку.
+        self._progress_interval = 0.1
+        self._last_progress_ts = 0.0
 
         # Оверлей
         self.overlay_manager = OverlayManager(self.root, self.config_path)
@@ -188,6 +243,11 @@ class ColonialHelperApp:
         # Авто-проверка токена
         if self.api.token:
             self.after(500, self._auto_validate)
+
+        # Фоновый индикатор игры (опрос ~1 раз в 1.5 с, сам монитор
+        # кэширует результат, лишних снимков процессов не делается).
+        self._game_was_running = False
+        self.after(1000, self._tick_game_status)
 
     # ============================================================
     #  Стили
@@ -223,6 +283,29 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         )
         subtitle.pack(anchor=W)
+
+        # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
+        game_frame = tb.Frame(frame)
+        game_frame.pack(fill=X, pady=(6, 0))
+
+        self.game_dot = tb.Label(game_frame, text="●", font=("Segoe UI", 11), foreground=COLOR_MUTED)
+        self.game_dot.pack(side=LEFT, padx=(0, 6))
+
+        self.game_label = tb.Label(
+            game_frame,
+            text="Игра: проверка…",
+            font=("Consolas", 10),
+            foreground=COLOR_MUTED,
+        )
+        self.game_label.pack(side=LEFT)
+
+        self.game_hint = tb.Label(
+            game_frame,
+            text="",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+        )
+        self.game_hint.pack(side=RIGHT)
 
         self.status_frame = tb.Frame(frame, relief="solid", borderwidth=1, padding=8)
         self.status_frame.pack(fill=X, pady=(10, 0))
@@ -268,6 +351,10 @@ class ColonialHelperApp:
         self.tab_route = tb.Frame(self.notebook)
         self.notebook.add(self.tab_route, text=" Маршрут ")
         self._build_tab_route()
+
+        self.tab_colony = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_colony, text=" Колонизатор ")
+        self._build_tab_colony()
 
         self.tab_overlay = tb.Frame(self.notebook)
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
@@ -444,108 +531,11 @@ class ColonialHelperApp:
         self.edsm_status_label.config(text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен")
 
     # ============================================================
-    #  Вкладка: Инфографика пилота
+    #  Инфографика пилота: крупные плитки, спарклайны, компактный режим
     # ============================================================
-    def _pilot_card(self, parent, title: str, row: int, column: int):
-        card = tb.LabelFrame(parent, text=title, padding=12, bootstyle="secondary")
-        card.grid(row=row, column=column, sticky="nsew", padx=6, pady=6)
-        return card
-
-    def _pilot_value(self, parent, key: str, text: str = "—", color=COLOR_TEXT):
-        label = tb.Label(parent, text=text, font=("Segoe UI", 14, "bold"), foreground=color)
-        label.pack(anchor=W, pady=(2, 5))
-        self._pilot_values[key] = label
-        return label
-
-    def _pilot_metric(self, parent, key: str, title: str, color=COLOR_CYAN):
-        row = tb.Frame(parent)
-        row.pack(fill=X, pady=3)
-        tb.Label(row, text=title, foreground=COLOR_MUTED, width=23, anchor=W).pack(side=LEFT)
-        value = tb.Label(row, text="—", font=("Consolas", 10, "bold"), foreground=color, anchor=E)
-        value.pack(side=RIGHT)
-        self._pilot_values[key] = value
-
-    def _pilot_bar(self, parent, key: str, title: str, color="info"):
-        tb.Label(parent, text=title, foreground=COLOR_MUTED).pack(anchor=W, pady=(5, 1))
-        bar = tb.Progressbar(parent, mode="determinate", maximum=100, bootstyle=color)
-        bar.pack(fill=X, pady=(0, 4))
-        self._pilot_bars[key] = bar
-
-    def _build_tab_pilot(self):
-        self._pilot_values = {}
-        self._pilot_bars = {}
-        viewport = tb.Frame(self.tab_pilot)
-        viewport.pack(fill=BOTH, expand=True)
-
-        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
-        header.pack(fill=X)
-        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"), foreground=COLOR_ORANGE).pack(side=LEFT)
-        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic, bootstyle="info-outline", width=12).pack(side=RIGHT)
-        self._pilot_values["updated"] = tb.Label(header, text="", foreground=COLOR_MUTED)
-        self._pilot_values["updated"].pack(side=RIGHT, padx=(0, 12))
-
-        subtitle = tb.Label(
-            viewport,
-            text="Живые данные из Journal, Ship Tracker, маршрута и текущей сессии. Сетевые запросы для инфографики не выполняются.",
-            foreground=COLOR_MUTED,
-            wraplength=850,
-        )
-        subtitle.pack(anchor=W, padx=15, pady=(0, 8))
-
-        grid = tb.Frame(viewport, padding=(9, 0, 9, 9))
-        grid.pack(fill=BOTH, expand=True)
-        for column in range(2):
-            grid.columnconfigure(column, weight=1, uniform="pilot")
-        for row in range(3):
-            grid.rowconfigure(row, weight=1)
-
-        identity = self._pilot_card(grid, "ПИЛОТ И ПОДКЛЮЧЕНИЯ", 0, 0)
-        self._pilot_value(identity, "commander", "CMDR не определён", COLOR_ORANGE)
-        self._pilot_metric(identity, "system", "Система")
-        self._pilot_metric(identity, "ship", "Корабль")
-        self._pilot_metric(identity, "watcher", "Watcher")
-        self._pilot_metric(identity, "services", "Сервисы")
-
-        route = self._pilot_card(grid, "МАРШРУТ", 0, 1)
-        self._pilot_value(route, "route_status", "Маршрут не загружен", COLOR_CYAN)
-        self._pilot_metric(route, "route_current", "Текущая")
-        self._pilot_metric(route, "route_next", "Следующая")
-        self._pilot_metric(route, "route_remaining", "Осталось")
-        self._pilot_bar(route, "route_progress", "Прогресс маршрута", "info")
-
-        ship = self._pilot_card(grid, "СОСТОЯНИЕ КОРАБЛЯ", 1, 0)
-        self._pilot_metric(ship, "hull", "Корпус")
-        self._pilot_metric(ship, "shield", "Щиты")
-        self._pilot_metric(ship, "fuel", "Топливо")
-        self._pilot_metric(ship, "power", "Энергия")
-        self._pilot_metric(ship, "modules", "Модули")
-        self._pilot_bar(ship, "hull_bar", "Корпус", "success")
-        self._pilot_bar(ship, "fuel_bar", "Топливо", "warning")
-
-        cargo = self._pilot_card(grid, "ГРУЗ И ЭКОНОМИКА", 1, 1)
-        self._pilot_value(cargo, "cargo", "0 / 0 t", COLOR_GREEN)
-        self._pilot_bar(cargo, "cargo_bar", "Заполнение трюма", "warning")
-        self._pilot_metric(cargo, "balance", "Баланс")
-        self._pilot_metric(cargo, "rebuy", "Страховка")
-        self._pilot_metric(cargo, "legal", "Правовой статус")
-        self._pilot_metric(cargo, "last_delivery", "Последняя доставка")
-
-        session = self._pilot_card(grid, "ТЕКУЩАЯ СЕССИЯ", 2, 0)
-        self._pilot_value(session, "session_tons", "0 t", COLOR_GREEN)
-        self._pilot_metric(session, "session_deliveries", "Доставки")
-        self._pilot_metric(session, "session_route", "На маршруте")
-        self._pilot_metric(session, "session_construction", "На стройки")
-        self._pilot_metric(session, "session_systems", "Системы посещены")
-
-        activity = self._pilot_card(grid, "АКТИВНОСТЬ И ДАННЫЕ", 2, 1)
-        self._pilot_value(activity, "event_summary", "Ожидание событий", COLOR_CYAN)
-        self._pilot_metric(activity, "journal_state", "Журналы")
-        self._pilot_metric(activity, "raven", "Raven Colonial")
-        self._pilot_metric(activity, "edsm", "EDSM")
-        self._pilot_metric(activity, "inara", "Inara")
-        self._pilot_metric(activity, "last_event", "Последнее событие")
-
-        self._refresh_pilot_infographic()
+    # Сколько точек держим в спарклайнах (при шаге 2 с — около 6 минут).
+    PILOT_SERIES_LIMIT = 180
+    PILOT_SAMPLE_SECONDS = 2.0
 
     @staticmethod
     def _pilot_percent(value) -> float:
@@ -554,76 +544,463 @@ class ColonialHelperApp:
         except (TypeError, ValueError):
             return 0.0
 
+    def _pilot_init_state(self):
+        self._pilot_compact = bool(self.config.get("pilot_compact", False))
+        self._pilot_series = {
+            "tons": deque(maxlen=self.PILOT_SERIES_LIMIT),
+            "cargo": deque(maxlen=self.PILOT_SERIES_LIMIT),
+            "hull": deque(maxlen=self.PILOT_SERIES_LIMIT),
+        }
+        self._pilot_tiles = {}
+        self._pilot_bars = {}
+        self._pilot_canvases = {}
+        self._pilot_columns = 0
+        self._pilot_last_sample = 0.0
+        self._pilot_resize_job = None
+        self._pilot_refresh_job = None
+        self._pilot_journal_cache = ("", 0.0)
+
+    def _build_tab_pilot(self):
+        self._pilot_init_state()
+        viewport = tb.Frame(self.tab_pilot)
+        viewport.pack(fill=BOTH, expand=True)
+
+        header = tb.Frame(viewport, padding=(15, 12, 15, 4))
+        header.pack(fill=X)
+        tb.Label(header, text="ИНФОГРАФИКА ПИЛОТА", font=("Consolas", 15, "bold"),
+                 foreground=COLOR_ORANGE).pack(side=LEFT)
+        self._pilot_compact_var = tk.BooleanVar(value=self._pilot_compact)
+        tb.Checkbutton(header, text="Компактный режим", variable=self._pilot_compact_var,
+                       command=self._on_pilot_compact_changed).pack(side=RIGHT)
+        tb.Button(header, text="Обновить", command=self._refresh_pilot_infographic,
+                  bootstyle="info-outline", width=12).pack(side=RIGHT, padx=(0, 12))
+        self._pilot_updated_label = tb.Label(header, text="", foreground=COLOR_MUTED)
+        self._pilot_updated_label.pack(side=RIGHT, padx=(0, 12))
+
+        tb.Label(
+            viewport,
+            text="Живые данные из журнала, трекера корабля, маршрута и текущей сессии. "
+                 "Сетевых запросов инфографика не делает.",
+            foreground=COLOR_MUTED,
+            wraplength=900,
+        ).pack(anchor=W, padx=15, pady=(0, 8))
+
+        self._pilot_body = tb.Frame(viewport, padding=(9, 0, 9, 9))
+        self._pilot_body.pack(fill=BOTH, expand=True)
+        # Раскладка пересобирается при изменении ширины окна: на узком окне
+        # три колонки превращаются в две и в одну, а не «сплющиваются».
+        self.tab_pilot.bind("<Configure>", self._on_pilot_resize)
+
+        self._rebuild_pilot_layout()
+        self._refresh_pilot_infographic()
+
+    # -- раскладка ---------------------------------------------------------
+    def _on_pilot_compact_changed(self):
+        self._pilot_compact = bool(self._pilot_compact_var.get())
+        self.config["pilot_compact"] = self._pilot_compact
+        self.save_config()
+        self._rebuild_pilot_layout()
+        self._refresh_pilot_infographic()
+
+    def _on_pilot_resize(self, _event=None):
+        if self._pilot_resize_job:
+            try:
+                self.root.after_cancel(self._pilot_resize_job)
+            except Exception:
+                pass
+        self._pilot_resize_job = self.root.after(250, self._rebuild_pilot_layout_if_needed)
+
+    def _rebuild_pilot_layout_if_needed(self):
+        self._pilot_resize_job = None
+        if self._pilot_column_count() != self._pilot_columns:
+            self._rebuild_pilot_layout()
+            self._refresh_pilot_infographic()
+
+    def _pilot_window_width(self) -> int:
+        try:
+            width = int(self.root.winfo_width())
+        except Exception:
+            width = 0
+        return width if width > 0 else 1100
+
+    def _pilot_column_count(self) -> int:
+        width = self._pilot_window_width()
+        if self._pilot_compact:
+            if width >= 1180:
+                return 4
+            if width >= 880:
+                return 3
+            return 2 if width >= 620 else 1
+        if width >= 1300:
+            return 3
+        if width >= 840:
+            return 2
+        return 1
+
+    def _rebuild_pilot_layout(self):
+        for child in list(self._pilot_body.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        self._pilot_tiles.clear()
+        self._pilot_bars.clear()
+        self._pilot_canvases.clear()
+
+        compact = self._pilot_compact
+        columns = self._pilot_column_count()
+        self._pilot_columns = columns
+        pad = (6, 4) if compact else (10, 8)
+
+        # 1. Крупные показатели — вся ширина окна
+        kpi_row = tb.Frame(self._pilot_body)
+        kpi_row.pack(fill=X, pady=(0, 8))
+        for index in range(4):
+            kpi_row.columnconfigure(index, weight=1, uniform="pilot_kpi")
+        self._pilot_kpi(kpi_row, "kpi_tons", "ТОННЫ ЗА СЕССИЮ", COLOR_GREEN, index=0, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_deliveries", "ДОСТАВКИ", COLOR_CYAN, index=1, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_cargo", "ГРУЗ", COLOR_ORANGE, index=2, pad=pad)
+        self._pilot_kpi(kpi_row, "kpi_systems", "СИСТЕМЫ", COLOR_CYAN, index=3, pad=pad)
+
+        # 2. Плитки с деталями — сетка, число колонок зависит от ширины
+        grid = tb.Frame(self._pilot_body)
+        grid.pack(fill=BOTH, expand=True)
+        for index in range(columns):
+            grid.columnconfigure(index, weight=1, uniform="pilot_grid")
+
+        tiles = [
+            ("session", self._pilot_tile_session),
+            ("ship", self._pilot_tile_ship),
+            ("route", self._pilot_tile_route),
+            ("systems", self._pilot_tile_systems),
+            ("status", self._pilot_tile_status),
+            ("journal", self._pilot_tile_journal),
+        ]
+        for index, (_key, builder) in enumerate(tiles):
+            row, column = divmod(index, columns)
+            grid.rowconfigure(row, weight=1)
+            builder(grid, row=row, column=column, pad=pad)
+
+    # -- строители плиток --------------------------------------------------
+    def _pilot_card(self, parent, title, row=None, column=None, pad=(10, 8), columnspan=1):
+        """Рамка плитки с заголовком; возвращает внутренний контейнер."""
+        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
+        if row is None:
+            card.pack(fill=BOTH, expand=True, padx=6, pady=6)
+        else:
+            card.grid(row=row, column=column, columnspan=columnspan,
+                      sticky="nsew", padx=6, pady=6)
+        title_font = ("Consolas", 9 if self._pilot_compact else 10, "bold")
+        tb.Label(card, text=title, font=title_font, foreground=COLOR_ORANGE).pack(anchor=W)
+        body = tb.Frame(card)
+        body.pack(fill=BOTH, expand=True, pady=(4, 0))
+        return body
+
+    def _pilot_kpi(self, parent, key, title, color, index=0, pad=(10, 8)):
+        card = tb.Frame(parent, relief="solid", borderwidth=1, padding=pad)
+        card.grid(row=0, column=index, sticky="nsew", padx=6, pady=2)
+        tb.Label(card, text=title, font=("Consolas", 9, "bold"),
+                 foreground=COLOR_MUTED).pack(anchor=W)
+        value_font = ("Consolas", 20 if self._pilot_compact else 28, "bold")
+        self._pilot_tiles[key] = tb.Label(card, text="—", font=value_font, foreground=color)
+        self._pilot_tiles[key].pack(anchor=W)
+        self._pilot_tiles[f"{key}_sub"] = tb.Label(
+            card, text="", font=("Consolas", 9), foreground=COLOR_MUTED, wraplength=260)
+        self._pilot_tiles[f"{key}_sub"].pack(anchor=W)
+
+    def _pilot_row(self, parent, key, label, value="—", color=None):
+        """Строка «подпись … значение» внутри плитки."""
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=1)
+        tb.Label(row, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(side=LEFT)
+        value_label = tb.Label(
+            row, text=value, font=("Consolas", 10, "bold"),
+            foreground=color or COLOR_CYAN)
+        value_label.pack(side=RIGHT)
+        self._pilot_tiles[key] = value_label
+        return value_label
+
+    def _pilot_bar(self, parent, key, label):
+        frame = tb.Frame(parent)
+        frame.pack(fill=X, pady=(4, 0))
+        tb.Label(frame, text=label, font=("Consolas", 9), foreground=COLOR_MUTED).pack(anchor=W)
+        bar = tb.Progressbar(frame, mode="determinate", length=100)
+        bar.pack(fill=X)
+        self._pilot_bars[key] = bar
+
+    def _pilot_canvas(self, parent, key, height=70):
+        canvas = tk.Canvas(parent, height=height, highlightthickness=0, borderwidth=0)
+        canvas.pack(fill=X, pady=(4, 2))
+        self._pilot_canvases[key] = canvas
+        return canvas
+
+    def _pilot_tile_session(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ДИНАМИКА СЕССИИ", row=row, column=column, pad=pad)
+        self._pilot_canvas(body, "spark_tons", height=64)
+        self._pilot_row(body, "session_rate", "Темп")
+        self._pilot_row(body, "session_construction", "На стройки")
+        self._pilot_row(body, "session_route", "На маршруте")
+
+    def _pilot_tile_ship(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "КОРАБЛЬ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "ship", "Корабль")
+        self._pilot_bar(body, "hull_bar", "Корпус")
+        self._pilot_bar(body, "shield_bar", "Щиты")
+        self._pilot_bar(body, "fuel_bar", "Топливо")
+        self._pilot_bar(body, "power_bar", "Энергия")
+        self._pilot_row(body, "modules", "Модули")
+
+    def _pilot_tile_route(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "МАРШРУТ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "route_status", "Пройдено")
+        self._pilot_bar(body, "route_progress", "Прогресс")
+        self._pilot_row(body, "route_current", "Текущая")
+        self._pilot_row(body, "route_next", "Следующая")
+        self._pilot_row(body, "route_remaining", "Осталось")
+        self._pilot_row(body, "last_delivery", "Последняя доставка")
+
+    def _pilot_tile_systems(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ТОП СИСТЕМ ПО ТОННАМ", row=row, column=column, pad=pad)
+        self._pilot_canvas(body, "bars_systems", height=110)
+
+    def _pilot_tile_status(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "СТАТУС И ПОДКЛЮЧЕНИЯ", row=row, column=column, pad=pad)
+        self._pilot_row(body, "commander", "CMDR")
+        self._pilot_row(body, "system", "Система")
+        self._pilot_row(body, "game", "Игра")
+        self._pilot_row(body, "watcher", "Watcher")
+        self._pilot_row(body, "services", "Сервисы")
+        self._pilot_row(body, "exobio", "Экзобиология")
+
+    def _pilot_tile_journal(self, parent, row, column, pad):
+        body = self._pilot_card(parent, "ЖУРНАЛЫ И ЭКОНОМИКА", row=row, column=column, pad=pad)
+        self._pilot_row(body, "balance", "Баланс")
+        self._pilot_row(body, "rebuy", "Страховка")
+        self._pilot_row(body, "legal", "Правовой статус")
+        self._pilot_row(body, "journal_state", "Журналы")
+        self._pilot_row(body, "event_summary", "События")
+        self._pilot_row(body, "last_event", "Последнее", color=COLOR_MUTED)
+
+    # -- отрисовка графиков ------------------------------------------------
+    def _pilot_draw_sparkline(self, canvas, values, color, label=""):
+        """Спарклайн: линия с заливкой. Без внешних библиотек — чистый Canvas."""
+        try:
+            canvas.delete("all")
+            width = int(canvas.winfo_width()) or 240
+            height = int(canvas.winfo_height()) or 60
+            if width < 10 or height < 10:
+                return
+            points = [float(v) for v in values]
+            if len(points) < 2:
+                canvas.create_text(6, height // 2, anchor="w", fill=COLOR_MUTED,
+                                   text=label or "накопление данных…", font=("Consolas", 8))
+                return
+            low, high = min(points), max(points)
+            if high - low < 1e-9:
+                low, high = low - 1.0, high + 1.0
+            pad_y = 4
+            usable = max(1, height - pad_y * 2)
+            step_x = width / float(len(points) - 1)
+            coords = []
+            for index, value in enumerate(points):
+                x = index * step_x
+                y = pad_y + (1.0 - (value - low) / (high - low)) * usable
+                coords.extend((x, y))
+            canvas.create_polygon([coords[0], height] + coords + [coords[-2], height],
+                                  fill=color, stipple="gray50", outline="")
+            canvas.create_line(*coords, fill=color, width=2, smooth=True)
+            canvas.create_text(4, 10, anchor="w", fill=color, font=("Consolas", 9, "bold"),
+                               text=f"{points[-1]:.0f}")
+        except Exception:
+            pass
+
+    def _pilot_draw_bars(self, canvas, rows, color):
+        """Горизонтальные полосы: [(подпись, значение), ...]."""
+        try:
+            canvas.delete("all")
+            width = int(canvas.winfo_width()) or 240
+            height = int(canvas.winfo_height()) or 100
+            if width < 10 or height < 10 or not rows:
+                canvas.create_text(6, height // 2 or 10, anchor="w", fill=COLOR_MUTED,
+                                   text="данных пока нет", font=("Consolas", 8))
+                return
+            maximum = max(value for _label, value in rows) or 1
+            row_height = max(14, min(26, height // max(1, len(rows))))
+            for index, (label, value) in enumerate(rows[:8]):
+                top = index * row_height + 2
+                bar_width = int((width - 90) * (value / maximum))
+                canvas.create_rectangle(0, top, max(2, bar_width), top + row_height - 6,
+                                        fill=color, outline="")
+                canvas.create_text(2, top + row_height - 4, anchor="sw", fill=COLOR_MUTED,
+                                   font=("Consolas", 8), text=str(label)[:28])
+                canvas.create_text(width - 2, top + row_height - 4, anchor="se",
+                                   fill=COLOR_TEXT, font=("Consolas", 8, "bold"),
+                                   text=f"{value:.0f} t")
+        except Exception:
+            return
+
+    # -- обновление --------------------------------------------------------
+    def _pilot_sample_series(self, state: dict):
+        """Снять точку для спарклайнов (не чаще раза в PILOT_SAMPLE_SECONDS)."""
+        now = time.monotonic()
+        if now - self._pilot_last_sample < self.PILOT_SAMPLE_SECONDS:
+            return
+        self._pilot_last_sample = now
+        self._pilot_series["tons"].append(float(self._session_cargo_tons or 0))
+        self._pilot_series["cargo"].append(float(state.get("cargo_count", 0) or 0))
+        self._pilot_series["hull"].append(self._pilot_percent(state.get("hull_percent")))
+
+    def _pilot_rate(self) -> float:
+        """Тонн в час по последним точкам серии."""
+        series = self._pilot_series["tons"]
+        if len(series) < 2:
+            return 0.0
+        delta = float(series[-1]) - float(series[0])
+        minutes = max(1.0, (len(series) - 1) * self.PILOT_SAMPLE_SECONDS / 60.0)
+        return delta / minutes * 60.0
+
     def _refresh_pilot_infographic(self):
         """Обновить инфографику только локальным состоянием приложения."""
-        if not hasattr(self, "_pilot_values"):
+        if not hasattr(self, "_pilot_tiles"):
             return
         try:
             state = self.ship.get_state_dict()
             route_total = len(self.route.systems)
             visited = self.route.visited_count
-            route_percent = (visited / route_total * 100) if route_total else 0
+            route_percent = (visited / route_total * 100) if route_total else 0.0
             current = self.ship.state.current_system or "—"
             ship_name = state.get("ship_type") or "Корабль не определён"
-            services = " / ".join(name for name, enabled in (
-                ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
-                ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
-            ) if enabled) or "нет подключений"
+            services = " / ".join(
+                name for name, enabled in (
+                    ("ED", self.api.is_connected), ("Raven", self.raven_api.is_connected),
+                    ("EDSM", self.edsm_api.enabled), ("Inara", self.inara_api.enabled),
+                ) if enabled
+            ) or "нет подключений"
             cargo = float(state.get("cargo_count", 0) or 0)
             capacity = float(state.get("cargo_capacity", 0) or 0)
-            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0
+            cargo_percent = cargo / capacity * 100 if capacity > 0 else 0.0
             damaged = int(state.get("damaged_count", 0) or 0)
             total_modules = len(state.get("modules", []))
             event_count = self._session_event_count
+            game_state = self.overlay_manager.game_state()
+            exobio = self.exobiology.current_body_state() if hasattr(self, "exobiology") else None
 
-            values = {
-                "commander": self.api.display_name if self.api.cmdr_name or self.api.email else (self._watcher_cmdr_name or "CMDR не определён"),
-                "system": current,
-                "ship": ship_name,
-                "watcher": "АКТИВЕН" if self.watcher_active else "остановлен",
-                "services": services,
-                "route_status": f"{visited}/{route_total} систем" if route_total else "Маршрут не загружен",
-                "route_current": self._get_overlay_data().get("current", "—"),
-                "route_next": self._get_overlay_data().get("next", "—"),
-                "route_remaining": str(max(0, route_total - visited)),
-                "hull": f"{self._pilot_percent(state.get('hull_percent')):.0f}%",
-                "shield": f"{self._pilot_percent(state.get('shield_percent')):.0f}%",
-                "fuel": f"{state.get('fuel_level', 0):.1f} / {state.get('fuel_capacity', 0):.1f} t",
-                "power": f"{self._pilot_percent(state.get('power_percent')):.0f}%",
-                "modules": f"{total_modules - damaged}/{total_modules} исправны",
-                "cargo": f"{cargo:.0f} / {capacity:.0f} t",
-                "balance": f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "),
-                "rebuy": f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "),
-                "legal": state.get("legal_state") or "неизвестно",
-                "last_delivery": self._last_delivery_system or "—",
-                "session_tons": f"{self._session_cargo_tons:.0f} t",
-                "session_deliveries": str(self._session_deliveries),
-                "session_route": f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t",
-                "session_construction": f"{self._session_construction_cargo_tons:.0f} t",
-                "session_systems": str(len(self._session_systems_visited)),
-                "event_summary": f"{event_count} событий" if event_count else "Ожидание событий",
-                "journal_state": "watcher читает" if self.watcher_active else "ожидание",
-                "raven": "подключён" if self.raven_api.is_connected else "выключен",
-                "edsm": "подключён" if self.edsm_api.enabled else "выключен",
-                "inara": "подключена" if self.inara_api.enabled else "выключена",
-                "last_event": self._last_session_event or "—",
-            }
-            for key, text in values.items():
-                if key in self._pilot_values:
-                    self._pilot_values[key].configure(text=text)
+            self._pilot_sample_series(state)
+
+            # --- крупные показатели ---
+            self._pilot_set("kpi_tons", f"{self._session_cargo_tons:.0f} t")
+            self._pilot_set("kpi_tons_sub", f"на маршрут {self._session_route_cargo_tons:.0f} t · на стройки {self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("kpi_deliveries", str(self._session_deliveries))
+            self._pilot_set("kpi_deliveries_sub", f"событий в сессии: {event_count}")
+            self._pilot_set("kpi_cargo", f"{cargo:.0f} / {capacity:.0f} t")
+            self._pilot_set("kpi_cargo_sub", f"трюм заполнен на {cargo_percent:.0f}%")
+            self._pilot_set("kpi_systems", str(len(self._session_systems_visited)))
+            self._pilot_set("kpi_systems_sub", f"маршрут: {visited}/{route_total}" if route_total else "маршрут не загружен")
+
+            # --- динамика ---
+            self._pilot_set("session_rate", f"{self._pilot_rate():.0f} t/час")
+            self._pilot_set("session_construction", f"{self._session_construction_cargo_tons:.0f} t")
+            self._pilot_set("session_route", f"{self._session_route_deliveries} / {self._session_route_cargo_tons:.0f} t")
+
+            # --- корабль ---
+            self._pilot_set("ship", ship_name)
+            self._pilot_set("modules", f"{total_modules - damaged}/{total_modules} исправны")
             for key, value in {
-                "route_progress": route_percent, "hull_bar": self._pilot_percent(state.get("hull_percent")),
-                "fuel_bar": self._pilot_percent(state.get("fuel_percent")), "cargo_bar": cargo_percent,
+                "hull_bar": self._pilot_percent(state.get("hull_percent")),
+                "shield_bar": self._pilot_percent(state.get("shield_percent")),
+                "fuel_bar": self._pilot_percent(state.get("fuel_percent")),
+                "power_bar": self._pilot_percent(state.get("power_percent")),
             }.items():
                 if key in self._pilot_bars:
                     self._pilot_bars[key].configure(value=value)
-            self._pilot_values["updated"].configure(text=datetime.now().strftime("%H:%M:%S"))
+
+            # --- маршрут ---
+            self._pilot_set("route_status", f"{visited}/{route_total} систем" if route_total else "не загружен")
+            if "route_progress" in self._pilot_bars:
+                self._pilot_bars["route_progress"].configure(value=route_percent)
+            overlay_data = self._get_overlay_data()
+            self._pilot_set("route_current", str(overlay_data.get("current", "—")))
+            self._pilot_set("route_next", str(overlay_data.get("next", "—")))
+            self._pilot_set("route_remaining", str(max(0, route_total - visited)))
+            self._pilot_set("last_delivery", self._last_delivery_system or "—")
+
+            # --- статус и подключения ---
+            self._pilot_set("commander", self._current_cmdr_name() or "CMDR не определён")
+            self._pilot_set("system", current)
+            game_text = "запущена (в фокусе)" if game_state.focused else ("запущена" if game_state.running else "не запущена")
+            if game_state.error:
+                game_text = f"нет данных ({game_state.error})"
+            self._pilot_set("game", game_text)
+            self._pilot_set("watcher", "АКТИВЕН" if self.watcher_active else "остановлен")
+            self._pilot_set("services", services)
+            if exobio:
+                genera = ", ".join(row["genus"] for row in (exobio.get("predictions") or [])[:3])
+                exobio_text = f"{exobio.get('body')}: {exobio.get('bio_signals', 0)} сигналов"
+                if genera:
+                    exobio_text += f" · {genera}"
+            else:
+                exobio_text = "тело не отсканировано"
+            self._pilot_set("exobio", exobio_text)
+
+            # --- журналы и экономика ---
+            self._pilot_set("balance", f"{int(state.get('balance', 0) or 0):,} cr".replace(",", " "))
+            self._pilot_set("rebuy", f"{int(state.get('rebuy', 0) or 0):,} cr".replace(",", " "))
+            self._pilot_set("legal", state.get("legal_state") or "неизвестно")
+            self._pilot_set("journal_state", self._pilot_journal_state())
+            self._pilot_set("event_summary", f"{event_count} событий" if event_count else "ожидание событий")
+            self._pilot_set("last_event", (self._last_session_event or "—")[:48])
+
+            # --- графики ---
+            if "spark_tons" in self._pilot_canvases:
+                self._pilot_draw_sparkline(self._pilot_canvases["spark_tons"],
+                                           self._pilot_series["tons"], COLOR_GREEN,
+                                           "журнал пока пуст")
+            if "bars_systems" in self._pilot_canvases:
+                rows = sorted(getattr(self, "_session_tons_by_system", {}).items(),
+                              key=lambda item: item[1], reverse=True)
+                self._pilot_draw_bars(self._pilot_canvases["bars_systems"], rows, COLOR_CYAN)
+
+            self._pilot_updated_label.configure(text=datetime.now().strftime("%H:%M:%S"))
         except Exception:
             # Инфографика не должна мешать watcher/UI при неполном состоянии
             # трекера во время самого первого чтения Journal.
             pass
-        if self.root.winfo_exists():
-            self.root.after(1000, self._refresh_pilot_infographic)
+        # Обновление идёт ровно одной цепочкой: кнопка «Обновить» и смена
+        # раскладки не должны плодить параллельные таймеры.
+        if self._pilot_refresh_job is None and self.root.winfo_exists():
+            self._pilot_refresh_job = self.root.after(1000, self._pilot_tick)
+
+    def _pilot_tick(self):
+        """Плановый тик автообновления (освобождает слот таймера)."""
+        self._pilot_refresh_job = None
+        self._refresh_pilot_infographic()
+
+    def _pilot_set(self, key: str, text: str):
+        label = self._pilot_tiles.get(key)
+        if label is not None:
+            try:
+                label.configure(text=text)
+            except Exception:
+                pass
+
+    def _pilot_journal_count(self) -> int:
+        """Сколько файлов журналов в папке (сканируем не чаще раза в 15 с)."""
+        text, stamp = self._pilot_journal_cache
+        if text and time.monotonic() - stamp < 15:
+            return int(text)
+        try:
+            files = list(self.journal_path.glob("Journal.*.log")) if self.journal_path else []
+        except OSError:
+            files = []
+        self._pilot_journal_cache = (str(len(files)), time.monotonic())
+        return len(files)
+
+    def _pilot_journal_state(self) -> str:
+        """Короткая сводка по журналам: сколько файлов и отслеживается ли."""
+        count = self._pilot_journal_count()
+        if not count:
+            return "папка журналов не выбрана"
+        return f"{count} файлов · {'слежение' if self.watcher_active else 'ожидание'}"
 
     # ============================================================
     #  Вкладка: Загрузка логов
@@ -674,7 +1051,70 @@ class ColonialHelperApp:
         self.progress_label = tb.Label(frame, text="", foreground=COLOR_MUTED)
         self.progress_label.pack(anchor=W)
 
+        # -- Настройки первичной загрузки --
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=(15, 10))
+        tb.Label(
+            frame,
+            text="Первичная загрузка (вся история журналов)",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor=W, pady=(0, 6))
+
+        self.skip_imported_var = tb.BooleanVar(value=self.skip_imported_files)
+        tb.Checkbutton(
+            frame,
+            text="Пропускать файлы, загруженные ранее (быстрый повторный импорт)",
+            variable=self.skip_imported_var,
+            bootstyle="success-round-toggle",
+            command=self._on_skip_imported_changed,
+        ).pack(anchor=W)
+
+        self.backfill_third_party_var = tb.BooleanVar(value=bool(self.dispatcher.backfill_enabled))
+        tb.Checkbutton(
+            frame,
+            text="Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)",
+            variable=self.backfill_third_party_var,
+            bootstyle="warning-round-toggle",
+            command=self._on_backfill_third_party_changed,
+        ).pack(anchor=W, pady=(2, 0))
+
+        tb.Label(
+            frame,
+            text="По умолчанию история отправляется только на ED Ring Colony: внешние сервисы "
+                 "получают лишь live-события watcher'а. Отправка тысяч исторических событий "
+                 "в EDSM/Inara/Raven — это часы ожидания и риск блокировки по rate limit.",
+            foreground=COLOR_MUTED,
+            wraplength=760,
+            font=("Segoe UI", 9),
+        ).pack(anchor=W, pady=(2, 8))
+
+        cache_frame = tb.Frame(frame)
+        cache_frame.pack(anchor=W)
+        tb.Button(
+            cache_frame,
+            text="Сбросить кэш импорта",
+            command=self._reset_import_cache,
+            bootstyle="secondary-outline",
+            width=22,
+        ).pack(side=LEFT)
+
         self.selected_files: list[Path] = []
+
+    def _on_skip_imported_changed(self):
+        self.skip_imported_files = bool(self.skip_imported_var.get())
+        self.config["skip_imported_files"] = self.skip_imported_files
+        self.save_config()
+
+    def _on_backfill_third_party_changed(self):
+        enabled = bool(self.backfill_third_party_var.get())
+        self.dispatcher.configure(backfill_enabled=enabled)
+        self.config["backfill_send_third_party"] = enabled
+        self.save_config()
+        self.log(
+            "История журналов будет отправляться во внешние API (медленно)"
+            if enabled
+            else "История журналов не отправляется во внешние API (только live-события)",
+            "warn" if enabled else "info",
+        )
 
     # ============================================================
     #  Вкладка: Маршрут
@@ -747,6 +1187,460 @@ class ColonialHelperApp:
 
         self.route_counter = tb.Label(frame, text="Маршрут не загружен", foreground=COLOR_MUTED)
         self.route_counter.pack(anchor=W, pady=(8, 0))
+
+    # ============================================================
+    #  Вкладка: Колонизатор (Raven Colonial)
+    # ============================================================
+    def _build_tab_colony(self):
+        frame = tb.Frame(self.tab_colony, padding=15)
+        frame.pack(fill=BOTH, expand=True)
+
+        tb.Label(frame, text="Колонизатор — проекты Raven Colonial",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 8))
+        tb.Label(
+            frame,
+            text="Просмотр своих проектов, назначение основного, завершение стройки и создание "
+                 "нового проекта. Запись (создание/изменение/завершение) требует ключа RCC — "
+                 "его выдают на сайте Raven Colonial.",
+            foreground=COLOR_MUTED,
+            wraplength=780,
+        ).pack(anchor=W, pady=(0, 10))
+
+        # ---- Командир и обновление ----
+        top = tb.Frame(frame)
+        top.pack(fill=X, pady=(0, 8))
+        tb.Label(top, text="Командир:", width=12, anchor=W).pack(side=LEFT)
+        self.colony_cmdr_var = tk.StringVar(value=self._current_cmdr_name())
+        tb.Entry(top, textvariable=self.colony_cmdr_var, width=28).pack(side=LEFT, padx=(0, 10))
+        tb.Button(top, text="Обновить список", command=self._on_colony_refresh,
+                  bootstyle="info-outline", width=18).pack(side=LEFT, padx=(0, 8))
+        self.colony_key_label = tb.Label(top, text="", foreground=COLOR_MUTED, font=("Consolas", 9))
+        self.colony_key_label.pack(side=LEFT)
+
+        # ---- Таблица проектов ----
+        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
+        tree_frame.pack(fill=BOTH, expand=True)
+        columns = ("primary", "system", "build", "type", "progress", "build_id")
+        self.colony_tree = tb.Treeview(
+            tree_frame, columns=columns, show="headings", bootstyle="dark", height=10,
+        )
+        for col, title, width, anchor in [
+            ("primary", "★", 34, CENTER),
+            ("system", "Система", 170, W),
+            ("build", "Стройка", 190, W),
+            ("type", "Тип", 160, W),
+            ("progress", "Прогресс", 150, CENTER),
+            ("build_id", "buildId", 260, W),
+        ]:
+            self.colony_tree.heading(col, text=title)
+            self.colony_tree.column(col, width=width, anchor=anchor)
+        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.colony_tree.yview)
+        self.colony_tree.configure(yscrollcommand=vsb.set)
+        self.colony_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+        self.colony_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_colony_select())
+
+        # ---- Действия с выбранным проектом ----
+        actions = tb.Frame(frame)
+        actions.pack(fill=X, pady=(10, 0))
+        self.colony_action_buttons = []
+        for text, command, style in [
+            ("★ Сделать основным", self._on_colony_set_primary, "success-outline"),
+            ("Снять основной", self._on_colony_clear_primary, "secondary-outline"),
+            ("Завершить проект", self._on_colony_complete, "danger-outline"),
+            ("Копировать buildId", self._on_colony_copy_id, "info-outline"),
+        ]:
+            btn = tb.Button(actions, text=text, command=command, bootstyle=style, width=22,
+                            state="disabled")
+            btn.pack(side=LEFT, padx=(0, 8))
+            self.colony_action_buttons.append(btn)
+
+        self.colony_status = tb.Label(frame, text="", foreground=COLOR_MUTED, font=("Consolas", 9),
+                                      wraplength=780)
+        self.colony_status.pack(anchor=W, pady=(6, 0))
+
+        # ---- Создание проекта ----
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
+        tb.Label(frame, text="Создать проект", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 6))
+
+        form = tb.Frame(frame)
+        form.pack(fill=X)
+        self.colony_fields = {}
+        rows = [
+            ("systemName", "Система *", ""),
+            ("buildName", "Название *", ""),
+            ("buildType", "Тип постройки *", ""),
+            ("marketId", "Market ID", ""),
+            ("systemAddress", "System address", ""),
+            ("maxNeed", "maxNeed", ""),
+            ("notes", "Заметки", ""),
+        ]
+        for index, (key, label, default) in enumerate(rows):
+            tb.Label(form, text=label, width=16, anchor=W).grid(row=index, column=0, sticky=W, pady=2)
+            var = tk.StringVar(value=default)
+            self.colony_fields[key] = var
+            entry = tb.Entry(form, textvariable=var, width=44)
+            entry.grid(row=index, column=1, sticky=W, pady=2)
+            if key == "buildType":
+                self.colony_build_type_entry = entry  # подсказки берём из своих проектов
+
+        self.colony_primary_port_var = tk.BooleanVar(value=False)
+        tb.Checkbutton(form, text="Основной порт системы", variable=self.colony_primary_port_var).grid(
+            row=len(rows), column=1, sticky=W, pady=2)
+        tb.Label(
+            form,
+            text="Товары (необязательно), формат: aluminium:1200, steel:900",
+            width=46, anchor=W,
+        ).grid(row=len(rows) + 1, column=1, sticky=W, pady=(6, 0))
+        self.colony_commodities_var = tk.StringVar(value="")
+        tb.Entry(form, textvariable=self.colony_commodities_var, width=44).grid(
+            row=len(rows) + 2, column=1, sticky=W)
+
+        buttons = tb.Frame(frame)
+        buttons.pack(anchor=W, pady=(10, 0))
+        tb.Button(buttons, text="Создать проект", command=self._on_colony_create,
+                  bootstyle="success-outline", width=20).pack(side=LEFT, padx=(0, 8))
+        tb.Button(buttons, text="Подставить текущую систему",
+                  command=self._on_colony_fill_current, bootstyle="secondary-outline", width=26).pack(side=LEFT)
+
+        self._update_colony_key_label()
+
+    # ---------- Колонизатор: состояние ----------
+    def _current_cmdr_name(self) -> str:
+        """Имя командира: из токена сайта, из журнала или вручную."""
+        for candidate in (
+            getattr(self.api, "cmdr_name", "") or "",
+            self._watcher_cmdr_name or "",
+            self.config.get("cmdr_name", "") or "",
+        ):
+            if candidate:
+                return str(candidate)
+        return ""
+
+    def _update_colony_key_label(self):
+        if not hasattr(self, "colony_key_label"):
+            return
+        if self.raven_api.is_connected:
+            self.colony_key_label.config(text="RCC ключ задан", foreground=COLOR_GREEN)
+        else:
+            self.colony_key_label.config(text="RCC ключ не задан — только просмотр",
+                                         foreground=COLOR_ORANGE)
+
+    def _selected_colony_project(self) -> Optional[dict]:
+        if not hasattr(self, "colony_tree"):
+            return None
+        selection = self.colony_tree.selection()
+        if not selection:
+            return None
+        values = self.colony_tree.item(selection[0], "values")
+        if not values or len(values) < 6:
+            return None
+        return {
+            "primary": values[0] == "★",
+            "systemName": values[1],
+            "buildName": values[2],
+            "buildType": values[3],
+            "progress": values[4],
+            "buildId": values[5],
+        }
+
+    def _on_colony_select(self):
+        project = self._selected_colony_project()
+        state = "normal" if (project and project["buildId"]) else "disabled"
+        for btn in getattr(self, "colony_action_buttons", []):
+            btn.config(state=state)
+        if project:
+            self.colony_status.config(
+                text=f"{project['systemName']}: {project['buildName']} "
+                     f"({project['buildType']}) — {project['progress']}"
+            )
+
+    def _set_colony_busy(self, busy: bool, text: str = ""):
+        """Блокируем кнопки на время запроса, чтобы не спамить Raven."""
+        for btn in getattr(self, "colony_action_buttons", []):
+            btn.config(state="disabled" if busy else "normal")
+        if text:
+            self.colony_status.config(text=text)
+        if not busy:
+            self._on_colony_select()
+
+    # ---------- Колонизатор: запросы (в фоне) ----------
+    def _on_colony_refresh(self):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира для поиска проектов.", "warn")
+            return
+        self._set_colony_busy(True, "Загружаю проекты Raven Colonial…")
+        threading.Thread(target=self._colony_refresh_thread, args=(cmdr,), daemon=True).start()
+
+    def _colony_refresh_thread(self, cmdr: str):
+        result = self.raven_api.get_cmdr_active(cmdr)
+        primary = self.raven_api.get_primary(cmdr) if result.get("ok") else {"ok": False}
+        self.after(0, lambda: self._colony_refresh_done(result, primary))
+
+    def _colony_refresh_done(self, result: dict, primary: dict):
+        self._set_colony_busy(False)
+        if not result.get("ok"):
+            self.colony_status.config(text=f"Не удалось загрузить проекты: {result.get('error')}")
+            self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
+            return
+
+        data = result.get("data")
+        projects = self._extract_colony_projects(data)
+        primary_id = self._extract_primary_id(primary)
+        self._fill_colony_tree(projects, primary_id)
+        self.colony_status.config(text=f"Проектов: {len(projects)}")
+        self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
+
+    @staticmethod
+    def _extract_colony_projects(data) -> list:
+        """Ответ /cmdr/{cmdr}/active — это список проектов или {'projects': [...]}."""
+        if isinstance(data, dict):
+            for key in ("projects", "Projects"):
+                if isinstance(data.get(key), list):
+                    return [p for p in data[key] if isinstance(p, dict)]
+            return [data] if "buildId" in data else []
+        if isinstance(data, list):
+            # Без buildId проект бесполезен: к нему нельзя обратиться ни по
+            # одному из действий вкладки.
+            return [p for p in data if isinstance(p, dict) and p.get("buildId")]
+        return []
+
+    @staticmethod
+    def _extract_primary_id(primary: dict):
+        data = primary.get("data") if isinstance(primary, dict) else None
+        if isinstance(data, dict):
+            return str(data.get("primaryBuildId") or data.get("buildId") or "")
+        if isinstance(data, str):
+            return data.strip().strip('"')
+        return ""
+
+    @staticmethod
+    def _project_progress(project: dict) -> str:
+        need = project.get("sumNeed")
+        total = project.get("sumTotal")
+        if need is None and total is None:
+            return "—"
+        try:
+            need = int(need or 0)
+            total = int(total or 0)
+        except (TypeError, ValueError):
+            return "—"
+        if total <= 0:
+            return f"{need}"
+        percent = 100 * need // total if total else 0
+        return f"{need} / {total} ({percent}%)"
+
+    def _fill_colony_tree(self, projects: list, primary_id: str = ""):
+        self.colony_tree.delete(*self.colony_tree.get_children())
+        build_types = []
+        for project in projects:
+            build_id = str(project.get("buildId", "") or "")
+            is_primary = bool(primary_id and build_id and build_id == primary_id)
+            build_type = str(project.get("buildType", "") or "")
+            if build_type and build_type not in build_types:
+                build_types.append(build_type)
+            self.colony_tree.insert(
+                "", END,
+                values=(
+                    "★" if is_primary else "",
+                    str(project.get("systemName", "") or ""),
+                    str(project.get("buildName", "") or ""),
+                    build_type,
+                    self._project_progress(project),
+                    build_id,
+                ),
+            )
+        # Типы построек подсказываем из уже существующих проектов —
+        # так список всегда актуальный и не зависит от захардкоженных данных.
+        entry = getattr(self, "colony_build_type_entry", None)
+        if entry is not None:
+            current = entry.cget("values") or ()
+            merged = list(current) + [t for t in build_types if t not in current]
+            entry.config(values=merged)
+        self._colony_projects_cache = {p.get("buildId"): p for p in projects}
+
+    # ---------- Колонизатор: действия ----------
+    def _on_colony_set_primary(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира.", "warn")
+            return
+        self._set_colony_busy(True, "Назначаю основной проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("set_primary", (cmdr, project["buildId"]),
+                               f"Основной проект: {project['buildName']}"), daemon=True).start()
+
+    def _on_colony_clear_primary(self):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира.", "warn")
+            return
+        self._set_colony_busy(True, "Снимаю основной проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
+
+    def _on_colony_complete(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        if not messagebox.askyesno(
+            "Завершить проект",
+            f"Отметить «{project['buildName']}» ({project['systemName']}) завершённым?\n"
+            "Это действие необратимо.",
+            parent=self.root,
+        ):
+            return
+        self._set_colony_busy(True, "Завершаю проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("mark_complete", (project["buildId"],), "Проект завершён"),
+                         daemon=True).start()
+
+    def _colony_simple_call_thread(self, method_name: str, args: tuple, success_text: str):
+        method = getattr(self.raven_api, method_name, None)
+        result = method(*args) if method else {"ok": False, "error": f"нет метода {method_name}"}
+        self.after(0, lambda: self._colony_action_done(result, success_text))
+
+    def _colony_action_done(self, result: dict, success_text: str):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if result.get("ok"):
+            self.log(f"Raven Colonial: {success_text}", "success")
+            self.colony_status.config(text=success_text)
+            if cmdr:
+                self._on_colony_refresh()
+            else:
+                self._set_colony_busy(False)
+        else:
+            self._set_colony_busy(False)
+            error = result.get("error") or "неизвестная ошибка"
+            self.colony_status.config(text=f"Ошибка: {error}")
+            self.log(f"Raven Colonial: {error}", "error")
+
+    def _on_colony_copy_id(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        build_id = project["buildId"]
+        try:
+            import pyperclip
+
+            pyperclip.copy(build_id)
+            self.log(f"buildId скопирован: {build_id}", "info")
+        except Exception:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(build_id)
+            self.log(f"buildId скопирован: {build_id}", "info")
+
+    def _on_colony_fill_current(self):
+        """Подставить систему, в которой командир находится сейчас."""
+        state = getattr(self.ship, "state", None)
+        system = (getattr(state, "current_system", "") or "").strip()
+        if not system:
+            self.log("Текущая система неизвестна — включите Watcher или загрузите журналы.", "warn")
+            return
+        self.colony_fields["systemName"].set(system)
+        market_id = str(self._last_depot_state.get("_market_id", "") or "")
+        if market_id and market_id != "0":
+            self.colony_fields["marketId"].set(market_id)
+        address = getattr(state, "system_address", 0) or 0
+        if address:
+            self.colony_fields["systemAddress"].set(str(address))
+        depot = self._last_depot_state or {}
+        commodities = [
+            f"{name}:{amount}"
+            for name, amount in sorted(depot.items())
+            if not name.startswith("_") and isinstance(amount, (int, float))
+        ]
+        if commodities:
+            self.colony_commodities_var.set(", ".join(commodities))
+        self.log(f"Подставлена текущая система: {system}", "info")
+
+    @staticmethod
+    def _parse_commodities(text: str) -> dict:
+        """'aluminium:1200, steel:900' -> {'aluminium': 1200, 'steel': 900}."""
+        result = {}
+        for chunk in (text or "").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            name, _, amount = chunk.partition(":")
+            name = name.strip().lower()
+            try:
+                value = int(float(amount.strip()))
+            except ValueError:
+                continue
+            if name:
+                result[name] = value
+        return result
+
+    def _on_colony_create(self):
+        if not self.raven_api.is_connected:
+            self.log("Для создания проекта нужен RCC ключ (вкладка «Подключение»).", "error")
+            return
+        system = self.colony_fields["systemName"].get().strip()
+        build_name = self.colony_fields["buildName"].get().strip()
+        build_type = self.colony_fields["buildType"].get().strip()
+        if not (system and build_name and build_type):
+            self.log("Заполните поля: система, название, тип постройки.", "warn")
+            return
+
+        def as_int(key: str) -> Optional[int]:
+            raw = self.colony_fields[key].get().strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                self.log(f"Поле «{key}» должно быть числом, получено: {raw}", "warn")
+                return None
+
+        market_id, system_address, max_need = as_int("marketId"), as_int("systemAddress"), as_int("maxNeed")
+        if any(value is None and self.colony_fields[key].get().strip()
+               for key, value in (("marketId", market_id), ("systemAddress", system_address),
+                                  ("maxNeed", max_need))):
+            return
+
+        project = {
+            "systemName": system,
+            "buildName": build_name,
+            "buildType": build_type,
+            "marketId": market_id,
+            "systemAddress": system_address,
+            "maxNeed": max_need,
+            "isPrimaryPort": bool(self.colony_primary_port_var.get()),
+            "notes": self.colony_fields["notes"].get().strip() or None,
+            "commodities": self._parse_commodities(self.colony_commodities_var.get()),
+        }
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        self.colony_status.config(text="Создаю проект…")
+        threading.Thread(target=self._colony_create_thread, args=(project, cmdr), daemon=True).start()
+
+    def _colony_create_thread(self, project: dict, cmdr: str):
+        result = self.raven_api.create_project(project)
+        build_id = ""
+        data = result.get("data")
+        if isinstance(data, dict):
+            build_id = str(data.get("buildId", "") or "")
+        if result.get("ok") and build_id and cmdr:
+            # Сразу привязываем проект к командиру, иначе он не попадёт в
+            # список «моих проектов» на сайте и в этой вкладке.
+            self.raven_api.link_cmdr(build_id, cmdr, True)
+        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr))
+
+    def _colony_create_done(self, result: dict, build_id: str, cmdr: str):
+        if result.get("ok"):
+            name = f"{self.colony_fields['systemName'].get()}: {self.colony_fields['buildName'].get()}"
+            self.log(f"Raven Colonial: проект создан — {name} (buildId {build_id})", "success")
+            self.colony_status.config(text=f"Проект создан, buildId: {build_id}")
+            if cmdr:
+                self._on_colony_refresh()
+        else:
+            error = result.get("error") or "неизвестная ошибка"
+            self.colony_status.config(text=f"Создать проект не удалось: {error}")
+            self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
     # ============================================================
     #  Вкладка: Оверлей
@@ -837,37 +1731,95 @@ class ColonialHelperApp:
         self.size_label = tb.Label(size_frame, text=str(self.font_size_var.get()))
         self.size_label.pack(side=LEFT, padx=(10, 0))
 
-        # Чекбоксы оверлеев
-        tb.Label(frame, text="Активные оверлеи:", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
-        ov_frame = tb.Frame(frame)
-        ov_frame.pack(fill=X, pady=5)
+        # ---- Блоки HUD: вид и поведение ----
+        tb.Label(frame, text="Блоки HUD: вид и поведение", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
+        tb.Label(
+            frame,
+            text="Каждый блок настраивается отдельно: показывать ли его, можно ли перетаскивать, "
+                 "своя прозрачность и свой размер шрифта, размер окна, «клик насквозь» и правило "
+                 "«показывать по ситуации». Всё применяется сразу — оверлей перезапускать не нужно.",
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        ).pack(anchor=W, pady=(0, 8))
 
-        self.show_route_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_route", True))
-        tb.Checkbutton(ov_frame, text="ROUTE — маршрут", variable=self.show_route_var,
-                       command=self._on_show_route_changed).pack(anchor=W, pady=2)
+        head = tb.Frame(frame)
+        head.pack(fill=X, pady=(0, 2))
+        for column_text, column_width in (
+            ("Блок", 20), ("Показ", 6), ("Блокир.", 8), ("Сквозь", 7),
+            ("Прозр.", 8), ("Шрифт", 7), ("Размер", 10), ("Показывать", 24), ("Клавиша", 8),
+        ):
+            tb.Label(head, text=column_text, width=column_width, anchor=W,
+                     font=("Consolas", 8), foreground=COLOR_MUTED).pack(side=LEFT, padx=(0, 4))
 
-        self.show_status_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_status", True))
-        tb.Checkbutton(ov_frame, text="STATUS — статус подключения", variable=self.show_status_var,
-                       command=self._on_show_status_changed).pack(anchor=W, pady=2)
+        self._overlay_block_vars = {}
+        for block_key in self.overlay_manager.BLOCKS:
+            self._build_overlay_block_row(frame, block_key)
 
-        self.show_ship_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_ship", True))
-        tb.Checkbutton(ov_frame, text="SHIP — состояние корабля", variable=self.show_ship_var,
-                       command=self._on_show_ship_changed).pack(anchor=W, pady=2)
+        # Общий размер всех блоков
+        all_size_frame = tb.Frame(frame)
+        all_size_frame.pack(fill=X, pady=(8, 0))
+        tb.Label(all_size_frame, text="Размер всех блоков:", width=20, anchor=W).pack(side=LEFT)
+        self.all_size_var = tk.StringVar(value="M — 100%")
+        all_size_combo = tb.Combobox(
+            all_size_frame, textvariable=self.all_size_var, width=10, state="readonly",
+            values=[SIZE_PRESET_LABELS[name] for name, _factor in SIZE_PRESETS],
+        )
+        all_size_combo.pack(side=LEFT, padx=(0, 4))
+        all_size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_all_size_preset_changed())
+        tb.Button(all_size_frame, text="Применить", command=self._on_all_size_preset_changed,
+                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(6, 0))
 
-        self.show_cargo_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_cargo", True))
-        tb.Checkbutton(ov_frame, text="CARGO — товары в трюме", variable=self.show_cargo_var,
-                       command=self._on_show_cargo_changed).pack(anchor=W, pady=2)
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
 
-        self.show_session_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_session", True))
-        tb.Checkbutton(ov_frame, text="SESSION — статистика сессии + график", variable=self.show_session_var,
-                       command=self._on_show_session_changed).pack(anchor=W, pady=2)
+        # ---- Поведение оверлея ----
+        tb.Label(frame, text="Поведение оверлея", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
 
-        tb.Separator(ov_frame, orient=HORIZONTAL).pack(fill=X, pady=6)
+        self.click_through_var = tk.BooleanVar(
+            value=bool(self.overlay_manager.settings.get("click_through", False))
+        )
+        tb.Checkbutton(
+            frame,
+            text="Клик-сквозь для всех блоков (HUD только для глаз, мышь работает в игре)",
+            variable=self.click_through_var,
+            command=self._on_click_through_changed,
+        ).pack(anchor=W, pady=2)
 
-        self.attach_game_var = tk.BooleanVar(value=self.overlay_manager.settings.get("attach_to_game", True))
-        tb.Checkbutton(ov_frame, text="Привязать оверлей к окну Elite Dangerous (только поверх игры)",
-                       variable=self.attach_game_var,
-                       command=self._on_attach_game_changed).pack(anchor=W, pady=2)
+        self.auto_rules_var = tk.BooleanVar(
+            value=bool(self.overlay_manager.settings.get("auto_rules_enabled", False))
+        )
+        tb.Checkbutton(
+            frame,
+            text="Показывать блоки по ситуации (правила заданы в таблице выше)",
+            variable=self.auto_rules_var,
+            command=self._on_auto_rules_changed,
+        ).pack(anchor=W, pady=2)
+
+        self.attach_game_var = tk.BooleanVar(
+            value=self.overlay_manager.settings.get("attach_to_game", True)
+        )
+        tb.Checkbutton(
+            frame,
+            text="Привязать оверлей к окну Elite Dangerous (только поверх игры)",
+            variable=self.attach_game_var,
+            command=self._on_attach_game_changed,
+        ).pack(anchor=W, pady=2)
+
+        idle_frame = tb.Frame(frame)
+        idle_frame.pack(fill=X, pady=(6, 0))
+        tb.Label(idle_frame, text="Скрывать при простое:", width=20, anchor=W).pack(side=LEFT)
+        current_idle = int(self.overlay_manager.settings.get("idle_timeout", 0) or 0)
+        self.idle_var = tk.StringVar(value=self._idle_label(current_idle))
+        idle_combo = tb.Combobox(
+            idle_frame, textvariable=self.idle_var, width=14, state="readonly",
+            values=[self._idle_label(seconds) for seconds in IDLE_TIMEOUTS],
+        )
+        idle_combo.pack(side=LEFT, padx=(0, 4))
+        idle_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_idle_changed())
+        tb.Label(
+            idle_frame,
+            text="простой = нет новых событий в журнале",
+            foreground=COLOR_MUTED,
+        ).pack(side=LEFT, padx=(10, 0))
 
         # Чекбоксы блоков ShipOverlay
         tb.Label(frame, text="Блоки корабля (SHIP):", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
@@ -893,21 +1845,404 @@ class ColonialHelperApp:
             tb.Checkbutton(ship_chk, text=block_label, variable=var,
                            command=lambda k=block_key, v=var: self._on_ship_block_changed(k, v.get())).pack(anchor=W, pady=1)
 
+        # ---------- Раскладка: якоря, отступы, профили ----------
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+        tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
+                 "окном игры, если включена привязка к игре. Профиль сохраняет всю раскладку "
+                 "(позиции, размеры, видимость, прозрачность) — например «Хаул», «Эксобиология», «Бой».",
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        ).pack(anchor=W, pady=(0, 8))
+
+        # Профили раскладки
+        prof_frame = tb.Frame(frame)
+        prof_frame.pack(fill=X, pady=(0, 6))
+        tb.Label(prof_frame, text="Профиль:", width=18, anchor=W).pack(side=LEFT)
+        self.profile_var = tk.StringVar(value=self.overlay_manager.active_profile)
+        self.profile_combo = tb.Combobox(
+            prof_frame, textvariable=self.profile_var,
+            values=self.overlay_manager.list_profiles(), width=22,
+        )
+        self.profile_combo.pack(side=LEFT, padx=(10, 6))
+        tb.Button(prof_frame, text="Применить", command=self._on_profile_apply,
+                  bootstyle="success-outline", width=12).pack(side=LEFT, padx=(0, 6))
+        tb.Button(prof_frame, text="Сохранить", command=self._on_profile_save,
+                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(0, 6))
+        tb.Button(prof_frame, text="Удалить", command=self._on_profile_delete,
+                  bootstyle="danger-outline", width=10).pack(side=LEFT)
+
+        # Отступ от края
+        margin_frame = tb.Frame(frame)
+        margin_frame.pack(fill=X, pady=5)
+        tb.Label(margin_frame, text="Отступ от края:", width=18, anchor=W).pack(side=LEFT)
+        self.margin_var = tk.IntVar(value=int(self.overlay_manager.settings.get("layout_margin", 24)))
+        margin_scale = tb.Scale(
+            margin_frame, from_=0, to=120, orient=HORIZONTAL,
+            variable=self.margin_var, length=250,
+            command=lambda v: self._on_margin_changed(int(float(v))),
+        )
+        margin_scale.pack(side=LEFT, padx=(10, 0))
+        self.margin_label = tb.Label(margin_frame, text=f"{self.margin_var.get()} px")
+        self.margin_label.pack(side=LEFT, padx=(10, 0))
+
+        # Якоря для каждого блока
+        tb.Label(frame, text="Привязка блоков:", font=("Segoe UI", 10)).pack(anchor=W, pady=(8, 2))
+        anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
+        self._anchor_vars = {}
+        for block_key, block_label in [
+            ("route", "ROUTE — маршрут"),
+            ("status", "STATUS — статус"),
+            ("ship", "SHIP — корабль"),
+            ("cargo", "CARGO — трюм"),
+            ("session", "SESSION — сессия"),
+            ("events", "EVENTS — события"),
+            ("exobio", "EXOBIO — экзобиология"),
+        ]:
+            row = tb.Frame(frame)
+            row.pack(fill=X, pady=1)
+            tb.Label(row, text=block_label, width=24, anchor=W).pack(side=LEFT)
+            current = self.overlay_manager.settings.get(f"{block_key}_anchor", "custom")
+            var = tk.StringVar(value=ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]))
+            self._anchor_vars[block_key] = var
+            combo = tb.Combobox(row, textvariable=var, values=anchor_values,
+                                width=18, state="readonly")
+            combo.pack(side=LEFT, padx=(6, 0))
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e, k=block_key, v=var: self._on_anchor_changed(k, v.get()))
+
+        # Кнопки раскладки
+        layout_btn_frame = tb.Frame(frame)
+        layout_btn_frame.pack(anchor=W, pady=(8, 0))
+        tb.Button(layout_btn_frame, text="Пересчитать по якорям",
+                  command=self._on_apply_anchors, bootstyle="info-outline", width=24).pack(side=LEFT, padx=(0, 8))
+        tb.Button(layout_btn_frame, text="Сбросить позиции",
+                  command=self._on_reset_overlay_positions, bootstyle="secondary-outline", width=18).pack(side=LEFT)
+
+        self.hide_without_game_var = tk.BooleanVar(
+            value=self.overlay_manager.settings.get("hide_when_game_off", True)
+        )
+        tb.Checkbutton(
+            frame,
+            text="Скрывать оверлей, когда игра не запущена",
+            variable=self.hide_without_game_var,
+            command=self._on_hide_without_game_changed,
+        ).pack(anchor=W, pady=(6, 0))
+
+        self.layout_info_label = tb.Label(
+            frame,
+            text="",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        )
+        self.layout_info_label.pack(anchor=W, pady=(6, 0))
+
         # Горячие клавиши подсказка
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+        tb.Label(frame, text="Горячие клавиши", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        self.hotkey_hint_label = tb.Label(
+            frame,
+            text="",
+            foreground=COLOR_MUTED,
+            font=("Consolas", 9),
+            wraplength=700,
+            justify=LEFT,
+        )
+        self.hotkey_hint_label.pack(anchor=W, pady=(0, 6))
         tb.Label(
             frame,
             text="Управление оверлеями:\n"
-                 "  • Перетаскивайте за заголовок (если не заблокировано)\n"
-                 "  • ПКМ по [L/U] — блокировка позиции\n"
-                 "  • ПКМ по [*] — меню: привязка, размер, прозрачность\n"
+                 "  • Перетаскивайте за заголовок (если блок не заблокирован)\n"
+                 "  • [L/U] в шапке — блокировка позиции\n"
+                 "  • [<] / [>] в шапке — клик-сквозь для этого блока\n"
+                 "  • [*] в шапке — меню: привязка, размер, прозрачность\n"
                  "  • Потяните за угол — изменение размера\n"
-                 "  • F12 — показать/скрыть все оверлеи\n"
-                 "  • Ctrl+O — включить/выключить оверлей",
+                 "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
+                 "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
             foreground=COLOR_MUTED,
             font=("Consolas", 10),
             justify=LEFT,
         ).pack(anchor=W)
+
+        # Изменения из оверлея (горячие клавиши, профиль) должны догонять
+        # виджеты вкладки, иначе галочки врут.
+        self.overlay_manager.on_settings_changed = self._on_overlay_settings_changed
+        self._update_overlay_hotkey_hint()
+
+    # ---------- Блоки: персональные настройки ----------
+    OVERLAY_ALPHA_CHOICES = ("общая", "40%", "55%", "70%", "85%", "100%")
+    OVERLAY_FONT_CHOICES = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
+    OVERLAY_HOTKEY_CHOICES = ("—", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
+                              "F9", "F10", "F11", "F12")
+
+    def _idle_label(self, seconds: int) -> str:
+        """Подпись для выбора таймера простоя."""
+        seconds = int(seconds or 0)
+        if seconds <= 0:
+            return "не скрывать"
+        if seconds < 60:
+            return f"{seconds} с"
+        return f"{seconds // 60} мин"
+
+    def _idle_seconds(self, label: str) -> int:
+        """Обратно: подпись -> секунды."""
+        text = (label or "").strip().lower()
+        if not text or text.startswith("не "):
+            return 0
+        if "мин" in text:
+            digits = "".join(ch for ch in text if ch.isdigit())
+            return int(digits or 0) * 60
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return int(digits or 0)
+
+    def _block_size_preset(self, key: str) -> str:
+        """Ближайший пресет к текущему размеру блока."""
+        from overlay import DEFAULT_BLOCK_POSITIONS
+
+        default = DEFAULT_BLOCK_POSITIONS.get(key)
+        width = self.overlay_manager.settings.get(f"{key}_width")
+        if not default or not width:
+            return "M"
+        try:
+            ratio = float(width) / float(default[2])
+        except (TypeError, ValueError, ZeroDivisionError):
+            return "M"
+        return min(SIZE_PRESETS, key=lambda item: abs(item[1] - ratio))[0]
+
+    def _build_overlay_block_row(self, parent, key: str):
+        """Строка настроек одного блока HUD."""
+        settings = self.overlay_manager.settings
+        row = tb.Frame(parent)
+        row.pack(fill=X, pady=1)
+        widgets = {}
+
+        tb.Label(row, text=BLOCK_LABELS.get(key, key), width=20, anchor=W).pack(side=LEFT, padx=(0, 4))
+
+        # Показ
+        visible_var = tk.BooleanVar(value=bool(settings.get(f"show_{key}", True)))
+        setattr(self, f"show_{key}_var", visible_var)   # совместимость со старыми обработчиками
+        widgets["visible"] = visible_var
+        tb.Checkbutton(row, variable=visible_var, width=3,
+                       command=lambda: self._on_block_visible_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Блокировка позиции
+        lock_var = tk.BooleanVar(value=bool(settings.get(f"{key}_locked", False)))
+        widgets["locked"] = lock_var
+        tb.Checkbutton(row, variable=lock_var, width=3,
+                       command=lambda: self._on_block_lock_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Клик-сквозь
+        through_var = tk.BooleanVar(value=self._block_through_value(key))
+        widgets["click_through"] = through_var
+        tb.Checkbutton(row, variable=through_var, width=3,
+                       command=lambda: self._on_block_through_changed(key)).pack(side=LEFT, padx=(0, 4))
+
+        # Прозрачность
+        alpha_var = tk.StringVar(value=self._block_alpha_label(key))
+        widgets["alpha"] = alpha_var
+        alpha_combo = tb.Combobox(row, textvariable=alpha_var, width=8, state="readonly",
+                                  values=list(self.OVERLAY_ALPHA_CHOICES))
+        alpha_combo.pack(side=LEFT, padx=(0, 4))
+        alpha_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_alpha_changed(key))
+
+        # Шрифт
+        font_var = tk.StringVar(value=self._block_font_label(key))
+        widgets["font_size"] = font_var
+        font_combo = tb.Combobox(row, textvariable=font_var, width=7, state="readonly",
+                                 values=list(self.OVERLAY_FONT_CHOICES))
+        font_combo.pack(side=LEFT, padx=(0, 4))
+        font_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_font_changed(key))
+
+        # Размер
+        size_var = tk.StringVar(value=SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+        widgets["size"] = size_var
+        size_combo = tb.Combobox(row, textvariable=size_var, width=10, state="readonly",
+                                 values=[SIZE_PRESET_LABELS[name] for name, _f in SIZE_PRESETS])
+        size_combo.pack(side=LEFT, padx=(0, 4))
+        size_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_size_changed(key))
+
+        # Правило показа
+        rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
+        rule_var = tk.StringVar(value=AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+        widgets["auto_rule"] = rule_var
+        rule_combo = tb.Combobox(row, textvariable=rule_var, width=24, state="readonly",
+                                 values=[AUTO_RULE_LABELS[name] for name in AUTO_RULES])
+        rule_combo.pack(side=LEFT, padx=(0, 4))
+        rule_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_rule_changed(key))
+
+        # Горячая клавиша
+        hotkey_var = tk.StringVar(value=str(settings.get(f"{key}_hotkey", "") or "—") or "—")
+        widgets["hotkey"] = hotkey_var
+        hotkey_combo = tb.Combobox(row, textvariable=hotkey_var, width=8, state="readonly",
+                                   values=list(self.OVERLAY_HOTKEY_CHOICES))
+        hotkey_combo.pack(side=LEFT, padx=(0, 4))
+        hotkey_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_hotkey_changed(key))
+
+        tb.Button(row, text="сброс", width=7, bootstyle="secondary-outline",
+                  command=lambda: self._on_block_reset(key)).pack(side=LEFT)
+
+        self._overlay_block_vars[key] = widgets
+
+    # -- подписи и разбор значений --
+    def _block_through_value(self, key: str) -> bool:
+        from overlay import block_click_through
+
+        return block_click_through(self.overlay_manager.settings, key)
+
+    def _block_alpha_label(self, key: str) -> str:
+        value = self.overlay_manager.settings.get(f"{key}_alpha")
+        return "общая" if value is None else f"{int(round(float(value) * 100))}%"
+
+    def _block_font_label(self, key: str) -> str:
+        value = self.overlay_manager.settings.get(f"{key}_font_size")
+        return "общий" if value in (None, "") else str(int(value))
+
+    def _rule_key_by_label(self, label: str) -> str:
+        for rule_key, text in AUTO_RULE_LABELS.items():
+            if text == label:
+                return rule_key
+        return "always"
+
+    def _preset_key_by_label(self, label: str) -> str:
+        for name, text in SIZE_PRESET_LABELS.items():
+            if text == label:
+                return name
+        return "M"
+
+    # -- обработчики строки блока --
+    def _on_block_visible_changed(self, key: str):
+        show = bool(self._overlay_block_vars[key]["visible"].get())
+        self.overlay_manager.set_block_visible(key, show)
+
+    def _on_block_lock_changed(self, key: str):
+        self.overlay_manager.set_block_locked(key, self._overlay_block_vars[key]["locked"].get())
+
+    def _on_block_through_changed(self, key: str):
+        enabled = bool(self._overlay_block_vars[key]["click_through"].get())
+        self.overlay_manager.set_click_through(enabled, key=key)
+        self.log(
+            f"{BLOCK_LABELS.get(key, key)}: клик-сквозь {'включён' if enabled else 'выключен'}",
+            "info",
+        )
+
+    def _on_block_alpha_changed(self, key: str):
+        label = self._overlay_block_vars[key]["alpha"].get()
+        if label == "общая":
+            self.overlay_manager.set_block_alpha(key, None)
+        else:
+            digits = "".join(ch for ch in label if ch.isdigit())
+            self.overlay_manager.set_block_alpha(key, int(digits or 100) / 100.0)
+
+    def _on_block_font_changed(self, key: str):
+        label = self._overlay_block_vars[key]["font_size"].get()
+        if label == "общий":
+            self.overlay_manager.set_block_font_size(key, None)
+        else:
+            digits = "".join(ch for ch in label if ch.isdigit())
+            if digits:
+                self.overlay_manager.set_block_font_size(key, int(digits))
+
+    def _on_block_size_changed(self, key: str):
+        preset = self._preset_key_by_label(self._overlay_block_vars[key]["size"].get())
+        self.overlay_manager.apply_size_preset(preset, key)
+
+    def _on_block_rule_changed(self, key: str):
+        rule = self._rule_key_by_label(self._overlay_block_vars[key]["auto_rule"].get())
+        self.overlay_manager.set_auto_rule(key, rule)
+        if not self.overlay_manager.settings.get("auto_rules_enabled", False):
+            self.auto_rules_var.set(True)
+            self.overlay_manager.set_auto_rules_enabled(True)
+
+    def _on_block_hotkey_changed(self, key: str):
+        value = self._overlay_block_vars[key]["hotkey"].get().strip()
+        combo = "" if value in ("", "—") else value
+        self.overlay_manager.set_block_hotkey(key, combo)
+        self._update_overlay_hotkey_hint()
+        if combo and not self.overlay_manager.hotkeys.available:
+            self.log(
+                f"Горячая клавиша {combo} сохранена, но системные горячие клавиши "
+                f"доступны только в Windows.",
+                "warn",
+            )
+        elif combo:
+            self.log(f"{BLOCK_LABELS.get(key, key)}: горячая клавиша {combo}", "success")
+
+    def _on_block_reset(self, key: str):
+        self.overlay_manager.reset_block(key)
+        self._sync_overlay_block_rows()
+        self.log(f"{BLOCK_LABELS.get(key, key)}: настройки сброшены", "info")
+
+    def _on_all_size_preset_changed(self):
+        preset = self._preset_key_by_label(self.all_size_var.get())
+        if self.overlay_manager.apply_size_preset(preset):
+            self._sync_overlay_block_rows()
+            self.log(f"Размер всех блоков: {SIZE_PRESET_LABELS.get(preset, preset)}", "info")
+
+    def _on_click_through_changed(self):
+        enabled = bool(self.click_through_var.get())
+        self.overlay_manager.set_click_through(enabled)
+        self._sync_overlay_block_rows()
+        self.log(
+            "Клик-сквозь включён: HUD не перехватывает мышь" if enabled
+            else "Клик-сквозь выключен",
+            "info",
+        )
+
+    def _on_auto_rules_changed(self):
+        self.overlay_manager.set_auto_rules_enabled(bool(self.auto_rules_var.get()))
+
+    def _on_idle_changed(self):
+        seconds = self._idle_seconds(self.idle_var.get())
+        self.overlay_manager.set_idle_timeout(seconds)
+
+    def _sync_overlay_block_rows(self):
+        """Перечитать настройки в виджеты (после сброса, профиля, горячей клавиши)."""
+        settings = self.overlay_manager.settings
+        for key, widgets in getattr(self, "_overlay_block_vars", {}).items():
+            widgets["visible"].set(bool(settings.get(f"show_{key}", True)))
+            widgets["locked"].set(bool(settings.get(f"{key}_locked", False)))
+            widgets["click_through"].set(self._block_through_value(key))
+            widgets["alpha"].set(self._block_alpha_label(key))
+            widgets["font_size"].set(self._block_font_label(key))
+            widgets["size"].set(SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
+            rule = str(settings.get(f"{key}_auto_rule", "always") or "always")
+            widgets["auto_rule"].set(AUTO_RULE_LABELS.get(rule, AUTO_RULE_LABELS["always"]))
+            widgets["hotkey"].set(str(settings.get(f"{key}_hotkey", "") or "—") or "—")
+        if hasattr(self, "idle_var"):
+            self.idle_var.set(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
+        if hasattr(self, "click_through_var"):
+            self.click_through_var.set(bool(settings.get("click_through", False)))
+        if hasattr(self, "auto_rules_var"):
+            self.auto_rules_var.set(bool(settings.get("auto_rules_enabled", False)))
+        if hasattr(self, "all_size_var"):
+            self.all_size_var.set("M — 100%")
+
+    def _on_overlay_settings_changed(self, key: str, name: str, _value):
+        """Настройка изменилась из оверлея (например, по горячей клавише)."""
+        self._sync_overlay_block_rows()
+
+    def _update_overlay_hotkey_hint(self):
+        """Строка подсказки: какие клавиши за чем закреплены."""
+        if not hasattr(self, "hotkey_hint_label"):
+            return
+        lines = []
+        for key in self.overlay_manager.BLOCKS:
+            combo = str(self.overlay_manager.settings.get(f"{key}_hotkey", "") or "")
+            if combo:
+                lines.append(f"{combo} — {BLOCK_LABELS.get(key, key)}")
+        all_combo = str(self.overlay_manager.settings.get("toggle_all_hotkey", "F12") or "")
+        if all_combo:
+            lines.append(f"{all_combo} — показать/скрыть все блоки")
+        hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
+        if not self.overlay_manager.hotkeys.available:
+            hint += "  (системные горячие клавиши работают только в Windows)"
+        try:
+            self.hotkey_hint_label.config(text=hint)
+        except Exception:
+            pass
 
     def _on_toggle_overlay(self):
         # NavRoute.json is produced by the game independently of Watcher.
@@ -932,9 +2267,127 @@ class ColonialHelperApp:
             self.log("Оверлей выключён", "info")
 
     def _on_toggle_overlay_visibility(self):
-        self.overlay_manager.toggle_visibility()
-        state = "visible" if (self.overlay_manager.route_overlay and self.overlay_manager.enabled) else "hidden"
+        """F12: показать/скрыть все блоки.
+
+        Когда системные горячие клавиши зарегистрированы, нажатие обрабатывает
+        отдельный поток (`HotkeyManager`) — иначе блоки переключились бы
+        дважды: и по привязке Tk, и по глобальной клавише.
+        """
+        if self.overlay_manager.hotkeys.running:
+            return
+        self.overlay_manager.toggle_all_blocks()
+        state = "visible" if any(
+            self.overlay_manager.settings.get(f"show_{key}", True)
+            for key in self.overlay_manager.BLOCKS
+        ) else "hidden"
         self.log(f"Overlay toggled: {state} (F12)", "info")
+
+    # ---------- Раскладка: профили, отступы, якоря ----------
+    def _refresh_profile_combo(self, selected: str = ""):
+        names = self.overlay_manager.list_profiles()
+        self.profile_combo.config(values=names)
+        if selected:
+            self.profile_var.set(selected)
+        elif self.profile_var.get() not in names:
+            self.profile_var.set(self.overlay_manager.active_profile)
+
+    def _on_profile_save(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            name = simpledialog.askstring(
+                "Профиль раскладки",
+                "Имя профиля (например: Хаул, Эксобиология, Бой):",
+                parent=self.root,
+            )
+            if not name:
+                return
+        if self.overlay_manager.capture_layout(name):
+            self._refresh_profile_combo(name)
+            self.log(f"Профиль раскладки «{name}» сохранён.", "success")
+        else:
+            self.log("Не удалось сохранить профиль раскладки.", "error")
+
+    def _on_profile_apply(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            self.log("Выберите профиль раскладки.", "warn")
+            return
+        if not self.overlay_manager.apply_layout(name):
+            self.log(f"Профиль «{name}» не найден.", "error")
+            return
+        # Прозрачность/шрифт из профиля подтягиваем и в элементы вкладки.
+        self.alpha_var.set(float(self.overlay_manager.settings.get("alpha", 0.9)))
+        self.alpha_label.config(text=f"{self.alpha_var.get():.0%}")
+        self.font_var.set(self.overlay_manager.settings.get("font_family", "Consolas"))
+        self.font_size_var.set(int(self.overlay_manager.settings.get("font_size", 10)))
+        self.size_label.config(text=str(self.font_size_var.get()))
+        self._refresh_profile_combo(name)
+        self._sync_overlay_block_rows()
+        self._update_overlay_hotkey_hint()
+        self.log(f"Профиль раскладки «{name}» применён.", "success")
+
+    def _on_profile_delete(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            return
+        if not messagebox.askyesno("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
+            return
+        if self.overlay_manager.delete_profile(name):
+            self._refresh_profile_combo("")
+            self.log(f"Профиль раскладки «{name}» удалён.", "info")
+        else:
+            self.log(f"Профиль «{name}» не найден.", "warn")
+
+    def _on_margin_changed(self, value: int):
+        self.margin_label.config(text=f"{value} px")
+        self.overlay_manager.set_layout_margin(value)
+        self._update_layout_info()
+
+    def _on_anchor_changed(self, block_key: str, label: str):
+        anchor = "custom"
+        for key, text in ANCHOR_LABELS.items():
+            if text == label:
+                anchor = key
+                break
+        self.overlay_manager.snap_block(block_key, anchor)
+        self.overlay_manager.save_settings()
+        self._update_layout_info()
+
+    def _on_apply_anchors(self):
+        self.overlay_manager.apply_anchors()
+        self._update_layout_info()
+        self.log("Блоки расставлены по якорям.", "info")
+
+    def _on_hide_without_game_changed(self):
+        enabled = bool(self.hide_without_game_var.get())
+        self.overlay_manager.settings["hide_when_game_off"] = enabled
+        self.overlay_manager.save_settings()
+        self.log(
+            "Оверлей прячется, когда игра не запущена" if enabled
+            else "Оверлей показывается всегда, даже без игры",
+            "info",
+        )
+
+    def _restart_overlay(self):
+        """Пересоздать окна оверлея (после смены шрифта/профиля)."""
+        was_enabled = self.overlay_manager.enabled
+        callback = getattr(self.overlay_manager, "_update_callback", None)
+        self.overlay_manager.stop()
+        if was_enabled:
+            self.overlay_manager.start(callback or self._get_overlay_data)
+
+    def _update_layout_info(self):
+        """Строка состояния под настройками раскладки."""
+        try:
+            area = self.overlay_manager.overlay_area()
+            state = self.overlay_manager.game_state()
+            source = "экран с игрой" if (state.running and state.monitor) else "основной экран"
+            self.layout_info_label.config(
+                text=f"Область раскладки: {source} {area[2]}x{area[3]} "
+                     f"(сдвиг {area[0]},{area[1]}), отступ {self.overlay_manager.settings.get('layout_margin', 24)} px"
+            )
+        except Exception:
+            pass
 
     def _on_alpha_changed(self, value: float):
         self.alpha_label.config(text=f"{value:.0%}")
@@ -948,19 +2401,28 @@ class ColonialHelperApp:
         self.overlay_manager.set_font(self.font_var.get(), value)
 
     def _on_show_route_changed(self):
-        self.overlay_manager.set_show_route(self.show_route_var.get())
+        self.overlay_manager.set_block_visible("route", self.show_route_var.get())
 
     def _on_show_status_changed(self):
-        self.overlay_manager.set_show_status(self.show_status_var.get())
+        self.overlay_manager.set_block_visible("status", self.show_status_var.get())
 
     def _on_show_ship_changed(self):
-        self.overlay_manager.set_show_ship(self.show_ship_var.get())
+        self.overlay_manager.set_block_visible("ship", self.show_ship_var.get())
 
     def _on_show_cargo_changed(self):
-        self.overlay_manager.set_show_cargo(self.show_cargo_var.get())
+        self.overlay_manager.set_block_visible("cargo", self.show_cargo_var.get())
 
     def _on_show_session_changed(self):
-        self.overlay_manager.set_show_session(self.show_session_var.get())
+        self.overlay_manager.set_block_visible("session", self.show_session_var.get())
+
+    def _on_show_events_changed(self):
+        """EVENTS создаётся вместе с остальными окнами, поэтому просто
+        показываем/прячем существующее окно."""
+        self.overlay_manager.set_block_visible("events", self.show_events_var.get())
+
+    def _on_show_exobio_changed(self):
+        """Блок экзобиологии показывает данные по текущему телу из журнала."""
+        self.overlay_manager.set_block_visible("exobio", self.show_exobio_var.get())
 
     def _on_attach_game_changed(self):
         self.overlay_manager.set_attach_to_game(self.attach_game_var.get())
@@ -971,16 +2433,11 @@ class ColonialHelperApp:
         self.overlay_manager.set_ship_block(block, show)
 
     def _on_reset_overlay_positions(self):
-        defaults = {
-            "route": (50, 50), "status": (50, 230), "ship": (50, 440),
-            "cargo": (50, 1000), "session": (400, 50),
-        }
-        for key, (x, y) in defaults.items():
-            self.overlay_manager.settings[f"{key}_x"] = x
-            self.overlay_manager.settings[f"{key}_y"] = y
-            self.overlay_manager.settings[f"{key}_anchor"] = "custom"
-        self.overlay_manager.save_settings()
-        self.log("Позиции оверлея сброшены. Перезапустите оверлей для применения.", "info")
+        self.overlay_manager.reset_positions()
+        self.overlay_manager.apply_block_style()
+        self._refresh_profile_combo()
+        self._sync_overlay_block_rows()
+        self.log("Позиции оверлея сброшены на стандартные.", "info")
 
     def _get_overlay_data(self) -> dict:
         """Собрать данные для обновления оверлея."""
@@ -993,6 +2450,10 @@ class ColonialHelperApp:
                 f"Inara: {'ON' if self.inara_api.enabled else 'OFF'}"
             ),
             "watcher_active": self.watcher_active,
+            "game_running": self.overlay_manager.game_running,
+            "game_focused": bool(self.overlay_manager.game_state().focused),
+            "game_detail": self.overlay_manager.game_state().process_name or "",
+            "exobiology": self.exobiology.current_body_state(),
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
             "current": "—",
@@ -1081,6 +2542,50 @@ class ColonialHelperApp:
             padding=5,
         )
         self.bottom_status.pack(fill=X, side=BOTTOM)
+
+    # ============================================================
+    #  Индикатор игры
+    # ============================================================
+    def _tick_game_status(self):
+        """Обновить индикатор запуска игры в шапке и статус-баре."""
+        try:
+            state = self.overlay_manager.game_state()
+            if state.error:
+                color, text = COLOR_MUTED, f"Игра: нет данных ({state.error})"
+            elif state.running:
+                color = COLOR_GREEN if state.focused else COLOR_ORANGE
+                text = "Игра: в фокусе" if state.focused else "Игра: запущена (не в фокусе)"
+            else:
+                color, text = COLOR_RED, "Игра: не запущена"
+
+            self.game_dot.config(foreground=color)
+            self.game_label.config(text=text, foreground=color)
+
+            if state.running:
+                details = [state.process_name or "Elite Dangerous"]
+                if state.rect:
+                    details.append(f"{state.width}x{state.height}")
+                if state.title:
+                    details.append(state.title)
+                self.game_hint.config(text="  |  ".join(details))
+            else:
+                self.game_hint.config(text="оверлей скрыт, пока игры нет"
+                                      if self.overlay_manager.settings.get("hide_when_game_off", True)
+                                      else "")
+
+            # Логируем только смену состояния, чтобы не засорять лог.
+            if state.running != self._game_was_running:
+                self._game_was_running = state.running
+                if state.running:
+                    self.log("Elite Dangerous запущена — оверлей активен", "success")
+                else:
+                    self.log("Elite Dangerous не запущена — оверлей скрыт", "info")
+            if hasattr(self, "layout_info_label"):
+                self._update_layout_info()
+        except Exception:
+            pass
+        finally:
+            self.after(1500, self._tick_game_status)
 
     # ============================================================
     #  Логирование
@@ -1208,8 +2713,98 @@ class ColonialHelperApp:
         # Сохраняем и настройки оверлея
         self.overlay_manager.save_settings()
 
+    # ============================================================
+    #  Кэш уже загруженных файлов журнала
+    # ============================================================
+    def _load_imported_files(self) -> dict:
+        """Прочитать локальный список уже успешно загруженных файлов."""
+        try:
+            with open(self.imported_files_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_imported_files(self):
+        """Записать кэш загруженных файлов атомарно (tmp + replace)."""
+        tmp = self.imported_files_path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.imported_files, fh)
+            tmp.replace(self.imported_files_path)
+        except OSError as exc:
+            self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить кэш импорта: {e}", "warn"))
+
+    def _is_file_imported(self, path: Path) -> bool:
+        """Файл уже загружался и с тех пор не менялся?
+
+        Проверяем размер и mtime: если файл дописывался, он будет разобран
+        заново. Версия парсера в ключе гарантирует переимпорт после смены
+        правил разбора (например, после исправления источника доставок).
+        """
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        record = self.imported_files.get(str(path))
+        if not isinstance(record, dict):
+            return False
+        return (
+            int(record.get("size", -1)) == int(stat.st_size)
+            and int(record.get("mtime", -1)) == int(stat.st_mtime)
+            and int(record.get("parser", -1)) == int(PARSER_VERSION)
+        )
+
+    def _mark_files_imported(self, files: list):
+        """Отметить файлы как успешно загруженные (только после удачной отправки).
+
+        Если часть чанков не загрузилась — файлы НЕ отмечаются, чтобы
+        следующая попытка пере-отправила их заново.
+        """
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        for path in files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            self.imported_files[str(path)] = {
+                "size": int(stat.st_size),
+                "mtime": int(stat.st_mtime),
+                "parser": int(PARSER_VERSION),
+                "at": now_iso,
+            }
+        self._save_imported_files()
+
+    def _reset_import_cache(self):
+        """Забыть все записи об импорте (кнопка на вкладке загрузки).
+
+        Заодно сбрасывается и внутрисессионная дедупликация событий
+        (`_seen_events`) с состоянием diff'ов: иначе повторный импорт в том же
+        запуске приложения всё равно не нашёл бы ни одной доставки, и кнопка
+        выглядела бы "ничего не делающей".
+        """
+        count = len(self.imported_files)
+        self.imported_files = {}
+        try:
+            if self.imported_files_path.exists():
+                self.imported_files_path.unlink()
+        except OSError:
+            pass
+        self._seen_events = set()
+        self._last_cargo = {}
+        self._last_depot_state = {}
+        self._last_contribution_state = {}
+        self.log(
+            f"Кэш импорта сброшен ({count} записей) — файлы будут разобраны и загружены заново",
+            "info",
+        )
+
     def _on_close(self):
         self.overlay_manager.stop()
+        try:
+            self.dispatcher.stop(wait=False)
+        except Exception:
+            pass
         self.save_config()
         self.root.destroy()
 
@@ -1281,6 +2876,7 @@ class ColonialHelperApp:
         self.raven_api.set_key(key)
         self.config["raven_colonial_key"] = key
         self.save_config()
+        self._update_colony_key_label()
         self.raven_status_label.config(text="Raven Colonial: проверка...", foreground="#d29922")
         self.log("Raven Colonial: проверка ключа...", "info")
         # Асинхронная проверка ключа через API
@@ -1465,9 +3061,37 @@ class ColonialHelperApp:
     # текущая пачка, read-память предыдущей уже освобождена.
     _UPLOAD_BATCH_SIZE = 40
 
+    def _update_progress(self, value=None, text=None, force=False):
+        """Обновить прогресс-бар из фонового потока.
+
+        Обновление идёт не чаще `_progress_interval` (0.1 с): на сотнях файлов
+        постоянные `root.after()` сами по себе забивали очередь Tkinter и
+        тормозили загрузку.
+        """
+        now = time.monotonic()
+        if not force and (now - self._last_progress_ts) < self._progress_interval:
+            return
+        self._last_progress_ts = now
+
+        def apply():
+            try:
+                if value is not None:
+                    self.progress.configure(value=max(0.0, min(100.0, float(value))))
+                if text is not None:
+                    self.progress_label.configure(text=text)
+            except Exception:
+                pass
+
+        self.root.after(0, apply)
+
+    def _any_third_party_enabled(self) -> bool:
+        return bool(self.edsm_api.enabled or self.inara_api.enabled or self.raven_api.is_connected)
+
     def _do_upload_thread(self):
         all_deliveries = []
-        all_construction_events = []
+        # Snapshots стройки собираются попутно, за тот же один проход по файлу,
+        # и сразу с отсевом повторов (подробнее — в ConstructionSnapshotCollector).
+        collector = ConstructionSnapshotCollector()
         cmdr_name = None
         total_event_counts: Counter = Counter()
         files_processed = 0
@@ -1477,17 +3101,69 @@ class ColonialHelperApp:
         # _on_select_files, но подстрахуемся и здесь на случай, если
         # selected_files когда-нибудь будет заполняться иначе.
         files = sorted(self.selected_files, key=lambda p: p.name)
-        total = len(files)
-        batch_size = self._UPLOAD_BATCH_SIZE
 
+        # Файлы, уже отправленные ранее, не переразбираем: повторная первичная
+        # загрузка после этого занимает секунды вместо десятков минут.
+        files_skipped = 0
+        if self.skip_imported_files:
+            pending = []
+            for path in files:
+                if self._is_file_imported(path):
+                    files_skipped += 1
+                else:
+                    pending.append(path)
+            files = pending
+        total = len(files)
+
+        if files_skipped:
+            self.root.after(
+                0,
+                lambda n=files_skipped: self.log(
+                    f"Пропущено уже загруженных ранее файлов: {n} "
+                    f"(сбросить — кнопка «Сбросить кэш импорта»)",
+                    "info",
+                ),
+            )
+        if not total:
+            self.root.after(0, lambda: self.log("Нет файлов для загрузки — все выбранные уже импортированы", "warn"))
+            self.root.after(0, lambda: self._update_progress(100, "Все выбранные файлы уже загружены", force=True))
+            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            return
+
+        batch_size = self._UPLOAD_BATCH_SIZE
         self.root.after(
             0,
-            lambda t=total: self.log(
-                f"Начинаю обработку {t} файлов" + (f" (пачками по {batch_size})" if t > batch_size else "") + "...",
+            lambda t=total, b=batch_size: self.log(
+                f"Начинаю обработку {t} файлов" + (f" (пачками по {b})" if t > b else "") + "...",
                 "info",
             ),
         )
+        if self._any_third_party_enabled() and not self.dispatcher.backfill_enabled:
+            self.root.after(
+                0,
+                lambda: self.log(
+                    "История не уходит в EDSM/Inara/Raven Colonial: эти сервисы получают только "
+                    "live-события watcher'а. Отправку истории можно включить галочкой ниже.",
+                    "info",
+                ),
+            )
 
+        # Один проход по каждому файлу: доставки + snapshots стройки + внешние
+        # API. Раньше текст файла разбирался трижды (доставки, snapshots,
+        # отправка в EDSM/Inara), и на сотнях файлов это было заметной частью
+        # времени первичной загрузки.
+        def dispatch_hook(line, ev):
+            station_type = str(self._last_depot_state.get("_station_type", "") or "")
+            self.dispatcher.submit(ev, live=False, station_type=station_type)
+
+        # Экзобиология собирается тем же проходом: тела, биосигналы и образцы
+        # нужны оверлею EXOBIO, отдельный проход по файлам для них не нужен.
+        hooks = [collector, dispatch_hook, self.exobiology.handle]
+
+        # Только те файлы, которые реально разобраны и чьи доставки приняты:
+        # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
+        # он больше никогда не был бы пере-отправлен.
+        accepted_files: list = []
         processed_count = 0
         for batch_start in range(0, total, batch_size):
             batch_files = files[batch_start: batch_start + batch_size]
@@ -1522,19 +3198,19 @@ class ColonialHelperApp:
                     continue  # ошибка чтения уже залогирована выше
                 self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
                 try:
-                    self._send_edsm_text(text)
                     current_system = self.ship.state.current_system if self.ship.state else None
                     current_system_address = self.ship.state.system_address if self.ship.state else 0
                     (
                         cname, deliveries, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, event_counts,
-                    ) = parse_journal(
-                        text, current_system, self._last_cargo, self._last_depot_state,
+                    ) = parse_events(
+                        iter_journal_events(text), current_system, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, current_system_address,
+                        hooks=hooks,
                     )
                     total_event_counts.update(event_counts)
-                    all_construction_events.extend(extract_construction_events(text))
                     files_processed += 1
+                    accepted_files.append(filepath)
                     # Проверка: все файлы от одного командира
                     if cname:
                         if cmdr_name is None:
@@ -1563,9 +3239,11 @@ class ColonialHelperApp:
                         0, lambda n=filepath.name, e=e: self.log(f"Ошибка обработки {n}: {e}", "error")
                     )
 
-                # Отдаём под загрузку/парсинг 0-90%, оставшиеся 10% — под отправку на сервер.
-                progress_val = processed_count / total * 90
-                self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
+                # Отдаём под чтение/разбор 0-85%, остальное — под отправку.
+                self._update_progress(
+                    processed_count / total * 85,
+                    f"Разбор файлов: {processed_count}/{total}",
+                )
 
             # Освобождаем память пачки явно перед чтением следующей.
             del batch_texts
@@ -1580,33 +3258,81 @@ class ColonialHelperApp:
             self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
         self._record_session_deliveries(all_deliveries)
-        construction_result = self.api.upload_construction_events(all_construction_events, cmdr_name)
-        if construction_result.get("ok") and all_construction_events:
-            self.root.after(0, lambda n=len(all_construction_events): self.log(
-                f"Прогресс строек: отправлено snapshots — {n}", "info"
-            ))
-        elif all_construction_events:
-            self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
-                self.log(f"Прогресс строек не отправлен: {e}", "warn"))
-        if not all_deliveries and not all_construction_events:
+
+        construction_events = collector.events
+        if collector.duplicates:
+            self.root.after(
+                0,
+                lambda d=collector.duplicates, k=len(construction_events): self.log(
+                    f"Snapshots стройки: {k} уникальных состояний "
+                    f"({d} повторов с неизменным состоянием отфильтровано)",
+                    "info",
+                ),
+            )
+
+        if not all_deliveries and not construction_events:
             self.root.after(0, lambda: self.log("Доставки и события строительства не найдены", "warn"))
+            self.root.after(0, lambda: self._mark_files_imported(accepted_files))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
-            self.root.after(0, lambda: self.progress.config(value=0))
-            self.root.after(0, lambda: self.progress_label.config(text=""))
+            self.root.after(0, lambda: self._update_progress(0, "", force=True))
+            return
+
+        # ---- Отправка snapshots стройплощадок (общий прогресс проекта) ----
+        construction_ok = True
+        if construction_events:
+            self._update_progress(85, f"Отправка snapshots стройки: {len(construction_events)}...", force=True)
+
+            def construction_progress(done, total_chunks):
+                self._update_progress(
+                    85 + 5.0 * done / max(1, total_chunks),
+                    f"Отправка snapshots стройки: {done}/{total_chunks} пачек",
+                )
+
+            construction_result = self.api.upload_construction_events(
+                construction_events, cmdr_name, progress_cb=construction_progress
+            )
+            if construction_result.get("ok"):
+                self.root.after(
+                    0,
+                    lambda n=len(construction_events): self.log(
+                        f"Прогресс строек: отправлено snapshots — {n}", "info"
+                    ),
+                )
+            else:
+                construction_ok = False
+                self.root.after(
+                    0,
+                    lambda e=construction_result.get("error", "ошибка"): self.log(
+                        f"Прогресс строек не отправлен: {e}", "warn"
+                    ),
+                )
+
+        # ---- Отправка доставок ----
+        if not all_deliveries:
+            self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
+            if construction_ok:
+                self.root.after(0, lambda: self._mark_files_imported(accepted_files))
+            self.root.after(0, lambda: self._update_progress(100, "Готово", force=True))
+            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             return
 
         self.root.after(
             0,
             lambda: self.log(f"Всего доставок: {len(all_deliveries)}. Отправка...", "info"),
         )
-        self.root.after(
-            0,
-            lambda: self.progress_label.config(text=f"Отправка {len(all_deliveries)} записей..."),
-        )
 
+        def delivery_progress(done, total_chunks):
+            self._update_progress(
+                90 + 10.0 * done / max(1, total_chunks),
+                f"Отправка доставок: {done}/{total_chunks} пачек",
+            )
+
+        self._update_progress(90, f"Отправка {len(all_deliveries)} записей...", force=True)
         try:
             result = self.api.upload_deliveries(
-                [self._delivery_for_api(d) for d in all_deliveries], cmdr_name
+                [self._delivery_for_api(d) for d in all_deliveries],
+                cmdr_name,
+                progress_cb=delivery_progress,
             )
         except Exception as e:
             # Подстраховка: api_client уже ловит сетевые и JSON-ошибки сам,
@@ -1616,16 +3342,15 @@ class ColonialHelperApp:
                 0, lambda e=e: self.log(f"Непредвиденная ошибка при отправке: {e}", "error")
             )
             self.root.after(
-                0, lambda e=str(e): self.progress_label.config(text=f"Ошибка: {e[:100]}")
+                0, lambda e=str(e): self._update_progress(None, f"Ошибка: {e[:100]}", force=True)
             )
-            self.root.after(0, lambda: self.progress.config(value=0))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             return
 
-        self.root.after(0, lambda: self.progress.config(value=100))
+        self.root.after(0, lambda: self._update_progress(100, None, force=True))
 
         if result["ok"]:
-            inserted = result['inserted']
+            inserted = result["inserted"]
             route_deliveries = [d for d in all_deliveries if self.route.is_on_route(d["system_name"])]
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
             self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
@@ -1641,6 +3366,8 @@ class ColonialHelperApp:
                     text=f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
                 ),
             )
+            if construction_ok:
+                self.root.after(0, lambda: self._mark_files_imported(accepted_files))
         else:
             # result может быть "partial" (часть чанков доставок всё же
             # загрузилась) — не теряем эту информацию молча и хотя бы
@@ -1663,9 +3390,7 @@ class ColonialHelperApp:
             # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
                 0,
-                lambda e=error_text: self.progress_label.config(
-                    text=f"Ошибка: {e[:100]}"
-                ),
+                lambda e=error_text: self.progress_label.config(text=f"Ошибка: {e[:100]}"),
             )
         self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
 
@@ -1695,6 +3420,7 @@ class ColonialHelperApp:
         self._session_route_cargo_tons = 0.0
         self._session_construction_cargo_tons = 0.0
         self._session_systems_visited.clear()
+        self._session_tons_by_system.clear()
         self._last_cargo = {}
         self._last_depot_state = {}
         self._last_contribution_state = {}
@@ -1706,7 +3432,11 @@ class ColonialHelperApp:
         # как основа для всех тиков watcher'а, пока журнал не назовёт другого CMDR.
         self._watcher_cmdr_name = self.api.cmdr_name
         self._pending_watcher_deliveries = []
-        self._raven_seen_carrier_events = set()
+        # Накопители первичной сверки + статистика внешних API — с нуля.
+        self._defer_uploads = False
+        self._backfill_deliveries = []
+        self._backfill_construction = []
+        self.dispatcher.reset_stats()
 
         self._auto_load_navroute()
 
@@ -1765,50 +3495,88 @@ class ColonialHelperApp:
         self._last_session_event = message
         self.overlay_manager.log_session_event(message)
 
-    def _send_inara_event(self, event: dict):
-        if not self.inara_api.enabled:
+    def _on_third_party_result(self, service: str, ok: bool, message: str):
+        """Результат отправки во внешний API (вызывается из потока диспетчера)."""
+        # В лог попадают только проблемы/особые случаи: успешных отправок на
+        # истории могут быть тысячи, и засорять ими лог бессмысленно.
+        if ok:
+            if message:
+                self.root.after(0, lambda m=message: self.log(m, "info"))
             return
-        event_name = str(event.get("event", ""))
-        names = {
-            "Location": "cmdrLocation", "FSDJump": "cmdrFSDJump", "Docked": "cmdrDock",
-            "Scan": "cmdrScan", "FSSDiscoveryScan": "cmdrFSSDiscoveryScan",
-            "MarketSell": "cmdrMarketSell", "MarketBuy": "cmdrMarketBuy",
-            "ColonisationContribution": "cmdrTrade",
-        }
-        inara_name = names.get(event_name)
-        if not inara_name:
-            return
-        key = f"{event.get('timestamp', '')}:{event_name}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}:{event.get('MarketID', '')}"
-        if key in self._inara_seen_events:
-            return
-        self._inara_seen_events.add(key)
-        data = dict(event)
-        data.pop("event", None)
-        self.inara_api.submit(inara_name, data, str(event.get("timestamp", "")))
+        self.root.after(
+            0,
+            lambda m=message, s=service: self.log(
+                f"{s.upper()}: {m}" if not m.lower().startswith(s.lower()) else m, "warn"
+            ),
+        )
 
-    def _send_edsm_text(self, text: str):
-        if not self.edsm_api.enabled:
-            return
-        for line in text.splitlines():
-            try:
-                event = json.loads(line)
-                self._log_session_event(event)
-                self._send_edsm_event(event)
-                self._send_inara_event(event)
-                self._send_carrier_event_to_raven(event)
-            except (ValueError, TypeError):
-                continue
+    def _detect_game_version(self):
+        """Прочитать версию и сборку игры из Fileheader свежего журнала.
 
-    def _send_edsm_event(self, event: dict):
-        if not self.edsm_api.enabled or event.get("event") not in {
-            "Location", "FSDJump", "Docked", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
-        }:
+        EDSM с 2022 года требует `fromGameVersion`/`fromGameBuild` (коды 207 и
+        208 — «версия не найдена» / «устаревшая»). Fileheader пишется один раз
+        в начале файла, поэтому в live-разборе новых строк он уже не попадётся.
+        """
+        try:
+            files = sorted(
+                self.journal_path.glob("Journal.*.log"),
+                key=lambda f: f.stat().st_mtime,
+            ) if self.journal_path and self.journal_path.exists() else []
+        except OSError:
+            files = []
+        if not files:
             return
-        key = f"{event.get('timestamp', '')}:{event.get('event', '')}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}"
-        if key in self._edsm_seen_events:
+        try:
+            with open(files[-1], "r", encoding="utf-8-sig") as fh:
+                for _index, line in enumerate(fh):
+                    if _index > 20:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("event") in ("Fileheader", "LoadGame"):
+                        self.dispatcher.set_game_version(
+                            event.get("GameVersion") or event.get("gameversion"),
+                            event.get("Build") or event.get("build"),
+                        )
+                        return
+        except OSError:
             return
-        self._edsm_seen_events.add(key)
-        threading.Thread(target=self.edsm_api.submit_event, args=(dict(event),), daemon=True).start()
+
+    def _send_inara_event(self, event: dict, live: bool = True):
+        """Поставить Inara-событие в очередь диспетчера (без блокировки потока)."""
+        self.dispatcher.submit(event, live=live)
+
+    def _send_edsm_event(self, event: dict, live: bool = True):
+        """Поставить EDSM-событие в очередь диспетчера.
+
+        Раньше здесь был `threading.Thread(...).start()` на каждое событие —
+        при первичной загрузке истории это тысячи одновременных потоков.
+        """
+        self.dispatcher.submit(event, live=live)
+
+    def _send_carrier_event_to_raven(self, event: dict, live: bool = True):
+        """Поставить операцию с грузом Fleet Carrier в очередь диспетчера."""
+        station_type = str(self._last_depot_state.get("_station_type", "") or "")
+        self.dispatcher.submit(event, live=live, station_type=station_type)
+
+    def _send_edsm_text(self, text: str, live: bool = True):
+        """Прогнать текст журнала через диспетчер внешних API.
+
+        Используется только для совместимости со старыми вызовами: основной
+        путь — хуки parse_events() (файл разбирается один раз, а не по разу на
+        каждого потребителя).
+        """
+        if not live and not self.dispatcher.backfill_enabled:
+            return
+        for _line, event in iter_journal_events(text):
+            self.dispatcher.submit(event, live=live)
 
     def _auto_load_navroute(self) -> bool:
         """Автоматически загрузить свежий NavRoute.json из папки журналов."""
@@ -2104,6 +3872,81 @@ class ColonialHelperApp:
         self.progress_label.configure(text=message)
         self.log(message, "success")
 
+        # Итог по внешним сервисам за время первичной сверки — чтобы было
+        # видно, почему она больше не длится часами.
+        stats = self.dispatcher.snapshot_stats()
+        if stats.get("skipped_backfill"):
+            self.log(
+                f"История отправлена только на ED Ring Colony: {stats['skipped_backfill']} "
+                f"исторических событий не ушли в EDSM/Inara/Raven "
+                f"(включается галочкой на вкладке «Загрузка логов»)",
+                "info",
+            )
+        elif stats.get("sent") or stats.get("failed"):
+            self.log(
+                f"Внешние API: отправлено {stats.get('sent', 0)}, ошибок {stats.get('failed', 0)}, "
+                f"в очереди {stats.get('pending', 0)}",
+                "info",
+            )
+
+    def _flush_deferred_uploads(self):
+        """Отправить на сайт всё, накопленное за время первичной сверки.
+
+        Один пакет вместо сотни мелких запросов (по одному на файл), что на
+        истории из 800 файлов экономило десятки минут: доставки уходят
+        параллельными пачками по 100, snapshots — по 100 (лимит сервера).
+        """
+        self._defer_uploads = False
+        deliveries, construction = self._backfill_deliveries, self._backfill_construction
+        self._backfill_deliveries, self._backfill_construction = [], []
+        if not deliveries and not construction:
+            return
+        cmdr_name = self._watcher_cmdr_name or ""
+
+        def log(message: str, level: str = "info"):
+            self.root.after(0, lambda m=message, l=level: self.log(m, l))
+
+        log(f"Первичная загрузка: отправка на сайт — {len(deliveries)} доставок, "
+            f"{len(construction)} snapshots стройки", "info")
+
+        if construction and self.api.is_connected:
+            def construction_progress(done, total_chunks):
+                self._update_progress(100.0, f"Отправка snapshots стройки: {done}/{total_chunks} пачек")
+
+            result = self.api.upload_construction_events(
+                construction, cmdr_name, progress_cb=construction_progress
+            )
+            if result.get("ok"):
+                log(f"Первичная загрузка: snapshots стройки отправлены ({len(construction)})", "success")
+            else:
+                log(f"Первичная загрузка: snapshots стройки не отправлены — "
+                    f"{result.get('error', 'ошибка')}", "warn")
+
+        if deliveries and self.api.is_connected:
+            def delivery_progress(done, total_chunks):
+                self._update_progress(100.0, f"Отправка доставок: {done}/{total_chunks} пачек")
+
+            result = self.api.upload_deliveries(
+                [self._delivery_for_api(d) for d in deliveries], cmdr_name, progress_cb=delivery_progress
+            )
+            if result.get("ok"):
+                route_tons = sum(
+                    d.get("amount", 0) for d in deliveries
+                    if self.route.is_on_route(d.get("system_name", ""))
+                )
+                log(f"Первичная загрузка: загружено {result['inserted']} доставок "
+                    f"({route_tons:.0f}t на маршрут)", "success")
+                self._send_deliveries_to_raven(deliveries, cmdr_name)
+            else:
+                # Не теряем распарсенные доставки: сервер дедуплицирует по
+                # source_hash, поэтому повторная попытка безопасна.
+                self._pending_watcher_deliveries = deliveries + self._pending_watcher_deliveries
+                log(f"Первичная загрузка: доставки не отправлены — {result.get('error', 'ошибка')}", "error")
+
+        # События строительства и доставки уже обработаны — прогресс-бар
+        # возвращаем в состояние "завершено".
+        self.root.after(0, lambda: self._update_progress(100.0, None, force=True))
+
     def _watcher_loop(self):
         offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
@@ -2140,19 +3983,27 @@ class ColonialHelperApp:
             self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
                 0, n, b, 0, "Подготовка журналов..."
             ))
-            for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
-                if self.watcher_stop_event.is_set():
-                    break
-                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
-                    self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
-                )
-                processed = self._process_journal_changes(f, start, size)
-                self.last_file_mtimes[str(f)] = start + processed
-                done_bytes += processed
-                self._save_journal_offsets()
-                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
-                    self._show_journal_reconciliation_progress(d, n, t, i, p)
-                )
+            # Отправку на сайт откладываем до конца сверки: иначе на каждый
+            # файл уходит отдельный запрос (на 800 файлах — сотни запросов).
+            self._defer_uploads = True
+            try:
+                for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
+                    if self.watcher_stop_event.is_set():
+                        break
+                    self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                        self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
+                    )
+                    # live=False: историческая сверка. События во внешние API
+                    # (EDSM/Inara/Raven) не уходят и в оверлей сессии не пишутся.
+                    processed = self._process_journal_changes(f, start, size, live=False)
+                    self.last_file_mtimes[str(f)] = start + processed
+                    done_bytes += processed
+                    self._save_journal_offsets()
+                    self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                        self._show_journal_reconciliation_progress(d, n, t, i, p)
+                    )
+            finally:
+                self._flush_deferred_uploads()
             if total_files == 0:
                 self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
             elif not self.watcher_stop_event.is_set():
@@ -2177,7 +4028,9 @@ class ColonialHelperApp:
                         # Новый файл/ротация журнала.
                         last_size = 0
                     if current_size > last_size:
-                        processed = self._process_journal_changes(f, last_size, current_size)
+                        # live=True: это текущая игра, события уходят в
+                        # EDSM/Inara/Raven и в оверлей.
+                        processed = self._process_journal_changes(f, last_size, current_size, live=True)
                         # Обновляем только на фактически обработанные байты (полные строки)
                         self.last_file_mtimes[fpath] = last_size + processed
                         self._save_journal_offsets()
@@ -2204,39 +4057,13 @@ class ColonialHelperApp:
             float(d.get("amount", 0) or 0) for d in deliveries
             if d.get("source") == "colonisation_contribution"
         )
+        for delivery in deliveries:
+            system = delivery.get("system_name") or "—"
+            self._session_tons_by_system[system] = (
+                self._session_tons_by_system.get(system, 0.0)
+                + float(delivery.get("amount", 0) or 0)
+            )
         self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
-
-    def _send_carrier_event_to_raven(self, event: dict):
-        if not self.raven_api.is_connected or event.get("event") not in ("MarketSell", "MarketBuy"):
-            return
-        market_id = event.get("MarketID")
-        count = event.get("Count")
-        commodity = event.get("Type_Localised") or event.get("Type")
-        station_type = str(event.get("StationType", "") or self._last_depot_state.get("_station_type", ""))
-        # Только Fleet Carrier transactions относятся к FC cargo. Обычные
-        # station MarketBuy/MarketSell нельзя отправлять в /api/fc/...
-        is_carrier = bool(event.get("CarrierID")) or "carrier" in station_type.lower()
-        if not market_id or not count or not commodity or not is_carrier:
-            return
-        # Не отправляем один и тот же journal event повторно в рамках сессии.
-        # Такое могло возникать, когда один и тот же MarketSell/MarketBuy
-        # присутствовал в reconciliation и в следующем watcher-чанке.
-        event_key = "|".join(str(event.get(key, "")) for key in (
-            "event", "timestamp", "MarketID", "Type", "Type_Localised", "Count", "CarrierID",
-        ))
-        if event_key in self._raven_seen_carrier_events:
-            return
-        # As in SrvSurvey: selling to the FC adds cargo, buying from it removes cargo.
-        delta = int(count) if event.get("event") == "MarketSell" else -int(count)
-        result = self.raven_api.supply_fc(int(market_id), str(commodity), delta)
-        if result.get("ok"):
-            self._raven_seen_carrier_events.add(event_key)
-            if result.get("already_exists"):
-                self.root.after(0, lambda: self.log(
-                    f"Raven FC cargo: событие уже было принято ранее ({commodity} {delta:+d})", "info"
-                ))
-        else:
-            self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven FC cargo: {e}", "warn"))
 
     def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
         if not self.raven_api.is_connected:
@@ -2249,24 +4076,75 @@ class ColonialHelperApp:
             address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
             if not address:
                 continue
+            # Проект ищем через кэш: все доставки на одну стройплощадку дают
+            # один и тот же buildId, а раньше на каждую доставку уходил
+            # отдельный HTTP-запрос (с таймаутом до 15 с).
             project = self.raven_api.get_project(address, market_id)
             if not project or not project.get("buildId"):
                 continue
             build_id = project["buildId"]
             commodity = delivery.get("commodity", "Unknown")
-            batches.setdefault(build_id, {})[commodity] = batches.setdefault(build_id, {}).get(commodity, 0) + int(delivery.get("amount", 0))
+            batch = batches.setdefault(build_id, {})
+            batch[commodity] = batch.get(commodity, 0) + int(delivery.get("amount", 0))
         for build_id, commodities in batches.items():
             result = self.raven_api.contribute(build_id, cmdr_name or "Unknown", commodities)
             if result.get("ok"):
-                self.root.after(0, lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"))
+                self.root.after(
+                    0,
+                    lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"),
+                )
             else:
-                self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"))
+                self.root.after(
+                    0,
+                    lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"),
+                )
 
-    def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
+    def _handle_tracked_event(self, ev: dict, live: bool = True):
+        """Обработка одного события журнала: маршрут, корабль, оверлей.
+
+        Вызывается из хука parse_events() — для live-тиков watcher'а и для
+        исторического разбора. Оверлей сессии обновляем только в live-режиме:
+        при первичной загрузке истории событий десятки тысяч, и каждый
+        `overlay_manager.log_session_event()` — это отдельный `root.after()`,
+        который забивает очередь Tkinter и сам по себе тормозит загрузку.
+        """
+        if live:
+            self._log_session_event(ev)
+        if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
+            sys_name = ev.get("StarSystem")
+            if sys_name:
+                self._session_systems_visited.add(sys_name)
+                if self.route.mark_visited(sys_name):
+                    self.root.after(0, self._refresh_route_tree)
+                    if live:
+                        self.overlay_manager.log(f"Jump: {sys_name}", "info")
+        # Отслеживание корабля
+        self.ship.parse_event(ev)
+        ev_name = ev.get("event")
+        if live and ev_name in (
+            "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
+            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll",
+        ):
+            st = self.ship.state
+            damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
+            dmg_str = f" ({', '.join(damaged)})" if damaged else ""
+            self.overlay_manager.log(
+                f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
+                f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
+                "info",
+            )
+
+    def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int, live: bool = False) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
 
         Читает только полные строки (заканчивающиеся на \\n).
         Неполная строка в конце блока остаётся для следующего тика.
+
+        `live=False` — исторический разбор (первичная сверка при старте
+        watcher'а). В этом режиме события НЕ уходят в EDSM/Inara/Raven и не
+        пишутся в оверлей сессии: на всей истории это десятки тысяч событий,
+        из-за которых первичная загрузка шла часами. `live=True` — обычный тик
+        watcher'а за игрой, там поведение прежнее.
         """
         try:
             with open(filepath, "rb") as f:
@@ -2295,9 +4173,26 @@ class ColonialHelperApp:
 
         current_system = self.ship.state.current_system if self.ship.state else None
         current_system_address = self.ship.state.system_address if self.ship.state else 0
-        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_journal(
-            new_text, current_system, self._last_cargo, self._last_depot_state,
+
+        # ОДИН проход по тексту: доставки, snapshots стройки, трекинг корабля
+        # и (только в live-режиме) внешние API. Раньше текст разбирался дважды
+        # — parse_journal() плюс отдельный построчный цикл на каждое событие.
+        collector = ConstructionSnapshotCollector()
+
+        def dispatch_hook(line, ev):
+            station_type = str(self._last_depot_state.get("_station_type", "") or "")
+            self.dispatcher.submit(ev, live=live, station_type=station_type)
+
+        def tracking_hook(line, ev):
+            try:
+                self._handle_tracked_event(ev, live=live)
+            except Exception:
+                pass
+
+        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_events(
+            iter_journal_events(new_text), current_system, self._last_cargo, self._last_depot_state,
             self._last_contribution_state, self._seen_events, current_system_address,
+            hooks=[collector, tracking_hook, dispatch_hook, self.exobiology.handle],
         )
         # Commander/LoadGame встречаются обычно только один раз в начале файла,
         # поэтому в большинстве тиков tick_cmdr_name будет None — переиспользуем
@@ -2313,41 +4208,25 @@ class ColonialHelperApp:
                 return processed_bytes
             self._watcher_cmdr_name = tick_cmdr_name
         cmdr_name = self._watcher_cmdr_name
-        # ВСЕГДА парсим события для трекинга корабля/маршрута/оверлея
-        for line in new_text.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-                self._log_session_event(ev)
-                self._send_edsm_event(ev)
-                self._send_inara_event(ev)
-                self._send_carrier_event_to_raven(ev)
-                if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
-                    sys_name = ev.get("StarSystem")
-                    if sys_name:
-                        self._session_systems_visited.add(sys_name)
-                        if self.route.mark_visited(sys_name):
-                            self.root.after(0, self._refresh_route_tree)
-                            self.overlay_manager.log(f"Jump: {sys_name}", "info")
-                # Отслеживание корабля
-                self.ship.parse_event(ev)
-                ev_name = ev.get("event")
-                if ev_name in ("HullDamage", "HeatDamage", "ShieldState", "ModuleDamage", "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll"):
-                    st = self.ship.state
-                    damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
-                    dmg_str = f" ({', '.join(damaged)})" if damaged else ""
-                    self.overlay_manager.log(
-                        f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
-                        f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
-                        "info",
-                    )
-            except Exception:
-                pass
+        # Трекинг корабля/маршрута/оверлея и внешние API выполняются в хуках
+        # parse_events() — тем же однопроходным разбором текста.
 
         self._record_session_deliveries(deliveries)
-        construction_events = extract_construction_events(new_text)
+        # Snapshots стройки собираются тем же проходом, что и доставки, с
+        # отсевом повторов (состояние ColonisationConstructionDepot меняется
+        # заметно реже, чем пишется в журнал).
+        construction_events = collector.events
+
+        # Первичная сверка: НЕ отправляем на сайт после каждого файла (на
+        # истории это сотни отдельных запросов), а накапливаем и отправляем
+        # одним пакетом в конце — см. _flush_deferred_uploads().
+        if self._defer_uploads:
+            if deliveries:
+                self._backfill_deliveries.extend(deliveries)
+            if construction_events:
+                self._backfill_construction.extend(construction_events)
+            return processed_bytes
+
         if construction_events and self.api.is_connected:
             construction_result = self.api.upload_construction_events(construction_events, cmdr_name)
             if not construction_result.get("ok"):
