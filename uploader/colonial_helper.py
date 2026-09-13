@@ -339,6 +339,10 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_route, text=" Маршрут ")
         self._build_tab_route()
 
+        self.tab_colony = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_colony, text=" Колонизатор ")
+        self._build_tab_colony()
+
         self.tab_overlay = tb.Frame(self.notebook)
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
         self._build_tab_overlay()
@@ -880,6 +884,460 @@ class ColonialHelperApp:
 
         self.route_counter = tb.Label(frame, text="Маршрут не загружен", foreground=COLOR_MUTED)
         self.route_counter.pack(anchor=W, pady=(8, 0))
+
+    # ============================================================
+    #  Вкладка: Колонизатор (Raven Colonial)
+    # ============================================================
+    def _build_tab_colony(self):
+        frame = tb.Frame(self.tab_colony, padding=15)
+        frame.pack(fill=BOTH, expand=True)
+
+        tb.Label(frame, text="Колонизатор — проекты Raven Colonial",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 8))
+        tb.Label(
+            frame,
+            text="Просмотр своих проектов, назначение основного, завершение стройки и создание "
+                 "нового проекта. Запись (создание/изменение/завершение) требует ключа RCC — "
+                 "его выдают на сайте Raven Colonial.",
+            foreground=COLOR_MUTED,
+            wraplength=780,
+        ).pack(anchor=W, pady=(0, 10))
+
+        # ---- Командир и обновление ----
+        top = tb.Frame(frame)
+        top.pack(fill=X, pady=(0, 8))
+        tb.Label(top, text="Командир:", width=12, anchor=W).pack(side=LEFT)
+        self.colony_cmdr_var = tk.StringVar(value=self._current_cmdr_name())
+        tb.Entry(top, textvariable=self.colony_cmdr_var, width=28).pack(side=LEFT, padx=(0, 10))
+        tb.Button(top, text="Обновить список", command=self._on_colony_refresh,
+                  bootstyle="info-outline", width=18).pack(side=LEFT, padx=(0, 8))
+        self.colony_key_label = tb.Label(top, text="", foreground=COLOR_MUTED, font=("Consolas", 9))
+        self.colony_key_label.pack(side=LEFT)
+
+        # ---- Таблица проектов ----
+        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
+        tree_frame.pack(fill=BOTH, expand=True)
+        columns = ("primary", "system", "build", "type", "progress", "build_id")
+        self.colony_tree = tb.Treeview(
+            tree_frame, columns=columns, show="headings", bootstyle="dark", height=10,
+        )
+        for col, title, width, anchor in [
+            ("primary", "★", 34, CENTER),
+            ("system", "Система", 170, W),
+            ("build", "Стройка", 190, W),
+            ("type", "Тип", 160, W),
+            ("progress", "Прогресс", 150, CENTER),
+            ("build_id", "buildId", 260, W),
+        ]:
+            self.colony_tree.heading(col, text=title)
+            self.colony_tree.column(col, width=width, anchor=anchor)
+        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.colony_tree.yview)
+        self.colony_tree.configure(yscrollcommand=vsb.set)
+        self.colony_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+        self.colony_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_colony_select())
+
+        # ---- Действия с выбранным проектом ----
+        actions = tb.Frame(frame)
+        actions.pack(fill=X, pady=(10, 0))
+        self.colony_action_buttons = []
+        for text, command, style in [
+            ("★ Сделать основным", self._on_colony_set_primary, "success-outline"),
+            ("Снять основной", self._on_colony_clear_primary, "secondary-outline"),
+            ("Завершить проект", self._on_colony_complete, "danger-outline"),
+            ("Копировать buildId", self._on_colony_copy_id, "info-outline"),
+        ]:
+            btn = tb.Button(actions, text=text, command=command, bootstyle=style, width=22,
+                            state="disabled")
+            btn.pack(side=LEFT, padx=(0, 8))
+            self.colony_action_buttons.append(btn)
+
+        self.colony_status = tb.Label(frame, text="", foreground=COLOR_MUTED, font=("Consolas", 9),
+                                      wraplength=780)
+        self.colony_status.pack(anchor=W, pady=(6, 0))
+
+        # ---- Создание проекта ----
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
+        tb.Label(frame, text="Создать проект", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 6))
+
+        form = tb.Frame(frame)
+        form.pack(fill=X)
+        self.colony_fields = {}
+        rows = [
+            ("systemName", "Система *", ""),
+            ("buildName", "Название *", ""),
+            ("buildType", "Тип постройки *", ""),
+            ("marketId", "Market ID", ""),
+            ("systemAddress", "System address", ""),
+            ("maxNeed", "maxNeed", ""),
+            ("notes", "Заметки", ""),
+        ]
+        for index, (key, label, default) in enumerate(rows):
+            tb.Label(form, text=label, width=16, anchor=W).grid(row=index, column=0, sticky=W, pady=2)
+            var = tk.StringVar(value=default)
+            self.colony_fields[key] = var
+            entry = tb.Entry(form, textvariable=var, width=44)
+            entry.grid(row=index, column=1, sticky=W, pady=2)
+            if key == "buildType":
+                self.colony_build_type_entry = entry  # подсказки берём из своих проектов
+
+        self.colony_primary_port_var = tk.BooleanVar(value=False)
+        tb.Checkbutton(form, text="Основной порт системы", variable=self.colony_primary_port_var).grid(
+            row=len(rows), column=1, sticky=W, pady=2)
+        tb.Label(
+            form,
+            text="Товары (необязательно), формат: aluminium:1200, steel:900",
+            width=46, anchor=W,
+        ).grid(row=len(rows) + 1, column=1, sticky=W, pady=(6, 0))
+        self.colony_commodities_var = tk.StringVar(value="")
+        tb.Entry(form, textvariable=self.colony_commodities_var, width=44).grid(
+            row=len(rows) + 2, column=1, sticky=W)
+
+        buttons = tb.Frame(frame)
+        buttons.pack(anchor=W, pady=(10, 0))
+        tb.Button(buttons, text="Создать проект", command=self._on_colony_create,
+                  bootstyle="success-outline", width=20).pack(side=LEFT, padx=(0, 8))
+        tb.Button(buttons, text="Подставить текущую систему",
+                  command=self._on_colony_fill_current, bootstyle="secondary-outline", width=26).pack(side=LEFT)
+
+        self._update_colony_key_label()
+
+    # ---------- Колонизатор: состояние ----------
+    def _current_cmdr_name(self) -> str:
+        """Имя командира: из токена сайта, из журнала или вручную."""
+        for candidate in (
+            getattr(self.api, "cmdr_name", "") or "",
+            self._watcher_cmdr_name or "",
+            self.config.get("cmdr_name", "") or "",
+        ):
+            if candidate:
+                return str(candidate)
+        return ""
+
+    def _update_colony_key_label(self):
+        if not hasattr(self, "colony_key_label"):
+            return
+        if self.raven_api.is_connected:
+            self.colony_key_label.config(text="RCC ключ задан", foreground=COLOR_GREEN)
+        else:
+            self.colony_key_label.config(text="RCC ключ не задан — только просмотр",
+                                         foreground=COLOR_ORANGE)
+
+    def _selected_colony_project(self) -> Optional[dict]:
+        if not hasattr(self, "colony_tree"):
+            return None
+        selection = self.colony_tree.selection()
+        if not selection:
+            return None
+        values = self.colony_tree.item(selection[0], "values")
+        if not values or len(values) < 6:
+            return None
+        return {
+            "primary": values[0] == "★",
+            "systemName": values[1],
+            "buildName": values[2],
+            "buildType": values[3],
+            "progress": values[4],
+            "buildId": values[5],
+        }
+
+    def _on_colony_select(self):
+        project = self._selected_colony_project()
+        state = "normal" if (project and project["buildId"]) else "disabled"
+        for btn in getattr(self, "colony_action_buttons", []):
+            btn.config(state=state)
+        if project:
+            self.colony_status.config(
+                text=f"{project['systemName']}: {project['buildName']} "
+                     f"({project['buildType']}) — {project['progress']}"
+            )
+
+    def _set_colony_busy(self, busy: bool, text: str = ""):
+        """Блокируем кнопки на время запроса, чтобы не спамить Raven."""
+        for btn in getattr(self, "colony_action_buttons", []):
+            btn.config(state="disabled" if busy else "normal")
+        if text:
+            self.colony_status.config(text=text)
+        if not busy:
+            self._on_colony_select()
+
+    # ---------- Колонизатор: запросы (в фоне) ----------
+    def _on_colony_refresh(self):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира для поиска проектов.", "warn")
+            return
+        self._set_colony_busy(True, "Загружаю проекты Raven Colonial…")
+        threading.Thread(target=self._colony_refresh_thread, args=(cmdr,), daemon=True).start()
+
+    def _colony_refresh_thread(self, cmdr: str):
+        result = self.raven_api.get_cmdr_active(cmdr)
+        primary = self.raven_api.get_primary(cmdr) if result.get("ok") else {"ok": False}
+        self.after(0, lambda: self._colony_refresh_done(result, primary))
+
+    def _colony_refresh_done(self, result: dict, primary: dict):
+        self._set_colony_busy(False)
+        if not result.get("ok"):
+            self.colony_status.config(text=f"Не удалось загрузить проекты: {result.get('error')}")
+            self.log(f"Raven Colonial: не удалось получить проекты — {result.get('error')}", "error")
+            return
+
+        data = result.get("data")
+        projects = self._extract_colony_projects(data)
+        primary_id = self._extract_primary_id(primary)
+        self._fill_colony_tree(projects, primary_id)
+        self.colony_status.config(text=f"Проектов: {len(projects)}")
+        self.log(f"Raven Colonial: загружено проектов — {len(projects)}", "success")
+
+    @staticmethod
+    def _extract_colony_projects(data) -> list:
+        """Ответ /cmdr/{cmdr}/active — это список проектов или {'projects': [...]}."""
+        if isinstance(data, dict):
+            for key in ("projects", "Projects"):
+                if isinstance(data.get(key), list):
+                    return [p for p in data[key] if isinstance(p, dict)]
+            return [data] if "buildId" in data else []
+        if isinstance(data, list):
+            # Без buildId проект бесполезен: к нему нельзя обратиться ни по
+            # одному из действий вкладки.
+            return [p for p in data if isinstance(p, dict) and p.get("buildId")]
+        return []
+
+    @staticmethod
+    def _extract_primary_id(primary: dict):
+        data = primary.get("data") if isinstance(primary, dict) else None
+        if isinstance(data, dict):
+            return str(data.get("primaryBuildId") or data.get("buildId") or "")
+        if isinstance(data, str):
+            return data.strip().strip('"')
+        return ""
+
+    @staticmethod
+    def _project_progress(project: dict) -> str:
+        need = project.get("sumNeed")
+        total = project.get("sumTotal")
+        if need is None and total is None:
+            return "—"
+        try:
+            need = int(need or 0)
+            total = int(total or 0)
+        except (TypeError, ValueError):
+            return "—"
+        if total <= 0:
+            return f"{need}"
+        percent = 100 * need // total if total else 0
+        return f"{need} / {total} ({percent}%)"
+
+    def _fill_colony_tree(self, projects: list, primary_id: str = ""):
+        self.colony_tree.delete(*self.colony_tree.get_children())
+        build_types = []
+        for project in projects:
+            build_id = str(project.get("buildId", "") or "")
+            is_primary = bool(primary_id and build_id and build_id == primary_id)
+            build_type = str(project.get("buildType", "") or "")
+            if build_type and build_type not in build_types:
+                build_types.append(build_type)
+            self.colony_tree.insert(
+                "", END,
+                values=(
+                    "★" if is_primary else "",
+                    str(project.get("systemName", "") or ""),
+                    str(project.get("buildName", "") or ""),
+                    build_type,
+                    self._project_progress(project),
+                    build_id,
+                ),
+            )
+        # Типы построек подсказываем из уже существующих проектов —
+        # так список всегда актуальный и не зависит от захардкоженных данных.
+        entry = getattr(self, "colony_build_type_entry", None)
+        if entry is not None:
+            current = entry.cget("values") or ()
+            merged = list(current) + [t for t in build_types if t not in current]
+            entry.config(values=merged)
+        self._colony_projects_cache = {p.get("buildId"): p for p in projects}
+
+    # ---------- Колонизатор: действия ----------
+    def _on_colony_set_primary(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира.", "warn")
+            return
+        self._set_colony_busy(True, "Назначаю основной проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("set_primary", (cmdr, project["buildId"]),
+                               f"Основной проект: {project['buildName']}"), daemon=True).start()
+
+    def _on_colony_clear_primary(self):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if not cmdr:
+            self.log("Укажите имя командира.", "warn")
+            return
+        self._set_colony_busy(True, "Снимаю основной проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
+
+    def _on_colony_complete(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        if not messagebox.askyesno(
+            "Завершить проект",
+            f"Отметить «{project['buildName']}» ({project['systemName']}) завершённым?\n"
+            "Это действие необратимо.",
+            parent=self.root,
+        ):
+            return
+        self._set_colony_busy(True, "Завершаю проект…")
+        threading.Thread(target=self._colony_simple_call_thread,
+                         args=("mark_complete", (project["buildId"],), "Проект завершён"),
+                         daemon=True).start()
+
+    def _colony_simple_call_thread(self, method_name: str, args: tuple, success_text: str):
+        method = getattr(self.raven_api, method_name, None)
+        result = method(*args) if method else {"ok": False, "error": f"нет метода {method_name}"}
+        self.after(0, lambda: self._colony_action_done(result, success_text))
+
+    def _colony_action_done(self, result: dict, success_text: str):
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        if result.get("ok"):
+            self.log(f"Raven Colonial: {success_text}", "success")
+            self.colony_status.config(text=success_text)
+            if cmdr:
+                self._on_colony_refresh()
+            else:
+                self._set_colony_busy(False)
+        else:
+            self._set_colony_busy(False)
+            error = result.get("error") or "неизвестная ошибка"
+            self.colony_status.config(text=f"Ошибка: {error}")
+            self.log(f"Raven Colonial: {error}", "error")
+
+    def _on_colony_copy_id(self):
+        project = self._selected_colony_project()
+        if not project:
+            return
+        build_id = project["buildId"]
+        try:
+            import pyperclip
+
+            pyperclip.copy(build_id)
+            self.log(f"buildId скопирован: {build_id}", "info")
+        except Exception:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(build_id)
+            self.log(f"buildId скопирован: {build_id}", "info")
+
+    def _on_colony_fill_current(self):
+        """Подставить систему, в которой командир находится сейчас."""
+        state = getattr(self.ship, "state", None)
+        system = (getattr(state, "current_system", "") or "").strip()
+        if not system:
+            self.log("Текущая система неизвестна — включите Watcher или загрузите журналы.", "warn")
+            return
+        self.colony_fields["systemName"].set(system)
+        market_id = str(self._last_depot_state.get("_market_id", "") or "")
+        if market_id and market_id != "0":
+            self.colony_fields["marketId"].set(market_id)
+        address = getattr(state, "system_address", 0) or 0
+        if address:
+            self.colony_fields["systemAddress"].set(str(address))
+        depot = self._last_depot_state or {}
+        commodities = [
+            f"{name}:{amount}"
+            for name, amount in sorted(depot.items())
+            if not name.startswith("_") and isinstance(amount, (int, float))
+        ]
+        if commodities:
+            self.colony_commodities_var.set(", ".join(commodities))
+        self.log(f"Подставлена текущая система: {system}", "info")
+
+    @staticmethod
+    def _parse_commodities(text: str) -> dict:
+        """'aluminium:1200, steel:900' -> {'aluminium': 1200, 'steel': 900}."""
+        result = {}
+        for chunk in (text or "").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            name, _, amount = chunk.partition(":")
+            name = name.strip().lower()
+            try:
+                value = int(float(amount.strip()))
+            except ValueError:
+                continue
+            if name:
+                result[name] = value
+        return result
+
+    def _on_colony_create(self):
+        if not self.raven_api.is_connected:
+            self.log("Для создания проекта нужен RCC ключ (вкладка «Подключение»).", "error")
+            return
+        system = self.colony_fields["systemName"].get().strip()
+        build_name = self.colony_fields["buildName"].get().strip()
+        build_type = self.colony_fields["buildType"].get().strip()
+        if not (system and build_name and build_type):
+            self.log("Заполните поля: система, название, тип постройки.", "warn")
+            return
+
+        def as_int(key: str) -> Optional[int]:
+            raw = self.colony_fields[key].get().strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                self.log(f"Поле «{key}» должно быть числом, получено: {raw}", "warn")
+                return None
+
+        market_id, system_address, max_need = as_int("marketId"), as_int("systemAddress"), as_int("maxNeed")
+        if any(value is None and self.colony_fields[key].get().strip()
+               for key, value in (("marketId", market_id), ("systemAddress", system_address),
+                                  ("maxNeed", max_need))):
+            return
+
+        project = {
+            "systemName": system,
+            "buildName": build_name,
+            "buildType": build_type,
+            "marketId": market_id,
+            "systemAddress": system_address,
+            "maxNeed": max_need,
+            "isPrimaryPort": bool(self.colony_primary_port_var.get()),
+            "notes": self.colony_fields["notes"].get().strip() or None,
+            "commodities": self._parse_commodities(self.colony_commodities_var.get()),
+        }
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        self.colony_status.config(text="Создаю проект…")
+        threading.Thread(target=self._colony_create_thread, args=(project, cmdr), daemon=True).start()
+
+    def _colony_create_thread(self, project: dict, cmdr: str):
+        result = self.raven_api.create_project(project)
+        build_id = ""
+        data = result.get("data")
+        if isinstance(data, dict):
+            build_id = str(data.get("buildId", "") or "")
+        if result.get("ok") and build_id and cmdr:
+            # Сразу привязываем проект к командиру, иначе он не попадёт в
+            # список «моих проектов» на сайте и в этой вкладке.
+            self.raven_api.link_cmdr(build_id, cmdr, True)
+        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr))
+
+    def _colony_create_done(self, result: dict, build_id: str, cmdr: str):
+        if result.get("ok"):
+            name = f"{self.colony_fields['systemName'].get()}: {self.colony_fields['buildName'].get()}"
+            self.log(f"Raven Colonial: проект создан — {name} (buildId {build_id})", "success")
+            self.colony_status.config(text=f"Проект создан, buildId: {build_id}")
+            if cmdr:
+                self._on_colony_refresh()
+        else:
+            error = result.get("error") or "неизвестная ошибка"
+            self.colony_status.config(text=f"Создать проект не удалось: {error}")
+            self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
     # ============================================================
     #  Вкладка: Оверлей
@@ -1761,6 +2219,7 @@ class ColonialHelperApp:
         self.raven_api.set_key(key)
         self.config["raven_colonial_key"] = key
         self.save_config()
+        self._update_colony_key_label()
         self.raven_status_label.config(text="Raven Colonial: проверка...", foreground="#d29922")
         self.log("Raven Colonial: проверка ключа...", "info")
         # Асинхронная проверка ключа через API

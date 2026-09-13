@@ -8,7 +8,7 @@ Endpoint и формат из SRV Survey:
 import requests
 import threading
 import time
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 
 class RavenColonialAPI:
@@ -156,3 +156,118 @@ class RavenColonialAPI:
                     "error": resp.text if not resp.ok else None}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ============================================================
+    #  Полный цикл работы с проектами (вкладка «Колонизатор»)
+    #
+    #  Схемы и методы — по официальной документации Raven Colonial
+    #  (https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/about):
+    #  PUT /api/project (создать), PATCH /api/project/{buildId} (изменить),
+    #  POST /api/project/{buildId}/complete, GET /api/cmdr/{cmdr}/active,
+    #  PUT|DELETE /api/cmdr/{cmdr}/primary, PUT|DELETE .../link/{cmdr},
+    #  PUT|DELETE .../assign/{cmdr}/{commodity}, POST|DELETE .../ready.
+    # ============================================================
+    def _request(self, method: str, path: str, json_body: Any = None, timeout: int = 15) -> dict:
+        """Один вызов Raven Colonial. Всегда возвращает {"ok","data","error","status"}.
+
+        Ни один метод клиента не должен выбрасывать исключение наружу: UI
+        вызывает их из фонового потока и показывает `error` в логе.
+        """
+        if not self.api_key:
+            return {"ok": False, "data": None, "error": "Ключ Raven Colonial (RCC) не задан", "status": 0}
+        try:
+            resp = self._session.request(
+                method.upper(),
+                f"{self.base_url}/{path.lstrip('/')}",
+                headers=self._headers(),
+                json=json_body,
+                timeout=timeout,
+            )
+        except Exception as exc:
+            return {"ok": False, "data": None, "error": str(exc), "status": 0}
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = resp.text[:500]
+        return {
+            "ok": resp.ok,
+            "data": payload if resp.ok else None,
+            "error": None if resp.ok else (payload if isinstance(payload, str) else str(payload))[:500],
+            "status": resp.status_code,
+        }
+
+    @staticmethod
+    def _esc(value) -> str:
+        """Имена командиров и товаров идут в пути — их нужно кодировать."""
+        from urllib.parse import quote
+
+        return quote(str(value), safe="")
+
+    # -- чтение ------------------------------------------------------------
+    def get_project_by_id(self, build_id: str) -> dict:
+        """GET /api/project/{buildId} — проект целиком."""
+        return self._request("GET", f"/project/{self._esc(build_id)}")
+
+    def get_cmdr_active(self, cmdr: str) -> dict:
+        """GET /api/cmdr/{cmdr}/active — активные проекты командира со связями."""
+        if not cmdr:
+            return {"ok": False, "data": None, "error": "Не задан имя командира", "status": 0}
+        return self._request("GET", f"/cmdr/{self._esc(cmdr)}/active")
+
+    def get_system_projects(self, system: str) -> dict:
+        """GET /api/system/{name|address} — активные проекты в системе."""
+        return self._request("GET", f"/system/{self._esc(system)}")
+
+    def get_primary(self, cmdr: str) -> dict:
+        """GET /api/cmdr/{cmdr}/primary — текущий основной проект."""
+        return self._request("GET", f"/cmdr/{self._esc(cmdr)}/primary")
+
+    # -- запись ------------------------------------------------------------
+    def create_project(self, project: dict) -> dict:
+        """PUT /api/project — создать проект.
+
+        Ожидаемые поля (ProjectCore/ProjectCreate): systemName, buildName,
+        buildType, marketId, systemAddress, starPos, bodyNum, bodyName,
+        factionName, architectName, maxNeed, notes, isPrimaryPort, commodities.
+        """
+        body = {key: value for key, value in project.items() if value is not None}
+        return self._request("PUT", "/project/", json_body=body)
+
+    def update_project(self, build_id: str, fields: dict) -> dict:
+        """PATCH /api/project/{buildId} — изменить поля (слияние, не замена)."""
+        body = {key: value for key, value in fields.items() if value is not None}
+        return self._request("PATCH", f"/project/{self._esc(build_id)}", json_body=body)
+
+    def mark_complete(self, build_id: str) -> dict:
+        """POST /api/project/{buildId}/complete — отметить завершённым (необратимо)."""
+        return self._request("POST", f"/project/{self._esc(build_id)}/complete")
+
+    def set_primary(self, cmdr: str, build_id: str) -> dict:
+        """PUT /api/cmdr/{cmdr}/primary — сделать проект основным."""
+        return self._request("PUT", f"/cmdr/{self._esc(cmdr)}/primary", json_body=str(build_id))
+
+    def clear_primary(self, cmdr: str) -> dict:
+        return self._request("DELETE", f"/cmdr/{self._esc(cmdr)}/primary")
+
+    def link_cmdr(self, build_id: str, cmdr: str, link: bool = True) -> dict:
+        """PUT/DELETE /api/project/{buildId}/link/{cmdr}."""
+        return self._request(
+            "PUT" if link else "DELETE",
+            f"/project/{self._esc(build_id)}/link/{self._esc(cmdr)}",
+        )
+
+    def assign_commodity(self, build_id: str, cmdr: str, commodity: str, assign: bool = True) -> dict:
+        """PUT/DELETE /api/project/{buildId}/assign/{cmdr}/{commodity}."""
+        return self._request(
+            "PUT" if assign else "DELETE",
+            f"/project/{self._esc(build_id)}/assign/{self._esc(cmdr)}/{self._esc(commodity)}",
+        )
+
+    def set_ready(self, build_id: str, commodities: list, ready: bool = True) -> dict:
+        """POST/DELETE /api/project/{buildId}/ready — отметить товары готовыми."""
+        return self._request(
+            "POST" if ready else "DELETE",
+            f"/project/{self._esc(build_id)}/ready",
+            json_body=list(commodities),
+        )
