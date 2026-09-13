@@ -40,12 +40,27 @@ jobs:
           python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py
 
       - name: Run uploader tests
-        # Тайминговые тесты (потоки и задержки) изредка ловят шум загруженного
-        # раннера: при падении прогоняем набор второй раз и считаем результат
-        # повторного прогона. Настоящая ошибка падает в обоих прогонах.
         run: |
-          python -m unittest discover -s uploader/tests -v || \
-            python -m unittest discover -s uploader/tests -v
+          set +e
+          python -m unittest discover -s uploader/tests -v > ci-tests.log 2>&1
+          code=$?
+          tail -n 60 ci-tests.log
+          if [ "$code" -ne 0 ]; then
+            summary=$(grep -E "^(FAIL|ERROR): " ci-tests.log | head -n 3 | tr '\n' ' ' | cut -c1-130)
+            tail_line=$(grep -E "^(FAILED|OK|Ran )" ci-tests.log | tail -n 2 | tr '\n' ' ' | cut -c1-130)
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
+              -f state=error -f context="ci-tests" \
+              -f description="$summary $tail_line" || true
+            git config user.email "ci-bot@users.noreply.github.com"
+            git config user.name "ci-bot"
+            git add -f ci-tests.log
+            git commit -m "ci-debug: лог упавших тестов ($GITHUB_RUN_ID)"
+            git pull --rebase origin "$GITHUB_REF_NAME"
+            git push origin "HEAD:$GITHUB_REF_NAME"
+          fi
+          exit $code
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build EXE with PyInstaller
         run: |
