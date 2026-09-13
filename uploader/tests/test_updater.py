@@ -327,6 +327,39 @@ class ReleaseTagAndNotesTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("usage:", out)
 
+    def test_cli_writes_notes_file_in_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "release-notes.md"
+            code = updater._cli(["--notes-file", str(target), "--branch", "arena/test"])
+            self.assertEqual(code, 0)
+            text = target.read_text(encoding="utf-8")
+            self.assertIn("**Colonial Helper", text)
+            self.assertIn("`arena/test`", text)
+            self.assertIn("Раунд", text)
+
+    def test_cli_notes_file_survives_cyrillic_hostile_console(self):
+        """Регрессия шага CI «Build release notes».
+
+        На Windows-раннере stdout получает кодировку консоли (cp1252), и
+        русский ченджлог в pipe падал с UnicodeEncodeError. Записывая файл
+        из Python в UTF-8, мы от кодировки консоли не зависим — проверяем
+        это отдельным процессом с враждебной кодировкой.
+        """
+        import os
+        import subprocess
+
+        script = Path(updater.__file__).resolve()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "notes.md"
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
+            completed = subprocess.run(
+                [sys.executable, str(script), "--notes-file", str(target),
+                 "--branch", "arena/test", "--commit", "abc123"],
+                capture_output=True, env=env, timeout=60,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr.decode("utf-8", "replace"))
+            self.assertIn("Раунд", target.read_text(encoding="utf-8"))
+
 
 # ---------------------------------------------------------------------------
 class UpdateUiTests(unittest.TestCase):

@@ -386,6 +386,8 @@ def _cli(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(description="Служебный CLI обновлений")
     parser.add_argument("--version", action="store_true", help="версия из colonial_helper.py")
     parser.add_argument("--notes", action="store_true", help="описание релиза")
+    parser.add_argument("--notes-file", default="", metavar="PATH",
+                        help="записать описание релиза в файл (UTF-8)")
     parser.add_argument("--tag", action="store_true", help="тег релиза для ветки")
     parser.add_argument("--branch", default="", help="имя ветки (для --tag/--notes)")
     parser.add_argument("--commit", default="", help="SHA коммита (для --notes)")
@@ -394,6 +396,20 @@ def _cli(argv: List[str]) -> int:
     version = current_version()
     if args.version:
         print(version)
+        return 0
+    if args.notes_file:
+        # Пишем в файл сами и в UTF-8: на Windows-раннере stdout получает
+        # кодировку консоли (cp1252/cp850), и русский ченджлог при выводе
+        # падал с UnicodeEncodeError — так и сломался шаг CI
+        # «Build release notes».
+        try:
+            Path(args.notes_file).write_text(
+                build_release_notes(version, args.branch, args.commit) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(f"Не удалось записать {args.notes_file}: {exc}")
+            return 2
         return 0
     if args.notes:
         print(build_release_notes(version, args.branch, args.commit))

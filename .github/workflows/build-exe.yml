@@ -21,6 +21,11 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # Вывод тестов и служебных скриптов на русском: без UTF-8 консоль
+      # раннера (cp1252/cp850) роняет print с UnicodeEncodeError.
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -70,8 +75,11 @@ jobs:
       - name: Build release notes
         shell: pwsh
         run: |
-          python uploader/updater.py --notes --branch "$env:GITHUB_REF_NAME" --commit "$env:GITHUB_SHA" |
-            Out-File -FilePath release-notes.md -Encoding utf8
+          # Пишем файл из Python (--notes-file, UTF-8): вывод через pipe
+          # шёл в кодировке консоли и русский ченджлог падал.
+          python uploader/updater.py --notes-file release-notes.md --branch "$env:GITHUB_REF_NAME" --commit "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw "Не удалось собрать описание релиза" }
+          Get-Content release-notes.md -TotalCount 5
 
       - name: Build EXE with PyInstaller
         run: |
