@@ -256,6 +256,12 @@ class OverlayAutoHideTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _run_loop(self, state, seconds=1.3):
+        """Прогнать цикл обновления и собрать вызовы переключения видимости.
+
+        Ждём ПЕРВЫЙ вызов, а не фиксированное время: на загруженном
+        CI-раннере старт потока и первый проход могут занять больше
+        заложенного времени, и тест падал «вхолостую», не проверяя ничего.
+        """
         from overlay import OverlayManager
 
         with mock.patch.object(type(self.manager.game_monitor), "state",
@@ -264,7 +270,10 @@ class OverlayAutoHideTests(unittest.TestCase):
             with mock.patch.object(OverlayManager, "_set_all_visibility") as visibility:
                 thread = threading.Thread(target=self.manager._update_loop, daemon=True)
                 thread.start()
-                time.sleep(seconds)
+                deadline = time.monotonic() + max(seconds, 10.0)
+                while not visibility.call_args_list and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                time.sleep(min(seconds, 0.5))   # даём циклу сделать пару проходов
                 self.manager._stop.set()
                 thread.join(10)
                 return [call.args for call in visibility.call_args_list]
