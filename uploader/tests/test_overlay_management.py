@@ -456,18 +456,45 @@ class OverlayFontTests(unittest.TestCase):
 
 
 class Win32HelperTests(unittest.TestCase):
-    """Win32-помощники не должны ронять программу без Windows."""
+    """Win32-помощники не должны ронять программу, если WinAPI недоступен.
+
+    ВАЖНО: настоящий Win32 здесь не дёргаем — на Windows-машине (в том числе
+    в CI) вызов с «левым» HWND падал и уносил за собой весь процесс.
+    """
+    @staticmethod
+    def _without_ctypes():
+        """Имитация «ctypes сломан/отсутствует»: import внутри функции падает."""
+        return mock.patch.dict(sys.modules, {"ctypes": None})
+
+    def test_click_through_without_handle_is_noop(self):
+        from overlay import _set_click_through
+
+        # Без HWND менять нечего — и Win32 даже не вызывается.
+        self.assertFalse(_set_click_through(0, True))
+        self.assertFalse(_set_click_through(0, False))
 
     def test_click_through_is_noop_without_win32(self):
         from overlay import _set_click_through
 
-        self.assertFalse(_set_click_through(0, True))
-        self.assertFalse(_set_click_through(12345, False))
+        with self._without_ctypes():
+            self.assertFalse(_set_click_through(12345, True))
+            self.assertFalse(_set_click_through(12345, False))
 
     def test_hwnd_of_window_is_none_without_win32(self):
         from overlay import _hwnd_of
 
-        self.assertIsNone(_hwnd_of(mock.MagicMock()))
+        with self._without_ctypes():
+            self.assertIsNone(_hwnd_of(mock.MagicMock()))
+
+    def test_hwnd_of_window_is_none_when_api_fails(self):
+        """ctypes есть, но Win32 отдаёт ошибку — тоже не падаем."""
+        from overlay import _hwnd_of
+
+        class _BrokenWindow:
+            def winfo_id(self):
+                raise RuntimeError("окна уже нет")
+
+        self.assertIsNone(_hwnd_of(_BrokenWindow()))
 
 
 class OverlayBehaviourTests(_ManagerTestCase):
