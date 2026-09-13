@@ -71,16 +71,25 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
-from journal_parser import parse_file, parse_journal, extract_construction_events
+from journal_parser import (
+    parse_file,          # noqa: F401 — оставлен как публичный API парсера
+    parse_journal,       # noqa: F401
+    parse_events,
+    iter_journal_events,
+    extract_construction_events,  # noqa: F401
+    ConstructionSnapshotCollector,
+    PARSER_VERSION,
+)
 from route_tracker import RouteTracker
 from overlay import OverlayManager
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
+from event_dispatch import ThirdPartyDispatcher
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -132,6 +141,11 @@ class ColonialHelperApp:
         self._last_session_event = ""
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
         self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
+        # Накопители для первичной сверки: доставки/snapshots не уходят на сайт
+        # после каждого файла (сотни запросов), а отправляются одним пакетом.
+        self._defer_uploads = False
+        self._backfill_deliveries: list = []
+        self._backfill_construction: list = []
         self._navroute_mtime = 0.0
 
         # Конфиг
@@ -153,13 +167,41 @@ class ColonialHelperApp:
             self.config.get("inara_api_key", ""),
             self.config.get("inara_commander_name", ""),
         )
-        self._edsm_seen_events: set = set()
-        self._inara_seen_events: set = set()
-        self._raven_seen_carrier_events: set = set()
+        # Дедупликация событий для внешних API живёт в self.dispatcher
+        # (event_dispatch.py), а не в приложении.
         # Восстанавливаем ключ из конфига (load_config вызывался раньше создания raven_api)
         raven_key = self.config.get("raven_colonial_key", "")
         if raven_key:
             self.raven_api.set_key(raven_key)
+
+        # Внешние API (EDSM / Inara / Raven Colonial) отправляются из
+        # фонового диспетчера: см. комментарии в event_dispatch.py. Раньше
+        # каждое событие журнала уходило синхронным HTTP-запросом прямо из
+        # потока обработки, из-за чего первичная загрузка истории занимала
+        # часы при подключённых API.
+        self.dispatcher = ThirdPartyDispatcher(
+            edsm_api=self.edsm_api,
+            inara_api=self.inara_api,
+            raven_api=self.raven_api,
+            logger=lambda message: self.root.after(0, lambda m=message: self.log(m, "info")),
+            # Историю (первичную загрузку) во внешние сервисы не отправляем,
+            # если пользователь это явно не включил в настройках.
+            backfill_enabled=bool(self.config.get("backfill_send_third_party", False)),
+        )
+        self.dispatcher.on_result = self._on_third_party_result
+
+        # Кэш уже загруженных файлов журнала (локальный, рядом с конфигом).
+        # Позволяет не переразбирать и не переотправлять файлы, которые уже
+        # были успешно импортированы — повторная первичная загрузка вместо
+        # десятков минут занимает секунды.
+        self.imported_files_path = self.config_path.with_name(".colonial_helper_imported_files.json")
+        self.imported_files: dict = self._load_imported_files()
+        self.skip_imported_files = bool(self.config.get("skip_imported_files", True))
+        # Прогресс обновляем не чаще, чем раз в _PROGRESS_MIN_INTERVAL секунд:
+        # на 800 файлов постоянные root.after() забивали очередь Tkinter и
+        # сами по себе тормозили загрузку.
+        self._progress_interval = 0.1
+        self._last_progress_ts = 0.0
 
         # Оверлей
         self.overlay_manager = OverlayManager(self.root, self.config_path)
@@ -674,7 +716,70 @@ class ColonialHelperApp:
         self.progress_label = tb.Label(frame, text="", foreground=COLOR_MUTED)
         self.progress_label.pack(anchor=W)
 
+        # -- Настройки первичной загрузки --
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=(15, 10))
+        tb.Label(
+            frame,
+            text="Первичная загрузка (вся история журналов)",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor=W, pady=(0, 6))
+
+        self.skip_imported_var = tb.BooleanVar(value=self.skip_imported_files)
+        tb.Checkbutton(
+            frame,
+            text="Пропускать файлы, загруженные ранее (быстрый повторный импорт)",
+            variable=self.skip_imported_var,
+            bootstyle="success-round-toggle",
+            command=self._on_skip_imported_changed,
+        ).pack(anchor=W)
+
+        self.backfill_third_party_var = tb.BooleanVar(value=bool(self.dispatcher.backfill_enabled))
+        tb.Checkbutton(
+            frame,
+            text="Отправлять историю в EDSM / Inara / Raven Colonial (очень медленно)",
+            variable=self.backfill_third_party_var,
+            bootstyle="warning-round-toggle",
+            command=self._on_backfill_third_party_changed,
+        ).pack(anchor=W, pady=(2, 0))
+
+        tb.Label(
+            frame,
+            text="По умолчанию история отправляется только на ED Ring Colony: внешние сервисы "
+                 "получают лишь live-события watcher'а. Отправка тысяч исторических событий "
+                 "в EDSM/Inara/Raven — это часы ожидания и риск блокировки по rate limit.",
+            foreground=COLOR_MUTED,
+            wraplength=760,
+            font=("Segoe UI", 9),
+        ).pack(anchor=W, pady=(2, 8))
+
+        cache_frame = tb.Frame(frame)
+        cache_frame.pack(anchor=W)
+        tb.Button(
+            cache_frame,
+            text="Сбросить кэш импорта",
+            command=self._reset_import_cache,
+            bootstyle="secondary-outline",
+            width=22,
+        ).pack(side=LEFT)
+
         self.selected_files: list[Path] = []
+
+    def _on_skip_imported_changed(self):
+        self.skip_imported_files = bool(self.skip_imported_var.get())
+        self.config["skip_imported_files"] = self.skip_imported_files
+        self.save_config()
+
+    def _on_backfill_third_party_changed(self):
+        enabled = bool(self.backfill_third_party_var.get())
+        self.dispatcher.configure(backfill_enabled=enabled)
+        self.config["backfill_send_third_party"] = enabled
+        self.save_config()
+        self.log(
+            "История журналов будет отправляться во внешние API (медленно)"
+            if enabled
+            else "История журналов не отправляется во внешние API (только live-события)",
+            "warn" if enabled else "info",
+        )
 
     # ============================================================
     #  Вкладка: Маршрут
@@ -1208,8 +1313,98 @@ class ColonialHelperApp:
         # Сохраняем и настройки оверлея
         self.overlay_manager.save_settings()
 
+    # ============================================================
+    #  Кэш уже загруженных файлов журнала
+    # ============================================================
+    def _load_imported_files(self) -> dict:
+        """Прочитать локальный список уже успешно загруженных файлов."""
+        try:
+            with open(self.imported_files_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _save_imported_files(self):
+        """Записать кэш загруженных файлов атомарно (tmp + replace)."""
+        tmp = self.imported_files_path.with_suffix(".tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self.imported_files, fh)
+            tmp.replace(self.imported_files_path)
+        except OSError as exc:
+            self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить кэш импорта: {e}", "warn"))
+
+    def _is_file_imported(self, path: Path) -> bool:
+        """Файл уже загружался и с тех пор не менялся?
+
+        Проверяем размер и mtime: если файл дописывался, он будет разобран
+        заново. Версия парсера в ключе гарантирует переимпорт после смены
+        правил разбора (например, после исправления источника доставок).
+        """
+        try:
+            stat = path.stat()
+        except OSError:
+            return False
+        record = self.imported_files.get(str(path))
+        if not isinstance(record, dict):
+            return False
+        return (
+            int(record.get("size", -1)) == int(stat.st_size)
+            and int(record.get("mtime", -1)) == int(stat.st_mtime)
+            and int(record.get("parser", -1)) == int(PARSER_VERSION)
+        )
+
+    def _mark_files_imported(self, files: list):
+        """Отметить файлы как успешно загруженные (только после удачной отправки).
+
+        Если часть чанков не загрузилась — файлы НЕ отмечаются, чтобы
+        следующая попытка пере-отправила их заново.
+        """
+        now_iso = datetime.now().isoformat(timespec="seconds")
+        for path in files:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            self.imported_files[str(path)] = {
+                "size": int(stat.st_size),
+                "mtime": int(stat.st_mtime),
+                "parser": int(PARSER_VERSION),
+                "at": now_iso,
+            }
+        self._save_imported_files()
+
+    def _reset_import_cache(self):
+        """Забыть все записи об импорте (кнопка на вкладке загрузки).
+
+        Заодно сбрасывается и внутрисессионная дедупликация событий
+        (`_seen_events`) с состоянием diff'ов: иначе повторный импорт в том же
+        запуске приложения всё равно не нашёл бы ни одной доставки, и кнопка
+        выглядела бы "ничего не делающей".
+        """
+        count = len(self.imported_files)
+        self.imported_files = {}
+        try:
+            if self.imported_files_path.exists():
+                self.imported_files_path.unlink()
+        except OSError:
+            pass
+        self._seen_events = set()
+        self._last_cargo = {}
+        self._last_depot_state = {}
+        self._last_contribution_state = {}
+        self.log(
+            f"Кэш импорта сброшен ({count} записей) — файлы будут разобраны и загружены заново",
+            "info",
+        )
+
     def _on_close(self):
         self.overlay_manager.stop()
+        try:
+            self.dispatcher.stop(wait=False)
+        except Exception:
+            pass
         self.save_config()
         self.root.destroy()
 
@@ -1465,9 +1660,37 @@ class ColonialHelperApp:
     # текущая пачка, read-память предыдущей уже освобождена.
     _UPLOAD_BATCH_SIZE = 40
 
+    def _update_progress(self, value=None, text=None, force=False):
+        """Обновить прогресс-бар из фонового потока.
+
+        Обновление идёт не чаще `_progress_interval` (0.1 с): на сотнях файлов
+        постоянные `root.after()` сами по себе забивали очередь Tkinter и
+        тормозили загрузку.
+        """
+        now = time.monotonic()
+        if not force and (now - self._last_progress_ts) < self._progress_interval:
+            return
+        self._last_progress_ts = now
+
+        def apply():
+            try:
+                if value is not None:
+                    self.progress.configure(value=max(0.0, min(100.0, float(value))))
+                if text is not None:
+                    self.progress_label.configure(text=text)
+            except Exception:
+                pass
+
+        self.root.after(0, apply)
+
+    def _any_third_party_enabled(self) -> bool:
+        return bool(self.edsm_api.enabled or self.inara_api.enabled or self.raven_api.is_connected)
+
     def _do_upload_thread(self):
         all_deliveries = []
-        all_construction_events = []
+        # Snapshots стройки собираются попутно, за тот же один проход по файлу,
+        # и сразу с отсевом повторов (подробнее — в ConstructionSnapshotCollector).
+        collector = ConstructionSnapshotCollector()
         cmdr_name = None
         total_event_counts: Counter = Counter()
         files_processed = 0
@@ -1477,17 +1700,67 @@ class ColonialHelperApp:
         # _on_select_files, но подстрахуемся и здесь на случай, если
         # selected_files когда-нибудь будет заполняться иначе.
         files = sorted(self.selected_files, key=lambda p: p.name)
-        total = len(files)
-        batch_size = self._UPLOAD_BATCH_SIZE
 
+        # Файлы, уже отправленные ранее, не переразбираем: повторная первичная
+        # загрузка после этого занимает секунды вместо десятков минут.
+        files_skipped = 0
+        if self.skip_imported_files:
+            pending = []
+            for path in files:
+                if self._is_file_imported(path):
+                    files_skipped += 1
+                else:
+                    pending.append(path)
+            files = pending
+        total = len(files)
+
+        if files_skipped:
+            self.root.after(
+                0,
+                lambda n=files_skipped: self.log(
+                    f"Пропущено уже загруженных ранее файлов: {n} "
+                    f"(сбросить — кнопка «Сбросить кэш импорта»)",
+                    "info",
+                ),
+            )
+        if not total:
+            self.root.after(0, lambda: self.log("Нет файлов для загрузки — все выбранные уже импортированы", "warn"))
+            self.root.after(0, lambda: self._update_progress(100, "Все выбранные файлы уже загружены", force=True))
+            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
+            return
+
+        batch_size = self._UPLOAD_BATCH_SIZE
         self.root.after(
             0,
-            lambda t=total: self.log(
-                f"Начинаю обработку {t} файлов" + (f" (пачками по {batch_size})" if t > batch_size else "") + "...",
+            lambda t=total, b=batch_size: self.log(
+                f"Начинаю обработку {t} файлов" + (f" (пачками по {b})" if t > b else "") + "...",
                 "info",
             ),
         )
+        if self._any_third_party_enabled() and not self.dispatcher.backfill_enabled:
+            self.root.after(
+                0,
+                lambda: self.log(
+                    "История не уходит в EDSM/Inara/Raven Colonial: эти сервисы получают только "
+                    "live-события watcher'а. Отправку истории можно включить галочкой ниже.",
+                    "info",
+                ),
+            )
 
+        # Один проход по каждому файлу: доставки + snapshots стройки + внешние
+        # API. Раньше текст файла разбирался трижды (доставки, snapshots,
+        # отправка в EDSM/Inara), и на сотнях файлов это было заметной частью
+        # времени первичной загрузки.
+        def dispatch_hook(line, ev):
+            station_type = str(self._last_depot_state.get("_station_type", "") or "")
+            self.dispatcher.submit(ev, live=False, station_type=station_type)
+
+        hooks = [collector, dispatch_hook]
+
+        # Только те файлы, которые реально разобраны и чьи доставки приняты:
+        # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
+        # он больше никогда не был бы пере-отправлен.
+        accepted_files: list = []
         processed_count = 0
         for batch_start in range(0, total, batch_size):
             batch_files = files[batch_start: batch_start + batch_size]
@@ -1522,19 +1795,19 @@ class ColonialHelperApp:
                     continue  # ошибка чтения уже залогирована выше
                 self.root.after(0, lambda n=filepath.name: self.log(f"Обработка {n}...", "info"))
                 try:
-                    self._send_edsm_text(text)
                     current_system = self.ship.state.current_system if self.ship.state else None
                     current_system_address = self.ship.state.system_address if self.ship.state else 0
                     (
                         cname, deliveries, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, event_counts,
-                    ) = parse_journal(
-                        text, current_system, self._last_cargo, self._last_depot_state,
+                    ) = parse_events(
+                        iter_journal_events(text), current_system, self._last_cargo, self._last_depot_state,
                         self._last_contribution_state, self._seen_events, current_system_address,
+                        hooks=hooks,
                     )
                     total_event_counts.update(event_counts)
-                    all_construction_events.extend(extract_construction_events(text))
                     files_processed += 1
+                    accepted_files.append(filepath)
                     # Проверка: все файлы от одного командира
                     if cname:
                         if cmdr_name is None:
@@ -1563,9 +1836,11 @@ class ColonialHelperApp:
                         0, lambda n=filepath.name, e=e: self.log(f"Ошибка обработки {n}: {e}", "error")
                     )
 
-                # Отдаём под загрузку/парсинг 0-90%, оставшиеся 10% — под отправку на сервер.
-                progress_val = processed_count / total * 90
-                self.root.after(0, lambda v=progress_val: self.progress.config(value=v))
+                # Отдаём под чтение/разбор 0-85%, остальное — под отправку.
+                self._update_progress(
+                    processed_count / total * 85,
+                    f"Разбор файлов: {processed_count}/{total}",
+                )
 
             # Освобождаем память пачки явно перед чтением следующей.
             del batch_texts
@@ -1580,33 +1855,81 @@ class ColonialHelperApp:
             self.root.after(0, lambda e=e: self.log(f"Не удалось построить сводную таблицу: {e}", "warn"))
 
         self._record_session_deliveries(all_deliveries)
-        construction_result = self.api.upload_construction_events(all_construction_events, cmdr_name)
-        if construction_result.get("ok") and all_construction_events:
-            self.root.after(0, lambda n=len(all_construction_events): self.log(
-                f"Прогресс строек: отправлено snapshots — {n}", "info"
-            ))
-        elif all_construction_events:
-            self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
-                self.log(f"Прогресс строек не отправлен: {e}", "warn"))
-        if not all_deliveries and not all_construction_events:
+
+        construction_events = collector.events
+        if collector.duplicates:
+            self.root.after(
+                0,
+                lambda d=collector.duplicates, k=len(construction_events): self.log(
+                    f"Snapshots стройки: {k} уникальных состояний "
+                    f"({d} повторов с неизменным состоянием отфильтровано)",
+                    "info",
+                ),
+            )
+
+        if not all_deliveries and not construction_events:
             self.root.after(0, lambda: self.log("Доставки и события строительства не найдены", "warn"))
+            self.root.after(0, lambda: self._mark_files_imported(accepted_files))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
-            self.root.after(0, lambda: self.progress.config(value=0))
-            self.root.after(0, lambda: self.progress_label.config(text=""))
+            self.root.after(0, lambda: self._update_progress(0, "", force=True))
+            return
+
+        # ---- Отправка snapshots стройплощадок (общий прогресс проекта) ----
+        construction_ok = True
+        if construction_events:
+            self._update_progress(85, f"Отправка snapshots стройки: {len(construction_events)}...", force=True)
+
+            def construction_progress(done, total_chunks):
+                self._update_progress(
+                    85 + 5.0 * done / max(1, total_chunks),
+                    f"Отправка snapshots стройки: {done}/{total_chunks} пачек",
+                )
+
+            construction_result = self.api.upload_construction_events(
+                construction_events, cmdr_name, progress_cb=construction_progress
+            )
+            if construction_result.get("ok"):
+                self.root.after(
+                    0,
+                    lambda n=len(construction_events): self.log(
+                        f"Прогресс строек: отправлено snapshots — {n}", "info"
+                    ),
+                )
+            else:
+                construction_ok = False
+                self.root.after(
+                    0,
+                    lambda e=construction_result.get("error", "ошибка"): self.log(
+                        f"Прогресс строек не отправлен: {e}", "warn"
+                    ),
+                )
+
+        # ---- Отправка доставок ----
+        if not all_deliveries:
+            self.root.after(0, lambda: self.log("Доставки не найдены", "warn"))
+            if construction_ok:
+                self.root.after(0, lambda: self._mark_files_imported(accepted_files))
+            self.root.after(0, lambda: self._update_progress(100, "Готово", force=True))
+            self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             return
 
         self.root.after(
             0,
             lambda: self.log(f"Всего доставок: {len(all_deliveries)}. Отправка...", "info"),
         )
-        self.root.after(
-            0,
-            lambda: self.progress_label.config(text=f"Отправка {len(all_deliveries)} записей..."),
-        )
 
+        def delivery_progress(done, total_chunks):
+            self._update_progress(
+                90 + 10.0 * done / max(1, total_chunks),
+                f"Отправка доставок: {done}/{total_chunks} пачек",
+            )
+
+        self._update_progress(90, f"Отправка {len(all_deliveries)} записей...", force=True)
         try:
             result = self.api.upload_deliveries(
-                [self._delivery_for_api(d) for d in all_deliveries], cmdr_name
+                [self._delivery_for_api(d) for d in all_deliveries],
+                cmdr_name,
+                progress_cb=delivery_progress,
             )
         except Exception as e:
             # Подстраховка: api_client уже ловит сетевые и JSON-ошибки сам,
@@ -1616,16 +1939,15 @@ class ColonialHelperApp:
                 0, lambda e=e: self.log(f"Непредвиденная ошибка при отправке: {e}", "error")
             )
             self.root.after(
-                0, lambda e=str(e): self.progress_label.config(text=f"Ошибка: {e[:100]}")
+                0, lambda e=str(e): self._update_progress(None, f"Ошибка: {e[:100]}", force=True)
             )
-            self.root.after(0, lambda: self.progress.config(value=0))
             self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
             return
 
-        self.root.after(0, lambda: self.progress.config(value=100))
+        self.root.after(0, lambda: self._update_progress(100, None, force=True))
 
         if result["ok"]:
-            inserted = result['inserted']
+            inserted = result["inserted"]
             route_deliveries = [d for d in all_deliveries if self.route.is_on_route(d["system_name"])]
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
             self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
@@ -1641,6 +1963,8 @@ class ColonialHelperApp:
                     text=f"Загружено: {ins} записей ({rt:.0f}t на маршрут)"
                 ),
             )
+            if construction_ok:
+                self.root.after(0, lambda: self._mark_files_imported(accepted_files))
         else:
             # result может быть "partial" (часть чанков доставок всё же
             # загрузилась) — не теряем эту информацию молча и хотя бы
@@ -1663,9 +1987,7 @@ class ColonialHelperApp:
             # вкладку "Лог". Показываем хотя бы начало реального текста ошибки.
             self.root.after(
                 0,
-                lambda e=error_text: self.progress_label.config(
-                    text=f"Ошибка: {e[:100]}"
-                ),
+                lambda e=error_text: self.progress_label.config(text=f"Ошибка: {e[:100]}"),
             )
         self.root.after(0, lambda: self.upload_btn.config(state=NORMAL))
 
@@ -1706,7 +2028,11 @@ class ColonialHelperApp:
         # как основа для всех тиков watcher'а, пока журнал не назовёт другого CMDR.
         self._watcher_cmdr_name = self.api.cmdr_name
         self._pending_watcher_deliveries = []
-        self._raven_seen_carrier_events = set()
+        # Накопители первичной сверки + статистика внешних API — с нуля.
+        self._defer_uploads = False
+        self._backfill_deliveries = []
+        self._backfill_construction = []
+        self.dispatcher.reset_stats()
 
         self._auto_load_navroute()
 
@@ -1765,50 +2091,49 @@ class ColonialHelperApp:
         self._last_session_event = message
         self.overlay_manager.log_session_event(message)
 
-    def _send_inara_event(self, event: dict):
-        if not self.inara_api.enabled:
+    def _on_third_party_result(self, service: str, ok: bool, message: str):
+        """Результат отправки во внешний API (вызывается из потока диспетчера)."""
+        # В лог попадают только проблемы/особые случаи: успешных отправок на
+        # истории могут быть тысячи, и засорять ими лог бессмысленно.
+        if ok:
+            if message:
+                self.root.after(0, lambda m=message: self.log(m, "info"))
             return
-        event_name = str(event.get("event", ""))
-        names = {
-            "Location": "cmdrLocation", "FSDJump": "cmdrFSDJump", "Docked": "cmdrDock",
-            "Scan": "cmdrScan", "FSSDiscoveryScan": "cmdrFSSDiscoveryScan",
-            "MarketSell": "cmdrMarketSell", "MarketBuy": "cmdrMarketBuy",
-            "ColonisationContribution": "cmdrTrade",
-        }
-        inara_name = names.get(event_name)
-        if not inara_name:
-            return
-        key = f"{event.get('timestamp', '')}:{event_name}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}:{event.get('MarketID', '')}"
-        if key in self._inara_seen_events:
-            return
-        self._inara_seen_events.add(key)
-        data = dict(event)
-        data.pop("event", None)
-        self.inara_api.submit(inara_name, data, str(event.get("timestamp", "")))
+        self.root.after(
+            0,
+            lambda m=message, s=service: self.log(
+                f"{s.upper()}: {m}" if not m.lower().startswith(s.lower()) else m, "warn"
+            ),
+        )
 
-    def _send_edsm_text(self, text: str):
-        if not self.edsm_api.enabled:
-            return
-        for line in text.splitlines():
-            try:
-                event = json.loads(line)
-                self._log_session_event(event)
-                self._send_edsm_event(event)
-                self._send_inara_event(event)
-                self._send_carrier_event_to_raven(event)
-            except (ValueError, TypeError):
-                continue
+    def _send_inara_event(self, event: dict, live: bool = True):
+        """Поставить Inara-событие в очередь диспетчера (без блокировки потока)."""
+        self.dispatcher.submit(event, live=live)
 
-    def _send_edsm_event(self, event: dict):
-        if not self.edsm_api.enabled or event.get("event") not in {
-            "Location", "FSDJump", "Docked", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
-        }:
+    def _send_edsm_event(self, event: dict, live: bool = True):
+        """Поставить EDSM-событие в очередь диспетчера.
+
+        Раньше здесь был `threading.Thread(...).start()` на каждое событие —
+        при первичной загрузке истории это тысячи одновременных потоков.
+        """
+        self.dispatcher.submit(event, live=live)
+
+    def _send_carrier_event_to_raven(self, event: dict, live: bool = True):
+        """Поставить операцию с грузом Fleet Carrier в очередь диспетчера."""
+        station_type = str(self._last_depot_state.get("_station_type", "") or "")
+        self.dispatcher.submit(event, live=live, station_type=station_type)
+
+    def _send_edsm_text(self, text: str, live: bool = True):
+        """Прогнать текст журнала через диспетчер внешних API.
+
+        Используется только для совместимости со старыми вызовами: основной
+        путь — хуки parse_events() (файл разбирается один раз, а не по разу на
+        каждого потребителя).
+        """
+        if not live and not self.dispatcher.backfill_enabled:
             return
-        key = f"{event.get('timestamp', '')}:{event.get('event', '')}:{event.get('SystemAddress', '')}:{event.get('BodyID', '')}"
-        if key in self._edsm_seen_events:
-            return
-        self._edsm_seen_events.add(key)
-        threading.Thread(target=self.edsm_api.submit_event, args=(dict(event),), daemon=True).start()
+        for _line, event in iter_journal_events(text):
+            self.dispatcher.submit(event, live=live)
 
     def _auto_load_navroute(self) -> bool:
         """Автоматически загрузить свежий NavRoute.json из папки журналов."""
@@ -2104,6 +2429,81 @@ class ColonialHelperApp:
         self.progress_label.configure(text=message)
         self.log(message, "success")
 
+        # Итог по внешним сервисам за время первичной сверки — чтобы было
+        # видно, почему она больше не длится часами.
+        stats = self.dispatcher.snapshot_stats()
+        if stats.get("skipped_backfill"):
+            self.log(
+                f"История отправлена только на ED Ring Colony: {stats['skipped_backfill']} "
+                f"исторических событий не ушли в EDSM/Inara/Raven "
+                f"(включается галочкой на вкладке «Загрузка логов»)",
+                "info",
+            )
+        elif stats.get("sent") or stats.get("failed"):
+            self.log(
+                f"Внешние API: отправлено {stats.get('sent', 0)}, ошибок {stats.get('failed', 0)}, "
+                f"в очереди {stats.get('pending', 0)}",
+                "info",
+            )
+
+    def _flush_deferred_uploads(self):
+        """Отправить на сайт всё, накопленное за время первичной сверки.
+
+        Один пакет вместо сотни мелких запросов (по одному на файл), что на
+        истории из 800 файлов экономило десятки минут: доставки уходят
+        параллельными пачками по 100, snapshots — по 100 (лимит сервера).
+        """
+        self._defer_uploads = False
+        deliveries, construction = self._backfill_deliveries, self._backfill_construction
+        self._backfill_deliveries, self._backfill_construction = [], []
+        if not deliveries and not construction:
+            return
+        cmdr_name = self._watcher_cmdr_name or ""
+
+        def log(message: str, level: str = "info"):
+            self.root.after(0, lambda m=message, l=level: self.log(m, l))
+
+        log(f"Первичная загрузка: отправка на сайт — {len(deliveries)} доставок, "
+            f"{len(construction)} snapshots стройки", "info")
+
+        if construction and self.api.is_connected:
+            def construction_progress(done, total_chunks):
+                self._update_progress(100.0, f"Отправка snapshots стройки: {done}/{total_chunks} пачек")
+
+            result = self.api.upload_construction_events(
+                construction, cmdr_name, progress_cb=construction_progress
+            )
+            if result.get("ok"):
+                log(f"Первичная загрузка: snapshots стройки отправлены ({len(construction)})", "success")
+            else:
+                log(f"Первичная загрузка: snapshots стройки не отправлены — "
+                    f"{result.get('error', 'ошибка')}", "warn")
+
+        if deliveries and self.api.is_connected:
+            def delivery_progress(done, total_chunks):
+                self._update_progress(100.0, f"Отправка доставок: {done}/{total_chunks} пачек")
+
+            result = self.api.upload_deliveries(
+                [self._delivery_for_api(d) for d in deliveries], cmdr_name, progress_cb=delivery_progress
+            )
+            if result.get("ok"):
+                route_tons = sum(
+                    d.get("amount", 0) for d in deliveries
+                    if self.route.is_on_route(d.get("system_name", ""))
+                )
+                log(f"Первичная загрузка: загружено {result['inserted']} доставок "
+                    f"({route_tons:.0f}t на маршрут)", "success")
+                self._send_deliveries_to_raven(deliveries, cmdr_name)
+            else:
+                # Не теряем распарсенные доставки: сервер дедуплицирует по
+                # source_hash, поэтому повторная попытка безопасна.
+                self._pending_watcher_deliveries = deliveries + self._pending_watcher_deliveries
+                log(f"Первичная загрузка: доставки не отправлены — {result.get('error', 'ошибка')}", "error")
+
+        # События строительства и доставки уже обработаны — прогресс-бар
+        # возвращаем в состояние "завершено".
+        self.root.after(0, lambda: self._update_progress(100.0, None, force=True))
+
     def _watcher_loop(self):
         offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
@@ -2140,19 +2540,27 @@ class ColonialHelperApp:
             self.root.after(0, lambda n=total_files, b=total_bytes: self._show_journal_reconciliation_progress(
                 0, n, b, 0, "Подготовка журналов..."
             ))
-            for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
-                if self.watcher_stop_event.is_set():
-                    break
-                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
-                    self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
-                )
-                processed = self._process_journal_changes(f, start, size)
-                self.last_file_mtimes[str(f)] = start + processed
-                done_bytes += processed
-                self._save_journal_offsets()
-                self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
-                    self._show_journal_reconciliation_progress(d, n, t, i, p)
-                )
+            # Отправку на сайт откладываем до конца сверки: иначе на каждый
+            # файл уходит отдельный запрос (на 800 файлах — сотни запросов).
+            self._defer_uploads = True
+            try:
+                for file_index, (f, start, size) in enumerate(reconciliation_files, 1):
+                    if self.watcher_stop_event.is_set():
+                        break
+                    self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                        self._show_journal_reconciliation_progress(d, n, t, i - 1, p)
+                    )
+                    # live=False: историческая сверка. События во внешние API
+                    # (EDSM/Inara/Raven) не уходят и в оверлей сессии не пишутся.
+                    processed = self._process_journal_changes(f, start, size, live=False)
+                    self.last_file_mtimes[str(f)] = start + processed
+                    done_bytes += processed
+                    self._save_journal_offsets()
+                    self.root.after(0, lambda i=file_index, n=total_files, p=f.name, d=done_bytes, t=total_bytes:
+                        self._show_journal_reconciliation_progress(d, n, t, i, p)
+                    )
+            finally:
+                self._flush_deferred_uploads()
             if total_files == 0:
                 self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
             elif not self.watcher_stop_event.is_set():
@@ -2177,7 +2585,9 @@ class ColonialHelperApp:
                         # Новый файл/ротация журнала.
                         last_size = 0
                     if current_size > last_size:
-                        processed = self._process_journal_changes(f, last_size, current_size)
+                        # live=True: это текущая игра, события уходят в
+                        # EDSM/Inara/Raven и в оверлей.
+                        processed = self._process_journal_changes(f, last_size, current_size, live=True)
                         # Обновляем только на фактически обработанные байты (полные строки)
                         self.last_file_mtimes[fpath] = last_size + processed
                         self._save_journal_offsets()
@@ -2206,38 +2616,6 @@ class ColonialHelperApp:
         )
         self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
 
-    def _send_carrier_event_to_raven(self, event: dict):
-        if not self.raven_api.is_connected or event.get("event") not in ("MarketSell", "MarketBuy"):
-            return
-        market_id = event.get("MarketID")
-        count = event.get("Count")
-        commodity = event.get("Type_Localised") or event.get("Type")
-        station_type = str(event.get("StationType", "") or self._last_depot_state.get("_station_type", ""))
-        # Только Fleet Carrier transactions относятся к FC cargo. Обычные
-        # station MarketBuy/MarketSell нельзя отправлять в /api/fc/...
-        is_carrier = bool(event.get("CarrierID")) or "carrier" in station_type.lower()
-        if not market_id or not count or not commodity or not is_carrier:
-            return
-        # Не отправляем один и тот же journal event повторно в рамках сессии.
-        # Такое могло возникать, когда один и тот же MarketSell/MarketBuy
-        # присутствовал в reconciliation и в следующем watcher-чанке.
-        event_key = "|".join(str(event.get(key, "")) for key in (
-            "event", "timestamp", "MarketID", "Type", "Type_Localised", "Count", "CarrierID",
-        ))
-        if event_key in self._raven_seen_carrier_events:
-            return
-        # As in SrvSurvey: selling to the FC adds cargo, buying from it removes cargo.
-        delta = int(count) if event.get("event") == "MarketSell" else -int(count)
-        result = self.raven_api.supply_fc(int(market_id), str(commodity), delta)
-        if result.get("ok"):
-            self._raven_seen_carrier_events.add(event_key)
-            if result.get("already_exists"):
-                self.root.after(0, lambda: self.log(
-                    f"Raven FC cargo: событие уже было принято ранее ({commodity} {delta:+d})", "info"
-                ))
-        else:
-            self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven FC cargo: {e}", "warn"))
-
     def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
         if not self.raven_api.is_connected:
             return
@@ -2249,24 +2627,75 @@ class ColonialHelperApp:
             address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
             if not address:
                 continue
+            # Проект ищем через кэш: все доставки на одну стройплощадку дают
+            # один и тот же buildId, а раньше на каждую доставку уходил
+            # отдельный HTTP-запрос (с таймаутом до 15 с).
             project = self.raven_api.get_project(address, market_id)
             if not project or not project.get("buildId"):
                 continue
             build_id = project["buildId"]
             commodity = delivery.get("commodity", "Unknown")
-            batches.setdefault(build_id, {})[commodity] = batches.setdefault(build_id, {}).get(commodity, 0) + int(delivery.get("amount", 0))
+            batch = batches.setdefault(build_id, {})
+            batch[commodity] = batch.get(commodity, 0) + int(delivery.get("amount", 0))
         for build_id, commodities in batches.items():
             result = self.raven_api.contribute(build_id, cmdr_name or "Unknown", commodities)
             if result.get("ok"):
-                self.root.after(0, lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"))
+                self.root.after(
+                    0,
+                    lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"),
+                )
             else:
-                self.root.after(0, lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"))
+                self.root.after(
+                    0,
+                    lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"),
+                )
 
-    def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int) -> int:
+    def _handle_tracked_event(self, ev: dict, live: bool = True):
+        """Обработка одного события журнала: маршрут, корабль, оверлей.
+
+        Вызывается из хука parse_events() — для live-тиков watcher'а и для
+        исторического разбора. Оверлей сессии обновляем только в live-режиме:
+        при первичной загрузке истории событий десятки тысяч, и каждый
+        `overlay_manager.log_session_event()` — это отдельный `root.after()`,
+        который забивает очередь Tkinter и сам по себе тормозит загрузку.
+        """
+        if live:
+            self._log_session_event(ev)
+        if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
+            sys_name = ev.get("StarSystem")
+            if sys_name:
+                self._session_systems_visited.add(sys_name)
+                if self.route.mark_visited(sys_name):
+                    self.root.after(0, self._refresh_route_tree)
+                    if live:
+                        self.overlay_manager.log(f"Jump: {sys_name}", "info")
+        # Отслеживание корабля
+        self.ship.parse_event(ev)
+        ev_name = ev.get("event")
+        if live and ev_name in (
+            "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
+            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll",
+        ):
+            st = self.ship.state
+            damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
+            dmg_str = f" ({', '.join(damaged)})" if damaged else ""
+            self.overlay_manager.log(
+                f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
+                f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
+                "info",
+            )
+
+    def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int, live: bool = False) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
 
         Читает только полные строки (заканчивающиеся на \\n).
         Неполная строка в конце блока остаётся для следующего тика.
+
+        `live=False` — исторический разбор (первичная сверка при старте
+        watcher'а). В этом режиме события НЕ уходят в EDSM/Inara/Raven и не
+        пишутся в оверлей сессии: на всей истории это десятки тысяч событий,
+        из-за которых первичная загрузка шла часами. `live=True` — обычный тик
+        watcher'а за игрой, там поведение прежнее.
         """
         try:
             with open(filepath, "rb") as f:
@@ -2295,9 +2724,26 @@ class ColonialHelperApp:
 
         current_system = self.ship.state.current_system if self.ship.state else None
         current_system_address = self.ship.state.system_address if self.ship.state else 0
-        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_journal(
-            new_text, current_system, self._last_cargo, self._last_depot_state,
+
+        # ОДИН проход по тексту: доставки, snapshots стройки, трекинг корабля
+        # и (только в live-режиме) внешние API. Раньше текст разбирался дважды
+        # — parse_journal() плюс отдельный построчный цикл на каждое событие.
+        collector = ConstructionSnapshotCollector()
+
+        def dispatch_hook(line, ev):
+            station_type = str(self._last_depot_state.get("_station_type", "") or "")
+            self.dispatcher.submit(ev, live=live, station_type=station_type)
+
+        def tracking_hook(line, ev):
+            try:
+                self._handle_tracked_event(ev, live=live)
+            except Exception:
+                pass
+
+        tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_events(
+            iter_journal_events(new_text), current_system, self._last_cargo, self._last_depot_state,
             self._last_contribution_state, self._seen_events, current_system_address,
+            hooks=[collector, tracking_hook, dispatch_hook],
         )
         # Commander/LoadGame встречаются обычно только один раз в начале файла,
         # поэтому в большинстве тиков tick_cmdr_name будет None — переиспользуем
@@ -2313,41 +2759,25 @@ class ColonialHelperApp:
                 return processed_bytes
             self._watcher_cmdr_name = tick_cmdr_name
         cmdr_name = self._watcher_cmdr_name
-        # ВСЕГДА парсим события для трекинга корабля/маршрута/оверлея
-        for line in new_text.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("{"):
-                continue
-            try:
-                ev = json.loads(line)
-                self._log_session_event(ev)
-                self._send_edsm_event(ev)
-                self._send_inara_event(ev)
-                self._send_carrier_event_to_raven(ev)
-                if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
-                    sys_name = ev.get("StarSystem")
-                    if sys_name:
-                        self._session_systems_visited.add(sys_name)
-                        if self.route.mark_visited(sys_name):
-                            self.root.after(0, self._refresh_route_tree)
-                            self.overlay_manager.log(f"Jump: {sys_name}", "info")
-                # Отслеживание корабля
-                self.ship.parse_event(ev)
-                ev_name = ev.get("event")
-                if ev_name in ("HullDamage", "HeatDamage", "ShieldState", "ModuleDamage", "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll"):
-                    st = self.ship.state
-                    damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
-                    dmg_str = f" ({', '.join(damaged)})" if damaged else ""
-                    self.overlay_manager.log(
-                        f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
-                        f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
-                        "info",
-                    )
-            except Exception:
-                pass
+        # Трекинг корабля/маршрута/оверлея и внешние API выполняются в хуках
+        # parse_events() — тем же однопроходным разбором текста.
 
         self._record_session_deliveries(deliveries)
-        construction_events = extract_construction_events(new_text)
+        # Snapshots стройки собираются тем же проходом, что и доставки, с
+        # отсевом повторов (состояние ColonisationConstructionDepot меняется
+        # заметно реже, чем пишется в журнал).
+        construction_events = collector.events
+
+        # Первичная сверка: НЕ отправляем на сайт после каждого файла (на
+        # истории это сотни отдельных запросов), а накапливаем и отправляем
+        # одним пакетом в конце — см. _flush_deferred_uploads().
+        if self._defer_uploads:
+            if deliveries:
+                self._backfill_deliveries.extend(deliveries)
+            if construction_events:
+                self._backfill_construction.extend(construction_events)
+            return processed_bytes
+
         if construction_events and self.api.is_connected:
             construction_result = self.api.upload_construction_events(construction_events, cmdr_name)
             if not construction_result.get("ok"):

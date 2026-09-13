@@ -14,6 +14,7 @@ args = [
     "--name", "ColonialHelper",
     "--add-data", f"api_client.py{os.pathsep}.",
     "--add-data", f"journal_parser.py{os.pathsep}.",
+    "--add-data", f"event_dispatch.py{os.pathsep}.",
     "--add-data", f"route_tracker.py{os.pathsep}.",
     "--add-data", f"overlay.py{os.pathsep}.",
     "--add-data", f"ship_tracker.py{os.pathsep}.",

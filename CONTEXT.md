@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-12.
-> Uploader release: 2.0.0.
+> Uploader release: 2.1.0.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -346,9 +346,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sync API: `/api/ravencolonial/sync`
 - Used for: Colonial data synchronization
 
-### 8.6 Colonial Helper uploader 2.0
+### 8.6 Colonial Helper uploader 2.1
 - Source: `uploader/colonial_helper.py`
-- Version: `2.0.0`
+- Version: `2.1.0`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -370,6 +370,26 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `.colonial_helper_credentials.json` in the user's home directory. This
   protects them from HUD settings saves and EXE upgrades; no credentials belong
   in source control.
+- Third-party APIs (EDSM, Inara, Raven Colonial FC cargo) are dispatched from a
+  background queue in `uploader/event_dispatch.py`: one bounded queue with a
+  small worker pool, so journal parsing never waits on the network.
+- Journal history (initial reconciliation and manual file import) is parsed with
+  `live=False` and is **not** forwarded to EDSM/Inara/Raven by default. Only
+  live watcher ticks are. Users may opt in per UI toggle
+  (`backfill_send_third_party` in the config).
+- Journal files are parsed once per pass: `iter_journal_events()` +
+  `parse_events(..., hooks=[...])` feed deliveries, construction snapshots, ship
+  tracking and third-party dispatch from the same stream.
+- Repeated `ColonisationConstructionDepot` snapshots with an unchanged state are
+  dropped before upload (`ConstructionSnapshotCollector`).
+- Site uploads are chunked and parallel: 100 deliveries per request / 100
+  snapshots per request (server limit), up to 4 concurrent requests, with a
+  progress callback. Startup reconciliation defers uploads and flushes them once
+  at the end instead of per file.
+- Uploaded-file cache `.colonial_helper_imported_files.json` stores
+  `path -> {size, mtime, parser}` so repeated imports skip unchanged files. The
+  parser version (`PARSER_VERSION` in `journal_parser.py`) invalidates the cache
+  when extraction rules change.
 
 ### 8.7 Pilot infographic tab
 - The uploader has a `Пилот` tab with local, live-updating cards.

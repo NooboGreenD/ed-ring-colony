@@ -6,18 +6,32 @@ Endpoint и формат из SRV Survey:
 - Contribute: Dictionary<string, int> (не JSON с commodity/amount)
 """
 import requests
+import threading
 import time
 from typing import Dict, Any, Optional
 
 
 class RavenColonialAPI:
+    # Сколько держим в памяти результат поиска проекта.
+    #
+    # get_project() вызывался для КАЖДОЙ доставки: при первичной загрузке
+    # истории это тысячи одинаковых запросов /system/{address}/{market_id} —
+    # все доставки на одну стройплощадку дают один и тот же проект. Кэш
+    # убирает тысячи лишних round trip'ов (каждый — до 15 с таймаута).
+    PROJECT_CACHE_TTL = 300.0
+
     def __init__(self, api_key: str = ""):
         self.api_key = api_key
         self.base_url = "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api"
         self._session = requests.Session()
+        self._project_cache: Dict[tuple, tuple] = {}
+        self._cache_lock = threading.Lock()
 
     def set_key(self, api_key: str):
         self.api_key = api_key
+        # Проект не зависит от ключа, но при смене аккаунта кэш лучше сбросить.
+        with self._cache_lock:
+            self._project_cache.clear()
 
     @property
     def is_connected(self) -> bool:
@@ -27,7 +41,25 @@ class RavenColonialAPI:
         return {"rcc-key": self.api_key}
 
     def get_project(self, system_address: int, market_id: int) -> Optional[dict]:
-        """Получить проект по system_address и market_id."""
+        """Получить проект по system_address и market_id (с кэшем).
+
+        Один и тот же проект запрашивался отдельным HTTP-запросом на каждую
+        доставку — при импорте всей истории это тысячи одинаковых запросов.
+        Результат (включая "проект не найден") кэшируется на
+        `PROJECT_CACHE_TTL` секунд.
+        """
+        try:
+            cache_key = (int(system_address or 0), int(market_id or 0))
+        except (TypeError, ValueError):
+            cache_key = (0, 0)
+
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._project_cache.get(cache_key)
+        if cached is not None and now - cached[0] < self.PROJECT_CACHE_TTL:
+            return cached[1]
+
+        project = None
         try:
             resp = self._session.get(
                 f"{self.base_url}/system/{system_address}/{market_id}",
@@ -35,10 +67,13 @@ class RavenColonialAPI:
                 timeout=15,
             )
             if resp.ok:
-                return resp.json()
+                project = resp.json()
         except Exception:
-            pass
-        return None
+            project = None
+
+        with self._cache_lock:
+            self._project_cache[cache_key] = (time.monotonic(), project)
+        return project
 
     def supply_fc(self, market_id: int, commodity: str, delta: int) -> dict:
         """Обновить груз Fleet Carrier по модели SrvSurvey/Raven Colonial.
