@@ -275,11 +275,35 @@ class CarrierApiSurfaceTests(unittest.TestCase):
         api = RavenColonialAPI("ключ")
         with mock.patch.object(api, "_request", return_value={"ok": True, "data": {"steel": 3}}) as request:
             self.assertEqual(api.get_fc_cargo(3700005632), {"ok": True, "data": {"steel": 3}})
-        request.assert_called_once_with("GET", "api/fc/3700005632/cargo")
+        request.assert_called_once_with("GET", "/fc/3700005632/cargo")
 
         self.assertFalse(api.get_fc_cargo(0)["ok"])
         self.assertFalse(api.get_fc_cargo("мусор")["ok"])
         self.assertFalse(api.get_fc_cargo(None)["ok"])
+
+    def test_get_fc_cargo_full_url_has_single_api_segment(self):
+        """`base_url` уже заканчивается на /api — путь не должен его повторять.
+
+        Проверяем реальный URL, который уходит в сессию: при ошибке получался
+        `.../api/api/fc/...`, и Raven отвечал 404.
+        """
+        from unittest import mock
+
+        from raven_colonial_api import RavenColonialAPI
+
+        api = RavenColonialAPI("ключ")
+        response = mock.MagicMock(ok=True, status_code=200)
+        response.json.return_value = {"steel": 3}
+        with mock.patch.object(api._session, "request", return_value=response) as request:
+            self.assertTrue(api.get_fc_cargo(3700005632)["ok"])
+        url = request.call_args[0][1]
+        self.assertEqual(
+            url,
+            "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net"
+            "/api/fc/3700005632/cargo",
+        )
+        self.assertEqual(request.call_args[0][0], "GET")
+        self.assertNotIn("/api/api/", url)
 
     def test_get_fc_cargo_without_key(self):
         from raven_colonial_api import RavenColonialAPI
@@ -402,6 +426,23 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
             self.app._feed_carrier(DOCKED_FC, live=True)
         self.assertEqual(self.app.carrier.state.commodities, {"steel": 90, "gold": 4})
         self.assertTrue(self.app.carrier.state.remote_seen)
+
+    def test_trading_on_carrier_does_not_spam_log(self):
+        """Строка в лог — на заметное событие, а не на каждую продажу."""
+        # Пустой ответ Raven не логируется: нас интересует только то, что
+        # пять продаж на борту не дают пять строк в лог.
+        self.app.raven_api.get_fc_cargo = lambda market_id: {"ok": True, "data": {}}
+        logged = []
+        self.app.overlay_manager.log = lambda message, level="info": logged.append(message)
+        with self._run_threads_inline():
+            self.app._feed_carrier(DOCKED_FC, live=True)
+            for index in range(5):
+                self.app._feed_carrier({
+                    "event": "MarketSell", "MarketID": 3700005632,
+                    "Type": "tritium", "Count": 10 + index,
+                }, live=True)
+        self.assertEqual(len(logged), 1, f"ожидали одну строку, получили {logged}")
+        self.assertEqual(self.app.carrier.state.commodities["tritium"], 60)
 
     def test_history_pass_does_not_touch_raven(self):
         calls = []

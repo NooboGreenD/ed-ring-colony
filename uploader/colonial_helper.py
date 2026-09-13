@@ -4667,6 +4667,13 @@ class ColonialHelperApp:
         market_id = int(self.carrier.state.market_id or 0)
         if not market_id:
             return
+        # В лог — только заметные события. Писать строку на каждую продажу на
+        # борту авианосца смысла нет: при разгрузке трюма их десятки.
+        if str(event.get("event")) in (
+            "CarrierStats", "Docked", "Location", "CarrierJump", "Undocked",
+            "CarrierNameChanged", "CarrierDecommission",
+        ):
+            self.overlay_manager.log(self.carrier.state.summary(), "info")
         # Товары поимённо журнал не отдаёт: считаем дельты сами, а точную
         # картину (груз всех клиентов) берём из Raven Colonial один раз на FC.
         if self.raven_api.is_connected and market_id != self._carrier_remote_market:
@@ -4674,7 +4681,6 @@ class ColonialHelperApp:
             threading.Thread(
                 target=self._load_carrier_cargo, args=(market_id,), daemon=True
             ).start()
-        self.overlay_manager.log(self.carrier.state.summary(), "info")
 
     def _load_carrier_cargo(self, market_id: int):
         """Фоновый запрос: поимённый груз авианосца из Raven Colonial.

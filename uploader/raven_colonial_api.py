@@ -161,7 +161,7 @@ class RavenColonialAPI:
             return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
         if market_id <= 0:
             return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
-        return self._request("GET", f"api/fc/{market_id}/cargo")
+        return self._request("GET", f"/fc/{market_id}/cargo")
 
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
