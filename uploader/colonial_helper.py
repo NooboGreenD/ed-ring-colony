@@ -12,7 +12,7 @@ import json
 import time
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from datetime import datetime
 from pathlib import Path
 import traceback
@@ -81,7 +81,7 @@ from journal_parser import (
     PARSER_VERSION,
 )
 from route_tracker import RouteTracker
-from overlay import OverlayManager
+from overlay import OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
@@ -89,7 +89,7 @@ from event_dispatch import ThirdPartyDispatcher
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -231,6 +231,11 @@ class ColonialHelperApp:
         if self.api.token:
             self.after(500, self._auto_validate)
 
+        # Фоновый индикатор игры (опрос ~1 раз в 1.5 с, сам монитор
+        # кэширует результат, лишних снимков процессов не делается).
+        self._game_was_running = False
+        self.after(1000, self._tick_game_status)
+
     # ============================================================
     #  Стили
     # ============================================================
@@ -265,6 +270,29 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         )
         subtitle.pack(anchor=W)
+
+        # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
+        game_frame = tb.Frame(frame)
+        game_frame.pack(fill=X, pady=(6, 0))
+
+        self.game_dot = tb.Label(game_frame, text="●", font=("Segoe UI", 11), foreground=COLOR_MUTED)
+        self.game_dot.pack(side=LEFT, padx=(0, 6))
+
+        self.game_label = tb.Label(
+            game_frame,
+            text="Игра: проверка…",
+            font=("Consolas", 10),
+            foreground=COLOR_MUTED,
+        )
+        self.game_label.pack(side=LEFT)
+
+        self.game_hint = tb.Label(
+            game_frame,
+            text="",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+        )
+        self.game_hint.pack(side=RIGHT)
 
         self.status_frame = tb.Frame(frame, relief="solid", borderwidth=1, padding=8)
         self.status_frame.pack(fill=X, pady=(10, 0))
@@ -967,6 +995,10 @@ class ColonialHelperApp:
         tb.Checkbutton(ov_frame, text="SESSION — статистика сессии + график", variable=self.show_session_var,
                        command=self._on_show_session_changed).pack(anchor=W, pady=2)
 
+        self.show_events_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_events", True))
+        tb.Checkbutton(ov_frame, text="EVENTS — события сессии", variable=self.show_events_var,
+                       command=self._on_show_events_changed).pack(anchor=W, pady=2)
+
         tb.Separator(ov_frame, orient=HORIZONTAL).pack(fill=X, pady=6)
 
         self.attach_game_var = tk.BooleanVar(value=self.overlay_manager.settings.get("attach_to_game", True))
@@ -997,6 +1029,100 @@ class ColonialHelperApp:
             self._ship_blocks[block_key] = var
             tb.Checkbutton(ship_chk, text=block_label, variable=var,
                            command=lambda k=block_key, v=var: self._on_ship_block_changed(k, v.get())).pack(anchor=W, pady=1)
+
+        # ---------- Раскладка: якоря, отступы, профили ----------
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+        tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
+                 "окном игры, если включена привязка к игре. Профиль сохраняет всю раскладку "
+                 "(позиции, размеры, видимость, прозрачность) — например «Хаул», «Эксобиология», «Бой».",
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        ).pack(anchor=W, pady=(0, 8))
+
+        # Профили раскладки
+        prof_frame = tb.Frame(frame)
+        prof_frame.pack(fill=X, pady=(0, 6))
+        tb.Label(prof_frame, text="Профиль:", width=18, anchor=W).pack(side=LEFT)
+        self.profile_var = tk.StringVar(value=self.overlay_manager.active_profile)
+        self.profile_combo = tb.Combobox(
+            prof_frame, textvariable=self.profile_var,
+            values=self.overlay_manager.list_profiles(), width=22,
+        )
+        self.profile_combo.pack(side=LEFT, padx=(10, 6))
+        tb.Button(prof_frame, text="Применить", command=self._on_profile_apply,
+                  bootstyle="success-outline", width=12).pack(side=LEFT, padx=(0, 6))
+        tb.Button(prof_frame, text="Сохранить", command=self._on_profile_save,
+                  bootstyle="info-outline", width=12).pack(side=LEFT, padx=(0, 6))
+        tb.Button(prof_frame, text="Удалить", command=self._on_profile_delete,
+                  bootstyle="danger-outline", width=10).pack(side=LEFT)
+
+        # Отступ от края
+        margin_frame = tb.Frame(frame)
+        margin_frame.pack(fill=X, pady=5)
+        tb.Label(margin_frame, text="Отступ от края:", width=18, anchor=W).pack(side=LEFT)
+        self.margin_var = tk.IntVar(value=int(self.overlay_manager.settings.get("layout_margin", 24)))
+        margin_scale = tb.Scale(
+            margin_frame, from_=0, to=120, orient=HORIZONTAL,
+            variable=self.margin_var, length=250,
+            command=lambda v: self._on_margin_changed(int(float(v))),
+        )
+        margin_scale.pack(side=LEFT, padx=(10, 0))
+        self.margin_label = tb.Label(margin_frame, text=f"{self.margin_var.get()} px")
+        self.margin_label.pack(side=LEFT, padx=(10, 0))
+
+        # Якоря для каждого блока
+        tb.Label(frame, text="Привязка блоков:", font=("Segoe UI", 10)).pack(anchor=W, pady=(8, 2))
+        anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
+        self._anchor_vars = {}
+        for block_key, block_label in [
+            ("route", "ROUTE — маршрут"),
+            ("status", "STATUS — статус"),
+            ("ship", "SHIP — корабль"),
+            ("cargo", "CARGO — трюм"),
+            ("session", "SESSION — сессия"),
+            ("events", "EVENTS — события"),
+        ]:
+            row = tb.Frame(frame)
+            row.pack(fill=X, pady=1)
+            tb.Label(row, text=block_label, width=24, anchor=W).pack(side=LEFT)
+            current = self.overlay_manager.settings.get(f"{block_key}_anchor", "custom")
+            var = tk.StringVar(value=ANCHOR_LABELS.get(current, ANCHOR_LABELS["custom"]))
+            self._anchor_vars[block_key] = var
+            combo = tb.Combobox(row, textvariable=var, values=anchor_values,
+                                width=18, state="readonly")
+            combo.pack(side=LEFT, padx=(6, 0))
+            combo.bind("<<ComboboxSelected>>",
+                       lambda _e, k=block_key, v=var: self._on_anchor_changed(k, v.get()))
+
+        # Кнопки раскладки
+        layout_btn_frame = tb.Frame(frame)
+        layout_btn_frame.pack(anchor=W, pady=(8, 0))
+        tb.Button(layout_btn_frame, text="Пересчитать по якорям",
+                  command=self._on_apply_anchors, bootstyle="info-outline", width=24).pack(side=LEFT, padx=(0, 8))
+        tb.Button(layout_btn_frame, text="Сбросить позиции",
+                  command=self._on_reset_overlay_positions, bootstyle="secondary-outline", width=18).pack(side=LEFT)
+
+        self.hide_without_game_var = tk.BooleanVar(
+            value=self.overlay_manager.settings.get("hide_when_game_off", True)
+        )
+        tb.Checkbutton(
+            frame,
+            text="Скрывать оверлей, когда игра не запущена",
+            variable=self.hide_without_game_var,
+            command=self._on_hide_without_game_changed,
+        ).pack(anchor=W, pady=(6, 0))
+
+        self.layout_info_label = tb.Label(
+            frame,
+            text="",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        )
+        self.layout_info_label.pack(anchor=W, pady=(6, 0))
 
         # Горячие клавиши подсказка
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
@@ -1041,6 +1167,113 @@ class ColonialHelperApp:
         state = "visible" if (self.overlay_manager.route_overlay and self.overlay_manager.enabled) else "hidden"
         self.log(f"Overlay toggled: {state} (F12)", "info")
 
+    # ---------- Раскладка: профили, отступы, якоря ----------
+    def _refresh_profile_combo(self, selected: str = ""):
+        names = self.overlay_manager.list_profiles()
+        self.profile_combo.config(values=names)
+        if selected:
+            self.profile_var.set(selected)
+        elif self.profile_var.get() not in names:
+            self.profile_var.set(self.overlay_manager.active_profile)
+
+    def _on_profile_save(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            name = simpledialog.askstring(
+                "Профиль раскладки",
+                "Имя профиля (например: Хаул, Эксобиология, Бой):",
+                parent=self.root,
+            )
+            if not name:
+                return
+        if self.overlay_manager.capture_layout(name):
+            self._refresh_profile_combo(name)
+            self.log(f"Профиль раскладки «{name}» сохранён.", "success")
+        else:
+            self.log("Не удалось сохранить профиль раскладки.", "error")
+
+    def _on_profile_apply(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            self.log("Выберите профиль раскладки.", "warn")
+            return
+        if not self.overlay_manager.apply_layout(name):
+            self.log(f"Профиль «{name}» не найден.", "error")
+            return
+        # Прозрачность/шрифт из профиля подтягиваем и в элементы вкладки.
+        self.alpha_var.set(float(self.overlay_manager.settings.get("alpha", 0.9)))
+        self.alpha_label.config(text=f"{self.alpha_var.get():.0%}")
+        self.font_var.set(self.overlay_manager.settings.get("font_family", "Consolas"))
+        self.font_size_var.set(int(self.overlay_manager.settings.get("font_size", 10)))
+        self.size_label.config(text=str(self.font_size_var.get()))
+        self._refresh_profile_combo(name)
+        if self.overlay_manager.enabled:
+            self._restart_overlay()
+        self.log(f"Профиль раскладки «{name}» применён.", "success")
+
+    def _on_profile_delete(self):
+        name = (self.profile_var.get() or "").strip()
+        if not name:
+            return
+        if not messagebox.askyesno("Удалить профиль", f"Удалить профиль «{name}»?", parent=self.root):
+            return
+        if self.overlay_manager.delete_profile(name):
+            self._refresh_profile_combo("")
+            self.log(f"Профиль раскладки «{name}» удалён.", "info")
+        else:
+            self.log(f"Профиль «{name}» не найден.", "warn")
+
+    def _on_margin_changed(self, value: int):
+        self.margin_label.config(text=f"{value} px")
+        self.overlay_manager.set_layout_margin(value)
+        self._update_layout_info()
+
+    def _on_anchor_changed(self, block_key: str, label: str):
+        anchor = "custom"
+        for key, text in ANCHOR_LABELS.items():
+            if text == label:
+                anchor = key
+                break
+        self.overlay_manager.snap_block(block_key, anchor)
+        self.overlay_manager.save_settings()
+        self._update_layout_info()
+
+    def _on_apply_anchors(self):
+        self.overlay_manager.apply_anchors()
+        self._update_layout_info()
+        self.log("Блоки расставлены по якорям.", "info")
+
+    def _on_hide_without_game_changed(self):
+        enabled = bool(self.hide_without_game_var.get())
+        self.overlay_manager.settings["hide_when_game_off"] = enabled
+        self.overlay_manager.save_settings()
+        self.log(
+            "Оверлей прячется, когда игра не запущена" if enabled
+            else "Оверлей показывается всегда, даже без игры",
+            "info",
+        )
+
+    def _restart_overlay(self):
+        """Пересоздать окна оверлея (после смены шрифта/профиля)."""
+        was_enabled = self.overlay_manager.enabled
+        callback = getattr(self.overlay_manager, "_update_callback", None)
+        self.overlay_manager.stop()
+        if was_enabled:
+            self.overlay_manager.start(callback or self._get_overlay_data)
+
+    def _update_layout_info(self):
+        """Строка состояния под настройками раскладки."""
+        try:
+            area = self.overlay_manager.overlay_area()
+            state = self.overlay_manager.game_state()
+            source = "экран с игрой" if (state.running and state.monitor) else "основной экран"
+            self.layout_info_label.config(
+                text=f"Область раскладки: {source} {area[2]}x{area[3]} "
+                     f"(сдвиг {area[0]},{area[1]}), отступ {self.overlay_manager.settings.get('layout_margin', 24)} px"
+            )
+        except Exception:
+            pass
+
     def _on_alpha_changed(self, value: float):
         self.alpha_label.config(text=f"{value:.0%}")
         self.overlay_manager.set_alpha(value)
@@ -1067,6 +1300,16 @@ class ColonialHelperApp:
     def _on_show_session_changed(self):
         self.overlay_manager.set_show_session(self.show_session_var.get())
 
+    def _on_show_events_changed(self):
+        """EVENTS создаётся вместе с остальными окнами, поэтому просто
+        показываем/прячем существующее окно."""
+        show = bool(self.show_events_var.get())
+        self.overlay_manager.settings["show_events"] = show
+        self.overlay_manager.save_settings()
+        overlay = self.overlay_manager.events_overlay
+        if overlay:
+            overlay.show() if show else overlay.hide()
+
     def _on_attach_game_changed(self):
         self.overlay_manager.set_attach_to_game(self.attach_game_var.get())
         state = "включена" if self.attach_game_var.get() else "отключена"
@@ -1076,16 +1319,11 @@ class ColonialHelperApp:
         self.overlay_manager.set_ship_block(block, show)
 
     def _on_reset_overlay_positions(self):
-        defaults = {
-            "route": (50, 50), "status": (50, 230), "ship": (50, 440),
-            "cargo": (50, 1000), "session": (400, 50),
-        }
-        for key, (x, y) in defaults.items():
-            self.overlay_manager.settings[f"{key}_x"] = x
-            self.overlay_manager.settings[f"{key}_y"] = y
-            self.overlay_manager.settings[f"{key}_anchor"] = "custom"
-        self.overlay_manager.save_settings()
-        self.log("Позиции оверлея сброшены. Перезапустите оверлей для применения.", "info")
+        self.overlay_manager.reset_positions()
+        self._refresh_profile_combo()
+        if self.overlay_manager.enabled:
+            self._restart_overlay()
+        self.log("Позиции оверлея сброшены на стандартные.", "info")
 
     def _get_overlay_data(self) -> dict:
         """Собрать данные для обновления оверлея."""
@@ -1098,6 +1336,9 @@ class ColonialHelperApp:
                 f"Inara: {'ON' if self.inara_api.enabled else 'OFF'}"
             ),
             "watcher_active": self.watcher_active,
+            "game_running": self.overlay_manager.game_running,
+            "game_focused": bool(self.overlay_manager.game_state().focused),
+            "game_detail": self.overlay_manager.game_state().process_name or "",
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
             "current": "—",
@@ -1186,6 +1427,50 @@ class ColonialHelperApp:
             padding=5,
         )
         self.bottom_status.pack(fill=X, side=BOTTOM)
+
+    # ============================================================
+    #  Индикатор игры
+    # ============================================================
+    def _tick_game_status(self):
+        """Обновить индикатор запуска игры в шапке и статус-баре."""
+        try:
+            state = self.overlay_manager.game_state()
+            if state.error:
+                color, text = COLOR_MUTED, f"Игра: нет данных ({state.error})"
+            elif state.running:
+                color = COLOR_GREEN if state.focused else COLOR_ORANGE
+                text = "Игра: в фокусе" if state.focused else "Игра: запущена (не в фокусе)"
+            else:
+                color, text = COLOR_RED, "Игра: не запущена"
+
+            self.game_dot.config(foreground=color)
+            self.game_label.config(text=text, foreground=color)
+
+            if state.running:
+                details = [state.process_name or "Elite Dangerous"]
+                if state.rect:
+                    details.append(f"{state.width}x{state.height}")
+                if state.title:
+                    details.append(state.title)
+                self.game_hint.config(text="  |  ".join(details))
+            else:
+                self.game_hint.config(text="оверлей скрыт, пока игры нет"
+                                      if self.overlay_manager.settings.get("hide_when_game_off", True)
+                                      else "")
+
+            # Логируем только смену состояния, чтобы не засорять лог.
+            if state.running != self._game_was_running:
+                self._game_was_running = state.running
+                if state.running:
+                    self.log("Elite Dangerous запущена — оверлей активен", "success")
+                else:
+                    self.log("Elite Dangerous не запущена — оверлей скрыт", "info")
+            if hasattr(self, "layout_info_label"):
+                self._update_layout_info()
+        except Exception:
+            pass
+        finally:
+            self.after(1500, self._tick_game_status)
 
     # ============================================================
     #  Логирование

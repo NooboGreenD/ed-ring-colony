@@ -1,13 +1,14 @@
 """Оверлейные окна для Colonial Helper — HUD-стиль ED Ring Colony."""
 import tkinter as tk
 from tkinter import END
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, Tuple
 import threading
 import time
 from pathlib import Path
 from collections import deque
 
 from ship_tracker import decode_status_flags
+from game_monitor import GameMonitor, GameState
 
 
 # ============================================================
@@ -108,23 +109,142 @@ def _make_separator(parent, color=COLOR_LINE) -> tk.Frame:
 
 
 # ============================================================
+#  Якоря и раскладка
+# ============================================================
+# Порядок — как в UI: сверху вниз, слева направо.
+ANCHOR_KEYS = (
+    "custom",
+    "top_left", "top_center", "top_right",
+    "mid_left", "mid_center", "mid_right",
+    "bottom_left", "bottom_center", "bottom_right",
+)
+
+ANCHOR_LABELS = {
+    "custom": "Свободная",
+    "top_left": "↖ Верх лево",
+    "top_center": "↑ Верх центр",
+    "top_right": "↗ Верх право",
+    "mid_left": "← Середина лево",
+    "mid_center": "• Центр",
+    "mid_right": "→ Середина право",
+    "bottom_left": "↙ Низ лево",
+    "bottom_center": "↓ Низ центр",
+    "bottom_right": "↘ Низ право",
+}
+
+
+def compute_anchored_position(
+    anchor: str,
+    area_x: int,
+    area_y: int,
+    area_w: int,
+    area_h: int,
+    win_w: int,
+    win_h: int,
+    margin: int = 24,
+) -> Optional[Tuple[int, int]]:
+    """Куда поставить окно размера (win_w, win_h) внутри области по якорю.
+
+    Чистая функция (без Tk) — её удобно тестировать и переиспользовать:
+    область может быть как весь экран, так и прямоугольник окна игры.
+
+    Возвращает None для `custom` — значит, позицией управляет пользователь.
+    Координаты всегда зажимаются внутрь области, чтобы блок не оказался за
+    её пределами (актуально для второго монитора и окон игры в окне).
+    """
+    if not anchor or anchor == "custom":
+        return None
+
+    left = area_x + margin
+    top = area_y + margin
+    right = area_x + area_w - win_w - margin
+    bottom = area_y + area_h - win_h - margin
+    center_x = area_x + (area_w - win_w) // 2
+    center_y = area_y + (area_h - win_h) // 2
+
+    position = {
+        "top_left": (left, top),
+        "top_center": (center_x, top),
+        "top_right": (right, top),
+        "mid_left": (left, center_y),
+        "mid_center": (center_x, center_y),
+        "mid_right": (right, center_y),
+        "bottom_left": (left, bottom),
+        "bottom_center": (center_x, bottom),
+        "bottom_right": (right, bottom),
+    }.get(anchor)
+
+    if position is None:
+        return None
+
+    x, y = position
+    # Зажимаем внутрь области (с запасом, чтобы окно не «убежало» полностью).
+    x = max(area_x, min(x, area_x + max(0, area_w - win_w)))
+    y = max(area_y, min(y, area_y + max(0, area_h - win_h)))
+    return int(x), int(y)
+
+
+def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dict:
+    """Снимок текущей раскладки для профиля (чистая функция, без Tk).
+
+    `windows`: {key: overlay|None}, `blocks`: ключи блоков.
+    """
+    snapshot: Dict[str, Any] = {}
+    for key in blocks:
+        overlay = windows.get(key)
+        entry = {
+            "x": settings.get(f"{key}_x"),
+            "y": settings.get(f"{key}_y"),
+            "width": settings.get(f"{key}_width"),
+            "height": settings.get(f"{key}_height"),
+            "anchor": settings.get(f"{key}_anchor", "custom"),
+            "visible": settings.get(f"show_{key}", True),
+        }
+        if overlay is not None:
+            # Живое окно: его фактическая геометрия актуальнее сохранённой.
+            try:
+                entry["x"] = overlay.window.winfo_x()
+                entry["y"] = overlay.window.winfo_y()
+                entry["width"] = overlay.window.winfo_width()
+                entry["height"] = overlay.window.winfo_height()
+                entry["anchor"] = getattr(overlay, "_anchor", entry["anchor"])
+            except Exception:
+                pass
+        snapshot[key] = entry
+    # Общие настройки вида тоже часть раскладки.
+    for key in ("alpha", "font_family", "font_size"):
+        if key in settings:
+            snapshot[key] = settings[key]
+    return snapshot
+
+
+def apply_layout_snapshot(settings: dict, snapshot: dict, blocks: tuple) -> None:
+    """Записать снимок раскладки в настройки (чистая функция, без Tk)."""
+    for key in blocks:
+        entry = snapshot.get(key)
+        if not isinstance(entry, dict):
+            continue
+        for suffix in ("x", "y", "width", "height", "anchor"):
+            if entry.get(suffix) is not None:
+                settings[f"{key}_{suffix}"] = entry[suffix]
+        if entry.get("visible") is not None:
+            settings[f"show_{key}"] = bool(entry["visible"])
+    for key in ("alpha", "font_family", "font_size"):
+        if key in snapshot and snapshot[key] is not None:
+            settings[key] = snapshot[key]
+
+
+# ============================================================
 #  Базовое оверлейное окно с управлением
 # ============================================================
 class OverlayWindow:
     """Базовое оверлейное окно: без рамки, всегда сверху, перетаскиваемое,
     с возможностью изменения размера, фиксации и привязки к экрану."""
 
-    ANCHOR_POSITIONS = {
-        "top_left": (20, 20),
-        "top_center": lambda w, h: (w // 2 - 150, 20),
-        "top_right": lambda w, h: (w - 320, 20),
-        "mid_left": lambda w, h: (20, h // 2 - 200),
-        "mid_right": lambda w, h: (w - 320, h // 2 - 200),
-        "bottom_left": lambda w, h: (20, h - 300),
-        "bottom_center": lambda w, h: (w // 2 - 150, h - 300),
-        "bottom_right": lambda w, h: (w - 320, h - 300),
-        "custom": None,
-    }
+    # Оставлено для совместимости со старыми конфигурациями: раньше позиции
+    # якорей были захардкожены под размер 320x300. Теперь положение считает
+    # `compute_anchored_position()` по реальному размеру окна и отступу.
+    ANCHOR_POSITIONS = {}
 
     def __init__(
         self,
@@ -204,6 +324,7 @@ class OverlayWindow:
         self._on_move_callback: Optional[Callable] = None
         self._on_resize_callback: Optional[Callable] = None
 
+        self._area_provider: Optional[Callable[[], Optional[Tuple[int, int, int, int]]]] = None
         self._apply_anchor()
 
     def _build_control_buttons(self):
@@ -264,14 +385,8 @@ class OverlayWindow:
 
         anchor_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
                               activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
-        for pos in ["custom", "top_left", "top_center", "top_right",
-                    "mid_left", "mid_right", "bottom_left", "bottom_center", "bottom_right"]:
-            label = {
-                "custom": "Custom",
-                "top_left": "Top Left", "top_center": "Top Center", "top_right": "Top Right",
-                "mid_left": "Mid Left", "mid_right": "Mid Right",
-                "bottom_left": "Bottom Left", "bottom_center": "Bottom Center", "bottom_right": "Bottom Right",
-            }.get(pos, pos)
+        for pos in ANCHOR_KEYS:
+            label = ANCHOR_LABELS.get(pos, pos)
             anchor_menu.add_command(
                 label=f"{'[x] ' if self._anchor == pos else '[ ] '}{label}",
                 command=lambda p=pos: self._set_anchor(p)
@@ -298,22 +413,76 @@ class OverlayWindow:
         self._apply_anchor()
         self._flash_indicator(COLOR_CYAN)
 
-    def _apply_anchor(self):
+    def set_position(self, x: int, y: int, save: bool = True):
+        """Переместить окно в точку (x, y) — используется якорями и профилями."""
+        self.window.geometry(f"+{int(x)}+{int(y)}")
+        if save:
+            self.settings[f"{self.overlay_key}_x"] = int(x)
+            self.settings[f"{self.overlay_key}_y"] = int(y)
+        if self._on_move_callback:
+            self._on_move_callback(int(x), int(y))
+
+    def set_geometry(self, x: int, y: int, width: int, height: int):
+        self.window.geometry(f"{int(width)}x{int(height)}+{int(x)}+{int(y)}")
+        self.settings[f"{self.overlay_key}_x"] = int(x)
+        self.settings[f"{self.overlay_key}_y"] = int(y)
+        self.settings[f"{self.overlay_key}_width"] = int(width)
+        self.settings[f"{self.overlay_key}_height"] = int(height)
+        if self._on_move_callback:
+            self._on_move_callback(int(x), int(y))
+
+    def size(self) -> Tuple[int, int]:
+        """Фактический размер окна (с откатом к сохранённому, если Tk молчит)."""
+        try:
+            self.window.update_idletasks()
+            w = self.window.winfo_width()
+            h = self.window.winfo_height()
+            if w > 1 and h > 1:
+                return int(w), int(h)
+        except Exception:
+            pass
+        return (
+            int(self.settings.get(f"{self.overlay_key}_width", 280) or 280),
+            int(self.settings.get(f"{self.overlay_key}_height", 200) or 200),
+        )
+
+    def _apply_anchor(self, area=None):
+        """Поставить окно по своему якорю.
+
+        `area` — прямоугольник (x, y, w, h), внутри которого раскладываем:
+        экран или окно игры. Если не передан, берётся область из
+        `self._area_provider` (её задаёт OverlayManager) либо весь экран.
+        """
         if self._anchor == "custom" or not self._anchor:
             return
-        self.master.update_idletasks()
-        screen_w = self.master.winfo_screenwidth()
-        screen_h = self.master.winfo_screenheight()
-        pos = self.ANCHOR_POSITIONS.get(self._anchor)
-        if pos is None:
+        if area is None:
+            area = self._area_provider() if self._area_provider else self._screen_area()
+        if not area:
             return
-        if callable(pos):
-            x, y = pos(screen_w, screen_h)
-        else:
-            x, y = pos
-        self.window.geometry(f"+{x}+{y}")
-        if self._on_move_callback:
-            self._on_move_callback(x, y)
+        area_x, area_y, area_w, area_h = area
+        win_w, win_h = self.size()
+        margin = int(self.settings.get("layout_margin", 24) or 0)
+        position = compute_anchored_position(
+            self._anchor, area_x, area_y, area_w, area_h, win_w, win_h, margin
+        )
+        if position is None:
+            return
+        self.set_position(*position)
+
+    def _screen_area(self) -> Optional[Tuple[int, int, int, int]]:
+        try:
+            return (
+                0,
+                0,
+                self.master.winfo_screenwidth(),
+                self.master.winfo_screenheight(),
+            )
+        except Exception:
+            return None
+
+    def set_area_provider(self, provider: Optional[Callable[[], Optional[Tuple[int, int, int, int]]]]):
+        """Функция, возвращающая область для якорей (экран или окно игры)."""
+        self._area_provider = provider
 
     def _reset_size(self):
         defaults = {
@@ -526,6 +695,14 @@ class StatusOverlay(OverlayWindow):
         self.status_text = tk.Label(self.status_frame, text="Offline", font=(ff, fs, "bold"), fg=COLOR_RED_TEXT, bg=COLOR_PANEL, anchor=tk.W)
         self.status_text.pack(side=tk.LEFT)
 
+        self.game_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        self.game_frame.pack(fill=tk.X, pady=(4, 0))
+        self.game_dot = tk.Label(self.game_frame, text="o", font=(ff, 10), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
+        self.game_dot.pack(side=tk.LEFT, padx=(0, 6))
+        self.game_text = tk.Label(self.game_frame, text="Игра: нет данных", font=(ff, fs - 1),
+                                  fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
+        self.game_text.pack(side=tk.LEFT)
+
         self.watcher_frame = tk.Frame(self.content, bg=COLOR_PANEL)
         self.watcher_frame.pack(fill=tk.X, pady=(4, 0))
         self.watcher_dot = tk.Label(self.watcher_frame, text="o", font=(ff, 10), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
@@ -550,6 +727,21 @@ class StatusOverlay(OverlayWindow):
         else:
             self.status_dot.config(fg=COLOR_RED_TEXT)
             self.status_text.config(text="Offline", fg=COLOR_RED_TEXT)
+
+    def set_game(self, running: bool, focused: bool = False, detail: str = ""):
+        """Строка «Игра: запущена / в фокусе / не запущена»."""
+        if running:
+            color = COLOR_GREEN_TEXT if focused else COLOR_YELLOW
+            text = "Игра: в фокусе" if focused else "Игра: запущена"
+            dot = "*"
+        else:
+            color = COLOR_RED_TEXT
+            text = "Игра: не запущена"
+            dot = "o"
+        if detail:
+            text = f"{text} ({detail})"
+        self.game_dot.config(fg=color, text=dot)
+        self.game_text.config(text=text, fg=color)
 
     def set_watcher(self, active: bool):
         self.watcher_dot.config(fg=COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED, text="*" if active else "o")
@@ -1136,10 +1328,25 @@ class SessionOverlay(OverlayWindow):
 #  OverlayManager
 # ============================================================
 class OverlayManager:
-    def __init__(self, master: tk.Tk, config_path: Path):
+    #: Блоки HUD: ключ -> (настройка видимости, класс окна)
+    BLOCKS = ("route", "status", "ship", "cargo", "session", "events")
+
+    #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
+    DEFAULT_POSITIONS = {
+        "route": (50, 50, 280, 160),
+        "status": (50, 220, 280, 220),
+        "ship": (50, 450, 360, 420),
+        "cargo": (400, 450, 300, 340),
+        "session": (400, 50, 320, 300),
+        "events": (730, 50, 320, 260),
+    }
+
+    def __init__(self, master: tk.Tk, config_path: Path, game_monitor=None):
         self.master = master
         self.config_path = config_path
         self.settings = load_overlay_settings(config_path)
+        # Отслеживание игры: запущена/в фокусе + геометрия окна.
+        self.game_monitor = game_monitor or GameMonitor()
         self.route_overlay: Optional[RouteOverlay] = None
         self.status_overlay: Optional[StatusOverlay] = None
         self.ship_overlay: Optional[ShipOverlay] = None
@@ -1178,21 +1385,191 @@ class OverlayManager:
         self.session_overlay = SessionOverlay(self.master, self.settings)
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
 
-        for ov, key in [(self.route_overlay, "route"), (self.status_overlay, "status"),
-                        (self.ship_overlay, "ship"), (self.cargo_overlay, "cargo"),
-                        (self.session_overlay, "session")]:
-            ov.set_on_move(getattr(self, f"_on_{key}_moved"))
+        for ov, key in self._blocks():
+            ov.set_on_move(self._make_moved_handler(key))
             ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
-        self.events_overlay.set_on_move(self._on_events_moved)
-        self.events_overlay.set_on_resize(lambda w, h: self._on_resized("events", w, h))
-        if not self.settings.get("show_events", True):
-            self.events_overlay.hide()
-
-        for ov, key in [(self.route_overlay, "show_route"), (self.status_overlay, "show_status"),
-                        (self.ship_overlay, "show_ship"), (self.cargo_overlay, "show_cargo"),
-                        (self.session_overlay, "show_session")]:
-            if not self.settings.get(key, True):
+            # Якоря считаем относительно экрана или окна игры — см. overlay_area().
+            ov.set_area_provider(self.overlay_area)
+            if not self.settings.get(f"show_{key}", True):
                 ov.hide()
+
+        # Применяем якоря после того, как все окна созданы и знают свой размер.
+        self.master.after(60, self.apply_anchors)
+
+    # ============================================================
+    #  Блоки, геометрия, раскладка
+    # ============================================================
+    def _blocks(self) -> list:
+        """Живые пары (ключ, окно) — только для существующих окон."""
+        mapping = {
+            "route": self.route_overlay,
+            "status": self.status_overlay,
+            "ship": self.ship_overlay,
+            "cargo": self.cargo_overlay,
+            "session": self.session_overlay,
+            "events": self.events_overlay,
+        }
+        return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
+
+    def _make_moved_handler(self, key: str):
+        def handler(x: int, y: int):
+            self.settings[f"{key}_x"] = x
+            self.settings[f"{key}_y"] = y
+
+        return handler
+
+    def game_state(self):
+        """Актуальное состояние игры (кэшируется монитором на ~1 с)."""
+        try:
+            return self.game_monitor.state
+        except Exception:
+            return GameState()
+
+    @property
+    def game_running(self) -> bool:
+        return bool(self.game_state().running)
+
+    def screen_area(self) -> Tuple[int, int, int, int]:
+        """Весь основной экран."""
+        try:
+            return (0, 0, self.master.winfo_screenwidth(), self.master.winfo_screenheight())
+        except Exception:
+            return (0, 0, 1920, 1080)
+
+    def overlay_area(self) -> Tuple[int, int, int, int]:
+        """Область, внутри которой раскладываются блоки HUD.
+
+        Если включена привязка к окну игры и игра запущена — это прямоугольник
+        монитора с игрой (так оверлей не уедет на другой экран). Иначе — весь
+        основной экран.
+        """
+        if self.settings.get("attach_to_game", True):
+            state = self.game_state()
+            monitor = state.monitor
+            if monitor:
+                left, top, right, bottom = monitor
+                return (left, top, max(1, right - left), max(1, bottom - top))
+        return self.screen_area()
+
+    def apply_anchors(self):
+        """Расставить все блоки по их якорям внутри текущей области."""
+        area = self.overlay_area()
+        for key, overlay in self._blocks():
+            anchor = self.settings.get(f"{key}_anchor", "custom")
+            if not anchor or anchor == "custom":
+                continue
+            try:
+                overlay._apply_anchor(area)
+            except Exception:
+                pass
+
+    def snap_block(self, key: str, anchor: str, save: bool = True):
+        """Привязать блок к якорю (или отпустить: anchor='custom')."""
+        if save:
+            self.settings[f"{key}_anchor"] = anchor
+        for block_key, overlay in self._blocks():
+            if block_key != key or overlay is None:
+                continue
+            if anchor == "custom":
+                return
+            try:
+                overlay._anchor = anchor
+                overlay._apply_anchor(self.overlay_area())
+            except Exception:
+                pass
+            return
+
+    def reset_positions(self):
+        """Вернуть блоки на стандартные места и сбросить якоря."""
+        for key, (x, y, w, h) in self.DEFAULT_POSITIONS.items():
+            self.settings[f"{key}_x"] = x
+            self.settings[f"{key}_y"] = y
+            self.settings[f"{key}_width"] = w
+            self.settings[f"{key}_height"] = h
+            self.settings[f"{key}_anchor"] = "custom"
+        for _key, overlay in self._blocks():
+            pos = self.DEFAULT_POSITIONS.get(_key)
+            if overlay is None or not pos:
+                continue
+            try:
+                overlay.set_geometry(*pos)
+            except Exception:
+                pass
+        self.save_settings()
+
+    # ============================================================
+    #  Профили раскладки
+    # ============================================================
+    def list_profiles(self) -> list:
+        profiles = self.settings.get("profiles") or {}
+        return sorted(profiles.keys()) if isinstance(profiles, dict) else []
+
+    @property
+    def active_profile(self) -> str:
+        return str(self.settings.get("active_profile", "") or "")
+
+    def capture_layout(self, name: str) -> bool:
+        """Сохранить текущую раскладку под именем `name`."""
+        name = (name or "").strip()
+        if not name:
+            return False
+        windows = {key: overlay for key, overlay in self._blocks()}
+        snapshot = capture_layout_snapshot(self.settings, windows, self.BLOCKS)
+        profiles = self.settings.get("profiles")
+        if not isinstance(profiles, dict):
+            profiles = {}
+        profiles[name] = snapshot
+        self.settings["profiles"] = profiles
+        self.settings["active_profile"] = name
+        self.save_settings()
+        return True
+
+    def apply_layout(self, name: str) -> bool:
+        """Применить сохранённую раскладку.
+
+        Шрифт/прозрачность могут отличаться от текущих, поэтому окна
+        пересоздаём — так настройки применяются гарантированно и одинаково.
+        """
+        profiles = self.settings.get("profiles") or {}
+        snapshot = profiles.get(name) if isinstance(profiles, dict) else None
+        if not isinstance(snapshot, dict):
+            return False
+        apply_layout_snapshot(self.settings, snapshot, self.BLOCKS)
+        self.settings["active_profile"] = name
+        for key, overlay in self._blocks():
+            entry = snapshot.get(key) or {}
+            if overlay is None or not isinstance(entry, dict):
+                continue
+            x, y = entry.get("x"), entry.get("y")
+            w, h = entry.get("width"), entry.get("height")
+            try:
+                if None not in (x, y, w, h):
+                    overlay.set_geometry(x, y, w, h)
+                overlay._anchor = entry.get("anchor", "custom")
+                if entry.get("visible", True) and self.settings.get(f"show_{key}", True):
+                    overlay.show()
+                else:
+                    overlay.hide()
+            except Exception:
+                pass
+        self.master.after(60, self.apply_anchors)
+        self.save_settings()
+        return True
+
+    def delete_profile(self, name: str) -> bool:
+        profiles = self.settings.get("profiles")
+        if not isinstance(profiles, dict) or name not in profiles:
+            return False
+        profiles.pop(name, None)
+        if self.active_profile == name:
+            self.settings["active_profile"] = ""
+        self.save_settings()
+        return True
+
+    def set_layout_margin(self, margin: int):
+        self.settings["layout_margin"] = max(0, int(margin))
+        self.apply_anchors()
+        self.save_settings()
 
     def _on_resized(self, key: str, w: int, h: int):
         self.settings[f"{key}_width"] = w
@@ -1225,12 +1602,31 @@ class OverlayManager:
     def _update_loop(self):
         last_data_hash = None
         ed_active_counter = 0
-        attach = self.settings.get("attach_to_game", True)
+        last_game_running = False
         while not self._stop.is_set():
+            # Игры нет — HUD не нужен вообще (если его не просили держать всегда).
+            try:
+                game = self.game_state()
+            except Exception:
+                game = GameState()
+            if self.settings.get("hide_when_game_off", True) and not game.running:
+                self.master.after(0, lambda: self._set_all_visibility(False))
+                last_game_running = False
+                time.sleep(1.0)
+                continue
+            if not last_game_running:
+                # Игра только что запустилась (или сменился монитор) —
+                # пересчитываем привязку блоков к её окну.
+                last_game_running = True
+                self.master.after(0, self.apply_anchors)
+
             # Проверяем, активна ли игра — оверлей topmost только над игрой
+            attach = self.settings.get("attach_to_game", True)
             if attach:
                 try:
-                    ed_active = _is_ed_foreground()
+                    # Эвристика по заголовку foreground-окна остаётся страховкой:
+                    # окно игры находится не всегда (например, до первого кадра).
+                    ed_active = game.focused or _is_ed_foreground()
                     if ed_active:
                         ed_active_counter = 3  # держим visible ещё 3 цикла после потери фокуса
                     elif ed_active_counter > 0:
@@ -1341,6 +1737,10 @@ class OverlayManager:
         parts.append(str(data.get("construction_cargo_tons", 0)))
         parts.append(str(data.get("progress", "")))
         parts.append(str(data.get("next_system_info", {})))
+        # Состояние игры: HUD должен отреагировать на запуск/выход из игры.
+        parts.append(str(data.get("game_running", False)))
+        parts.append(str(data.get("game_focused", False)))
+        parts.append(str(data.get("game_detail", "")))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
@@ -1352,6 +1752,11 @@ class OverlayManager:
             )
         if self.status_overlay:
             self.status_overlay.set_status(data.get("online", False), data.get("status_detail", ""))
+            self.status_overlay.set_game(
+                bool(data.get("game_running", False)),
+                bool(data.get("game_focused", False)),
+                str(data.get("game_detail", "") or ""),
+            )
             self.status_overlay.set_watcher(data.get("watcher_active", False))
             self.status_overlay.set_progress(data.get("progress", ""))
             for msg, level in data.get("log_lines", []):
@@ -1403,9 +1808,8 @@ class OverlayManager:
         self.enabled = False
         self._stop.set()
         self.save_settings()
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
-            if ov:
-                self.master.after(0, ov.destroy)
+        for _key, ov in self._blocks():
+            self.master.after(0, ov.destroy)
         self.route_overlay = None
         self.status_overlay = None
         self.ship_overlay = None
@@ -1420,15 +1824,13 @@ class OverlayManager:
             self.start(update_callback)
 
     def toggle_visibility(self):
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay, self.events_overlay]:
-            if ov:
-                ov.toggle()
+        for _key, ov in self._blocks():
+            ov.toggle()
 
     def set_alpha(self, alpha: float):
         self.settings["alpha"] = alpha
-        for ov in [self.route_overlay, self.status_overlay, self.ship_overlay, self.cargo_overlay, self.session_overlay]:
-            if ov:
-                ov.set_alpha(alpha)
+        for _key, ov in self._blocks():
+            ov.set_alpha(alpha)
 
     def set_font(self, family: str, size: int):
         self.settings["font_family"] = family
@@ -1472,6 +1874,8 @@ class OverlayManager:
             self.ship_overlay = ShipOverlay(self.master, self.settings)
             self.ship_overlay.set_on_move(self._on_ship_moved)
             self.ship_overlay.set_on_resize(lambda w, h: self._on_resized("ship", w, h))
+            self.ship_overlay.set_area_provider(self.overlay_area)
+            self.ship_overlay._apply_anchor(self.overlay_area())
             if not was_visible or not self.settings.get("show_ship", True):
                 self.ship_overlay.hide()
 
@@ -1536,7 +1940,20 @@ DEFAULT_SETTINGS = {
     "session_height": 300,
     "session_locked": False,
     "session_anchor": "custom",
+    "events_x": 730,
+    "events_y": 50,
+    "events_width": 320,
+    "events_height": 260,
+    "events_locked": False,
+    "events_anchor": "custom",
     "attach_to_game": True,
+    # Раскладка: отступ от края области (экрана или окна игры)
+    "layout_margin": 24,
+    # Прятать HUD, когда игра не запущена
+    "hide_when_game_off": True,
+    # Профили раскладки: {имя: {блок: {x,y,width,height,anchor,visible}, ...}}
+    "profiles": {},
+    "active_profile": "",
 }
 
 

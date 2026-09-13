@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-12.
-> Uploader release: 2.1.0.
+> Uploader release: 2.2.0.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -346,9 +346,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sync API: `/api/ravencolonial/sync`
 - Used for: Colonial data synchronization
 
-### 8.6 Colonial Helper uploader 2.1
+### 8.6 Colonial Helper uploader 2.2
 - Source: `uploader/colonial_helper.py`
-- Version: `2.1.0`
+- Version: `2.2.0`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -373,6 +373,16 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Third-party APIs (EDSM, Inara, Raven Colonial FC cargo) are dispatched from a
   background queue in `uploader/event_dispatch.py`: one bounded queue with a
   small worker pool, so journal parsing never waits on the network.
+- Game detection lives in `uploader/game_monitor.py`: it finds the game process
+  (`EliteDangerous64.exe` and legacy names), its window rectangle and the work
+  area of the monitor the game runs on. The UI header, the STATUS overlay and
+  the HUD auto-hide all read this single cached state (1 s TTL); outside
+  Windows it reports `unsupported platform` instead of a false negative.
+- HUD layout in `uploader/overlay.py`: blocks snap to edges/corners of a layout
+  area (screen, or the monitor with the game window when "attach to game" is
+  on) via `compute_anchored_position()`, with a configurable margin and
+  clamping. Named layout profiles (positions, sizes, visibility, alpha, font)
+  are stored in `config.json` under `profiles`.
 - Journal history (initial reconciliation and manual file import) is parsed with
   `live=False` and is **not** forwarded to EDSM/Inara/Raven by default. Only
   live watcher ticks are. Users may opt in per UI toggle
