@@ -458,6 +458,42 @@ class ApiClientUploadTests(unittest.TestCase):
         self.assertEqual(result["chunks_failed"], 1)
         self.assertEqual(result["inserted"], 100)
 
+    def test_slow_chunk_is_split_and_retried_smaller(self):
+        """Пачка, которую сервер не осилил, дробится и уходит частями."""
+        attempts = []
+
+        def slow_on_big_chunks(payload):
+            rows = payload.get("deliveries", [])
+            attempts.append(len(rows))
+            return len(rows) > 50  # пачки больше 50 отвечают 500
+
+        client, calls = self._client_with_stub(latency=0.0, fail_predicate=slow_on_big_chunks)
+        deliveries = [{"system_name": "Sol", "commodity": "steel", "amount": 1,
+                       "delivered_at": "2025-01-01T00:00:00Z", "source_hash": "h%d" % i}
+                      for i in range(100)]
+        result = client.upload_deliveries(deliveries, "CMDR")
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["inserted"], 100)
+        # Сначала целая пачка, потом две половинки.
+        self.assertIn(100, attempts)
+        self.assertIn(50, attempts)
+
+    def test_all_chunks_failing_stops_early(self):
+        """Если сайт не принимает данные — не долбим его сотнями пачек."""
+        client, calls = self._client_with_stub(latency=0.0, fail_predicate=lambda payload: True)
+        deliveries = [{"system_name": "Sol", "commodity": "steel", "amount": 1,
+                       "delivered_at": "2025-01-01T00:00:00Z", "source_hash": "h%d" % i}
+                      for i in range(2000)]  # 20 пачек по 100
+        started = time.monotonic()
+        result = client.upload_deliveries(deliveries, "CMDR", max_workers=1)
+        elapsed = time.monotonic() - started
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["chunks_failed"], 20)
+        # Реально отправлялись только первые пачки, остальные отсечены
+        # предохранителем — иначе на мёртвом сервере ушли бы минуты повторов.
+        self.assertLess(calls["count"], 20 * 3)
+        self.assertLess(elapsed, 30.0)
+
     def test_construction_events_respect_server_limit(self):
         client, calls = self._client_with_stub(latency=0.0)
         events = [{"timestamp": "2025-01-01T00:00:00Z", "system_name": "Sol"} for _ in range(250)]

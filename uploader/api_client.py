@@ -20,6 +20,12 @@ DELIVERY_CHUNK_SIZE = 100
 CONSTRUCTION_CHUNK_SIZE = 100
 UPLOAD_WORKERS = 4
 MAX_UPLOAD_ATTEMPTS = 3
+# Если пачка стабильно не проходит (5xx/429 — Vercel не успел), дробим её:
+# глубина дробления и минимальный размер, ниже которого дробить бессмысленно.
+MAX_CHUNK_SPLIT_DEPTH = 3
+MIN_CHUNK_SPLIT_SIZE = 25
+# Сколько полностью неудачных пачек подряд — и остальные не отправляем.
+FAIL_FAST_AFTER = 3
 
 # Сессия requests НЕ потокобезопасна, поэтому у каждого потока своя.
 # thread-local автоматически освобождается вместе с потоком пула.
@@ -156,8 +162,14 @@ class ApiClient:
             except Exception:
                 pass
 
-        def worker(item):
-            _index, chunk = item
+        def try_chunk(chunk: list, depth: int = 0):
+            """Отправить одну пачку. Вернуть (ok, data, error).
+
+            Если сервер не справляется с пачкой (5xx/429/таймаут — например,
+            Vercel оборвал serverless-функцию на большой пачке), пачка
+            дробится пополам и отправляется частями: лучше несколько мелких
+            запросов, чем потерянные доставки.
+            """
             error = ""
             for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
                 try:
@@ -170,18 +182,8 @@ class ApiClient:
                             continue
                         break
                     if not resp.ok:
-                        error = data.get("error", f"Upload failed (HTTP {status})")
-                        break
-                    with lock:
-                        if field == "deliveries":
-                            state["inserted"] += int(data.get("inserted", 0) or 0)
-                            state["events"] += int(data.get("eventsFound", 0) or 0)
-                        else:
-                            state["inserted"] += int(data.get("constructionInserted", 0) or 0)
-                            state["snapshots"] += int(data.get("snapshotInserted", 0) or 0)
-                        state["done"] += 1
-                    notify_progress()
-                    return
+                        return False, None, data.get("error", f"Upload failed (HTTP {status})")
+                    return True, data, ""
                 except requests.RequestException as e:
                     error = f"Сетевая ошибка: {e}"
                     if attempt < MAX_UPLOAD_ATTEMPTS:
@@ -192,12 +194,51 @@ class ApiClient:
                     # Подстраховка: любая другая неожиданная ошибка на чанке не
                     # должна ронять весь процесс загрузки (и оставлять UI
                     # в подвешенном состоянии) — считаем чанк неудачным.
-                    error = f"Неожиданная ошибка: {e}"
-                    break
+                    return False, None, f"Неожиданная ошибка: {e}"
+
+            if depth < MAX_CHUNK_SPLIT_DEPTH and len(chunk) > MIN_CHUNK_SPLIT_SIZE:
+                middle = len(chunk) // 2
+                combined = {}
+                last_error = error
+                for half in (chunk[:middle], chunk[middle:]):
+                    ok, data, half_error = try_chunk(half, depth + 1)
+                    if not ok:
+                        return False, None, half_error or last_error
+                    for key, value in (data or {}).items():
+                        if isinstance(value, (int, float)):
+                            combined[key] = combined.get(key, 0) + value
+                return True, combined, ""
+
+            return False, None, error
+
+        def worker(item):
+            _index, chunk = item
+            # Предохранитель: если сайт просто лежит, не тратим минуты на
+            # повторы каждой пачки (на большой истории пачек сотни). После
+            # нескольких полностью неудачных пачек остальные даже не шлём.
             with lock:
-                state["failed"] += 1
+                give_up = state["failed"] >= FAIL_FAST_AFTER
+            if give_up:
+                with lock:
+                    state["failed"] += 1
+                    state["done"] += 1
+                    if not state["last_error"]:
+                        state["last_error"] = "сервер не принимает данные, отправка прервана"
+                notify_progress()
+                return
+            ok, data, error = try_chunk(chunk)
+            with lock:
+                if ok:
+                    if field == "deliveries":
+                        state["inserted"] += int((data or {}).get("inserted", 0) or 0)
+                        state["events"] += int((data or {}).get("eventsFound", 0) or 0)
+                    else:
+                        state["inserted"] += int((data or {}).get("constructionInserted", 0) or 0)
+                        state["snapshots"] += int((data or {}).get("snapshotInserted", 0) or 0)
+                else:
+                    state["failed"] += 1
+                    state["last_error"] = error
                 state["done"] += 1
-                state["last_error"] = error
             notify_progress()
 
         workers = max(1, min(int(max_workers or 1), total_chunks))
