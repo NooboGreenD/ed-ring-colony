@@ -101,12 +101,19 @@ class _FakeBlock:
 
 class _ManagerTestCase(unittest.TestCase):
     def setUp(self):
+        from hotkeys import HotkeyManager
         from overlay import OverlayManager
 
         self.tmp = tempfile.TemporaryDirectory()
         self.config_path = Path(self.tmp.name) / "config.json"
         self.manager = OverlayManager(_FakeMaster(), self.config_path)
         self.manager._stop = threading.Event()
+        # Клавиши в операционной системе не регистрируем: на Windows-машинах
+        # (в том числе в CI) это реальные системные горячие клавиши.
+        patcher = mock.patch.object(HotkeyManager, "start", autospec=True,
+                                    side_effect=lambda self: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         self.manager._stop.set()
@@ -448,6 +455,21 @@ class OverlayFontTests(unittest.TestCase):
         self.assertEqual(root.applied[-1], ("Arial", 14))
 
 
+class Win32HelperTests(unittest.TestCase):
+    """Win32-помощники не должны ронять программу без Windows."""
+
+    def test_click_through_is_noop_without_win32(self):
+        from overlay import _set_click_through
+
+        self.assertFalse(_set_click_through(0, True))
+        self.assertFalse(_set_click_through(12345, False))
+
+    def test_hwnd_of_window_is_none_without_win32(self):
+        from overlay import _hwnd_of
+
+        self.assertIsNone(_hwnd_of(mock.MagicMock()))
+
+
 class OverlayBehaviourTests(_ManagerTestCase):
     """Правила показа по ситуации и автоскрытие при простое."""
 
@@ -619,8 +641,18 @@ class OverlayTabTests(unittest.TestCase):
              mock.patch.object(colonial_helper.ColonialHelperApp, "save_config"), \
              mock.patch("pathlib.Path.home", return_value=self.home):
             self.app = colonial_helper.ColonialHelperApp(self.root)
-        # Горячие клавиши реально не регистрируем (в песочнице это Windows-only).
+        # Горячие клавиши реально не регистрируем: в CI это Windows-only.
         self.app.overlay_manager.hotkeys.available = False
+        from hotkeys import HotkeyManager
+
+        patcher = mock.patch.object(HotkeyManager, "start", autospec=True,
+                                    side_effect=lambda self: True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher_stop = mock.patch.object(HotkeyManager, "stop", autospec=True,
+                                         side_effect=lambda self: None)
+        patcher_stop.start()
+        self.addCleanup(patcher_stop.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -768,14 +800,33 @@ class HotkeyTests(unittest.TestCase):
         self.assertEqual(normalize_hotkey("shift + x"), "Shift+X")
 
     def test_manager_is_inert_without_windows(self):
+        """Вне Windows регистрация молча отключена, но программа работает."""
         from hotkeys import HotkeyManager
 
         manager = HotkeyManager()
         self.assertTrue(manager.register("F5", lambda: None))
-        self.assertFalse(manager.start())
-        self.assertFalse(manager.running)
-        manager.stop()  # не должно падать
+        with mock.patch("hotkeys._IS_WINDOWS", False):
+            self.assertFalse(manager.start())
+            self.assertFalse(manager.running)
+            manager.stop()  # не должно падать
         self.assertEqual(manager.combos(), ["F5"])
+
+    def test_windows_path_survives_missing_user32(self):
+        """Нет WinAPI — поток регистрации тихо завершается, программа живёт."""
+        from hotkeys import HotkeyManager
+
+        manager = HotkeyManager()
+        manager.register("F5", lambda: None)
+        with mock.patch("hotkeys._IS_WINDOWS", True):
+            self.assertTrue(manager.start())
+            for _ in range(100):
+                if not manager.running:
+                    break
+                time.sleep(0.02)
+            manager.stop()
+        self.assertFalse(manager.running)
+        if not sys.platform.startswith("win"):
+            self.assertFalse(manager.available)
 
     def test_bad_combo_is_rejected(self):
         from hotkeys import HotkeyManager
