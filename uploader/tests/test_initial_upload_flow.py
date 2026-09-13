@@ -151,7 +151,8 @@ class UploadFlowTests(unittest.TestCase):
     def setUp(self):
         self.stub = install_gui_stubs()
         for name in ("colonial_helper", "api_client", "event_dispatch",
-                     "journal_parser", "overlay", "ship_tracker", "route_tracker"):
+                     "journal_parser", "overlay", "ship_tracker", "route_tracker",
+                     "game_monitor", "exobiology"):
             sys.modules.pop(name, None)
 
         self.tmp = tempfile.TemporaryDirectory()

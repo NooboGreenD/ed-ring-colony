@@ -82,6 +82,7 @@ from journal_parser import (
 )
 from route_tracker import RouteTracker
 from overlay import OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS
+from exobiology import ExobiologyTracker
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
@@ -134,6 +135,7 @@ class ColonialHelperApp:
         self._session_systems_visited = set()
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
+        self.exobiology = ExobiologyTracker()  # тела, биосигналы, образцы (только свой журнал)
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
@@ -1457,6 +1459,11 @@ class ColonialHelperApp:
         tb.Checkbutton(ov_frame, text="EVENTS — события сессии", variable=self.show_events_var,
                        command=self._on_show_events_changed).pack(anchor=W, pady=2)
 
+        self.show_exobio_var = tk.BooleanVar(value=self.overlay_manager.settings.get("show_exobio", True))
+        tb.Checkbutton(ov_frame, text="EXOBIO — экзобиология (тело, сигналы, образцы)",
+                       variable=self.show_exobio_var,
+                       command=self._on_show_exobio_changed).pack(anchor=W, pady=2)
+
         tb.Separator(ov_frame, orient=HORIZONTAL).pack(fill=X, pady=6)
 
         self.attach_game_var = tk.BooleanVar(value=self.overlay_manager.settings.get("attach_to_game", True))
@@ -1542,6 +1549,7 @@ class ColonialHelperApp:
             ("cargo", "CARGO — трюм"),
             ("session", "SESSION — сессия"),
             ("events", "EVENTS — события"),
+            ("exobio", "EXOBIO — экзобиология"),
         ]:
             row = tb.Frame(frame)
             row.pack(fill=X, pady=1)
@@ -1768,6 +1776,15 @@ class ColonialHelperApp:
         if overlay:
             overlay.show() if show else overlay.hide()
 
+    def _on_show_exobio_changed(self):
+        """Блок экзобиологии показывает данные по текущему телу из журнала."""
+        show = bool(self.show_exobio_var.get())
+        self.overlay_manager.settings["show_exobio"] = show
+        self.overlay_manager.save_settings()
+        overlay = self.overlay_manager.exobio_overlay
+        if overlay:
+            overlay.show() if show else overlay.hide()
+
     def _on_attach_game_changed(self):
         self.overlay_manager.set_attach_to_game(self.attach_game_var.get())
         state = "включена" if self.attach_game_var.get() else "отключена"
@@ -1797,6 +1814,7 @@ class ColonialHelperApp:
             "game_running": self.overlay_manager.game_running,
             "game_focused": bool(self.overlay_manager.game_state().focused),
             "game_detail": self.overlay_manager.game_state().process_name or "",
+            "exobiology": self.exobiology.current_body_state(),
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
             "current": "—",
@@ -2499,7 +2517,9 @@ class ColonialHelperApp:
             station_type = str(self._last_depot_state.get("_station_type", "") or "")
             self.dispatcher.submit(ev, live=False, station_type=station_type)
 
-        hooks = [collector, dispatch_hook]
+        # Экзобиология собирается тем же проходом: тела, биосигналы и образцы
+        # нужны оверлею EXOBIO, отдельный проход по файлам для них не нужен.
+        hooks = [collector, dispatch_hook, self.exobiology.handle]
 
         # Только те файлы, которые реально разобраны и чьи доставки приняты:
         # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
@@ -3487,7 +3507,7 @@ class ColonialHelperApp:
         tick_cmdr_name, deliveries, self._last_cargo, self._last_depot_state, self._last_contribution_state, self._seen_events, _tick_event_counts = parse_events(
             iter_journal_events(new_text), current_system, self._last_cargo, self._last_depot_state,
             self._last_contribution_state, self._seen_events, current_system_address,
-            hooks=[collector, tracking_hook, dispatch_hook],
+            hooks=[collector, tracking_hook, dispatch_hook, self.exobiology.handle],
         )
         # Commander/LoadGame встречаются обычно только один раз в начале файла,
         # поэтому в большинстве тиков tick_cmdr_name будет None — переиспользуем

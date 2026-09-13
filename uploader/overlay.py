@@ -1188,6 +1188,129 @@ class CargoOverlay(OverlayWindow):
 
 
 # ============================================================
+#  ExobiologyOverlay
+# ============================================================
+class ExobiologyOverlay(OverlayWindow):
+    """Экзобиология по текущему телу: параметры, сигналы и предсказание родов.
+
+    Данные — только из журнала игрока (Scan / SAAScanComplete / FSSBodySignals /
+    ScanOrganic). Предсказание уровня **род**, упрощённая собственная модель
+    (`exobiology.GENUS_RULES`) — см. комментарий про лицензию в модуле.
+    """
+
+    def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
+        super().__init__(
+            master, "EXOBIO",
+            settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
+            settings.get("exobio_width", 330), settings.get("exobio_height", 360),
+            settings, "exobio",
+        )
+        ff = settings.get("font_family", "Consolas")
+        fs = settings.get("font_size", 10)
+        wrap = max(160, int(settings.get("exobio_width", 330)) - 30)
+
+        self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
+                                   fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
+                                   justify=tk.LEFT, wraplength=wrap)
+        self.body_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.params_label = tk.Label(self.content, text="", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT, wraplength=wrap)
+        self.params_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.signals_label = tk.Label(self.content, text="", font=(ff, fs - 1),
+                                      fg=COLOR_YELLOW, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=wrap)
+        self.signals_label.pack(fill=tk.X, pady=(2, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=5)
+
+        tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
+                 fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
+        self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
+                                      fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=wrap)
+        self.predict_label.pack(fill=tk.X, pady=(2, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=5)
+
+        tk.Label(self.content, text="Образцы на теле:", font=(ff, fs - 1, "bold"),
+                 fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
+        self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                       justify=tk.LEFT, wraplength=wrap)
+        self.organics_label.pack(fill=tk.X, pady=(2, 0))
+
+        tk.Label(
+            self.content,
+            text="Модель предсказывает род, а не вид: таблица критериев "
+                 "намеренно не копируется из GPL-проектов.",
+            font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
+            anchor=tk.W, justify=tk.LEFT, wraplength=wrap,
+        ).pack(fill=tk.X, pady=(6, 0))
+
+    def update_exobiology(self, state: Optional[dict]):
+        """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
+        if not state:
+            self.body_label.config(text="Тело: —")
+            self.params_label.config(text="Отсканируйте тело (FSS или подход)")
+            self.signals_label.config(text="")
+            self.predict_label.config(text="нет данных")
+            self.organics_label.config(text="—")
+            return
+
+        self.body_label.config(
+            text=f"{state.get('body') or '—'}  ({state.get('planet_class') or '?'})"
+        )
+
+        gravity = float(state.get("gravity") or 0.0)
+        self.params_label.config(
+            text=(
+                f"{state.get('atmosphere') or 'нет атмосферы'}\n"
+                f"T {float(state.get('temperature') or 0):.0f} K   "
+                f"g {gravity / 10.0:.2f}\n"
+                f"Вулканизм: {state.get('volcanism') or 'нет'}\n"
+                f"{'посадка возможна' if state.get('landable') else 'посадка невозможна'}"
+            )
+        )
+
+        signals = int(state.get("bio_signals") or 0)
+        mapped = "карта есть" if state.get("mapped") else "карты нет (DSS)"
+        self.signals_label.config(
+            text=(f"Биосигналов: {signals}  |  {mapped}" if signals
+                  else f"Биосигналов нет  |  {mapped}")
+        )
+
+        predictions = state.get("predictions") or []
+        if predictions:
+            lines = []
+            for row in predictions[:6]:
+                bars = "#" * int(min(float(row.get("score") or 0), 6))
+                notes = ", ".join(row.get("notes") or [])
+                lines.append(f"{row.get('genus')} {bars}"
+                             + (f"  {notes}" if notes else ""))
+            extra = len(predictions) - 6
+            if extra > 0:
+                lines.append(f"… и ещё {extra}")
+            self.predict_label.config(text="\n".join(lines))
+        else:
+            self.predict_label.config(text="нет подходящих родов")
+
+        organics = state.get("organics") or []
+        if organics:
+            rows = []
+            for row in organics:
+                samples = int(row.get("samples") or 0)
+                mark = "✔" if row.get("complete") else f"{samples}/3"
+                stage = row.get("stage") or ""
+                rows.append(f"{row.get('species')} [{mark}] {stage}".rstrip())
+            self.organics_label.config(text="\n".join(rows))
+        else:
+            self.organics_label.config(text="образцы не взяты")
+
+
+# ============================================================
 #  SessionOverlay — статистика сессии с графиком
 # ============================================================
 class SessionOverlay(OverlayWindow):
@@ -1329,7 +1452,7 @@ class SessionOverlay(OverlayWindow):
 # ============================================================
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
-    BLOCKS = ("route", "status", "ship", "cargo", "session", "events")
+    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = {
@@ -1339,6 +1462,7 @@ class OverlayManager:
         "cargo": (400, 450, 300, 340),
         "session": (400, 50, 320, 300),
         "events": (730, 50, 320, 260),
+        "exobio": (1060, 50, 330, 360),
     }
 
     def __init__(self, master: tk.Tk, config_path: Path, game_monitor=None):
@@ -1353,6 +1477,7 @@ class OverlayManager:
         self.cargo_overlay: Optional[CargoOverlay] = None
         self.session_overlay: Optional[SessionOverlay] = None
         self.events_overlay: Optional[SessionEventsOverlay] = None
+        self.exobio_overlay: Optional[ExobiologyOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -1384,6 +1509,7 @@ class OverlayManager:
         self.cargo_overlay = CargoOverlay(self.master, self.settings)
         self.session_overlay = SessionOverlay(self.master, self.settings)
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
+        self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
 
         for ov, key in self._blocks():
             ov.set_on_move(self._make_moved_handler(key))
@@ -1408,6 +1534,7 @@ class OverlayManager:
             "cargo": self.cargo_overlay,
             "session": self.session_overlay,
             "events": self.events_overlay,
+            "exobio": self.exobio_overlay,
         }
         return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
 
@@ -1665,15 +1792,9 @@ class OverlayManager:
             "cargo": "show_cargo",
             "session": "show_session",
             "events": "show_events",
+            "exobio": "show_exobio",
         }
-        overlays = [
-            (self.route_overlay, "route"),
-            (self.status_overlay, "status"),
-            (self.ship_overlay, "ship"),
-            (self.cargo_overlay, "cargo"),
-            (self.session_overlay, "session"),
-            (self.events_overlay, "events"),
-        ]
+        overlays = list(self._blocks())
         for ov, key in overlays:
             if ov:
                 try:
@@ -1741,6 +1862,7 @@ class OverlayManager:
         parts.append(str(data.get("game_running", False)))
         parts.append(str(data.get("game_focused", False)))
         parts.append(str(data.get("game_detail", "")))
+        parts.append(str(data.get("exobiology", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
 
     def _apply_update(self, data: dict):
@@ -1769,6 +1891,9 @@ class OverlayManager:
             cargo_data = data.get("cargo", {})
             if cargo_data:
                 self.cargo_overlay.update_cargo(cargo_data)
+
+        if self.exobio_overlay:
+            self.exobio_overlay.update_exobiology(data.get("exobiology"))
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
@@ -1816,6 +1941,7 @@ class OverlayManager:
         self.cargo_overlay = None
         self.session_overlay = None
         self.events_overlay = None
+        self.exobio_overlay = None
 
     def toggle(self, update_callback: Callable):
         if self.enabled:
@@ -1899,6 +2025,7 @@ DEFAULT_SETTINGS = {
     "show_cargo": True,
     "show_session": True,
     "show_events": True,
+    "show_exobio": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -1946,6 +2073,12 @@ DEFAULT_SETTINGS = {
     "events_height": 260,
     "events_locked": False,
     "events_anchor": "custom",
+    "exobio_x": 1060,
+    "exobio_y": 50,
+    "exobio_width": 330,
+    "exobio_height": 360,
+    "exobio_locked": False,
+    "exobio_anchor": "custom",
     "attach_to_game": True,
     # Раскладка: отступ от края области (экрана или окна игры)
     "layout_margin": 24,
@@ -1994,7 +2127,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
                 existing = {}
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
-            "route_", "status_", "ship_", "cargo_", "session_", "events_",
+            "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         tmp = config_path.with_suffix(config_path.suffix + ".tmp")

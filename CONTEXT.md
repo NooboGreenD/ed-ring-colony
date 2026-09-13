@@ -383,6 +383,12 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   on) via `compute_anchored_position()`, with a configurable margin and
   clamping. Named layout profiles (positions, sizes, visibility, alpha, font)
   are stored in `config.json` under `profiles`.
+- Exobiology lives in `uploader/exobiology.py`: journal-only tracking (Scan,
+  SAAScanComplete, FSSBodySignals, ScanOrganic, CodexEntry) plus a deliberately
+  simplified **genus-level** prediction model (`GENUS_RULES`). Precise
+  species/variant criteria exist only in SrvSurvey (GPL-3.0), and this repo has
+  no license, so nothing was copied from it — the overlay states this.
+  Rendered by `ExobiologyOverlay` (HUD block `exobio`).
 - The "Колонизатор" tab drives the full Raven Colonial project cycle through
   `uploader/raven_colonial_api.py`: `GET /api/cmdr/{cmdr}/active`,
   `PUT /api/project` (create), `PATCH /api/project/{buildId}` (update),
