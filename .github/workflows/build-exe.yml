@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - main
-      - arena/01a09030-ed-ring-colony
+      # Все рабочие ветки агента/сессий собирают EXE и выкладывают его
+      # артефактом прогона. Конкретную ветку можно запустить и вручную
+      # (workflow_dispatch) с флагом upload_release.
+      - arena/**
   workflow_dispatch:
     inputs:
       upload_release:
