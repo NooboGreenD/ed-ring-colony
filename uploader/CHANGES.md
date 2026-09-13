@@ -1,3 +1,103 @@
+# Раунд 12 (версия 2.2.1): аудит отправки в EDSM / Inara / Raven Colonial
+
+Проводилась сверка с эталонной реализацией: EDDiscovery
+(`EliteDangerousCore/EliteDangerous/3rdPartyInterfaces/EDSM/EDSMClass.cs`,
+`.../Inara/Inara.cs`, `.../Inara/InaraSync.cs`) и официальная документация
+EDSM (https://www.edsm.net/en/api-journal-v1) и Inara
+(https://inara.cz/elite/inara-api-docs/).
+
+## 1. Почему не уходил прогресс погрузки авианосца (Raven Colonial)
+
+Найдено четыре причины, каждая сама по себе достаточна, чтобы данные не
+доходили.
+
+1. **Не обрабатывался `CargoTransfer`.** Погрузка авианосца через экран
+   «Inventory → Transfer» пишется в журнал как
+   `CargoTransfer` с `Direction: tocarrier`, а не как `MarketSell`. Диспетчер
+   смотрел только `MarketBuy`/`MarketSell` — при таком способе погрузки в
+   Raven Colonial не уходило **ничего**. Теперь обрабатываются оба пути.
+2. **Неверное имя товара.** Raven Colonial требует нижний регистр и
+   языкозависимые токены: `steel`, но не `Steel` и не `$steel_name;`
+   (документация: «Commodity names are always lower case and language
+   agnostic»). Бралось `Type_Localised` — то есть «Steel». Добавлена
+   нормализация `normalize_commodity()`.
+3. **Авианосец определялся только по типу станции.** Проверка опиралась на
+   `StationType` последней стоянки (`_last_depot_state._station_type`). Если
+   программа запущена, когда командир уже стоит на FC, событий `Docked`/
+   `Market` в новых строках журнала нет, и тип станции пуст — прогресс не
+   отправлялся. Теперь сначала проверяется **MarketID в диапазоне
+   3 700 000 000 … 3 800 000 000** (общеизвестная эвристика авианосцев, ею же
+   пользуются EDMC/EDDiscovery), затем `CarrierID` и только потом тип станции.
+4. **Белое пятно в диагностике.** В ответе Raven не было кода: в логе было
+   просто «Raven Colonial отклонил событие». Теперь в ошибку попадает
+   `HTTP 401/403/404` с телом ответа — видно, что именно не так (ключ, чужой
+   FC, авианосец не привязан к командиру).
+
+## 2. EDSM: события отклонялись, но считались отправленными
+
+* **Не хватало обязательных полей.** EDSM требует `fromSoftware`,
+  `fromSoftwareVersion`, `fromGameVersion` и `fromGameBuild`. С 29.11.2022
+  версия и сборка игры обязательны: без них ответ `msgnum` **204**
+  («Software/Software version not found») или **207** («Game/Build version not
+  found»), и событие **не сохраняется**. Версия игры читается из `Fileheader`/
+  `LoadGame` — в том числе отдельно при старте (`_detect_game_version()`),
+  потому что в live-разборе новых строк `Fileheader` уже не встречается.
+* **Успех считался по HTTP-коду.** EDSM отвечает **HTTP 200 даже при
+  ошибке**: статус события лежит в теле (`msgnum`). Раньше любой `response.ok`
+  увеличивал счётчик «отправлено». Теперь разбирается `msgnum`: 100–104 —
+  принято (включая «уже сохранено» и «дубль»), всё от 200 — ошибка.
+* **Добавлен transient state.** Для одиночной отправки EDSM рекомендует
+  докладывать `_systemAddress`, `_systemName`, `_systemCoordinates`,
+  `_marketId`, `_stationName`, `_shipId` — иначе, например, `Scan` не к чему
+  привязать. Состояние отслеживается по Location/FSDJump/Docked/CarrierJump/
+  Undocked/Loadout.
+* В список событий добавлены **CarrierJump** и **Undocked**: без них на EDSM
+  рвётся цепочка «прыгнул — пристыковался — отстыковался», а перелёты
+  авианосца не попадают в журнал полётов.
+
+## 3. Inara: запросы уходили не по адресу
+
+* **Неверный URL.** Использовался `https://inara.cz/inara-api.php`; API живёт
+  по адресу **`https://inara.cz/inapi/v1/`** (ровно как в EDDiscovery:
+  `InaraClass` с `ServerAddress = "https://inara.cz/"` и путём `inapi/v1/`).
+  Запросы уходили в никуда, но считались успешными.
+* **Неверные имена событий.** Отправлялись `cmdrLocation`, `cmdrFSDJump`,
+  `cmdrDock`, `cmdrScan`, `cmdrMarketSell` — таких событий в Inara API нет.
+  Правильно: `setCommanderTravelLocation`, `addCommanderTravelFSDJump`,
+  `addCommanderTravelDock`, `addCommanderTravelCarrierJump`,
+  `addCommanderInventoryCargoItem` / `delCommanderInventoryCargoItem`.
+  Событий сканирования Inara не принимает (EDDiscovery их тоже не шлёт) —
+  `Scan`, `FSSDiscoveryScan` и `ColonisationContribution` из рассылки убраны.
+* **Поля в формате журнала.** Inara ждёт `starsystemName`, `stationName`,
+  `marketID`, `shipType`, `itemName`, `itemCount` — а не `StarSystem`,
+  `StationName`, `MarketID`. Добавлены сборщики payload'ов.
+* **Успех по HTTP-коду.** Как и EDSM, Inara отвечает 200 и при ошибке: статус
+  лежит в `events[].eventStatus` (400 — ошибка). Теперь разбирается и он, и
+  `header.eventStatus` (400 — проблема авторизации).
+* `isDeveloped` заменён на актуальное `isBeingDeveloped`; версия приложения
+  берётся настоящая, а не «1.0.0».
+
+## 4. Мелочи
+
+* Множества дедупликации ограничены по размеру (иначе на длинной сессии растут
+  бесконечно — по множеству на каждый сервис).
+* Клиенты EDSM/Inara не выбрасывают исключения наружу.
+* Тесты: новый `uploader/tests/test_third_party_api.py` (26 тестов), всего
+  **102** (было 80).
+
+## Файлы
+
+- `uploader/edsm_api.py` — обязательные поля, разбор `msgnum`, transient state
+- `uploader/inara_api.py` — правильный URL, имена событий и поля, разбор
+  `eventStatus`
+- `uploader/event_dispatch.py` — CargoTransfer, определение авианосца по
+  MarketID, нормализация товаров, transient state, версия игры, лимит dedup
+- `uploader/raven_colonial_api.py` — код ответа в сообщении об ошибке
+- `uploader/colonial_helper.py` — версия приложения для API, чтение версии игры
+- `uploader/tests/test_third_party_api.py` (новый)
+
+---
+
 # Uploader — раунд 11 (версия 2.2.0): управление оверлеями и статус игры
 
 ## 1. Индикатор запуска игры

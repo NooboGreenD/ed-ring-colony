@@ -90,7 +90,7 @@ from event_dispatch import ThirdPartyDispatcher
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -164,10 +164,12 @@ class ColonialHelperApp:
         self.edsm_api = EDSMAPI(
             self.config.get("edsm_api_key", ""),
             self.config.get("edsm_commander_name", ""),
+            app_version=VERSION,
         )
         self.inara_api = InaraAPI(
             self.config.get("inara_api_key", ""),
             self.config.get("inara_commander_name", ""),
+            app_version=VERSION,
         )
         # Дедупликация событий для внешних API живёт в self.dispatcher
         # (event_dispatch.py), а не в приложении.
@@ -191,6 +193,11 @@ class ColonialHelperApp:
             backfill_enabled=bool(self.config.get("backfill_send_third_party", False)),
         )
         self.dispatcher.on_result = self._on_third_party_result
+
+        # EDSM требует версию и сборку игры (иначе msgnum 207/208 и событие
+        # никуда не попадает). Fileheader стоит в самом начале журнала и в
+        # live-тиках уже не встретится, поэтому читаем его отдельно.
+        self._detect_game_version()
 
         # Кэш уже загруженных файлов журнала (локальный, рядом с конфигом).
         # Позволяет не переразбирать и не переотправлять файлы, которые уже
@@ -2869,6 +2876,45 @@ class ColonialHelperApp:
                 f"{s.upper()}: {m}" if not m.lower().startswith(s.lower()) else m, "warn"
             ),
         )
+
+    def _detect_game_version(self):
+        """Прочитать версию и сборку игры из Fileheader свежего журнала.
+
+        EDSM с 2022 года требует `fromGameVersion`/`fromGameBuild` (коды 207 и
+        208 — «версия не найдена» / «устаревшая»). Fileheader пишется один раз
+        в начале файла, поэтому в live-разборе новых строк он уже не попадётся.
+        """
+        try:
+            files = sorted(
+                self.journal_path.glob("Journal.*.log"),
+                key=lambda f: f.stat().st_mtime,
+            ) if self.journal_path and self.journal_path.exists() else []
+        except OSError:
+            files = []
+        if not files:
+            return
+        try:
+            with open(files[-1], "r", encoding="utf-8-sig") as fh:
+                for _index, line in enumerate(fh):
+                    if _index > 20:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("event") in ("Fileheader", "LoadGame"):
+                        self.dispatcher.set_game_version(
+                            event.get("GameVersion") or event.get("gameversion"),
+                            event.get("Build") or event.get("build"),
+                        )
+                        return
+        except OSError:
+            return
 
     def _send_inara_event(self, event: dict, live: bool = True):
         """Поставить Inara-событие в очередь диспетчера (без блокировки потока)."""

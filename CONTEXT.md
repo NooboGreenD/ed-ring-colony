@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-12.
-> Uploader release: 2.2.0.
+> Uploader release: 2.2.1.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://ed-ring-colony.vercel.app
 
@@ -348,7 +348,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 
 ### 8.6 Colonial Helper uploader 2.2
 - Source: `uploader/colonial_helper.py`
-- Version: `2.2.0`
+- Version: `2.2.1`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -366,6 +366,18 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - `source_hash` and server upsert keys make retries idempotent.
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
+- EDSM requires `fromSoftware`, `fromSoftwareVersion`, `fromGameVersion` and
+  `fromGameBuild`, and reports per-event status in the JSON body (`msgnum`,
+  100-104 accepted, >= 200 rejected) even when HTTP is 200.
+- Inara endpoint is `https://inara.cz/inapi/v1/` with Inara event names
+  (`addCommanderTravelFSDJump`, `setCommanderTravelLocation`,
+  `addCommanderInventoryCargoItem`, ...) and Inara-style property names
+  (`starsystemName`, `stationName`, `marketID`); per-event status arrives in
+  `events[].eventStatus`.
+- Fleet carrier cargo is reported to Raven Colonial from both `MarketSell`/
+  `MarketBuy` and `CargoTransfer` (loading via the Transfer screen). The carrier
+  is detected by MarketID in 3 700 000 000-3 800 000 000, by `CarrierID`, or by
+  station type; commodity names are normalised to lower-case FDNames.
 - API credentials are also mirrored to the local runtime-only file
   `.colonial_helper_credentials.json` in the user's home directory. This
   protects them from HUD settings saves and EXE upgrades; no credentials belong

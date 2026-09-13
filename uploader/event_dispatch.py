@@ -48,24 +48,130 @@ import time
 from typing import Callable, Optional
 
 # Какие события журнала уходят в EDSM (навигация и сканирование).
+# CarrierJump и Undocked добавлены: без них на EDSM рвётся цепочка
+# «прыгнул — пристыковался — отстыковался», а перелёты авианосца не
+# попадают в журнал полётов вовсе.
 EDSM_EVENTS = frozenset({
-    "Location", "FSDJump", "Docked", "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+    "Location", "FSDJump", "Docked", "Undocked", "CarrierJump",
+    "Scan", "FSSDiscoveryScan", "SAAScanComplete",
 })
 
-# События журнала -> имя события Inara API (модель EDDiscovery).
-INARA_EVENT_NAMES = {
-    "Location": "cmdrLocation",
-    "FSDJump": "cmdrFSDJump",
-    "Docked": "cmdrDock",
-    "Scan": "cmdrScan",
-    "FSSDiscoveryScan": "cmdrFSSDiscoveryScan",
-    "MarketSell": "cmdrMarketSell",
-    "MarketBuy": "cmdrMarketBuy",
-    "ColonisationContribution": "cmdrTrade",
-}
+# Диапазон MarketID, в котором живут Fleet Carrier.
+# Общеизвестная эвристика (ею же пользуются EDMC/EDDiscovery): MarketID
+# авианосца лежит в 3 700 000 000 … 3 800 000 000. Она позволяет понять, что
+# торговля идёт на авианосце, даже если мы не видели событий Docked/Market
+# (например, программа запущена, когда командир уже давно стоит на FC).
+FLEET_CARRIER_MARKET_MIN = 3_700_000_000
+FLEET_CARRIER_MARKET_MAX = 3_800_000_000
 
 # Грузовые операции на Fleet Carrier уходят в Raven Colonial (/api/fc/...).
-RAVEN_CARGO_EVENTS = frozenset({"MarketSell", "MarketBuy"})
+#
+# CargoTransfer добавлен отдельно: погрузка авианосца через экран «Inventory →
+# Transfer» пишется именно им (`Direction: tocarrier`), а не MarketSell. Пока
+# это событие игнорировалось, прогресс погрузки в Raven Colonial не менялся
+# вообще — ровно то, на что жаловался пользователь.
+RAVEN_CARGO_EVENTS = frozenset({"MarketSell", "MarketBuy", "CargoTransfer"})
+
+
+def normalize_commodity(value) -> str:
+    """Имя товара в том виде, в каком его ждут внешние API.
+
+    Журнал даёт три варианта: `steel` (FDName), `$steel_name;` (токен) и
+    `Steel` (Type_Localised). Raven Colonial принимает только нижний регистр и
+    языкозависимые токены reject: «`liquidoxygen` not `LiquidOxygen` or
+    `$liquidoxygen_name;`». Inara принимает имя «as is in the journals».
+    """
+    name = str(value or "").strip().lower()
+    if name.startswith("$"):
+        name = name[1:]
+    for suffix in ("_name;", "_name"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    return name
+
+
+def is_fleet_carrier(event: dict, station_type: str = "") -> bool:
+    """Это операция на Fleet Carrier?
+
+    Проверяем по трём признакам — любого достаточно:
+
+    * MarketID в диапазоне авианосцев (работает даже без событий стыковки);
+    * в событии есть `CarrierID` (например, CarrierJump/CarrierStats);
+    * `StationType` (или тип станции, где мы сейчас) — FleetCarrier.
+    """
+    if not isinstance(event, dict):
+        return False
+    try:
+        market_id = int(event.get("MarketID") or 0)
+    except (TypeError, ValueError):
+        market_id = 0
+    if FLEET_CARRIER_MARKET_MIN <= market_id < FLEET_CARRIER_MARKET_MAX:
+        return True
+    if event.get("CarrierID"):
+        return True
+    station = str(event.get("StationType") or station_type or "").lower()
+    return "carrier" in station
+
+
+# ---------------------------------------------------------------------------
+#  Inara: имена событий и поля в формате Inara API
+#
+#  Раньше отправлялись имена вида `cmdrFSDJump` и сырые поля журнала. В Inara
+#  API таких событий нет: правильные имена — `addCommanderTravelFSDJump`,
+#  `addCommanderTravelDock`, `setCommanderTravelLocation`, а поля называются
+#  `starsystemName`, `stationName`, `marketID`, `shipType`, `shipGameID`
+#  (не `StarSystem`/`StationName`/...). Список событий сверен с
+#  https://inara.cz/elite/inara-api-docs/ и с EDDiscovery (InaraSync.cs):
+#  событий сканирования Inara не принимает вовсе.
+# ---------------------------------------------------------------------------
+def _inara_location(event: dict) -> dict:
+    data = {"starsystemName": event.get("StarSystem") or event.get("SystemName")}
+    if event.get("StationName"):
+        data["stationName"] = event["StationName"]
+    if event.get("MarketID"):
+        data["marketID"] = event["MarketID"]
+    return {key: value for key, value in data.items() if value not in (None, "")}
+
+
+def _inara_dock(event: dict) -> dict:
+    data = _inara_location(event)
+    if event.get("ShipType"):
+        data["shipType"] = event["ShipType"]
+    return data
+
+
+def _inara_jump(event: dict) -> dict:
+    data = {"starsystemName": event.get("StarSystem")}
+    if event.get("StarPos"):
+        data["starsystemCoords"] = event["StarPos"]
+    if event.get("JumpDist"):
+        data["jumpDistance"] = event["JumpDist"]
+    if event.get("ShipType"):
+        data["shipType"] = event["ShipType"]
+    return {key: value for key, value in data.items() if value not in (None, "")}
+
+
+def _inara_cargo_item(event: dict) -> dict:
+    """Товар из MarketBuy/MarketSell — в формате Inara (дельта по cargo)."""
+    count = event.get("Count") or 0
+    return {
+        "itemName": normalize_commodity(event.get("Type") or event.get("Type_Localised")),
+        "itemCount": abs(int(count)),
+    }
+
+
+# Журнальное событие -> (имя события Inara, сборщик eventData)
+INARA_EVENTS = {
+    "Location": ("setCommanderTravelLocation", _inara_location),
+    "FSDJump": ("addCommanderTravelFSDJump", _inara_jump),
+    "Docked": ("addCommanderTravelDock", _inara_dock),
+    "CarrierJump": ("addCommanderTravelCarrierJump", _inara_jump),
+    # Покупка кладёт товар в трюм, продажа — забирает: дельтовые события
+    # точнее, чем set-события (не нужно знать остаток по каждому товару).
+    "MarketBuy": ("addCommanderInventoryCargoItem", _inara_cargo_item),
+    "MarketSell": ("delCommanderInventoryCargoItem", _inara_cargo_item),
+}
 
 # Результат постановки события в очередь.
 _QUEUED = "queued"
@@ -116,6 +222,91 @@ class ThirdPartyDispatcher:
         # Опциональный колбэк: on_result(service, ok, message)
         self.on_result: Optional[Callable[[str, bool, str], None]] = None
         self._last_drop_warning = 0.0
+
+        # «Transient state» для EDSM: сам по себе журнал часто не знает, где и
+        # на чём был командир в момент события (например, в Scan нет системы).
+        # EDSM просит докладывать это отдельными полями.
+        self._game_state = {
+            "system_address": None,
+            "system_name": None,
+            "coordinates": None,
+            "market_id": None,
+            "station_name": None,
+            "ship_id": None,
+        }
+        # Ограничение на множества дедупликации: на длинной сессии они иначе
+        # растут бесконечно (по множеству на каждый сервис).
+        self.max_seen = 50000
+
+    # -- контекст ----------------------------------------------------------
+    def set_game_version(self, version: str = "", build: str = ""):
+        """Версия и сборка игры — обязательные поля EDSM (msgnum 207/208)."""
+        if self.edsm_api is not None and hasattr(self.edsm_api, "set_game_version"):
+            try:
+                self.edsm_api.set_game_version(version, build)
+            except Exception:
+                pass
+
+    def _is_seen(self, service: str, key) -> bool:
+        """Уже отправляли? (без пометки — для сервисов с повтором при ошибке)."""
+        with self._lock:
+            seen = self._seen[service]
+            if key in seen:
+                self.stats["duplicate"] += 1
+                return True
+            return False
+
+    def _remember_seen(self, service: str, key) -> bool:
+        """True, если ключ уже отправляли. Множество ограничено по размеру."""
+        with self._lock:
+            seen = self._seen[service]
+            if key in seen:
+                self.stats["duplicate"] += 1
+                return True
+            if len(seen) >= self.max_seen:
+                # Жертвуем идеальной дедупликацией ради памяти: внешние сервисы
+                # и сами отсекают дубли (у EDSM кеш на 300 с).
+                seen.clear()
+            seen.add(key)
+            return False
+
+    def _update_game_state(self, event: dict, event_name: str):
+        """Обновить «transient state» по образцу из документации EDSM."""
+        state = self._game_state
+        if event_name == "LoadGame":
+            state.update({"coordinates": None, "market_id": None, "station_name": None})
+        elif event_name == "Undocked":
+            state["market_id"] = None
+            state["station_name"] = None
+        elif event_name in ("Location", "FSDJump", "Docked", "CarrierJump"):
+            system = event.get("StarSystem")
+            if system:
+                if system != state["system_name"]:
+                    state["coordinates"] = None
+                state["system_name"] = system
+            if event.get("SystemAddress") is not None:
+                state["system_address"] = event.get("SystemAddress")
+            if event.get("StarPos") is not None:
+                state["coordinates"] = event.get("StarPos")
+            if event.get("MarketID") is not None:
+                state["market_id"] = event.get("MarketID")
+            if event.get("StationName") is not None:
+                state["station_name"] = event.get("StationName")
+        if event_name in ("Loadout", "SetUserShipName", "ShipyardSwap", "ShipyardNew"):
+            ship_id = event.get("ShipID") or event.get("ShipIdent")
+            if ship_id:
+                state["ship_id"] = ship_id
+
+    def _transient_fields(self) -> dict:
+        state = self._game_state
+        return {
+            "_systemAddress": state["system_address"],
+            "_systemName": state["system_name"],
+            "_systemCoordinates": state["coordinates"],
+            "_marketId": state["market_id"],
+            "_stationName": state["station_name"],
+            "_shipId": state["ship_id"],
+        }
 
     # -- настройка ---------------------------------------------------------
     def configure(
@@ -172,6 +363,17 @@ class ThirdPartyDispatcher:
             return True
 
         event_name = str(event.get("event", ""))
+
+        # Версия игры нужна EDSM: без неё события отклоняются (msgnum 207).
+        if event_name in ("Fileheader", "LoadGame"):
+            self.set_game_version(
+                event.get("GameVersion") or event.get("gameversion"),
+                event.get("Build") or event.get("build"),
+            )
+        # Transient state обновляем до отправки: событие должно уйти уже с
+        # актуальной системой/станцией, иначе EDSM привяжет его не туда.
+        self._update_game_state(event, event_name)
+
         results = []
 
         # ВАЖНО: раньше Inara и Raven вызывались только при включённом EDSM
@@ -179,7 +381,7 @@ class ThirdPartyDispatcher:
         # сервис по отдельности.
         if self._edsm_enabled() and event_name in EDSM_EVENTS:
             results.append(self._submit_edsm(event, event_name))
-        if self._inara_enabled() and event_name in INARA_EVENT_NAMES:
+        if self._inara_enabled() and event_name in INARA_EVENTS:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
             results.append(self._submit_raven(event, event_name, station_type))
@@ -204,12 +406,13 @@ class ThirdPartyDispatcher:
             event.get("SystemAddress", ""),
             event.get("BodyID", ""),
         )
-        with self._lock:
-            if key in self._seen["edsm"]:
-                self.stats["duplicate"] += 1
-                return _SKIPPED
-            self._seen["edsm"].add(key)
-        return self._enqueue("edsm", {"event": dict(event)})
+        if self._remember_seen("edsm", key):
+            return _SKIPPED
+        payload = dict(event)
+        # Transient state: EDSM сам просит докладывать систему/станцию/корабль
+        # для одиночных событий (без этого, например, Scan не привяжется).
+        payload.update(self._transient_fields())
+        return self._enqueue("edsm", {"event": payload})
 
     def _submit_inara(self, event: dict, event_name: str) -> str:
         key = (
@@ -219,44 +422,56 @@ class ThirdPartyDispatcher:
             event.get("BodyID", ""),
             event.get("MarketID", ""),
         )
-        with self._lock:
-            if key in self._seen["inara"]:
-                self.stats["duplicate"] += 1
-                return _SKIPPED
-            self._seen["inara"].add(key)
-        payload = dict(event)
-        payload.pop("event", None)
+        if self._remember_seen("inara", key):
+            return _SKIPPED
+        event_api_name, builder = INARA_EVENTS[event_name]
+        try:
+            data = builder(event)
+        except Exception:
+            data = {}
+        if not data:
+            # Нечего отправлять: например, в событии нет системы.
+            return _SKIPPED
         return self._enqueue(
             "inara",
             {
-                "event_name": INARA_EVENT_NAMES[event_name],
-                "data": payload,
+                "event_name": event_api_name,
+                "data": data,
                 "timestamp": str(event.get("timestamp", "")),
             },
         )
 
     def _submit_raven(self, event: dict, event_name: str, station_type: str = "") -> str:
-        """Fleet Carrier cargo: продажа на FC добавляет груз, покупка — забирает."""
+        """Fleet Carrier cargo: продажа на FC добавляет груз, покупка — забирает.
+
+        Тип станции больше не единственный признак авианосца: если программа
+        запущена, когда командир уже стоит на FC, событий `Docked`/`Market`
+        в новых строках журнала нет, `_station_type` пуст, и прогресс погрузки
+        не уходил в Raven Colonial вовсе. Теперь сначала проверяем MarketID
+        (диапазон авианосцев) и `CarrierID`.
+        """
+        if event_name == "CargoTransfer":
+            return self._submit_raven_transfer(event, station_type)
+
         market_id = event.get("MarketID")
         count = event.get("Count")
-        commodity = event.get("Type_Localised") or event.get("Type")
-        carrier_station = "carrier" in str(
-            event.get("StationType", "") or station_type or ""
-        ).lower()
-        is_carrier = bool(event.get("CarrierID")) or carrier_station
-        if not market_id or not count or not commodity or not is_carrier:
+        # Raven Colonial требует имя товара в нижнем регистре и без
+        # локализационных токенов: `steel`, а не `Steel` и не `$steel_name;`.
+        commodity = normalize_commodity(event.get("Type") or event.get("Type_Localised"))
+        if not market_id or not count or not commodity:
+            return _SKIPPED
+        if not is_fleet_carrier(event, station_type):
             return _SKIPPED
 
         key = "|".join(
             str(event.get(field, ""))
             for field in ("event", "timestamp", "MarketID", "Type", "Type_Localised", "Count", "CarrierID")
         )
-        with self._lock:
-            if key in self._seen["raven"]:
-                self.stats["duplicate"] += 1
-                return _SKIPPED
-        # Ключ добавляется в `seen` только ПОСЛЕ успешной отправки, чтобы
-        # неудачный запрос был предпринят ещё раз (как было раньше).
+        # Raven: ключ попадает в `seen` только ПОСЛЕ успешной отправки (см.
+        # `_do_raven`), чтобы неудачный запрос был предпринят ещё раз. Здесь
+        # только проверяем дубли, ничего не помечая.
+        if self._is_seen("raven", key):
+            return _SKIPPED
         delta = int(count) if event_name == "MarketSell" else -int(count)
         return self._enqueue(
             "raven",
@@ -267,6 +482,59 @@ class ThirdPartyDispatcher:
                 "key": key,
             },
         )
+
+    def _submit_raven_transfer(self, event: dict, station_type: str = "") -> str:
+        """Перенос груза через экран Transfer: ship <-> авианосец.
+
+        Событие `CargoTransfer` не содержит MarketID, поэтому авианосец
+        определяем по рынку текущей стоянки (мы уже знаем её из Location/
+        Docked/CarrierJump) — перекидывать груз можно только находясь у FC.
+        """
+        transfers = event.get("Transfers")
+        if not isinstance(transfers, list) or not transfers:
+            return _SKIPPED
+        # MarketID берём из события, а если его нет — из последней стоянки.
+        market_id = event.get("MarketID") or self._game_state.get("market_id")
+        try:
+            market_id = int(market_id or 0)
+        except (TypeError, ValueError):
+            market_id = 0
+        if not market_id or not is_fleet_carrier({"MarketID": market_id}, station_type):
+            return _SKIPPED
+
+        result = _SKIPPED
+        for index, transfer in enumerate(transfers):
+            if not isinstance(transfer, dict):
+                continue
+            direction = str(transfer.get("Direction") or "").lower()
+            if direction == "tocarrier":
+                delta = int(transfer.get("Count") or 0)
+            elif direction == "toship":
+                delta = -int(transfer.get("Count") or 0)
+            else:
+                continue  # tosrv / прочие — к авианосцу не относятся
+            commodity = normalize_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
+            if not commodity or not delta:
+                continue
+            key = "|".join(str(part) for part in (
+                "CargoTransfer", event.get("timestamp", ""), market_id, index,
+                transfer.get("Type", ""), transfer.get("Count", ""), direction,
+            ))
+            if self._is_seen("raven", key):
+                result = _SKIPPED if result == _SKIPPED else result
+                continue
+            outcome = self._enqueue(
+                "raven",
+                {
+                    "market_id": market_id,
+                    "commodity": commodity,
+                    "delta": delta,
+                    "key": key,
+                },
+            )
+            if outcome != _SKIPPED:
+                result = outcome
+        return result
 
     def _enqueue(self, service: str, payload: dict) -> str:
         self._start_locked()

@@ -262,9 +262,11 @@ class EventDispatchTests(unittest.TestCase):
         def __init__(self, latency=0.0):
             self.calls = 0
             self.latency = latency
+            self.events = []   # (event_name, data)
 
         def submit(self, event_name, data, timestamp):
             self.calls += 1
+            self.events.append((event_name, data))
             if self.latency:
                 time.sleep(self.latency)
             return {"ok": True}
@@ -326,15 +328,26 @@ class EventDispatchTests(unittest.TestCase):
         inara = self.FakeInara()
         raven = self.FakeRaven()
         dispatcher = ThirdPartyDispatcher(inara_api=inara, raven_api=raven, edsm_api=None)
-        dispatcher.submit({"event": "Docked", "timestamp": "2025-01-01T00:00:00Z", "SystemAddress": 5}, live=True)  # cmdrDock
+        dispatcher.submit(
+            {"event": "Docked", "timestamp": "2025-01-01T00:00:00Z", "SystemAddress": 5,
+             "StarSystem": "Sol", "StationName": "Jameson Memorial", "MarketID": 42},
+            live=True,
+        )
         dispatcher.submit(
             {"event": "MarketSell", "timestamp": "2025-01-01T00:00:01Z", "MarketID": 42,
              "Type": "steel", "Type_Localised": "Steel", "Count": 10, "CarrierID": 7},
             live=True,
         )
         dispatcher.flush(timeout=2)
-        # Docked -> cmdrDock, MarketSell -> cmdrMarketSell (оба есть в карте Inara).
+        # Имена событий и поля — в формате Inara API, а не журнала.
         self.assertEqual(inara.calls, 2)
+        names = [name for name, _data in inara.events]
+        self.assertEqual(names[0], "addCommanderTravelDock")
+        self.assertEqual(names[1], "delCommanderInventoryCargoItem")
+        dock_data = inara.events[0][1]
+        self.assertEqual(dock_data["starsystemName"], "Sol")
+        self.assertEqual(dock_data["stationName"], "Jameson Memorial")
+        self.assertEqual(inara.events[1][1]["itemName"], "steel")
         self.assertEqual(raven.calls, 1)
 
     def test_submit_never_blocks_on_slow_service(self):

@@ -102,11 +102,18 @@ class RavenColonialAPI:
             # indefinitely.
             response_text = response.text[:500]
             already_exists = response.status_code == 409 and "already exists" in response_text.lower()
+            # Код ответа попадает в сообщение об ошибке: без него в логе видно
+            # только «Raven Colonial отклонил событие» и непонятно, что именно
+            # не так (401 — ключ, 403 — чужой FC, 404 — авианосец не привязан).
+            error = None
+            if not (response.ok or already_exists):
+                error = f"HTTP {response.status_code}: {response_text}" if response_text else f"HTTP {response.status_code}"
             return {
                 "ok": response.ok or already_exists,
                 "already_exists": already_exists,
+                "status": response.status_code,
                 "data": payload,
-                "error": None if (response.ok or already_exists) else response_text,
+                "error": error,
             }
         except requests.RequestException as exc:
             return {"ok": False, "error": str(exc)}
