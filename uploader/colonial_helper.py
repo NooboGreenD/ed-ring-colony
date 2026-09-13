@@ -97,10 +97,11 @@ from inara_api import InaraAPI
 from ship_tracker import ShipTracker
 from event_dispatch import ThirdPartyDispatcher, normalize_commodity
 from raven_colonial_api import RavenColonialAPI, project_url
+import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.4.2"
+VERSION = "2.5.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -266,6 +267,11 @@ class ColonialHelperApp:
         self._game_was_running = False
         self.after(1000, self._tick_game_status)
 
+        # Проверка обновлений — через пару секунд после старта, чтобы не
+        # мешать отрисовке окна и автопроверке токена.
+        self._update_busy = False
+        self.after(2500, self._auto_check_update)
+
     # ============================================================
     #  Стили
     # ============================================================
@@ -281,6 +287,14 @@ class ColonialHelperApp:
     # ============================================================
     #  Шапка
     # ============================================================
+    #: Каналы обновлений: какие релизы GitHub предлагать.
+    #: CI публикует сборки и с main (полноценный релиз), и с arena/**
+    #: (prerelease) — см. .github/workflows/build-exe.yml.
+    UPDATE_CHANNEL_LABELS = {
+        "stable": "Только стабильные (main)",
+        "all": "Все сборки (включая arena)",
+    }
+
     def _build_header(self):
         frame = tb.Frame(self.root, padding=10)
         frame.pack(fill=X, pady=(0, 5))
@@ -300,6 +314,48 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         )
         subtitle.pack(anchor=W)
+
+        # Обновления: кнопка проверки, канал и автопроверка при запуске.
+        update_frame = tb.Frame(frame)
+        update_frame.pack(fill=X, pady=(6, 0))
+
+        self.update_button = tb.Button(
+            update_frame,
+            text="⟳  Обновить программу",
+            width=22,
+            bootstyle="info-outline",
+            command=lambda: self._on_check_update(manual=True),
+        )
+        self.update_button.pack(side=LEFT, padx=(0, 8))
+
+        self.update_channel_var = tk.StringVar(value=self._update_channel_label())
+        self.update_channel_combo = tb.Combobox(
+            update_frame,
+            textvariable=self.update_channel_var,
+            width=26,
+            state="readonly",
+            values=[text for text in self.UPDATE_CHANNEL_LABELS.values()],
+        )
+        self.update_channel_combo.pack(side=LEFT, padx=(0, 8))
+        self.update_channel_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_update_settings_changed())
+
+        self.update_auto_var = tk.BooleanVar(
+            value=bool(self.config.get("update_check_enabled", True)))
+        tb.Checkbutton(
+            update_frame,
+            text="проверять при запуске",
+            variable=self.update_auto_var,
+            command=self._on_update_settings_changed,
+        ).pack(side=LEFT)
+
+        self.update_hint = tb.Label(
+            update_frame,
+            text=f"установлена v{VERSION}",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+        )
+        self.update_hint.pack(side=RIGHT)
 
         # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
         game_frame = tb.Frame(frame)
@@ -3010,6 +3066,158 @@ class ColonialHelperApp:
             padding=5,
         )
         self.bottom_status.pack(fill=X, side=BOTTOM)
+
+    # ============================================================
+    #  Обновление программы
+    # ============================================================
+    def _update_channel_label(self) -> str:
+        channel = str(self.config.get("update_channel", "stable"))
+        return self.UPDATE_CHANNEL_LABELS.get(
+            channel, self.UPDATE_CHANNEL_LABELS["stable"])
+
+    def _update_channel_value(self) -> str:
+        label = str(self.update_channel_var.get())
+        for value, text in self.UPDATE_CHANNEL_LABELS.items():
+            if text == label:
+                return value
+        return "stable"
+
+    def _on_update_settings_changed(self):
+        """Канал и автопроверку сохраняем сразу: это настройки, не состояние."""
+        self.config["update_channel"] = self._update_channel_value()
+        self.config["update_check_enabled"] = bool(self.update_auto_var.get())
+        self.save_config()
+
+    def _auto_check_update(self):
+        if not bool(self.config.get("update_check_enabled", True)):
+            return
+        self._on_check_update(manual=False)
+
+    def _set_update_ui(self, busy: bool, hint: str = "", button_text: str = ""):
+        """Состояние строки обновлений: кнопка занята/свободна + подсказка."""
+        try:
+            self.update_button.config(
+                state="disabled" if busy else "normal",
+                text=button_text or "⟳  Обновить программу",
+            )
+        except Exception:
+            pass
+        if hint and hasattr(self, "update_hint"):
+            try:
+                self.update_hint.config(text=hint)
+            except Exception:
+                pass
+
+    def _on_check_update(self, manual: bool = False):
+        """Спросить GitHub Releases, есть ли сборка новее установленной.
+
+        Сетевой запрос — только в фоновом потоке: интерфейс не должен ждать
+        ответа GitHub, тем более при автопроверке на старте.
+        """
+        if self._update_busy:
+            return
+        self._update_busy = True
+        channel = self._update_channel_value()
+        self._set_update_ui(True, hint="проверка обновлений…", button_text="Проверяю…")
+        self.log("Проверяю обновления…", "info")
+
+        def worker():
+            result = updater.check_for_update(VERSION, channel=channel)
+            self.after(0, lambda r=result: self._on_update_checked(r, manual))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_checked(self, result: dict, manual: bool):
+        self._update_busy = False
+        latest = str(result.get("latest") or VERSION)
+        if not result.get("ok"):
+            message = str(result.get("error") or "нет данных")
+            self._set_update_ui(False, hint=f"не проверено: {message[:40]}")
+            # Автопроверка без сети — обычное дело, в лог пишем только по кнопке.
+            if manual:
+                self.log(f"Обновления не проверены: {message}", "warn")
+            return
+
+        if not result.get("update_available"):
+            self._set_update_ui(False, hint=f"актуальная версия v{latest}")
+            self.log(f"Установлена актуальная версия {VERSION}", "success")
+            return
+
+        release = result.get("release") or {}
+        self._set_update_ui(False, hint=f"доступна v{latest}")
+        self.log(
+            f"Доступна новая версия {latest} (установлена {VERSION}): "
+            f"{release.get('name') or release.get('tag') or ''}", "warn")
+        if not manual:
+            # При автопроверке окно не выпрыгивает: пишем в лог и подсказку.
+            self.log("Нажмите «Обновить программу», чтобы скачать сборку.", "info")
+            return
+
+        size_mb = int(release.get("asset_size") or 0) / (1024 * 1024)
+        if not messagebox.askyesno(
+            "Обновление Colonial Helper",
+            f"Доступна версия {latest} (у вас {VERSION}).\n\n"
+            f"Файл: {release.get('asset_name') or 'ColonialHelper.exe'}"
+            f"{f' ({size_mb:.1f} МБ)' if size_mb else ''}\n\n"
+            "Скачать новую сборку?",
+            parent=self.root,
+        ):
+            return
+        self._start_update_download(release)
+
+    def _start_update_download(self, release: dict):
+        """Скачать сборку в «Загрузки» и показать папку."""
+        folder = updater.download_folder()
+        self._update_busy = True
+        self._set_update_ui(True, hint="скачивание…", button_text="Скачиваю…")
+
+        def report(done: int, total: int):
+            if not total:
+                return
+            # Не чаще раза в ~5%, иначе очередь Tk забьётся прогрессом.
+            percent = int(done * 100 / total)
+            if percent - getattr(self, "_update_last_percent", -10) < 5:
+                return
+            self._update_last_percent = percent
+            self.after(0, lambda p=percent: self._set_update_ui(
+                True, hint=f"скачивание {p}%", button_text="Скачиваю…"))
+
+        def worker():
+            result = updater.download_asset(release, folder, progress=report)
+            self.after(0, lambda r=result: self._on_update_downloaded(r, release))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_downloaded(self, result: dict, release: dict):
+        self._update_busy = False
+        self._update_last_percent = -10
+        if not result.get("ok"):
+            message = str(result.get("error") or "неизвестная ошибка")
+            self._set_update_ui(False, hint="скачивание не удалось")
+            self.log(f"Не удалось скачать обновление: {message}", "error")
+            return
+        path = str(result.get("path") or "")
+        size_mb = int(result.get("size") or 0) / (1024 * 1024)
+        self._set_update_ui(False, hint=f"скачано: {Path(path).name}")
+        self.log(f"Сборка {release.get('version_text') or ''} скачана: {path} "
+                 f"({size_mb:.1f} МБ)", "success")
+        self.log("Закройте программу и замените ColonialHelper.exe скачанным файлом.", "info")
+        # Показываем папку со сборкой: запускать новый exe из-под старого
+        # не нужно, а найти файл пользователь должен сразу.
+        def open_folder():
+            try:
+                import os
+                import webbrowser
+
+                if hasattr(os, "startfile"):
+                    os.startfile(str(Path(path).parent))  # noqa: S606 - своя папка
+                else:
+                    webbrowser.open(Path(path).parent.as_uri())
+            except Exception as exc:
+                self.after(0, lambda e=exc: self.log(
+                    f"Не удалось открыть папку со сборкой: {e}", "warn"))
+
+        threading.Thread(target=open_folder, daemon=True).start()
 
     # ============================================================
     #  Индикатор игры
