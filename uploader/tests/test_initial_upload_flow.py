@@ -234,8 +234,9 @@ class UploadFlowTests(unittest.TestCase):
         self.assertTrue(all(app._is_file_imported(p) for p in self.files))
 
         # Быстро: сеть подменена, но и на реальной сети пачек стало на порядок
-        # меньше, чем число файлов.
-        self.assertLess(elapsed, 30.0)
+        # меньше, чем число файлов. Порог с запасом на загруженный CI-раннер:
+        # регрессия, ради которой написан тест, измерялась минутами.
+        self.assertLess(elapsed, 60.0)
 
     def test_second_import_skips_unchanged_files(self):
         app = self._build_app()

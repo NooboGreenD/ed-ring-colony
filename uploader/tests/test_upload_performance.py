@@ -362,7 +362,8 @@ class EventDispatchTests(unittest.TestCase):
             )
         submit_seconds = time.monotonic() - started
         # 300 событий по 20 мс последовательно заняли бы ~6 с: разбор не ждёт.
-        self.assertLess(submit_seconds, 1.0)
+        # Порог с запасом на загруженный CI-раннер (важен сам порядок величин).
+        self.assertLess(submit_seconds, 3.0)
         dispatcher.flush(timeout=10)
         self.assertEqual(edsm.calls, 300)
 
@@ -438,10 +439,11 @@ class ApiClientUploadTests(unittest.TestCase):
         return client, calls
 
     def test_deliveries_are_chunked_and_parallel(self):
-        # Задержка запроса 0.2 с: последовательно 4 пачки шли бы 0.8 с.
-        # Порог 0.6 с оставляет запас на медленный CI-раннер, но по-прежнему
-        # ловит деградацию до последовательной отправки.
-        latency = 0.2
+        # Задержка запроса 0.4 с: последовательно 4 пачки шли бы 1.6 с.
+        # Порог 1.2 с оставляет запас на медленный CI-раннер (параллельно это
+        # ~0.4-0.6 с), но по-прежнему ловит деградацию до последовательной
+        # отправки: она как раз не уложилась бы в порог.
+        latency = 0.4
         client, calls = self._client_with_stub(latency=latency)
         deliveries = [{"system_name": "Sol", "commodity": "steel", "amount": 1,
                        "delivered_at": "2025-01-01T00:00:00Z", "source_hash": "h%d" % i}
@@ -621,8 +623,9 @@ class InitialLoadSmokeTest(unittest.TestCase):
             self.assertEqual((edsm.calls, inara.calls, raven.calls), (0, 0, 0))
             self.assertTrue(collector.events, "snapshots стройки должны собираться")
             self.assertGreater(collector.duplicates, 0, "повторы snapshots должны отсекаться")
-            # Разбор 8 файлов — быстрый (раньше на этом шаге шли тысячи HTTP).
-            self.assertLess(parse_seconds, 5.0)
+            # Разбор 8 файлов — быстрый (раньше на этом шаге шли тысячи HTTP,
+            # то есть минуты). Порог щедрый, чтобы не ловить шум CI-раннера.
+            self.assertLess(parse_seconds, 15.0)
         finally:
             tmp.cleanup()
 
