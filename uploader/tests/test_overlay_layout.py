@@ -293,6 +293,128 @@ class OverlayAutoHideTests(unittest.TestCase):
         self.assertTrue(all(args == (True,) for args in calls), calls)
 
 
+class GameMonitorDeadlockTests(unittest.TestCase):
+    """Опрос Win32 не должен ни держать блокировку, ни ждать другой поток.
+
+    Регрессия «программа намертво виснет после включения оверлея»:
+    `_probe()` (EnumWindows + GetWindowTextW по всем окнам, включая наши)
+    выполнялся под `GameMonitor._lock`. Главный поток Tk берёт тот же лок
+    раз в секунду из `_set_all_visibility()`, а `GetWindowTextW` для окна
+    собственного процесса ждёт, пока поток Tk обработает сообщение. Оба
+    потока вставали навсегда.
+    """
+
+    def test_probe_does_not_hold_the_lock(self):
+        from game_monitor import GameMonitor
+
+        free = {}
+
+        def lister():
+            # Если опрос идёт под блокировкой, взять её здесь не получится.
+            free["lock_is_free"] = monitor._lock.acquire(blocking=False)
+            if free["lock_is_free"]:
+                monitor._lock.release()
+            return [(1, "EliteDangerous64.exe")]
+
+        monitor = GameMonitor(process_lister=lister)
+        monitor.refresh()
+        self.assertTrue(free.get("lock_is_free"),
+                        "во время опроса блокировка должна быть свободна")
+
+    def test_second_thread_never_waits_for_a_probe(self):
+        """Пока один поток опрашивает систему, второй не ждёт его."""
+        import threading
+        import time
+
+        from game_monitor import GameMonitor
+
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_lister():
+            started.set()
+            release.wait(timeout=5)
+            return [(1, "EliteDangerous64.exe")]
+
+        monitor = GameMonitor(cache_ttl=0.0, process_lister=slow_lister)
+
+        worker = threading.Thread(target=lambda: monitor.state, daemon=True)
+        worker.start()
+        self.assertTrue(started.wait(timeout=5), "опрос должен начаться")
+
+        began = time.monotonic()
+        state = monitor.state          # не должен ждать медленный опрос
+        elapsed = time.monotonic() - began
+        self.assertLess(elapsed, 1.0, f"поток ждал опрос {elapsed:.2f} с")
+        self.assertFalse(state.running)   # отдали последний (пустой) снимок
+
+        release.set()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(monitor.state.running, "после опроса снимок обновлён")
+
+    def test_probe_failure_does_not_leave_the_monitor_locked(self):
+        import threading
+
+        from game_monitor import GameMonitor
+
+        def boom():
+            raise RuntimeError("snapshot failed")
+
+        monitor = GameMonitor(cache_ttl=0.0, process_lister=boom)
+        state = monitor.state
+        self.assertIn("process list unavailable", state.error)
+        # Следующий вызов не должен упереться в незакрытый флаг опроса.
+        self.assertTrue(monitor._lock.acquire(blocking=False))
+        monitor._lock.release()
+        self.assertFalse(monitor._probing)
+        self.assertTrue(threading.active_count() >= 1)
+
+    def test_is_own_window(self):
+        from game_monitor import _is_own_window
+
+        self.assertTrue(_is_own_window(4242, 4242))
+        self.assertFalse(_is_own_window(4242, 777))
+        self.assertFalse(_is_own_window(0, 777))
+        # Не смогли определить свой PID — не блокируем перебор окон.
+        self.assertFalse(_is_own_window(4242, 0))
+        self.assertFalse(_is_own_window("мусор", 777))
+
+    def test_is_game_title(self):
+        from game_monitor import _is_game_title
+
+        self.assertTrue(_is_game_title("Elite - Dangerous"))
+        self.assertTrue(_is_game_title("Elite Dangerous (64)"))
+        self.assertFalse(_is_game_title("Colonial Helper 2.5.0"))
+        self.assertFalse(_is_game_title("ROUTE — маршрут"))
+        self.assertFalse(_is_game_title(""))
+        self.assertFalse(_is_game_title(None))
+
+    def test_overlay_hwnd_lookup_reuses_safe_helper(self):
+        """overlay больше не перебирает окна сам (там и был второй дедлок)."""
+        import inspect
+
+        import overlay
+
+        source = inspect.getsource(overlay._get_ed_hwnd)
+        self.assertIn("_win32_find_game_window", source)
+        # Проверяем именно вызовы: в докстринге старые имена упоминаются.
+        self.assertNotIn("EnumWindows(", source)
+        self.assertNotIn("GetWindowTextW(", source)
+        self.assertNotIn("GetWindowTextLengthW(", source)
+        # Вне Windows помощник честно возвращает None, а не падает.
+        self.assertIsNone(overlay._get_ed_hwnd())
+
+    def test_foreground_check_skips_own_window(self):
+        import inspect
+
+        import overlay
+
+        source = inspect.getsource(overlay._is_ed_foreground)
+        self.assertIn("_is_own_window", source,
+                      "проверка foreground обязана пропускать свои окна")
+
+
 class GameMonitorTests(unittest.TestCase):
     def test_running_game_is_detected_by_process(self):
         from game_monitor import GameMonitor

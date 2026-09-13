@@ -8,7 +8,13 @@ from pathlib import Path
 from collections import deque
 
 from ship_tracker import decode_status_flags
-from game_monitor import GameMonitor, GameState
+from game_monitor import (
+    GameMonitor,
+    GameState,
+    _is_own_window,
+    _win32_find_game_window,
+    _win32_window_pid,
+)
 from hotkeys import HotkeyManager
 
 
@@ -16,32 +22,22 @@ from hotkeys import HotkeyManager
 #  Win32 API helpers для привязки оверлея к окну игры
 # ============================================================
 def _get_ed_hwnd() -> Optional[int]:
-    """Найти HWND окна Elite Dangerous."""
+    """Найти HWND окна Elite Dangerous.
+
+    Здесь был свой `EnumWindows` + `GetWindowTextW` по всем видимым окнам —
+    включая главное окно Colonial Helper и окна оверлея. `GetWindowTextW`
+    для окна собственного процесса отправляет сообщение его потоку (главному
+    потоку Tk) и ждёт ответа; этот вызов идёт из фонового потока
+    `_update_loop` раз в секунду. Как только поток Tk оказывался занят (а он
+    раз в секунду берёт `GameMonitor._lock`), оба потока вставали навсегда —
+    приложение намертво зависало сразу после включения оверлея.
+
+    Теперь поиск один и он в `game_monitor`: свои окна пропускаются по PID
+    до чтения заголовка.
+    """
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        EnumWindows = user32.EnumWindows
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.POINTER(ctypes.c_int))
-        GetWindowTextW = user32.GetWindowTextW
-        GetWindowTextLengthW = user32.GetWindowTextLengthW
-        IsWindowVisible = user32.IsWindowVisible
-
-        ed_hwnd = []
-
-        def foreach_window(hwnd, _):
-            if IsWindowVisible(hwnd):
-                length = GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    GetWindowTextW(hwnd, buf, length + 1)
-                    title = buf.value
-                    if "Elite - Dangerous" in title or "Elite Dangerous" in title:
-                        ed_hwnd.append(hwnd)
-                        return False
-            return True
-
-        EnumWindows(EnumWindowsProc(foreach_window), 0)
-        return ed_hwnd[0] if ed_hwnd else None
+        hwnd, _title = _win32_find_game_window()
+        return hwnd
     except Exception:
         return None
 
@@ -59,6 +55,16 @@ def _is_ed_foreground() -> bool:
         ed = _get_ed_hwnd()
         if ed and fg == ed:
             return True
+        # Своё окно в фокусе — это не игра. Заголовок при этом не читаем:
+        # GetWindowTextW для окна собственного процесса ждёт ответ главного
+        # потока Tk (тот самый дедлок, что и в _get_ed_hwnd).
+        try:
+            import os
+
+            if _is_own_window(_win32_window_pid(user32, fg), os.getpid()):
+                return False
+        except Exception:
+            pass
         # Fallback: проверяем по заголовку foreground окна
         length = user32.GetWindowTextLengthW(fg)
         if length > 0:
