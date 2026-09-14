@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.6.0"
+VERSION = "2.7.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -159,6 +159,10 @@ class ColonialHelperApp:
         self._colony_selected_site_id = ""     # systemSiteId выбранного плана
         self._colony_autofilled_name = ""      # название, подставленное автозаполнением
         self._colony_announced_sites = set()   # о каких площадках уже сообщили
+        # Проект, отмеченный основным во вкладке «Колонизатор». Его потребность
+        # показывает блок CARRIER в оверлее (см. `_carrier_need_info`).
+        self.colony_primary_project: dict = {}
+        self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
@@ -1649,6 +1653,40 @@ class ColonialHelperApp:
         # так список всегда актуальный и не зависит от захардкоженных данных.
         self._colony_add_build_type_hints(build_types)
         self._colony_projects_cache = {p.get("buildId"): p for p in projects}
+        # Основной проект Raven — он же источник списка материалов в оверлее.
+        self._sync_colony_primary_project(primary_id)
+
+    def _sync_colony_primary_project(self, primary_id: str):
+        """Запомнить проект, который Raven считает основным.
+
+        Его `commodities` — актуальный список того, чего проекту ещё не хватает;
+        именно его показывает блок CARRIER.
+        """
+        primary_id = str(primary_id or "").strip()
+        cache = getattr(self, "_colony_projects_cache", {}) or {}
+        project = cache.get(primary_id) if primary_id else None
+        current_id = str(self.colony_primary_project.get("buildId") or "")
+        if isinstance(project, dict):
+            self.colony_primary_project = dict(project)
+            # Пишем в лог только на смене проекта: метод зовётся на каждом
+            # «Обновить список», иначе строка дублировалась бы без конца.
+            if str(project.get("buildId") or "") != current_id:
+                self.log(
+                    "Колонизатор: основной проект — "
+                    f"{project.get('buildName') or '?'} ({project.get('systemName') or '?'})",
+                    "info")
+            return
+        if primary_id:
+            # Сервер назвал проект, которого нет в списке командира, — не
+            # показываем устаревший список материалов.
+            self.colony_primary_project = {}
+            return
+        # Сервер основного проекта не назвал. Не стираем выбор, сделанный
+        # только что: ответ Raven приходит с задержкой, а потребность в блоке
+        # CARRIER нужна сразу. Сбрасываем лишь проект, которого у командира
+        # уже нет в списке.
+        if current_id and cache and current_id not in cache:
+            self.colony_primary_project = {}
 
     def _colony_add_build_type_hints(self, build_types):
         """Добавить подсказки типов постройки в combobox (без повторов)."""
@@ -1676,6 +1714,10 @@ class ColonialHelperApp:
             self.log("Укажите имя командира.", "warn")
             return
         self._set_colony_busy(True, "Назначаю основной проект…")
+        # Запоминаем сразу: блок CARRIER должен показать материалы этого
+        # проекта, не дожидаясь ответа сервера и обновления списка.
+        cached = (getattr(self, "_colony_projects_cache", {}) or {}).get(project["buildId"])
+        self.colony_primary_project = dict(cached or project)
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("set_primary", (cmdr, project["buildId"]),
                                f"Основной проект: {project['buildName']}"), daemon=True).start()
@@ -1686,6 +1728,7 @@ class ColonialHelperApp:
             self.log("Укажите имя командира.", "warn")
             return
         self._set_colony_busy(True, "Снимаю основной проект…")
+        self.colony_primary_project = {}
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
 
@@ -3037,9 +3080,11 @@ class ColonialHelperApp:
         data["route_deliveries_count"] = self._session_route_deliveries
         data["route_cargo_tons"] = self._session_route_cargo_tons
         data["construction_cargo_tons"] = self._session_construction_cargo_tons
-        # Авианосец: тоннаж из CarrierStats + товары поимённо + остаток до
-        # потребности стройплощадки, у которой мы сейчас стоим.
-        data["carrier"] = self.carrier.get_state_dict(self._carrier_need())
+        # Авианосец: тоннаж из CarrierStats + товары поимённо (сколько уже
+        # лежит на борту) + остаток до потребности основного проекта.
+        need, need_label, need_source = self._carrier_need_info()
+        data["carrier"] = self.carrier.get_state_dict(
+            need, need_label=need_label, need_source=need_source)
         data["last_delivery_system"] = self._last_delivery_system
         return data
 
@@ -3278,6 +3323,10 @@ class ColonialHelperApp:
                     self.log("Elite Dangerous не запущена — оверлей скрыт", "info")
             if hasattr(self, "layout_info_label"):
                 self._update_layout_info()
+            # Груз авианосца по товарам журнал не отдаёт: снимок из Raven
+            # Colonial перечитывается по таймеру, иначе «на борту» устаревает,
+            # пока груз возят другие командиры.
+            self._refresh_carrier_cargo(int(self.carrier.state.market_id or 0))
         except Exception:
             pass
         finally:
@@ -4889,20 +4938,56 @@ class ColonialHelperApp:
     #  Груз на авианосце (блок CARRIER в оверлее)
     # ============================================================
     def _carrier_need(self) -> dict:
-        """Потребность стройплощадки, к которой привязан авианосец.
+        """Потребность, которую показывает блок CARRIER (без подписи)."""
+        return self._carrier_need_info()[0]
 
-        Берём текущую площадку из трекера колонизации: именно туда commander
-        завозит груз со своего FC. Если площадки нет — потребность пуста, и
-        блок покажет только то, что лежит на борту.
+    def _carrier_need_info(self):
+        """Что нужно завезти и откуда мы это знаем.
+
+        Возвращает `(need, label, source)`.
+
+        Приоритет источников:
+
+        1. **Проект, отмеченный основным во вкладке «Колонизатор».** Его
+           `commodities` в Raven Colonial — это актуальный остаток потребности,
+           который видят все клиенты: и то, что завезли вы, и то, что завезли
+           другие командиры. Именно этот список просил показывать пользователь.
+        2. **Стройплощадка из журнала**, у которой стоит игрок
+           (`ColonisationConstructionDepot`). Работает без ключа RCC, но знает
+           только то, что написано в журнале.
+
+        Если ни того, ни другого нет — потребность пуста, и блок показывает
+        только груз на борту.
         """
+        project = self.colony_primary_project or {}
+        if isinstance(project, dict) and project:
+            commodities = project.get("commodities")
+            if isinstance(commodities, dict) and commodities:
+                need = {}
+                for raw, amount in commodities.items():
+                    try:
+                        value = int(float(amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        need[str(raw)] = value
+                if need:
+                    label = (f"{project.get('buildName') or 'проект'}"
+                             f" · {project.get('systemName') or ''}").strip(" ·")
+                    return need, label, "project"
+
         site = self.construction.site
         if site is None:
-            return {}
+            return {}, "", ""
         try:
             need = site.remaining_by_commodity()
         except Exception:
-            return {}
-        return {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
+            return {}, "", ""
+        need = {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
+        if not need:
+            return {}, "", ""
+        label = site.station_name or site.system_name or "стройплощадка"
+        return need, label, "site"
 
     def _feed_carrier(self, event: dict, live: bool = False):
         """Передать событие журнала трекеру авианосца.
@@ -4927,13 +5012,34 @@ class ColonialHelperApp:
             "CarrierNameChanged", "CarrierDecommission",
         ):
             self.overlay_manager.log(self.carrier.state.summary(), "info")
-        # Товары поимённо журнал не отдаёт: считаем дельты сами, а точную
-        # картину (груз всех клиентов) берём из Raven Colonial один раз на FC.
-        if self.raven_api.is_connected and market_id != self._carrier_remote_market:
-            self._carrier_remote_market = market_id
-            threading.Thread(
-                target=self._load_carrier_cargo, args=(market_id,), daemon=True
-            ).start()
+        # Товары поимённо журнал не отдаёт: дельты считаем сами, а точную
+        # картину (груз всех командиров) берём из Raven Colonial. Один раз на
+        # FC мало — другие командиры возят груз параллельно, поэтому снимок
+        # обновляется и по таймеру.
+        self._refresh_carrier_cargo(market_id)
+
+    #: Как часто перечитывать поимённый груз авианосца из Raven Colonial.
+    CARRIER_CARGO_REFRESH_SECONDS = 300.0
+
+    def _refresh_carrier_cargo(self, market_id: int, force: bool = False):
+        """Запросить поимённый груз FC из Raven Colonial (в фоновом потоке).
+
+        Без ключа RCC или без сети ничего не происходит: блок останется на
+        локальном учёте по дельтам журнала и честно это подпишет.
+        """
+        market_id = int(market_id or 0)
+        if market_id <= 0 or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        fresh = now - float(self._carrier_remote_at or 0.0)
+        same_carrier = market_id == self._carrier_remote_market
+        if same_carrier and not force and fresh < self.CARRIER_CARGO_REFRESH_SECONDS:
+            return
+        self._carrier_remote_market = market_id
+        self._carrier_remote_at = now
+        threading.Thread(
+            target=self._load_carrier_cargo, args=(market_id,), daemon=True
+        ).start()
 
     def _load_carrier_cargo(self, market_id: int):
         """Фоновый запрос: поимённый груз авианосца из Raven Colonial.

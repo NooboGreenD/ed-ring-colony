@@ -241,7 +241,8 @@ class CarrierRemainingTests(unittest.TestCase):
         self.assertEqual(data["need_total"], 500)
         rows = {row["key"]: row for row in data["commodities"]}
         self.assertEqual(rows["steel"], {
-            "key": "steel", "name": "Steel", "amount": 120, "need": 200, "remaining": 80,
+            "key": "steel", "name": "Steel", "amount": 120, "delivered": 120,
+            "need": 200, "remaining": 80,
         })
         self.assertEqual(rows["tritium"]["remaining"], 0)
         # Сначала то, чего больше всего не хватает.
@@ -450,6 +451,170 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
         with self._run_threads_inline():
             self.app._feed_carrier(DOCKED_FC, live=False)
         self.assertEqual(calls, [])
+
+    # -- основной проект из «Колонизатора» --------------------------------
+    def test_primary_project_need_reaches_overlay(self):
+        """Материалы основного проекта — источник списка в блоке CARRIER."""
+        self.app.colony_primary_project = {
+            "buildId": "abc-123",
+            "buildName": "Jameson Memorial",
+            "systemName": "Kuma",
+            "commodities": {"steel": 4000, "titanium": 900, "copper": 0},
+        }
+        self.app.carrier.handle(CARRIER_STATS)
+        self.app.carrier.handle(DOCKED_FC)
+        self.app.carrier.handle(TRANSFER_TO_CARRIER)
+
+        need, label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "project")
+        self.assertEqual(need, {"steel": 4000, "titanium": 900})
+        self.assertIn("Jameson Memorial", label)
+        self.assertIn("Kuma", label)
+
+        data = self.app._get_overlay_data()["carrier"]
+        rows = {row["key"]: row for row in data["commodities"]}
+        self.assertEqual(rows["steel"]["need"], 4000)
+        self.assertEqual(rows["steel"]["amount"], 120)
+        self.assertEqual(rows["steel"]["remaining"], 3880)
+        # Нулевая потребность в список не попадает.
+        self.assertNotIn("copper", rows)
+        self.assertEqual(data["need_label"], label)
+        self.assertEqual(data["need_source"], "project")
+        self.assertEqual(data["need_total"], 4900)
+
+    def test_primary_project_wins_over_construction_site(self):
+        """Проект из «Колонизатора» важнее площадки из журнала."""
+        self._dock_at_site()
+        self.app.colony_primary_project = {
+            "buildName": "Primary port", "systemName": "Sol",
+            "commodities": {"gold": 50},
+        }
+        need, label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "project")
+        self.assertEqual(need, {"gold": 50})
+        self.assertIn("Primary port", label)
+
+    def test_site_is_used_when_no_primary_project(self):
+        self._dock_at_site()
+        need, label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "site")
+        self.assertEqual(need["steel"], 5960)
+        self.assertTrue(label)
+
+    def test_project_without_commodities_falls_back_to_site(self):
+        self._dock_at_site()
+        self.app.colony_primary_project = {"buildName": "Пусто", "commodities": {}}
+        need, _label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "site")
+        self.assertEqual(need["steel"], 5960)
+
+    def test_garbage_project_does_not_break_overlay(self):
+        for bad in ({"commodities": "не карта"}, {"commodities": {"steel": "много"}},
+                    {"commodities": None}):
+            self.app.colony_primary_project = bad
+            _need, _label, source = self.app._carrier_need_info()
+            self.assertNotEqual(source, "project", bad)
+
+    def test_set_primary_remembers_project_for_overlay(self):
+        self.app._colony_projects_cache = {
+            "abc-123": {"buildId": "abc-123", "buildName": "Jameson Memorial",
+                        "systemName": "Kuma", "buildType": "Coriolis",
+                        "commodities": {"steel": 100}},
+        }
+        self.app.colony_tree = self.mock.MagicMock()
+        self.app.colony_tree.selection.return_value = ("item",)
+        # `item(id, "values")` возвращает сам кортеж значений, а не словарь.
+        self.app.colony_tree.item.return_value = (
+            "", "Kuma", "Jameson Memorial", "Coriolis", "100 / 200", "abc-123")
+        self.app.colony_cmdr_var = self.mock.MagicMock()
+        self.app.colony_cmdr_var.get.return_value = "CMDR Test"
+        self.app.raven_api.set_primary = lambda cmdr, build_id: {"ok": True}
+        with self._run_threads_inline():
+            self.app._on_colony_set_primary()
+        self.assertEqual(self.app.colony_primary_project["buildId"], "abc-123")
+        self.assertEqual(self.app._carrier_need_info()[0], {"steel": 100})
+
+    def test_clear_primary_drops_the_list(self):
+        self.app.colony_primary_project = {"buildId": "abc", "commodities": {"steel": 10}}
+        self.app.colony_cmdr_var = self.mock.MagicMock()
+        self.app.colony_cmdr_var.get.return_value = "CMDR Test"
+        self.app.raven_api.clear_primary = lambda cmdr: {"ok": True}
+        with self._run_threads_inline():
+            self.app._on_colony_clear_primary()
+        self.assertEqual(self.app.colony_primary_project, {})
+
+    # -- «на борту» против «завезено мной» --------------------------------
+    def test_on_board_and_delivered_are_separate(self):
+        """Груз других командиров виден в «на борту», но не в «завезено мной»."""
+        self.app.carrier.handle(DOCKED_FC)
+        self.app.carrier.handle(TRANSFER_TO_CARRIER)      # +120 steel — наше
+        state = self.app.carrier.state
+        self.assertEqual(state.delivered["steel"], 120)
+        # Raven отдаёт полный трюм: 250 steel (из них наши 120) и чужой gold.
+        self.app.carrier.merge_remote({"steel": 250, "gold": 40})
+        self.assertEqual(state.commodities, {"steel": 250, "gold": 40})
+        self.assertEqual(state.delivered["steel"], 120)
+
+        data = self.app.carrier.get_state_dict({"steel": 300})
+        rows = {row["key"]: row for row in data["commodities"]}
+        self.assertEqual(rows["steel"]["amount"], 250)
+        self.assertEqual(rows["steel"]["delivered"], 120)
+        self.assertEqual(rows["steel"]["remaining"], 50)
+        self.assertEqual(rows["gold"]["amount"], 40)
+        self.assertEqual(rows["gold"]["delivered"], 0)
+        # Та же пересылка везла 120 steel + 300 tritium — считаем обе.
+        self.assertEqual(data["delivered_total"], 420)
+        self.assertTrue(data["remote_seen"])
+
+    def test_new_deltas_count_on_top_of_remote_snapshot(self):
+        self.app.carrier.handle(DOCKED_FC)
+        self.app.carrier.merge_remote({"steel": 200})
+        self.app.carrier.handle(TRANSFER_TO_CARRIER)      # +120
+        self.assertEqual(self.app.carrier.state.commodities["steel"], 320)
+        self.assertEqual(self.app.carrier.state.delivered["steel"], 120)
+        # Снимок не испорчен локальной дельтой.
+        self.assertEqual(self.app.carrier.state.remote_cargo["steel"], 200)
+        self.assertFalse(self.app.carrier.state.remote_seen)
+
+    def test_cargo_refresh_is_throttled_but_repeats(self):
+        """Снимок Raven перечитывается по таймеру, но не на каждый тик."""
+        calls = []
+        self.app.raven_api.get_fc_cargo = lambda market_id: (
+            calls.append(market_id) or {"ok": True, "data": {"steel": 10}})
+        with self._run_threads_inline():
+            self.app._refresh_carrier_cargo(3700005632)
+            self.app._refresh_carrier_cargo(3700005632)
+            self.app._refresh_carrier_cargo(3700005632)
+        self.assertEqual(len(calls), 1, calls)
+        # Другой авианосец — сразу новый запрос.
+        with self._run_threads_inline():
+            self.app._refresh_carrier_cargo(3700005633)
+        self.assertEqual(calls, [3700005632, 3700005633])
+        # Истёк интервал — перечитываем тот же.
+        self.app._carrier_remote_at -= self.app.CARRIER_CARGO_REFRESH_SECONDS + 1
+        with self._run_threads_inline():
+            self.app._refresh_carrier_cargo(3700005633)
+        self.assertEqual(len(calls), 3)
+
+    def test_no_refresh_without_key(self):
+        calls = []
+        self.app.raven_api.api_key = ""
+        self.app.raven_api.get_fc_cargo = lambda market_id: calls.append(market_id)
+        with self._run_threads_inline():
+            self.app._refresh_carrier_cargo(3700005632, force=True)
+        self.assertEqual(calls, [])
+
+    def test_switching_carrier_drops_old_cargo(self):
+        self.app.carrier.handle(DOCKED_FC)
+        self.app.carrier.merge_remote({"steel": 250})
+        self.app.carrier.handle({
+            "event": "Docked", "StationName": "Чужой FC", "StationType": "FleetCarrier",
+            "MarketID": 3700009999, "StarSystem": "Kuma"})
+        state = self.app.carrier.state
+        self.assertEqual(state.commodities, {})
+        self.assertEqual(state.delivered, {})
+        self.assertEqual(state.remote_cargo, {})
+        self.assertFalse(state.remote_seen)
 
     def test_raven_failure_keeps_local_accounting(self):
         self.app.carrier.handle(DOCKED_FC)

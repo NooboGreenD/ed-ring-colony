@@ -384,6 +384,108 @@ class CarrierOverlayRenderTests(unittest.TestCase):
         self.assertEqual(self._text(overlay.name_label), "Fleet Carrier")
         self.assertIn("учтено по журналу", self._text(overlay.total_label))
 
+    def _labels(self):
+        """Перехватить все создаваемые tk.Label вместе с их текстом."""
+        import overlay as _ov
+
+        created = []
+
+        def factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Label")
+            widget.text_arg = str(kwargs.get("text", ""))
+            created.append(widget)
+            return widget
+
+        patcher = mock.patch.object(_ov.tk, "Label", side_effect=factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return created
+
+    def test_on_board_column_and_project_label(self):
+        """Главное число — «на борту»; видно, чей это список материалов."""
+        created = self._labels()
+        overlay = self._overlay()
+        overlay.update_carrier({
+            "name": "Spirula", "stats_seen": True, "at_carrier": True,
+            "stored": 250, "cargo_capacity": 17819, "free": 17569, "fill_percent": 1,
+            "need_total": 4900, "need_label": "Jameson Memorial (Kuma)",
+            "need_source": "project", "delivered_total": 120, "remote_seen": True,
+            "commodities": [
+                {"key": "steel", "name": "Steel", "amount": 250, "delivered": 120,
+                 "need": 4000, "remaining": 3750},
+                {"key": "titanium", "name": "Titanium", "amount": 0, "delivered": 0,
+                 "need": 900, "remaining": 900},
+            ],
+        })
+        project = self._text(overlay.project_label)
+        self.assertIn("Проект (основной)", project)
+        self.assertIn("Jameson Memorial", project)
+        self.assertIn("нужно 4900 t", project)
+
+        summary = self._text(overlay.summary_label)
+        self.assertIn("На борту 250 / 4900 t", summary)
+        self.assertIn("осталось 4650 t", summary)
+        self.assertIn("Raven Colonial", summary)
+        self.assertIn("завезено вами 120 t", summary)
+
+        # Строки: «на борту» с долей командира в скобках.
+        texts = [w.text_arg for w in created]
+        self.assertIn("250 (120)", texts)
+        self.assertIn("Steel", texts)
+        self.assertIn("Titanium", texts)
+        self.assertIn("-3750", texts)
+        self.assertIn("на борту", texts)      # заголовок колонки
+
+    def test_site_need_is_labelled_as_site(self):
+        overlay = self._overlay()
+        overlay.update_carrier({
+            "name": "Spirula", "stats_seen": True,
+            "need_total": 100, "need_label": "Planetary Construction Site: 1",
+            "need_source": "site",
+            "commodities": [{"key": "steel", "name": "Steel", "amount": 100,
+                             "delivered": 100, "need": 100, "remaining": 0}],
+        })
+        self.assertIn("Стройплощадка", self._text(overlay.project_label))
+        self.assertNotIn("Проект (основной)", self._text(overlay.project_label))
+
+    def test_closed_need_shows_ok(self):
+        overlay = self._overlay()
+        overlay.update_carrier({
+            "name": "Spirula", "stats_seen": True,
+            "need_total": 100, "need_label": "Jameson Memorial", "need_source": "project",
+            "commodities": [{"key": "steel", "name": "Steel", "amount": 100,
+                             "delivered": 100, "need": 100, "remaining": 0}],
+        })
+        summary = self._text(overlay.summary_label)
+        self.assertIn("осталось 0 t", summary)
+
+    def test_no_project_selected_hints_where_to_go(self):
+        overlay = self._overlay()
+        overlay.update_carrier({
+            "name": "Spirula", "stats_seen": True,
+            "stored": 440, "cargo_capacity": 17819, "free": 17379,
+            "commodities": [{"key": "steel", "name": "Steel", "amount": 120,
+                             "delivered": 120, "need": 0, "remaining": 0}],
+        })
+        project = self._text(overlay.project_label)
+        self.assertIn("Проект не выбран", project)
+        self.assertIn("Колонизатор", project)
+
+    def test_local_accounting_is_labelled_as_yours_only(self):
+        """Без снимка Raven цифра — только ваши перевозки, и это подписано."""
+        overlay = self._overlay()
+        overlay.update_carrier({
+            "name": "Spirula", "stats_seen": False, "tracked_total": 120,
+            "delivered_total": 120, "remote_seen": False,
+            "need_total": 500, "need_label": "Jameson Memorial", "need_source": "project",
+            "commodities": [{"key": "steel", "name": "Steel", "amount": 120,
+                             "delivered": 120, "need": 500, "remaining": 380}],
+        })
+        summary = self._text(overlay.summary_label)
+        self.assertIn("по журналу", summary)
+        self.assertIn("только ваши перевозки", summary)
+        self.assertNotIn("Raven Colonial", summary)
+
     def test_empty_state_does_not_crash(self):
         overlay = self._overlay()
         overlay.update_carrier({})

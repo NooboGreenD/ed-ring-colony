@@ -1743,7 +1743,26 @@ class CarrierOverlay(OverlayWindow):
                                      justify=tk.LEFT)
         self.detail_label.pack(fill=tk.X, pady=(0, 2))
 
+        # Чей список материалов показан: проект, отмеченный основным во
+        # вкладке «Колонизатор», или стройплощадка из журнала.
+        self.project_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=300)
+        self.project_label.pack(fill=tk.X, pady=(2, 0))
+
         _make_separator(self.content).pack(fill=tk.X, pady=2)
+
+        # Заголовки колонок: без них «120/200» непонятно что означает.
+        columns = tk.Frame(self.content, bg=COLOR_PANEL)
+        columns.pack(fill=tk.X, pady=(0, 1))
+        tk.Label(columns, text="Товар", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
+                 bg=COLOR_PANEL, anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(columns, text="ост.", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
+                 bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
+        tk.Label(columns, text="нужно", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
+                 bg=COLOR_PANEL, anchor=tk.E, width=7).pack(side=tk.RIGHT)
+        tk.Label(columns, text="на борту", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
+                 bg=COLOR_PANEL, anchor=tk.E, width=9).pack(side=tk.RIGHT)
 
         self.canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=150)
         self.canvas.pack(fill=tk.BOTH, expand=True)
@@ -1819,31 +1838,55 @@ class CarrierOverlay(OverlayWindow):
             for row in rows:
                 line = tk.Frame(self.inner, bg=COLOR_PANEL)
                 line.pack(fill=tk.X, pady=1)
-                label = str(row.get("name") or row.get("key") or "")[:20]
-                amount = int(row.get("amount") or 0)
+                label = str(row.get("name") or row.get("key") or "")[:18]
+                amount = int(row.get("amount") or 0)      # сколько лежит на борту
+                delivered = int(row.get("delivered") or 0)  # сколько завезли вы
                 need = int(row.get("need") or 0)
                 remaining = int(row.get("remaining") or 0)
+
+                # «На борту» — главное число: оно включает и груз других
+                # командиров. Если часть завезли вы, подписываем это.
+                on_board = f"{amount}"
+                if delivered and delivered < amount:
+                    on_board = f"{amount} ({delivered})"
                 tk.Label(line, text=label, font=(ff, fs - 1), fg=COLOR_TEXT,
-                         bg=COLOR_PANEL, anchor=tk.W, width=20).pack(side=tk.LEFT)
-                if need > 0:
-                    value = f"{amount}/{need}"
-                    color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
-                else:
-                    value = f"{amount}"
-                    color = COLOR_TEXT
-                tk.Label(line, text=value, font=(ff, fs - 1, "bold"), fg=color,
-                         bg=COLOR_PANEL, anchor=tk.E, width=11).pack(side=tk.RIGHT)
+                         bg=COLOR_PANEL, anchor=tk.W, width=18).pack(side=tk.LEFT)
                 if need > 0:
                     tail = f"-{remaining}" if remaining > 0 else "OK"
-                    tk.Label(line, text=tail, font=(ff, fs - 1),
-                             fg=COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT,
-                             bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
+                    tail_color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
+                    need_color = COLOR_TEXT_MUTED
+                    board_color = COLOR_GREEN_TEXT if remaining == 0 else COLOR_ACCENT
+                else:
+                    tail, tail_color = "", COLOR_TEXT_MUTED
+                    need_color = COLOR_TEXT_MUTED
+                    board_color = COLOR_TEXT
+                tk.Label(line, text=tail, font=(ff, fs - 1, "bold"), fg=tail_color,
+                         bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
+                tk.Label(line, text=str(need) if need else "—", font=(ff, fs - 1),
+                         fg=need_color, bg=COLOR_PANEL, anchor=tk.E,
+                         width=7).pack(side=tk.RIGHT)
+                tk.Label(line, text=on_board, font=(ff, fs - 1, "bold"), fg=board_color,
+                         bg=COLOR_PANEL, anchor=tk.E, width=9).pack(side=tk.RIGHT)
 
+        # Чей список материалов показан.
+        need_label = str(data.get("need_label") or "").strip()
+        need_source = str(data.get("need_source") or "").strip()
         need_total = int(data.get("need_total") or 0)
+        if need_label and need_total > 0:
+            kind = "Проект (основной)" if need_source == "project" else "Стройплощадка"
+            self.project_label.config(text=f"{kind}: {need_label}\nнужно {need_total} t")
+        elif need_label:
+            self.project_label.config(text=f"Проект: {need_label} · потребность закрыта")
+        else:
+            self.project_label.config(
+                text="Проект не выбран — отметьте основной во вкладке «Колонизатор»")
+
         tracked_total = int(data.get("tracked_total") or 0)
+        delivered_total = int(data.get("delivered_total") or 0)
         if need_total > 0:
             left = sum(int(r.get("remaining") or 0) for r in rows)
-            summary = f"Завезено {tracked_total} / {need_total} t · осталось {left} t"
+            have = sum(int(r.get("amount") or 0) for r in rows)
+            summary = f"На борту {have} / {need_total} t · осталось {left} t"
             color = COLOR_GREEN_TEXT if left == 0 else COLOR_CYAN
         elif stats_seen:
             summary = f"На борту {stored} t · свободно {int(data.get('free') or 0)} t"
@@ -1851,10 +1894,20 @@ class CarrierOverlay(OverlayWindow):
         else:
             summary = ""
             color = COLOR_CYAN
-        self.summary_label.config(text=summary, fg=color)
 
+        # Откуда цифры по товарам: снимок Raven Colonial видит груз всех
+        # командиров, локальный учёт — только ваши переводы из журнала.
         if bool(data.get("remote_seen")):
-            self.summary_label.config(text=(summary + "  ·  Raven") if summary else "Raven Colonial")
+            source = "груз: Raven Colonial"
+        elif tracked_total or delivered_total:
+            source = "груз: по журналу (только ваши перевозки)"
+        else:
+            source = ""
+        if delivered_total and need_total:
+            source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
+        if source:
+            summary = f"{summary}\n{source}" if summary else source
+        self.summary_label.config(text=summary, fg=color)
 
         self.inner.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))

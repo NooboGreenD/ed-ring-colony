@@ -40,6 +40,7 @@ Raven Colonial             ``GET /api/fc/{marketId}/cargo`` — товары п�
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from event_dispatch import (
@@ -105,8 +106,17 @@ class CarrierState:
         self.free: int = 0
         self.crew_space: int = 0
         self.fuel_level: float = 0.0
-        # Товары поимённо: нормализованное имя -> тонны
+        # Товары поимённо: нормализованное имя -> тонны.
+        # Это оценка того, что СЕЙЧАС лежит на борту: снимок из Raven Colonial
+        # плюс дельты журнала после него (см. `delivered`).
         self.commodities: Dict[str, int] = {}
+        # Сколько завез лично этот командир (дельты журнала с момента разбора).
+        # Отдельно от `commodities`: на борту может лежать груз других
+        # командиров, и «завезено мной» != «есть на авианосце».
+        self.delivered: Dict[str, int] = {}
+        # Последний снимок груза из Raven Colonial (товар -> тонны).
+        self.remote_cargo: Dict[str, int] = {}
+        self.remote_at: float = 0.0
         # Как товар подписать в оверлее (локализованное имя из журнала).
         self.names: Dict[str, str] = {}
         self.last_event: str = ""
@@ -176,8 +186,15 @@ class CarrierState:
             result[key] = max(0, want - have)
         return result
 
-    def get_state_dict(self, need: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
-        """Словарь для оверлея и для хеша данных (см. `_hash_data`)."""
+    def get_state_dict(self, need: Optional[Mapping[str, int]] = None,
+                       need_label: str = "", need_source: str = "") -> Dict[str, Any]:
+        """Словарь для оверлея и для хеша данных (см. `_hash_data`).
+
+        `need` — потребность проекта/площадки, `need_label` — как её подписать
+        в блоке (название проекта), `need_source` — откуда она взялась
+        (`project` / `site` / `remote`), чтобы в оверлее было видно, почему
+        список именно такой.
+        """
         need = dict(need or {})
         rows = []
         for key in sorted(set(self.commodities) | {normalize_commodity(k) for k in need if k}):
@@ -188,12 +205,16 @@ class CarrierState:
                 if normalize_commodity(raw) == key:
                     want = _as_int(amount)
                     break
+            have = int(self.commodities.get(key, 0) or 0)
             rows.append({
                 "key": key,
                 "name": self.names.get(key) or key,
-                "amount": int(self.commodities.get(key, 0) or 0),
+                # Сколько лежит на борту (снимок Raven + дельты журнала).
+                "amount": have,
+                # Сколько завёз лично этот командир.
+                "delivered": int(self.delivered.get(key, 0) or 0),
                 "need": want,
-                "remaining": max(0, want - int(self.commodities.get(key, 0) or 0)),
+                "remaining": max(0, want - have),
             })
         rows.sort(key=lambda row: (-row["remaining"], -row["need"], row["name"]))
         return {
@@ -214,8 +235,13 @@ class CarrierState:
             "fuel_level": float(self.fuel_level or 0.0),
             "fill_percent": int(self.fill_percent),
             "tracked_total": int(self.tracked_total),
+            "delivered_total": sum(int(v) for v in self.delivered.values() if v > 0),
+            "remote_age": (int(round(max(0.0, time.time() - self.remote_at)))
+                           if self.remote_at else 0),
             "commodities": rows,
             "need_total": sum(max(0, _as_int(v)) for v in need.values()),
+            "need_label": str(need_label or ""),
+            "need_source": str(need_source or ""),
         }
 
 
@@ -332,6 +358,8 @@ class CarrierTracker:
         if not market_id:
             return False
         state = self.state
+        previous_market = state.market_id
+        was_at_carrier = state.at_carrier
         state.market_id = market_id
         state.carrier_id = state.carrier_id or market_id
         # Имя из `CarrierStats`/`CarrierNameChanged` достовернее: `StationName`
@@ -342,11 +370,17 @@ class CarrierTracker:
             state.system_name = str(event["StarSystem"])
         if event.get("SystemAddress"):
             state.system_address = _as_int(event["SystemAddress"])
-        changed = not state.at_carrier or state.market_id != market_id
         state.at_carrier = True
         # Стоим у чужого авианосца — наши цифры по товарам к нему не относятся.
-        if changed and state.carrier_id and state.carrier_id != market_id:
+        # `changed` считали по `market_id` ПОСЛЕ перезаписи и всегда получали
+        # False: при перелёте с одного FC на другой цифры оставались от прежнего.
+        if state.carrier_id != market_id and (not was_at_carrier
+                                              or previous_market != market_id):
+            # Чужой авианосец — ни наш груз, ни наш снимок к нему не относятся.
             state.commodities.clear()
+            state.delivered.clear()
+            state.remote_cargo.clear()
+            state.remote_at = 0.0
             state.remote_seen = False
         return True
 
@@ -412,14 +446,28 @@ class CarrierTracker:
 
     # -- служебное ----------------------------------------------------------
     def _add_commodity(self, key: str, delta: int, label=None) -> None:
-        """Прибавить дельту к товару (ниже нуля не опускаемся)."""
+        """Прибавить дельту к товару (ниже нуля не опускаемся).
+
+        Дельта применяется к оценке груза на борту и отдельно учитывается как
+        «завезено этим командиром». Снимок Raven при этом не портится: он
+        остаётся в `remote_cargo`, и следующая дельта считается уже от него.
+        """
+        delta = int(delta)
         current = int(self.state.commodities.get(key, 0) or 0)
-        self.state.commodities[key] = max(0, current + int(delta))
+        self.state.commodities[key] = max(0, current + delta)
         if not self.state.commodities[key]:
             self.state.commodities.pop(key, None)
+        if delta > 0:
+            self.state.delivered[key] = int(self.state.delivered.get(key, 0) or 0) + delta
+        elif delta < 0:
+            left = int(self.state.delivered.get(key, 0) or 0) + delta
+            if left > 0:
+                self.state.delivered[key] = left
+            else:
+                self.state.delivered.pop(key, None)
         if label and key not in self.state.names:
             self.state.names[key] = str(label)
-        # Появилась локальная дельта — цифры Raven перестали быть полными.
+        # Цифры Raven перестали быть «чистым снимком»: после него были дельты.
         self.state.remote_seen = False
 
     def merge_remote(self, cargo: Mapping[str, Any], capacity: Optional[int] = None,
@@ -442,7 +490,12 @@ class CarrierTracker:
                 merged[key] = value
         if not merged:
             return False
-        self.state.commodities = merged
+        self.state.remote_cargo = dict(merged)
+        self.state.remote_at = time.time()
+        # Локальный учёт по дельтам заменяется снимком целиком: Raven видел
+        # груз всех командиров, а не только наши переводы. «Завезено мной»
+        # при этом сохраняем — это другая величина.
+        self.state.commodities = dict(merged)
         self.state.remote_seen = True
         if capacity:
             self.state.capacity = _as_int(capacity) or self.state.capacity
@@ -450,5 +503,19 @@ class CarrierTracker:
             self.state.name = str(name)
         return True
 
-    def get_state_dict(self, need: Optional[Mapping[str, int]] = None) -> Dict[str, Any]:
-        return self.state.get_state_dict(need)
+    @property
+    def delivered_total(self) -> int:
+        """Сколько тонн завёз этот командир (по дельтам журнала)."""
+        return sum(int(v) for v in self.state.delivered.values() if v > 0)
+
+    @property
+    def remote_age(self) -> float:
+        """Сколько секунд назад получен снимок груза из Raven (0 — не получен)."""
+        if not self.state.remote_at:
+            return 0.0
+        return max(0.0, time.time() - float(self.state.remote_at))
+
+    def get_state_dict(self, need: Optional[Mapping[str, int]] = None,
+                       need_label: str = "", need_source: str = "") -> Dict[str, Any]:
+        return self.state.get_state_dict(need, need_label=need_label,
+                                         need_source=need_source)
