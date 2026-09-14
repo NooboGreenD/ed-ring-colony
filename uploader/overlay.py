@@ -207,15 +207,18 @@ BLOCK_LABELS = {
 }
 
 #: Размеры по умолчанию (используются и «Сбросить позиции», и пресетами).
+#: Ширина и высота обязаны совпадать с <ключ>_width/_height в DEFAULT_SETTINGS:
+#: иначе «Сбросить позиции» и пресет M возвращают блоку другой размер, чем у
+#: свежей установки. Блоки разложены в четыре колонки без перекрытий.
 DEFAULT_BLOCK_POSITIONS = {
     "route": (50, 50, 280, 160),
     "status": (50, 220, 280, 220),
     "ship": (50, 450, 360, 420),
-    "cargo": (400, 450, 300, 340),
-    "session": (400, 50, 320, 300),
-    "events": (730, 50, 320, 260),
-    "exobio": (1060, 50, 360, 470),
-    "carrier": (1060, 430, 330, 300),
+    "cargo": (430, 450, 300, 340),
+    "session": (430, 50, 320, 300),
+    "events": (770, 50, 320, 260),
+    "exobio": (1120, 50, 360, 620),
+    "carrier": (770, 330, 330, 300),
 }
 
 #: Пресеты размера: множитель к стандартному размеру блока.
@@ -3564,7 +3567,7 @@ class OverlayManager:
 #: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
 #: поэтому без миграции прежний пользователь навсегда остался бы на старом
 #: значении и не увидел бы исправления.
-SETTINGS_SCHEMA_VERSION = 2
+SETTINGS_SCHEMA_VERSION = 3
 
 #: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
 #: Ключ получает новый дефолт только если пользователь его не менял, то есть
@@ -3573,6 +3576,24 @@ SETTINGS_SCHEMA_VERSION = 2
 SETTINGS_DEFAULT_CHANGES = {
     # 2.8.3: раздел «Поиск планет» обрезался при высоте 470 px
     2: {"exobio_height": 470},
+}
+
+#: Миграции позиций: версия схемы -> {блок: (прежний x, прежний y)}.
+#: Позиция переносится на новую, только если блок не двигали вовсе, то есть
+#: обе координаты всё ещё равны прежним значениям по умолчанию. Блок, который
+#: пользователь поставил сам, трогать нельзя — даже если он стоит «неудачно».
+SETTINGS_POSITION_CHANGES = {
+    # 2.8.5: раскладка приведена к сетке без перекрытий. Прежняя уезжала
+    # CARGO за нижний край экрана (y=1000 при высоте 340), а EXOBIO после
+    # подъёма до 620 px наезжал на CARRIER.
+    3: {
+        "ship": (50, 440),
+        "cargo": (50, 1000),
+        "session": (400, 50),
+        "events": (730, 50),
+        "exobio": (1060, 50),
+        "carrier": (1060, 430),
+    },
 }
 
 
@@ -3593,6 +3614,12 @@ def migrate_overlay_settings(merged: dict, stored: dict) -> dict:
         for key, old_default in SETTINGS_DEFAULT_CHANGES.get(version, {}).items():
             if stored.get(key) == old_default:
                 merged[key] = DEFAULT_SETTINGS[key]
+        for block, (old_x, old_y) in SETTINGS_POSITION_CHANGES.get(version, {}).items():
+            # Только если блок не двигали: обе координаты равны прежним
+            # дефолтным. Сдвинутый вручную блок оставляем как есть.
+            if (stored.get(f"{block}_x"), stored.get(f"{block}_y")) == (old_x, old_y):
+                merged[f"{block}_x"] = DEFAULT_SETTINGS[f"{block}_x"]
+                merged[f"{block}_y"] = DEFAULT_SETTINGS[f"{block}_y"]
     merged["settings_schema"] = SETTINGS_SCHEMA_VERSION
     return merged
 
@@ -3621,46 +3648,21 @@ DEFAULT_SETTINGS = {
     "show_legal": True,
     "show_destination": True,
     "show_modules": True,
-    "route_x": 50,
-    "route_y": 50,
-    "route_width": 280,
-    "route_height": 160,
+    # Позиции и размеры блоков здесь не заданы: их подставляет цикл сразу
+    # после словаря из DEFAULT_BLOCK_POSITIONS. Раньше значения дублировались
+    # и разошлись — EXOBIO наезжал на CARRIER, а CARGO уходил за нижний край.
     "route_locked": False,
     "route_anchor": "custom",
-    "status_x": 50,
-    "status_y": 220,
-    "status_width": 280,
-    "status_height": 220,
     "status_locked": False,
     "status_anchor": "custom",
-    "ship_x": 50,
-    "ship_y": 440,
-    "ship_width": 360,
-    "ship_height": 420,
     "ship_locked": False,
     "ship_anchor": "custom",
-    "cargo_x": 50,
-    "cargo_y": 1000,
-    "cargo_width": 300,
-    "cargo_height": 340,
     "cargo_locked": False,
     "cargo_anchor": "custom",
-    "session_x": 400,
-    "session_y": 50,
-    "session_width": 320,
-    "session_height": 300,
     "session_locked": False,
     "session_anchor": "custom",
-    "events_x": 730,
-    "events_y": 50,
-    "events_width": 320,
-    "events_height": 260,
     "events_locked": False,
     "events_anchor": "custom",
-    "exobio_x": 1060,
-    "exobio_y": 50,
-    "exobio_width": 360,
-    "exobio_height": 620,
     "exobio_locked": False,
     "exobio_anchor": "custom",
     # Фильтры блока EXOBIO (вкладка «Экзобиология»).
@@ -3672,10 +3674,6 @@ DEFAULT_SETTINGS = {
     "exobio_show_planet_search": True,
     # Сколько найденных планет показывать.
     "exobio_planet_limit": 6,
-    "carrier_x": 1060,
-    "carrier_y": 430,
-    "carrier_width": 330,
-    "carrier_height": 300,
     "carrier_locked": False,
     "carrier_anchor": "custom",
     "attach_to_game": True,
@@ -3695,6 +3693,17 @@ DEFAULT_SETTINGS = {
     "profiles": {},
     "active_profile": "",
 }
+
+# Позиции и размеры блоков берутся из DEFAULT_BLOCK_POSITIONS — единственного
+# источника раскладки. Раньше они дублировались literals-ами выше и разошлись:
+# окна читают именно <ключ>_x/_y/_width/_height, поэтому при первом запуске
+# EXOBIO наезжал на CARRIER, а CARGO уходил за нижний край экрана.
+for _key, (_x, _y, _w, _h) in DEFAULT_BLOCK_POSITIONS.items():
+    DEFAULT_SETTINGS[f"{_key}_x"] = _x
+    DEFAULT_SETTINGS[f"{_key}_y"] = _y
+    DEFAULT_SETTINGS[f"{_key}_width"] = _w
+    DEFAULT_SETTINGS[f"{_key}_height"] = _h
+del _key, _x, _y, _w, _h
 
 
 def load_overlay_settings(config_path: Path) -> dict:
