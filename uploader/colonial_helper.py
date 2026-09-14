@@ -93,6 +93,18 @@ from colonisation import (
     build_project_draft,
     format_commodities,
 )
+from system_map import (
+    BODY_LABELS,
+    KIND_MOON,
+    KIND_STAR,
+    STATION_CARRIER,
+    STATION_LABELS,
+    STATION_SITE,
+    MapStation,
+    SystemMapBuilder,
+    layout as map_layout,
+    map_summary,
+)
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
@@ -102,7 +114,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.9.3"
+VERSION = "2.10.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -156,6 +168,17 @@ class ColonialHelperApp:
         # Стройплощадки колонизации: из них вкладка «Колонизатор» заполняет
         # форму создания проекта (см. colonisation.py).
         self.construction = ConstructionSiteTracker()
+        # Карта системы: тела, станции и стройплощадки с процентом завезённого
+        # груза. Собирается из тех же событий журнала, что идут в остальные
+        # трекеры, плюс данные Raven Colonial (вкладка «Карта системы»).
+        self.system_map = SystemMapBuilder()
+        self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
+        self._map_selected = ""               # выбранный объект (имя тела/buildId)
+        self._map_redraw_job = None           # id отложенной перерисовки
+        self._map_items: list = []            # что нарисовано (для клика мышью)
+        self._map_last_snapshot = None        # снимок последней отрисовки
+        self._map_raven_fetched: dict = {}    # система -> время запроса Raven
+        self._map_raven_inflight = False      # запрос к Raven уже летит
         self._colony_draft_site = None        # площадка, по которой заполнена форма
         self._colony_selected_site_id = ""     # systemSiteId выбранного плана
         self._colony_autofilled_name = ""      # название, подставленное автозаполнением
@@ -486,6 +509,10 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_colony, text=" Колонизатор ")
         self._build_tab_colony()
 
+        self.tab_map = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_map, text=" Карта системы ")
+        self._build_tab_map()
+
         self.tab_overlay = tb.Frame(self.notebook)
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
         self._build_tab_overlay()
@@ -497,6 +524,10 @@ class ColonialHelperApp:
         self.tab_log = tb.Frame(self.notebook)
         self.notebook.add(self.tab_log, text=" Лог ")
         self._build_tab_log()
+
+        # Карта системы перерисовывается, когда вкладку открыли: рисовать её
+        # в фоне бессмысленно, а данные к тому времени уже успевают устареть.
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
     # ============================================================
     #  Вкладка: Подключение
@@ -2420,6 +2451,747 @@ class ColonialHelperApp:
 
 
     # ============================================================
+    #  Вкладка: Карта системы
+    # ============================================================
+    #: Шаги зума: кнопки «−»/«+» и колесо мыши переключают их по порядку.
+    MAP_ZOOM_STEPS = (0.6, 0.8, 1.0, 1.3, 1.7, 2.2)
+    #: Как часто можно дёргать Raven Colonial ради карты. События журнала
+    #: обновляют её мгновенно, а сеть нужна только чтобы увидеть груз, который
+    #: завезли другие командиры, и планы площадок.
+    MAP_RAVEN_TTL = 120
+    #: Пачка событий журнала не должна перерисовывать карту десятки раз:
+    #: перерисовки склеиваются в одну.
+    MAP_REDRAW_MS = 120
+    #: Длинные имена станций урезаем, иначе подписи перекрывают полкарты.
+    MAP_LABEL_LIMIT = 26
+
+    def _build_tab_map(self):
+        outer = tb.Frame(self.tab_map, padding=10)
+        outer.pack(fill=BOTH, expand=True)
+
+        tb.Label(outer, text="Карта системы — где вы и что строится",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W)
+        tb.Label(
+            outer,
+            text="Звезда, планеты и луны, станции, поселения и стройплощадки системы, в "
+                 "которой находится пилот. У строящихся объектов — сколько процентов груза "
+                 "завезено: журнал плюс Raven Colonial, включая доставки других командиров.",
+            foreground=COLOR_MUTED, wraplength=820, justify=LEFT,
+        ).pack(anchor=W, pady=(0, 8))
+
+        # ---- Панель управления ----
+        bar = tb.Frame(outer)
+        bar.pack(fill=X, pady=(0, 6))
+        tb.Button(bar, text="Обновить", command=self._on_map_refresh,
+                  bootstyle="info-outline", width=11).pack(side=LEFT)
+        tb.Button(bar, text="−", command=lambda: self._on_map_zoom(-1),
+                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(8, 0))
+        tb.Button(bar, text="+", command=lambda: self._on_map_zoom(1),
+                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(4, 0))
+        self.map_zoom_label = tb.Label(bar, text="100%", foreground=COLOR_MUTED, width=6)
+        self.map_zoom_label.pack(side=LEFT, padx=(4, 12))
+        self.map_moons_var = tk.BooleanVar(value=True)
+        tb.Checkbutton(bar, text="Луны", variable=self.map_moons_var,
+                       command=self._map_redraw_now,
+                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
+        self.map_labels_var = tk.BooleanVar(value=True)
+        tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
+                       command=self._map_redraw_now,
+                       bootstyle="info-round-toggle").pack(side=LEFT)
+        self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
+                                         foreground=COLOR_ORANGE)
+        self.map_system_label.pack(side=RIGHT)
+
+        # ---- Холст слева, список объектов справа ----
+        body = tb.Frame(outer)
+        body.pack(fill=BOTH, expand=True)
+
+        canvas_frame = tb.Frame(body, relief="solid", borderwidth=1)
+        canvas_frame.pack(side=LEFT, fill=BOTH, expand=True)
+        self.map_canvas = tk.Canvas(canvas_frame, bg=COLOR_BG, highlightthickness=0,
+                                    borderwidth=0)
+        self.map_canvas.pack(fill=BOTH, expand=True)
+        self.map_canvas.bind("<Configure>", self._on_map_resize)
+        self.map_canvas.bind("<Button-1>", self._on_map_click)
+        self.map_canvas.bind("<Motion>", self._on_map_hover)
+        self.map_canvas.bind("<Leave>", lambda _event: self._map_restore_hint())
+        # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
+        for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.map_canvas.bind(binding, self._on_map_wheel)
+
+        side = tb.Frame(body)
+        side.pack(side=RIGHT, fill=Y, padx=(8, 0))
+        tb.Label(side, text="Объекты системы",
+                 font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
+        tree_frame = tb.Frame(side)
+        tree_frame.pack(fill=BOTH, expand=True)
+        columns = ("object", "type", "progress", "rest")
+        self.map_tree = tb.Treeview(tree_frame, columns=columns, show="headings",
+                                    bootstyle="dark", height=16)
+        for col, title, width, anchor in (
+            ("object", "Объект", 148, W),
+            ("type", "Тип", 94, W),
+            ("progress", "Завезено", 66, CENTER),
+            ("rest", "Осталось", 76, "e"),
+        ):
+            self.map_tree.heading(col, text=title)
+            self.map_tree.column(col, width=width, anchor=anchor)
+        # Стройки — самое важное на карте, поэтому они оранжевые и сверху списка.
+        self.map_tree.tag_configure("site", foreground=COLOR_ORANGE)
+        self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
+        self.map_tree.tag_configure("built", foreground=COLOR_TEXT)
+        self.map_tree.tag_configure("body", foreground=COLOR_MUTED)
+        tree_vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.map_tree.yview)
+        self.map_tree.configure(yscrollcommand=tree_vsb.set)
+        self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        tree_vsb.pack(side=RIGHT, fill=Y)
+        self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
+        self.map_tree.bind("<Double-1>", lambda _event: self._on_map_open_project())
+
+        # ---- Состояние ----
+        footer = tb.Frame(outer)
+        footer.pack(fill=X, pady=(6, 0))
+        self.map_status = tb.Label(footer, text="Система неизвестна", foreground=COLOR_MUTED,
+                                   wraplength=620, justify=LEFT)
+        self.map_status.pack(side=LEFT, fill=X, expand=True)
+        self.map_hint = tb.Label(footer, text="", foreground=COLOR_CYAN, font=("Consolas", 9),
+                                 wraplength=280, justify=RIGHT)
+        self.map_hint.pack(side=RIGHT)
+
+        self._map_update_zoom_label()
+        self._map_redraw_now()
+
+    # ---------- карта: перерисовка ----------
+    def _map_visible(self) -> bool:
+        """Вкладка «Карта системы» сейчас открыта?"""
+        notebook = getattr(self, "notebook", None)
+        tab = getattr(self, "tab_map", None)
+        if notebook is None or tab is None:
+            return False
+        try:
+            return str(notebook.select()) == str(tab)
+        except Exception:
+            return False
+
+    def _map_canvas_size(self):
+        """Размер холста или (0, 0), если вкладка ещё не показана."""
+        canvas = getattr(self, "map_canvas", None)
+        if canvas is None:
+            return 0, 0
+        try:
+            width = int(canvas.winfo_width())
+            height = int(canvas.winfo_height())
+        except Exception:
+            return 0, 0
+        if width <= 1 or height <= 1:
+            return 0, 0
+        return width, height
+
+    def _map_zoom(self) -> float:
+        try:
+            return float(self.MAP_ZOOM_STEPS[self._map_zoom_index])
+        except Exception:
+            return 1.0
+
+    def _map_update_zoom_label(self):
+        label = getattr(self, "map_zoom_label", None)
+        if label is None:
+            return
+        try:
+            label.config(text=f"{int(round(self._map_zoom() * 100))}%")
+        except Exception:
+            pass
+
+    def _map_schedule_redraw(self, delay_ms: int = None):
+        """Отложить перерисовку: десятки событий журнала дают один кадр."""
+        if delay_ms is None:
+            delay_ms = self.MAP_REDRAW_MS if self._map_visible() else 1000
+        if self._map_redraw_job is not None:
+            try:
+                self.root.after_cancel(self._map_redraw_job)
+            except Exception:
+                pass
+            self._map_redraw_job = None
+        try:
+            self._map_redraw_job = self.root.after(int(delay_ms), self._map_redraw_now)
+        except Exception:
+            self._map_redraw_job = None
+
+    def _map_redraw_now(self):
+        """Кадр карты: холст, список объектов справа и строка состояния."""
+        self._map_redraw_job = None
+        snapshot = self.system_map.snapshot()
+        self._map_last_snapshot = snapshot
+        self._draw_system_map(snapshot)
+        self._fill_map_tree(snapshot)
+        self._map_update_status(snapshot)
+
+    def _draw_system_map(self, snapshot=None):
+        canvas = getattr(self, "map_canvas", None)
+        if canvas is None:
+            return
+        width, height = self._map_canvas_size()
+        if not width or not height:
+            # Холст ещё не получил размеры (вкладка не показана) — повторим.
+            self._map_schedule_redraw(delay_ms=250)
+            return
+        if snapshot is None:
+            snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        show_labels = bool(getattr(self, "map_labels_var", None)
+                           and self.map_labels_var.get())
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        items = map_layout(snapshot, width, height, zoom=self._map_zoom(),
+                           show_moons=show_moons, selected=self._map_selected)
+        self._map_items = items
+        try:
+            canvas.delete("all")
+        except Exception:
+            return
+        center_x, center_y = width / 2.0, height / 2.0
+        # Орбитальные кольца — под объектами, иначе они режут значки.
+        for item in items:
+            if item.kind == "body" and item.orbit_radius > 0:
+                canvas.create_oval(
+                    center_x - item.orbit_radius, center_y - item.orbit_radius,
+                    center_x + item.orbit_radius, center_y + item.orbit_radius,
+                    outline=COLOR_LINE, dash=(2, 4))
+        for wanted, painter in (
+            ("star", self._map_draw_star), ("body", self._map_draw_body),
+            ("station", self._map_draw_station), ("player", self._map_draw_player),
+        ):
+            for item in items:
+                if item.kind == wanted:
+                    painter(canvas, item, show_labels)
+        self._map_draw_legend(canvas)
+
+    @classmethod
+    def _map_short_label(cls, text) -> str:
+        text = str(text or "").strip()
+        if len(text) <= cls.MAP_LABEL_LIMIT:
+            return text
+        return text[: cls.MAP_LABEL_LIMIT - 1].rstrip() + "…"
+
+    def _map_draw_star(self, canvas, item, show_labels):
+        radius = max(6.0, float(item.radius))
+        # Свечение: звезда — центр карты, её видно сразу.
+        canvas.create_oval(item.x - radius * 1.9, item.y - radius * 1.9,
+                           item.x + radius * 1.9, item.y + radius * 1.9,
+                           fill="#2b2410", outline="")
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
+                           fill=item.color,
+                           outline=COLOR_ORANGE if item.selected else "#111315",
+                           width=2 if item.selected else 1)
+        if not show_labels:
+            return
+        if item.label:
+            canvas.create_text(item.x, item.y - radius * 1.9 - 6,
+                               text=self._map_short_label(item.label), fill=COLOR_TEXT,
+                               font=("Consolas", 9, "bold"), anchor="s")
+        if item.caption:
+            canvas.create_text(item.x, item.y + radius * 1.9 + 6, text=item.caption,
+                               fill=COLOR_MUTED, font=("Consolas", 8), anchor="n")
+
+    def _map_draw_body(self, canvas, item, show_labels):
+        radius = max(3.0, float(item.radius))
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
+                           fill=item.color,
+                           outline=COLOR_ORANGE if item.selected else "#111315",
+                           width=2 if item.selected else 1)
+        if getattr(item.ref, "landable", False):
+            canvas.create_text(item.x, item.y, text="L", fill="#111315",
+                               font=("Consolas", 7, "bold"))
+        if not show_labels or not item.label:
+            return
+        is_moon = getattr(item.ref, "kind", "") == KIND_MOON
+        canvas.create_text(item.x, item.y + radius + 7,
+                           text=self._map_short_label(item.label),
+                           fill=COLOR_MUTED if is_moon else COLOR_TEXT,
+                           font=("Consolas", 7 if is_moon else 8), anchor="n")
+        if item.caption and not is_moon:
+            canvas.create_text(item.x, item.y + radius + 18, text=item.caption,
+                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
+
+    def _map_draw_station(self, canvas, item, show_labels):
+        station = item.ref
+        radius = max(5.0, float(item.radius))
+        is_site = isinstance(station, MapStation) and station.is_site
+        planned = bool(getattr(station, "planned", False))
+        outline = COLOR_ORANGE if item.selected else item.color
+        line_width = 2 if item.selected else 1
+        if is_site:
+            # Ромб: стройплощадку должно быть видно среди обычных станций.
+            spread = radius + 2.0
+            points = [item.x, item.y - spread, item.x + spread, item.y,
+                      item.x, item.y + spread, item.x - spread, item.y]
+            options = {"outline": outline, "width": line_width}
+            if planned:
+                # План площадки: контур пунктиром, завозить туда ещё нечего.
+                options["dash"] = (3, 2)
+                options["fill"] = COLOR_PANEL
+            else:
+                options["fill"] = item.color
+            canvas.create_polygon(points, **options)
+        elif getattr(station, "kind", "") == STATION_CARRIER:
+            canvas.create_rectangle(item.x - radius, item.y - radius,
+                                    item.x + radius, item.y + radius,
+                                    fill=item.color, outline=outline, width=line_width)
+        else:
+            canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
+                               item.y + radius, fill=item.color, outline=outline,
+                               width=line_width)
+        used = radius + 4.0
+        if item.progress is not None:
+            used += self._map_draw_progress(canvas, item, radius)
+        if not show_labels or not item.label:
+            return
+        canvas.create_text(item.x, item.y + used + 4,
+                           text=self._map_short_label(item.label),
+                           fill=COLOR_ORANGE if is_site else COLOR_TEXT,
+                           font=("Consolas", 8, "bold") if is_site else ("Consolas", 8),
+                           anchor="n")
+
+    def _map_draw_progress(self, canvas, item, radius) -> float:
+        """Прогресс-бар под стройплощадкой: сколько процентов груза завезено.
+
+        Возвращает, на сколько пикселей ниже значка занято место, — подпись
+        объекта рисуется уже под полосой.
+        """
+        progress = max(0, min(100, int(item.progress or 0)))
+        bar_width = max(20, int(item.bar_width))
+        left = item.x - bar_width / 2.0
+        top = item.y + radius + 6.0
+        bottom = top + 9.0
+        canvas.create_rectangle(left, top, left + bar_width, bottom,
+                                fill="#111315", outline=COLOR_LINE)
+        color = (COLOR_GREEN if progress >= 100
+                 else (COLOR_ORANGE if progress >= 40 else COLOR_RED))
+        fill_width = int(round((bar_width - 2) * progress / 100.0))
+        if fill_width > 0:
+            canvas.create_rectangle(left + 1, top + 1, left + 1 + fill_width, bottom - 1,
+                                    fill=color, outline="")
+        canvas.create_text(left + bar_width + 5, (top + bottom) / 2.0, text=f"{progress}%",
+                           fill=color, font=("Consolas", 8, "bold"), anchor=W)
+        return (bottom + 3.0) - (item.y + radius)
+
+    def _map_draw_player(self, canvas, item, show_labels):
+        radius = max(10.0, float(item.radius))
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
+                           item.y + radius, outline=COLOR_GREEN, width=2)
+        canvas.create_oval(item.x - 3, item.y - 3, item.x + 3, item.y + 3,
+                           fill=COLOR_GREEN, outline="")
+        if not show_labels:
+            return
+        canvas.create_text(item.x, item.y - radius - 6, text="Вы здесь",
+                           fill=COLOR_GREEN, font=("Consolas", 8, "bold"), anchor="s")
+        if item.caption:
+            canvas.create_text(item.x, item.y + radius + 6,
+                               text=self._map_short_label(item.caption),
+                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
+
+    def _map_draw_legend(self, canvas):
+        """Подсказка значков в углу холста."""
+        entries = (
+            (STATION_LABELS.get(STATION_SITE, "стройка"), COLOR_ORANGE),
+            ("тело", "#9fd8ef"),
+            ("станция", "#eeeeee"),
+            ("авианосец", COLOR_CYAN),
+            ("вы", COLOR_GREEN),
+        )
+        x = 12.0
+        for text, color in entries:
+            canvas.create_rectangle(x, 9, x + 8, 17, fill=color, outline="")
+            canvas.create_text(x + 12, 13, text=text, fill=COLOR_MUTED,
+                               font=("Consolas", 8), anchor=W)
+            x += 22 + 6.6 * len(text)
+
+    # ---------- карта: список объектов и состояние ----------
+    def _fill_map_tree(self, snapshot):
+        tree = getattr(self, "map_tree", None)
+        if tree is None:
+            return
+        try:
+            tree.delete(*tree.get_children())
+        except Exception:
+            return
+        rows = []
+        for station in snapshot.stations:
+            percent = station.percent_delivered
+            if station.planned and percent is None:
+                progress = "план"
+            elif percent is not None:
+                progress = f"{percent}%"
+            else:
+                progress = "—"
+            rest = (f"{station.remaining_tons:,}".replace(",", " ")
+                    if station.remaining_tons else "")
+            tag = ("planned" if station.planned
+                   else ("site" if station.is_site else "built"))
+            rows.append((f"s:{station.build_id or station.name}",
+                         (self._map_short_label(station.title),
+                          STATION_LABELS.get(station.kind, "объект"), progress, rest), tag))
+        for body in snapshot.bodies:
+            kind = BODY_LABELS.get(body.kind, "тело")
+            if body.kind == KIND_STAR and body.star_type:
+                kind = f"звезда {body.star_type}"
+            flags = [flag for flag, enabled in (
+                ("скан", body.scanned), ("карта", body.mapped),
+                ("посадка", body.landable), ("терраформ", body.terraformable),
+            ) if enabled]
+            rows.append((f"b:{body.name}",
+                         (self._map_short_label(body.name), kind, " · ".join(flags),
+                          f"{body.distance_ls:.1f} ls"), "body"))
+        for iid, values, tag in rows:
+            try:
+                tree.insert("", "end", iid=iid, values=values, tags=(tag,))
+            except Exception:
+                continue
+        self._map_sync_tree_selection()
+
+    def _map_sync_tree_selection(self):
+        tree = getattr(self, "map_tree", None)
+        if tree is None or not self._map_selected:
+            return
+        try:
+            match = [iid for iid in tree.get_children()
+                     if str(iid).split(":", 1)[-1] == self._map_selected]
+            if match:
+                tree.selection_set(match[0])
+                tree.see(match[0])
+        except Exception:
+            pass
+
+    def _map_set_status(self, text: str):
+        label = getattr(self, "map_status", None)
+        if label is None:
+            return
+        try:
+            label.config(text=str(text or ""))
+        except Exception:
+            pass
+
+    def _map_set_hint(self, text: str):
+        label = getattr(self, "map_hint", None)
+        if label is None:
+            return
+        try:
+            label.config(text=str(text or ""))
+        except Exception:
+            pass
+
+    def _map_update_status(self, snapshot, note: str = ""):
+        text = map_summary(snapshot)
+        if note:
+            text = f"{text}\n{note}"
+        self._map_set_status(text)
+        label = getattr(self, "map_system_label", None)
+        if label is None:
+            return
+        player = snapshot.player
+        ship = " ".join(part for part in (player.ship_name, player.ship_type) if part)
+        header = snapshot.system or "система неизвестна"
+        try:
+            label.config(text=f"{header} · {ship}" if ship else header)
+        except Exception:
+            pass
+
+    def _map_restore_hint(self):
+        """Курсор ушёл с объекта: показываем детали выбранного (если есть)."""
+        if self._map_selected:
+            self._map_show_details(self._map_selected)
+        else:
+            self._map_set_hint("")
+
+    def _map_show_details(self, key: str):
+        snapshot = self._map_last_snapshot
+        if snapshot is None or not key:
+            self._map_set_hint("")
+            return
+        for station in snapshot.stations:
+            if key in (station.build_id, station.name):
+                parts = [station.caption]
+                if station.required_tons:
+                    parts.append("нужно "
+                                 + f"{station.required_tons:,}".replace(",", " ") + " t")
+                if station.body_name:
+                    parts.append(f"тело: {station.body_name}")
+                if station.build_id:
+                    parts.append(f"buildId: {station.build_id}")
+                self._map_set_hint(" · ".join(parts))
+                return
+        for body in snapshot.bodies:
+            if body.name == key:
+                parts = [body.label, f"{body.distance_ls:.1f} ls"]
+                if body.stations:
+                    parts.append(f"объектов: {len(body.stations)}")
+                self._map_set_hint(" · ".join(parts))
+                return
+        self._map_set_hint("")
+
+    # ---------- карта: мышь и выбор ----------
+    def _map_item_at(self, x, y):
+        """Объект под курсором. Станции важнее тел: они нарисованы поверх."""
+        priority = {"station": 0, "player": 1, "body": 2, "star": 3}
+        best = None
+        best_key = None
+        for item in getattr(self, "_map_items", []) or []:
+            reach = max(9.0, float(item.radius) + 5.0)
+            distance = ((float(item.x) - float(x)) ** 2
+                        + (float(item.y) - float(y)) ** 2) ** 0.5
+            if distance > reach:
+                continue
+            key = (priority.get(item.kind, 9), distance)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = item
+        return best
+
+    def _map_item_key(self, item) -> str:
+        ref = getattr(item, "ref", None)
+        if isinstance(ref, MapStation):
+            return str(ref.build_id or ref.name or "")
+        return str(getattr(item, "label", "") or "")
+
+    def _on_map_resize(self, _event=None):
+        self._map_schedule_redraw()
+
+    def _on_map_zoom(self, step: int):
+        index = int(self._map_zoom_index) + int(step or 0)
+        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, index))
+        self._map_update_zoom_label()
+        self._draw_system_map(self._map_last_snapshot)
+
+    def _on_map_wheel(self, event):
+        delta = 0
+        try:
+            delta = int(getattr(event, "delta", 0) or 0)
+        except Exception:
+            delta = 0
+        if delta:
+            self._on_map_zoom(1 if delta > 0 else -1)
+            return
+        # Linux: колесо приходит кнопками 4 (вверх) и 5 (вниз).
+        try:
+            number = int(getattr(event, "num", 0) or 0)
+        except Exception:
+            number = 0
+        self._on_map_zoom(1 if number == 4 else -1)
+
+    def _on_map_click(self, event):
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None or item.kind == "player":
+            return
+        self._select_map_object(self._map_item_key(item))
+
+    def _on_map_hover(self, event):
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None:
+            self._map_restore_hint()
+            return
+        if item.kind == "player":
+            self._map_set_hint(f"Вы здесь · {item.caption}")
+            return
+        if item.progress is not None:
+            self._map_set_hint(f"{item.label} · завезено {item.progress}%")
+            return
+        self._map_set_hint(" · ".join(part for part in (item.label, item.caption) if part))
+
+    def _on_map_tree_select(self, _event=None):
+        tree = getattr(self, "map_tree", None)
+        if tree is None:
+            return
+        try:
+            selection = tree.selection()
+        except Exception:
+            return
+        if not selection:
+            return
+        key = str(selection[0]).split(":", 1)[-1]
+        if not key or key == self._map_selected:
+            return
+        self._map_selected = key
+        self._draw_system_map(self._map_last_snapshot)
+        self._map_show_details(key)
+
+    def _select_map_object(self, key: str):
+        self._map_selected = str(key or "")
+        self._draw_system_map(self._map_last_snapshot)
+        self._map_sync_tree_selection()
+        self._map_show_details(self._map_selected)
+
+    def _on_map_open_project(self):
+        """Двойной клик по стройке — открыть её проект в Raven Colonial."""
+        snapshot = self._map_last_snapshot
+        key = self._map_selected
+        if snapshot is None or not key:
+            return
+        build_id = ""
+        for station in snapshot.stations:
+            if key in (station.build_id, station.name):
+                build_id = station.build_id
+                break
+        if not build_id:
+            self._map_set_hint("У объекта нет buildId — проект в Raven не открываем")
+            return
+        name = ""
+        for station in snapshot.stations:
+            if station.build_id == build_id:
+                name = station.title
+                break
+        try:
+            url = project_url(build_id)
+        except Exception:
+            url = ""
+        if not url:
+            return
+        self._colony_open_url(url, f"Проект {name}" if name else "Проект")
+
+    # ---------- карта: данные Raven Colonial ----------
+    def _on_map_refresh(self):
+        self._map_redraw_now()
+        if not self.system_map.current_system:
+            self._map_set_status(
+                "Система неизвестна — включите Watcher или загрузите журналы")
+            return
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not getattr(self.raven_api, "is_connected", False):
+            self._map_update_status(
+                snapshot, "Raven Colonial не подключён: показаны только данные журнала")
+            return
+        self._map_update_status(snapshot, "Запрашиваю проекты и планы в Raven Colonial…")
+        self._map_refresh_from_raven(force=True)
+
+    def _map_refresh_from_raven(self, force: bool = False):
+        """Фоновый запрос проектов и планов системы (не чаще MAP_RAVEN_TTL)."""
+        system = self.system_map.current_system
+        if not system or not getattr(self.raven_api, "is_connected", False):
+            return
+        if self._map_raven_inflight:
+            return
+        address = self.system_map.current_system_address
+        key = f"{system}:{address}"
+        now = time.time()
+        try:
+            previous = float(self._map_raven_fetched.get(key) or 0.0)
+        except (TypeError, ValueError):
+            previous = 0.0
+        if not force and now - previous < self.MAP_RAVEN_TTL:
+            return
+        self._map_raven_fetched[key] = now
+        self._map_raven_inflight = True
+        api = self.raven_api
+
+        def worker():
+            try:
+                projects = api.get_system_projects(address or system)
+                sites = api.get_system_sites(system)
+            except Exception:
+                projects = sites = None
+            self.after(0, lambda: self._map_raven_done(system, projects, sites))
+
+        threading.Thread(target=worker, daemon=True, name="map-raven").start()
+
+    def _map_raven_done(self, system: str, projects_result, sites_result):
+        self._map_raven_inflight = False
+        if self.system_map.current_system != system:
+            return   # пилот уже улетел: эти данные другой системы
+        projects = []
+        plans = []
+        note = ""
+        if isinstance(projects_result, dict) and projects_result.get("ok"):
+            projects = self._map_extract_projects(projects_result.get("data"))
+        elif isinstance(projects_result, dict) and projects_result.get("error"):
+            note = f"Raven Colonial (проекты): {projects_result.get('error')}"
+        if isinstance(sites_result, dict) and sites_result.get("ok"):
+            plans = self._map_extract_plans(sites_result.get("data"))
+        elif isinstance(sites_result, dict) and sites_result.get("error") and not note:
+            note = f"Raven Colonial (планы): {sites_result.get('error')}"
+        changed = False
+        if projects:
+            changed = bool(self.system_map.merge_projects(system, projects)) or changed
+        if plans:
+            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
+        if projects or plans:
+            note = (f"Raven Colonial: активных проектов — {len(projects)}, "
+                    f"площадок в планах — {len(plans)}")
+        if changed:
+            self._map_redraw_now()
+        if note:
+            snapshot = self._map_last_snapshot or self.system_map.snapshot()
+            self._map_update_status(snapshot, note)
+
+    @staticmethod
+    def _map_extract_projects(data) -> list:
+        """Ответ /api/system/{addr}: список проектов или {'projects': [...]}.
+
+        В отличие от вкладки «Колонизатор» здесь нужны и проекты без buildId:
+        по ним карта показывает потребность и остаток, даже если проект ещё не
+        привязан к командиру.
+        """
+        if isinstance(data, dict):
+            for key in ("projects", "Projects", "builds", "data"):
+                if isinstance(data.get(key), list):
+                    return [item for item in data[key] if isinstance(item, dict)]
+            if any(key in data for key in ("buildId", "buildName", "marketId", "sumTotal")):
+                return [data]
+            return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _map_extract_plans(data) -> list:
+        """Ответ /api/v2/system/{system}/sites: все площадки вместе со статусом.
+
+        Статус важен: `demolish` карта не показывает, `complete` — показывает
+        построенный объект. Фильтрует статусы уже `merge_site_plans`.
+        """
+        if isinstance(data, dict):
+            for key in ("sites", "Sites"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            else:
+                data = [data] if data else []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    # ---------- карта: события журнала ----------
+    def _feed_system_map(self, event: dict, live: bool = False):
+        """Событие журнала — в карту системы.
+
+        Вызывается из того же однопроходного разбора, что и остальные трекеры:
+        отдельных чтений журнала карта не добавляет. В историческом разборе
+        (`live=False`) сеть не трогаем — там десятки тысяч событий и сотни
+        прыжков, а Raven Colonial нужен только для текущей системы.
+        """
+        try:
+            changed = self.system_map.handle(event)
+        except Exception:
+            return
+        if not changed:
+            return
+        name = str(event.get("event") or "")
+        if not live:
+            if self._map_visible():
+                self._map_schedule_redraw()
+            return
+        self._map_schedule_redraw()
+        if name in ("Location", "FSDJump", "CarrierJump", "ColonisationConstructionDepot",
+                    "Docked"):
+            # Прибыли в систему или открыли депо стройки: журнал не знает,
+            # сколько груза завезли другие командиры, — спросим Raven Colonial.
+            self._map_refresh_from_raven()
+
+    def _on_notebook_tab_changed(self, _event=None):
+        """Переключили вкладку: карте нужна свежая отрисовка и данные Raven."""
+        if not self._map_visible():
+            return
+        self._map_redraw_now()
+        self._map_refresh_from_raven()
+
+    # ============================================================
     #  Вкладка: Оверлей
     # ============================================================
     def _build_tab_overlay(self):
@@ -4286,7 +5058,13 @@ class ColonialHelperApp:
         def construction_hook(line, ev):
             self._feed_construction_site(ev, live=False)
 
-        hooks = [collector, dispatch_hook, self.exobiology.handle, construction_hook]
+        # Карта системы наполняется тем же проходом: после импорта истории
+        # вкладка показывает текущую систему сразу, не дожидаясь новых событий.
+        def map_hook(line, ev):
+            self._feed_system_map(ev, live=False)
+
+        hooks = [collector, dispatch_hook, self.exobiology.handle, construction_hook,
+                 map_hook]
 
         # Только те файлы, которые реально разобраны и чьи доставки приняты:
         # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
@@ -4803,6 +5581,12 @@ class ColonialHelperApp:
         "ColonisationConstructionDepot", "Market", "SupercruiseExit",
         "Touchdown", "Liftoff",
     })
+    #: Для карты системы нужны ещё и сканы тел: без них до полного разбора
+    #: журнала карта знала бы только станцию, у которой стоит пилот.
+    RESTORE_MAP_EVENTS = RESTORE_STATE_EVENTS | frozenset({
+        "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
+        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame",
+    })
 
     def _restore_station_state_from_journal(self) -> dict:
         """Восстановить стройплощадку и авианосец по хвосту журнала.
@@ -4824,6 +5608,7 @@ class ColonialHelperApp:
         события через те же трекеры, что и живой watcher.
         """
         restored = {"site": False, "carrier": False}
+        map_events: list = []
         try:
             files = sorted(
                 self.journal_path.glob("Journal.*.log"),
@@ -4848,13 +5633,16 @@ class ColonialHelperApp:
 
             events = []
             for _line, event in iter_journal_events(raw.decode("utf-8", errors="replace")):
-                if event.get("event") in self.RESTORE_STATE_EVENTS:
+                if event.get("event") in self.RESTORE_MAP_EVENTS:
                     events.append(event)
             if not events:
                 continue
             # Хронологический порядок важен: трекеры «отпускают» площадку по
             # Undocked и чужой авианосец по Docked к другой станции.
             for event in events:
+                map_events.append(event)
+                if event.get("event") not in self.RESTORE_STATE_EVENTS:
+                    continue
                 try:
                     self.construction.handle("", event)
                     self.carrier.handle(event)
@@ -4868,6 +5656,18 @@ class ColonialHelperApp:
                 restored["carrier"] = True
             if restored["site"] or restored["carrier"]:
                 break
+
+        # Карта системы собирается хронологически: файлы идут от новых к
+        # старым, а положение пилота определяет последнее событие, а не первое
+        # попавшееся. Поэтому сортируем всё собранное и прогоняем одним списком.
+        map_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        for event in map_events:
+            try:
+                self.system_map.handle(event)
+            except Exception:
+                continue
+        if self.system_map.current_system:
+            self._map_schedule_redraw(delay_ms=0)
 
         notes = []
         site = self.construction.site
@@ -5924,6 +6724,8 @@ class ColonialHelperApp:
                         self.overlay_manager.log(f"Jump: {sys_name}", "info")
         # Стройплощадка: из неё вкладка «Колонизатор» заполняет форму проекта.
         self._feed_construction_site(ev, live=live)
+        # Карта системы: тела, станции, стройплощадки и где сейчас пилот.
+        self._feed_system_map(ev, live=live)
         # Отслеживание корабля
         self.ship.parse_event(ev)
         # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
