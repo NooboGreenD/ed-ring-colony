@@ -3560,7 +3560,45 @@ class OverlayManager:
 # ============================================================
 #  Настройки оверлея
 # ============================================================
+#: Версия схемы HUD-настроек. Поднимаем, когда меняем значение по умолчанию
+#: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
+#: поэтому без миграции прежний пользователь навсегда остался бы на старом
+#: значении и не увидел бы исправления.
+SETTINGS_SCHEMA_VERSION = 2
+
+#: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
+#: Ключ получает новый дефолт только если пользователь его не менял, то есть
+#: сохранённое значение всё ещё равно прежнему дефолту. Свой размер окна,
+#: заданный вручную, трогать нельзя.
+SETTINGS_DEFAULT_CHANGES = {
+    # 2.8.3: раздел «Поиск планет» обрезался при высоте 470 px
+    2: {"exobio_height": 470},
+}
+
+
+def migrate_overlay_settings(merged: dict, stored: dict) -> dict:
+    """Поднять дефолты, которые пользователь не менял, до текущей версии схемы.
+
+    :param merged: DEFAULT_SETTINGS, перекрытые сохранённым конфигом.
+    :param stored: содержимое конфига как есть — по нему видно, что именно
+        записала предыдущая версия и какую версию схемы она помнила.
+    """
+    try:
+        stored_version = int(stored.get("settings_schema", 1))
+    except (TypeError, ValueError):
+        stored_version = 1
+    if stored_version >= SETTINGS_SCHEMA_VERSION:
+        return merged
+    for version in range(stored_version + 1, SETTINGS_SCHEMA_VERSION + 1):
+        for key, old_default in SETTINGS_DEFAULT_CHANGES.get(version, {}).items():
+            if stored.get(key) == old_default:
+                merged[key] = DEFAULT_SETTINGS[key]
+    merged["settings_schema"] = SETTINGS_SCHEMA_VERSION
+    return merged
+
+
 DEFAULT_SETTINGS = {
+    "settings_schema": SETTINGS_SCHEMA_VERSION,
     "alpha": 0.90,
     "font_family": "Consolas",
     "font_size": 10,
@@ -3667,7 +3705,9 @@ def load_overlay_settings(config_path: Path) -> dict:
                 data = json.load(f)
             merged = dict(DEFAULT_SETTINGS)
             merged.update(data)
-            return merged
+            return migrate_overlay_settings(
+                merged, data if isinstance(data, dict) else {}
+            )
         except Exception:
             pass
     return dict(DEFAULT_SETTINGS)
