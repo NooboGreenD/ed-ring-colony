@@ -364,6 +364,64 @@ class ExobioFiltersRenderTests(unittest.TestCase):
         })
         overlay.planets_label.pack_forget.assert_called()
 
+    def test_repeated_ticks_do_not_repack_planet_section(self):
+        """Блок тикает раз в секунду — переупаковка на каждом тике мигает."""
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        state = {
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "genera_filter": [],
+            "planet_criteria": [{"id": "rocky_atmo_land",
+                                 "label": "Каменистая с атмосферой и посадкой"}],
+            "planets": [{
+                "body": "HIP 12345 A 3", "planet_class": "Rocky body", "landable": True,
+                "atmosphere_category": "thin", "bio_signals": 5, "distance_ls": 812.0,
+                "matched": ["Каменистая с атмосферой и посадкой"],
+            }],
+        }
+        overlay.update_exobiology(state)
+        for widget in (overlay.planet_separator, overlay.planets_header, overlay.planets_label):
+            widget.pack.reset_mock()
+            widget.pack_forget.reset_mock()
+
+        for _ in range(5):
+            overlay._render()
+
+        for widget in (overlay.planet_separator, overlay.planets_header, overlay.planets_label):
+            widget.pack.assert_not_called()
+            widget.pack_forget.assert_not_called()
+
+    def test_visibility_switch_repacks_once(self):
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        state = {
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [], "planets": [],
+        }
+        overlay.update_exobiology(state)
+        overlay.planets_label.pack_forget.reset_mock()
+
+        overlay.settings["exobio_show_planet_search"] = False
+        overlay._render()
+        overlay.planets_label.pack_forget.assert_called_once()
+
+        # Повторный тик при том же состоянии — уже без переупаковки.
+        overlay.planets_label.pack_forget.reset_mock()
+        overlay._render()
+        overlay.planets_label.pack_forget.assert_not_called()
+
+        overlay.settings["exobio_show_planet_search"] = True
+        overlay.planets_label.pack.reset_mock()
+        overlay._render()
+        overlay.planets_label.pack.assert_called_once()
+
+    def test_planet_section_visible_by_default(self):
+        overlay = self._overlay()
+        overlay.update_exobiology({
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [], "planets": [],
+        })
+        self.assertTrue(overlay._planets_shown)
+        overlay.planets_label.pack.assert_called()
+
     def test_genus_filter_hides_other_genera(self):
         overlay = self._overlay()
         base = state()
@@ -559,6 +617,101 @@ class CarrierRowReuseTests(unittest.TestCase):
         overlay._on_canvas_resize(mock.Mock(width=0))
         overlay._on_canvas_resize(mock.Mock(width=None))
         overlay.canvas.itemconfigure.assert_not_called()
+
+
+class CargoRowReuseTests(unittest.TestCase):
+    """Строки трюма (CARGO) переиспользуются: пересоздание и было миганием."""
+
+    def setUp(self):
+        import overlay
+
+        self.created = []
+
+        def label_factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Label")
+            widget.text_arg = str(kwargs.get("text", ""))
+
+            def _config(*c_args, **c_kwargs):
+                if "text" in c_kwargs:
+                    widget.text_arg = str(c_kwargs["text"])
+
+            widget.config.side_effect = _config
+            self.created.append(widget)
+            return widget
+
+        patcher = mock.patch.object(overlay.tk, "Label", side_effect=label_factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.destroyed = []
+
+        def frame_factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Frame")
+            widget.destroy.side_effect = lambda: self.destroyed.append(widget)
+            return widget
+
+        frame_patcher = mock.patch.object(overlay.tk, "Frame", side_effect=frame_factory)
+        frame_patcher.start()
+        self.addCleanup(frame_patcher.stop)
+
+    def _overlay(self):
+        from overlay import CargoOverlay
+
+        return CargoOverlay(_FakeMaster(), {"font_family": "Consolas", "font_size": 10})
+
+    @staticmethod
+    def _data(*rows):
+        return {"cargo_count": sum(r["Count"] for r in rows), "cargo_capacity": 100,
+                "inventory": list(rows)}
+
+    def test_rows_are_not_recreated_on_update(self):
+        overlay = self._overlay()
+        overlay.update_cargo(self._data({"Name": "steel", "Name_Localised": "Steel", "Count": 10}))
+        labels_after_first = len(self.created)
+
+        for count in (20, 30, 40):
+            overlay.update_cargo(self._data(
+                {"Name": "steel", "Name_Localised": "Steel", "Count": count}))
+
+        self.assertEqual(len(self.created), labels_after_first)
+        self.assertEqual(self.destroyed, [])
+        self.assertEqual(overlay._cargo_pool[0]["count"].text_arg, "  40")
+        self.assertEqual(overlay._cargo_pool[0]["name"].text_arg, "Steel")
+
+    def test_same_inventory_does_not_repack(self):
+        overlay = self._overlay()
+        overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
+        frame = overlay._cargo_pool[0]["frame"]
+        frame.pack.reset_mock()
+        frame.pack_forget.reset_mock()
+
+        overlay.update_cargo(self._data({"Name": "steel", "Count": 25}))
+        frame.pack.assert_not_called()
+        frame.pack_forget.assert_not_called()
+
+    def test_changed_inventory_repacks(self):
+        overlay = self._overlay()
+        overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
+        overlay.update_cargo(self._data({"Name": "steel", "Count": 10},
+                                        {"Name": "gold", "Count": 5}))
+        self.assertEqual(len(overlay._cargo_pool), 2)
+        self.assertEqual(overlay._cargo_order, ["steel", "gold"])
+
+    def test_stolen_goods_are_marked(self):
+        overlay = self._overlay()
+        overlay.update_cargo(self._data(
+            {"Name": "tritium", "Name_Localised": "Tritium", "Count": 8, "Stolen": 3}))
+        entry = overlay._cargo_pool[0]
+        self.assertEqual(entry["icon"].text_arg, "!")
+        self.assertIn("(3 stl)", entry["count"].text_arg)
+
+    def test_empty_hold_shows_placeholder(self):
+        overlay = self._overlay()
+        overlay.update_cargo(self._data({"Name": "steel", "Count": 10}))
+        overlay.update_cargo({"cargo_count": 0, "cargo_capacity": 100, "inventory": []})
+        self.assertEqual(overlay._cargo_order, [])
+        overlay._cargo_pool[0]["frame"].pack_forget.assert_called()
+        self.assertEqual(self.destroyed, [])
 
 
 if __name__ == "__main__":

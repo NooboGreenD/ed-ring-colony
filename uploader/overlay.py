@@ -1646,8 +1646,16 @@ class CargoOverlay(OverlayWindow):
         self.cargo_canvas.create_window((0, 0), window=self.cargo_inner, anchor=tk.NW, width=270)
         self.cargo_inner.bind("<Configure>", lambda e: self.cargo_canvas.configure(scrollregion=self.cargo_canvas.bbox("all")))
 
+        self._cargo_font = (ff, fs - 1)
+        self._cargo_font_bold = (ff, fs - 1, "bold")
+        self._cargo_icon_font = (ff, 8)
         self.empty_label = tk.Label(self.cargo_inner, text="[ Empty hold ]", font=(ff, fs), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
         self.empty_label.pack(pady=30)
+        # Пул строк: виджеты создаются один раз и дальше только меняют текст.
+        # Пересоздание всего списка на каждое обновление выглядело как
+        # мигание — та же ошибка, что была в блоке CARRIER.
+        self._cargo_pool: list = []
+        self._cargo_order: list = []
 
     def update_cargo(self, data: dict):
         total = data.get("cargo_count", 0)
@@ -1661,42 +1669,67 @@ class CargoOverlay(OverlayWindow):
         self.cargo_bar_fill.config(width=bar_width)
         self.cargo_bar_fill.config(bg=COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT))
 
-        inventory = data.get("inventory", [])
-        for widget in self.cargo_inner.winfo_children():
-            widget.destroy()
-
-        if not inventory:
-            self.empty_label = tk.Label(
-                self.cargo_inner, text="[ Empty hold ]",
-                font=(self.settings.get("font_family", "Consolas"), self.settings.get("font_size", 10)),
-                fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
-            )
-            self.empty_label.pack(pady=30)
-        else:
-            ff = self.settings.get("font_family", "Consolas")
-            fs = self.settings.get("font_size", 10)
-            for item in inventory:
-                name = item.get("Name_Localised") or item.get("Name", "Unknown")
-                count = item.get("Count", 0)
-                stolen = item.get("Stolen", 0)
-
-                row = tk.Frame(self.cargo_inner, bg=COLOR_PANEL)
-                row.pack(fill=tk.X, pady=2)
-
-                icon = "!" if stolen > 0 else "-"
-                icon_color = COLOR_RED_TEXT if stolen > 0 else COLOR_ACCENT
-
-                tk.Label(row, text=icon, font=(ff, 8), fg=icon_color, bg=COLOR_PANEL, width=2).pack(side=tk.LEFT)
-                tk.Label(row, text=f"{name[:22]}", font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W, width=22).pack(side=tk.LEFT)
-
-                count_text = f"{count:>4}"
-                if stolen > 0:
-                    count_text += f" ({stolen} stl)"
-
-                tk.Label(row, text=count_text, font=(ff, fs - 1, "bold"), fg=COLOR_ACCENT if stolen > 0 else COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.E).pack(side=tk.RIGHT)
+        self._render_cargo_rows(data.get("inventory", []))
 
         self.cargo_inner.update_idletasks()
         self.cargo_canvas.configure(scrollregion=self.cargo_canvas.bbox("all"))
+
+    # -- список трюма --------------------------------------------------------
+    def _make_cargo_row(self) -> dict:
+        frame = tk.Frame(self.cargo_inner, bg=COLOR_PANEL)
+        icon = tk.Label(frame, text="-", font=self._cargo_icon_font, fg=COLOR_ACCENT,
+                        bg=COLOR_PANEL, width=2)
+        icon.pack(side=tk.LEFT)
+        name = tk.Label(frame, text="", font=self._cargo_font, fg=COLOR_TEXT,
+                        bg=COLOR_PANEL, anchor=tk.W, width=22)
+        name.pack(side=tk.LEFT)
+        count = tk.Label(frame, text="", font=self._cargo_font_bold, fg=COLOR_TEXT,
+                         bg=COLOR_PANEL, anchor=tk.E)
+        count.pack(side=tk.RIGHT)
+        return {"frame": frame, "icon": icon, "name": name, "count": count}
+
+    def _render_cargo_rows(self, inventory: list):
+        """Обновить список трюма, переиспользуя виджеты."""
+        inventory = list(inventory or [])
+
+        if not inventory:
+            if self._cargo_order:
+                for entry in self._cargo_pool:
+                    entry["frame"].pack_forget()
+                self._cargo_order = []
+            self.empty_label.pack(pady=30)
+            return
+
+        self.empty_label.pack_forget()
+        while len(self._cargo_pool) < len(inventory):
+            self._cargo_pool.append(self._make_cargo_row())
+
+        # Переупаковываем только когда состав или порядок изменились: pack()
+        # уже упакованного виджета не переставляет его, а лишняя переупаковка
+        # на каждом тике — это перерасчёт геометрии и мигание.
+        order = [str(item.get("Name") or item.get("Name_Localised") or index)
+                 for index, item in enumerate(inventory)]
+        if order != self._cargo_order:
+            for entry in self._cargo_pool:
+                entry["frame"].pack_forget()
+            for index in range(len(inventory)):
+                self._cargo_pool[index]["frame"].pack(fill=tk.X, pady=2)
+            self._cargo_order = order
+
+        for index, item in enumerate(inventory):
+            entry = self._cargo_pool[index]
+            name = item.get("Name_Localised") or item.get("Name", "Unknown")
+            count = int(item.get("Count") or 0)
+            stolen = int(item.get("Stolen") or 0)
+
+            entry["icon"].config(text="!" if stolen > 0 else "-",
+                                 fg=COLOR_RED_TEXT if stolen > 0 else COLOR_ACCENT)
+            entry["name"].config(text=f"{name[:22]}")
+            count_text = f"{count:>4}"
+            if stolen > 0:
+                count_text += f" ({stolen} stl)"
+            entry["count"].config(text=count_text,
+                                  fg=COLOR_ACCENT if stolen > 0 else COLOR_TEXT)
 
 
 # ============================================================
@@ -2028,6 +2061,13 @@ class ExobiologyOverlay(OverlayWindow):
 
         self._state: Dict[str, Any] = {}
         self._tick_id: Optional[str] = None
+        # Применённая видимость раздела «Поиск планет». Раздел выше уже
+        # упакован, поэтому стартуем с True — иначе первый же рендер делал
+        # лишнюю переупаковку. Сравнивать нужно, чтобы не дёргать
+        # pack()/pack_forget() на каждом тике: блок тикает раз в секунду,
+        # пока идёт отсчёт образца, а лишняя переупаковка — это перерасчёт
+        # геометрии и мигание.
+        self._planets_shown: bool = True
 
         self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
                                    fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
@@ -2273,12 +2313,14 @@ class ExobiologyOverlay(OverlayWindow):
             lines.append(f"… и ещё {extra}")
         self.predict_label.config(text="\n".join(lines))
 
-    def _render_planets(self, state: dict):
-        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
-        enabled = bool(self.settings.get("exobio_show_planet_search", True))
-        criteria = state.get("planet_criteria") or []
-        if not enabled:
-            for widget in (self.planet_separator, self.planets_header, self.planets_label):
+    def _set_planets_visible(self, visible: bool):
+        """Показать/скрыть раздел, но только если видимость изменилась."""
+        if self._planets_shown == visible:
+            return
+        self._planets_shown = visible
+        widgets = (self.planet_separator, self.planets_header, self.planets_label)
+        if not visible:
+            for widget in widgets:
                 try:
                     widget.pack_forget()
                 except Exception:
@@ -2293,6 +2335,14 @@ class ExobiologyOverlay(OverlayWindow):
                 widget.pack(**kwargs)
             except Exception:
                 pass
+
+    def _render_planets(self, state: dict):
+        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
+        criteria = state.get("planet_criteria") or []
+        if not bool(self.settings.get("exobio_show_planet_search", True)):
+            self._set_planets_visible(False)
+            return
+        self._set_planets_visible(True)
 
         if not criteria:
             self.planets_header.config(text="Поиск планет:")
