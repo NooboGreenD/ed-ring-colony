@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE.parent))
 
 from system_map import (  # noqa: E402
     better_kind,
+    map_report,
     KIND_MOON,
     KIND_PLANET,
     KIND_STAR,
@@ -571,6 +572,118 @@ class BodyTests(unittest.TestCase):
                                       Parents=[{"Star": 1}], PlanetClass="Rocky body",
                                       DistanceFromArrivalLS=float(index + 1)))
         self.assertLessEqual(len(builder.snapshot(SYSTEM).bodies), MAX_BODIES_PER_SYSTEM)
+
+
+class RavenBodyTests(unittest.TestCase):
+    """Тела системы из Raven v2: карта не пуста до сканирования."""
+
+    def bodies(self):
+        return [
+            {"bodyName": f"{SYSTEM} A", "bodyId": 1, "starType": "K",
+             "distanceFromArrivalLS": 0.0, "radius": 5.9e8},
+            {"bodyName": BODY_1, "bodyId": 3, "planetClass": "High metal content world",
+             "distanceFromArrivalLS": 12.4, "radius": 7.4e6, "isLandable": True,
+             "parents": [1]},
+            {"bodyName": BODY_2, "bodyId": 4, "planetClass": "Class III gas giant",
+             "distanceFromArrivalLS": 812.0, "parents": [1]},
+            {"bodyName": MOON_2A, "bodyId": 5, "planetClass": "Icy body",
+             "distanceFromArrivalLS": 813.1, "parents": [4]},
+            {"bodyName": "", "bodyId": 99},
+            None,
+        ]
+
+    def test_bodies_appear_before_scanning(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event(Docked=False, StationName="", MarketID=0,
+                                      StationServices=None, StationType="",
+                                      Body="", BodyID=None))
+        self.assertTrue(builder.merge_bodies(SYSTEM, self.bodies()))
+        snapshot = builder.snapshot()
+        names = [body.name for body in snapshot.bodies]
+        self.assertIn(BODY_1, names)
+        self.assertIn(MOON_2A, names)
+        body = next(item for item in snapshot.bodies if item.name == BODY_1)
+        self.assertTrue(body.from_raven)
+        self.assertFalse(body.scanned, "тело из Raven не должно выглядеть отсканированным")
+        self.assertTrue(body.landable)
+        self.assertEqual(body.kind, KIND_PLANET)
+        moon = next(item for item in snapshot.bodies if item.name == MOON_2A)
+        self.assertEqual(moon.kind, KIND_MOON)
+        self.assertEqual(moon.parent_name, BODY_2)
+        star = snapshot.star
+        self.assertEqual(star.star_type, "K")
+
+    def test_journal_wins_over_raven(self):
+        builder = scanned_system()
+        before = builder.snapshot()
+        body_before = next(item for item in before.bodies if item.name == BODY_1)
+        self.assertTrue(body_before.scanned)
+        builder.merge_bodies(SYSTEM, [
+            {"bodyName": BODY_1, "planetClass": "Совершенно другой класс",
+             "distanceFromArrivalLS": 999.0, "isLandable": False}])
+        body = next(item for item in builder.snapshot().bodies if item.name == BODY_1)
+        self.assertEqual(body.body_class, "High metal content world")
+        self.assertEqual(body.distance_ls, 12.4)
+        self.assertTrue(body.landable)
+        self.assertTrue(body.scanned)
+
+    def test_merge_is_idempotent(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        bodies = self.bodies()
+        self.assertTrue(builder.merge_bodies(SYSTEM, bodies))
+        self.assertFalse(builder.merge_bodies(SYSTEM, bodies))
+
+    def test_terraformable_and_garbage(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.merge_bodies(SYSTEM, [
+            {"bodyName": f"{SYSTEM} A 7", "planetClass": "Rocky body (terraformable)",
+             "parents": [{"Star": 1}]}])
+        body = next(item for item in builder.snapshot().bodies
+                    if item.name == f"{SYSTEM} A 7")
+        self.assertTrue(body.terraformable)
+        self.assertFalse(builder.merge_bodies(SYSTEM, [None, {}, 5]))
+        # Пустая система берёт текущую (как merge_projects), а без неё — некуда.
+        fresh = SystemMapBuilder()
+        self.assertFalse(fresh.merge_bodies("", self.bodies()))
+
+    def test_body_cap_respected(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.merge_bodies(SYSTEM, [{"bodyName": f"{SYSTEM} A {i}", "bodyId": i,
+                                       "planetClass": "Rocky body"}
+                                      for i in range(MAX_BODIES_PER_SYSTEM + 50)])
+        self.assertLessEqual(len(builder.snapshot().bodies), MAX_BODIES_PER_SYSTEM)
+
+
+class MapReportTests(unittest.TestCase):
+    """Сводка системы для буфера обмена."""
+
+    def test_report_lists_sites_and_player(self):
+        builder = scanned_system()
+        builder.handle(depot_event([resource("Steel", 6680, 1815),
+                                    resource("Liquid oxygen", 1865, 120)]))
+        builder.handle({"event": "FSSSignalDiscovered", "StarSystem": SYSTEM,
+                        "SystemAddress": ADDRESS, "IsStation": True,
+                        "SignalName": "$SAA_SignalType_Station;",
+                        "SignalName_Localised": "Jameson Memorial"})
+        builder.merge_site_plans(SYSTEM, [{"name": "B 2", "bodyNum": 4,
+                                           "bodyName": BODY_2, "status": "planned"}])
+        report = map_report(builder.snapshot(), "2.10.2")
+        self.assertIn(SYSTEM, report.splitlines()[0])
+        self.assertIn("Colonial Helper 2.10.2", report)
+        self.assertIn("Тел: 4 из 9, отсканировано 4", report)
+        self.assertIn("Стройки:", report)
+        self.assertIn("A 1 — 23% (осталось 6 610 t): steel 4 865, liquidoxygen 1 745",
+                      report)
+        self.assertIn("B 2 — план", report)
+        self.assertIn("Построено: Jameson Memorial", report)
+        self.assertIn(f"Пилот: на станции {SITE_NAME}", report)
+
+    def test_report_without_system(self):
+        self.assertEqual(map_report(SystemMapBuilder().snapshot()),
+                         "Система неизвестна — включите Watcher или загрузите журналы")
 
 
 class PlayerPositionTests(unittest.TestCase):

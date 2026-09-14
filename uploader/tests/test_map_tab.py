@@ -494,6 +494,146 @@ class MapRavenTests(MapTabTestBase):
         return False
 
 
+class MapRavenBodiesTests(MapTabTestBase):
+    """Тела из Raven v2: система видна до сканирования, журнал главнее."""
+
+    def whole_result(self):
+        return {"ok": True, "status": 200, "data": {"bodies": [
+            {"bodyName": f"{SYSTEM} A", "bodyId": 1, "starType": "K"},
+            {"bodyName": BODY_1, "bodyId": 3,
+             "planetClass": "High metal content world",
+             "distanceFromArrivalLS": 12.4, "isLandable": True, "parents": [1]},
+            {"bodyName": f"{SYSTEM} A 2", "bodyId": 4,
+             "planetClass": "Class III gas giant",
+             "distanceFromArrivalLS": 812.0, "parents": [1]},
+        ]}}
+
+    def test_bodies_appear_without_scans(self):
+        self.app._handle_tracked_event(location_event(Body="", BodyID=None), live=True)
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": []},
+                                 {"ok": True, "data": {"sites": []}},
+                                 self.whole_result())
+        snapshot = self.app.system_map.snapshot()
+        names = [body.name for body in snapshot.bodies]
+        self.assertIn(BODY_1, names)
+        self.assertIn(f"{SYSTEM} A 2", names)
+        body = next(item for item in snapshot.bodies if item.name == BODY_1)
+        self.assertTrue(body.from_raven)
+        self.assertFalse(body.scanned)
+
+    def test_bodies_flag_in_tree(self):
+        self.app._handle_tracked_event(location_event(Body="", BodyID=None), live=True)
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": []},
+                                 {"ok": True, "data": {"sites": []}},
+                                 self.whole_result())
+        self.app._map_redraw_now()
+        values = [call.kwargs.get("values") for call in self.app.map_tree.insert.call_args_list]
+        self.assertTrue(any("raven" in [str(part) for part in row]
+                            for row in values if row), values)
+
+    def test_journal_scan_not_overwritten(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": []},
+                                 {"ok": True, "data": {"sites": []}},
+                                 self.whole_result())
+        body = next(item for item in self.app.system_map.snapshot().bodies
+                    if item.name == BODY_1)
+        self.assertTrue(body.scanned)
+        self.assertFalse(body.from_raven)
+        self.assertEqual(body.distance_ls, 12.4)
+
+    def test_extract_bodies_shapes(self):
+        extract = self.app._map_extract_bodies
+        self.assertEqual(extract({"bodies": [{"bodyName": "X"}]}), [{"bodyName": "X"}])
+        self.assertEqual(extract([{"bodyName": "X"}]), [{"bodyName": "X"}])
+        self.assertEqual(extract({"bodyName": "X"}), [{"bodyName": "X"}])
+        self.assertEqual(extract({"stars": [{"bodyName": "S"}]}), [{"bodyName": "S"}])
+        self.assertEqual(extract(None), [])
+        self.assertEqual(extract("мусор"), [])
+
+
+class MapFilterAndSummaryTests(MapTabTestBase):
+    """Фильтр списка объектов и сводка системы в буфер обмена."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(), live=True)
+        self.app._map_raven_done(
+            SYSTEM,
+            {"ok": True, "data": [{"buildId": BUILD_ID, "buildName": "A 1",
+                                   "marketId": SITE_MARKET, "sumTotal": 5000,
+                                   "sumNeed": 4000}]},
+            {"ok": True, "data": {"sites": [
+                {"id": "s-2", "name": "B 2", "bodyNum": 4, "bodyName": f"{SYSTEM} A 2",
+                 "status": "planned"}]}},
+        )
+        self.app._map_redraw_now()
+
+    def tree_iids(self):
+        return [str(call.kwargs.get("iid"))
+                for call in self.app.map_tree.insert.call_args_list]
+
+    def refill(self):
+        """Перезаполнить список с нуля: заглушка копит вызовы insert."""
+        self.app.map_tree.insert.reset_mock()
+        self.app._fill_map_tree(self.app._map_last_snapshot)
+        return self.tree_iids()
+
+    def test_filter_limits_rows(self):
+        self.prepare()
+        total = len(self.refill())
+        self.assertGreater(total, 4)
+
+        self.app.map_filter_var.set("площадка")
+        filtered = self.refill()
+        self.assertTrue(filtered)
+        self.assertLess(len(filtered), total)
+
+        # Фильтр ищет подстроку по всем колонкам: «план» нашёл бы и «планета»,
+        # поэтому берём имя плана.
+        self.app.map_filter_var.set("B 2")
+        planned = self.refill()
+        self.assertEqual(planned, ["s:B 2"])
+
+        self.app.map_filter_var.set("")
+        self.assertEqual(len(self.refill()), total)
+
+    def test_filter_is_case_insensitive(self):
+        self.prepare()
+        self.app.map_filter_var.set("ПЛОЩАДКА")
+        self.assertTrue(self.refill())
+
+    def test_copy_summary_to_clipboard(self):
+        self.prepare()
+        import sys as _sys
+
+        clipboard = _sys.modules.get("pyperclip")
+        self.assertIsNotNone(clipboard, "заглушка pyperclip не установлена")
+        clipboard.copy.reset_mock()
+        self.app._on_map_copy_summary()
+        clipboard.copy.assert_called_once()
+        report = str(clipboard.copy.call_args.args[0])
+        self.assertIn(SYSTEM, report)
+        self.assertIn("Стройки:", report)
+        self.assertIn("A 1 — 20% (осталось 4 000 t): steel 4 000", report)
+        hints = [str(call.kwargs.get("text"))
+                 for call in self.app.map_hint.config.call_args_list]
+        self.assertIn("Сводка скопирована в буфер обмена", hints)
+
+    def test_copy_summary_fallback_without_pyperclip(self):
+        self.prepare()
+        with mock.patch.dict("sys.modules", {"pyperclip": None}):
+            self.app._on_map_copy_summary()
+        self.app.root.clipboard_append.assert_called()
+        report = "".join(str(call.args[0]) for call
+                         in self.app.root.clipboard_append.call_args_list)
+        self.assertIn(SYSTEM, report)
+
+
 class MapInteractionTests(MapTabTestBase):
     """Выбор объекта, открытие проекта и переход на вкладку."""
 

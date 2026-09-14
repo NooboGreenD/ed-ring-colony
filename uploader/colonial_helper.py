@@ -103,6 +103,7 @@ from system_map import (
     MapStation,
     SystemMapBuilder,
     layout as map_layout,
+    map_report,
     map_summary,
 )
 from edsm_api import EDSMAPI
@@ -114,7 +115,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.1"
+VERSION = "2.10.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2525,8 +2526,19 @@ class ColonialHelperApp:
 
         side = tb.Frame(body)
         side.pack(side=RIGHT, fill=Y, padx=(8, 0))
-        tb.Label(side, text="Объекты системы",
-                 font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
+        side_top = tb.Frame(side)
+        side_top.pack(fill=X, pady=(0, 4))
+        tb.Label(side_top, text="Объекты системы",
+                 font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        tb.Button(side_top, text="Сводка", command=self._on_map_copy_summary,
+                  bootstyle="secondary-outline", width=8).pack(side=RIGHT)
+        filter_row = tb.Frame(side)
+        filter_row.pack(fill=X, pady=(0, 4))
+        tb.Label(filter_row, text="Фильтр:", foreground=COLOR_MUTED).pack(side=LEFT)
+        self.map_filter_var = tk.StringVar(value="")
+        filter_entry = tb.Entry(filter_row, textvariable=self.map_filter_var, width=22)
+        filter_entry.pack(side=LEFT, padx=(6, 0), fill=X, expand=True)
+        self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
         tree_frame = tb.Frame(side)
         tree_frame.pack(fill=BOTH, expand=True)
         columns = ("object", "type", "progress", "rest")
@@ -2850,11 +2862,14 @@ class ColonialHelperApp:
             flags = [flag for flag, enabled in (
                 ("скан", body.scanned), ("карта", body.mapped),
                 ("посадка", body.landable), ("терраформ", body.terraformable),
+                ("raven", bool(getattr(body, "from_raven", False)) and not body.scanned),
             ) if enabled]
             rows.append((f"b:{body.name}",
                          (self._map_short_label(body.name), kind, " · ".join(flags),
                           f"{body.distance_ls:.1f} ls"), "body"))
         for iid, values, tag in rows:
+            if not self._map_filter_matches(values):
+                continue
             try:
                 tree.insert("", "end", iid=iid, values=values, tags=(tag,))
             except Exception:
@@ -3067,6 +3082,36 @@ class ColonialHelperApp:
         self._map_sync_tree_selection()
         self._map_show_details(self._map_selected)
 
+    def _on_map_filter_changed(self):
+        """Фильтр списка объектов: перерисовывать холст не нужно."""
+        self._fill_map_tree(self._map_last_snapshot or self.system_map.snapshot())
+
+    def _map_filter_matches(self, values) -> bool:
+        needle = str(self.map_filter_var.get() or "").strip().lower()
+        if not needle:
+            return True
+        return any(needle in str(value).lower() for value in values)
+
+    def _on_map_copy_summary(self):
+        """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        report = map_report(snapshot, VERSION)
+        try:
+            import pyperclip
+
+            pyperclip.copy(report)
+        except Exception:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(report)
+            except Exception:
+                self._map_set_hint("Буфер обмена недоступен")
+                return
+        sites = len([station for station in snapshot.sites if not station.complete])
+        self.log(f"Сводка системы {snapshot.system or '—'} скопирована "
+                 f"(строек: {sites})", "info")
+        self._map_set_hint("Сводка скопирована в буфер обмена")
+
     def _on_map_open_project(self):
         """Двойной клик по стройке — открыть её проект в Raven Colonial."""
         snapshot = self._map_last_snapshot
@@ -3133,19 +3178,24 @@ class ColonialHelperApp:
             try:
                 projects = api.get_system_projects(address or system)
                 sites = api.get_system_sites(system)
+                whole = api.get_system_v2(system)
             except Exception:
-                projects = sites = None
-            self.after(0, lambda: self._map_raven_done(system, projects, sites))
+                projects = sites = whole = None
+            self.after(0, lambda: self._map_raven_done(system, projects, sites, whole))
 
         threading.Thread(target=worker, daemon=True, name="map-raven").start()
 
-    def _map_raven_done(self, system: str, projects_result, sites_result):
+    def _map_raven_done(self, system: str, projects_result, sites_result,
+                        whole_result=None):
         self._map_raven_inflight = False
         if self.system_map.current_system != system:
             return   # пилот уже улетел: эти данные другой системы
         projects = []
         plans = []
         note = ""
+        bodies = []
+        if isinstance(whole_result, dict) and whole_result.get("ok"):
+            bodies = self._map_extract_bodies(whole_result.get("data"))
         if isinstance(projects_result, dict) and projects_result.get("ok"):
             projects = self._map_extract_projects(projects_result.get("data"))
         elif isinstance(projects_result, dict) and projects_result.get("error"):
@@ -3155,13 +3205,16 @@ class ColonialHelperApp:
         elif isinstance(sites_result, dict) and sites_result.get("error") and not note:
             note = f"Raven Colonial (планы): {sites_result.get('error')}"
         changed = False
+        if bodies:
+            # Тела — первыми: стройплощадки и планы привязываются к телам.
+            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
         if projects:
             changed = bool(self.system_map.merge_projects(system, projects)) or changed
         if plans:
             changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
-        if projects or plans:
-            note = (f"Raven Colonial: активных проектов — {len(projects)}, "
-                    f"площадок в планах — {len(plans)}")
+        if projects or plans or bodies:
+            note = (f"Raven Colonial: проектов — {len(projects)}, планов — {len(plans)}, "
+                    f"тел — {len(bodies)}")
         if changed:
             self._map_redraw_now()
         if note:
@@ -3183,6 +3236,23 @@ class ColonialHelperApp:
             if any(key in data for key in ("buildId", "buildName", "marketId", "sumTotal")):
                 return [data]
             return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _map_extract_bodies(data) -> list:
+        """Ответ /v2/system/{system}: тела могут лежать в 'bodies' или списком."""
+        if isinstance(data, dict):
+            for key in ("bodies", "Bodies", "stars", "planets"):
+                if isinstance(data.get(key), list):
+                    found = [item for item in data[key] if isinstance(item, dict)]
+                    if found:
+                        return found
+            nested = data.get("body") or data.get("Body")
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+            return [data] if any(key in data for key in ("bodyName", "BodyName")) else []
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         return []

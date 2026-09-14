@@ -295,6 +295,7 @@ class MapBody:
     scanned: bool = False
     mapped: bool = False
     terraformable: bool = False
+    from_raven: bool = False              # тело из Raven v2, журнал его не видел
     stations: List[MapStation] = field(default_factory=list)
     updated_at: str = ""
 
@@ -1075,6 +1076,101 @@ class SystemMapBuilder:
                 changed = True
         return changed
 
+    # -- тела из Raven Colonial v2 ----------------------------------------
+    @staticmethod
+    def _raven_body_fields(raw: dict) -> dict:
+        """Поля тела из ответа Raven v2: ключи приходят в разном регистре."""
+        def pick(*keys):
+            for key in keys:
+                if key in raw and raw[key] not in (None, ""):
+                    return raw[key]
+            return None
+
+        fields = {
+            "name": str(pick("bodyName", "BodyName", "name", "Name") or "").strip(),
+            "body_id": _as_int(pick("bodyId", "BodyID"), 0),
+            "star_type": str(pick("starType", "StarType") or "").strip(),
+            "body_class": str(pick("planetClass", "PlanetClass", "type", "Type")
+                              or "").strip(),
+            "distance_ls": _as_float(pick("distanceFromArrivalLS",
+                                          "DistanceFromArrivalLS", "distanceLS"), 0.0),
+            "radius_m": _as_float(pick("radius", "Radius", "radiusM"), 0.0),
+        }
+        landable = pick("isLandable", "Landable", "landable")
+        fields["landable"] = bool(landable) if isinstance(landable, bool) else None
+        parents = pick("parents", "Parents")
+        parent_ids: List[int] = []
+        if isinstance(parents, list):
+            for entry in parents:
+                if isinstance(entry, dict):
+                    parent_ids.extend(_as_int(value, 0) for value in entry.values()
+                                      if _as_int(value, 0))
+                elif _as_int(entry, 0):
+                    parent_ids.append(_as_int(entry, 0))
+        fields["parent_ids"] = parent_ids
+        return fields
+
+    def merge_bodies(self, system: str, bodies: List[dict]) -> bool:
+        """Тела системы из Raven Colonial v2 (`/v2/system/{system}`).
+
+        Зачем: до сканирования карта знала бы только станции и «звезда не
+        отсканирована», а пилоту хочется видеть систему сразу по прилёту.
+        Raven даёт имена, классы и расстояния всех тел; журнал остаётся
+        главным источником — его поля (скан, карта, посадка, класс) мы не
+        затираем, а только дополняем пробелы.
+        """
+        system = str(system or self.current_system or "").strip()
+        if not system or not isinstance(bodies, list):
+            return False
+        changed = False
+        for raw in bodies:
+            if not isinstance(raw, dict):
+                continue
+            fields = self._raven_body_fields(raw)
+            name = fields["name"]
+            if not name:
+                continue
+            body = self._bodies.get(system, {}).get(name)
+            if body is None:
+                body = self._body(system, name)
+                body.from_raven = True
+                changed = True
+            for key, value in (
+                ("body_id", fields["body_id"]),
+                ("star_type", fields["star_type"]),
+                ("body_class", fields["body_class"]),
+                ("distance_ls", fields["distance_ls"]),
+                ("radius_m", fields["radius_m"]),
+            ):
+                if not value:
+                    continue
+                if not getattr(body, key):
+                    # Журнал главнее: дополняем только пробелы.
+                    setattr(body, key, value)
+                    changed = True
+            if fields["landable"] is not None and not body.scanned:
+                if body.landable != fields["landable"]:
+                    body.landable = fields["landable"]
+                    changed = True
+            if fields["parent_ids"] and not body.parent_ids:
+                body.parent_ids = fields["parent_ids"]
+                changed = True
+            if body.kind == KIND_UNKNOWN:
+                if fields["star_type"]:
+                    body.kind = KIND_STAR
+                elif fields["parent_ids"]:
+                    body.kind = KIND_MOON
+                else:
+                    body.kind = KIND_PLANET
+                changed = True
+            if "terraformable" in str(fields["body_class"]).lower():
+                if not body.terraformable:
+                    body.terraformable = True
+                    changed = True
+        if changed:
+            self._resolve_parents(system)
+        return changed
+
     def _find_plan_station(self, system: str, name: str, body_num, body_name: str):
         """Станция, которая уже соответствует этому плану."""
         lowered = str(name or "").strip().lower()
@@ -1455,6 +1551,53 @@ def _spread_labels(items: List[PlacedItem], height: float) -> None:
             item.label_dy = 0.0
             chosen = label_box(item)
         placed.append(chosen)
+
+
+def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
+    """Многострочная сводка системы: её удобно кинуть в чат флот-крыла.
+
+    В отличие от `map_summary` (одна строка состояния) здесь список строек с
+    процентами и остатками по товарам, построенные объекты и где пилот.
+    """
+    if not snapshot.system:
+        return "Система неизвестна — включите Watcher или загрузите журналы"
+    head = snapshot.system
+    if app_version:
+        head += f" — карта системы (Colonial Helper {app_version})"
+    lines = [head]
+    scanned = len([body for body in snapshot.bodies if body.scanned])
+    bodies_line = f"Тел: {len(snapshot.bodies)}"
+    if snapshot.known_body_count:
+        bodies_line += f" из {snapshot.known_body_count}"
+    bodies_line += f", отсканировано {scanned}"
+    lines.append(bodies_line)
+
+    sites = [station for station in snapshot.sites if not station.complete]
+    if sites:
+        lines.append("Стройки:")
+        for station in sites:
+            percent = station.percent_delivered
+            progress = f"{percent}%" if percent is not None else "процент неизвестен"
+            if station.planned and percent is None:
+                progress = "план"
+            rest = f" (осталось {station.remaining_tons:,} t)".replace(",", " ")
+            line = f"  {station.title} — {progress}{rest if station.remaining_tons else ''}"
+            if station.remaining_by_commodity:
+                top = sorted(station.remaining_by_commodity.items(),
+                             key=lambda pair: pair[1], reverse=True)[:4]
+                line += ": " + ", ".join(f"{name} {amount:,}".replace(",", " ")
+                                          for name, amount in top)
+            lines.append(line)
+    done = [station for station in snapshot.sites if station.complete]
+    built = [station for station in snapshot.built if not station.is_site]
+    if done or built:
+        names = [f"{station.title} (100%)" for station in done]
+        names += [station.title for station in built]
+        lines.append("Построено: " + ", ".join(names))
+    player = snapshot.player
+    ship = " ".join(part for part in (player.ship_name, player.ship_type) if part)
+    lines.append(f"Пилот: {ship}, {player.place}" if ship else f"Пилот: {player.place}")
+    return "\n".join(lines)
 
 
 def map_summary(snapshot: MapSnapshot) -> str:
