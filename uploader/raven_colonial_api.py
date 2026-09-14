@@ -27,6 +27,25 @@ UX_URL = "https://ravencolonial.com"
 REQUIRED_PROJECT_FIELDS = ("marketId", "systemAddress", "buildName")
 
 
+def projects_from(data) -> List[dict]:
+    """Список проектов из ответа Raven Colonial.
+
+    `GET /api/system/{systemAddress}` и `/api/cmdr/{cmdr}/active` отдают то
+    список проектов, то объект со списком внутри, то один проект — зависит от
+    версии сервиса. Приводим к одному виду, чтобы поиск по системе не зависел
+    от формы ответа.
+    """
+    if isinstance(data, dict):
+        for key in ("projects", "Projects", "data", "Data"):
+            if isinstance(data.get(key), list):
+                return [item for item in data[key]
+                        if isinstance(item, dict) and item.get("buildId")]
+        return [data] if data.get("buildId") else []
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict) and item.get("buildId")]
+    return []
+
+
 def project_url(build_id: str) -> str:
     """Ссылка на страницу проекта в Raven Colonial."""
     return f"{UX_URL}/#build={build_id}"
@@ -47,19 +66,58 @@ class RavenColonialAPI:
     # все доставки на одну стройплощадку дают один и тот же проект. Кэш
     # убирает тысячи лишних round trip'ов (каждый — до 15 с таймаута).
     PROJECT_CACHE_TTL = 300.0
+    # «Проекта пока нет» (404) держим заметно меньше: площадку могут
+    # зарегистрировать в Raven Colonial в любую минуту (это делает другой
+    # командир или сам пользователь на вкладке «Колонизатор»), и доставка,
+    # которая всё это время лежала в очереди, должна уйти сразу, как только
+    # проект появится.
+    PROJECT_MISS_TTL = 30.0
 
     def __init__(self, api_key: str = ""):
         self.api_key = api_key
         self.base_url = "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api"
         self._session = requests.Session()
+        # key -> (monotonic_time, project, ttl)
         self._project_cache: Dict[tuple, tuple] = {}
         self._cache_lock = threading.Lock()
+        # Почему последний get_project() вернул None. Нужно вызывающему коду,
+        # чтобы отличить «проекта нет» от «сервер не ответил»: во втором
+        # случае доставку нельзя списывать со счетов, её надо повторить.
+        self.last_lookup_error: str = ""
+        # Как именно найден проект: "market" — точное совпадение
+        # systemAddress+marketId, "system" — поиск по системе (единственный
+        # активный проект), "system+market" — проект системы с тем же
+        # marketId, "id" — по buildId (привязка площадки вручную). Пусто,
+        # если не найден. Вызывающий код пишет это в лог: пользователю важно
+        # видеть, куда именно зачислились тонны.
+        self.last_lookup_source: str = ""
 
     def set_key(self, api_key: str):
         self.api_key = api_key
         # Проект не зависит от ключа, но при смене аккаунта кэш лучше сбросить.
+        self.invalidate_project_cache()
+
+    def invalidate_project_cache(self, system_address=None, market_id=None) -> None:
+        """Сбросить кэш поиска проектов.
+
+        Без аргументов — весь кэш (смена ключа, создание проекта, ручная
+        сверка). С аргументами — только одну площадку: именно её проект
+        только что создали/изменили, и следующая доставка должна увидеть
+        свежий `buildId`, а не «проект не найден» из кэша.
+        """
         with self._cache_lock:
-            self._project_cache.clear()
+            if system_address is None and market_id is None:
+                self._project_cache.clear()
+                return
+            try:
+                address = int(system_address or 0)
+                market = int(market_id or 0)
+            except (TypeError, ValueError):
+                self._project_cache.clear()
+                return
+            for key in list(self._project_cache):
+                if (not address or key[0] == address) and (not market or key[1] == market):
+                    self._project_cache.pop(key, None)
 
     @property
     def is_connected(self) -> bool:
@@ -68,13 +126,20 @@ class RavenColonialAPI:
     def _headers(self) -> dict:
         return {"rcc-key": self.api_key}
 
-    def get_project(self, system_address: int, market_id: int) -> Optional[dict]:
+    def get_project(self, system_address: int, market_id: int,
+                    use_cache: bool = True) -> Optional[dict]:
         """Получить проект по system_address и market_id (с кэшем).
 
         Один и тот же проект запрашивался отдельным HTTP-запросом на каждую
         доставку — при импорте всей истории это тысячи одинаковых запросов.
-        Результат (включая "проект не найден") кэшируется на
-        `PROJECT_CACHE_TTL` секунд.
+        Успешный ответ кэшируется на `PROJECT_CACHE_TTL` секунд, «проекта нет»
+        (404) — на `PROJECT_MISS_TTL`.
+
+        Сетевая ошибка или 5xx НЕ кэшируются. Раньше в кэш писался любой
+        результат, включая `None` после таймаута: одна секундная заминка сети
+        превращалась в пять минут «проект не найден», и все доставки этого
+        окна молча не уходили в Raven Colonial. Причина последнего отказа
+        доступна в `last_lookup_error`.
         """
         try:
             cache_key = (int(system_address or 0), int(market_id or 0))
@@ -82,26 +147,162 @@ class RavenColonialAPI:
             cache_key = (0, 0)
 
         now = time.monotonic()
-        with self._cache_lock:
-            cached = self._project_cache.get(cache_key)
-        if cached is not None and now - cached[0] < self.PROJECT_CACHE_TTL:
-            return cached[1]
+        if use_cache:
+            with self._cache_lock:
+                cached = self._project_cache.get(cache_key)
+            if cached is not None and now - cached[0] < cached[2]:
+                self.last_lookup_error = "" if cached[1] else "проекта пока нет в Raven Colonial"
+                if cached[1]:
+                    self.last_lookup_source = str(cached[3]) if len(cached) > 3 else "market"
+                else:
+                    self.last_lookup_source = ""
+                return cached[1]
 
-        project = None
+        self.last_lookup_error = ""
+        self.last_lookup_source = ""
         try:
             resp = self._session.get(
                 f"{self.base_url}/system/{system_address}/{market_id}",
                 headers=self._headers(),
                 timeout=15,
             )
-            if resp.ok:
-                project = resp.json()
-        except Exception:
-            project = None
+        except Exception as exc:
+            # Временный сбой: не кэшируем, следующая доставка спросит снова.
+            self.last_lookup_error = f"Raven Colonial не ответил ({exc})"
+            return None
 
+        if resp.ok:
+            try:
+                project = resp.json()
+            except ValueError:
+                project = None
+            if isinstance(project, dict) and project.get("buildId"):
+                self.last_lookup_source = "market"
+                self._cache_project(cache_key, project, self.PROJECT_CACHE_TTL, "market")
+                return project
+            # Пустой ответ — не «проекта нет»: пробуем найти по системе.
+            return self._fallback_by_system(cache_key, system_address, market_id,
+                                            "Raven Colonial вернул пустой ответ")
+
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if status == 404:
+            # Точной пары (systemAddress, marketId) в Raven нет. Это НЕ значит,
+            # что проекта нет: его могли создать через сайт или из события
+            # другой площадки, и тогда marketId в проекте отличается от
+            # журнального. Раньше здесь поиск заканчивался, и все доставки
+            # площадки бесконечно висели в очереди с «проект не найден» —
+            # тонны в проект не попадали вовсе.
+            return self._fallback_by_system(cache_key, system_address, market_id,
+                                            "проекта пока нет в Raven Colonial")
+
+        self.last_lookup_error = self._describe_error(status, getattr(resp, "text", ""),
+                                                      "GET", f"/system/{system_address}/{market_id}")
+        return None
+
+    #: Как долго помним «проект не нашёлся и по системе тоже».
+    SYSTEM_FALLBACK_TTL = 60.0
+
+    def _cache_project(self, cache_key: tuple, project, ttl: float, source: str) -> None:
         with self._cache_lock:
-            self._project_cache[cache_key] = (time.monotonic(), project)
-        return project
+            self._project_cache[cache_key] = (time.monotonic(), project, ttl, source)
+
+    def _fallback_by_system(self, cache_key: tuple, system_address: int, market_id: int,
+                            miss_reason: str):
+        """Поиск проекта по системе, когда точная пара не совпала.
+
+        `GET /api/system/{systemAddress}` отдаёт активные проекты системы.
+        Берём проект, только если уверены: либо у одного из них совпал
+        `marketId`, либо активный проект в системе ровно один. Угадывать из
+        нескольких нельзя — тонны ушли бы в чужой проект.
+        """
+        try:
+            resp = self._session.get(
+                f"{self.base_url}/system/{system_address}",
+                headers=self._headers(),
+                timeout=15,
+            )
+        except Exception as exc:
+            self.last_lookup_error = f"Raven Colonial не ответил ({exc})"
+            self.last_lookup_source = ""
+            return None
+
+        if not resp.ok:
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status != 404:
+                self.last_lookup_error = self._describe_error(
+                    status, getattr(resp, "text", ""), "GET", f"/system/{system_address}")
+                self.last_lookup_source = ""
+                return None
+            projects: List[dict] = []
+        else:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = None
+            projects = projects_from(data)
+
+        try:
+            market = int(market_id or 0)
+        except (TypeError, ValueError):
+            market = 0
+
+        if market:
+            for project in projects:
+                try:
+                    if int(project.get("marketId") or 0) == market:
+                        self.last_lookup_source = "system+market"
+                        self.last_lookup_error = ""
+                        self._cache_project(cache_key, project, self.PROJECT_CACHE_TTL,
+                                            "system+market")
+                        return project
+                except (TypeError, ValueError):
+                    continue
+
+        if len(projects) == 1:
+            # В системе один активный проект — он и есть наша стройка.
+            self.last_lookup_source = "system"
+            self.last_lookup_error = ""
+            self._cache_project(cache_key, projects[0], self.PROJECT_CACHE_TTL, "system")
+            return projects[0]
+
+        if len(projects) > 1:
+            self.last_lookup_error = (
+                f"в системе {len(projects)} активных проектов и ни один не привязан к "
+                f"market_id {market}: привяжите площадку к проекту вручную "
+                "(вкладка «Колонизатор»)")
+        else:
+            self.last_lookup_error = miss_reason
+        self.last_lookup_source = ""
+        # «Не нашлось и по системе» тоже кэшируем — иначе каждая доставка
+        # очереди делала бы два запроса вместо одного.
+        self._cache_project(cache_key, None, self.SYSTEM_FALLBACK_TTL, "")
+        return None
+
+    def resolve_project_by_id(self, build_id: str) -> Optional[dict]:
+        """Проект как словарь (или None) по его `buildId`.
+
+        Обёртка над `get_project_by_id()`: нужна ручной привязке
+        стройплощадки к проекту, где buildId известен заранее, а поиск по
+        marketId не совпадает (именно поэтому площадку и привязывают руками).
+        """
+        build_id = str(build_id or "").strip()
+        if not build_id:
+            self.last_lookup_error = "не задан buildId"
+            self.last_lookup_source = ""
+            return None
+        result = self.get_project_by_id(build_id)
+        if not isinstance(result, dict) or not result.get("ok"):
+            self.last_lookup_error = str((result or {}).get("error") or "проект не получен")
+            self.last_lookup_source = ""
+            return None
+        projects = projects_from(result.get("data"))
+        if not projects:
+            self.last_lookup_error = "Raven Colonial вернул пустой проект"
+            self.last_lookup_source = ""
+            return None
+        self.last_lookup_error = ""
+        self.last_lookup_source = "id"
+        return projects[0]
 
     def supply_fc(self, market_id: int, commodity: str, delta: int) -> dict:
         """Обновить груз Fleet Carrier по модели SrvSurvey/Raven Colonial.
@@ -166,34 +367,61 @@ class RavenColonialAPI:
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
 
+        `POST /api/project/{buildId}/contribute/{cmdr?}`, тело — словарь
+        «товар -> тонны» (имена в нижнем регистре, языконезависимые).
+
         Args:
             build_id: ID проекта
-            cmdr: Имя командира
+            cmdr: Имя командира (Raven приводит его к нижнему регистру сам,
+                но пробелы и прочее в пути обязаны быть URL-кодированы —
+                это прямое требование документации API)
             commodities: {resource_name: amount} (Dictionary<string, int>)
+
+        Возвращает `{"ok", "data", "error", "retryable"}`. `retryable`
+        показывает, имеет ли смысл повторить отправку: при 401/403/404/422
+        повтор бессмысленен (данные/ключ неверны), при таймауте и 5xx — нужен.
+        Повторы здесь не спят по несколько секунд: вызывающий код работает в
+        потоке watcher'а, а досылкой занимается его собственная очередь.
         """
-        last_error = "Raven Colonial request failed"
-        for attempt in range(1, 4):
-            try:
-                resp = self._session.post(
-                    f"{self.base_url}/project/{build_id}/contribute/{cmdr}",
-                    headers=self._headers(),
-                    json=commodities,
-                    timeout=15,
-                )
-                if resp.ok:
-                    try:
-                        payload = resp.json()
-                    except ValueError:
-                        payload = None
-                    return {"ok": True, "data": payload, "error": None}
-                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                if resp.status_code not in (408, 429) and resp.status_code < 500:
-                    break
-            except requests.RequestException as exc:
-                last_error = str(exc)
-            if attempt < 3:
-                time.sleep(attempt)
-        return {"ok": False, "error": last_error}
+        if not self.api_key:
+            return {"ok": False, "data": None, "retryable": False,
+                    "error": "Ключ Raven Colonial (RCC) не задан"}
+        cleaned = {
+            str(name): int(amount)
+            for name, amount in (commodities or {}).items()
+            if str(name or "").strip() and int(amount or 0) != 0
+        }
+        if not cleaned:
+            return {"ok": False, "data": None, "retryable": False,
+                    "error": "нечего отправлять: пустой список товаров"}
+        url = (f"{self.base_url}/project/{self._esc(build_id)}"
+               f"/contribute/{self._esc(cmdr) if cmdr else ''}")
+        try:
+            resp = self._session.post(
+                url,
+                headers=self._headers(),
+                json=cleaned,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            return {"ok": False, "data": None, "retryable": True, "error": str(exc)}
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if resp.ok:
+            return {"ok": True, "data": payload, "error": None, "retryable": False}
+        status = int(getattr(resp, "status_code", 0) or 0)
+        return {
+            "ok": False,
+            "data": payload,
+            "status": status,
+            # 408/429/5xx — сервер просит повторить позже, остальное нет.
+            "retryable": status in (408, 429) or status >= 500 or status == 0,
+            "error": self._describe_error(status, payload if payload is not None
+                                          else getattr(resp, "text", ""),
+                                          "POST", f"/project/{build_id}/contribute/{cmdr}"),
+        }
 
     def update_supply(self, build_id: str, resources: dict) -> dict:
         """Обновить supply проекта."""
