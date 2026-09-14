@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.8.6"
+VERSION = "2.8.7"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -3327,6 +3327,16 @@ class ColonialHelperApp:
             return
 
         if not result.get("update_available"):
+            if result.get("channel_empty"):
+                # В канале нет ни одного релиза. Это не «версия свежая», а
+                # «смотреть нечего»: писать «актуальная версия» было бы ложью.
+                self._set_update_ui(
+                    False, hint="в этом канале сборок нет — смените канал")
+                if manual:
+                    self.log(
+                        f"В канале «{self._update_channel_label()}» нет ни одной "
+                        "сборки. Переключите канал на «Все сборки».", "warn")
+                return
             self._set_update_ui(False, hint=f"актуальная версия v{latest}")
             self.log(f"Установлена актуальная версия {VERSION}", "success")
             return

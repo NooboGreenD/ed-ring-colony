@@ -158,9 +158,9 @@ def _sort_key(release: Dict[str, Any]):
     return (release["version"], release.get("published_at") or "")
 
 
-def choose_release(releases: Iterable[Dict[str, Any]], channel: str = "stable",
-                   current: str = "") -> Optional[Dict[str, Any]]:
-    """Лучший релиз под канал обновлений.
+def channel_candidates(releases: Iterable[Dict[str, Any]],
+                       channel: str = "stable") -> List[Dict[str, Any]]:
+    """Релизы, которые канал вообще рассматривает (без сравнения с current).
 
     `stable` — пропускаем prerelease и черновики (это сборки `main`).
     `all`    — берём и prerelease из веток `arena/**`.
@@ -169,6 +169,13 @@ def choose_release(releases: Iterable[Dict[str, Any]], channel: str = "stable",
     candidates = [r for r in releases if r and not r.get("draft")]
     if channel != "all":
         candidates = [r for r in candidates if not r.get("prerelease")]
+    return candidates
+
+
+def choose_release(releases: Iterable[Dict[str, Any]], channel: str = "stable",
+                   current: str = "") -> Optional[Dict[str, Any]]:
+    """Лучший релиз под канал обновлений."""
+    candidates = channel_candidates(releases, channel)
     if current:
         base = version_tuple(current)
         candidates = [r for r in candidates if r["version"] > base]
@@ -182,8 +189,11 @@ def check_for_update(current: str, channel: str = "stable",
     """Есть ли сборка новее `current`.
 
     Возвращает `{"ok", "update_available", "current", "latest", "release",
-    "error"}`. Исключений не бросает: вызов идёт из фонового потока, а
-    отсутствие сети не должно ломать запуск программы.
+    "error", "channel_empty"}`. Исключений не бросает: вызов идёт из фонового
+    потока, а отсутствие сети не должно ломать запуск программы.
+
+    `latest` — новейший релиз **в пределах выбранного канала**: на канале
+    stable туда не попадает тег arena-сборки, которую канал не предлагает.
     """
     result: Dict[str, Any] = {
         "ok": False,
@@ -192,6 +202,9 @@ def check_for_update(current: str, channel: str = "stable",
         "latest": "",
         "release": None,
         "error": None,
+        # True, когда в выбранном канале нет ни одного релиза: тогда
+        # «обновлений нет» означает не «версия свежая», а «смотреть нечего».
+        "channel_empty": False,
     }
     try:
         import requests
@@ -240,8 +253,13 @@ def check_for_update(current: str, channel: str = "stable",
     result["ok"] = True
     best = choose_release(releases, channel=channel, current=current)
     if best is None:
-        newest = max(releases, key=_sort_key) if releases else None
+        # «Последняя известная» — тоже в пределах канала. Считали по всем
+        # релизам, и на канале stable подсказка показывала тег arena-сборки,
+        # которую этот канал заведомо не предлагает.
+        in_channel = channel_candidates(releases, channel)
+        newest = max(in_channel, key=_sort_key) if in_channel else None
         result["latest"] = newest["version_text"] if newest else str(current or "")
+        result["channel_empty"] = not in_channel
         return result
     result["update_available"] = True
     result["latest"] = best["version_text"]

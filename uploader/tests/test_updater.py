@@ -212,6 +212,89 @@ class CheckForUpdateTests(unittest.TestCase):
         self.assertEqual(result["latest"], "2.5.0")
 
 
+class UpdateChannelScopeTests(unittest.TestCase):
+    """`latest` обязан считаться в пределах канала (2.8.7).
+
+    Найдено на реальном ответе GitHub API: в репозитории 10 релизов, все —
+    prerelease с arena-ветки, стабильных нет вообще. Канал по умолчанию —
+    `stable`. `choose_release` корректно возвращал None, но `latest`
+    вычислялся по **всем** релизам, минуя фильтр канала, и интерфейс
+    показывал «актуальная версия v2.8.6-arena-01a09bd7-ed-ring-colony»
+    пользователю на 2.0.0.
+    """
+
+    ARENA = [
+        _release("v2.8.6-arena-x", prerelease=True),
+        _release("v2.8.0-arena-x", prerelease=True),
+    ]
+
+    def test_latest_stays_inside_the_stable_channel(self):
+        """На stable тег arena-сборки в `latest` не попадает."""
+        result = updater.check_for_update(
+            "2.0.0", channel="stable", session=_Session([_Response(self.ARENA)]))
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["update_available"])
+        self.assertNotIn("arena", result["latest"])
+        # Смотреть нечего — значит «последняя известная» это своя версия.
+        self.assertEqual(result["latest"], "2.0.0")
+
+    def test_empty_channel_is_flagged(self):
+        """Пустой канал помечен: это не «версия свежая», а «нечего смотреть»."""
+        result = updater.check_for_update(
+            "2.0.0", channel="stable", session=_Session([_Response(self.ARENA)]))
+
+        self.assertTrue(result["channel_empty"])
+
+    def test_all_channel_still_sees_prereleases(self):
+        """Канал `all` по-прежнему находит arena-сборку."""
+        result = updater.check_for_update(
+            "2.0.0", channel="all", session=_Session([_Response(self.ARENA)]))
+
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["latest"], "2.8.6-arena-x")
+        self.assertFalse(result["channel_empty"])
+
+    def test_up_to_date_in_a_non_empty_channel(self):
+        """Своя версия и есть новейшая в канале — канал не пуст."""
+        payload = [_release("v2.4.2"), _release("v2.4.0")]
+        result = updater.check_for_update(
+            "2.4.2", channel="stable", session=_Session([_Response(payload)]))
+
+        self.assertFalse(result["update_available"])
+        self.assertFalse(result["channel_empty"])
+        self.assertEqual(result["latest"], "2.4.2")
+
+    def test_latest_is_newest_of_the_channel_not_of_the_current(self):
+        """`latest` — новейший релиз канала, даже если он старее установленного."""
+        payload = [_release("v2.3.0"), _release("v2.2.0")]
+        result = updater.check_for_update(
+            "2.9.0", channel="stable", session=_Session([_Response(payload)]))
+
+        self.assertFalse(result["update_available"])
+        self.assertFalse(result["channel_empty"])
+        self.assertEqual(result["latest"], "2.3.0")
+
+    def test_draft_only_channel_counts_as_empty(self):
+        """Канал только из черновиков пуст: черновики не предлагаем никогда."""
+        payload = [_release("v9.9.9", draft=True)]
+        result = updater.check_for_update(
+            "2.0.0", channel="all", session=_Session([_Response(payload)]))
+
+        self.assertFalse(result["update_available"])
+        self.assertTrue(result["channel_empty"])
+        self.assertEqual(result["latest"], "2.0.0")
+
+    def test_channel_candidates_helper_matches_choose_release(self):
+        """Общий фильтр: helper и choose_release видят один и тот же набор."""
+        parsed = [updater.parse_release(r) for r in self.ARENA]
+
+        self.assertEqual(updater.channel_candidates(parsed, "stable"), [])
+        self.assertEqual(len(updater.channel_candidates(parsed, "all")), 2)
+        self.assertIsNone(updater.choose_release(parsed, "stable"))
+        self.assertIsNotNone(updater.choose_release(parsed, "all"))
+
+
 class DownloadTests(unittest.TestCase):
     def test_download_writes_file_and_reports_progress(self):
         payload = [b"a" * 100, b"b" * 100, b"c" * 50]
