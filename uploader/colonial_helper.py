@@ -120,7 +120,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.8"
+VERSION = "2.10.9"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2709,9 +2709,12 @@ class ColonialHelperApp:
         # Орбитальные кольца — под объектами, иначе они режут значки.
         for item in items:
             if item.kind == "body" and item.orbit_radius > 0:
+                # У лун центр кольца — планета, у планет — звезда (центр карты).
+                cx = ring_x if item.orbit_cx is None else item.orbit_cx
+                cy = ring_y if item.orbit_cy is None else item.orbit_cy
                 canvas.create_oval(
-                    ring_x - item.orbit_radius, ring_y - item.orbit_radius,
-                    ring_x + item.orbit_radius, ring_y + item.orbit_radius,
+                    cx - item.orbit_radius, cy - item.orbit_radius,
+                    cx + item.orbit_radius, cy + item.orbit_radius,
                     outline=COLOR_LINE, dash=(2, 4))
         for wanted, painter in (
             ("star", self._map_draw_star), ("body", self._map_draw_body),

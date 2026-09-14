@@ -1455,3 +1455,76 @@ class UnscannedCounterTests(unittest.TestCase):
         summary = map_summary(builder.snapshot())
         self.assertIn("тела не отсканированы", summary)
         self.assertNotIn("без скана", summary)
+
+
+class OrbitRingTests(unittest.TestCase):
+    """2.10.9: луны стоят на кольцах вокруг планеты, радиус кольца — из полуоси.
+
+    Журнал Elite Dangerous даёт `SemiMajorAxis` (метры): у планет это почти
+    дистанция от звезды, у лун — радиус орбиты вокруг планеты. Raven v2 полуосей
+    не даёт, поэтому для лун оценка — |distLS луны − distLS планеты|.
+    """
+
+    MOON_2B = f"{SYSTEM} A 2 b"
+
+    def test_scan_semi_major_axis_becomes_orbit_ls(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.handle(scan_event(BODY_1, 3, SemiMajorAxis=349340160000.0))
+        body = next(item for item in builder.snapshot().bodies if item.name == BODY_1)
+        self.assertAlmostEqual(body.orbit_ls, 349340160000.0 / 299792458.0, places=3)
+
+    def _layout(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.handle(scan_event(STAR, 1, StarType="K", DistanceFromArrivalLS=0.0,
+                                  Radius=5.9e8))
+        builder.handle(scan_event(BODY_2, 4, Parents=[{"Star": 1}],
+                                  PlanetClass="Class III gas giant",
+                                  DistanceFromArrivalLS=812.0, Radius=6.1e7))
+        builder.handle(scan_event(MOON_2A, 5, Parents=[{"Planet": 4}],
+                                  PlanetClass="Icy body", DistanceFromArrivalLS=813.1,
+                                  Radius=1.2e6, SemiMajorAxis=0.9 * 299792458.0))
+        builder.handle(scan_event(self.MOON_2B, 6, Parents=[{"Planet": 4}],
+                                  PlanetClass="Rocky body", DistanceFromArrivalLS=816.0,
+                                  Radius=9e5, SemiMajorAxis=4.0 * 299792458.0))
+        return layout(builder.snapshot(), 900, 560)
+
+    def test_moon_ring_is_centered_on_planet(self):
+        items = self._layout()
+        planet = next(item for item in items if item.label == BODY_2)
+        moon = next(item for item in items if item.label == MOON_2A)
+        self.assertGreater(moon.orbit_radius, 0.0, "у луны есть орбитальное кольцо")
+        self.assertAlmostEqual(moon.orbit_cx, planet.x, delta=0.01)
+        self.assertAlmostEqual(moon.orbit_cy, planet.y, delta=0.01)
+        distance = math.hypot(moon.x - planet.x, moon.y - planet.y)
+        self.assertAlmostEqual(distance, moon.orbit_radius, delta=0.5,
+                               msg="луна стоит НА своём кольце")
+
+    def test_farther_moon_gets_bigger_ring(self):
+        items = self._layout()
+        near = next(item for item in items if item.label == MOON_2A)
+        far = next(item for item in items if item.label == self.MOON_2B)
+        self.assertGreater(far.orbit_radius, near.orbit_radius)
+
+    def test_planet_ring_center_is_star(self):
+        items = self._layout()
+        planet = next(item for item in items if item.label == BODY_2)
+        self.assertAlmostEqual(planet.orbit_cx, 450.0, delta=0.01)
+        self.assertAlmostEqual(planet.orbit_cy, 280.0, delta=0.01)
+
+    def test_raven_only_moon_still_gets_ring(self):
+        # Без журнала полуось неизвестна: кольцо строим по оценке |ΔdistLS|.
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.merge_bodies(SYSTEM, [
+            {"bodyName": BODY_2, "bodyId": 4, "planetClass": "Class III gas giant",
+             "distanceFromArrivalLS": 812.0},
+            {"bodyName": MOON_2A, "bodyId": 5, "planetClass": "Icy body",
+             "distanceFromArrivalLS": 813.2, "parents": [4]},
+        ])
+        items = layout(builder.snapshot(), 900, 560)
+        planet = next(item for item in items if item.label == BODY_2)
+        moon = next(item for item in items if item.label == MOON_2A)
+        self.assertGreater(moon.orbit_radius, 0.0)
+        self.assertAlmostEqual(moon.orbit_cx, planet.x, delta=0.01)

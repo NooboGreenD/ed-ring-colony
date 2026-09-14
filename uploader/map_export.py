@@ -216,8 +216,9 @@ def export_map_png(snapshot, width: int = 1280, height: int = 820,
 
     for item in items:
         if item.kind == "body" and item.orbit_radius > 0:
-            raster.dashed_circle(center_x + pan_x, center_y + pan_y,
-                                 item.orbit_radius, COLOR_LINE)
+            cx = center_x + pan_x if item.orbit_cx is None else item.orbit_cx
+            cy = center_y + pan_y if item.orbit_cy is None else item.orbit_cy
+            raster.dashed_circle(cx, cy, item.orbit_radius, COLOR_LINE)
 
     for item in items:
         if item.kind != "star":

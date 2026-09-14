@@ -721,3 +721,65 @@ class InaraEventMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InaraWhitelistTests(unittest.TestCase):
+    """2.10.9: «This application has no access allowed.» — не временный сбой.
+
+    Inara пускает только приложения из белого списка: личный ключ без
+    одобренного имени приложения отклоняется на каждом запросе. Повторять
+    такой запрос бесполезно, а в лог достаточно одной понятной строки.
+    """
+
+    def setUp(self):
+        from inara_api import InaraAPI
+
+        self.api = InaraAPI("key", "CMDR", app_version="2.10.9")
+        self.api._session = mock.MagicMock()
+        self.api.RETRY_DELAY = 0
+
+    def _answer(self, status_text):
+        self.api._session.post.return_value = _FakeResponse(
+            {"header": {"eventStatus": 400, "eventStatusText": status_text},
+             "events": []})
+
+    def test_not_whitelisted_is_explained_and_not_retried(self):
+        self._answer("This application has no access allowed.")
+        result = self.api.submit("addCommanderTravelDock",
+                                 {"starsystemName": "Sol"}, "2025-01-01T00:00:00Z")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.get("error_kind"), "inara_not_whitelisted")
+        self.assertFalse(result.get("retryable"))
+        self.assertEqual(self.api._session.post.call_count, 1,
+                         "повторы при отказе в доступе бессмысленны")
+        self.assertIn("белом списке", result["error"])
+
+    def test_other_auth_error_is_not_retried_either(self):
+        self._answer("Invalid API key")
+        result = self.api.submit("addCommanderTravelDock",
+                                 {"starsystemName": "Sol"}, "2025-01-01T00:00:00Z")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result.get("retryable"))
+        self.assertNotIn("error_kind", result)
+        self.assertEqual(self.api._session.post.call_count, 1)
+
+    def test_dispatcher_notifies_once_per_session(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        class Denied:
+            enabled = True
+
+            def submit(self, event_name, data, timestamp=""):
+                return {"ok": False, "error_kind": "inara_not_whitelisted",
+                        "error": "Inara: приложение не в белом списке Inara"}
+
+        notes = []
+        dispatcher = ThirdPartyDispatcher(inara_api=Denied())
+        dispatcher.on_result = lambda service, ok, message: notes.append(message)
+        payload = {"event_name": "addCommanderTravelDock", "data": {},
+                   "timestamp": "2025-01-01T00:00:00Z"}
+        dispatcher._do_inara(payload)
+        dispatcher._do_inara(payload)
+        dispatcher._do_inara(payload)
+        self.assertEqual(len(notes), 1, "простыня из одинаковых отказов не нужна")
+        self.assertIn("белом списке", notes[0])

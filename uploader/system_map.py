@@ -300,6 +300,7 @@ class MapBody:
     body_class: str = ""
     star_type: str = ""
     distance_ls: float = 0.0
+    orbit_ls: float = 0.0        # большая полуось: у лун — вокруг планеты
     radius_m: float = 0.0
     parent_ids: List[int] = field(default_factory=list)
     parent_name: str = ""
@@ -778,6 +779,11 @@ class SystemMapBuilder:
         if parent_ids:
             body.parent_ids = parent_ids
         body.distance_ls = _as_float(event.get("DistanceFromArrivalLS"), body.distance_ls)
+        semi_major_m = _as_float(event.get("SemiMajorAxis"), 0.0)
+        if semi_major_m > 0:
+            # У планет полуось почти равна дистанции от звезды, у лун — это
+            # радиус орбиты вокруг планеты: из него строим кольцо луны.
+            body.orbit_ls = semi_major_m / METERS_PER_LS
         body.radius_m = _as_float(event.get("Radius"), body.radius_m)
         if "Landable" in event:
             body.landable = bool(event.get("Landable"))
@@ -1358,6 +1364,8 @@ class PlacedItem:
     color: str = "#eeeeee"
     progress: Optional[int] = None
     orbit_radius: float = 0.0       # радиус орбитального кольца (для тел)
+    orbit_cx: Optional[float] = None  # центр кольца: None — центр карты (звезда)
+    orbit_cy: Optional[float] = None
     label_dy: float = 0.0           # сдвиг подписи: расталкивание наложений
     pan_x: float = 0.0              # панорама всей карты (центр не на звезде)
     pan_y: float = 0.0
@@ -1422,6 +1430,7 @@ def station_color(station: MapStation) -> str:
 
 
 GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))   # ~137.5°, раскладка без наложений
+METERS_PER_LS = 299792458.0   # журнал даёт SemiMajorAxis в метрах
 
 
 def _find_center_item(items: List[PlacedItem], center_on: str):
@@ -1490,12 +1499,42 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         low = high = 0.0
     span = max(1e-6, high - low)
 
+    def orbit_of(body) -> float:
+        """Большая полуось тела в LS: журнал, иначе оценка по Raven v2.
+
+        Raven v2 полуосей не даёт, только дистанцию от точки прибытия, поэтому
+        для лун берём |distLS луны − distLS планеты| (проекция радиуса орбиты),
+        для планет — саму distLS.
+        """
+        if body.orbit_ls > 0:
+            return body.orbit_ls
+        if body.kind == KIND_MOON:
+            parent = by_name.get(body.parent_name or "")
+            if parent is not None and parent.distance_ls > 0:
+                return max(1e-4, abs(body.distance_ls - parent.distance_ls))
+            return 1e-4
+        return max(0.0, body.distance_ls)
+
+    def moon_ring_px(body, siblings) -> float:
+        inner, outer = 15.0, 34.0
+        orbits = [math.log10(max(1e-4, orbit_of(item))) for item in siblings]
+        if len(orbits) < 2:
+            return (inner + outer) / 2.0
+        low, high = min(orbits), max(orbits)
+        span = high - low
+        if span <= 1e-9:
+            return (inner + outer) / 2.0
+        scale = (math.log10(max(1e-4, orbit_of(body))) - low) / span
+        return inner + (outer - inner) * max(0.0, min(1.0, scale))
+
     def ring_radius(distance_ls: float) -> float:
         inner = max_radius * 0.22
         if len(distances) <= 1:
             return max_radius * 0.6
         scale = (math.log10(max(0.05, distance_ls)) - low) / span
         return inner + (max_radius - inner) * max(0.0, min(1.0, scale))
+
+    by_name = {body.name: body for body in snapshot.bodies}
 
     for index, body in enumerate(planets):
         orbit = ring_radius(body.distance_ls)
@@ -1506,14 +1545,15 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         items.append(PlacedItem(
             kind="body", x=x, y=y, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=body_color(body),
-            orbit_radius=orbit, ref=body, selected=(selected == body.name),
+            orbit_radius=orbit, orbit_cx=center_x, orbit_cy=center_y,
+            ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (x, y)
 
     # Луны — рядом со своей планетой; если планеты на карте нет, ставим луну
     # на её собственное кольцо, чтобы тело не пропало.
     moons = sorted((body for body in snapshot.bodies if body.kind == KIND_MOON),
-                   key=lambda body: (body.parent_name, body.distance_ls, body.name))
+                   key=lambda body: (body.parent_name, orbit_of(body), body.name))
     if show_moons:
         for body in moons:
             siblings = [item for item in moons if item.parent_name == body.parent_name]
@@ -1524,16 +1564,22 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
                 angle = (len(planets) + index) * GOLDEN_ANGLE
                 x = center_x + orbit * math.cos(angle)
                 y = center_y + orbit * math.sin(angle)
+                ring_cx, ring_cy, ring_px = center_x, center_y, orbit
             else:
-                offset = 20.0 + 9.0 * index
-                angle = -math.pi / 4 + index * 0.9
-                x = anchor[0] + offset * math.cos(angle)
-                y = anchor[1] + offset * math.sin(angle)
+                # Кольцо луны вокруг планеты: радиус монотонно растёт с большой
+                # полуосью (лог-шкала между ближайшей и дальней луной родителя),
+                # угол — золотой, чтобы луны не слипались в одну точку.
+                ring_px = moon_ring_px(body, siblings)
+                angle = index * GOLDEN_ANGLE
+                x = anchor[0] + ring_px * math.cos(angle)
+                y = anchor[1] + ring_px * math.sin(angle)
+                ring_cx, ring_cy = anchor
             x = max(14.0, min(width - 14.0, x))
             y = max(14.0, min(height - 14.0, y))
             items.append(PlacedItem(
                 kind="body", x=x, y=y, radius=3.5, label=body.name,
-                caption=body.body_class, color=body_color(body), orbit_radius=0.0,
+                caption=body.body_class, color=body_color(body),
+                orbit_radius=ring_px, orbit_cx=ring_cx, orbit_cy=ring_cy,
                 ref=body, selected=(selected == body.name),
             ))
             positions[body.name] = (x, y)
@@ -1597,6 +1643,10 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             for item in items:
                 item.x += dx
                 item.y += dy
+                if item.orbit_cx is not None:
+                    item.orbit_cx += dx
+                if item.orbit_cy is not None:
+                    item.orbit_cy += dy
                 item.pan_x = dx
                 item.pan_y = dy
     _spread_labels(items, height)

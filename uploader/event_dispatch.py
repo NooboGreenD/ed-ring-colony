@@ -297,6 +297,9 @@ class ThirdPartyDispatcher:
         # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
         # недоступность EDSM не превратилась в тысячи одинаковых строк в логе.
         self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0}
+        # «Приложение не в белом списке Inara» не лечится повторами: пишем один
+        # раз, иначе каждое событие журнала добавляло бы простыню в лог.
+        self._inara_access_notified = False
 
         # «Transient state» для EDSM: сам по себе журнал часто не знает, где и
         # на чём был командир в момент события (например, в Scan нет системы).
@@ -731,6 +734,11 @@ class ThirdPartyDispatcher:
         if result.get("ok"):
             self.stats["sent"] += 1
             self._notify_success("inara")
+        elif result.get("error_kind") == "inara_not_whitelisted":
+            self.stats["failed"] += 1
+            if not self._inara_access_notified:
+                self._inara_access_notified = True
+                self._notify("inara", False, str(result.get("error") or ""))
         else:
             self.stats["failed"] += 1
             self._notify_failure("inara", str(result.get("error") or "Inara отклонила событие"))
