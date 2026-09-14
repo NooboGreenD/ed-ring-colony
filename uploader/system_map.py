@@ -1353,6 +1353,8 @@ class PlacedItem:
     progress: Optional[int] = None
     orbit_radius: float = 0.0       # радиус орбитального кольца (для тел)
     label_dy: float = 0.0           # сдвиг подписи: расталкивание наложений
+    pan_x: float = 0.0              # панорама всей карты (центр не на звезде)
+    pan_y: float = 0.0
     ref: object = None
     selected: bool = False
 
@@ -1416,8 +1418,25 @@ def station_color(station: MapStation) -> str:
 GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))   # ~137.5°, раскладка без наложений
 
 
+def _find_center_item(items: List[PlacedItem], center_on: str):
+    """Объект, на который просили отцентровать: тело по имени, станция по id."""
+    wanted = str(center_on or "").strip()
+    if not wanted:
+        return None
+    for item in items:
+        ref = item.ref
+        if isinstance(ref, MapStation):
+            if wanted in (str(ref.build_id or ""), str(ref.name or ""),
+                          str(ref.title or ""), str(item.label or "")):
+                return item
+        elif str(item.label or "") == wanted:
+            return item
+    return None
+
+
 def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
-           show_moons: bool = True, selected: str = "") -> List[PlacedItem]:
+           show_moons: bool = True, selected: str = "",
+           center_on: str = "") -> List[PlacedItem]:
     """Разложить снимок системы по координатам холста.
 
     Карта схематическая (реальных орбитальных позиций журнал не даёт): звезда в
@@ -1562,6 +1581,18 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         kind="player", x=anchor[0], y=anchor[1], radius=12.0,
         label="Вы здесь", caption=player.place, color=PLAYER_COLOR, ref=player,
     ))
+    if center_on:
+        # Двойной клик по объекту: вся карта сдвигается так, чтобы он встал в
+        # центр холста. Орбитальные кольца едут вместе с картой (pan_x/pan_y).
+        anchor = _find_center_item(items, center_on)
+        if anchor is not None:
+            dx = center_x - anchor.x
+            dy = center_y - anchor.y
+            for item in items:
+                item.x += dx
+                item.y += dy
+                item.pan_x = dx
+                item.pan_y = dy
     _spread_labels(items, height)
     return items
 
@@ -1645,6 +1676,30 @@ def _spread_labels(items: List[PlacedItem], height: float) -> None:
         placed.append(chosen)
 
 
+#: Русские названия товаров колонизации для сводки: ключи Raven Colonial —
+#: строчные «слепые» имена (`liquidoxygen`), в чат крыла такое кидать неудобно.
+#: Неизвестные ключи сводка показывает как есть — выдумывать имена нельзя.
+COMMODITY_LABELS_RU = {
+    "steel": "Сталь", "titanium": "Титан", "copper": "Медь",
+    "aluminium": "Алюминий", "lithium": "Литий", "cobalt": "Кобальт",
+    "gallium": "Галлий", "indium": "Индий", "tantalum": "Тантал",
+    "uranium": "Уран", "silver": "Серебро", "gold": "Золото",
+    "platinum": "Платина", "palladium": "Палладий", "osmium": "Осмий",
+    "thorium": "Торий", "beryllium": "Бериллий", "zirconium": "Цирконий",
+    "hafnium": "Гафний", "antimony": "Сурьма", "tellurium": "Теллур",
+    "germanium": "Германий", "yttrium": "Иттрий", "niobium": "Ниобий",
+    "thallium": "Таллий", "scandium": "Скандий",
+    "liquidoxygen": "Жидкий кислород", "water": "Вода", "ice": "Лёд",
+    "hydrogenperoxide": "Пероксид водорода", "biowaste": "Биоотходы",
+}
+
+
+def commodity_label(key: str) -> str:
+    """`liquidoxygen` -> «Жидкий кислород»; неизвестный ключ не трогаем."""
+    name = str(key or "").strip()
+    return COMMODITY_LABELS_RU.get(name.lower(), name)
+
+
 def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
     """Многострочная сводка системы: её удобно кинуть в чат флот-крыла.
 
@@ -1677,8 +1732,9 @@ def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
             if station.remaining_by_commodity:
                 top = sorted(station.remaining_by_commodity.items(),
                              key=lambda pair: pair[1], reverse=True)[:4]
-                line += ": " + ", ".join(f"{name} {amount:,}".replace(",", " ")
-                                          for name, amount in top)
+                line += ": " + ", ".join(
+                    f"{commodity_label(name)} {amount:,}".replace(",", " ")
+                    for name, amount in top)
             lines.append(line)
     done = [station for station in snapshot.sites if station.complete]
     built = [station for station in snapshot.built if not station.is_site]

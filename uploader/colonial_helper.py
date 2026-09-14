@@ -116,7 +116,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.4"
+VERSION = "2.10.5"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -176,6 +176,7 @@ class ColonialHelperApp:
         self.system_map = SystemMapBuilder()
         self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
         self._map_selected = ""               # выбранный объект (имя тела/buildId)
+        self._map_center = ""                 # центр карты: пусто = звезда системы
         self._map_redraw_job = None           # id отложенной перерисовки
         self._map_items: list = []            # что нарисовано (для клика мышью)
         self._map_last_snapshot = None        # снимок последней отрисовки
@@ -2522,6 +2523,8 @@ class ColonialHelperApp:
         self.map_canvas.pack(fill=BOTH, expand=True)
         self.map_canvas.bind("<Configure>", self._on_map_resize)
         self.map_canvas.bind("<Button-1>", self._on_map_click)
+        # Двойной клик: отцентровать на объекте, по пустому месту — сброс.
+        self.map_canvas.bind("<Double-Button-1>", self._on_map_double_click)
         self.map_canvas.bind("<Motion>", self._on_map_hover)
         self.map_canvas.bind("<Leave>", lambda _event: self._map_restore_hint())
         # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
@@ -2543,9 +2546,10 @@ class ColonialHelperApp:
         filter_entry = tb.Entry(filter_row, textvariable=self.map_filter_var, width=22)
         filter_entry.pack(side=LEFT, padx=(6, 0), fill=X, expand=True)
         # Быстрый отбор «что ещё сканировать»: тела со сканом прячем из списка.
-        self.map_unscanned_var = tk.BooleanVar(value=False)
+        self.map_unscanned_var = tk.BooleanVar(
+            value=bool(self.config.get("map_unscanned", False)))
         tb.Checkbutton(filter_row, text="неотск.", variable=self.map_unscanned_var,
-                       command=self._on_map_filter_changed,
+                       command=self._on_map_unscanned_toggle,
                        bootstyle="secondary-round-toggle").pack(side=LEFT, padx=(6, 0))
         self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
         tree_frame = tb.Frame(side)
@@ -2561,6 +2565,8 @@ class ColonialHelperApp:
         ):
             self.map_tree.heading(col, text=title)
             self.map_tree.column(col, width=width, anchor=anchor)
+        # Двойной клик по строке — отцентровать карту на выбранном объекте.
+        self.map_tree.bind("<Double-1>", self._on_map_tree_double)
         # Стройки — самое важное на карте, поэтому они оранжевые и сверху списка.
         self.map_tree.tag_configure("site", foreground=COLOR_ORANGE)
         self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
@@ -2672,19 +2678,25 @@ class ColonialHelperApp:
         show_moons = not getattr(self, "map_moons_var", None) or bool(
             self.map_moons_var.get())
         items = map_layout(snapshot, width, height, zoom=self._map_zoom(),
-                           show_moons=show_moons, selected=self._map_selected)
+                           show_moons=show_moons, selected=self._map_selected,
+                           center_on=self._map_center)
         self._map_items = items
         try:
             canvas.delete("all")
         except Exception:
             return
         center_x, center_y = width / 2.0, height / 2.0
+        # Центр карты после двойного клика: кольца едут вместе со всей картой.
+        pan_x, pan_y = next(((item.pan_x, item.pan_y) for item in items
+                             if getattr(item, "pan_x", 0.0) or getattr(item, "pan_y", 0.0)),
+                            (0.0, 0.0))
+        ring_x, ring_y = center_x + pan_x, center_y + pan_y
         # Орбитальные кольца — под объектами, иначе они режут значки.
         for item in items:
             if item.kind == "body" and item.orbit_radius > 0:
                 canvas.create_oval(
-                    center_x - item.orbit_radius, center_y - item.orbit_radius,
-                    center_x + item.orbit_radius, center_y + item.orbit_radius,
+                    ring_x - item.orbit_radius, ring_y - item.orbit_radius,
+                    ring_x + item.orbit_radius, ring_y + item.orbit_radius,
                     outline=COLOR_LINE, dash=(2, 4))
         for wanted, painter in (
             ("star", self._map_draw_star), ("body", self._map_draw_body),
@@ -3008,6 +3020,11 @@ class ColonialHelperApp:
         self._map_remember_view()
         self._draw_system_map(self._map_last_snapshot)
 
+    def _on_map_unscanned_toggle(self):
+        """Тумблер «неотск.»: перезаполнить список и запомнить до рестарта."""
+        self._map_remember_view()
+        self._on_map_filter_changed()
+
     def _on_map_toggle(self):
         """Переключили «Луны»/«Подписи»: перерисовать и запомнить вид."""
         self._map_remember_view()
@@ -3018,6 +3035,8 @@ class ColonialHelperApp:
         self.config["map_zoom_index"] = int(self._map_zoom_index)
         self.config["map_show_moons"] = bool(self.map_moons_var.get())
         self.config["map_show_labels"] = bool(self.map_labels_var.get())
+        self.config["map_unscanned"] = bool(getattr(self, "map_unscanned_var", None)
+                                            and self.map_unscanned_var.get())
         # Запись файла откладываем: колесо мыши даёт несколько шагов зума подряд.
         if self._map_save_job is not None:
             try:
@@ -3058,6 +3077,29 @@ class ColonialHelperApp:
         if item is None or item.kind == "player":
             return
         self._select_map_object(self._map_item_key(item))
+
+    def _on_map_double_click(self, event):
+        """Двойной клик по объекту — центр карты на нём; по пустому месту — сброс.
+
+        Дальние луны и внешние стройки уезжают за край холста на любом зуме;
+        панорама дешевле, чем ещё три ступени зума.
+        """
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None or item.kind == "player":
+            self._map_center = ""
+            self._map_set_hint("Центр — звезда системы; двойной клик по объекту "
+                               "отцентрует на нём")
+        else:
+            self._map_center = self._map_item_key(item)
+            self._map_set_hint(f"Центр: {item.label} — двойной клик по пустому месту "
+                               f"вернёт звезду в центр")
+        self._map_redraw_now()
+
+    def _on_map_tree_double(self, _event=None):
+        """Двойной клик по строке списка — то же центрирование выбранного."""
+        if self._map_selected:
+            self._map_center = self._map_selected
+            self._map_redraw_now()
 
     def _on_map_hover(self, event):
         item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))

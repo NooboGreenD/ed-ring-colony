@@ -638,7 +638,7 @@ class MapFilterAndSummaryTests(MapTabTestBase):
         report = str(clipboard.copy.call_args.args[0])
         self.assertIn(SYSTEM, report)
         self.assertIn("Стройки:", report)
-        self.assertIn("A 1 — 20% (осталось 4 000 t): steel 4 000", report)
+        self.assertIn("A 1 — 20% (осталось 4 000 t): Сталь 4 000", report)
         hints = [str(call.kwargs.get("text"))
                  for call in self.app.map_hint.config.call_args_list]
         self.assertIn("Сводка скопирована в буфер обмена", hints)
@@ -930,3 +930,57 @@ class MapRavenCacheTests(MapTabTestBase):
         self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
         self.app._on_map_refresh()
         self.assertIn(f"{SYSTEM} C 9", self.names())
+
+
+class MapCenteringTests(MapTabTestBase):
+    """Двойной клик по объекту — центр карты на нём; по пустому месту — сброс."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(), live=True)
+        self.app._map_redraw_now()
+
+    def item(self, label):
+        found = [item for item in self.app._map_items if item.label == label]
+        self.assertTrue(found, f"объект {label} не на холсте")
+        return found[0]
+
+    def test_double_click_centers_on_body(self):
+        self.prepare()
+        target = self.item(BODY_1)
+        self.app._on_map_double_click(mock.Mock(x=target.x, y=target.y))
+        self.assertEqual(self.app._map_center, BODY_1)
+        centered = self.item(BODY_1)
+        self.assertAlmostEqual(centered.x, 450.0, delta=1.0,
+                               msg="холст 900x560: центр (450, 280)")
+        self.assertAlmostEqual(centered.y, 280.0, delta=1.0)
+
+    def test_double_click_empty_resets_center(self):
+        self.prepare()
+        target = self.item(BODY_1)
+        self.app._on_map_double_click(mock.Mock(x=target.x, y=target.y))
+        self.app._on_map_double_click(mock.Mock(x=4.0, y=4.0))
+        self.assertEqual(self.app._map_center, "")
+        star = next(item for item in self.app._map_items if item.kind == "star")
+        self.assertAlmostEqual(star.x, 450.0, delta=1.0)
+        self.assertAlmostEqual(star.y, 280.0, delta=1.0)
+
+    def test_tree_double_click_centers_selected(self):
+        self.prepare()
+        self.app._select_map_object(BODY_1)
+        self.app._on_map_tree_double()
+        self.assertEqual(self.app._map_center, BODY_1)
+        centered = self.item(BODY_1)
+        self.assertAlmostEqual(centered.x, 450.0, delta=1.0)
+
+    def test_unscanned_toggle_is_remembered(self):
+        self.prepare()
+        self.app.map_unscanned_var.set(True)
+        self.app.map_tree.insert.reset_mock()
+        self.app._on_map_unscanned_toggle()
+        self.assertTrue(self.app.config.get("map_unscanned"))
+        rows = [str(call.kwargs.get("iid"))
+                for call in self.app.map_tree.insert.call_args_list]
+        self.assertNotIn(f"b:{BODY_1}", rows)

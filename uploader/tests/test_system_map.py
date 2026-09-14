@@ -46,6 +46,7 @@ from system_map import (  # noqa: E402
     SystemMapBuilder,
     classify_signal,
     classify_station,
+    commodity_label,
     layout,
     map_summary,
     merged_source,
@@ -678,8 +679,8 @@ class MapReportTests(unittest.TestCase):
         self.assertIn("Colonial Helper 2.10.2", report)
         self.assertIn("Тел: 4 из 9, отсканировано 4", report)
         self.assertIn("Стройки:", report)
-        self.assertIn("A 1 — 23% (осталось 6 610 t): steel 4 865, liquidoxygen 1 745",
-                      report)
+        self.assertIn("A 1 — 23% (осталось 6 610 t): Сталь 4 865, "
+                      "Жидкий кислород 1 745", report)
         self.assertIn("B 2 — план", report)
         self.assertIn("Построено: Jameson Memorial", report)
         self.assertIn(f"Пилот: на станции {SITE_NAME}", report)
@@ -1323,3 +1324,47 @@ class MapRavenCacheTests(unittest.TestCase):
         cache = MapRavenCache(None)
         self.assertFalse(cache.store(SYSTEM, bodies=[{"name": BODY_1}]))
         self.assertEqual(cache.load(SYSTEM), {})
+
+
+class CommodityLabelTests(unittest.TestCase):
+    """Русские названия товаров в сводке: ключи Raven слепые и строчные."""
+
+    def test_known_keys(self):
+        self.assertEqual(commodity_label("steel"), "Сталь")
+        self.assertEqual(commodity_label("liquidoxygen"), "Жидкий кислород")
+        self.assertEqual(commodity_label("STEEL"), "Сталь", "регистр не важен")
+
+    def test_unknown_key_untouched(self):
+        self.assertEqual(commodity_label("unobtainium"), "unobtainium")
+        self.assertEqual(commodity_label(""), "")
+
+
+class LayoutCenterTests(unittest.TestCase):
+    """Двойной клик: карта центрируется на объекте, вся геометрия едет вместе."""
+
+    def test_center_on_body(self):
+        snapshot = scanned_system().snapshot()
+        plain = layout(snapshot, 900, 600)
+        centered = layout(snapshot, 900, 600, center_on=BODY_1)
+        target = next(item for item in centered if item.label == BODY_1)
+        self.assertAlmostEqual(target.x, 450.0, delta=0.5)
+        self.assertAlmostEqual(target.y, 300.0, delta=0.5)
+        plain_target = next(item for item in plain if item.label == BODY_1)
+        dx, dy = 450.0 - plain_target.x, 300.0 - plain_target.y
+        self.assertTrue(abs(dx) + abs(dy) > 1.0, "тело и так было в центре?")
+        for before, after in zip(plain, centered):
+            self.assertAlmostEqual(after.x - before.x, dx, delta=0.01)
+            self.assertAlmostEqual(after.y - before.y, dy, delta=0.01)
+            self.assertAlmostEqual(after.pan_x, dx, delta=0.01)
+            self.assertAlmostEqual(after.pan_y, dy, delta=0.01)
+
+    def test_center_unknown_keeps_star(self):
+        snapshot = scanned_system().snapshot()
+        plain = layout(snapshot, 900, 600)
+        centered = layout(snapshot, 900, 600, center_on="нет такого тела")
+        star = next(item for item in centered if item.kind == "star")
+        self.assertAlmostEqual(star.x, 450.0, delta=0.5)
+        self.assertAlmostEqual(star.y, 300.0, delta=0.5)
+        for before, after in zip(plain, centered):
+            self.assertAlmostEqual(after.x, before.x, delta=0.01)
+            self.assertAlmostEqual(after.y, before.y, delta=0.01)
