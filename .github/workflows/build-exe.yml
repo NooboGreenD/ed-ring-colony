@@ -45,8 +45,16 @@ jobs:
           python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py uploader/colonisation.py uploader/carrier.py uploader/updater.py uploader/http_errors.py uploader/system_map.py
 
       - name: Run uploader tests
+        # Хвост провального прогона пишем в step summary: сырые логи джобы
+        # иногда недоступны, а список упавших тестов нужен сразу.
+        shell: pwsh
         run: |
-          python -m unittest discover -s uploader/tests -v
+          python -m unittest discover -s uploader/tests -v 2>&1 | Tee-Object -FilePath uploader-tests.log
+          if ($LASTEXITCODE -ne 0) {
+            "## Упавшие тесты (хвост прогона)" >> $env:GITHUB_STEP_SUMMARY
+            Get-Content uploader-tests.log -Tail 150 >> $env:GITHUB_STEP_SUMMARY
+            exit $LASTEXITCODE
+          }
 
       # Версия берётся из colonial_helper.VERSION, тег и признак prerelease —
       # из имени ветки. Считает это uploader/updater.py, чтобы правила тегов
