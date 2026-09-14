@@ -486,13 +486,24 @@ class CarrierTracker:
         if not isinstance(cargo, Mapping) or not cargo:
             return False
         merged: Dict[str, int] = {}
+        aliases: Dict[str, int] = {}
         for raw, amount in cargo.items():
             key = canonical_commodity(raw)
             if not key:
                 continue
             value = _as_int(amount)
-            if value > 0:
+            if value <= 0:
+                continue
+            # Канонический ключ (`cmmcomposite`) важнее псевдонима
+            # (`cmm-composite`): на сервере FC-cargo мог скопиться мусор от
+            # старых записей, и при слиянии он не должен перебивать актуальный
+            # канонический счётчик — только дополнять отсутствующий.
+            if str(raw).strip().lower() == key:
                 merged[key] = value
+            else:
+                aliases[key] = value
+        for key, value in aliases.items():
+            merged.setdefault(key, value)
         if not merged:
             return False
         self.state.remote_cargo = dict(merged)

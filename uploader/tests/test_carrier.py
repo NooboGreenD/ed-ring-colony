@@ -1119,6 +1119,16 @@ class CanonicalCommodityTests(unittest.TestCase):
         self.assertEqual(cmm[0]["need"], 5)
         self.assertEqual(cmm[0]["remaining"], 0)
 
+    def test_canonical_key_beats_stale_alias(self):
+        tracker = CarrierTracker()
+        tracker.merge_remote({"cmm-composite": 12, "cmmcomposite": 5})
+        self.assertEqual(tracker.state.commodities.get("cmmcomposite"), 5,
+                         "старый псевдоним не перебивает канонический счётчик")
+        tracker2 = CarrierTracker()
+        tracker2.merge_remote({"cmm-composite": 12})
+        self.assertEqual(tracker2.state.commodities.get("cmmcomposite"), 12,
+                         "без канонического ключа псевдоним работает")
+
     def test_localised_journal_name_joins_same_row(self):
         tracker = CarrierTracker()
         self.assertTrue(tracker.handle({
