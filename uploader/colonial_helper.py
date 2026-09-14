@@ -2674,6 +2674,7 @@ class ColonialHelperApp:
 
     def _map_draw_star(self, canvas, item, show_labels):
         radius = max(6.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
         # Свечение: звезда — центр карты, её видно сразу.
         canvas.create_oval(item.x - radius * 1.9, item.y - radius * 1.9,
                            item.x + radius * 1.9, item.y + radius * 1.9,
@@ -2685,15 +2686,16 @@ class ColonialHelperApp:
         if not show_labels:
             return
         if item.label:
-            canvas.create_text(item.x, item.y - radius * 1.9 - 6,
+            canvas.create_text(item.x, item.y - radius * 1.9 - 6 + dy,
                                text=self._map_short_label(item.label), fill=COLOR_TEXT,
                                font=("Consolas", 9, "bold"), anchor="s")
         if item.caption:
-            canvas.create_text(item.x, item.y + radius * 1.9 + 6, text=item.caption,
+            canvas.create_text(item.x, item.y + radius * 1.9 + 6 + dy, text=item.caption,
                                fill=COLOR_MUTED, font=("Consolas", 8), anchor="n")
 
     def _map_draw_body(self, canvas, item, show_labels):
         radius = max(3.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
         canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
                            fill=item.color,
                            outline=COLOR_ORANGE if item.selected else "#111315",
@@ -2704,16 +2706,17 @@ class ColonialHelperApp:
         if not show_labels or not item.label:
             return
         is_moon = getattr(item.ref, "kind", "") == KIND_MOON
-        canvas.create_text(item.x, item.y + radius + 7,
+        canvas.create_text(item.x, item.y + radius + 7 + dy,
                            text=self._map_short_label(item.label),
                            fill=COLOR_MUTED if is_moon else COLOR_TEXT,
                            font=("Consolas", 7 if is_moon else 8), anchor="n")
         if item.caption and not is_moon:
-            canvas.create_text(item.x, item.y + radius + 18, text=item.caption,
+            canvas.create_text(item.x, item.y + radius + 18 + dy, text=item.caption,
                                fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
 
     def _map_draw_station(self, canvas, item, show_labels):
         station = item.ref
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
         radius = max(5.0, float(item.radius))
         is_site = isinstance(station, MapStation) and station.is_site
         planned = bool(getattr(station, "planned", False))
@@ -2742,16 +2745,16 @@ class ColonialHelperApp:
                                width=line_width)
         used = radius + 4.0
         if item.progress is not None:
-            used += self._map_draw_progress(canvas, item, radius)
+            used += self._map_draw_progress(canvas, item, radius, dy)
         if not show_labels or not item.label:
             return
-        canvas.create_text(item.x, item.y + used + 4,
+        canvas.create_text(item.x, item.y + used + 4 + dy,
                            text=self._map_short_label(item.label),
                            fill=COLOR_ORANGE if is_site else COLOR_TEXT,
                            font=("Consolas", 8, "bold") if is_site else ("Consolas", 8),
                            anchor="n")
 
-    def _map_draw_progress(self, canvas, item, radius) -> float:
+    def _map_draw_progress(self, canvas, item, radius, dy: float = 0.0) -> float:
         """Прогресс-бар под стройплощадкой: сколько процентов груза завезено.
 
         Возвращает, на сколько пикселей ниже значка занято место, — подпись
@@ -2760,7 +2763,7 @@ class ColonialHelperApp:
         progress = max(0, min(100, int(item.progress or 0)))
         bar_width = max(20, int(item.bar_width))
         left = item.x - bar_width / 2.0
-        top = item.y + radius + 6.0
+        top = item.y + radius + 6.0 + dy
         bottom = top + 9.0
         canvas.create_rectangle(left, top, left + bar_width, bottom,
                                 fill="#111315", outline=COLOR_LINE)
@@ -2776,16 +2779,17 @@ class ColonialHelperApp:
 
     def _map_draw_player(self, canvas, item, show_labels):
         radius = max(10.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
         canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
                            item.y + radius, outline=COLOR_GREEN, width=2)
         canvas.create_oval(item.x - 3, item.y - 3, item.x + 3, item.y + 3,
                            fill=COLOR_GREEN, outline="")
         if not show_labels:
             return
-        canvas.create_text(item.x, item.y - radius - 6, text="Вы здесь",
+        canvas.create_text(item.x, item.y - radius - 6 + dy, text="Вы здесь",
                            fill=COLOR_GREEN, font=("Consolas", 8, "bold"), anchor="s")
         if item.caption:
-            canvas.create_text(item.x, item.y + radius + 6,
+            canvas.create_text(item.x, item.y + radius + 6 + dy,
                                text=self._map_short_label(item.caption),
                                fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
 

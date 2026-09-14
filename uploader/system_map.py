@@ -143,6 +143,19 @@ def _as_int(value, default: int = 0) -> int:
         return default
 
 
+def better_kind(current: str, candidate: str) -> str:
+    """Какой тип объекта оставить.
+
+    События журнала не всегда несут `StationType`: `Undocked` и часть
+    `Docked` приходят без него, и `classify_station` отвечает «объект».
+    Такой ответ не должен стирать уже известный тип — иначе станция, которую
+    мы видели портом, после отстыковки превращалась бы в безымянный «объект».
+    """
+    if candidate == STATION_OTHER and current and current != STATION_OTHER:
+        return current
+    return candidate or current or STATION_OTHER
+
+
 def merged_source(current: str) -> str:
     """Откуда объект известен после подмешивания данных Raven.
 
@@ -536,7 +549,8 @@ class SystemMapBuilder:
         market_id = _as_int(event.get("MarketID"), 0)
         station = self._station(system, station_name, market_id)
         station.station_type = station_type or station.station_type
-        station.kind = classify_station(station_name, station_type, services)
+        station.kind = better_kind(station.kind,
+                                   classify_station(station_name, station_type, services))
         if market_id:
             station.market_id = market_id
         body_name = str(event.get("BodyName") or event.get("Body") or "").strip()
@@ -686,9 +700,9 @@ class SystemMapBuilder:
         station_name = str(event.get("StationName") or "").strip()
         if station_name:
             station = self._station(system, station_name, _as_int(event.get("MarketID"), 0))
-            station.kind = classify_station(
+            station.kind = better_kind(station.kind, classify_station(
                 station_name, str(event.get("StationType") or ""),
-                event.get("StationServices") or []) or station.kind
+                event.get("StationServices") or []))
             self._attach(system, station)
         self.player.docked = False
         self.player.station_name = ""
@@ -1150,6 +1164,7 @@ class PlacedItem:
     color: str = "#eeeeee"
     progress: Optional[int] = None
     orbit_radius: float = 0.0       # радиус орбитального кольца (для тел)
+    label_dy: float = 0.0           # сдвиг подписи: расталкивание наложений
     ref: object = None
     selected: bool = False
 
@@ -1359,7 +1374,87 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         kind="player", x=anchor[0], y=anchor[1], radius=12.0,
         label="Вы здесь", caption=player.place, color=PLAYER_COLOR, ref=player,
     ))
+    _spread_labels(items, height)
     return items
+
+
+def _rects_overlap(first, second, margin: float = 0.0) -> bool:
+    return not (first[2] + margin < second[0] or second[2] + margin < first[0]
+                or first[3] + margin < second[1] or second[3] + margin < first[1])
+
+
+def _label_size(item: PlacedItem):
+    """Ширина и высота блока подписи: текст, полоса прогресса, пояснение.
+
+    Ширины считаем по тем шрифтам, которыми рисует вкладка (Consolas 8 для
+    имени, 7 для пояснения): завышенная рамка заставляла бы расталкивание
+    раздвигать подписи, которые на экране и не касались.
+    """
+    label_px = 4.9 * len(item.label or "")
+    caption_px = 4.3 * len(item.caption or "")
+    progress_px = (float(item.bar_width) + 42.0) if item.progress is not None else 0.0
+    width = max(label_px, caption_px, progress_px) + 8.0
+    height = 16.0
+    if item.progress is not None:
+        height += 14.0
+    if item.caption:
+        height += 12.0
+    return max(30.0, width), height
+
+
+def label_box(item: PlacedItem) -> Tuple[float, float, float, float]:
+    """Прямоугольник, который займёт подпись объекта на холсте."""
+    width, height = _label_size(item)
+    extra = 22.0 if item.kind in ("star", "player") else 0.0
+    top = item.y + item.radius + 4.0 + float(getattr(item, "label_dy", 0.0) or 0.0) - extra
+    return (item.x - width / 2.0, top, item.x + width / 2.0, top + height)
+
+
+def _icon_box(item: PlacedItem) -> Tuple[float, float, float, float]:
+    """Значок объекта: подпись не должна ложиться поверх чужого значка."""
+    if item.kind == "star":
+        radius = max(6.0, item.radius) * 1.9
+    elif item.kind == "station":
+        radius = max(5.0, item.radius) + 3.0
+    else:
+        radius = max(3.0, item.radius)
+    return (item.x - radius - 2.0, item.y - radius - 2.0,
+            item.x + radius + 2.0, item.y + radius + 2.0)
+
+
+def _spread_labels(items: List[PlacedItem], height: float) -> None:
+    """Развести подписи, чтобы они не наезжали друг на друга.
+
+    В плотных системах (несколько станций у одного тела) подписи иначе
+    сливаются в кашу: каждая следующая пробует сдвинуться вниз/вверх, пока не
+    найдёт свободное место. Порядок важен: сначала важное — стройплощадки и
+    отметка пилота, потом тела.
+    """
+    order = {"station": 0, "player": 1, "star": 2, "body": 3}
+    # Значки неподвижны: они — препятствия для подписей, включая свой
+    # (своя подпись начинается ниже значка и с ним не пересекается).
+    placed: List[Tuple[float, float, float, float]] = [_icon_box(item) for item in items]
+    for item in sorted(items, key=lambda it: (order.get(it.kind, 9), it.y, it.x)):
+        chosen = None
+        # Шаги по 7 пикселей в обе стороны, от ближайших к дальним: в плотном
+        # кластере (планета + две площадки + луна) свободная щель узкая.
+        candidates = sorted(range(-112, 127, 7), key=lambda value: (abs(value), value))
+        for dy in candidates:
+            dy = float(dy)
+            item.label_dy = dy
+            box = label_box(item)
+            if box[1] < 2.0 or box[3] > height - 2.0:
+                continue
+            if any(_rects_overlap(box, other, 2.0) for other in placed):
+                continue
+            chosen = box
+            break
+        if chosen is None:
+            # Свободного места не нашлось: рисуем на месте, лучше внахлёст,
+            # чем за границами холста.
+            item.label_dy = 0.0
+            chosen = label_box(item)
+        placed.append(chosen)
 
 
 def map_summary(snapshot: MapSnapshot) -> str:

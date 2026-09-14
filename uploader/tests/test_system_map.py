@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from system_map import (  # noqa: E402
+    better_kind,
     KIND_MOON,
     KIND_PLANET,
     KIND_STAR,
@@ -188,6 +189,14 @@ class ClassificationTests(unittest.TestCase):
     def test_signal_unknown_or_empty(self):
         self.assertIsNone(classify_signal(""))
         self.assertIsNone(classify_signal("$SAA_SignalType_Anomie;"))
+
+    def test_better_kind_does_not_downgrade(self):
+        # Событие без StationType не должно стирать уже известный тип.
+        self.assertEqual(better_kind(STATION_PORT, STATION_OTHER), STATION_PORT)
+        self.assertEqual(better_kind(STATION_OTHER, STATION_PORT), STATION_PORT)
+        # Уточнение в пользу стройплощадки работает.
+        self.assertEqual(better_kind(STATION_PORT, STATION_SITE), STATION_SITE)
+        self.assertEqual(better_kind(STATION_OTHER, STATION_OTHER), STATION_OTHER)
 
     def test_merged_source_is_stable(self):
         # Повторное слияние не должно переключать источник туда-сюда.
@@ -756,6 +765,38 @@ class LayoutTests(unittest.TestCase):
         marker = next(item for item in items if item.kind == "player")
         self.assertEqual(marker.caption, "в суперкруизе")
 
+    def test_labels_do_not_overlap(self):
+        """В плотной системе подписи расталкиваются, а не сливаются в кашу."""
+        from system_map import _icon_box, label_box
+
+        snapshot = self.fixture()
+        items = layout(snapshot, 900, 560)
+        boxes = [label_box(item) for item in items if item.label or item.caption]
+        icons = [_icon_box(item) for item in items]
+        self.assertGreater(len(boxes), 6)
+
+        def overlap(first, second):
+            return (first[0] < second[2] and second[0] < first[2]
+                    and first[1] < second[3] and second[1] < first[3])
+
+        for index, first in enumerate(boxes):
+            for second in boxes[index + 1:]:
+                self.assertFalse(overlap(first, second),
+                                 f"подписи наезжают: {first} / {second}")
+        for box in boxes:
+            for icon in icons:
+                # Своя подпись начинается ниже своего значка — это не наезд.
+                if abs(box[1] - (icon[3] - 2.0)) < 3.0 and box[0] < icon[2] < box[2]:
+                    continue
+                self.assertFalse(overlap(box, icon),
+                                 f"подпись лежит на значке: {box} / {icon}")
+
+    def test_label_shift_is_deterministic(self):
+        snapshot = self.fixture()
+        first = [item.label_dy for item in layout(snapshot, 900, 560)]
+        second = [item.label_dy for item in layout(snapshot, 900, 560)]
+        self.assertEqual(first, second)
+
     def test_zoom_changes_scale(self):
         snapshot = self.fixture()
         normal = layout(snapshot, 900, 560)
@@ -893,6 +934,21 @@ class RobustnessTests(unittest.TestCase):
         self.assertEqual(len(stations), 1)
         self.assertEqual(stations[0].market_id, 128665509)
         self.assertEqual(stations[0].kind, STATION_PORT)
+
+    def test_undocked_does_not_downgrade_known_kind(self):
+        # `Undocked` приходит без StationType: станция должна остаться портом.
+        builder = SystemMapBuilder()
+        builder.handle({"event": "FSDJump", "StarSystem": SYSTEM, "SystemAddress": ADDRESS})
+        builder.handle({"event": "Docked", "StarSystem": SYSTEM,
+                        "StationName": "Jameson Terminal", "StationType": "Orbis Starport",
+                        "MarketID": 128665509})
+        builder.handle({"event": "Undocked", "StarSystem": SYSTEM,
+                        "StationName": "Jameson Terminal", "MarketID": 128665509})
+        stations = builder.snapshot().stations
+        self.assertEqual(len(stations), 1)
+        self.assertEqual(stations[0].kind, STATION_PORT,
+                         "после отстыковки тип станции ухудшился")
+        self.assertEqual(stations[0].caption, "станция")
 
     def test_snapshot_of_other_system(self):
         builder = scanned_system()
