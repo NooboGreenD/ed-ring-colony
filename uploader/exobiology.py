@@ -210,6 +210,212 @@ def format_credits(value) -> str:
     return f"{value:.0f}"
 
 
+# ============================================================
+#  Поиск планет по параметрам
+# ============================================================
+# Отдельная задача пользователя: «поиск планет с параметрами — при нахождении
+# такой планеты в системе выводить информацию в оверлей (например планета
+# каменистая с атмосферой и посадкой, ледяная с посадкой и т.д.)».
+#
+# Критерии намеренно описаны данными, а не кодом: пресет — это словарь, его
+# можно дополнить одной строкой, не трогая функцию поиска.
+
+#: Группы типов планет: `PlanetClass` из журнала собран в понятные наборы.
+PLANET_CLASS_GROUPS: Dict[str, Tuple[str, ...]] = {
+    "rocky": ("Rocky body",),
+    "icy": ("Icy body",),
+    "rocky_ice": ("Rocky ice body",),
+    "metal_rich": ("Metal rich body",),
+    "high_metal": ("High metal content body",),
+    "earthlike": ("Earthlike body",),
+    "water": ("Water world",),
+    "ammonia": ("Ammonia world",),
+}
+
+#: Русские подписи групп — для вкладки настроек.
+PLANET_GROUP_LABELS: Dict[str, str] = {
+    "rocky": "Каменистая",
+    "icy": "Ледяная",
+    "rocky_ice": "Каменисто-ледяная",
+    "metal_rich": "Богатая металлом",
+    "high_metal": "Высокое содержание металла",
+    "earthlike": "Землеподобная",
+    "water": "Мир с водой",
+    "ammonia": "Аммиачный мир",
+}
+
+#: Готовые наборы критериев. `classes` пусто — подходит любой тип.
+#: `atmosphere`: "any" / "none" / "present" / "thin" / "thick".
+PLANET_SEARCH_PRESETS: Tuple[Dict[str, Any], ...] = (
+    {
+        "id": "rocky_atmo_land",
+        "label": "Каменистая с атмосферой и посадкой",
+        "classes": ("rocky",), "landable": True, "atmosphere": "present",
+    },
+    {
+        "id": "rocky_land_noatmo",
+        "label": "Каменистая с посадкой, без атмосферы",
+        "classes": ("rocky",), "landable": True, "atmosphere": "none",
+    },
+    {
+        "id": "icy_land",
+        "label": "Ледяная с посадкой",
+        "classes": ("icy",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "rocky_ice_land",
+        "label": "Каменисто-ледяная с посадкой",
+        "classes": ("rocky_ice",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "metal_rich_land",
+        "label": "Богатая металлом с посадкой",
+        "classes": ("metal_rich",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "high_metal_land",
+        "label": "Высокое содержание металла, с посадкой",
+        "classes": ("high_metal",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "earthlike",
+        "label": "Землеподобная",
+        "classes": ("earthlike",), "landable": None, "atmosphere": "any",
+    },
+    {
+        "id": "water_world",
+        "label": "Мир с водой",
+        "classes": ("water",), "landable": None, "atmosphere": "any",
+    },
+    {
+        "id": "ammonia_world",
+        "label": "Аммиачный мир",
+        "classes": ("ammonia",), "landable": None, "atmosphere": "any",
+    },
+    {
+        "id": "volcanic_land",
+        "label": "С вулканизмом и посадкой",
+        "classes": (), "landable": True, "atmosphere": "any", "volcanism": True,
+    },
+    {
+        "id": "any_landable",
+        "label": "Любая, на которую можно сесть",
+        "classes": (), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "bio_signals",
+        "label": "С биосигналами",
+        "classes": (), "landable": None, "atmosphere": "any", "min_signals": 1,
+    },
+)
+
+#: Быстрый доступ к пресету по id.
+PLANET_PRESETS_BY_ID: Dict[str, Dict[str, Any]] = {
+    str(row.get("id")): row for row in PLANET_SEARCH_PRESETS
+}
+
+
+def _preset_classes(criteria: dict) -> set:
+    """Множество `PlanetClass` из критериев (пусто — подходит любой тип)."""
+    result = set()
+    for group in criteria.get("classes") or ():
+        result.update(PLANET_CLASS_GROUPS.get(str(group), ()))
+    # Допускаем и прямые названия классов из журнала, не только группы.
+    for group in criteria.get("classes") or ():
+        text = str(group)
+        if text not in PLANET_CLASS_GROUPS:
+            result.add(text)
+    return result
+
+
+def body_matches(body: dict, criteria: dict) -> bool:
+    """Подходит ли тело под один набор критериев поиска."""
+    if not isinstance(body, dict) or not isinstance(criteria, dict):
+        return False
+
+    wanted = _preset_classes(criteria)
+    if wanted and str(body.get("planet_class") or "") not in wanted:
+        return False
+
+    landable = criteria.get("landable")
+    if landable is not None and bool(body.get("landable")) != bool(landable):
+        return False
+
+    mode = str(criteria.get("atmosphere") or "any").lower()
+    if mode != "any":
+        category = atmosphere_category(body)
+        if mode == "present":
+            # «С атмосферой» — тонкая или плотная. unknown не годится: данных
+            # нет, и утверждать, что атмосфера есть, нельзя.
+            if category not in ("thin", "thick"):
+                return False
+        elif category != mode:
+            return False
+
+    volcanism = criteria.get("volcanism")
+    if volcanism is not None:
+        has = bool(str(body.get("volcanism") or "").strip().lower()
+                   not in ("", "no volcanism", "none"))
+        if has != bool(volcanism):
+            return False
+
+    min_signals = int(criteria.get("min_signals") or 0)
+    if min_signals and int(body.get("bio_signals") or 0) < min_signals:
+        return False
+
+    return True
+
+
+def search_planets(bodies, criteria_list, limit: int = 6) -> List[Dict[str, Any]]:
+    """Найти в списке тел те, что подходят хотя бы под один набор критериев.
+
+    Возвращает строки для оверлея: имя, тип, признаки и какие именно наборы
+    совпали (игроку важно понимать, почему планета попала в список).
+    """
+    active = [row for row in (criteria_list or []) if isinstance(row, dict)]
+    if not active:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for body in bodies or []:
+        if not isinstance(body, dict):
+            continue
+        matched = [str(rule.get("label") or rule.get("id") or "")
+                   for rule in active if body_matches(body, rule)]
+        if not matched:
+            continue
+        rows.append({
+            "body": str(body.get("name") or ""),
+            "planet_class": str(body.get("planet_class") or ""),
+            "landable": bool(body.get("landable")),
+            "atmosphere_category": atmosphere_category(body),
+            "atmosphere": str(body.get("atmosphere") or body.get("atmosphere_type") or ""),
+            "volcanism": str(body.get("volcanism") or ""),
+            "bio_signals": int(body.get("bio_signals") or 0),
+            "mapped": bool(body.get("mapped")),
+            "distance_ls": _as_float(body.get("distance_ls"), 0.0),
+            "matched": matched,
+        })
+    # Сначала близкие тела и те, где есть биосигналы: туда полетят в первую
+    # очередь. Сортировка детерминирована, иначе список прыгал бы между тиками.
+    rows.sort(key=lambda row: (not row["bio_signals"],
+                               row["distance_ls"] if row["distance_ls"] > 0 else 1e9,
+                               row["body"]))
+    return rows[:max(1, int(limit))]
+
+
+def filter_predictions(rows, allowed) -> List[Dict[str, Any]]:
+    """Оставить в предсказаниях только выбранные роды.
+
+    `allowed` пусто или None — фильтр выключен, показываем всё.
+    """
+    if not allowed:
+        return list(rows or [])
+    wanted = {str(item).strip() for item in allowed if str(item).strip()}
+    if not wanted:
+        return list(rows or [])
+    return [row for row in (rows or []) if str(row.get("genus") or "") in wanted]
+
+
 def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """То же, что `predict_genera`, но с процентом совпадения правил.
 
@@ -615,6 +821,19 @@ class ExobiologyTracker:
         # «Fungoida» во множественном числе приходит как «Fungoida», а вот
         # «Osseus» — как «Osseus»: проверяем и полную строку.
         return text if text in GENUS_VALUE_CR else head
+
+    def search_system_planets(self, criteria_list, limit: int = 6) -> List[dict]:
+        """Тела текущей системы, подходящие под выбранные наборы критериев.
+
+        В отличие от `system_bodies()` сюда попадают и тела без биосигналов:
+        поиск планет ищет именно параметры (тип, посадка, атмосфера), а не
+        жизнь. Данные — только из журнала игрока.
+        """
+        if not criteria_list:
+            return []
+        bodies = [body for key, body in self.bodies.items()
+                  if key.startswith(f"{self.current_system}|")]
+        return search_planets(bodies, criteria_list, limit=limit)
 
     def system_bodies(self, limit: int = 10) -> List[dict]:
         """Тела текущей системы, у которых есть биосигналы (важные сверху).

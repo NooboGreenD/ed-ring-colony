@@ -385,7 +385,13 @@ class CarrierOverlayRenderTests(unittest.TestCase):
         self.assertIn("учтено по журналу", self._text(overlay.total_label))
 
     def _labels(self):
-        """Перехватить все создаваемые tk.Label вместе с их текстом."""
+        """Перехватить все создаваемые tk.Label вместе с их текстом.
+
+        `text_arg` — последний известный текст: из конструктора либо из
+        последующего `config(text=...)`. Строки списка товаров создаются
+        пустыми и заполняются через `config()`, поэтому читать только
+        аргументы конструктора нельзя.
+        """
         import overlay as _ov
 
         created = []
@@ -393,6 +399,14 @@ class CarrierOverlayRenderTests(unittest.TestCase):
         def factory(*args, **kwargs):
             widget = mock.MagicMock(name="Label")
             widget.text_arg = str(kwargs.get("text", ""))
+
+            def _config(*c_args, **c_kwargs):
+                if "text" in c_kwargs:
+                    widget.text_arg = str(c_kwargs["text"])
+                return widget.config_real(*c_args, **c_kwargs)
+
+            widget.config_real = mock.MagicMock()
+            widget.config.side_effect = _config
             created.append(widget)
             return widget
 
@@ -431,6 +445,8 @@ class CarrierOverlayRenderTests(unittest.TestCase):
         # Строки: «на борту» с долей командира в скобках.
         texts = [w.text_arg for w in created]
         self.assertIn("250 (120)", texts)
+        # Строки переиспользуются, а не пересоздаются: пустых ячеек нет.
+        self.assertIn("4000", texts)
         self.assertIn("Steel", texts)
         self.assertIn("Titanium", texts)
         self.assertIn("-3750", texts)

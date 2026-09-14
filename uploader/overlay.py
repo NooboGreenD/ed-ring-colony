@@ -1710,6 +1710,21 @@ class CarrierOverlay(OverlayWindow):
     стройплощадки колонизации. Данные собирает `carrier.CarrierTracker`.
     """
 
+    #: Колонки списка товаров: (заголовок, ширина в символах, выравнивание).
+    #: Спецификация общая для шапки и для строк: раньше у шапки был свой
+    #: набор шири́н и свой размер шрифта, поэтому заголовки разъезжались с
+    #: цифрами. Порядок совпадает с порядком ячеек в строке.
+    COLUMNS = (
+        ("Товар", 18, tk.W),
+        ("на борту", 9, tk.E),
+        ("нужно", 7, tk.E),
+        ("ост.", 6, tk.E),
+    )
+    #: Ключи ячеек строки в том же порядке, что и `COLUMNS`.
+    CELL_KEYS = ("name", "board", "need", "tail")
+    #: Номера колонок, которые печатаем жирным (числа важнее подписей).
+    BOLD_COLUMNS = (1, 3)
+
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
         super().__init__(
             master, "CARRIER",
@@ -1752,27 +1767,44 @@ class CarrierOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=2)
 
-        # Заголовки колонок: без них «120/200» непонятно что означает.
-        columns = tk.Frame(self.content, bg=COLOR_PANEL)
-        columns.pack(fill=tk.X, pady=(0, 1))
-        tk.Label(columns, text="Товар", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
-                 bg=COLOR_PANEL, anchor=tk.W).pack(side=tk.LEFT)
-        tk.Label(columns, text="ост.", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
-                 bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
-        tk.Label(columns, text="нужно", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
-                 bg=COLOR_PANEL, anchor=tk.E, width=7).pack(side=tk.RIGHT)
-        tk.Label(columns, text="на борту", font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED,
-                 bg=COLOR_PANEL, anchor=tk.E, width=9).pack(side=tk.RIGHT)
+        # Список товаров. Шапка и canvas живут в одном контейнере, а ширина
+        # внутреннего фрейма canvas подгоняется под реальную ширину canvas
+        # (`_on_canvas_resize`) — только так заголовки колонок стоят ровно
+        # над цифрами. Полоса прокрутки вынесена в отдельный столбец справа,
+        # иначе она съедала ширину у строк, но не у шапки.
+        self._row_font = (ff, fs - 1)
+        self._row_font_bold = (ff, fs - 1, "bold")
 
-        self.canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=150)
+        list_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        rail = tk.Frame(list_frame, bg=COLOR_PANEL)
+        rail.pack(side=tk.RIGHT, fill=tk.Y)
+        self.columns = tk.Frame(list_frame, bg=COLOR_PANEL)
+        self.columns.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(self.columns, bg=COLOR_PANEL)
+        header.pack(fill=tk.X, pady=(0, 1))
+        for index, (text, width, anchor) in enumerate(self.COLUMNS):
+            tk.Label(header, text=text, font=self._row_font, fg=COLOR_TEXT_MUTED,
+                     bg=COLOR_PANEL, anchor=anchor, width=width).grid(
+                row=0, column=index, sticky="ew" if anchor == tk.W else "e")
+        header.grid_columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(self.columns, bg=COLOR_PANEL, highlightthickness=0, height=150)
         self.canvas.pack(fill=tk.BOTH, expand=True)
-        scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.canvas.yview)
+        scrollbar = tk.Scrollbar(rail, orient=tk.VERTICAL, command=self.canvas.yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.canvas.configure(yscrollcommand=scrollbar.set)
 
         self.inner = tk.Frame(self.canvas, bg=COLOR_PANEL)
-        self.canvas.create_window((0, 0), window=self.inner, anchor=tk.NW, width=300)
+        self._inner_window = self.canvas.create_window((0, 0), window=self.inner, anchor=tk.NW)
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+
+        # Пул строк: виджеты создаются один раз и дальше только меняют текст.
+        self._row_pool: list = []
+        self._row_order: list = []
+        self._empty_label: Optional[tk.Label] = None
 
         self.summary_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
                                       fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
@@ -1825,48 +1857,7 @@ class CarrierOverlay(OverlayWindow):
         self.detail_label.config(text="  ·  ".join(details))
 
         rows = list(data.get("commodities") or [])
-        for widget in self.inner.winfo_children():
-            widget.destroy()
-
-        if not rows:
-            tk.Label(
-                self.inner,
-                text="[ Нет данных по товарам ]\nОткройте Carrier Management\nили пристыкуйтесь к авианосцу",
-                font=(ff, fs - 1), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, justify=tk.LEFT,
-            ).pack(pady=18, anchor=tk.W)
-        else:
-            for row in rows:
-                line = tk.Frame(self.inner, bg=COLOR_PANEL)
-                line.pack(fill=tk.X, pady=1)
-                label = str(row.get("name") or row.get("key") or "")[:18]
-                amount = int(row.get("amount") or 0)      # сколько лежит на борту
-                delivered = int(row.get("delivered") or 0)  # сколько завезли вы
-                need = int(row.get("need") or 0)
-                remaining = int(row.get("remaining") or 0)
-
-                # «На борту» — главное число: оно включает и груз других
-                # командиров. Если часть завезли вы, подписываем это.
-                on_board = f"{amount}"
-                if delivered and delivered < amount:
-                    on_board = f"{amount} ({delivered})"
-                tk.Label(line, text=label, font=(ff, fs - 1), fg=COLOR_TEXT,
-                         bg=COLOR_PANEL, anchor=tk.W, width=18).pack(side=tk.LEFT)
-                if need > 0:
-                    tail = f"-{remaining}" if remaining > 0 else "OK"
-                    tail_color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
-                    need_color = COLOR_TEXT_MUTED
-                    board_color = COLOR_GREEN_TEXT if remaining == 0 else COLOR_ACCENT
-                else:
-                    tail, tail_color = "", COLOR_TEXT_MUTED
-                    need_color = COLOR_TEXT_MUTED
-                    board_color = COLOR_TEXT
-                tk.Label(line, text=tail, font=(ff, fs - 1, "bold"), fg=tail_color,
-                         bg=COLOR_PANEL, anchor=tk.E, width=6).pack(side=tk.RIGHT)
-                tk.Label(line, text=str(need) if need else "—", font=(ff, fs - 1),
-                         fg=need_color, bg=COLOR_PANEL, anchor=tk.E,
-                         width=7).pack(side=tk.RIGHT)
-                tk.Label(line, text=on_board, font=(ff, fs - 1, "bold"), fg=board_color,
-                         bg=COLOR_PANEL, anchor=tk.E, width=9).pack(side=tk.RIGHT)
+        self._render_rows(rows)
 
         # Чей список материалов показан.
         need_label = str(data.get("need_label") or "").strip()
@@ -1912,6 +1903,95 @@ class CarrierOverlay(OverlayWindow):
         self.inner.update_idletasks()
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
+    # -- список товаров ----------------------------------------------------
+    def _on_canvas_resize(self, event):
+        """Подогнать внутренний фрейм под ширину canvas.
+
+        Без этого строки оставались фиксированными 300 px, а шапка занимала
+        всю ширину блока — заголовки колонок не совпадали с цифрами.
+        """
+        try:
+            width = int(getattr(event, "width", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if width > 1:
+            self.canvas.itemconfigure(self._inner_window, width=width)
+
+    def _make_row(self) -> dict:
+        """Одна строка списка: тот же грид и те же ширины, что и у шапки."""
+        frame = tk.Frame(self.inner, bg=COLOR_PANEL)
+        cells = {}
+        for index, (_text, width, anchor) in enumerate(self.COLUMNS):
+            font = self._row_font_bold if index in self.BOLD_COLUMNS else self._row_font
+            cell = tk.Label(frame, text="", font=font, fg=COLOR_TEXT,
+                            bg=COLOR_PANEL, anchor=anchor, width=width)
+            cell.grid(row=0, column=index, sticky="ew" if anchor == tk.W else "e")
+            cells[self.CELL_KEYS[index]] = cell
+        frame.grid_columnconfigure(0, weight=1)
+        return {"frame": frame, "cells": cells}
+
+    def _render_rows(self, rows: list):
+        """Обновить список, переиспользуя виджеты.
+
+        Прежний код уничтожал и создавал заново все строки на каждое
+        обновление — именно это выглядело как мерцание текста.
+        """
+        if self._empty_label is None:
+            self._empty_label = tk.Label(
+                self.inner,
+                text="[ Нет данных по товарам ]\nОткройте Carrier Management\n"
+                     "или пристыкуйтесь к авианосцу",
+                font=self._row_font, fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, justify=tk.LEFT,
+            )
+
+        if not rows:
+            if self._row_order:
+                for entry in self._row_pool:
+                    entry["frame"].pack_forget()
+                self._row_order = []
+            self._empty_label.pack(pady=18, anchor=tk.W)
+            return
+
+        self._empty_label.pack_forget()
+        while len(self._row_pool) < len(rows):
+            self._row_pool.append(self._make_row())
+
+        # Переупаковываем только когда состав или порядок строк изменились:
+        # pack() уже упакованного виджета не переставляет его, но лишняя
+        # переупаковка на каждом тике — это перерасчёт геометрии и мигание.
+        order = [str(row.get("key") or row.get("name") or index)
+                 for index, row in enumerate(rows)]
+        if order != self._row_order:
+            for entry in self._row_pool:
+                entry["frame"].pack_forget()
+            for index in range(len(rows)):
+                self._row_pool[index]["frame"].pack(fill=tk.X, pady=1)
+            self._row_order = order
+
+        for index, row in enumerate(rows):
+            entry = self._row_pool[index]
+            cells = entry["cells"]
+            amount = int(row.get("amount") or 0)        # сколько лежит на борту
+            delivered = int(row.get("delivered") or 0)  # сколько завезли вы
+            need = int(row.get("need") or 0)
+            remaining = int(row.get("remaining") or 0)
+
+            # «На борту» — главное число: оно включает и груз других
+            # командиров. Если часть завезли вы, подписываем это.
+            on_board = f"{amount} ({delivered})" if delivered and delivered < amount else f"{amount}"
+            if need > 0:
+                tail = f"-{remaining}" if remaining > 0 else "OK"
+                tail_color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
+                board_color = COLOR_GREEN_TEXT if remaining == 0 else COLOR_ACCENT
+            else:
+                tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
+
+            cells["name"].config(text=str(row.get("name") or row.get("key") or "")[:18],
+                                 fg=COLOR_TEXT)
+            cells["board"].config(text=on_board, fg=board_color)
+            cells["need"].config(text=str(need) if need else "—", fg=COLOR_TEXT_MUTED)
+            cells["tail"].config(text=tail, fg=tail_color)
+
 
 # ============================================================
 #  ExobiologyOverlay
@@ -1928,9 +2008,11 @@ class ExobiologyOverlay(OverlayWindow):
     журнала, а таймер обязан тикать и без них.
     """
 
-    #: Сколько родов и тел системы показываем — блок не резиновый.
+    #: Сколько родов, тел системы и найденных планет показываем — блок не
+    #: резиновый.
     MAX_PREDICTIONS = 5
     MAX_BODIES = 6
+    MAX_PLANETS = 5
 
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
         super().__init__(
@@ -1994,6 +2076,17 @@ class ExobiologyOverlay(OverlayWindow):
                                      fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
                                      justify=tk.LEFT, wraplength=wrap)
         self.bodies_label.pack(fill=tk.X, pady=(2, 0))
+
+        # Поиск планет по параметрам: настраивается на вкладке «Экзобиология».
+        self.planet_separator = _make_separator(self.content)
+        self.planet_separator.pack(fill=tk.X, pady=5)
+        self.planets_header = tk.Label(self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.planets_header.pack(fill=tk.X)
+        self.planets_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                      fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=wrap)
+        self.planets_label.pack(fill=tk.X, pady=(2, 0))
 
         tk.Label(
             self.content,
@@ -2063,6 +2156,7 @@ class ExobiologyOverlay(OverlayWindow):
             self.predict_label.config(text="нет данных")
             self.bodies_header.config(text="Тела системы:")
             self.bodies_label.config(text="—")
+            self._render_planets({})
             return
 
         system = str(state.get("system") or "").strip()
@@ -2094,6 +2188,7 @@ class ExobiologyOverlay(OverlayWindow):
         self._render_samples(state, mapped)
         self._render_predictions(state, mapped)
         self._render_bodies(state)
+        self._render_planets(state)
 
     def _render_samples(self, state: dict, mapped: bool):
         organics = state.get("organics") or []
@@ -2153,8 +2248,15 @@ class ExobiologyOverlay(OverlayWindow):
 
     def _render_predictions(self, state: dict, mapped: bool):
         predictions = state.get("predictions") or []
+        # Фильтр по родам задаётся на вкладке «Экзобиология».
+        allowed = state.get("genera_filter") or []
+        if allowed:
+            predictions = [row for row in predictions
+                           if str(row.get("genus") or "") in {str(g) for g in allowed}]
         if not predictions:
-            self.predict_label.config(text="нет подходящих родов")
+            self.predict_label.config(
+                text="роды отфильтрованы (вкладка «Экзобиология»)" if allowed
+                else "нет подходящих родов")
             return
         lines = []
         for row in predictions[:self.MAX_PREDICTIONS]:
@@ -2170,6 +2272,71 @@ class ExobiologyOverlay(OverlayWindow):
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.predict_label.config(text="\n".join(lines))
+
+    def _render_planets(self, state: dict):
+        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
+        enabled = bool(self.settings.get("exobio_show_planet_search", True))
+        criteria = state.get("planet_criteria") or []
+        if not enabled:
+            for widget in (self.planet_separator, self.planets_header, self.planets_label):
+                try:
+                    widget.pack_forget()
+                except Exception:
+                    pass
+            return
+        for widget, kwargs in (
+            (self.planet_separator, {"fill": tk.X, "pady": 5}),
+            (self.planets_header, {"fill": tk.X}),
+            (self.planets_label, {"fill": tk.X, "pady": (2, 0)}),
+        ):
+            try:
+                widget.pack(**kwargs)
+            except Exception:
+                pass
+
+        if not criteria:
+            self.planets_header.config(text="Поиск планет:")
+            self.planets_label.config(
+                text="критерии не выбраны — вкладка «Экзобиология»",
+                fg=COLOR_TEXT_MUTED)
+            return
+
+        rows = state.get("planets") or []
+        self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
+        if not rows:
+            self.planets_label.config(
+                text="в этой системе подходящих планет нет\n"
+                     "(нужны отсканированные тела)",
+                fg=COLOR_TEXT_MUTED)
+            return
+
+        system = str(state.get("system") or "")
+        lines = []
+        for row in rows[:self.MAX_PLANETS]:
+            name = str(row.get("body") or "?")
+            if system and name.startswith(system):
+                name = name[len(system):].strip() or name
+            traits = [str(row.get("planet_class") or "?")]
+            category = str(row.get("atmosphere_category") or "")
+            if category in ("thin", "thick"):
+                traits.append("атмосфера")
+            elif category == "none":
+                traits.append("без атмосферы")
+            traits.append("посадка" if row.get("landable") else "не сесть")
+            if int(row.get("bio_signals") or 0):
+                traits.append(f"сигналов {row['bio_signals']}")
+            distance = float(row.get("distance_ls") or 0.0)
+            if distance > 0:
+                traits.append(f"{distance:.0f} св.с")
+            lines.append(f"{name}  ·  {', '.join(traits)}")
+            # Почему планета попала в список — иначе фильтры непрозрачны.
+            matched = [str(item) for item in (row.get("matched") or []) if item]
+            if matched:
+                lines.append(f"   ↳ {', '.join(matched[:2])}")
+        extra = len(rows) - self.MAX_PLANETS
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.planets_label.config(text="\n".join(lines), fg=COLOR_GREEN_TEXT)
 
     def _render_bodies(self, state: dict):
         bodies = state.get("system_bodies") or []
@@ -2349,6 +2516,9 @@ class OverlayManager:
         self.master = master
         self.config_path = config_path
         self.settings = load_overlay_settings(config_path)
+        # Отдаёт состояние EXOBIO для принудительной перерисовки блока после
+        # смены фильтров (подключает приложение, см. set_exobio_state_provider).
+        self._exobio_state_provider = None
         # Отслеживание игры: запущена/в фокусе + геометрия окна.
         self.game_monitor = game_monitor or GameMonitor()
         self.route_overlay: Optional[RouteOverlay] = None
@@ -2813,6 +2983,11 @@ class OverlayManager:
             parts.append(f"{row.get('species')}:{row.get('samples')}:{row.get('stage')}")
         for row in state.get("system_bodies") or []:
             parts.append(f"{row.get('body')}:{row.get('bio_signals')}:{bool(row.get('mapped'))}")
+        # Фильтры и найденные планеты: без них смена настроек на вкладке
+        # «Экзобиология» не перерисовывала блок.
+        parts.append("g:" + ",".join(str(g) for g in state.get("genera_filter") or []))
+        for row in state.get("planets") or []:
+            parts.append(f"p:{row.get('body')}:{row.get('planet_class')}")
         return "|".join(parts)
 
     def _apply_update(self, data: dict):
@@ -2976,6 +3151,43 @@ class OverlayManager:
             self.apply_block_style("ship")
             if not was_visible or not self.settings.get("show_ship", True):
                 self.ship_overlay.hide()
+
+    def set_exobio_filters(self, genera=None, planet_search=None, show_planets=None):
+        """Фильтры блока EXOBIO (вкладка «Экзобиология»).
+
+        Окно не пересоздаём: разделы перерисуются на следующем тике данных, а
+        принудительную перерисовку делаем сами. Пересоздание окна — это ровно
+        та вспышка, на которую жаловались в настройках блоков.
+        """
+        if genera is not None:
+            self.settings["exobio_genera"] = [str(g) for g in genera if str(g).strip()]
+        if planet_search is not None:
+            self.settings["exobio_planet_search"] = [str(i) for i in planet_search if str(i).strip()]
+        if show_planets is not None:
+            self.settings["exobio_show_planet_search"] = bool(show_planets)
+        self.refresh_exobio()
+
+    def refresh_exobio(self):
+        """Перерисовать EXOBIO сразу, не дожидаясь новых событий журнала.
+
+        Без этого смена фильтра на вкладке применялась только после следующего
+        события в журнале — в пустой системе выглядело как «не работает».
+        """
+        overlay = self.exobio_overlay
+        if overlay is None or not self.enabled:
+            return
+        provider = getattr(self, "_exobio_state_provider", None)
+        if provider is None:
+            return
+        try:
+            state = provider()
+        except Exception:
+            return
+        overlay.update_exobiology(state)
+
+    def set_exobio_state_provider(self, provider):
+        """Колбэк, отдающий состояние экзобиологии для принудительной перерисовки."""
+        self._exobio_state_provider = provider
 
     def set_attach_to_game(self, attach: bool):
         self.settings["attach_to_game"] = attach
@@ -3353,6 +3565,15 @@ DEFAULT_SETTINGS = {
     "exobio_height": 470,
     "exobio_locked": False,
     "exobio_anchor": "custom",
+    # Фильтры блока EXOBIO (вкладка «Экзобиология»).
+    # Пустой список родов — фильтр выключен, показываем все предсказания.
+    "exobio_genera": [],
+    # id наборов критериев поиска планет (exobiology.PLANET_SEARCH_PRESETS).
+    "exobio_planet_search": [],
+    # Показывать ли в блоке раздел «Поиск планет».
+    "exobio_show_planet_search": True,
+    # Сколько найденных планет показывать.
+    "exobio_planet_limit": 6,
     "carrier_x": 1060,
     "carrier_y": 430,
     "carrier_width": 330,

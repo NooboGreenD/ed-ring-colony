@@ -280,5 +280,286 @@ class ExobioFingerprintTests(unittest.TestCase):
         self.assertNotEqual(one, two)
 
 
+class ExobioFiltersRenderTests(unittest.TestCase):
+    """Фильтр по родам и раздел «Поиск планет» в окне EXOBIO."""
+
+    def setUp(self):
+        # В общей GUI-заглушке `tk.Label(...)` возвращает один и тот же
+        # MagicMock на все вызовы — не различишь, что написано в конкретной
+        # подписи. Здесь каждый Label свой, как в настоящем Tk.
+        import overlay
+
+        patcher = mock.patch.object(
+            overlay.tk, "Label",
+            side_effect=lambda *args, **kwargs: mock.MagicMock(name="Label"),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _overlay(self, settings=None):
+        from overlay import ExobiologyOverlay
+
+        base = {"font_family": "Consolas", "font_size": 10}
+        base.update(settings or {})
+        return ExobiologyOverlay(_Master(), base)
+
+    @staticmethod
+    def _text(widget):
+        call = widget.config.call_args_list[-1]
+        if call.kwargs.get("text") is not None:
+            return str(call.kwargs["text"])
+        return str(call.args[0]) if call.args else ""
+
+    def test_planet_section_lists_found_planets(self):
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        overlay.update_exobiology({
+            "system": "HIP 12345",
+            "body": "HIP 12345 A 3",
+            "planet_class": "Rocky body",
+            "genera_filter": [],
+            "planet_criteria": [{"id": "rocky_atmo_land", "label": "Каменистая с атмосферой и посадкой"}],
+            "planets": [{
+                "body": "HIP 12345 A 3", "planet_class": "Rocky body", "landable": True,
+                "atmosphere_category": "thin", "bio_signals": 5, "distance_ls": 812.0,
+                "matched": ["Каменистая с атмосферой и посадкой"],
+            }],
+        })
+        self.assertIn("найдено 1", self._text(overlay.planets_header))
+        text = self._text(overlay.planets_label)
+        self.assertIn("A 3", text)
+        self.assertIn("Rocky body", text)
+        self.assertIn("атмосфера", text)
+        self.assertIn("посадка", text)
+        self.assertIn("сигналов 5", text)
+        # Причина попадания в список — иначе фильтры непрозрачны.
+        self.assertIn("Каменистая с атмосферой и посадкой", text)
+
+    def test_planet_section_says_when_no_criteria(self):
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        overlay.update_exobiology({
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [], "planets": [],
+        })
+        self.assertIn("критерии не выбраны", self._text(overlay.planets_label))
+        self.assertIn("Экзобиология", self._text(overlay.planets_label))
+
+    def test_planet_section_says_when_nothing_found(self):
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        overlay.update_exobiology({
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [{"id": "icy_land", "label": "Ледяная с посадкой"}],
+            "planets": [],
+        })
+        self.assertIn("подходящих планет нет", self._text(overlay.planets_label))
+
+    def test_planet_section_hidden_when_disabled(self):
+        overlay = self._overlay({"exobio_show_planet_search": False})
+        overlay.update_exobiology({
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [{"id": "icy_land", "label": "Ледяная с посадкой"}],
+            "planets": [{"body": "HIP 12345 A 1", "planet_class": "Icy body",
+                         "landable": True, "atmosphere_category": "none",
+                         "bio_signals": 0, "distance_ls": 900.0,
+                         "matched": ["Ледяная с посадкой"]}],
+        })
+        overlay.planets_label.pack_forget.assert_called()
+
+    def test_genus_filter_hides_other_genera(self):
+        overlay = self._overlay()
+        base = state()
+        base["predictions"] = [
+            {"genus": "Osseus", "percent": 80, "value_cr": 2_700_000, "notes": []},
+            {"genus": "Bacterium", "percent": 40, "value_cr": 300_000, "notes": []},
+        ]
+        base["genera_filter"] = ["Osseus"]
+        overlay.update_exobiology(base)
+        text = self._text(overlay.predict_label)
+        self.assertIn("Osseus", text)
+        self.assertNotIn("Bacterium", text)
+
+    def test_genus_filter_that_excludes_all_says_so(self):
+        overlay = self._overlay()
+        base = state()
+        base["predictions"] = [{"genus": "Osseus", "percent": 80, "value_cr": 1, "notes": []}]
+        base["genera_filter"] = ["Electricae"]
+        overlay.update_exobiology(base)
+        self.assertIn("отфильтрованы", self._text(overlay.predict_label))
+
+    def test_no_filter_shows_all_genera(self):
+        overlay = self._overlay()
+        base = state()
+        base["predictions"] = [
+            {"genus": "Osseus", "percent": 80, "value_cr": 1, "notes": []},
+            {"genus": "Bacterium", "percent": 40, "value_cr": 1, "notes": []},
+        ]
+        base["genera_filter"] = []
+        overlay.update_exobiology(base)
+        text = self._text(overlay.predict_label)
+        self.assertIn("Osseus", text)
+        self.assertIn("Bacterium", text)
+
+    def test_planet_limit_caps_the_list(self):
+        overlay = self._overlay()
+        planets = [{
+            "body": f"HIP 12345 A {index}", "planet_class": "Icy body", "landable": True,
+            "atmosphere_category": "none", "bio_signals": 0, "distance_ls": 100.0 * index,
+            "matched": ["Ледяная с посадкой"],
+        } for index in range(1, 9)]
+        overlay.update_exobiology({
+            "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
+            "planet_criteria": [{"id": "icy_land", "label": "Ледяная с посадкой"}],
+            "planets": planets,
+        })
+        text = self._text(overlay.planets_label)
+        self.assertIn("… и ещё 3", text)
+        self.assertIn("найдено 8", self._text(overlay.planets_header))
+
+
+class CarrierRowReuseTests(unittest.TestCase):
+    """Строки CARRIER переиспользуются: пересоздание виджетов и было мерцанием."""
+
+    def setUp(self):
+        import overlay
+
+        self.created = []
+
+        def factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Label")
+            widget.text_arg = str(kwargs.get("text", ""))
+
+            def _config(*c_args, **c_kwargs):
+                if "text" in c_kwargs:
+                    widget.text_arg = str(c_kwargs["text"])
+
+            widget.config.side_effect = _config
+            self.created.append(widget)
+            return widget
+
+        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.destroyed = []
+
+        def frame_factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Frame")
+            widget.destroy.side_effect = lambda: self.destroyed.append(widget)
+            return widget
+
+        frame_patcher = mock.patch.object(overlay.tk, "Frame", side_effect=frame_factory)
+        frame_patcher.start()
+        self.addCleanup(frame_patcher.stop)
+
+    def _overlay(self):
+        from overlay import CarrierOverlay
+
+        return CarrierOverlay(_FakeMaster(), {"font_family": "Consolas", "font_size": 10})
+
+    @staticmethod
+    def _rows(steel=250, delivered=120):
+        return {"commodities": [{
+            "key": "steel", "name": "Steel", "amount": steel,
+            "delivered": delivered, "need": 4000, "remaining": max(0, 4000 - steel),
+        }]}
+
+    def test_rows_are_not_recreated_on_update(self):
+        overlay = self._overlay()
+        overlay.update_carrier(self._rows())
+        labels_after_first = len(self.created)
+        frames_after_first = len(overlay._row_pool)
+
+        for amount in (300, 350, 400):
+            overlay.update_carrier(self._rows(steel=amount))
+
+        self.assertEqual(len(overlay._row_pool), frames_after_first)
+        # Новые Label не создавались — только менялся текст существующих.
+        self.assertEqual(len(self.created), labels_after_first)
+        self.assertEqual(self.destroyed, [])
+        cells = overlay._row_pool[0]["cells"]
+        self.assertEqual(cells["board"].text_arg, "400 (120)")
+
+    def test_pool_grows_but_never_shrinks_widgets(self):
+        overlay = self._overlay()
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
+        ]})
+        self.assertEqual(len(overlay._row_pool), 2)
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+        ]})
+        # Виджет остался в пуле, но скрыт.
+        self.assertEqual(len(overlay._row_pool), 2)
+        overlay._row_pool[1]["frame"].pack_forget.assert_called()
+        self.assertEqual(self.destroyed, [])
+
+    def test_same_order_does_not_repack_rows(self):
+        """Пока состав и порядок строк не меняются, геометрию не трогаем."""
+        overlay = self._overlay()
+        overlay.update_carrier(self._rows())
+        frame = overlay._row_pool[0]["frame"]
+        frame.pack.reset_mock()
+        frame.pack_forget.reset_mock()
+
+        for amount in (300, 350, 400):
+            overlay.update_carrier(self._rows(steel=amount))
+
+        frame.pack.assert_not_called()
+        frame.pack_forget.assert_not_called()
+        self.assertEqual(overlay._row_pool[0]["cells"]["board"].text_arg, "400 (120)")
+
+    def test_changed_order_repacks_rows(self):
+        overlay = self._overlay()
+        overlay.update_carrier(self._rows())
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
+        ]})
+        frame = overlay._row_pool[0]["frame"]
+        frame.pack.reset_mock()
+        frame.pack_forget.reset_mock()
+
+        # Порядок сменился — строки обязаны переупаковаться.
+        overlay.update_carrier({"commodities": [
+            {"key": "gold", "name": "Gold", "amount": 2, "delivered": 0, "need": 5, "remaining": 3},
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0, "need": 5, "remaining": 4},
+        ]})
+        frame.pack_forget.assert_called()
+        self.assertEqual(overlay._row_order, ["gold", "steel"])
+
+    def test_empty_rows_hide_pool_without_touching_it_twice(self):
+        overlay = self._overlay()
+        overlay.update_carrier(self._rows())
+        overlay.update_carrier({"commodities": []})
+        frame = overlay._row_pool[0]["frame"]
+        frame.pack_forget.reset_mock()
+
+        overlay.update_carrier({"commodities": []})
+        frame.pack_forget.assert_not_called()
+        self.assertEqual(overlay._row_order, [])
+
+    def test_header_uses_the_same_column_spec(self):
+        from overlay import CarrierOverlay
+
+        overlay = self._overlay()
+        self.assertEqual(len(overlay.COLUMNS), len(overlay.CELL_KEYS))
+        self.assertEqual([text for text, _w, _a in CarrierOverlay.COLUMNS],
+                         ["Товар", "на борту", "нужно", "ост."])
+        # Ширины колонок шапки и строк берутся из одной спецификации.
+        widths = [width for _t, width, _a in CarrierOverlay.COLUMNS]
+        self.assertEqual(widths, [18, 9, 7, 6])
+
+    def test_canvas_resize_sets_inner_width(self):
+        overlay = self._overlay()
+        overlay._on_canvas_resize(mock.Mock(width=286))
+        overlay.canvas.itemconfigure.assert_called_with(overlay._inner_window, width=286)
+
+    def test_canvas_resize_ignores_garbage(self):
+        overlay = self._overlay()
+        overlay._on_canvas_resize(mock.Mock(width=0))
+        overlay._on_canvas_resize(mock.Mock(width=None))
+        overlay.canvas.itemconfigure.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

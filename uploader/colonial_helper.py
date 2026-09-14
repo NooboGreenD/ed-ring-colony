@@ -85,7 +85,7 @@ from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
-from exobiology import ExobiologyTracker
+from exobiology import ExobiologyTracker, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR
 from carrier import CarrierTracker
 from colonisation import (
     ConstructionSiteTracker,
@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -240,6 +240,9 @@ class ColonialHelperApp:
 
         # Оверлей
         self.overlay_manager = OverlayManager(self.root, self.config_path)
+        # Смена фильтров на вкладке «Экзобиология» должна перерисовывать блок
+        # сразу, а не ждать следующего события журнала.
+        self._wire_exobio_state_provider()
 
         # Стили
         self.style = None
@@ -436,6 +439,10 @@ class ColonialHelperApp:
         self.tab_overlay = tb.Frame(self.notebook)
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
         self._build_tab_overlay()
+
+        self.tab_exobio = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_exobio, text=" Экзобиология ")
+        self._build_tab_exobio()
 
         self.tab_log = tb.Frame(self.notebook)
         self.notebook.add(self.tab_log, text=" Лог ")
@@ -3091,6 +3098,122 @@ class ColonialHelperApp:
     # ============================================================
     #  Вкладка: Лог
     # ============================================================
+    # ============================================================
+    #  Вкладка: Экзобиология (фильтры оверлея EXOBIO)
+    # ============================================================
+    def _build_tab_exobio(self):
+        """Фильтры блока EXOBIO: роды и поиск планет по параметрам.
+
+        Отдельная вкладка, а не раздел в «Оверлее»: настроек оверлея и так
+        много, а эти относятся только к одному блоку.
+        """
+        frame = self._scrollable_frame(self.tab_exobio)
+        settings = self.overlay_manager.settings
+
+        tb.Label(frame, text="Фильтры оверлея EXOBIO",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(
+            frame,
+            text="Блок EXOBIO показывает образцы, вероятные роды и тела системы. "
+                 "Здесь выбирается, какие роды оставлять в прогнозе и какие планеты "
+                 "искать в системе. Всё применяется сразу — оверлей перезапускать не нужно.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 10))
+
+        # ---- Фильтр по родам ----
+        tb.Label(frame, text="Роды в прогнозе", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
+                 "Если не отмечено ничего — фильтр выключен и показываются все роды.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 6))
+
+        selected_genera = {str(g) for g in (settings.get("exobio_genera") or [])}
+        self._exobio_genus_vars = {}
+        genera_grid = tb.Frame(frame)
+        genera_grid.pack(anchor=W, fill=X, pady=(0, 6))
+        for index, genus in enumerate(sorted(GENUS_VALUE_CR)):
+            var = tk.BooleanVar(value=genus in selected_genera)
+            self._exobio_genus_vars[genus] = var
+            tb.Checkbutton(
+                genera_grid, text=genus, variable=var, width=22,
+                command=self._on_exobio_filters_changed,
+            ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
+
+        genera_btns = tb.Frame(frame)
+        genera_btns.pack(anchor=W, pady=(0, 4))
+        tb.Button(genera_btns, text="Отметить все", width=16, bootstyle="secondary-outline",
+                  command=lambda: self._set_all_genera(True)).pack(side=LEFT, padx=(0, 8))
+        tb.Button(genera_btns, text="Снять все", width=16, bootstyle="secondary-outline",
+                  command=lambda: self._set_all_genera(False)).pack(side=LEFT)
+        tb.Label(genera_btns, text="«Снять все» = показать все роды",
+                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+
+        # ---- Поиск планет ----
+        tb.Label(frame, text="Поиск планет в системе",
+                 font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Отмеченные наборы критериев применяются к отсканированным телам текущей "
+                 "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
+                 "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
+                 "нашлась. Данные только из вашего журнала: тело должно быть отсканировано.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 6))
+
+        self.exobio_show_planets_var = tk.BooleanVar(
+            value=bool(settings.get("exobio_show_planet_search", True)))
+        tb.Checkbutton(
+            frame, text="Показывать раздел «Поиск планет» в оверлее",
+            variable=self.exobio_show_planets_var,
+            command=self._on_exobio_filters_changed,
+        ).pack(anchor=W, pady=(0, 6))
+
+        selected_ids = {str(i) for i in (settings.get("exobio_planet_search") or [])}
+        self._exobio_planet_vars = {}
+        for preset in PLANET_SEARCH_PRESETS:
+            preset_id = str(preset.get("id"))
+            var = tk.BooleanVar(value=preset_id in selected_ids)
+            self._exobio_planet_vars[preset_id] = var
+            tb.Checkbutton(
+                frame, text=str(preset.get("label") or preset_id), variable=var,
+                command=self._on_exobio_filters_changed,
+            ).pack(anchor=W, pady=1)
+
+        planet_btns = tb.Frame(frame)
+        planet_btns.pack(anchor=W, pady=(8, 0))
+        tb.Button(planet_btns, text="Снять все", width=16, bootstyle="secondary-outline",
+                  command=self._clear_planet_filters).pack(side=LEFT)
+        tb.Label(planet_btns, text="без отмеченных наборов раздел пишет, что критерии не выбраны",
+                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
+
+    def _set_all_genera(self, value: bool):
+        for var in getattr(self, "_exobio_genus_vars", {}).values():
+            var.set(bool(value))
+        self._on_exobio_filters_changed()
+
+    def _clear_planet_filters(self):
+        for var in getattr(self, "_exobio_planet_vars", {}).values():
+            var.set(False)
+        self._on_exobio_filters_changed()
+
+    def _on_exobio_filters_changed(self):
+        """Сохранить фильтры и сразу перерисовать блок EXOBIO."""
+        genera = [genus for genus, var in getattr(self, "_exobio_genus_vars", {}).items()
+                  if var.get()]
+        planet_ids = [preset_id for preset_id, var
+                      in getattr(self, "_exobio_planet_vars", {}).items() if var.get()]
+        show_planets = bool(getattr(self, "exobio_show_planets_var", tk.BooleanVar(value=True)).get())
+        try:
+            self.overlay_manager.set_exobio_filters(
+                genera=genera, planet_search=planet_ids, show_planets=show_planets)
+            self.overlay_manager.save_settings()
+        except Exception as exc:  # настройки не должны ронять интерфейс
+            self.log(f"Не удалось сохранить фильтры EXOBIO: {exc}", "error")
+
     def _build_tab_log(self):
         frame = tb.Frame(self.tab_log, padding=15)
         frame.pack(fill=BOTH, expand=True)
@@ -3703,12 +3826,48 @@ class ColonialHelperApp:
             bodies = tracker.system_bodies(limit=10)
         except Exception:
             bodies = []
-        if state is None and not bodies:
+        criteria, genera = self._exobiology_filters()
+        planets = []
+        if criteria:
+            try:
+                planets = tracker.search_system_planets(criteria)
+            except Exception:
+                planets = []
+        if state is None and not bodies and not planets:
             return None
         state = dict(state or {})
         state["system_bodies"] = bodies
         state["system"] = state.get("system") or tracker.current_system
+        # Фильтры и результат поиска планет (вкладка «Экзобиология»).
+        state["genera_filter"] = genera
+        state["planet_criteria"] = criteria
+        state["planets"] = planets
         return state
+
+    def _wire_exobio_state_provider(self):
+        """Дать оверлею способ перерисовать EXOBIO после смены фильтров."""
+        manager = getattr(self, "overlay_manager", None)
+        if manager is None:
+            return
+        try:
+            manager.set_exobio_state_provider(self._exobiology_overlay_state)
+        except Exception:
+            pass
+
+    def _exobiology_filters(self):
+        """Выбранные фильтры EXOBIO: (наборы критериев поиска, роды).
+
+        Настройки читаем каждый раз, а не кэшируем: вкладка «Экзобиология»
+        меняет их на лету, и блок должен обновиться без перезапуска оверлея.
+        """
+        settings = getattr(getattr(self, "overlay_manager", None), "settings", {}) or {}
+        genera = [str(item) for item in (settings.get("exobio_genera") or []) if str(item).strip()]
+        wanted_ids = {str(item) for item in (settings.get("exobio_planet_search") or [])}
+        criteria = []
+        if wanted_ids and bool(settings.get("exobio_show_planet_search", True)):
+            criteria = [dict(row) for row in PLANET_SEARCH_PRESETS
+                        if str(row.get("id")) in wanted_ids]
+        return criteria, genera
 
     # ============================================================
     #  Обработчики: Загрузка

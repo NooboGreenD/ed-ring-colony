@@ -236,7 +236,11 @@ class CarrierState:
             "fill_percent": int(self.fill_percent),
             "tracked_total": int(self.tracked_total),
             "delivered_total": sum(int(v) for v in self.delivered.values() if v > 0),
-            "remote_age": (int(round(max(0.0, time.time() - self.remote_at)))
+            # Возраст снимка — в минутах, не в секундах. Поле попадает в хеш
+            # данных оверлея (`OverlayManager._hash_data`), и секундная
+            # точность перерисовывала блок CARRIER каждую секунду: текст
+            # мерцал, хотя груз не менялся.
+            "remote_age": (int(max(0.0, time.time() - self.remote_at) // 60)
                            if self.remote_at else 0),
             "commodities": rows,
             "need_total": sum(max(0, _as_int(v)) for v in need.values()),
