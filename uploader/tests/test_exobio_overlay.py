@@ -619,6 +619,69 @@ class CarrierRowReuseTests(unittest.TestCase):
         overlay.canvas.itemconfigure.assert_not_called()
 
 
+class ExobioSectionOrderTests(unittest.TestCase):
+    """Раздел «Поиск планет» обязан быть выше списка тел системы.
+
+    Окно EXOBIO не резиновое: при переполнении обрезается низ, поэтому раздел,
+    ради которого пользователь и включал поиск, не должен стоять последним.
+    """
+
+    def setUp(self):
+        import overlay
+
+        self.made = []
+
+        def factory(*args, **kwargs):
+            widget = mock.MagicMock(name="Label")
+            widget.text_arg = str(kwargs.get("text", ""))
+            self.made.append(widget)
+            return widget
+
+        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _overlay(self):
+        from overlay import ExobiologyOverlay
+
+        return ExobiologyOverlay(_Master(), {"font_family": "Consolas", "font_size": 10})
+
+    def test_planet_section_is_packed_before_bodies(self):
+        overlay = self._overlay()
+        texts = [w.text_arg for w in self.made]
+        planets_at = texts.index("Поиск планет:")
+        bodies_at = texts.index("Тела системы:")
+        self.assertLess(planets_at, bodies_at,
+                        f"порядок разделов: {texts}")
+
+    def test_default_height_fits_content(self):
+        """Высота по умолчанию обязана вмещать разделы до списка тел."""
+        import overlay
+
+        self.assertGreaterEqual(overlay.DEFAULT_SETTINGS["exobio_height"], 600)
+
+    def test_reshow_keeps_position(self):
+        """После «скрыть/показать» раздел не должен уезжать в конец окна."""
+        overlay = self._overlay()
+        overlay.update_exobiology({
+            "system": "S", "body": "S A 3", "planet_class": "Rocky body",
+            "planet_criteria": [], "planets": [],
+        })
+        overlay.settings["exobio_show_planet_search"] = False
+        overlay._render()
+        overlay.settings["exobio_show_planet_search"] = True
+        overlay.planets_header.pack.reset_mock()
+        overlay._render()
+
+        kwargs = overlay.planets_header.pack.call_args.kwargs
+        self.assertIs(kwargs.get("before"), overlay.bodies_separator,
+                      "pack() без before= дописал бы раздел в конец окна")
+
+    def test_bodies_separator_exists(self):
+        overlay = self._overlay()
+        self.assertIsNotNone(getattr(overlay, "bodies_separator", None))
+
+
 class CarrierColumnGeometryTests(unittest.TestCase):
     """Шапка и строки CARRIER обязаны получать одинаковую геометрию.
 

@@ -2057,7 +2057,7 @@ class ExobiologyOverlay(OverlayWindow):
         super().__init__(
             master, "EXOBIO",
             settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
-            settings.get("exobio_width", 360), settings.get("exobio_height", 470),
+            settings.get("exobio_width", 360), settings.get("exobio_height", 620),
             settings, "exobio",
         )
         ff = settings.get("font_family", "Consolas")
@@ -2113,17 +2113,9 @@ class ExobiologyOverlay(OverlayWindow):
                                       justify=tk.LEFT, wraplength=wrap)
         self.predict_label.pack(fill=tk.X, pady=(2, 0))
 
-        _make_separator(self.content).pack(fill=tk.X, pady=5)
-
-        self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
-                                      fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
-        self.bodies_header.pack(fill=tk.X)
-        self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
-                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
-                                     justify=tk.LEFT, wraplength=wrap)
-        self.bodies_label.pack(fill=tk.X, pady=(2, 0))
-
-        # Поиск планет по параметрам: настраивается на вкладке «Экзобиология».
+        # Поиск планет по параметрам (вкладка «Экзобиология»). Раздел стоит
+        # ВЫШЕ списка тел системы: окно не резиновое, и при переполнении
+        # обрезается низ — а это как раз то, ради чего раздел добавляли.
         self.planet_separator = _make_separator(self.content)
         self.planet_separator.pack(fill=tk.X, pady=5)
         self.planets_header = tk.Label(self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
@@ -2133,6 +2125,16 @@ class ExobiologyOverlay(OverlayWindow):
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
                                       justify=tk.LEFT, wraplength=wrap)
         self.planets_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.bodies_separator = _make_separator(self.content)
+        self.bodies_separator.pack(fill=tk.X, pady=5)
+        self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.bodies_header.pack(fill=tk.X)
+        self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT, wraplength=wrap)
+        self.bodies_label.pack(fill=tk.X, pady=(2, 0))
 
         tk.Label(
             self.content,
@@ -2332,13 +2334,15 @@ class ExobiologyOverlay(OverlayWindow):
                 except Exception:
                     pass
             return
+        # `before=` обязателен: pack() без него дописывает виджет в конец,
+        # и после переключения «показать/скрыть» раздел уезжал бы вниз окна.
         for widget, kwargs in (
             (self.planet_separator, {"fill": tk.X, "pady": 5}),
             (self.planets_header, {"fill": tk.X}),
             (self.planets_label, {"fill": tk.X, "pady": (2, 0)}),
         ):
             try:
-                widget.pack(**kwargs)
+                widget.pack(before=self.bodies_separator, **kwargs)
             except Exception:
                 pass
 
@@ -3618,7 +3622,7 @@ DEFAULT_SETTINGS = {
     "exobio_x": 1060,
     "exobio_y": 50,
     "exobio_width": 360,
-    "exobio_height": 470,
+    "exobio_height": 620,
     "exobio_locked": False,
     "exobio_anchor": "custom",
     # Фильтры блока EXOBIO (вкладка «Экзобиология»).
