@@ -1770,12 +1770,18 @@ class MapRavenCache:
     def _write(self, data: dict) -> bool:
         if self.path is None:
             return False
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False)
-            os.replace(tmp, self.path)
-            return True
-        except Exception:
-            return False
+        # Вторая попытка — на случай занятого файла (антивирус на Windows
+        # успевает схватить .tmp прямо во время os.replace).
+        for attempt in range(2):
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self.path.with_name(self.path.name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle, ensure_ascii=False)
+                os.replace(tmp, self.path)
+                return True
+            except Exception:
+                if attempt:
+                    return False
+                time.sleep(0.05)
+        return False
