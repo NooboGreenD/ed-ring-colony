@@ -626,5 +626,362 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
         self.assertFalse(self.app.carrier.state.remote_seen)
 
 
+class SiteProjectRefreshTests(unittest.TestCase):
+    """Состояние рынка стройплощадки из Raven Colonial (2.9.0).
+
+    Остаток потребности проекта на Raven общий на всех командиров. Журнал
+    знает только то, что завезли вы, поэтому без перечитывания проекта
+    «осталось завезти» не уменьшалось, когда часть груза сдавал другой
+    командир или когда сессия прервалась и доставка досылалась позже.
+    """
+
+    def setUp(self):
+        CarrierOverlayIntegrationTests.setUp(self)
+
+    def tearDown(self):
+        CarrierOverlayIntegrationTests.tearDown(self)
+
+    _run_threads_inline = CarrierOverlayIntegrationTests._run_threads_inline
+    _dock_at_site = CarrierOverlayIntegrationTests._dock_at_site
+
+    PROJECT = {
+        "buildId": "build-1",
+        "buildName": "Hestia Depot",
+        "systemName": "Kuma",
+        # Raven уже учёл чужую доставку: стали не хватает 3000, а не 5960.
+        "commodities": {"steel": 3000, "liquidoxygen": 1865},
+    }
+
+    def test_remote_project_wins_over_journal(self):
+        """Чужие доставки уменьшают остаток — журнал их не знает."""
+        self._dock_at_site()
+        self.app.raven_api.get_project = lambda address, market_id: dict(self.PROJECT)
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+
+        need, label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "site_project")
+        self.assertEqual(need["steel"], 3000, "должен быть остаток с Raven, а не из журнала")
+        self.assertEqual(need["liquidoxygen"], 1865)
+        self.assertIn("Hestia Depot", label)
+
+    def test_journal_site_used_when_no_remote_project(self):
+        """Нет проекта на Raven — остаёмся на данных журнала."""
+        self._dock_at_site()
+        self.app.raven_api.get_project = lambda address, market_id: None
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+
+        need, _label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "site")
+        self.assertEqual(need["steel"], 5960, "журнальный остаток: 6680-720")
+
+    def test_primary_project_still_wins(self):
+        """Проект, выбранный основным, важнее площадки под ногами."""
+        self._dock_at_site()
+        self.app.colony_primary_project = {
+            "buildId": "other", "buildName": "Другой", "systemName": "Kuma",
+            "commodities": {"steel": 42},
+        }
+        self.app.raven_api.get_project = lambda address, market_id: dict(self.PROJECT)
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+
+        need, _label, source = self.app._carrier_need_info()
+        self.assertEqual(source, "project")
+        self.assertEqual(need, {"steel": 42})
+
+    def test_refresh_is_throttled(self):
+        """Чаще, чем раз в SITE_PROJECT_REFRESH_SECONDS, в сеть не ходим."""
+        self._dock_at_site()
+        calls = []
+        self.app.raven_api.get_project = lambda a, m: (calls.append((a, m)) or dict(self.PROJECT))
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+            self.app._refresh_site_project()
+            self.app._refresh_site_project()
+
+        self.assertEqual(len(calls), 1, f"лишние запросы: {calls}")
+        self.assertEqual(calls[0], (123456789, 3951663874))
+
+    def test_force_bypasses_throttle(self):
+        self._dock_at_site()
+        calls = []
+        self.app.raven_api.get_project = lambda a, m: (calls.append((a, m)) or dict(self.PROJECT))
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+            self.app._refresh_site_project(force=True)
+
+        self.assertEqual(len(calls), 2)
+
+    def test_no_key_means_no_request(self):
+        """Без ключа RCC в сеть не ходим и проект не подменяем."""
+        self._dock_at_site()
+        self.app.raven_api.api_key = ""
+        calls = []
+        self.app.raven_api.get_project = lambda a, m: (calls.append((a, m)) or dict(self.PROJECT))
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+
+        self.assertEqual(calls, [])
+        self.assertEqual(self.app.site_project, {})
+
+    def test_remaining_total_is_logged(self):
+        """В лог пишется суммарный остаток — его и просил видеть пользователь."""
+        self._dock_at_site()
+        self.app.raven_api.get_project = lambda address, market_id: dict(self.PROJECT)
+        logged = []
+        self.app.log = lambda text, level="info": logged.append(str(text))
+
+        with self._run_threads_inline():
+            self.app._refresh_site_project()
+
+        # Число форматируется с пробелом-разделителем тысяч, запятая после
+        # «позиц.» при этом должна остаться на месте.
+        self.assertTrue(
+            any("осталось завезти 4 865 t (2 позиц., данные Raven Colonial)" in t
+                for t in logged),
+            logged)
+
+    def test_raven_error_is_not_fatal(self):
+        self._dock_at_site()
+
+        def _boom(address, market_id):
+            raise RuntimeError("нет сети")
+
+        self.app.raven_api.get_project = _boom
+        with self._run_threads_inline():
+            self.app._refresh_site_project()  # не должно бросить исключение
+        self.assertEqual(self.app.site_project, {})
+
+
+class StateFilesLogSpamTests(unittest.TestCase):
+    """`_load_current_state_files` зовётся watcher'ом каждые 5 секунд (2.9.0).
+
+    Без сравнения подписи две строки — «Модули: …» и «Загружено состояние: …» —
+    писались в лог на каждом тике, хотя в корабле ничего не менялось. Это и был
+    «лог постоянно печатает инфу о корабле», на который жаловался пользователь.
+    """
+
+    def setUp(self):
+        CarrierOverlayIntegrationTests.setUp(self)
+        self.journal = self.app.journal_path
+        self.journal.mkdir(parents=True, exist_ok=True)
+        self.logged = []
+        self.app.log = lambda text, level="info": self.logged.append(str(text))
+
+    def tearDown(self):
+        CarrierOverlayIntegrationTests.tearDown(self)
+
+    def _write(self, name: str, payload: dict):
+        import json as _json
+
+        (self.journal / name).write_text(
+            _json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def _write_state(self, modules: list):
+        self._write("Status.json", {"Fuel": {"FuelMain": 10.0, "FuelReservoir": 0.5},
+                                    "Balance": 1000, "Cargo": 12})
+        self._write("ModulesInfo.json", {"Modules": modules})
+        self._write("Cargo.json", {"Count": 12, "Inventory": []})
+
+    MODULES = [
+        {"Slot": "PowerPlant", "Item": "powerplant_size4_class3", "Health": 1.0,
+         "Power": 0.0, "On": True, "Priority": 1},
+        {"Slot": "MainEngines", "Item": "engine_size3_class2", "Health": 1.0,
+         "Power": 4.2, "On": True, "Priority": 1},
+    ]
+
+    def test_module_line_logged_once_when_nothing_changes(self):
+        """Главная жалоба: одна и та же строка про модули каждые 5 секунд."""
+        self._write_state(self.MODULES)
+
+        for _ in range(5):
+            self.app._load_current_state_files()
+
+        module_lines = [t for t in self.logged if t.startswith("Модули:")]
+        self.assertEqual(len(module_lines), 1, module_lines)
+
+        state_lines = [t for t in self.logged if t.startswith("Загружено состояние:")]
+        self.assertEqual(len(state_lines), 1, state_lines)
+
+    def test_module_line_logged_again_when_state_changes(self):
+        """Изменилось состояние — строку пишем, иначе починку не увидишь."""
+        self._write_state(self.MODULES)
+        self.app._load_current_state_files()
+        self.logged.clear()
+
+        # Модуль повредился: damaged 0 -> 1, подпись меняется.
+        broken = [dict(self.MODULES[0]), dict(self.MODULES[1], Health=0.4)]
+        self._write_state(broken)
+        self.app._load_current_state_files()
+
+        module_lines = [t for t in self.logged if t.startswith("Модули:")]
+        self.assertEqual(len(module_lines), 1, module_lines)
+        self.assertIn("повреждено: 1", module_lines[0])
+
+    def test_module_line_logged_when_count_changes(self):
+        self._write_state(self.MODULES)
+        self.app._load_current_state_files()
+        self.logged.clear()
+
+        extra = self.MODULES + [
+            {"Slot": "ShieldGenerator", "Item": "shieldgenerator_size3_class1",
+             "Health": 1.0, "Power": 1.1, "On": True, "Priority": 2}]
+        self._write_state(extra)
+        self.app._load_current_state_files()
+
+        module_lines = [t for t in self.logged if t.startswith("Модули:")]
+        self.assertEqual(len(module_lines), 1, module_lines)
+        self.assertIn("3 шт.", module_lines[0])
+
+    def test_state_files_line_logged_once(self):
+        """«Загружено состояние: Status, ModulesInfo, Cargo» — тоже раз."""
+        self._write_state(self.MODULES)
+        for _ in range(4):
+            self.app._load_current_state_files()
+        state_lines = [t for t in self.logged if t.startswith("Загружено состояние:")]
+        self.assertEqual(len(state_lines), 1, state_lines)
+        self.assertIn("Status", state_lines[0])
+
+    def test_state_files_line_repeats_when_set_changes(self):
+        """Появился новый файл — набор изменился, строку пишем снова."""
+        self._write("Status.json", {"Balance": 10})
+        self.app._load_current_state_files()
+        self.logged.clear()
+
+        self._write("Cargo.json", {"Count": 3, "Inventory": []})
+        self.app._load_current_state_files()
+
+        state_lines = [t for t in self.logged if t.startswith("Загружено состояние:")]
+        self.assertEqual(len(state_lines), 1, state_lines)
+        self.assertIn("Cargo", state_lines[0])
+
+    def test_read_errors_still_logged_every_time(self):
+        """Ошибку чтения прятать нельзя: анти-спам касается только рутины."""
+        (self.journal / "Status.json").write_text("{ не json", encoding="utf-8")
+
+        for _ in range(3):
+            self.app._load_current_state_files()
+
+        errors = [t for t in self.logged if "Ошибка чтения Status.json" in t]
+        self.assertEqual(len(errors), 3, errors)
+
+
+class RavenSkipReportTests(unittest.TestCase):
+    """Почему тоннаж не дошёл до Raven Colonial (2.9.0).
+
+    Все ветки отказа просто делали `continue`: в логе не было ни строки, и
+    «Raven Colonial не получает инфу о доставленном грузе» выглядело как
+    поломка сервера, хотя чаще всего проект просто не найден по market_id.
+    """
+
+    def setUp(self):
+        CarrierOverlayIntegrationTests.setUp(self)
+        self.logged = []
+        self.app.log = lambda text, level="info": self.logged.append((str(text), level))
+        self.sent = []
+        self.app.raven_api.contribute = (
+            lambda build_id, cmdr, commodities: (self.sent.append((build_id, commodities))
+                                                 or {"ok": True})
+        )
+
+    def tearDown(self):
+        CarrierOverlayIntegrationTests.tearDown(self)
+
+    def _texts(self):
+        return [t for t, _ in self.logged]
+
+    def _warns(self):
+        return [t for t, level in self.logged if level == "warn"]
+
+    def test_missing_market_id_is_reported(self):
+        self.app._send_deliveries_to_raven(
+            [{"source": "colonisation_contribution", "system_address": 1,
+              "commodity": "steel", "amount": 100}],
+            cmdr_name="Cmdr")
+        warns = self._warns()
+        self.assertTrue(any("не отправлено 1 доставок" in t for t in warns), warns)
+        self.assertTrue(any("в событии нет MarketID" in t for t in warns), warns)
+        self.assertEqual(self.sent, [])
+
+    def test_unknown_project_is_reported_with_market_id(self):
+        """Самая частая причина: по market_id проект не находится."""
+        self.app.raven_api.get_project = lambda address, market_id: None
+        self.app._send_deliveries_to_raven(
+            [{"source": "colonisation_contribution", "market_id": 3951663874,
+              "system_address": 123456789, "commodity": "steel", "amount": 100}],
+            cmdr_name="Cmdr")
+        warns = self._warns()
+        self.assertTrue(any("market_id=3951663874" in t for t in warns), warns)
+        self.assertTrue(any("проект не найден" in t for t in warns), warns)
+
+    def test_missing_system_address_is_reported(self):
+        self.app.raven_api.get_project = lambda a, m: {"buildId": "b1"}
+        self.app.ship.state.system_address = 0
+        self.app._send_deliveries_to_raven(
+            [{"source": "colonisation_contribution", "market_id": 1,
+              "commodity": "steel", "amount": 100}],
+            cmdr_name="Cmdr")
+        self.assertTrue(any("не определён SystemAddress" in t for t in self._warns()),
+                        self._warns())
+
+    def test_empty_commodity_name_is_reported(self):
+        self.app.raven_api.get_project = lambda a, m: {"buildId": "b1"}
+        self.app._send_deliveries_to_raven(
+            [{"source": "colonisation_contribution", "market_id": 1,
+              "system_address": 5, "commodity": "", "amount": 100}],
+            cmdr_name="Cmdr")
+        self.assertTrue(any("пустое имя товара" in t for t in self._warns()), self._warns())
+
+    def test_carrier_delivery_is_silent_by_design(self):
+        """Продажа своему авианосцу идёт через PATCH /fc/{id}/cargo — не «пропуск»."""
+        self.app._send_deliveries_to_raven(
+            [{"source": "carrier_delivery", "market_id": 3700001234,
+              "system_address": 5, "commodity": "steel", "amount": 100}],
+            cmdr_name="Cmdr")
+        self.assertEqual(self._warns(), [], "carrier_delivery не должен считаться отказом")
+        self.assertEqual(self.sent, [])
+
+    def test_counts_are_aggregated_per_reason(self):
+        """Одна строка на пакет, а не по строке на каждую доставку."""
+        self.app.raven_api.get_project = lambda a, m: None
+        deliveries = [
+            {"source": "colonisation_contribution", "market_id": 1,
+             "system_address": 5, "commodity": "steel", "amount": 10},
+            {"source": "colonisation_contribution", "market_id": 1,
+             "system_address": 5, "commodity": "titanium", "amount": 20},
+            {"source": "colonisation_contribution", "system_address": 5,
+             "commodity": "steel", "amount": 30},
+        ]
+        self.app._send_deliveries_to_raven(deliveries, cmdr_name="Cmdr")
+
+        skip_lines = [t for t in self._warns() if "не отправлено" in t]
+        self.assertEqual(len(skip_lines), 1, skip_lines)
+        self.assertIn("не отправлено 3 доставок", skip_lines[0])
+        self.assertIn("проект не найден (market_id=1) — 2", skip_lines[0])
+        self.assertIn("в событии нет MarketID — 1", skip_lines[0])
+
+    def test_successful_delivery_reports_tonnage(self):
+        self.app.raven_api.get_project = lambda a, m: {"buildId": "b1"}
+        self.app._send_deliveries_to_raven(
+            [{"source": "colonisation_contribution", "market_id": 1,
+              "system_address": 5, "commodity": "$steel_name;", "amount": 250}],
+            cmdr_name="Cmdr")
+        self.assertEqual(self.sent, [("b1", {"steel": 250})])
+        self.assertTrue(any("+250t" in t for t in self._texts()), self._texts())
+        self.assertEqual(self._warns(), [])
+
+    def test_nothing_to_report_stays_silent(self):
+        self.app._send_deliveries_to_raven([], cmdr_name="Cmdr")
+        self.assertEqual(self._warns(), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

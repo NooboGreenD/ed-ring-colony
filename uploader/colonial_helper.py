@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.8.9"
+VERSION = "2.9.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -162,6 +162,13 @@ class ColonialHelperApp:
         # Проект, отмеченный основным во вкладке «Колонизатор». Его потребность
         # показывает блок CARRIER в оверлее (см. `_carrier_need_info`).
         self.colony_primary_project: dict = {}
+        # Проект стройплощадки, у которой командир стоит сейчас. Перечитывается
+        # из Raven Colonial по таймеру: остаток потребности там общий на всех,
+        # поэтому груз, который завезли другие командиры, должен уменьшать
+        # «осталось завезти» и у нас. Журнал этого не знает.
+        self.site_project: dict = {}
+        self._site_remote_market = 0           # по какой площадке уже спросили Raven
+        self._site_remote_at = 0.0             # когда последний раз спрашивали
         self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
@@ -272,6 +279,12 @@ class ColonialHelperApp:
         # Фоновый индикатор игры (опрос ~1 раз в 1.5 с, сам монитор
         # кэширует результат, лишних снимков процессов не делается).
         self._game_was_running = False
+        # Подписи того, что уже написано в лог про состояние корабля.
+        # `_load_current_state_files()` зовётся из watcher-цикла каждые 5 с,
+        # и без сравнения подписей одни и те же строки про модули и
+        # прочитанные файлы повторялись в логе без конца.
+        self._modules_log_sig = None
+        self._state_files_log_sig = None
         self.after(1000, self._tick_game_status)
 
         # Проверка обновлений — через пару секунд после старта, чтобы не
@@ -3460,6 +3473,10 @@ class ColonialHelperApp:
             # Colonial перечитывается по таймеру, иначе «на борту» устаревает,
             # пока груз возят другие командиры.
             self._refresh_carrier_cargo(int(self.carrier.state.market_id or 0))
+            # То же для стройплощадки: остаток потребности там общий на всех
+            # командиров, и груз, сданный другими, должен уменьшать «осталось
+            # завезти» и у нас.
+            self._refresh_site_project()
         except Exception:
             pass
         finally:
@@ -4689,14 +4706,23 @@ class ColonialHelperApp:
                         pass
                 loaded.append("ModulesInfo")
                 damaged = sum(1 for m in st.modules.values() if m.health < 1.0)
-                self.root.after(
-                    0,
-                    lambda: self.log(
-                        f"Модули: {len(st.modules)} шт., повреждено: {damaged}, "
-                        f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
-                        "info",
-                    ),
+                # Watcher зовёт этот метод каждые 5 секунд. Без сравнения
+                # подписи одна и та же строка про модули писалась в лог
+                # без конца, хотя в корабле ничего не менялось.
+                modules_sig = (
+                    len(st.modules), damaged,
+                    round(st.power_used, 2), round(st.power_capacity, 2),
                 )
+                if modules_sig != self._modules_log_sig:
+                    self._modules_log_sig = modules_sig
+                    self.root.after(
+                        0,
+                        lambda: self.log(
+                            f"Модули: {len(st.modules)} шт., повреждено: {damaged}, "
+                            f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
+                            "info",
+                        ),
+                    )
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения ModulesInfo.json: {e}", "warn"))
         try:
@@ -4713,7 +4739,14 @@ class ColonialHelperApp:
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения Cargo.json: {e}", "warn"))
         if loaded:
-            self.root.after(0, lambda: self.log(f"Загружено состояние: {', '.join(loaded)}", "info"))
+            # Тот же метод зовётся каждые 5 секунд: без сравнения подписи
+            # «Загружено состояние: Status, ModulesInfo, Cargo» писалось в лог
+            # на каждом тике, хотя набор файлов не менялся.
+            files_sig = tuple(loaded)
+            if files_sig != self._state_files_log_sig:
+                self._state_files_log_sig = files_sig
+                self.root.after(
+                    0, lambda: self.log(f"Загружено состояние: {', '.join(loaded)}", "info"))
 
     def _load_latest_loadout(self):
         """Найти и применить последнее событие Loadout из журналов."""
@@ -5016,9 +5049,19 @@ class ColonialHelperApp:
         if not self.raven_api.is_connected:
             return
         batches = {}
+        # Причины, по которым доставка не ушла на Raven. Раньше все четыре
+        # ветки просто делали `continue`: в логе не было ни строки, и
+        # «Raven Colonial не получает тоннаж» выглядело как поломка сервера,
+        # хотя чаще всего проект просто не найден по market_id.
+        skipped: dict = {}
+
+        def _skip(reason: str):
+            skipped[reason] = skipped.get(reason, 0) + 1
+
         for delivery in deliveries:
             market_id = delivery.get("market_id")
             if not market_id:
+                _skip("в событии нет MarketID")
                 continue
             # Продажа груза своему авианосцу — это не доставка на стройку:
             # груз авианосца обновляется отдельным PATCH /api/fc/{marketId}/
@@ -5028,12 +5071,14 @@ class ColonialHelperApp:
                 continue
             address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
             if not address:
+                _skip("не определён SystemAddress")
                 continue
             # Проект ищем через кэш: все доставки на одну стройплощадку дают
             # один и тот же buildId, а раньше на каждую доставку уходил
             # отдельный HTTP-запрос (с таймаутом до 15 с).
             project = self.raven_api.get_project(address, market_id)
             if not project or not project.get("buildId"):
+                _skip(f"проект не найден (market_id={market_id})")
                 continue
             build_id = project["buildId"]
             # Raven Colonial принимает только языконезависимые имена товаров в
@@ -5044,6 +5089,7 @@ class ColonialHelperApp:
             # проекта, и тоннаж на Raven Colonial не рос.
             commodity = normalize_commodity(delivery.get("commodity") or "")
             if not commodity:
+                _skip("пустое имя товара")
                 continue
             batch = batches.setdefault(build_id, {})
             batch[commodity] = batch.get(commodity, 0) + int(delivery.get("amount", 0))
@@ -5059,6 +5105,18 @@ class ColonialHelperApp:
                     0,
                     lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"),
                 )
+        if skipped:
+            # Без этой строки «Raven Colonial не получил тоннаж» выглядело как
+            # молчаливый отказ сервера: четыре ветки выше просто делали
+            # `continue`. Чаще всего причина — проект не найден по market_id,
+            # и пользователю нужно это видеть, а не догадываться.
+            detail = "; ".join(f"{reason} — {count}" for reason, count in sorted(skipped.items()))
+            self.root.after(
+                0,
+                lambda d=detail: self.log(
+                    f"Raven Colonial: не отправлено {sum(skipped.values())} доставок ({d})",
+                    "warn"),
+            )
 
     def _handle_tracked_event(self, ev: dict, live: bool = True):
         """Обработка одного события журнала: маршрут, корабль, оверлей.
@@ -5121,11 +5179,14 @@ class ColonialHelperApp:
            `commodities` в Raven Colonial — это актуальный остаток потребности,
            который видят все клиенты: и то, что завезли вы, и то, что завезли
            другие командиры. Именно этот список просил показывать пользователь.
-        2. **Стройплощадка из журнала**, у которой стоит игрок
-           (`ColonisationConstructionDepot`). Работает без ключа RCC, но знает
-           только то, что написано в журнале.
+        2. **Проект стройплощадки, у которой стоит игрок**, перечитанный из
+           Raven Colonial (`site_project`). Тоже знает чужие доставки, но не
+           требует отмечать проект основным.
+        3. **Стройплощадка из журнала** (`ColonisationConstructionDepot`).
+           Работает без ключа RCC, но знает только то, что написано в журнале:
+           если часть груза сдал другой командир, остаток будет завышен.
 
-        Если ни того, ни другого нет — потребность пуста, и блок показывает
+        Если ни одного источника нет — потребность пуста, и блок показывает
         только груз на борту.
         """
         project = self.colony_primary_project or {}
@@ -5145,6 +5206,27 @@ class ColonialHelperApp:
                              f" · {project.get('systemName') or ''}").strip(" ·")
                     return need, label, "project"
 
+        # 2. Проект стройплощадки, у которой стоит игрок, перечитанный из Raven
+        #    Colonial. В отличие от журнала он знает и чужие доставки: если
+        #    часть груза сдал другой командир, «осталось завезти» уменьшится.
+        site_project = self.site_project or {}
+        if isinstance(site_project, dict) and site_project.get("buildId"):
+            commodities = site_project.get("commodities")
+            if isinstance(commodities, dict) and commodities:
+                need = {}
+                for raw, amount in commodities.items():
+                    try:
+                        value = int(float(amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        need[str(raw)] = value
+                if need:
+                    label = (f"{site_project.get('buildName') or 'стройплощадка'}"
+                             f" · {site_project.get('systemName') or ''}").strip(" ·")
+                    return need, label, "site_project"
+
+        # 3. Журнал: работает без ключа RCC, но знает только ваши доставки.
         site = self.construction.site
         if site is None:
             return {}, "", ""
@@ -5219,7 +5301,7 @@ class ColonialHelperApp:
         try:
             result = self.raven_api.get_fc_cargo(market_id)
         except Exception as exc:
-            self.log(f"Raven Colonial: груз авианосца не получен ({exc})", "warning")
+            self.log(f"Raven Colonial: груз авианосца не получен ({exc})", "warn")
             return
         if not result.get("ok"):
             self.log(
@@ -5245,6 +5327,68 @@ class ColonialHelperApp:
             self.log(
                 f"Авианосец {market_id}: груз по товарам получен из Raven Colonial "
                 f"({len(cargo)} позиц.)", "info")
+
+    #: Как часто перечитывать проект стройплощадки из Raven Colonial.
+    SITE_PROJECT_REFRESH_SECONDS = 300.0
+
+    def _refresh_site_project(self, force: bool = False):
+        """Перечитать из Raven Colonial проект площадки, у которой стоит игрок.
+
+        Остаток потребности проекта на Raven общий на всех командиров. Журнал
+        знает только то, что завезли вы, поэтому без этого запроса «осталось
+        завезти» не уменьшалось, когда часть груза сдавал кто-то другой (или
+        когда сессия прервалась и доставки досылались в другой заход).
+
+        Без ключа RCC или без сети ничего не происходит: потребность останется
+        на данных журнала из `ColonisationConstructionDepot`.
+        """
+        site = self.construction.site
+        if site is None:
+            return
+        try:
+            market_id = int(site.market_id or 0)
+            address = int(site.system_address or 0)
+        except (TypeError, ValueError):
+            return
+        if market_id <= 0 or address <= 0 or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        fresh = now - float(self._site_remote_at or 0.0)
+        same_site = market_id == self._site_remote_market
+        if same_site and not force and fresh < self.SITE_PROJECT_REFRESH_SECONDS:
+            return
+        self._site_remote_market = market_id
+        self._site_remote_at = now
+        threading.Thread(
+            target=self._load_site_project, args=(address, market_id), daemon=True
+        ).start()
+
+    def _load_site_project(self, address: int, market_id: int):
+        """Фоновый запрос: проект стройплощадки из Raven Colonial."""
+        try:
+            project = self.raven_api.get_project(address, market_id)
+        except Exception as exc:
+            self.log(f"Raven Colonial: проект стройплощадки не получен ({exc})", "warn")
+            return
+        if not isinstance(project, dict) or not project.get("buildId"):
+            # Площадка есть в журнале, но проекта на Raven ещё нет (никто не
+            # создал) — это не ошибка, а состояние. Молча остаёмся на журнале.
+            self.site_project = {}
+            return
+        self.site_project = dict(project)
+        commodities = project.get("commodities")
+        if isinstance(commodities, dict):
+            left = sum(
+                int(float(v)) for v in commodities.values()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            )
+            # Тысячи разделяем пробелом, но только в самом числе: глобальный
+            # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
+            tons = f"{left:,}".replace(",", " ")
+            self.log(
+                f"Стройплощадка {market_id}: осталось завезти {tons} t "
+                f"({len(commodities)} позиц., данные Raven Colonial)",
+                "info")
 
     def _feed_construction_site(self, event: dict, live: bool = False):
         """Передать событие журнала трекеру стройплощадок.
