@@ -28,6 +28,7 @@ import json
 import math
 import os
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -235,6 +236,7 @@ class MapStation:
     remaining_by_commodity: Dict[str, int] = field(default_factory=dict)
     complete: bool = False
     planned: bool = False                   # план Raven: физической стройки ещё нет
+    due_at: str = ""                        # дедлайн проекта Raven (timeDue)
     source: str = "journal"                 # journal | raven | both
     updated_at: str = ""
 
@@ -960,6 +962,10 @@ class SystemMapBuilder:
             build_type = str(project.get("buildType") or "").strip()
             if build_type and station.build_type != build_type:
                 station.build_type = build_type
+                changed = True
+            due = str(project.get("timeDue") or "").strip()
+            if due and station.due_at != due:
+                station.due_at = due
                 changed = True
             if name and station.build_name != name:
                 station.build_name = name
@@ -1694,6 +1700,34 @@ COMMODITY_LABELS_RU = {
 }
 
 
+def due_note(due_at: str, now=None) -> str:
+    """Человеческая строка дедлайна проекта Raven для сводки.
+
+    `timeDue` приходит ISO-строкой; пустое значение и мусор дают пустую
+    строку — лучше ничего, чем выдуманный срок.
+    """
+    text = str(due_at or "").strip()
+    if not text:
+        return ""
+    try:
+        due = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    delta_days = (due - moment).total_seconds() / 86400.0
+    if delta_days < 0:
+        over = max(1, int(-delta_days))
+        return f"дедлайн просрочен на {over} дн ({due:%d.%m})"
+    days = int(delta_days)
+    if days == 0:
+        return f"дедлайн сегодня ({due:%d.%m})"
+    return f"дедлайн через {days} дн ({due:%d.%m})"
+
+
 def commodity_label(key: str) -> str:
     """`liquidoxygen` -> «Жидкий кислород»; неизвестный ключ не трогаем."""
     name = str(key or "").strip()
@@ -1729,6 +1763,9 @@ def map_report(snapshot: MapSnapshot, app_version: str = "") -> str:
                 progress = "план"
             rest = f" (осталось {station.remaining_tons:,} t)".replace(",", " ")
             line = f"  {station.title} — {progress}{rest if station.remaining_tons else ''}"
+            note = due_note(station.due_at)
+            if note:
+                line += f" · {note}"
             if station.remaining_by_commodity:
                 top = sorted(station.remaining_by_commodity.items(),
                              key=lambda pair: pair[1], reverse=True)[:4]

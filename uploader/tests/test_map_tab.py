@@ -984,3 +984,34 @@ class MapCenteringTests(MapTabTestBase):
         rows = [str(call.kwargs.get("iid"))
                 for call in self.app.map_tree.insert.call_args_list]
         self.assertNotIn(f"b:{BODY_1}", rows)
+
+
+class MapExportButtonTests(MapTabTestBase):
+    """Кнопка PNG: схема системы сохраняется файлом без Pillow и скриншотов."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(), live=True)
+        self.app._map_redraw_now()
+
+    def test_save_png_writes_file(self):
+        self.prepare()
+        target = self.home / "system_map.png"
+        with mock.patch.object(self.module.filedialog, "asksaveasfilename",
+                               return_value=str(target)):
+            self.app._on_map_save_png()
+        self.assertTrue(target.exists(), "файл не создан")
+        head = target.read_bytes()[:8]
+        self.assertEqual(head, b"\x89PNG\r\n\x1a\n")
+        status = [str(call.kwargs.get("text"))
+                  for call in self.app.map_status.config.call_args_list]
+        self.assertTrue(any("Карта сохранена" in text for text in status), status[-2:])
+
+    def test_save_png_cancelled(self):
+        self.prepare()
+        with mock.patch.object(self.module.filedialog, "asksaveasfilename",
+                               return_value=""):
+            self.app._on_map_save_png()
+        self.assertEqual(list(self.home.glob("*.png")), [])

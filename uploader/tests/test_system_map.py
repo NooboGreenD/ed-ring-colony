@@ -18,6 +18,7 @@
 import json
 import sys
 import tempfile
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from system_map import (  # noqa: E402
     classify_signal,
     classify_station,
     commodity_label,
+    due_note,
     layout,
     map_summary,
     merged_source,
@@ -1368,3 +1370,39 @@ class LayoutCenterTests(unittest.TestCase):
         for before, after in zip(plain, centered):
             self.assertAlmostEqual(after.x, before.x, delta=0.01)
             self.assertAlmostEqual(after.y, before.y, delta=0.01)
+
+
+class ProjectDueTests(unittest.TestCase):
+    """Дедлайн проекта Raven (timeDue) доезжает до сводки."""
+
+    NOW = datetime(2026, 9, 14, 12, 0, 0, tzinfo=timezone.utc)
+
+    def test_due_note_wording(self):
+        self.assertEqual(due_note("2026-10-05T12:00:00Z", now=self.NOW),
+                         "дедлайн через 21 дн (05.10)")
+        self.assertEqual(due_note("2026-09-14T18:00:00Z", now=self.NOW),
+                         "дедлайн сегодня (14.09)")
+        self.assertEqual(due_note("2026-09-11T12:00:00Z", now=self.NOW),
+                         "дедлайн просрочен на 3 дн (11.09)")
+        self.assertEqual(due_note("", now=self.NOW), "")
+        self.assertEqual(due_note("не дата", now=self.NOW), "")
+
+    def test_merge_projects_keeps_timeDue(self):
+        builder = scanned_system()
+        builder.merge_projects(SYSTEM, [
+            {"buildId": "guid-due", "buildName": "A 1", "marketId": SITE_MARKET,
+             "sumTotal": 1000, "sumNeed": 100,
+             "timeDue": "2026-10-05T12:00:00Z"}])
+        station = next(item for item in builder.snapshot().stations
+                       if item.build_id == "guid-due")
+        self.assertEqual(station.due_at, "2026-10-05T12:00:00Z")
+
+    def test_report_shows_deadline(self):
+        builder = scanned_system()
+        builder.handle(depot_event([resource("Steel", 6680, 1815)]))
+        builder.merge_projects(SYSTEM, [
+            {"buildId": "guid-due", "buildName": "A 1", "marketId": SITE_MARKET,
+             "timeDue": "2026-10-05T12:00:00Z"}])
+        report = map_report(builder.snapshot(), "2.10.6")
+        self.assertIn("дедлайн через", report)
+        self.assertIn("(05.10)", report)

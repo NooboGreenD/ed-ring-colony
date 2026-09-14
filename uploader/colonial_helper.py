@@ -93,6 +93,7 @@ from colonisation import (
     build_project_draft,
     format_commodities,
 )
+from map_export import save_map_png
 from system_map import (
     BODY_LABELS,
     KIND_MOON,
@@ -116,7 +117,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.5"
+VERSION = "2.10.6"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2539,6 +2540,9 @@ class ColonialHelperApp:
                  font=("Segoe UI", 10, "bold")).pack(side=LEFT)
         tb.Button(side_top, text="Сводка", command=self._on_map_copy_summary,
                   bootstyle="secondary-outline", width=8).pack(side=RIGHT)
+        tb.Button(side_top, text="PNG", command=self._on_map_save_png,
+                  bootstyle="secondary-outline", width=6).pack(side=RIGHT,
+                                                               padx=(0, 4))
         filter_row = tb.Frame(side)
         filter_row.pack(fill=X, pady=(0, 4))
         tb.Label(filter_row, text="Фильтр:", foreground=COLOR_MUTED).pack(side=LEFT)
@@ -3146,6 +3150,34 @@ class ColonialHelperApp:
         if not needle:
             return True
         return any(needle in str(value).lower() for value in values)
+
+    def _on_map_save_png(self):
+        """Схему системы — в PNG: крылу картинка, а не простыня текста.
+
+        Рендерим сами (`map_export`), без Pillow и скриншотов окна: файл
+        открывается везде и не тащит в EXE ещё десяток мегабайт.
+        """
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        try:
+            path = filedialog.asksaveasfilename(
+                title="Сохранить карту системы",
+                defaultextension=".png",
+                filetypes=(("PNG-изображение", "*.png"), ("Все файлы", "*.*")))
+        except Exception:
+            path = ""
+        if not path:
+            return
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        show_labels = not getattr(self, "map_labels_var", None) or bool(
+            self.map_labels_var.get())
+        if save_map_png(snapshot, str(path), zoom=self._map_zoom(),
+                        show_moons=show_moons, show_labels=show_labels,
+                        center_on=self._map_center):
+            self._map_update_status(snapshot, f"Карта сохранена: {path}")
+        else:
+            self._map_update_status(snapshot,
+                                    f"Не удалось сохранить карту: {path}")
 
     def _on_map_copy_summary(self):
         """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""
