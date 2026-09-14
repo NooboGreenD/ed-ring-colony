@@ -114,13 +114,14 @@ from system_map import (
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
-from event_dispatch import ThirdPartyDispatcher, normalize_commodity
+from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
+                          normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
 import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.11"
+VERSION = "2.10.12"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -6611,7 +6612,7 @@ class ColonialHelperApp:
         тонны молча не зачтутся. Документация API: «Commodity names are always
         lower case and language agnostic», то есть без пробелов.
         """
-        return "".join(normalize_commodity(name or "").split())
+        return canonical_commodity(name or "")
 
     #: Как часто переспрашиваем Raven о проекте, который не нашёлся ни по
     #: market_id, ни по системе. Первые несколько попыток идут в обычном темпе
@@ -7129,7 +7130,7 @@ class ColonialHelperApp:
                     except (TypeError, ValueError):
                         continue
                     if value > 0:
-                        need[str(raw)] = value
+                        need[canonical_commodity(raw)] = value
                 if need:
                     label = (f"{project.get('buildName') or 'проект'}"
                              f" · {project.get('systemName') or ''}").strip(" ·")
@@ -7149,7 +7150,7 @@ class ColonialHelperApp:
                     except (TypeError, ValueError):
                         continue
                     if value > 0:
-                        need[str(raw)] = value
+                        need[canonical_commodity(raw)] = value
                 if need:
                     label = (f"{site_project.get('buildName') or 'стройплощадка'}"
                              f" · {site_project.get('systemName') or ''}").strip(" ·")
@@ -7160,7 +7161,8 @@ class ColonialHelperApp:
         if site is None:
             return {}, "", ""
         try:
-            need = site.remaining_by_commodity()
+            need = {canonical_commodity(key): value
+                    for key, value in site.remaining_by_commodity().items()}
         except Exception:
             return {}, "", ""
         need = {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
@@ -7376,7 +7378,7 @@ class ColonialHelperApp:
         commodities = project.get("commodities")
         if isinstance(commodities, dict):
             remaining = {
-                normalize_commodity(key): int(float(value))
+                canonical_commodity(key): int(float(value))
                 for key, value in commodities.items()
                 if isinstance(value, (int, float)) and not isinstance(value, bool)
             }
@@ -7622,7 +7624,7 @@ class ColonialHelperApp:
         self.site_project = dict(project)
         commodities = project.get("commodities") if isinstance(project.get("commodities"), dict) else {}
         remaining = {
-            normalize_commodity(key): int(float(value))
+            canonical_commodity(key): int(float(value))
             for key, value in commodities.items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         }

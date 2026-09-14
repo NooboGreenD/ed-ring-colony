@@ -1088,3 +1088,43 @@ class LiveWatcherRavenTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class CanonicalCommodityTests(unittest.TestCase):
+    """2.10.12: один материал — одна строка оверлея.
+
+    Снимок FC-cargo с Raven приносил ключи с дефисами (`cmm-composite`),
+    потребность проекта и журнал — канонические (`cmmcomposite`): блок CARRIER
+    рисовал две строки одного материала, и «лишняя» тянула тоннаж, не связанный
+    с текущей ситуацией. Канонический ключ Raven — строчные a-z0-9.
+    """
+
+    def test_canonical_form(self):
+        from event_dispatch import canonical_commodity
+
+        self.assertEqual(canonical_commodity("cmm-composite"), "cmmcomposite")
+        self.assertEqual(canonical_commodity("CMM Composite"), "cmmcomposite")
+        self.assertEqual(canonical_commodity("$cmmcomposite_name;"), "cmmcomposite")
+        self.assertEqual(canonical_commodity("liquidoxygen"), "liquidoxygen")
+        self.assertEqual(canonical_commodity("  Steel "), "steel")
+
+    def test_fc_snapshot_with_hyphen_merges_with_need(self):
+        tracker = CarrierTracker()
+        self.assertTrue(tracker.merge_remote({"cmm-composite": 5, "steel": 10}))
+        state = tracker.state.get_state_dict(need={"cmmcomposite": 5})
+        cmm = [row for row in state["commodities"] if "cmm" in row["key"]]
+        self.assertEqual(len(cmm), 1, "дефисное и каноническое имена — одна строка")
+        self.assertEqual(cmm[0]["key"], "cmmcomposite")
+        self.assertEqual(cmm[0]["amount"], 5)
+        self.assertEqual(cmm[0]["need"], 5)
+        self.assertEqual(cmm[0]["remaining"], 0)
+
+    def test_localised_journal_name_joins_same_row(self):
+        tracker = CarrierTracker()
+        self.assertTrue(tracker.handle({
+            "event": "MarketSell", "timestamp": "2026-09-14T10:00:00Z",
+            "MarketID": 3700005632, "Type_Localised": "CMM Composite", "Count": 3}))
+        self.assertEqual(list(tracker.state.commodities), ["cmmcomposite"])
+        tracker.merge_remote({"cmm-composite": 5})
+        self.assertEqual(list(tracker.state.commodities), ["cmmcomposite"],
+                         "снимок Raven не заводит вторую строку")

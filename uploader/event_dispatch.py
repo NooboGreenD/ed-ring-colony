@@ -91,6 +91,23 @@ def normalize_commodity(value) -> str:
     return name
 
 
+#: Raven Colonial хранит имена товаров только буквами в нижнем регистре
+#: (`liquidoxygen`, `cmmcomposite`). Всё остальное — дефисы, пробелы,
+#: подчёркивания, локализацию — считаем мусором ключа.
+_CANON_OK = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def canonical_commodity(value) -> str:
+    """Канонический ключ товара Raven: строчные a-z0-9 без служебных символов.
+
+    Снимки FC-cargo и локализованные поля журнала приносят ключи вида
+    `cmm-composite` или `CMM Composite`: без канонизации один материал
+    расщепляется на две строки оверлея, и «лишняя» тянет тоннаж, не связанный
+    с текущей потребностью.
+    """
+    return "".join(ch for ch in normalize_commodity(value) if ch in _CANON_OK)
+
+
 def is_fleet_carrier(event: dict, station_type: str = "") -> bool:
     """Это операция на Fleet Carrier?
 
@@ -586,7 +603,7 @@ class ThirdPartyDispatcher:
         for item in event.get("ResourcesRequired") or []:
             if not isinstance(item, dict):
                 continue
-            name = normalize_commodity(item.get("Name") or "")
+            name = canonical_commodity(item.get("Name") or "")
             required = int(item.get("RequiredAmount") or 0)
             provided = int(item.get("ProvidedAmount") or 0)
             if name and required > 0:
@@ -644,7 +661,10 @@ class ThirdPartyDispatcher:
         count = event.get("Count")
         # Raven Colonial требует имя товара в нижнем регистре и без
         # локализационных токенов: `steel`, а не `Steel` и не `$steel_name;`.
-        commodity = normalize_commodity(event.get("Type") or event.get("Type_Localised"))
+        # Канонический вид (только a-z0-9): иначе дельты FC-cargo заводили на
+        # сервере второй ключ того же товара («cmm composite» рядом с
+        # `cmmcomposite`), и блок CARRIER показывал две строки одного материала.
+        commodity = canonical_commodity(event.get("Type") or event.get("Type_Localised"))
         if not market_id or not count or not commodity:
             return _SKIPPED
         if not is_fleet_carrier(event, station_type):
@@ -700,7 +720,7 @@ class ThirdPartyDispatcher:
                 delta = -int(transfer.get("Count") or 0)
             else:
                 continue  # tosrv / прочие — к авианосцу не относятся
-            commodity = normalize_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
+            commodity = canonical_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
             if not commodity or not delta:
                 continue
             key = "|".join(str(part) for part in (
