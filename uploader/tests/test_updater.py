@@ -340,6 +340,120 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(Path(folder).is_dir())
 
 
+class DownloadOverHttpTests(unittest.TestCase):
+    """`download_asset` против настоящего HTTP-сервера (2.8.8).
+
+    Остальные тесты скачивания подменяют сессию заглушкой: они проверяют, что
+    функция правильно дёргает `session.get`, но не проходят настоящий путь
+    `requests` — стриминг, `Content-Length`, переименование `.part`. Здесь
+    поднимается локальный сервер, и вызов идёт по реальной сети (127.0.0.1),
+    без выхода в интернет.
+
+    Найдено при проверке на настоящем файле из GitHub Releases: интернет для
+    хоста релизов в песочнице недоступен (requests, curl и gh падают на
+    `release-assets.githubusercontent.com` одинаково), поэтому реальный exe
+    скачать нельзя, но код скачивания проверить можно.
+    """
+
+    PAYLOAD = bytes(range(256)) * 4096  # 1 МБ узнаваемого содержимого
+
+    @classmethod
+    def setUpClass(cls):
+        import hashlib
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        cls.digest = hashlib.sha256(cls.PAYLOAD).hexdigest()
+        payload = cls.PAYLOAD
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                if self.path == "/ColonialHelper.exe":
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                if self.path == "/partial.exe":
+                    # Обещаем 100 КБ, отдаём 100 байт и рвём соединение.
+                    self.send_response(200)
+                    self.send_header("Content-Length", "100000")
+                    self.end_headers()
+                    self.wfile.write(b"x" * 100)
+                    self.close_connection = True
+                    return
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def test_real_download_writes_exact_bytes(self):
+        """Скачанный файл побайтово равен отданному, .part не остаётся."""
+        import hashlib
+
+        seen = []
+        with tempfile.TemporaryDirectory() as tmp:
+            result = updater.download_asset(
+                {"asset_url": f"{self.base}/ColonialHelper.exe",
+                 "asset_name": "ColonialHelper.exe"},
+                tmp,
+                progress=lambda done, total: seen.append((done, total)),
+            )
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["size"], len(self.PAYLOAD))
+
+            path = Path(result["path"])
+            self.assertTrue(path.exists())
+            self.assertEqual(
+                hashlib.sha256(path.read_bytes()).hexdigest(), self.digest)
+            self.assertEqual(list(Path(tmp).glob("*.part")), [],
+                             "временный файл должен исчезнуть после rename")
+
+        self.assertTrue(seen, "прогресс ни разу не вызван")
+        self.assertEqual(seen[-1][1], len(self.PAYLOAD))
+        self.assertTrue(
+            all(a[0] <= b[0] for a, b in zip(seen, seen[1:])),
+            f"прогресс немонотонный: {seen}")
+
+    def test_http_error_leaves_nothing_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = updater.download_asset(
+                {"asset_url": f"{self.base}/нет-такого.exe",
+                 "asset_name": "ColonialHelper.exe"}, tmp)
+
+            self.assertFalse(result["ok"])
+            self.assertIn("404", result["error"])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_truncated_download_leaves_no_partial_exe(self):
+        """Обрыв на середине не должен оставлять «почти готовый» exe."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = updater.download_asset(
+                {"asset_url": f"{self.base}/partial.exe",
+                 "asset_name": "ColonialHelper.exe"}, tmp)
+
+            self.assertFalse(result["ok"])
+            self.assertIn("прервано", result["error"])
+            self.assertEqual(list(Path(tmp).glob("*.part")), [],
+                             ".part должен быть удалён при обрыве")
+            self.assertFalse((Path(tmp) / "ColonialHelper.exe").exists(),
+                             "оборванный файл не должен выдаваться за готовый")
+
+
 class ReleaseTagAndNotesTests(unittest.TestCase):
     def test_release_tag_per_branch(self):
         self.assertEqual(updater.release_tag("2.4.2", "main"), "v2.4.2")
