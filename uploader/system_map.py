@@ -73,6 +73,12 @@ BODY_LABELS = {
     KIND_UNKNOWN: "тело",
 }
 
+#: Тела Raven v2, которые на карту не попадают: барицентры и пояса астероидов.
+#: Это служебные записи (`"type": "bc"`, `"ac"`), а не то, что видит пилот.
+RAVEN_SKIP_BODY_TYPES = {"bc", "ac"}
+#: Код звезды в `type` ответа Raven v2.
+RAVEN_STAR_TYPE = "st"
+
 #: `StationType` из журнала -> наш тип объекта. Ключи в нижнем регистре.
 STATION_TYPE_KINDS = {
     "fleetcarrier": STATION_CARRIER,
@@ -815,25 +821,41 @@ class SystemMapBuilder:
         return True
 
     def _resolve_parents(self, system: str) -> None:
-        """body_id -> имя родителя: луны рисуются рядом со своей планетой."""
+        """body_id -> имя родителя: луны рисуются рядом со своей планетой.
+
+        Проходов несколько: родитель сам может оказаться луной (суб-луны вроде
+        «HIP 22460 13 e a»), а порядок тел не гарантирован ни журналом, ни
+        Raven v2. `body_id == 0` допустим — так Raven нумерует звезду.
+        """
         bodies = self._bodies.get(system, {})
-        by_id = {body.body_id: body for body in bodies.values() if body.body_id}
-        for body in bodies.values():
-            if not body.parent_ids:
-                continue
-            parent = None
-            for parent_id in body.parent_ids:
-                candidate = by_id.get(parent_id)
-                if candidate is not None and candidate is not body:
-                    parent = candidate
-                    break
-            if parent is None or parent.kind == KIND_MOON:
-                continue
-            if not body.parent_name:
-                body.parent_name = parent.name
-            # планету, чей родитель — планета, показываем луной (и наоборот)
-            if body.kind != KIND_STAR:
-                body.kind = KIND_MOON if parent.kind == KIND_PLANET else KIND_PLANET
+        by_id = {body.body_id: body for body in bodies.values()
+                 if body.body_id is not None}
+        for _attempt in range(3):
+            changed = False
+            for body in bodies.values():
+                if not body.parent_ids:
+                    continue
+                parent = None
+                for parent_id in body.parent_ids:
+                    candidate = by_id.get(parent_id)
+                    if candidate is not None and candidate is not body:
+                        parent = candidate
+                        break
+                if parent is None:
+                    continue
+                if not body.parent_name and parent.name:
+                    body.parent_name = parent.name
+                    changed = True
+                if body.kind == KIND_STAR or parent.kind == KIND_UNKNOWN:
+                    continue
+                # планету, чей родитель — планета или луна, показываем луной
+                wanted = (KIND_MOON if parent.kind in (KIND_PLANET, KIND_MOON)
+                          else KIND_PLANET)
+                if body.kind != wanted:
+                    body.kind = wanted
+                    changed = True
+            if not changed:
+                break
 
     # -- стройплощадки ----------------------------------------------------
     def _on_colonisationconstructiondepot(self, event: dict) -> bool:
@@ -898,8 +920,12 @@ class SystemMapBuilder:
         return True
 
     def _body_name_by_num(self, system: str, body_num: int) -> str:
+        wanted = int(body_num or 0)
+        if not wanted:
+            # Иначе стройка с неизвестным BodyNum «прилипнет» к звезде Raven (num 0).
+            return ""
         for body in self._bodies.get(system, {}).values():
-            if body.body_id == int(body_num or 0):
+            if body.body_id == wanted:
                 return body.name
         return ""
 
@@ -1078,37 +1104,98 @@ class SystemMapBuilder:
 
     # -- тела из Raven Colonial v2 ----------------------------------------
     @staticmethod
-    def _raven_body_fields(raw: dict) -> dict:
-        """Поля тела из ответа Raven v2: ключи приходят в разном регистре."""
+    def _raven_radius_m(value) -> float:
+        """Радиус тела в метрах: Raven v2 отдаёт километры и -1 вместо «не знаю».
+
+        Журнальный `Radius` приходит сразу в метрах, поэтому различаем единицы
+        по порядку величины: больше 250 000 км тел не бывает.
+        """
+        number = _as_float(value, 0.0)
+        if number <= 0:
+            return 0.0
+        return number if number > 250000.0 else number * 1000.0
+
+    @classmethod
+    def _raven_body_fields(cls, raw: dict) -> dict:
+        """Поля тела из ответа Raven v2 (`GET /api/v2/system/{system}`).
+
+        Реальный ответ выглядит так (проверено на HIP 22460)::
+
+            {"name": "HIP 22460 1", "num": 5, "distLS": 45.87, "parents": [0],
+             "type": "hmc", "subType": "High metal content world",
+             "features": ["landable", "geo", "rings"], "radius": 9284.4,
+             "temp": 967.0, "gravity": 1.18}
+
+        то есть `num` вместо BodyID, `distLS` вместо DistanceFromArrivalLS,
+        класс — в `subType` (а `type` — короткий код), посадка — в `features`,
+        радиус — в километрах. Звезда приходит с `"type": "st"` и `num: 0`.
+        Журнальные варианты ключей тоже понимаем: вдруг ответ изменится.
+        """
         def pick(*keys):
             for key in keys:
                 if key in raw and raw[key] not in (None, ""):
                     return raw[key]
             return None
 
-        fields = {
-            "name": str(pick("bodyName", "BodyName", "name", "Name") or "").strip(),
-            "body_id": _as_int(pick("bodyId", "BodyID"), 0),
-            "star_type": str(pick("starType", "StarType") or "").strip(),
-            "body_class": str(pick("planetClass", "PlanetClass", "type", "Type")
-                              or "").strip(),
-            "distance_ls": _as_float(pick("distanceFromArrivalLS",
-                                          "DistanceFromArrivalLS", "distanceLS"), 0.0),
-            "radius_m": _as_float(pick("radius", "Radius", "radiusM"), 0.0),
-        }
-        landable = pick("isLandable", "Landable", "landable")
-        fields["landable"] = bool(landable) if isinstance(landable, bool) else None
+        name = str(pick("name", "Name", "bodyName", "BodyName") or "").strip()
+        code = str(pick("type", "Type") or "").strip().lower()
+        sub_type = str(pick("subType", "SubType", "planetClass", "PlanetClass",
+                            "bodyClass") or "").strip()
+        star_type = str(pick("starType", "StarType") or "").strip()
+        is_star = code == RAVEN_STAR_TYPE or bool(star_type)
+        if is_star and not star_type and sub_type:
+            # "F (White) Star" -> "F": подпись звезды короткая.
+            star_type = sub_type.split(" ", 1)[0]
+        # Короткие коды v2 ("hmc", "gg", "rb") — не название класса, их не показываем.
+        body_class = "" if is_star else sub_type
+        if body_class and len(body_class) <= 4 and " " not in body_class:
+            body_class = ""
+
+        features = pick("features", "Features")
+        feature_set = {str(item).strip().lower() for item in features} \
+            if isinstance(features, list) else set()
+        if feature_set:
+            landable = "landable" in feature_set
+        else:
+            value = pick("isLandable", "Landable", "landable")
+            landable = bool(value) if isinstance(value, bool) else None
+
         parents = pick("parents", "Parents")
         parent_ids: List[int] = []
         if isinstance(parents, list):
             for entry in parents:
                 if isinstance(entry, dict):
+                    # Журнальная форма: [{"Planet": 4}] или [{"Star": 1}].
                     parent_ids.extend(_as_int(value, 0) for value in entry.values()
                                       if _as_int(value, 0))
-                elif _as_int(entry, 0):
-                    parent_ids.append(_as_int(entry, 0))
-        fields["parent_ids"] = parent_ids
-        return fields
+                else:
+                    # Raven v2: [прямой родитель, ..., звезда]; звезда бывает с num 0.
+                    parent_id = _as_int(entry, None)
+                    if parent_id is not None:
+                        parent_ids.append(parent_id)
+
+        # `num: 0` у звезды Raven — валидный идентификатор, поэтому None отличаем от 0.
+        raw_id = pick("num", "bodyId", "BodyID")
+        return {
+            "name": name,
+            "body_id": None if raw_id is None else _as_int(raw_id, 0),
+            "is_star": is_star,
+            "star_type": star_type,
+            "body_class": body_class,
+            "distance_ls": _as_float(pick("distLS", "distanceToArrival",
+                                          "distanceFromArrivalLS",
+                                          "DistanceFromArrivalLS", "distanceLS",
+                                          "distance"), 0.0),
+            "radius_m": cls._raven_radius_m(pick("radius", "Radius", "radiusKM",
+                                                 "radiusM")),
+            "landable": landable,
+            "terraformable": ("terraformable" in feature_set
+                              or "terraformable" in sub_type.lower()),
+            "parent_ids": parent_ids,
+            # Барицентры и пояса — служебные записи, на карту их не несём.
+            "skip": bool(code in RAVEN_SKIP_BODY_TYPES
+                         or "barycentre" in name.lower()),
+        }
 
     def merge_bodies(self, system: str, bodies: List[dict]) -> bool:
         """Тела системы из Raven Colonial v2 (`/v2/system/{system}`).
@@ -1128,15 +1215,16 @@ class SystemMapBuilder:
                 continue
             fields = self._raven_body_fields(raw)
             name = fields["name"]
-            if not name:
+            if not name or fields["skip"]:
                 continue
             body = self._bodies.get(system, {}).get(name)
             if body is None:
+                if len(self._bodies.get(system, {})) >= MAX_BODIES_PER_SYSTEM:
+                    continue
                 body = self._body(system, name)
                 body.from_raven = True
                 changed = True
             for key, value in (
-                ("body_id", fields["body_id"]),
                 ("star_type", fields["star_type"]),
                 ("body_class", fields["body_class"]),
                 ("distance_ls", fields["distance_ls"]),
@@ -1148,25 +1236,25 @@ class SystemMapBuilder:
                     # Журнал главнее: дополняем только пробелы.
                     setattr(body, key, value)
                     changed = True
+            # `num == 0` у звезды Raven — валидный идентификатор, поэтому None.
+            if fields["body_id"] is not None and body.body_id is None:
+                body.body_id = fields["body_id"]
+                changed = True
             if fields["landable"] is not None and not body.scanned:
                 if body.landable != fields["landable"]:
                     body.landable = fields["landable"]
                     changed = True
+            if fields["terraformable"] and not body.terraformable:
+                body.terraformable = True
+                changed = True
             if fields["parent_ids"] and not body.parent_ids:
                 body.parent_ids = fields["parent_ids"]
                 changed = True
             if body.kind == KIND_UNKNOWN:
-                if fields["star_type"]:
-                    body.kind = KIND_STAR
-                elif fields["parent_ids"]:
-                    body.kind = KIND_MOON
-                else:
-                    body.kind = KIND_PLANET
+                # Луну из планеты сделает _resolve_parents: у Raven parents есть
+                # и у планет ([звезда]), поэтому по наличию родителей не угадать.
+                body.kind = KIND_STAR if fields["is_star"] else KIND_PLANET
                 changed = True
-            if "terraformable" in str(fields["body_class"]).lower():
-                if not body.terraformable:
-                    body.terraformable = True
-                    changed = True
         if changed:
             self._resolve_parents(system)
         return changed

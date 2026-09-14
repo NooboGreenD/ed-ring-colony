@@ -1089,3 +1089,184 @@ class RobustnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def raven_v2_bodies():
+    """Кусок НАСТОЯЩЕГО ответа `GET /api/v2/system/HIP 22460`.
+
+    Форма ответа отличается от журнальной: `num` вместо BodyID, `distLS` вместо
+    DistanceFromArrivalLS, класс — в `subType` (в `type` короткий код), посадка —
+    в списке `features`, радиус — в километрах и -1 вместо «неизвестно». Звезда
+    приходит с `"type": "st"` и `num: 0`, плюс есть служебные записи: пояс
+    астероидов (`"type": "ac"`) и барицентры (`"type": "bc"`).
+    """
+    return [
+        {"name": "HIP 22460", "num": 0, "distLS": 0, "parents": [], "type": "st",
+         "subType": "F (White) Star", "features": [], "radius": -1,
+         "temp": 7147, "gravity": -1},
+        {"name": "HIP 22460 A Belt", "num": 100000, "distLS": 6.986333191877696,
+         "parents": [0], "type": "ac", "subType": "Metallic", "features": [],
+         "radius": -1, "temp": 7147, "gravity": -1},
+        {"name": "HIP 22460 1", "num": 5, "distLS": 45.876972, "parents": [0],
+         "type": "hmc", "subType": "High metal content world",
+         "features": ["landable", "geo", "rings", "volcanism", "tidal"],
+         "radius": 9284.441, "temp": 967.035767, "gravity": 1.1765807076578},
+        {"name": "HIP 22460 3", "num": 20, "distLS": 210.889612, "parents": [0],
+         "type": "hmc", "subType": "High metal content world",
+         "features": ["landable", "geo", "rings", "volcanism", "tidal"],
+         "radius": 7750.072, "temp": 450.99, "gravity": 1.549},
+        {"name": "HIP 22460 3 a", "num": 22, "distLS": 211.249559, "parents": [20, 0],
+         "type": "rb", "subType": "Rocky body", "features": ["landable", "tidal"],
+         "radius": 478.12615625, "temp": 450.99, "gravity": 0.055},
+        {"name": "HIP 22460 barycentre 55", "num": 55, "distLS": 0, "parents": [],
+         "type": "bc", "features": [], "radius": -1, "temp": -1, "gravity": -1},
+        {"name": "HIP 22460 8", "num": 56, "distLS": 1122.007374, "parents": [55, 0],
+         "type": "gg", "subType": "Gas giant with water-based life",
+         "features": ["rings"], "radius": 70979.76, "temp": 238.56, "gravity": 2.908},
+        {"name": "HIP 22460 13", "num": 93, "distLS": 2465.260776, "parents": [92, 0],
+         "type": "gg", "subType": "Class III gas giant", "features": ["rings"],
+         "radius": 71640.68, "temp": 507.56, "gravity": 15.075},
+        {"name": "HIP 22460 13 e", "num": 99, "distLS": 2469.588361,
+         "parents": [93, 92, 0], "type": "rb", "subType": "Rocky body",
+         "features": ["landable", "bio", "tidal", "atmosphere"], "radius": 1370.6825},
+        {"name": "HIP 22460 13 e a", "num": 100, "distLS": 2469.580469,
+         "parents": [99, 93, 92, 0], "type": "rb", "subType": "Rocky body",
+         "features": ["landable", "geo", "volcanism", "tidal"], "radius": 457.621},
+    ]
+
+
+class RavenV2RealPayloadTests(unittest.TestCase):
+    """Тела из настоящего ответа Raven v2: карта не пустая до сканирования."""
+
+    def builder(self, bodies=None):
+        builder = SystemMapBuilder()
+        builder.handle(location_event(Docked=False, StationName="", MarketID=0,
+                                      StationServices=None, StationType="",
+                                      Body="", BodyID=None))
+        builder.merge_bodies(SYSTEM, raven_v2_bodies() if bodies is None else bodies)
+        return builder
+
+    def body(self, builder, name):
+        found = [item for item in builder.snapshot().bodies if item.name == name]
+        self.assertEqual(len(found), 1, f"тело {name} не найдено")
+        return found[0]
+
+    def test_kinds_star_planet_moon(self):
+        builder = self.builder()
+        star = self.body(builder, SYSTEM)
+        self.assertEqual(star.kind, KIND_STAR)
+        self.assertEqual(star.star_type, "F", "из «F (White) Star» нужен короткий класс")
+        self.assertEqual(star.body_id, 0, "звезда Raven имеет num 0")
+        self.assertFalse(star.body_class, "у звезды класс не показываем")
+        planet = self.body(builder, "HIP 22460 1")
+        self.assertEqual(planet.kind, KIND_PLANET,
+                         "планета с parents=[звезда] не должна стать луной")
+        self.assertEqual(planet.parent_name, SYSTEM)
+        moon = self.body(builder, "HIP 22460 3 a")
+        self.assertEqual(moon.kind, KIND_MOON)
+        self.assertEqual(moon.parent_name, "HIP 22460 3")
+
+    def test_submoon_resolves_through_moon_parent(self):
+        builder = self.builder()
+        self.assertEqual(self.body(builder, "HIP 22460 13 e").kind, KIND_MOON)
+        submoon = self.body(builder, "HIP 22460 13 e a")
+        self.assertEqual(submoon.kind, KIND_MOON)
+        self.assertEqual(submoon.parent_name, "HIP 22460 13 e")
+
+    def test_order_of_bodies_does_not_matter(self):
+        """Raven отдаёт тела в своём порядке — дети могут прийти раньше родителей."""
+        builder = self.builder(bodies=list(reversed(raven_v2_bodies())))
+        self.assertEqual(self.body(builder, "HIP 22460 3 a").kind, KIND_MOON)
+        self.assertEqual(self.body(builder, "HIP 22460 13 e a").kind, KIND_MOON)
+        self.assertEqual(self.body(builder, "HIP 22460 1").kind, KIND_PLANET)
+
+    def test_service_records_are_skipped(self):
+        names = [body.name for body in self.builder().snapshot().bodies]
+        self.assertNotIn("HIP 22460 A Belt", names, "пояс астероидов не тело")
+        self.assertNotIn("HIP 22460 barycentre 55", names, "барицентр не тело")
+        self.assertEqual(len(names), len(raven_v2_bodies()) - 2)
+
+    def test_barycentre_child_becomes_planet_of_star(self):
+        """Родитель-барицентр пропущен, поэтому планета висит на звезде."""
+        body = self.body(self.builder(), "HIP 22460 8")
+        self.assertEqual(body.kind, KIND_PLANET)
+        self.assertEqual(body.parent_name, SYSTEM)
+
+    def test_fields_distLS_subType_features_radius_km(self):
+        builder = self.builder()
+        planet = self.body(builder, "HIP 22460 1")
+        self.assertAlmostEqual(planet.distance_ls, 45.876972, places=5)
+        self.assertEqual(planet.body_class, "High metal content world")
+        self.assertTrue(planet.landable, "посадка приходит в features")
+        self.assertAlmostEqual(planet.radius_m, 9284441.0, delta=1.0)
+        self.assertTrue(planet.from_raven)
+        self.assertFalse(planet.scanned)
+        giant = self.body(builder, "HIP 22460 8")
+        self.assertFalse(giant.landable, "features без «landable» — посадки нет")
+        star = self.body(builder, SYSTEM)
+        self.assertEqual(star.radius_m, 0.0, "radius -1 означает «неизвестно»")
+
+    def test_terraformable_from_subtype(self):
+        bodies = raven_v2_bodies()
+        bodies[3]["subType"] = "High metal content world (Terraformable)"
+        builder = self.builder(bodies=bodies)
+        self.assertTrue(self.body(builder, "HIP 22460 3").terraformable)
+
+    def test_journal_still_wins(self):
+        builder = scanned_system()
+        journal_body = next(item for item in builder.snapshot().bodies
+                            if item.name == BODY_1)
+        self.assertTrue(journal_body.scanned)
+        builder.merge_bodies(SYSTEM, [
+            {"name": BODY_1, "num": 3, "distLS": 999.0, "parents": [0], "type": "rb",
+             "subType": "Rocky body", "features": [], "radius": 100.0}])
+        body = next(item for item in builder.snapshot().bodies if item.name == BODY_1)
+        self.assertTrue(body.scanned)
+        self.assertEqual(body.body_class, "High metal content world")
+        self.assertAlmostEqual(body.distance_ls, 12.4, places=3)
+        self.assertTrue(body.landable, "Raven без features не отменяет посадку")
+        self.assertFalse(body.from_raven)
+
+    def test_merge_is_idempotent(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event(Docked=False, StationName="", MarketID=0,
+                                      StationServices=None, StationType="",
+                                      Body="", BodyID=None))
+        bodies = raven_v2_bodies()
+        self.assertTrue(builder.merge_bodies(SYSTEM, bodies))
+        self.assertFalse(builder.merge_bodies(SYSTEM, bodies))
+
+    def test_project_attaches_to_raven_body(self):
+        """Стройка Raven ложится на тело из того же ответа (bodyNum -> num)."""
+        builder = self.builder()
+        builder.merge_projects(SYSTEM, [
+            {"buildId": "guid-v2-1", "buildName": "1", "marketId": 900001,
+             "buildType": "PlanetaryInstallation", "bodyNum": 5,
+             "sumTotal": 4000, "sumNeed": 1500, "commodities": {"steel": 1500}}])
+        station = next(item for item in builder.snapshot().stations
+                       if item.build_id == "guid-v2-1")
+        self.assertEqual(station.body_name, "HIP 22460 1")
+        self.assertEqual(station.percent_delivered, 62)
+
+    def test_project_without_body_does_not_grab_the_star(self):
+        builder = self.builder()
+        builder.merge_projects(SYSTEM, [
+            {"buildId": "guid-v2-2", "buildName": "Порт", "marketId": 900002,
+             "buildType": "Orbis Starport", "bodyNum": 0}])
+        station = next(item for item in builder.snapshot().stations
+                       if item.build_id == "guid-v2-2")
+        self.assertEqual(station.body_name, "")
+        star = self.body(builder, SYSTEM)
+        self.assertFalse(star.stations, "звезда не должна обрастать стройками")
+
+    def test_layout_handles_raven_only_system(self):
+        snapshot = self.builder().snapshot()
+        items = layout(snapshot, 900, 620, zoom=1.0, show_moons=True)
+        kinds = {item.kind for item in items}
+        self.assertIn("star", kinds)
+        self.assertIn("body", kinds)
+        for item in items:
+            self.assertGreaterEqual(item.x, -1.0)
+            self.assertLessEqual(item.x, 901.0)
+            self.assertGreaterEqual(item.y, -1.0)
+            self.assertLessEqual(item.y, 621.0)
