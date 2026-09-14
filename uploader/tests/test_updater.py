@@ -723,6 +723,73 @@ class UpdateUiTests(unittest.TestCase):
             self.app._on_check_update(manual=True)
         self.assertFalse(self.app._update_busy)
 
+    # --- ветка channel_empty (2.8.7) --------------------------------------
+    # В 2.8.7 updater научился честно сообщать «в канале сборок нет», но ветка
+    # интерфейса осталась без теста: check_for_update покрывали, а то, что
+    # делает с ответом окно, — нет.
+
+    def _hints(self):
+        return [str(c.kwargs.get("text", ""))
+                for c in self.app.update_hint.config.call_args_list]
+
+    def _capture_log(self):
+        logged = []
+        self.app.log = lambda text, level="info": logged.append((str(text), level))
+        return logged
+
+    def test_empty_channel_does_not_claim_latest(self):
+        """Пустой канал — не «актуальная версия», а «смотреть нечего»."""
+        self.module.updater.check_for_update = lambda *a, **k: {
+            "ok": True, "update_available": False, "latest": "2.0.0",
+            "channel_empty": True, "release": None,
+        }
+        logged = self._capture_log()
+
+        with self._sync_threads():
+            self.app._on_check_update(manual=True)
+
+        hints = self._hints()
+        self.assertTrue(hints, "подсказка ни разу не выставлена")
+        self.assertIn("сборок нет", hints[-1], hints[-1])
+        self.assertNotIn("актуальная", hints[-1],
+                         "пустой канал не должен выдаваться за «всё свежо»")
+
+        # По кнопке пишем в лог: имя канала и куда переключиться.
+        self.assertTrue(logged, "по кнопке должна быть запись в лог")
+        text, level = logged[-1]
+        self.assertIn(self.app._update_channel_label(), text)
+        self.assertIn("Все сборки", text)
+        self.assertEqual(level, "warn")
+        self.assertFalse(self.app._update_busy, "кнопка должна разблокироваться")
+
+    def test_empty_channel_is_silent_on_autocheck(self):
+        """Автопроверка на старте не должна засорять лог тем же сообщением."""
+        self.module.updater.check_for_update = lambda *a, **k: {
+            "ok": True, "update_available": False, "latest": "2.0.0",
+            "channel_empty": True, "release": None,
+        }
+        logged = self._capture_log()
+
+        with self._sync_threads():
+            self.app._on_check_update(manual=False)
+
+        self.assertEqual([t for t, _ in logged if "сборки" in t], [],
+                         f"автопроверка не должна писать в лог: {logged}")
+        self.assertIn("сборок нет", self._hints()[-1])
+
+    def test_nonempty_channel_still_reports_latest(self):
+        """Тот же путь без channel_empty сообщает актуальную версию."""
+        self.module.updater.check_for_update = lambda *a, **k: {
+            "ok": True, "update_available": False, "latest": "2.0.0",
+            "channel_empty": False, "release": None,
+        }
+        self._capture_log()
+
+        with self._sync_threads():
+            self.app._on_check_update(manual=True)
+
+        self.assertIn("актуальная версия v2.0.0", self._hints()[-1])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
