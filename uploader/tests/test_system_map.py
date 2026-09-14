@@ -1528,3 +1528,57 @@ class OrbitRingTests(unittest.TestCase):
         moon = next(item for item in items if item.label == MOON_2A)
         self.assertGreater(moon.orbit_radius, 0.0)
         self.assertAlmostEqual(moon.orbit_cx, planet.x, delta=0.01)
+
+
+class BinaryStarLayoutTests(unittest.TestCase):
+    """2.10.10: в системе может быть больше одной звезды — и карта это рисует.
+
+    Раньше `layout()` знал только `snapshot.star`: вторая звезда двойной
+    системы просто пропадала, а её планеты вставали вокруг главной звезды.
+    Теперь вторая звезда стоит на собственном кольце, а планеты кружат
+    вокруг СВОЕЙ звезды.
+    """
+
+    STAR_B = f"{SYSTEM} B"
+    PLANET_B1 = f"{SYSTEM} B 1"
+    LS = 299792458.0
+
+    def _snapshot(self):
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.handle(scan_event(STAR, 1, StarType="K", DistanceFromArrivalLS=0.0,
+                                  Radius=5.9e8))
+        builder.handle(scan_event(self.STAR_B, 2, StarType="M",
+                                  DistanceFromArrivalLS=500.0, Radius=4.0e8,
+                                  SemiMajorAxis=500.0 * self.LS))
+        builder.handle(scan_event(BODY_1, 3, Parents=[{"Star": 1}],
+                                  PlanetClass="Icy body", DistanceFromArrivalLS=12.4,
+                                  Radius=7.4e6, SemiMajorAxis=12.4 * self.LS))
+        builder.handle(scan_event(self.PLANET_B1, 4, Parents=[{"Star": 2}],
+                                  PlanetClass="Rocky body", DistanceFromArrivalLS=505.0,
+                                  Radius=6.0e6, SemiMajorAxis=5.0 * self.LS))
+        return builder.snapshot()
+
+    def test_second_star_is_on_the_map(self):
+        items = layout(self._snapshot(), 900, 560)
+        stars = [item for item in items if item.kind == "star" and item.label]
+        self.assertEqual({item.label for item in stars}, {STAR, self.STAR_B})
+        second = next(item for item in stars if item.label == self.STAR_B)
+        self.assertGreater(second.orbit_radius, 0.0,
+                           "вторая звезда стоит на кольце вокруг главной")
+        self.assertAlmostEqual(second.orbit_cx, 450.0, delta=0.01)
+        self.assertAlmostEqual(second.orbit_cy, 280.0, delta=0.01)
+
+    def test_planet_orbits_its_own_star(self):
+        items = layout(self._snapshot(), 900, 560)
+        second = next(item for item in items if item.label == self.STAR_B)
+        planet = next(item for item in items if item.label == self.PLANET_B1)
+        self.assertAlmostEqual(planet.orbit_cx, second.x, delta=0.01)
+        self.assertAlmostEqual(planet.orbit_cy, second.y, delta=0.01)
+        self.assertLess(planet.orbit_radius, second.orbit_radius,
+                        "кольцо планеты вокруг своей звезды меньше кольца звезды")
+        distance = math.hypot(planet.x - second.x, planet.y - second.y)
+        self.assertAlmostEqual(distance, planet.orbit_radius, delta=0.5)
+
+    def test_summary_counts_stars(self):
+        self.assertIn("звёзд: 2", map_summary(self._snapshot()))

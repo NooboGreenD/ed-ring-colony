@@ -783,3 +783,63 @@ class InaraWhitelistTests(unittest.TestCase):
         dispatcher._do_inara(payload)
         self.assertEqual(len(notes), 1, "простыня из одинаковых отказов не нужна")
         self.assertIn("белом списке", notes[0])
+
+
+class RavenSupplyUpdateTests(unittest.TestCase):
+    """2.10.10: колонка Need на сайте обновляется ProjectUpdate, а не contribute.
+
+    Raven Colonial прибавляет тонны доставок к заслугам командира, но остаток
+    потребности по материалам пересчитывает только из `POST /api/project/{id}`
+    с телом `{buildId, commodities, maxNeed}` — так делает эталонный плагин
+    EDMC-Ravencolonial при каждом `ColonisationConstructionDepot`.
+    """
+
+    def test_update_supply_posts_project_update(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        api = RavenColonialAPI("key")
+        api._session = mock.MagicMock()
+        api._session.post.return_value = _FakeResponse({"buildId": "b-1"})
+        result = api.update_supply("b-1", {"steel": 600}, 1000)
+        self.assertTrue(result["ok"])
+        url = api._session.post.call_args[0][0]
+        self.assertTrue(url.endswith("/project/b-1"), url)
+        self.assertEqual(api._session.post.call_args[1]["json"],
+                         {"buildId": "b-1", "commodities": {"steel": 600},
+                          "maxNeed": 1000})
+
+    def test_depot_event_updates_project_need(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        calls = []
+
+        class FakeRaven:
+            enabled = True
+            is_connected = True
+
+            def get_project(self, address, market_id, use_cache=True):
+                return {"buildId": "b-42"}
+
+            def update_supply(self, build_id, commodities, max_need):
+                calls.append((build_id, dict(commodities), max_need))
+                return {"ok": True}
+
+            def supply_fc(self, *args, **kwargs):
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(raven_api=FakeRaven())
+        event = {"event": "ColonisationConstructionDepot",
+                 "MarketID": 3951663874, "SystemAddress": 123456789,
+                 "ResourcesRequired": [
+                     {"Name": "$steel_name;", "RequiredAmount": 1000,
+                      "ProvidedAmount": 400},
+                     {"Name": "$water_name;", "RequiredAmount": 500,
+                      "ProvidedAmount": 500},
+                 ]}
+        self.assertEqual(dispatcher._submit_raven_supply(event), "queued")
+        service, payload = dispatcher._queue.get_nowait()
+        self.assertEqual(service, "raven")
+        dispatcher._do_raven(payload)
+        self.assertEqual(calls, [("b-42", {"steel": 600, "water": 0}, 1500)])
+        # То же состояние depot повторно — ProjectUpdate не дублируем.
+        self.assertEqual(dispatcher._submit_raven_supply(event), "skipped")

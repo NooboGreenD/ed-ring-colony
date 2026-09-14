@@ -1454,11 +1454,12 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
            center_on: str = "") -> List[PlacedItem]:
     """Разложить снимок системы по координатам холста.
 
-    Карта схематическая (реальных орбитальных позиций журнал не даёт): звезда в
-    центре, планеты на кольцах, радиус которых логарифмически зависит от
-    `DistanceFromArrivalLS`, угол — по золотому углу, поэтому тела не
-    накладываются друг на друга. Луны рисуются рядом со своей планетой,
-    станции — рядом со своим телом, стройплощадки получают прогресс-бар.
+    Карта схематическая (реальных орбитальных позиций журнал не даёт): главная
+    звезда в центре, вторые и третьи звёзды — на собственных кольцах вокруг
+    неё, планеты на кольцах вокруг СВОЕЙ звезды (радиус логарифмически зависит
+    от большой полуоси), угол — по золотому углу, поэтому тела не накладываются
+    друг на друга. Луны рисуются на кольцах вокруг своей планеты, станции —
+    рядом со своим телом, стройплощадки получают прогресс-бар.
 
     Функция детерминирована: один и тот же снимок даёт те же координаты, что
     позволяет тестировать раскладку без tkinter.
@@ -1491,20 +1492,17 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
     # Планеты (без лун): у планеты родитель — звезда, у луны — планета.
     planets = [body for body in snapshot.bodies
                if body.kind not in (KIND_STAR, KIND_MOON)]
-    distances = sorted({max(0.0, body.distance_ls) for body in planets})
-    if distances:
-        low = math.log10(max(0.05, distances[0]))
-        high = math.log10(max(0.05, distances[-1]))
-    else:
-        low = high = 0.0
-    span = max(1e-6, high - low)
+    by_name = {body.name: body for body in snapshot.bodies}
+    stars = [body for body in snapshot.bodies if body.kind == KIND_STAR]
+    second_stars = [body for body in stars if star is not None
+                    and body.name != star.name]
 
     def orbit_of(body) -> float:
         """Большая полуось тела в LS: журнал, иначе оценка по Raven v2.
 
         Raven v2 полуосей не даёт, только дистанцию от точки прибытия, поэтому
         для лун берём |distLS луны − distLS планеты| (проекция радиуса орбиты),
-        для планет — саму distLS.
+        для планет и звёзд — саму distLS.
         """
         if body.orbit_ls > 0:
             return body.orbit_ls
@@ -1514,6 +1512,18 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
                 return max(1e-4, abs(body.distance_ls - parent.distance_ls))
             return 1e-4
         return max(0.0, body.distance_ls)
+
+    # Шкала колец строится по полуосям ВОКРУГ РОДИТЕЛЯ: у планет и вторых звёзд
+    # это орбита вокруг главной звезды, поэтому широкая двойная система не
+    # сжимает кольца планет в точку.
+    distances = sorted({orbit_of(body) for body in planets}
+                       | {orbit_of(body) for body in second_stars})
+    if distances:
+        low = math.log10(max(0.05, distances[0]))
+        high = math.log10(max(0.05, distances[-1]))
+    else:
+        low = high = 0.0
+    span = max(1e-6, high - low)
 
     def moon_ring_px(body, siblings) -> float:
         inner, outer = 15.0, 34.0
@@ -1534,18 +1544,39 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         scale = (math.log10(max(0.05, distance_ls)) - low) / span
         return inner + (max_radius - inner) * max(0.0, min(1.0, scale))
 
-    by_name = {body.name: body for body in snapshot.bodies}
-
-    for index, body in enumerate(planets):
-        orbit = ring_radius(body.distance_ls)
-        angle = index * GOLDEN_ANGLE
+    # Вторые и третьи звёзды: собственное кольцо вокруг главной. Без этого
+    # двойная система рисовалась как одиночная: лишние звёзды пропадали.
+    star_positions = {}
+    if star is not None:
+        star_positions[star.name] = (center_x, center_y)
+    for index, body in enumerate(second_stars):
+        orbit = ring_radius(orbit_of(body))
+        angle = math.pi / 3.0 + index * GOLDEN_ANGLE
         x = center_x + orbit * math.cos(angle)
         y = center_y + orbit * math.sin(angle)
+        radius = max(9.0, min(22.0, 9.0 + math.log10(max(1.0, body.radius_m) / 1.0e8) * 3.0))
+        items.append(PlacedItem(
+            kind="star", x=x, y=y, radius=radius, label=body.name,
+            caption=body.body_class or body.star_type, color=BODY_COLORS["star"],
+            orbit_radius=orbit, orbit_cx=center_x, orbit_cy=center_y,
+            ref=body, selected=(selected == body.name),
+        ))
+        positions[body.name] = (x, y)
+        star_positions[body.name] = (x, y)
+
+    for index, body in enumerate(planets):
+        orbit = ring_radius(orbit_of(body))
+        angle = index * GOLDEN_ANGLE
+        # Планета двойной системы кружит вокруг СВОЕЙ звезды: центр кольца —
+        # позиция родительской звезды, а не всегда середина холста.
+        anchor = star_positions.get(body.parent_name or "", (center_x, center_y))
+        x = anchor[0] + orbit * math.cos(angle)
+        y = anchor[1] + orbit * math.sin(angle)
         radius = max(4.0, min(14.0, 4.0 + math.log10(max(1.0, body.radius_m) / 1.0e6) * 2.0))
         items.append(PlacedItem(
             kind="body", x=x, y=y, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=body_color(body),
-            orbit_radius=orbit, orbit_cx=center_x, orbit_cy=center_y,
+            orbit_radius=orbit, orbit_cx=anchor[0], orbit_cy=anchor[1],
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (x, y)
@@ -1858,6 +1889,9 @@ def map_summary(snapshot: MapSnapshot) -> str:
     if not snapshot.system:
         return "Система неизвестна — включите Watcher или загрузите журналы"
     parts = [snapshot.system]
+    star_count = len([body for body in snapshot.bodies if body.kind == KIND_STAR])
+    if star_count > 1:
+        parts.append(f"звёзд: {star_count}")
     bodies = len(snapshot.bodies)
     if snapshot.known_body_count and snapshot.known_body_count > bodies:
         parts.append(f"тел {bodies} из {snapshot.known_body_count}")

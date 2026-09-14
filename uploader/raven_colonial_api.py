@@ -423,19 +423,52 @@ class RavenColonialAPI:
                                           "POST", f"/project/{build_id}/contribute/{cmdr}"),
         }
 
-    def update_supply(self, build_id: str, resources: dict) -> dict:
-        """Обновить supply проекта."""
+    def update_supply(self, build_id: str, commodities: dict, max_need: int) -> dict:
+        """Обновить потребность проекта по товарам (колонка Need на сайте).
+
+        Raven Colonial НЕ пересчитывает `commodities` из доставок: вклад
+        командира (`contribute`) прибавляет тонны к заслугам, а остаток
+        потребности по материалам обновляет клиент архитектора отдельным
+        `POST /api/project/{buildId}` с телом ProjectUpdate — ровно так же
+        поступает эталонный плагин EDMC-Ravencolonial при каждом событии
+        `ColonisationConstructionDepot`:
+
+            {"buildId": ..., "commodities": {товар: ещё нужно}, "maxNeed": ...}
+
+        Без этого вызова сайт показывает завезённый груз, но потребность по
+        материалам не уменьшается — симптом, который невозможно отличить от
+        «потерянных доставок».
+        """
+        payload = {
+            "buildId": str(build_id or ""),
+            "commodities": {str(k): int(v) for k, v in (commodities or {}).items()},
+            "maxNeed": int(max_need or 0),
+        }
         try:
             resp = self._session.post(
-                f"{self.base_url}/project/{build_id}/supply",
+                f"{self.base_url}/project/{self._esc(build_id)}",
                 headers=self._headers(),
-                json=resources,
+                json=payload,
                 timeout=15,
             )
-            return {"ok": resp.ok, "data": resp.json() if resp.ok else None,
-                    "error": resp.text if not resp.ok else None}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        except requests.RequestException as exc:
+            return {"ok": False, "data": None, "retryable": True, "error": str(exc)}
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        if resp.ok:
+            return {"ok": True, "data": data, "error": None, "retryable": False}
+        status = int(getattr(resp, "status_code", 0) or 0)
+        return {
+            "ok": False,
+            "data": data,
+            "status": status,
+            "retryable": status in (408, 429) or status >= 500 or status == 0,
+            "error": self._describe_error(status, data if data is not None
+                                          else getattr(resp, "text", ""),
+                                          "POST", f"/project/{build_id}"),
+        }
 
     # ============================================================
     #  Полный цикл работы с проектами (вкладка «Колонизатор»)

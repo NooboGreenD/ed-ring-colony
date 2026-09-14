@@ -120,7 +120,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.9"
+VERSION = "2.10.10"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -7515,6 +7515,7 @@ class ColonialHelperApp:
             project, note = self._resolve_site_project(address, market_id)
             if isinstance(project, dict) and project.get("buildId"):
                 how = str(note or "")
+                self._push_raven_supply(project, market_id)
             else:
                 project = None
                 error = str(note or "")
@@ -7522,6 +7523,27 @@ class ColonialHelperApp:
             error = str(exc)
         self.after(0, lambda: self._colony_reconcile_done(market_id, address, project,
                                                           error, how))
+
+    def _push_raven_supply(self, project: dict, market_id: int) -> None:
+        """Дослать остаток потребности в Raven (ProjectUpdate по depot-состоянию).
+
+        Доставки (`contribute`) прибавляют тонны к заслугам командира, но
+        колонку Need по материалам Raven пересчитывает только из ProjectUpdate
+        клиента архитектора. Без этого вызова сайт выглядит так: «груз завезён,
+        а потребность не уменьшилась».
+        """
+        site = getattr(self.construction, "site", None)
+        if site is None or int(getattr(site, "market_id", 0) or 0) != int(market_id or 0):
+            return
+        needed = {res.name: res.remaining for res in getattr(site, "resources", [])
+                  if getattr(res, "name", "")}
+        max_need = sum(res.required for res in getattr(site, "resources", [])
+                       if (getattr(res, "required", 0) or 0) > 0)
+        if not needed:
+            return
+        self.dispatcher.submit_supply_update(
+            int(market_id), int(getattr(site, "system_address", 0) or 0),
+            needed, max_need)
 
     def _colony_reconcile_done(self, market_id: int, address: int, project, error: str = "",
                               how: str = ""):

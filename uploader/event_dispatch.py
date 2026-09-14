@@ -297,6 +297,9 @@ class ThirdPartyDispatcher:
         # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
         # недоступность EDSM не превратилась в тысячи одинаковых строк в логе.
         self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0}
+        # Последнее отправленное состояние потребности по marketId: depot-
+        # события приходят пачками, а Raven не любит бессмысленные ProjectUpdate.
+        self._raven_supply_state: dict = {}
         # «Приложение не в белом списке Inara» не лечится повторами: пишем один
         # раз, иначе каждое событие журнала добавляло бы простыню в лог.
         self._inara_access_notified = False
@@ -496,6 +499,8 @@ class ThirdPartyDispatcher:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
             results.append(self._submit_raven(event, event_name, station_type))
+        if self._raven_enabled() and event_name == "ColonisationConstructionDepot":
+            results.append(self._submit_raven_supply(event))
 
         return _DROPPED not in results
 
@@ -561,6 +566,60 @@ class ThirdPartyDispatcher:
                 "timestamp": str(event.get("timestamp", "")),
             },
         )
+
+    def _submit_raven_supply(self, event: dict) -> str:
+        """Потребность площадки из depot-события — в ProjectUpdate для Raven.
+
+        Журнальное `ColonisationConstructionDepot` несёт Required/Provided по
+        каждому материалу: остаток (Required − Provided) и есть то, что сайт
+        показывает в колонке Need. Сам Raven из доставок его не пересчитывает.
+        """
+        needed: dict = {}
+        max_need = 0
+        for item in event.get("ResourcesRequired") or []:
+            if not isinstance(item, dict):
+                continue
+            name = normalize_commodity(item.get("Name") or "")
+            required = int(item.get("RequiredAmount") or 0)
+            provided = int(item.get("ProvidedAmount") or 0)
+            if name and required > 0:
+                needed[name] = max(0, required - provided)
+                max_need += required
+        if not needed:
+            return _SKIPPED
+        try:
+            market_id = int(event.get("MarketID") or 0)
+        except (TypeError, ValueError):
+            market_id = 0
+        if not market_id:
+            return _SKIPPED
+        address = int(event.get("SystemAddress") or 0) or \
+            int(self._game_state.get("system_address") or 0)
+        return self.submit_supply_update(market_id, address, needed, max_need)
+
+    def submit_supply_update(self, market_id: int, system_address: int,
+                             commodities: dict, max_need: int) -> str:
+        """Поставить ProjectUpdate потребности в очередь (один раз на состояние).
+
+        Возвращает «queued» / «skipped» (состояние не изменилось или отправить
+        нечего) / «dropped» (очередь переполнена).
+        """
+        try:
+            key = int(market_id or 0)
+        except (TypeError, ValueError):
+            return _SKIPPED
+        if not key or not commodities:
+            return _SKIPPED
+        if self._raven_supply_state.get(key) == commodities:
+            return _SKIPPED
+        self._raven_supply_state[key] = dict(commodities)
+        return self._enqueue("raven", {
+            "kind": "supply",
+            "market_id": key,
+            "system_address": int(system_address or 0),
+            "commodities": dict(commodities),
+            "max_need": int(max_need or 0),
+        })
 
     def _submit_raven(self, event: dict, event_name: str, station_type: str = "") -> str:
         """Fleet Carrier cargo: продажа на FC добавляет груз, покупка — забирает.
@@ -746,6 +805,9 @@ class ThirdPartyDispatcher:
     def _do_raven(self, payload: dict):
         if not self._raven_enabled():
             return
+        if payload.get("kind") == "supply":
+            self._do_raven_supply(payload)
+            return
         result = self.raven_api.supply_fc(
             payload["market_id"], payload["commodity"], payload["delta"]
         ) or {}
@@ -763,6 +825,26 @@ class ThirdPartyDispatcher:
         else:
             self.stats["failed"] += 1
             self._notify("raven", False, str(result.get("error") or "Raven Colonial отклонил событие"))
+
+    def _do_raven_supply(self, payload: dict):
+        project = self.raven_api.get_project(
+            payload.get("system_address") or 0, payload.get("market_id") or 0)
+        build_id = str((project or {}).get("buildId") or "")
+        if not build_id:
+            self.stats["failed"] += 1
+            self._notify("raven", False,
+                         "Raven Colonial: не нашёл проект для обновления потребности")
+            return
+        result = self.raven_api.update_supply(
+            build_id, payload.get("commodities") or {}, payload.get("max_need") or 0) or {}
+        if result.get("ok"):
+            self.stats["sent"] += 1
+            self._notify("raven", True,
+                         "Raven Colonial: потребность площадки обновлена по журналу")
+        else:
+            self.stats["failed"] += 1
+            self._notify_failure("raven", str(result.get("error")
+                                              or "Raven Colonial отклонил ProjectUpdate"))
 
     # -- состояние ---------------------------------------------------------
     def pending(self) -> int:
