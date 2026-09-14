@@ -976,6 +976,47 @@ class MapCenteringTests(MapTabTestBase):
         centered = self.item(BODY_1)
         self.assertAlmostEqual(centered.x, 450.0, delta=1.0)
 
+    def test_escape_resets_center(self):
+        self.prepare()
+        target = self.item(BODY_1)
+        self.app._on_map_double_click(mock.Mock(x=target.x, y=target.y))
+        self.assertEqual(self.app._map_center, BODY_1)
+        self.app._on_map_escape()
+        self.assertEqual(self.app._map_center, "")
+        star = next(item for item in self.app._map_items if item.kind == "star")
+        self.assertAlmostEqual(star.x, 450.0, delta=1.0,
+                               msg="Esc вернул звезду в центр холста")
+
+    def test_escape_without_center_is_noop(self):
+        self.prepare()
+        self.app._on_map_escape()   # не падает и ничего не ломает
+        self.assertEqual(self.app._map_center, "")
+
+    def test_escape_is_bound_on_canvas_and_tree(self):
+        for widget in (self.app.map_canvas, self.app.map_tree):
+            bound = [call.args[1].__name__ for call in widget.bind.call_args_list
+                     if call.args and call.args[0] == "<Escape>"]
+            self.assertIn("_on_map_escape", bound)
+
+    def test_tree_double_click_binding_is_not_overwritten(self):
+        # Регресс-ловушка: второй bind("<Double-1>") молча затирал первый и
+        # центрирование в приложении не работало. В заглушках все Treeview —
+        # один MagicMock, поэтому проверяем ПОСЛЕДНЮЮ привязку на дереве:
+        # если её снова перетрут «открытием проекта», тест покраснеет.
+        bound = [call.args[1] for call in self.app.map_tree.bind.call_args_list
+                 if call.args and call.args[0] == "<Double-1>"]
+        self.assertTrue(bound, "двойной клик по дереву вообще не привязан")
+        self.assertEqual(bound[-1].__name__, "_on_map_tree_double")
+
+    def test_tree_ctrl_double_click_opens_project(self):
+        self.prepare()
+        self.app._select_map_object(BODY_1)
+        with mock.patch.object(self.app, "_on_map_open_project") as opener:
+            self.app._on_map_tree_double(mock.Mock(state=4))
+        opener.assert_called_once_with()
+        self.assertEqual(self.app._map_center, "",
+                         "Ctrl+двойной открывает проект, а не центрирует")
+
     def test_unscanned_toggle_is_remembered(self):
         self.prepare()
         self.app.map_unscanned_var.set(True)

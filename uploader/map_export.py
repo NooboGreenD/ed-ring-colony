@@ -8,6 +8,7 @@
 """
 
 import struct
+import time
 import zlib
 from typing import Optional, Tuple
 
@@ -16,6 +17,8 @@ from system_map import (
     STATION_CARRIER,
     STATION_LABELS,
     PlacedItem,
+    due_note,
+    due_timestamp,
     layout,
     map_summary,
 )
@@ -31,6 +34,7 @@ COLOR_ORANGE = (0xe6, 0x7e, 0x22)
 COLOR_CYAN = (0x34, 0x98, 0xdb)
 COLOR_GREEN = (0x2e, 0xcc, 0x71)
 COLOR_RED = (0xe7, 0x4c, 0x3c)
+COLOR_YELLOW = (0xf1, 0xc4, 0x0f)   # тот же жёлтый, что в палитре вкладки
 COLOR_DARK = (0x11, 0x13, 0x15)
 
 
@@ -283,6 +287,12 @@ def export_map_png(snapshot, width: int = 1280, height: int = 820,
             used += 18.0
         raster.text(item.x, item.y + used + 6 + dy, item.label,
                     COLOR_ORANGE if station.is_site else COLOR_TEXT, "ma")
+        note = due_note(station.due_at)
+        if note:
+            # Просрочка краснеет, «скоро» жёлтеет — как строки в списке.
+            urgent = (COLOR_RED if due_timestamp(station.due_at) < time.time()
+                      else COLOR_YELLOW)
+            raster.text(item.x, item.y + used + 20 + dy, note, urgent, "ma")
 
     for item in items:
         if item.kind != "player":

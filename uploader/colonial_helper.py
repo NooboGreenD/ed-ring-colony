@@ -120,7 +120,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.7"
+VERSION = "2.10.8"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2530,6 +2530,9 @@ class ColonialHelperApp:
         self.map_canvas.bind("<Button-1>", self._on_map_click)
         # Двойной клик: отцентровать на объекте, по пустому месту — сброс.
         self.map_canvas.bind("<Double-Button-1>", self._on_map_double_click)
+        # Esc ловим и на дереве: в Windows событие уходит виджету с фокусом,
+        # а фокус после клика по строке — у списка, не у холста.
+        self.map_canvas.bind("<Escape>", self._on_map_escape)
         self.map_canvas.bind("<Motion>", self._on_map_hover)
         self.map_canvas.bind("<Leave>", lambda _event: self._map_restore_hint())
         # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
@@ -2576,6 +2579,7 @@ class ColonialHelperApp:
             self.map_tree.column(col, width=width, anchor=anchor)
         # Двойной клик по строке — отцентровать карту на выбранном объекте.
         self.map_tree.bind("<Double-1>", self._on_map_tree_double)
+        self.map_tree.bind("<Escape>", self._on_map_escape)
         # Стройки — самое важное на карте, поэтому они оранжевые и сверху списка.
         self.map_tree.tag_configure("site", foreground=COLOR_ORANGE)
         self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
@@ -2589,7 +2593,6 @@ class ColonialHelperApp:
         self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
         tree_vsb.pack(side=RIGHT, fill=Y)
         self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
-        self.map_tree.bind("<Double-1>", lambda _event: self._on_map_open_project())
 
         # ---- Состояние ----
         footer = tb.Frame(outer)
@@ -3092,10 +3095,22 @@ class ColonialHelperApp:
         self._on_map_zoom(1 if number == 4 else -1)
 
     def _on_map_click(self, event):
+        try:
+            self.map_canvas.focus_set()   # иначе Esc не долетит до холста
+        except Exception:
+            pass
         item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
         if item is None or item.kind == "player":
             return
         self._select_map_object(self._map_item_key(item))
+
+    def _on_map_escape(self, _event=None):
+        """Esc — вернуть звезду в центр: панорама сбрасывается с клавиатуры."""
+        if not self._map_center:
+            return
+        self._map_center = ""
+        self._map_set_hint("Центр — звезда системы")
+        self._map_redraw_now()
 
     def _on_map_double_click(self, event):
         """Двойной клик по объекту — центр карты на нём; по пустому месту — сброс.
@@ -3107,15 +3122,23 @@ class ColonialHelperApp:
         if item is None or item.kind == "player":
             self._map_center = ""
             self._map_set_hint("Центр — звезда системы; двойной клик по объекту "
-                               "отцентрует на нём")
+                               "отцентрует на нём, Esc сбросит")
         else:
             self._map_center = self._map_item_key(item)
             self._map_set_hint(f"Центр: {item.label} — двойной клик по пустому месту "
-                               f"вернёт звезду в центр")
+                               f"или Esc вернёт звезду в центр")
         self._map_redraw_now()
 
-    def _on_map_tree_double(self, _event=None):
-        """Двойной клик по строке списка — то же центрирование выбранного."""
+    def _on_map_tree_double(self, event=None):
+        """Двойной клик по строке — центр карты на объекте.
+
+        Ctrl+двойной клик — прежний жест: открыть проект стройки в Raven
+        Colonial. Два отдельных bind на `<Double-1>` — ловушка: второй
+        молча перезаписывает первый, поэтому модификатор разведён внутри.
+        """
+        if event is not None and int(getattr(event, "state", 0) or 0) & 0x4:
+            self._on_map_open_project()
+            return
         if self._map_selected:
             self._map_center = self._map_selected
             self._map_redraw_now()

@@ -1815,6 +1815,10 @@ def map_summary(snapshot: MapSnapshot) -> str:
         parts.append(f"тел: {bodies}")
     else:
         parts.append("тела не отсканированы")
+    unscanned = len([body for body in snapshot.bodies if not body.scanned])
+    if unscanned:
+        # Подсказка сканеру: сколько тел системы журнал ещё не видел.
+        parts.append(f"без скана: {unscanned}")
     building = [station for station in snapshot.sites if not station.complete]
     if building:
         details = []

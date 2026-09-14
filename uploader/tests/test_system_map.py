@@ -1423,3 +1423,35 @@ class DueTimestampTests(unittest.TestCase):
         naive = due_timestamp("2026-09-20T00:00:00")
         self.assertLess(early, late)
         self.assertEqual(early, naive, "наивное время считаем UTC")
+
+
+class UnscannedCounterTests(unittest.TestCase):
+    """2.10.8: сводка сообщает, сколько тел журнал ещё не видел."""
+
+    def test_counter_when_partial(self):
+        # Raven добавил звезду и BODY_2, журнал видел только BODY_1.
+        builder = SystemMapBuilder()
+        builder.handle(location_event())
+        builder.handle(scan_event(BODY_1, 3))
+        builder.merge_bodies(SYSTEM, [
+            {"bodyName": STAR, "bodyId": 1, "starType": "K",
+             "distanceFromArrivalLS": 0.0},
+            {"bodyName": BODY_1, "bodyId": 3, "planetClass": "Icy body",
+             "distanceFromArrivalLS": 12.4},
+            {"bodyName": BODY_2, "bodyId": 4, "planetClass": "Class III gas giant",
+             "distanceFromArrivalLS": 812.0},
+        ])
+        self.assertIn("без скана: 2", map_summary(builder.snapshot()))
+
+    def test_absent_when_all_scanned(self):
+        snapshot = scanned_system().snapshot()
+        self.assertNotIn("без скана", map_summary(snapshot))
+
+    def test_absent_for_unscanned_empty_system(self):
+        # Нет тел вовсе — остаётся прежняя формулировка «тела не отсканированы».
+        builder = SystemMapBuilder()
+        builder.handle({"event": "FSDJump", "StarSystem": SYSTEM,
+                        "SystemAddress": ADDRESS})
+        summary = map_summary(builder.snapshot())
+        self.assertIn("тела не отсканированы", summary)
+        self.assertNotIn("без скана", summary)

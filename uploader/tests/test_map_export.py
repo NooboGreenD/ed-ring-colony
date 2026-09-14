@@ -9,6 +9,8 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -23,6 +25,33 @@ def png_dims(data: bytes):
     assert data[:8] == b"\x89PNG\r\n\x1a\n", "это не PNG"
     width, height = struct.unpack(">II", data[16:24])
     return width, height
+
+
+def rgb_pixels(data: bytes) -> bytes:
+    """Сырые RGB-байты картинки: один IDAT, фильтр 0 в каждой строке."""
+    pos, idat = 8, b""
+    while pos < len(data):
+        length = struct.unpack(">I", data[pos:pos + 4])[0]
+        tag = data[pos + 4:pos + 8]
+        if tag == b"IDAT":
+            idat += data[pos + 8:pos + 8 + length]
+        pos += 12 + length
+    raw = zlib.decompress(idat)
+    width, height = png_dims(data)
+    stride = width * 3
+    out = bytearray()
+    for y in range(height):
+        row = raw[y * (stride + 1):(y + 1) * (stride + 1)]
+        assert row[0] == 0, "ожидали строку без фильтра"
+        out += row[1:]
+    return bytes(out)
+
+
+YELLOW = b"\xf1\xc4\x0f"
+
+
+def due_iso(days: float) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
 class MapExportTests(unittest.TestCase):
@@ -66,6 +95,26 @@ class MapExportTests(unittest.TestCase):
         snapshot.sites[0].build_name = "Стройка ★ Ω"
         data = export_map_png(snapshot)
         self.assertEqual(png_dims(data)[1], 820)
+
+    def test_due_soon_caption_is_yellow(self):
+        snapshot = self.snapshot()
+        snapshot.sites[0].due_at = due_iso(21)
+        pixels = rgb_pixels(export_map_png(snapshot))
+        self.assertIn(YELLOW, pixels)
+
+    def test_overdue_caption_is_not_yellow(self):
+        # Просрочка рисуется красным (он же у прогресс-бара), жёлтого нет,
+        # а картинка отличается от варианта без дедлайна.
+        with_due = self.snapshot()
+        with_due.sites[0].due_at = due_iso(-3)
+        data = export_map_png(with_due)
+        self.assertNotIn(YELLOW, rgb_pixels(data))
+        plain = self.snapshot()
+        plain.sites[0].due_at = ""
+        self.assertNotEqual(data, export_map_png(plain))
+
+    def test_no_due_no_yellow(self):
+        self.assertNotIn(YELLOW, rgb_pixels(export_map_png(self.snapshot())))
 
     def test_save_writes_file(self):
         with tempfile.TemporaryDirectory() as tmp:
