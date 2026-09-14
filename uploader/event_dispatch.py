@@ -499,7 +499,11 @@ class ThirdPartyDispatcher:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
             results.append(self._submit_raven(event, event_name, station_type))
-        if self._raven_enabled() and event_name == "ColonisationConstructionDepot":
+        # ProjectUpdate потребности шлём только за живыми событиями: при
+        # пакетном разборе истории depot-события дублируются из каждого файла,
+        # а тестовые прогонки журнала не должны делать лишних запросов.
+        if (self._raven_enabled() and live
+                and event_name == "ColonisationConstructionDepot"):
             results.append(self._submit_raven_supply(event))
 
         return _DROPPED not in results
