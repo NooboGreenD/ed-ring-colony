@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.9.0"
+VERSION = "2.9.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -5553,58 +5553,21 @@ class ColonialHelperApp:
                 for d in deliveries:
                     if self.route.mark_visited(d["system_name"]):
                         self.root.after(0, self._refresh_route_tree)
-                # Отправка на Raven Colonial
-                if self.raven_api.is_connected:
-                    # Группируем доставки по build_id (как в SRV Survey)
-                    raven_batches: dict = {}  # build_id -> {commodity: amount}
-                    for d in upload_deliveries:
-                        # Fleet Carrier cargo is sent through /api/fc/.../cargo,
-                        # not as a construction contribution.
-                        if d.get("source") == "carrier_delivery":
-                            continue
-                        market_id = d.get("market_id")
-                        if not market_id:
-                            continue
-                        # Берём систему, зафиксированную В МОМЕНТ этой доставки
-                        # (journal_parser проставляет её по SystemAddress из
-                        # Location/FSDJump/Docked/CarrierJump на момент события),
-                        # а не текущее состояние корабля — к моменту отправки
-                        # батча на сервер игрок мог уже прыгнуть в другую систему,
-                        # и подстановка "текущей" system_address привела бы к
-                        # поиску проекта не в той системе и потере доставки.
-                        system_address = d.get("system_address") or (
-                            self.ship.state.system_address if self.ship.state else 0
-                        )
-                        if not system_address:
-                            self.root.after(
-                                0,
-                                lambda c=d.get("commodity", "?"): self.log(
-                                    f"Raven Colonial: пропущена доставка '{c}' — не удалось "
-                                    f"определить SystemAddress", "warn"
-                                ),
-                            )
-                            continue
-                        project = self.raven_api.get_project(system_address, market_id)
-                        if project and project.get("buildId"):
-                            bid = project["buildId"]
-                            if bid not in raven_batches:
-                                raven_batches[bid] = {}
-                            comm = d["commodity"]
-                            raven_batches[bid][comm] = raven_batches[bid].get(comm, 0) + d["amount"]
-                    # Отправляем сгруппированные батчи
-                    for bid, commodities in raven_batches.items():
-                        rc_result = self.raven_api.contribute(
-                            bid, cmdr_name or "Unknown", commodities
-                        )
-                        if rc_result["ok"]:
-                            total = sum(commodities.values())
-                            self.root.after(
-                                0,
-                                lambda t=total, n=len(commodities): self.log(
-                                    f"Raven Colonial: +{t}t ({n} ресурсов)", "success"
-                                ),
-                            )
-            else:
+                # Отправка на Raven Colonial.
+                # Раунд 33: раньше здесь была своя копия цикла отправки, и она
+                # разошлась с _send_deliveries_to_raven — отправляла имя товара
+                # как Name_Localised из журнала ("Steel", "Liquid oxygen") без
+                # normalize_commodity, хотя Raven Colonial требует lower-case
+                # language-agnostic имена, и молча теряла доставки без MarketID,
+                # без buildId и при ошибке API. Именно этот код, а не
+                # _send_deliveries_to_raven, выполняется в живом вотчере —
+                # поэтому тоннаж на Raven и не появлялся. Дубликат удалён:
+                # отправка только через _send_deliveries_to_raven, где имена
+                # нормализованы, а каждая пропущенная доставка попадает в
+                # агрегированный отчёт. SystemAddress по-прежнему берётся из
+                # события доставки, а не из текущего положения корабля.
+                self._send_deliveries_to_raven(upload_deliveries, cmdr_name)
+
                 # Оставляем события в очереди: следующий тик повторит отправку
                 # с тем же source_hash, а сервер безопасно устранит дубли.
                 self._pending_watcher_deliveries = upload_deliveries + self._pending_watcher_deliveries

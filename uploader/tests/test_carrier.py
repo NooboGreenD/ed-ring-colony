@@ -983,5 +983,108 @@ class RavenSkipReportTests(unittest.TestCase):
         self.assertEqual(self._warns(), [])
 
 
+class LiveWatcherRavenTests(unittest.TestCase):
+    """Раунд 33: ЖИВОЙ путь вотчера — `_process_journal_changes(live=True)`.
+
+    Тесты выше дёргают `_send_deliveries_to_raven` напрямую, и шесть релизов
+    подряд этого хватало: в `_process_journal_changes` лежала собственная копия
+    цикла отправки, которая в живой игре и выполнялась. Она отправляла
+    `commodity` как есть, то есть `Name_Localised` из журнала («Steel»,
+    «Liquid oxygen»), хотя Raven Colonial требует lower-case language-agnostic
+    имена, и молча теряла доставки без MarketID, без buildId и при ошибке API.
+    Дубликат удалён — эти тесты гоняют именно тик вотчера по настоящему файлу
+    журнала, чтобы дефект нельзя было вернуть unnoticed.
+    """
+
+    LOCATION = (
+        '{"timestamp":"2026-09-14T10:00:00Z","event":"Location",'
+        '"StarSystem":"HIP 22460","SystemAddress":123456789,'
+        '"StationName":"Planetary Construction Site: A 1",'
+        '"StationType":"PlanetaryConstructionSite"}'
+    )
+    CONTRIBUTION = (
+        '{"timestamp":"2026-09-14T10:01:00Z","event":"ColonisationContribution",'
+        '"MarketID":3951663874,"Contributions":['
+        '{"Name":"$steel_name;","Name_Localised":"Steel","Amount":250},'
+        '{"Name":"$liquidoxygen_name;","Name_Localised":"Liquid oxygen","Amount":120}]}'
+    )
+
+    def setUp(self):
+        CarrierOverlayIntegrationTests.setUp(self)
+        self.journal_dir = self.app.journal_path
+        self.journal_dir.mkdir(parents=True, exist_ok=True)
+        self.logged = []
+        self.app.log = lambda text, level="info": self.logged.append((str(text), level))
+        self.sent = []
+        self.app.raven_api.get_project = lambda address, market_id: {"buildId": "b1"}
+        self.app.raven_api.contribute = (
+            lambda build_id, cmdr, commodities: (
+                self.sent.append((build_id, cmdr, dict(commodities))) or {"ok": True})
+        )
+        # Аплоад на сайт должен пройти: отправка на Raven вложена в его успех
+        # (иначе ретрай следующего тика зачёл бы тоннаж второй раз).
+        class _Api:
+            is_connected = True
+
+            def upload_deliveries(self, rows, cmdr):
+                return {"ok": True, "inserted": len(rows)}
+
+            def upload_construction_events(self, events, cmdr):
+                return {"ok": True}
+
+        self.app.api = _Api()
+        self.app.dispatcher.submit = lambda *args, **kwargs: None
+        self.app._watcher_cmdr_name = "Test CMDR"
+        self.app.ship.state.current_system = "HIP 22460"
+        self.app.ship.state.system_address = 123456789
+
+    def tearDown(self):
+        CarrierOverlayIntegrationTests.tearDown(self)
+
+    def _tick(self, lines):
+        path = self.journal_dir / "Journal.260914100000.01.log"
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+        size = path.stat().st_size
+        self.app._process_journal_changes(path, 0, size, live=True)
+
+    def _warns(self):
+        return [t for t, level in self.logged if level == "warn"]
+
+    def test_localised_names_are_normalized_before_raven(self):
+        """Главный дефект: «Steel»/«Liquid oxygen» уходили в Raven как есть."""
+        self._tick([self.LOCATION, self.CONTRIBUTION])
+        self.assertEqual(
+            self.sent,
+            [("b1", "Test CMDR", {"steel": 250, "liquidoxygen": 120})],
+        )
+
+    def test_unknown_project_is_reported_on_live_path(self):
+        self.app.raven_api.get_project = lambda address, market_id: None
+        self._tick([self.LOCATION, self.CONTRIBUTION])
+        warns = self._warns()
+        self.assertTrue(any("не отправлено 2 доставок" in t for t in warns), warns)
+        self.assertTrue(any("market_id=3951663874" in t for t in warns), warns)
+        self.assertEqual(self.sent, [])
+
+    def test_missing_market_id_is_reported_on_live_path(self):
+        no_market = (
+            '{"timestamp":"2026-09-14T10:01:00Z","event":"ColonisationContribution",'
+            '"Contributions":[{"Name":"$steel_name;","Name_Localised":"Steel",'
+            '"Amount":250}]}'
+        )
+        self._tick([self.LOCATION, no_market])
+        self.assertTrue(any("в событии нет MarketID" in t for t in self._warns()),
+                        self._warns())
+        self.assertEqual(self.sent, [])
+
+    def test_watcher_has_no_own_raven_send_loop(self):
+        """Страховка от возвращения дубликата: путь отправки должен быть один."""
+        import inspect
+
+        source = inspect.getsource(self.app._process_journal_changes)
+        self.assertNotIn("raven_api.contribute", source)
+        self.assertIn("_send_deliveries_to_raven", source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
