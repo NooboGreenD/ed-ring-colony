@@ -619,6 +619,96 @@ class CarrierRowReuseTests(unittest.TestCase):
         overlay.canvas.itemconfigure.assert_not_called()
 
 
+class CarrierColumnGeometryTests(unittest.TestCase):
+    """Шапка и строки CARRIER обязаны получать одинаковую геометрию.
+
+    Проверяем не константу `COLUMNS`, а то, что реально передаётся в виджеты:
+    именно расхождение шрифта или ширины и разъезжает колонки на экране.
+    """
+
+    def setUp(self):
+        import overlay
+
+        self.calls = []
+
+        def factory(*args, **kwargs):
+            self.calls.append(dict(kwargs))
+            return mock.MagicMock(name="Label")
+
+        patcher = mock.patch.object(overlay.tk, "Label", side_effect=factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _overlay(self):
+        # Шрифт намеренно пропорциональный: на Consolas расхождение жирного и
+        # обычного начертания невидно, а на Segoe UI колонки разъезжаются.
+        from overlay import CarrierOverlay
+
+        return CarrierOverlay(_FakeMaster(), {"font_family": "Segoe UI", "font_size": 10})
+
+    def _geometry(self, overlay):
+        """(заголовки, ячейки первой строки) — списки (font, width, anchor)."""
+        from overlay import CarrierOverlay
+
+        titles = {text for text, _w, _a in CarrierOverlay.COLUMNS}
+        header = [call for call in self.calls if call.get("text") in titles]
+        # Ячейки строки создаются пустыми, после заголовков.
+        rows = [call for call in self.calls
+                if call.get("text") == "" and "width" in call and "anchor" in call]
+        cells = rows[:len(CarrierOverlay.COLUMNS)]
+        return header, cells
+
+    def test_header_and_rows_share_width_and_anchor(self):
+        from overlay import CarrierOverlay
+
+        overlay = self._overlay()
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
+             "need": 5, "remaining": 4},
+        ]})
+        header, cells = self._geometry(overlay)
+
+        self.assertEqual(len(header), len(CarrierOverlay.COLUMNS), header)
+        self.assertEqual(len(cells), len(CarrierOverlay.COLUMNS), cells)
+        for index, (_text, width, anchor) in enumerate(CarrierOverlay.COLUMNS):
+            self.assertEqual(header[index]["width"], width)
+            self.assertEqual(cells[index]["width"], width)
+            self.assertEqual(header[index]["anchor"], anchor)
+            self.assertEqual(cells[index]["anchor"], anchor)
+
+    def test_header_font_matches_cell_font(self):
+        """Жирный заголовок над жирной ячейкой: иначе width даст разную ширину."""
+        from overlay import CarrierOverlay
+
+        overlay = self._overlay()
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
+             "need": 5, "remaining": 4},
+        ]})
+        header, cells = self._geometry(overlay)
+
+        for index in range(len(CarrierOverlay.COLUMNS)):
+            self.assertEqual(tuple(header[index]["font"]), tuple(cells[index]["font"]),
+                             f"колонка {index}: шрифт шапки != шрифт ячейки")
+            expect_bold = index in CarrierOverlay.BOLD_COLUMNS
+            self.assertEqual(len(header[index]["font"]) == 3, expect_bold,
+                             f"колонка {index}: жирность не совпала с BOLD_COLUMNS")
+
+    def test_all_columns_use_one_font_family(self):
+        from overlay import CarrierOverlay
+
+        overlay = self._overlay()
+        overlay.update_carrier({"commodities": [
+            {"key": "steel", "name": "Steel", "amount": 1, "delivered": 0,
+             "need": 5, "remaining": 4},
+        ]})
+        header, cells = self._geometry(overlay)
+        families = {call["font"][0] for call in header + cells}
+        self.assertEqual(families, {"Segoe UI"})
+        sizes = {call["font"][1] for call in header + cells}
+        self.assertEqual(sizes, {9}, "шапка и строки обязаны быть одного кегля")
+
+
 class CargoRowReuseTests(unittest.TestCase):
     """Строки трюма (CARGO) переиспользуются: пересоздание и было миганием."""
 

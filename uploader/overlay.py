@@ -1818,7 +1818,13 @@ class CarrierOverlay(OverlayWindow):
         header = tk.Frame(self.columns, bg=COLOR_PANEL)
         header.pack(fill=tk.X, pady=(0, 1))
         for index, (text, width, anchor) in enumerate(self.COLUMNS):
-            tk.Label(header, text=text, font=self._row_font, fg=COLOR_TEXT_MUTED,
+            # Шрифт заголовка обязан совпадать со шрифтом ячейки под ним:
+            # `width` у tk.Label измеряется в символах средней ширины ДАННОГО
+            # шрифта, поэтому у жирного и обычного начертания одно и то же
+            # width даёт разную ширину в пикселях. На моноширинном Consolas
+            # этого не видно, а на Segoe UI или Arial колонки разъезжаются.
+            font = self._row_font_bold if index in self.BOLD_COLUMNS else self._row_font
+            tk.Label(header, text=text, font=font, fg=COLOR_TEXT_MUTED,
                      bg=COLOR_PANEL, anchor=anchor, width=width).grid(
                 row=0, column=index, sticky="ew" if anchor == tk.W else "e")
         header.grid_columnconfigure(0, weight=1)
