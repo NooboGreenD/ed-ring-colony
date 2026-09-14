@@ -1700,6 +1700,24 @@ COMMODITY_LABELS_RU = {
 }
 
 
+def due_timestamp(due_at: str) -> float:
+    """Дедлайн как epoch-секунды; пустой или битый срок — бесконечность.
+
+    Список объектов сортируется по сроку, аinf уводит «бессрочные» стройки
+    в конец, не ломая сортировку мусором.
+    """
+    text = str(due_at or "").strip()
+    if not text:
+        return math.inf
+    try:
+        due = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return math.inf
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return due.timestamp()
+
+
 def due_note(due_at: str, now=None) -> str:
     """Человеческая строка дедлайна проекта Raven для сводки.
 

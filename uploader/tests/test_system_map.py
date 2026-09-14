@@ -16,6 +16,7 @@
 """
 
 import json
+import math
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -49,6 +50,7 @@ from system_map import (  # noqa: E402
     classify_station,
     commodity_label,
     due_note,
+    due_timestamp,
     layout,
     map_summary,
     merged_source,
@@ -1406,3 +1408,18 @@ class ProjectDueTests(unittest.TestCase):
         report = map_report(builder.snapshot(), "2.10.6")
         self.assertIn("дедлайн через", report)
         self.assertIn("(05.10)", report)
+
+
+class DueTimestampTests(unittest.TestCase):
+    """Сортировка списка по дедлайну опирается на due_timestamp."""
+
+    def test_empty_and_garbage_are_infinity(self):
+        self.assertEqual(due_timestamp(""), math.inf)
+        self.assertEqual(due_timestamp("не дата"), math.inf)
+
+    def test_order_and_naive_utc(self):
+        early = due_timestamp("2026-09-20T00:00:00Z")
+        late = due_timestamp("2026-12-01T00:00:00+00:00")
+        naive = due_timestamp("2026-09-20T00:00:00")
+        self.assertLess(early, late)
+        self.assertEqual(early, naive, "наивное время считаем UTC")

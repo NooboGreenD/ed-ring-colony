@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1015,3 +1016,83 @@ class MapExportButtonTests(MapTabTestBase):
                                return_value=""):
             self.app._on_map_save_png()
         self.assertEqual(list(self.home.glob("*.png")), [])
+
+
+class MapCarryAndDueTests(MapTabTestBase):
+    """Колонка «Везти», сортировка строек по дедлайну и цветовая тревога."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(required=5000, provided=1000),
+                                       live=True)
+        # Проект Raven даёт стройке buildId: без него iid строки — имя станции.
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": [
+            {"buildId": BUILD_ID, "buildName": "A 1", "marketId": SITE_MARKET,
+             "bodyNum": 3, "sumTotal": 5000, "sumNeed": 4000,
+             "commodities": {"steel": 4000}}]}, {"ok": True, "data": []})
+
+    def rows(self):
+        self.app.map_tree.insert.reset_mock()
+        self.app._fill_map_tree(self.app._map_last_snapshot)
+        out = []
+        for call in self.app.map_tree.insert.call_args_list:
+            out.append((str(call.kwargs.get("iid")), call.kwargs.get("values"),
+                        call.kwargs.get("tags")))
+        return out
+
+    def due_iso(self, days: float) -> str:
+        moment = datetime.now(timezone.utc) + timedelta(days=days)
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    _market = 910000
+
+    def add_project(self, build_id, due=None):
+        MapCarryAndDueTests._market += 1
+        project = {"buildId": build_id, "buildName": build_id,
+                   "marketId": MapCarryAndDueTests._market,
+                   "buildType": "PlanetaryInstallation", "bodyNum": 3,
+                   "sumTotal": 2000, "sumNeed": 1000, "commodities": {"steel": 1000}}
+        if due:
+            project["timeDue"] = due
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": [project]},
+                                 {"ok": True, "data": []})
+
+    def test_carry_column_shows_top_commodity(self):
+        self.prepare()
+        site = [row for row in self.rows() if row[0] == f"s:{BUILD_ID}"]
+        self.assertEqual(len(site), 1)
+        values = site[0][1]
+        self.assertEqual(len(values), 5, "пять колонок: объект/тип/завезено/осталось/везти")
+        self.assertEqual(values[4], "Сталь 4 000")
+
+    def test_filter_finds_carry_column(self):
+        self.prepare()
+        self.app.map_filter_var.set("Сталь")
+        rows = self.rows()
+        self.assertTrue(any(row[0] == f"s:{BUILD_ID}" for row in rows))
+        self.app.map_filter_var.set("")
+
+    def test_stations_sorted_by_deadline(self):
+        self.prepare()
+        self.add_project("due-far", due=self.due_iso(60))
+        self.add_project("due-near", due=self.due_iso(2))
+        self.add_project("due-none")
+        iids = [row[0] for row in self.rows() if row[0].startswith("s:")]
+        self.assertEqual(iids[:2], ["s:due-near", "s:due-far"],
+                         "ближайший дедлайн сверху")
+        self.assertLess(iids.index("s:due-far"), iids.index("s:due-none"),
+                        "бессрочные — после срочных")
+        self.assertLess(iids.index("s:due-far"), iids.index(f"s:{BUILD_ID}"),
+                        "стройка журнала без срока — тоже после срочных")
+
+    def test_deadline_tags(self):
+        self.prepare()
+        self.add_project("tag-over", due=self.due_iso(-1))
+        self.add_project("tag-soon", due=self.due_iso(2))
+        self.add_project("tag-calm", due=self.due_iso(30))
+        tags = {row[0]: row[2] for row in self.rows()}
+        self.assertEqual(tags["s:tag-over"], ("overdue",))
+        self.assertEqual(tags["s:tag-soon"], ("due_soon",))
+        self.assertEqual(tags["s:tag-calm"], ("site",))

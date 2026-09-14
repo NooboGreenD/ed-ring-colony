@@ -9,6 +9,7 @@ GUI приложение на ttkbootstrap с live-watcher журналов Elit
 import os
 import sys
 import json
+import math
 import time
 import threading
 import tkinter as tk
@@ -95,6 +96,7 @@ from colonisation import (
 )
 from map_export import save_map_png
 from system_map import (
+    due_timestamp,
     BODY_LABELS,
     KIND_MOON,
     KIND_STAR,
@@ -104,6 +106,7 @@ from system_map import (
     MapRavenCache,
     MapStation,
     SystemMapBuilder,
+    commodity_label,
     layout as map_layout,
     map_report,
     map_summary,
@@ -117,7 +120,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.6"
+VERSION = "2.10.7"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -129,6 +132,7 @@ COLOR_ORANGE = "#e67e22"
 COLOR_CYAN = "#3498db"
 COLOR_GREEN = "#2ecc71"
 COLOR_RED = "#e74c3c"
+COLOR_YELLOW = "#f1c40f"            # дедлайн стройки на исходе
 
 
 class ColonialHelperApp:
@@ -2558,14 +2562,15 @@ class ColonialHelperApp:
         self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
         tree_frame = tb.Frame(side)
         tree_frame.pack(fill=BOTH, expand=True)
-        columns = ("object", "type", "progress", "rest")
+        columns = ("object", "type", "progress", "rest", "carry")
         self.map_tree = tb.Treeview(tree_frame, columns=columns, show="headings",
                                     bootstyle="dark", height=16)
         for col, title, width, anchor in (
-            ("object", "Объект", 148, W),
-            ("type", "Тип", 94, W),
-            ("progress", "Завезено", 66, CENTER),
-            ("rest", "Осталось", 76, "e"),
+            ("object", "Объект", 138, W),
+            ("type", "Тип", 88, W),
+            ("progress", "Завезено", 62, CENTER),
+            ("rest", "Осталось", 66, "e"),
+            ("carry", "Везти", 96, W),
         ):
             self.map_tree.heading(col, text=title)
             self.map_tree.column(col, width=width, anchor=anchor)
@@ -2576,6 +2581,9 @@ class ColonialHelperApp:
         self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
         self.map_tree.tag_configure("built", foreground=COLOR_TEXT)
         self.map_tree.tag_configure("body", foreground=COLOR_MUTED)
+        # Тревога по сроку стройки заметнее цвета её типа.
+        self.map_tree.tag_configure("due_soon", foreground=COLOR_YELLOW)
+        self.map_tree.tag_configure("overdue", foreground=COLOR_RED)
         tree_vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.map_tree.yview)
         self.map_tree.configure(yscrollcommand=tree_vsb.set)
         self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
@@ -2865,7 +2873,8 @@ class ColonialHelperApp:
         except Exception:
             return
         rows = []
-        for station in snapshot.stations:
+        now = time.time()
+        for station in sorted(snapshot.stations, key=self._map_station_sort_key):
             percent = station.percent_delivered
             if station.planned and percent is None:
                 progress = "план"
@@ -2877,9 +2886,15 @@ class ColonialHelperApp:
                     if station.remaining_tons else "")
             tag = ("planned" if station.planned
                    else ("site" if station.is_site else "built"))
+            due = due_timestamp(station.due_at)
+            if not station.complete and due != math.inf:
+                # Просроченный и горящий срок важнее цвета типа стройки.
+                tag = "overdue" if due < now else (
+                    "due_soon" if due - now <= self.MAP_DUE_SOON_DAYS * 86400 else tag)
             rows.append((f"s:{station.build_id or station.name}",
                          (self._map_short_label(station.title),
-                          STATION_LABELS.get(station.kind, "объект"), progress, rest), tag))
+                          STATION_LABELS.get(station.kind, "объект"), progress, rest,
+                          self._map_carry_note(station)), tag))
         unscanned_only = bool(getattr(self, "map_unscanned_var", None)
                               and self.map_unscanned_var.get())
         for body in snapshot.bodies:
@@ -2895,7 +2910,7 @@ class ColonialHelperApp:
             ) if enabled]
             rows.append((f"b:{body.name}",
                          (self._map_short_label(body.name), kind, " · ".join(flags),
-                          f"{body.distance_ls:.1f} ls"), "body"))
+                          f"{body.distance_ls:.1f} ls", ""), "body"))
         for iid, values, tag in rows:
             if not self._map_filter_matches(values):
                 continue
@@ -3144,6 +3159,25 @@ class ColonialHelperApp:
     def _on_map_filter_changed(self):
         """Фильтр списка объектов: перерисовывать холст не нужно."""
         self._fill_map_tree(self._map_last_snapshot or self.system_map.snapshot())
+
+    #: Сколько дней до дедлайна стройки считать «горит».
+    MAP_DUE_SOON_DAYS = 3
+
+    @staticmethod
+    def _map_station_sort_key(station):
+        """Стройки с ближайшим дедлайном — сверху: это и есть план маршрута."""
+        group = 0 if (station.is_site and not station.complete
+                      and not station.planned) else (1 if station.planned else 2)
+        return (group, due_timestamp(station.due_at), station.title or "")
+
+    @staticmethod
+    def _map_carry_note(station) -> str:
+        """Что везти на стройку: главный товар остатка по-русски."""
+        if not station.remaining_by_commodity:
+            return ""
+        name, amount = max(station.remaining_by_commodity.items(),
+                           key=lambda pair: pair[1])
+        return f"{commodity_label(name)} {amount:,}".replace(",", " ")
 
     def _map_filter_matches(self, values) -> bool:
         needle = str(self.map_filter_var.get() or "").strip().lower()
