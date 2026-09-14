@@ -607,6 +607,25 @@ class MapFilterAndSummaryTests(MapTabTestBase):
         self.app.map_filter_var.set("ПЛОЩАДКА")
         self.assertTrue(self.refill())
 
+    def test_unscanned_toggle_hides_scanned_bodies(self):
+        """Тумблер «неотск.»: в списке остаются станции и тела без скана."""
+        self.prepare()
+        total = len(self.refill())
+        self.assertIn(f"b:{BODY_1}", self.refill(), "отсканированное тело в списке")
+
+        self.app.map_unscanned_var.set(True)
+        rows = self.refill()
+        self.assertLess(len(rows), total)
+        self.assertNotIn(f"b:{SYSTEM} A", rows, "отсканированная звезда спрятана")
+        self.assertNotIn(f"b:{BODY_1}", rows, "отсканированное тело спрятано")
+        self.assertIn(f"b:{SYSTEM} A 2", rows,
+                      "тело плана без скана остаётся: его и надо сканировать")
+        self.assertTrue(any(row.startswith("s:") for row in rows),
+                        "станции должны остаться")
+
+        self.app.map_unscanned_var.set(False)
+        self.assertEqual(len(self.refill()), total)
+
     def test_copy_summary_to_clipboard(self):
         self.prepare()
         import sys as _sys
@@ -841,3 +860,73 @@ class MapRobustnessTests(MapTabTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MapRavenCacheTests(MapTabTestBase):
+    """Кэш Raven: карта собирается мгновенно, пока сеть молчит или отключена."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+
+    def bodies_payload(self):
+        return [{"name": f"{SYSTEM} C 9", "num": 91, "distLS": 700.0, "parents": [0],
+                 "type": "rb", "subType": "Rocky body", "features": ["landable"],
+                 "radius": 900.0}]
+
+    def names(self):
+        return [body.name for body in self.app.system_map.snapshot().bodies]
+
+    def status_texts(self):
+        return [str(call.kwargs.get("text"))
+                for call in self.app.map_status.config.call_args_list]
+
+    def test_raven_done_stores_cache(self):
+        self.prepare()
+        self.assertFalse(self.app.map_cache.path.exists())
+        self.app._map_raven_done(SYSTEM, {"ok": True, "data": []},
+                                 {"ok": True, "data": []},
+                                 {"ok": True, "data": {"bodies": self.bodies_payload()}})
+        entry = self.app.map_cache.load(SYSTEM)
+        self.assertEqual(entry.get("bodies"), self.bodies_payload())
+
+    def test_cache_applied_and_shows_age(self):
+        self.prepare()
+        self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
+        self.assertNotIn(f"{SYSTEM} C 9", self.names())
+        self.assertTrue(self.app._map_apply_raven_cache(SYSTEM))
+        body = next(item for item in self.app.system_map.snapshot().bodies
+                    if item.name == f"{SYSTEM} C 9")
+        self.assertTrue(body.from_raven)
+        texts = self.status_texts()
+        self.assertTrue(any("кэш" in text and "данные от" in text for text in texts),
+                        texts[-2:])
+
+    def test_cache_not_applied_when_empty(self):
+        self.prepare()
+        self.assertFalse(self.app._map_apply_raven_cache(SYSTEM))
+        self.assertFalse(self.app._map_apply_raven_cache(""))
+
+    def test_refresh_bridges_with_cache_until_first_answer(self):
+        self.prepare()
+        self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
+        self.assertFalse(self.app.raven_api.is_connected, "без ключа RCC сети нет")
+        self.app._map_refresh_from_raven()
+        self.assertIn(f"{SYSTEM} C 9", self.names(),
+                      "оффлайн: кэш должен подставить тела прошлого визита")
+
+    def test_cache_ignored_once_network_answered(self):
+        self.prepare()
+        self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
+        key = f"{SYSTEM}:{self.app.system_map.current_system_address}"
+        self.app._map_raven_fetched[key] = time.time()
+        self.app._map_refresh_from_raven()
+        self.assertNotIn(f"{SYSTEM} C 9", self.names(),
+                         "сеть уже ответила за этот запуск: кэш не подмешиваем")
+
+    def test_refresh_button_offline_uses_cache(self):
+        self.prepare()
+        self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
+        self.app._on_map_refresh()
+        self.assertIn(f"{SYSTEM} C 9", self.names())

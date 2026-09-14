@@ -100,6 +100,7 @@ from system_map import (
     STATION_CARRIER,
     STATION_LABELS,
     STATION_SITE,
+    MapRavenCache,
     MapStation,
     SystemMapBuilder,
     layout as map_layout,
@@ -115,7 +116,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.3"
+VERSION = "2.10.4"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -248,6 +249,9 @@ class ColonialHelperApp:
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
         self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
+        # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
+        self.map_cache = MapRavenCache(
+            self.config_path.with_name(".colonial_helper_map_cache.json"))
         self.load_config()
 
         # Raven Colonial API
@@ -2538,6 +2542,11 @@ class ColonialHelperApp:
         self.map_filter_var = tk.StringVar(value="")
         filter_entry = tb.Entry(filter_row, textvariable=self.map_filter_var, width=22)
         filter_entry.pack(side=LEFT, padx=(6, 0), fill=X, expand=True)
+        # Быстрый отбор «что ещё сканировать»: тела со сканом прячем из списка.
+        self.map_unscanned_var = tk.BooleanVar(value=False)
+        tb.Checkbutton(filter_row, text="неотск.", variable=self.map_unscanned_var,
+                       command=self._on_map_filter_changed,
+                       bootstyle="secondary-round-toggle").pack(side=LEFT, padx=(6, 0))
         self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
         tree_frame = tb.Frame(side)
         tree_frame.pack(fill=BOTH, expand=True)
@@ -2855,7 +2864,11 @@ class ColonialHelperApp:
             rows.append((f"s:{station.build_id or station.name}",
                          (self._map_short_label(station.title),
                           STATION_LABELS.get(station.kind, "объект"), progress, rest), tag))
+        unscanned_only = bool(getattr(self, "map_unscanned_var", None)
+                              and self.map_unscanned_var.get())
         for body in snapshot.bodies:
+            if unscanned_only and body.scanned:
+                continue
             kind = BODY_LABELS.get(body.kind, "тело")
             if body.kind == KIND_STAR and body.star_type:
                 kind = f"звезда {body.star_type}"
@@ -3148,8 +3161,9 @@ class ColonialHelperApp:
             return
         snapshot = self._map_last_snapshot or self.system_map.snapshot()
         if not getattr(self.raven_api, "is_connected", False):
-            self._map_update_status(
-                snapshot, "Raven Colonial не подключён: показаны только данные журнала")
+            if not self._map_apply_raven_cache(self.system_map.current_system):
+                self._map_update_status(
+                    snapshot, "Raven Colonial не подключён: показаны только данные журнала")
             return
         self._map_update_status(snapshot, "Запрашиваю проекты и планы в Raven Colonial…")
         self._map_refresh_from_raven(force=True)
@@ -3157,7 +3171,13 @@ class ColonialHelperApp:
     def _map_refresh_from_raven(self, force: bool = False):
         """Фоновый запрос проектов и планов системы (не чаще MAP_RAVEN_TTL)."""
         system = self.system_map.current_system
-        if not system or not getattr(self.raven_api, "is_connected", False):
+        if not system:
+            return
+        key = f"{system}:{self.system_map.current_system_address}"
+        if not self._map_raven_fetched.get(key):
+            # Сеть ещё не ответила ни разу за этот запуск: показываем прошлый визит.
+            self._map_apply_raven_cache(system)
+        if not getattr(self.raven_api, "is_connected", False):
             return
         if self._map_raven_inflight:
             return
@@ -3184,6 +3204,41 @@ class ColonialHelperApp:
             self.after(0, lambda: self._map_raven_done(system, projects, sites, whole))
 
         threading.Thread(target=worker, daemon=True, name="map-raven").start()
+
+    def _map_apply_raven_cache(self, system: str) -> bool:
+        """Подставить прошлый ответ Raven, пока сеть молчит (или недоступна)."""
+        cache = getattr(self, "map_cache", None)
+        if cache is None or not system:
+            return False
+        entry = cache.load(system)
+        bodies = entry.get("bodies") or []
+        projects = entry.get("projects") or []
+        plans = entry.get("plans") or []
+        if not (bodies or projects or plans):
+            return False
+        changed = False
+        if bodies:
+            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
+        if projects:
+            changed = bool(self.system_map.merge_projects(system, projects)) or changed
+        if plans:
+            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
+        if not changed:
+            return False
+        self._map_redraw_now()
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        self._map_update_status(snapshot,
+                                f"Raven Colonial: кэш{self._map_cache_age(entry.get('ts'))}")
+        return True
+
+    @staticmethod
+    def _map_cache_age(ts) -> str:
+        """Возраст кэша человечески: «, данные от 12.09 21:40»."""
+        try:
+            stamp = datetime.fromtimestamp(float(ts))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return ""
+        return f", данные от {stamp:%d.%m %H:%M}"
 
     def _map_raven_done(self, system: str, projects_result, sites_result,
                         whole_result=None):
@@ -3215,6 +3270,10 @@ class ColonialHelperApp:
         if projects or plans or bodies:
             note = (f"Raven Colonial: проектов — {len(projects)}, планов — {len(plans)}, "
                     f"тел — {len(bodies)}")
+            cache = getattr(self, "map_cache", None)
+            if cache is not None:
+                # В следующий раз карта соберётся из этого кэша без ожидания сети.
+                cache.store(system, bodies, projects, plans)
         if changed:
             self._map_redraw_now()
         if note:

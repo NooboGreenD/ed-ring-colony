@@ -24,8 +24,12 @@
 
 from __future__ import annotations
 
+import json
 import math
+import os
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from colonisation import (
@@ -1712,3 +1716,66 @@ def map_summary(snapshot: MapSnapshot) -> str:
         parts.append(f"построенных объектов: {built}")
     parts.append(f"вы {snapshot.player.place}")
     return " · ".join(parts)
+
+
+class MapRavenCache:
+    """Последний удачный ответ Raven по системам — на диске.
+
+    Карта открывается мгновенно даже без сети: тела, проекты и планы
+    прошлого визита подставляются сразу, а фоновый запрос подтверждает или
+    обновляет их. В строке состояния возраст кэша показывается честно, так
+    что «данные от 12.09 21:40» не выглядят свежими. Файл держим маленьким:
+    только последние `max_systems` систем.
+    """
+
+    def __init__(self, path, max_systems: int = 24):
+        self.path = Path(path) if path else None
+        self.max_systems = max(1, int(max_systems))
+
+    def load(self, system: str) -> dict:
+        """Запись кэша системы: ``{"ts", "bodies", "projects", "plans"}`` или ``{}``."""
+        entry = self._read().get(str(system or "").strip())
+        return entry if isinstance(entry, dict) else {}
+
+    def store(self, system: str, bodies=None, projects=None, plans=None) -> bool:
+        system = str(system or "").strip()
+        if not system or self.path is None:
+            return False
+        if not (bodies or projects or plans):
+            return False
+        data = self._read()
+        data[system] = {
+            "ts": time.time(),
+            "bodies": [item for item in (bodies or []) if isinstance(item, dict)],
+            "projects": [item for item in (projects or []) if isinstance(item, dict)],
+            "plans": [item for item in (plans or []) if isinstance(item, dict)],
+        }
+        # Свежие системы важнее старых: файл не должен расти бесконечно.
+        ordered = sorted(data.items(),
+                         key=lambda kv: _as_float(kv[1].get("ts") if isinstance(kv[1], dict) else None, 0.0),
+                         reverse=True)
+        return self._write(dict(ordered[:self.max_systems]))
+
+    def _read(self) -> dict:
+        if self.path is None or not self.path.exists():
+            return {}
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            # Битый кэш — не причина падать: карта просто начнёт с журнала.
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write(self, data: dict) -> bool:
+        if self.path is None:
+            return False
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_name(self.path.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False)
+            os.replace(tmp, self.path)
+            return True
+        except Exception:
+            return False

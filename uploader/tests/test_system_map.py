@@ -15,7 +15,9 @@
 * память сборщика ограничена (системы/тела/станции не растут бесконечно).
 """
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from system_map import (  # noqa: E402
     KIND_STAR,
     MAX_BODIES_PER_SYSTEM,
     MAX_STATIONS_PER_SYSTEM,
+    MapRavenCache,
     STATION_CARRIER,
     STATION_INSTALLATION,
     STATION_MEGASHIP,
@@ -1270,3 +1273,53 @@ class RavenV2RealPayloadTests(unittest.TestCase):
             self.assertLessEqual(item.x, 901.0)
             self.assertGreaterEqual(item.y, -1.0)
             self.assertLessEqual(item.y, 621.0)
+
+
+class MapRavenCacheTests(unittest.TestCase):
+    """Кэш последнего ответа Raven: мгновенная карта без сети и без распухания."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / "map_cache.json"
+
+    def cache(self, **kwargs):
+        return MapRavenCache(self.path, **kwargs)
+
+    def test_roundtrip(self):
+        cache = self.cache()
+        self.assertEqual(cache.load(SYSTEM), {}, "пустой кэш молчит")
+        self.assertTrue(cache.store(SYSTEM, bodies=[{"name": BODY_1}],
+                                    projects=[{"buildId": "x"}], plans=[]))
+        entry = cache.load(SYSTEM)
+        self.assertEqual(entry.get("bodies"), [{"name": BODY_1}])
+        self.assertEqual(entry.get("projects"), [{"buildId": "x"}])
+        self.assertEqual(entry.get("plans"), [])
+        self.assertIn("ts", entry)
+
+    def test_garbage_in_payload_is_dropped(self):
+        self.assertTrue(self.cache().store(SYSTEM, bodies=[{"name": BODY_1}, None, 5]))
+        self.assertEqual(self.cache().load(SYSTEM)["bodies"], [{"name": BODY_1}])
+
+    def test_corrupt_file_is_not_fatal(self):
+        self.path.write_text("{это не json", encoding="utf-8")
+        self.assertEqual(self.cache().load(SYSTEM), {})
+        self.assertTrue(self.cache().store(SYSTEM, bodies=[{"name": BODY_1}]))
+        self.assertEqual(self.cache().load(SYSTEM)["bodies"], [{"name": BODY_1}])
+
+    def test_only_fresh_systems_survive(self):
+        cache = self.cache(max_systems=3)
+        for index in range(5):
+            self.assertTrue(cache.store(f"SYS {index}", bodies=[{"name": f"B{index}"}]))
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(data), ["SYS 2", "SYS 3", "SYS 4"])
+
+    def test_empty_payload_not_stored(self):
+        self.assertFalse(self.cache().store(SYSTEM))
+        self.assertFalse(self.cache().store(""))
+        self.assertEqual(self.cache().load(SYSTEM), {})
+
+    def test_no_path_is_safe(self):
+        cache = MapRavenCache(None)
+        self.assertFalse(cache.store(SYSTEM, bodies=[{"name": BODY_1}]))
+        self.assertEqual(cache.load(SYSTEM), {})
