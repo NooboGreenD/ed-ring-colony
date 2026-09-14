@@ -27,8 +27,12 @@
 """
 
 import json
+import time
+
 import requests
 from typing import Optional
+
+from http_errors import apply_client_headers, describe_bad_response, short_body
 
 
 class EDSMAPI:
@@ -36,6 +40,11 @@ class EDSMAPI:
 
     # Коды, которые считаем успешной (или штатной) обработкой события.
     OK_MSGNUMS = frozenset({100, 101, 102, 103, 104})
+
+    #: Сколько раз пробуем отправить «временную» ошибку (HTML от Cloudflare,
+    #: 5xx, 429, обрыв соединения) и пауза между попытками.
+    MAX_ATTEMPTS = 3
+    RETRY_DELAY = 1.5
 
     def __init__(self, api_key: str = "", commander_name: str = "",
                  app_name: str = "ED Ring Colony Uploader", app_version: str = "0.0.0"):
@@ -49,6 +58,9 @@ class EDSMAPI:
         self.game_version = "4.0.0.1"
         self.game_build = "live"
         self._session = requests.Session()
+        # Без осмысленного User-Agent Cloudflare перед EDSM отдаёт
+        # HTML-страницу вместо JSON — выглядит как «сервис сломался».
+        apply_client_headers(self._session, app_name, app_version)
 
     @property
     def enabled(self) -> bool:
@@ -61,6 +73,7 @@ class EDSMAPI:
     def set_app_version(self, version: str):
         if version:
             self.app_version = str(version).strip()
+            apply_client_headers(self._session, self.app_name, self.app_version)
 
     def set_game_version(self, version: str = "", build: str = ""):
         """Запомнить версию и сборку игры из журнала (Fileheader / LoadGame)."""
@@ -70,9 +83,26 @@ class EDSMAPI:
             self.game_build = str(build).strip()
 
     def submit_event(self, event: dict) -> dict:
-        """Отправить одно событие журнала. Возвращает {"ok", "msgnum", "msg"|"error"}."""
+        """Отправить одно событие журнала. Возвращает {"ok", "msgnum", "msg"|"error"}.
+
+        Временные сбои (HTML-страница Cloudflare, 5xx, 429, обрыв соединения)
+        повторяем `MAX_ATTEMPTS` раз с паузой: потерять событие журнала из-за
+        секундной недоступности EDSM обиднее, чем подождать.
+        """
         if not self.enabled:
             return {"ok": False, "skipped": True}
+        result: dict = {"ok": False, "error": "EDSM: не отправлено"}
+        for attempt in range(1, max(1, self.MAX_ATTEMPTS) + 1):
+            result = self._submit_once(event)
+            if result.get("ok") or not result.get("retryable"):
+                return result
+            if attempt < self.MAX_ATTEMPTS:
+                time.sleep(self.RETRY_DELAY)
+        result["attempts"] = max(1, self.MAX_ATTEMPTS)
+        return result
+
+    def _submit_once(self, event: dict) -> dict:
+        """Одна попытка отправки."""
         try:
             response = self._session.post(
                 self.URL,
@@ -90,7 +120,12 @@ class EDSMAPI:
         except Exception as exc:
             # Клиент внешнего сервиса не должен ронять ни поток диспетчера,
             # ни разбор журнала.
-            return {"ok": False, "error": str(exc)}
+            return {
+                "ok": False,
+                "status": 0,
+                "retryable": True,
+                "error": f"EDSM: нет соединения ({exc}); событие будет повторено",
+            }
 
         # EDSM всегда отвечает 200, даже когда событие отклонено: статус живёт
         # в теле ответа. Поэтому `response.ok` здесь недостаточно.
@@ -102,23 +137,23 @@ class EDSMAPI:
                 msgnum = payload.get("msgnum")
                 msg = str(payload.get("msg") or "")
         except ValueError:
-            pass
-
-        if not response.ok and msgnum is None:
-            return {
-                "ok": False,
-                "status": response.status_code,
-                "error": response.text[:200],
-            }
+            payload = None
 
         if msgnum is None:
-            return {"ok": False, "status": response.status_code,
-                    "error": f"EDSM: нет msgnum в ответе ({response.text[:120]})"}
+            # Не JSON: HTML от Cloudflare, пустое тело, страница ошибки.
+            # Сырую разметку в лог не кладём — только короткое описание.
+            return describe_bad_response(
+                "EDSM", response, detail="нет JSON в ответе"
+            )
 
         try:
             msgnum = int(msgnum)
         except (TypeError, ValueError):
-            return {"ok": False, "error": f"EDSM: неожиданный msgnum {msgnum!r} ({msg})"}
+            return {
+                "ok": False,
+                "status": response.status_code,
+                "error": f"EDSM: неожиданный msgnum {msgnum!r} ({msg or short_body(response)})",
+            }
 
         if msgnum in self.OK_MSGNUMS:
             return {"ok": True, "msgnum": msgnum, "msg": msg, "status": response.status_code}

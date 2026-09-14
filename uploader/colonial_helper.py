@@ -85,15 +85,23 @@ from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
-from exobiology import ExobiologyTracker
+from exobiology import ExobiologyTracker, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR
+from carrier import CarrierTracker
+from colonisation import (
+    ConstructionSiteTracker,
+    build_project_draft,
+    format_commodities,
+)
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
-from event_dispatch import ThirdPartyDispatcher
+from event_dispatch import ThirdPartyDispatcher, normalize_commodity
+from raven_colonial_api import RavenColonialAPI, project_url
+import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.3.0"
+VERSION = "2.9.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -140,6 +148,28 @@ class ColonialHelperApp:
         self._last_cargo: dict = {}  # последний инвентарь для parse_journal
         self._last_depot_state: dict = {}  # snapshot стройплощадки для отображения прогресса
         self.exobiology = ExobiologyTracker()  # тела, биосигналы, образцы (только свой журнал)
+        # Груз на авианосце: сколько завезено и сколько осталось завезти
+        # (блок CARRIER в оверлее, см. carrier.py).
+        self.carrier = CarrierTracker()
+        self._carrier_remote_market = 0  # по какому FC уже запросили Raven
+        # Стройплощадки колонизации: из них вкладка «Колонизатор» заполняет
+        # форму создания проекта (см. colonisation.py).
+        self.construction = ConstructionSiteTracker()
+        self._colony_draft_site = None        # площадка, по которой заполнена форма
+        self._colony_selected_site_id = ""     # systemSiteId выбранного плана
+        self._colony_autofilled_name = ""      # название, подставленное автозаполнением
+        self._colony_announced_sites = set()   # о каких площадках уже сообщили
+        # Проект, отмеченный основным во вкладке «Колонизатор». Его потребность
+        # показывает блок CARRIER в оверлее (см. `_carrier_need_info`).
+        self.colony_primary_project: dict = {}
+        # Проект стройплощадки, у которой командир стоит сейчас. Перечитывается
+        # из Raven Colonial по таймеру: остаток потребности там общий на всех,
+        # поэтому груз, который завезли другие командиры, должен уменьшать
+        # «осталось завезти» и у нас. Журнал этого не знает.
+        self.site_project: dict = {}
+        self._site_remote_market = 0           # по какой площадке уже спросили Raven
+        self._site_remote_at = 0.0             # когда последний раз спрашивали
+        self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
@@ -163,7 +193,6 @@ class ColonialHelperApp:
         self.load_config()
 
         # Raven Colonial API
-        from raven_colonial_api import RavenColonialAPI
         self.raven_api = RavenColonialAPI(self.config.get("raven_colonial_key", ""))
         self.edsm_api = EDSMAPI(
             self.config.get("edsm_api_key", ""),
@@ -218,6 +247,9 @@ class ColonialHelperApp:
 
         # Оверлей
         self.overlay_manager = OverlayManager(self.root, self.config_path)
+        # Смена фильтров на вкладке «Экзобиология» должна перерисовывать блок
+        # сразу, а не ждать следующего события журнала.
+        self._wire_exobio_state_provider()
 
         # Стили
         self.style = None
@@ -247,7 +279,18 @@ class ColonialHelperApp:
         # Фоновый индикатор игры (опрос ~1 раз в 1.5 с, сам монитор
         # кэширует результат, лишних снимков процессов не делается).
         self._game_was_running = False
+        # Подписи того, что уже написано в лог про состояние корабля.
+        # `_load_current_state_files()` зовётся из watcher-цикла каждые 5 с,
+        # и без сравнения подписей одни и те же строки про модули и
+        # прочитанные файлы повторялись в логе без конца.
+        self._modules_log_sig = None
+        self._state_files_log_sig = None
         self.after(1000, self._tick_game_status)
+
+        # Проверка обновлений — через пару секунд после старта, чтобы не
+        # мешать отрисовке окна и автопроверке токена.
+        self._update_busy = False
+        self.after(2500, self._auto_check_update)
 
     # ============================================================
     #  Стили
@@ -264,6 +307,14 @@ class ColonialHelperApp:
     # ============================================================
     #  Шапка
     # ============================================================
+    #: Каналы обновлений: какие релизы GitHub предлагать.
+    #: CI публикует сборки и с main (полноценный релиз), и с arena/**
+    #: (prerelease) — см. .github/workflows/build-exe.yml.
+    UPDATE_CHANNEL_LABELS = {
+        "stable": "Только стабильные (main)",
+        "all": "Все сборки (включая arena)",
+    }
+
     def _build_header(self):
         frame = tb.Frame(self.root, padding=10)
         frame.pack(fill=X, pady=(0, 5))
@@ -283,6 +334,48 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         )
         subtitle.pack(anchor=W)
+
+        # Обновления: кнопка проверки, канал и автопроверка при запуске.
+        update_frame = tb.Frame(frame)
+        update_frame.pack(fill=X, pady=(6, 0))
+
+        self.update_button = tb.Button(
+            update_frame,
+            text="⟳  Обновить программу",
+            width=22,
+            bootstyle="info-outline",
+            command=lambda: self._on_check_update(manual=True),
+        )
+        self.update_button.pack(side=LEFT, padx=(0, 8))
+
+        self.update_channel_var = tk.StringVar(value=self._update_channel_label())
+        self.update_channel_combo = tb.Combobox(
+            update_frame,
+            textvariable=self.update_channel_var,
+            width=26,
+            state="readonly",
+            values=[text for text in self.UPDATE_CHANNEL_LABELS.values()],
+        )
+        self.update_channel_combo.pack(side=LEFT, padx=(0, 8))
+        self.update_channel_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_update_settings_changed())
+
+        self.update_auto_var = tk.BooleanVar(
+            value=bool(self.config.get("update_check_enabled", True)))
+        tb.Checkbutton(
+            update_frame,
+            text="проверять при запуске",
+            variable=self.update_auto_var,
+            command=self._on_update_settings_changed,
+        ).pack(side=LEFT)
+
+        self.update_hint = tb.Label(
+            update_frame,
+            text=f"установлена v{VERSION}",
+            font=("Consolas", 9),
+            foreground=COLOR_MUTED,
+        )
+        self.update_hint.pack(side=RIGHT)
 
         # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
         game_frame = tb.Frame(frame)
@@ -360,6 +453,10 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
         self._build_tab_overlay()
 
+        self.tab_exobio = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_exobio, text=" Экзобиология ")
+        self._build_tab_exobio()
+
         self.tab_log = tb.Frame(self.notebook)
         self.notebook.add(self.tab_log, text=" Лог ")
         self._build_tab_log()
@@ -370,18 +467,7 @@ class ColonialHelperApp:
     def _build_tab_auth(self):
         # Вкладка содержит несколько API и полей. На небольших окнах вся
         # форма должна прокручиваться, а не обрезаться снизу.
-        viewport = tb.Frame(self.tab_auth)
-        viewport.pack(fill=BOTH, expand=True)
-        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
-        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        frame = tb.Frame(canvas, padding=15)
-        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
-        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        frame = self._scrollable_frame(self.tab_auth)
 
         tb.Label(frame, text="Основной API ED Ring Colony", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
@@ -1191,9 +1277,45 @@ class ColonialHelperApp:
     # ============================================================
     #  Вкладка: Колонизатор (Raven Colonial)
     # ============================================================
+    # ============================================================
+    #  Вкладка: Колонизатор
+    # ============================================================
+    def _scrollable_frame(self, parent, padding: int = 15):
+        """Прокручиваемая область вкладки.
+
+        На вкладках «Подключение», «Колонизатор» и «Оверлей» элементов больше, чем
+        помещается в окно 800×550, поэтому содержимое живёт внутри canvas.
+        Колесо мыши привязывается к canvas при входе курсора и отвязывается
+        при выходе — иначе последняя построенная вкладка перехватывала бы
+        прокрутку у всех остальных (так было с `bind_all` на этапе сборки).
+        """
+        viewport = tb.Frame(parent)
+        viewport.pack(fill=BOTH, expand=True)
+        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
+        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        frame = tb.Frame(canvas, padding=padding)
+        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
+        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+
+        def on_enter(_event=None):
+            canvas.bind_all("<MouseWheel>", lambda ev: canvas.yview_scroll(int(-ev.delta / 120), "units"))
+
+        def on_leave(_event=None):
+            try:
+                canvas.unbind_all("<MouseWheel>")
+            except Exception:
+                pass
+
+        canvas.bind("<Enter>", on_enter)
+        canvas.bind("<Leave>", on_leave)
+        return frame
+
     def _build_tab_colony(self):
-        frame = tb.Frame(self.tab_colony, padding=15)
-        frame.pack(fill=BOTH, expand=True)
+        frame = self._scrollable_frame(self.tab_colony)
 
         tb.Label(frame, text="Колонизатор — проекты Raven Colonial",
                  font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 8))
@@ -1219,10 +1341,10 @@ class ColonialHelperApp:
 
         # ---- Таблица проектов ----
         tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
-        tree_frame.pack(fill=BOTH, expand=True)
+        tree_frame.pack(fill=BOTH, expand=False)
         columns = ("primary", "system", "build", "type", "progress", "build_id")
         self.colony_tree = tb.Treeview(
-            tree_frame, columns=columns, show="headings", bootstyle="dark", height=10,
+            tree_frame, columns=columns, show="headings", bootstyle="dark", height=8,
         )
         for col, title, width, anchor in [
             ("primary", "★", 34, CENTER),
@@ -1239,6 +1361,7 @@ class ColonialHelperApp:
         self.colony_tree.pack(side=LEFT, fill=BOTH, expand=True)
         vsb.pack(side=RIGHT, fill=Y)
         self.colony_tree.bind("<<TreeviewSelect>>", lambda _e: self._on_colony_select())
+        self.colony_tree.bind("<Double-1>", lambda _e: self._on_colony_open_project())
 
         # ---- Действия с выбранным проектом ----
         actions = tb.Frame(frame)
@@ -1249,6 +1372,7 @@ class ColonialHelperApp:
             ("Снять основной", self._on_colony_clear_primary, "secondary-outline"),
             ("Завершить проект", self._on_colony_complete, "danger-outline"),
             ("Копировать buildId", self._on_colony_copy_id, "info-outline"),
+            ("Открыть в Raven Colonial", self._on_colony_open_project, "info-outline"),
         ]:
             btn = tb.Button(actions, text=text, command=command, bootstyle=style, width=22,
                             state="disabled")
@@ -1263,55 +1387,147 @@ class ColonialHelperApp:
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=12)
         tb.Label(frame, text="Создать проект", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 6))
 
+        # Строка автозаполнения: что известно из журнала прямо сейчас.
+        autofill = tb.Frame(frame)
+        autofill.pack(fill=X, pady=(0, 6))
+        tb.Button(autofill, text="Заполнить из журнала", command=self._on_colony_fill_current,
+                  bootstyle="primary-outline", width=24).pack(side=LEFT, padx=(0, 10))
+        self.colony_autofill_var = tk.BooleanVar(value=bool(self.config.get("colony_autofill", True)))
+        tb.Checkbutton(
+            autofill, text="Заполнять автоматически при посадке на стройплощадку",
+            variable=self.colony_autofill_var, command=self._on_colony_autofill_changed,
+        ).pack(side=LEFT, padx=(0, 10))
+        self.colony_open_page_var = tk.BooleanVar(
+            value=bool(self.config.get("colony_open_page_after_create", True)))
+        tb.Checkbutton(
+            autofill, text="Открывать страницу проекта после создания",
+            variable=self.colony_open_page_var, command=self._on_colony_autofill_changed,
+        ).pack(side=LEFT)
+
+        self.colony_site_label = tb.Label(
+            frame, text="Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+            foreground=COLOR_MUTED, font=("Consolas", 9), wraplength=780,
+        )
+        self.colony_site_label.pack(anchor=W, pady=(0, 8))
+
         form = tb.Frame(frame)
         form.pack(fill=X)
         self.colony_fields = {}
-        rows = [
-            ("systemName", "Система *", ""),
-            ("buildName", "Название *", ""),
-            ("buildType", "Тип постройки *", ""),
-            ("marketId", "Market ID", ""),
-            ("systemAddress", "System address", ""),
-            ("maxNeed", "maxNeed", ""),
-            ("notes", "Заметки", ""),
-        ]
-        for index, (key, label, default) in enumerate(rows):
-            tb.Label(form, text=label, width=16, anchor=W).grid(row=index, column=0, sticky=W, pady=2)
-            var = tk.StringVar(value=default)
+        self.colony_entries = {}
+
+        def add_field(key: str, label: str, row: int, column: int, values: tuple = ()):
+            """Пара «подпись + поле» в сетке формы. `*` в подписи — поле обязательное."""
+            tb.Label(form, text=label, width=18, anchor=W).grid(
+                row=row, column=column * 2, sticky=W, pady=2, padx=(0 if column == 0 else 14, 4))
+            var = tk.StringVar(value="")
             self.colony_fields[key] = var
-            entry = tb.Entry(form, textvariable=var, width=44)
-            entry.grid(row=index, column=1, sticky=W, pady=2)
+            if values:
+                entry = tb.Combobox(form, textvariable=var, width=26, values=values)
+            else:
+                entry = tb.Entry(form, textvariable=var, width=28)
+            entry.grid(row=row, column=column * 2 + 1, sticky=W, pady=2)
+            self.colony_entries[key] = entry
             if key == "buildType":
-                self.colony_build_type_entry = entry  # подсказки берём из своих проектов
+                # Подсказки берём из своих проектов и планов системы — список
+                # всегда актуальный и не зависит от захардкоженных данных.
+                self.colony_build_type_entry = entry
+            return entry
+
+        # Обязательные поля Raven Colonial (схема ProjectCreate) помечены *.
+        add_field("systemName", "Система", 0, 0)
+        add_field("marketId", "Market ID *", 0, 1)
+        add_field("systemAddress", "System address *", 1, 0)
+        add_field("buildName", "Название *", 1, 1)
+        add_field("buildType", "Тип постройки", 2, 0)
+        add_field("maxNeed", "maxNeed (всего)", 2, 1)
+        add_field("bodyName", "Тело", 3, 0)
+        add_field("bodyNum", "Номер тела", 3, 1)
+        add_field("architectName", "Архитектор", 4, 0)
+        add_field("discordLink", "Discord-ссылка", 4, 1)
+
+        # Запланированные площадки Raven Colonial (systemSiteId): если площадка
+        # уже внесена в план системы, проект привязывается к ней, а тип и тело
+        # подставляются из плана.
+        tb.Label(form, text="План площадки", width=18, anchor=W).grid(
+            row=5, column=0, sticky=W, pady=2, padx=(0, 4))
+        self.colony_site_plan_var = tk.StringVar(value="")
+        self.colony_site_plan_combo = tb.Combobox(
+            form, textvariable=self.colony_site_plan_var, width=26,
+            values=("Нет (создать новый план)",),
+        )
+        self.colony_site_plan_combo.grid(row=5, column=1, sticky=W, pady=2)
+        self.colony_site_plan_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_colony_plan_selected())
+        self._colony_site_plans: list = []
 
         self.colony_primary_port_var = tk.BooleanVar(value=False)
         tb.Checkbutton(form, text="Основной порт системы", variable=self.colony_primary_port_var).grid(
-            row=len(rows), column=1, sticky=W, pady=2)
+            row=5, column=2, columnspan=2, sticky=W, pady=2, padx=(14, 0))
+
+        tb.Label(form, text="Заметки", width=18, anchor=W).grid(
+            row=6, column=0, sticky="nw", pady=2, padx=(0, 4))
+        self.colony_fields["notes"] = tk.StringVar(value="")
+        tb.Entry(form, textvariable=self.colony_fields["notes"], width=64).grid(
+            row=6, column=1, columnspan=3, sticky=W, pady=2)
+
+        tb.Label(form, text="StarPos", width=18, anchor=W).grid(
+            row=7, column=0, sticky=W, pady=2, padx=(0, 4))
+        self.colony_starpos_var = tk.StringVar(value="")
+        tb.Entry(form, textvariable=self.colony_starpos_var, width=64, state="readonly").grid(
+            row=7, column=1, columnspan=3, sticky=W, pady=2)
+
         tb.Label(
             form,
-            text="Товары (необязательно), формат: aluminium:1200, steel:900",
-            width=46, anchor=W,
-        ).grid(row=len(rows) + 1, column=1, sticky=W, pady=(6, 0))
+            text="Товары (остаток потребности), формат: aluminium:1200, steel:900",
+            width=18, anchor=W,
+        ).grid(row=8, column=0, sticky=W, pady=(6, 0), padx=(0, 4))
         self.colony_commodities_var = tk.StringVar(value="")
-        tb.Entry(form, textvariable=self.colony_commodities_var, width=44).grid(
-            row=len(rows) + 2, column=1, sticky=W)
+        tb.Entry(form, textvariable=self.colony_commodities_var, width=64).grid(
+            row=8, column=1, columnspan=3, sticky=W)
 
         buttons = tb.Frame(frame)
         buttons.pack(anchor=W, pady=(10, 0))
-        tb.Button(buttons, text="Создать проект", command=self._on_colony_create,
-                  bootstyle="success-outline", width=20).pack(side=LEFT, padx=(0, 8))
-        tb.Button(buttons, text="Подставить текущую систему",
-                  command=self._on_colony_fill_current, bootstyle="secondary-outline", width=26).pack(side=LEFT)
+        self.colony_create_btn = tb.Button(
+            buttons, text="Создать проект", command=self._on_colony_create,
+            bootstyle="success-outline", width=20,
+        )
+        self.colony_create_btn.pack(side=LEFT, padx=(0, 8))
+        tb.Button(buttons, text="Очистить форму", command=self._on_colony_clear_form,
+                  bootstyle="secondary-outline", width=18).pack(side=LEFT, padx=(0, 8))
+        tb.Button(buttons, text="Проверить площадку в системе", command=self._on_colony_check_system,
+                  bootstyle="info-outline", width=28).pack(side=LEFT)
 
         self._update_colony_key_label()
+        self._colony_form_baseline = self._colony_form_snapshot()
+        self._update_colony_site_label()
+        # Если ключ RCC уже сохранён, имя пилота подставляем сразу, не дожидаясь
+        # нажатия «Проверить ключ».
+        if self.raven_api.is_connected:
+            self._autofill_cmdr_from_key()
 
     # ---------- Колонизатор: состояние ----------
+    def _autofill_cmdr_from_key(self):
+        """Узнать имя пилота по сохранённому ключу RCC (в фоновом потоке)."""
+        key = (self.raven_api.api_key or "").strip()
+        if not key:
+            return
+
+        def worker():
+            result = self.raven_api.get_cmdr_by_key(key)
+            if not result.get("ok"):
+                return
+            name = self.raven_api.cmdr_display_name(result)
+            if name:
+                self.root.after(0, lambda n=name: self._apply_rcc_commander(n))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _current_cmdr_name(self) -> str:
         """Имя командира: из токена сайта, из журнала или вручную."""
         for candidate in (
             getattr(self.api, "cmdr_name", "") or "",
             self._watcher_cmdr_name or "",
             self.config.get("cmdr_name", "") or "",
+            getattr(self.construction, "commander", "") or "",
         ):
             if candidate:
                 return str(candidate)
@@ -1359,6 +1575,8 @@ class ColonialHelperApp:
         """Блокируем кнопки на время запроса, чтобы не спамить Raven."""
         for btn in getattr(self, "colony_action_buttons", []):
             btn.config(state="disabled" if busy else "normal")
+        if hasattr(self, "colony_create_btn"):
+            self.colony_create_btn.config(state="disabled" if busy else "normal")
         if text:
             self.colony_status.config(text=text)
         if not busy:
@@ -1453,12 +1671,58 @@ class ColonialHelperApp:
             )
         # Типы построек подсказываем из уже существующих проектов —
         # так список всегда актуальный и не зависит от захардкоженных данных.
-        entry = getattr(self, "colony_build_type_entry", None)
-        if entry is not None:
-            current = entry.cget("values") or ()
-            merged = list(current) + [t for t in build_types if t not in current]
-            entry.config(values=merged)
+        self._colony_add_build_type_hints(build_types)
         self._colony_projects_cache = {p.get("buildId"): p for p in projects}
+        # Основной проект Raven — он же источник списка материалов в оверлее.
+        self._sync_colony_primary_project(primary_id)
+
+    def _sync_colony_primary_project(self, primary_id: str):
+        """Запомнить проект, который Raven считает основным.
+
+        Его `commodities` — актуальный список того, чего проекту ещё не хватает;
+        именно его показывает блок CARRIER.
+        """
+        primary_id = str(primary_id or "").strip()
+        cache = getattr(self, "_colony_projects_cache", {}) or {}
+        project = cache.get(primary_id) if primary_id else None
+        current_id = str(self.colony_primary_project.get("buildId") or "")
+        if isinstance(project, dict):
+            self.colony_primary_project = dict(project)
+            # Пишем в лог только на смене проекта: метод зовётся на каждом
+            # «Обновить список», иначе строка дублировалась бы без конца.
+            if str(project.get("buildId") or "") != current_id:
+                self.log(
+                    "Колонизатор: основной проект — "
+                    f"{project.get('buildName') or '?'} ({project.get('systemName') or '?'})",
+                    "info")
+            return
+        if primary_id:
+            # Сервер назвал проект, которого нет в списке командира, — не
+            # показываем устаревший список материалов.
+            self.colony_primary_project = {}
+            return
+        # Сервер основного проекта не назвал. Не стираем выбор, сделанный
+        # только что: ответ Raven приходит с задержкой, а потребность в блоке
+        # CARRIER нужна сразу. Сбрасываем лишь проект, которого у командира
+        # уже нет в списке.
+        if current_id and cache and current_id not in cache:
+            self.colony_primary_project = {}
+
+    def _colony_add_build_type_hints(self, build_types):
+        """Добавить подсказки типов постройки в combobox (без повторов)."""
+        entry = getattr(self, "colony_build_type_entry", None)
+        if entry is None:
+            return
+        try:
+            current = list(entry.cget("values") or ())
+        except Exception:
+            current = []
+        merged = list(current) + [str(t) for t in (build_types or []) if t and str(t) not in current]
+        if merged != current:
+            try:
+                entry.config(values=merged)
+            except Exception:
+                pass
 
     # ---------- Колонизатор: действия ----------
     def _on_colony_set_primary(self):
@@ -1470,6 +1734,10 @@ class ColonialHelperApp:
             self.log("Укажите имя командира.", "warn")
             return
         self._set_colony_busy(True, "Назначаю основной проект…")
+        # Запоминаем сразу: блок CARRIER должен показать материалы этого
+        # проекта, не дожидаясь ответа сервера и обновления списка.
+        cached = (getattr(self, "_colony_projects_cache", {}) or {}).get(project["buildId"])
+        self.colony_primary_project = dict(cached or project)
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("set_primary", (cmdr, project["buildId"]),
                                f"Основной проект: {project['buildName']}"), daemon=True).start()
@@ -1480,6 +1748,7 @@ class ColonialHelperApp:
             self.log("Укажите имя командира.", "warn")
             return
         self._set_colony_busy(True, "Снимаю основной проект…")
+        self.colony_primary_project = {}
         threading.Thread(target=self._colony_simple_call_thread,
                          args=("clear_primary", (cmdr,), "Основной проект снят"), daemon=True).start()
 
@@ -1534,30 +1803,309 @@ class ColonialHelperApp:
             self.root.clipboard_append(build_id)
             self.log(f"buildId скопирован: {build_id}", "info")
 
+    def _on_colony_open_project(self):
+        """Открыть страницу выбранного проекта в Raven Colonial."""
+        project = self._selected_colony_project()
+        if not project or not project["buildId"]:
+            self.log("Выберите проект в списке.", "warn")
+            return
+        self._colony_open_url(project_url(project["buildId"]),
+                              f"Проект {project['buildName']}")
+
+    def _colony_open_url(self, url: str, what: str = ""):
+        """Открыть ссылку в системном браузере (не блокируя UI)."""
+        def open_in_thread():
+            try:
+                import webbrowser
+
+                opened = webbrowser.open(url, new=2)
+            except Exception as exc:
+                self.after(0, lambda e=exc: self.log(f"Не удалось открыть браузер: {e}", "warn"))
+                return
+            label = f"{what}: " if what else ""
+            if opened:
+                self.after(0, lambda: self.log(f"Raven Colonial: открыта страница — {label}{url}", "info"))
+            else:
+                self.after(0, lambda: self.log(
+                    f"Raven Colonial: браузер не открылся, скопируйте ссылку — {url}", "warn"))
+
+        threading.Thread(target=open_in_thread, daemon=True).start()
+
+    def _on_colony_autofill_changed(self):
+        """Галочки формы создания сохраняем сразу, без кнопки «Применить»."""
+        self.config["colony_autofill"] = bool(self.colony_autofill_var.get())
+        self.config["colony_open_page_after_create"] = bool(self.colony_open_page_var.get())
+        self.save_config()
+
+    def _update_colony_site_label(self):
+        """Подпись под кнопкой автозаполнения: что известно из журнала."""
+        label = getattr(self, "colony_site_label", None)
+        if label is None:
+            return
+        site = self.construction.site
+        if site is None or not site.market_id:
+            label.config(
+                text="Стройплощадка не найдена — пристыкуйтесь к Construction Ship / площадке.",
+                foreground=COLOR_MUTED,
+            )
+            return
+        docked = "вы на площадке" if site.docked else "последняя посещённая площадка"
+        color = COLOR_GREEN if site.has_depot else COLOR_ORANGE
+        label.config(text=f"{site.summary()} · {docked}", foreground=color)
+
+    # ---------- Колонизатор: автозаполнение из журнала ----------
+    def _colony_form_snapshot(self) -> dict:
+        """Снимок формы: по нему видно, правил ли пользователь поля руками."""
+        snapshot = {key: var.get() for key, var in getattr(self, "colony_fields", {}).items()}
+        snapshot["_commodities"] = (
+            self.colony_commodities_var.get() if hasattr(self, "colony_commodities_var") else ""
+        )
+        snapshot["_primary"] = bool(self.colony_primary_port_var.get()) if hasattr(self, "colony_primary_port_var") else False
+        snapshot["_starpos"] = self.colony_starpos_var.get() if hasattr(self, "colony_starpos_var") else ""
+        snapshot["_plan"] = self.colony_site_plan_var.get() if hasattr(self, "colony_site_plan_var") else ""
+        return snapshot
+
+    def _colony_form_dirty(self) -> bool:
+        return self._colony_form_snapshot() != getattr(self, "_colony_form_baseline", {})
+
     def _on_colony_fill_current(self):
-        """Подставить систему, в которой командир находится сейчас."""
+        """Кнопка «Заполнить из журнала»: площадка из журнала, иначе текущая система."""
+        site = self.construction.site
+        if site is not None and site.market_id:
+            self._colony_autofill_from_site(site, auto=False)
+            return
+
         state = getattr(self.ship, "state", None)
         system = (getattr(state, "current_system", "") or "").strip()
         if not system:
-            self.log("Текущая система неизвестна — включите Watcher или загрузите журналы.", "warn")
+            self.log(
+                "Стройплощадка в журнале не найдена, а текущая система неизвестна — "
+                "включите Watcher или загрузите журналы.", "warn",
+            )
             return
         self.colony_fields["systemName"].set(system)
-        market_id = str(self._last_depot_state.get("_market_id", "") or "")
-        if market_id and market_id != "0":
-            self.colony_fields["marketId"].set(market_id)
         address = getattr(state, "system_address", 0) or 0
         if address:
             self.colony_fields["systemAddress"].set(str(address))
-        depot = self._last_depot_state or {}
-        commodities = [
-            f"{name}:{amount}"
-            for name, amount in sorted(depot.items())
-            if not name.startswith("_") and isinstance(amount, (int, float))
-        ]
-        if commodities:
-            self.colony_commodities_var.set(", ".join(commodities))
-        self.log(f"Подставлена текущая система: {system}", "info")
+        market_id = str(self._last_depot_state.get("_market_id", "") or "")
+        if market_id and market_id != "0":
+            self.colony_fields["marketId"].set(market_id)
+        if not self.colony_fields["architectName"].get():
+            self.colony_fields["architectName"].set(self._current_cmdr_name())
+        self._colony_form_baseline = self._colony_form_snapshot()
+        self.log(f"Подставлена текущая система: {system} (без данных стройплощадки)", "info")
+        self._fetch_colony_site_context(system)
 
+    def _colony_autofill_from_site(self, site, auto: bool = False):
+        """Заполнить форму создания проекта данными стройплощадки из журнала."""
+        if site is None or not site.market_id:
+            self.log("Стройплощадка не найдена: в журнале нет ColonisationConstructionDepot.", "warn")
+            return
+
+        self.colony_fields["systemName"].set(site.system_name or "")
+        self.colony_fields["marketId"].set(str(site.market_id))
+        self.colony_fields["systemAddress"].set(str(site.system_address or ""))
+        self.colony_starpos_var.set(
+            ", ".join(f"{value:.4f}" for value in site.star_pos) if site.star_pos else ""
+        )
+        self.colony_fields["bodyName"].set(site.body_name or "")
+        self.colony_fields["bodyNum"].set("" if site.body_num is None else str(site.body_num))
+        self.colony_fields["maxNeed"].set(str(site.total_required) if site.total_required else "")
+        self.colony_primary_port_var.set(bool(site.is_primary_port))
+
+        # Название подставляем только если поле пустое или заполнено нами же
+        # ранее: переименовывать проект за пользователем не нужно.
+        current_name = self.colony_fields["buildName"].get().strip()
+        if not current_name or current_name == getattr(self, "_colony_autofilled_name", ""):
+            suggested = site.suggested_name
+            self.colony_fields["buildName"].set(suggested)
+            self._colony_autofilled_name = suggested
+
+        if not self.colony_fields["architectName"].get().strip():
+            architect = self.construction.commander or self._current_cmdr_name()
+            if architect:
+                self.colony_fields["architectName"].set(architect)
+
+        remaining = site.remaining_by_commodity()
+        if remaining:
+            self.colony_commodities_var.set(format_commodities(remaining))
+        elif not site.has_depot:
+            self.log(
+                "Ресурсы площадки ещё не получены: зайдите в Construction Services "
+                "на площадке — тогда подставятся потребности по товарам.", "warn",
+            )
+
+        self._colony_draft_site = site
+        self._colony_form_baseline = self._colony_form_snapshot()
+        self._update_colony_site_label()
+        prefix = "Автозаполнение" if auto else "Форма заполнена"
+        self.log(f"{prefix}: {site.summary()}", "success" if site.has_depot else "info")
+        self.colony_status.config(text=site.summary())
+        # Планы площадок и архитектора системы берём из Raven Colonial — в
+        # журнале их нет. Запрос фоновый, форма не блокируется.
+        if site.system_name:
+            self._fetch_colony_site_context(site.system_name)
+
+    def _fetch_colony_site_context(self, system: str):
+        """Фоновый запрос планов площадок и архитектора системы."""
+        if not system or not self.raven_api.is_connected:
+            return
+
+        def worker():
+            sites = self.raven_api.get_system_sites(system)
+            architect = self.raven_api.get_system_architect(system)
+            self.after(0, lambda: self._colony_site_context_done(system, sites, architect))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _colony_site_context_done(self, system: str, sites: dict, architect: dict):
+        if architect.get("ok"):
+            name = architect.get("data")
+            if isinstance(name, dict):
+                name = name.get("architectName") or name.get("architect") or name.get("name")
+            name = str(name or "").strip().strip('"')
+            if name and not self.colony_fields["architectName"].get().strip():
+                self.colony_fields["architectName"].set(name)
+                self._colony_form_baseline = self._colony_form_snapshot()
+                self.log(f"Raven Colonial: архитектор системы {system} — {name}", "info")
+
+        if not sites.get("ok"):
+            return
+        plans = self._extract_site_plans(sites.get("data"))
+        self._colony_site_plans = plans
+        labels = ["Нет (создать новый план)"] + [
+            self._site_plan_label(plan) for plan in plans
+        ]
+        try:
+            self.colony_site_plan_combo.config(values=tuple(labels))
+        except Exception:
+            pass
+        # Типы построек из планов системы — самые точные подсказки: это ровно
+        # те коды, которые Raven Colonial ожидает в buildType.
+        self._colony_add_build_type_hints([plan.get("buildType") for plan in plans])
+        if plans:
+            self.log(
+                f"Raven Colonial: в системе {system} запланировано площадок — {len(plans)}", "info")
+            # Один план — выбираем его сами: тип и тело возьмутся из плана.
+            if len(plans) == 1 and not self.colony_site_plan_var.get():
+                self.colony_site_plan_var.set(labels[1])
+                self._on_colony_plan_selected()
+
+    @staticmethod
+    def _extract_site_plans(data) -> list:
+        """Из ответа /v2/system/{system}/sites — только незавершённые планы."""
+        if isinstance(data, dict):
+            for key in ("sites", "Sites"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            else:
+                data = [data] if data else []
+        if not isinstance(data, list):
+            return []
+        plans = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "").lower()
+            # Готовые и снесённые площадки привязывать не к чему.
+            if status in ("complete", "completed", "demolish", "demolished"):
+                continue
+            plans.append({
+                "id": str(item.get("id") or item.get("siteId") or ""),
+                "name": str(item.get("name") or ""),
+                "buildType": str(item.get("buildType") or ""),
+                "bodyNum": item.get("bodyNum", item.get("bodyId")),
+                "bodyName": str(item.get("bodyName") or ""),
+            })
+        return [plan for plan in plans if plan["id"]]
+
+    @staticmethod
+    def _site_plan_label(plan: dict) -> str:
+        build_type = plan.get("buildType") or "?"
+        name = plan.get("name") or plan.get("id")
+        return f"{name} ({build_type})"
+
+    def _on_colony_plan_selected(self):
+        """Выбран план площадки — подставляем systemSiteId, тип и тело."""
+        index = 0
+        try:
+            index = int(self.colony_site_plan_combo.current())
+        except Exception:
+            index = 0
+        if index <= 0 or index - 1 >= len(self._colony_site_plans):
+            self._colony_selected_site_id = ""
+            return
+        plan = self._colony_site_plans[index - 1]
+        self._colony_selected_site_id = plan["id"]
+        if plan.get("buildType") and not self.colony_fields["buildType"].get().strip():
+            self.colony_fields["buildType"].set(plan["buildType"])
+        if plan.get("bodyName") and not self.colony_fields["bodyName"].get().strip():
+            self.colony_fields["bodyName"].set(plan["bodyName"])
+        if plan.get("bodyNum") not in (None, "") and not self.colony_fields["bodyNum"].get().strip():
+            self.colony_fields["bodyNum"].set(str(plan["bodyNum"]))
+        if not self.colony_fields["buildName"].get().strip():
+            self.colony_fields["buildName"].set(plan.get("name") or "")
+        self._colony_form_baseline = self._colony_form_snapshot()
+        self.log(f"Выбран план площадки: {self._site_plan_label(plan)}", "info")
+
+    def _on_colony_clear_form(self):
+        for var in self.colony_fields.values():
+            var.set("")
+        self.colony_starpos_var.set("")
+        self.colony_commodities_var.set("")
+        self.colony_primary_port_var.set(False)
+        self.colony_site_plan_var.set("")
+        self._colony_selected_site_id = ""
+        self._colony_draft_site = None
+        self._colony_autofilled_name = ""
+        self._colony_form_baseline = self._colony_form_snapshot()
+        self.colony_status.config(text="Форма очищена")
+        self._update_colony_site_label()
+
+    def _on_colony_check_system(self):
+        """Есть ли уже проект на этой площадке/в этой системе?
+
+        Создание проекта, который уже существует, Raven отклоняет, а сообщение
+        об этом приходит только после запроса. Дешевле проверить заранее.
+        """
+        system = self.colony_fields["systemName"].get().strip()
+        address = self.colony_fields["systemAddress"].get().strip()
+        market_id = self.colony_fields["marketId"].get().strip()
+        if not (system or address or market_id):
+            self.log("Заполните систему, Market ID или System address.", "warn")
+            return
+        self.colony_status.config(text="Проверяю площадку в Raven Colonial…")
+        threading.Thread(target=self._colony_check_system_thread,
+                         args=(system, address, market_id), daemon=True).start()
+
+    def _colony_check_system_thread(self, system: str, address: str, market_id: str):
+        result = None
+        if address and market_id:
+            try:
+                result = self.raven_api.get_project(int(address), int(market_id))
+            except (TypeError, ValueError):
+                result = None
+        if not result:
+            result = self.raven_api.get_system_projects(address or system)
+        self.after(0, lambda: self._colony_check_system_done(result))
+
+    def _colony_check_system_done(self, result):
+        if not isinstance(result, dict) or not result.get("ok"):
+            error = (result or {}).get("error") if isinstance(result, dict) else "нет ответа"
+            self.colony_status.config(text=f"Проверить не удалось: {error}")
+            self.log(f"Raven Colonial: проверка площадки — {error}", "warn")
+            return
+        projects = self._extract_colony_projects(result.get("data"))
+        if not projects:
+            self.colony_status.config(text="Проекта на этой площадке нет — можно создавать.")
+            self.log("Raven Colonial: активного проекта на площадке нет", "success")
+            return
+        names = ", ".join(f"{p.get('buildName')} ({p.get('buildId')})" for p in projects[:3])
+        self.colony_status.config(text=f"Внимание: в системе уже есть проект — {names}")
+        self.log(f"Raven Colonial: найден существующий проект — {names}", "warn")
+
+    # ---------- Колонизатор: создание проекта ----------
     @staticmethod
     def _parse_commodities(text: str) -> dict:
         """'aluminium:1200, steel:900' -> {'aluminium': 1200, 'steel': 900}."""
@@ -1567,7 +2115,7 @@ class ColonialHelperApp:
             if not chunk:
                 continue
             name, _, amount = chunk.partition(":")
-            name = name.strip().lower()
+            name = normalize_commodity(name)
             try:
                 value = int(float(amount.strip()))
             except ValueError:
@@ -1580,11 +2128,20 @@ class ColonialHelperApp:
         if not self.raven_api.is_connected:
             self.log("Для создания проекта нужен RCC ключ (вкладка «Подключение»).", "error")
             return
-        system = self.colony_fields["systemName"].get().strip()
+        site = getattr(self, "_colony_draft_site", None)
         build_name = self.colony_fields["buildName"].get().strip()
-        build_type = self.colony_fields["buildType"].get().strip()
-        if not (system and build_name and build_type):
-            self.log("Заполните поля: система, название, тип постройки.", "warn")
+        system = self.colony_fields["systemName"].get().strip()
+        missing = [
+            label for key, label in (("marketId", "Market ID"), ("systemAddress", "System address"),
+                                     ("buildName", "Название"))
+            if not self.colony_fields[key].get().strip()
+        ]
+        if missing:
+            hint = ""
+            if site is None and {"Market ID", "System address"} & set(missing):
+                hint = " Пристыкуйтесь к стройплощадке и нажмите «Заполнить из журнала»."
+            self.log(f"Raven Colonial требует заполнить: {', '.join(missing)}.{hint}", "warn")
+            self.colony_status.config(text=f"Не заполнены обязательные поля: {', '.join(missing)}")
             return
 
         def as_int(key: str) -> Optional[int]:
@@ -1592,49 +2149,96 @@ class ColonialHelperApp:
             if not raw:
                 return None
             try:
-                return int(raw)
+                return int(float(raw))
             except ValueError:
                 self.log(f"Поле «{key}» должно быть числом, получено: {raw}", "warn")
-                return None
+                raise
 
-        market_id, system_address, max_need = as_int("marketId"), as_int("systemAddress"), as_int("maxNeed")
-        if any(value is None and self.colony_fields[key].get().strip()
-               for key, value in (("marketId", market_id), ("systemAddress", system_address),
-                                  ("maxNeed", max_need))):
+        try:
+            market_id = as_int("marketId")
+            system_address = as_int("systemAddress")
+            max_need = as_int("maxNeed")
+            body_num = as_int("bodyNum")
+        except ValueError:
             return
 
-        project = {
-            "systemName": system,
-            "buildName": build_name,
-            "buildType": build_type,
-            "marketId": market_id,
-            "systemAddress": system_address,
-            "maxNeed": max_need,
-            "isPrimaryPort": bool(self.colony_primary_port_var.get()),
-            "notes": self.colony_fields["notes"].get().strip() or None,
-            "commodities": self._parse_commodities(self.colony_commodities_var.get()),
-        }
-        cmdr = (self.colony_cmdr_var.get() or "").strip()
-        self.colony_status.config(text="Создаю проект…")
-        threading.Thread(target=self._colony_create_thread, args=(project, cmdr), daemon=True).start()
+        # Событие депота относится ровно к той площадке, чей MarketID стоит в
+        # форме. Если командир поправил Market ID руками, чужой snapshot
+        # отправлять нельзя — Raven посчитает по нему исходную потребность.
+        if site is not None and str(site.market_id) != str(self.colony_fields["marketId"].get().strip()):
+            site = None
 
-    def _colony_create_thread(self, project: dict, cmdr: str):
+        # Форма — источник истины: даже если площадка известна, командир мог
+        # поправить любое поле руками. Из площадки берём только то, чего в
+        # форме нет (событие депота, starPos).
+        project = build_project_draft(
+            site,
+            build_name=build_name,
+            build_type=self.colony_fields["buildType"].get().strip(),
+            architect_name=self.colony_fields["architectName"].get().strip(),
+            discord_link=self.colony_fields["discordLink"].get().strip(),
+            notes=self.colony_fields["notes"].get().strip(),
+            is_primary_port=bool(self.colony_primary_port_var.get()),
+            commanders={cmdr: [] for cmdr in [(self.colony_cmdr_var.get() or "").strip()] if cmdr},
+            system_site_id=getattr(self, "_colony_selected_site_id", ""),
+        )
+        project["marketId"] = market_id
+        project["systemAddress"] = system_address
+        if system:
+            project["systemName"] = system
+        if max_need is not None:
+            project["maxNeed"] = max_need
+        if body_num is not None:
+            project["bodyNum"] = body_num
+        if self.colony_fields["bodyName"].get().strip():
+            project["bodyName"] = self.colony_fields["bodyName"].get().strip()
+        commodities = self._parse_commodities(self.colony_commodities_var.get())
+        if commodities:
+            project["commodities"] = commodities
+
+        cmdr = (self.colony_cmdr_var.get() or "").strip()
+        open_page = bool(self.colony_open_page_var.get())
+        self._set_colony_busy(True, "Создаю проект…")
+        threading.Thread(target=self._colony_create_thread,
+                         args=(project, cmdr, open_page), daemon=True).start()
+
+    def _colony_create_thread(self, project: dict, cmdr: str, open_page: bool = True):
         result = self.raven_api.create_project(project)
         build_id = ""
         data = result.get("data")
         if isinstance(data, dict):
             build_id = str(data.get("buildId", "") or "")
+        if isinstance(data, str):
+            build_id = data.strip().strip('"')
         if result.get("ok") and build_id and cmdr:
             # Сразу привязываем проект к командиру, иначе он не попадёт в
             # список «моих проектов» на сайте и в этой вкладке.
-            self.raven_api.link_cmdr(build_id, cmdr, True)
-        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr))
+            link = self.raven_api.link_cmdr(build_id, cmdr, True)
+            if not link.get("ok"):
+                result["link_error"] = link.get("error")
+        self.after(0, lambda: self._colony_create_done(result, build_id, cmdr, open_page))
 
-    def _colony_create_done(self, result: dict, build_id: str, cmdr: str):
+    def _colony_create_done(self, result: dict, build_id: str, cmdr: str, open_page: bool = True):
+        self._set_colony_busy(False)
         if result.get("ok"):
-            name = f"{self.colony_fields['systemName'].get()}: {self.colony_fields['buildName'].get()}"
-            self.log(f"Raven Colonial: проект создан — {name} (buildId {build_id})", "success")
-            self.colony_status.config(text=f"Проект создан, buildId: {build_id}")
+            system = self.colony_fields["systemName"].get()
+            name = f"{system}: {self.colony_fields['buildName'].get()}".strip(": ")
+            message = f"Raven Colonial: проект создан — {name}"
+            if build_id:
+                message += f" (buildId {build_id})"
+            self.log(message, "success")
+            if result.get("link_error"):
+                self.log(
+                    f"Raven Colonial: проект создан, но не привязан к командиру — "
+                    f"{result['link_error']}", "warn",
+                )
+            self.colony_status.config(text=f"Проект создан, buildId: {build_id or '—'}")
+            # Запоминаем недавно использованные типы постройки: официальный
+            # справочник кодов Raven не публикует, а свои значения команда
+            # вводит из раза в раз одни и те же.
+            self._remember_colony_build_type(self.colony_fields["buildType"].get().strip())
+            if build_id and open_page:
+                self._colony_open_url(project_url(build_id), f"Проект {name}")
             if cmdr:
                 self._on_colony_refresh()
         else:
@@ -1642,24 +2246,24 @@ class ColonialHelperApp:
             self.colony_status.config(text=f"Создать проект не удалось: {error}")
             self.log(f"Raven Colonial: проект не создан — {error}", "error")
 
+    def _remember_colony_build_type(self, build_type: str):
+        build_type = (build_type or "").strip()
+        if not build_type:
+            return
+        recent = [item for item in self.config.get("colony_build_types_recent", []) if item != build_type]
+        recent.insert(0, build_type)
+        self.config["colony_build_types_recent"] = recent[:10]
+        self._colony_add_build_type_hints([build_type])
+        self.save_config()
+
+
     # ============================================================
     #  Вкладка: Оверлей
     # ============================================================
     def _build_tab_overlay(self):
-        # The overlay settings contain more controls than a small window can
-        # display. Put the whole settings panel in a scrollable canvas.
-        viewport = tb.Frame(self.tab_overlay)
-        viewport.pack(fill=BOTH, expand=True)
-        canvas = tk.Canvas(viewport, highlightthickness=0, borderwidth=0)
-        scrollbar = tb.Scrollbar(viewport, orient=VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side=RIGHT, fill=Y)
-        canvas.pack(side=LEFT, fill=BOTH, expand=True)
-        frame = tb.Frame(canvas, padding=15)
-        window_id = canvas.create_window((0, 0), window=frame, anchor="nw")
-        frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        # Настроек оверлея больше, чем помещается в небольшое окно, поэтому
+        # вся панель прокручивается (общий помощник `_scrollable_frame`).
+        frame = self._scrollable_frame(self.tab_overlay)
 
         tb.Label(frame, text="Настройки оверлея HUD", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(
@@ -2453,7 +3057,7 @@ class ColonialHelperApp:
             "game_running": self.overlay_manager.game_running,
             "game_focused": bool(self.overlay_manager.game_state().focused),
             "game_detail": self.overlay_manager.game_state().process_name or "",
-            "exobiology": self.exobiology.current_body_state(),
+            "exobiology": self._exobiology_overlay_state(),
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
             "current": "—",
@@ -2496,12 +3100,133 @@ class ColonialHelperApp:
         data["route_deliveries_count"] = self._session_route_deliveries
         data["route_cargo_tons"] = self._session_route_cargo_tons
         data["construction_cargo_tons"] = self._session_construction_cargo_tons
+        # Авианосец: тоннаж из CarrierStats + товары поимённо (сколько уже
+        # лежит на борту) + остаток до потребности основного проекта.
+        need, need_label, need_source = self._carrier_need_info()
+        data["carrier"] = self.carrier.get_state_dict(
+            need, need_label=need_label, need_source=need_source)
         data["last_delivery_system"] = self._last_delivery_system
         return data
 
     # ============================================================
     #  Вкладка: Лог
     # ============================================================
+    # ============================================================
+    #  Вкладка: Экзобиология (фильтры оверлея EXOBIO)
+    # ============================================================
+    def _build_tab_exobio(self):
+        """Фильтры блока EXOBIO: роды и поиск планет по параметрам.
+
+        Отдельная вкладка, а не раздел в «Оверлее»: настроек оверлея и так
+        много, а эти относятся только к одному блоку.
+        """
+        frame = self._scrollable_frame(self.tab_exobio)
+        settings = self.overlay_manager.settings
+
+        tb.Label(frame, text="Фильтры оверлея EXOBIO",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(
+            frame,
+            text="Блок EXOBIO показывает образцы, вероятные роды и тела системы. "
+                 "Здесь выбирается, какие роды оставлять в прогнозе и какие планеты "
+                 "искать в системе. Всё применяется сразу — оверлей перезапускать не нужно.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 10))
+
+        # ---- Фильтр по родам ----
+        tb.Label(frame, text="Роды в прогнозе", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Отмеченные роды остаются в списке «Вероятные роды», остальные скрываются. "
+                 "Если не отмечено ничего — фильтр выключен и показываются все роды.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 6))
+
+        selected_genera = {str(g) for g in (settings.get("exobio_genera") or [])}
+        self._exobio_genus_vars = {}
+        genera_grid = tb.Frame(frame)
+        genera_grid.pack(anchor=W, fill=X, pady=(0, 6))
+        for index, genus in enumerate(sorted(GENUS_VALUE_CR)):
+            var = tk.BooleanVar(value=genus in selected_genera)
+            self._exobio_genus_vars[genus] = var
+            tb.Checkbutton(
+                genera_grid, text=genus, variable=var, width=22,
+                command=self._on_exobio_filters_changed,
+            ).grid(row=index // 3, column=index % 3, sticky=W, padx=(0, 12), pady=1)
+
+        genera_btns = tb.Frame(frame)
+        genera_btns.pack(anchor=W, pady=(0, 4))
+        tb.Button(genera_btns, text="Отметить все", width=16, bootstyle="secondary-outline",
+                  command=lambda: self._set_all_genera(True)).pack(side=LEFT, padx=(0, 8))
+        tb.Button(genera_btns, text="Снять все", width=16, bootstyle="secondary-outline",
+                  command=lambda: self._set_all_genera(False)).pack(side=LEFT)
+        tb.Label(genera_btns, text="«Снять все» = показать все роды",
+                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
+
+        # ---- Поиск планет ----
+        tb.Label(frame, text="Поиск планет в системе",
+                 font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
+        tb.Label(
+            frame,
+            text="Отмеченные наборы критериев применяются к отсканированным телам текущей "
+                 "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
+                 "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
+                 "нашлась. Данные только из вашего журнала: тело должно быть отсканировано.",
+            foreground=COLOR_MUTED, wraplength=700,
+        ).pack(anchor=W, pady=(0, 6))
+
+        self.exobio_show_planets_var = tk.BooleanVar(
+            value=bool(settings.get("exobio_show_planet_search", True)))
+        tb.Checkbutton(
+            frame, text="Показывать раздел «Поиск планет» в оверлее",
+            variable=self.exobio_show_planets_var,
+            command=self._on_exobio_filters_changed,
+        ).pack(anchor=W, pady=(0, 6))
+
+        selected_ids = {str(i) for i in (settings.get("exobio_planet_search") or [])}
+        self._exobio_planet_vars = {}
+        for preset in PLANET_SEARCH_PRESETS:
+            preset_id = str(preset.get("id"))
+            var = tk.BooleanVar(value=preset_id in selected_ids)
+            self._exobio_planet_vars[preset_id] = var
+            tb.Checkbutton(
+                frame, text=str(preset.get("label") or preset_id), variable=var,
+                command=self._on_exobio_filters_changed,
+            ).pack(anchor=W, pady=1)
+
+        planet_btns = tb.Frame(frame)
+        planet_btns.pack(anchor=W, pady=(8, 0))
+        tb.Button(planet_btns, text="Снять все", width=16, bootstyle="secondary-outline",
+                  command=self._clear_planet_filters).pack(side=LEFT)
+        tb.Label(planet_btns, text="без отмеченных наборов раздел пишет, что критерии не выбраны",
+                 foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
+
+    def _set_all_genera(self, value: bool):
+        for var in getattr(self, "_exobio_genus_vars", {}).values():
+            var.set(bool(value))
+        self._on_exobio_filters_changed()
+
+    def _clear_planet_filters(self):
+        for var in getattr(self, "_exobio_planet_vars", {}).values():
+            var.set(False)
+        self._on_exobio_filters_changed()
+
+    def _on_exobio_filters_changed(self):
+        """Сохранить фильтры и сразу перерисовать блок EXOBIO."""
+        genera = [genus for genus, var in getattr(self, "_exobio_genus_vars", {}).items()
+                  if var.get()]
+        planet_ids = [preset_id for preset_id, var
+                      in getattr(self, "_exobio_planet_vars", {}).items() if var.get()]
+        show_planets = bool(getattr(self, "exobio_show_planets_var", tk.BooleanVar(value=True)).get())
+        try:
+            self.overlay_manager.set_exobio_filters(
+                genera=genera, planet_search=planet_ids, show_planets=show_planets)
+            self.overlay_manager.save_settings()
+        except Exception as exc:  # настройки не должны ронять интерфейс
+            self.log(f"Не удалось сохранить фильтры EXOBIO: {exc}", "error")
+
     def _build_tab_log(self):
         frame = tb.Frame(self.tab_log, padding=15)
         frame.pack(fill=BOTH, expand=True)
@@ -2544,6 +3269,168 @@ class ColonialHelperApp:
         self.bottom_status.pack(fill=X, side=BOTTOM)
 
     # ============================================================
+    #  Обновление программы
+    # ============================================================
+    def _update_channel_label(self) -> str:
+        channel = str(self.config.get("update_channel", "stable"))
+        return self.UPDATE_CHANNEL_LABELS.get(
+            channel, self.UPDATE_CHANNEL_LABELS["stable"])
+
+    def _update_channel_value(self) -> str:
+        label = str(self.update_channel_var.get())
+        for value, text in self.UPDATE_CHANNEL_LABELS.items():
+            if text == label:
+                return value
+        return "stable"
+
+    def _on_update_settings_changed(self):
+        """Канал и автопроверку сохраняем сразу: это настройки, не состояние."""
+        self.config["update_channel"] = self._update_channel_value()
+        self.config["update_check_enabled"] = bool(self.update_auto_var.get())
+        self.save_config()
+
+    def _auto_check_update(self):
+        if not bool(self.config.get("update_check_enabled", True)):
+            return
+        self._on_check_update(manual=False)
+
+    def _set_update_ui(self, busy: bool, hint: str = "", button_text: str = ""):
+        """Состояние строки обновлений: кнопка занята/свободна + подсказка."""
+        try:
+            self.update_button.config(
+                state="disabled" if busy else "normal",
+                text=button_text or "⟳  Обновить программу",
+            )
+        except Exception:
+            pass
+        if hint and hasattr(self, "update_hint"):
+            try:
+                self.update_hint.config(text=hint)
+            except Exception:
+                pass
+
+    def _on_check_update(self, manual: bool = False):
+        """Спросить GitHub Releases, есть ли сборка новее установленной.
+
+        Сетевой запрос — только в фоновом потоке: интерфейс не должен ждать
+        ответа GitHub, тем более при автопроверке на старте.
+        """
+        if self._update_busy:
+            return
+        self._update_busy = True
+        channel = self._update_channel_value()
+        self._set_update_ui(True, hint="проверка обновлений…", button_text="Проверяю…")
+        self.log("Проверяю обновления…", "info")
+
+        def worker():
+            result = updater.check_for_update(VERSION, channel=channel)
+            self.after(0, lambda r=result: self._on_update_checked(r, manual))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_checked(self, result: dict, manual: bool):
+        self._update_busy = False
+        latest = str(result.get("latest") or VERSION)
+        if not result.get("ok"):
+            message = str(result.get("error") or "нет данных")
+            self._set_update_ui(False, hint=f"не проверено: {message[:40]}")
+            # Автопроверка без сети — обычное дело, в лог пишем только по кнопке.
+            if manual:
+                self.log(f"Обновления не проверены: {message}", "warn")
+            return
+
+        if not result.get("update_available"):
+            if result.get("channel_empty"):
+                # В канале нет ни одного релиза. Это не «версия свежая», а
+                # «смотреть нечего»: писать «актуальная версия» было бы ложью.
+                self._set_update_ui(
+                    False, hint="в этом канале сборок нет — смените канал")
+                if manual:
+                    self.log(
+                        f"В канале «{self._update_channel_label()}» нет ни одной "
+                        "сборки. Переключите канал на «Все сборки».", "warn")
+                return
+            self._set_update_ui(False, hint=f"актуальная версия v{latest}")
+            self.log(f"Установлена актуальная версия {VERSION}", "success")
+            return
+
+        release = result.get("release") or {}
+        self._set_update_ui(False, hint=f"доступна v{latest}")
+        self.log(
+            f"Доступна новая версия {latest} (установлена {VERSION}): "
+            f"{release.get('name') or release.get('tag') or ''}", "warn")
+        if not manual:
+            # При автопроверке окно не выпрыгивает: пишем в лог и подсказку.
+            self.log("Нажмите «Обновить программу», чтобы скачать сборку.", "info")
+            return
+
+        size_mb = int(release.get("asset_size") or 0) / (1024 * 1024)
+        if not messagebox.askyesno(
+            "Обновление Colonial Helper",
+            f"Доступна версия {latest} (у вас {VERSION}).\n\n"
+            f"Файл: {release.get('asset_name') or 'ColonialHelper.exe'}"
+            f"{f' ({size_mb:.1f} МБ)' if size_mb else ''}\n\n"
+            "Скачать новую сборку?",
+            parent=self.root,
+        ):
+            return
+        self._start_update_download(release)
+
+    def _start_update_download(self, release: dict):
+        """Скачать сборку в «Загрузки» и показать папку."""
+        folder = updater.download_folder()
+        self._update_busy = True
+        self._set_update_ui(True, hint="скачивание…", button_text="Скачиваю…")
+
+        def report(done: int, total: int):
+            if not total:
+                return
+            # Не чаще раза в ~5%, иначе очередь Tk забьётся прогрессом.
+            percent = int(done * 100 / total)
+            if percent - getattr(self, "_update_last_percent", -10) < 5:
+                return
+            self._update_last_percent = percent
+            self.after(0, lambda p=percent: self._set_update_ui(
+                True, hint=f"скачивание {p}%", button_text="Скачиваю…"))
+
+        def worker():
+            result = updater.download_asset(release, folder, progress=report)
+            self.after(0, lambda r=result: self._on_update_downloaded(r, release))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_update_downloaded(self, result: dict, release: dict):
+        self._update_busy = False
+        self._update_last_percent = -10
+        if not result.get("ok"):
+            message = str(result.get("error") or "неизвестная ошибка")
+            self._set_update_ui(False, hint="скачивание не удалось")
+            self.log(f"Не удалось скачать обновление: {message}", "error")
+            return
+        path = str(result.get("path") or "")
+        size_mb = int(result.get("size") or 0) / (1024 * 1024)
+        self._set_update_ui(False, hint=f"скачано: {Path(path).name}")
+        self.log(f"Сборка {release.get('version_text') or ''} скачана: {path} "
+                 f"({size_mb:.1f} МБ)", "success")
+        self.log("Закройте программу и замените ColonialHelper.exe скачанным файлом.", "info")
+        # Показываем папку со сборкой: запускать новый exe из-под старого
+        # не нужно, а найти файл пользователь должен сразу.
+        def open_folder():
+            try:
+                import os
+                import webbrowser
+
+                if hasattr(os, "startfile"):
+                    os.startfile(str(Path(path).parent))  # noqa: S606 - своя папка
+                else:
+                    webbrowser.open(Path(path).parent.as_uri())
+            except Exception as exc:
+                self.after(0, lambda e=exc: self.log(
+                    f"Не удалось открыть папку со сборкой: {e}", "warn"))
+
+        threading.Thread(target=open_folder, daemon=True).start()
+
+    # ============================================================
     #  Индикатор игры
     # ============================================================
     def _tick_game_status(self):
@@ -2582,6 +3469,14 @@ class ColonialHelperApp:
                     self.log("Elite Dangerous не запущена — оверлей скрыт", "info")
             if hasattr(self, "layout_info_label"):
                 self._update_layout_info()
+            # Груз авианосца по товарам журнал не отдаёт: снимок из Raven
+            # Colonial перечитывается по таймеру, иначе «на борту» устаревает,
+            # пока груз возят другие командиры.
+            self._refresh_carrier_cargo(int(self.carrier.state.market_id or 0))
+            # То же для стройплощадки: остаток потребности там общий на всех
+            # командиров, и груз, сданный другими, должен уменьшать «осталось
+            # завезти» и у нас.
+            self._refresh_site_project()
         except Exception:
             pass
         finally:
@@ -2883,54 +3778,58 @@ class ColonialHelperApp:
         threading.Thread(target=self._check_raven_key_async, args=(key,), daemon=True).start()
 
     def _check_raven_key_async(self, key: str):
-        try:
-            import requests
-            # Проверяем ключ через корневой endpoint /api
-            # 200 = ключ валиден, 401 = ключ неверный, остальное = ошибка
-            resp = requests.get(
-                "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api",
-                headers={"rcc-key": key},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                self.root.after(0, lambda: self.raven_status_label.config(
-                    text="Raven Colonial: подключено", foreground="#3fb950"
-                ))
-                self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
-            elif resp.status_code == 401:
-                self.root.after(0, lambda: self.raven_status_label.config(
-                    text="Raven Colonial: ключ неверный", foreground="#f85149"
-                ))
-                self.root.after(0, lambda: self.log("Raven Colonial: ключ неверный (401)", "error"))
-            else:
-                # 404 или другой код — возможно endpoint другой, но ключ может быть валидным
-                # Пробуем альтернативный endpoint /api/system/0/0
-                resp2 = requests.get(
-                    "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api/system/0/0",
-                    headers={"rcc-key": key},
-                    timeout=10,
-                )
-                if resp2.status_code in (200, 404):
-                    # 404 = проект не найден, но доступ есть (ключ валиден)
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text="Raven Colonial: подключено", foreground="#3fb950"
-                    ))
-                    self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
-                elif resp2.status_code == 401:
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text="Raven Colonial: ключ неверный", foreground="#f85149"
-                    ))
-                    self.root.after(0, lambda: self.log("Raven Colonial: ключ неверный (401)", "error"))
-                else:
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text=f"Raven Colonial: ошибка {resp2.status_code}", foreground="#f85149"
-                    ))
-                    self.root.after(0, lambda: self.log(f"Raven Colonial: ошибка {resp2.status_code}", "error"))
-        except Exception as e:
+        """Проверить ключ RCC и подставить имя командира.
+
+        `GET /api/cmdr/` с заголовком `rcc-key` возвращает профиль владельца
+        ключа (в том числе `displayName`) — это единственный способ узнать
+        имя пилота, имея только ключ. Раньше ключ проверялся запросом к
+        корневому `/api` с запасным вариантом `/api/system/0/0`, и имя
+        приходилось вводить руками.
+        """
+        result = self.raven_api.get_cmdr_by_key(key)
+        if result.get("ok"):
+            cmdr = self.raven_api.cmdr_display_name(result)
             self.root.after(0, lambda: self.raven_status_label.config(
-                text="Raven Colonial: сетевая ошибка", foreground="#f85149"
-            ))
-            self.root.after(0, lambda: self.log(f"Raven Colonial: сетевая ошибка: {e}", "error"))
+                text="Raven Colonial: подключено", foreground="#3fb950"))
+            self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
+            if cmdr:
+                self.root.after(0, lambda name=cmdr: self._apply_rcc_commander(name))
+            return
+
+        status = int(result.get("status") or 0)
+        error = str(result.get("error") or "неизвестная ошибка")
+        if status == 401:
+            text, log_text = "Raven Colonial: ключ неверный", "Raven Colonial: ключ неверный (401)"
+            level = "error"
+        elif status == 0:
+            text, log_text = "Raven Colonial: сетевая ошибка", f"Raven Colonial: {error}"
+            level = "error"
+        else:
+            text, log_text = f"Raven Colonial: ошибка {status}", f"Raven Colonial: {error}"
+            level = "error"
+        self.root.after(0, lambda t=text: self.raven_status_label.config(
+            text=t, foreground="#f85149"))
+        self.root.after(0, lambda m=log_text, lv=level: self.log(m, lv))
+
+    def _apply_rcc_commander(self, name: str):
+        """Подставить имя пилота, которое Raven Colonial отдал по ключу RCC.
+
+        Имя из ключа — авторитетное: именно под ним сервис знает командира,
+        поэтому поле «Командир» во вкладке «Колонизатор» перезаписывается.
+        """
+        name = str(name or "").strip()
+        if not name:
+            return
+        self.config["cmdr_name"] = name
+        self.save_config()
+        if hasattr(self, "colony_cmdr_var"):
+            self.colony_cmdr_var.set(name)
+        if hasattr(self, "colony_key_label"):
+            self.colony_key_label.config(
+                text=f"RCC ключ задан · {name}", foreground=COLOR_GREEN)
+        self.log(f"Raven Colonial: командир по ключу RCC — {name}", "success")
+        # Список проектов сразу не обновляем: пользователь может нажать
+        # «Обновить список» сам, а лишний запрос на каждое сохранение не нужен.
 
     def _on_browse_journal_path(self):
         path = filedialog.askdirectory(initialdir=str(self.journal_path))
@@ -2939,6 +3838,63 @@ class ColonialHelperApp:
             self.path_entry.delete(0, END)
             self.path_entry.insert(0, str(self.journal_path))
             self.save_config()
+
+    def _exobiology_overlay_state(self):
+        """Состояние экзобиологии для оверлея: тело + карта тел системы.
+
+        Отдельным методом, чтобы не дёргать трекер дважды и не тащить в оверлей
+        весь список тел, когда блок выключен.
+        """
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None:
+            return None
+        state = tracker.current_body_state()
+        try:
+            bodies = tracker.system_bodies(limit=10)
+        except Exception:
+            bodies = []
+        criteria, genera = self._exobiology_filters()
+        planets = []
+        if criteria:
+            try:
+                planets = tracker.search_system_planets(criteria)
+            except Exception:
+                planets = []
+        if state is None and not bodies and not planets:
+            return None
+        state = dict(state or {})
+        state["system_bodies"] = bodies
+        state["system"] = state.get("system") or tracker.current_system
+        # Фильтры и результат поиска планет (вкладка «Экзобиология»).
+        state["genera_filter"] = genera
+        state["planet_criteria"] = criteria
+        state["planets"] = planets
+        return state
+
+    def _wire_exobio_state_provider(self):
+        """Дать оверлею способ перерисовать EXOBIO после смены фильтров."""
+        manager = getattr(self, "overlay_manager", None)
+        if manager is None:
+            return
+        try:
+            manager.set_exobio_state_provider(self._exobiology_overlay_state)
+        except Exception:
+            pass
+
+    def _exobiology_filters(self):
+        """Выбранные фильтры EXOBIO: (наборы критериев поиска, роды).
+
+        Настройки читаем каждый раз, а не кэшируем: вкладка «Экзобиология»
+        меняет их на лету, и блок должен обновиться без перезапуска оверлея.
+        """
+        settings = getattr(getattr(self, "overlay_manager", None), "settings", {}) or {}
+        genera = [str(item) for item in (settings.get("exobio_genera") or []) if str(item).strip()]
+        wanted_ids = {str(item) for item in (settings.get("exobio_planet_search") or [])}
+        criteria = []
+        if wanted_ids and bool(settings.get("exobio_show_planet_search", True)):
+            criteria = [dict(row) for row in PLANET_SEARCH_PRESETS
+                        if str(row.get("id")) in wanted_ids]
+        return criteria, genera
 
     # ============================================================
     #  Обработчики: Загрузка
@@ -3158,7 +4114,12 @@ class ColonialHelperApp:
 
         # Экзобиология собирается тем же проходом: тела, биосигналы и образцы
         # нужны оверлею EXOBIO, отдельный проход по файлам для них не нужен.
-        hooks = [collector, dispatch_hook, self.exobiology.handle]
+        # Стройплощадки — тоже: они нужны вкладке «Колонизатор», а события
+        # ColonisationConstructionDepot и так проходят через этот разбор.
+        def construction_hook(line, ev):
+            self._feed_construction_site(ev, live=False)
+
+        hooks = [collector, dispatch_hook, self.exobiology.handle, construction_hook]
 
         # Только те файлы, которые реально разобраны и чьи доставки приняты:
         # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
@@ -3425,6 +4386,9 @@ class ColonialHelperApp:
         self._last_depot_state = {}
         self._last_contribution_state = {}
         self._seen_events = set()
+        # Сессия новая — площадки и уведомления о них тоже с нуля.
+        self.construction.reset()
+        self._colony_announced_sites.clear()
         self._last_delivery_system = ""
         self._session_event_count = 0
         self._last_session_event = ""
@@ -3742,14 +4706,23 @@ class ColonialHelperApp:
                         pass
                 loaded.append("ModulesInfo")
                 damaged = sum(1 for m in st.modules.values() if m.health < 1.0)
-                self.root.after(
-                    0,
-                    lambda: self.log(
-                        f"Модули: {len(st.modules)} шт., повреждено: {damaged}, "
-                        f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
-                        "info",
-                    ),
+                # Watcher зовёт этот метод каждые 5 секунд. Без сравнения
+                # подписи одна и та же строка про модули писалась в лог
+                # без конца, хотя в корабле ничего не менялось.
+                modules_sig = (
+                    len(st.modules), damaged,
+                    round(st.power_used, 2), round(st.power_capacity, 2),
                 )
+                if modules_sig != self._modules_log_sig:
+                    self._modules_log_sig = modules_sig
+                    self.root.after(
+                        0,
+                        lambda: self.log(
+                            f"Модули: {len(st.modules)} шт., повреждено: {damaged}, "
+                            f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
+                            "info",
+                        ),
+                    )
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения ModulesInfo.json: {e}", "warn"))
         try:
@@ -3766,7 +4739,14 @@ class ColonialHelperApp:
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения Cargo.json: {e}", "warn"))
         if loaded:
-            self.root.after(0, lambda: self.log(f"Загружено состояние: {', '.join(loaded)}", "info"))
+            # Тот же метод зовётся каждые 5 секунд: без сравнения подписи
+            # «Загружено состояние: Status, ModulesInfo, Cargo» писалось в лог
+            # на каждом тике, хотя набор файлов не менялся.
+            files_sig = tuple(loaded)
+            if files_sig != self._state_files_log_sig:
+                self._state_files_log_sig = files_sig
+                self.root.after(
+                    0, lambda: self.log(f"Загружено состояние: {', '.join(loaded)}", "info"))
 
     def _load_latest_loadout(self):
         """Найти и применить последнее событие Loadout из журналов."""
@@ -4069,21 +5049,48 @@ class ColonialHelperApp:
         if not self.raven_api.is_connected:
             return
         batches = {}
+        # Причины, по которым доставка не ушла на Raven. Раньше все четыре
+        # ветки просто делали `continue`: в логе не было ни строки, и
+        # «Raven Colonial не получает тоннаж» выглядело как поломка сервера,
+        # хотя чаще всего проект просто не найден по market_id.
+        skipped: dict = {}
+
+        def _skip(reason: str):
+            skipped[reason] = skipped.get(reason, 0) + 1
+
         for delivery in deliveries:
             market_id = delivery.get("market_id")
             if not market_id:
+                _skip("в событии нет MarketID")
+                continue
+            # Продажа груза своему авианосцу — это не доставка на стройку:
+            # груз авианосца обновляется отдельным PATCH /api/fc/{marketId}/
+            # cargo. Если отправить её ещё и в /contribute, Raven засчитает
+            # тонны проекту дважды (или засчитает то, чего никто не сдавал).
+            if delivery.get("source") == "carrier_delivery":
                 continue
             address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
             if not address:
+                _skip("не определён SystemAddress")
                 continue
             # Проект ищем через кэш: все доставки на одну стройплощадку дают
             # один и тот же buildId, а раньше на каждую доставку уходил
             # отдельный HTTP-запрос (с таймаутом до 15 с).
             project = self.raven_api.get_project(address, market_id)
             if not project or not project.get("buildId"):
+                _skip(f"проект не найден (market_id={market_id})")
                 continue
             build_id = project["buildId"]
-            commodity = delivery.get("commodity", "Unknown")
+            # Raven Colonial принимает только языконезависимые имена товаров в
+            # нижнем регистре («Commodity names are always lower case and
+            # language agnostic»: `steel`, не `Steel` и не `$steel_name;`).
+            # Парсер же кладёт в доставку `Type_Localised`/`Name_Localised` —
+            # без нормализации сервер не мог сопоставить доставку с ресурсом
+            # проекта, и тоннаж на Raven Colonial не рос.
+            commodity = normalize_commodity(delivery.get("commodity") or "")
+            if not commodity:
+                _skip("пустое имя товара")
+                continue
             batch = batches.setdefault(build_id, {})
             batch[commodity] = batch.get(commodity, 0) + int(delivery.get("amount", 0))
         for build_id, commodities in batches.items():
@@ -4098,6 +5105,18 @@ class ColonialHelperApp:
                     0,
                     lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"),
                 )
+        if skipped:
+            # Без этой строки «Raven Colonial не получил тоннаж» выглядело как
+            # молчаливый отказ сервера: четыре ветки выше просто делали
+            # `continue`. Чаще всего причина — проект не найден по market_id,
+            # и пользователю нужно это видеть, а не догадываться.
+            detail = "; ".join(f"{reason} — {count}" for reason, count in sorted(skipped.items()))
+            self.root.after(
+                0,
+                lambda d=detail: self.log(
+                    f"Raven Colonial: не отправлено {sum(skipped.values())} доставок ({d})",
+                    "warn"),
+            )
 
     def _handle_tracked_event(self, ev: dict, live: bool = True):
         """Обработка одного события журнала: маршрут, корабль, оверлей.
@@ -4118,8 +5137,13 @@ class ColonialHelperApp:
                     self.root.after(0, self._refresh_route_tree)
                     if live:
                         self.overlay_manager.log(f"Jump: {sys_name}", "info")
+        # Стройплощадка: из неё вкладка «Колонизатор» заполняет форму проекта.
+        self._feed_construction_site(ev, live=live)
         # Отслеживание корабля
         self.ship.parse_event(ev)
+        # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
+        # только считаются локально для блока CARRIER в оверлее.
+        self._feed_carrier(ev, live=live)
         ev_name = ev.get("event")
         if live and ev_name in (
             "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
@@ -4133,6 +5157,280 @@ class ColonialHelperApp:
                 f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
                 "info",
             )
+
+    # ============================================================
+    #  Стройплощадки колонизации (для вкладки «Колонизатор»)
+    # ============================================================
+    # ============================================================
+    #  Груз на авианосце (блок CARRIER в оверлее)
+    # ============================================================
+    def _carrier_need(self) -> dict:
+        """Потребность, которую показывает блок CARRIER (без подписи)."""
+        return self._carrier_need_info()[0]
+
+    def _carrier_need_info(self):
+        """Что нужно завезти и откуда мы это знаем.
+
+        Возвращает `(need, label, source)`.
+
+        Приоритет источников:
+
+        1. **Проект, отмеченный основным во вкладке «Колонизатор».** Его
+           `commodities` в Raven Colonial — это актуальный остаток потребности,
+           который видят все клиенты: и то, что завезли вы, и то, что завезли
+           другие командиры. Именно этот список просил показывать пользователь.
+        2. **Проект стройплощадки, у которой стоит игрок**, перечитанный из
+           Raven Colonial (`site_project`). Тоже знает чужие доставки, но не
+           требует отмечать проект основным.
+        3. **Стройплощадка из журнала** (`ColonisationConstructionDepot`).
+           Работает без ключа RCC, но знает только то, что написано в журнале:
+           если часть груза сдал другой командир, остаток будет завышен.
+
+        Если ни одного источника нет — потребность пуста, и блок показывает
+        только груз на борту.
+        """
+        project = self.colony_primary_project or {}
+        if isinstance(project, dict) and project:
+            commodities = project.get("commodities")
+            if isinstance(commodities, dict) and commodities:
+                need = {}
+                for raw, amount in commodities.items():
+                    try:
+                        value = int(float(amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        need[str(raw)] = value
+                if need:
+                    label = (f"{project.get('buildName') or 'проект'}"
+                             f" · {project.get('systemName') or ''}").strip(" ·")
+                    return need, label, "project"
+
+        # 2. Проект стройплощадки, у которой стоит игрок, перечитанный из Raven
+        #    Colonial. В отличие от журнала он знает и чужие доставки: если
+        #    часть груза сдал другой командир, «осталось завезти» уменьшится.
+        site_project = self.site_project or {}
+        if isinstance(site_project, dict) and site_project.get("buildId"):
+            commodities = site_project.get("commodities")
+            if isinstance(commodities, dict) and commodities:
+                need = {}
+                for raw, amount in commodities.items():
+                    try:
+                        value = int(float(amount))
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        need[str(raw)] = value
+                if need:
+                    label = (f"{site_project.get('buildName') or 'стройплощадка'}"
+                             f" · {site_project.get('systemName') or ''}").strip(" ·")
+                    return need, label, "site_project"
+
+        # 3. Журнал: работает без ключа RCC, но знает только ваши доставки.
+        site = self.construction.site
+        if site is None:
+            return {}, "", ""
+        try:
+            need = site.remaining_by_commodity()
+        except Exception:
+            return {}, "", ""
+        need = {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
+        if not need:
+            return {}, "", ""
+        label = site.station_name or site.system_name or "стройплощадка"
+        return need, label, "site"
+
+    def _feed_carrier(self, event: dict, live: bool = False):
+        """Передать событие журнала трекеру авианосца.
+
+        Вызывается из того же однопроходного разбора, что и стройплощадки:
+        отдельных чтений журнала не добавляет. В историческом разборе
+        (`live=False`) Raven не опрашиваем — там десятки тысяч событий.
+        """
+        try:
+            changed = self.carrier.handle(event)
+        except Exception:
+            return
+        if not changed or not live:
+            return
+        market_id = int(self.carrier.state.market_id or 0)
+        if not market_id:
+            return
+        # В лог — только заметные события. Писать строку на каждую продажу на
+        # борту авианосца смысла нет: при разгрузке трюма их десятки.
+        if str(event.get("event")) in (
+            "CarrierStats", "Docked", "Location", "CarrierJump", "Undocked",
+            "CarrierNameChanged", "CarrierDecommission",
+        ):
+            self.overlay_manager.log(self.carrier.state.summary(), "info")
+        # Товары поимённо журнал не отдаёт: дельты считаем сами, а точную
+        # картину (груз всех командиров) берём из Raven Colonial. Один раз на
+        # FC мало — другие командиры возят груз параллельно, поэтому снимок
+        # обновляется и по таймеру.
+        self._refresh_carrier_cargo(market_id)
+
+    #: Как часто перечитывать поимённый груз авианосца из Raven Colonial.
+    CARRIER_CARGO_REFRESH_SECONDS = 300.0
+
+    def _refresh_carrier_cargo(self, market_id: int, force: bool = False):
+        """Запросить поимённый груз FC из Raven Colonial (в фоновом потоке).
+
+        Без ключа RCC или без сети ничего не происходит: блок останется на
+        локальном учёте по дельтам журнала и честно это подпишет.
+        """
+        market_id = int(market_id or 0)
+        if market_id <= 0 or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        fresh = now - float(self._carrier_remote_at or 0.0)
+        same_carrier = market_id == self._carrier_remote_market
+        if same_carrier and not force and fresh < self.CARRIER_CARGO_REFRESH_SECONDS:
+            return
+        self._carrier_remote_market = market_id
+        self._carrier_remote_at = now
+        threading.Thread(
+            target=self._load_carrier_cargo, args=(market_id,), daemon=True
+        ).start()
+
+    def _load_carrier_cargo(self, market_id: int):
+        """Фоновый запрос: поимённый груз авианосца из Raven Colonial.
+
+        Ничего не блокирует и не падает: нет ключа/сети — останемся на
+        локальном учёте по дельтам журнала.
+        """
+        try:
+            result = self.raven_api.get_fc_cargo(market_id)
+        except Exception as exc:
+            self.log(f"Raven Colonial: груз авианосца не получен ({exc})", "warn")
+            return
+        if not result.get("ok"):
+            self.log(
+                f"Raven Colonial: груз авианосца {market_id} не получен "
+                f"({result.get('error') or 'нет данных'})", "info")
+            return
+        # Raven может отдать и объект с полем `cargo`, и саму карту
+        # «товар -> тонны» (это под-ресурс /api/fc/{id}/cargo). Принимаем оба
+        # варианта: числовые значения и есть груз, остальное — служебные поля.
+        data = result.get("data")
+        if isinstance(data, dict) and isinstance(data.get("cargo"), dict):
+            cargo = data["cargo"]
+        elif isinstance(data, dict):
+            cargo = {
+                key: value for key, value in data.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+        else:
+            cargo = data
+        if not isinstance(cargo, dict) or not cargo:
+            return
+        if self.carrier.merge_remote(cargo):
+            self.log(
+                f"Авианосец {market_id}: груз по товарам получен из Raven Colonial "
+                f"({len(cargo)} позиц.)", "info")
+
+    #: Как часто перечитывать проект стройплощадки из Raven Colonial.
+    SITE_PROJECT_REFRESH_SECONDS = 300.0
+
+    def _refresh_site_project(self, force: bool = False):
+        """Перечитать из Raven Colonial проект площадки, у которой стоит игрок.
+
+        Остаток потребности проекта на Raven общий на всех командиров. Журнал
+        знает только то, что завезли вы, поэтому без этого запроса «осталось
+        завезти» не уменьшалось, когда часть груза сдавал кто-то другой (или
+        когда сессия прервалась и доставки досылались в другой заход).
+
+        Без ключа RCC или без сети ничего не происходит: потребность останется
+        на данных журнала из `ColonisationConstructionDepot`.
+        """
+        site = self.construction.site
+        if site is None:
+            return
+        try:
+            market_id = int(site.market_id or 0)
+            address = int(site.system_address or 0)
+        except (TypeError, ValueError):
+            return
+        if market_id <= 0 or address <= 0 or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        fresh = now - float(self._site_remote_at or 0.0)
+        same_site = market_id == self._site_remote_market
+        if same_site and not force and fresh < self.SITE_PROJECT_REFRESH_SECONDS:
+            return
+        self._site_remote_market = market_id
+        self._site_remote_at = now
+        threading.Thread(
+            target=self._load_site_project, args=(address, market_id), daemon=True
+        ).start()
+
+    def _load_site_project(self, address: int, market_id: int):
+        """Фоновый запрос: проект стройплощадки из Raven Colonial."""
+        try:
+            project = self.raven_api.get_project(address, market_id)
+        except Exception as exc:
+            self.log(f"Raven Colonial: проект стройплощадки не получен ({exc})", "warn")
+            return
+        if not isinstance(project, dict) or not project.get("buildId"):
+            # Площадка есть в журнале, но проекта на Raven ещё нет (никто не
+            # создал) — это не ошибка, а состояние. Молча остаёмся на журнале.
+            self.site_project = {}
+            return
+        self.site_project = dict(project)
+        commodities = project.get("commodities")
+        if isinstance(commodities, dict):
+            left = sum(
+                int(float(v)) for v in commodities.values()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            )
+            # Тысячи разделяем пробелом, но только в самом числе: глобальный
+            # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
+            tons = f"{left:,}".replace(",", " ")
+            self.log(
+                f"Стройплощадка {market_id}: осталось завезти {tons} t "
+                f"({len(commodities)} позиц., данные Raven Colonial)",
+                "info")
+
+    def _feed_construction_site(self, event: dict, live: bool = False):
+        """Передать событие журнала трекеру стройплощадок.
+
+        Вызывается из того же однопроходного разбора, что и доставки:
+        отдельных чтений журнала не добавляет. В историческом разборе
+        (`live=False`) UI не трогаем — там десятки тысяч событий, а
+        площадка нужна только для текущей стоянки.
+        """
+        try:
+            changed = self.construction.handle("", event)
+        except Exception:
+            return
+        if changed and live:
+            self.after(0, self._on_construction_site_changed)
+
+    def _on_construction_site_changed(self):
+        """Командир только что пристыковался к стройплощадке (или улетел)."""
+        site = self.construction.site
+        if site is None or not site.market_id:
+            self._update_colony_site_label()
+            return
+        self._update_colony_site_label()
+        if site.market_id in self._colony_announced_sites:
+            return
+        self._colony_announced_sites.add(site.market_id)
+
+        self.log(f"Стройплощадка: {site.summary()}", "info")
+        if not self.colony_autofill_var.get():
+            self.log(
+                "Автозаполнение формы создания проекта выключено — "
+                "нажмите «Заполнить из журнала».", "info",
+            )
+            return
+        if self._colony_form_dirty():
+            # Пользователь уже что-то ввёл руками — не затираем его ввод.
+            self.log(
+                "Форма создания проекта изменена вручную — автозаполнение пропущено "
+                "(кнопка «Заполнить из журнала» перезаполнит её).", "info",
+            )
+            return
+        self._colony_autofill_from_site(site, auto=True)
 
     def _process_journal_changes(self, filepath: Path, old_size: int, new_size: int, live: bool = False) -> int:
         """Обработать изменения в журнале. Возвращает количество обработанных байт.
@@ -4255,58 +5553,21 @@ class ColonialHelperApp:
                 for d in deliveries:
                     if self.route.mark_visited(d["system_name"]):
                         self.root.after(0, self._refresh_route_tree)
-                # Отправка на Raven Colonial
-                if self.raven_api.is_connected:
-                    # Группируем доставки по build_id (как в SRV Survey)
-                    raven_batches: dict = {}  # build_id -> {commodity: amount}
-                    for d in upload_deliveries:
-                        # Fleet Carrier cargo is sent through /api/fc/.../cargo,
-                        # not as a construction contribution.
-                        if d.get("source") == "carrier_delivery":
-                            continue
-                        market_id = d.get("market_id")
-                        if not market_id:
-                            continue
-                        # Берём систему, зафиксированную В МОМЕНТ этой доставки
-                        # (journal_parser проставляет её по SystemAddress из
-                        # Location/FSDJump/Docked/CarrierJump на момент события),
-                        # а не текущее состояние корабля — к моменту отправки
-                        # батча на сервер игрок мог уже прыгнуть в другую систему,
-                        # и подстановка "текущей" system_address привела бы к
-                        # поиску проекта не в той системе и потере доставки.
-                        system_address = d.get("system_address") or (
-                            self.ship.state.system_address if self.ship.state else 0
-                        )
-                        if not system_address:
-                            self.root.after(
-                                0,
-                                lambda c=d.get("commodity", "?"): self.log(
-                                    f"Raven Colonial: пропущена доставка '{c}' — не удалось "
-                                    f"определить SystemAddress", "warn"
-                                ),
-                            )
-                            continue
-                        project = self.raven_api.get_project(system_address, market_id)
-                        if project and project.get("buildId"):
-                            bid = project["buildId"]
-                            if bid not in raven_batches:
-                                raven_batches[bid] = {}
-                            comm = d["commodity"]
-                            raven_batches[bid][comm] = raven_batches[bid].get(comm, 0) + d["amount"]
-                    # Отправляем сгруппированные батчи
-                    for bid, commodities in raven_batches.items():
-                        rc_result = self.raven_api.contribute(
-                            bid, cmdr_name or "Unknown", commodities
-                        )
-                        if rc_result["ok"]:
-                            total = sum(commodities.values())
-                            self.root.after(
-                                0,
-                                lambda t=total, n=len(commodities): self.log(
-                                    f"Raven Colonial: +{t}t ({n} ресурсов)", "success"
-                                ),
-                            )
-            else:
+                # Отправка на Raven Colonial.
+                # Раунд 33: раньше здесь была своя копия цикла отправки, и она
+                # разошлась с _send_deliveries_to_raven — отправляла имя товара
+                # как Name_Localised из журнала ("Steel", "Liquid oxygen") без
+                # normalize_commodity, хотя Raven Colonial требует lower-case
+                # language-agnostic имена, и молча теряла доставки без MarketID,
+                # без buildId и при ошибке API. Именно этот код, а не
+                # _send_deliveries_to_raven, выполняется в живом вотчере —
+                # поэтому тоннаж на Raven и не появлялся. Дубликат удалён:
+                # отправка только через _send_deliveries_to_raven, где имена
+                # нормализованы, а каждая пропущенная доставка попадает в
+                # агрегированный отчёт. SystemAddress по-прежнему берётся из
+                # события доставки, а не из текущего положения корабля.
+                self._send_deliveries_to_raven(upload_deliveries, cmdr_name)
+
                 # Оставляем события в очереди: следующий тик повторит отправку
                 # с тем же source_hash, а сервер безопасно устранит дубли.
                 self._pending_watcher_deliveries = upload_deliveries + self._pending_watcher_deliveries

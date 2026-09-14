@@ -107,6 +107,7 @@ class InaraTests(unittest.TestCase):
 
         self.api = InaraAPI("key", "CMDR", app_version="2.2.0")
         self.api._session = mock.MagicMock()
+        self.api.RETRY_DELAY = 0     # тест не должен спать между попытками
         self.captured = {}
 
         def record(url, json=None, timeout=None):
@@ -169,6 +170,197 @@ class InaraTests(unittest.TestCase):
         result = self.api.submit("x", {})
         self.assertFalse(result["ok"])
         self.assertIn("timeout", result["error"])
+
+
+CLOUDFLARE_HTML = (
+    "<!DOCTYPE html>\n"
+    '<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n'
+    '<!--[if IE 7]>    <html class="no-js ie7 oldie" lang="en-US"> <![endif]-->\n'
+    "<head><title>edsm.net | 503: Service temporarily unavailable</title></head>"
+)
+
+
+class CloudflareHtmlResponseTests(unittest.TestCase):
+    """Ответ-заглушка Cloudflare: короткое сообщение в лог, а не разметка.
+
+    Жалоба: в логах появлялось
+    «EDSM: <!DOCTYPE html> <!--[if lt IE 7]> <html class="no-js ie6…».
+    Это страница Cloudflare вместо JSON: EDSM был недоступен или отклонял
+    клиента. Теперь такой ответ классифицируется и повторяется.
+    """
+
+    def _api(self, response):
+        from edsm_api import EDSMAPI
+
+        api = EDSMAPI("key", "CMDR")
+        api._session = mock.MagicMock()
+        api._session.post.return_value = response
+        api.RETRY_DELAY = 0          # тест не должен спать между попытками
+        return api
+
+    def test_html_answer_is_classified_not_dumped(self):
+        api = self._api(_FakeResponse(None, ok=False, status=503, text=CLOUDFLARE_HTML))
+        result = api.submit_event({"event": "FSDJump"})
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retryable"])
+        self.assertEqual(result["status"], 503)
+        self.assertNotIn("<!DOCTYPE", result["error"])
+        self.assertNotIn("<!--[if", result["error"])
+        self.assertIn("HTML", result["error"])
+        self.assertLess(len(result["error"]), 200)
+
+    def test_html_answer_is_retried(self):
+        """Число повторов фиксируем числом, а не константой самого клиента."""
+        api = self._api(_FakeResponse(None, ok=False, status=503, text=CLOUDFLARE_HTML))
+        result = api.submit_event({"event": "FSDJump"})
+        self.assertEqual(api._session.post.call_count, 3)
+        self.assertEqual(result["attempts"], 3)
+        self.assertGreater(api.MAX_ATTEMPTS, 1)
+
+    def test_permanent_failure_is_not_retried(self):
+        """Отклонённое событие (msgnum >= 200) повторять бессмысленно."""
+        api = self._api(_FakeResponse({"msgnum": 204, "msg": "Software not found"}))
+        result = api.submit_event({"event": "FSDJump"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(api._session.post.call_count, 1)
+        self.assertIn("204", result["error"])
+
+    def test_recovery_after_transient_failure(self):
+        api = self._api(_FakeResponse(None, ok=False, status=503, text=CLOUDFLARE_HTML))
+        api._session.post.side_effect = [
+            _FakeResponse(None, ok=False, status=503, text=CLOUDFLARE_HTML),
+            _FakeResponse({"msgnum": 100, "msg": "OK"}),
+        ]
+        result = api.submit_event({"event": "FSDJump"})
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(api._session.post.call_count, 2)
+
+    def test_user_agent_is_set(self):
+        """Cloudflare отклоняет дефолтный python-requests — UA обязателен."""
+        import requests
+
+        from edsm_api import EDSMAPI
+        from inara_api import InaraAPI
+
+        for api in (EDSMAPI("key", "CMDR", app_version="2.5.1"),
+                    InaraAPI("key", "CMDR", app_version="2.5.1")):
+            self.assertIsInstance(api._session, requests.Session)
+            agent = api._session.headers.get("User-Agent", "")
+            self.assertIn("2.5.1", agent)
+            self.assertNotIn("python-requests", agent)
+            self.assertEqual(api._session.headers.get("Accept"), "application/json")
+
+    def test_inara_html_answer_is_classified(self):
+        from inara_api import InaraAPI
+
+        api = InaraAPI("key", "CMDR")
+        api._session = mock.MagicMock()
+        api.RETRY_DELAY = 0
+        api._session.post.return_value = _FakeResponse(
+            None, ok=False, status=503, text=CLOUDFLARE_HTML)
+        result = api.submit("addCommanderTravelFSDJump", {"starsystemName": "Kuma"})
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retryable"])
+        self.assertNotIn("<!DOCTYPE", result["error"])
+        self.assertIn("Inara", result["error"])
+        # Inara за тем же Cloudflare, что и EDSM: событие повторяется.
+        self.assertEqual(api._session.post.call_count, 3)
+        self.assertEqual(result["attempts"], 3)
+
+    def test_connection_error_is_retryable(self):
+        import requests
+
+        api = self._api(None)
+        api._session.post.side_effect = requests.Timeout("read timed out")
+        result = api.submit_event({"event": "FSDJump"})
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["retryable"])
+        self.assertIn("нет соединения", result["error"])
+        self.assertNotIn("<", result["error"])
+
+
+class HttpResponseClassifierTests(unittest.TestCase):
+    """Чистые функции разбора плохих ответов."""
+
+    def test_looks_like_html(self):
+        from http_errors import looks_like_html
+
+        self.assertTrue(looks_like_html(CLOUDFLARE_HTML))
+        self.assertTrue(looks_like_html("<html><body>oops</body></html>"))
+        self.assertFalse(looks_like_html('{"msgnum": 100}'))
+        self.assertFalse(looks_like_html(""))
+        self.assertFalse(looks_like_html(None))
+
+    def test_describe_statuses(self):
+        from http_errors import describe_bad_response
+
+        cases = {
+            401: "доступ запрещён",
+            403: "доступ запрещён",
+            404: "не найден",
+            429: "слишком много запросов",
+            500: "ошибка сервера",
+            503: "ошибка сервера",
+        }
+        for status, needle in cases.items():
+            described = describe_bad_response(
+                "EDSM", _FakeResponse(None, ok=False, status=status, text=""))
+            self.assertIn(needle, described["error"], status)
+            self.assertTrue(described["retryable"] or status in (401, 403, 404))
+
+    def test_short_body_hides_html(self):
+        from http_errors import short_body
+
+        self.assertEqual(short_body(_FakeResponse(text=CLOUDFLARE_HTML)), "HTML-страница")
+        self.assertEqual(short_body(_FakeResponse(text="обычная ошибка")), "обычная ошибка")
+
+
+class DispatcherFailureThrottleTests(unittest.TestCase):
+    """Одна недоступность сервиса — не тысячи строк в логе."""
+
+    def _dispatcher(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        dispatcher = ThirdPartyDispatcher()
+        messages = []
+        dispatcher.on_result = lambda service, ok, message: messages.append((ok, message))
+        return dispatcher, messages
+
+    def test_first_failure_is_logged_then_throttled(self):
+        dispatcher, messages = self._dispatcher()
+        for _ in range(10):
+            dispatcher._notify_failure("edsm", "EDSM: ошибка сервера (HTTP 503)")
+        self.assertEqual(len(messages), 1, messages)
+        self.assertFalse(messages[0][0])
+
+    def test_reminder_every_n_failures(self):
+        dispatcher, messages = self._dispatcher()
+        total = dispatcher.FAIL_NOTICE_EVERY * 2 + 1
+        for _ in range(total):
+            dispatcher._notify_failure("edsm", "EDSM: ошибка сервера (HTTP 503)")
+        # 1-я, N-я и 2N-я неудачи.
+        self.assertEqual(len(messages), 3, messages)
+        self.assertIn("неудач подряд", messages[1][1])
+        self.assertIn(str(dispatcher.FAIL_NOTICE_EVERY), messages[1][1])
+
+    def test_recovery_is_reported_once(self):
+        dispatcher, messages = self._dispatcher()
+        for _ in range(3):
+            dispatcher._notify_failure("edsm", "EDSM: ошибка сервера (HTTP 503)")
+        dispatcher._notify_success("edsm")
+        dispatcher._notify_success("edsm")
+        recovery = [m for ok, m in messages if ok]
+        self.assertEqual(len(recovery), 1, messages)
+        self.assertIn("восстановлена", recovery[0])
+        self.assertEqual(dispatcher._fail_streak["edsm"], 0)
+
+    def test_services_are_counted_separately(self):
+        dispatcher, messages = self._dispatcher()
+        dispatcher._notify_failure("edsm", "EDSM: сбой")
+        dispatcher._notify_failure("inara", "Inara: сбой")
+        self.assertEqual(dispatcher._fail_streak["edsm"], 1)
+        self.assertEqual(dispatcher._fail_streak["inara"], 1)
+        self.assertEqual(len(messages), 2)
 
 
 class FleetCarrierDetectionTests(unittest.TestCase):
@@ -428,6 +620,103 @@ class EdsmTransientStateTests(unittest.TestCase):
             dispatcher.submit({"event": "Scan", "timestamp": f"2025-01-01T00:00:{index:02d}Z",
                                "BodyName": f"Sol {index}"}, live=True)
         self.assertLessEqual(len(dispatcher._seen["edsm"]), dispatcher.max_seen)
+
+
+class InaraEventMappingTests(unittest.TestCase):
+    """Поля Inara API: имена из журнала не совпадают с именами Inara.
+
+    Документация: https://inara.cz/elite/inara-api-docs/. Раньше уходили
+    `StarSystem`/`StationName` и не уходили координаты, тело и `shipGameID`,
+    а посадки (Touchdown) не отправлялись вовсе.
+    """
+
+    def _submit(self, event: dict) -> tuple:
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append((event_name, event_data, timestamp))
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        dispatcher.submit(event, live=True)
+        dispatcher.flush(timeout=2)
+        return sent
+
+    def test_dock_sends_coords_body_and_ship(self):
+        sent = self._submit({
+            "event": "Docked", "timestamp": "2025-01-01T00:00:00Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0], "Body": "Kuma 3 a",
+            "StationName": "Hestia Depot", "MarketID": 3951663874,
+            "ShipType": "Type9", "ShipID": 12,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelDock")
+        self.assertEqual(data["starsystemName"], "Kuma")
+        self.assertEqual(data["starsystemCoords"], [1.0, 2.0, 3.0])
+        self.assertEqual(data["starsystemBodyName"], "Kuma 3 a")
+        self.assertEqual(data["stationName"], "Hestia Depot")
+        self.assertEqual(data["marketID"], 3951663874)
+        self.assertEqual(data["shipType"], "Type9")
+        self.assertEqual(data["shipGameID"], 12)
+
+    def test_carrier_jump_sends_station_and_market(self):
+        sent = self._submit({
+            "event": "CarrierJump", "timestamp": "2025-01-01T00:00:01Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0],
+            "StationName": "The Last Word", "MarketID": 3700005632,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelCarrierJump")
+        self.assertEqual(data["stationName"], "The Last Word")
+        self.assertEqual(data["marketID"], 3700005632)
+
+    def test_touchdown_is_sent_as_travel_land(self):
+        """Посадка на стройплощадку — главное событие колонизатора."""
+        sent = self._submit({
+            "event": "Touchdown", "timestamp": "2025-01-01T00:00:02Z",
+            "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0],
+            "Body": "Kuma 3 a", "Latitude": 24.66, "Longitude": -107.5,
+        })
+        name, data, _ = sent[0]
+        self.assertEqual(name, "addCommanderTravelLand")
+        self.assertEqual(data["starsystemName"], "Kuma")
+        self.assertEqual(data["starsystemBodyName"], "Kuma 3 a")
+        self.assertEqual(data["starsystemBodyCoords"], [24.66, -107.5])
+
+    def test_touchdown_without_system_uses_known_position(self):
+        """Touchdown приходит без системы — подставляем известное положение."""
+        from event_dispatch import ThirdPartyDispatcher
+
+        sent = []
+
+        class FakeInara:
+            enabled = True
+
+            def submit(self, event_name, event_data, timestamp=""):
+                sent.append((event_name, event_data))
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(inara_api=FakeInara())
+        dispatcher.submit({"event": "Location", "timestamp": "2025-01-01T00:00:00Z",
+                           "StarSystem": "Kuma", "StarPos": [1.0, 2.0, 3.0]}, live=True)
+        dispatcher.submit({"event": "Touchdown", "timestamp": "2025-01-01T00:00:03Z"}, live=True)
+        dispatcher.flush(timeout=2)
+        land = [item for item in sent if item[0] == "addCommanderTravelLand"]
+        self.assertEqual(len(land), 1)
+        self.assertEqual(land[0][1]["starsystemName"], "Kuma")
+        self.assertEqual(land[0][1]["starsystemCoords"], [1.0, 2.0, 3.0])
+
+    def test_scans_are_not_sent_to_inara(self):
+        """Событий сканирования в Inara API нет."""
+        from event_dispatch import INARA_EVENTS
+
+        for event in ("Scan", "FSSDiscoveryScan", "SAAScanComplete"):
+            self.assertNotIn(event, INARA_EVENTS)
 
 
 if __name__ == "__main__":

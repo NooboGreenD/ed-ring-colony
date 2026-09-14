@@ -4,11 +4,39 @@ Endpoint и формат из SRV Survey:
 - Base URL: https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api
 - Auth header: rcc-key (не Authorization: Bearer)
 - Contribute: Dictionary<string, int> (не JSON с commodity/amount)
+
+Схемы запросов сверены с официальным OpenAPI
+(`https://ravencolonial100-…/openapi/v1.json`): `PUT /api/project` принимает
+схему `ProjectCreate`, где обязательны ровно три поля — `marketId`,
+`systemAddress` и `buildName`. Всё остальное (`buildType`, `systemName`,
+`starPos`, `bodyNum`, `bodyName`, `architectName`, `commodities`, `maxNeed`,
+`commanders`, `colonisationConstructionDepot`, `systemSiteId`, `notes`,
+`isPrimaryPort`, `discordLink`) опционально.
 """
 import requests
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+# Адрес сайта Raven Colonial. Страница проекта открывается как
+# `https://ravencolonial.com/#build={buildId}` — так же её открывает сам
+# SrvSurvey после создания проекта.
+UX_URL = "https://ravencolonial.com"
+
+# Поля, без которых Raven Colonial проект не создаст (схема ProjectCreate).
+REQUIRED_PROJECT_FIELDS = ("marketId", "systemAddress", "buildName")
+
+
+def project_url(build_id: str) -> str:
+    """Ссылка на страницу проекта в Raven Colonial."""
+    return f"{UX_URL}/#build={build_id}"
+
+
+def system_url(system_name: str) -> str:
+    """Ссылка на страницу системы в Raven Colonial."""
+    from urllib.parse import quote
+
+    return f"{UX_URL}/#sys={quote(str(system_name or ''), safe='')}"
 
 
 class RavenColonialAPI:
@@ -118,6 +146,23 @@ class RavenColonialAPI:
         except requests.RequestException as exc:
             return {"ok": False, "error": str(exc)}
 
+    def get_fc_cargo(self, market_id: int) -> dict:
+        """Поимённый груз Fleet Carrier: GET /api/fc/{marketId}/cargo.
+
+        Raven хранит груз авианосца как карту «товар -> тонны» в нижнем
+        регистре (`steel`, а не `Steel` и не `$steel_name;`) — ровно в том
+        виде, в каком его отправляют клиенты через PATCH того же пути.
+        Журнал таких данных не даёт: `CarrierStats` сообщает только общий
+        тоннаж (`SpaceUsage.Cargo`), без разбивки по товарам.
+        """
+        try:
+            market_id = int(market_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        if market_id <= 0:
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        return self._request("GET", f"/fc/{market_id}/cargo")
+
     def contribute(self, build_id: str, cmdr: str, commodities: dict) -> dict:
         """Отправить доставку на проект.
 
@@ -197,12 +242,52 @@ class RavenColonialAPI:
             payload = resp.json()
         except ValueError:
             payload = resp.text[:500]
+        if resp.ok:
+            return {"ok": True, "data": payload, "error": None,
+                    "status": resp.status_code}
         return {
-            "ok": resp.ok,
-            "data": payload if resp.ok else None,
-            "error": None if resp.ok else (payload if isinstance(payload, str) else str(payload))[:500],
+            "ok": False,
+            "data": None,
+            "error": self._describe_error(resp.status_code, payload, method, path),
             "status": resp.status_code,
         }
+
+    @staticmethod
+    def _describe_error(status: int, payload, method: str, path: str) -> str:
+        """Текст ошибки для лога.
+
+        Raven Colonial на многие отказы отвечает пустым телом (204/400/404 без
+        JSON), и раньше в лог уезжала пустая строка, а UI показывал
+        «неизвестная ошибка». Теперь статус расшифровывается, а тело ответа
+        добавляется только если в нём действительно что-то есть.
+        """
+        reasons = {
+            400: "неверный запрос — сервер не принял параметры",
+            401: "ключ RCC не принят (401) — проверьте ключ на сайте Raven Colonial",
+            403: "нет прав на эту операцию (403)",
+            404: "не найдено (404) — проект или командир не существует",
+            405: "метод не поддерживается сервером (405)",
+            409: "конфликт: проект уже в таком состоянии (409)",
+            422: "сервер не принял данные (422)",
+            429: "слишком много запросов (429) — подождите немного",
+            500: "ошибка сервера Raven Colonial (500)",
+            502: "сервис недоступен (502)",
+            503: "сервис временно недоступен (503)",
+            504: "сервер не ответил вовремя (504)",
+        }
+        reason = reasons.get(status)
+        if reason is None:
+            reason = ("ошибка сервера Raven Colonial" if 500 <= status < 600
+                      else "сервер отказал")
+        # Код ответа показываем всегда: по нему Support Raven Colonial
+        # понимает, о чём речь, даже если формулировка окажется неточной.
+        if str(status) not in reason:
+            reason += f" (HTTP {status})"
+        detail = payload if isinstance(payload, str) else (str(payload) if payload else "")
+        detail = detail.strip()
+        if detail and detail.lower() not in ("null", "none", "''", '""'):
+            reason += f": {detail[:300]}"
+        return reason
 
     @staticmethod
     def _esc(value) -> str:
@@ -215,6 +300,59 @@ class RavenColonialAPI:
     def get_project_by_id(self, build_id: str) -> dict:
         """GET /api/project/{buildId} — проект целиком."""
         return self._request("GET", f"/project/{self._esc(build_id)}")
+
+    def get_cmdr_by_key(self, api_key: str = "") -> dict:
+        """GET /api/cmdr/ — чей это ключ.
+
+        Raven Colonial отдаёт по ключу профиль командира, в том числе
+        `displayName` — ровно то имя, под которым командир известен сервису.
+        Это единственный способ узнать имя пилота, имея только ключ RCC:
+        в журнале имя появляется лишь после `LoadGame`, а в настройках
+        пользователь его может не заполнять.
+
+        Ключ можно передать явно (проверка только что введённого ключа),
+        иначе используется текущий.
+        """
+        key = (api_key or self.api_key or "").strip()
+        if not key:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Ключ Raven Colonial (RCC) не задан"}
+        try:
+            resp = self._session.request(
+                "GET",
+                f"{self.base_url}/cmdr/",
+                headers={"rcc-key": key},
+                timeout=15,
+            )
+        except Exception as exc:
+            return {"ok": False, "data": None, "status": 0, "error": str(exc)}
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if not resp.ok:
+            return {
+                "ok": False,
+                "data": None,
+                "status": resp.status_code,
+                "error": ("ключ RCC не принят (401) — проверьте ключ на сайте Raven Colonial"
+                          if resp.status_code == 401
+                          else self._describe_error(resp.status_code, payload, "GET", "/cmdr/")),
+            }
+        return {"ok": True, "data": payload, "error": None, "status": resp.status_code}
+
+    @staticmethod
+    def cmdr_display_name(result: dict) -> str:
+        """Достать имя командира из ответа `get_cmdr_by_key()`."""
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict):
+            for key in ("displayName", "DisplayName", "name", "cmdrName"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        return ""
 
     def get_cmdr_active(self, cmdr: str) -> dict:
         """GET /api/cmdr/{cmdr}/active — активные проекты командира со связями."""
@@ -230,14 +368,57 @@ class RavenColonialAPI:
         """GET /api/cmdr/{cmdr}/primary — текущий основной проект."""
         return self._request("GET", f"/cmdr/{self._esc(cmdr)}/primary")
 
+    # -- v2: данные системы (тела, планы площадок, архитектор) --------------
+    #
+    # Эти методы нужны форме создания проекта: Raven Colonial знает, какие
+    # площадки в системе уже запланированы и кто архитектор системы. Оттуда
+    # берутся `systemSiteId`, `buildType` плана и `architectName` — то, чего
+    # нет в журнале игрока.
+    def get_system_sites(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address}/sites — площадки системы (планы и стройки)."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}/sites")
+
+    def get_system_architect(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address}/architect — архитектор системы."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}/architect")
+
+    def get_system_v2(self, system: str) -> dict:
+        """GET /api/v2/system/{name|address} — система целиком (тела, площадки)."""
+        if not system:
+            return {"ok": False, "data": None, "error": "Не задана система", "status": 0}
+        return self._request("GET", f"/v2/system/{self._esc(system)}")
+
     # -- запись ------------------------------------------------------------
     def create_project(self, project: dict) -> dict:
         """PUT /api/project — создать проект.
 
-        Ожидаемые поля (ProjectCore/ProjectCreate): systemName, buildName,
-        buildType, marketId, systemAddress, starPos, bodyNum, bodyName,
-        factionName, architectName, maxNeed, notes, isPrimaryPort, commodities.
+        Ожидаемые поля (схема ProjectCreate): обязательные `marketId`,
+        `systemAddress`, `buildName`; опциональные `systemName`, `buildType`,
+        `starPos`, `bodyNum`, `bodyName`, `architectName`, `maxNeed`, `notes`,
+        `isPrimaryPort`, `commodities`, `commanders`, `discordLink`,
+        `systemSiteId`, `colonisationConstructionDepot`.
+
+        Обязательные поля проверяются здесь, до запроса: без них Raven
+        отвечает 400, а в логе это выглядит как «неизвестная ошибка».
         """
+        if not self.api_key:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Ключ Raven Colonial (RCC) не задан"}
+        missing = [
+            field for field in REQUIRED_PROJECT_FIELDS
+            if project.get(field) in (None, "", 0)
+        ]
+        if missing:
+            return {
+                "ok": False,
+                "data": None,
+                "status": 0,
+                "error": "Не заполнены обязательные поля: " + ", ".join(missing),
+            }
         body = {key: value for key, value in project.items() if value is not None}
         return self._request("PUT", "/project/", json_body=body)
 
@@ -251,11 +432,29 @@ class RavenColonialAPI:
         return self._request("POST", f"/project/{self._esc(build_id)}/complete")
 
     def set_primary(self, cmdr: str, build_id: str) -> dict:
-        """PUT /api/cmdr/{cmdr}/primary — сделать проект основным."""
-        return self._request("PUT", f"/cmdr/{self._esc(cmdr)}/primary", json_body=str(build_id))
+        """PUT /api/cmdr/{cmdr}/primary/{buildId} — сделать проект основным.
+
+        `buildId` передаётся **в пути**, тело запроса пустое. Раньше сюда
+        отправлялся `PUT /cmdr/{cmdr}/primary` с JSON-строкой в теле — сервер
+        отвечал отказом с пустым телом, и в интерфейсе это выглядело как
+        «неизвестная ошибка».
+        """
+        if not cmdr:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не задано имя командира"}
+        if not build_id:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не выбран проект (пустой buildId)"}
+        return self._request(
+            "PUT", f"/cmdr/{self._esc(cmdr)}/primary/{self._esc(build_id)}"
+        )
 
     def clear_primary(self, cmdr: str) -> dict:
-        return self._request("DELETE", f"/cmdr/{self._esc(cmdr)}/primary")
+        """DELETE /api/cmdr/{cmdr}/primary/ — снять основной проект."""
+        if not cmdr:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не задано имя командира"}
+        return self._request("DELETE", f"/cmdr/{self._esc(cmdr)}/primary/")
 
     def link_cmdr(self, build_id: str, cmdr: str, link: bool = True) -> dict:
         """PUT/DELETE /api/project/{buildId}/link/{cmdr}."""

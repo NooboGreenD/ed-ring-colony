@@ -4,16 +4,16 @@ on:
   push:
     branches:
       - main
-      # Все рабочие ветки агента/сессий собирают EXE и выкладывают его
-      # артефактом прогона. Конкретную ветку можно запустить и вручную
-      # (workflow_dispatch) с флагом upload_release.
+      # Все рабочие ветки агента/сессий собирают EXE и публикуют его
+      # в Releases: main — полноценным релизом, arena/** — prerelease
+      # с суффиксом ветки в теге (иначе ветки перезаписывали бы друг друга).
       - arena/**
   workflow_dispatch:
     inputs:
       upload_release:
-        description: "Upload the EXE to the latest Colonial Helper release"
+        description: "Deprecated: релиз теперь публикуется при каждом push"
         required: false
-        default: false
+        default: true
         type: boolean
 
 jobs:
@@ -21,6 +21,11 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      # Вывод тестов и служебных скриптов на русском: без UTF-8 консоль
+      # раннера (cp1252/cp850) роняет print с UnicodeEncodeError.
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,11 +42,44 @@ jobs:
 
       - name: Validate uploader sources
         run: |
-          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py
+          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py uploader/colonisation.py uploader/carrier.py uploader/updater.py uploader/http_errors.py
 
       - name: Run uploader tests
         run: |
           python -m unittest discover -s uploader/tests -v
+
+      # Версия берётся из colonial_helper.VERSION, тег и признак prerelease —
+      # из имени ветки. Считает это uploader/updater.py, чтобы правила тегов
+      # были покрыты тестами, а не жили в YAML.
+      - name: Prepare release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $version = (python uploader/updater.py --version).Trim()
+          $branch = "$env:GITHUB_REF_NAME"
+          if (-not $version) { throw "Не удалось прочитать VERSION из colonial_helper.py" }
+          if ($branch -eq "main") {
+            $prerelease = "false"
+            $title = "Colonial Helper $version"
+          } else {
+            $prerelease = "true"
+            $title = "Colonial Helper $version ($branch)"
+          }
+          $tag = (python uploader/updater.py --tag --branch $branch).Trim()
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "prerelease=$prerelease" >> $env:GITHUB_OUTPUT
+          "title=$title" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$version tag=$tag prerelease=$prerelease title=$title"
+
+      - name: Build release notes
+        shell: pwsh
+        run: |
+          # Пишем файл из Python (--notes-file, UTF-8): вывод через pipe
+          # шёл в кодировке консоли и русский ченджлог падал.
+          python uploader/updater.py --notes-file release-notes.md --branch "$env:GITHUB_REF_NAME" --commit "$env:GITHUB_SHA"
+          if ($LASTEXITCODE -ne 0) { throw "Не удалось собрать описание релиза" }
+          Get-Content release-notes.md -TotalCount 5
 
       - name: Build EXE with PyInstaller
         run: |
@@ -54,15 +92,19 @@ jobs:
           name: ColonialHelper-Windows
           path: uploader/dist/ColonialHelper.exe
 
-      - name: Upload to Release
-        if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.upload_release == true)
+      # Релиз публикуется при каждом push: тег уже существует — релиз
+      # обновляется (softprops/action-gh-release создаёт или перезаписывает).
+      - name: Publish release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: colonial-helper-latest
-          name: "Colonial Helper (Latest Build)"
-          body: "Автоматическая сборка ColonialHelper.exe"
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.title }}
+          # Без этого релиз помечается веткой по умолчанию (main), даже если
+          # собран из arena/** — в списке релизов видно не ту ветку.
+          target_commitish: ${{ github.sha }}
+          body_path: release-notes.md
           files: uploader/dist/ColonialHelper.exe
           draft: false
-          prerelease: false
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

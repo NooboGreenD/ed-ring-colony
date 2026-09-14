@@ -237,7 +237,18 @@ def parse_events(
                 market_id = ev.get("MarketID", 0)
                 contributions = ev.get("Contributions", [])
                 for contrib in contributions:
-                    name = contrib.get("Name_Localised") or _normalize_name(contrib.get("Name", "Unknown"))
+                    # Берём `Name` — это FDName-токен («$liquidoxygen_name;»),
+                    # из которого _normalize_name даёт каноническое имя, какого
+                    # ждёт Raven Colonial. `Name_Localised` («Liquid oxygen»)
+                    # языкозависим и содержит пробелы: после normalize_commodity
+                    # он превращается в «liquid oxygen», а не в «liquidoxygen»,
+                    # и доставка не зачитывается. Локализованное имя оставляем
+                    # только как запасной вариант, когда токена в событии нет.
+                    name = (
+                        _normalize_name(contrib.get("Name") or "")
+                        or contrib.get("Name_Localised")
+                        or "Unknown"
+                    )
                     amount = int(contrib.get("Amount", 0) or 0)
                     if amount <= 0:
                         continue

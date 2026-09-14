@@ -8,7 +8,14 @@ from pathlib import Path
 from collections import deque
 
 from ship_tracker import decode_status_flags
-from game_monitor import GameMonitor, GameState
+from game_monitor import (
+    GameMonitor,
+    GameState,
+    _is_own_window,
+    _win32_find_game_window,
+    _win32_window_pid,
+)
+from exobiology import estimate_value, format_credits
 from hotkeys import HotkeyManager
 
 
@@ -16,32 +23,22 @@ from hotkeys import HotkeyManager
 #  Win32 API helpers для привязки оверлея к окну игры
 # ============================================================
 def _get_ed_hwnd() -> Optional[int]:
-    """Найти HWND окна Elite Dangerous."""
+    """Найти HWND окна Elite Dangerous.
+
+    Здесь был свой `EnumWindows` + `GetWindowTextW` по всем видимым окнам —
+    включая главное окно Colonial Helper и окна оверлея. `GetWindowTextW`
+    для окна собственного процесса отправляет сообщение его потоку (главному
+    потоку Tk) и ждёт ответа; этот вызов идёт из фонового потока
+    `_update_loop` раз в секунду. Как только поток Tk оказывался занят (а он
+    раз в секунду берёт `GameMonitor._lock`), оба потока вставали навсегда —
+    приложение намертво зависало сразу после включения оверлея.
+
+    Теперь поиск один и он в `game_monitor`: свои окна пропускаются по PID
+    до чтения заголовка.
+    """
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        EnumWindows = user32.EnumWindows
-        EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.POINTER(ctypes.c_int))
-        GetWindowTextW = user32.GetWindowTextW
-        GetWindowTextLengthW = user32.GetWindowTextLengthW
-        IsWindowVisible = user32.IsWindowVisible
-
-        ed_hwnd = []
-
-        def foreach_window(hwnd, _):
-            if IsWindowVisible(hwnd):
-                length = GetWindowTextLengthW(hwnd)
-                if length > 0:
-                    buf = ctypes.create_unicode_buffer(length + 1)
-                    GetWindowTextW(hwnd, buf, length + 1)
-                    title = buf.value
-                    if "Elite - Dangerous" in title or "Elite Dangerous" in title:
-                        ed_hwnd.append(hwnd)
-                        return False
-            return True
-
-        EnumWindows(EnumWindowsProc(foreach_window), 0)
-        return ed_hwnd[0] if ed_hwnd else None
+        hwnd, _title = _win32_find_game_window()
+        return hwnd
     except Exception:
         return None
 
@@ -59,6 +56,16 @@ def _is_ed_foreground() -> bool:
         ed = _get_ed_hwnd()
         if ed and fg == ed:
             return True
+        # Своё окно в фокусе — это не игра. Заголовок при этом не читаем:
+        # GetWindowTextW для окна собственного процесса ждёт ответ главного
+        # потока Tk (тот самый дедлок, что и в _get_ed_hwnd).
+        try:
+            import os
+
+            if _is_own_window(_win32_window_pid(user32, fg), os.getpid()):
+                return False
+        except Exception:
+            pass
         # Fallback: проверяем по заголовку foreground окна
         length = user32.GetWindowTextLengthW(fg)
         if length > 0:
@@ -89,26 +96,68 @@ def _hwnd_of(window) -> Optional[int]:
         return None
 
 
-def _set_click_through(hwnd: int, enabled: bool) -> bool:
+#: Флаги Win32 для режима «клик насквозь».
+GWL_EXSTYLE = -20
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_LAYERED = 0x00080000
+LWA_ALPHA = 0x00000002
+SWP_FRAMECHANGED = 0x0020
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+
+
+def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0) -> bool:
     """Сделать окно прозрачным для мыши (WS_EX_TRANSPARENT | WS_EX_LAYERED).
 
     Нужен именно Win32: tkinter не умеет «клик насквозь». Окно остаётся
     видимым и поверх игры, но все щелчки уходят в игру.
+
+    Тонкости, без которых окно мигает при редактировании:
+
+    * после смены расширенного стиля Windows требует
+      ``SetWindowPos(..., SWP_FRAMECHANGED)`` — без него новое оформление
+      применяется «когда получится», и окно дёргается;
+    * ``WS_EX_LAYERED`` снимаем симметрично: раньше он оставался навсегда,
+      и любое последующее действие с окном (``lift()``, смена размера,
+      перетаскивание) пересобирало слоистое окно — отсюда мерцание;
+    * включив ``WS_EX_LAYERED``, сразу задаём альфу через
+      ``SetLayeredWindowAttributes``: слоистое окно без атрибутов Windows
+      считает полностью прозрачным, и блок на долю секунды пропадал.
+      При alpha < 1.0 слой нужен самому Tk, поэтому при выключении
+      «клик насквозь» его не трогаем.
     """
     if not hwnd:
         return False
     try:
         import ctypes
         user32 = ctypes.windll.user32
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        # На 64-битных сборках стили живут в LONG_PTR.
+        get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
+        set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        try:
+            transparency = max(0.0, min(1.0, float(alpha)))
+        except (TypeError, ValueError):
+            transparency = 1.0
+        style = get_style(hwnd, GWL_EXSTYLE)
         if enabled:
-            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
+            new_style = style | WS_EX_TRANSPARENT | WS_EX_LAYERED
+            set_style(hwnd, GWL_EXSTYLE, new_style)
+            # Слоистое окно обязано иметь атрибуты, иначе оно не рисуется.
+            user32.SetLayeredWindowAttributes(
+                hwnd, 0, int(round(transparency * 255)), LWA_ALPHA
+            )
         else:
-            style &= ~WS_EX_TRANSPARENT
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            new_style = style & ~WS_EX_TRANSPARENT
+            if transparency >= 1.0:
+                new_style &= ~WS_EX_LAYERED
+            set_style(hwnd, GWL_EXSTYLE, new_style)
+        if new_style != style:
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
         return True
     except Exception:
         return False
@@ -154,17 +203,22 @@ BLOCK_LABELS = {
     "session": "SESSION — сессия",
     "events": "EVENTS — события",
     "exobio": "EXOBIO — экзобиология",
+    "carrier": "CARRIER — авианосец",
 }
 
 #: Размеры по умолчанию (используются и «Сбросить позиции», и пресетами).
+#: Ширина и высота обязаны совпадать с <ключ>_width/_height в DEFAULT_SETTINGS:
+#: иначе «Сбросить позиции» и пресет M возвращают блоку другой размер, чем у
+#: свежей установки. Блоки разложены в четыре колонки без перекрытий.
 DEFAULT_BLOCK_POSITIONS = {
     "route": (50, 50, 280, 160),
     "status": (50, 220, 280, 220),
     "ship": (50, 450, 360, 420),
-    "cargo": (400, 450, 300, 340),
-    "session": (400, 50, 320, 300),
-    "events": (730, 50, 320, 260),
-    "exobio": (1060, 50, 330, 360),
+    "cargo": (430, 450, 300, 340),
+    "session": (430, 50, 320, 300),
+    "events": (770, 50, 320, 260),
+    "exobio": (1120, 50, 360, 620),
+    "carrier": (770, 330, 330, 300),
 }
 
 #: Пресеты размера: множитель к стандартному размеру блока.
@@ -181,6 +235,7 @@ SIZE_PRESET_LABELS = {
 AUTO_RULES = (
     "always", "never", "game_focused", "docked", "in_space",
     "in_srv", "on_foot", "has_cargo", "has_bio", "has_route",
+    "at_carrier",
 )
 AUTO_RULE_LABELS = {
     "always": "всегда",
@@ -193,10 +248,16 @@ AUTO_RULE_LABELS = {
     "has_cargo": "когда есть груз",
     "has_bio": "когда есть биосигналы",
     "has_route": "когда задан маршрут",
+    "at_carrier": "когда вы на авианосце",
 }
 
 #: Через сколько секунд без событий прятать HUD; 0 — не прятать.
 IDLE_TIMEOUTS = (0, 30, 60, 120, 300, 600)
+
+#: Как часто на всякий случай переподнимать блоки в Z-order (секунды).
+#: Раз в секунду (частота цикла обновления) — слишком часто: Windows
+#: пересобирает layered-окна, и HUD заметно мерцает при редактировании.
+ZORDER_REFRESH_SECONDS = 15.0
 
 
 def preset_size(key: str, preset: str) -> Optional[Tuple[int, int]]:
@@ -270,6 +331,8 @@ def auto_rule_matches(rule: str, context: dict) -> bool:
         return int(context.get("bio_signals") or 0) > 0
     if rule == "has_route":
         return int(context.get("route_total") or 0) > 0
+    if rule == "at_carrier":
+        return bool(context.get("at_carrier"))
     return True
 
 
@@ -476,6 +539,16 @@ class OverlayWindow:
         self.window.configure(bg=COLOR_BG)
         self._hwnd: Optional[int] = None
         self._is_topmost = True
+        # Меню шапки держим в атрибутах: локальный tk.Menu уничтожился бы под
+        # открытым граббером мыши и приложение перестало бы отвечать на клики.
+        self._edit_menu: Optional[tk.Menu] = None
+        self._edit_submenus: list = []
+        # Какой режим «клик насквозь» реально применён к окну. None — ещё не
+        # применяли. Нужен, чтобы не дёргать Win32-стили по десять раз в
+        # секунду: каждая такая правка пересобирает окно (мерцание).
+        self._applied_through: Optional[bool] = None
+        # Идёт ли сейчас перетаскивание/ресайз: пока да, Z-order не трогаем.
+        self._dragging = False
 
         # Главный контейнер с границей
         self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=1)
@@ -506,8 +579,10 @@ class OverlayWindow:
         # Drag area
         self.header.bind("<Button-1>", self._on_drag_start)
         self.header.bind("<B1-Motion>", self._on_drag_motion)
+        self.header.bind("<ButtonRelease-1>", self._on_drag_release)
         self.title_label.bind("<Button-1>", self._on_drag_start)
         self.title_label.bind("<B1-Motion>", self._on_drag_motion)
+        self.title_label.bind("<ButtonRelease-1>", self._on_drag_release)
 
         # Content
         self.content = tk.Frame(self.outer, bg=COLOR_PANEL)
@@ -518,6 +593,7 @@ class OverlayWindow:
         self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
         self.resize_handle.bind("<Button-1>", self._on_resize_start)
         self.resize_handle.bind("<B1-Motion>", self._on_resize_motion)
+        self.resize_handle.bind("<ButtonRelease-1>", self._on_drag_release)
 
         self._on_move_callback: Optional[Callable] = None
         self._on_resize_callback: Optional[Callable] = None
@@ -600,12 +676,20 @@ class OverlayWindow:
                 pass
         self._applied_font = (family, size)
 
-    def _sync_click_through(self):
-        """Применить режим «клик насквозь» (после создания окна)."""
+    def _sync_click_through(self, force: bool = False):
+        """Применить режим «клик насквозь» (после создания окна).
+
+        Если состояние не менялось — ничего не делаем. Раньше каждая правка
+        стиля через Win32 пересобирала окно: при редактировании (перетаскивание,
+        ресайз, смена прозрачности) это выглядело как мерцание блока.
+        """
+        if not force and self._applied_through == self._click_through:
+            return
         hwnd = self._hwnd or _hwnd_of(self.window)
         if hwnd:
             self._hwnd = hwnd
-        _set_click_through(hwnd, self._click_through)
+        if _set_click_through(hwnd, self._click_through, self._alpha):
+            self._applied_through = self._click_through
 
     def set_click_through(self, enabled: bool, save_key: Optional[str] = None):
         """Включить/выключить клик-сквозь.
@@ -613,9 +697,11 @@ class OverlayWindow:
         `save_key` — ключ настройки: свой у блока (`{key}_click_through`)
         или общий (`click_through`). None — в настройки не пишем.
         """
-        self._click_through = bool(enabled)
+        enabled = bool(enabled)
+        changed = self._click_through != enabled
+        self._click_through = enabled
         if save_key:
-            self.settings[save_key] = bool(enabled)
+            self.settings[save_key] = enabled
         try:
             self.through_btn.config(
                 text=">" if self._click_through else "<",
@@ -623,8 +709,9 @@ class OverlayWindow:
             )
         except Exception:
             pass
-        self.window.after_idle(self._sync_click_through)
-        self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
+        if changed:
+            self.window.after_idle(self._sync_click_through)
+            self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
 
     def _toggle_click_through(self):
         """Переключатель «клик-сквозь» из меню шапки."""
@@ -696,7 +783,32 @@ class OverlayWindow:
         self.header_indicator.config(bg=color)
         self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
 
+    def _destroy_edit_menu(self):
+        """Снять и уничтожить меню шапки, если оно ещё живо.
+
+        Меню ОБЯЗАТЕЛЬНО держим в атрибуте. Локальный `tk.Menu` уничтожается
+        сборщиком сразу после возврата из `_show_edit_menu`, а Tk к этому
+        моменту уже забрал граббер мыши — в результате ни одно окно
+        приложения больше не получало клики, и программа «зависала»
+        (помогали только снятие процесса или Escape).
+        """
+        for submenu in getattr(self, "_edit_submenus", None) or []:
+            try:
+                submenu.destroy()
+            except Exception:
+                pass
+        self._edit_submenus = []
+        menu = getattr(self, "_edit_menu", None)
+        self._edit_menu = None
+        if menu is not None:
+            try:
+                menu.destroy()
+            except Exception:
+                pass
+
     def _show_edit_menu(self):
+        # Повторный клик по «*» не должен оставлять предыдущее меню висеть.
+        self._destroy_edit_menu()
         menu = tk.Menu(self.window, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
                        activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT,
                        borderwidth=1, relief="solid")
@@ -741,7 +853,14 @@ class OverlayWindow:
                 command=lambda v=value: self._set_own_font(v),
             )
         menu.add_cascade(label="Font size", menu=font_menu)
-        menu.post(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
+
+        # Ссылки храним до закрытия меню (см. _destroy_edit_menu).
+        self._edit_menu = menu
+        self._edit_submenus = [anchor_menu, alpha_menu, font_menu]
+        # `tk_popup`, а не `post`: Tk сам снимает граббер и прячет меню после
+        # выбора пункта или клика мимо. У `post` этого нет — по документации
+        # Tk закрыть такое меню обязано приложение, иначе граббер остаётся.
+        menu.tk_popup(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
 
     def _set_own_font(self, size: Optional[int]):
         """Свой размер шрифта блока (None — общий)."""
@@ -778,8 +897,19 @@ class OverlayWindow:
             self._on_move_callback(int(x), int(y))
 
     def size(self) -> Tuple[int, int]:
-        """Фактический размер окна (с откатом к сохранённому, если Tk молчит)."""
+        """Фактический размер окна (с откатом к сохранённому, если Tk молчит).
+
+        `update_idletasks()` зовём только когда Tk ещё не знает размер:
+        принудительный проход по отложенным задачам внутри обработчика
+        события (ползунок «отступ», смена якоря) перерисовывает окно, а при
+        раскладке восьми блоков это восемь перерисовок на каждый тик —
+        ровно то мерцание, на которое жаловались при редактировании.
+        """
         try:
+            w = self.window.winfo_width()
+            h = self.window.winfo_height()
+            if w > 1 and h > 1:
+                return int(w), int(h)
             self.window.update_idletasks()
             w = self.window.winfo_width()
             h = self.window.winfo_height()
@@ -860,8 +990,17 @@ class OverlayWindow:
     def _on_drag_start(self, event):
         if self._locked:
             return
+        self._dragging = True
         self._drag_data["x"] = event.x_root - self.window.winfo_x()
         self._drag_data["y"] = event.y_root - self.window.winfo_y()
+
+    def _on_drag_release(self, event=None):
+        """Кнопка отпущена: перетаскивание/ресайз закончились.
+
+        Пока флаг поднят, OverlayManager не поднимает окно в Z-order —
+        иначе ежесекундный lift() борется с курсором и блок мигает.
+        """
+        self._dragging = False
 
     def _on_drag_motion(self, event):
         if self._locked:
@@ -878,6 +1017,7 @@ class OverlayWindow:
     def _on_resize_start(self, event):
         if self._locked:
             return
+        self._dragging = True
         self._resize_data["x"] = event.x_root
         self._resize_data["y"] = event.y_root
         self._resize_data["w"] = self.window.winfo_width()
@@ -909,6 +1049,16 @@ class OverlayWindow:
             self.window.attributes("-alpha", alpha)
         except Exception:
             pass
+        # У слоистого окна (режим «клик насквозь») альфу задаём мы сами через
+        # SetLayeredWindowAttributes, поэтому после смены прозрачности режим
+        # надо применить заново — иначе блок останется полупрозрачным на глаз
+        # не тем, каким его выставили.
+        if self._click_through:
+            self._applied_through = None
+            try:
+                self.window.after_idle(self._sync_click_through)
+            except Exception:
+                pass
 
     def set_topmost(self, topmost: bool):
         """Установить/снять topmost через tkinter (безопасно для overrideredirect)."""
@@ -930,6 +1080,8 @@ class OverlayWindow:
             self.show()
 
     def destroy(self):
+        # Недоуничтоженное меню оставляет граббер — снимаем его первыми.
+        self._destroy_edit_menu()
         self.window.destroy()
 
 
@@ -1497,8 +1649,16 @@ class CargoOverlay(OverlayWindow):
         self.cargo_canvas.create_window((0, 0), window=self.cargo_inner, anchor=tk.NW, width=270)
         self.cargo_inner.bind("<Configure>", lambda e: self.cargo_canvas.configure(scrollregion=self.cargo_canvas.bbox("all")))
 
+        self._cargo_font = (ff, fs - 1)
+        self._cargo_font_bold = (ff, fs - 1, "bold")
+        self._cargo_icon_font = (ff, 8)
         self.empty_label = tk.Label(self.cargo_inner, text="[ Empty hold ]", font=(ff, fs), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
         self.empty_label.pack(pady=30)
+        # Пул строк: виджеты создаются один раз и дальше только меняют текст.
+        # Пересоздание всего списка на каждое обновление выглядело как
+        # мигание — та же ошибка, что была в блоке CARRIER.
+        self._cargo_pool: list = []
+        self._cargo_order: list = []
 
     def update_cargo(self, data: dict):
         total = data.get("cargo_count", 0)
@@ -1512,65 +1672,411 @@ class CargoOverlay(OverlayWindow):
         self.cargo_bar_fill.config(width=bar_width)
         self.cargo_bar_fill.config(bg=COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT))
 
-        inventory = data.get("inventory", [])
-        for widget in self.cargo_inner.winfo_children():
-            widget.destroy()
-
-        if not inventory:
-            self.empty_label = tk.Label(
-                self.cargo_inner, text="[ Empty hold ]",
-                font=(self.settings.get("font_family", "Consolas"), self.settings.get("font_size", 10)),
-                fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
-            )
-            self.empty_label.pack(pady=30)
-        else:
-            ff = self.settings.get("font_family", "Consolas")
-            fs = self.settings.get("font_size", 10)
-            for item in inventory:
-                name = item.get("Name_Localised") or item.get("Name", "Unknown")
-                count = item.get("Count", 0)
-                stolen = item.get("Stolen", 0)
-
-                row = tk.Frame(self.cargo_inner, bg=COLOR_PANEL)
-                row.pack(fill=tk.X, pady=2)
-
-                icon = "!" if stolen > 0 else "-"
-                icon_color = COLOR_RED_TEXT if stolen > 0 else COLOR_ACCENT
-
-                tk.Label(row, text=icon, font=(ff, 8), fg=icon_color, bg=COLOR_PANEL, width=2).pack(side=tk.LEFT)
-                tk.Label(row, text=f"{name[:22]}", font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W, width=22).pack(side=tk.LEFT)
-
-                count_text = f"{count:>4}"
-                if stolen > 0:
-                    count_text += f" ({stolen} stl)"
-
-                tk.Label(row, text=count_text, font=(ff, fs - 1, "bold"), fg=COLOR_ACCENT if stolen > 0 else COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.E).pack(side=tk.RIGHT)
+        self._render_cargo_rows(data.get("inventory", []))
 
         self.cargo_inner.update_idletasks()
         self.cargo_canvas.configure(scrollregion=self.cargo_canvas.bbox("all"))
+
+    # -- список трюма --------------------------------------------------------
+    def _make_cargo_row(self) -> dict:
+        frame = tk.Frame(self.cargo_inner, bg=COLOR_PANEL)
+        icon = tk.Label(frame, text="-", font=self._cargo_icon_font, fg=COLOR_ACCENT,
+                        bg=COLOR_PANEL, width=2)
+        icon.pack(side=tk.LEFT)
+        name = tk.Label(frame, text="", font=self._cargo_font, fg=COLOR_TEXT,
+                        bg=COLOR_PANEL, anchor=tk.W, width=22)
+        name.pack(side=tk.LEFT)
+        count = tk.Label(frame, text="", font=self._cargo_font_bold, fg=COLOR_TEXT,
+                         bg=COLOR_PANEL, anchor=tk.E)
+        count.pack(side=tk.RIGHT)
+        return {"frame": frame, "icon": icon, "name": name, "count": count}
+
+    def _render_cargo_rows(self, inventory: list):
+        """Обновить список трюма, переиспользуя виджеты."""
+        inventory = list(inventory or [])
+
+        if not inventory:
+            if self._cargo_order:
+                for entry in self._cargo_pool:
+                    entry["frame"].pack_forget()
+                self._cargo_order = []
+            self.empty_label.pack(pady=30)
+            return
+
+        self.empty_label.pack_forget()
+        while len(self._cargo_pool) < len(inventory):
+            self._cargo_pool.append(self._make_cargo_row())
+
+        # Переупаковываем только когда состав или порядок изменились: pack()
+        # уже упакованного виджета не переставляет его, а лишняя переупаковка
+        # на каждом тике — это перерасчёт геометрии и мигание.
+        order = [str(item.get("Name") or item.get("Name_Localised") or index)
+                 for index, item in enumerate(inventory)]
+        if order != self._cargo_order:
+            for entry in self._cargo_pool:
+                entry["frame"].pack_forget()
+            for index in range(len(inventory)):
+                self._cargo_pool[index]["frame"].pack(fill=tk.X, pady=2)
+            self._cargo_order = order
+
+        for index, item in enumerate(inventory):
+            entry = self._cargo_pool[index]
+            name = item.get("Name_Localised") or item.get("Name", "Unknown")
+            count = int(item.get("Count") or 0)
+            stolen = int(item.get("Stolen") or 0)
+
+            entry["icon"].config(text="!" if stolen > 0 else "-",
+                                 fg=COLOR_RED_TEXT if stolen > 0 else COLOR_ACCENT)
+            entry["name"].config(text=f"{name[:22]}")
+            count_text = f"{count:>4}"
+            if stolen > 0:
+                count_text += f" ({stolen} stl)"
+            entry["count"].config(text=count_text,
+                                  fg=COLOR_ACCENT if stolen > 0 else COLOR_TEXT)
+
+
+# ============================================================
+#  CarrierOverlay — груз на авианосце
+# ============================================================
+class CarrierOverlay(OverlayWindow):
+    """Груз Fleet Carrier: сколько завезено и сколько осталось завезти.
+
+    Слева — тоннаж из `CarrierStats` (достоверный), справа список товаров:
+    сколько лежит на борту и сколько ещё не хватает до потребности
+    стройплощадки колонизации. Данные собирает `carrier.CarrierTracker`.
+    """
+
+    #: Колонки списка товаров: (заголовок, ширина в символах, выравнивание).
+    #: Спецификация общая для шапки и для строк: раньше у шапки был свой
+    #: набор шири́н и свой размер шрифта, поэтому заголовки разъезжались с
+    #: цифрами. Порядок совпадает с порядком ячеек в строке.
+    COLUMNS = (
+        ("Товар", 18, tk.W),
+        ("на борту", 9, tk.E),
+        ("нужно", 7, tk.E),
+        ("ост.", 6, tk.E),
+    )
+    #: Ключи ячеек строки в том же порядке, что и `COLUMNS`.
+    CELL_KEYS = ("name", "board", "need", "tail")
+    #: Номера колонок, которые печатаем жирным (числа важнее подписей).
+    BOLD_COLUMNS = (1, 3)
+
+    def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
+        super().__init__(
+            master, "CARRIER",
+            settings.get("carrier_x", 1060), settings.get("carrier_y", 430),
+            settings.get("carrier_width", 330), settings.get("carrier_height", 300),
+            settings, "carrier",
+        )
+        ff = settings.get("font_family", "Consolas")
+        fs = settings.get("font_size", 10)
+
+        header = tk.Frame(self.content, bg=COLOR_PANEL)
+        header.pack(fill=tk.X, pady=(4, 0))
+        self.name_label = tk.Label(header, text="Fleet Carrier", font=(ff, fs + 1, "bold"),
+                                   fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
+        self.name_label.pack(side=tk.LEFT)
+        self.callsign_label = tk.Label(header, text="", font=(ff, fs - 1),
+                                       fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E)
+        self.callsign_label.pack(side=tk.RIGHT)
+
+        self.total_label = tk.Label(self.content, text="— / — t", font=(ff, fs),
+                                    fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.total_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.cargo_bar_bg = tk.Frame(self.content, bg=COLOR_LINE, height=6)
+        self.cargo_bar_bg.pack(fill=tk.X, pady=(4, 2))
+        self.cargo_bar_fill = tk.Frame(self.cargo_bar_bg, bg=COLOR_ACCENT, height=6, width=0)
+        self.cargo_bar_fill.place(x=0, y=0)
+
+        self.detail_label = tk.Label(self.content, text="", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT)
+        self.detail_label.pack(fill=tk.X, pady=(0, 2))
+
+        # Чей список материалов показан: проект, отмеченный основным во
+        # вкладке «Колонизатор», или стройплощадка из журнала.
+        self.project_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=300)
+        self.project_label.pack(fill=tk.X, pady=(2, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=2)
+
+        # Список товаров. Шапка и canvas живут в одном контейнере, а ширина
+        # внутреннего фрейма canvas подгоняется под реальную ширину canvas
+        # (`_on_canvas_resize`) — только так заголовки колонок стоят ровно
+        # над цифрами. Полоса прокрутки вынесена в отдельный столбец справа,
+        # иначе она съедала ширину у строк, но не у шапки.
+        self._row_font = (ff, fs - 1)
+        self._row_font_bold = (ff, fs - 1, "bold")
+
+        list_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        list_frame.pack(fill=tk.BOTH, expand=True)
+        rail = tk.Frame(list_frame, bg=COLOR_PANEL)
+        rail.pack(side=tk.RIGHT, fill=tk.Y)
+        self.columns = tk.Frame(list_frame, bg=COLOR_PANEL)
+        self.columns.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(self.columns, bg=COLOR_PANEL)
+        header.pack(fill=tk.X, pady=(0, 1))
+        for index, (text, width, anchor) in enumerate(self.COLUMNS):
+            # Шрифт заголовка обязан совпадать со шрифтом ячейки под ним:
+            # `width` у tk.Label измеряется в символах средней ширины ДАННОГО
+            # шрифта, поэтому у жирного и обычного начертания одно и то же
+            # width даёт разную ширину в пикселях. На моноширинном Consolas
+            # этого не видно, а на Segoe UI или Arial колонки разъезжаются.
+            font = self._row_font_bold if index in self.BOLD_COLUMNS else self._row_font
+            tk.Label(header, text=text, font=font, fg=COLOR_TEXT_MUTED,
+                     bg=COLOR_PANEL, anchor=anchor, width=width).grid(
+                row=0, column=index, sticky="ew" if anchor == tk.W else "e")
+        header.grid_columnconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(self.columns, bg=COLOR_PANEL, highlightthickness=0, height=150)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+        scrollbar = tk.Scrollbar(rail, orient=tk.VERTICAL, command=self.canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.inner = tk.Frame(self.canvas, bg=COLOR_PANEL)
+        self._inner_window = self.canvas.create_window((0, 0), window=self.inner, anchor=tk.NW)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+
+        # Пул строк: виджеты создаются один раз и дальше только меняют текст.
+        self._row_pool: list = []
+        self._row_order: list = []
+        self._empty_label: Optional[tk.Label] = None
+
+        self.summary_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT)
+        self.summary_label.pack(fill=tk.X, pady=(2, 4))
+
+        self.update_carrier({})
+
+    def update_carrier(self, data: Optional[dict]):
+        """Обновить блок. `data` — `CarrierState.get_state_dict(need)`."""
+        data = data or {}
+        ff = self.settings.get("font_family", "Consolas")
+        fs = self.settings.get("font_size", 10)
+
+        name = str(data.get("name") or "").strip()
+        self.name_label.config(text=name or "Fleet Carrier")
+        callsign = str(data.get("callsign") or "").strip()
+        system = str(data.get("system_name") or "").strip()
+        self.callsign_label.config(text=callsign or system)
+
+        stored = int(data.get("stored") or 0)
+        capacity = int(data.get("cargo_capacity") or 0)
+        pct = int(data.get("fill_percent") or 0)
+        stats_seen = bool(data.get("stats_seen"))
+
+        if stats_seen and capacity > 0:
+            self.total_label.config(text=f"{stored} / {capacity} t")
+            self.cargo_bar_fill.config(width=int((pct / 100) * 300))
+            self.cargo_bar_fill.config(
+                bg=COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT)
+            )
+        else:
+            # Без CarrierStats тоннаж неизвестен: показываем только учтённое
+            # поимённо и честно пишем, откуда цифра.
+            tracked = int(data.get("tracked_total") or 0)
+            self.total_label.config(
+                text=f"{tracked} t (учтено по журналу)" if tracked else "Тоннаж неизвестен"
+            )
+            self.cargo_bar_fill.config(width=0)
+
+        details = []
+        if stats_seen:
+            details.append(f"свободно {int(data.get('free') or 0)} t")
+            if int(data.get("reserved") or 0):
+                details.append(f"резерв {int(data.get('reserved') or 0)} t")
+        if bool(data.get("pending_decommission")):
+            details.append("списывается!")
+        if bool(data.get("at_carrier")):
+            details.append("вы на борту")
+        self.detail_label.config(text="  ·  ".join(details))
+
+        rows = list(data.get("commodities") or [])
+        self._render_rows(rows)
+
+        # Чей список материалов показан.
+        need_label = str(data.get("need_label") or "").strip()
+        need_source = str(data.get("need_source") or "").strip()
+        need_total = int(data.get("need_total") or 0)
+        if need_label and need_total > 0:
+            kind = "Проект (основной)" if need_source == "project" else "Стройплощадка"
+            self.project_label.config(text=f"{kind}: {need_label}\nнужно {need_total} t")
+        elif need_label:
+            self.project_label.config(text=f"Проект: {need_label} · потребность закрыта")
+        else:
+            self.project_label.config(
+                text="Проект не выбран — отметьте основной во вкладке «Колонизатор»")
+
+        tracked_total = int(data.get("tracked_total") or 0)
+        delivered_total = int(data.get("delivered_total") or 0)
+        if need_total > 0:
+            left = sum(int(r.get("remaining") or 0) for r in rows)
+            have = sum(int(r.get("amount") or 0) for r in rows)
+            summary = f"На борту {have} / {need_total} t · осталось {left} t"
+            color = COLOR_GREEN_TEXT if left == 0 else COLOR_CYAN
+        elif stats_seen:
+            summary = f"На борту {stored} t · свободно {int(data.get('free') or 0)} t"
+            color = COLOR_ACCENT
+        else:
+            summary = ""
+            color = COLOR_CYAN
+
+        # Откуда цифры по товарам: снимок Raven Colonial видит груз всех
+        # командиров, локальный учёт — только ваши переводы из журнала.
+        if bool(data.get("remote_seen")):
+            source = "груз: Raven Colonial"
+        elif tracked_total or delivered_total:
+            source = "груз: по журналу (только ваши перевозки)"
+        else:
+            source = ""
+        if delivered_total and need_total:
+            source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
+        if source:
+            summary = f"{summary}\n{source}" if summary else source
+        self.summary_label.config(text=summary, fg=color)
+
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    # -- список товаров ----------------------------------------------------
+    def _on_canvas_resize(self, event):
+        """Подогнать внутренний фрейм под ширину canvas.
+
+        Без этого строки оставались фиксированными 300 px, а шапка занимала
+        всю ширину блока — заголовки колонок не совпадали с цифрами.
+        """
+        try:
+            width = int(getattr(event, "width", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        if width > 1:
+            self.canvas.itemconfigure(self._inner_window, width=width)
+
+    def _make_row(self) -> dict:
+        """Одна строка списка: тот же грид и те же ширины, что и у шапки."""
+        frame = tk.Frame(self.inner, bg=COLOR_PANEL)
+        cells = {}
+        for index, (_text, width, anchor) in enumerate(self.COLUMNS):
+            font = self._row_font_bold if index in self.BOLD_COLUMNS else self._row_font
+            cell = tk.Label(frame, text="", font=font, fg=COLOR_TEXT,
+                            bg=COLOR_PANEL, anchor=anchor, width=width)
+            cell.grid(row=0, column=index, sticky="ew" if anchor == tk.W else "e")
+            cells[self.CELL_KEYS[index]] = cell
+        frame.grid_columnconfigure(0, weight=1)
+        return {"frame": frame, "cells": cells}
+
+    def _render_rows(self, rows: list):
+        """Обновить список, переиспользуя виджеты.
+
+        Прежний код уничтожал и создавал заново все строки на каждое
+        обновление — именно это выглядело как мерцание текста.
+        """
+        if self._empty_label is None:
+            self._empty_label = tk.Label(
+                self.inner,
+                text="[ Нет данных по товарам ]\nОткройте Carrier Management\n"
+                     "или пристыкуйтесь к авианосцу",
+                font=self._row_font, fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, justify=tk.LEFT,
+            )
+
+        if not rows:
+            if self._row_order:
+                for entry in self._row_pool:
+                    entry["frame"].pack_forget()
+                self._row_order = []
+            self._empty_label.pack(pady=18, anchor=tk.W)
+            return
+
+        self._empty_label.pack_forget()
+        while len(self._row_pool) < len(rows):
+            self._row_pool.append(self._make_row())
+
+        # Переупаковываем только когда состав или порядок строк изменились:
+        # pack() уже упакованного виджета не переставляет его, но лишняя
+        # переупаковка на каждом тике — это перерасчёт геометрии и мигание.
+        order = [str(row.get("key") or row.get("name") or index)
+                 for index, row in enumerate(rows)]
+        if order != self._row_order:
+            for entry in self._row_pool:
+                entry["frame"].pack_forget()
+            for index in range(len(rows)):
+                self._row_pool[index]["frame"].pack(fill=tk.X, pady=1)
+            self._row_order = order
+
+        for index, row in enumerate(rows):
+            entry = self._row_pool[index]
+            cells = entry["cells"]
+            amount = int(row.get("amount") or 0)        # сколько лежит на борту
+            delivered = int(row.get("delivered") or 0)  # сколько завезли вы
+            need = int(row.get("need") or 0)
+            remaining = int(row.get("remaining") or 0)
+
+            # «На борту» — главное число: оно включает и груз других
+            # командиров. Если часть завезли вы, подписываем это.
+            on_board = f"{amount} ({delivered})" if delivered and delivered < amount else f"{amount}"
+            if need > 0:
+                tail = f"-{remaining}" if remaining > 0 else "OK"
+                tail_color = COLOR_RED_TEXT if remaining > 0 else COLOR_GREEN_TEXT
+                board_color = COLOR_GREEN_TEXT if remaining == 0 else COLOR_ACCENT
+            else:
+                tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
+
+            cells["name"].config(text=str(row.get("name") or row.get("key") or "")[:18],
+                                 fg=COLOR_TEXT)
+            cells["board"].config(text=on_board, fg=board_color)
+            cells["need"].config(text=str(need) if need else "—", fg=COLOR_TEXT_MUTED)
+            cells["tail"].config(text=tail, fg=tail_color)
 
 
 # ============================================================
 #  ExobiologyOverlay
 # ============================================================
 class ExobiologyOverlay(OverlayWindow):
-    """Экзобиология по текущему телу: параметры, сигналы и предсказание родов.
+    """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
 
     Данные — только из журнала игрока (Scan / SAAScanComplete / FSSBodySignals /
     ScanOrganic). Предсказание уровня **род**, упрощённая собственная модель
     (`exobiology.GENUS_RULES`) — см. комментарий про лицензию в модуле.
+
+    Блок сам обновляется раз в секунду, пока идёт отсчёт до следующего
+    образца: общий цикл HUD перерисовывает окно только когда меняются данные
+    журнала, а таймер обязан тикать и без них.
     """
+
+    #: Сколько родов, тел системы и найденных планет показываем — блок не
+    #: резиновый.
+    MAX_PREDICTIONS = 5
+    MAX_BODIES = 6
+    MAX_PLANETS = 5
 
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
         super().__init__(
             master, "EXOBIO",
             settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
-            settings.get("exobio_width", 330), settings.get("exobio_height", 360),
+            settings.get("exobio_width", 360), settings.get("exobio_height", 620),
             settings, "exobio",
         )
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
-        wrap = max(160, int(settings.get("exobio_width", 330)) - 30)
+        wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
+        self._wrap = wrap
+
+        self._state: Dict[str, Any] = {}
+        self._tick_id: Optional[str] = None
+        # Применённая видимость раздела «Поиск планет». Раздел выше уже
+        # упакован, поэтому стартуем с True — иначе первый же рендер делал
+        # лишнюю переупаковку. Сравнивать нужно, чтобы не дёргать
+        # pack()/pack_forget() на каждом тике: блок тикает раз в секунду,
+        # пока идёт отсчёт образца, а лишняя переупаковка — это перерасчёт
+        # геометрии и мигание.
+        self._planets_shown: bool = True
 
         self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
                                    fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
@@ -1589,6 +2095,20 @@ class ExobiologyOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=5)
 
+        self.samples_header = tk.Label(self.content, text="Образцы:", font=(ff, fs - 1, "bold"),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.samples_header.pack(fill=tk.X)
+        self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                       justify=tk.LEFT, wraplength=wrap)
+        self.organics_label.pack(fill=tk.X, pady=(2, 0))
+        self.next_action_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                          fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                          justify=tk.LEFT, wraplength=wrap)
+        self.next_action_label.pack(fill=tk.X, pady=(3, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=5)
+
         tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
                  fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
         self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
@@ -1596,81 +2116,316 @@ class ExobiologyOverlay(OverlayWindow):
                                       justify=tk.LEFT, wraplength=wrap)
         self.predict_label.pack(fill=tk.X, pady=(2, 0))
 
-        _make_separator(self.content).pack(fill=tk.X, pady=5)
+        # Поиск планет по параметрам (вкладка «Экзобиология»). Раздел стоит
+        # ВЫШЕ списка тел системы: окно не резиновое, и при переполнении
+        # обрезается низ — а это как раз то, ради чего раздел добавляли.
+        self.planet_separator = _make_separator(self.content)
+        self.planet_separator.pack(fill=tk.X, pady=5)
+        self.planets_header = tk.Label(self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.planets_header.pack(fill=tk.X)
+        self.planets_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                      fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                      justify=tk.LEFT, wraplength=wrap)
+        self.planets_label.pack(fill=tk.X, pady=(2, 0))
 
-        tk.Label(self.content, text="Образцы на теле:", font=(ff, fs - 1, "bold"),
-                 fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
-        self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
-                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
-                                       justify=tk.LEFT, wraplength=wrap)
-        self.organics_label.pack(fill=tk.X, pady=(2, 0))
+        self.bodies_separator = _make_separator(self.content)
+        self.bodies_separator.pack(fill=tk.X, pady=5)
+        self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.bodies_header.pack(fill=tk.X)
+        self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT, wraplength=wrap)
+        self.bodies_label.pack(fill=tk.X, pady=(2, 0))
 
         tk.Label(
             self.content,
-            text="Модель предсказывает род, а не вид: таблица критериев "
-                 "намеренно не копируется из GPL-проектов.",
+            text="Модель предсказывает род, а не вид; цена — порядок величины "
+                 "(зависит от варианта). Таблица критериев намеренно не "
+                 "копируется из GPL-проектов.",
             font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
             anchor=tk.W, justify=tk.LEFT, wraplength=wrap,
         ).pack(fill=tk.X, pady=(6, 0))
 
+    # -- обновление --------------------------------------------------------
     def update_exobiology(self, state: Optional[dict]):
         """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
+        self._state = dict(state or {})
+        self._render()
+        self._schedule_tick()
+
+    def _schedule_tick(self):
+        """Тикать раз в секунду, пока есть незавершённые образцы."""
+        if self._tick_id is not None:
+            try:
+                self.master.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        if not self._has_pending_samples():
+            return
+        try:
+            self._tick_id = self.master.after(1000, self._tick)
+        except Exception:
+            self._tick_id = None
+
+    def _tick(self):
+        self._tick_id = None
+        try:
+            self._render()
+            self._schedule_tick()
+        except Exception:
+            # Оверлей не имеет права ронять Tk.
+            pass
+
+    def _has_pending_samples(self) -> bool:
+        for row in self._state.get("organics") or []:
+            if not row.get("complete") and int(row.get("samples") or 0) > 0:
+                return True
+        return False
+
+    def destroy(self):
+        if self._tick_id is not None:
+            try:
+                self.master.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        super().destroy()
+
+    # -- отрисовка ---------------------------------------------------------
+    def _render(self):
+        state = self._state
         if not state:
             self.body_label.config(text="Тело: —")
             self.params_label.config(text="Отсканируйте тело (FSS или подход)")
             self.signals_label.config(text="")
-            self.predict_label.config(text="нет данных")
+            self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
+            self.next_action_label.config(text="")
+            self.predict_label.config(text="нет данных")
+            self.bodies_header.config(text="Тела системы:")
+            self.bodies_label.config(text="—")
+            self._render_planets({})
             return
 
+        system = str(state.get("system") or "").strip()
+        body = str(state.get("body") or "—")
+        prefix = f"{system} · " if system and system not in body else ""
         self.body_label.config(
-            text=f"{state.get('body') or '—'}  ({state.get('planet_class') or '?'})"
+            text=f"{prefix}{body}  ({state.get('planet_class') or '?'})"
         )
 
         gravity = float(state.get("gravity") or 0.0)
+        mapped = bool(state.get("mapped"))
         self.params_label.config(
             text=(
                 f"{state.get('atmosphere') or 'нет атмосферы'}\n"
                 f"T {float(state.get('temperature') or 0):.0f} K   "
                 f"g {gravity / 10.0:.2f}\n"
-                f"Вулканизм: {state.get('volcanism') or 'нет'}\n"
+                f"Вулканизм: {state.get('volcanism') or 'нет'}   "
                 f"{'посадка возможна' if state.get('landable') else 'посадка невозможна'}"
             )
         )
 
         signals = int(state.get("bio_signals") or 0)
-        mapped = "карта есть" if state.get("mapped") else "карты нет (DSS)"
         self.signals_label.config(
-            text=(f"Биосигналов: {signals}  |  {mapped}" if signals
-                  else f"Биосигналов нет  |  {mapped}")
+            text=(f"Биосигналов: {signals}  |  {'карта есть (DSS)' if mapped else 'карты нет'}"
+                  if signals else
+                  f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
         )
 
-        predictions = state.get("predictions") or []
-        if predictions:
-            lines = []
-            for row in predictions[:6]:
-                bars = "#" * int(min(float(row.get("score") or 0), 6))
-                notes = ", ".join(row.get("notes") or [])
-                lines.append(f"{row.get('genus')} {bars}"
-                             + (f"  {notes}" if notes else ""))
-            extra = len(predictions) - 6
-            if extra > 0:
-                lines.append(f"… и ещё {extra}")
-            self.predict_label.config(text="\n".join(lines))
-        else:
-            self.predict_label.config(text="нет подходящих родов")
+        self._render_samples(state, mapped)
+        self._render_predictions(state, mapped)
+        self._render_bodies(state)
+        self._render_planets(state)
 
+    def _render_samples(self, state: dict, mapped: bool):
         organics = state.get("organics") or []
-        if organics:
-            rows = []
-            for row in organics:
-                samples = int(row.get("samples") or 0)
-                mark = "✔" if row.get("complete") else f"{samples}/3"
-                stage = row.get("stage") or ""
-                rows.append(f"{row.get('species')} [{mark}] {stage}".rstrip())
-            self.organics_label.config(text="\n".join(rows))
-        else:
+        total_value = int(state.get("value_cr") or 0)
+        if not total_value:
+            total_value = sum(int(row.get("value_cr") or 0) for row in organics)
+        header = "Образцы:" + (f"  ≈ {format_credits(total_value)} кр" if total_value else "")
+        self.samples_header.config(text=header)
+
+        if not organics:
             self.organics_label.config(text="образцы не взяты")
+            self.next_action_label.config(text=self._suggest_next_action(state, []))
+            return
+
+        lines = []
+        for row in organics:
+            samples = int(row.get("samples") or 0)
+            complete = bool(row.get("complete"))
+            marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
+            value = int(row.get("value_cr") or 0)
+            price = f"  ≈ {format_credits(value)}" if value else ""
+            name = str(row.get("species") or "?")
+            if row.get("seen_before"):
+                name += " (уже встречалось)"
+            lines.append(f"{name}  {marks} {samples}/3{price}")
+            if complete:
+                lines.append("   комплект готов — вид засчитан")
+            elif samples:
+                wait = int(row.get("wait_seconds") or 0)
+                stage = str(row.get("stage") or "")
+                if wait > 0:
+                    lines.append(f"   ждите {wait} с до следующего образца")
+                else:
+                    lines.append(f"   готов к образцу ({stage or 'Sample'}) — смените точку")
+        self.organics_label.config(text="\n".join(lines))
+        self.next_action_label.config(text=self._suggest_next_action(state, organics))
+
+    @staticmethod
+    def _suggest_next_action(state: dict, organics: list) -> str:
+        """Одна строка-подсказка: что делать прямо сейчас."""
+        if not organics:
+            signals = int(state.get("bio_signals") or 0)
+            if signals:
+                return f"→ найдите организм: биосигналов на теле {signals}"
+            if not state.get("landable", True):
+                return "→ на это тело не сесть"
+            return "→ отсканируйте тело, чтобы получить прогноз"
+        waiting = [row for row in organics
+                   if not row.get("complete") and int(row.get("wait_seconds") or 0) > 0]
+        if waiting:
+            wait = min(int(row.get("wait_seconds")) for row in waiting)
+            return f"→ {wait} с до следующего образца"
+        open_rows = [row for row in organics if not row.get("complete")]
+        if open_rows:
+            return "→ возьмите образец с новой точки"
+        return "→ все комплекты собраны — можно лететь дальше"
+
+    def _render_predictions(self, state: dict, mapped: bool):
+        predictions = state.get("predictions") or []
+        # Фильтр по родам задаётся на вкладке «Экзобиология».
+        allowed = state.get("genera_filter") or []
+        if allowed:
+            predictions = [row for row in predictions
+                           if str(row.get("genus") or "") in {str(g) for g in allowed}]
+        if not predictions:
+            self.predict_label.config(
+                text="роды отфильтрованы (вкладка «Экзобиология»)" if allowed
+                else "нет подходящих родов")
+            return
+        lines = []
+        for row in predictions[:self.MAX_PREDICTIONS]:
+            genus = str(row.get("genus") or "?")
+            percent = row.get("percent")
+            head = f"{genus}  {percent}%" if percent is not None else genus
+            value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
+            if value:
+                head += f"  ≈ {format_credits(value)}"
+            notes = ", ".join(row.get("notes") or [])
+            lines.append(head + (f"\n   {notes}" if notes else ""))
+        extra = len(predictions) - self.MAX_PREDICTIONS
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.predict_label.config(text="\n".join(lines))
+
+    def _set_planets_visible(self, visible: bool):
+        """Показать/скрыть раздел, но только если видимость изменилась."""
+        if self._planets_shown == visible:
+            return
+        self._planets_shown = visible
+        widgets = (self.planet_separator, self.planets_header, self.planets_label)
+        if not visible:
+            for widget in widgets:
+                try:
+                    widget.pack_forget()
+                except Exception:
+                    pass
+            return
+        # `before=` обязателен: pack() без него дописывает виджет в конец,
+        # и после переключения «показать/скрыть» раздел уезжал бы вниз окна.
+        for widget, kwargs in (
+            (self.planet_separator, {"fill": tk.X, "pady": 5}),
+            (self.planets_header, {"fill": tk.X}),
+            (self.planets_label, {"fill": tk.X, "pady": (2, 0)}),
+        ):
+            try:
+                widget.pack(before=self.bodies_separator, **kwargs)
+            except Exception:
+                pass
+
+    def _render_planets(self, state: dict):
+        """Раздел «Поиск планет»: что в этой системе подходит под фильтры."""
+        criteria = state.get("planet_criteria") or []
+        if not bool(self.settings.get("exobio_show_planet_search", True)):
+            self._set_planets_visible(False)
+            return
+        self._set_planets_visible(True)
+
+        if not criteria:
+            self.planets_header.config(text="Поиск планет:")
+            self.planets_label.config(
+                text="критерии не выбраны — вкладка «Экзобиология»",
+                fg=COLOR_TEXT_MUTED)
+            return
+
+        rows = state.get("planets") or []
+        self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
+        if not rows:
+            self.planets_label.config(
+                text="в этой системе подходящих планет нет\n"
+                     "(нужны отсканированные тела)",
+                fg=COLOR_TEXT_MUTED)
+            return
+
+        system = str(state.get("system") or "")
+        lines = []
+        for row in rows[:self.MAX_PLANETS]:
+            name = str(row.get("body") or "?")
+            if system and name.startswith(system):
+                name = name[len(system):].strip() or name
+            traits = [str(row.get("planet_class") or "?")]
+            category = str(row.get("atmosphere_category") or "")
+            if category in ("thin", "thick"):
+                traits.append("атмосфера")
+            elif category == "none":
+                traits.append("без атмосферы")
+            traits.append("посадка" if row.get("landable") else "не сесть")
+            if int(row.get("bio_signals") or 0):
+                traits.append(f"сигналов {row['bio_signals']}")
+            distance = float(row.get("distance_ls") or 0.0)
+            if distance > 0:
+                traits.append(f"{distance:.0f} св.с")
+            lines.append(f"{name}  ·  {', '.join(traits)}")
+            # Почему планета попала в список — иначе фильтры непрозрачны.
+            matched = [str(item) for item in (row.get("matched") or []) if item]
+            if matched:
+                lines.append(f"   ↳ {', '.join(matched[:2])}")
+        extra = len(rows) - self.MAX_PLANETS
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.planets_label.config(text="\n".join(lines), fg=COLOR_GREEN_TEXT)
+
+    def _render_bodies(self, state: dict):
+        bodies = state.get("system_bodies") or []
+        self.bodies_header.config(
+            text=f"Тела системы с биосигналами: {len(bodies)}" if bodies else "Тела системы:")
+        if not bodies:
+            self.bodies_label.config(text="в этой системе биосигналов не найдено")
+            return
+        lines = []
+        for row in bodies[:self.MAX_BODIES]:
+            name = str(row.get("body") or "?")
+            # Имя тела в журнале начинается с имени системы — оставляем хвост.
+            system = str(state.get("system") or "")
+            if system and name.startswith(system):
+                name = name[len(system):].strip() or name
+            marks = []
+            if row.get("has_organics"):
+                marks.append("образцы")
+            marks.append("карта есть" if row.get("mapped") else "карты нет")
+            if not row.get("landable"):
+                marks.append("не сесть")
+            lines.append(f"{name}  ·  сигналов {row.get('bio_signals', 0)}  ·  {', '.join(marks)}")
+        extra = len(bodies) - self.MAX_BODIES
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.bodies_label.config(text="\n".join(lines))
 
 
 # ============================================================
@@ -1815,7 +2570,7 @@ class SessionOverlay(OverlayWindow):
 # ============================================================
 class OverlayManager:
     #: Блоки HUD: ключ -> (настройка видимости, класс окна)
-    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio")
+    BLOCKS = ("route", "status", "ship", "cargo", "session", "events", "exobio", "carrier")
 
     #: Позиции по умолчанию для «Сбросить позиции» (x, y, w, h)
     DEFAULT_POSITIONS = DEFAULT_BLOCK_POSITIONS
@@ -1824,6 +2579,9 @@ class OverlayManager:
         self.master = master
         self.config_path = config_path
         self.settings = load_overlay_settings(config_path)
+        # Отдаёт состояние EXOBIO для принудительной перерисовки блока после
+        # смены фильтров (подключает приложение, см. set_exobio_state_provider).
+        self._exobio_state_provider = None
         # Отслеживание игры: запущена/в фокусе + геометрия окна.
         self.game_monitor = game_monitor or GameMonitor()
         self.route_overlay: Optional[RouteOverlay] = None
@@ -1833,6 +2591,7 @@ class OverlayManager:
         self.session_overlay: Optional[SessionOverlay] = None
         self.events_overlay: Optional[SessionEventsOverlay] = None
         self.exobio_overlay: Optional[ExobiologyOverlay] = None
+        self.carrier_overlay: Optional[CarrierOverlay] = None
         self.enabled = False
         self._update_callback: Optional[Callable] = None
         self._thread: Optional[threading.Thread] = None
@@ -1852,6 +2611,9 @@ class OverlayManager:
         # возврат фокуса игре продлевает показ HUD.
         self._last_activity = time.monotonic()
         self._hidden_by_idle = False
+        # Когда в последний раз переставляли блоки в Z-order (см.
+        # _set_all_visibility и ZORDER_REFRESH_SECONDS).
+        self._zorder_at = 0.0
         self.hotkeys = HotkeyManager(master, logger=self.log)
 
     def start(self, update_callback: Callable):
@@ -1874,6 +2636,7 @@ class OverlayManager:
         self.session_overlay = SessionOverlay(self.master, self.settings)
         self.events_overlay = SessionEventsOverlay(self.master, self.settings)
         self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
+        self.carrier_overlay = CarrierOverlay(self.master, self.settings)
 
         for ov, key in self._blocks():
             ov.set_on_move(self._make_moved_handler(key))
@@ -1906,6 +2669,7 @@ class OverlayManager:
             "session": self.session_overlay,
             "events": self.events_overlay,
             "exobio": self.exobio_overlay,
+            "carrier": self.carrier_overlay,
         }
         return [(key, mapping.get(key)) for key in self.BLOCKS if mapping.get(key) is not None]
 
@@ -2169,25 +2933,41 @@ class OverlayManager:
     def _set_all_visibility(self, show: bool):
         """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order.
 
+        Z-order поднимаем не на каждом тике (цикл работает раз в секунду),
+        а только когда это действительно нужно: блок только что появился,
+        у него слетел topmost или прошло больше ZORDER_REFRESH_SECONDS с
+        прошлой перестановки. Ежесекундный lift() по всем окнам — главный
+        источник мерцания при редактировании: Windows каждый раз
+        пересобирает layered-окна, а во время перетаскивания ещё и борется
+        с курсором за позицию окна.
+
         Итоговая видимость блока складывается из четырёх условий: HUD вообще
         нужен (`show` — есть игра/фокус), пользователь включил блок, сработало
         правило «по ситуации» и не истёк таймер простоя.
         """
         visibility = self.evaluate_block_visibility(game_visible=show)
+        now = time.monotonic()
+        refresh_due = (now - self._zorder_at) >= ZORDER_REFRESH_SECONDS
         for key, ov in self._blocks():
             if not ov:
                 continue
             try:
                 should_show = visibility.get(key, show)
                 if should_show:
-                    if not ov.window.winfo_viewable():
+                    just_shown = not ov.window.winfo_viewable()
+                    if just_shown:
                         ov.show()
-                    ov.window.lift()
-                    ov.window.attributes("-topmost", True)
+                    # Пока блок тянут мышью, порядок окон не трогаем.
+                    if getattr(ov, "_dragging", False):
+                        continue
+                    if just_shown or refresh_due or not ov._is_topmost:
+                        ov.set_topmost(True)
+                        ov.window.lift()
                 else:
                     ov.hide()
             except Exception:
                 pass
+        self._zorder_at = now
 
     def _hash_data(self, data: dict) -> str:
         """Хеш данных для сравнения изменений между тиками.
@@ -2242,8 +3022,36 @@ class OverlayManager:
         parts.append(str(data.get("game_running", False)))
         parts.append(str(data.get("game_focused", False)))
         parts.append(str(data.get("game_detail", "")))
-        parts.append(str(data.get("exobiology", {})))
+        # Отпечаток экзобиологии — без «живых» полей: обратный отсчёт до
+        # следующего образца меняется каждую секунду, и с ним хеш менялся бы
+        # тоже, заставляя перерисовывать все блоки. Оверлей Exobio тикает сам.
+        parts.append(self._exobiology_fingerprint(data.get("exobiology")))
+        # Груз авианосца: тоннаж, товары и остаток до потребности площадки.
+        parts.append(str(data.get("carrier", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+    @staticmethod
+    def _exobiology_fingerprint(state) -> str:
+        """Часть хеша по экзобиологии: только то, что приходит из журнала."""
+        if not isinstance(state, dict):
+            return ""
+        parts = [
+            str(state.get("system") or ""),
+            str(state.get("body") or ""),
+            str(state.get("bio_signals") or 0),
+            str(bool(state.get("mapped"))),
+            str(len(state.get("predictions") or [])),
+        ]
+        for row in state.get("organics") or []:
+            parts.append(f"{row.get('species')}:{row.get('samples')}:{row.get('stage')}")
+        for row in state.get("system_bodies") or []:
+            parts.append(f"{row.get('body')}:{row.get('bio_signals')}:{bool(row.get('mapped'))}")
+        # Фильтры и найденные планеты: без них смена настроек на вкладке
+        # «Экзобиология» не перерисовывала блок.
+        parts.append("g:" + ",".join(str(g) for g in state.get("genera_filter") or []))
+        for row in state.get("planets") or []:
+            parts.append(f"p:{row.get('body')}:{row.get('planet_class')}")
+        return "|".join(parts)
 
     def _apply_update(self, data: dict):
         # Данные изменились — значит, в журнале есть жизнь: продлеваем показ
@@ -2278,6 +3086,11 @@ class OverlayManager:
 
         if self.exobio_overlay:
             self.exobio_overlay.update_exobiology(data.get("exobiology"))
+
+        if self.carrier_overlay:
+            carrier_data = data.get("carrier")
+            if carrier_data:
+                self.carrier_overlay.update_carrier(carrier_data)
 
         if self.session_overlay:
             current_sys = data.get("current", "-")
@@ -2327,6 +3140,7 @@ class OverlayManager:
         self.session_overlay = None
         self.events_overlay = None
         self.exobio_overlay = None
+        self.carrier_overlay = None
 
     def toggle(self, update_callback: Callable):
         if self.enabled:
@@ -2381,7 +3195,13 @@ class OverlayManager:
         но позицию, прозрачность, шрифт и блокировку возвращаем сразу же —
         для пользователя это выглядит как мгновенная перерисовка одного блока.
         """
+        show = bool(show)
+        previous = bool(self.settings.get(f"show_{block}", True))
         self.settings[f"show_{block}"] = show
+        if previous == show:
+            # Значение не изменилось — пересоздавать окно незачем: это и есть
+            # та самая вспышка, которую пользователь видит при редактировании.
+            return
         if self.ship_overlay and self.enabled:
             was_visible = self.ship_overlay.window.winfo_viewable()
             self.ship_overlay.destroy()
@@ -2394,6 +3214,43 @@ class OverlayManager:
             self.apply_block_style("ship")
             if not was_visible or not self.settings.get("show_ship", True):
                 self.ship_overlay.hide()
+
+    def set_exobio_filters(self, genera=None, planet_search=None, show_planets=None):
+        """Фильтры блока EXOBIO (вкладка «Экзобиология»).
+
+        Окно не пересоздаём: разделы перерисуются на следующем тике данных, а
+        принудительную перерисовку делаем сами. Пересоздание окна — это ровно
+        та вспышка, на которую жаловались в настройках блоков.
+        """
+        if genera is not None:
+            self.settings["exobio_genera"] = [str(g) for g in genera if str(g).strip()]
+        if planet_search is not None:
+            self.settings["exobio_planet_search"] = [str(i) for i in planet_search if str(i).strip()]
+        if show_planets is not None:
+            self.settings["exobio_show_planet_search"] = bool(show_planets)
+        self.refresh_exobio()
+
+    def refresh_exobio(self):
+        """Перерисовать EXOBIO сразу, не дожидаясь новых событий журнала.
+
+        Без этого смена фильтра на вкладке применялась только после следующего
+        события в журнале — в пустой системе выглядело как «не работает».
+        """
+        overlay = self.exobio_overlay
+        if overlay is None or not self.enabled:
+            return
+        provider = getattr(self, "_exobio_state_provider", None)
+        if provider is None:
+            return
+        try:
+            state = provider()
+        except Exception:
+            return
+        overlay.update_exobiology(state)
+
+    def set_exobio_state_provider(self, provider):
+        """Колбэк, отдающий состояние экзобиологии для принудительной перерисовки."""
+        self._exobio_state_provider = provider
 
     def set_attach_to_game(self, attach: bool):
         self.settings["attach_to_game"] = attach
@@ -2638,6 +3495,8 @@ class OverlayManager:
                                  or (data.get("cargo") or {}).get("cargo_count") or 0),
             "bio_signals": int((exobio.get("bio_signals") if isinstance(exobio, dict) else 0) or 0),
             "route_total": int(data.get("total") or 0),
+            # Стоит ли командир сейчас на авианосце (правило at_carrier).
+            "at_carrier": bool((data.get("carrier") or {}).get("at_carrier")),
             "game_running": bool(data.get("game_running", game.running)),
             "game_focused": bool(data.get("game_focused", game.focused)),
         }
@@ -2704,7 +3563,69 @@ class OverlayManager:
 # ============================================================
 #  Настройки оверлея
 # ============================================================
+#: Версия схемы HUD-настроек. Поднимаем, когда меняем значение по умолчанию
+#: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
+#: поэтому без миграции прежний пользователь навсегда остался бы на старом
+#: значении и не увидел бы исправления.
+SETTINGS_SCHEMA_VERSION = 3
+
+#: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
+#: Ключ получает новый дефолт только если пользователь его не менял, то есть
+#: сохранённое значение всё ещё равно прежнему дефолту. Свой размер окна,
+#: заданный вручную, трогать нельзя.
+SETTINGS_DEFAULT_CHANGES = {
+    # 2.8.3: раздел «Поиск планет» обрезался при высоте 470 px
+    2: {"exobio_height": 470},
+}
+
+#: Миграции позиций: версия схемы -> {блок: (прежний x, прежний y)}.
+#: Позиция переносится на новую, только если блок не двигали вовсе, то есть
+#: обе координаты всё ещё равны прежним значениям по умолчанию. Блок, который
+#: пользователь поставил сам, трогать нельзя — даже если он стоит «неудачно».
+SETTINGS_POSITION_CHANGES = {
+    # 2.8.5: раскладка приведена к сетке без перекрытий. Прежняя уезжала
+    # CARGO за нижний край экрана (y=1000 при высоте 340), а EXOBIO после
+    # подъёма до 620 px наезжал на CARRIER.
+    3: {
+        "ship": (50, 440),
+        "cargo": (50, 1000),
+        "session": (400, 50),
+        "events": (730, 50),
+        "exobio": (1060, 50),
+        "carrier": (1060, 430),
+    },
+}
+
+
+def migrate_overlay_settings(merged: dict, stored: dict) -> dict:
+    """Поднять дефолты, которые пользователь не менял, до текущей версии схемы.
+
+    :param merged: DEFAULT_SETTINGS, перекрытые сохранённым конфигом.
+    :param stored: содержимое конфига как есть — по нему видно, что именно
+        записала предыдущая версия и какую версию схемы она помнила.
+    """
+    try:
+        stored_version = int(stored.get("settings_schema", 1))
+    except (TypeError, ValueError):
+        stored_version = 1
+    if stored_version >= SETTINGS_SCHEMA_VERSION:
+        return merged
+    for version in range(stored_version + 1, SETTINGS_SCHEMA_VERSION + 1):
+        for key, old_default in SETTINGS_DEFAULT_CHANGES.get(version, {}).items():
+            if stored.get(key) == old_default:
+                merged[key] = DEFAULT_SETTINGS[key]
+        for block, (old_x, old_y) in SETTINGS_POSITION_CHANGES.get(version, {}).items():
+            # Только если блок не двигали: обе координаты равны прежним
+            # дефолтным. Сдвинутый вручную блок оставляем как есть.
+            if (stored.get(f"{block}_x"), stored.get(f"{block}_y")) == (old_x, old_y):
+                merged[f"{block}_x"] = DEFAULT_SETTINGS[f"{block}_x"]
+                merged[f"{block}_y"] = DEFAULT_SETTINGS[f"{block}_y"]
+    merged["settings_schema"] = SETTINGS_SCHEMA_VERSION
+    return merged
+
+
 DEFAULT_SETTINGS = {
+    "settings_schema": SETTINGS_SCHEMA_VERSION,
     "alpha": 0.90,
     "font_family": "Consolas",
     "font_size": 10,
@@ -2715,6 +3636,7 @@ DEFAULT_SETTINGS = {
     "show_session": True,
     "show_events": True,
     "show_exobio": True,
+    "show_carrier": True,
     "show_flags": True,
     "show_pips": True,
     "show_hull": True,
@@ -2726,48 +3648,34 @@ DEFAULT_SETTINGS = {
     "show_legal": True,
     "show_destination": True,
     "show_modules": True,
-    "route_x": 50,
-    "route_y": 50,
-    "route_width": 280,
-    "route_height": 160,
+    # Позиции и размеры блоков здесь не заданы: их подставляет цикл сразу
+    # после словаря из DEFAULT_BLOCK_POSITIONS. Раньше значения дублировались
+    # и разошлись — EXOBIO наезжал на CARRIER, а CARGO уходил за нижний край.
     "route_locked": False,
     "route_anchor": "custom",
-    "status_x": 50,
-    "status_y": 220,
-    "status_width": 280,
-    "status_height": 220,
     "status_locked": False,
     "status_anchor": "custom",
-    "ship_x": 50,
-    "ship_y": 440,
-    "ship_width": 360,
-    "ship_height": 420,
     "ship_locked": False,
     "ship_anchor": "custom",
-    "cargo_x": 50,
-    "cargo_y": 1000,
-    "cargo_width": 300,
-    "cargo_height": 340,
     "cargo_locked": False,
     "cargo_anchor": "custom",
-    "session_x": 400,
-    "session_y": 50,
-    "session_width": 320,
-    "session_height": 300,
     "session_locked": False,
     "session_anchor": "custom",
-    "events_x": 730,
-    "events_y": 50,
-    "events_width": 320,
-    "events_height": 260,
     "events_locked": False,
     "events_anchor": "custom",
-    "exobio_x": 1060,
-    "exobio_y": 50,
-    "exobio_width": 330,
-    "exobio_height": 360,
     "exobio_locked": False,
     "exobio_anchor": "custom",
+    # Фильтры блока EXOBIO (вкладка «Экзобиология»).
+    # Пустой список родов — фильтр выключен, показываем все предсказания.
+    "exobio_genera": [],
+    # id наборов критериев поиска планет (exobiology.PLANET_SEARCH_PRESETS).
+    "exobio_planet_search": [],
+    # Показывать ли в блоке раздел «Поиск планет».
+    "exobio_show_planet_search": True,
+    # Сколько найденных планет показывать.
+    "exobio_planet_limit": 6,
+    "carrier_locked": False,
+    "carrier_anchor": "custom",
     "attach_to_game": True,
     # Раскладка: отступ от края области (экрана или окна игры)
     "layout_margin": 24,
@@ -2786,6 +3694,17 @@ DEFAULT_SETTINGS = {
     "active_profile": "",
 }
 
+# Позиции и размеры блоков берутся из DEFAULT_BLOCK_POSITIONS — единственного
+# источника раскладки. Раньше они дублировались literals-ами выше и разошлись:
+# окна читают именно <ключ>_x/_y/_width/_height, поэтому при первом запуске
+# EXOBIO наезжал на CARRIER, а CARGO уходил за нижний край экрана.
+for _key, (_x, _y, _w, _h) in DEFAULT_BLOCK_POSITIONS.items():
+    DEFAULT_SETTINGS[f"{_key}_x"] = _x
+    DEFAULT_SETTINGS[f"{_key}_y"] = _y
+    DEFAULT_SETTINGS[f"{_key}_width"] = _w
+    DEFAULT_SETTINGS[f"{_key}_height"] = _h
+del _key, _x, _y, _w, _h
+
 
 def load_overlay_settings(config_path: Path) -> dict:
     if config_path.exists():
@@ -2795,7 +3714,9 @@ def load_overlay_settings(config_path: Path) -> dict:
                 data = json.load(f)
             merged = dict(DEFAULT_SETTINGS)
             merged.update(data)
-            return merged
+            return migrate_overlay_settings(
+                merged, data if isinstance(data, dict) else {}
+            )
         except Exception:
             pass
     return dict(DEFAULT_SETTINGS)
@@ -2825,6 +3746,7 @@ def save_overlay_settings(config_path: Path, settings: dict):
         overlay_keys = set(DEFAULT_SETTINGS)
         overlay_keys.update(key for key in settings if key.startswith((
             "route_", "status_", "ship_", "cargo_", "session_", "events_", "exobio_",
+            "carrier_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
         tmp = config_path.with_suffix(config_path.suffix + ".tmp")

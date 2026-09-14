@@ -17,12 +17,21 @@
 4. Версия приложения берётся настоящая, а не «1.0.0».
 """
 
+import time
+
 import requests
 from typing import Optional
+
+from http_errors import apply_client_headers, describe_bad_response, short_body
 
 
 class InaraAPI:
     URL = "https://inara.cz/inapi/v1/"
+
+    #: Сколько раз пробуем отправить «временную» ошибку (HTML от Cloudflare,
+    #: 5xx, 429, обрыв соединения) и пауза между попытками — как у EDSM.
+    MAX_ATTEMPTS = 3
+    RETRY_DELAY = 1.5
 
     def __init__(self, api_key: str = "", commander_name: str = "",
                  app_name: str = "ED Ring Colony Uploader", app_version: str = "0.0.0"):
@@ -31,6 +40,9 @@ class InaraAPI:
         self.app_name = app_name
         self.app_version = app_version
         self._session = requests.Session()
+        # Inara тоже за Cloudflare: без User-Agent вместо JSON приходит
+        # HTML-страница, и событие молча теряется.
+        apply_client_headers(self._session, app_name, app_version)
 
     @property
     def enabled(self) -> bool:
@@ -43,11 +55,29 @@ class InaraAPI:
     def set_app_version(self, version: str):
         if version:
             self.app_version = str(version).strip()
+            apply_client_headers(self._session, self.app_name, self.app_version)
 
     def submit(self, event_name: str, event_data: dict, timestamp: str = "") -> dict:
-        """Отправить одно событие. Возвращает {"ok", "status", "data", "error"}."""
+        """Отправить одно событие. Возвращает {"ok", "status", "data", "error"}.
+
+        Временные сбои (HTML-страница Cloudflare, 5xx, 429, обрыв соединения)
+        повторяем `MAX_ATTEMPTS` раз — Inara за тем же Cloudflare, что и EDSM.
+        """
         if not self.enabled:
             return {"ok": False, "skipped": True}
+        result: dict = {"ok": False, "error": "Inara: не отправлено"}
+        for attempt in range(1, max(1, self.MAX_ATTEMPTS) + 1):
+            result = self._submit_once(event_name, event_data, timestamp)
+            if result.get("ok") or not result.get("retryable"):
+                return result
+            if attempt < self.MAX_ATTEMPTS:
+                time.sleep(self.RETRY_DELAY)
+        result["attempts"] = max(1, self.MAX_ATTEMPTS)
+        return result
+
+    def _submit_once(self, event_name: str, event_data: dict,
+                     timestamp: str = "") -> dict:
+        """Одна попытка отправки."""
         payload = {
             "header": {
                 "appName": self.app_name,
@@ -67,7 +97,12 @@ class InaraAPI:
         except Exception as exc:
             # Клиент внешнего сервиса не должен ронять ни поток диспетчера,
             # ни разбор журнала.
-            return {"ok": False, "error": str(exc)}
+            return {
+                "ok": False,
+                "status": 0,
+                "retryable": True,
+                "error": f"Inara: нет соединения ({exc}); событие будет повторено",
+            }
 
         try:
             data = response.json()
@@ -75,11 +110,9 @@ class InaraAPI:
             data = None
 
         if not isinstance(data, dict):
-            return {
-                "ok": False,
-                "status": response.status_code,
-                "error": f"Inara: не JSON в ответе ({response.text[:160]})",
-            }
+            # HTML от Cloudflare / пустое тело: короткое описание вместо
+            # куска разметки в логе.
+            return describe_bad_response("Inara", response, detail="нет JSON в ответе")
 
         header = data.get("header") or {}
         header_status = header.get("eventStatus")
@@ -103,7 +136,7 @@ class InaraAPI:
                 "ok": False,
                 "status": response.status_code,
                 "data": data,
-                "error": f"Inara: нет eventStatus в ответе ({response.text[:160]})",
+                "error": f"Inara: нет eventStatus в ответе ({short_body(response)})",
             }
 
         event_status = int(event_status)

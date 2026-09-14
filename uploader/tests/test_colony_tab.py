@@ -33,6 +33,115 @@ class _FakeResponse:
         return self._payload
 
 
+class CommanderByKeyTests(unittest.TestCase):
+    """Имя пилота по ключу RCC: GET /api/cmdr/ с заголовком rcc-key."""
+
+    def setUp(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        self.api = RavenColonialAPI("test-key")
+        self.api._session = mock.MagicMock()
+        self.calls = []
+
+        def record(method, url, headers=None, json=None, timeout=None):
+            self.calls.append({"method": method.upper(), "url": url,
+                               "headers": headers or {}, "json": json})
+            return _FakeResponse({"displayName": "Jameson", "cmdrId": "1234"})
+
+        self.api._session.request.side_effect = record
+
+    def test_endpoint_and_header(self):
+        result = self.api.get_cmdr_by_key("candidate-key")
+        self.assertTrue(result["ok"])
+        call = self.calls[0]
+        self.assertEqual(call["method"], "GET")
+        self.assertTrue(call["url"].endswith("/api/cmdr/"), call["url"])
+        self.assertEqual(call["headers"].get("rcc-key"), "candidate-key")
+
+    def test_uses_current_key_when_not_passed(self):
+        self.api.get_cmdr_by_key()
+        self.assertEqual(self.calls[0]["headers"].get("rcc-key"), "test-key")
+
+    def test_no_key_means_no_request(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        api = RavenColonialAPI("")
+        api._session = mock.MagicMock()
+        result = api.get_cmdr_by_key("")
+        self.assertFalse(result["ok"])
+        self.assertIn("не задан", result["error"])
+        api._session.request.assert_not_called()
+
+    def test_bad_key_is_reported(self):
+        self.api._session.request.side_effect = None
+        self.api._session.request.return_value = _FakeResponse(
+            None, ok=False, status=401, text="")
+        result = self.api.get_cmdr_by_key("bad")
+        self.assertFalse(result["ok"])
+        self.assertIn("401", result["error"])
+
+    def test_display_name_extraction(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        self.assertEqual(
+            RavenColonialAPI.cmdr_display_name({"data": {"displayName": "Jameson"}}),
+            "Jameson")
+        self.assertEqual(
+            RavenColonialAPI.cmdr_display_name({"data": {"name": "  Jameson  "}}),
+            "Jameson")
+        self.assertEqual(RavenColonialAPI.cmdr_display_name({"data": "Jameson"}),
+                         "Jameson")
+        self.assertEqual(RavenColonialAPI.cmdr_display_name({"data": {}}), "")
+        self.assertEqual(RavenColonialAPI.cmdr_display_name({}), "")
+        self.assertEqual(RavenColonialAPI.cmdr_display_name(None), "")
+
+    def test_network_error_is_not_raised(self):
+        self.api._session.request.side_effect = RuntimeError("timeout")
+        result = self.api.get_cmdr_by_key()
+        self.assertFalse(result["ok"])
+        self.assertIn("timeout", result["error"])
+
+
+class ErrorDescriptionTests(unittest.TestCase):
+    """Пустое тело ответа больше не превращается в «неизвестную ошибку»."""
+
+    def setUp(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        self.api = RavenColonialAPI("test-key")
+        self.api._session = mock.MagicMock()
+        self.calls = []
+
+        def record(method, url, headers=None, json=None, timeout=None):
+            self.calls.append({"method": method.upper(), "url": url})
+            return _FakeResponse(None, ok=False, status=self.status, text=self.body)
+
+        self.api._session.request.side_effect = record
+
+    def _error(self, status, body=""):
+        self.status, self.body = status, body
+        return self.api.get_cmdr_active("CMDR")["error"]
+
+    def test_empty_body_is_explained_by_status(self):
+        for status, needle in ((400, "неверный запрос"), (401, "ключ RCC"),
+                               (403, "нет прав"), (404, "не найдено"),
+                               (409, "конфликт"), (429, "слишком много запросов"),
+                               (500, "ошибка сервера"), (503, "недоступен")):
+            error = self._error(status)
+            self.assertIn(needle, error, status)
+            self.assertIn(str(status), error, status)
+            self.assertNotIn("неизвестная ошибка", error)
+
+    def test_server_message_is_appended(self):
+        error = self._error(400, "buildName is required")
+        self.assertIn("buildName is required", error)
+
+    def test_unknown_status_still_says_something(self):
+        error = self._error(418)
+        self.assertIn("418", error)
+        self.assertTrue(error.strip())
+
+
 class RavenColonialApiTests(unittest.TestCase):
     def setUp(self):
         from raven_colonial_api import RavenColonialAPI
@@ -52,7 +161,7 @@ class RavenColonialApiTests(unittest.TestCase):
     def test_create_project_uses_put_and_key(self):
         result = self.api.create_project({
             "systemName": "Sol", "buildName": "Alpha", "buildType": "Coriolis",
-            "marketId": 123, "notes": None,
+            "marketId": 123, "systemAddress": 456, "notes": None,
         })
         self.assertTrue(result["ok"])
         call = self.calls[0]
@@ -62,7 +171,34 @@ class RavenColonialApiTests(unittest.TestCase):
         # None-поля не должны уезжать на сервер: PATCH-подобный merge ломается
         # от явных null'ов.
         self.assertEqual(call["json"], {"systemName": "Sol", "buildName": "Alpha",
-                                        "buildType": "Coriolis", "marketId": 123})
+                                        "buildType": "Coriolis", "marketId": 123,
+                                        "systemAddress": 456})
+
+    def test_create_project_requires_api_fields(self):
+        """Обязательные поля ProjectCreate — marketId, systemAddress, buildName.
+
+        Без них Raven отвечает 400, а в логе это выглядит как «неизвестная
+        ошибка». Проверяем их до запроса и называем конкретные поля.
+        """
+        result = self.api.create_project({"systemName": "Sol", "buildType": "Coriolis"})
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.calls, [])  # запрос не уходил
+        for field in ("marketId", "systemAddress", "buildName"):
+            self.assertIn(field, result["error"])
+
+        # Одного marketId мало: без systemAddress проект создать нельзя.
+        result = self.api.create_project({"buildName": "Alpha", "marketId": 1})
+        self.assertFalse(result["ok"])
+        self.assertIn("systemAddress", result["error"])
+        self.assertEqual(self.calls, [])
+
+    def test_project_page_url(self):
+        """После создания проект открывается как ravencolonial.com/#build=..."""
+        from raven_colonial_api import project_url, system_url
+
+        self.assertEqual(project_url("abc-123"), "https://ravencolonial.com/#build=abc-123")
+        self.assertEqual(system_url("Arietis Sector AG-W b2-1"),
+                         "https://ravencolonial.com/#sys=Arietis%20Sector%20AG-W%20b2-1")
 
     def test_update_project_uses_patch(self):
         self.api.update_project("abc-123", {"buildName": "Beta", "maxNeed": None})
@@ -78,16 +214,30 @@ class RavenColonialApiTests(unittest.TestCase):
 
     # -- основной проект ---------------------------------------------------
     def test_set_primary(self):
+        """buildId идёт в пути, тело пустое.
+
+        Раньше отправлялся PUT /cmdr/{cmdr}/primary с JSON-строкой в теле —
+        сервер отвечал отказом с пустым телом, а UI показывал
+        «неизвестная ошибка».
+        """
         self.api.set_primary("CMDR Name", "abc-123")
         call = self.calls[0]
         self.assertEqual(call["method"], "PUT")
-        self.assertTrue(call["url"].endswith("/api/cmdr/CMDR%20Name/primary"))
-        self.assertEqual(call["json"], "abc-123")
+        self.assertTrue(
+            call["url"].endswith("/api/cmdr/CMDR%20Name/primary/abc-123"), call["url"])
+        self.assertIsNone(call["json"])
+
+    def test_set_primary_rejects_empty_arguments(self):
+        self.assertFalse(self.api.set_primary("", "abc-123")["ok"])
+        self.assertFalse(self.api.set_primary("CMDR Name", "")["ok"])
+        self.assertEqual(self.calls, [])
 
     def test_clear_primary(self):
         self.api.clear_primary("CMDR Name")
         self.assertEqual(self.calls[0]["method"], "DELETE")
-        self.assertTrue(self.calls[0]["url"].endswith("/api/cmdr/CMDR%20Name/primary"))
+        self.assertTrue(
+            self.calls[0]["url"].endswith("/api/cmdr/CMDR%20Name/primary/"),
+            self.calls[0]["url"])
 
     def test_get_primary(self):
         self.api.get_primary("cmdr")

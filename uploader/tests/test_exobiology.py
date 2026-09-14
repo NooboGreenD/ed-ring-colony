@@ -16,7 +16,17 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from exobiology import ExobiologyTracker, atmosphere_category, predict_genera  # noqa: E402
+from exobiology import (  # noqa: E402
+    FIRST_DISCOVERY_BONUS,
+    MAPPED_BONUS,
+    SAMPLE_COOLDOWN_SECONDS,
+    ExobiologyTracker,
+    atmosphere_category,
+    estimate_value,
+    format_credits,
+    predict_genera,
+    prediction_rows,
+)
 
 
 def scan_event(**overrides):
@@ -181,3 +191,173 @@ class TrackerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ValueEstimateTests(unittest.TestCase):
+    """Оценка выплаты: порядок величины, а не прайс."""
+
+    def test_base_value(self):
+        self.assertGreater(estimate_value("Tussock"), 0)
+        self.assertEqual(estimate_value("Tussock", mapped=False),
+                         estimate_value("Tussock"))
+
+    def test_multipliers(self):
+        base = estimate_value("Osseus")
+        self.assertEqual(estimate_value("Osseus", mapped=True),
+                         int(round(base * MAPPED_BONUS)))
+        self.assertEqual(estimate_value("Osseus", first_discovery=True),
+                         int(round(base * FIRST_DISCOVERY_BONUS)))
+
+    def test_unknown_genus_gives_zero_not_a_guess(self):
+        self.assertEqual(estimate_value("Неизвестный род"), 0)
+        self.assertEqual(estimate_value(""), 0)
+        self.assertEqual(estimate_value(None), 0)
+
+    def test_format_credits(self):
+        self.assertEqual(format_credits(0), "0")
+        self.assertEqual(format_credits(850), "850")
+        self.assertEqual(format_credits(550_000), "550 тыс")
+        self.assertEqual(format_credits(1_200_000), "1.2 млн")
+        self.assertEqual(format_credits(2_000_000), "2 млн")
+        self.assertEqual(format_credits("мусор"), "0")
+
+
+class PredictionRowsTests(unittest.TestCase):
+    """Процент считается от максимума, достижимого для конкретного рода."""
+
+    def test_percent_is_relative_to_the_genus_maximum(self):
+        body = {"atmosphere": "thin sulfur dioxide atmosphere",
+                "volcanism": "", "surface_temperature": 188.0,
+                "surface_gravity": 4.2}
+        rows = {row["genus"]: row for row in prediction_rows(body)}
+        # Род только с атмосферным правилом: совпало — значит 100 %.
+        self.assertEqual(rows["Tussock"]["percent"], 100)
+        # Electricae требует геологию и на таком теле не предсказывается вовсе.
+        self.assertNotIn("Electricae", rows)
+
+    def test_geology_genus_reaches_full_percent(self):
+        body = {"atmosphere": "thin sulfur dioxide atmosphere",
+                "volcanism": "minor silicate vapour geysers"}
+        rows = {row["genus"]: row for row in prediction_rows(body)}
+        self.assertEqual(rows["Electricae"]["percent"], 100)
+        self.assertIn("геология", rows["Electricae"]["notes"])
+
+    def test_rows_carry_value_and_limit(self):
+        body = {"atmosphere": "thin sulfur dioxide atmosphere", "volcanism": ""}
+        rows = prediction_rows(body)
+        self.assertTrue(all("value_cr" in row and "percent" in row for row in rows))
+        self.assertLessEqual(len(prediction_rows(body, limit=2)), 2)
+
+    def test_empty_body(self):
+        self.assertEqual(prediction_rows({}), [])
+
+
+class SampleTimingTests(unittest.TestCase):
+    """Обратный отсчёт до следующего образца."""
+
+    def setUp(self):
+        self.tracker = ExobiologyTracker()
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "Sol"})
+        self.tracker.handle(scan_event(StarSystem="Sol", BodyName="Sol 3"))
+        self.tracker.handle({"event": "ApproachBody", "StarSystem": "Sol",
+                             "BodyName": "Sol 3"})
+
+    def _sample(self, timestamp):
+        self.tracker.handle({
+            "event": "ScanOrganic", "timestamp": timestamp, "Body": "Sol 3",
+            "Species_Localised": "Tussock", "ScanType": "Sample"})
+
+    def test_countdown_uses_event_timestamp(self):
+        self._sample("2025-01-01T00:00:00Z")
+        from datetime import datetime, timezone
+
+        now = datetime(2025, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
+        row = self.tracker.current_body_state(now=now)["organics"][0]
+        self.assertEqual(row["samples"], 1)
+        self.assertEqual(row["wait_seconds"], int(round(SAMPLE_COOLDOWN_SECONDS - 10)))
+        self.assertEqual(row["samples_left"], 2)
+
+    def test_countdown_reaches_zero(self):
+        self._sample("2025-01-01T00:00:00Z")
+        from datetime import datetime, timezone
+
+        now = datetime(2025, 1, 1, 0, 5, 0, tzinfo=timezone.utc).timestamp()
+        row = self.tracker.current_body_state(now=now)["organics"][0]
+        self.assertEqual(row["wait_seconds"], 0)
+
+    def test_complete_set_has_no_countdown_and_carries_value(self):
+        for second in (0, 40, 80):
+            self._sample(f"2025-01-01T00:00:{second:02d}Z")
+        from datetime import datetime, timezone
+
+        now = datetime(2025, 1, 1, 0, 2, 0, tzinfo=timezone.utc).timestamp()
+        state = self.tracker.current_body_state(now=now)
+        row = state["organics"][0]
+        self.assertTrue(row["complete"])
+        self.assertEqual(row["wait_seconds"], 0)
+        self.assertGreater(row["value_cr"], 0)
+        self.assertEqual(state["value_cr"], row["value_cr"])
+        self.assertEqual(state["samples_done"], 3)
+        self.assertEqual(state["samples_total"], 3)
+
+    def test_genus_is_derived_from_species_name(self):
+        self.assertEqual(ExobiologyTracker._genus_of("Tussock Poxtop"), "Tussock")
+        self.assertEqual(ExobiologyTracker._genus_of("Osseus"), "Osseus")
+        self.assertEqual(ExobiologyTracker._genus_of("Что-то незнакомое"),
+                         "Что-то")
+        self.assertEqual(ExobiologyTracker._genus_of(""), "")
+
+
+class SystemBodiesTests(unittest.TestCase):
+    """Список тел системы: куда лететь за биосигналами."""
+
+    def setUp(self):
+        self.tracker = ExobiologyTracker()
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "A"})
+        self.tracker.handle(scan_event(StarSystem="A", BodyName="A 1"))
+        self.tracker.handle(scan_event(StarSystem="A", BodyName="A 2"))
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "B"})
+        self.tracker.handle(scan_event(StarSystem="B", BodyName="B 1"))
+        # Вернулись в A — список тел системы смотрим по ней.
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "A"})
+
+    def _signals(self, body, count, system="A"):
+        self.tracker.handle({"event": "FSSBodySignals", "StarSystem": system,
+                             "BodyName": body,
+                             "Signals": [{"Type": "$SAA_SignalType_Biological;",
+                                          "Count": count}]})
+
+    def test_only_current_system_and_sorted_by_signals(self):
+        self._signals("A 1", 2)
+        self._signals("A 2", 5)
+        self._signals("B 1", 9, system="B")
+        rows = self.tracker.system_bodies()
+        self.assertEqual([row["body"] for row in rows], ["A 2", "A 1"])
+        self.assertEqual(rows[0]["bio_signals"], 5)
+
+    def test_bodies_without_signals_are_hidden(self):
+        self._signals("A 1", 3)
+        rows = self.tracker.system_bodies()
+        self.assertEqual([row["body"] for row in rows], ["A 1"])
+
+    def test_limit(self):
+        self._signals("A 1", 3)
+        self._signals("A 2", 4)
+        self.assertEqual(len(self.tracker.system_bodies(limit=1)), 1)
+
+    def test_signals_follow_the_event_system_not_the_current_one(self):
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "B"})
+        self._signals("A 2", 4)          # событие помечено системой A
+        self.assertEqual([row["body"] for row in self.tracker.system_bodies()], [])
+        self.tracker.handle({"event": "FSDJump", "StarSystem": "A"})
+        self.assertEqual([row["body"] for row in self.tracker.system_bodies()], ["A 2"])
+
+    def test_flags(self):
+        self._signals("A 1", 1)
+        self.tracker.handle({"event": "SAAScanComplete", "BodyName": "A 1"})
+        self.tracker.handle({"event": "ScanOrganic", "Body": "A 1",
+                             "Species_Localised": "Tussock", "ScanType": "Sample"})
+        row = self.tracker.system_bodies()[0]
+        self.assertTrue(row["mapped"])
+        self.assertTrue(row["has_organics"])
+        self.assertTrue(row["landable"])
