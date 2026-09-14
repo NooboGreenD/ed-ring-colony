@@ -114,7 +114,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.0"
+VERSION = "2.10.1"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -179,6 +179,8 @@ class ColonialHelperApp:
         self._map_last_snapshot = None        # снимок последней отрисовки
         self._map_raven_fetched: dict = {}    # система -> время запроса Raven
         self._map_raven_inflight = False      # запрос к Raven уже летит
+        self._map_autorefresh_job = None      # фоновое освежение открытой вкладки
+        self._map_save_job = None             # отложенное сохранение вида в конфиг
         self._colony_draft_site = None        # площадка, по которой заполнена форма
         self._colony_selected_site_id = ""     # systemSiteId выбранного плана
         self._colony_autofilled_name = ""      # название, подставленное автозаполнением
@@ -2490,13 +2492,15 @@ class ColonialHelperApp:
                   bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(4, 0))
         self.map_zoom_label = tb.Label(bar, text="100%", foreground=COLOR_MUTED, width=6)
         self.map_zoom_label.pack(side=LEFT, padx=(4, 12))
-        self.map_moons_var = tk.BooleanVar(value=True)
+        self.map_moons_var = tk.BooleanVar(
+            value=bool(self.config.get("map_show_moons", True)))
         tb.Checkbutton(bar, text="Луны", variable=self.map_moons_var,
-                       command=self._map_redraw_now,
+                       command=self._on_map_toggle,
                        bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
-        self.map_labels_var = tk.BooleanVar(value=True)
+        self.map_labels_var = tk.BooleanVar(
+            value=bool(self.config.get("map_show_labels", True)))
         tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
-                       command=self._map_redraw_now,
+                       command=self._on_map_toggle,
                        bootstyle="info-round-toggle").pack(side=LEFT)
         self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
                                          foreground=COLOR_ORANGE)
@@ -2558,6 +2562,11 @@ class ColonialHelperApp:
                                  wraplength=280, justify=RIGHT)
         self.map_hint.pack(side=RIGHT)
 
+        try:
+            zoom_index = int(self.config.get("map_zoom_index", 2))
+        except (TypeError, ValueError):
+            zoom_index = 2
+        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, zoom_index))
         self._map_update_zoom_label()
         self._map_redraw_now()
 
@@ -2917,6 +2926,11 @@ class ColonialHelperApp:
                 if station.required_tons:
                     parts.append("нужно "
                                  + f"{station.required_tons:,}".replace(",", " ") + " t")
+                if station.remaining_by_commodity:
+                    top = sorted(station.remaining_by_commodity.items(),
+                                 key=lambda pair: pair[1], reverse=True)[:3]
+                    parts.append("осталось: " + ", ".join(
+                        f"{name} {amount:,}".replace(",", " ") for name, amount in top))
                 if station.body_name:
                     parts.append(f"тело: {station.body_name}")
                 if station.build_id:
@@ -2963,7 +2977,37 @@ class ColonialHelperApp:
         index = int(self._map_zoom_index) + int(step or 0)
         self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, index))
         self._map_update_zoom_label()
+        self._map_remember_view()
         self._draw_system_map(self._map_last_snapshot)
+
+    def _on_map_toggle(self):
+        """Переключили «Луны»/«Подписи»: перерисовать и запомнить вид."""
+        self._map_remember_view()
+        self._map_redraw_now()
+
+    def _map_remember_view(self):
+        """Вид вкладки (зум, луны, подписи) переживает перезапуск приложения."""
+        self.config["map_zoom_index"] = int(self._map_zoom_index)
+        self.config["map_show_moons"] = bool(self.map_moons_var.get())
+        self.config["map_show_labels"] = bool(self.map_labels_var.get())
+        # Запись файла откладываем: колесо мыши даёт несколько шагов зума подряд.
+        if self._map_save_job is not None:
+            try:
+                self.root.after_cancel(self._map_save_job)
+            except Exception:
+                pass
+            self._map_save_job = None
+        try:
+            self._map_save_job = self.root.after(1200, self._map_flush_view)
+        except Exception:
+            self._map_save_job = None
+
+    def _map_flush_view(self):
+        self._map_save_job = None
+        try:
+            self.save_config()
+        except Exception:
+            pass
 
     def _on_map_wheel(self, event):
         delta = 0
@@ -3194,6 +3238,30 @@ class ColonialHelperApp:
             return
         self._map_redraw_now()
         self._map_refresh_from_raven()
+        self._map_arm_autorefresh()
+
+    def _map_arm_autorefresh(self):
+        """Пока вкладка открыта, Raven опрашивается сам раз в MAP_RAVEN_TTL.
+
+        Процент завезённого меняется не только когда пилот что-то привёз:
+        другие командиры довозят груз, и карта открытой вкладки должна это
+        показать без нажатия «Обновить». Цепочка сама обрывается, стоит
+        переключить вкладку.
+        """
+        if self._map_autorefresh_job is not None:
+            return
+        try:
+            self._map_autorefresh_job = self.root.after(
+                self.MAP_RAVEN_TTL * 1000, self._map_autorefresh_tick)
+        except Exception:
+            self._map_autorefresh_job = None
+
+    def _map_autorefresh_tick(self):
+        self._map_autorefresh_job = None
+        if not self._map_visible():
+            return
+        self._map_refresh_from_raven()
+        self._map_arm_autorefresh()
 
     # ============================================================
     #  Вкладка: Оверлей

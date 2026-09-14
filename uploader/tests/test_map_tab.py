@@ -561,6 +561,98 @@ class MapInteractionTests(MapTabTestBase):
         self.assertEqual([item.label for item in selected], ["A 1"])
 
 
+class MapViewSettingsTests(MapTabTestBase):
+    """Вид вкладки переживает перезапуск, открытая вкладка освежается сама."""
+
+    def test_view_restored_from_config(self):
+        self.app.config["map_zoom_index"] = 4
+        self.app.config["map_show_moons"] = False
+        self.app.config["map_show_labels"] = False
+        self.app._build_tab_map()
+        self.assertEqual(self.app._map_zoom_index, 4)
+        self.assertFalse(self.app.map_moons_var.get())
+        self.assertFalse(self.app.map_labels_var.get())
+
+    def test_bad_config_zoom_falls_back(self):
+        self.app.config["map_zoom_index"] = "мусор"
+        self.app._build_tab_map()
+        self.assertEqual(self.app._map_zoom_index, 2)
+
+    def test_zoom_is_remembered_in_config(self):
+        self.app._on_map_zoom(1)
+        self.assertEqual(self.app.config["map_zoom_index"], 3)
+        self.app.map_moons_var.set(False)
+        self.app._on_map_toggle()
+        self.assertFalse(self.app.config["map_show_moons"])
+        self.assertFalse(self.app.config["map_show_labels"] is False
+                         and not self.app.map_labels_var.get())
+
+    def test_toggle_redraws_and_remembers(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        self.app.map_canvas.reset_mock()
+        self.app.map_labels_var.set(False)
+        self.app._on_map_toggle()
+        self.assertEqual(self.app.config["map_show_labels"], False)
+        self.assertGreater(self.app.map_canvas.create_oval.call_count, 0)
+
+    def test_save_is_debounced(self):
+        with mock.patch.object(self.app, "save_config") as save:
+            for _ in range(5):
+                self.app._map_remember_view()
+            save.assert_not_called()          # колесо мыши не пишет файл пять раз
+            self.app._map_flush_view()
+            save.assert_called_once()
+
+    def test_autorefresh_arms_and_stops_when_hidden(self):
+        with mock.patch.object(self.app, "_map_visible", return_value=True), \
+             mock.patch.object(self.app, "_map_refresh_from_raven") as refresh:
+            self.app._on_notebook_tab_changed()
+            self.assertIsNotNone(self.app._map_autorefresh_job, "автообновление не взведено")
+            self.assertEqual(refresh.call_count, 1, "открытие вкладки не опросило Raven")
+            self.app._map_autorefresh_tick()
+            self.assertEqual(refresh.call_count, 2, "тик не опросил Raven")
+            self.assertIsNotNone(self.app._map_autorefresh_job, "цепочка продолжилась")
+        with mock.patch.object(self.app, "_map_visible", return_value=False), \
+             mock.patch.object(self.app, "_map_refresh_from_raven") as refresh:
+            self.app._map_autorefresh_tick()
+            refresh.assert_not_called()
+            self.assertIsNone(self.app._map_autorefresh_job, "цепочка оборвалась")
+
+    def test_autorefresh_does_not_double_arm(self):
+        with mock.patch.object(self.app, "_map_visible", return_value=True):
+            self.app._map_arm_autorefresh()
+            first = self.app._map_autorefresh_job
+            self.app._map_arm_autorefresh()
+            self.assertEqual(self.app._map_autorefresh_job, first)
+
+
+class MapSelectionDetailsTests(MapTabTestBase):
+    """Подсказка по выбранному объекту: остатки по товарам, а не только тонны."""
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        self.app._handle_tracked_event(depot_event(required=5000, provided=1000), live=True)
+        self.app._map_redraw_now()
+
+    def test_details_show_commodities(self):
+        self.prepare()
+        self.app._select_map_object(SITE_NAME)
+        hints = [str(call.kwargs.get("text"))
+                 for call in self.app.map_hint.config.call_args_list]
+        self.assertTrue(any("осталось: steel 4 000" in hint for hint in hints), hints[-3:])
+        self.assertTrue(any("нужно 5 000 t" in hint for hint in hints), hints[-3:])
+
+    def test_details_for_body(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._map_redraw_now()
+        self.app._select_map_object(BODY_1)
+        hints = [str(call.kwargs.get("text"))
+                 for call in self.app.map_hint.config.call_args_list]
+        self.assertTrue(any("ls" in hint and BODY_1 in hint for hint in hints), hints[-3:])
+
+
 class MapRobustnessTests(MapTabTestBase):
     """Карта не должна ронять приложение."""
 
