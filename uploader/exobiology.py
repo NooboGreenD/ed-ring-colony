@@ -29,6 +29,7 @@
 EDSM/Spansh/Canonn — всё работает офлайн.
 """
 
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 # В журнале тип биосигнала приходит в виде локализационного токена.
@@ -51,6 +52,45 @@ LANDABLE_PLANET_CLASSES = {
 SAMPLE_STAGES = ("Log", "Analyse", "Sample")
 # Полный кредит за вид — 3 образца с разных точек.
 SAMPLES_FOR_FULL_CREDIT = 3
+
+# После каждого образца организм «закрывается», и следующий снимок удаётся
+# сделать не сразу. Точного значения в документации нет — это эмпирическая
+# пауза, которую называют игроки (~30 с). Оверлей показывает обратный отсчёт
+# до неё как подсказку, а не как гарантию: считать можно и раньше.
+SAMPLE_COOLDOWN_SECONDS = 30.0
+
+# Множители выплаты за биологические образцы (известные правила игры):
+# ×2 — если система/тело открыты впервые, ×3.60246 — если тело картографировано.
+FIRST_DISCOVERY_BONUS = 2.0
+MAPPED_BONUS = 3.60246
+
+# Грубая оценка стоимости полного комплекта (3 образца) по роду, кр.
+# Это **порядок величины**, а не прайс: реальная цена зависит от варианта
+# (какой именно Tussock или Osseus), которого журнал до сдачи образца не
+# сообщает. Таблица своя, округлённая; уточняется в одном месте.
+GENUS_VALUE_CR: Dict[str, int] = {
+    "Bacterium": 90_000,
+    "Aleoida": 500_000,
+    "Amphora Plant": 500_000,
+    "Anemone": 400_000,
+    "Bark Mounds": 550_000,
+    "Brain Trees": 800_000,
+    "Cactoida": 550_000,
+    "Clypeus": 600_000,
+    "Conchas": 600_000,
+    "Electricae": 1_000_000,
+    "Fonticulua": 400_000,
+    "Frutexa": 400_000,
+    "Fumerola": 800_000,
+    "Fungoida": 550_000,
+    "Osseus": 750_000,
+    "Recepta": 650_000,
+    "Shards": 600_000,
+    "Stratum": 950_000,
+    "Tubers": 550_000,
+    "Tubus": 800_000,
+    "Tussock": 100_000,
+}
 
 # Сколько тел держим в памяти. При первичной загрузке всей истории журналов
 # тел могут быть тысячи, а оверлею нужны только недавние.
@@ -136,6 +176,69 @@ def body_props(event: dict, system: str = "") -> Optional[dict]:
         "mapped": False,
         "bio_signals": 0,
     }
+
+
+def estimate_value(genus: str, mapped: bool = False,
+                   first_discovery: bool = False) -> int:
+    """Грубая оценка выплаты за полный комплект образцов рода, кр.
+
+    Формула: базовая цена рода × 2 (первооткрытие) × 3.60246 (карта тела).
+    Если род неизвестен таблице — 0, и оверлей цену не показывает вовсе:
+    выдуманное число вреднее пустого места.
+    """
+    base = GENUS_VALUE_CR.get(str(genus or "").strip(), 0)
+    if not base:
+        return 0
+    value = float(base)
+    if first_discovery:
+        value *= FIRST_DISCOVERY_BONUS
+    if mapped:
+        value *= MAPPED_BONUS
+    return int(round(value))
+
+
+def format_credits(value) -> str:
+    """«1.2 млн» / «850 тыс» — в оверлее мало места на полные числа."""
+    try:
+        value = float(value or 0)
+    except (TypeError, ValueError):
+        return "0"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} млн".replace(".0 млн", " млн")
+    if value >= 1_000:
+        return f"{value / 1_000:.0f} тыс"
+    return f"{value:.0f}"
+
+
+def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """То же, что `predict_genera`, но с процентом совпадения правил.
+
+    Оценка в `predict_genera` абсолютная (сколько правил совпало), поэтому
+    «6» у Osseus и «3» у Bacterium не сравнимы напрямую: у Osseus обязательна
+    геология и максимум выше. Процент считается от максимума, достижимого
+    именно для этого рода при данных тела, — его и показываем игроку.
+    """
+    rows: List[Dict[str, Any]] = []
+    for genus, score, notes in predict_genera(body):
+        rule = GENUS_RULES.get(genus, {})
+        max_score = WEIGHT_ATMOSPHERE if rule.get("atmos") else 0.0
+        if rule.get("geology"):
+            max_score += WEIGHT_GEOLOGY
+        if rule.get("temp"):
+            max_score += WEIGHT_TEMP
+        if rule.get("gravity"):
+            max_score += WEIGHT_GRAVITY
+        if rule.get("materials"):
+            max_score += WEIGHT_MATERIAL
+        percent = int(round(100 * score / max_score)) if max_score else 0
+        rows.append({
+            "genus": genus,
+            "score": score,
+            "percent": max(0, min(100, percent)),
+            "notes": list(notes or []),
+            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+        })
+    return rows[:limit] if limit else rows
 
 
 # ============================================================
@@ -301,6 +404,28 @@ class ExobiologyTracker:
             self.bodies[key] = body
         return body
 
+    def _event_system(self, event: dict) -> str:
+        """Система события: своя, если указана, иначе текущая."""
+        return str(event.get("StarSystem") or self.current_system or "").strip()
+
+    @staticmethod
+    def _event_time(event: dict) -> float:
+        """Момент события в секундах epoch.
+
+        Для живого журнала это практически `time.time()`; timestamp из файла
+        нужен, чтобы обратный отсчёт не «врал» при разборе истории.
+        """
+        raw = str(event.get("timestamp") or "").strip()
+        if raw:
+            from datetime import datetime
+
+            text = raw.replace("Z", "+00:00")
+            try:
+                return datetime.fromisoformat(text).timestamp()
+            except ValueError:
+                pass
+        return time.time()
+
     # -- журнал ------------------------------------------------------------
     def _trim(self):
         """Ограничить память: удаляем самые старые записи (dict сохраняет порядок)."""
@@ -347,8 +472,11 @@ class ExobiologyTracker:
                 body_name = str(event.get("BodyName") or self.current_body or "").strip()
                 if not body_name:
                     return
-                body = self._ensure_body(self._key(self.current_system, body_name),
-                                         self.current_system, body_name)
+                # Система — из самого события: `StarSystem` в нём есть, а
+                # `current_system` к этому моменту мог уже уехать вперёд
+                # (разбор истории идёт пачками).
+                system = self._event_system(event)
+                body = self._ensure_body(self._key(system, body_name), system, body_name)
                 body["mapped"] = True
                 return
 
@@ -365,15 +493,18 @@ class ExobiologyTracker:
                 body_name = str(event.get("BodyName") or self.current_body or "").strip()
                 if not body_name:
                     return
-                body = self._ensure_body(self._key(self.current_system, body_name),
-                                         self.current_system, body_name)
+                system = self._event_system(event)
+                body = self._ensure_body(self._key(system, body_name), system, body_name)
                 body["bio_signals"] = max(int(body.get("bio_signals") or 0), count)
                 return
 
             if name == "ScanOrganic":
-                key = self._body_key(event)
-                body_name = str(event.get("Body") or self.current_body or "")
-                system = self.current_system
+                # В ScanOrganic тело лежит в поле `Body`, а не в `BodyName` —
+                # иначе запись уходила к телу, на котором мы были до этого.
+                body_name = str(event.get("Body") or event.get("BodyName")
+                                or self.current_body or "")
+                system = self._event_system(event)
+                key = self._body_key(event, body_name)
                 species = (
                     event.get("Species_Localised")
                     or event.get("Species")
@@ -386,13 +517,18 @@ class ExobiologyTracker:
                     return
                 stage = str(event.get("ScanType") or event.get("Type") or "").strip()
                 entry = self.organics.setdefault(key, {}).setdefault(
-                    species, {"stage": "", "samples": 0, "first": "", "body": body_name, "system": system}
+                    species, {"stage": "", "samples": 0, "first": "", "body": body_name,
+                              "system": system, "last_ts": 0.0}
                 )
                 if stage == "Sample":
                     entry["samples"] = int(entry.get("samples") or 0) + 1
                     entry["stage"] = "Sample"
+                    # Когда был последний снимок — по нему оверлей считает
+                    # обратный отсчёт до следующего образца.
+                    entry["last_ts"] = self._event_time(event)
                 elif stage:
                     entry["stage"] = stage
+                    entry["last_ts"] = self._event_time(event)
                 self.seen_species[species] = self.seen_species.get(species, 0) + 1
                 return
 
@@ -407,17 +543,42 @@ class ExobiologyTracker:
             return
 
     # -- выдача ------------------------------------------------------------
-    def current_body_state(self) -> Optional[dict]:
+    def current_body_state(self, now: Optional[float] = None) -> Optional[dict]:
         """Состояние текущего тела (с предсказанием и прогрессом образцов)."""
         key = self._key(self.current_system, self.current_body)
-        return self.body_state(key)
+        return self.body_state(key, now=now)
 
-    def body_state(self, key: str) -> Optional[dict]:
+    def body_state(self, key: str, now: Optional[float] = None) -> Optional[dict]:
         body = self.bodies.get(key)
         if body is None:
             return None
-        predictions = predict_genera(body)
+        now = time.time() if now is None else float(now)
+        mapped = bool(body.get("mapped"))
         organics = self.organics.get(key, {})
+
+        rows = []
+        total_value = 0
+        for species, data in sorted(organics.items()):
+            samples = int(data.get("samples") or 0)
+            complete = samples >= SAMPLES_FOR_FULL_CREDIT
+            last_ts = float(data.get("last_ts") or 0.0)
+            # Сколько осталось ждать до следующего снимка (0 — можно снимать).
+            wait = 0.0
+            if last_ts and not complete:
+                wait = max(0.0, SAMPLE_COOLDOWN_SECONDS - (now - last_ts))
+            value = estimate_value(self._genus_of(species), mapped=mapped)
+            total_value += value
+            rows.append({
+                "species": species,
+                "stage": data.get("stage", ""),
+                "samples": samples,
+                "samples_left": max(0, SAMPLES_FOR_FULL_CREDIT - samples),
+                "complete": complete,
+                "wait_seconds": int(round(wait)),
+                "value_cr": value,
+                "seen_before": int(self.seen_species.get(species, 0) or 0) > samples,
+            })
+
         return {
             "system": body.get("system", ""),
             "body": body.get("name", ""),
@@ -429,22 +590,56 @@ class ExobiologyTracker:
             "gravity": body.get("surface_gravity", 0.0),
             "volcanism": body.get("volcanism") or "нет",
             "materials": body.get("materials", []),
-            "mapped": bool(body.get("mapped")),
+            "mapped": mapped,
             "bio_signals": int(body.get("bio_signals") or 0),
-            "predictions": [
-                {"genus": genus, "score": score, "notes": notes}
-                for genus, score, notes in predictions
-            ],
-            "organics": [
-                {
-                    "species": species,
-                    "stage": data.get("stage", ""),
-                    "samples": int(data.get("samples") or 0),
-                    "complete": int(data.get("samples") or 0) >= SAMPLES_FOR_FULL_CREDIT,
-                }
-                for species, data in sorted(organics.items())
-            ],
+            # Предсказания с процентом совпадения правил и оценкой в кр.
+            "predictions": prediction_rows(body),
+            "organics": rows,
+            "value_cr": total_value,
+            "samples_done": sum(row["samples"] for row in rows),
+            "samples_total": sum(SAMPLES_FOR_FULL_CREDIT for _ in rows),
         }
+
+    @staticmethod
+    def _genus_of(species: str) -> str:
+        """Из названия вида — род (первое слово): «Tussock Poxtop» → «Tussock».
+
+        `ScanOrganic` отдаёт вид, а цена в таблице — по роду.
+        """
+        text = str(species or "").strip()
+        if not text:
+            return ""
+        head = text.split()[0]
+        if head in GENUS_VALUE_CR:
+            return head
+        # «Fungoida» во множественном числе приходит как «Fungoida», а вот
+        # «Osseus» — как «Osseus»: проверяем и полную строку.
+        return text if text in GENUS_VALUE_CR else head
+
+    def system_bodies(self, limit: int = 10) -> List[dict]:
+        """Тела текущей системы, у которых есть биосигналы (важные сверху).
+
+        Сортировка: сначала по числу биосигналов, затем по наличию карты и по
+        имени —
+        порядок детерминирован, иначе список прыгал бы между тиками.
+        """
+        rows = []
+        for key, body in self.bodies.items():
+            if not key.startswith(f"{self.current_system}|"):
+                continue
+            signals = int(body.get("bio_signals") or 0)
+            rows.append({
+                "body": str(body.get("name") or ""),
+                "planet_class": str(body.get("planet_class") or ""),
+                "bio_signals": signals,
+                "mapped": bool(body.get("mapped")),
+                "landable": bool(body.get("landable")),
+                "has_organics": bool(self.organics.get(key)),
+            })
+        rows.sort(key=lambda row: (-row["bio_signals"], not row["mapped"], row["body"]))
+        # Тела без биосигналов интересны только если на них уже взяты образцы.
+        rows = [row for row in rows if row["bio_signals"] or row["has_organics"]]
+        return rows[:limit]
 
     def recent_bodies(self, limit: int = 8) -> List[dict]:
         """Последние отсканированные тела текущей системы (свежие сверху)."""

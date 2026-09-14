@@ -242,12 +242,52 @@ class RavenColonialAPI:
             payload = resp.json()
         except ValueError:
             payload = resp.text[:500]
+        if resp.ok:
+            return {"ok": True, "data": payload, "error": None,
+                    "status": resp.status_code}
         return {
-            "ok": resp.ok,
-            "data": payload if resp.ok else None,
-            "error": None if resp.ok else (payload if isinstance(payload, str) else str(payload))[:500],
+            "ok": False,
+            "data": None,
+            "error": self._describe_error(resp.status_code, payload, method, path),
             "status": resp.status_code,
         }
+
+    @staticmethod
+    def _describe_error(status: int, payload, method: str, path: str) -> str:
+        """Текст ошибки для лога.
+
+        Raven Colonial на многие отказы отвечает пустым телом (204/400/404 без
+        JSON), и раньше в лог уезжала пустая строка, а UI показывал
+        «неизвестная ошибка». Теперь статус расшифровывается, а тело ответа
+        добавляется только если в нём действительно что-то есть.
+        """
+        reasons = {
+            400: "неверный запрос — сервер не принял параметры",
+            401: "ключ RCC не принят (401) — проверьте ключ на сайте Raven Colonial",
+            403: "нет прав на эту операцию (403)",
+            404: "не найдено (404) — проект или командир не существует",
+            405: "метод не поддерживается сервером (405)",
+            409: "конфликт: проект уже в таком состоянии (409)",
+            422: "сервер не принял данные (422)",
+            429: "слишком много запросов (429) — подождите немного",
+            500: "ошибка сервера Raven Colonial (500)",
+            502: "сервис недоступен (502)",
+            503: "сервис временно недоступен (503)",
+            504: "сервер не ответил вовремя (504)",
+        }
+        reason = reasons.get(status)
+        if reason is None:
+            reason = ("ошибка сервера Raven Colonial" if 500 <= status < 600
+                      else "сервер отказал")
+        # Код ответа показываем всегда: по нему Support Raven Colonial
+        # понимает, о чём речь, даже если формулировка окажется неточной.
+        if str(status) not in reason:
+            reason += f" (HTTP {status})"
+        detail = payload if isinstance(payload, str) else (str(payload) if payload else "")
+        detail = detail.strip()
+        if detail and detail.lower() not in ("null", "none", "''", '""'):
+            reason += f": {detail[:300]}"
+        return reason
 
     @staticmethod
     def _esc(value) -> str:
@@ -260,6 +300,59 @@ class RavenColonialAPI:
     def get_project_by_id(self, build_id: str) -> dict:
         """GET /api/project/{buildId} — проект целиком."""
         return self._request("GET", f"/project/{self._esc(build_id)}")
+
+    def get_cmdr_by_key(self, api_key: str = "") -> dict:
+        """GET /api/cmdr/ — чей это ключ.
+
+        Raven Colonial отдаёт по ключу профиль командира, в том числе
+        `displayName` — ровно то имя, под которым командир известен сервису.
+        Это единственный способ узнать имя пилота, имея только ключ RCC:
+        в журнале имя появляется лишь после `LoadGame`, а в настройках
+        пользователь его может не заполнять.
+
+        Ключ можно передать явно (проверка только что введённого ключа),
+        иначе используется текущий.
+        """
+        key = (api_key or self.api_key or "").strip()
+        if not key:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Ключ Raven Colonial (RCC) не задан"}
+        try:
+            resp = self._session.request(
+                "GET",
+                f"{self.base_url}/cmdr/",
+                headers={"rcc-key": key},
+                timeout=15,
+            )
+        except Exception as exc:
+            return {"ok": False, "data": None, "status": 0, "error": str(exc)}
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if not resp.ok:
+            return {
+                "ok": False,
+                "data": None,
+                "status": resp.status_code,
+                "error": ("ключ RCC не принят (401) — проверьте ключ на сайте Raven Colonial"
+                          if resp.status_code == 401
+                          else self._describe_error(resp.status_code, payload, "GET", "/cmdr/")),
+            }
+        return {"ok": True, "data": payload, "error": None, "status": resp.status_code}
+
+    @staticmethod
+    def cmdr_display_name(result: dict) -> str:
+        """Достать имя командира из ответа `get_cmdr_by_key()`."""
+        data = result.get("data") if isinstance(result, dict) else None
+        if isinstance(data, dict):
+            for key in ("displayName", "DisplayName", "name", "cmdrName"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(data, str) and data.strip():
+            return data.strip()
+        return ""
 
     def get_cmdr_active(self, cmdr: str) -> dict:
         """GET /api/cmdr/{cmdr}/active — активные проекты командира со связями."""
@@ -339,11 +432,29 @@ class RavenColonialAPI:
         return self._request("POST", f"/project/{self._esc(build_id)}/complete")
 
     def set_primary(self, cmdr: str, build_id: str) -> dict:
-        """PUT /api/cmdr/{cmdr}/primary — сделать проект основным."""
-        return self._request("PUT", f"/cmdr/{self._esc(cmdr)}/primary", json_body=str(build_id))
+        """PUT /api/cmdr/{cmdr}/primary/{buildId} — сделать проект основным.
+
+        `buildId` передаётся **в пути**, тело запроса пустое. Раньше сюда
+        отправлялся `PUT /cmdr/{cmdr}/primary` с JSON-строкой в теле — сервер
+        отвечал отказом с пустым телом, и в интерфейсе это выглядело как
+        «неизвестная ошибка».
+        """
+        if not cmdr:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не задано имя командира"}
+        if not build_id:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не выбран проект (пустой buildId)"}
+        return self._request(
+            "PUT", f"/cmdr/{self._esc(cmdr)}/primary/{self._esc(build_id)}"
+        )
 
     def clear_primary(self, cmdr: str) -> dict:
-        return self._request("DELETE", f"/cmdr/{self._esc(cmdr)}/primary")
+        """DELETE /api/cmdr/{cmdr}/primary/ — снять основной проект."""
+        if not cmdr:
+            return {"ok": False, "data": None, "status": 0,
+                    "error": "Не задано имя командира"}
+        return self._request("DELETE", f"/cmdr/{self._esc(cmdr)}/primary/")
 
     def link_cmdr(self, build_id: str, cmdr: str, link: bool = True) -> dict:
         """PUT/DELETE /api/project/{buildId}/link/{cmdr}."""

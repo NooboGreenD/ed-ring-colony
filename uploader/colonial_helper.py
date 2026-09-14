@@ -101,7 +101,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.5.2"
+VERSION = "2.6.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -1475,8 +1475,28 @@ class ColonialHelperApp:
         self._update_colony_key_label()
         self._colony_form_baseline = self._colony_form_snapshot()
         self._update_colony_site_label()
+        # Если ключ RCC уже сохранён, имя пилота подставляем сразу, не дожидаясь
+        # нажатия «Проверить ключ».
+        if self.raven_api.is_connected:
+            self._autofill_cmdr_from_key()
 
     # ---------- Колонизатор: состояние ----------
+    def _autofill_cmdr_from_key(self):
+        """Узнать имя пилота по сохранённому ключу RCC (в фоновом потоке)."""
+        key = (self.raven_api.api_key or "").strip()
+        if not key:
+            return
+
+        def worker():
+            result = self.raven_api.get_cmdr_by_key(key)
+            if not result.get("ok"):
+                return
+            name = self.raven_api.cmdr_display_name(result)
+            if name:
+                self.root.after(0, lambda n=name: self._apply_rcc_commander(n))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _current_cmdr_name(self) -> str:
         """Имя командира: из токена сайта, из журнала или вручную."""
         for candidate in (
@@ -2974,7 +2994,7 @@ class ColonialHelperApp:
             "game_running": self.overlay_manager.game_running,
             "game_focused": bool(self.overlay_manager.game_state().focused),
             "game_detail": self.overlay_manager.game_state().process_name or "",
-            "exobiology": self.exobiology.current_body_state(),
+            "exobiology": self._exobiology_overlay_state(),
             "progress": self.progress_label.cget("text") or "",
             "log_lines": [],
             "current": "—",
@@ -3559,54 +3579,58 @@ class ColonialHelperApp:
         threading.Thread(target=self._check_raven_key_async, args=(key,), daemon=True).start()
 
     def _check_raven_key_async(self, key: str):
-        try:
-            import requests
-            # Проверяем ключ через корневой endpoint /api
-            # 200 = ключ валиден, 401 = ключ неверный, остальное = ошибка
-            resp = requests.get(
-                "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api",
-                headers={"rcc-key": key},
-                timeout=10,
-            )
-            if resp.status_code == 200:
-                self.root.after(0, lambda: self.raven_status_label.config(
-                    text="Raven Colonial: подключено", foreground="#3fb950"
-                ))
-                self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
-            elif resp.status_code == 401:
-                self.root.after(0, lambda: self.raven_status_label.config(
-                    text="Raven Colonial: ключ неверный", foreground="#f85149"
-                ))
-                self.root.after(0, lambda: self.log("Raven Colonial: ключ неверный (401)", "error"))
-            else:
-                # 404 или другой код — возможно endpoint другой, но ключ может быть валидным
-                # Пробуем альтернативный endpoint /api/system/0/0
-                resp2 = requests.get(
-                    "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net/api/system/0/0",
-                    headers={"rcc-key": key},
-                    timeout=10,
-                )
-                if resp2.status_code in (200, 404):
-                    # 404 = проект не найден, но доступ есть (ключ валиден)
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text="Raven Colonial: подключено", foreground="#3fb950"
-                    ))
-                    self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
-                elif resp2.status_code == 401:
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text="Raven Colonial: ключ неверный", foreground="#f85149"
-                    ))
-                    self.root.after(0, lambda: self.log("Raven Colonial: ключ неверный (401)", "error"))
-                else:
-                    self.root.after(0, lambda: self.raven_status_label.config(
-                        text=f"Raven Colonial: ошибка {resp2.status_code}", foreground="#f85149"
-                    ))
-                    self.root.after(0, lambda: self.log(f"Raven Colonial: ошибка {resp2.status_code}", "error"))
-        except Exception as e:
+        """Проверить ключ RCC и подставить имя командира.
+
+        `GET /api/cmdr/` с заголовком `rcc-key` возвращает профиль владельца
+        ключа (в том числе `displayName`) — это единственный способ узнать
+        имя пилота, имея только ключ. Раньше ключ проверялся запросом к
+        корневому `/api` с запасным вариантом `/api/system/0/0`, и имя
+        приходилось вводить руками.
+        """
+        result = self.raven_api.get_cmdr_by_key(key)
+        if result.get("ok"):
+            cmdr = self.raven_api.cmdr_display_name(result)
             self.root.after(0, lambda: self.raven_status_label.config(
-                text="Raven Colonial: сетевая ошибка", foreground="#f85149"
-            ))
-            self.root.after(0, lambda: self.log(f"Raven Colonial: сетевая ошибка: {e}", "error"))
+                text="Raven Colonial: подключено", foreground="#3fb950"))
+            self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
+            if cmdr:
+                self.root.after(0, lambda name=cmdr: self._apply_rcc_commander(name))
+            return
+
+        status = int(result.get("status") or 0)
+        error = str(result.get("error") or "неизвестная ошибка")
+        if status == 401:
+            text, log_text = "Raven Colonial: ключ неверный", "Raven Colonial: ключ неверный (401)"
+            level = "error"
+        elif status == 0:
+            text, log_text = "Raven Colonial: сетевая ошибка", f"Raven Colonial: {error}"
+            level = "error"
+        else:
+            text, log_text = f"Raven Colonial: ошибка {status}", f"Raven Colonial: {error}"
+            level = "error"
+        self.root.after(0, lambda t=text: self.raven_status_label.config(
+            text=t, foreground="#f85149"))
+        self.root.after(0, lambda m=log_text, lv=level: self.log(m, lv))
+
+    def _apply_rcc_commander(self, name: str):
+        """Подставить имя пилота, которое Raven Colonial отдал по ключу RCC.
+
+        Имя из ключа — авторитетное: именно под ним сервис знает командира,
+        поэтому поле «Командир» во вкладке «Колонизатор» перезаписывается.
+        """
+        name = str(name or "").strip()
+        if not name:
+            return
+        self.config["cmdr_name"] = name
+        self.save_config()
+        if hasattr(self, "colony_cmdr_var"):
+            self.colony_cmdr_var.set(name)
+        if hasattr(self, "colony_key_label"):
+            self.colony_key_label.config(
+                text=f"RCC ключ задан · {name}", foreground=COLOR_GREEN)
+        self.log(f"Raven Colonial: командир по ключу RCC — {name}", "success")
+        # Список проектов сразу не обновляем: пользователь может нажать
+        # «Обновить список» сам, а лишний запрос на каждое сохранение не нужен.
 
     def _on_browse_journal_path(self):
         path = filedialog.askdirectory(initialdir=str(self.journal_path))
@@ -3615,6 +3639,27 @@ class ColonialHelperApp:
             self.path_entry.delete(0, END)
             self.path_entry.insert(0, str(self.journal_path))
             self.save_config()
+
+    def _exobiology_overlay_state(self):
+        """Состояние экзобиологии для оверлея: тело + карта тел системы.
+
+        Отдельным методом, чтобы не дёргать трекер дважды и не тащить в оверлей
+        весь список тел, когда блок выключен.
+        """
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None:
+            return None
+        state = tracker.current_body_state()
+        try:
+            bodies = tracker.system_bodies(limit=10)
+        except Exception:
+            bodies = []
+        if state is None and not bodies:
+            return None
+        state = dict(state or {})
+        state["system_bodies"] = bodies
+        state["system"] = state.get("system") or tracker.current_system
+        return state
 
     # ============================================================
     #  Обработчики: Загрузка

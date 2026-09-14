@@ -15,6 +15,7 @@ from game_monitor import (
     _win32_find_game_window,
     _win32_window_pid,
 )
+from exobiology import estimate_value, format_credits
 from hotkeys import HotkeyManager
 
 
@@ -213,7 +214,7 @@ DEFAULT_BLOCK_POSITIONS = {
     "cargo": (400, 450, 300, 340),
     "session": (400, 50, 320, 300),
     "events": (730, 50, 320, 260),
-    "exobio": (1060, 50, 330, 360),
+    "exobio": (1060, 50, 360, 470),
     "carrier": (1060, 430, 330, 300),
 }
 
@@ -1863,23 +1864,35 @@ class CarrierOverlay(OverlayWindow):
 #  ExobiologyOverlay
 # ============================================================
 class ExobiologyOverlay(OverlayWindow):
-    """Экзобиология по текущему телу: параметры, сигналы и предсказание родов.
+    """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
 
     Данные — только из журнала игрока (Scan / SAAScanComplete / FSSBodySignals /
     ScanOrganic). Предсказание уровня **род**, упрощённая собственная модель
     (`exobiology.GENUS_RULES`) — см. комментарий про лицензию в модуле.
+
+    Блок сам обновляется раз в секунду, пока идёт отсчёт до следующего
+    образца: общий цикл HUD перерисовывает окно только когда меняются данные
+    журнала, а таймер обязан тикать и без них.
     """
+
+    #: Сколько родов и тел системы показываем — блок не резиновый.
+    MAX_PREDICTIONS = 5
+    MAX_BODIES = 6
 
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
         super().__init__(
             master, "EXOBIO",
             settings.get("exobio_x", 1060), settings.get("exobio_y", 50),
-            settings.get("exobio_width", 330), settings.get("exobio_height", 360),
+            settings.get("exobio_width", 360), settings.get("exobio_height", 470),
             settings, "exobio",
         )
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
-        wrap = max(160, int(settings.get("exobio_width", 330)) - 30)
+        wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
+        self._wrap = wrap
+
+        self._state: Dict[str, Any] = {}
+        self._tick_id: Optional[str] = None
 
         self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
                                    fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
@@ -1898,6 +1911,20 @@ class ExobiologyOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=5)
 
+        self.samples_header = tk.Label(self.content, text="Образцы:", font=(ff, fs - 1, "bold"),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.samples_header.pack(fill=tk.X)
+        self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
+                                       justify=tk.LEFT, wraplength=wrap)
+        self.organics_label.pack(fill=tk.X, pady=(2, 0))
+        self.next_action_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                          fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
+                                          justify=tk.LEFT, wraplength=wrap)
+        self.next_action_label.pack(fill=tk.X, pady=(3, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=5)
+
         tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
                  fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
         self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
@@ -1907,79 +1934,215 @@ class ExobiologyOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=5)
 
-        tk.Label(self.content, text="Образцы на теле:", font=(ff, fs - 1, "bold"),
-                 fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
-        self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
-                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
-                                       justify=tk.LEFT, wraplength=wrap)
-        self.organics_label.pack(fill=tk.X, pady=(2, 0))
+        self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
+                                      fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.bodies_header.pack(fill=tk.X)
+        self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
+                                     fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
+                                     justify=tk.LEFT, wraplength=wrap)
+        self.bodies_label.pack(fill=tk.X, pady=(2, 0))
 
         tk.Label(
             self.content,
-            text="Модель предсказывает род, а не вид: таблица критериев "
-                 "намеренно не копируется из GPL-проектов.",
+            text="Модель предсказывает род, а не вид; цена — порядок величины "
+                 "(зависит от варианта). Таблица критериев намеренно не "
+                 "копируется из GPL-проектов.",
             font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
             anchor=tk.W, justify=tk.LEFT, wraplength=wrap,
         ).pack(fill=tk.X, pady=(6, 0))
 
+    # -- обновление --------------------------------------------------------
     def update_exobiology(self, state: Optional[dict]):
         """Обновить содержимое. `state` — словарь от `ExobiologyTracker`."""
+        self._state = dict(state or {})
+        self._render()
+        self._schedule_tick()
+
+    def _schedule_tick(self):
+        """Тикать раз в секунду, пока есть незавершённые образцы."""
+        if self._tick_id is not None:
+            try:
+                self.master.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        if not self._has_pending_samples():
+            return
+        try:
+            self._tick_id = self.master.after(1000, self._tick)
+        except Exception:
+            self._tick_id = None
+
+    def _tick(self):
+        self._tick_id = None
+        try:
+            self._render()
+            self._schedule_tick()
+        except Exception:
+            # Оверлей не имеет права ронять Tk.
+            pass
+
+    def _has_pending_samples(self) -> bool:
+        for row in self._state.get("organics") or []:
+            if not row.get("complete") and int(row.get("samples") or 0) > 0:
+                return True
+        return False
+
+    def destroy(self):
+        if self._tick_id is not None:
+            try:
+                self.master.after_cancel(self._tick_id)
+            except Exception:
+                pass
+            self._tick_id = None
+        super().destroy()
+
+    # -- отрисовка ---------------------------------------------------------
+    def _render(self):
+        state = self._state
         if not state:
             self.body_label.config(text="Тело: —")
             self.params_label.config(text="Отсканируйте тело (FSS или подход)")
             self.signals_label.config(text="")
-            self.predict_label.config(text="нет данных")
+            self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
+            self.next_action_label.config(text="")
+            self.predict_label.config(text="нет данных")
+            self.bodies_header.config(text="Тела системы:")
+            self.bodies_label.config(text="—")
             return
 
+        system = str(state.get("system") or "").strip()
+        body = str(state.get("body") or "—")
+        prefix = f"{system} · " if system and system not in body else ""
         self.body_label.config(
-            text=f"{state.get('body') or '—'}  ({state.get('planet_class') or '?'})"
+            text=f"{prefix}{body}  ({state.get('planet_class') or '?'})"
         )
 
         gravity = float(state.get("gravity") or 0.0)
+        mapped = bool(state.get("mapped"))
         self.params_label.config(
             text=(
                 f"{state.get('atmosphere') or 'нет атмосферы'}\n"
                 f"T {float(state.get('temperature') or 0):.0f} K   "
                 f"g {gravity / 10.0:.2f}\n"
-                f"Вулканизм: {state.get('volcanism') or 'нет'}\n"
+                f"Вулканизм: {state.get('volcanism') or 'нет'}   "
                 f"{'посадка возможна' if state.get('landable') else 'посадка невозможна'}"
             )
         )
 
         signals = int(state.get("bio_signals") or 0)
-        mapped = "карта есть" if state.get("mapped") else "карты нет (DSS)"
         self.signals_label.config(
-            text=(f"Биосигналов: {signals}  |  {mapped}" if signals
-                  else f"Биосигналов нет  |  {mapped}")
+            text=(f"Биосигналов: {signals}  |  {'карта есть (DSS)' if mapped else 'карты нет'}"
+                  if signals else
+                  f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
         )
 
-        predictions = state.get("predictions") or []
-        if predictions:
-            lines = []
-            for row in predictions[:6]:
-                bars = "#" * int(min(float(row.get("score") or 0), 6))
-                notes = ", ".join(row.get("notes") or [])
-                lines.append(f"{row.get('genus')} {bars}"
-                             + (f"  {notes}" if notes else ""))
-            extra = len(predictions) - 6
-            if extra > 0:
-                lines.append(f"… и ещё {extra}")
-            self.predict_label.config(text="\n".join(lines))
-        else:
-            self.predict_label.config(text="нет подходящих родов")
+        self._render_samples(state, mapped)
+        self._render_predictions(state, mapped)
+        self._render_bodies(state)
 
+    def _render_samples(self, state: dict, mapped: bool):
         organics = state.get("organics") or []
-        if organics:
-            rows = []
-            for row in organics:
-                samples = int(row.get("samples") or 0)
-                mark = "✔" if row.get("complete") else f"{samples}/3"
-                stage = row.get("stage") or ""
-                rows.append(f"{row.get('species')} [{mark}] {stage}".rstrip())
-            self.organics_label.config(text="\n".join(rows))
-        else:
+        total_value = int(state.get("value_cr") or 0)
+        if not total_value:
+            total_value = sum(int(row.get("value_cr") or 0) for row in organics)
+        header = "Образцы:" + (f"  ≈ {format_credits(total_value)} кр" if total_value else "")
+        self.samples_header.config(text=header)
+
+        if not organics:
             self.organics_label.config(text="образцы не взяты")
+            self.next_action_label.config(text=self._suggest_next_action(state, []))
+            return
+
+        lines = []
+        for row in organics:
+            samples = int(row.get("samples") or 0)
+            complete = bool(row.get("complete"))
+            marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
+            value = int(row.get("value_cr") or 0)
+            price = f"  ≈ {format_credits(value)}" if value else ""
+            name = str(row.get("species") or "?")
+            if row.get("seen_before"):
+                name += " (уже встречалось)"
+            lines.append(f"{name}  {marks} {samples}/3{price}")
+            if complete:
+                lines.append("   комплект готов — вид засчитан")
+            elif samples:
+                wait = int(row.get("wait_seconds") or 0)
+                stage = str(row.get("stage") or "")
+                if wait > 0:
+                    lines.append(f"   ждите {wait} с до следующего образца")
+                else:
+                    lines.append(f"   готов к образцу ({stage or 'Sample'}) — смените точку")
+        self.organics_label.config(text="\n".join(lines))
+        self.next_action_label.config(text=self._suggest_next_action(state, organics))
+
+    @staticmethod
+    def _suggest_next_action(state: dict, organics: list) -> str:
+        """Одна строка-подсказка: что делать прямо сейчас."""
+        if not organics:
+            signals = int(state.get("bio_signals") or 0)
+            if signals:
+                return f"→ найдите организм: биосигналов на теле {signals}"
+            if not state.get("landable", True):
+                return "→ на это тело не сесть"
+            return "→ отсканируйте тело, чтобы получить прогноз"
+        waiting = [row for row in organics
+                   if not row.get("complete") and int(row.get("wait_seconds") or 0) > 0]
+        if waiting:
+            wait = min(int(row.get("wait_seconds")) for row in waiting)
+            return f"→ {wait} с до следующего образца"
+        open_rows = [row for row in organics if not row.get("complete")]
+        if open_rows:
+            return "→ возьмите образец с новой точки"
+        return "→ все комплекты собраны — можно лететь дальше"
+
+    def _render_predictions(self, state: dict, mapped: bool):
+        predictions = state.get("predictions") or []
+        if not predictions:
+            self.predict_label.config(text="нет подходящих родов")
+            return
+        lines = []
+        for row in predictions[:self.MAX_PREDICTIONS]:
+            genus = str(row.get("genus") or "?")
+            percent = row.get("percent")
+            head = f"{genus}  {percent}%" if percent is not None else genus
+            value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
+            if value:
+                head += f"  ≈ {format_credits(value)}"
+            notes = ", ".join(row.get("notes") or [])
+            lines.append(head + (f"\n   {notes}" if notes else ""))
+        extra = len(predictions) - self.MAX_PREDICTIONS
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.predict_label.config(text="\n".join(lines))
+
+    def _render_bodies(self, state: dict):
+        bodies = state.get("system_bodies") or []
+        self.bodies_header.config(
+            text=f"Тела системы с биосигналами: {len(bodies)}" if bodies else "Тела системы:")
+        if not bodies:
+            self.bodies_label.config(text="в этой системе биосигналов не найдено")
+            return
+        lines = []
+        for row in bodies[:self.MAX_BODIES]:
+            name = str(row.get("body") or "?")
+            # Имя тела в журнале начинается с имени системы — оставляем хвост.
+            system = str(state.get("system") or "")
+            if system and name.startswith(system):
+                name = name[len(system):].strip() or name
+            marks = []
+            if row.get("has_organics"):
+                marks.append("образцы")
+            marks.append("карта есть" if row.get("mapped") else "карты нет")
+            if not row.get("landable"):
+                marks.append("не сесть")
+            lines.append(f"{name}  ·  сигналов {row.get('bio_signals', 0)}  ·  {', '.join(marks)}")
+        extra = len(bodies) - self.MAX_BODIES
+        if extra > 0:
+            lines.append(f"… и ещё {extra}")
+        self.bodies_label.config(text="\n".join(lines))
 
 
 # ============================================================
@@ -2573,10 +2736,31 @@ class OverlayManager:
         parts.append(str(data.get("game_running", False)))
         parts.append(str(data.get("game_focused", False)))
         parts.append(str(data.get("game_detail", "")))
-        parts.append(str(data.get("exobiology", {})))
+        # Отпечаток экзобиологии — без «живых» полей: обратный отсчёт до
+        # следующего образца меняется каждую секунду, и с ним хеш менялся бы
+        # тоже, заставляя перерисовывать все блоки. Оверлей Exobio тикает сам.
+        parts.append(self._exobiology_fingerprint(data.get("exobiology")))
         # Груз авианосца: тоннаж, товары и остаток до потребности площадки.
         parts.append(str(data.get("carrier", {})))
         return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+    @staticmethod
+    def _exobiology_fingerprint(state) -> str:
+        """Часть хеша по экзобиологии: только то, что приходит из журнала."""
+        if not isinstance(state, dict):
+            return ""
+        parts = [
+            str(state.get("system") or ""),
+            str(state.get("body") or ""),
+            str(state.get("bio_signals") or 0),
+            str(bool(state.get("mapped"))),
+            str(len(state.get("predictions") or [])),
+        ]
+        for row in state.get("organics") or []:
+            parts.append(f"{row.get('species')}:{row.get('samples')}:{row.get('stage')}")
+        for row in state.get("system_bodies") or []:
+            parts.append(f"{row.get('body')}:{row.get('bio_signals')}:{bool(row.get('mapped'))}")
+        return "|".join(parts)
 
     def _apply_update(self, data: dict):
         # Данные изменились — значит, в журнале есть жизнь: продлеваем показ
@@ -3112,8 +3296,8 @@ DEFAULT_SETTINGS = {
     "events_anchor": "custom",
     "exobio_x": 1060,
     "exobio_y": 50,
-    "exobio_width": 330,
-    "exobio_height": 360,
+    "exobio_width": 360,
+    "exobio_height": 470,
     "exobio_locked": False,
     "exobio_anchor": "custom",
     "carrier_x": 1060,
