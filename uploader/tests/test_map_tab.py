@@ -1137,3 +1137,72 @@ class MapCarryAndDueTests(MapTabTestBase):
         self.assertEqual(tags["s:tag-over"], ("overdue",))
         self.assertEqual(tags["s:tag-soon"], ("due_soon",))
         self.assertEqual(tags["s:tag-calm"], ("site",))
+
+
+class PrimaryProjectRefreshTests(MapTabTestBase):
+    """2.10.11: потребность основного проекта в CARRIER перечитывается с Raven.
+
+    Раньше `colony_primary_project` копировался один раз при назначении
+    основным: наши же доставки, ProjectUpdate и сдачи других командиров
+    меняли остаток на сервере, а оверлей показывал потребность на момент
+    назначения.
+    """
+
+    class Runner:
+        """Замена threading.Thread: целевая функция выполняется сразу."""
+
+        instances = []
+
+        def __init__(self, target=None, args=(), **kwargs):
+            self.target, self.args = target, args
+            PrimaryProjectRefreshTests.instances.append(self)
+
+        def start(self):
+            self.target(*self.args)
+
+    def prepare(self, primary="b-1"):
+        PrimaryProjectRefreshTests.instances = []
+        self.app.raven_api = mock.MagicMock()
+        self.app.raven_api.is_connected = True
+        self.app.colony_primary_project = {"buildId": primary,
+                                           "commodities": {"steel": 100}}
+
+    def test_primary_project_reread_updates_need(self):
+        self.prepare()
+        self.app.raven_api.resolve_project_by_id.return_value = {
+            "buildId": "b-1", "buildName": "P", "commodities": {"steel": 40}}
+        self.app._load_primary_project("b-1")
+        self.assertEqual(self.app.colony_primary_project["commodities"]["steel"], 40)
+        need, _label, source = self.app._carrier_need_info()
+        self.assertEqual(need, {"steel": 40})
+        self.assertEqual(source, "project")
+
+    def test_primary_refresh_is_throttled(self):
+        self.prepare()
+        with mock.patch.object(self.module.threading, "Thread", self.Runner):
+            self.app._refresh_primary_project()
+            self.app._refresh_primary_project()
+            self.assertEqual(len(self.instances), 1,
+                             "в пределах TTL тот же проект повторно не запрашиваем")
+            self.app._refresh_primary_project(force=True)
+            self.assertEqual(len(self.instances), 2)
+
+    def test_load_does_not_replace_other_primary(self):
+        self.prepare()
+        self.app.raven_api.resolve_project_by_id.return_value = {
+            "buildId": "b-1", "commodities": {"steel": 40}}
+        # Пока запрос летел, основным назначили другой проект.
+        self.app.colony_primary_project = {"buildId": "b-3", "commodities": {}}
+        self.app._load_primary_project("b-1")
+        self.assertEqual(self.app.colony_primary_project["buildId"], "b-3")
+
+    def test_supply_sent_hook_rereads_both_projects(self):
+        self.prepare()
+        self.app.raven_api.resolve_project_by_id.return_value = {
+            "buildId": "b-1", "commodities": {"steel": 7}}
+        with mock.patch.object(self.app, "_refresh_site_project") as site, \
+                mock.patch.object(self.module.threading, "Thread", self.Runner):
+            self.app._on_raven_supply_sent("b-1")
+            site.assert_called_once_with(force=True)
+        self.assertEqual(self.app.colony_primary_project["commodities"]["steel"], 7,
+                         "после ProjectUpdate потребность перечитана сразу")

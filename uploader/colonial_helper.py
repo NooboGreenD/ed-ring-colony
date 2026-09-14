@@ -120,7 +120,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.10"
+VERSION = "2.10.11"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -196,6 +196,8 @@ class ColonialHelperApp:
         # Проект, отмеченный основным во вкладке «Колонизатор». Его потребность
         # показывает блок CARRIER в оверлее (см. `_carrier_need_info`).
         self.colony_primary_project: dict = {}
+        self._primary_remote_id = ""       # чей основной проект перечитывали
+        self._primary_remote_at = 0.0      # и когда (monotonic)
         # Проект стройплощадки, у которой командир стоит сейчас. Перечитывается
         # из Raven Colonial по таймеру: остаток потребности там общий на всех,
         # поэтому груз, который завезли другие командиры, должен уменьшать
@@ -294,6 +296,7 @@ class ColonialHelperApp:
             backfill_enabled=bool(self.config.get("backfill_send_third_party", False)),
         )
         self.dispatcher.on_result = self._on_third_party_result
+        self.dispatcher.on_supply_sent = self._on_raven_supply_sent
 
         # EDSM требует версию и сборку игры (иначе msgnum 207/208 и событие
         # никуда не попадает). Fileheader стоит в самом начале журнала и в
@@ -4746,6 +4749,9 @@ class ColonialHelperApp:
             # командиров, и груз, сданный другими, должен уменьшать «осталось
             # завезти» и у нас.
             self._refresh_site_project()
+            # Основной проект колонизатора раньше перечитывался только в момент
+            # назначения: блок CARRIER показывал потребность навеки замершей.
+            self._refresh_primary_project()
         except Exception:
             pass
         finally:
@@ -6972,6 +6978,7 @@ class ColonialHelperApp:
             # «Осталось завезти» после нашей же доставки устарело: перечитываем
             # проект площадки сразу, а не через пять минут.
             self._refresh_site_project(force=True)
+            self._refresh_primary_project(force=True)
         elif batches:
             self._raven_fail_streak += 1
 
@@ -7263,6 +7270,55 @@ class ColonialHelperApp:
 
     #: Как часто перечитывать проект стройплощадки из Raven Colonial.
     SITE_PROJECT_REFRESH_SECONDS = 300.0
+
+    #: Как часто перечитываем ОСНОВНОЙ проект колонизатора по таймеру.
+    PRIMARY_PROJECT_REFRESH_SECONDS = 300.0
+
+    def _refresh_primary_project(self, force: bool = False):
+        """Перечитать основной проект колонизатора из Raven Colonial.
+
+        Блок CARRIER оверлея показывает `commodities` основного проекта —
+        актуальный остаток потребности на сервере. Раньше словарь проекта
+        копировался один раз при назначении основным (или при загрузке
+        списка), и после наших же доставок и ProjectUpdate, а также после
+        сдач других командиров оверлей продолжал показывать потребность на
+        момент назначения.
+        """
+        build_id = str(self.colony_primary_project.get("buildId") or "")
+        if not build_id or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        same = build_id == self._primary_remote_id
+        if (not force and same
+                and now - float(self._primary_remote_at or 0.0)
+                < self.PRIMARY_PROJECT_REFRESH_SECONDS):
+            return
+        self._primary_remote_id = build_id
+        self._primary_remote_at = now
+        threading.Thread(target=self._load_primary_project,
+                         args=(build_id,), daemon=True).start()
+
+    def _load_primary_project(self, build_id: str):
+        project = self.raven_api.resolve_project_by_id(build_id)
+        if not isinstance(project, dict) or not project.get("buildId"):
+            return
+
+        def apply():
+            # Пока запрос летел, основным могли назначить другой проект —
+            # чужой список материалов не подменяем.
+            if str(self.colony_primary_project.get("buildId") or "") != build_id:
+                return
+            self.colony_primary_project = dict(project)
+            cache = getattr(self, "_colony_projects_cache", None)
+            if isinstance(cache, dict):
+                cache[build_id] = dict(project)
+
+        self.root.after(0, apply)
+
+    def _on_raven_supply_sent(self, build_id: str = ""):
+        """ProjectUpdate дошёл до Raven: потребность изменилась — перечитать."""
+        self.after(0, lambda: self._refresh_site_project(force=True))
+        self.after(0, lambda: self._refresh_primary_project(force=True))
 
     def _refresh_site_project(self, force: bool = False):
         """Перечитать из Raven Colonial проект площадки, у которой стоит игрок.

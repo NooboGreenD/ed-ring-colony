@@ -292,6 +292,9 @@ class ThirdPartyDispatcher:
 
         # Опциональный колбэк: on_result(service, ok, message)
         self.on_result: Optional[Callable[[str, bool, str], None]] = None
+        # Опциональный колбэк: on_supply_sent(build_id) — ProjectUpdate
+        # потребности принят Raven, локальные копии проекта устарели.
+        self.on_supply_sent: Optional[Callable[[str], None]] = None
         self._last_drop_warning = 0.0
 
         # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
@@ -845,6 +848,11 @@ class ThirdPartyDispatcher:
             self.stats["sent"] += 1
             self._notify("raven", True,
                          "Raven Colonial: потребность площадки обновлена по журналу")
+            if self.on_supply_sent:
+                try:
+                    self.on_supply_sent(build_id)
+                except Exception:
+                    pass
         else:
             self.stats["failed"] += 1
             self._notify_failure("raven", str(result.get("error")

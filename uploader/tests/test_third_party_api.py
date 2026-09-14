@@ -828,6 +828,8 @@ class RavenSupplyUpdateTests(unittest.TestCase):
                 return {"ok": True}
 
         dispatcher = ThirdPartyDispatcher(raven_api=FakeRaven())
+        sent_ids = []
+        dispatcher.on_supply_sent = sent_ids.append
         event = {"event": "ColonisationConstructionDepot",
                  "MarketID": 3951663874, "SystemAddress": 123456789,
                  "ResourcesRequired": [
@@ -841,5 +843,7 @@ class RavenSupplyUpdateTests(unittest.TestCase):
         self.assertEqual(service, "raven")
         dispatcher._do_raven(payload)
         self.assertEqual(calls, [("b-42", {"steel": 600, "water": 0}, 1500)])
+        self.assertEqual(sent_ids, ["b-42"],
+                         "хук on_supply_sent зовётся после принятого ProjectUpdate")
         # То же состояние depot повторно — ProjectUpdate не дублируем.
         self.assertEqual(dispatcher._submit_raven_supply(event), "skipped")
