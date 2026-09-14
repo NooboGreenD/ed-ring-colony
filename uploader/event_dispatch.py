@@ -294,6 +294,10 @@ class ThirdPartyDispatcher:
         self.on_result: Optional[Callable[[str, bool, str], None]] = None
         self._last_drop_warning = 0.0
 
+        # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
+        # недоступность EDSM не превратилась в тысячи одинаковых строк в логе.
+        self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0}
+
         # «Transient state» для EDSM: сам по себе журнал часто не знает, где и
         # на чём был командир в момент события (например, в Scan нет системы).
         # EDSM просит докладывать это отдельными полями.
@@ -407,6 +411,39 @@ class ThirdPartyDispatcher:
             self.logger(message)
         except Exception:
             pass
+
+    #: Как часто напоминать о длящемся сбое (каждая N-я неудача).
+    FAIL_NOTICE_EVERY = 25
+
+    def _notify_failure(self, service: str, message: str):
+        """Сообщить о неудаче, не засоряя лог.
+
+        Первая неудача в серии попадает в лог целиком, дальше — только каждая
+        `FAIL_NOTICE_EVERY`-я, с накопленным счётчиком. Как только сервис
+        снова отвечает, пишем об этом (иначе пользователь не узнает, что
+        отправка восстановилась).
+        """
+        streak = self._fail_streak.get(service, 0) + 1
+        self._fail_streak[service] = streak
+        if streak == 1:
+            self._notify(service, False, message)
+        elif streak % self.FAIL_NOTICE_EVERY == 0:
+            self._notify(
+                service, False,
+                f"{service.upper()}: сервис по-прежнему не принимает события — "
+                f"{streak} неудач подряд (последняя: {message})",
+            )
+
+    def _notify_success(self, service: str):
+        """Сбросить счётчик сбоев и сообщить о восстановлении."""
+        streak = self._fail_streak.get(service, 0)
+        self._fail_streak[service] = 0
+        if streak > 1:
+            self._notify(
+                service, True,
+                f"{service.upper()}: отправка восстановлена "
+                f"(до этого {streak} событий не ушло)",
+            )
 
     def _notify(self, service: str, ok: bool, message: str):
         if not self.on_result:
@@ -680,9 +717,10 @@ class ThirdPartyDispatcher:
         result = self.edsm_api.submit_event(payload["event"]) or {}
         if result.get("ok"):
             self.stats["sent"] += 1
+            self._notify_success("edsm")
         else:
             self.stats["failed"] += 1
-            self._notify("edsm", False, str(result.get("error") or "EDSM отклонил событие"))
+            self._notify_failure("edsm", str(result.get("error") or "EDSM отклонил событие"))
 
     def _do_inara(self, payload: dict):
         if not self._inara_enabled():
@@ -692,9 +730,10 @@ class ThirdPartyDispatcher:
         ) or {}
         if result.get("ok"):
             self.stats["sent"] += 1
+            self._notify_success("inara")
         else:
             self.stats["failed"] += 1
-            self._notify("inara", False, str(result.get("error") or "Inara отклонила событие"))
+            self._notify_failure("inara", str(result.get("error") or "Inara отклонила событие"))
 
     def _do_raven(self, payload: dict):
         if not self._raven_enabled():
