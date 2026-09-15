@@ -24,7 +24,6 @@
  *   GALNET_TRANSLATE_LIMIT     (по умолчанию 10)
  */
 
-import { createClient } from '@supabase/supabase-js';
 import { fetchGalnetFeed } from './lib/galnet-source.mjs';
 import {
   GALNET_TABLE,
@@ -146,6 +145,8 @@ async function main() {
     return;
   }
 
+  // Клиент подключается лениво: `--dry-run` должен работать и без зависимостей.
+  const { createClient } = await import('@supabase/supabase-js');
   const supabase = createClient(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });

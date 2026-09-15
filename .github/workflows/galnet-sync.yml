@@ -28,7 +28,7 @@ on:
       - '.github/workflows/galnet-sync.yml'
 
 jobs:
-  # ── Проверка парсера без доступа к базе ───────────────────────────────
+  # ── Проверка парсера ───────────────────────────────────────────────────
   # Ловит поломку контракта API / парсера до того, как она попадёт в прод.
   parser-smoke:
     if: github.event_name == 'pull_request'
@@ -42,55 +42,21 @@ jobs:
       - name: Parser unit tests
         run: node --test scripts/tests/*.test.mjs
       - name: Live feed dry-run (parse only, no DB writes)
-        run: node scripts/galnet-sync.mjs --dry-run --limit=10 > dryrun.txt 2>&1 || echo "DRYRUN_EXIT=$?" >> dryrun.txt
-
-      - name: TEMP diagnostics
-        if: always()
         run: |
-          {
-            echo "=== curl verbose ==="
-            curl -sS -v --max-time 30 -H "Accept: application/vnd.api+json" \
-              "https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article?sort=-published_at&page%5Boffset%5D=0&page%5Blimit%5D=10" \
-              -o feed.json -w "HTTP=%{http_code}\n" 2>&1 | tail -40
-            echo
-            echo "=== body head ==="
-            head -c 600 feed.json
-            echo
-            echo "=== dry-run output ==="
-            cat dryrun.txt
-          } 2>&1 | tee diag.txt
-
-      - name: TEMP publish diagnostics
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let text = 'no diag.txt';
-            try { text = fs.readFileSync('diag.txt', 'utf8').slice(0, 60000); } catch (e) { text = 'read error: ' + e.message; }
-            try {
-              await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: 'galnet-diag',
-                head_sha: context.sha,
-                status: 'completed',
-                conclusion: 'neutral',
-                output: { title: 'Galnet feed diagnostics', summary: 'raw CI output', text }
-              });
-            } catch (e) {
-              core.info('checks.create failed: ' + e.message);
-            }
-            try {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: 'CI diagnostics (Galnet feed):\n\n```\n' + text.slice(0, 60000) + '\n```'
-              });
-            } catch (e) {
-              core.info('createComment failed: ' + e.message);
-            }
+          set +e
+          node scripts/galnet-sync.mjs --dry-run --limit=10 --json > dry-run.json
+          code=$?
+          set -e
+          cat dry-run.json
+          if [ "$code" -eq 0 ]; then exit 0; fi
+          # Проблема сети/доступа к ленте не должна блокировать PR,
+          # а вот реальная поломка парсера — должна.
+          if node -e "const d=require('./dry-run.json'); const e=d.error||''; process.exit(/HTTP \\d|timed out|fetch failed|ENOTFOUND|EAI_AGAIN|ECONN|ECONNRESET|socket|TLS/i.test(e) ? 0 : 1)"; then
+            echo "::warning::Galnet feed is unreachable from CI (network/access); parser not verified live."
+            exit 0
+          fi
+          echo "::error::Galnet parser smoke test failed"
+          exit 1
 
   # ── Ежедневная синхронизация + автоперевод ────────────────────────────
   sync:
@@ -100,6 +66,7 @@ jobs:
     env:
       # Признак наличия ключа Yandex в секретах Actions (булево как строка).
       HAS_YANDEX_KEY: ${{ secrets.YANDEX_TRANSLATE_API_KEY != '' }}
+      SITE_URL: ${{ secrets.VERCEL_URL || 'https://ed-ring-colony.vercel.app' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +102,28 @@ jobs:
             exit "$status"
           fi
 
+      # Резерв: если раннер не смог дотянуться до ленты Frontier
+      # (блокировка по IP, сеть) — синхронизацию выполняет сам сайт.
+      - name: Sync via Vercel (fallback when script fails)
+        if: failure() && steps.sync.outcome == 'failure'
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          code=$(curl -s -o galnet-sync.json -w "%{http_code}" \
+            --max-time 280 --retry 2 --retry-delay 10 \
+            -X POST \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "${SITE_URL}/api/galnet")
+          echo "HTTP ${code}"
+          cat galnet-sync.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::/api/galnet returned HTTP ${code}"
+            exit 1
+          fi
+
       - name: Drain remaining translation queue
         env:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
@@ -168,15 +157,15 @@ jobs:
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          url="${{ secrets.VERCEL_URL || 'https://ed-ring-colony.vercel.app' }}/api/cron/translate?limit=10"
           code=$(curl -s -o translate-fallback.json -w "%{http_code}" \
-            --max-time 120 --retry 2 --retry-delay 5 \
-            -X POST -H "Authorization: Bearer ${CRON_SECRET}" "$url")
+            --max-time 280 --retry 2 --retry-delay 10 \
+            -X POST -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${SITE_URL}/api/cron/translate?limit=10")
           echo "HTTP ${code}"
           cat translate-fallback.json
           echo
           if [ "$code" != "200" ]; then
-            echo "::error::Vercel translate endpoint returned HTTP ${code}"
+            echo "::error::/api/cron/translate returned HTTP ${code}"
             exit 1
           fi
 
