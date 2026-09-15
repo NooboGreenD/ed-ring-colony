@@ -24,16 +24,24 @@
 `GENUS_RULES` — её легко уточнить, дописав поля `temp`, `gravity`, `materials`
 и элементы атмосферы.
 
-Данные берутся **только из журнала самого игрока**: `Scan`,
-`SAAScanComplete`, `FSSBodySignals`, `ScanOrganic`, `CodexEntry`. Никаких
-EDSM/Spansh/Canonn — всё работает офлайн.
+Данные берутся **из журнала самого игрока**: `Scan`, `SAAScanComplete`,
+`SAASignalsFound`, `FSSBodySignals`, `ScanOrganic`, `CodexEntry`, а также
+локального кэша ранее посещённых систем. Всё работает офлайн.
 """
 
+import json
+import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # В журнале тип биосигнала приходит в виде локализационного токена.
-BIO_SIGNAL_TOKENS = ("$SAA_SignalType_Biological;", "SAA_SignalType_Biological")
+BIO_SIGNAL_TOKENS = (
+    "$SAA_SignalType_Biological;",
+    "SAA_SignalType_Biological",
+    "Biological",
+    "биологическ",
+)
 
 # Тела, на которые можно сесть.
 LANDABLE_PLANET_CLASSES = {
@@ -92,9 +100,8 @@ GENUS_VALUE_CR: Dict[str, int] = {
     "Tussock": 100_000,
 }
 
-# Сколько тел держим в памяти. При первичной загрузке всей истории журналов
-# тел могут быть тысячи, а оверлею нужны только недавние.
-MAX_TRACKED_BODIES = 500
+# Сколько тел держим в памяти (увеличено для исследователей и длинных экспедиций).
+MAX_TRACKED_BODIES = 10_000
 
 
 def _as_float(value, default: float = 0.0) -> float:
@@ -104,8 +111,17 @@ def _as_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _as_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def atmosphere_category(body: dict) -> str:
     """none / thin / thick / unknown — по данным события Scan."""
+    if not isinstance(body, dict):
+        return "unknown"
     atmosphere = str(body.get("atmosphere") or "").strip().lower()
     atmosphere_type = str(body.get("atmosphere_type") or "").strip().lower()
     combined = f"{atmosphere} {atmosphere_type}".strip()
@@ -113,10 +129,24 @@ def atmosphere_category(body: dict) -> str:
         return "unknown"
     if "no atmosphere" in combined or combined in ("none", ""):
         return "none"
-    if "thin" in combined:
-        return "thin"
     if "thick" in combined or "hot" in combined or "rich" in combined:
         return "thick"
+    if "thin" in combined:
+        return "thin"
+    # В Elite Dangerous Odyssey посадка разрешена исключительно на тела с тонкой (tenuous) атмосферой.
+    # Если планета landable и имеет атмосферу — в рамках игры это тонкая атмосфера:
+    if body.get("landable"):
+        return "thin"
+    # Проверка давления: в журнале SurfacePressure в Паскалях (1 атм ~ 101325 Па).
+    # Тонкие атмосферы Odyssey обычно <= 15 000 Па (~0.15 атм).
+    pressure = _as_float(body.get("surface_pressure"), 0.0)
+    if 0 < pressure <= 15000:
+        return "thin"
+    if pressure > 15000:
+        return "thick"
+    # Если указан конкретный газ или есть слово atmosphere:
+    if "atmosphere" in combined or (atmosphere_type and atmosphere_type not in ("none", "unknown")):
+        return "thin"
     return "unknown"
 
 
@@ -125,7 +155,7 @@ def body_props(event: dict, system: str = "") -> Optional[dict]:
     planet_class = str(event.get("PlanetClass") or "").strip()
     if not planet_class:
         return None
-    name = str(event.get("BodyName") or "").strip()
+    name = str(event.get("BodyName") or event.get("Body") or "").strip()
     if not name:
         return None
 
@@ -175,6 +205,7 @@ def body_props(event: dict, system: str = "") -> Optional[dict]:
         "star_types": star_types,
         "mapped": False,
         "bio_signals": 0,
+        "confirmed_genera": [],
     }
 
 
@@ -258,9 +289,29 @@ PLANET_SEARCH_PRESETS: Tuple[Dict[str, Any], ...] = (
         "classes": ("rocky",), "landable": True, "atmosphere": "none",
     },
     {
+        "id": "high_metal_atmo_land",
+        "label": "Высокое содержание металла с атмосферой и посадкой",
+        "classes": ("high_metal",), "landable": True, "atmosphere": "present",
+    },
+    {
+        "id": "high_metal_land",
+        "label": "Высокое содержание металла, с посадкой",
+        "classes": ("high_metal",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "icy_atmo_land",
+        "label": "Ледяная с атмосферой и посадкой",
+        "classes": ("icy",), "landable": True, "atmosphere": "present",
+    },
+    {
         "id": "icy_land",
         "label": "Ледяная с посадкой",
         "classes": ("icy",), "landable": True, "atmosphere": "any",
+    },
+    {
+        "id": "rocky_ice_atmo_land",
+        "label": "Каменисто-ледяная с атмосферой и посадкой",
+        "classes": ("rocky_ice",), "landable": True, "atmosphere": "present",
     },
     {
         "id": "rocky_ice_land",
@@ -271,11 +322,6 @@ PLANET_SEARCH_PRESETS: Tuple[Dict[str, Any], ...] = (
         "id": "metal_rich_land",
         "label": "Богатая металлом с посадкой",
         "classes": ("metal_rich",), "landable": True, "atmosphere": "any",
-    },
-    {
-        "id": "high_metal_land",
-        "label": "Высокое содержание металла, с посадкой",
-        "classes": ("high_metal",), "landable": True, "atmosphere": "any",
     },
     {
         "id": "earthlike",
@@ -306,6 +352,11 @@ PLANET_SEARCH_PRESETS: Tuple[Dict[str, Any], ...] = (
         "id": "bio_signals",
         "label": "С биосигналами",
         "classes": (), "landable": None, "atmosphere": "any", "min_signals": 1,
+    },
+    {
+        "id": "bio_landable",
+        "label": "С биосигналами и посадкой",
+        "classes": (), "landable": True, "atmosphere": "any", "min_signals": 1,
     },
 )
 
@@ -345,9 +396,23 @@ def body_matches(body: dict, criteria: dict) -> bool:
     if mode != "any":
         category = atmosphere_category(body)
         if mode == "present":
-            # «С атмосферой» — тонкая или плотная. unknown не годится: данных
-            # нет, и утверждать, что атмосфера есть, нельзя.
-            if category not in ("thin", "thick"):
+            # «С атмосферой» — тонкая или плотная. unknown не годится, если нет данных
+            if category == "none":
+                return False
+            if category in ("thin", "thick"):
+                pass
+            elif not (body.get("atmosphere") or body.get("atmosphere_type")
+                      or body.get("atmosphere_elements")
+                      or float(body.get("surface_pressure") or 0.0) > 0):
+                return False
+        elif mode == "thin":
+            if category != "thin":
+                return False
+        elif mode == "none":
+            if category != "none":
+                return False
+        elif mode == "thick":
+            if category != "thick":
                 return False
         elif category != mode:
             return False
@@ -395,8 +460,7 @@ def search_planets(bodies, criteria_list, limit: int = 6) -> List[Dict[str, Any]
             "distance_ls": _as_float(body.get("distance_ls"), 0.0),
             "matched": matched,
         })
-    # Сначала близкие тела и те, где есть биосигналы: туда полетят в первую
-    # очередь. Сортировка детерминирована, иначе список прыгал бы между тиками.
+    # Сначала тела с биосигналами, затем близкие: туда полетят в первую очередь.
     rows.sort(key=lambda row: (not row["bio_signals"],
                                row["distance_ls"] if row["distance_ls"] > 0 else 1e9,
                                row["body"]))
@@ -425,6 +489,7 @@ def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, A
     именно для этого рода при данных тела, — его и показываем игроку.
     """
     rows: List[Dict[str, Any]] = []
+    confirmed = set(body.get("confirmed_genera") or [])
     for genus, score, notes in predict_genera(body):
         rule = GENUS_RULES.get(genus, {})
         max_score = WEIGHT_ATMOSPHERE if rule.get("atmos") else 0.0
@@ -437,13 +502,33 @@ def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, A
         if rule.get("materials"):
             max_score += WEIGHT_MATERIAL
         percent = int(round(100 * score / max_score)) if max_score else 0
+        current_notes = list(notes or [])
+        if genus in confirmed:
+            percent = 100
+            current_notes.append("подтверждено DSS")
         rows.append({
             "genus": genus,
             "score": score,
             "percent": max(0, min(100, percent)),
-            "notes": list(notes or []),
+            "notes": current_notes,
             "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+            "confirmed": genus in confirmed,
         })
+
+    # Роды, подтверждённые DSS сканированием, но не попавшие в предсказания из-за грубости модели:
+    seen = {r["genus"] for r in rows}
+    for genus in confirmed:
+        if genus not in seen and genus in GENUS_VALUE_CR:
+            rows.append({
+                "genus": genus,
+                "score": 5.0,
+                "percent": 100,
+                "notes": ["подтверждено DSS"],
+                "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+                "confirmed": True,
+            })
+
+    rows.sort(key=lambda r: (not r.get("confirmed"), -r["percent"], -r["value_cr"], r["genus"]))
     return rows[:limit] if limit else rows
 
 
@@ -517,7 +602,6 @@ def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, f
                 notes.append(f"атмосфера: {category}")
             elif category != "unknown":
                 # Атмосфера не подходит — род маловероятен, но не исключён
-                # (модель грубая), поэтому просто не добираем баллы.
                 continue
 
         geology = rule.get("geology")
@@ -553,8 +637,6 @@ def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, f
         if score > 0:
             results.append((genus, score, notes))
 
-    # Сортировка: сначала оценка, затем алфавит — порядок детерминирован,
-    # иначе список «прыгал» бы между тиками.
     results.sort(key=lambda row: (-row[1], row[0]))
     return results[:limit] if limit else results
 
@@ -576,11 +658,11 @@ class ExobiologyTracker:
         self.bodies: Dict[str, dict] = {}
         # system|body -> {species: {"stage": str, "samples": int, "first": str}}
         self.organics: Dict[str, Dict[str, dict]] = {}
+        # system -> int (число тел в системе из FSSDiscoveryScan / NavBeaconScan)
+        self.known_body_counts: Dict[str, int] = {}
         # Роды/виды, найденные когда-либо (для подсветки «уже встречалось»)
         self.seen_species: Dict[str, int] = {}
         # Подписи уже учтённых «счётных» событий (ScanOrganic/CodexEntry):
-        # хвост журнала перечитывается при каждом старте Watcher, и один и тот
-        # же образец не должен считаться дважды.
         self._recent_sigs: Dict[tuple, None] = {}
 
     # -- helpers -----------------------------------------------------------
@@ -590,7 +672,7 @@ class ExobiologyTracker:
 
     def _body_key(self, event: dict, body_name: str = "") -> str:
         system = str(event.get("StarSystem") or self.current_system or "").strip()
-        body = body_name or str(event.get("BodyName") or self.current_body or "").strip()
+        body = body_name or str(event.get("Body") or event.get("BodyName") or self.current_body or "").strip()
         return self._key(system, body)
 
     def _ensure_body(self, key: str, system: str, body_name: str) -> dict:
@@ -610,21 +692,18 @@ class ExobiologyTracker:
                 "mapped": False,
                 "bio_signals": 0,
                 "landable": False,
+                "confirmed_genera": [],
             }
             self.bodies[key] = body
         return body
 
     def _event_system(self, event: dict) -> str:
         """Система события: своя, если указана, иначе текущая."""
-        return str(event.get("StarSystem") or self.current_system or "").strip()
+        return str(event.get("StarSystem") or event.get("SystemName") or self.current_system or "").strip()
 
     @staticmethod
     def _event_time(event: dict) -> float:
-        """Момент события в секундах epoch.
-
-        Для живого журнала это практически `time.time()`; timestamp из файла
-        нужен, чтобы обратный отсчёт не «врал» при разборе истории.
-        """
+        """Момент события в секундах epoch."""
         raw = str(event.get("timestamp") or "").strip()
         if raw:
             from datetime import datetime
@@ -638,7 +717,7 @@ class ExobiologyTracker:
 
     # -- журнал ------------------------------------------------------------
     #: Сколько подписей событий держать в памяти (защита от роста).
-    MAX_RECENT_SIGS = 4096
+    MAX_RECENT_SIGS = 8192
 
     def _seen_once(self, sig: tuple) -> bool:
         """True, если событие с такой подписью уже учтено (иначе запоминает)."""
@@ -662,44 +741,95 @@ class ExobiologyTracker:
             return
         try:
             name = event.get("event")
-            if name in ("Location", "FSDJump", "Docked", "CarrierJump", "ApproachBody", "LeaveBody"):
-                system = str(event.get("StarSystem") or "").strip()
+            if name in ("Location", "FSDJump", "Docked", "CarrierJump", "ApproachBody",
+                        "LeaveBody", "Touchdown", "Liftoff", "SupercruiseExit"):
+                system = str(event.get("StarSystem") or event.get("SystemName") or "").strip()
                 if system:
-                    self.current_system = system
-                if name == "ApproachBody":
-                    self.current_body = str(event.get("BodyName") or "").strip()
+                    if system != self.current_system:
+                        self.current_system = system
+                        self.current_body = ""
+
+                if name in ("ApproachBody", "Touchdown"):
+                    body = str(event.get("Body") or event.get("BodyName") or "").strip()
+                    if body:
+                        self.current_body = body
                 elif name == "LeaveBody":
                     self.current_body = ""
+                elif name in ("Location", "SupercruiseExit"):
+                    body = str(event.get("Body") or event.get("BodyName") or "").strip()
+                    body_type = str(event.get("BodyType") or "").strip().lower()
+                    if body and body_type != "star":
+                        self.current_body = body
                 return
 
             if name == "Scan":
                 system = str(event.get("StarSystem") or self.current_system or "").strip()
                 if system:
-                    self.current_system = system
+                    if system != self.current_system:
+                        self.current_system = system
+                        self.current_body = ""
                 props = body_props(event, system)
                 if props is None:
                     return
                 key = self._key(props["system"], props["name"])
                 existing = self.bodies.get(key, {})
-                # Уже известные факты (карта поверхности, число биосигналов)
+                # Уже известные факты (карта поверхности, число биосигналов, подтверждённые роды)
                 # не должны теряться при повторном скане тела.
-                props["mapped"] = bool(existing.get("mapped", False))
-                props["bio_signals"] = int(existing.get("bio_signals") or 0)
+                props["mapped"] = bool(existing.get("mapped", False)) or bool(props.get("mapped", False))
+                props["bio_signals"] = max(int(existing.get("bio_signals") or 0), int(props.get("bio_signals") or 0))
+                if existing.get("confirmed_genera"):
+                    props["confirmed_genera"] = sorted(set(
+                        existing.get("confirmed_genera", []) + props.get("confirmed_genera", [])))
                 self.bodies[key] = props
                 self.current_body = props["name"]
                 self._trim()
                 return
 
             if name == "SAAScanComplete":
-                body_name = str(event.get("BodyName") or self.current_body or "").strip()
+                body_name = str(event.get("BodyName") or event.get("Body")
+                                or self.current_body or "").strip()
                 if not body_name:
                     return
-                # Система — из самого события: `StarSystem` в нём есть, а
-                # `current_system` к этому моменту мог уже уехать вперёд
-                # (разбор истории идёт пачками).
                 system = self._event_system(event)
                 body = self._ensure_body(self._key(system, body_name), system, body_name)
                 body["mapped"] = True
+                self.current_body = body_name
+                return
+
+            if name == "SAASignalsFound":
+                signals = event.get("Signals") or []
+                count = 0
+                if isinstance(signals, list):
+                    for signal in signals:
+                        if not isinstance(signal, dict):
+                            continue
+                        signal_type = str(signal.get("Type") or "").lower()
+                        type_loc = str(signal.get("Type_Localised") or "").lower()
+                        if (any(token.lower() in signal_type for token in BIO_SIGNAL_TOKENS)
+                                or "biological" in signal_type
+                                or "biological" in type_loc
+                                or "биолог" in type_loc):
+                            count += int(signal.get("Count") or 0)
+                body_name = str(event.get("BodyName") or event.get("Body")
+                                or self.current_body or "").strip()
+                if not body_name:
+                    return
+                system = self._event_system(event)
+                body = self._ensure_body(self._key(system, body_name), system, body_name)
+                body["bio_signals"] = max(int(body.get("bio_signals") or 0), count)
+                genuses = event.get("Genuses") or []
+                if isinstance(genuses, list):
+                    found_genuses = []
+                    for g in genuses:
+                        if isinstance(g, dict):
+                            gname = g.get("Genus_Localised") or g.get("Genus")
+                            if gname:
+                                found_genuses.append(str(gname).strip())
+                if found_genuses:
+                    body["confirmed_genera"] = sorted(set(
+                        body.get("confirmed_genera", []) + found_genuses))
+                    body["genuses"] = list(body["confirmed_genera"])
+                self.current_body = body_name
                 return
 
             if name == "FSSBodySignals":
@@ -709,10 +839,15 @@ class ExobiologyTracker:
                     for signal in signals:
                         if not isinstance(signal, dict):
                             continue
-                        signal_type = str(signal.get("Type") or "")
-                        if any(token.lower() in signal_type.lower() for token in BIO_SIGNAL_TOKENS):
+                        signal_type = str(signal.get("Type") or "").lower()
+                        type_loc = str(signal.get("Type_Localised") or "").lower()
+                        if (any(token.lower() in signal_type for token in BIO_SIGNAL_TOKENS)
+                                or "biological" in signal_type
+                                or "biological" in type_loc
+                                or "биолог" in type_loc):
                             count += int(signal.get("Count") or 0)
-                body_name = str(event.get("BodyName") or self.current_body or "").strip()
+                body_name = str(event.get("BodyName") or event.get("Body")
+                                or self.current_body or "").strip()
                 if not body_name:
                     return
                 system = self._event_system(event)
@@ -720,11 +855,23 @@ class ExobiologyTracker:
                 body["bio_signals"] = max(int(body.get("bio_signals") or 0), count)
                 return
 
+            if name == "FSSDiscoveryScan":
+                count = _as_int(event.get("BodyCount"), 0)
+                system = self._event_system(event)
+                if system and count:
+                    self.known_body_counts[system] = count
+                return
+
+            if name == "NavBeaconScan":
+                count = _as_int(event.get("NumBodies"), 0)
+                system = self._event_system(event)
+                if system and count:
+                    self.known_body_counts[system] = count
+                return
+
             if name == "ScanOrganic":
-                # В ScanOrganic тело лежит в поле `Body`, а не в `BodyName` —
-                # иначе запись уходила к телу, на котором мы были до этого.
                 body_name = str(event.get("Body") or event.get("BodyName")
-                                or self.current_body or "")
+                                or self.current_body or "").strip()
                 system = self._event_system(event)
                 key = self._body_key(event, body_name)
                 species = (
@@ -738,10 +885,6 @@ class ExobiologyTracker:
                 if not species:
                     return
                 stage = str(event.get("ScanType") or event.get("Type") or "").strip()
-                # Один и тот же снимок мог прийти и живым watcher'ом, и из
-                # хвоста журнала при восстановлении состояния — не считаем
-                # дважды. Без timestamp событие не дедуплицируем: отличить
-                # повтор от второго образца той же секунды невозможно.
                 ts = str(event.get("timestamp") or "").strip()
                 if ts and self._seen_once(("organic", key, species, stage, ts)):
                     return
@@ -752,8 +895,6 @@ class ExobiologyTracker:
                 if stage == "Sample":
                     entry["samples"] = int(entry.get("samples") or 0) + 1
                     entry["stage"] = "Sample"
-                    # Когда был последний снимок — по нему оверлей считает
-                    # обратный отсчёт до следующего образца.
                     entry["last_ts"] = self._event_time(event)
                 elif stage:
                     entry["stage"] = stage
@@ -762,7 +903,6 @@ class ExobiologyTracker:
                 return
 
             if name == "CodexEntry":
-                # Вид занесён в кодекс — значит, он точно найден на этом теле.
                 if str(event.get("Category") or "").lower().startswith("$codex_categorytype_biology"):
                     species = str(event.get("Name_Localised") or event.get("Name") or "").strip()
                     if species:
@@ -771,7 +911,6 @@ class ExobiologyTracker:
                                 ("codex", species, str(event.get("Region") or ""), ts)):
                             self.seen_species[species] = self.seen_species.get(species, 0) + 1
         except Exception:
-            # Хук не имеет права ронять разбор журнала.
             return
 
     # -- выдача ------------------------------------------------------------
@@ -794,7 +933,6 @@ class ExobiologyTracker:
             samples = int(data.get("samples") or 0)
             complete = samples >= SAMPLES_FOR_FULL_CREDIT
             last_ts = float(data.get("last_ts") or 0.0)
-            # Сколько осталось ждать до следующего снимка (0 — можно снимать).
             wait = 0.0
             if last_ts and not complete:
                 wait = max(0.0, SAMPLE_COOLDOWN_SECONDS - (now - last_ts))
@@ -824,6 +962,7 @@ class ExobiologyTracker:
             "materials": body.get("materials", []),
             "mapped": mapped,
             "bio_signals": int(body.get("bio_signals") or 0),
+            "confirmed_genera": list(body.get("confirmed_genera") or []),
             # Предсказания с процентом совпадения правил и оценкой в кр.
             "predictions": prediction_rows(body),
             "organics": rows,
@@ -834,27 +973,17 @@ class ExobiologyTracker:
 
     @staticmethod
     def _genus_of(species: str) -> str:
-        """Из названия вида — род (первое слово): «Tussock Poxtop» → «Tussock».
-
-        `ScanOrganic` отдаёт вид, а цена в таблице — по роду.
-        """
+        """Из названия вида — род (первое слово): «Tussock Poxtop» → «Tussock»."""
         text = str(species or "").strip()
         if not text:
             return ""
         head = text.split()[0]
         if head in GENUS_VALUE_CR:
             return head
-        # «Fungoida» во множественном числе приходит как «Fungoida», а вот
-        # «Osseus» — как «Osseus»: проверяем и полную строку.
         return text if text in GENUS_VALUE_CR else head
 
     def search_system_planets(self, criteria_list, limit: int = 6) -> List[dict]:
-        """Тела текущей системы, подходящие под выбранные наборы критериев.
-
-        В отличие от `system_bodies()` сюда попадают и тела без биосигналов:
-        поиск планет ищет именно параметры (тип, посадка, атмосфера), а не
-        жизнь. Данные — только из журнала игрока.
-        """
+        """Тела текущей системы, подходящие под выбранные наборы критериев."""
         if not criteria_list:
             return []
         bodies = [body for key, body in self.bodies.items()
@@ -862,12 +991,7 @@ class ExobiologyTracker:
         return search_planets(bodies, criteria_list, limit=limit)
 
     def system_bodies(self, limit: int = 10) -> List[dict]:
-        """Тела текущей системы, у которых есть биосигналы (важные сверху).
-
-        Сортировка: сначала по числу биосигналов, затем по наличию карты и по
-        имени —
-        порядок детерминирован, иначе список прыгал бы между тиками.
-        """
+        """Тела текущей системы, у которых есть биосигналы (важные сверху)."""
         rows = []
         for key, body in self.bodies.items():
             if not key.startswith(f"{self.current_system}|"):
@@ -882,14 +1006,36 @@ class ExobiologyTracker:
                 "has_organics": bool(self.organics.get(key)),
             })
         rows.sort(key=lambda row: (-row["bio_signals"], not row["mapped"], row["body"]))
-        # Тела без биосигналов интересны только если на них уже взяты образцы.
         rows = [row for row in rows if row["bio_signals"] or row["has_organics"]]
         return rows[:limit]
 
     def system_body_count(self) -> int:
-        """Сколько тел текущей системы знает журнал (для честных подсказок)."""
+        """Сколько тел текущей системы знает журнал."""
         prefix = f"{self.current_system}|"
         return sum(1 for key in self.bodies if key.startswith(prefix))
+
+    def system_scanned_count(self, system: str = "") -> int:
+        """Сколько тел заданной системы реально отсканировано в журнале."""
+        sys_name = system or self.current_system
+        prefix = f"{sys_name}|"
+        return sum(1 for key in self.bodies if key.startswith(prefix))
+
+    def system_known_body_count(self, system: str = "") -> int:
+        """Всего тел в системе (из FSSDiscoveryScan / NavBeaconScan)."""
+        sys_name = system or self.current_system
+        return int(self.known_body_counts.get(sys_name, 0) or 0)
+
+    def system_bio_signals_total(self, system: str = "") -> int:
+        """Суммарное число биосигналов во всей системе."""
+        sys_name = system or self.current_system
+        prefix = f"{sys_name}|"
+        return sum(int(b.get("bio_signals") or 0) for k, b in self.bodies.items() if k.startswith(prefix))
+
+    def system_bio_bodies_count(self, system: str = "") -> int:
+        """Число тел в системе, где найдены биосигналы."""
+        sys_name = system or self.current_system
+        prefix = f"{sys_name}|"
+        return sum(1 for k, b in self.bodies.items() if k.startswith(prefix) and int(b.get("bio_signals") or 0) > 0)
 
     def recent_bodies(self, limit: int = 8) -> List[dict]:
         """Последние отсканированные тела текущей системы (свежие сверху)."""
@@ -900,3 +1046,305 @@ class ExobiologyTracker:
             if state:
                 result.append(state)
         return result
+
+    # -- кэш ---------------------------------------------------------------
+    def export_system_data(self, system: str) -> dict:
+        """Собрать данные системы для сохранения в дисковый кэш."""
+        sys_name = str(system or self.current_system or "").strip()
+        if not sys_name:
+            return {}
+        prefix = f"{sys_name}|"
+        bodies = {}
+        for key, body in self.bodies.items():
+            if key.startswith(prefix):
+                bname = key[len(prefix):]
+                bodies[bname] = dict(body)
+        organics = {}
+        for key, orgs in self.organics.items():
+            if key.startswith(prefix):
+                bname = key[len(prefix):]
+                organics[bname] = dict(orgs)
+        return {
+            "bodies": bodies,
+            "organics": organics,
+            "known_body_count": int(self.known_body_counts.get(sys_name, 0) or 0),
+        }
+
+    def import_system_data(self, system: str, data: dict) -> int:
+        """Импортировать данные системы из кэша. Возвращает число загруженных тел."""
+        if not system or not isinstance(data, dict):
+            return 0
+        bodies = data.get("bodies") or {}
+        count = 0
+        prefix = f"{system}|"
+        for bname, bprops in bodies.items():
+            if not isinstance(bprops, dict):
+                continue
+            key = f"{prefix}{bname}"
+            existing = self.bodies.get(key, {})
+            merged = dict(bprops)
+            merged["system"] = system
+            merged["name"] = bname
+            if existing:
+                merged["mapped"] = bool(existing.get("mapped")) or bool(merged.get("mapped"))
+                merged["bio_signals"] = max(int(existing.get("bio_signals") or 0), int(merged.get("bio_signals") or 0))
+                if existing.get("confirmed_genera"):
+                    merged["confirmed_genera"] = sorted(set(
+                        existing.get("confirmed_genera", []) + merged.get("confirmed_genera", [])))
+            self.bodies[key] = merged
+            count += 1
+        organics = data.get("organics") or {}
+        for bname, orgs in organics.items():
+            if isinstance(orgs, dict):
+                key = f"{prefix}{bname}"
+                self.organics.setdefault(key, {}).update(orgs)
+        known = int(data.get("known_body_count") or 0)
+        if known:
+            self.known_body_counts[system] = max(int(self.known_body_counts.get(system, 0) or 0), known)
+        return count
+
+    def load_from_cache(self, cache) -> int:
+        """Загрузить все системы из ExobiologyCache."""
+        if not cache:
+            return 0
+        data = cache.load()
+        count = 0
+        for sys_name, sys_data in data.items():
+            if isinstance(sys_data, dict):
+                self.import_system_data(sys_name, sys_data)
+                count += 1
+        return count
+
+    def save_to_cache(self, cache) -> int:
+        """Сохранить все накопленные системы в ExobiologyCache."""
+        if not cache:
+            return 0
+        systems = set()
+        for key in self.bodies:
+            if "|" in key:
+                systems.add(key.split("|", 1)[0])
+        if self.current_system:
+            systems.add(self.current_system)
+        count = 0
+        for sys_name in systems:
+            sys_data = self.export_system_data(sys_name)
+            if sys_data.get("bodies") or sys_data.get("organics") or sys_data.get("known_body_count"):
+                cache.store_system(sys_name, sys_data.get("bodies"), sys_data.get("organics"),
+                                   sys_data.get("known_body_count", 0))
+                count += 1
+        cache.save()
+        return count
+
+
+# ============================================================
+#  Дисковый кэш экзобиологии
+# ============================================================
+class ExobiologyCache:
+    """Кэш данных экзобиологии на диске (~/.colonial_helper_exobio_cache.json).
+
+    Хранит тела, сигналы и образцы посещённых систем, чтобы при перезапуске
+    или повторном визите в систему оверлей сразу отображал полную информацию.
+    """
+
+    def __init__(self, path: Optional[Path] = None, max_systems: int = 500):
+        self.path = Path(path) if path else None
+        self.max_systems = max(10, int(max_systems))
+        self._data: Dict[str, dict] = {}
+        self._loaded = False
+
+    def load(self) -> Dict[str, dict]:
+        if self._loaded:
+            return self._data
+        if not self.path or not self.path.exists():
+            self._loaded = True
+            return self._data
+        try:
+            with open(self.path, "r", encoding="utf-8") as f:
+                content = json.load(f)
+            if isinstance(content, dict):
+                self._data = content
+        except Exception:
+            self._data = {}
+        self._loaded = True
+        return self._data
+
+    def save(self) -> bool:
+        if not self.path:
+            return False
+        try:
+            if len(self._data) > self.max_systems:
+                items = sorted(
+                    self._data.items(),
+                    key=lambda item: float((item[1] if isinstance(item[1], dict) else {}).get("ts") or 0.0),
+                    reverse=True
+                )[:self.max_systems]
+                self._data = dict(items)
+            tmp_path = self.path.with_name(f"{self.path.name}.tmp.{os.getpid()}")
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False, indent=1)
+            tmp_path.replace(self.path)
+            return True
+        except Exception:
+            return False
+
+    def get_system(self, system: str) -> Optional[dict]:
+        self.load()
+        return self._data.get(str(system or "").strip())
+
+    def all_systems(self) -> Dict[str, dict]:
+        self.load()
+        return dict(self._data)
+
+    def clear_system(self, system: str) -> bool:
+        sys_name = str(system or "").strip()
+        self.load()
+        if sys_name in self._data:
+            del self._data[sys_name]
+            self.save()
+            return True
+        return False
+
+    def store_system(self, system: str, bodies: dict = None, organics: dict = None,
+                     known_body_count: int = 0) -> bool:
+        sys_name = str(system or "").strip()
+        if not sys_name:
+            return False
+        self.load()
+        existing = self._data.get(sys_name, {})
+        merged_bodies = dict(existing.get("bodies") or {})
+        for bname, bdata in (bodies or {}).items():
+            if isinstance(bdata, dict):
+                if bname in merged_bodies:
+                    prev = merged_bodies[bname]
+                    bdata["mapped"] = bool(prev.get("mapped")) or bool(bdata.get("mapped"))
+                    bdata["bio_signals"] = max(int(prev.get("bio_signals") or 0), int(bdata.get("bio_signals") or 0))
+                    if prev.get("confirmed_genera"):
+                        bdata["confirmed_genera"] = sorted(set(
+                            prev.get("confirmed_genera", []) + bdata.get("confirmed_genera", [])))
+                merged_bodies[bname] = bdata
+
+        merged_organics = dict(existing.get("organics") or {})
+        for bname, orgs in (organics or {}).items():
+            if isinstance(orgs, dict):
+                merged_organics.setdefault(bname, {}).update(orgs)
+
+        self._data[sys_name] = {
+            "ts": time.time(),
+            "bodies": merged_bodies,
+            "organics": merged_organics,
+            "known_body_count": max(int(existing.get("known_body_count") or 0), int(known_body_count or 0)),
+        }
+        return self.save()
+
+
+# ============================================================
+#  Поиск сканов в истории журналов
+# ============================================================
+EXOBIO_JOURNAL_EVENTS = frozenset({
+    "FSDJump", "Location", "CarrierJump",
+    "Scan", "FSSBodySignals", "SAASignalsFound", "SAAScanComplete",
+    "ScanOrganic", "CodexEntry", "FSSDiscoveryScan", "NavBeaconScan",
+    "ApproachBody", "LeaveBody", "Touchdown", "Liftoff",
+})
+
+
+def scan_journals_for_system(journal_path, system_name: str, handle_func=None) -> List[dict]:
+    """Быстрый поиск событий экзобиологии для заданной системы во всех журналах."""
+    if not journal_path or not system_name:
+        return []
+    path = Path(journal_path)
+    if not path.exists():
+        return []
+    system_bytes = f'"{system_name}"'.encode("utf-8")
+    raw_system_bytes = system_name.encode("utf-8")
+    try:
+        files = sorted(path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+
+    found_events: List[dict] = []
+    for fpath in files:
+        try:
+            with open(fpath, "rb") as fh:
+                content = fh.read()
+            if system_bytes not in content and raw_system_bytes not in content:
+                continue
+            current_sys = None
+            for line in content.splitlines():
+                matched_ev = None
+                for ev_name in EXOBIO_JOURNAL_EVENTS:
+                    if f'"{ev_name}"'.encode("utf-8") in line:
+                        matched_ev = ev_name
+                        break
+                if not matched_ev:
+                    continue
+                try:
+                    ev = json.loads(line.decode("utf-8", errors="replace"))
+                except Exception:
+                    continue
+                ev_name = ev.get("event")
+                if ev_name in ("FSDJump", "Location", "CarrierJump"):
+                    current_sys = str(ev.get("StarSystem") or "").strip()
+                    if current_sys == system_name:
+                        found_events.append(ev)
+                    continue
+
+                ev_sys = str(ev.get("StarSystem") or ev.get("SystemName") or "").strip()
+                if not ev_sys and current_sys:
+                    ev_sys = current_sys
+
+                if ev_sys == system_name or (not ev_sys and (system_bytes in line or raw_system_bytes in line)):
+                    if not ev.get("StarSystem"):
+                        ev["StarSystem"] = system_name
+                    found_events.append(ev)
+        except Exception:
+            continue
+
+    found_events.sort(key=lambda ev: str(ev.get("timestamp") or ""))
+    if handle_func:
+        for ev in found_events:
+            try:
+                handle_func(ev)
+            except Exception:
+                pass
+    return found_events
+
+
+def scan_all_journals_for_exobio(journal_path, handle_func=None, on_progress=None) -> int:
+    """Полное сканирование всех журналов на события экзобиологии для наполнения кэша."""
+    if not journal_path:
+        return 0
+    path = Path(journal_path)
+    if not path.exists():
+        return 0
+    try:
+        files = sorted(path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime)
+    except OSError:
+        return 0
+    total = len(files)
+    count = 0
+    for idx, fpath in enumerate(files):
+        if on_progress:
+            try:
+                on_progress(idx + 1, total)
+            except Exception:
+                pass
+        try:
+            with open(fpath, "rb") as fh:
+                content = fh.read()
+            if not any(f'"{ev}"'.encode("utf-8") in content for ev in EXOBIO_JOURNAL_EVENTS):
+                continue
+            for line in content.splitlines():
+                for ev_name in EXOBIO_JOURNAL_EVENTS:
+                    if f'"{ev_name}"'.encode("utf-8") in line:
+                        try:
+                            ev = json.loads(line.decode("utf-8", errors="replace"))
+                            if handle_func:
+                                handle_func(ev)
+                            count += 1
+                        except Exception:
+                            pass
+                        break
+        except Exception:
+            continue
+    return count

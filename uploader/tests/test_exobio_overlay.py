@@ -201,6 +201,40 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
         self.overlay.update_exobiology(state(system_bodies=[]))
         self.assertIn("не найдено", _text(self.overlay.bodies_label))
 
+    def test_unknown_body_with_system_bio_summary(self):
+        st = {
+            "system": "Procyon",
+            "body": None,
+            "system_bodies": [
+                {"body": "Procyon 2", "planet_class": "Rocky body", "bio_signals": 2, "landable": True, "mapped": True}
+            ],
+            "system_scanned_bodies": 4,
+            "system_known_bodies": 10,
+        }
+        self.overlay.update_exobiology(st)
+        body_text = _text(self.overlay.body_label)
+        self.assertIn("Procyon", body_text)
+        self.assertIn("Тело: —", body_text)
+        params = _text(self.overlay.params_label)
+        self.assertIn("тел с биосигналами", params)
+        self.assertIn("2 сигн.", params)
+        self.assertIn("2", _text(self.overlay.bodies_label))
+
+    def test_planet_search_with_scanned_bodies(self):
+        st = {
+            "system": "Maia",
+            "body": None,
+            "system_bodies": [],
+            "planet_criteria": [{"id": "rocky", "label": "Скалистые"}],
+            "planets": [
+                {"body": "Maia 3", "planet_class": "Rocky body", "bio_signals": 3, "landable": True}
+            ],
+        }
+        self.overlay.update_exobiology(st)
+        planets_text = _text(self.overlay.planets_label)
+        self.assertIn("3  ·  Rocky body", planets_text)
+        self.assertIn("сигналов 3", planets_text)
+
 
 class ExobioOverlayTickerTests(_OverlayTestCase):
     """Отсчёт обязан тикать и без новых данных журнала."""

@@ -135,6 +135,69 @@ class ExobioTabTests(unittest.TestCase):
             self.app._exobio_planet_vars["icy_land"].set(True)
             self.app._on_exobio_filters_changed()  # не должно бросить
 
+    # -- дерево тел и панель экзобиологии -----------------------------------
+    def test_exobio_treeview_exists_and_configured(self):
+        self.assertTrue(hasattr(self.app, "exobio_tree"))
+        self.assertTrue(hasattr(self.app, "exobio_system_label"))
+        self.assertTrue(hasattr(self.app, "exobio_summary_label"))
+
+    def test_update_tab_exobio_populates_treeview_and_labels(self):
+        from test_exobiology import scan_event
+
+        self.app.exobiology.handle({"event": "FSDJump", "StarSystem": "HIP 12345"})
+        self.app.exobiology.handle(scan_event())
+        self.app.exobiology.handle({
+            "event": "FSSBodySignals",
+            "StarSystem": "HIP 12345",
+            "BodyName": "HIP 12345 A 3",
+            "Signals": [{"Type": "$SAA_SignalType_Biological;", "Count": 3}],
+        })
+
+        self.app.exobio_tree.insert.reset_mock()
+        self.app._update_tab_exobio()
+
+        # Проверяем обновление подписей
+        sys_calls = [str(call) for call in self.app.exobio_system_label.config.call_args_list]
+        self.assertTrue(any("HIP 12345" in call for call in sys_calls))
+
+        summary_calls = [str(call) for call in self.app.exobio_summary_label.config.call_args_list]
+        self.assertTrue(any("Тел отсканировано: 1" in call for call in summary_calls))
+        self.assertTrue(any("Всего биосигналов: 3" in call for call in summary_calls))
+
+        # Проверяем вставку строк в дерево
+        inserted_values = [call.kwargs.get("values") for call in self.app.exobio_tree.insert.call_args_list]
+        self.assertEqual(len(inserted_values), 1)
+        self.assertEqual(inserted_values[0][0], "A 3")
+        self.assertEqual(inserted_values[0][4], "3")  # биосигналы
+
+    def test_overlay_state_with_cached_system_bodies(self):
+        # Если в памяти тел нет, но они есть в кэше — _exobiology_overlay_state подтягивает их
+        self.app.exobiology.current_system = "CacheSys"
+        self.app.exobio_cache.store_system("CacheSys", {
+            "CacheSys 1": {
+                "body_name": "CacheSys 1",
+                "planet_class": "Rocky body",
+                "atmosphere": "thin carbon dioxide atmosphere",
+                "atmosphere_category": "carbon_dioxide",
+                "landable": True,
+                "bio_signals": 2,
+            }
+        }, known_body_count=5)
+
+        state = self.app._exobiology_overlay_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(state["system"], "CacheSys")
+        self.assertEqual(state["system_known_bodies"], 5)
+        self.assertEqual(state["system_scanned_bodies"], 1)
+        self.assertEqual(len(state["system_bodies"]), 1)
+        self.assertEqual(state["system_bodies"][0]["body"], "CacheSys 1")
+
+    def test_notebook_tab_change_refreshes_exobio_tab(self):
+        with mock.patch.object(self.app, "_update_tab_exobio") as update_mock:
+            self.app.notebook.select = mock.MagicMock(return_value=str(self.app.tab_exobio))
+            self.app._on_notebook_tab_changed(None)
+            update_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -87,7 +87,10 @@ from overlay import (
     OverlayManager, ANCHOR_KEYS, ANCHOR_LABELS, BLOCK_LABELS,
     SIZE_PRESETS, SIZE_PRESET_LABELS, AUTO_RULES, AUTO_RULE_LABELS, IDLE_TIMEOUTS,
 )
-from exobiology import ExobiologyTracker, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR
+from exobiology import (
+    ExobiologyTracker, ExobiologyCache, PLANET_SEARCH_PRESETS, GENUS_VALUE_CR,
+    scan_journals_for_system, scan_all_journals_for_exobio, body_matches,
+)
 from carrier import CarrierTracker
 from colonisation import (
     ConstructionSiteTracker,
@@ -121,7 +124,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.14"
+VERSION = "2.10.15"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -261,6 +264,10 @@ class ColonialHelperApp:
         # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
         self.map_cache = MapRavenCache(
             self.config_path.with_name(".colonial_helper_map_cache.json"))
+        # Дисковый кэш экзобиологии: сохраняет ранее отсканированные системы
+        self.exobio_cache = ExobiologyCache(
+            self.config_path.with_name(".colonial_helper_exobio_cache.json"))
+        self.exobiology.load_from_cache(self.exobio_cache)
         self.load_config()
 
         # Raven Colonial API
@@ -3500,12 +3507,22 @@ class ColonialHelperApp:
             self._map_refresh_from_raven()
 
     def _on_notebook_tab_changed(self, _event=None):
-        """Переключили вкладку: карте нужна свежая отрисовка и данные Raven."""
-        if not self._map_visible():
-            return
-        self._map_redraw_now()
-        self._map_refresh_from_raven()
-        self._map_arm_autorefresh()
+        """Переключили вкладку: карте и экзобиологии нужны свежие данные."""
+        if self._map_visible():
+            self._map_redraw_now()
+            self._map_refresh_from_raven()
+            self._map_arm_autorefresh()
+        if hasattr(self, "notebook") and hasattr(self, "tab_exobio"):
+            try:
+                selected_tab = self.notebook.select()
+                if selected_tab == str(self.tab_exobio):
+                    self._update_tab_exobio()
+                    if (hasattr(self, "exobiology")
+                            and self.exobiology.current_system
+                            and self.exobiology.system_body_count() == 0):
+                        self._scan_journals_for_current_system(force=False)
+            except Exception:
+                pass
 
     def _map_arm_autorefresh(self):
         """Пока вкладка открыта, Raven опрашивается сам раз в MAP_RAVEN_TTL.
@@ -4385,26 +4402,89 @@ class ColonialHelperApp:
     #  Вкладка: Лог
     # ============================================================
     # ============================================================
-    #  Вкладка: Экзобиология (фильтры оверлея EXOBIO)
+    #  Вкладка: Экзобиология (тела, биосигналы, фильтры оверлея EXOBIO)
     # ============================================================
     def _build_tab_exobio(self):
-        """Фильтры блока EXOBIO: роды и поиск планет по параметрам.
-
-        Отдельная вкладка, а не раздел в «Оверлее»: настроек оверлея и так
-        много, а эти относятся только к одному блоку.
-        """
+        """Вкладка «Экзобиология»: текущая система, тела, биосигналы и фильтры оверлея."""
         frame = self._scrollable_frame(self.tab_exobio)
         settings = self.overlay_manager.settings
 
-        tb.Label(frame, text="Фильтры оверлея EXOBIO",
-                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(frame, text="Экзобиология — поиск органики и фильтры оверлея",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
-            text="Блок EXOBIO показывает образцы, вероятные роды и тела системы. "
-                 "Здесь выбирается, какие роды оставлять в прогнозе и какие планеты "
-                 "искать в системе. Всё применяется сразу — оверлей перезапускать не нужно.",
-            foreground=COLOR_MUTED, wraplength=700,
+            text="Тела текущей системы, биосигналы, образцы и фильтры для оверлея EXOBIO. "
+                 "Если система уже была отсканирована ранее, сканы подтягиваются автоматически "
+                 "из истории журналов и кэша. Все изменения фильтров применяются сразу.",
+            foreground=COLOR_MUTED, wraplength=780,
         ).pack(anchor=W, pady=(0, 10))
+
+        # ---- Панель текущей системы и управление ----
+        sys_box = tb.Frame(frame, padding=8, relief="solid", borderwidth=1)
+        sys_box.pack(fill=X, pady=(0, 10))
+
+        top_row = tb.Frame(sys_box)
+        top_row.pack(fill=X)
+
+        self.exobio_system_label = tb.Label(
+            top_row, text="Текущая система: —", font=("Segoe UI", 11, "bold"), foreground=COLOR_CYAN
+        )
+        self.exobio_system_label.pack(side=LEFT)
+
+        tb.Button(
+            top_row, text="Сверить с журналами", command=lambda: self._scan_journals_for_current_system(force=True),
+            bootstyle="info-outline", width=22
+        ).pack(side=RIGHT, padx=(6, 0))
+        tb.Button(
+            top_row, text="Сканировать все журналы", command=self._scan_all_journals_for_exobio,
+            bootstyle="secondary-outline", width=24
+        ).pack(side=RIGHT)
+
+        self.exobio_summary_label = tb.Label(
+            sys_box, text="Тел отсканировано: 0 · С биосигналами: 0 · Всего биосигналов: 0",
+            font=("Segoe UI", 9), foreground=COLOR_MUTED
+        )
+        self.exobio_summary_label.pack(anchor=W, pady=(4, 0))
+
+        self.exobio_status_label = tb.Label(
+            sys_box, text="", font=("Segoe UI", 9), foreground=COLOR_ORANGE
+        )
+        self.exobio_status_label.pack(anchor=W)
+
+        # ---- Таблица тел текущей системы ----
+        tb.Label(frame, text="Тела текущей системы", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(4, 2))
+        tb.Label(
+            frame,
+            text="Отсканированные тела текущей системы: тип, атмосфера, посадка, число биосигналов "
+                 "и совпадение с выбранными фильтрами поиска.",
+            foreground=COLOR_MUTED, wraplength=780,
+        ).pack(anchor=W, pady=(0, 4))
+
+        tree_frame = tb.Frame(frame, relief="solid", borderwidth=1)
+        tree_frame.pack(fill=X, expand=False, pady=(0, 10))
+
+        columns = ("body", "class", "atmosphere", "landable", "signals", "mapped", "matched")
+        self.exobio_tree = tb.Treeview(
+            tree_frame, columns=columns, show="headings", bootstyle="dark", height=6,
+        )
+        for col, title, width, anchor in [
+            ("body", "Тело", 160, W),
+            ("class", "Класс", 130, W),
+            ("atmosphere", "Атмосфера", 160, W),
+            ("landable", "Посадка", 75, CENTER),
+            ("signals", "Биосигналы", 90, CENTER),
+            ("mapped", "Карта DSS", 85, CENTER),
+            ("matched", "Подходит под фильтр", 200, W),
+        ]:
+            self.exobio_tree.heading(col, text=title)
+            self.exobio_tree.column(col, width=width, anchor=anchor)
+
+        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.exobio_tree.yview)
+        self.exobio_tree.configure(yscrollcommand=vsb.set)
+        self.exobio_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=10)
 
         # ---- Фильтр по родам ----
         tb.Label(frame, text="Роды в прогнозе", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
@@ -4446,7 +4526,7 @@ class ColonialHelperApp:
             text="Отмеченные наборы критериев применяются к отсканированным телам текущей "
                  "системы. Подходящие планеты попадают в раздел «Поиск планет» оверлея — "
                  "с типом, атмосферой, возможностью посадки и причиной, по которой планета "
-                 "нашлась. Данные только из вашего журнала: тело должно быть отсканировано.",
+                 "нашлась. Данные берутся из вашего журнала и кэша.",
             foreground=COLOR_MUTED, wraplength=700,
         ).pack(anchor=W, pady=(0, 6))
 
@@ -4476,6 +4556,8 @@ class ColonialHelperApp:
         tb.Label(planet_btns, text="без отмеченных наборов раздел пишет, что критерии не выбраны",
                  foreground=COLOR_MUTED).pack(side=LEFT, padx=(12, 0))
 
+        self._update_tab_exobio()
+
     def _set_all_genera(self, value: bool):
         for var in getattr(self, "_exobio_genus_vars", {}).values():
             var.set(bool(value))
@@ -4499,6 +4581,198 @@ class ColonialHelperApp:
             self.overlay_manager.save_settings()
         except Exception as exc:  # настройки не должны ронять интерфейс
             self.log(f"Не удалось сохранить фильтры EXOBIO: {exc}", "error")
+        self._update_tab_exobio()
+
+    def _update_tab_exobio(self):
+        """Обновить сводку и таблицу тел на вкладке «Экзобиология»."""
+        if not hasattr(self, "exobio_tree") or not hasattr(self, "exobiology"):
+            return
+        tracker = self.exobiology
+        system = str(tracker.current_system or "").strip() or "не определена"
+        if hasattr(self, "exobio_system_label"):
+            try:
+                self.exobio_system_label.config(text=f"Текущая система: {system}")
+            except Exception:
+                pass
+
+        scanned = tracker.system_scanned_count()
+        known = tracker.system_known_body_count()
+        bio_bodies = tracker.system_bio_bodies_count()
+        bio_total = tracker.system_bio_signals_total()
+
+        body_text = f"Тел отсканировано: {scanned}" + (f" из {known}" if known and known > scanned else "")
+        if hasattr(self, "exobio_summary_label"):
+            try:
+                self.exobio_summary_label.config(
+                    text=f"{body_text}  ·  Тел с биосигналами: {bio_bodies}  ·  Всего биосигналов: {bio_total}"
+                )
+            except Exception:
+                pass
+
+        try:
+            for item in self.exobio_tree.get_children():
+                self.exobio_tree.delete(item)
+        except Exception:
+            return
+
+        if not tracker.current_system:
+            return
+
+        criteria, _ = self._exobiology_filters()
+        prefix = f"{tracker.current_system}|"
+        system_bodies = [b for k, b in tracker.bodies.items() if k.startswith(prefix)]
+        system_bodies.sort(key=lambda b: (
+            -int(b.get("bio_signals") or 0),
+            not bool(b.get("landable")),
+            float(b.get("distance_ls") or 0.0),
+            str(b.get("name") or "")
+        ))
+
+        from exobiology import body_matches
+        for b in system_bodies:
+            name = str(b.get("name") or "")
+            disp_name = name
+            if system and name.startswith(system):
+                disp_name = name[len(system):].strip() or name
+
+            p_class = str(b.get("planet_class") or "—")
+            atmo = str(b.get("atmosphere") or b.get("atmosphere_type") or "нет")
+            landable_str = "Да" if b.get("landable") else "Нет"
+            signals = int(b.get("bio_signals") or 0)
+            sig_str = str(signals) if signals else "—"
+            mapped_str = "Да" if b.get("mapped") else "—"
+
+            matched_rules = []
+            for rule in criteria:
+                if body_matches(b, rule):
+                    matched_rules.append(str(rule.get("label") or rule.get("id") or ""))
+
+            matched_str = ", ".join(matched_rules[:2]) if matched_rules else "—"
+            if len(matched_rules) > 2:
+                matched_str += f" (+{len(matched_rules)-2})"
+
+            try:
+                self.exobio_tree.insert(
+                    "", END, values=(disp_name, p_class, atmo, landable_str, sig_str, mapped_str, matched_str)
+                )
+            except Exception:
+                pass
+
+    def _scan_journals_for_current_system(self, force: bool = False):
+        """Быстро найти сканы текущей системы во всех файлах журналов."""
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None or not getattr(self, "journal_path", None):
+            return
+        system = str(tracker.current_system or "").strip()
+        if not system:
+            return
+        if not force and tracker.system_body_count() > 0:
+            return
+
+        now = time.time()
+        last_scanned = getattr(self, "_last_exobio_scan_system", None)
+        if not force and last_scanned == system and (now - getattr(self, "_last_exobio_scan_time", 0.0)) < 30.0:
+            return
+        self._last_exobio_scan_system = system
+        self._last_exobio_scan_time = now
+
+        def worker():
+            from exobiology import scan_journals_for_system
+            events = scan_journals_for_system(self.journal_path, system)
+            if events:
+                def on_done():
+                    for ev in events:
+                        try:
+                            tracker.handle(ev)
+                        except Exception:
+                            pass
+                    cache = getattr(self, "exobio_cache", None)
+                    if cache:
+                        sys_data = tracker.export_system_data(system)
+                        cache.store_system(system, sys_data.get("bodies"), sys_data.get("organics"),
+                                           sys_data.get("known_body_count", 0))
+                    if hasattr(self, "overlay_manager") and self.overlay_manager:
+                        self.overlay_manager.refresh_exobio()
+                    self._update_tab_exobio()
+                    self.log(f"Экзобиология: подтянуто {len(events)} событий для системы {system}", "info")
+                if hasattr(self, "root") and self.root:
+                    try:
+                        self.root.after(0, on_done)
+                    except Exception:
+                        pass
+                else:
+                    on_done()
+
+        threading.Thread(target=worker, daemon=True, name="exobio-sys-scan").start()
+
+    def _scan_all_journals_for_exobio(self):
+        """Полное сканирование всех журналов на события экзобиологии для наполнения кэша."""
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None or not getattr(self, "journal_path", None):
+            return
+        if getattr(self, "_exobio_full_scanning", False):
+            return
+        self._exobio_full_scanning = True
+        if hasattr(self, "exobio_status_label"):
+            try:
+                self.exobio_status_label.config(text="Сканирование журналов...", foreground=COLOR_ORANGE)
+            except Exception:
+                pass
+
+        def worker():
+            from exobiology import scan_all_journals_for_exobio
+            events = []
+
+            def on_progress(cur, total):
+                if hasattr(self, "root") and self.root:
+                    try:
+                        self.root.after(0, lambda c=cur, t=total: getattr(self, "exobio_status_label", None) and
+                                        self.exobio_status_label.config(text=f"Сканирование: файл {c} из {t}..."))
+                    except Exception:
+                        pass
+
+            def collector(ev):
+                events.append(ev)
+
+            scan_all_journals_for_exobio(self.journal_path, handle_func=collector, on_progress=on_progress)
+
+            def on_finish():
+                self._exobio_full_scanning = False
+                for ev in events:
+                    try:
+                        tracker.handle(ev)
+                    except Exception:
+                        pass
+                cache = getattr(self, "exobio_cache", None)
+                if cache:
+                    systems = set()
+                    for key in tracker.bodies:
+                        if "|" in key:
+                            systems.add(key.split("|", 1)[0])
+                    for sys_name in systems:
+                        sys_data = tracker.export_system_data(sys_name)
+                        cache.store_system(sys_name, sys_data.get("bodies"), sys_data.get("organics"),
+                                           sys_data.get("known_body_count", 0))
+                if hasattr(self, "exobio_status_label"):
+                    try:
+                        self.exobio_status_label.config(text=f"Сканирование завершено: учтено {len(events)} событий",
+                                                        foreground=COLOR_GREEN_TEXT)
+                    except Exception:
+                        pass
+                self.log(f"Полное сканирование экзобиологии: {len(events)} событий обработано", "info")
+                if hasattr(self, "overlay_manager") and self.overlay_manager:
+                    self.overlay_manager.refresh_exobio()
+                self._update_tab_exobio()
+
+            if hasattr(self, "root") and self.root:
+                try:
+                    self.root.after(0, on_finish)
+                except Exception:
+                    pass
+            else:
+                on_finish()
+
+        threading.Thread(target=worker, daemon=True, name="exobio-all-scan").start()
 
     def _build_tab_log(self):
         frame = tb.Frame(self.tab_log, padding=15)
@@ -5129,6 +5403,17 @@ class ColonialHelperApp:
         tracker = getattr(self, "exobiology", None)
         if tracker is None:
             return None
+
+        # Если для текущей системы в памяти нет тел, пробуем загрузить из кэша или файлов:
+        if tracker.current_system and tracker.system_body_count() == 0:
+            cache = getattr(self, "exobio_cache", None)
+            if cache:
+                sys_data = cache.get_system(tracker.current_system)
+                if sys_data and sys_data.get("bodies"):
+                    tracker.import_system_data(tracker.current_system, sys_data)
+            if tracker.system_body_count() == 0 and getattr(self, "journal_path", None):
+                self._scan_journals_for_current_system(force=False)
+
         state = tracker.current_body_state()
         try:
             bodies = tracker.system_bodies(limit=10)
@@ -5149,8 +5434,10 @@ class ColonialHelperApp:
         state["system_bodies"] = bodies
         state["system"] = state.get("system") or tracker.current_system
         try:
-            state["system_known_bodies"] = tracker.system_body_count()
+            state["system_scanned_bodies"] = tracker.system_scanned_count()
+            state["system_known_bodies"] = tracker.system_known_body_count() or tracker.system_body_count()
         except Exception:
+            state["system_scanned_bodies"] = 0
             state["system_known_bodies"] = 0
         # Фильтры и результат поиска планет (вкладка «Экзобиология»).
         state["genera_filter"] = genera
@@ -5933,11 +6220,15 @@ class ColonialHelperApp:
     #: журнала карта знала бы только станцию, у которой стоит пилот.
     RESTORE_MAP_EVENTS = RESTORE_STATE_EVENTS | frozenset({
         "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
-        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame",
+        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame", "NavBeaconScan",
+        "Touchdown", "Liftoff",
     })
     #: Трекеру экзобиологии дополнительно нужны биосигналы и образцы: без них
     #: блок EXOBIO после перезапуска «не видел» отсканированную систему.
-    RESTORE_EXOBIO_EVENTS = frozenset({"FSSBodySignals", "ScanOrganic", "CodexEntry"})
+    RESTORE_EXOBIO_EVENTS = frozenset({
+        "FSSBodySignals", "SAASignalsFound", "ScanOrganic", "CodexEntry",
+        "Touchdown", "Liftoff", "SupercruiseExit",
+    })
     RESTORE_TRACK_EVENTS = RESTORE_MAP_EVENTS | RESTORE_EXOBIO_EVENTS
 
     def _restore_station_state_from_journal(self) -> dict:
@@ -6006,8 +6297,8 @@ class ColonialHelperApp:
                 restored["site"] = True
             if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
                 restored["carrier"] = True
-            if restored["site"] or restored["carrier"]:
-                break
+            # Не прерываем сбор событий карты и экзобиологии: даже если пилот уже
+            # пристыкован, сканы тел системы могли быть сделаны в предыдущих файлах.
 
         # Карта системы собирается хронологически: файлы идут от новых к
         # старым, а положение пилота определяет последнее событие, а не первое
@@ -6029,6 +6320,11 @@ class ColonialHelperApp:
                     tracker.handle(event)
                 except Exception:
                     continue
+            cache = getattr(self, "exobio_cache", None)
+            if cache and tracker.current_system:
+                sys_data = tracker.export_system_data(tracker.current_system)
+                cache.store_system(tracker.current_system, sys_data.get("bodies"),
+                                   sys_data.get("organics"), sys_data.get("known_body_count", 0))
         if self.system_map.current_system:
             self._map_schedule_redraw(delay_ms=0)
 

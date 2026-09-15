@@ -2212,18 +2212,37 @@ class ExobiologyOverlay(OverlayWindow):
 
         body_name = str(state.get("body") or "").strip()
         if not body_name:
-            # Текущее тело неизвестно (игрок в космосе/на станции), но фильтры
-            # и данные системы могут быть: показываем разделы честно, без
+            # Текущее тело неизвестно (игрок в космосе/на станции/в суперкруизе),
+            # но фильтры и данные системы могут быть: показываем разделы честно, без
             # «нулевых» параметров и без «критерии не выбраны» при выбранных.
             system = str(state.get("system") or "").strip()
             prefix = f"{system} · " if system else ""
             self.body_label.config(text=f"{prefix}Тело: —")
-            self.params_label.config(
-                text="данных о текущем теле нет — отсканируйте тело (FSS или подход)")
-            self.signals_label.config(text="")
+
+            bio_bodies = state.get("system_bodies") or []
+            total_bio_signals = sum(int(b.get("bio_signals") or 0) for b in bio_bodies)
+            scanned_count = int(state.get("system_scanned_bodies") or state.get("system_known_bodies") or 0)
+
+            if bio_bodies:
+                self.params_label.config(
+                    text=f"данных о текущем теле нет — в системе {len(bio_bodies)} тел с биосигналами ({total_bio_signals} сигн.)\n"
+                         "подлетите к планете (FSS или подход) или выберите в списке")
+                self.signals_label.config(text=f"Биосигналов в системе: {total_bio_signals}")
+                self.next_action_label.config(text="→ выберите планету для высадки и сбора образцов")
+            elif scanned_count > 0:
+                self.params_label.config(
+                    text=f"данных о текущем теле нет — отсканировано {scanned_count} тел (FSS или подход)\n"
+                         "сканируйте другие планеты системы (FSS/DSS)")
+                self.signals_label.config(text="")
+                self.next_action_label.config(text="")
+            else:
+                self.params_label.config(
+                    text="данных о текущем теле нет — отсканируйте тело (FSS или подход)")
+                self.signals_label.config(text="")
+                self.next_action_label.config(text="")
+
             self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
-            self.next_action_label.config(text="")
             self.predict_label.config(text="нет данных")
             self._render_bodies(state)
             self._render_planets(state)
@@ -2386,7 +2405,7 @@ class ExobiologyOverlay(OverlayWindow):
         rows = state.get("planets") or []
         self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
         if not rows:
-            known = int(state.get("system_known_bodies") or 0)
+            known = int(state.get("system_known_bodies") or state.get("system_scanned_bodies") or 0)
             if known:
                 text = ("в этой системе подходящих планет нет\n"
                         f"(журнал знает {known} тел системы)")
