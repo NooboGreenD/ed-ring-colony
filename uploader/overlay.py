@@ -780,8 +780,11 @@ class OverlayWindow:
         self.set_locked(not self._locked)
 
     def _flash_indicator(self, color: str, duration_ms: int = 300):
-        self.header_indicator.config(bg=color)
-        self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
+        try:
+            self.header_indicator.config(bg=color)
+            self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
+        except Exception:
+            pass
 
     def _destroy_edit_menu(self):
         """Снять и уничтожить меню шапки, если оно ещё живо.
