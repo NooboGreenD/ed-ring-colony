@@ -146,7 +146,83 @@ export async function POST(req: Request) {
       }
     }
 
-    return NextResponse.json({ ...outcome, constructionInserted, snapshotInserted });
+    // Pilot stats / balances (credits, arx, mercenary coins, discoveries, exobio)
+    let pilotStatsUpdated = false;
+    if (body.pilot_stats && typeof body.pilot_stats === 'object' && !Array.isArray(body.pilot_stats)) {
+      const ps = body.pilot_stats as Record<string, unknown>;
+      const statsRow: Record<string, any> = {
+        user_id: userId,
+        cmdr_name: cmdr || null,
+        last_updated: new Date().toISOString(),
+      };
+      if (ps.credits != null) statsRow.credits = Number(ps.credits) || 0;
+      if (ps.arx != null) statsRow.arx = Number(ps.arx) || 0;
+      if (ps.mercenary_coins != null) statsRow.mercenary_coins = Number(ps.mercenary_coins) || 0;
+      if (ps.mercenary_rank != null) statsRow.mercenary_rank = Number(ps.mercenary_rank) || 0;
+      if (ps.exobiologist_rank != null) statsRow.exobiologist_rank = Number(ps.exobiologist_rank) || 0;
+      if (ps.first_discoveries_count != null) statsRow.first_discoveries_count = Number(ps.first_discoveries_count) || 0;
+      if (ps.first_mapped_count != null) statsRow.first_mapped_count = Number(ps.first_mapped_count) || 0;
+      if (ps.first_footfalls_count != null) statsRow.first_footfalls_count = Number(ps.first_footfalls_count) || 0;
+      if (ps.bio_samples_count != null) statsRow.bio_samples_count = Number(ps.bio_samples_count) || 0;
+      if (ps.bio_species_count != null) statsRow.bio_species_count = Number(ps.bio_species_count) || 0;
+      if (ps.bio_value_cr != null) statsRow.bio_value_cr = Number(ps.bio_value_cr) || 0;
+      if (ps.exploration_stats && typeof ps.exploration_stats === 'object') {
+        statsRow.exploration_stats = ps.exploration_stats;
+      }
+
+      try {
+        await svc.from('pilot_stats').upsert(statsRow, { onConflict: 'user_id' });
+        await svc.from('capi_profiles').update(statsRow).eq('user_id', userId);
+        pilotStatsUpdated = true;
+      } catch (err: any) {
+        console.warn('[logs/upload] Failed updating pilot stats:', err.message);
+      }
+    }
+
+    // System scans discovered or mapped by player
+    let systemScansInserted = 0;
+    if (Array.isArray(body.system_scans) && body.system_scans.length > 0) {
+      try {
+        const scanRows = (body.system_scans as Record<string, unknown>[]).slice(0, 100).map((s) => ({
+          system_name: String(s.system_name || s.system || '').trim(),
+          body_name: String(s.body_name || s.name || '').trim(),
+          body_id: typeof s.body_id === 'number' ? s.body_id : null,
+          body_type: s.body_type ? String(s.body_type) : null,
+          sub_type: s.sub_type ? String(s.sub_type) : null,
+          distance_ls: typeof s.distance_ls === 'number' ? s.distance_ls : 0,
+          parents: Array.isArray(s.parents) ? s.parents : [],
+          radius_m: typeof s.radius_m === 'number' ? s.radius_m : 0,
+          gravity: typeof s.gravity === 'number' ? s.gravity : 0,
+          earth_masses: typeof s.earth_masses === 'number' ? s.earth_masses : 0,
+          surface_temp_k: typeof s.surface_temp_k === 'number' ? s.surface_temp_k : 0,
+          surface_pressure: typeof s.surface_pressure === 'number' ? s.surface_pressure : 0,
+          volcanism: s.volcanism ? String(s.volcanism) : null,
+          atmosphere: s.atmosphere ? String(s.atmosphere) : null,
+          atmosphere_type: s.atmosphere_type ? String(s.atmosphere_type) : null,
+          is_landable: !!(s.is_landable || s.landable),
+          bio_signals_count: typeof s.bio_signals_count === 'number' ? s.bio_signals_count : 0,
+          first_discovered_by: s.first_discovered_by ? String(s.first_discovered_by) : null,
+          first_mapped_by: s.first_mapped_by ? String(s.first_mapped_by) : null,
+          first_footfall_by: s.first_footfall_by ? String(s.first_footfall_by) : null,
+          scanned_by_cmdr: cmdr || null,
+          user_id: userId,
+          source: 'journal',
+          updated_at: new Date().toISOString(),
+        })).filter((s) => s.system_name && s.body_name);
+
+        if (scanRows.length > 0) {
+          const { data } = await svc
+            .from('system_scans')
+            .upsert(scanRows, { onConflict: 'system_name,body_name' })
+            .select('id');
+          systemScansInserted = data?.length ?? scanRows.length;
+        }
+      } catch (err: any) {
+        console.warn('[logs/upload] Failed saving system scans:', err.message);
+      }
+    }
+
+    return NextResponse.json({ ...outcome, constructionInserted, snapshotInserted, pilotStatsUpdated, systemScansInserted });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/upload] Failed:', message);

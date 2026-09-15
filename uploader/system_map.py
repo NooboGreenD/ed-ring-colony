@@ -133,7 +133,7 @@ MAP_EVENTS = frozenset({
     "Docked", "Undocked", "ApproachBody", "LeaveBody", "Touchdown", "Liftoff",
     "Scan", "FSSDiscoveryScan", "SAAScanComplete", "FSSSignalDiscovered",
     "CarrierStats", "ColonisationConstructionDepot", "LoadGame", "Loadout",
-    "ShipyardBuy", "ShipyardSwap",
+    "ShipyardBuy", "ShipyardSwap", "SAASignalsFound", "FSSBodySignals",
 })
 
 
@@ -308,7 +308,21 @@ class MapBody:
     scanned: bool = False
     mapped: bool = False
     terraformable: bool = False
+    atmosphere: str = ""
+    gravity: float = 0.0
+    surface_temp_k: float = 0.0
+    bio_signals: int = 0
+    bio_genuses: List[str] = field(default_factory=list)
+    first_discovered_by: str = ""
+    first_mapped_by: str = ""
+    first_footfall_by: str = ""
+    semi_major_axis_ls: float = 0.0
+    eccentricity: float = 0.0
+    orbital_inclination: float = 0.0
+    arg_of_periapsis: float = 0.0
     from_raven: bool = False              # тело из Raven v2, журнал его не видел
+    from_external: bool = False           # тело из EDSM / базы проекта
+    source: str = "journal"
     stations: List[MapStation] = field(default_factory=list)
     updated_at: str = ""
 
@@ -787,6 +801,26 @@ class SystemMapBuilder:
         body.radius_m = _as_float(event.get("Radius"), body.radius_m)
         if "Landable" in event:
             body.landable = bool(event.get("Landable"))
+        if "Atmosphere" in event or "AtmosphereType" in event:
+            body.atmosphere = str(event.get("Atmosphere") or event.get("AtmosphereType") or "")
+        if "SurfaceGravity" in event:
+            body.gravity = _as_float(event.get("SurfaceGravity"), 0.0) / 9.80665
+        elif "Gravity" in event:
+            body.gravity = _as_float(event.get("Gravity"), 0.0)
+        if "SurfaceTemperature" in event:
+            body.surface_temp_k = _as_float(event.get("SurfaceTemperature"), 0.0)
+        if "Eccentricity" in event:
+            body.eccentricity = _as_float(event.get("Eccentricity"), 0.0)
+        if "OrbitalInclination" in event:
+            body.orbital_inclination = _as_float(event.get("OrbitalInclination"), 0.0)
+        if "Periapsis" in event:
+            body.arg_of_periapsis = _as_float(event.get("Periapsis"), 0.0)
+        if event.get("WasDiscovered") is False:
+            body.first_discovered_by = "Вы"
+        elif not body.first_discovered_by and event.get("WasDiscovered"):
+            body.first_discovered_by = "Другой пилот"
+        if event.get("WasMapped") is False:
+            body.first_mapped_by = "Вы"
         body.scanned = True
         body.updated_at = str(event.get("timestamp") or body.updated_at)
         self._resolve_parents(system)
@@ -800,8 +834,105 @@ class SystemMapBuilder:
         body = self._body(system, name)
         body.body_id = _as_int(event.get("BodyID"), 0) or body.body_id
         body.mapped = True
+        if event.get("WasMapped") is False:
+            body.first_mapped_by = "Вы"
         body.updated_at = str(event.get("timestamp") or body.updated_at)
         return True
+
+    def _on_saasignalsfound(self, event: dict) -> bool:
+        system = self.player.system or self.current_system
+        name = str(event.get("BodyName") or "").strip()
+        if not system or not name:
+            return False
+        body = self._body(system, name)
+        for sig in event.get("Signals") or []:
+            if isinstance(sig, dict) and "biological" in str(sig.get("Type") or "").lower():
+                body.bio_signals = _as_int(sig.get("Count"), body.bio_signals)
+        genuses = [str(g.get("Genus_Localised") or g.get("Genus") or "")
+                   for g in (event.get("Genuses") or []) if isinstance(g, dict)]
+        if genuses:
+            body.bio_genuses = genuses
+        return True
+
+    def _on_fssbodysignals(self, event: dict) -> bool:
+        return self._on_saasignalsfound(event)
+
+    def load_external_bodies(self, bodies: list, source: str = "edsm") -> bool:
+        """Подгрузить тела системы из внешнего источника (EDSM или БД проекта).
+
+        Позволяет показать полную структуру системы, даже если локальный игрок
+        ещё не просканировал все планеты сам.
+        """
+        system = self.player.system or self.current_system
+        if not system or not isinstance(bodies, list) or not bodies:
+            return False
+
+        changed = False
+        existing = self._bodies.get(system, {})
+
+        for entry in bodies:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("body_name") or entry.get("name") or "").strip()
+            if not name:
+                continue
+
+            body = self._body(system, name)
+
+            # Если тело уже было полноценно отсканировано в журнале — не затираем
+            if body.scanned and not body.from_external:
+                # Только дополняем биосигналами / первооткрывателем при их отсутствии
+                if (not body.first_discovered_by or body.first_discovered_by == "Другой пилот") and entry.get("first_discovered_by"):
+                    body.first_discovered_by = str(entry.get("first_discovered_by"))
+                if not body.first_mapped_by and entry.get("first_mapped_by"):
+                    body.first_mapped_by = str(entry.get("first_mapped_by"))
+                continue
+
+            b_type = str(entry.get("body_type") or entry.get("type") or "").strip().lower()
+            sub_type = str(entry.get("sub_type") or entry.get("subType") or entry.get("planet_class") or "").strip()
+
+            if "star" in b_type or (sub_type and "star" in sub_type.lower()):
+                body.kind = KIND_STAR
+                body.star_type = sub_type or body.star_type or "Star"
+            else:
+                parents = entry.get("parents") or []
+                moon = any(isinstance(p, dict) and "Planet" in p for p in parents) if isinstance(parents, list) else False
+                body.kind = KIND_MOON if moon else KIND_PLANET
+
+            if sub_type:
+                body.body_class = sub_type
+            dist = _as_float(entry.get("distance_ls") or entry.get("distanceToArrival"), 0.0)
+            if dist > 0 or not body.distance_ls:
+                body.distance_ls = dist
+
+            semi_major = _as_float(entry.get("semiMajorAxis") or entry.get("semi_major_axis_ls"), 0.0)
+            if semi_major > 0:
+                body.orbit_ls = semi_major if semi_major < 1e10 else (semi_major / METERS_PER_LS)
+
+            rad = _as_float(entry.get("radius_m") or entry.get("radius"), 0.0)
+            if rad > 0:
+                body.radius_m = rad if rad > 1e4 else (rad * 1000.0)
+
+            if "is_landable" in entry or "isLandable" in entry or "landable" in entry:
+                body.landable = bool(entry.get("is_landable") or entry.get("isLandable") or entry.get("landable"))
+
+            body.atmosphere = str(entry.get("atmosphere") or entry.get("atmosphereType") or body.atmosphere or "")
+            body.gravity = _as_float(entry.get("gravity"), body.gravity)
+            body.surface_temp_k = _as_float(entry.get("surface_temp_k") or entry.get("surfaceTemperature"), body.surface_temp_k)
+            body.first_discovered_by = str(entry.get("first_discovered_by") or body.first_discovered_by or "")
+            body.first_mapped_by = str(entry.get("first_mapped_by") or body.first_mapped_by or "")
+            body.first_footfall_by = str(entry.get("first_footfall_by") or body.first_footfall_by or "")
+            body.bio_signals = _as_int(entry.get("bio_signals_count") or entry.get("bio_signals"), body.bio_signals)
+            body.source = source
+            body.from_external = True
+            body.scanned = True
+            changed = True
+
+        if len(bodies) > self.known_body_counts.get(system, 0):
+            self.known_body_counts[system] = len(bodies)
+
+        self._resolve_parents(system)
+        return changed
 
     def _on_fssdiscoveryscan(self, event: dict) -> bool:
         system, _address = self._absorb_system(event)
@@ -1371,6 +1502,16 @@ class PlacedItem:
     pan_y: float = 0.0
     ref: object = None
     selected: bool = False
+    depth: float = 0.0              # глубина z (для сортировки в 3D)
+    plane_x: float = 0.0            # проекция на базовую плоскость орбиты
+    plane_y: float = 0.0
+    orbit_a: float = 0.0            # большая полуось эллипса (3D Orrery)
+    orbit_b: float = 0.0            # малая полуось эллипса (3D Orrery)
+    orbit_tilt: float = 0.0         # наклон орбиты
+    distance_ls: float = 0.0        # дистанция в LS
+    landable: bool = False
+    bio_signals: int = 0
+    first_discovered_by: str = ""
 
     @property
     def bar_width(self) -> int:
@@ -1449,21 +1590,277 @@ def _find_center_item(items: List[PlacedItem], center_on: str):
     return None
 
 
+def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
+               show_moons: bool = True, selected: str = "",
+               center_on: str = "", pitch_deg: float = 38.0,
+               yaw_deg: float = -20.0) -> List[PlacedItem]:
+    """Разложить снимок системы в 3D Orrery (аксонометрическая проекция)."""
+    width = max(80, int(width or 0))
+    height = max(80, int(height or 0))
+    zoom = max(0.4, min(4.0, _as_float(zoom, 1.0) or 1.0))
+    center_x = width / 2.0
+    center_y = height / 2.0
+    max_radius = max(30.0, min(center_x, center_y) - 46.0) * zoom
+
+    pitch = math.radians(max(10.0, min(85.0, _as_float(pitch_deg, 38.0))))
+    yaw = math.radians(_as_float(yaw_deg, -20.0))
+    sin_p, cos_p = math.sin(pitch), math.cos(pitch)
+    sin_y, cos_y = math.sin(yaw), math.cos(yaw)
+
+    items: List[PlacedItem] = []
+    positions: Dict[str, Tuple[float, float, float]] = {}
+
+    star = snapshot.star
+    if star is not None:
+        star_radius = max(10.0, min(24.0, 10.0 + math.log10(max(1.0, star.radius_m) / 1.0e8) * 3.0))
+        items.append(PlacedItem(
+            kind="star", x=center_x, y=center_y, radius=star_radius,
+            label=star.name, caption=star.body_class or star.star_type,
+            color=BODY_COLORS["star"], orbit_radius=0.0, ref=star,
+            selected=(selected == star.name),
+            depth=0.0, plane_x=center_x, plane_y=center_y,
+            distance_ls=0.0,
+        ))
+        positions[star.name] = (center_x, center_y, 0.0)
+    else:
+        items.append(PlacedItem(
+            kind="star", x=center_x, y=center_y, radius=5.0,
+            label="", caption="звезда не отсканирована",
+            color="#555555", orbit_radius=0.0,
+            depth=0.0, plane_x=center_x, plane_y=center_y,
+        ))
+
+    planets = [body for body in snapshot.bodies if body.kind not in (KIND_STAR, KIND_MOON)]
+    by_name = {body.name: body for body in snapshot.bodies}
+    stars = [body for body in snapshot.bodies if body.kind == KIND_STAR]
+    second_stars = [body for body in stars if star is not None and body.name != star.name]
+
+    def orbit_of(body) -> float:
+        if body.orbit_ls > 0:
+            return body.orbit_ls
+        if body.kind == KIND_MOON:
+            parent = by_name.get(body.parent_name or "")
+            if parent is not None and parent.distance_ls > 0:
+                return max(1e-4, abs(body.distance_ls - parent.distance_ls))
+            return 1e-4
+        return max(0.0, body.distance_ls)
+
+    distances = sorted({orbit_of(body) for body in planets} | {orbit_of(body) for body in second_stars})
+    if distances:
+        low = math.log10(max(0.05, distances[0]))
+        high = math.log10(max(0.05, distances[-1]))
+    else:
+        low = high = 0.0
+    span = max(1e-6, high - low)
+
+    def ring_radius(distance_ls: float) -> float:
+        inner = max_radius * 0.22
+        if len(distances) <= 1:
+            return max_radius * 0.6
+        scale = (math.log10(max(0.05, distance_ls)) - low) / span
+        return inner + (max_radius - inner) * max(0.0, min(1.0, scale))
+
+    def moon_ring_px(body, siblings) -> float:
+        inner, outer = 16.0, 36.0
+        orbits = [math.log10(max(1e-4, orbit_of(item))) for item in siblings]
+        if len(orbits) < 2:
+            return (inner + outer) / 2.0
+        low_m, high_m = min(orbits), max(orbits)
+        span_m = high_m - low_m
+        if span_m <= 1e-9:
+            return (inner + outer) / 2.0
+        scale = (math.log10(max(1e-4, orbit_of(body))) - low_m) / span_m
+        return inner + (outer - inner) * max(0.0, min(1.0, scale))
+
+    # Вторые звёзды
+    for index, body in enumerate(second_stars):
+        orbit_r = ring_radius(orbit_of(body))
+        angle = math.pi / 3.0 + index * GOLDEN_ANGLE
+        xw = orbit_r * math.cos(angle)
+        zw = orbit_r * math.sin(angle)
+        yw = 0.0
+        xr = xw * cos_y - zw * sin_y
+        zr = xw * sin_y + zw * cos_y
+        sx = center_x + xr
+        sy = center_y - (yw * cos_p - zr * sin_p)
+        px = center_x + xr
+        py = center_y + zr * sin_p
+        depth = zr * cos_p + yw * sin_p
+        radius = max(9.0, min(22.0, 9.0 + math.log10(max(1.0, body.radius_m) / 1.0e8) * 3.0))
+
+        items.append(PlacedItem(
+            kind="star", x=sx, y=sy, radius=radius, label=body.name,
+            caption=body.body_class or body.star_type, color=BODY_COLORS["star"],
+            orbit_radius=orbit_r, orbit_cx=center_x, orbit_cy=center_y,
+            orbit_a=orbit_r, orbit_b=orbit_r * sin_p,
+            plane_x=px, plane_y=py, depth=depth,
+            distance_ls=body.distance_ls,
+            ref=body, selected=(selected == body.name),
+        ))
+        positions[body.name] = (sx, sy, depth)
+
+    # Планеты
+    for index, body in enumerate(planets):
+        orbit_r = ring_radius(orbit_of(body))
+        angle = index * GOLDEN_ANGLE
+        xw = orbit_r * math.cos(angle)
+        zw = orbit_r * math.sin(angle)
+        yw = math.sin(angle * 2.0) * 16.0 if abs(body.orbital_inclination) < 1e-3 else (body.orbital_inclination * 4.0)
+        xr = xw * cos_y - zw * sin_y
+        zr = xw * sin_y + zw * cos_y
+        sx = center_x + xr
+        sy = center_y - (yw * cos_p - zr * sin_p)
+        px = center_x + xr
+        py = center_y + zr * sin_p
+        depth = zr * cos_p + yw * sin_p
+        radius = max(4.5, min(15.0, 4.5 + math.log10(max(1.0, body.radius_m) / 1.0e6) * 2.0))
+
+        items.append(PlacedItem(
+            kind="body", x=sx, y=sy, radius=radius, label=body.name,
+            caption=body.body_class or body.star_type, color=body_color(body),
+            orbit_radius=orbit_r, orbit_cx=center_x, orbit_cy=center_y,
+            orbit_a=orbit_r, orbit_b=orbit_r * sin_p,
+            plane_x=px, plane_y=py, depth=depth,
+            distance_ls=body.distance_ls, landable=body.landable,
+            bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
+            ref=body, selected=(selected == body.name),
+        ))
+        positions[body.name] = (sx, sy, depth)
+
+    # Луны
+    moons = sorted((body for body in snapshot.bodies if body.kind == KIND_MOON),
+                   key=lambda b: (b.parent_name, orbit_of(b), b.name))
+    if show_moons:
+        for body in moons:
+            siblings = [item for item in moons if item.parent_name == body.parent_name]
+            index = siblings.index(body) if body in siblings else 0
+            anchor = positions.get(body.parent_name)
+            if anchor is None:
+                orbit_r = ring_radius(body.distance_ls)
+                angle = (len(planets) + index) * GOLDEN_ANGLE
+                xw = orbit_r * math.cos(angle)
+                zw = orbit_r * math.sin(angle)
+                yw = 0.0
+                xr = xw * cos_y - zw * sin_y
+                zr = xw * sin_y + zw * cos_y
+                sx = center_x + xr
+                sy = center_y + zr * sin_p
+                px, py = sx, sy
+                depth = zr * cos_p
+                oa, ob = orbit_r, orbit_r * sin_p
+                ocx, ocy = center_x, center_y
+            else:
+                ring_px = moon_ring_px(body, siblings)
+                angle = index * GOLDEN_ANGLE
+                sx = anchor[0] + ring_px * math.cos(angle)
+                sy = anchor[1] + ring_px * sin_p * math.sin(angle)
+                px, py = sx, sy
+                depth = anchor[2] + 0.1
+                oa, ob = ring_px, ring_px * sin_p
+                ocx, ocy = anchor[0], anchor[1]
+
+            items.append(PlacedItem(
+                kind="body", x=sx, y=sy, radius=3.5, label=body.name,
+                caption=body.body_class, color=body_color(body),
+                orbit_radius=oa, orbit_cx=ocx, orbit_cy=ocy,
+                orbit_a=oa, orbit_b=ob, plane_x=px, plane_y=py, depth=depth,
+                distance_ls=body.distance_ls, landable=body.landable,
+                bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
+                ref=body, selected=(selected == body.name),
+            ))
+            positions[body.name] = (sx, sy, depth)
+
+    # Станции и стройплощадки
+    floating_index = 0
+    for station in snapshot.stations:
+        anchor = positions.get(station.body_name) if station.body_name else None
+        if anchor is None:
+            angle = math.pi / 2.0 + floating_index * 0.55
+            orbit_r = max_radius * 0.98
+            xw = orbit_r * math.cos(angle)
+            zw = orbit_r * math.sin(angle)
+            xr = xw * cos_y - zw * sin_y
+            zr = xw * sin_y + zw * cos_y
+            sx = center_x + xr
+            sy = center_y + zr * sin_p
+            depth = zr * cos_p
+            floating_index += 1
+        else:
+            angle = math.pi / 3.0 + 0.7 * len([
+                item for item in snapshot.stations if item.body_name == station.body_name])
+            sx = anchor[0] + 22.0 * math.cos(angle)
+            sy = anchor[1] + 22.0 * sin_p * math.sin(angle)
+            depth = anchor[2] + 0.2
+
+        items.append(PlacedItem(
+            kind="station", x=sx, y=sy,
+            radius=7.0 if station.is_site else 5.0,
+            label=station.title, caption=station.caption,
+            color=station_color(station),
+            progress=station.percent_delivered if station.is_site and not station.planned else None,
+            depth=depth, plane_x=sx, plane_y=sy,
+            ref=station,
+            selected=(selected in (station.name, station.title, station.build_name, station.build_id)),
+        ))
+
+    # Отметка пилота
+    player = snapshot.player
+    anchor = None
+    if player.docked and player.station_name:
+        anchor = positions.get(player.station_name)
+        if anchor is None:
+            for item in items:
+                if item.kind == "station" and isinstance(item.ref, MapStation) and item.ref.name == player.station_name:
+                    anchor = (item.x, item.y, item.depth)
+                    break
+    if anchor is None and player.body_name:
+        anchor = positions.get(player.body_name)
+    if anchor is None:
+        anchor = (center_x, center_y - max_radius * 0.35, 0.0)
+
+    items.append(PlacedItem(
+        kind="player", x=anchor[0], y=anchor[1], radius=12.0,
+        label="Вы здесь", caption=player.place, color=PLAYER_COLOR, ref=player,
+        depth=anchor[2] + 0.5, plane_x=anchor[0], plane_y=anchor[1],
+    ))
+
+    if center_on:
+        anchor_item = _find_center_item(items, center_on)
+        if anchor_item is not None:
+            dx = center_x - anchor_item.x
+            dy = center_y - anchor_item.y
+            for item in items:
+                item.x += dx
+                item.y += dy
+                item.plane_x += dx
+                item.plane_y += dy
+                if item.orbit_cx is not None:
+                    item.orbit_cx += dx
+                if item.orbit_cy is not None:
+                    item.orbit_cy += dy
+                item.pan_x = dx
+                item.pan_y = dy
+
+    _spread_labels(items, height)
+    return items
+
+
 def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
            show_moons: bool = True, selected: str = "",
-           center_on: str = "") -> List[PlacedItem]:
+           center_on: str = "", mode: str = "2d",
+           pitch_deg: float = 38.0, yaw_deg: float = -20.0) -> List[PlacedItem]:
     """Разложить снимок системы по координатам холста.
 
-    Карта схематическая (реальных орбитальных позиций журнал не даёт): главная
-    звезда в центре, вторые и третьи звёзды — на собственных кольцах вокруг
-    неё, планеты на кольцах вокруг СВОЕЙ звезды (радиус логарифмически зависит
-    от большой полуоси), угол — по золотому углу, поэтому тела не накладываются
-    друг на друга. Луны рисуются на кольцах вокруг своей планеты, станции —
-    рядом со своим телом, стройплощадки получают прогресс-бар.
-
-    Функция детерминирована: один и тот же снимок даёт те же координаты, что
-    позволяет тестировать раскладку без tkinter.
+    Поддерживает два режима:
+    * "2d" — классическая плоская схема с круговыми орбитами;
+    * "3d" — 3D Orrery с перспективой, наклоном плоскости орбит и дроп-линиями.
     """
+    if str(mode or "").lower() == "3d":
+        return _layout_3d(snapshot, width, height, zoom=zoom,
+                          show_moons=show_moons, selected=selected,
+                          center_on=center_on, pitch_deg=pitch_deg,
+                          yaw_deg=yaw_deg)
+
     width = max(80, int(width or 0))
     height = max(80, int(height or 0))
     zoom = max(0.4, min(4.0, _as_float(zoom, 1.0) or 1.0))
@@ -1482,12 +1879,14 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             label=star.name, caption=star.body_class or star.star_type,
             color=BODY_COLORS["star"], orbit_radius=0.0, ref=star,
             selected=(selected == star.name),
+            plane_x=center_x, plane_y=center_y, distance_ls=0.0,
         ))
         positions[star.name] = (center_x, center_y)
     else:
         items.append(PlacedItem(kind="star", x=center_x, y=center_y, radius=4.0,
                                 label="", caption="звезда не отсканирована",
-                                color="#555555", orbit_radius=0.0))
+                                color="#555555", orbit_radius=0.0,
+                                plane_x=center_x, plane_y=center_y))
 
     # Планеты (без лун): у планеты родитель — звезда, у луны — планета.
     planets = [body for body in snapshot.bodies
@@ -1577,6 +1976,8 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             kind="body", x=x, y=y, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=body_color(body),
             orbit_radius=orbit, orbit_cx=anchor[0], orbit_cy=anchor[1],
+            distance_ls=body.distance_ls, landable=body.landable,
+            bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (x, y)
@@ -1611,6 +2012,8 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
                 kind="body", x=x, y=y, radius=3.5, label=body.name,
                 caption=body.body_class, color=body_color(body),
                 orbit_radius=ring_px, orbit_cx=ring_cx, orbit_cy=ring_cy,
+                distance_ls=body.distance_ls, landable=body.landable,
+                bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
                 ref=body, selected=(selected == body.name),
             ))
             positions[body.name] = (x, y)

@@ -36,6 +36,8 @@ import { useFriends } from '@/hooks/useFriends';
 const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','Master','Dangerous','Deadly','Elite'];
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
+const MERCENARY_RANKS = ['Defenceless', 'Mostly Defenceless', 'Rookie', 'Soldier', 'Gunslinger', 'Warrior', 'Gladiator', 'Deadeye', 'Elite', 'Elite I', 'Elite II', 'Elite III', 'Elite IV', 'Elite V'];
+const EXOBIOLOGIST_RANKS = ['Directionless', 'Mostly Directionless', 'Compiler', 'Collector', 'Explorer', 'Surveyor', 'Taxonomist', 'Geneticist', 'Elite', 'Elite I', 'Elite II', 'Elite III', 'Elite IV', 'Elite V'];
 
 type Delivery = {
   system_name: string;
@@ -102,6 +104,29 @@ type Props = {
     current_system: string | null;
     current_station: string | null;
     last_updated: string | null;
+  } | null;
+  pilotStats?: {
+    credits?: number | null;
+    arx?: number | null;
+    mercenary_coins?: number | null;
+    mercenary_rank?: number | null;
+    exobiologist_rank?: number | null;
+    combat_rank?: number | null;
+    trade_rank?: number | null;
+    explore_rank?: number | null;
+    empire_rank?: number | null;
+    federation_rank?: number | null;
+    current_ship?: string | null;
+    current_system?: string | null;
+    current_station?: string | null;
+    first_discoveries_count?: number | null;
+    first_mapped_count?: number | null;
+    first_footfalls_count?: number | null;
+    bio_samples_count?: number | null;
+    bio_species_count?: number | null;
+    bio_value_cr?: number | null;
+    exploration_stats?: Record<string, any> | null;
+    last_updated?: string | null;
   } | null;
 };
 
@@ -791,6 +816,162 @@ export default function CmdrDossier(props: Props) {
                       </span>
                     </span>
                   )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Exploration, First Discoveries & Pilot Balances ── */}
+          {(props.pilotStats || props.capiProfile) && (
+            <div style={{ marginBottom: 24 }}>
+              <SectionHeader title="Исследования, Первооткрывательство и Баланс" />
+              <div
+                style={{
+                  border: '1px solid #3b82f633',
+                  background: '#1a1c1e',
+                  borderRadius: 4,
+                  padding: '16px 18px',
+                }}
+              >
+                {/* 1. Баланс пилота */}
+                <div style={{ marginBottom: 16 }}>
+                  <div
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: 11,
+                      letterSpacing: 1.5,
+                      textTransform: 'uppercase',
+                      color: '#9ca3af',
+                      marginBottom: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>Баланс пилота (Кредиты, ARX, Монеты наемников)</span>
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                      gap: 12,
+                    }}
+                  >
+                    <StatCard
+                      label="Баланс Кредитов"
+                      value={((props.pilotStats?.credits ?? props.capiProfile?.credits ?? 0)).toLocaleString('ru-RU') + ' CR'}
+                      color="#22c55e"
+                      sub="Игровой капитал"
+                    />
+                    <StatCard
+                      label="Баланс ARX"
+                      value={((props.pilotStats?.arx ?? 0)).toLocaleString('ru-RU') + ' ARX'}
+                      color="#a855f7"
+                      sub="Премиум Frontier"
+                    />
+                    <StatCard
+                      label="Монеты наёмников"
+                      value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString('ru-RU')}
+                      color="#f59e0b"
+                      sub="Боевые жетоны"
+                    />
+                  </div>
+                </div>
+
+                {/* 2. Первооткрывательство */}
+                <div style={{ marginBottom: 16 }}>
+                  <div
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: 11,
+                      letterSpacing: 1.5,
+                      textTransform: 'uppercase',
+                      color: '#9ca3af',
+                      marginBottom: 10,
+                    }}
+                  >
+                    Первооткрывательство в галактике
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                      gap: 12,
+                    }}
+                  >
+                    <StatCard
+                      label="Системы первым"
+                      value={((props.pilotStats?.first_discoveries_count ?? 0)).toLocaleString('ru-RU')}
+                      color="#3b82f6"
+                      sub="First Discovered"
+                    />
+                    <StatCard
+                      label="Планеты первым"
+                      value={((props.pilotStats?.first_mapped_count ?? 0)).toLocaleString('ru-RU')}
+                      color="#06b6d4"
+                      sub="First Mapped"
+                    />
+                    <StatCard
+                      label="Первопроходец"
+                      value={((props.pilotStats?.first_footfalls_count ?? 0)).toLocaleString('ru-RU')}
+                      color="#10b981"
+                      sub="First Footfalls"
+                    />
+                  </div>
+                </div>
+
+                {/* 3. Экзобиология и образцы */}
+                <div>
+                  <div
+                    style={{
+                      fontFamily: 'ui-monospace, monospace',
+                      fontSize: 11,
+                      letterSpacing: 1.5,
+                      textTransform: 'uppercase',
+                      color: '#9ca3af',
+                      marginBottom: 10,
+                    }}
+                  >
+                    Экзобиология и Органика
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                      gap: 12,
+                    }}
+                  >
+                    <StatCard
+                      label="Собрано образцов"
+                      value={((props.pilotStats?.bio_samples_count ?? 0)).toLocaleString('ru-RU')}
+                      color="#10b981"
+                      sub="Genuses / Samples"
+                    />
+                    <StatCard
+                      label="Видов органики"
+                      value={((props.pilotStats?.bio_species_count ?? 0)).toLocaleString('ru-RU')}
+                      color="#84cc16"
+                      sub="Уникальных видов"
+                    />
+                    <StatCard
+                      label="Ценность находок"
+                      value={((props.pilotStats?.bio_value_cr ?? 0)).toLocaleString('ru-RU') + ' CR'}
+                      color="#eab308"
+                      sub="Сданные данные"
+                    />
+                    <StatCard
+                      label="Ранг Экзобиолога"
+                      value={EXOBIOLOGIST_RANKS[props.pilotStats?.exobiologist_rank ?? 0] ?? '—'}
+                      color="#10b981"
+                      sub="Vista Genomics"
+                    />
+                    <StatCard
+                      label="Ранг Наёмника"
+                      value={MERCENARY_RANKS[props.pilotStats?.mercenary_rank ?? 0] ?? '—'}
+                      color="#ef4444"
+                      sub="Odyssey Mercenary"
+                    />
+                  </div>
                 </div>
               </div>
             </div>

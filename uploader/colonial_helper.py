@@ -107,7 +107,9 @@ from system_map import (
     STATION_LABELS,
     STATION_SITE,
     MapRavenCache,
+    MapSnapshot,
     MapStation,
+    PlacedItem,
     SystemMapBuilder,
     commodity_label,
     layout as map_layout,
@@ -2525,6 +2527,14 @@ class ColonialHelperApp:
         tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
                        command=self._on_map_toggle,
                        bootstyle="info-round-toggle").pack(side=LEFT)
+        tb.Label(bar, text="Вид:", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
+        self.map_view_mode = tk.StringVar(value=str(self.config.get("map_view_mode", "2d")))
+        tb.Radiobutton(bar, text="2D", variable=self.map_view_mode, value="2d",
+                       command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT)
+        tb.Radiobutton(bar, text="3D", variable=self.map_view_mode, value="3d",
+                       command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT, padx=(2, 6))
+        tb.Button(bar, text="Сброс 3D", command=self._on_map_reset_3d,
+                  bootstyle="secondary-outline", width=8).pack(side=LEFT, padx=(0, 6))
         self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
                                          foreground=COLOR_ORANGE)
         self.map_system_label.pack(side=RIGHT)
@@ -2539,7 +2549,12 @@ class ColonialHelperApp:
                                     borderwidth=0)
         self.map_canvas.pack(fill=BOTH, expand=True)
         self.map_canvas.bind("<Configure>", self._on_map_resize)
-        self.map_canvas.bind("<Button-1>", self._on_map_click)
+        self.map_canvas.bind("<ButtonPress-1>", self._on_map_press)
+        self.map_canvas.bind("<B1-Motion>", self._on_map_drag)
+        self.map_canvas.bind("<ButtonRelease-1>", self._on_map_release)
+        self.map_canvas.bind("<ButtonPress-3>", self._on_map_press_3)
+        self.map_canvas.bind("<B3-Motion>", self._on_map_drag)
+        self.map_canvas.bind("<ButtonRelease-3>", self._on_map_release)
         # Двойной клик: отцентровать на объекте, по пустому месту — сброс.
         self.map_canvas.bind("<Double-Button-1>", self._on_map_double_click)
         # Esc ловим и на дереве: в Windows событие уходит виджету с фокусом,
@@ -2621,6 +2636,14 @@ class ColonialHelperApp:
         except (TypeError, ValueError):
             zoom_index = 2
         self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, zoom_index))
+        self._map_pitch_deg = float(self.config.get("map_pitch_deg", 38.0))
+        self._map_yaw_deg = float(self.config.get("map_yaw_deg", -20.0))
+        self._map_drag_start = None
+        self._map_dragged = False
+        self._scans_to_upload = []
+        self._last_scan_upload_time = 0.0
+        self._pilot_stats = dict(self.config.get("pilot_stats", {}))
+        self._map_external_scans_fetched = {}
         self._map_update_zoom_label()
         self._map_redraw_now()
 
@@ -2689,6 +2712,168 @@ class ColonialHelperApp:
         self._fill_map_tree(snapshot)
         self._map_update_status(snapshot)
 
+    def _on_map_mode_change(self):
+        mode = self.map_view_mode.get() if hasattr(self, "map_view_mode") else "2d"
+        self.config["map_view_mode"] = mode
+        self.save_config()
+        self._map_schedule_redraw(0)
+
+    def _on_map_reset_3d(self):
+        self._map_pitch_deg = 38.0
+        self._map_yaw_deg = -20.0
+        self._map_center = ""
+        self._map_zoom_index = 2
+        self._map_update_zoom_label()
+        self._map_schedule_redraw(0)
+
+    def _on_map_press(self, event):
+        self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
+        self._map_dragged = False
+
+    def _on_map_press_3(self, event):
+        self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
+        self._map_dragged = False
+
+    def _on_map_drag(self, event):
+        if not getattr(self, "_map_drag_start", None):
+            return
+        dx = getattr(event, "x", 0) - self._map_drag_start[0]
+        dy = getattr(event, "y", 0) - self._map_drag_start[1]
+        if abs(dx) > 3 or abs(dy) > 3:
+            self._map_dragged = True
+            mode = self.map_view_mode.get() if hasattr(self, "map_view_mode") else "2d"
+            if mode == "3d":
+                self._map_yaw_deg = (getattr(self, "_map_yaw_deg", -20.0) + dx * 0.4) % 360.0
+                self._map_pitch_deg = max(12.0, min(82.0, getattr(self, "_map_pitch_deg", 38.0) + dy * 0.4))
+                self._map_drag_start = (getattr(event, "x", 0), getattr(event, "y", 0))
+                self._map_schedule_redraw(15)
+
+    def _on_map_release(self, event):
+        if not getattr(self, "_map_dragged", False):
+            self._on_map_click(event)
+        self._map_drag_start = None
+        self._map_dragged = False
+
+    def _map_draw_target_lock(self, canvas, item):
+        """Прицел захвата цели (Target Lock brackets) в стиле Elite Dangerous HUD."""
+        d = max(float(item.radius) + 7.0, 15.0)
+        bracket_len = 5.0
+        x, y = item.x, item.y
+        color = COLOR_ORANGE
+        canvas.create_line(x - d, y - d + bracket_len, x - d, y - d, x - d + bracket_len, y - d, fill=color, width=2)
+        canvas.create_line(x + d - bracket_len, y - d, x + d, y - d, x + d, y - d + bracket_len, fill=color, width=2)
+        canvas.create_line(x - d, y + d - bracket_len, x - d, y + d, x - d + bracket_len, y + d, fill=color, width=2)
+        canvas.create_line(x + d - bracket_len, y + d, x + d, y + d, x + d, y + d - bracket_len, fill=color, width=2)
+        dist = getattr(item, "distance_ls", 0.0)
+        if dist > 0:
+            dist_text = f"{dist:,.1f} Ls".replace(",", " ")
+            canvas.create_text(x, y + d + 8.0, text=dist_text, fill=COLOR_ORANGE,
+                               font=("Consolas", 8, "bold"), anchor="n")
+
+    def _map_draw_3d_grid(self, canvas, width, height, cx, cy, pitch_deg, yaw_deg):
+        """Отрисовать перспективную координатную сетку орбитальной плоскости."""
+        pitch = math.radians(max(10.0, min(85.0, pitch_deg)))
+        sin_p = math.sin(pitch)
+        max_r = min(width, height) * 0.42 * self._map_zoom()
+
+        for step in (0.3, 0.6, 0.9, 1.2):
+            rx = max_r * step
+            ry = rx * sin_p
+            canvas.create_oval(cx - rx, cy - ry, cx + rx, cy + ry,
+                               outline="#0e2338", width=1, dash=(2, 6))
+
+        yaw = math.radians(yaw_deg)
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        r = max_r * 1.15
+        for angle in (0.0, math.pi / 2.0, math.pi / 4.0, 3.0 * math.pi / 4.0):
+            xw = r * math.cos(angle)
+            zw = r * math.sin(angle)
+            xr = xw * cos_y - zw * sin_y
+            zr = xw * sin_y + zw * cos_y
+            canvas.create_line(cx - xr, cy - zr * sin_p, cx + xr, cy + zr * sin_p,
+                               fill="#0c1d30", dash=(1, 5))
+
+    def _map_draw_hud_panels(self, canvas, snapshot: MapSnapshot, items: List[PlacedItem]):
+        """Отрисовать информационные HUD-панели (сводка системы слева, описание цели справа)."""
+        if not snapshot or not snapshot.system:
+            return
+
+        # Левая панель: Сводка системы
+        lx, ly = 12.0, 12.0
+        lw, lh = 205.0, 105.0
+        canvas.create_rectangle(lx, ly, lx + lw, ly + lh, fill="#0a121c", outline="#183654", width=1)
+        canvas.create_line(lx, ly + 22.0, lx + lw, ly + 22.0, fill="#214b74", width=1)
+        canvas.create_text(lx + 8.0, ly + 11.0, text=self._map_short_label(snapshot.system),
+                           fill=COLOR_ORANGE, font=("Consolas", 9, "bold"), anchor="w")
+
+        star = snapshot.star
+        star_info = (star.star_type or star.body_class or "Главная звезда") if star else "Неизвестно"
+        scanned_count = len(snapshot.bodies)
+        total_count = snapshot.known_body_count or scanned_count
+        sites_count = len(snapshot.sites)
+
+        view_mode_name = "3D Оррери" if getattr(self, "map_view_mode", None) and self.map_view_mode.get() == "3d" else "2D Схема"
+        lines = [
+            f"Звезда: {self._map_short_label(star_info)}",
+            f"Тела: {scanned_count} / {total_count} отскан.",
+            f"Стройки: {sites_count} активн.",
+            f"Вид: {view_mode_name}",
+        ]
+        for idx, line in enumerate(lines):
+            canvas.create_text(lx + 8.0, ly + 32.0 + idx * 16.0, text=line,
+                               fill=COLOR_TEXT if idx < 2 else COLOR_MUTED,
+                               font=("Consolas", 8), anchor="w")
+
+        # Правая панель: Описание выбранного объекта
+        selected_item = next((it for it in items if it.selected), None)
+        if selected_item is None and self._map_selected:
+            selected_item = next((it for it in items if it.label == self._map_selected or (it.ref and getattr(it.ref, 'name', '') == self._map_selected)), None)
+
+        if selected_item is not None:
+            rw = 225.0
+            rh = 135.0
+            canvas_w = float(getattr(canvas, "winfo_width", lambda: 800)() or 800)
+            rx = max(lx + lw + 16.0, canvas_w - rw - 12.0)
+            ry = 12.0
+
+            canvas.create_rectangle(rx, ry, rx + rw, ry + rh, fill="#0a121c",
+                                    outline="#e67e22" if selected_item.kind == "station" else "#1b4870", width=1)
+            canvas.create_line(rx, ry + 22.0, rx + rw, ry + 22.0, fill="#214b74", width=1)
+            canvas.create_text(rx + 8.0, ry + 11.0, text=self._map_short_label(selected_item.label or "Объект"),
+                               fill=COLOR_ORANGE, font=("Consolas", 9, "bold"), anchor="w")
+
+            ref = selected_item.ref
+            target_lines = []
+            if selected_item.kind in ("star", "body"):
+                b_class = getattr(ref, "body_class", "") or getattr(ref, "star_type", "") or selected_item.caption
+                target_lines.append(f"Класс: {self._map_short_label(b_class)}")
+                dist = getattr(ref, "distance_ls", 0.0) or selected_item.distance_ls
+                if dist > 0:
+                    target_lines.append(f"Дистанция: {dist:,.1f} Ls".replace(",", " "))
+                if getattr(ref, "gravity", 0.0) > 0:
+                    target_lines.append(f"Гравитация: {ref.gravity:.2f} G")
+                if getattr(ref, "atmosphere", ""):
+                    target_lines.append(f"Атмосфера: {self._map_short_label(ref.atmosphere)}")
+                if getattr(ref, "bio_signals", 0) > 0:
+                    target_lines.append(f"Биосигналы: {ref.bio_signals} шт.")
+                if getattr(ref, "first_discovered_by", ""):
+                    target_lines.append(f"Открыл: {self._map_short_label(ref.first_discovered_by)}")
+            elif selected_item.kind == "station":
+                s_kind = getattr(ref, "caption", "") or selected_item.caption
+                target_lines.append(f"Тип: {s_kind}")
+                if getattr(ref, "is_site", False):
+                    pct = ref.percent_delivered
+                    target_lines.append(f"Прогресс: {pct if pct is not None else 0}%")
+                    rest = ref.remaining_tons
+                    if rest:
+                        target_lines.append(f"Осталось: {rest:,} t".replace(",", " "))
+            else:
+                target_lines.append(f"Статус: {selected_item.caption}")
+
+            for idx, line in enumerate(target_lines[:6]):
+                canvas.create_text(rx + 8.0, ry + 32.0 + idx * 16.0, text=line,
+                                   fill=COLOR_TEXT, font=("Consolas", 8), anchor="w")
+
     def _draw_system_map(self, snapshot=None):
         canvas = getattr(self, "map_canvas", None)
         if canvas is None:
@@ -2704,9 +2889,13 @@ class ColonialHelperApp:
                            and self.map_labels_var.get())
         show_moons = not getattr(self, "map_moons_var", None) or bool(
             self.map_moons_var.get())
+        mode = getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "2d"
+        pitch_deg = getattr(self, "_map_pitch_deg", 38.0)
+        yaw_deg = getattr(self, "_map_yaw_deg", -20.0)
         items = map_layout(snapshot, width, height, zoom=self._map_zoom(),
                            show_moons=show_moons, selected=self._map_selected,
-                           center_on=self._map_center)
+                           center_on=self._map_center, mode=mode,
+                           pitch_deg=pitch_deg, yaw_deg=yaw_deg)
         self._map_items = items
         try:
             canvas.delete("all")
@@ -2718,23 +2907,53 @@ class ColonialHelperApp:
                              if getattr(item, "pan_x", 0.0) or getattr(item, "pan_y", 0.0)),
                             (0.0, 0.0))
         ring_x, ring_y = center_x + pan_x, center_y + pan_y
-        # Орбитальные кольца — под объектами, иначе они режут значки.
-        for item in items:
-            if item.kind == "body" and item.orbit_radius > 0:
-                # У лун центр кольца — планета, у планет — звезда (центр карты).
-                cx = ring_x if item.orbit_cx is None else item.orbit_cx
-                cy = ring_y if item.orbit_cy is None else item.orbit_cy
-                canvas.create_oval(
-                    cx - item.orbit_radius, cy - item.orbit_radius,
-                    cx + item.orbit_radius, cy + item.orbit_radius,
-                    outline=COLOR_LINE, dash=(2, 4))
-        for wanted, painter in (
-            ("star", self._map_draw_star), ("body", self._map_draw_body),
-            ("station", self._map_draw_station), ("player", self._map_draw_player),
-        ):
+
+        if mode == "3d":
+            self._map_draw_3d_grid(canvas, width, height, ring_x, ring_y, pitch_deg, yaw_deg)
             for item in items:
-                if item.kind == wanted:
-                    painter(canvas, item, show_labels)
+                if item.kind == "body" and item.orbit_a > 0:
+                    cx = ring_x if item.orbit_cx is None else item.orbit_cx
+                    cy = ring_y if item.orbit_cy is None else item.orbit_cy
+                    canvas.create_oval(
+                        cx - item.orbit_a, cy - item.orbit_b,
+                        cx + item.orbit_a, cy + item.orbit_b,
+                        outline="#13314d", dash=(2, 4))
+                if item.kind == "body" and abs(item.y - item.plane_y) > 2.0:
+                    canvas.create_line(item.plane_x, item.plane_y, item.x, item.y,
+                                       fill="#1a4269", dash=(1, 3))
+                    canvas.create_oval(item.plane_x - 3.0, item.plane_y - 1.5,
+                                       item.plane_x + 3.0, item.plane_y + 1.5,
+                                       outline="#1d5987", width=1)
+            draw_order = sorted(items, key=lambda it: it.depth)
+            for item in draw_order:
+                if item.kind == "star":
+                    self._map_draw_star(canvas, item, show_labels)
+                elif item.kind == "body":
+                    self._map_draw_body(canvas, item, show_labels)
+                elif item.kind == "station":
+                    self._map_draw_station(canvas, item, show_labels)
+                elif item.kind == "player":
+                    self._map_draw_player(canvas, item, show_labels)
+        else:
+            # 2D плоская схема
+            for item in items:
+                if item.kind == "body" and item.orbit_radius > 0:
+                    cx = ring_x if item.orbit_cx is None else item.orbit_cx
+                    cy = ring_y if item.orbit_cy is None else item.orbit_cy
+                    canvas.create_oval(
+                        cx - item.orbit_radius, cy - item.orbit_radius,
+                        cx + item.orbit_radius, cy + item.orbit_radius,
+                        outline=COLOR_LINE, dash=(2, 4))
+            for wanted, painter in (
+                ("star", self._map_draw_star), ("body", self._map_draw_body),
+                ("station", self._map_draw_station), ("player", self._map_draw_player),
+            ):
+                for item in items:
+                    if item.kind == wanted:
+                        painter(canvas, item, show_labels)
+
+        if show_labels:
+            self._map_draw_hud_panels(canvas, snapshot, items)
         self._map_draw_legend(canvas)
 
     @classmethod
@@ -2755,6 +2974,8 @@ class ColonialHelperApp:
                            fill=item.color,
                            outline=COLOR_ORANGE if item.selected else "#111315",
                            width=2 if item.selected else 1)
+        if item.selected:
+            self._map_draw_target_lock(canvas, item)
         if not show_labels:
             return
         if item.label:
@@ -2775,6 +2996,8 @@ class ColonialHelperApp:
         if getattr(item.ref, "landable", False):
             canvas.create_text(item.x, item.y, text="L", fill="#111315",
                                font=("Consolas", 7, "bold"))
+        if item.selected:
+            self._map_draw_target_lock(canvas, item)
         if not show_labels or not item.label:
             return
         is_moon = getattr(item.ref, "kind", "") == KIND_MOON
@@ -2783,7 +3006,10 @@ class ColonialHelperApp:
                            fill=COLOR_MUTED if is_moon else COLOR_TEXT,
                            font=("Consolas", 7 if is_moon else 8), anchor="n")
         if item.caption and not is_moon:
-            canvas.create_text(item.x, item.y + radius + 18 + dy, text=item.caption,
+            caption_text = item.caption
+            if getattr(item, "distance_ls", 0.0) > 0 and getattr(self, "map_view_mode", None) and self.map_view_mode.get() == "3d":
+                caption_text += f" ({item.distance_ls:,.0f} Ls)".replace(",", " ")
+            canvas.create_text(item.x, item.y + radius + 18 + dy, text=caption_text,
                                fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
 
     def _map_draw_station(self, canvas, item, show_labels):
@@ -2815,6 +3041,8 @@ class ColonialHelperApp:
             canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
                                item.y + radius, fill=item.color, outline=outline,
                                width=line_width)
+        if item.selected:
+            self._map_draw_target_lock(canvas, item)
         used = radius + 4.0
         if item.progress is not None:
             used += self._map_draw_progress(canvas, item, radius, dy)
@@ -3306,6 +3534,7 @@ class ColonialHelperApp:
                 "Система неизвестна — включите Watcher или загрузите журналы")
             return
         snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        self._fetch_external_scans_if_needed(self.system_map.current_system, force=True)
         if not getattr(self.raven_api, "is_connected", False):
             if not self._map_apply_raven_cache(self.system_map.current_system):
                 self._map_update_status(
@@ -3313,6 +3542,147 @@ class ColonialHelperApp:
             return
         self._map_update_status(snapshot, "Запрашиваю проекты и планы в Raven Colonial…")
         self._map_refresh_from_raven(force=True)
+
+    def _fetch_external_scans_if_needed(self, system_name: str, force: bool = False):
+        """Запросить сканы тел системы из БД проекта или EDSM в фоновом потоке."""
+        system = str(system_name or "").strip()
+        if not system:
+            return
+
+        now = time.time()
+        if not hasattr(self, "_map_external_scans_fetched"):
+            self._map_external_scans_fetched = {}
+        last_fetch = self._map_external_scans_fetched.get(system, 0.0)
+        if not force and (now - last_fetch) < 180.0:
+            return
+        self._map_external_scans_fetched[system] = now
+
+        def worker():
+            bodies = []
+            source_name = "БД проекта"
+            try:
+                # 1. Запрос в БД проекта
+                if getattr(self, "api_client", None) and hasattr(self.api_client, "get_system_scans"):
+                    res = self.api_client.get_system_scans(system)
+                    if res.get("ok") and res.get("bodies"):
+                        bodies = res["bodies"]
+                        source_name = "БД проекта"
+
+                # 2. Если в БД нет данных, запрашиваем EDSM
+                if not bodies and getattr(self, "edsm_api", None) and hasattr(self.edsm_api, "fetch_system_bodies"):
+                    res = self.edsm_api.fetch_system_bodies(system)
+                    if res.get("ok") and res.get("bodies"):
+                        bodies = res["bodies"]
+                        source_name = "EDSM"
+                        # Кэшируем в БД проекта для других командиров
+                        if getattr(self, "api_client", None) and hasattr(self.api_client, "upload_system_scans"):
+                            self.api_client.upload_system_scans(system, bodies)
+            except Exception as exc:
+                self.log(f"Внешние сканы {system}: {exc}")
+                return
+
+            if bodies:
+                self.root.after(0, lambda: self._on_external_scans_received(system, bodies, source_name))
+
+        threading.Thread(target=worker, daemon=True, name=f"ExtScans-{system}").start()
+
+    def _on_external_scans_received(self, system: str, bodies: list, source_name: str):
+        if not bodies:
+            return
+        changed = self.system_map.load_external_bodies(bodies, source=source_name)
+        if changed:
+            self.log(f"Карта: получено {len(bodies)} тел из {source_name} (сканы других командиров)")
+            self._map_schedule_redraw(0)
+
+    def _queue_scan_for_upload(self, event: dict):
+        if not isinstance(event, dict):
+            return
+        if not hasattr(self, "_scans_to_upload"):
+            self._scans_to_upload = []
+        body_data = {
+            "system_name": event.get("StarSystem") or self.system_map.current_system,
+            "body_name": event.get("BodyName"),
+            "body_id": event.get("BodyID"),
+            "sub_type": event.get("PlanetClass") or event.get("StarType"),
+            "distance_ls": event.get("DistanceFromArrivalLS"),
+            "radius_m": event.get("Radius"),
+            "gravity": event.get("SurfaceGravity"),
+            "surface_temp_k": event.get("SurfaceTemperature"),
+            "atmosphere": event.get("Atmosphere") or event.get("AtmosphereType"),
+            "is_landable": bool(event.get("Landable")),
+            "first_discovered_by": "Вы" if event.get("WasDiscovered") is False else None,
+            "first_mapped_by": "Вы" if event.get("WasMapped") is False else None,
+        }
+        self._scans_to_upload.append(body_data)
+        if len(self._scans_to_upload) >= 5 or (time.time() - getattr(self, "_last_scan_upload_time", 0.0)) > 60.0:
+            self._flush_scans_to_upload()
+
+    def _flush_scans_to_upload(self):
+        scans = getattr(self, "_scans_to_upload", [])
+        if not scans or not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            return
+        to_send = scans[:]
+        self._scans_to_upload = []
+        self._last_scan_upload_time = time.time()
+        system = self.system_map.current_system
+
+        def worker():
+            try:
+                self.api_client.upload_system_scans(system, to_send)
+            except Exception as exc:
+                self.log(f"Сбой отправки сканов: {exc}")
+
+        threading.Thread(target=worker, daemon=True, name="UploadScans").start()
+
+    def _maybe_sync_pilot_stats(self):
+        stats = getattr(self, "_pilot_stats", {})
+        if not stats or not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            return
+        payload = dict(stats)
+
+        def worker():
+            try:
+                self.api_client.upload_pilot_stats(payload)
+            except Exception as exc:
+                self.log(f"Сбой отправки статистики пилота: {exc}")
+
+        threading.Thread(target=worker, daemon=True, name="SyncPilotStats").start()
+
+    def _update_pilot_stats_from_event(self, ev: dict):
+        if not hasattr(self, "_pilot_stats"):
+            self._pilot_stats = {}
+        ev_name = ev.get("event")
+        if ev_name == "LoadGame":
+            if "Credits" in ev:
+                self._pilot_stats["credits"] = ev["Credits"]
+        elif ev_name == "Rank":
+            if "Soldier" in ev:
+                self._pilot_stats["mercenary_rank"] = ev["Soldier"]
+            if "Exobiologist" in ev:
+                self._pilot_stats["exobiologist_rank"] = ev["Exobiologist"]
+        elif ev_name == "Statistics":
+            bank = ev.get("Bank_Account") or {}
+            exp = ev.get("Exploration") or {}
+            exo = ev.get("Exobiology") or {}
+            combat = ev.get("Combat") or {}
+            if "Current_Wealth" in bank:
+                self._pilot_stats["credits"] = bank["Current_Wealth"]
+            if "Planets_Scanned_To_Level_2" in exp:
+                self._pilot_stats["first_discoveries_count"] = exp["Planets_Scanned_To_Level_2"]
+            if "Planets_Scanned_To_Level_3" in exp:
+                self._pilot_stats["first_mapped_count"] = exp["Planets_Scanned_To_Level_3"]
+            if "First_Footfalls" in exp:
+                self._pilot_stats["first_footfalls_count"] = exp["First_Footfalls"]
+            if "Organic_Data_Count" in exo:
+                self._pilot_stats["bio_samples_count"] = exo["Organic_Data_Count"]
+            if "Organic_Species_Encountered" in exo:
+                self._pilot_stats["bio_species_count"] = exo["Organic_Species_Encountered"]
+            if "Organic_Data_Profits" in exo:
+                self._pilot_stats["bio_value_cr"] = exo["Organic_Data_Profits"]
+            if "Combat_Bond_Profits" in combat:
+                self._pilot_stats["mercenary_coins"] = combat["Combat_Bond_Profits"]
+        self.config["pilot_stats"] = self._pilot_stats
+        self._maybe_sync_pilot_stats()
 
     def _map_refresh_from_raven(self, force: bool = False):
         """Фоновый запрос проектов и планов системы (не чаще MAP_RAVEN_TTL)."""
@@ -3506,6 +3876,9 @@ class ColonialHelperApp:
             # Прибыли в систему или открыли депо стройки: журнал не знает,
             # сколько груза завезли другие командиры, — спросим Raven Colonial.
             self._map_refresh_from_raven()
+            self._fetch_external_scans_if_needed(self.system_map.current_system)
+        if name == "Scan" and live:
+            self._queue_scan_for_upload(event)
 
     def _on_notebook_tab_changed(self, _event=None):
         """Переключили вкладку: карте и экзобиологии нужны свежие данные."""
@@ -7452,6 +7825,8 @@ class ColonialHelperApp:
         # только считаются локально для блока CARRIER в оверлее.
         self._feed_carrier(ev, live=live)
         ev_name = ev.get("event")
+        if ev_name in ("LoadGame", "Rank", "Progress", "Statistics"):
+            self._update_pilot_stats_from_event(ev)
         if live and ev_name in (
             "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
             "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll",
