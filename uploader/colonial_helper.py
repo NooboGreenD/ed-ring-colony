@@ -121,7 +121,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.13"
+VERSION = "2.10.14"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -5141,11 +5141,17 @@ class ColonialHelperApp:
                 planets = tracker.search_system_planets(criteria)
             except Exception:
                 planets = []
-        if state is None and not bodies and not planets:
+        # Выбранные фильтры обязаны дойти до блока даже при пустом трекере:
+        # иначе оверлей рисует «критерии не выбраны» и выглядит сломанным.
+        if state is None and not bodies and not planets and not criteria and not genera:
             return None
         state = dict(state or {})
         state["system_bodies"] = bodies
         state["system"] = state.get("system") or tracker.current_system
+        try:
+            state["system_known_bodies"] = tracker.system_body_count()
+        except Exception:
+            state["system_known_bodies"] = 0
         # Фильтры и результат поиска планет (вкладка «Экзобиология»).
         state["genera_filter"] = genera
         state["planet_criteria"] = criteria
@@ -5929,6 +5935,10 @@ class ColonialHelperApp:
         "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
         "FSDJump", "ApproachBody", "LeaveBody", "LoadGame",
     })
+    #: Трекеру экзобиологии дополнительно нужны биосигналы и образцы: без них
+    #: блок EXOBIO после перезапуска «не видел» отсканированную систему.
+    RESTORE_EXOBIO_EVENTS = frozenset({"FSSBodySignals", "ScanOrganic", "CodexEntry"})
+    RESTORE_TRACK_EVENTS = RESTORE_MAP_EVENTS | RESTORE_EXOBIO_EVENTS
 
     def _restore_station_state_from_journal(self) -> dict:
         """Восстановить стройплощадку и авианосец по хвосту журнала.
@@ -5975,7 +5985,7 @@ class ColonialHelperApp:
 
             events = []
             for _line, event in iter_journal_events(raw.decode("utf-8", errors="replace")):
-                if event.get("event") in self.RESTORE_MAP_EVENTS:
+                if event.get("event") in self.RESTORE_TRACK_EVENTS:
                     events.append(event)
             if not events:
                 continue
@@ -6008,6 +6018,17 @@ class ColonialHelperApp:
                 self.system_map.handle(event)
             except Exception:
                 continue
+        # Тот же хронологический хвост кормит трекер экзобиологии: блок EXOBIO
+        # должен знать тела, отсканированные до запуска программы, — иначе
+        # «Поиск планет» с вкладки «Экзобиология» выглядит сломанным. Повторный
+        # учёт образцов исключает дедупликация событий по timestamp в трекере.
+        tracker = getattr(self, "exobiology", None)
+        if tracker is not None:
+            for event in map_events:
+                try:
+                    tracker.handle(event)
+                except Exception:
+                    continue
         if self.system_map.current_system:
             self._map_schedule_redraw(delay_ms=0)
 
@@ -7314,8 +7335,95 @@ class ColonialHelperApp:
             cache = getattr(self, "_colony_projects_cache", None)
             if isinstance(cache, dict):
                 cache[build_id] = dict(project)
+            self._maybe_confirm_project_complete(project)
 
         self.root.after(0, apply)
+
+    # ============================================================
+    #  Подтверждение завершения проекта в Raven Colonial
+    # ============================================================
+    def _maybe_confirm_project_complete(self, project):
+        """Остаток потребности занулился — подтвердить завершение проекта.
+
+        Raven Colonial не отмечает проект завершённым сам: клиент, который
+        увидел полную завозку, отправляет `POST /api/project/{buildId}/complete`.
+        Мы видим это при перечитке основного проекта и проекта стройплощадки —
+        когда в `commodities` не осталось положительных остатков. Вызов
+        планируется в главный поток: `_load_site_project` работает в фоне.
+        """
+        if not isinstance(project, dict):
+            return
+        if not str(project.get("buildId") or "").strip():
+            return
+        self.after(0, lambda p=dict(project): self._confirm_project_complete(p))
+
+    def _confirm_project_complete(self, project: dict):
+        """Главный поток: проверить остаток и один раз отправить /complete."""
+        build_id = str(project.get("buildId") or "").strip()
+        if not build_id or not self.raven_api.is_connected:
+            return
+        commodities = project.get("commodities")
+        if not isinstance(commodities, dict) or not commodities:
+            return  # данных о потребности нет — повода завершать нет
+        values = []
+        for amount in commodities.values():
+            try:
+                values.append(int(float(amount)))
+            except (TypeError, ValueError):
+                return  # остаток не читается — лучше не трогать
+        if not values or any(value > 0 for value in values):
+            return
+        notified = {str(item) for item in (self.config.get("raven_complete_notified") or [])}
+        if build_id in notified:
+            return
+        status = str(project.get("status") or "").strip().lower()
+        if status in ("complete", "completed", "done"):
+            # Сервер уже считает проект завершённым — запоминаем и не дёргаем API.
+            notified.add(build_id)
+            self.config["raven_complete_notified"] = sorted(notified)
+            self.save_config()
+            return
+        notified.add(build_id)
+        self.config["raven_complete_notified"] = sorted(notified)
+        self.save_config()
+        name = str(project.get("buildName") or build_id)
+        self.log(f"Raven Colonial: «{name}» — потребность завезена полностью, "
+                 "отправляю подтверждение завершения…", "info")
+        threading.Thread(target=self._confirm_complete_thread,
+                         args=(build_id, name), daemon=True).start()
+
+    def _confirm_complete_thread(self, build_id: str, name: str):
+        """Фоновый POST /complete; сетевой сбой снимает метку ради повтора."""
+        try:
+            result = self.raven_api.mark_complete(build_id)
+        except Exception as exc:
+            result = {"ok": False, "status": 0, "error": str(exc)}
+        if not isinstance(result, dict):
+            result = {"ok": False, "status": 0, "error": "пустой ответ"}
+
+        def done():
+            if result.get("ok"):
+                self.log(f"Raven Colonial: завершение проекта «{name}» подтверждено.",
+                         "success")
+                return
+            try:
+                status = int(result.get("status") or 0)
+            except (TypeError, ValueError):
+                status = 0
+            if status == 0:
+                # Сеть не ответила — убираем метку, следующая перечитка повторит.
+                notified = [str(item)
+                            for item in (self.config.get("raven_complete_notified") or [])
+                            if str(item) != build_id]
+                self.config["raven_complete_notified"] = notified
+                self.save_config()
+                self.log(f"Raven Colonial: подтверждение завершения «{name}» не ушло "
+                         f"({result.get('error') or 'сеть'}) — повторю позже.", "warn")
+            else:
+                self.log(f"Raven Colonial: завершение «{name}» не принял "
+                         f"({result.get('error') or status}).", "error")
+
+        self.after(0, done)
 
     def _on_raven_supply_sent(self, build_id: str = ""):
         """ProjectUpdate дошёл до Raven: потребность изменилась — перечитать."""
@@ -7375,6 +7483,7 @@ class ColonialHelperApp:
             self.site_project = {}
             return
         self.site_project = dict(project)
+        self._maybe_confirm_project_complete(project)
         commodities = project.get("commodities")
         if isinstance(commodities, dict):
             remaining = {
@@ -7622,6 +7731,7 @@ class ColonialHelperApp:
             return
 
         self.site_project = dict(project)
+        self._maybe_confirm_project_complete(project)
         commodities = project.get("commodities") if isinstance(project.get("commodities"), dict) else {}
         remaining = {
             canonical_commodity(key): int(float(value))

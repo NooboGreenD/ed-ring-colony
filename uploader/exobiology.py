@@ -578,6 +578,10 @@ class ExobiologyTracker:
         self.organics: Dict[str, Dict[str, dict]] = {}
         # Роды/виды, найденные когда-либо (для подсветки «уже встречалось»)
         self.seen_species: Dict[str, int] = {}
+        # Подписи уже учтённых «счётных» событий (ScanOrganic/CodexEntry):
+        # хвост журнала перечитывается при каждом старте Watcher, и один и тот
+        # же образец не должен считаться дважды.
+        self._recent_sigs: Dict[tuple, None] = {}
 
     # -- helpers -----------------------------------------------------------
     @staticmethod
@@ -633,6 +637,18 @@ class ExobiologyTracker:
         return time.time()
 
     # -- журнал ------------------------------------------------------------
+    #: Сколько подписей событий держать в памяти (защита от роста).
+    MAX_RECENT_SIGS = 4096
+
+    def _seen_once(self, sig: tuple) -> bool:
+        """True, если событие с такой подписью уже учтено (иначе запоминает)."""
+        if sig in self._recent_sigs:
+            return True
+        self._recent_sigs[sig] = None
+        while len(self._recent_sigs) > self.MAX_RECENT_SIGS:
+            self._recent_sigs.pop(next(iter(self._recent_sigs)), None)
+        return False
+
     def _trim(self):
         """Ограничить память: удаляем самые старые записи (dict сохраняет порядок)."""
         while len(self.bodies) > MAX_TRACKED_BODIES:
@@ -722,6 +738,13 @@ class ExobiologyTracker:
                 if not species:
                     return
                 stage = str(event.get("ScanType") or event.get("Type") or "").strip()
+                # Один и тот же снимок мог прийти и живым watcher'ом, и из
+                # хвоста журнала при восстановлении состояния — не считаем
+                # дважды. Без timestamp событие не дедуплицируем: отличить
+                # повтор от второго образца той же секунды невозможно.
+                ts = str(event.get("timestamp") or "").strip()
+                if ts and self._seen_once(("organic", key, species, stage, ts)):
+                    return
                 entry = self.organics.setdefault(key, {}).setdefault(
                     species, {"stage": "", "samples": 0, "first": "", "body": body_name,
                               "system": system, "last_ts": 0.0}
@@ -743,7 +766,10 @@ class ExobiologyTracker:
                 if str(event.get("Category") or "").lower().startswith("$codex_categorytype_biology"):
                     species = str(event.get("Name_Localised") or event.get("Name") or "").strip()
                     if species:
-                        self.seen_species[species] = self.seen_species.get(species, 0) + 1
+                        ts = str(event.get("timestamp") or "").strip()
+                        if not ts or not self._seen_once(
+                                ("codex", species, str(event.get("Region") or ""), ts)):
+                            self.seen_species[species] = self.seen_species.get(species, 0) + 1
         except Exception:
             # Хук не имеет права ронять разбор журнала.
             return
@@ -859,6 +885,11 @@ class ExobiologyTracker:
         # Тела без биосигналов интересны только если на них уже взяты образцы.
         rows = [row for row in rows if row["bio_signals"] or row["has_organics"]]
         return rows[:limit]
+
+    def system_body_count(self) -> int:
+        """Сколько тел текущей системы знает журнал (для честных подсказок)."""
+        prefix = f"{self.current_system}|"
+        return sum(1 for key in self.bodies if key.startswith(prefix))
 
     def recent_bodies(self, limit: int = 8) -> List[dict]:
         """Последние отсканированные тела текущей системы (свежие сверху)."""

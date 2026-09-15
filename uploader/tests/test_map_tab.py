@@ -1206,3 +1206,174 @@ class PrimaryProjectRefreshTests(MapTabTestBase):
             site.assert_called_once_with(force=True)
         self.assertEqual(self.app.colony_primary_project["commodities"]["steel"], 7,
                          "после ProjectUpdate потребность перечитана сразу")
+
+
+def exobio_journal_lines():
+    """Хвост журнала: прыжок, скан каменистой тела с атмосферой, сигналы, образец."""
+    return [
+        '{"timestamp":"2026-09-14T09:59:00Z","event":"FSDJump","StarSystem":"%s",'
+        '"SystemAddress":%d}' % (SYSTEM, ADDRESS),
+        '{"timestamp":"2026-09-14T09:59:30Z","event":"Scan","BodyName":"%s",'
+        '"BodyID":3,"StarSystem":"%s","PlanetClass":"Rocky body","Landable":true,'
+        '"Atmosphere":"thin sulfur dioxide atmosphere",'
+        '"DistanceFromArrivalLS":12.4}' % (BODY_1, SYSTEM),
+        '{"timestamp":"2026-09-14T09:59:40Z","event":"FSSBodySignals","BodyName":"%s",'
+        '"StarSystem":"%s","Signals":[{"Type":"$SAA_SignalType_Biological;","Count":3}]}'
+        % (BODY_1, SYSTEM),
+        '{"timestamp":"2026-09-14T09:59:50Z","event":"ScanOrganic","StarSystem":"%s",'
+        '"Body":"%s","Species_Localised":"Tussock Poxtop","ScanType":"Sample"}'
+        % (SYSTEM, BODY_1),
+    ]
+
+
+class ExobioRestoreTests(MapTabTestBase):
+    """2.10.14: хвост журнала кормит трекер экзобиологии.
+
+    Жалоба: «система отсканирована пилотом», но блок EXOBIO пуст — сканы
+    произошли до запуска Watcher и в трекер не попадали.
+    """
+
+    def _write_journal(self):
+        raw = ("\n".join(exobio_journal_lines()) + "\n").encode("utf-8")
+        (self.home / "Journal.260914100000.01.log").write_bytes(raw)
+
+    def test_restore_fills_exobiology_tracker(self):
+        from exobiology import PLANET_PRESETS_BY_ID
+
+        self._write_journal()
+        with mock.patch.object(self.app, "log"):
+            self.app._restore_station_state_from_journal()
+        tracker = self.app.exobiology
+        self.assertEqual(tracker.current_system, SYSTEM)
+        rows = tracker.search_system_planets([PLANET_PRESETS_BY_ID["rocky_atmo_land"]])
+        self.assertEqual([row["body"] for row in rows], [BODY_1])
+        self.assertEqual(rows[0]["bio_signals"], 3)
+        self.assertEqual(tracker.system_body_count(), 1)
+
+    def test_restore_twice_does_not_double_samples(self):
+        self._write_journal()
+        with mock.patch.object(self.app, "log"):
+            self.app._restore_station_state_from_journal()
+            self.app._restore_station_state_from_journal()
+        tracker = self.app.exobiology
+        entry = tracker.organics[tracker._key(SYSTEM, BODY_1)]["Tussock Poxtop"]
+        self.assertEqual(entry["samples"], 1,
+                         "повторный restore не должен удваивать образцы")
+
+
+class ExobioOverlayStateTests(MapTabTestBase):
+    """2.10.14: выбранные фильтры доходят до оверлея даже при пустом трекере."""
+
+    def test_selected_filters_reach_state_on_empty_tracker(self):
+        self.app.overlay_manager.settings["exobio_planet_search"] = ["rocky_atmo_land"]
+        state = self.app._exobiology_overlay_state()
+        self.assertIsNotNone(state, "с выбранными фильтрами состояние обязано быть")
+        self.assertEqual([row["id"] for row in state["planet_criteria"]],
+                         ["rocky_atmo_land"])
+        self.assertEqual(state["planets"], [])
+        self.assertEqual(state["system_known_bodies"], 0)
+
+    def test_empty_tracker_without_filters_returns_none(self):
+        self.app.overlay_manager.settings["exobio_planet_search"] = []
+        self.app.overlay_manager.settings["exobio_genera"] = []
+        self.assertIsNone(self.app._exobiology_overlay_state())
+
+    def test_restored_system_planets_reach_state(self):
+        self._write_journal = None  # не используется; журнал пишем прямо
+        raw = ("\n".join(exobio_journal_lines()) + "\n").encode("utf-8")
+        (self.home / "Journal.260914100000.01.log").write_bytes(raw)
+        self.app.overlay_manager.settings["exobio_planet_search"] = ["rocky_atmo_land"]
+        with mock.patch.object(self.app, "log"):
+            self.app._restore_station_state_from_journal()
+        state = self.app._exobiology_overlay_state()
+        self.assertIsNotNone(state)
+        self.assertEqual([row["body"] for row in state["planets"]], [BODY_1])
+        self.assertEqual(state["system_known_bodies"], 1)
+        self.assertEqual(state["system"], SYSTEM)
+
+
+class ProjectCompleteConfirmTests(MapTabTestBase):
+    """2.10.14: Raven получает подтверждение, когда потребность завезена вся."""
+
+    class Runner:
+        """Замена threading.Thread: целевая функция выполняется сразу."""
+
+        instances = []
+
+        def __init__(self, target=None, args=(), **kwargs):
+            self.target, self.args = target, args
+            ProjectCompleteConfirmTests.instances.append(self)
+
+        def start(self):
+            self.target(*self.args)
+
+    DONE = {"buildId": "b-done", "buildName": "Форпост",
+            "commodities": {"steel": 0, "cmmcomposite": 0}}
+
+    def prepare(self):
+        ProjectCompleteConfirmTests.instances = []
+        self.app.raven_api = mock.MagicMock()
+        self.app.raven_api.is_connected = True
+        self.app.raven_api.mark_complete.return_value = {"ok": True, "status": 200}
+        self.app.config = dict(self.app.config or {})
+        self.app.config.pop("raven_complete_notified", None)
+
+    def _call(self, project):
+        with mock.patch.object(self.module.threading, "Thread", self.Runner), \
+                mock.patch.object(self.app, "log"):
+            self.app._maybe_confirm_project_complete(project)
+
+    def test_zero_remaining_confirms_completion_once(self):
+        self.prepare()
+        self._call(dict(self.DONE))
+        self._call(dict(self.DONE))
+        self.app.raven_api.mark_complete.assert_called_once_with("b-done")
+        self.assertIn("b-done", self.app.config["raven_complete_notified"])
+
+    def test_positive_remaining_is_not_completed(self):
+        self.prepare()
+        self._call(dict(self.DONE, commodities={"steel": 5}))
+        self.app.raven_api.mark_complete.assert_not_called()
+        self.assertNotIn("b-done", self.app.config.get("raven_complete_notified", []))
+
+    def test_empty_commodities_is_not_a_reason(self):
+        self.prepare()
+        self._call({"buildId": "b-x", "commodities": {}})
+        self.app.raven_api.mark_complete.assert_not_called()
+
+    def test_network_failure_allows_retry(self):
+        self.prepare()
+        self.app.raven_api.mark_complete.return_value = {
+            "ok": False, "status": 0, "error": "connection"}
+        self._call(dict(self.DONE))
+        self.assertNotIn("b-done", self.app.config.get("raven_complete_notified", []),
+                         "сетевой сбой снял метку")
+        self.app.raven_api.mark_complete.return_value = {"ok": True, "status": 200}
+        self._call(dict(self.DONE))
+        self.assertEqual(self.app.raven_api.mark_complete.call_count, 2)
+        self.assertIn("b-done", self.app.config["raven_complete_notified"])
+
+    def test_server_reject_is_not_retried(self):
+        self.prepare()
+        self.app.raven_api.mark_complete.return_value = {
+            "ok": False, "status": 403, "error": "forbidden"}
+        self._call(dict(self.DONE))
+        self._call(dict(self.DONE))
+        self.app.raven_api.mark_complete.assert_called_once()
+
+    def test_server_status_complete_skips_call(self):
+        self.prepare()
+        self._call(dict(self.DONE, status="Complete"))
+        self.app.raven_api.mark_complete.assert_not_called()
+        self.assertIn("b-done", self.app.config["raven_complete_notified"],
+                      "сервер уже завершил — запоминаем, чтобы не проверять снова")
+
+    def test_primary_refresh_hook_confirms(self):
+        self.prepare()
+        self.app.colony_primary_project = {"buildId": "b-done",
+                                           "commodities": {"steel": 10}}
+        self.app.raven_api.resolve_project_by_id.return_value = dict(self.DONE)
+        with mock.patch.object(self.module.threading, "Thread", self.Runner), \
+                mock.patch.object(self.app, "log"):
+            self.app._load_primary_project("b-done")
+        self.app.raven_api.mark_complete.assert_called_once_with("b-done")
