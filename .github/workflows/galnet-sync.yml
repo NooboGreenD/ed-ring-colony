@@ -42,7 +42,30 @@ jobs:
       - name: Parser unit tests
         run: node --test scripts/tests/*.test.mjs
       - name: Live feed dry-run (parse only, no DB writes)
-        run: node scripts/galnet-sync.mjs --dry-run --limit=10
+        run: node scripts/galnet-sync.mjs --dry-run --limit=10 > dryrun.txt 2>&1 || echo "DRYRUN_EXIT=$?" >> dryrun.txt
+
+      - name: TEMP diagnostics
+        if: always()
+        run: |
+          {
+            echo "=== curl verbose ==="
+            curl -sS -v --max-time 30 -H "Accept: application/vnd.api+json" \
+              "https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article?sort=-published_at&page%5Boffset%5D=0&page%5Blimit%5D=10" \
+              -o feed.json -w "HTTP=%{http_code}\n" 2>&1 | tail -40
+            echo
+            echo "=== body head ==="
+            head -c 600 feed.json
+            echo
+            echo "=== dry-run output ==="
+            cat dryrun.txt
+          } 2>&1 | tee diag.txt
+
+      - name: TEMP upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: galnet-diag
+          path: diag.txt
 
   # ── Ежедневная синхронизация + автоперевод ────────────────────────────
   sync:
