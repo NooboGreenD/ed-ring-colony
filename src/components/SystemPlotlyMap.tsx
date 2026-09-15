@@ -1,7 +1,15 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { IconGlobe, IconMaximize, IconMinimize, IconRefreshCw } from '@/components/Icons';
+import {
+  IconGlobe,
+  IconMaximize,
+  IconMinimize,
+  IconRefreshCw,
+  IconCrosshair,
+  IconCheck,
+  IconConstruction,
+} from '@/components/Icons';
 
 declare global {
   interface Window {
@@ -81,6 +89,8 @@ export default function SystemPlotlyMap({
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [scriptLoaded, setScriptLoaded] = useState(false);
+  const [selectedTarget, setSelectedTarget] = useState<string>('');
+  const [filterMode, setFilterMode] = useState<'all' | 'bio' | 'landable' | 'sites'>('all');
 
   // Загрузка библиотеки Plotly.js через CDN
   useEffect(() => {
@@ -129,8 +139,12 @@ export default function SystemPlotlyMap({
     };
 
     const isMoon = (b: any) => {
-      return (Array.isArray(b.parents) && b.parents.length > 0 && b.parents.some((p: any) => p && ('Planet' in p || 'planet' in p)))
-        || (b.body_type || '').toLowerCase() === 'moon';
+      return (
+        (Array.isArray(b.parents) &&
+          b.parents.length > 0 &&
+          b.parents.some((p: any) => p && ('Planet' in p || 'planet' in p))) ||
+        (b.body_type || '').toLowerCase() === 'moon'
+      );
     };
 
     const stars = bodies.filter((b) => isStar(b));
@@ -180,6 +194,9 @@ export default function SystemPlotlyMap({
     const orbXs: (number | null)[] = [];
     const orbYs: (number | null)[] = [];
     const orbZs: (number | null)[] = [];
+    const ringXs: (number | null)[] = [];
+    const ringYs: (number | null)[] = [];
+    const ringZs: (number | null)[] = [];
 
     allOrbiters.forEach((b, idx) => {
       const a = orbitRadii[b.body_name] || (40 + idx * 18);
@@ -206,7 +223,35 @@ export default function SystemPlotlyMap({
       const py = a * Math.sin(theta) * Math.cos(incRad);
       const pz = a * Math.sin(theta) * Math.sin(incRad);
       positions[b.body_name] = [px, py, pz];
+
+      // Кольца планет
+      if (Array.isArray(b.rings) && b.rings.length > 0) {
+        const ringRadius = 7.0 + (idx % 3) * 2.0;
+        for (let s = 0; s <= 48; s++) {
+          const phi = (2 * Math.PI * s) / 48;
+          ringXs.push(px + ringRadius * Math.cos(phi));
+          ringYs.push(py + ringRadius * Math.sin(phi) * Math.cos(incRad));
+          ringZs.push(pz + ringRadius * Math.sin(phi) * Math.sin(incRad));
+        }
+        ringXs.push(null);
+        ringYs.push(null);
+        ringZs.push(null);
+      }
     });
+
+    // Обитаемая зона звезды (Habitable Zone)
+    const hzXs: number[] = [];
+    const hzYs: number[] = [];
+    const hzZs: number[] = [];
+    if (primaryStar) {
+      const rHz = 55.0;
+      for (let s = 0; s <= 72; s++) {
+        const phi = (2 * Math.PI * s) / 72;
+        hzXs.push(rHz * Math.cos(phi));
+        hzYs.push(rHz * Math.sin(phi));
+        hzZs.push(0);
+      }
+    }
 
     // Луны вокруг планет
     const mOrbXs: (number | null)[] = [];
@@ -214,7 +259,6 @@ export default function SystemPlotlyMap({
     const mOrbZs: (number | null)[] = [];
 
     moons.forEach((m, mIdx) => {
-      // Ищем родительскую планету по имени
       let pName = '';
       if (Array.isArray(m.parents) && m.parents.length > 0) {
         const parentPlanetId = m.parents.find((p: any) => p && ('Planet' in p || 'planet' in p));
@@ -268,7 +312,23 @@ export default function SystemPlotlyMap({
 
     const traces: any[] = [];
 
-    // 1. Орбиты планет
+    // 1. Обитаемая зона
+    if (hzXs.length > 0) {
+      traces.push({
+        type: 'scatter3d',
+        name: '🌱 Обитаемая зона',
+        x: hzXs,
+        y: hzYs,
+        z: hzZs,
+        mode: 'lines',
+        line: { color: 'rgba(46, 204, 113, 0.35)', width: 2.5, dash: 'dash' },
+        hovertext: ['<b>🌱 Обитаемая зона (Goldilocks Zone)</b><br>Зона возможного существования жидкой воды и ELW'],
+        hoverinfo: 'text',
+        showlegend: true,
+      });
+    }
+
+    // 2. Орбиты планет
     if (orbXs.length > 0) {
       traces.push({
         type: 'scatter3d',
@@ -283,7 +343,7 @@ export default function SystemPlotlyMap({
       });
     }
 
-    // 2. Орбиты лун
+    // 3. Орбиты лун
     if (mOrbXs.length > 0) {
       traces.push({
         type: 'scatter3d',
@@ -298,7 +358,22 @@ export default function SystemPlotlyMap({
       });
     }
 
-    // 3. Звезда
+    // 4. Кольца планет
+    if (ringXs.length > 0) {
+      traces.push({
+        type: 'scatter3d',
+        name: '💍 Кольца планет',
+        x: ringXs,
+        y: ringYs,
+        z: ringZs,
+        mode: 'lines',
+        line: { color: 'rgba(159, 216, 239, 0.75)', width: 2.5 },
+        hoverinfo: 'skip',
+        showlegend: true,
+      });
+    }
+
+    // 5. Звезда
     if (primaryStar) {
       const pColor = getStarColor(primaryStar.sub_type || primaryStar.subType);
       traces.push({
@@ -325,8 +400,14 @@ export default function SystemPlotlyMap({
       });
     }
 
-    // 4. Планеты
-    if (planets.length > 0) {
+    // 6. Планеты
+    const filteredPlanets = planets.filter((p) => {
+      if (filterMode === 'bio') return (p.bio_signals_count || 0) > 0;
+      if (filterMode === 'landable') return Boolean(p.is_landable || p.landable || p.isLandable);
+      return true;
+    });
+
+    if (filteredPlanets.length > 0) {
       const pXs: number[] = [];
       const pYs: number[] = [];
       const pZs: number[] = [];
@@ -336,7 +417,7 @@ export default function SystemPlotlyMap({
       const pLineColors: string[] = [];
       const pSizes: number[] = [];
 
-      planets.forEach((p) => {
+      filteredPlanets.forEach((p) => {
         const pos = positions[p.body_name];
         if (!pos) return;
         pXs.push(pos[0]);
@@ -363,6 +444,9 @@ export default function SystemPlotlyMap({
         if (isLandable) lines.push("<span style='color:#00f3ff'>🛬 Пригодна для посадки</span>");
         if (p.bio_signals_count > 0) {
           lines.push(`<span style='color:#00ff88'>🌿 Биосигналы: <b>${p.bio_signals_count}</b></span>`);
+        }
+        if (Array.isArray(p.rings) && p.rings.length > 0) {
+          lines.push(`<span style='color:#9fd8ef'>💍 Кольца: <b>${p.rings.length}</b></span>`);
         }
         pHovers.push(lines.join('<br>'));
       });
@@ -391,8 +475,8 @@ export default function SystemPlotlyMap({
       }
     }
 
-    // 5. Луны
-    if (moons.length > 0) {
+    // 7. Луны
+    if (moons.length > 0 && filterMode === 'all') {
       const mXs: number[] = [];
       const mYs: number[] = [];
       const mZs: number[] = [];
@@ -437,8 +521,8 @@ export default function SystemPlotlyMap({
       }
     }
 
-    // 6. Стройплощадки
-    if (projects.length > 0) {
+    // 8. Стройплощадки
+    if (projects.length > 0 && (filterMode === 'all' || filterMode === 'sites')) {
       const prjXs: number[] = [];
       const prjYs: number[] = [];
       const prjZs: number[] = [];
@@ -494,6 +578,44 @@ export default function SystemPlotlyMap({
       }
     }
 
+    // 9. Захват цели (Target Focus Reticle)
+    if (selectedTarget && positions[selectedTarget]) {
+      const [tx, ty, tz] = positions[selectedTarget];
+      traces.push({
+        type: 'scatter3d',
+        name: `🎯 Цель: ${selectedTarget}`,
+        x: [tx],
+        y: [ty],
+        z: [tz],
+        mode: 'markers+text',
+        marker: {
+          size: 26,
+          symbol: 'circle-open',
+          color: '#00f3ff',
+          line: { color: '#00f3ff', width: 3 },
+          opacity: 1.0,
+        },
+        text: [`🎯 [${selectedTarget}]`],
+        textposition: 'top center',
+        textfont: { color: '#00f3ff', size: 12 },
+        hovertext: [`<b>🎯 Захваченная цель</b><br>${selectedTarget}`],
+        hoverinfo: 'text',
+        showlegend: true,
+      });
+    }
+
+    const initCam: any = {
+      eye: { x: 1.5, y: 1.5, z: 1.1 },
+      up: { x: 0, y: 0, z: 1 },
+      center: { x: 0, y: 0, z: 0 },
+    };
+
+    if (selectedTarget && positions[selectedTarget]) {
+      const [tx, ty, tz] = positions[selectedTarget];
+      initCam.center = { x: (tx / 200.0) * 0.4, y: (ty / 200.0) * 0.4, z: (tz / 200.0) * 0.4 };
+      initCam.eye = { x: (tx / 200.0) * 0.4 + 0.8, y: (ty / 200.0) * 0.4 + 0.8, z: (tz / 200.0) * 0.4 + 0.6 };
+    }
+
     const layout = {
       paper_bgcolor: '#0b0e14',
       plot_bgcolor: '#07090e',
@@ -518,10 +640,7 @@ export default function SystemPlotlyMap({
         xaxis: { showgrid: true, gridcolor: '#15202e', showticklabels: false, showbackground: false },
         yaxis: { showgrid: true, gridcolor: '#15202e', showticklabels: false, showbackground: false },
         zaxis: { showgrid: true, gridcolor: '#15202e', showticklabels: false, showbackground: false },
-        camera: {
-          eye: { x: 1.5, y: 1.5, z: 1.1 },
-          up: { x: 0, y: 0, z: 1 },
-        },
+        camera: initCam,
         aspectmode: 'data',
       },
       updatemenus: [
@@ -539,17 +658,17 @@ export default function SystemPlotlyMap({
             {
               label: '🔭 3D Orrery',
               method: 'relayout',
-              args: [{ 'scene.camera': { eye: { x: 1.5, y: 1.5, z: 1.1 }, up: { x: 0, y: 0, z: 1 } } }],
+              args: [{ 'scene.camera': { eye: { x: 1.5, y: 1.5, z: 1.1 }, up: { x: 0, y: 0, z: 1 }, center: { x: 0, y: 0, z: 0 } } }],
             },
             {
               label: '🧭 Сверху (2D)',
               method: 'relayout',
-              args: [{ 'scene.camera': { eye: { x: 0.001, y: 0.001, z: 2.5 }, up: { x: 0, y: 1, z: 0 } } }],
+              args: [{ 'scene.camera': { eye: { x: 0.001, y: 0.001, z: 2.5 }, up: { x: 0, y: 1, z: 0 }, center: { x: 0, y: 0, z: 0 } } }],
             },
             {
               label: '🔄 Сброс',
               method: 'relayout',
-              args: [{ 'scene.camera': { eye: { x: 1.6, y: 1.6, z: 1.2 }, up: { x: 0, y: 0, z: 1 } } }],
+              args: [{ 'scene.camera': { eye: { x: 1.6, y: 1.6, z: 1.2 }, up: { x: 0, y: 0, z: 1 }, center: { x: 0, y: 0, z: 0 } } }],
             },
           ],
         },
@@ -571,7 +690,7 @@ export default function SystemPlotlyMap({
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [scriptLoaded, bodies, projects, isFullscreen]);
+  }, [scriptLoaded, bodies, projects, isFullscreen, selectedTarget, filterMode]);
 
   const toggleFullscreen = () => {
     setIsFullscreen((prev) => !prev);
@@ -603,7 +722,7 @@ export default function SystemPlotlyMap({
           gap: 10,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <h2 style={{ fontSize: 18, color: '#eeeeee', margin: 0 }}>
             🪐 Интерактивная 3D-карта системы (Plotly Orrery)
           </h2>
@@ -622,7 +741,93 @@ export default function SystemPlotlyMap({
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Селектор цели */}
+          {bodies.length > 0 && (
+            <select
+              value={selectedTarget}
+              onChange={(e) => setSelectedTarget(e.target.value)}
+              style={{
+                background: '#1e2022',
+                border: '1px solid #4a4d50',
+                color: '#e2e8f0',
+                padding: '5px 10px',
+                borderRadius: 6,
+                fontSize: 12,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">🎯 Без фокуса (система)</option>
+              {bodies.map((b) => (
+                <option key={b.body_name} value={b.body_name}>
+                  {b.body_name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Быстрые фильтры */}
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              onClick={() => setFilterMode('all')}
+              style={{
+                background: filterMode === 'all' ? '#e67e22' : '#323538',
+                border: 'none',
+                color: '#ffffff',
+                padding: '4px 8px',
+                borderRadius: 4,
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              Все
+            </button>
+            <button
+              onClick={() => setFilterMode('bio')}
+              style={{
+                background: filterMode === 'bio' ? '#2ecc71' : '#323538',
+                border: 'none',
+                color: '#ffffff',
+                padding: '4px 8px',
+                borderRadius: 4,
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              🌿 Био
+            </button>
+            <button
+              onClick={() => setFilterMode('landable')}
+              style={{
+                background: filterMode === 'landable' ? '#00f3ff' : '#323538',
+                border: 'none',
+                color: filterMode === 'landable' ? '#000000' : '#ffffff',
+                padding: '4px 8px',
+                borderRadius: 4,
+                fontSize: 11,
+                cursor: 'pointer',
+              }}
+            >
+              🛬 Посадка
+            </button>
+            {projects.length > 0 && (
+              <button
+                onClick={() => setFilterMode('sites')}
+                style={{
+                  background: filterMode === 'sites' ? '#ff8800' : '#323538',
+                  border: 'none',
+                  color: '#ffffff',
+                  padding: '4px 8px',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  cursor: 'pointer',
+                }}
+              >
+                🏗️ Стройки
+              </button>
+            )}
+          </div>
+
           <button
             onClick={toggleFullscreen}
             style={{

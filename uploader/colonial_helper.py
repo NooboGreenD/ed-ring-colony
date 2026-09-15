@@ -2567,6 +2567,10 @@ class ColonialHelperApp:
         # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
         for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.map_canvas.bind(binding, self._on_map_wheel)
+        # Горячие клавиши для интерактивной карты Plotly
+        self.map_canvas.bind("<Control-p>", lambda _event: self._on_map_open_plotly())
+        self.map_canvas.bind("<Control-P>", lambda _event: self._on_map_open_plotly())
+        self.map_canvas.bind("<F4>", lambda _event: self._on_map_open_plotly())
 
         side = tb.Frame(body)
         side.pack(side=RIGHT, fill=Y, padx=(8, 0))
@@ -2625,6 +2629,7 @@ class ColonialHelperApp:
         self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
         tree_vsb.pack(side=RIGHT, fill=Y)
         self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
+        self.map_tree.bind("<Button-3>", self._on_map_tree_context)
 
         # ---- Состояние ----
         footer = tb.Frame(outer)
@@ -3493,13 +3498,15 @@ class ColonialHelperApp:
         show_moons = not getattr(self, "map_moons_var", None) or bool(
             self.map_moons_var.get())
         view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        selected = getattr(self, "_map_selected", "") or ""
         try:
             from plotly_map import open_plotly_in_browser
             path = open_plotly_in_browser(
-                snapshot, view_mode=view_mode, show_moons=show_moons
+                snapshot, view_mode=view_mode, show_moons=show_moons, selected=selected
             )
-            self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}")
-            self.log(f"Интерактивная карта {snapshot.system} (Plotly {view_mode.upper()}) открыта в браузере", "info")
+            target_note = f" (фокус: {selected})" if selected else ""
+            self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}{target_note}")
+            self.log(f"Интерактивная карта {snapshot.system} (Plotly {view_mode.upper()}){target_note} открыта в браузере", "info")
         except Exception as err:
             self._map_update_status(snapshot, f"Ошибка открытия Plotly: {err}")
             self.log(f"Не удалось открыть карту Plotly: {err}", "warning")
@@ -3524,16 +3531,70 @@ class ColonialHelperApp:
         show_moons = not getattr(self, "map_moons_var", None) or bool(
             self.map_moons_var.get())
         view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        selected = getattr(self, "_map_selected", "") or ""
         try:
             from plotly_map import export_plotly_html
             export_plotly_html(
-                snapshot, filepath=path, view_mode=view_mode, show_moons=show_moons
+                snapshot, filepath=path, view_mode=view_mode, show_moons=show_moons, selected=selected
             )
             self._map_update_status(snapshot, f"Карта Plotly сохранена: {path}")
             self.log(f"Карта системы {snapshot.system} экспортирована в HTML: {path}", "info")
         except Exception as err:
             self._map_update_status(snapshot, f"Ошибка экспорта Plotly: {err}")
             self.log(f"Не удалось сохранить карту Plotly: {err}", "warning")
+
+    def _on_map_tree_context(self, event):
+        """Контекстное меню по правой кнопке мыши в списке объектов карты."""
+        tree = getattr(self, "map_tree", None)
+        if tree is None:
+            return
+        iid = tree.identify_row(event.y)
+        if not iid:
+            return
+        tree.selection_set(iid)
+        key = str(iid).split(":", 1)[-1]
+        self._select_map_object(key)
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(
+            label=f"🎯 Открыть в Plotly 3D (фокус: {key[:18]})",
+            command=self._on_map_open_plotly,
+        )
+        menu.add_command(
+            label="📋 Скопировать название",
+            command=lambda: self._copy_map_text(key, f"Название '{key}' скопировано"),
+        )
+        snapshot = self._map_last_snapshot
+        if snapshot:
+            for station in snapshot.stations:
+                if key in (station.build_id, station.name) and station.build_id:
+                    menu.add_command(
+                        label="🏗️ Открыть проект в Raven Colonial",
+                        command=self._on_map_open_project,
+                    )
+                    break
+        menu.add_separator()
+        menu.add_command(
+            label="💾 Экспорт Plotly HTML...",
+            command=self._on_map_export_plotly,
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_map_text(self, text: str, hint: str = "Скопировано"):
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+        except Exception:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+            except Exception:
+                pass
+        if hint:
+            self._map_set_hint(hint)
 
     def _on_map_copy_summary(self):
         """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""

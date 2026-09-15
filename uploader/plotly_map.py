@@ -3,17 +3,20 @@
 Предоставляет функции построения интерактивной модели звездной системы (Orrery),
 включая:
 - Звёзды (спектральные классы, размеры, светимость)
+- Обитаемую зону звезды (Goldilocks Zone)
+- Планетарные астероидные кольца (Icy, Metallic, Metal-Rich, Rocky)
 - Орбиты небесных тел (с учетом эксцентриситета и наклонения)
 - Планеты всех классов (ELW, WW, AW, HMC, газовые гиганты и т.д.)
 - Луны с орбитами вокруг родительских планет
 - Станции, аванпосты, поселения и мегакорабли
 - Колонизационные стройплощадки с прогресс-барами и списком требуемых ресурсов
 - Авианосцы (Fleet Carriers)
+- Захват цели (Target Lock) и центрирование камеры на выбранном объекте
 - Маркер положения пилота («Вы здесь» / CMDR)
 - Богатые интерактивные карточки при наведении (hovertemplate)
 - Переключение видов камеры (3D Orrery, вид сверху 2D, вид сбоку)
 - Поддержка как 3D, так и 2D режима отображения
-- Экспорт в автономный HTML и открытие в браузере
+- Автономный экспорт в HTML (CDN или локальный bundle) и открытие в браузере
 """
 
 import json
@@ -29,9 +32,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import plotly.graph_objects as go
+    import plotly.offline as po
     HAS_PLOTLY = True
 except ImportError:
     go = None
+    po = None
     HAS_PLOTLY = False
 
 from system_map import (
@@ -75,6 +80,7 @@ ED_COLOR_SITE = "#ff8800"
 ED_COLOR_SITE_DONE = "#2ecc71"
 ED_COLOR_LANDABLE = "#00f3ff"
 ED_COLOR_BIO = "#00ff88"
+ED_COLOR_HABITABLE_ZONE = "rgba(46, 204, 113, 0.40)"
 
 #: Цвета звезд по спектральному типу
 STAR_SPECTRAL_COLORS: Dict[str, str] = {
@@ -125,6 +131,24 @@ STAR_SPECTRAL_COLORS: Dict[str, str] = {
     "X": "#ff007f",
     "SupermassiveBlackHole": "#2d004d",
 }
+
+#: Цвета колец планет
+RING_CLASS_COLORS: Dict[str, str] = {
+    "icy": "rgba(159, 216, 239, 0.75)",
+    "metal": "rgba(241, 196, 15, 0.8)",
+    "rich": "rgba(230, 126, 34, 0.8)",
+    "rocky": "rgba(160, 140, 125, 0.75)",
+    "default": "rgba(180, 200, 220, 0.7)",
+}
+
+
+def get_ring_color(ring_class: str) -> str:
+    """Вернуть цвет кольца по его типу."""
+    low = (ring_class or "").lower()
+    for key, col in RING_CLASS_COLORS.items():
+        if key in low:
+            return col
+    return RING_CLASS_COLORS["default"]
 
 
 def get_star_color(star_type: str) -> str:
@@ -179,19 +203,28 @@ def build_progress_bar(progress_pct: float, length: int = 12) -> str:
     return "█" * filled + "░" * empty + f" {p:.1f}%"
 
 
+def estimate_habitable_zone_ls(star: Optional[MapBody]) -> Optional[Tuple[float, float]]:
+    """Оценить границы обитаемой зоны (в св. секундах) вокруг главной звезды."""
+    if star is None or not star.is_star:
+        return None
+    r_sol = max(1e-4, star.radius_m / 6.957e8) if star.radius_m > 0 else 1.0
+    t_sol = max(1e-4, star.surface_temp_k / 5778.0) if star.surface_temp_k > 0 else 1.0
+    lum = (r_sol ** 2) * (t_sol ** 4)
+    if lum <= 0:
+        return None
+    sqrt_l = math.sqrt(lum)
+    hz_inner_ls = max(1.0, 474.0 * sqrt_l)
+    hz_outer_ls = max(hz_inner_ls + 5.0, 684.0 * sqrt_l)
+    return (hz_inner_ls, hz_outer_ls)
+
+
 def build_system_geometry(
     snapshot: MapSnapshot,
     scale_mode: str = "orrery",
     show_moons: bool = True,
     is_3d: bool = True,
 ) -> Dict[str, Any]:
-    """Рассчитать координаты звезд, планет, лун, орбит и станций.
-
-    Режимы масштабирования:
-    - 'orrery': адаптивно-логарифмический масштаб (все тела отчетливо видны,
-      орбиты не слипаются, идеален для интерактивного исследования).
-    - 'linear': физический масштаб в св. секундах.
-    """
+    """Рассчитать координаты звезд, планет, лун, колец, орбит и станций."""
     planets = [b for b in snapshot.bodies if b.kind not in (KIND_STAR, KIND_MOON)]
     stars = [b for b in snapshot.bodies if b.kind == KIND_STAR]
     moons = [b for b in snapshot.bodies if b.kind == KIND_MOON] if show_moons else []
@@ -218,9 +251,9 @@ def build_system_geometry(
     orbit_radii: Dict[str, float] = {}
     all_orbiters = list(planets) + list(other_stars)
 
+    r_min, r_max = 24.0, 240.0
     if scale_mode == "orrery":
         # Логарифмически-ранговое распределение орбит (от 24 до 240 единиц)
-        r_min, r_max = 24.0, 240.0
         n_items = len(all_orbiters)
         if n_items == 1:
             orbit_radii[all_orbiters[0].name] = 60.0
@@ -251,6 +284,7 @@ def build_system_geometry(
     # Координаты тел
     positions: Dict[str, Tuple[float, float, float]] = {}
     orbit_curves: Dict[str, Dict[str, Any]] = {}
+    body_rings: Dict[str, List[Dict[str, Any]]] = {}
 
     # Основная звезда в начале координат
     if primary_star:
@@ -304,6 +338,40 @@ def build_system_geometry(
         by = r_body * math.sin(theta) * math.cos(inc_rad) if is_3d else r_body * math.sin(theta)
         bz = r_body * math.sin(theta) * math.sin(inc_rad) if is_3d else 0.0
         positions[body.name] = (bx, by, bz)
+
+        # Планетарные кольца
+        if getattr(body, "rings", None):
+            r_km = (body.radius_m or 6000000.0) / 1000.0
+            sz_offset = max(6.0, min(22.0, 6.0 + math.log10(max(100.0, r_km) / 1000.0) * 4.0)) * 0.45
+            rings_data = []
+            for r_idx, ring in enumerate(body.rings):
+                r_name = str(ring.get("Name") or ring.get("name") or f"{body.name} Ring")
+                r_class = str(ring.get("RingClass") or ring.get("type") or ring.get("sub_type") or "Icy")
+                inner_m = float(ring.get("InnerRad") or ring.get("inner_rad") or 0.0)
+                outer_m = float(ring.get("OuterRad") or ring.get("outer_rad") or 0.0)
+                ring_r = sz_offset + 3.2 + r_idx * 2.8
+                r_xs, r_ys, r_zs = [], [], []
+                r_steps = 48
+                for step in range(r_steps + 1):
+                    phi = 2 * math.pi * step / r_steps
+                    rx = bx + ring_r * math.cos(phi)
+                    ry = by + (ring_r * math.sin(phi) * math.cos(inc_rad) if is_3d else ring_r * math.sin(phi))
+                    rz = bz + (ring_r * math.sin(phi) * math.sin(inc_rad) if is_3d else 0.0)
+                    r_xs.append(rx)
+                    r_ys.append(ry)
+                    if is_3d:
+                        r_zs.append(rz)
+                rings_data.append({
+                    "name": r_name,
+                    "class": r_class,
+                    "color": get_ring_color(r_class),
+                    "inner_km": inner_m / 1000.0,
+                    "outer_km": outer_m / 1000.0,
+                    "x": r_xs,
+                    "y": r_ys,
+                    "z": r_zs if is_3d else None,
+                })
+            body_rings[body.name] = rings_data
 
     # Расставляем луны вокруг их родительских планет
     moon_orbit_curves: Dict[str, Dict[str, Any]] = {}
@@ -373,6 +441,7 @@ def build_system_geometry(
         "positions": positions,
         "orbit_curves": orbit_curves,
         "moon_orbit_curves": moon_orbit_curves,
+        "body_rings": body_rings,
         "station_positions": station_positions,
         "player_pos": player_pos,
         "planets": planets,
@@ -380,6 +449,9 @@ def build_system_geometry(
         "primary_star": primary_star,
         "other_stars": other_stars,
         "by_name": by_name,
+        "r_min": r_min,
+        "r_max": r_max,
+        "all_orbiters": all_orbiters,
     }
 
 
@@ -407,6 +479,17 @@ def _build_body_hover(body: MapBody) -> str:
     if body.bio_signals > 0:
         genus_str = f" ({', '.join(body.bio_genuses)})" if body.bio_genuses else ""
         lines.append(f"<span style='color:#00ff88'>🌿 Биосигналы: <b>{body.bio_signals}</b>{genus_str}</span>")
+    if getattr(body, "rings", None):
+        ring_parts = []
+        for r in body.rings:
+            rc = str(r.get("RingClass") or r.get("type") or "Icy").replace("eRingClass_", "")
+            inner = float(r.get("InnerRad") or 0.0) / 1000.0
+            outer = float(r.get("OuterRad") or 0.0) / 1000.0
+            if inner > 0 and outer > 0:
+                ring_parts.append(f"{rc} ({inner:,.0f}–{outer:,.0f} км)".replace(",", " "))
+            else:
+                ring_parts.append(rc)
+        lines.append(f"💍 Кольца: <b>{', '.join(ring_parts)}</b>")
     if body.first_discovered_by:
         lines.append(f"<span style='color:#9ca3af'>Открыто: CMDR {body.first_discovered_by}</span>")
     if body.first_footfall_by:
@@ -455,12 +538,12 @@ def build_plotly_dict(
     view_mode: str = "3d",
     scale_mode: str = "orrery",
     show_moons: bool = True,
+    selected: str = "",
     title: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Сгенерировать структуру данных Plotly (data, layout, config) в виде dict.
 
     Поддерживает режимы '3d' (Orrery) и '2d' (плоская схема).
-    Работает автономно без обязательной установки сторонних пакетов.
     """
     is_3d = (str(view_mode or "3d").lower() == "3d")
     trace_type = "scatter3d" if is_3d else "scatter"
@@ -471,16 +554,68 @@ def build_plotly_dict(
     positions = geom["positions"]
     orbit_curves = geom["orbit_curves"]
     moon_orbit_curves = geom["moon_orbit_curves"]
+    body_rings = geom["body_rings"]
     station_positions = geom["station_positions"]
     player_pos = geom["player_pos"]
     planets = geom["planets"]
     moons = geom["moons"]
     primary_star = geom["primary_star"]
     other_stars = geom["other_stars"]
+    r_min = geom["r_min"]
+    r_max = geom["r_max"]
+    all_orbiters = geom["all_orbiters"]
 
     data: List[Dict[str, Any]] = []
 
-    # 1. Линии орбит планет
+    # 1. Обитаемая зона звезды (Habitable / Goldilocks Zone)
+    if primary_star:
+        hz_range = estimate_habitable_zone_ls(primary_star)
+        if hz_range:
+            hz_in, hz_out = hz_range
+            hz_mid = (hz_in + hz_out) / 2.0
+            if scale_mode == "orrery" and len(all_orbiters) > 1:
+                all_distances = [max(0.1, b.orbit_ls or b.distance_ls) for b in all_orbiters]
+                log_min = math.log10(min(all_distances))
+                log_max = math.log10(max(all_distances))
+                log_span = max(1e-4, log_max - log_min)
+                log_frac = max(0.0, min(1.0, (math.log10(hz_mid) - log_min) / log_span))
+                r_hz = r_min + log_frac * (r_max - r_min)
+            else:
+                max_d = max([b.orbit_ls or b.distance_ls for b in all_orbiters] or [100.0])
+                r_hz = max(30.0, hz_mid * (200.0 / max(1.0, max_d)))
+
+            hz_xs, hz_ys, hz_zs = [], [], []
+            steps = 72
+            for step in range(steps + 1):
+                phi = 2 * math.pi * step / steps
+                hz_xs.append(r_hz * math.cos(phi))
+                hz_ys.append(r_hz * math.sin(phi))
+                if is_3d:
+                    hz_zs.append(0.0)
+
+            hz_note = (
+                f"<b>🌱 Обитаемая зона (Goldilocks Zone)</b><br>"
+                f"Диапазон: {hz_in:,.0f} — {hz_out:,.0f} св. с<br>"
+                f"Зона жидкой воды и планет земного типа (ELW)"
+            ).replace(",", " ")
+
+            tr_hz: Dict[str, Any] = {
+                "type": trace_type,
+                "name": "🌱 Обитаемая зона",
+                "x": hz_xs,
+                "y": hz_ys,
+                "mode": "lines",
+                "line": {"color": ED_COLOR_HABITABLE_ZONE, "width": 2.5, "dash": "dash"},
+                "hovertext": [hz_note] * len(hz_xs),
+                "hoverinfo": "text",
+                "legendgroup": "habitable_zone",
+                "showlegend": True,
+            }
+            if is_3d:
+                tr_hz["z"] = hz_zs
+            data.append(tr_hz)
+
+    # 2. Линии орбит планет
     orb_x: List[Optional[float]] = []
     orb_y: List[Optional[float]] = []
     orb_z: List[Optional[float]] = []
@@ -506,7 +641,7 @@ def build_plotly_dict(
             tr["z"] = orb_z
         data.append(tr)
 
-    # 2. Линии орбит лун
+    # 3. Линии орбит лун
     if show_moons and moon_orbit_curves:
         m_orb_x: List[Optional[float]] = []
         m_orb_y: List[Optional[float]] = []
@@ -533,7 +668,34 @@ def build_plotly_dict(
                 tr_m["z"] = m_orb_z
             data.append(tr_m)
 
-    # 3. Основная звезда системы
+    # 4. Кольца планет
+    if body_rings:
+        ring_xs: List[Optional[float]] = []
+        ring_ys: List[Optional[float]] = []
+        ring_zs: List[Optional[float]] = []
+        for body_ring_list in body_rings.values():
+            for r_entry in body_ring_list:
+                ring_xs.extend(r_entry["x"] + [None])
+                ring_ys.extend(r_entry["y"] + [None])
+                if is_3d and r_entry["z"] is not None:
+                    ring_zs.extend(r_entry["z"] + [None])
+        if ring_xs:
+            tr_rings: Dict[str, Any] = {
+                "type": trace_type,
+                "name": "💍 Кольца планет",
+                "x": ring_xs,
+                "y": ring_ys,
+                "mode": "lines",
+                "line": {"color": "rgba(159, 216, 239, 0.75)", "width": 2.5},
+                "hoverinfo": "skip",
+                "legendgroup": "rings",
+                "showlegend": True,
+            }
+            if is_3d:
+                tr_rings["z"] = ring_zs
+            data.append(tr_rings)
+
+    # 5. Основная звезда системы
     if primary_star:
         p_color = get_star_color(primary_star.star_type)
         rad_km = (primary_star.radius_m or 6.96e8) / 1000.0
@@ -586,7 +748,7 @@ def build_plotly_dict(
             tr_center["z"] = [0.0]
         data.append(tr_center)
 
-    # 4. Вторичные звёзды
+    # 6. Вторичные звёзды
     if other_stars:
         s_xs, s_ys, s_zs, s_texts, s_hovers, s_colors = [], [], [], [], [], []
         for star in other_stars:
@@ -624,7 +786,7 @@ def build_plotly_dict(
                 tr_s["z"] = s_zs
             data.append(tr_s)
 
-    # 5. Планеты
+    # 7. Планеты
     if planets:
         p_xs, p_ys, p_zs, p_texts, p_hovers, p_colors, p_sizes = [], [], [], [], [], [], []
         line_colors = []
@@ -677,7 +839,7 @@ def build_plotly_dict(
                 tr_p["z"] = p_zs
             data.append(tr_p)
 
-    # 6. Луны
+    # 8. Луны
     if show_moons and moons:
         m_xs, m_ys, m_zs, m_texts, m_hovers, m_colors = [], [], [], [], [], []
         for m in moons:
@@ -715,7 +877,7 @@ def build_plotly_dict(
                 tr_m_body["z"] = m_zs
             data.append(tr_m_body)
 
-    # 7. Стройплощадки колонизации
+    # 9. Стройплощадки колонизации
     sites = [s for s in snapshot.stations if s.is_site]
     if sites:
         st_xs, st_ys, st_zs, st_texts, st_hovers, st_colors = [], [], [], [], [], []
@@ -758,7 +920,7 @@ def build_plotly_dict(
                 tr_sites["z"] = st_zs
             data.append(tr_sites)
 
-    # 8. Станции, порты и аванпосты
+    # 10. Станции, порты и аванпосты
     regular_stations = [s for s in snapshot.stations if not s.is_site and s.kind != STATION_CARRIER]
     if regular_stations:
         st_xs, st_ys, st_zs, st_texts, st_hovers = [], [], [], [], []
@@ -798,7 +960,7 @@ def build_plotly_dict(
                 tr_st["z"] = st_zs
             data.append(tr_st)
 
-    # 9. Fleet Carriers
+    # 11. Fleet Carriers
     carriers = [s for s in snapshot.stations if s.kind == STATION_CARRIER]
     if carriers:
         c_xs, c_ys, c_zs, c_texts, c_hovers = [], [], [], [], []
@@ -838,7 +1000,7 @@ def build_plotly_dict(
                 tr_c["z"] = c_zs
             data.append(tr_c)
 
-    # 10. Пилот («Вы здесь»)
+    # 12. Пилот («Вы здесь»)
     if player_pos is not None:
         px, py, pz = player_pos
         cmdr_note = "Ваш корабль в системе"
@@ -871,6 +1033,44 @@ def build_plotly_dict(
         if is_3d:
             tr_pl["z"] = [pz]
         data.append(tr_pl)
+
+    # 13. Захват цели (Target Lock)
+    target_pos = None
+    target_label = ""
+    if selected:
+        clean_sel = str(selected).strip().lower()
+        for name, pos in {**positions, **station_positions}.items():
+            if clean_sel == name.lower() or clean_sel in name.lower() or name.lower() in clean_sel:
+                target_pos = pos
+                target_label = name
+                break
+
+    if target_pos is not None:
+        tx, ty, tz = target_pos
+        tr_target: Dict[str, Any] = {
+            "type": trace_type,
+            "name": f"🎯 Цель: {target_label}",
+            "x": [tx],
+            "y": [ty],
+            "mode": "markers+text",
+            "marker": {
+                "size": 26,
+                "symbol": "circle-open",
+                "color": "#00f3ff",
+                "line": {"color": "#00f3ff", "width": 3},
+                "opacity": 1.0,
+            },
+            "text": [f"🎯 [{target_label}]"],
+            "textposition": "top center",
+            "textfont": {"color": "#00f3ff", "size": 12, "family": "Consolas, Segoe UI"},
+            "hovertext": [f"<b>🎯 Выбранная цель</b><br>{target_label}"],
+            "hoverinfo": "text",
+            "legendgroup": "target",
+            "showlegend": True,
+        }
+        if is_3d:
+            tr_target["z"] = [tz]
+        data.append(tr_target)
 
     # Заголовок и сводка
     sys_title = title or f"Система {snapshot.system or 'Неизвестная'}"
@@ -912,24 +1112,46 @@ def build_plotly_dict(
             {
                 "label": "🔭 3D Orrery",
                 "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.1}, "up": {"x": 0, "y": 0, "z": 1}}}],
+                "args": [{"scene.camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.1}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
             },
             {
                 "label": "🧭 Сверху (2D)",
                 "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 0.001, "y": 0.001, "z": 2.5}, "up": {"x": 0, "y": 1, "z": 0}}}],
+                "args": [{"scene.camera": {"eye": {"x": 0.001, "y": 0.001, "z": 2.5}, "up": {"x": 0, "y": 1, "z": 0}, "center": {"x": 0, "y": 0, "z": 0}}}],
             },
             {
                 "label": "📐 Сбоку (Профиль)",
                 "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 2.5, "y": 0.001, "z": 0.001}, "up": {"x": 0, "y": 0, "z": 1}}}],
+                "args": [{"scene.camera": {"eye": {"x": 2.5, "y": 0.001, "z": 0.001}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
             },
             {
                 "label": "🔄 Сброс",
                 "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 1.6, "y": 1.6, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1}}}],
+                "args": [{"scene.camera": {"eye": {"x": 1.6, "y": 1.6, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
             },
         ]
+        if target_pos is not None:
+            tx, ty, tz = target_pos
+            camera_buttons.insert(0, {
+                "label": f"🎯 Фокус: {target_label[:10]}",
+                "method": "relayout",
+                "args": [{"scene.camera": {
+                    "center": {"x": tx / 200.0 * 0.4, "y": ty / 200.0 * 0.4, "z": tz / 200.0 * 0.4},
+                    "eye": {"x": (tx / 200.0 * 0.4) + 0.8, "y": (ty / 200.0 * 0.4) + 0.8, "z": (tz / 200.0 * 0.4) + 0.6},
+                    "up": {"x": 0, "y": 0, "z": 1},
+                }}],
+            })
+
+        init_cam: Dict[str, Any] = {
+            "eye": {"x": 1.5, "y": 1.5, "z": 1.1},
+            "up": {"x": 0, "y": 0, "z": 1},
+            "center": {"x": 0, "y": 0, "z": 0},
+        }
+        if target_pos is not None:
+            tx, ty, tz = target_pos
+            init_cam["center"] = {"x": tx / 200.0 * 0.4, "y": ty / 200.0 * 0.4, "z": tz / 200.0 * 0.4}
+            init_cam["eye"] = {"x": (tx / 200.0 * 0.4) + 0.8, "y": (ty / 200.0 * 0.4) + 0.8, "z": (tz / 200.0 * 0.4) + 0.6}
+
         layout["scene"] = {
             "bgcolor": ED_BG_CANVAS,
             "xaxis": {
@@ -956,10 +1178,7 @@ def build_plotly_dict(
                 "showticklabels": False,
                 "showbackground": False,
             },
-            "camera": {
-                "eye": {"x": 1.5, "y": 1.5, "z": 1.1},
-                "up": {"x": 0, "y": 0, "z": 1},
-            },
+            "camera": init_cam,
             "aspectmode": "data",
         }
         layout["updatemenus"] = [
@@ -1016,6 +1235,7 @@ def build_plotly_figure(
     view_mode: str = "3d",
     scale_mode: str = "orrery",
     show_moons: bool = True,
+    selected: str = "",
     title: Optional[str] = None,
 ):
     """Собрать и вернуть объект plotly.graph_objects.Figure.
@@ -1032,6 +1252,7 @@ def build_plotly_figure(
         view_mode=view_mode,
         scale_mode=scale_mode,
         show_moons=show_moons,
+        selected=selected,
         title=title,
     )
     return go.Figure(data=schema["data"], layout=schema["layout"])
@@ -1042,18 +1263,22 @@ def generate_plotly_html(
     view_mode: str = "3d",
     scale_mode: str = "orrery",
     show_moons: bool = True,
+    selected: str = "",
+    include_plotlyjs: Union[str, bool] = "cdn",
     title: Optional[str] = None,
 ) -> str:
     """Сгенерировать автономный HTML-документ с интерактивной картой.
 
-    Работает надежно как при наличии установленного `plotly`, так и при его
-    отсутствии (рендерит через CDN Plotly.js).
+    Поддерживает:
+    - include_plotlyjs='cdn': легкий HTML со скриптом из CDN.
+    - include_plotlyjs='inline': полностью автономный HTML с встроенным скриптом.
     """
     schema = build_plotly_dict(
         snapshot,
         view_mode=view_mode,
         scale_mode=scale_mode,
         show_moons=show_moons,
+        selected=selected,
         title=title,
     )
     data_json = json.dumps(schema["data"], ensure_ascii=False)
@@ -1064,6 +1289,12 @@ def generate_plotly_html(
     active_sites = [s for s in snapshot.stations if s.is_site]
     landables = [b for b in snapshot.bodies if b.landable]
     bio_count = sum(b.bio_signals for b in snapshot.bodies)
+    ringed_count = sum(1 for b in snapshot.bodies if getattr(b, "rings", None))
+
+    if include_plotlyjs in ("inline", True) and HAS_PLOTLY and po is not None:
+        script_tag = f"<script>{po.get_plotlyjs()}</script>"
+    else:
+        script_tag = '<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>'
 
     html = f"""<!DOCTYPE html>
 <html lang="ru">
@@ -1071,7 +1302,7 @@ def generate_plotly_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Карта системы {sys_name} — Colonial Helper</title>
-  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  {script_tag}
   <style>
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
@@ -1195,7 +1426,9 @@ def generate_plotly_html(
         {f'<span class="badge orange">🏗️ Строек: {len(active_sites)}</span>' if active_sites else ''}
         {f'<span class="badge cyan">🛬 Посадочных: {len(landables)}</span>' if landables else ''}
         {f'<span class="badge green">🌿 Биосигналов: {bio_count}</span>' if bio_count else ''}
+        {f'<span class="badge">💍 С кольцами: {ringed_count}</span>' if ringed_count else ''}
         {f'<span class="badge cyan">🛸 CMDR в системе</span>' if snapshot.player and snapshot.player.system == snapshot.system else ''}
+        {f'<span class="badge orange">🎯 Фокус: {selected}</span>' if selected else ''}
       </div>
     </div>
     <div class="controls">
@@ -1243,10 +1476,17 @@ def export_plotly_html(
     view_mode: str = "3d",
     scale_mode: str = "orrery",
     show_moons: bool = True,
+    selected: str = "",
+    include_plotlyjs: Union[str, bool] = "cdn",
 ) -> Path:
     """Экспортировать интерактивную карту Plotly в HTML-файл на диске."""
     content = generate_plotly_html(
-        snapshot, view_mode=view_mode, scale_mode=scale_mode, show_moons=show_moons
+        snapshot,
+        view_mode=view_mode,
+        scale_mode=scale_mode,
+        show_moons=show_moons,
+        selected=selected,
+        include_plotlyjs=include_plotlyjs,
     )
 
     if filepath is None:
@@ -1267,6 +1507,8 @@ def open_plotly_in_browser(
     view_mode: str = "3d",
     scale_mode: str = "orrery",
     show_moons: bool = True,
+    selected: str = "",
+    include_plotlyjs: Union[str, bool] = "cdn",
 ) -> Path:
     """Сгенерировать интерактивную карту Plotly и открыть её в веб-браузере."""
     target_path = export_plotly_html(
@@ -1275,6 +1517,8 @@ def open_plotly_in_browser(
         view_mode=view_mode,
         scale_mode=scale_mode,
         show_moons=show_moons,
+        selected=selected,
+        include_plotlyjs=include_plotlyjs,
     )
     webbrowser.open(target_path.as_uri())
     return target_path

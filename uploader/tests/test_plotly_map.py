@@ -153,6 +153,48 @@ class PlotlyMapGeometryTests(unittest.TestCase):
         self.assertTrue(has_moons_1)
         self.assertFalse(has_moons_2)
 
+    def test_habitable_zone_estimation_and_trace(self):
+        star = self.snapshot.star
+        hz = pm.estimate_habitable_zone_ls(star)
+        self.assertIsNotNone(hz)
+        self.assertGreater(hz[1], hz[0])
+        schema = pm.build_plotly_dict(self.snapshot)
+        hz_trace = next((t for t in schema["data"] if "Обитаемая зона" in str(t.get("name"))), None)
+        self.assertIsNotNone(hz_trace)
+
+    def test_planetary_rings_rendering_and_hover(self):
+        self.builder.handle({
+            "event": "Scan",
+            "StarSystem": "TestSys",
+            "BodyName": "RingedWorld",
+            "ScanType": "Detailed",
+            "PlanetClass": "Class I gas giant",
+            "Radius": 5e7,
+            "DistanceFromArrivalLS": 800.0,
+            "Rings": [{
+                "Name": "RingedWorld A Ring",
+                "RingClass": "eRingClass_Icy",
+                "InnerRad": 6e7,
+                "OuterRad": 1.2e8,
+            }],
+        })
+        snap = self.builder.snapshot("TestSys")
+        schema = pm.build_plotly_dict(snap)
+        ring_trace = next((t for t in schema["data"] if "Кольца планет" in str(t.get("name"))), None)
+        self.assertIsNotNone(ring_trace)
+        planet_trace = next(t for t in schema["data"] if t.get("name") == "Планеты")
+        ringed_hover = next(h for h in planet_trace["hovertext"] if "RingedWorld" in h)
+        self.assertIn("Кольца", ringed_hover)
+        self.assertIn("Icy", ringed_hover)
+
+    def test_target_lock_and_camera_centering(self):
+        schema = pm.build_plotly_dict(self.snapshot, selected="TestSys 1")
+        target_trace = next((t for t in schema["data"] if "Цель: TestSys 1" in str(t.get("name"))), None)
+        self.assertIsNotNone(target_trace)
+        camera = schema["layout"]["scene"]["camera"]
+        self.assertIn("center", camera)
+        self.assertNotEqual(camera["center"]["x"], 0.0)
+
 
 class PlotlyMapOutputTests(unittest.TestCase):
     """Тесты вывода HTML, работы с файлами и браузером."""
@@ -198,6 +240,12 @@ class PlotlyMapOutputTests(unittest.TestCase):
             self.assertTrue(path.exists())
             mock_open.assert_called_once_with(path.as_uri())
 
+    def test_generate_plotly_html_offline_mode(self):
+        if pm.HAS_PLOTLY:
+            html = pm.generate_plotly_html(self.snapshot, include_plotlyjs="inline")
+            self.assertIn("<script>", html)
+            self.assertGreater(len(html), 100000)
+
     def test_system_without_star_fallback(self):
         empty_snap = sm.MapSnapshot(system="EmptySys")
         schema = pm.build_plotly_dict(empty_snap)
@@ -241,9 +289,16 @@ class ColonialHelperPlotlyIntegrationTests(unittest.TestCase):
         with mock.patch("plotly_map.open_plotly_in_browser") as mock_open:
             mock_open.return_value = Path("/tmp/test_map.html")
             self.app_cls._on_map_open_plotly(app)
-            mock_open.assert_called_once_with(snap, view_mode="3d", show_moons=True)
+            mock_open.assert_called_once_with(snap, view_mode="3d", show_moons=True, selected="")
             app._map_update_status.assert_called_once()
             app.log.assert_called_once()
+
+    def test_copy_map_text_and_context_menu_attributes(self):
+        self.assertTrue(hasattr(self.app_cls, "_on_map_tree_context"))
+        self.assertTrue(hasattr(self.app_cls, "_copy_map_text"))
+        app = mock.MagicMock(spec=self.app_cls)
+        self.app_cls._copy_map_text(app, "HIP 22460 1", "Скопировано")
+        app._map_set_hint.assert_called_with("Скопировано")
 
 
 if __name__ == "__main__":

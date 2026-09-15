@@ -320,6 +320,7 @@ class MapBody:
     eccentricity: float = 0.0
     orbital_inclination: float = 0.0
     arg_of_periapsis: float = 0.0
+    rings: List[Dict[str, Any]] = field(default_factory=list)
     from_raven: bool = False              # тело из Raven v2, журнал его не видел
     from_external: bool = False           # тело из EDSM / базы проекта
     source: str = "journal"
@@ -815,6 +816,8 @@ class SystemMapBuilder:
             body.orbital_inclination = _as_float(event.get("OrbitalInclination"), 0.0)
         if "Periapsis" in event:
             body.arg_of_periapsis = _as_float(event.get("Periapsis"), 0.0)
+        if "Rings" in event and isinstance(event.get("Rings"), list):
+            body.rings = [r for r in event["Rings"] if isinstance(r, dict)]
         if event.get("WasDiscovered") is False:
             body.first_discovered_by = "Вы"
         elif not body.first_discovered_by and event.get("WasDiscovered"):
@@ -923,6 +926,8 @@ class SystemMapBuilder:
             body.first_mapped_by = str(entry.get("first_mapped_by") or body.first_mapped_by or "")
             body.first_footfall_by = str(entry.get("first_footfall_by") or body.first_footfall_by or "")
             body.bio_signals = _as_int(entry.get("bio_signals_count") or entry.get("bio_signals"), body.bio_signals)
+            if "rings" in entry and isinstance(entry["rings"], list):
+                body.rings = [r for r in entry["rings"] if isinstance(r, dict)]
             body.source = source
             body.from_external = True
             body.scanned = True
