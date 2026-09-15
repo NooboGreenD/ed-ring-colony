@@ -53,6 +53,9 @@ export default async function CmdrPage({ params }: { params: { name: string } })
     { data: rankRow },
     rcData,
     { data: capiProfile },
+    { data: pilotStatsRow },
+    { count: firstDiscoveredCount },
+    { count: firstMappedCount },
   ] = await Promise.all([
     loadAllDeliveries(),
     profileId
@@ -65,7 +68,59 @@ export default async function CmdrPage({ params }: { params: { name: string } })
     profileId
       ? supabase.from('capi_profiles').select('*').eq('user_id', profileId).maybeSingle()
       : Promise.resolve({ data: null }),
+    profileId
+      ? supabase.from('pilot_stats').select('*').eq('user_id', profileId).maybeSingle()
+      : Promise.resolve({ data: null }),
+    supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_discovered_by', name),
+    supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_mapped_by', name),
   ]);
+
+  const pilotStats = {
+    credits: pilotStatsRow?.credits ?? capiProfile?.credits ?? 0,
+    arx: pilotStatsRow?.arx ?? capiProfile?.arx ?? 0,
+    mercenary_coins: pilotStatsRow?.mercenary_coins ?? capiProfile?.mercenary_coins ?? 0,
+    mercenary_rank: pilotStatsRow?.mercenary_rank ?? capiProfile?.mercenary_rank ?? 0,
+    exobiologist_rank: pilotStatsRow?.exobiologist_rank ?? capiProfile?.exobiologist_rank ?? 0,
+    combat_rank: capiProfile?.combat_rank ?? 0,
+    trade_rank: capiProfile?.trade_rank ?? 0,
+    explore_rank: capiProfile?.explore_rank ?? 0,
+    empire_rank: capiProfile?.empire_rank ?? 0,
+    federation_rank: capiProfile?.federation_rank ?? 0,
+    current_ship: capiProfile?.current_ship ?? null,
+    current_system: capiProfile?.current_system ?? null,
+    current_station: capiProfile?.current_station ?? null,
+    first_discoveries_count: Math.max(
+      pilotStatsRow?.first_discoveries_count ?? 0,
+      capiProfile?.first_discoveries_count ?? 0,
+      firstDiscoveredCount ?? 0,
+    ),
+    first_mapped_count: Math.max(
+      pilotStatsRow?.first_mapped_count ?? 0,
+      capiProfile?.first_mapped_count ?? 0,
+      firstMappedCount ?? 0,
+    ),
+    first_footfalls_count: Math.max(
+      pilotStatsRow?.first_footfalls_count ?? 0,
+      capiProfile?.first_footfalls_count ?? 0,
+    ),
+    bio_samples_count: Math.max(
+      pilotStatsRow?.bio_samples_count ?? 0,
+      capiProfile?.bio_samples_count ?? 0,
+    ),
+    bio_species_count: Math.max(
+      pilotStatsRow?.bio_species_count ?? 0,
+      capiProfile?.bio_species_count ?? 0,
+    ),
+    bio_value_cr: Math.max(
+      pilotStatsRow?.bio_value_cr ?? 0,
+      capiProfile?.bio_value_cr ?? 0,
+    ),
+    exploration_stats: {
+      ...(capiProfile?.exploration_stats || {}),
+      ...(pilotStatsRow?.exploration_stats || {}),
+    },
+    last_updated: pilotStatsRow?.last_updated || capiProfile?.last_updated || null,
+  };
 
   // Агрегация
   const deliveryRows = allRows || [];
@@ -193,6 +248,7 @@ export default async function CmdrPage({ params }: { params: { name: string } })
         currentUserId={currentUserId}
         profileUserId={profileId}
         capiProfile={capiProfile}
+        pilotStats={pilotStats}
       />
     </div>
   );

@@ -201,6 +201,40 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
         self.overlay.update_exobiology(state(system_bodies=[]))
         self.assertIn("не найдено", _text(self.overlay.bodies_label))
 
+    def test_unknown_body_with_system_bio_summary(self):
+        st = {
+            "system": "Procyon",
+            "body": None,
+            "system_bodies": [
+                {"body": "Procyon 2", "planet_class": "Rocky body", "bio_signals": 2, "landable": True, "mapped": True}
+            ],
+            "system_scanned_bodies": 4,
+            "system_known_bodies": 10,
+        }
+        self.overlay.update_exobiology(st)
+        body_text = _text(self.overlay.body_label)
+        self.assertIn("Procyon", body_text)
+        self.assertIn("Тело: —", body_text)
+        params = _text(self.overlay.params_label)
+        self.assertIn("тел с биосигналами", params)
+        self.assertIn("2 сигн.", params)
+        self.assertIn("2", _text(self.overlay.bodies_label))
+
+    def test_planet_search_with_scanned_bodies(self):
+        st = {
+            "system": "Maia",
+            "body": None,
+            "system_bodies": [],
+            "planet_criteria": [{"id": "rocky", "label": "Скалистые"}],
+            "planets": [
+                {"body": "Maia 3", "planet_class": "Rocky body", "bio_signals": 3, "landable": True}
+            ],
+        }
+        self.overlay.update_exobiology(st)
+        planets_text = _text(self.overlay.planets_label)
+        self.assertIn("3  ·  Rocky body", planets_text)
+        self.assertIn("сигналов 3", planets_text)
+
 
 class ExobioOverlayTickerTests(_OverlayTestCase):
     """Отсчёт обязан тикать и без новых данных журнала."""
@@ -901,6 +935,54 @@ class CargoRowReuseTests(unittest.TestCase):
         self.assertEqual(overlay._cargo_order, [])
         overlay._cargo_pool[0]["frame"].pack_forget.assert_called()
         self.assertEqual(self.destroyed, [])
+
+
+class ExobioVisualDesignTests(_OverlayTestCase):
+    """Тесты визуальных элементов дизайна и компактного режима оверлея EXOBIO."""
+
+    def test_format_prob_bar(self):
+        self.assertEqual(self.overlay._format_prob_bar(100, length=8), "■■■■■■■■")
+        self.assertEqual(self.overlay._format_prob_bar(50, length=8), "■■■■□□□□")
+        self.assertEqual(self.overlay._format_prob_bar(0, length=8), "□□□□□□□□")
+        self.assertEqual(self.overlay._format_prob_bar(None), "")
+
+    def test_telemetry_chips_display_status(self):
+        self.overlay.update_exobiology(state(
+            bio_signals=3, landable=True, mapped=True, gravity=4.2, temperature=188.0
+        ))
+        self.assertIn("3 BIO", _text(self.overlay.chip_bio))
+        self.assertIn("ПОСАДКА", _text(self.overlay.chip_land))
+        self.assertIn("DSS ✓", _text(self.overlay.chip_dss))
+        self.assertIn("0.42g", _text(self.overlay.chip_grav))
+        self.assertIn("188K", _text(self.overlay.chip_temp))
+
+    def test_telemetry_chips_unlandable_and_unmapped(self):
+        self.overlay.update_exobiology(state(
+            bio_signals=0, landable=False, mapped=False
+        ))
+        self.assertIn("0 BIO", _text(self.overlay.chip_bio))
+        self.assertIn("НЕ СЕСТЬ", _text(self.overlay.chip_land))
+        self.assertIn("DSS ✗", _text(self.overlay.chip_dss))
+
+    def test_predictions_include_led_pips_bar(self):
+        self.overlay.update_exobiology(state())
+        text = _text(self.overlay.predict_label)
+        self.assertIn("■■■■■■■■", text)
+
+    def test_compact_mode_toggle_switches_setting_and_renders(self):
+        self.overlay.update_exobiology(state())
+        self.assertTrue(self.overlay.settings.get("exobio_compact", True))
+
+        self.overlay._toggle_compact_mode()
+        self.assertFalse(self.overlay.settings["exobio_compact"])
+        legacy_params = _text(self.overlay.params_label)
+        self.assertIn("T 188 K", legacy_params)
+        self.assertIn("посадка возможна", legacy_params)
+
+        self.overlay._toggle_compact_mode()
+        self.assertTrue(self.overlay.settings["exobio_compact"])
+        compact_params = _text(self.overlay.params_label)
+        self.assertIn("thin sulfur dioxide atmosphere", compact_params)
 
 
 if __name__ == "__main__":

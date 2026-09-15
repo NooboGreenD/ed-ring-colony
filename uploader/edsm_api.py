@@ -163,3 +163,24 @@ class EDSMAPI:
             "status": response.status_code,
             "error": f"EDSM {msgnum}: {msg or 'отклонено'}",
         }
+
+    def fetch_system_bodies(self, system_name: str) -> dict:
+        """Получить список тел системы из EDSM API.
+
+        Возвращает {"ok": True, "bodies": [...]} или {"ok": False, "error": ...}.
+        """
+        name = str(system_name or "").strip()
+        if not name:
+            return {"ok": False, "error": "Пустое имя системы"}
+        try:
+            url = f"https://www.edsm.net/api-system-v1/bodies?systemName={requests.utils.quote(name)}"
+            resp = self._session.get(url, timeout=10)
+            if not resp.ok:
+                return {"ok": False, "error": f"EDSM HTTP {resp.status_code}"}
+            data = resp.json()
+            if isinstance(data, dict):
+                return {"ok": True, "bodies": data.get("bodies") or []}
+            return {"ok": True, "bodies": []}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сбой запроса к EDSM: {exc}"}
+

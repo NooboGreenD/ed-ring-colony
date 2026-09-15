@@ -780,8 +780,11 @@ class OverlayWindow:
         self.set_locked(not self._locked)
 
     def _flash_indicator(self, color: str, duration_ms: int = 300):
-        self.header_indicator.config(bg=color)
-        self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
+        try:
+            self.header_indicator.config(bg=color)
+            self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
+        except Exception:
+            pass
 
     def _destroy_edit_menu(self):
         """Снять и уничтожить меню шапки, если оно ещё живо.
@@ -805,6 +808,10 @@ class OverlayWindow:
                 menu.destroy()
             except Exception:
                 pass
+
+    def _add_custom_menu_entries(self, menu: tk.Menu):
+        """Переопределяется подклассами для добавления пунктов в меню редактирования."""
+        pass
 
     def _show_edit_menu(self):
         # Повторный клик по «*» не должен оставлять предыдущее меню висеть.
@@ -853,6 +860,8 @@ class OverlayWindow:
                 command=lambda v=value: self._set_own_font(v),
             )
         menu.add_cascade(label="Font size", menu=font_menu)
+
+        self._add_custom_menu_entries(menu)
 
         # Ссылки храним до закрытия меню (см. _destroy_edit_menu).
         self._edit_menu = menu
@@ -2078,75 +2087,128 @@ class ExobiologyOverlay(OverlayWindow):
         # геометрии и мигание.
         self._planets_shown: bool = True
 
+        # Заголовок тела
         self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
                                    fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
                                    justify=tk.LEFT, wraplength=wrap)
         self.body_label.pack(fill=tk.X, pady=(2, 0))
 
+        # Визуальная панель значков телеметрии (Badges & Chips)
+        # Сокращает вертикальное пространство, объединяя статус био, посадки,
+        # DSS, гравитации и температуры в компактную горизонтальную полосу бейджей.
+        self._telemetry_shown: bool = True
+        self._action_shown: bool = True
+        self._signals_shown: bool = True
+
+        self.telemetry_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        self.telemetry_frame.pack(fill=tk.X, pady=(2, 1))
+
+        badge_fs = max(8, fs - 2)
+        self.chip_bio = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs, "bold"),
+                                 fg=COLOR_GREEN_TEXT, bg="#123824", padx=5, pady=1, relief=tk.SOLID, bd=1)
+        self.chip_bio.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.chip_land = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs, "bold"),
+                                  fg=COLOR_GREEN_TEXT, bg="#143823", padx=5, pady=1, relief=tk.SOLID, bd=1)
+        self.chip_land.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.chip_dss = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs, "bold"),
+                                 fg=COLOR_CYAN, bg="#0e2a47", padx=5, pady=1, relief=tk.SOLID, bd=1)
+        self.chip_dss.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.chip_grav = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs),
+                                  fg=COLOR_TEXT, bg="#21262d", padx=4, pady=1)
+        self.chip_grav.pack(side=tk.LEFT, padx=(0, 4))
+
+        self.chip_temp = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs),
+                                  fg=COLOR_TEXT, bg="#21262d", padx=4, pady=1)
+        self.chip_temp.pack(side=tk.LEFT)
+
+        # Подпись параметров тела (атмосфера, температура, гравитация, вулканизм)
         self.params_label = tk.Label(self.content, text="", font=(ff, fs - 1),
                                      fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
                                      justify=tk.LEFT, wraplength=wrap)
-        self.params_label.pack(fill=tk.X, pady=(2, 0))
+        self.params_label.pack(fill=tk.X, pady=(1, 0))
 
+        # Подпись сигналов (для совместимости)
         self.signals_label = tk.Label(self.content, text="", font=(ff, fs - 1),
                                       fg=COLOR_YELLOW, bg=COLOR_PANEL, anchor=tk.W,
                                       justify=tk.LEFT, wraplength=wrap)
-        self.signals_label.pack(fill=tk.X, pady=(2, 0))
+        self.signals_label.pack(fill=tk.X, pady=(1, 0))
 
-        _make_separator(self.content).pack(fill=tk.X, pady=5)
+        _make_separator(self.content).pack(fill=tk.X, pady=(3, 2))
 
+        # Раздел образцов
         self.samples_header = tk.Label(self.content, text="Образцы:", font=(ff, fs - 1, "bold"),
                                        fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
         self.samples_header.pack(fill=tk.X)
         self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                        fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
                                        justify=tk.LEFT, wraplength=wrap)
-        self.organics_label.pack(fill=tk.X, pady=(2, 0))
-        self.next_action_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
-                                          fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
-                                          justify=tk.LEFT, wraplength=wrap)
-        self.next_action_label.pack(fill=tk.X, pady=(3, 0))
+        self.organics_label.pack(fill=tk.X, pady=(1, 0))
 
-        _make_separator(self.content).pack(fill=tk.X, pady=5)
+        # Плашка следующего действия (HUD action callout banner)
+        self.next_action_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
+                                          fg=COLOR_CYAN, bg="#10253d", anchor=tk.W,
+                                          justify=tk.LEFT, wraplength=wrap, padx=6, pady=2,
+                                          relief=tk.SOLID, bd=1)
+        self.next_action_label.pack(fill=tk.X, pady=(2, 0))
+
+        _make_separator(self.content).pack(fill=tk.X, pady=(3, 2))
 
         tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
                  fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
         self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
                                       justify=tk.LEFT, wraplength=wrap)
-        self.predict_label.pack(fill=tk.X, pady=(2, 0))
+        self.predict_label.pack(fill=tk.X, pady=(1, 0))
 
         # Поиск планет по параметрам (вкладка «Экзобиология»). Раздел стоит
         # ВЫШЕ списка тел системы: окно не резиновое, и при переполнении
         # обрезается низ — а это как раз то, ради чего раздел добавляли.
         self.planet_separator = _make_separator(self.content)
-        self.planet_separator.pack(fill=tk.X, pady=5)
+        self.planet_separator.pack(fill=tk.X, pady=(3, 2))
         self.planets_header = tk.Label(self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
                                        fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
         self.planets_header.pack(fill=tk.X)
         self.planets_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
                                       justify=tk.LEFT, wraplength=wrap)
-        self.planets_label.pack(fill=tk.X, pady=(2, 0))
+        self.planets_label.pack(fill=tk.X, pady=(1, 0))
 
         self.bodies_separator = _make_separator(self.content)
-        self.bodies_separator.pack(fill=tk.X, pady=5)
+        self.bodies_separator.pack(fill=tk.X, pady=(3, 2))
         self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
         self.bodies_header.pack(fill=tk.X)
         self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                      fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
                                      justify=tk.LEFT, wraplength=wrap)
-        self.bodies_label.pack(fill=tk.X, pady=(2, 0))
+        self.bodies_label.pack(fill=tk.X, pady=(1, 0))
 
-        tk.Label(
+        # Компактная сноска в 1 строку вместо 4 строк текста
+        self.footer_label = tk.Label(
             self.content,
-            text="Модель предсказывает род, а не вид; цена — порядок величины "
-                 "(зависит от варианта). Таблица критериев намеренно не "
-                 "копируется из GPL-проектов.",
+            text="ℹ Прогноз по родам · Оценка выплат ориентировочная",
             font=(ff, max(7, fs - 2)), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL,
             anchor=tk.W, justify=tk.LEFT, wraplength=wrap,
-        ).pack(fill=tk.X, pady=(6, 0))
+        )
+        self.footer_label.pack(fill=tk.X, pady=(4, 0))
+
+    # -- контекстное меню блока --------------------------------------------
+    def _add_custom_menu_entries(self, menu: tk.Menu):
+        menu.add_separator()
+        compact = bool(self.settings.get("exobio_compact", True))
+        menu.add_command(
+            label=f"{'[x] ' if compact else '[ ] '}Компактный вид (значки и шкалы)",
+            command=self._toggle_compact_mode,
+        )
+
+    def _toggle_compact_mode(self):
+        new_val = not bool(self.settings.get("exobio_compact", True))
+        self.settings["exobio_compact"] = new_val
+        self._render()
+        self._flash_indicator(COLOR_CYAN)
 
     # -- обновление --------------------------------------------------------
     def update_exobiology(self, state: Optional[dict]):
@@ -2194,7 +2256,89 @@ class ExobiologyOverlay(OverlayWindow):
             self._tick_id = None
         super().destroy()
 
-    # -- отрисовка ---------------------------------------------------------
+    # -- отрисовка и визуальные элементы ------------------------------------
+    @staticmethod
+    def _format_prob_bar(percent: Optional[int], length: int = 8) -> str:
+        """Визуальная шкала вероятности (LED pips meter)."""
+        if percent is None:
+            return ""
+        try:
+            pct = max(0, min(100, int(percent)))
+        except (TypeError, ValueError):
+            return ""
+        filled = int(round((pct / 100.0) * length))
+        empty = max(0, length - filled)
+        return "■" * filled + "□" * empty
+
+    def _set_action_visible(self, visible: bool):
+        if self._action_shown == visible:
+            return
+        self._action_shown = visible
+        if visible:
+            try:
+                self.next_action_label.pack(fill=tk.X, pady=(2, 0))
+            except Exception:
+                pass
+        else:
+            try:
+                self.next_action_label.pack_forget()
+            except Exception:
+                pass
+
+    def _hide_telemetry_chips(self):
+        if self._telemetry_shown:
+            self._telemetry_shown = False
+            try:
+                self.telemetry_frame.pack_forget()
+            except Exception:
+                pass
+        if not self._signals_shown:
+            self._signals_shown = True
+            try:
+                self.signals_label.pack(fill=tk.X, pady=(1, 0))
+            except Exception:
+                pass
+
+    def _show_telemetry_chips(self, signals: int, landable: bool, mapped: bool,
+                              gravity: float, temp: float, atmo: str):
+        if not self._telemetry_shown:
+            self._telemetry_shown = True
+            try:
+                self.telemetry_frame.pack(fill=tk.X, pady=(2, 1), after=self.body_label)
+            except Exception:
+                pass
+
+        if self._signals_shown:
+            self._signals_shown = False
+            try:
+                self.signals_label.pack_forget()
+            except Exception:
+                pass
+
+        # Bio chip
+        if signals > 0:
+            self.chip_bio.config(text=f"🌿 {signals} BIO", fg=COLOR_GREEN_TEXT, bg="#123824")
+        else:
+            self.chip_bio.config(text="🌿 0 BIO", fg=COLOR_TEXT_MUTED, bg="#1c2128")
+
+        # Landable chip
+        if landable:
+            self.chip_land.config(text="🛬 ПОСАДКА", fg=COLOR_GREEN_TEXT, bg="#143823")
+        else:
+            self.chip_land.config(text="⛔ НЕ СЕСТЬ", fg=COLOR_RED_TEXT, bg="#381414")
+
+        # DSS chip
+        if mapped:
+            self.chip_dss.config(text="📡 DSS ✓", fg=COLOR_CYAN, bg="#0e2a47")
+        else:
+            self.chip_dss.config(text="📡 DSS ✗", fg=COLOR_TEXT_MUTED, bg="#1c2128")
+
+        # Gravity chip
+        self.chip_grav.config(text=f"⚖ {gravity / 10.0:.2f}g", fg=COLOR_TEXT, bg="#21262d")
+
+        # Temperature chip
+        self.chip_temp.config(text=f"🌡 {temp:.0f}K", fg=COLOR_TEXT, bg="#21262d")
+
     def _render(self):
         state = self._state
         if not state:
@@ -2204,27 +2348,52 @@ class ExobiologyOverlay(OverlayWindow):
             self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
             self.next_action_label.config(text="")
+            self._set_action_visible(False)
             self.predict_label.config(text="нет данных")
             self.bodies_header.config(text="Тела системы:")
             self.bodies_label.config(text="—")
+            self._hide_telemetry_chips()
             self._render_planets({})
             return
 
         body_name = str(state.get("body") or "").strip()
         if not body_name:
-            # Текущее тело неизвестно (игрок в космосе/на станции), но фильтры
-            # и данные системы могут быть: показываем разделы честно, без
+            # Текущее тело неизвестно (игрок в космосе/на станции/в суперкруизе),
+            # но фильтры и данные системы могут быть: показываем разделы честно, без
             # «нулевых» параметров и без «критерии не выбраны» при выбранных.
             system = str(state.get("system") or "").strip()
             prefix = f"{system} · " if system else ""
             self.body_label.config(text=f"{prefix}Тело: —")
-            self.params_label.config(
-                text="данных о текущем теле нет — отсканируйте тело (FSS или подход)")
-            self.signals_label.config(text="")
+
+            bio_bodies = state.get("system_bodies") or []
+            total_bio_signals = sum(int(b.get("bio_signals") or 0) for b in bio_bodies)
+            scanned_count = int(state.get("system_scanned_bodies") or state.get("system_known_bodies") or 0)
+
+            if bio_bodies:
+                self.params_label.config(
+                    text=f"данных о текущем теле нет — в системе {len(bio_bodies)} тел с биосигналами ({total_bio_signals} сигн.)\n"
+                         "подлетите к планете (FSS или подход) или выберите в списке")
+                self.signals_label.config(text=f"Биосигналов в системе: {total_bio_signals}")
+                self.next_action_label.config(text="→ выберите планету для высадки и сбора образцов")
+                self._set_action_visible(True)
+            elif scanned_count > 0:
+                self.params_label.config(
+                    text=f"данных о текущем теле нет — отсканировано {scanned_count} тел (FSS или подход)\n"
+                         "сканируйте другие планеты системы (FSS/DSS)")
+                self.signals_label.config(text="")
+                self.next_action_label.config(text="")
+                self._set_action_visible(False)
+            else:
+                self.params_label.config(
+                    text="данных о текущем теле нет — отсканируйте тело (FSS или подход)")
+                self.signals_label.config(text="")
+                self.next_action_label.config(text="")
+                self._set_action_visible(False)
+
             self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
-            self.next_action_label.config(text="")
             self.predict_label.config(text="нет данных")
+            self._hide_telemetry_chips()
             self._render_bodies(state)
             self._render_planets(state)
             return
@@ -2232,28 +2401,51 @@ class ExobiologyOverlay(OverlayWindow):
         system = str(state.get("system") or "").strip()
         body = str(state.get("body") or "—")
         prefix = f"{system} · " if system and system not in body else ""
+        planet_class = str(state.get('planet_class') or '?')
         self.body_label.config(
-            text=f"{prefix}{body}  ({state.get('planet_class') or '?'})"
+            text=f"{prefix}{body}  ({planet_class})"
         )
 
         gravity = float(state.get("gravity") or 0.0)
         mapped = bool(state.get("mapped"))
-        self.params_label.config(
-            text=(
-                f"{state.get('atmosphere') or 'нет атмосферы'}\n"
-                f"T {float(state.get('temperature') or 0):.0f} K   "
-                f"g {gravity / 10.0:.2f}\n"
-                f"Вулканизм: {state.get('volcanism') or 'нет'}   "
-                f"{'посадка возможна' if state.get('landable') else 'посадка невозможна'}"
-            )
-        )
-
+        landable = bool(state.get("landable"))
         signals = int(state.get("bio_signals") or 0)
-        self.signals_label.config(
-            text=(f"Биосигналов: {signals}  |  {'карта есть (DSS)' if mapped else 'карты нет'}"
-                  if signals else
-                  f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
-        )
+        temp = float(state.get("temperature") or 0)
+        atmo = str(state.get("atmosphere") or "нет атмосферы")
+        volc = str(state.get("volcanism") or "")
+
+        compact = bool(self.settings.get("exobio_compact", True))
+        if compact:
+            # Обновляем визуальные беджи телеметрии (Design elements)
+            self._show_telemetry_chips(signals=signals, landable=landable, mapped=mapped,
+                                       gravity=gravity, temp=temp, atmo=atmo)
+
+            # Компактная подпись параметров: атмосфера и вулканизм в 1 строку
+            volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
+            self.params_label.config(text=f"🌫 {atmo}{volc_text}")
+            self.signals_label.config(
+                text=(f"Биосигналов: {signals}  |  {'карта есть (DSS)' if mapped else 'карты нет'}"
+                      if signals else
+                      f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+            )
+            # Сигналы уже наглядно видны в значках [BIO] и [DSS], скрываем дублирующую строку
+            self.signals_label.pack_forget()
+        else:
+            self._hide_telemetry_chips()
+            self.params_label.config(
+                text=(
+                    f"{atmo}\n"
+                    f"T {temp:.0f} K   g {gravity / 10.0:.2f}\n"
+                    f"Вулканизм: {volc or 'нет'}   "
+                    f"{'посадка возможна' if landable else 'посадка невозможна'}"
+                )
+            )
+            self.signals_label.config(
+                text=(f"Биосигналов: {signals}  |  {'карта есть (DSS)' if mapped else 'карты нет'}"
+                      if signals else
+                      f"Биосигналов нет  |  {'карта есть (DSS)' if mapped else 'карты нет'}")
+            )
+            self.signals_label.pack(fill=tk.X, pady=(1, 0))
 
         self._render_samples(state, mapped)
         self._render_predictions(state, mapped)
@@ -2270,7 +2462,9 @@ class ExobiologyOverlay(OverlayWindow):
 
         if not organics:
             self.organics_label.config(text="образцы не взяты")
-            self.next_action_label.config(text=self._suggest_next_action(state, []))
+            action = self._suggest_next_action(state, [])
+            self.next_action_label.config(text=action)
+            self._set_action_visible(bool(action))
             return
 
         lines = []
@@ -2285,16 +2479,18 @@ class ExobiologyOverlay(OverlayWindow):
                 name += " (уже встречалось)"
             lines.append(f"{name}  {marks} {samples}/3{price}")
             if complete:
-                lines.append("   комплект готов — вид засчитан")
+                lines.append("   ✔ комплект готов — вид засчитан")
             elif samples:
                 wait = int(row.get("wait_seconds") or 0)
                 stage = str(row.get("stage") or "")
                 if wait > 0:
-                    lines.append(f"   ждите {wait} с до следующего образца")
+                    lines.append(f"   ⏱ ждите {wait} с до следующего образца")
                 else:
-                    lines.append(f"   готов к образцу ({stage or 'Sample'}) — смените точку")
+                    lines.append(f"   🚀 готов к образцу ({stage or 'Sample'}) — смените точку")
         self.organics_label.config(text="\n".join(lines))
-        self.next_action_label.config(text=self._suggest_next_action(state, organics))
+        action = self._suggest_next_action(state, organics)
+        self.next_action_label.config(text=action)
+        self._set_action_visible(bool(action))
 
     @staticmethod
     def _suggest_next_action(state: dict, organics: list) -> str:
@@ -2332,7 +2528,8 @@ class ExobiologyOverlay(OverlayWindow):
         for row in predictions[:self.MAX_PREDICTIONS]:
             genus = str(row.get("genus") or "?")
             percent = row.get("percent")
-            head = f"{genus}  {percent}%" if percent is not None else genus
+            bar = f" {self._format_prob_bar(percent)}" if percent is not None else ""
+            head = f"{genus}  {percent}%{bar}" if percent is not None else genus
             value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
             if value:
                 head += f"  ≈ {format_credits(value)}"
@@ -2359,9 +2556,9 @@ class ExobiologyOverlay(OverlayWindow):
         # `before=` обязателен: pack() без него дописывает виджет в конец,
         # и после переключения «показать/скрыть» раздел уезжал бы вниз окна.
         for widget, kwargs in (
-            (self.planet_separator, {"fill": tk.X, "pady": 5}),
+            (self.planet_separator, {"fill": tk.X, "pady": (3, 2)}),
             (self.planets_header, {"fill": tk.X}),
-            (self.planets_label, {"fill": tk.X, "pady": (2, 0)}),
+            (self.planets_label, {"fill": tk.X, "pady": (1, 0)}),
         ):
             try:
                 widget.pack(before=self.bodies_separator, **kwargs)
@@ -2386,7 +2583,7 @@ class ExobiologyOverlay(OverlayWindow):
         rows = state.get("planets") or []
         self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
         if not rows:
-            known = int(state.get("system_known_bodies") or 0)
+            known = int(state.get("system_known_bodies") or state.get("system_scanned_bodies") or 0)
             if known:
                 text = ("в этой системе подходящих планет нет\n"
                         f"(журнал знает {known} тел системы)")
@@ -3695,6 +3892,8 @@ DEFAULT_SETTINGS = {
     "exobio_planet_search": [],
     # Показывать ли в блоке раздел «Поиск планет».
     "exobio_show_planet_search": True,
+    # Компактный режим блока EXOBIO (плашки-бейджи, шкалы вероятности, HUD-акцент).
+    "exobio_compact": True,
     # Сколько найденных планет показывать.
     "exobio_planet_limit": 6,
     "carrier_locked": False,

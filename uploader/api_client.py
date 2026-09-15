@@ -270,3 +270,68 @@ class ApiClient:
     @property
     def display_name(self) -> str:
         return self.cmdr_name or self.email or "Пользователь"
+
+    def get_system_scans(self, system_name: str) -> dict:
+        """Получить сканы тел системы из БД проекта (/api/atlas/system-bodies)."""
+        name = str(system_name or "").strip()
+        if not name:
+            return {"ok": False, "error": "Пустое имя системы"}
+        try:
+            resp = self._session.get(
+                f"{API_BASE}/atlas/system-bodies",
+                params={"system": name},
+                timeout=12,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def upload_system_scans(self, system_name: str, bodies: list, cmdr: str = None) -> dict:
+        """Отправить сканы тел системы в БД проекта (/api/atlas/system-bodies)."""
+        name = str(system_name or "").strip()
+        if not name or not bodies:
+            return {"ok": True, "saved": 0}
+        payload = {
+            "token": self.token,
+            "system": name,
+            "cmdr": cmdr or self.cmdr_name,
+            "bodies": bodies,
+        }
+        try:
+            resp = self._session.post(
+                f"{API_BASE}/atlas/system-bodies",
+                json=payload,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def upload_pilot_stats(self, stats: dict, cmdr: str = None) -> dict:
+        """Отправить баланс и статистику пилота в БД проекта (/api/cmdr/stats)."""
+        if not self.token and not stats:
+            return {"ok": False, "error": "Нет токена или данных"}
+        payload = {
+            "token": self.token,
+            "cmdr": cmdr or self.cmdr_name,
+            **stats,
+        }
+        try:
+            resp = self._session.post(
+                f"{API_BASE}/cmdr/stats",
+                json=payload,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+

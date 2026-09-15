@@ -163,7 +163,15 @@ class UploadFlowTests(unittest.TestCase):
         self.files = make_history(self.journal_dir, files=5, events_per_file=300)
 
     def tearDown(self):
-        self.tmp.cleanup()
+        try:
+            self.tmp.cleanup()
+        except OSError:
+            import time
+            time.sleep(0.15)
+            try:
+                self.tmp.cleanup()
+            except OSError:
+                pass
 
     def _build_app(self):
         import colonial_helper  # noqa: E402

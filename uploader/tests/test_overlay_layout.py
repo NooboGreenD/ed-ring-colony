@@ -21,6 +21,10 @@ from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+
+from test_initial_upload_flow import install_gui_stubs  # noqa: E402
+install_gui_stubs()
 
 
 class _FakeMaster:

@@ -117,6 +117,10 @@ export const IconMessage = (p: IconProps) => wrap(<><path d="M21 11.5a8.38 8.38 
 export const IconAlert = (p: IconProps) => wrap(<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></>, p);
 export const IconMapPin = (p: IconProps) => wrap(<><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></>, p);
 export const IconRefresh = (p: IconProps) => wrap(<><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0118.8-4.3L23 12"/><path d="M20.49 15a9 9 0 01-18.8 4.3L1 12"/></>, p);
+export const IconRefreshCw = IconRefresh;
+export const IconMaximize = (p: IconProps) => wrap(<><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></>, p);
+export const IconMinimize = (p: IconProps) => wrap(<><path d="M4 14h6m0 0v6m0-6L3 21m17-7h-6m0 0v6m0-6l7 7M3 3l7 7m0-7v6m0 0H4m17-7l-7 7m0-7v6m0 0h6"/></>, p);
+export const IconCrosshair = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/></>, p);
 export const IconMap = (p: IconProps) => wrap(<><polygon points="1 6 1 22 8 18 16 22 21 18 21 2 16 6 8 2 1 6"/><path d="M8 2v16M16 6v16"/></>, p);
 export const IconTarget = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></>, p);
 export const IconPackage = (p: IconProps) => wrap(<><path d="M16.5 9.4l-9-5.2L2 9.4v5.2l9 5.2 9-5.2V9.4z"/><path d="M16.5 9.4L12 12 7.5 9.4"/><path d="M12 12v5.2"/></>, p);
