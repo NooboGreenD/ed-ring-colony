@@ -9,13 +9,13 @@ function assertEnv(name: string, value: string | undefined): string {
 }
 
 function getSupabaseUrl() {
-  return assertEnv("NEXT_PUBLIC_SUPABASE_URL", process.env.NEXT_PUBLIC_SUPABASE_URL);
+  return process.env.NEXT_PUBLIC_SUPABASE_URL || "https://sgukfplhxdhmkqponwft.supabase.co";
 }
 
 function getSupabaseConfig() {
   return {
     url: getSupabaseUrl(),
-    key: assertEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+    key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dummy",
   };
 }
 
