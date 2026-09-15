@@ -937,5 +937,53 @@ class CargoRowReuseTests(unittest.TestCase):
         self.assertEqual(self.destroyed, [])
 
 
+class ExobioVisualDesignTests(_OverlayTestCase):
+    """Тесты визуальных элементов дизайна и компактного режима оверлея EXOBIO."""
+
+    def test_format_prob_bar(self):
+        self.assertEqual(self.overlay._format_prob_bar(100, length=8), "■■■■■■■■")
+        self.assertEqual(self.overlay._format_prob_bar(50, length=8), "■■■■□□□□")
+        self.assertEqual(self.overlay._format_prob_bar(0, length=8), "□□□□□□□□")
+        self.assertEqual(self.overlay._format_prob_bar(None), "")
+
+    def test_telemetry_chips_display_status(self):
+        self.overlay.update_exobiology(state(
+            bio_signals=3, landable=True, mapped=True, gravity=4.2, temperature=188.0
+        ))
+        self.assertIn("3 BIO", _text(self.overlay.chip_bio))
+        self.assertIn("ПОСАДКА", _text(self.overlay.chip_land))
+        self.assertIn("DSS ✓", _text(self.overlay.chip_dss))
+        self.assertIn("0.42g", _text(self.overlay.chip_grav))
+        self.assertIn("188K", _text(self.overlay.chip_temp))
+
+    def test_telemetry_chips_unlandable_and_unmapped(self):
+        self.overlay.update_exobiology(state(
+            bio_signals=0, landable=False, mapped=False
+        ))
+        self.assertIn("0 BIO", _text(self.overlay.chip_bio))
+        self.assertIn("НЕ СЕСТЬ", _text(self.overlay.chip_land))
+        self.assertIn("DSS ✗", _text(self.overlay.chip_dss))
+
+    def test_predictions_include_led_pips_bar(self):
+        self.overlay.update_exobiology(state())
+        text = _text(self.overlay.predict_label)
+        self.assertIn("■■■■■■■■", text)
+
+    def test_compact_mode_toggle_switches_setting_and_renders(self):
+        self.overlay.update_exobiology(state())
+        self.assertTrue(self.overlay.settings.get("exobio_compact", True))
+
+        self.overlay._toggle_compact_mode()
+        self.assertFalse(self.overlay.settings["exobio_compact"])
+        legacy_params = _text(self.overlay.params_label)
+        self.assertIn("T 188 K", legacy_params)
+        self.assertIn("посадка возможна", legacy_params)
+
+        self.overlay._toggle_compact_mode()
+        self.assertTrue(self.overlay.settings["exobio_compact"])
+        compact_params = _text(self.overlay.params_label)
+        self.assertIn("thin sulfur dioxide atmosphere", compact_params)
+
+
 if __name__ == "__main__":
     unittest.main()
