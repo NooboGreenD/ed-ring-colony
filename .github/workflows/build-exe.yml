@@ -21,6 +21,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+      issues: write
     env:
       # Вывод тестов и служебных скриптов на русском: без UTF-8 консоль
       # раннера (cp1252/cp850) роняет print с UnicodeEncodeError.
@@ -46,6 +47,8 @@ jobs:
 
       - name: Run uploader tests
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           python -m unittest discover -s uploader/tests -v 2>&1 | tee uploader-tests.log
@@ -53,11 +56,13 @@ jobs:
           if [ "$code" -ne 0 ]; then
             echo "=================== TEST FAILURE TAIL ==================="
             tail -n 150 uploader-tests.log
-            if [ -n "$GITHUB_STEP_SUMMARY" ]; then
-              summary_path=$(cygpath -u "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "$GITHUB_STEP_SUMMARY")
-              echo "## Упавшие тесты (хвост прогона)" >> "$summary_path"
-              tail -n 150 uploader-tests.log >> "$summary_path"
-            fi
+            gh issue create --title "CI Test Failure Logs" --body "$(tail -n 120 uploader-tests.log)" || true
+            git config user.name "CI Bot"
+            git config user.email "bot@ci.local"
+            git checkout -B ci-debug-log
+            git add -f uploader-tests.log
+            git commit -m "ci debug log"
+            git push origin ci-debug-log --force || true
           fi
           exit "$code"
 
