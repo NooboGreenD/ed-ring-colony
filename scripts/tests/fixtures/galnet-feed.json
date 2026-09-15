@@ -1,0 +1,105 @@
+{
+  "jsonapi": { "version": "1.1" },
+  "data": [
+    {
+      "type": "node--galnet_article",
+      "id": "cc9f3a38-3e90-4a1a-8205-1bbf5fe5d518",
+      "attributes": {
+        "langcode": "en",
+        "title": "Federation Condemns Ongoing October Accords Exclusion",
+        "created": "2026-09-11T14:00:46+00:00",
+        "changed": "2026-09-11T14:00:46+00:00",
+        "moderation_state": null,
+        "publish_on": null,
+        "unpublish_on": null,
+        "published_at": "2026-09-11T14:00:46+00:00",
+        "body": {
+          "value": "President Felicia Winters held a conference today condemning the continued exclusion of the Federation.\r\n\u0022The evidence presented to me has concluded that those involved with the October Accords pose a credible threat,\u0022 she said.\r\n\u0022We can only assume that we are now a target.\u0022",
+          "format": null,
+          "processed": "\u003Cp\u003EPresident Felicia Winters held a conference today.\u003Cbr \/\u003E\n\u0026quot;The evidence presented to me\u0026quot; she said.\u003C\/p\u003E\n",
+          "summary": null
+        },
+        "field_galnet_date": "11 SEP 3312",
+        "field_galnet_guid": "6aa3bc366f39584229038902",
+        "field_galnet_image": "NewsImageCombat01",
+        "field_slug": "federation-condemns-ongoing-october-accords-exclusion"
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "3158d15c-5f43-4632-b1b0-2fe8a194b4d7",
+      "attributes": {
+        "langcode": "en",
+        "title": "Wreaken Calls for Surface Mining Support Tests",
+        "created": "2026-09-03T11:00:46+00:00",
+        "changed": "2026-09-03T11:00:46+00:00",
+        "published_at": "2026-09-03T11:00:46+00:00",
+        "body": {
+          "value": "To test its new deployable mining rig, Wreaken Corporation has called for independent pilots.\r\nDr. Ben Curtis, Chief Geologist at Wreaken, stated:\r\n\u0022We\u0027re excited to not only test the rig\u0027s patented mining laser technology.\u0022",
+          "format": null,
+          "processed": null,
+          "summary": null
+        },
+        "field_galnet_date": "03 SEP 3312",
+        "field_galnet_guid": "6a993628a96f951e83045c7e",
+        "field_galnet_image": "NewsImageGoldRushMining.png",
+        "field_slug": "wreaken-calls-surface-mining-support-tests"
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "edge-case-no-published-at",
+      "attributes": {
+        "langcode": "en",
+        "title": "Legacy Article Without Published At",
+        "created": "2026-08-01T10:00:00+00:00",
+        "body": { "value": "Plain body without any formatting.\r\nSecond line." },
+        "field_galnet_date": "01 AUG 3312",
+        "field_galnet_image": null
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "edge-case-only-lore-date",
+      "attributes": {
+        "langcode": "en",
+        "title": "Only Lore Date Available",
+        "body": { "value": "This article has no machine readable timestamps." },
+        "field_galnet_date": "11 SEP 3312"
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "edge-case-html-body",
+      "attributes": {
+        "langcode": "en",
+        "title": "HTML Body Only &amp; Entities",
+        "published_at": "2026-07-15T08:00:00+00:00",
+        "body": {
+          "value": null,
+          "processed": "\u003Cp\u003EFirst &amp; second paragraph.\u003Cbr \/\u003E\n\u0026quot;Quoted\u0026quot; text.\u003C\/p\u003E\n"
+        }
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "edge-case-empty-title",
+      "attributes": {
+        "langcode": "en",
+        "title": "   ",
+        "published_at": "2026-07-14T08:00:00+00:00",
+        "body": { "value": "Should be skipped because the title is empty." }
+      }
+    },
+    {
+      "type": "node--galnet_article",
+      "id": "edge-case-empty-body",
+      "attributes": {
+        "langcode": "en",
+        "title": "Empty Body Should Be Skipped",
+        "published_at": "2026-07-13T08:00:00+00:00",
+        "body": { "value": "   " }
+      }
+    }
+  ]
+}

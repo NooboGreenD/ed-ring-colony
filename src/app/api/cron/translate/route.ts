@@ -1,115 +1,61 @@
 import { createAdminClient } from '@/lib/supabaseAdmin';
-import { translateAndSaveArticle } from '@/lib/translate';
 import { NextResponse } from 'next/server';
+import { DEFAULT_TRANSLATE_LIMIT, translatePending } from '../../../../../scripts/lib/galnet-sync.mjs';
 
-// Vercel Cron sends a simple GET request with a custom User-Agent.
-// We check the User-Agent to verify the request comes from Vercel.
-const VERCEL_CRON_USER_AGENT = 'vercel-cron/1.0';
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
+// Vercel Cron присылает GET с User-Agent вида vercel-cron/1.0.
+const VERCEL_CRON_USER_AGENT = 'vercel-cron/';
 
 function isVercelCron(request: Request): boolean {
   const ua = request.headers.get('user-agent') || '';
   return ua.startsWith(VERCEL_CRON_USER_AGENT);
 }
 
-export async function GET(request: Request) {
-  // Verify this is a legitimate Vercel Cron request
-  if (!isVercelCron(request)) {
-    return new Response('Unauthorized', { status: 401 });
-  }
+function isAuthorized(request: Request): boolean {
+  if (isVercelCron(request)) return true;
 
-  const supabase = createAdminClient();
-  const results = { processed: 0, errors: [] as string[] };
-
-  // Обрабатываем news
-  const { data: pendingNews } = await supabase
-    .from('news')
-    .select('id, title, body')
-    .eq('translation_status', 'pending')
-    .or('translated_at.is.null')
-    .limit(5);
-
-  for (const article of pendingNews || []) {
-    try {
-      await translateAndSaveArticle('news', article.id, article.title, article.body, supabase);
-      results.processed++;
-    } catch (err: any) {
-      results.errors.push(`news:${article.id}: ${err.message}`);
-      await supabase
-        .from('news')
-        .update({ translation_status: 'failed' })
-        .eq('id', article.id);
-    }
-  }
-
-  // Обрабатываем galnet_news
-  const { data: pendingGalnet } = await supabase
-    .from('galnet_news')
-    .select('id, title, body')
-    .eq('translation_status', 'pending')
-    .or('translated_at.is.null')
-    .limit(5);
-
-  for (const article of pendingGalnet || []) {
-    try {
-      await translateAndSaveArticle('galnet_news', article.id, article.title, article.body, supabase);
-      results.processed++;
-    } catch (err: any) {
-      results.errors.push(`galnet:${article.id}: ${err.message}`);
-      await supabase
-        .from('galnet_news')
-        .update({ translation_status: 'failed' })
-        .eq('id', article.id);
-    }
-  }
-
-  return NextResponse.json(results);
+  const authHeader = request.headers.get('authorization') || '';
+  const cronSecret = process.env.CRON_SECRET;
+  return Boolean(cronSecret) && authHeader === `Bearer ${cronSecret}`;
 }
 
-// Keep POST for manual/external triggers with Bearer token
-export async function POST(request: Request) {
-  const authHeader = request.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return new Response('Unauthorized', { status: 401 });
+/**
+ * Догоняет очередь переводов для `news` и `galnet_news`.
+ * За раз обрабатывается ограниченная пачка, остаток дойдёт следующим запуском.
+ */
+async function handle(request: Request) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
   }
+
+  const { searchParams } = new URL(request.url);
+  const parsed = Number.parseInt(searchParams.get('limit') || '', 10);
+  const limit = Number.isFinite(parsed) && parsed > 0
+    ? Math.min(parsed, 50)
+    : DEFAULT_TRANSLATE_LIMIT;
 
   const supabase = createAdminClient();
-  const results = { processed: 0, errors: [] as string[] };
 
-  const { data: pendingNews } = await supabase
-    .from('news')
-    .select('id, title, body')
-    .eq('translation_status', 'pending')
-    .or('translated_at.is.null')
-    .limit(5);
+  const result = await translatePending({
+    supabase,
+    tables: ['galnet_news', 'news'],
+    limit,
+    log: (message: string) => console.log('[cron/translate]', message),
+  });
 
-  for (const article of pendingNews || []) {
-    try {
-      await translateAndSaveArticle('news', article.id, article.title, article.body, supabase);
-      results.processed++;
-    } catch (err: any) {
-      results.errors.push(`news:${article.id}: ${err.message}`);
-      await supabase.from('news').update({ translation_status: 'failed' }).eq('id', article.id);
-    }
-  }
+  return NextResponse.json(
+    { success: result.ok, ...result },
+    { status: result.ok ? 200 : 500 }
+  );
+}
 
-  const { data: pendingGalnet } = await supabase
-    .from('galnet_news')
-    .select('id, title, body')
-    .eq('translation_status', 'pending')
-    .or('translated_at.is.null')
-    .limit(5);
+export async function GET(request: Request) {
+  return handle(request);
+}
 
-  for (const article of pendingGalnet || []) {
-    try {
-      await translateAndSaveArticle('galnet_news', article.id, article.title, article.body, supabase);
-      results.processed++;
-    } catch (err: any) {
-      results.errors.push(`galnet:${article.id}: ${err.message}`);
-      await supabase.from('galnet_news').update({ translation_status: 'failed' }).eq('id', article.id);
-    }
-  }
-
-  return NextResponse.json(results);
+export async function POST(request: Request) {
+  return handle(request);
 }
