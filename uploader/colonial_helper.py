@@ -7805,7 +7805,8 @@ class ColonialHelperApp:
             sys_name = ev.get("StarSystem")
             if sys_name:
                 self._session_systems_visited.add(sys_name)
-                self._ensure_system_exobio(sys_name)
+                if live:
+                    self._ensure_system_exobio(sys_name)
                 if self.route.mark_visited(sys_name):
                     self.root.after(0, self._refresh_route_tree)
                     if live:
@@ -7813,7 +7814,7 @@ class ColonialHelperApp:
         if ev.get("event") in ("ApproachBody", "Touchdown"):
             bname = ev.get("Body") or ev.get("BodyName")
             sys_name = ev.get("StarSystem") or getattr(getattr(self, "exobiology", None), "current_system", "")
-            if sys_name and bname:
+            if sys_name and bname and live:
                 self._ensure_body_exobio(sys_name, bname)
         # Стройплощадка: из неё вкладка «Колонизатор» заполняет форму проекта.
         self._feed_construction_site(ev, live=live)

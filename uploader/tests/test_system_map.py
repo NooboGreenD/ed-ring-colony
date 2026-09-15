@@ -22,6 +22,7 @@ import tempfile
 from datetime import datetime, timezone
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -1314,8 +1315,9 @@ class MapRavenCacheTests(unittest.TestCase):
 
     def test_only_fresh_systems_survive(self):
         cache = self.cache(max_systems=3)
-        for index in range(5):
-            self.assertTrue(cache.store(f"SYS {index}", bodies=[{"name": f"B{index}"}]))
+        with mock.patch("time.time", side_effect=[1000.0 + i for i in range(10)]):
+            for index in range(5):
+                self.assertTrue(cache.store(f"SYS {index}", bodies=[{"name": f"B{index}"}]))
         data = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertEqual(sorted(data), ["SYS 2", "SYS 3", "SYS 4"])
 
