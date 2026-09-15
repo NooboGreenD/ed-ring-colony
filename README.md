@@ -206,10 +206,15 @@ ed-ring-colony/
 - `GET /api/wiki/tags` — List tags
 - `GET /api/wiki/search` — Search wiki
 
+### Galnet Endpoints
+- `GET /api/galnet` — Список статей Galnet (`?locale=ru&limit=100`)
+- `POST /api/galnet` — Синхронизация ленты + перевод новых статей (cron)
+- `PATCH /api/galnet` — Догон очереди переводов (cron)
+- `GET /api/galnet/[nid]` — Одна статья (по `nid`, `guid` или `slug`)
+
 ### Other Endpoints
 - `GET /api/leaderboard` — Player stats
 - `GET /api/atlas/search` — System search
-- `GET /api/galnet` — Galnet news
 - `GET /api/news` — Site news
 - `GET /api/notifications` — User notifications
 - `POST /api/push/subscribe` — Push subscription
@@ -219,6 +224,40 @@ ed-ring-colony/
 - `POST /api/journal/import` — authenticated browser/CAPI Journal import
 - `POST /api/translate` — Translate content
 - `POST /api/cron/translate` — Cron translation job
+
+## Galnet Sync
+
+Новости Galnet забираются с официального JSON:API Frontier
+(`https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article`), складываются
+в таблицу `galnet_news` и автоматически переводятся через
+Yandex Cloud Translate API v2 на ru/en/de/it/ko/zh/ja.
+
+Расписание (GitHub Actions):
+
+| Workflow | Расписание | Что делает |
+|----------|-----------|------------|
+| `galnet-sync.yml` | раз в сутки, 06:20 UTC | синхронизация ленты + перевод новых статей |
+| `auto-translate.yml` | раз в 6 часов | догон очереди переводов (`news`, `galnet_news`) |
+
+Синхронизация работает напрямую с БД (минуя Vercel), поэтому не зависит от
+`CRON_SECRET` и от лимита длительности serverless-функции:
+
+```bash
+node scripts/galnet-sync.mjs                  # синхронизация + перевод
+node scripts/galnet-sync.mjs --dry-run        # только разбор ленты, без записи в БД
+node scripts/galnet-sync.mjs --translate-only # только очередь переводов
+node scripts/galnet-sync.mjs --no-translate   # только синхронизация
+```
+
+Нужные секреты репозитория: `NEXT_PUBLIC_SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `YANDEX_TRANSLATE_API_KEY`
+(опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
+
+Тесты парсера и синхронизации (сеть не нужна):
+
+```bash
+npm test
+```
 
 ## Colonial Helper uploader 2.0
 

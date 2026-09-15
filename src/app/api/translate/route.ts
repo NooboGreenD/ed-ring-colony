@@ -1,67 +1,51 @@
 import { NextResponse } from 'next/server';
+import { SUPPORTED_TRANSLATION_LANGS, hasTranslateCredentials, translateTexts } from '@/lib/translate';
 
-const YANDEX_API_URL = 'https://translate.api.cloud.yandex.net/translate/v2/translate';
-const SUPPORTED_LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
-function getYandexApiKey(): string {
-  const key = process.env.YANDEX_TRANSLATE_API_KEY;
-  if (!key) throw new Error('YANDEX_TRANSLATE_API_KEY not configured');
-  return key;
-}
-
-async function translateBatch(
-  texts: string[],
-  targetLang: string,
-  sourceLang: string
-): Promise<string[]> {
-  const apiKey = getYandexApiKey();
-  const response = await fetch(YANDEX_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Api-Key ${apiKey}`,
-    },
-    body: JSON.stringify({
-      sourceLanguageCode: sourceLang,
-      targetLanguageCode: targetLang,
-      format: 'PLAIN_TEXT',
-      texts: texts,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Yandex Translate API error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-  if (!data.translations || !Array.isArray(data.translations)) {
-    throw new Error('Yandex Translate API unexpected response');
-  }
-  return data.translations.map((t: any) => t.text);
-}
-
+/**
+ * Ручной перевод строк из админки.
+ * Логика вызова Yandex Translate живёт в scripts/lib/translate.mjs
+ * (общий модуль для сайта и скриптов GitHub Actions).
+ */
 export async function POST(req: Request) {
   try {
     const { texts, sourceLang = 'ru' } = await req.json();
-    // texts: array of strings to translate
+
     if (!Array.isArray(texts) || texts.length === 0) {
       return NextResponse.json({ error: 'texts must be a non-empty array' }, { status: 400 });
     }
 
-    const targetLangs = SUPPORTED_LANGS.filter((l) => l !== sourceLang);
+    if (!hasTranslateCredentials()) {
+      return NextResponse.json(
+        { success: false, error: 'YANDEX_TRANSLATE_API_KEY is not configured' },
+        { status: 500 }
+      );
+    }
+
+    const targetLangs = SUPPORTED_TRANSLATION_LANGS.filter((lang) => lang !== sourceLang);
     const results: Record<string, string[]> = {};
+    const errors: string[] = [];
 
     await Promise.all(
       targetLangs.map(async (lang) => {
-        results[lang] = await translateBatch(texts, lang, sourceLang);
+        try {
+          results[lang] = await translateTexts(texts, lang, sourceLang);
+        } catch (err: any) {
+          errors.push(`${lang}: ${err?.message || err}`);
+        }
       })
     );
 
-    // Also include source language as-is
+    // Язык оригинала возвращаем как есть.
     results[sourceLang] = texts;
 
-    return NextResponse.json({ success: true, translations: results });
+    return NextResponse.json({
+      success: errors.length === 0,
+      translations: results,
+      errors: errors.length ? errors : undefined,
+    });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }

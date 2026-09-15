@@ -251,6 +251,8 @@ Applied via `npx supabase db push`.
 | `/api/journal/import` | POST | Auth | Browser/CAPI Journal import |
 | `/api/translate` | POST | Auth | Translate content |
 | `/api/cron/translate` | POST | Cron | Auto-translation job |
+| `/api/galnet` | POST | Cron | Galnet sync + translate new articles |
+| `/api/galnet` | PATCH | Cron | Drain translation queue |
 | `/api/comments` | GET | None | List comments |
 | `/api/comments` | POST | Auth | Create comment |
 | `/api/comments/[id]` | DELETE | Auth | Delete comment |
@@ -456,14 +458,33 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   Journal reconciliation is running.
 
 ### 8.8 Yandex Translate
-- API: `src/lib/translate.ts`
-- Used for: Automatic content translation
-- Cron endpoint: `/api/cron/translate`
+- Общий клиент: `scripts/lib/translate.mjs` (ESM, используется и сайтом, и скриптами)
+- Обёртка для Next.js: `src/lib/translate.ts`
+- API: Yandex Cloud Translate v2, `POST /translate/v2/translate`
+- Авторизация: `Authorization: Api-Key <YANDEX_TRANSLATE_API_KEY>`
+  (альтернатива — IAM-токен через `Bearer`)
+- Языки: ru, en, de, it, ko, zh, ja
+- Cron endpoints: `/api/cron/translate`, `PATCH /api/galnet`
+- Поведение: повторы при 429/5xx, нарезка длинных текстов (< 8000 символов
+  на запрос), изоляция ошибок по языкам (статус `partial` вместо потери статьи)
 
 ### 8.7 Frontier Galnet
-- RSS/API ingestion
-- Stored in `galnet_news` table
+- Источник: официальный Drupal JSON:API Frontier,
+  `https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article`
+  (`Accept: application/vnd.api+json` обязателен)
+- Парсер: `scripts/lib/galnet-source.mjs`
+- Оркестрация: `scripts/lib/galnet-sync.mjs` (лента → БД → перевод)
+- CLI: `scripts/galnet-sync.mjs` (запускается в GitHub Actions)
+- Next.js endpoints: `GET/POST/PATCH /api/galnet`, `GET /api/galnet/[nid]`
+- Stored in `galnet_news` table (колонки переводов — миграция
+  `20260915000000_galnet_translations.sql`)
 - Displayed on homepage and `/galnet`
+- Расписание: `galnet-sync.yml` — раз в сутки (06:20 UTC),
+  `auto-translate.yml` — раз в 6 часов (догон очереди)
+- Дедупликация по `nid` (UUID Drupal) и `guid`; изменение текста Frontier
+  помечает статью к повторному переводу
+- ВАЖНО: поле `field_galnet_date` («11 SEP 3312») — внутриигровая дата,
+  в колонку `published_at` (TIMESTAMPTZ) не попадает
 
 ---
 
@@ -484,7 +505,12 @@ VAPID_PRIVATE_KEY=...
 
 # Translation
 YANDEX_TRANSLATE_API_KEY=...
+YANDEX_TRANSLATE_FOLDER_ID=...
 CRON_SECRET=...
+
+# Galnet sync (scripts/galnet-sync.mjs)
+GALNET_FEED_LIMIT=30
+GALNET_TRANSLATE_LIMIT=10
 
 # External APIs
 RAVEN_API_BASE=...

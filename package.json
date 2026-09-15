@@ -5,7 +5,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "clean": "rm -rf .next dist"
+    "clean": "rm -rf .next dist",
+    "test": "node --test scripts/tests/*.test.mjs",
+    "test:galnet": "node --test scripts/tests/*.test.mjs",
+    "galnet:sync": "node scripts/galnet-sync.mjs",
+    "galnet:dry-run": "node scripts/galnet-sync.mjs --dry-run"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",
