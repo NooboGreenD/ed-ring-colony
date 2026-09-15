@@ -2210,6 +2210,25 @@ class ExobiologyOverlay(OverlayWindow):
             self._render_planets({})
             return
 
+        body_name = str(state.get("body") or "").strip()
+        if not body_name:
+            # Текущее тело неизвестно (игрок в космосе/на станции), но фильтры
+            # и данные системы могут быть: показываем разделы честно, без
+            # «нулевых» параметров и без «критерии не выбраны» при выбранных.
+            system = str(state.get("system") or "").strip()
+            prefix = f"{system} · " if system else ""
+            self.body_label.config(text=f"{prefix}Тело: —")
+            self.params_label.config(
+                text="данных о текущем теле нет — отсканируйте тело (FSS или подход)")
+            self.signals_label.config(text="")
+            self.samples_header.config(text="Образцы:")
+            self.organics_label.config(text="—")
+            self.next_action_label.config(text="")
+            self.predict_label.config(text="нет данных")
+            self._render_bodies(state)
+            self._render_planets(state)
+            return
+
         system = str(state.get("system") or "").strip()
         body = str(state.get("body") or "—")
         prefix = f"{system} · " if system and system not in body else ""
@@ -2367,10 +2386,14 @@ class ExobiologyOverlay(OverlayWindow):
         rows = state.get("planets") or []
         self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
         if not rows:
-            self.planets_label.config(
-                text="в этой системе подходящих планет нет\n"
-                     "(нужны отсканированные тела)",
-                fg=COLOR_TEXT_MUTED)
+            known = int(state.get("system_known_bodies") or 0)
+            if known:
+                text = ("в этой системе подходящих планет нет\n"
+                        f"(журнал знает {known} тел системы)")
+            else:
+                text = ("журнал ещё не знает сканов тел этой системы\n"
+                        "(сканируйте планеты FSS/DSS при работающем Watcher)")
+            self.planets_label.config(text=text, fg=COLOR_TEXT_MUTED)
             return
 
         system = str(state.get("system") or "")

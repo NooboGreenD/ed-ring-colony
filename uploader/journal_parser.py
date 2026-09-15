@@ -444,6 +444,80 @@ def _construction_event_from(ev: dict, current_system: str = None) -> Optional[d
     }
 
 
+def site_deliveries_from_text(
+    text: str,
+    market_id: Optional[int] = None,
+    current_system: Optional[str] = None,
+    current_system_address: int = 0,
+) -> List[dict]:
+    """Доставки на стройплощадку из текста журнала (`ColonisationContribution`).
+
+    Отдельный проход нужен сверке с Raven Colonial: «что я реально завёз на
+    эту площадку по журналу» против «сколько осталось завезти» по данным
+    сервиса (там учтён и груз других командиров). Живой watcher собирает те же
+    доставки в `parse_events()`.
+
+    Записи получаются ровно того же вида и с тем же `source_hash`, что и у
+    `parse_events()` — поэтому журнал отправленного в Raven Colonial
+    (`_raven_sent`) узнаёт их и не даёт зачесть одну доставку дважды, каким бы
+    путём она ни была найдена.
+
+    Args:
+        text: текст журнала (или его хвост).
+        market_id: если задан — только доставки этой площадки.
+        current_system: система для подписи (в событии её может не быть).
+        current_system_address: SystemAddress, если в событии его нет.
+    """
+    wanted = 0
+    if market_id:
+        try:
+            wanted = int(market_id)
+        except (TypeError, ValueError):
+            wanted = 0
+
+    result: List[dict] = []
+    for line, ev in iter_journal_events(text):
+        if ev.get("event") != "ColonisationContribution":
+            continue
+        try:
+            event_market = int(ev.get("MarketID") or 0)
+        except (TypeError, ValueError):
+            event_market = 0
+        if wanted and event_market != wanted:
+            continue
+        system = ev.get("StarSystem") or current_system or ""
+        address = ev.get("SystemAddress") or current_system_address or 0
+        for contrib in ev.get("Contributions") or []:
+            if not isinstance(contrib, dict):
+                continue
+            # `Name` — FDName-токен: из него получается каноническое имя,
+            # которое ждёт Raven Colonial (`liquidoxygen`, а не «Liquid oxygen»).
+            name = (
+                _normalize_name(contrib.get("Name") or "")
+                or contrib.get("Name_Localised")
+                or "Unknown"
+            )
+            try:
+                amount = int(contrib.get("Amount", 0) or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount <= 0:
+                continue
+            result.append({
+                "system_name": system,
+                "commodity": name,
+                "amount": amount,
+                "delivered_at": ev.get("timestamp"),
+                "market_id": event_market,
+                "system_address": address,
+                "is_hub": None,
+                "route_system_id": None,
+                "source": "colonisation_contribution",
+                "source_hash": _source_hash("contribution", line, name, amount),
+            })
+    return result
+
+
 def extract_construction_events_from_events(events) -> List[dict]:
     """Извлечь snapshots строительства из уже распарсенных событий.
 

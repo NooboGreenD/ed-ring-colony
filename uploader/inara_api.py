@@ -116,15 +116,31 @@ class InaraAPI:
 
         header = data.get("header") or {}
         header_status = header.get("eventStatus")
-        # 400 в заголовке — проблема авторизации: весь пакет отменён.
+        # 400 в заголовке — проблема авторизации: весь пакет отменён. Повторять
+        # бесполезно (retryable=False): ключ не «отлипнет» сам.
         if header_status is not None and int(header_status) >= 400:
-            return {
+            text = str(header.get("eventStatusText") or "")
+            result = {
                 "ok": False,
                 "status": response.status_code,
+                "retryable": False,
                 "header_status": header_status,
                 "data": data,
-                "error": f"Inara: {header.get('eventStatusText') or 'ошибка авторизации'}",
+                "error": f"Inara: {text or 'ошибка авторизации'}",
             }
+            if "no access allowed" in text.lower():
+                # Личный ключ Inara работает только в паре с приложением,
+                # внесённым в белый список администрацией: иначе любой запрос
+                # отклоняется с «This application has no access allowed.».
+                result["error_kind"] = "inara_not_whitelisted"
+                result["error"] = (
+                    f"Inara: приложению «{self.app_name}» не разрешён доступ — "
+                    f"ключ действителен, но приложение не в белом списке Inara. "
+                    f"Доступ запрашивает автор приложения у администрации Inara; "
+                    f"до одобрения события Inara можно отключить в настройках — "
+                    f"на EDSM и Raven Colonial это не влияет"
+                )
+            return result
 
         events = data.get("events") or []
         first = events[0] if events else {}

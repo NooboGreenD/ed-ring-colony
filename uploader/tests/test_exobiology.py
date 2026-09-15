@@ -361,3 +361,65 @@ class SystemBodiesTests(unittest.TestCase):
         self.assertTrue(row["mapped"])
         self.assertTrue(row["has_organics"])
         self.assertTrue(row["landable"])
+
+
+class EventDedupTests(unittest.TestCase):
+    """2.10.14: повтор события из хвоста журнала не считается дважды.
+
+    `_restore_station_state_from_journal` при каждом старте Watcher заново
+    прогоняет хвост последних журналов через трекер — без дедупликации по
+    timestamp каждый перезапуск добавлял бы лишний образец.
+    """
+
+    def _tracker(self):
+        tracker = ExobiologyTracker()
+        tracker.handle({"event": "FSDJump", "StarSystem": "Sol"})
+        tracker.handle({"event": "ApproachBody", "StarSystem": "Sol",
+                        "BodyName": "Sol 3"})
+        return tracker
+
+    def _sample(self, tracker, ts):
+        tracker.handle({"event": "ScanOrganic", "timestamp": ts, "StarSystem": "Sol",
+                        "Body": "Sol 3", "Species_Localised": "Tussock Poxtop",
+                        "ScanType": "Sample"})
+
+    def test_same_sample_event_counted_once(self):
+        tracker = self._tracker()
+        self._sample(tracker, "2026-09-14T10:00:00Z")
+        self._sample(tracker, "2026-09-14T10:00:00Z")
+        entry = tracker.organics[tracker._key("Sol", "Sol 3")]["Tussock Poxtop"]
+        self.assertEqual(entry["samples"], 1)
+
+    def test_distinct_timestamps_count_separately(self):
+        tracker = self._tracker()
+        self._sample(tracker, "2026-09-14T10:00:00Z")
+        self._sample(tracker, "2026-09-14T10:01:00Z")
+        entry = tracker.organics[tracker._key("Sol", "Sol 3")]["Tussock Poxtop"]
+        self.assertEqual(entry["samples"], 2)
+
+    def test_events_without_timestamp_are_not_deduped(self):
+        tracker = self._tracker()
+        self._sample(tracker, "")
+        self._sample(tracker, "")
+        entry = tracker.organics[tracker._key("Sol", "Sol 3")]["Tussock Poxtop"]
+        self.assertEqual(entry["samples"], 2,
+                         "без timestamp отличить повтор от нового образца нельзя")
+
+    def test_codex_entry_dedup(self):
+        tracker = self._tracker()
+        event = {"event": "CodexEntry", "timestamp": "2026-09-14T10:00:00Z",
+                 "Category": "$codex_categorytype_biology;",
+                 "Name": "Tussock Poxtop", "Region": "Sol 3"}
+        tracker.handle(event)
+        tracker.handle(dict(event))
+        self.assertEqual(tracker.seen_species["Tussock Poxtop"], 1)
+
+    def test_system_body_count(self):
+        tracker = self._tracker()
+        tracker.handle({"event": "Scan", "timestamp": "2026-09-14T10:00:00Z",
+                        "StarSystem": "Sol", "BodyName": "Sol 3",
+                        "PlanetClass": "Rocky body"})
+        self.assertEqual(tracker.system_body_count(), 1)
+        tracker.handle({"event": "FSDJump", "StarSystem": "Alpha Centauri"})
+        self.assertEqual(tracker.system_body_count(), 0,
+                         "считаем только тела текущей системы")

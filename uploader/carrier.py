@@ -46,6 +46,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 from event_dispatch import (
     FLEET_CARRIER_MARKET_MAX,
     FLEET_CARRIER_MARKET_MIN,
+    canonical_commodity,
     normalize_commodity,
 )
 
@@ -175,7 +176,7 @@ class CarrierState:
         """
         result: Dict[str, int] = {}
         for raw, amount in (need or {}).items():
-            key = normalize_commodity(raw)
+            key = canonical_commodity(raw)
             if not key:
                 continue
             try:
@@ -197,12 +198,12 @@ class CarrierState:
         """
         need = dict(need or {})
         rows = []
-        for key in sorted(set(self.commodities) | {normalize_commodity(k) for k in need if k}):
+        for key in sorted(set(self.commodities) | {canonical_commodity(k) for k in need if k}):
             if not key:
                 continue
             want = 0
             for raw, amount in need.items():
-                if normalize_commodity(raw) == key:
+                if canonical_commodity(raw) == key:
                     want = _as_int(amount)
                     break
             have = int(self.commodities.get(key, 0) or 0)
@@ -419,7 +420,7 @@ class CarrierTracker:
                 delta = -_as_int(transfer.get("Count"))
             else:
                 continue  # tosrv / tomultiplier — к авианосцу не относятся
-            key = normalize_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
+            key = canonical_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
             if not key or not delta:
                 continue
             self._add_commodity(key, delta, transfer.get("Type_Localised"))
@@ -438,7 +439,7 @@ class CarrierTracker:
         count = _as_int(event.get("Count"))
         if not count:
             return False
-        key = normalize_commodity(event.get("Type") or event.get("Type_Localised"))
+        key = canonical_commodity(event.get("Type") or event.get("Type_Localised"))
         if not key:
             return False
         if not self.state.carrier_id:
@@ -485,13 +486,24 @@ class CarrierTracker:
         if not isinstance(cargo, Mapping) or not cargo:
             return False
         merged: Dict[str, int] = {}
+        aliases: Dict[str, int] = {}
         for raw, amount in cargo.items():
-            key = normalize_commodity(raw)
+            key = canonical_commodity(raw)
             if not key:
                 continue
             value = _as_int(amount)
-            if value > 0:
+            if value <= 0:
+                continue
+            # Канонический ключ (`cmmcomposite`) важнее псевдонима
+            # (`cmm-composite`): на сервере FC-cargo мог скопиться мусор от
+            # старых записей, и при слиянии он не должен перебивать актуальный
+            # канонический счётчик — только дополнять отсутствующий.
+            if str(raw).strip().lower() == key:
                 merged[key] = value
+            else:
+                aliases[key] = value
+        for key, value in aliases.items():
+            merged.setdefault(key, value)
         if not merged:
             return False
         self.state.remote_cargo = dict(merged)

@@ -91,6 +91,23 @@ def normalize_commodity(value) -> str:
     return name
 
 
+#: Raven Colonial хранит имена товаров только буквами в нижнем регистре
+#: (`liquidoxygen`, `cmmcomposite`). Всё остальное — дефисы, пробелы,
+#: подчёркивания, локализацию — считаем мусором ключа.
+_CANON_OK = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def canonical_commodity(value) -> str:
+    """Канонический ключ товара Raven: строчные a-z0-9 без служебных символов.
+
+    Снимки FC-cargo и локализованные поля журнала приносят ключи вида
+    `cmm-composite` или `CMM Composite`: без канонизации один материал
+    расщепляется на две строки оверлея, и «лишняя» тянет тоннаж, не связанный
+    с текущей потребностью.
+    """
+    return "".join(ch for ch in normalize_commodity(value) if ch in _CANON_OK)
+
+
 def is_fleet_carrier(event: dict, station_type: str = "") -> bool:
     """Это операция на Fleet Carrier?
 
@@ -292,11 +309,20 @@ class ThirdPartyDispatcher:
 
         # Опциональный колбэк: on_result(service, ok, message)
         self.on_result: Optional[Callable[[str, bool, str], None]] = None
+        # Опциональный колбэк: on_supply_sent(build_id) — ProjectUpdate
+        # потребности принят Raven, локальные копии проекта устарели.
+        self.on_supply_sent: Optional[Callable[[str], None]] = None
         self._last_drop_warning = 0.0
 
         # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
         # недоступность EDSM не превратилась в тысячи одинаковых строк в логе.
         self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0}
+        # Последнее отправленное состояние потребности по marketId: depot-
+        # события приходят пачками, а Raven не любит бессмысленные ProjectUpdate.
+        self._raven_supply_state: dict = {}
+        # «Приложение не в белом списке Inara» не лечится повторами: пишем один
+        # раз, иначе каждое событие журнала добавляло бы простыню в лог.
+        self._inara_access_notified = False
 
         # «Transient state» для EDSM: сам по себе журнал часто не знает, где и
         # на чём был командир в момент события (например, в Scan нет системы).
@@ -493,6 +519,12 @@ class ThirdPartyDispatcher:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
             results.append(self._submit_raven(event, event_name, station_type))
+        # ProjectUpdate потребности шлём только за живыми событиями: при
+        # пакетном разборе истории depot-события дублируются из каждого файла,
+        # а тестовые прогонки журнала не должны делать лишних запросов.
+        if (self._raven_enabled() and live
+                and event_name == "ColonisationConstructionDepot"):
+            results.append(self._submit_raven_supply(event))
 
         return _DROPPED not in results
 
@@ -559,6 +591,60 @@ class ThirdPartyDispatcher:
             },
         )
 
+    def _submit_raven_supply(self, event: dict) -> str:
+        """Потребность площадки из depot-события — в ProjectUpdate для Raven.
+
+        Журнальное `ColonisationConstructionDepot` несёт Required/Provided по
+        каждому материалу: остаток (Required − Provided) и есть то, что сайт
+        показывает в колонке Need. Сам Raven из доставок его не пересчитывает.
+        """
+        needed: dict = {}
+        max_need = 0
+        for item in event.get("ResourcesRequired") or []:
+            if not isinstance(item, dict):
+                continue
+            name = canonical_commodity(item.get("Name") or "")
+            required = int(item.get("RequiredAmount") or 0)
+            provided = int(item.get("ProvidedAmount") or 0)
+            if name and required > 0:
+                needed[name] = max(0, required - provided)
+                max_need += required
+        if not needed:
+            return _SKIPPED
+        try:
+            market_id = int(event.get("MarketID") or 0)
+        except (TypeError, ValueError):
+            market_id = 0
+        if not market_id:
+            return _SKIPPED
+        address = int(event.get("SystemAddress") or 0) or \
+            int(self._game_state.get("system_address") or 0)
+        return self.submit_supply_update(market_id, address, needed, max_need)
+
+    def submit_supply_update(self, market_id: int, system_address: int,
+                             commodities: dict, max_need: int) -> str:
+        """Поставить ProjectUpdate потребности в очередь (один раз на состояние).
+
+        Возвращает «queued» / «skipped» (состояние не изменилось или отправить
+        нечего) / «dropped» (очередь переполнена).
+        """
+        try:
+            key = int(market_id or 0)
+        except (TypeError, ValueError):
+            return _SKIPPED
+        if not key or not commodities:
+            return _SKIPPED
+        if self._raven_supply_state.get(key) == commodities:
+            return _SKIPPED
+        self._raven_supply_state[key] = dict(commodities)
+        return self._enqueue("raven", {
+            "kind": "supply",
+            "market_id": key,
+            "system_address": int(system_address or 0),
+            "commodities": dict(commodities),
+            "max_need": int(max_need or 0),
+        })
+
     def _submit_raven(self, event: dict, event_name: str, station_type: str = "") -> str:
         """Fleet Carrier cargo: продажа на FC добавляет груз, покупка — забирает.
 
@@ -575,7 +661,10 @@ class ThirdPartyDispatcher:
         count = event.get("Count")
         # Raven Colonial требует имя товара в нижнем регистре и без
         # локализационных токенов: `steel`, а не `Steel` и не `$steel_name;`.
-        commodity = normalize_commodity(event.get("Type") or event.get("Type_Localised"))
+        # Канонический вид (только a-z0-9): иначе дельты FC-cargo заводили на
+        # сервере второй ключ того же товара («cmm composite» рядом с
+        # `cmmcomposite`), и блок CARRIER показывал две строки одного материала.
+        commodity = canonical_commodity(event.get("Type") or event.get("Type_Localised"))
         if not market_id or not count or not commodity:
             return _SKIPPED
         if not is_fleet_carrier(event, station_type):
@@ -631,7 +720,7 @@ class ThirdPartyDispatcher:
                 delta = -int(transfer.get("Count") or 0)
             else:
                 continue  # tosrv / прочие — к авианосцу не относятся
-            commodity = normalize_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
+            commodity = canonical_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
             if not commodity or not delta:
                 continue
             key = "|".join(str(part) for part in (
@@ -731,12 +820,20 @@ class ThirdPartyDispatcher:
         if result.get("ok"):
             self.stats["sent"] += 1
             self._notify_success("inara")
+        elif result.get("error_kind") == "inara_not_whitelisted":
+            self.stats["failed"] += 1
+            if not self._inara_access_notified:
+                self._inara_access_notified = True
+                self._notify("inara", False, str(result.get("error") or ""))
         else:
             self.stats["failed"] += 1
             self._notify_failure("inara", str(result.get("error") or "Inara отклонила событие"))
 
     def _do_raven(self, payload: dict):
         if not self._raven_enabled():
+            return
+        if payload.get("kind") == "supply":
+            self._do_raven_supply(payload)
             return
         result = self.raven_api.supply_fc(
             payload["market_id"], payload["commodity"], payload["delta"]
@@ -755,6 +852,31 @@ class ThirdPartyDispatcher:
         else:
             self.stats["failed"] += 1
             self._notify("raven", False, str(result.get("error") or "Raven Colonial отклонил событие"))
+
+    def _do_raven_supply(self, payload: dict):
+        project = self.raven_api.get_project(
+            payload.get("system_address") or 0, payload.get("market_id") or 0)
+        build_id = str((project or {}).get("buildId") or "")
+        if not build_id:
+            self.stats["failed"] += 1
+            self._notify("raven", False,
+                         "Raven Colonial: не нашёл проект для обновления потребности")
+            return
+        result = self.raven_api.update_supply(
+            build_id, payload.get("commodities") or {}, payload.get("max_need") or 0) or {}
+        if result.get("ok"):
+            self.stats["sent"] += 1
+            self._notify("raven", True,
+                         "Raven Colonial: потребность площадки обновлена по журналу")
+            if self.on_supply_sent:
+                try:
+                    self.on_supply_sent(build_id)
+                except Exception:
+                    pass
+        else:
+            self.stats["failed"] += 1
+            self._notify_failure("raven", str(result.get("error")
+                                              or "Raven Colonial отклонил ProjectUpdate"))
 
     # -- состояние ---------------------------------------------------------
     def pending(self) -> int:

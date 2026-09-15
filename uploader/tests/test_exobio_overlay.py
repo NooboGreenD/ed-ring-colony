@@ -348,9 +348,45 @@ class ExobioFiltersRenderTests(unittest.TestCase):
         overlay.update_exobiology({
             "system": "HIP 12345", "body": "HIP 12345 A 3", "planet_class": "Rocky body",
             "planet_criteria": [{"id": "icy_land", "label": "Ледяная с посадкой"}],
-            "planets": [],
+            "planets": [], "system_known_bodies": 5,
         })
-        self.assertIn("подходящих планет нет", self._text(overlay.planets_label))
+        text = self._text(overlay.planets_label)
+        self.assertIn("подходящих планет нет", text)
+        self.assertIn("журнал знает 5 тел", text)
+
+    def test_planet_section_says_when_system_not_scanned(self):
+        """Критерии выбраны, но сканов системы в журнале нет — говорим прямо.
+
+        Раньше блок в этом случае получал пустое состояние и писал «критерии
+        не выбраны», хотя галочки на вкладке стояли (жалоба пользователя).
+        """
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        overlay.update_exobiology({
+            "system": "HIP 12345",
+            "planet_criteria": [{"id": "icy_land", "label": "Ледяная с посадкой"}],
+            "planets": [], "system_known_bodies": 0,
+        })
+        text = self._text(overlay.planets_label)
+        self.assertIn("журнал ещё не знает сканов", text)
+        self.assertNotIn("критерии не выбраны", text)
+
+    def test_no_body_state_renders_honest_sections(self):
+        """Состояние без текущего тела: фильтры и поиск планет всё равно видны."""
+        overlay = self._overlay({"exobio_show_planet_search": True})
+        overlay.update_exobiology({
+            "system": "HIP 12345",
+            "planet_criteria": [{"id": "rocky_atmo_land",
+                                 "label": "Каменистая с атмосферой и посадкой"}],
+            "planets": [{"body": "HIP 12345 A 3", "planet_class": "Rocky body",
+                         "landable": True, "atmosphere_category": "thin",
+                         "bio_signals": 2, "distance_ls": 812.0,
+                         "matched": ["Каменистая с атмосферой и посадкой"]}],
+            "system_known_bodies": 4,
+        })
+        self.assertIn("найдено 1", self._text(overlay.planets_header))
+        self.assertIn("A 3", self._text(overlay.planets_label))
+        # Параметры тела не врут нулями, когда тело неизвестно.
+        self.assertIn("данных о текущем теле нет", self._text(overlay.params_label))
 
     def test_planet_section_hidden_when_disabled(self):
         overlay = self._overlay({"exobio_show_planet_search": False})

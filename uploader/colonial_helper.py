@@ -9,6 +9,7 @@ GUI приложение на ttkbootstrap с live-watcher журналов Elit
 import os
 import sys
 import json
+import math
 import time
 import threading
 import tkinter as tk
@@ -77,6 +78,7 @@ from journal_parser import (
     parse_events,
     iter_journal_events,
     extract_construction_events,  # noqa: F401
+    site_deliveries_from_text,
     ConstructionSnapshotCollector,
     PARSER_VERSION,
 )
@@ -92,16 +94,34 @@ from colonisation import (
     build_project_draft,
     format_commodities,
 )
+from map_export import save_map_png
+from system_map import (
+    due_timestamp,
+    BODY_LABELS,
+    KIND_MOON,
+    KIND_STAR,
+    STATION_CARRIER,
+    STATION_LABELS,
+    STATION_SITE,
+    MapRavenCache,
+    MapStation,
+    SystemMapBuilder,
+    commodity_label,
+    layout as map_layout,
+    map_report,
+    map_summary,
+)
 from edsm_api import EDSMAPI
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
-from event_dispatch import ThirdPartyDispatcher, normalize_commodity
+from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
+                          normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
 import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.9.1"
+VERSION = "2.10.14"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -113,6 +133,7 @@ COLOR_ORANGE = "#e67e22"
 COLOR_CYAN = "#3498db"
 COLOR_GREEN = "#2ecc71"
 COLOR_RED = "#e74c3c"
+COLOR_YELLOW = "#f1c40f"            # дедлайн стройки на исходе
 
 
 class ColonialHelperApp:
@@ -155,6 +176,20 @@ class ColonialHelperApp:
         # Стройплощадки колонизации: из них вкладка «Колонизатор» заполняет
         # форму создания проекта (см. colonisation.py).
         self.construction = ConstructionSiteTracker()
+        # Карта системы: тела, станции и стройплощадки с процентом завезённого
+        # груза. Собирается из тех же событий журнала, что идут в остальные
+        # трекеры, плюс данные Raven Colonial (вкладка «Карта системы»).
+        self.system_map = SystemMapBuilder()
+        self._map_zoom_index = 2              # 1.0 — индекс в MAP_ZOOM_STEPS
+        self._map_selected = ""               # выбранный объект (имя тела/buildId)
+        self._map_center = ""                 # центр карты: пусто = звезда системы
+        self._map_redraw_job = None           # id отложенной перерисовки
+        self._map_items: list = []            # что нарисовано (для клика мышью)
+        self._map_last_snapshot = None        # снимок последней отрисовки
+        self._map_raven_fetched: dict = {}    # система -> время запроса Raven
+        self._map_raven_inflight = False      # запрос к Raven уже летит
+        self._map_autorefresh_job = None      # фоновое освежение открытой вкладки
+        self._map_save_job = None             # отложенное сохранение вида в конфиг
         self._colony_draft_site = None        # площадка, по которой заполнена форма
         self._colony_selected_site_id = ""     # systemSiteId выбранного плана
         self._colony_autofilled_name = ""      # название, подставленное автозаполнением
@@ -162,6 +197,8 @@ class ColonialHelperApp:
         # Проект, отмеченный основным во вкладке «Колонизатор». Его потребность
         # показывает блок CARRIER в оверлее (см. `_carrier_need_info`).
         self.colony_primary_project: dict = {}
+        self._primary_remote_id = ""       # чей основной проект перечитывали
+        self._primary_remote_at = 0.0      # и когда (monotonic)
         # Проект стройплощадки, у которой командир стоит сейчас. Перечитывается
         # из Raven Colonial по таймеру: остаток потребности там общий на всех,
         # поэтому груз, который завезли другие командиры, должен уменьшать
@@ -170,6 +207,11 @@ class ColonialHelperApp:
         self._site_remote_market = 0           # по какой площадке уже спросили Raven
         self._site_remote_at = 0.0             # когда последний раз спрашивали
         self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
+        # Что уже написано в лог про стройплощадку/авианосец: обе строки
+        # перечитываются по таймеру (300 с) и без сравнения повторялись бы
+        # в логе без конца, даже когда цифры не менялись.
+        self._site_project_log_sig = None
+        self._carrier_cargo_log_sig = None
         self._last_contribution_state: dict = {}  # { (market_id, resource): amount } для diff
         self._seen_events: set = set()  # ключи событий — защита от дублей
         self._last_delivery_system: str = ""  # последняя система доставки для оверлея
@@ -177,6 +219,32 @@ class ColonialHelperApp:
         self._last_session_event = ""
         self._watcher_cmdr_name: Optional[str] = None  # CMDR, привязанный к текущей watcher-сессии
         self._pending_watcher_deliveries: list = []  # очередь повторной отправки при временной ошибке API
+        # Отправка в Raven Colonial живёт ОТДЕЛЬНО от аплоада на сайт:
+        # это два разных сервера, и сбой одного не должен терять данные для
+        # другого. Очередь досылается на каждом тике watcher'а, а журнал
+        # отправленного (`_raven_sent`) не даёт зачесть одну и ту же доставку
+        # дважды — ни при повторе, ни после перезапуска программы.
+        self._pending_raven_deliveries: list = []
+        self._raven_lock = threading.RLock()   # очередь досылают несколько потоков
+        self._raven_last_attempt = 0.0         # когда в последний раз пробовали дослать
+        self._raven_fail_streak = 0            # подряд неудач (для шага повтора)
+        self._raven_no_key_warned = False      # подсказка про ключ RCC пишется один раз
+        self._raven_sent: dict = {}            # source_hash -> {"build_id", "tons", "at"}
+        self._raven_cmdr_cache = ""            # имя командира, каким его знает Raven
+        self._raven_cmdr_asked_at = 0.0        # когда в последний раз спрашивали
+        self._raven_queue_sig = ""             # состав очереди на прошлой попытке
+        self._raven_attempts: dict = {}        # ключ доставки -> сколько раз пробовали
+        self._raven_skip_sig = None            # о каких отказах уже написали в лог
+        self._raven_skip_prev_sig = None       # предыдущая подпись (против «качелей»)
+        self._raven_site_miss: dict = {}       # (address, market_id) -> (попыток, когда)
+        self._raven_bound_projects: dict = {}  # buildId -> карточка привязанного проекта
+        self._raven_site_warned: set = set()   # каким площадкам уже объяснили, что делать
+        self._site_remaining_prev: dict = {}   # остаток потребности на прошлом опросе
+        self._raven_credit_pending: dict = {}  # товар -> тонны, зачтения которых ждём
+        self._raven_credit_checks = 0          # сколько снимков потребности сравнивали
+        self._raven_credit_warn_sig = None     # о незачтённых тоннах пишем один раз
+        self._raven_credit_prev_sig = None
+        self._colony_reconcile_busy = False    # сверка стройплощадки идёт
         # Накопители для первичной сверки: доставки/snapshots не уходят на сайт
         # после каждого файла (сотни запросов), а отправляются одним пакетом.
         self._defer_uploads = False
@@ -190,6 +258,9 @@ class ColonialHelperApp:
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
         self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
+        # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
+        self.map_cache = MapRavenCache(
+            self.config_path.with_name(".colonial_helper_map_cache.json"))
         self.load_config()
 
         # Raven Colonial API
@@ -226,6 +297,7 @@ class ColonialHelperApp:
             backfill_enabled=bool(self.config.get("backfill_send_third_party", False)),
         )
         self.dispatcher.on_result = self._on_third_party_result
+        self.dispatcher.on_supply_sent = self._on_raven_supply_sent
 
         # EDSM требует версию и сборку игры (иначе msgnum 207/208 и событие
         # никуда не попадает). Fileheader стоит в самом начале журнала и в
@@ -239,6 +311,10 @@ class ColonialHelperApp:
         self.imported_files_path = self.config_path.with_name(".colonial_helper_imported_files.json")
         self.imported_files: dict = self._load_imported_files()
         self.skip_imported_files = bool(self.config.get("skip_imported_files", True))
+        # Журнал того, что уже зачтено Raven Colonial (source_hash -> тонны).
+        # Не даёт зачесть одну и ту же доставку проекту дважды — ни при повторе
+        # в очереди досылки, ни после перезапуска программы.
+        self._raven_sent = self._load_raven_ledger()
         # Прогресс обновляем не чаще, чем раз в _PROGRESS_MIN_INTERVAL секунд:
         # на 800 файлов постоянные root.after() забивали очередь Tkinter и
         # сами по себе тормозили загрузку.
@@ -284,6 +360,7 @@ class ColonialHelperApp:
         # и без сравнения подписей одни и те же строки про модули и
         # прочитанные файлы повторялись в логе без конца.
         self._modules_log_sig = None
+        self._modules_log_prev_sig = None
         self._state_files_log_sig = None
         self.after(1000, self._tick_game_status)
 
@@ -449,6 +526,10 @@ class ColonialHelperApp:
         self.notebook.add(self.tab_colony, text=" Колонизатор ")
         self._build_tab_colony()
 
+        self.tab_map = tb.Frame(self.notebook)
+        self.notebook.add(self.tab_map, text=" Карта системы ")
+        self._build_tab_map()
+
         self.tab_overlay = tb.Frame(self.notebook)
         self.notebook.add(self.tab_overlay, text=" Оверлей ")
         self._build_tab_overlay()
@@ -460,6 +541,10 @@ class ColonialHelperApp:
         self.tab_log = tb.Frame(self.notebook)
         self.notebook.add(self.tab_log, text=" Лог ")
         self._build_tab_log()
+
+        # Карта системы перерисовывается, когда вкладку открыли: рисовать её
+        # в фоне бессмысленно, а данные к тому времени уже успевают устареть.
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_notebook_tab_changed)
 
     # ============================================================
     #  Вкладка: Подключение
@@ -1373,6 +1458,12 @@ class ColonialHelperApp:
             ("Завершить проект", self._on_colony_complete, "danger-outline"),
             ("Копировать buildId", self._on_colony_copy_id, "info-outline"),
             ("Открыть в Raven Colonial", self._on_colony_open_project, "info-outline"),
+            # Привязка нужна, когда автоматически сопоставить площадку с
+            # проектом нельзя: проект создавали через сайт (marketId другой)
+            # или в системе несколько активных проектов. Без неё тонны
+            # зависают в очереди с «проект не найден».
+            ("Привязать площадку к проекту", self._on_colony_bind_site, "warning-outline"),
+            ("Снять привязку площадки", self._on_colony_unbind_site, "secondary-outline"),
         ]:
             btn = tb.Button(actions, text=text, command=command, bootstyle=style, width=22,
                             state="disabled")
@@ -1392,6 +1483,12 @@ class ColonialHelperApp:
         autofill.pack(fill=X, pady=(0, 6))
         tb.Button(autofill, text="Заполнить из журнала", command=self._on_colony_fill_current,
                   bootstyle="primary-outline", width=24).pack(side=LEFT, padx=(0, 10))
+        # Сверка: сколько осталось завезти по данным Raven Colonial (там учтён
+        # и груз других командиров) против того, что завезли вы по журналу, и
+        # досылка того, что не ушло из-за прерванной сессии или сбоя сети.
+        tb.Button(autofill, text="Сверить стройплощадку с Raven",
+                  command=self._on_colony_reconcile,
+                  bootstyle="warning-outline", width=30).pack(side=LEFT, padx=(0, 10))
         self.colony_autofill_var = tk.BooleanVar(value=bool(self.config.get("colony_autofill", True)))
         tb.Checkbutton(
             autofill, text="Заполнять автоматически при посадке на стройплощадку",
@@ -1725,6 +1822,110 @@ class ColonialHelperApp:
                 pass
 
     # ---------- Колонизатор: действия ----------
+    def _current_site_market(self):
+        """MarketID стройплощадки, с которой сейчас работаем: `(id, system)`.
+
+        Сначала — площадка из журнала (командир у неё стоит). Если её нет,
+        берём Market ID из формы создания проекта: привязать площадку к
+        проекту должно быть можно и до стыковки.
+        """
+        site = self.construction.site
+        if site is not None and site.market_id:
+            try:
+                return int(site.market_id), str(site.system_name or "")
+            except (TypeError, ValueError):
+                pass
+        field = (getattr(self, "colony_fields", {}) or {}).get("marketId")
+        raw = ""
+        if field is not None:
+            try:
+                raw = str(field.get() or "").strip()
+            except Exception:
+                raw = ""
+        try:
+            return int(raw or 0), ""
+        except ValueError:
+            return 0, ""
+
+    def _on_colony_bind_site(self):
+        """Зачислять доставки этой стройплощадки выбранному проекту."""
+        project = self._selected_colony_project()
+        if not project or not project.get("buildId"):
+            self.log("Выберите проект в списке проектов Raven Colonial.", "warn")
+            return
+        market_id, system = self._current_site_market()
+        if not market_id:
+            self.log("Стройплощадка не определена: пристыкуйтесь к Construction Ship / "
+                     "площадке (или запустите watcher) либо заполните Market ID в форме "
+                     "создания проекта.", "warn")
+            return
+        build_id = str(project["buildId"])
+        name = str(project.get("buildName") or "")
+        site = self.construction.site
+        bindings = dict(self.config.get("raven_site_bindings") or {})
+        bindings[str(market_id)] = {
+            "build_id": build_id,
+            "name": name,
+            "system": system or str(project.get("systemName") or ""),
+            "address": int(getattr(site, "system_address", 0) or 0) if site is not None else 0,
+        }
+        self.config["raven_site_bindings"] = bindings
+        self.save_config()
+        self.log(f"Площадка {market_id} привязана к проекту «{name}» ({build_id}): "
+                 "доставки будут зачисляться ему.", "success")
+        self.colony_status.config(text=f"Площадка {market_id} → проект «{name}»")
+
+        # Привязка меняет ответ на «какой это проект»: сбрасываем кэш поиска,
+        # счётчики промахов и сразу досылаем то, что ждало в очереди.
+        invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+        if callable(invalidate):
+            invalidate()
+        self._raven_site_miss.clear()
+        self._raven_site_warned.clear()
+        self._raven_bound_projects.clear()
+        self._site_project_log_sig = None
+        self.site_project = {}
+        if self._pending_raven_deliveries:
+            threading.Thread(target=self._flush_raven_after_binding, daemon=True).start()
+        else:
+            self._refresh_site_project(force=True)
+
+    def _flush_raven_after_binding(self):
+        """Фоновая досылка очереди после привязки площадки к проекту."""
+        summary = self._flush_raven_deliveries(self._current_cmdr_name(), force=True)
+        sent = int(summary.get("sent", 0) or 0)
+        tons = int(summary.get("tons", 0) or 0)
+        left = int(summary.get("pending", 0) or 0)
+        self.root.after(
+            0,
+            lambda n=sent, t=tons, rest=left: self.log(
+                f"Raven Colonial: после привязки дослано {n} доставок ({t} t)"
+                + (f", в очереди осталось {rest}" if rest else ""),
+                "success" if n else "info"),
+        )
+        self._refresh_site_project(force=True)
+
+    def _on_colony_unbind_site(self):
+        """Снять привязку: снова ищем проект по market_id площадки."""
+        market_id, _system = self._current_site_market()
+        bindings = dict(self.config.get("raven_site_bindings") or {})
+        if not market_id or str(market_id) not in bindings:
+            self.log("Привязки для этой стройплощадки нет.", "info")
+            return
+        record = bindings.pop(str(market_id))
+        self.config["raven_site_bindings"] = bindings
+        self.save_config()
+        self.log(f"Привязка площадки {market_id} снята (была к проекту "
+                 f"{record.get('build_id')}).", "info")
+        self.colony_status.config(text=f"Привязка площадки {market_id} снята")
+        self._raven_bound_projects.pop(str(record.get("build_id") or ""), None)
+        invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+        if callable(invalidate):
+            invalidate()
+        self.site_project = {}
+        self._site_project_log_sig = None
+        self._refresh_site_project(force=True)
+
     def _on_colony_set_primary(self):
         project = self._selected_colony_project()
         if not project:
@@ -2221,6 +2422,15 @@ class ColonialHelperApp:
     def _colony_create_done(self, result: dict, build_id: str, cmdr: str, open_page: bool = True):
         self._set_colony_busy(False)
         if result.get("ok"):
+            # Проект только что создан: кэш поиска «проекта нет» нужно сбросить,
+            # иначе доставки ближайших минут продолжат отбрасываться с
+            # «проект не найден», хотя buildId уже существует.
+            site = self.construction.site
+            invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+            if callable(invalidate):
+                invalidate(int(site.system_address or 0) if site else 0,
+                           int(site.market_id or 0) if site else 0)
+            self.site_project = {}
             system = self.colony_fields["systemName"].get()
             name = f"{system}: {self.colony_fields['buildName'].get()}".strip(": ")
             message = f"Raven Colonial: проект создан — {name}"
@@ -2256,6 +2466,1069 @@ class ColonialHelperApp:
         self._colony_add_build_type_hints([build_type])
         self.save_config()
 
+
+    # ============================================================
+    #  Вкладка: Карта системы
+    # ============================================================
+    #: Шаги зума: кнопки «−»/«+» и колесо мыши переключают их по порядку.
+    MAP_ZOOM_STEPS = (0.6, 0.8, 1.0, 1.3, 1.7, 2.2)
+    #: Как часто можно дёргать Raven Colonial ради карты. События журнала
+    #: обновляют её мгновенно, а сеть нужна только чтобы увидеть груз, который
+    #: завезли другие командиры, и планы площадок.
+    MAP_RAVEN_TTL = 120
+    #: Пачка событий журнала не должна перерисовывать карту десятки раз:
+    #: перерисовки склеиваются в одну.
+    MAP_REDRAW_MS = 120
+    #: Длинные имена станций урезаем, иначе подписи перекрывают полкарты.
+    MAP_LABEL_LIMIT = 26
+
+    def _build_tab_map(self):
+        outer = tb.Frame(self.tab_map, padding=10)
+        outer.pack(fill=BOTH, expand=True)
+
+        tb.Label(outer, text="Карта системы — где вы и что строится",
+                 font=("Segoe UI", 12, "bold")).pack(anchor=W)
+        tb.Label(
+            outer,
+            text="Звезда, планеты и луны, станции, поселения и стройплощадки системы, в "
+                 "которой находится пилот. У строящихся объектов — сколько процентов груза "
+                 "завезено: журнал плюс Raven Colonial, включая доставки других командиров.",
+            foreground=COLOR_MUTED, wraplength=820, justify=LEFT,
+        ).pack(anchor=W, pady=(0, 8))
+
+        # ---- Панель управления ----
+        bar = tb.Frame(outer)
+        bar.pack(fill=X, pady=(0, 6))
+        tb.Button(bar, text="Обновить", command=self._on_map_refresh,
+                  bootstyle="info-outline", width=11).pack(side=LEFT)
+        tb.Button(bar, text="−", command=lambda: self._on_map_zoom(-1),
+                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(8, 0))
+        tb.Button(bar, text="+", command=lambda: self._on_map_zoom(1),
+                  bootstyle="secondary-outline", width=3).pack(side=LEFT, padx=(4, 0))
+        self.map_zoom_label = tb.Label(bar, text="100%", foreground=COLOR_MUTED, width=6)
+        self.map_zoom_label.pack(side=LEFT, padx=(4, 12))
+        self.map_moons_var = tk.BooleanVar(
+            value=bool(self.config.get("map_show_moons", True)))
+        tb.Checkbutton(bar, text="Луны", variable=self.map_moons_var,
+                       command=self._on_map_toggle,
+                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
+        self.map_labels_var = tk.BooleanVar(
+            value=bool(self.config.get("map_show_labels", True)))
+        tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
+                       command=self._on_map_toggle,
+                       bootstyle="info-round-toggle").pack(side=LEFT)
+        self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
+                                         foreground=COLOR_ORANGE)
+        self.map_system_label.pack(side=RIGHT)
+
+        # ---- Холст слева, список объектов справа ----
+        body = tb.Frame(outer)
+        body.pack(fill=BOTH, expand=True)
+
+        canvas_frame = tb.Frame(body, relief="solid", borderwidth=1)
+        canvas_frame.pack(side=LEFT, fill=BOTH, expand=True)
+        self.map_canvas = tk.Canvas(canvas_frame, bg=COLOR_BG, highlightthickness=0,
+                                    borderwidth=0)
+        self.map_canvas.pack(fill=BOTH, expand=True)
+        self.map_canvas.bind("<Configure>", self._on_map_resize)
+        self.map_canvas.bind("<Button-1>", self._on_map_click)
+        # Двойной клик: отцентровать на объекте, по пустому месту — сброс.
+        self.map_canvas.bind("<Double-Button-1>", self._on_map_double_click)
+        # Esc ловим и на дереве: в Windows событие уходит виджету с фокусом,
+        # а фокус после клика по строке — у списка, не у холста.
+        self.map_canvas.bind("<Escape>", self._on_map_escape)
+        self.map_canvas.bind("<Motion>", self._on_map_hover)
+        self.map_canvas.bind("<Leave>", lambda _event: self._map_restore_hint())
+        # Колесо мыши: в Windows/macOS это <MouseWheel>, в Linux — кнопки 4/5.
+        for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.map_canvas.bind(binding, self._on_map_wheel)
+
+        side = tb.Frame(body)
+        side.pack(side=RIGHT, fill=Y, padx=(8, 0))
+        side_top = tb.Frame(side)
+        side_top.pack(fill=X, pady=(0, 4))
+        tb.Label(side_top, text="Объекты системы",
+                 font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        tb.Button(side_top, text="Сводка", command=self._on_map_copy_summary,
+                  bootstyle="secondary-outline", width=8).pack(side=RIGHT)
+        tb.Button(side_top, text="PNG", command=self._on_map_save_png,
+                  bootstyle="secondary-outline", width=6).pack(side=RIGHT,
+                                                               padx=(0, 4))
+        filter_row = tb.Frame(side)
+        filter_row.pack(fill=X, pady=(0, 4))
+        tb.Label(filter_row, text="Фильтр:", foreground=COLOR_MUTED).pack(side=LEFT)
+        self.map_filter_var = tk.StringVar(value="")
+        filter_entry = tb.Entry(filter_row, textvariable=self.map_filter_var, width=22)
+        filter_entry.pack(side=LEFT, padx=(6, 0), fill=X, expand=True)
+        # Быстрый отбор «что ещё сканировать»: тела со сканом прячем из списка.
+        self.map_unscanned_var = tk.BooleanVar(
+            value=bool(self.config.get("map_unscanned", False)))
+        tb.Checkbutton(filter_row, text="неотск.", variable=self.map_unscanned_var,
+                       command=self._on_map_unscanned_toggle,
+                       bootstyle="secondary-round-toggle").pack(side=LEFT, padx=(6, 0))
+        self.map_filter_var.trace_add("write", lambda *_args: self._on_map_filter_changed())
+        tree_frame = tb.Frame(side)
+        tree_frame.pack(fill=BOTH, expand=True)
+        columns = ("object", "type", "progress", "rest", "carry")
+        self.map_tree = tb.Treeview(tree_frame, columns=columns, show="headings",
+                                    bootstyle="dark", height=16)
+        for col, title, width, anchor in (
+            ("object", "Объект", 138, W),
+            ("type", "Тип", 88, W),
+            ("progress", "Завезено", 62, CENTER),
+            ("rest", "Осталось", 66, "e"),
+            ("carry", "Везти", 96, W),
+        ):
+            self.map_tree.heading(col, text=title)
+            self.map_tree.column(col, width=width, anchor=anchor)
+        # Двойной клик по строке — отцентровать карту на выбранном объекте.
+        self.map_tree.bind("<Double-1>", self._on_map_tree_double)
+        self.map_tree.bind("<Escape>", self._on_map_escape)
+        # Стройки — самое важное на карте, поэтому они оранжевые и сверху списка.
+        self.map_tree.tag_configure("site", foreground=COLOR_ORANGE)
+        self.map_tree.tag_configure("planned", foreground=COLOR_MUTED)
+        self.map_tree.tag_configure("built", foreground=COLOR_TEXT)
+        self.map_tree.tag_configure("body", foreground=COLOR_MUTED)
+        # Тревога по сроку стройки заметнее цвета её типа.
+        self.map_tree.tag_configure("due_soon", foreground=COLOR_YELLOW)
+        self.map_tree.tag_configure("overdue", foreground=COLOR_RED)
+        tree_vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.map_tree.yview)
+        self.map_tree.configure(yscrollcommand=tree_vsb.set)
+        self.map_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        tree_vsb.pack(side=RIGHT, fill=Y)
+        self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
+
+        # ---- Состояние ----
+        footer = tb.Frame(outer)
+        footer.pack(fill=X, pady=(6, 0))
+        self.map_status = tb.Label(footer, text="Система неизвестна", foreground=COLOR_MUTED,
+                                   wraplength=620, justify=LEFT)
+        self.map_status.pack(side=LEFT, fill=X, expand=True)
+        self.map_hint = tb.Label(footer, text="", foreground=COLOR_CYAN, font=("Consolas", 9),
+                                 wraplength=280, justify=RIGHT)
+        self.map_hint.pack(side=RIGHT)
+
+        try:
+            zoom_index = int(self.config.get("map_zoom_index", 2))
+        except (TypeError, ValueError):
+            zoom_index = 2
+        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, zoom_index))
+        self._map_update_zoom_label()
+        self._map_redraw_now()
+
+    # ---------- карта: перерисовка ----------
+    def _map_visible(self) -> bool:
+        """Вкладка «Карта системы» сейчас открыта?"""
+        notebook = getattr(self, "notebook", None)
+        tab = getattr(self, "tab_map", None)
+        if notebook is None or tab is None:
+            return False
+        try:
+            return str(notebook.select()) == str(tab)
+        except Exception:
+            return False
+
+    def _map_canvas_size(self):
+        """Размер холста или (0, 0), если вкладка ещё не показана."""
+        canvas = getattr(self, "map_canvas", None)
+        if canvas is None:
+            return 0, 0
+        try:
+            width = int(canvas.winfo_width())
+            height = int(canvas.winfo_height())
+        except Exception:
+            return 0, 0
+        if width <= 1 or height <= 1:
+            return 0, 0
+        return width, height
+
+    def _map_zoom(self) -> float:
+        try:
+            return float(self.MAP_ZOOM_STEPS[self._map_zoom_index])
+        except Exception:
+            return 1.0
+
+    def _map_update_zoom_label(self):
+        label = getattr(self, "map_zoom_label", None)
+        if label is None:
+            return
+        try:
+            label.config(text=f"{int(round(self._map_zoom() * 100))}%")
+        except Exception:
+            pass
+
+    def _map_schedule_redraw(self, delay_ms: int = None):
+        """Отложить перерисовку: десятки событий журнала дают один кадр."""
+        if delay_ms is None:
+            delay_ms = self.MAP_REDRAW_MS if self._map_visible() else 1000
+        if self._map_redraw_job is not None:
+            try:
+                self.root.after_cancel(self._map_redraw_job)
+            except Exception:
+                pass
+            self._map_redraw_job = None
+        try:
+            self._map_redraw_job = self.root.after(int(delay_ms), self._map_redraw_now)
+        except Exception:
+            self._map_redraw_job = None
+
+    def _map_redraw_now(self):
+        """Кадр карты: холст, список объектов справа и строка состояния."""
+        self._map_redraw_job = None
+        snapshot = self.system_map.snapshot()
+        self._map_last_snapshot = snapshot
+        self._draw_system_map(snapshot)
+        self._fill_map_tree(snapshot)
+        self._map_update_status(snapshot)
+
+    def _draw_system_map(self, snapshot=None):
+        canvas = getattr(self, "map_canvas", None)
+        if canvas is None:
+            return
+        width, height = self._map_canvas_size()
+        if not width or not height:
+            # Холст ещё не получил размеры (вкладка не показана) — повторим.
+            self._map_schedule_redraw(delay_ms=250)
+            return
+        if snapshot is None:
+            snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        show_labels = bool(getattr(self, "map_labels_var", None)
+                           and self.map_labels_var.get())
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        items = map_layout(snapshot, width, height, zoom=self._map_zoom(),
+                           show_moons=show_moons, selected=self._map_selected,
+                           center_on=self._map_center)
+        self._map_items = items
+        try:
+            canvas.delete("all")
+        except Exception:
+            return
+        center_x, center_y = width / 2.0, height / 2.0
+        # Центр карты после двойного клика: кольца едут вместе со всей картой.
+        pan_x, pan_y = next(((item.pan_x, item.pan_y) for item in items
+                             if getattr(item, "pan_x", 0.0) or getattr(item, "pan_y", 0.0)),
+                            (0.0, 0.0))
+        ring_x, ring_y = center_x + pan_x, center_y + pan_y
+        # Орбитальные кольца — под объектами, иначе они режут значки.
+        for item in items:
+            if item.kind == "body" and item.orbit_radius > 0:
+                # У лун центр кольца — планета, у планет — звезда (центр карты).
+                cx = ring_x if item.orbit_cx is None else item.orbit_cx
+                cy = ring_y if item.orbit_cy is None else item.orbit_cy
+                canvas.create_oval(
+                    cx - item.orbit_radius, cy - item.orbit_radius,
+                    cx + item.orbit_radius, cy + item.orbit_radius,
+                    outline=COLOR_LINE, dash=(2, 4))
+        for wanted, painter in (
+            ("star", self._map_draw_star), ("body", self._map_draw_body),
+            ("station", self._map_draw_station), ("player", self._map_draw_player),
+        ):
+            for item in items:
+                if item.kind == wanted:
+                    painter(canvas, item, show_labels)
+        self._map_draw_legend(canvas)
+
+    @classmethod
+    def _map_short_label(cls, text) -> str:
+        text = str(text or "").strip()
+        if len(text) <= cls.MAP_LABEL_LIMIT:
+            return text
+        return text[: cls.MAP_LABEL_LIMIT - 1].rstrip() + "…"
+
+    def _map_draw_star(self, canvas, item, show_labels):
+        radius = max(6.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
+        # Свечение: звезда — центр карты, её видно сразу.
+        canvas.create_oval(item.x - radius * 1.9, item.y - radius * 1.9,
+                           item.x + radius * 1.9, item.y + radius * 1.9,
+                           fill="#2b2410", outline="")
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
+                           fill=item.color,
+                           outline=COLOR_ORANGE if item.selected else "#111315",
+                           width=2 if item.selected else 1)
+        if not show_labels:
+            return
+        if item.label:
+            canvas.create_text(item.x, item.y - radius * 1.9 - 6 + dy,
+                               text=self._map_short_label(item.label), fill=COLOR_TEXT,
+                               font=("Consolas", 9, "bold"), anchor="s")
+        if item.caption:
+            canvas.create_text(item.x, item.y + radius * 1.9 + 6 + dy, text=item.caption,
+                               fill=COLOR_MUTED, font=("Consolas", 8), anchor="n")
+
+    def _map_draw_body(self, canvas, item, show_labels):
+        radius = max(3.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius, item.y + radius,
+                           fill=item.color,
+                           outline=COLOR_ORANGE if item.selected else "#111315",
+                           width=2 if item.selected else 1)
+        if getattr(item.ref, "landable", False):
+            canvas.create_text(item.x, item.y, text="L", fill="#111315",
+                               font=("Consolas", 7, "bold"))
+        if not show_labels or not item.label:
+            return
+        is_moon = getattr(item.ref, "kind", "") == KIND_MOON
+        canvas.create_text(item.x, item.y + radius + 7 + dy,
+                           text=self._map_short_label(item.label),
+                           fill=COLOR_MUTED if is_moon else COLOR_TEXT,
+                           font=("Consolas", 7 if is_moon else 8), anchor="n")
+        if item.caption and not is_moon:
+            canvas.create_text(item.x, item.y + radius + 18 + dy, text=item.caption,
+                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
+
+    def _map_draw_station(self, canvas, item, show_labels):
+        station = item.ref
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
+        radius = max(5.0, float(item.radius))
+        is_site = isinstance(station, MapStation) and station.is_site
+        planned = bool(getattr(station, "planned", False))
+        outline = COLOR_ORANGE if item.selected else item.color
+        line_width = 2 if item.selected else 1
+        if is_site:
+            # Ромб: стройплощадку должно быть видно среди обычных станций.
+            spread = radius + 2.0
+            points = [item.x, item.y - spread, item.x + spread, item.y,
+                      item.x, item.y + spread, item.x - spread, item.y]
+            options = {"outline": outline, "width": line_width}
+            if planned:
+                # План площадки: контур пунктиром, завозить туда ещё нечего.
+                options["dash"] = (3, 2)
+                options["fill"] = COLOR_PANEL
+            else:
+                options["fill"] = item.color
+            canvas.create_polygon(points, **options)
+        elif getattr(station, "kind", "") == STATION_CARRIER:
+            canvas.create_rectangle(item.x - radius, item.y - radius,
+                                    item.x + radius, item.y + radius,
+                                    fill=item.color, outline=outline, width=line_width)
+        else:
+            canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
+                               item.y + radius, fill=item.color, outline=outline,
+                               width=line_width)
+        used = radius + 4.0
+        if item.progress is not None:
+            used += self._map_draw_progress(canvas, item, radius, dy)
+        if not show_labels or not item.label:
+            return
+        canvas.create_text(item.x, item.y + used + 4 + dy,
+                           text=self._map_short_label(item.label),
+                           fill=COLOR_ORANGE if is_site else COLOR_TEXT,
+                           font=("Consolas", 8, "bold") if is_site else ("Consolas", 8),
+                           anchor="n")
+
+    def _map_draw_progress(self, canvas, item, radius, dy: float = 0.0) -> float:
+        """Прогресс-бар под стройплощадкой: сколько процентов груза завезено.
+
+        Возвращает, на сколько пикселей ниже значка занято место, — подпись
+        объекта рисуется уже под полосой.
+        """
+        progress = max(0, min(100, int(item.progress or 0)))
+        bar_width = max(20, int(item.bar_width))
+        left = item.x - bar_width / 2.0
+        top = item.y + radius + 6.0 + dy
+        bottom = top + 9.0
+        canvas.create_rectangle(left, top, left + bar_width, bottom,
+                                fill="#111315", outline=COLOR_LINE)
+        color = (COLOR_GREEN if progress >= 100
+                 else (COLOR_ORANGE if progress >= 40 else COLOR_RED))
+        fill_width = int(round((bar_width - 2) * progress / 100.0))
+        if fill_width > 0:
+            canvas.create_rectangle(left + 1, top + 1, left + 1 + fill_width, bottom - 1,
+                                    fill=color, outline="")
+        canvas.create_text(left + bar_width + 5, (top + bottom) / 2.0, text=f"{progress}%",
+                           fill=color, font=("Consolas", 8, "bold"), anchor=W)
+        return (bottom + 3.0) - (item.y + radius)
+
+    def _map_draw_player(self, canvas, item, show_labels):
+        radius = max(10.0, float(item.radius))
+        dy = float(getattr(item, "label_dy", 0.0) or 0.0)
+        canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
+                           item.y + radius, outline=COLOR_GREEN, width=2)
+        canvas.create_oval(item.x - 3, item.y - 3, item.x + 3, item.y + 3,
+                           fill=COLOR_GREEN, outline="")
+        if not show_labels:
+            return
+        canvas.create_text(item.x, item.y - radius - 6 + dy, text="Вы здесь",
+                           fill=COLOR_GREEN, font=("Consolas", 8, "bold"), anchor="s")
+        if item.caption:
+            canvas.create_text(item.x, item.y + radius + 6 + dy,
+                               text=self._map_short_label(item.caption),
+                               fill=COLOR_MUTED, font=("Consolas", 7), anchor="n")
+
+    def _map_draw_legend(self, canvas):
+        """Подсказка значков в углу холста."""
+        entries = (
+            (STATION_LABELS.get(STATION_SITE, "стройка"), COLOR_ORANGE),
+            ("тело", "#9fd8ef"),
+            ("станция", "#eeeeee"),
+            ("авианосец", COLOR_CYAN),
+            ("вы", COLOR_GREEN),
+        )
+        x = 12.0
+        for text, color in entries:
+            canvas.create_rectangle(x, 9, x + 8, 17, fill=color, outline="")
+            canvas.create_text(x + 12, 13, text=text, fill=COLOR_MUTED,
+                               font=("Consolas", 8), anchor=W)
+            x += 22 + 6.6 * len(text)
+
+    # ---------- карта: список объектов и состояние ----------
+    def _fill_map_tree(self, snapshot):
+        tree = getattr(self, "map_tree", None)
+        if tree is None:
+            return
+        try:
+            tree.delete(*tree.get_children())
+        except Exception:
+            return
+        rows = []
+        now = time.time()
+        for station in sorted(snapshot.stations, key=self._map_station_sort_key):
+            percent = station.percent_delivered
+            if station.planned and percent is None:
+                progress = "план"
+            elif percent is not None:
+                progress = f"{percent}%"
+            else:
+                progress = "—"
+            rest = (f"{station.remaining_tons:,}".replace(",", " ")
+                    if station.remaining_tons else "")
+            tag = ("planned" if station.planned
+                   else ("site" if station.is_site else "built"))
+            due = due_timestamp(station.due_at)
+            if not station.complete and due != math.inf:
+                # Просроченный и горящий срок важнее цвета типа стройки.
+                tag = "overdue" if due < now else (
+                    "due_soon" if due - now <= self.MAP_DUE_SOON_DAYS * 86400 else tag)
+            rows.append((f"s:{station.build_id or station.name}",
+                         (self._map_short_label(station.title),
+                          STATION_LABELS.get(station.kind, "объект"), progress, rest,
+                          self._map_carry_note(station)), tag))
+        unscanned_only = bool(getattr(self, "map_unscanned_var", None)
+                              and self.map_unscanned_var.get())
+        for body in snapshot.bodies:
+            if unscanned_only and body.scanned:
+                continue
+            kind = BODY_LABELS.get(body.kind, "тело")
+            if body.kind == KIND_STAR and body.star_type:
+                kind = f"звезда {body.star_type}"
+            flags = [flag for flag, enabled in (
+                ("скан", body.scanned), ("карта", body.mapped),
+                ("посадка", body.landable), ("терраформ", body.terraformable),
+                ("raven", bool(getattr(body, "from_raven", False)) and not body.scanned),
+            ) if enabled]
+            rows.append((f"b:{body.name}",
+                         (self._map_short_label(body.name), kind, " · ".join(flags),
+                          f"{body.distance_ls:.1f} ls", ""), "body"))
+        for iid, values, tag in rows:
+            if not self._map_filter_matches(values):
+                continue
+            try:
+                tree.insert("", "end", iid=iid, values=values, tags=(tag,))
+            except Exception:
+                continue
+        self._map_sync_tree_selection()
+
+    def _map_sync_tree_selection(self):
+        tree = getattr(self, "map_tree", None)
+        if tree is None or not self._map_selected:
+            return
+        try:
+            match = [iid for iid in tree.get_children()
+                     if str(iid).split(":", 1)[-1] == self._map_selected]
+            if match:
+                tree.selection_set(match[0])
+                tree.see(match[0])
+        except Exception:
+            pass
+
+    def _map_set_status(self, text: str):
+        label = getattr(self, "map_status", None)
+        if label is None:
+            return
+        try:
+            label.config(text=str(text or ""))
+        except Exception:
+            pass
+
+    def _map_set_hint(self, text: str):
+        label = getattr(self, "map_hint", None)
+        if label is None:
+            return
+        try:
+            label.config(text=str(text or ""))
+        except Exception:
+            pass
+
+    def _map_update_status(self, snapshot, note: str = ""):
+        text = map_summary(snapshot)
+        if note:
+            text = f"{text}\n{note}"
+        self._map_set_status(text)
+        label = getattr(self, "map_system_label", None)
+        if label is None:
+            return
+        player = snapshot.player
+        ship = " ".join(part for part in (player.ship_name, player.ship_type) if part)
+        header = snapshot.system or "система неизвестна"
+        try:
+            label.config(text=f"{header} · {ship}" if ship else header)
+        except Exception:
+            pass
+
+    def _map_restore_hint(self):
+        """Курсор ушёл с объекта: показываем детали выбранного (если есть)."""
+        if self._map_selected:
+            self._map_show_details(self._map_selected)
+        else:
+            self._map_set_hint("")
+
+    def _map_show_details(self, key: str):
+        snapshot = self._map_last_snapshot
+        if snapshot is None or not key:
+            self._map_set_hint("")
+            return
+        for station in snapshot.stations:
+            if key in (station.build_id, station.name):
+                parts = [station.caption]
+                if station.required_tons:
+                    parts.append("нужно "
+                                 + f"{station.required_tons:,}".replace(",", " ") + " t")
+                if station.remaining_by_commodity:
+                    top = sorted(station.remaining_by_commodity.items(),
+                                 key=lambda pair: pair[1], reverse=True)[:3]
+                    parts.append("осталось: " + ", ".join(
+                        f"{name} {amount:,}".replace(",", " ") for name, amount in top))
+                if station.body_name:
+                    parts.append(f"тело: {station.body_name}")
+                if station.build_id:
+                    parts.append(f"buildId: {station.build_id}")
+                self._map_set_hint(" · ".join(parts))
+                return
+        for body in snapshot.bodies:
+            if body.name == key:
+                parts = [body.label, f"{body.distance_ls:.1f} ls"]
+                if body.stations:
+                    parts.append(f"объектов: {len(body.stations)}")
+                self._map_set_hint(" · ".join(parts))
+                return
+        self._map_set_hint("")
+
+    # ---------- карта: мышь и выбор ----------
+    def _map_item_at(self, x, y):
+        """Объект под курсором. Станции важнее тел: они нарисованы поверх."""
+        priority = {"station": 0, "player": 1, "body": 2, "star": 3}
+        best = None
+        best_key = None
+        for item in getattr(self, "_map_items", []) or []:
+            reach = max(9.0, float(item.radius) + 5.0)
+            distance = ((float(item.x) - float(x)) ** 2
+                        + (float(item.y) - float(y)) ** 2) ** 0.5
+            if distance > reach:
+                continue
+            key = (priority.get(item.kind, 9), distance)
+            if best_key is None or key < best_key:
+                best_key = key
+                best = item
+        return best
+
+    def _map_item_key(self, item) -> str:
+        ref = getattr(item, "ref", None)
+        if isinstance(ref, MapStation):
+            return str(ref.build_id or ref.name or "")
+        return str(getattr(item, "label", "") or "")
+
+    def _on_map_resize(self, _event=None):
+        self._map_schedule_redraw()
+
+    def _on_map_zoom(self, step: int):
+        index = int(self._map_zoom_index) + int(step or 0)
+        self._map_zoom_index = max(0, min(len(self.MAP_ZOOM_STEPS) - 1, index))
+        self._map_update_zoom_label()
+        self._map_remember_view()
+        self._draw_system_map(self._map_last_snapshot)
+
+    def _on_map_unscanned_toggle(self):
+        """Тумблер «неотск.»: перезаполнить список и запомнить до рестарта."""
+        self._map_remember_view()
+        self._on_map_filter_changed()
+
+    def _on_map_toggle(self):
+        """Переключили «Луны»/«Подписи»: перерисовать и запомнить вид."""
+        self._map_remember_view()
+        self._map_redraw_now()
+
+    def _map_remember_view(self):
+        """Вид вкладки (зум, луны, подписи) переживает перезапуск приложения."""
+        self.config["map_zoom_index"] = int(self._map_zoom_index)
+        self.config["map_show_moons"] = bool(self.map_moons_var.get())
+        self.config["map_show_labels"] = bool(self.map_labels_var.get())
+        self.config["map_unscanned"] = bool(getattr(self, "map_unscanned_var", None)
+                                            and self.map_unscanned_var.get())
+        # Запись файла откладываем: колесо мыши даёт несколько шагов зума подряд.
+        if self._map_save_job is not None:
+            try:
+                self.root.after_cancel(self._map_save_job)
+            except Exception:
+                pass
+            self._map_save_job = None
+        try:
+            self._map_save_job = self.root.after(1200, self._map_flush_view)
+        except Exception:
+            self._map_save_job = None
+
+    def _map_flush_view(self):
+        self._map_save_job = None
+        try:
+            self.save_config()
+        except Exception:
+            pass
+
+    def _on_map_wheel(self, event):
+        delta = 0
+        try:
+            delta = int(getattr(event, "delta", 0) or 0)
+        except Exception:
+            delta = 0
+        if delta:
+            self._on_map_zoom(1 if delta > 0 else -1)
+            return
+        # Linux: колесо приходит кнопками 4 (вверх) и 5 (вниз).
+        try:
+            number = int(getattr(event, "num", 0) or 0)
+        except Exception:
+            number = 0
+        self._on_map_zoom(1 if number == 4 else -1)
+
+    def _on_map_click(self, event):
+        try:
+            self.map_canvas.focus_set()   # иначе Esc не долетит до холста
+        except Exception:
+            pass
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None or item.kind == "player":
+            return
+        self._select_map_object(self._map_item_key(item))
+
+    def _on_map_escape(self, _event=None):
+        """Esc — вернуть звезду в центр: панорама сбрасывается с клавиатуры."""
+        if not self._map_center:
+            return
+        self._map_center = ""
+        self._map_set_hint("Центр — звезда системы")
+        self._map_redraw_now()
+
+    def _on_map_double_click(self, event):
+        """Двойной клик по объекту — центр карты на нём; по пустому месту — сброс.
+
+        Дальние луны и внешние стройки уезжают за край холста на любом зуме;
+        панорама дешевле, чем ещё три ступени зума.
+        """
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None or item.kind == "player":
+            self._map_center = ""
+            self._map_set_hint("Центр — звезда системы; двойной клик по объекту "
+                               "отцентрует на нём, Esc сбросит")
+        else:
+            self._map_center = self._map_item_key(item)
+            self._map_set_hint(f"Центр: {item.label} — двойной клик по пустому месту "
+                               f"или Esc вернёт звезду в центр")
+        self._map_redraw_now()
+
+    def _on_map_tree_double(self, event=None):
+        """Двойной клик по строке — центр карты на объекте.
+
+        Ctrl+двойной клик — прежний жест: открыть проект стройки в Raven
+        Colonial. Два отдельных bind на `<Double-1>` — ловушка: второй
+        молча перезаписывает первый, поэтому модификатор разведён внутри.
+        """
+        if event is not None and int(getattr(event, "state", 0) or 0) & 0x4:
+            self._on_map_open_project()
+            return
+        if self._map_selected:
+            self._map_center = self._map_selected
+            self._map_redraw_now()
+
+    def _on_map_hover(self, event):
+        item = self._map_item_at(getattr(event, "x", 0), getattr(event, "y", 0))
+        if item is None:
+            self._map_restore_hint()
+            return
+        if item.kind == "player":
+            self._map_set_hint(f"Вы здесь · {item.caption}")
+            return
+        if item.progress is not None:
+            self._map_set_hint(f"{item.label} · завезено {item.progress}%")
+            return
+        self._map_set_hint(" · ".join(part for part in (item.label, item.caption) if part))
+
+    def _on_map_tree_select(self, _event=None):
+        tree = getattr(self, "map_tree", None)
+        if tree is None:
+            return
+        try:
+            selection = tree.selection()
+        except Exception:
+            return
+        if not selection:
+            return
+        key = str(selection[0]).split(":", 1)[-1]
+        if not key or key == self._map_selected:
+            return
+        self._map_selected = key
+        self._draw_system_map(self._map_last_snapshot)
+        self._map_show_details(key)
+
+    def _select_map_object(self, key: str):
+        self._map_selected = str(key or "")
+        self._draw_system_map(self._map_last_snapshot)
+        self._map_sync_tree_selection()
+        self._map_show_details(self._map_selected)
+
+    def _on_map_filter_changed(self):
+        """Фильтр списка объектов: перерисовывать холст не нужно."""
+        self._fill_map_tree(self._map_last_snapshot or self.system_map.snapshot())
+
+    #: Сколько дней до дедлайна стройки считать «горит».
+    MAP_DUE_SOON_DAYS = 3
+
+    @staticmethod
+    def _map_station_sort_key(station):
+        """Стройки с ближайшим дедлайном — сверху: это и есть план маршрута."""
+        group = 0 if (station.is_site and not station.complete
+                      and not station.planned) else (1 if station.planned else 2)
+        return (group, due_timestamp(station.due_at), station.title or "")
+
+    @staticmethod
+    def _map_carry_note(station) -> str:
+        """Что везти на стройку: главный товар остатка по-русски."""
+        if not station.remaining_by_commodity:
+            return ""
+        name, amount = max(station.remaining_by_commodity.items(),
+                           key=lambda pair: pair[1])
+        return f"{commodity_label(name)} {amount:,}".replace(",", " ")
+
+    def _map_filter_matches(self, values) -> bool:
+        needle = str(self.map_filter_var.get() or "").strip().lower()
+        if not needle:
+            return True
+        return any(needle in str(value).lower() for value in values)
+
+    def _on_map_save_png(self):
+        """Схему системы — в PNG: крылу картинка, а не простыня текста.
+
+        Рендерим сами (`map_export`), без Pillow и скриншотов окна: файл
+        открывается везде и не тащит в EXE ещё десяток мегабайт.
+        """
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        try:
+            path = filedialog.asksaveasfilename(
+                title="Сохранить карту системы",
+                defaultextension=".png",
+                filetypes=(("PNG-изображение", "*.png"), ("Все файлы", "*.*")))
+        except Exception:
+            path = ""
+        if not path:
+            return
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        show_labels = not getattr(self, "map_labels_var", None) or bool(
+            self.map_labels_var.get())
+        if save_map_png(snapshot, str(path), zoom=self._map_zoom(),
+                        show_moons=show_moons, show_labels=show_labels,
+                        center_on=self._map_center):
+            self._map_update_status(snapshot, f"Карта сохранена: {path}")
+        else:
+            self._map_update_status(snapshot,
+                                    f"Не удалось сохранить карту: {path}")
+
+    def _on_map_copy_summary(self):
+        """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        report = map_report(snapshot, VERSION)
+        try:
+            import pyperclip
+
+            pyperclip.copy(report)
+        except Exception:
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(report)
+            except Exception:
+                self._map_set_hint("Буфер обмена недоступен")
+                return
+        sites = len([station for station in snapshot.sites if not station.complete])
+        self.log(f"Сводка системы {snapshot.system or '—'} скопирована "
+                 f"(строек: {sites})", "info")
+        self._map_set_hint("Сводка скопирована в буфер обмена")
+
+    def _on_map_open_project(self):
+        """Двойной клик по стройке — открыть её проект в Raven Colonial."""
+        snapshot = self._map_last_snapshot
+        key = self._map_selected
+        if snapshot is None or not key:
+            return
+        build_id = ""
+        for station in snapshot.stations:
+            if key in (station.build_id, station.name):
+                build_id = station.build_id
+                break
+        if not build_id:
+            self._map_set_hint("У объекта нет buildId — проект в Raven не открываем")
+            return
+        name = ""
+        for station in snapshot.stations:
+            if station.build_id == build_id:
+                name = station.title
+                break
+        try:
+            url = project_url(build_id)
+        except Exception:
+            url = ""
+        if not url:
+            return
+        self._colony_open_url(url, f"Проект {name}" if name else "Проект")
+
+    # ---------- карта: данные Raven Colonial ----------
+    def _on_map_refresh(self):
+        self._map_redraw_now()
+        if not self.system_map.current_system:
+            self._map_set_status(
+                "Система неизвестна — включите Watcher или загрузите журналы")
+            return
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not getattr(self.raven_api, "is_connected", False):
+            if not self._map_apply_raven_cache(self.system_map.current_system):
+                self._map_update_status(
+                    snapshot, "Raven Colonial не подключён: показаны только данные журнала")
+            return
+        self._map_update_status(snapshot, "Запрашиваю проекты и планы в Raven Colonial…")
+        self._map_refresh_from_raven(force=True)
+
+    def _map_refresh_from_raven(self, force: bool = False):
+        """Фоновый запрос проектов и планов системы (не чаще MAP_RAVEN_TTL)."""
+        system = self.system_map.current_system
+        if not system:
+            return
+        key = f"{system}:{self.system_map.current_system_address}"
+        if not self._map_raven_fetched.get(key):
+            # Сеть ещё не ответила ни разу за этот запуск: показываем прошлый визит.
+            self._map_apply_raven_cache(system)
+        if not getattr(self.raven_api, "is_connected", False):
+            return
+        if self._map_raven_inflight:
+            return
+        address = self.system_map.current_system_address
+        key = f"{system}:{address}"
+        now = time.time()
+        try:
+            previous = float(self._map_raven_fetched.get(key) or 0.0)
+        except (TypeError, ValueError):
+            previous = 0.0
+        if not force and now - previous < self.MAP_RAVEN_TTL:
+            return
+        self._map_raven_fetched[key] = now
+        self._map_raven_inflight = True
+        api = self.raven_api
+
+        def worker():
+            try:
+                projects = api.get_system_projects(address or system)
+                sites = api.get_system_sites(system)
+                whole = api.get_system_v2(system)
+            except Exception:
+                projects = sites = whole = None
+            self.after(0, lambda: self._map_raven_done(system, projects, sites, whole))
+
+        threading.Thread(target=worker, daemon=True, name="map-raven").start()
+
+    def _map_apply_raven_cache(self, system: str) -> bool:
+        """Подставить прошлый ответ Raven, пока сеть молчит (или недоступна)."""
+        cache = getattr(self, "map_cache", None)
+        if cache is None or not system:
+            return False
+        entry = cache.load(system)
+        bodies = entry.get("bodies") or []
+        projects = entry.get("projects") or []
+        plans = entry.get("plans") or []
+        if not (bodies or projects or plans):
+            return False
+        changed = False
+        if bodies:
+            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
+        if projects:
+            changed = bool(self.system_map.merge_projects(system, projects)) or changed
+        if plans:
+            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
+        if not changed:
+            return False
+        self._map_redraw_now()
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        self._map_update_status(snapshot,
+                                f"Raven Colonial: кэш{self._map_cache_age(entry.get('ts'))}")
+        return True
+
+    @staticmethod
+    def _map_cache_age(ts) -> str:
+        """Возраст кэша человечески: «, данные от 12.09 21:40»."""
+        try:
+            stamp = datetime.fromtimestamp(float(ts))
+        except (TypeError, ValueError, OSError, OverflowError):
+            return ""
+        return f", данные от {stamp:%d.%m %H:%M}"
+
+    def _map_raven_done(self, system: str, projects_result, sites_result,
+                        whole_result=None):
+        self._map_raven_inflight = False
+        if self.system_map.current_system != system:
+            return   # пилот уже улетел: эти данные другой системы
+        projects = []
+        plans = []
+        note = ""
+        bodies = []
+        if isinstance(whole_result, dict) and whole_result.get("ok"):
+            bodies = self._map_extract_bodies(whole_result.get("data"))
+        if isinstance(projects_result, dict) and projects_result.get("ok"):
+            projects = self._map_extract_projects(projects_result.get("data"))
+        elif isinstance(projects_result, dict) and projects_result.get("error"):
+            note = f"Raven Colonial (проекты): {projects_result.get('error')}"
+        if isinstance(sites_result, dict) and sites_result.get("ok"):
+            plans = self._map_extract_plans(sites_result.get("data"))
+        elif isinstance(sites_result, dict) and sites_result.get("error") and not note:
+            note = f"Raven Colonial (планы): {sites_result.get('error')}"
+        changed = False
+        if bodies:
+            # Тела — первыми: стройплощадки и планы привязываются к телам.
+            changed = bool(self.system_map.merge_bodies(system, bodies)) or changed
+        if projects:
+            changed = bool(self.system_map.merge_projects(system, projects)) or changed
+        if plans:
+            changed = bool(self.system_map.merge_site_plans(system, plans)) or changed
+        if projects or plans or bodies:
+            note = (f"Raven Colonial: проектов — {len(projects)}, планов — {len(plans)}, "
+                    f"тел — {len(bodies)}")
+            cache = getattr(self, "map_cache", None)
+            if cache is not None:
+                # В следующий раз карта соберётся из этого кэша без ожидания сети.
+                cache.store(system, bodies, projects, plans)
+        if changed:
+            self._map_redraw_now()
+        if note:
+            snapshot = self._map_last_snapshot or self.system_map.snapshot()
+            self._map_update_status(snapshot, note)
+
+    @staticmethod
+    def _map_extract_projects(data) -> list:
+        """Ответ /api/system/{addr}: список проектов или {'projects': [...]}.
+
+        В отличие от вкладки «Колонизатор» здесь нужны и проекты без buildId:
+        по ним карта показывает потребность и остаток, даже если проект ещё не
+        привязан к командиру.
+        """
+        if isinstance(data, dict):
+            for key in ("projects", "Projects", "builds", "data"):
+                if isinstance(data.get(key), list):
+                    return [item for item in data[key] if isinstance(item, dict)]
+            if any(key in data for key in ("buildId", "buildName", "marketId", "sumTotal")):
+                return [data]
+            return []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _map_extract_bodies(data) -> list:
+        """Ответ /v2/system/{system}: тела могут лежать в 'bodies' или списком."""
+        if isinstance(data, dict):
+            for key in ("bodies", "Bodies", "stars", "planets"):
+                if isinstance(data.get(key), list):
+                    found = [item for item in data[key] if isinstance(item, dict)]
+                    if found:
+                        return found
+            nested = data.get("body") or data.get("Body")
+            if isinstance(nested, list):
+                return [item for item in nested if isinstance(item, dict)]
+            return [data] if any(key in data for key in ("bodyName", "BodyName")) else []
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _map_extract_plans(data) -> list:
+        """Ответ /api/v2/system/{system}/sites: все площадки вместе со статусом.
+
+        Статус важен: `demolish` карта не показывает, `complete` — показывает
+        построенный объект. Фильтрует статусы уже `merge_site_plans`.
+        """
+        if isinstance(data, dict):
+            for key in ("sites", "Sites"):
+                if isinstance(data.get(key), list):
+                    data = data[key]
+                    break
+            else:
+                data = [data] if data else []
+        if not isinstance(data, list):
+            return []
+        return [item for item in data if isinstance(item, dict)]
+
+    # ---------- карта: события журнала ----------
+    def _feed_system_map(self, event: dict, live: bool = False):
+        """Событие журнала — в карту системы.
+
+        Вызывается из того же однопроходного разбора, что и остальные трекеры:
+        отдельных чтений журнала карта не добавляет. В историческом разборе
+        (`live=False`) сеть не трогаем — там десятки тысяч событий и сотни
+        прыжков, а Raven Colonial нужен только для текущей системы.
+        """
+        try:
+            changed = self.system_map.handle(event)
+        except Exception:
+            return
+        if not changed:
+            return
+        name = str(event.get("event") or "")
+        if not live:
+            if self._map_visible():
+                self._map_schedule_redraw()
+            return
+        self._map_schedule_redraw()
+        if name in ("Location", "FSDJump", "CarrierJump", "ColonisationConstructionDepot",
+                    "Docked"):
+            # Прибыли в систему или открыли депо стройки: журнал не знает,
+            # сколько груза завезли другие командиры, — спросим Raven Colonial.
+            self._map_refresh_from_raven()
+
+    def _on_notebook_tab_changed(self, _event=None):
+        """Переключили вкладку: карте нужна свежая отрисовка и данные Raven."""
+        if not self._map_visible():
+            return
+        self._map_redraw_now()
+        self._map_refresh_from_raven()
+        self._map_arm_autorefresh()
+
+    def _map_arm_autorefresh(self):
+        """Пока вкладка открыта, Raven опрашивается сам раз в MAP_RAVEN_TTL.
+
+        Процент завезённого меняется не только когда пилот что-то привёз:
+        другие командиры довозят груз, и карта открытой вкладки должна это
+        показать без нажатия «Обновить». Цепочка сама обрывается, стоит
+        переключить вкладку.
+        """
+        if self._map_autorefresh_job is not None:
+            return
+        try:
+            self._map_autorefresh_job = self.root.after(
+                self.MAP_RAVEN_TTL * 1000, self._map_autorefresh_tick)
+        except Exception:
+            self._map_autorefresh_job = None
+
+    def _map_autorefresh_tick(self):
+        self._map_autorefresh_job = None
+        if not self._map_visible():
+            return
+        self._map_refresh_from_raven()
+        self._map_arm_autorefresh()
 
     # ============================================================
     #  Вкладка: Оверлей
@@ -3477,6 +4750,9 @@ class ColonialHelperApp:
             # командиров, и груз, сданный другими, должен уменьшать «осталось
             # завезти» и у нас.
             self._refresh_site_project()
+            # Основной проект колонизатора раньше перечитывался только в момент
+            # назначения: блок CARRIER показывал потребность навеки замершей.
+            self._refresh_primary_project()
         except Exception:
             pass
         finally:
@@ -3794,6 +5070,11 @@ class ColonialHelperApp:
             self.root.after(0, lambda: self.log("Raven Colonial: ключ действителен", "success"))
             if cmdr:
                 self.root.after(0, lambda name=cmdr: self._apply_rcc_commander(name))
+            # До появления ключа доставки копились в очереди досылки
+            # (`_flush_raven_deliveries` без ключа ничего не отправляет).
+            # Ключ есть — досылаем их сразу, а не ждём следующего тика.
+            self.root.after(0, lambda: self._flush_raven_deliveries(
+                cmdr or self._current_cmdr_name(), force=True))
             return
 
         status = int(result.get("status") or 0)
@@ -3860,11 +5141,17 @@ class ColonialHelperApp:
                 planets = tracker.search_system_planets(criteria)
             except Exception:
                 planets = []
-        if state is None and not bodies and not planets:
+        # Выбранные фильтры обязаны дойти до блока даже при пустом трекере:
+        # иначе оверлей рисует «критерии не выбраны» и выглядит сломанным.
+        if state is None and not bodies and not planets and not criteria and not genera:
             return None
         state = dict(state or {})
         state["system_bodies"] = bodies
         state["system"] = state.get("system") or tracker.current_system
+        try:
+            state["system_known_bodies"] = tracker.system_body_count()
+        except Exception:
+            state["system_known_bodies"] = 0
         # Фильтры и результат поиска планет (вкладка «Экзобиология»).
         state["genera_filter"] = genera
         state["planet_criteria"] = criteria
@@ -4119,7 +5406,13 @@ class ColonialHelperApp:
         def construction_hook(line, ev):
             self._feed_construction_site(ev, live=False)
 
-        hooks = [collector, dispatch_hook, self.exobiology.handle, construction_hook]
+        # Карта системы наполняется тем же проходом: после импорта истории
+        # вкладка показывает текущую систему сразу, не дожидаясь новых событий.
+        def map_hook(line, ev):
+            self._feed_system_map(ev, live=False)
+
+        hooks = [collector, dispatch_hook, self.exobiology.handle, construction_hook,
+                 map_hook]
 
         # Только те файлы, которые реально разобраны и чьи доставки приняты:
         # файл другого CMDR пропускается и в кэш импорта не попадает, иначе
@@ -4314,7 +5607,24 @@ class ColonialHelperApp:
             inserted = result["inserted"]
             route_deliveries = [d for d in all_deliveries if self.route.is_on_route(d["system_name"])]
             route_tons = sum(d.get("amount", 0) for d in route_deliveries)
-            self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
+            # Ручной импорт — это история, а не live-события. Raven Colonial
+            # на `contribute` СУММИРУЕТ тонны, поэтому прогон одних и тех же
+            # файлов ещё раз завысил бы вклад командира в общий проект.
+            # Отправляем только если пользователь явно включил отправку
+            # истории во внешние API (о чём вкладка и предупреждает).
+            if self.dispatcher.backfill_enabled:
+                self._send_deliveries_to_raven(all_deliveries, cmdr_name or "")
+            elif all_deliveries and self.raven_api.is_connected:
+                tons = sum(int(d.get("amount", 0) or 0) for d in all_deliveries)
+                self.root.after(
+                    0,
+                    lambda n=len(all_deliveries), t=tons: self.log(
+                        f"Raven Colonial: {n} доставок из импортированных файлов ({t} t) "
+                        "не отправлены — это история, а не live-события. Живой watcher "
+                        "отправляет доставки сам; дослать конкретную стройплощадку можно "
+                        "кнопкой «Сверить стройплощадку с Raven» на вкладке «Колонизатор».",
+                        "info"),
+                )
             self.root.after(
                 0,
                 lambda ins=inserted, rt=route_tons: self.log(
@@ -4422,6 +5732,14 @@ class ColonialHelperApp:
                 "будет определена по первому FSDJump/Location/Docked событию.",
                 "warn",
             )
+
+        # Авианосец и стройплощадка — тоже из журнала. Без этого программа,
+        # запущенная, когда командир УЖЕ стоит у площадки или на борту FC,
+        # не знала ни market_id площадки, ни market_id авианосца: Raven не
+        # опрашивался, «осталось завезти» не считалось, а доставки, которые
+        # не успели уйти в прерванной сессии, не досылались.
+        self.carrier.reset()
+        self._restore_station_state_from_journal()
 
         self.watcher_btn.config(text="⏹ Остановить", bootstyle="danger-outline")
         self.log("Watcher запущен. Мониторинг журналов...", "success")
@@ -4602,6 +5920,134 @@ class ColonialHelperApp:
                         return sys_name, int(sys_addr) if sys_addr else 0
         return None, 0
 
+    #: Сколько последних журналов и байт читаем, восстанавливая место стоянки.
+    RESTORE_STATE_MAX_FILES = 3
+    RESTORE_STATE_MAX_BYTES = 6 * 1024 * 1024
+    #: События, из которых восстанавливается «где мы сейчас стоим».
+    RESTORE_STATE_EVENTS = frozenset({
+        "Location", "Docked", "Undocked", "CarrierJump", "CarrierStats",
+        "ColonisationConstructionDepot", "Market", "SupercruiseExit",
+        "Touchdown", "Liftoff",
+    })
+    #: Для карты системы нужны ещё и сканы тел: без них до полного разбора
+    #: журнала карта знала бы только станцию, у которой стоит пилот.
+    RESTORE_MAP_EVENTS = RESTORE_STATE_EVENTS | frozenset({
+        "Scan", "SAAScanComplete", "FSSDiscoveryScan", "FSSSignalDiscovered",
+        "FSDJump", "ApproachBody", "LeaveBody", "LoadGame",
+    })
+    #: Трекеру экзобиологии дополнительно нужны биосигналы и образцы: без них
+    #: блок EXOBIO после перезапуска «не видел» отсканированную систему.
+    RESTORE_EXOBIO_EVENTS = frozenset({"FSSBodySignals", "ScanOrganic", "CodexEntry"})
+    RESTORE_TRACK_EVENTS = RESTORE_MAP_EVENTS | RESTORE_EXOBIO_EVENTS
+
+    def _restore_station_state_from_journal(self) -> dict:
+        """Восстановить стройплощадку и авианосец по хвосту журнала.
+
+        Зачем: `construction.site` и `carrier.state.market_id` наполняются
+        событиями журнала. Если программу запустили (или перезапустили после
+        сбоя/закрытия игры), когда командир уже стоит у стройплощадки или на
+        борту своего авианосца, новых событий `Docked`/`CarrierStats` не
+        будет, и приложение не знает ни `MarketID` площадки, ни `MarketID`
+        авианосца. Следствия ровно те, на которые жаловался пользователь:
+
+        * Raven Colonial не опрашивается → «осталось завезти» не считается
+          и чужие доставки не учитываются;
+        * поимённый груз авианосца не подтягивается → блок CARRIER пустой;
+        * прерванная сессия не досылается.
+
+        Читаем хвост последних журналов (не больше `RESTORE_STATE_MAX_FILES`
+        файлов и `RESTORE_STATE_MAX_BYTES` байт) и прогоняем только нужные
+        события через те же трекеры, что и живой watcher.
+        """
+        restored = {"site": False, "carrier": False}
+        map_events: list = []
+        try:
+            files = sorted(
+                self.journal_path.glob("Journal.*.log"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )[: self.RESTORE_STATE_MAX_FILES]
+        except OSError:
+            return restored
+        if not files:
+            return restored
+
+        for path in files:
+            try:
+                size = path.stat().st_size
+                with open(path, "rb") as fh:
+                    if size > self.RESTORE_STATE_MAX_BYTES:
+                        fh.seek(size - self.RESTORE_STATE_MAX_BYTES)
+                        fh.readline()  # отбрасываем неполную строку
+                    raw = fh.read()
+            except OSError:
+                continue
+
+            events = []
+            for _line, event in iter_journal_events(raw.decode("utf-8", errors="replace")):
+                if event.get("event") in self.RESTORE_TRACK_EVENTS:
+                    events.append(event)
+            if not events:
+                continue
+            # Хронологический порядок важен: трекеры «отпускают» площадку по
+            # Undocked и чужой авианосец по Docked к другой станции.
+            for event in events:
+                map_events.append(event)
+                if event.get("event") not in self.RESTORE_STATE_EVENTS:
+                    continue
+                try:
+                    self.construction.handle("", event)
+                    self.carrier.handle(event)
+                except Exception:
+                    continue
+
+            site = self.construction.site
+            if site is not None and site.market_id and site.docked:
+                restored["site"] = True
+            if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
+                restored["carrier"] = True
+            if restored["site"] or restored["carrier"]:
+                break
+
+        # Карта системы собирается хронологически: файлы идут от новых к
+        # старым, а положение пилота определяет последнее событие, а не первое
+        # попавшееся. Поэтому сортируем всё собранное и прогоняем одним списком.
+        map_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        for event in map_events:
+            try:
+                self.system_map.handle(event)
+            except Exception:
+                continue
+        # Тот же хронологический хвост кормит трекер экзобиологии: блок EXOBIO
+        # должен знать тела, отсканированные до запуска программы, — иначе
+        # «Поиск планет» с вкладки «Экзобиология» выглядит сломанным. Повторный
+        # учёт образцов исключает дедупликация событий по timestamp в трекере.
+        tracker = getattr(self, "exobiology", None)
+        if tracker is not None:
+            for event in map_events:
+                try:
+                    tracker.handle(event)
+                except Exception:
+                    continue
+        if self.system_map.current_system:
+            self._map_schedule_redraw(delay_ms=0)
+
+        notes = []
+        site = self.construction.site
+        if site is not None and site.market_id:
+            notes.append(f"стройплощадка {site.market_id} ({site.system_name or 'система не известна'})")
+        market_id = int(self.carrier.state.market_id or 0)
+        if market_id:
+            notes.append(f"авианосец {market_id}")
+        if notes:
+            self.log("Восстановлено из журнала: " + ", ".join(notes), "info")
+            # Оба состояния теперь известны — сразу спрашиваем Raven Colonial,
+            # сколько осталось завезти и что лежит на борту (включая груз,
+            # который завезли другие командиры).
+            self._refresh_site_project(force=True)
+            self._refresh_carrier_cargo(market_id, force=True)
+        return restored
+
     def _load_current_state_files(self):
         """Прочитать текущие JSON-файлы состояния (Status, ModulesInfo, Cargo)."""
         loaded = []
@@ -4706,23 +6152,7 @@ class ColonialHelperApp:
                         pass
                 loaded.append("ModulesInfo")
                 damaged = sum(1 for m in st.modules.values() if m.health < 1.0)
-                # Watcher зовёт этот метод каждые 5 секунд. Без сравнения
-                # подписи одна и та же строка про модули писалась в лог
-                # без конца, хотя в корабле ничего не менялось.
-                modules_sig = (
-                    len(st.modules), damaged,
-                    round(st.power_used, 2), round(st.power_capacity, 2),
-                )
-                if modules_sig != self._modules_log_sig:
-                    self._modules_log_sig = modules_sig
-                    self.root.after(
-                        0,
-                        lambda: self.log(
-                            f"Модули: {len(st.modules)} шт., повреждено: {damaged}, "
-                            f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
-                            "info",
-                        ),
-                    )
+                self._maybe_log_modules(len(st.modules), damaged, st.power_capacity)
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения ModulesInfo.json: {e}", "warn"))
         try:
@@ -4747,6 +6177,50 @@ class ColonialHelperApp:
                 self._state_files_log_sig = files_sig
                 self.root.after(
                     0, lambda: self.log(f"Загружено состояние: {', '.join(loaded)}", "info"))
+
+    def _maybe_log_modules(self, count: int, damaged: int, capacity: float):
+        """Строка про модули — только когда в корабле реально что-то изменилось.
+
+        `_load_current_state_files()` зовётся из цикла watcher'а каждые пять
+        секунд, и это была главная жалоба на лог: «постоянно пишет информацию
+        о корабле, сколько модулей и т.д.».
+
+        Подпись 2.9.0 включала текущее энергопотребление `power_used`, а оно
+        меняется в полёте постоянно (вкл/выкл модулей, посадочные опоры,
+        грузовой захват, выход из суперкруиза) — строка и печаталась снова и
+        снова. Теперь в подписи только то, что действительно стоит сообщать:
+        состав корабля (тип, имя, число модулей), число повреждённых и
+        мощность реактора. Текущее потребление остаётся в тексте строки,
+        в блоке SHIP оверлея и в инфографике пилота.
+
+        Отдельно глушатся «качели»: устаревший ModulesInfo.json и события
+        журнала (Repair/ModuleDamage) могут по очереди возвращать состояние
+        туда-сюда. Возврат к уже сообщённой подписи не новость — его не пишем.
+        """
+        st = self.ship.state
+        if st is None:
+            return
+        signature = (count, damaged, round(float(capacity or 0.0), 2),
+                     str(getattr(st, "ship_type", "") or ""),
+                     str(getattr(st, "ship_name", "") or ""))
+        previous = self._modules_log_sig
+        if signature == previous:
+            return
+        if signature == self._modules_log_prev_sig:
+            # Состояние вернулось к тому, о котором уже сообщали (A -> B -> A).
+            self._modules_log_sig = signature
+            self._modules_log_prev_sig = previous
+            return
+        self._modules_log_prev_sig = previous
+        self._modules_log_sig = signature
+        self.root.after(
+            0,
+            lambda c=count, d=damaged: self.log(
+                f"Модули: {c} шт., повреждено: {d}, "
+                f"энергия: {st.power_used:.2f}/{st.power_capacity:.2f} MW",
+                "info",
+            ),
+        )
 
     def _load_latest_loadout(self):
         """Найти и применить последнее событие Loadout из журналов."""
@@ -4869,12 +6343,18 @@ class ColonialHelperApp:
                 "info",
             )
 
-    def _flush_deferred_uploads(self):
+    def _flush_deferred_uploads(self, full_history: bool = False):
         """Отправить на сайт всё, накопленное за время первичной сверки.
 
         Один пакет вместо сотни мелких запросов (по одному на файл), что на
         истории из 800 файлов экономило десятки минут: доставки уходят
         параллельными пачками по 100, snapshots — по 100 (лимит сервера).
+
+        `full_history=True` — сверка читала журналы с самого начала (файл
+        смещений пуст, то есть это первый запуск программы). В этом случае
+        доставки в Raven Colonial уходят только если пользователь включил
+        отправку истории: `contribute` суммирует тонны, и повторный прогон
+        всей истории завысил бы вклад командира в общий проект.
         """
         self._defer_uploads = False
         deliveries, construction = self._backfill_deliveries, self._backfill_construction
@@ -4916,12 +6396,23 @@ class ColonialHelperApp:
                 )
                 log(f"Первичная загрузка: загружено {result['inserted']} доставок "
                     f"({route_tons:.0f}t на маршрут)", "success")
-                self._send_deliveries_to_raven(deliveries, cmdr_name)
             else:
                 # Не теряем распарсенные доставки: сервер дедуплицирует по
                 # source_hash, поэтому повторная попытка безопасна.
                 self._pending_watcher_deliveries = deliveries + self._pending_watcher_deliveries
                 log(f"Первичная загрузка: доставки не отправлены — {result.get('error', 'ошибка')}", "error")
+
+        # Raven Colonial — отдельно от сайта и от его ответа: сбой ED Ring
+        # Colony не должен уносить тонны стройплощадки (и наоборот).
+        if deliveries:
+            if full_history and not self.dispatcher.backfill_enabled:
+                tons = sum(int(d.get("amount", 0) or 0) for d in deliveries)
+                log(f"Raven Colonial: {len(deliveries)} доставок истории ({tons} t) НЕ отправлены — "
+                    "первичная сверка читала журналы с начала, а contribute суммирует тонны. "
+                    "Отправку истории можно включить галочкой «Отправлять историю в EDSM / Inara / "
+                    "Raven Colonial» на вкладке «Загрузка логов».", "info")
+            else:
+                self._send_deliveries_to_raven(deliveries, cmdr_name)
 
         # События строительства и доставки уже обработаны — прогресс-бар
         # возвращаем в состояние "завершено".
@@ -4983,7 +6474,9 @@ class ColonialHelperApp:
                         self._show_journal_reconciliation_progress(d, n, t, i, p)
                     )
             finally:
-                self._flush_deferred_uploads()
+                # full_history: смещений не было, читали журналы с самого
+                # начала — это вся история, а не «недосланное за сессию».
+                self._flush_deferred_uploads(full_history=first_reconciliation)
             if total_files == 0:
                 self.root.after(0, lambda: self._finish_journal_reconciliation("Новых строк для загрузки не найдено"))
             elif not self.watcher_stop_event.is_set():
@@ -5045,78 +6538,534 @@ class ColonialHelperApp:
             )
         self._last_delivery_system = deliveries[-1].get("system_name", self._last_delivery_system)
 
-    def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = ""):
+    #: Источники доставок, которые в принципе не являются вкладом в проект.
+    #: `carrier_delivery` — продажа своему авианосцу (уходит в
+    #: PATCH /api/fc/{id}/cargo), `cargo_delta`/`cargo_depot` — изменение трюма
+    #: и миссии: MarketID у них нет, а вклад в стройку игра пишет отдельным
+    #: событием `ColonisationContribution`. Они не «отказы», поэтому в отчёт
+    #: о пропущенных доставках не попадают (иначе лог забивался бы строками
+    #: «в событии нет MarketID» на каждую разгрузку трюма).
+    RAVEN_NON_PROJECT_SOURCES = frozenset({
+        "carrier_delivery", "cargo_delta", "cargo_depot",
+    })
+
+    #: Сколько неудачных отправок подряд держим в очереди, прежде чем
+    #: увеличить паузу между попытками (30 с -> 60 с -> 120 с, максимум 300 с).
+    RAVEN_RETRY_BACKOFF = (30.0, 60.0, 120.0, 300.0)
+    #: Очередь досылки не должна расти бесконечно: при долгом отсутствии сети
+    #: важнее не уронить приложение, чем дослать deliveries месячной давности.
+    RAVEN_PENDING_LIMIT = 500
+    #: Недоставленная строка (проекта ещё нет, сеть лежит) не должна каждый тик
+    #: вотчера порождать одно и то же сообщение: пока состав очереди не
+    #: изменился, повторная попытка делается не чаще раза в минуту, а после
+    #: RAVEN_MAX_ATTEMPTS попыток строка снимается с досылки (об этом пишется
+    #: один раз — держать её в очереди вечно смысла нет).
+    RAVEN_IDLE_RETRY_SECONDS = 60.0
+    RAVEN_MAX_ATTEMPTS = 30
+    #: То же для очереди аплоада на ED Ring Colony.
+    WATCHER_PENDING_LIMIT = 500
+
+    def _send_deliveries_to_raven(self, deliveries: list, cmdr_name: str = "",
+                                  force: bool = False):
+        """Поставить доставки в очередь Raven Colonial и сразу её дослать.
+
+        Публичная точка входа для всех путей (живой тик watcher'а, первичная сверка,
+        ручной импорт): метод сам решает, что уже отправлено (журнал
+        `source_hash`), что можно отправить сейчас, а что оставить в очереди.
+
+        Отправка в Raven НЕ зависит от результата аплоада на ED Ring Colony:
+        это два разных сервера, и раньше сбой одного молча уносил данные для
+        другого (и наоборот — успех одного заставлял слать доставку повторно).
+        """
+        self._queue_raven_deliveries(deliveries)
+        return self._flush_raven_deliveries(cmdr_name, force=force)
+
+    def _queue_raven_deliveries(self, deliveries: list) -> int:
+        """Добавить доставки в очередь Raven Colonial. Возвращает сколько добавлено."""
+        added = 0
+        for delivery in deliveries or []:
+            if not isinstance(delivery, dict):
+                continue
+            key = self._raven_delivery_key(delivery)
+            if not key or key in self._raven_sent:
+                # Уже зачтено Raven Colonial — повтор завысил бы тоннаж проекта.
+                continue
+            if any(self._raven_delivery_key(item) == key
+                   for item in self._pending_raven_deliveries):
+                continue
+            self._pending_raven_deliveries.append(dict(delivery))
+            added += 1
+        if len(self._pending_raven_deliveries) > self.RAVEN_PENDING_LIMIT:
+            dropped = len(self._pending_raven_deliveries) - self.RAVEN_PENDING_LIMIT
+            self._pending_raven_deliveries = self._pending_raven_deliveries[-self.RAVEN_PENDING_LIMIT:]
+            self.root.after(
+                0,
+                lambda n=dropped: self.log(
+                    f"Raven Colonial: очередь досылки переполнена, отброшено {n} старых доставок",
+                    "warn"),
+            )
+        return added
+
+    @staticmethod
+    def _raven_delivery_key(delivery: dict) -> str:
+        """Ключ доставки для журнала отправленного.
+
+        `source_hash` есть у всего, что пришло из журнала. Для доставок без
+        него (старые записи, ручные вызовы) собираем ключ из тех же полей,
+        которые определяют уникальность: площадка, товар, тонны, время.
+        """
+        raw = str(delivery.get("source_hash") or "").strip()
+        if raw:
+            return raw
+        return "|".join(str(delivery.get(field, "") or "") for field in (
+            "source", "market_id", "system_address", "commodity",
+            "amount", "delivered_at",
+        ))
+
+    @staticmethod
+    def _raven_commodity(name: str) -> str:
+        """Имя товара в том виде, в каком его ждёт Raven Colonial.
+
+        `normalize_commodity` делает каноническое имя из FDName-токена
+        (`$liquidoxygen_name;` -> `liquidoxygen`). Но если токена в событии не
+        оказалось и взято локализованное имя («Liquid oxygen»), нормализация
+        даёт имя с пробелом — такое Raven с ресурсом проекта не сопоставит, и
+        тонны молча не зачтутся. Документация API: «Commodity names are always
+        lower case and language agnostic», то есть без пробелов.
+        """
+        return canonical_commodity(name or "")
+
+    #: Как часто переспрашиваем Raven о проекте, который не нашёлся ни по
+    #: market_id, ни по системе. Первые несколько попыток идут в обычном темпе
+    #: (проект могли создать только что), дальше — редко: проект не появляется
+    #: за минуту, а долбить сервис и лог каждые пять секунд смысла нет.
+    RAVEN_SITE_MISS_FAST_TRIES = 3
+    RAVEN_SITE_MISS_RETRY_SECONDS = 300.0
+
+    def _raven_site_binding(self, market_id) -> dict:
+        """Ручная привязка стройплощадки к проекту Raven Colonial.
+
+        Нужна, когда автоматически площадку с проектом сопоставить нельзя:
+        проект создавали через сайт (и `marketId` там другой) или в системе
+        несколько активных проектов. Тогда пользователь сам указывает, какому
+        проекту зачислять тонны.
+        """
+        try:
+            key = str(int(market_id or 0))
+        except (TypeError, ValueError):
+            return {}
+        if key in ("", "0"):
+            return {}
+        bindings = self.config.get("raven_site_bindings") or {}
+        if not isinstance(bindings, dict):
+            return {}
+        record = bindings.get(key)
+        if isinstance(record, dict) and str(record.get("build_id") or "").strip():
+            return record
+        if isinstance(record, str) and record.strip():
+            return {"build_id": record.strip()}
+        return {}
+
+    def _resolve_site_project(self, address: int, market_id: int):
+        """Какой проект Raven считать этой стройплощадкой: `(project, note)`.
+
+        Порядок: ручная привязка (buildId известен точно) -> поиск по
+        (systemAddress, marketId) -> поиск по системе (внутри
+        `RavenColonialAPI.get_project`). Если проект не определён, возвращает
+        `(None, причина)` — вызывающий код пишет причину в лог и оставляет
+        доставки в очереди, а не выбрасывает их.
+        """
+        binding = self._raven_site_binding(market_id)
+        if binding:
+            build_id = str(binding.get("build_id") or "").strip()
+            cached = self._raven_bound_projects.get(build_id)
+            if isinstance(cached, dict) and cached.get("buildId"):
+                return cached, "привязка площадки"
+            resolve = getattr(self.raven_api, "resolve_project_by_id", None)
+            if build_id and callable(resolve):
+                try:
+                    project = resolve(build_id)
+                except Exception:
+                    project = None
+                if isinstance(project, dict) and project.get("buildId"):
+                    # Карточка привязанного проекта нужна только чтобы показать
+                    # название и остаток потребности: держим её в памяти, а не
+                    # спрашиваем на каждую отправку.
+                    self._raven_bound_projects[build_id] = project
+                    return project, "привязка площадки"
+            if build_id:
+                # Карточку Raven сейчас не отдал (сеть/таймаут), но buildId
+                # известен точно: тонны важнее названия проекта.
+                minimal = {"buildId": build_id,
+                           "buildName": str(binding.get("name") or "")}
+                return minimal, "привязка площадки"
+        try:
+            project = self.raven_api.get_project(int(address or 0), int(market_id or 0))
+        except Exception as exc:
+            return None, f"Raven Colonial не ответил ({exc})"
+        if isinstance(project, dict) and project.get("buildId"):
+            # `last_lookup_source` показывает, как именно найден проект:
+            # "market" (точная пара), "system" (единственный активный проект
+            # системы), "system+market". Пользователю это важно: тонны ушли в
+            # проект, который найден не по market_id площадки.
+            return project, str(getattr(self.raven_api, "last_lookup_source", "") or "market")
+        return None, str(getattr(self.raven_api, "last_lookup_error", "") or "")
+
+    def _site_on_pause(self, site_key, now: float) -> bool:
+        """Проект площадки не находится уже давно — пора перестать спрашивать."""
+        record = self._raven_site_miss.get(site_key)
+        if not record:
+            return False
+        attempts, last = record
+        if int(attempts) < self.RAVEN_SITE_MISS_FAST_TRIES:
+            return False
+        return (now - float(last)) < self.RAVEN_SITE_MISS_RETRY_SECONDS
+
+    def _note_site_miss(self, site_key, now: float) -> None:
+        attempts, _last = self._raven_site_miss.get(site_key, (0, 0.0))
+        self._raven_site_miss[site_key] = (int(attempts) + 1, now)
+
+    def _clear_site_miss(self, site_key) -> None:
+        """Проект нашёлся: счётчик промахов и «объяснение» больше не нужны."""
+        if self._raven_site_miss.pop(site_key, None) is not None:
+            self._raven_site_warned.discard(site_key)
+
+    def _warn_site_unresolved(self, market_id, reason: str) -> None:
+        """Один раз объяснить, почему тонны не уходят и что сделать.
+
+        Без этой строки «проект не найден» повторялся бы в сводке каждую
+        минуту, не говоря пользователю, что проект надо создать (или привязать
+        площадку к существующему) — иначе тонны не зачтутся никогда.
+        """
+        try:
+            wanted = int(market_id or 0)
+        except (TypeError, ValueError):
+            wanted = 0
+        waiting = sum(
+            int(item.get("amount", 0) or 0)
+            for item in self._pending_raven_deliveries
+            if int(item.get("market_id", 0) or 0) == wanted
+        )
+        self.root.after(
+            0,
+            lambda m=wanted, r=reason, t=waiting: self.log(
+                f"Raven Colonial: проект стройплощадки {m} не найден ({r}). "
+                f"{t} t ждут отправки. Создайте проект на вкладке «Колонизатор» "
+                "или привяжите площадку к существующему проекту — иначе тонны "
+                "не зачтутся.", "warn"),
+        )
+
+    #: Как часто можно спросить Raven Colonial об имени командира по ключу.
+    RAVEN_CMDR_RETRY_SECONDS = 60.0
+
+    def _raven_cmdr_name(self) -> str:
+        """Имя командира для `POST /project/{buildId}/contribute/{cmdr}`.
+
+        Raven зачисляет тонны тому командиру, чьё имя стоит в пути запроса, а
+        без имени пишет их на «Unknown» — вклад в проект теряется. Обычно имя
+        есть (токен сайта, `Commander` из журнала), но если программа запущена
+        до `LoadGame`, его может не быть: тогда спрашиваем у самого Raven по
+        ключу RCC (`GET /api/cmdr/` возвращает `displayName` — ровно то имя,
+        под которым командир известен сервису).
+
+        Запрос делается не чаще раза в минуту и только пока имя не найдено:
+        метод зовётся из потока watcher'а, блокировать его надолго нельзя.
+        """
+        name = (self._current_cmdr_name() or "").strip()
+        if name:
+            self._raven_cmdr_cache = name
+            return name
+        cached = str(getattr(self, "_raven_cmdr_cache", "") or "").strip()
+        if cached:
+            return cached
+        now = time.monotonic()
+        if now - float(getattr(self, "_raven_cmdr_asked_at", 0.0) or 0.0) < self.RAVEN_CMDR_RETRY_SECONDS:
+            return ""
         if not self.raven_api.is_connected:
-            return
-        batches = {}
-        # Причины, по которым доставка не ушла на Raven. Раньше все четыре
-        # ветки просто делали `continue`: в логе не было ни строки, и
-        # «Raven Colonial не получает тоннаж» выглядело как поломка сервера,
-        # хотя чаще всего проект просто не найден по market_id.
+            return ""
+        self._raven_cmdr_asked_at = now
+        try:
+            result = self.raven_api.get_cmdr_by_key()
+            resolved = self.raven_api.cmdr_display_name(result)
+        except Exception:
+            resolved = ""
+        if resolved:
+            self._raven_cmdr_cache = resolved
+        return str(resolved or "")
+
+    def _flush_raven_deliveries(self, cmdr_name: str = "", force: bool = False) -> dict:
+        """Отправить очередь в Raven Colonial. Возвращает сводку попытки.
+
+        Под блокировкой: очередь досылают и поток watcher'а, и UI (после
+        проверки ключа, привязки площадки, сверки). Без блокировки два потока
+        успевали отправить одну и ту же доставку до того, как она попадёт в
+        журнал отправленного, — тонны проекту зачитывались дважды.
+        """
+        summary = {"sent": 0, "tons": 0, "skipped": 0, "pending": 0, "reasons": {}}
+        with self._raven_lock:
+            return self._flush_raven_deliveries_locked(cmdr_name, force, summary)
+
+    def _flush_raven_deliveries_locked(self, cmdr_name: str, force: bool, summary: dict) -> dict:
+        queue = [item for item in self._pending_raven_deliveries]
+        if not queue:
+            return summary
+
+        if not self.raven_api.is_connected:
+            # Без ключа RCC отправить нельзя, но и терять доставки нельзя:
+            # очередь останется и уйдёт, как только ключ появится.
+            if not self._raven_no_key_warned:
+                self._raven_no_key_warned = True
+                self.root.after(
+                    0,
+                    lambda n=len(queue): self.log(
+                        f"Raven Colonial: ключ RCC не задан — {n} доставок на стройплощадку "
+                        "ждут отправки (вкладка «Колонизатор»)", "warn"),
+                )
+            summary["pending"] = len(queue)
+            return summary
+
+        now = time.monotonic()
+        # Одна и та же недоставленная строка не должна дёргать Raven и лог
+        # каждые пять секунд: если состав очереди не изменился, повторяем
+        # попытку не чаще RAVEN_IDLE_RETRY_SECONDS.
+        queue_sig = "|".join(sorted(self._raven_delivery_key(item) for item in queue))
+        if (not force and queue_sig == self._raven_queue_sig
+                and now - self._raven_last_attempt < self.RAVEN_IDLE_RETRY_SECONDS):
+            summary["pending"] = len(queue)
+            return summary
+        self._raven_queue_sig = queue_sig
+
+        if not force and self._raven_fail_streak:
+            pause = self.RAVEN_RETRY_BACKOFF[
+                min(self._raven_fail_streak - 1, len(self.RAVEN_RETRY_BACKOFF) - 1)]
+            if now - self._raven_last_attempt < pause:
+                summary["pending"] = len(queue)
+                return summary
+        self._raven_last_attempt = now
+
+        # Имя командира: Raven зачисляет тонны на командира из пути запроса,
+        # а без имени пишет их на «Unknown».
+        cmdr = (cmdr_name or self._raven_cmdr_name() or "").strip()
+
+        batches: dict = {}
+        batch_keys: dict = {}
         skipped: dict = {}
+        forgotten: set = set()
+        site_projects: dict = {}   # (address, market_id) -> (project, note)
+        resolved_notes: dict = {}  # build_id -> как нашли проект
 
         def _skip(reason: str):
             skipped[reason] = skipped.get(reason, 0) + 1
 
-        for delivery in deliveries:
+        def _forget(delivery):
+            """Убрать доставку из очереди (по идентичности, не по равенству)."""
+            forgotten.add(id(delivery))
+            self._raven_attempts.pop(self._raven_delivery_key(delivery), None)
+
+        def _retry_later(reason: str, delivery):
+            """Строку ещё можно отправить позже: считаем попытки и сдаёмся.
+
+            Без счётчика «проект не найден» означал бы вечную очередь и вечное
+            сообщение в логе: через RAVEN_MAX_ATTEMPTS попыток строка снимается
+            с досылки, а причина пишется один раз.
+            """
+            key = self._raven_delivery_key(delivery)
+            attempts = int(self._raven_attempts.get(key, 0)) + 1
+            self._raven_attempts[key] = attempts
+            if attempts >= self.RAVEN_MAX_ATTEMPTS:
+                _forget(delivery)
+                _skip(f"{reason} — после {attempts} попыток снято с досылки")
+            else:
+                _skip(reason)
+
+        for delivery in queue:
+            source = str(delivery.get("source") or "")
+            if source in self.RAVEN_NON_PROJECT_SOURCES:
+                # Не вклад в проект — уходит другим путём или не уходит вовсе.
+                _forget(delivery)
+                continue
             market_id = delivery.get("market_id")
             if not market_id:
+                # MarketID в событии не появится никогда — повторять нечего.
                 _skip("в событии нет MarketID")
+                _forget(delivery)
                 continue
-            # Продажа груза своему авианосцу — это не доставка на стройку:
-            # груз авианосца обновляется отдельным PATCH /api/fc/{marketId}/
-            # cargo. Если отправить её ещё и в /contribute, Raven засчитает
-            # тонны проекту дважды (или засчитает то, чего никто не сдавал).
-            if delivery.get("source") == "carrier_delivery":
-                continue
-            address = delivery.get("system_address") or (self.ship.state.system_address if self.ship.state else 0)
+            address = delivery.get("system_address") or (
+                self.ship.state.system_address if self.ship.state else 0)
             if not address:
-                _skip("не определён SystemAddress")
+                # Позиция корабля может определиться позже — пробуем ещё.
+                _retry_later("не определён SystemAddress", delivery)
                 continue
-            # Проект ищем через кэш: все доставки на одну стройплощадку дают
-            # один и тот же buildId, а раньше на каждую доставку уходил
-            # отдельный HTTP-запрос (с таймаутом до 15 с).
-            project = self.raven_api.get_project(address, market_id)
-            if not project or not project.get("buildId"):
-                _skip(f"проект не найден (market_id={market_id})")
-                continue
-            build_id = project["buildId"]
             # Raven Colonial принимает только языконезависимые имена товаров в
-            # нижнем регистре («Commodity names are always lower case and
-            # language agnostic»: `steel`, не `Steel` и не `$steel_name;`).
-            # Парсер же кладёт в доставку `Type_Localised`/`Name_Localised` —
-            # без нормализации сервер не мог сопоставить доставку с ресурсом
-            # проекта, и тоннаж на Raven Colonial не рос.
-            commodity = normalize_commodity(delivery.get("commodity") or "")
+            # нижнем регистре без пробелов (`steel`, `liquidoxygen` — не
+            # `Steel`, не `Liquid oxygen` и не `$steel_name;`).
+            commodity = self._raven_commodity(delivery.get("commodity") or "")
             if not commodity:
                 _skip("пустое имя товара")
+                _forget(delivery)
+                continue
+            site_key = (int(address or 0), int(market_id or 0))
+            if self._site_on_pause(site_key, now):
+                # Проект не находится уже несколько попыток подряд: не долбим
+                # Raven и не повторяем сводку, доставка просто ждёт.
+                continue
+            # ОДИН поиск проекта на площадку, а не на каждую доставку: раньше
+            # очередь из четырёх недоставленных строк делала четыре запроса за
+            # тик и так далее по кругу — это и выглядело как «зацикливание».
+            if site_key not in site_projects:
+                site_projects[site_key] = self._resolve_site_project(*site_key)
+            project, note = site_projects[site_key]
+            if not isinstance(project, dict) or not project.get("buildId"):
+                self._note_site_miss(site_key, now)
+                if site_key not in self._raven_site_warned:
+                    self._raven_site_warned.add(site_key)
+                    self._warn_site_unresolved(market_id, note or "проекта пока нет")
+                if note and "пока нет" not in note:
+                    _retry_later(f"Raven Colonial: {note}", delivery)
+                else:
+                    _retry_later(f"проект не найден (market_id={market_id})", delivery)
+                continue
+            self._clear_site_miss(site_key)
+            build_id = str(project["buildId"])
+            try:
+                amount = int(delivery.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                amount = 0
+            if amount <= 0:
+                _skip("в событии нет тоннажа")
+                _forget(delivery)
                 continue
             batch = batches.setdefault(build_id, {})
-            batch[commodity] = batch.get(commodity, 0) + int(delivery.get("amount", 0))
+            batch[commodity] = batch.get(commodity, 0) + amount
+            batch_keys.setdefault(build_id, []).append((delivery, project))
+            resolved_notes.setdefault(build_id, str(note or ""))
+
+        sent_any = False
         for build_id, commodities in batches.items():
-            result = self.raven_api.contribute(build_id, cmdr_name or "Unknown", commodities)
+            result = self.raven_api.contribute(build_id, cmdr, commodities)
             if result.get("ok"):
+                sent_any = True
+                tons = sum(commodities.values())
+                project_name = ""
+                for delivery, project in batch_keys.get(build_id, []):
+                    self._raven_sent[self._raven_delivery_key(delivery)] = {
+                        "build_id": build_id,
+                        "tons": int(delivery.get("amount", 0) or 0),
+                        "at": time.time(),
+                    }
+                    _forget(delivery)
+                    project_name = project_name or str(
+                        project.get("buildName") or project.get("systemName") or "")
+                self._save_raven_ledger()
+                summary["sent"] += len(batch_keys.get(build_id, []))
+                summary["tons"] += tons
+                label = f" ({project_name})" if project_name else ""
+                how = resolved_notes.get(build_id, "")
+                if how and how not in ("market",):
+                    # Проект найден не по market_id площадки (или привязан
+                    # вручную) — пользователю важно видеть, куда ушли тонны.
+                    label += f", найден: {how}"
+                for name, amount in commodities.items():
+                    self._raven_credit_pending[name] = (
+                        self._raven_credit_pending.get(name, 0) + int(amount))
+                self._raven_credit_checks = 0
                 self.root.after(
                     0,
-                    lambda total=sum(commodities.values()): self.log(f"Raven Colonial: +{total}t", "success"),
+                    lambda t=tons, name=label: self.log(
+                        f"Raven Colonial: +{t}t{name}", "success"),
                 )
             else:
+                retryable = bool(result.get("retryable", True))
+                error = str(result.get("error") or "неизвестная ошибка")
+                if retryable:
+                    # Оставляем в очереди: следующий тик повторит отправку,
+                    # но не бесконечно — счётчик попыток общий для строки.
+                    for delivery, _project in batch_keys.get(build_id, []):
+                        _retry_later(
+                            f"сервер не принял доставку, будет повтор ({error})", delivery)
+                else:
+                    # Повтор бессмыслен (неверный ключ/проект/данные): убираем
+                    # из очереди, иначе она росла бы вечно.
+                    for delivery, _project in batch_keys.get(build_id, []):
+                        _forget(delivery)
+                    _skip(f"отправка невозможна ({error})")
                 self.root.after(
                     0,
-                    lambda e=result.get("error", "unknown"): self.log(f"Raven Colonial: {e}", "warn"),
+                    lambda e=error, b=build_id: self.log(
+                        f"Raven Colonial: проект {b} — {e}", "warn"),
                 )
+
+        if sent_any:
+            self._raven_fail_streak = 0
+            # «Осталось завезти» после нашей же доставки устарело: перечитываем
+            # проект площадки сразу, а не через пять минут.
+            self._refresh_site_project(force=True)
+            self._refresh_primary_project(force=True)
+        elif batches:
+            self._raven_fail_streak += 1
+
+        if forgotten:
+            self._pending_raven_deliveries = [
+                item for item in self._pending_raven_deliveries
+                if id(item) not in forgotten]
+        if not self._pending_raven_deliveries:
+            self._raven_attempts.clear()
+            self._raven_queue_sig = ""
+
+        summary["skipped"] = sum(skipped.values())
+        summary["reasons"] = skipped
+        summary["pending"] = len(self._pending_raven_deliveries)
         if skipped:
             # Без этой строки «Raven Colonial не получил тоннаж» выглядело как
-            # молчаливый отказ сервера: четыре ветки выше просто делали
+            # молчаливый отказ сервера: все ветки выше просто делали
             # `continue`. Чаще всего причина — проект не найден по market_id,
             # и пользователю нужно это видеть, а не догадываться.
-            detail = "; ".join(f"{reason} — {count}" for reason, count in sorted(skipped.items()))
-            self.root.after(
-                0,
-                lambda d=detail: self.log(
-                    f"Raven Colonial: не отправлено {sum(skipped.values())} доставок ({d})",
-                    "warn"),
-            )
+            detail = "; ".join(f"{reason} — {count}"
+                               for reason, count in sorted(skipped.items()))
+            total = sum(skipped.values())
+            # Повтор той же сводки — не новость (та же самая недоставленная
+            # строка минуту спустя), поэтому пишем только при изменении.
+            # «Качели» (A -> B -> A) тоже глушим: две последние подписи.
+            report_sig = (total, detail)
+            if report_sig not in (self._raven_skip_sig, self._raven_skip_prev_sig):
+                self._raven_skip_prev_sig = self._raven_skip_sig
+                self._raven_skip_sig = report_sig
+                self.root.after(
+                    0,
+                    lambda d=detail, n=total: self.log(
+                        f"Raven Colonial: не отправлено {n} доставок ({d})", "warn"),
+                )
+        return summary
+
+    def _save_raven_ledger(self):
+        """Сохранить журнал отправленного в Raven Colonial (рядом с конфигом).
+
+        Именно он не даёт зачесть одну доставку дважды после перезапуска:
+        offsets журнала отвечают за «какие байты прочитаны», а этот файл — за
+        «какие тонны уже зачтены проекту».
+        """
+        try:
+            path = self.config_path.with_name(".colonial_helper_raven_sent.json")
+            items = sorted(
+                self._raven_sent.items(), key=lambda item: item[1].get("at", 0.0)
+            )[-5000:]
+            self._raven_sent = dict(items)
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(self._raven_sent, fh)
+            tmp.replace(path)
+        except OSError:
+            # Журнал отправленного — страховка от дублей, не критичные данные.
+            pass
+
+    def _load_raven_ledger(self) -> dict:
+        try:
+            path = self.config_path.with_name(".colonial_helper_raven_sent.json")
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
 
     def _handle_tracked_event(self, ev: dict, live: bool = True):
         """Обработка одного события журнала: маршрут, корабль, оверлей.
@@ -5139,6 +7088,8 @@ class ColonialHelperApp:
                         self.overlay_manager.log(f"Jump: {sys_name}", "info")
         # Стройплощадка: из неё вкладка «Колонизатор» заполняет форму проекта.
         self._feed_construction_site(ev, live=live)
+        # Карта системы: тела, станции, стройплощадки и где сейчас пилот.
+        self._feed_system_map(ev, live=live)
         # Отслеживание корабля
         self.ship.parse_event(ev)
         # Груз авианосца: те же события, что уходят в Raven (/api/fc/.../cargo),
@@ -5200,7 +7151,7 @@ class ColonialHelperApp:
                     except (TypeError, ValueError):
                         continue
                     if value > 0:
-                        need[str(raw)] = value
+                        need[canonical_commodity(raw)] = value
                 if need:
                     label = (f"{project.get('buildName') or 'проект'}"
                              f" · {project.get('systemName') or ''}").strip(" ·")
@@ -5220,7 +7171,7 @@ class ColonialHelperApp:
                     except (TypeError, ValueError):
                         continue
                     if value > 0:
-                        need[str(raw)] = value
+                        need[canonical_commodity(raw)] = value
                 if need:
                     label = (f"{site_project.get('buildName') or 'стройплощадка'}"
                              f" · {site_project.get('systemName') or ''}").strip(" ·")
@@ -5231,7 +7182,8 @@ class ColonialHelperApp:
         if site is None:
             return {}, "", ""
         try:
-            need = site.remaining_by_commodity()
+            need = {canonical_commodity(key): value
+                    for key, value in site.remaining_by_commodity().items()}
         except Exception:
             return {}, "", ""
         need = {k: int(v) for k, v in (need or {}).items() if int(v or 0) > 0}
@@ -5323,13 +7275,160 @@ class ColonialHelperApp:
             cargo = data
         if not isinstance(cargo, dict) or not cargo:
             return
+        # Подписываем в лог только РЕАЛЬНО изменившийся снимок: запрос уходит
+        # по таймеру каждые пять минут, и «груз получен» на каждом обновлении
+        # превращалось в фоновый шум, даже когда другие командиры ничего не
+        # завозили.
+        signature = tuple(sorted(
+            (normalize_commodity(key), int(float(value or 0)))
+            for key, value in cargo.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        ))
         if self.carrier.merge_remote(cargo):
-            self.log(
-                f"Авианосец {market_id}: груз по товарам получен из Raven Colonial "
-                f"({len(cargo)} позиц.)", "info")
+            if signature != self._carrier_cargo_log_sig:
+                self._carrier_cargo_log_sig = signature
+                self.log(
+                    f"Авианосец {market_id}: груз по товарам обновлён из Raven Colonial "
+                    f"({len(signature)} позиц., {sum(item[1] for item in signature)} t)", "info")
 
     #: Как часто перечитывать проект стройплощадки из Raven Colonial.
     SITE_PROJECT_REFRESH_SECONDS = 300.0
+
+    #: Как часто перечитываем ОСНОВНОЙ проект колонизатора по таймеру.
+    PRIMARY_PROJECT_REFRESH_SECONDS = 300.0
+
+    def _refresh_primary_project(self, force: bool = False):
+        """Перечитать основной проект колонизатора из Raven Colonial.
+
+        Блок CARRIER оверлея показывает `commodities` основного проекта —
+        актуальный остаток потребности на сервере. Раньше словарь проекта
+        копировался один раз при назначении основным (или при загрузке
+        списка), и после наших же доставок и ProjectUpdate, а также после
+        сдач других командиров оверлей продолжал показывать потребность на
+        момент назначения.
+        """
+        build_id = str(self.colony_primary_project.get("buildId") or "")
+        if not build_id or not self.raven_api.is_connected:
+            return
+        now = time.monotonic()
+        same = build_id == self._primary_remote_id
+        if (not force and same
+                and now - float(self._primary_remote_at or 0.0)
+                < self.PRIMARY_PROJECT_REFRESH_SECONDS):
+            return
+        self._primary_remote_id = build_id
+        self._primary_remote_at = now
+        threading.Thread(target=self._load_primary_project,
+                         args=(build_id,), daemon=True).start()
+
+    def _load_primary_project(self, build_id: str):
+        project = self.raven_api.resolve_project_by_id(build_id)
+        if not isinstance(project, dict) or not project.get("buildId"):
+            return
+
+        def apply():
+            # Пока запрос летел, основным могли назначить другой проект —
+            # чужой список материалов не подменяем.
+            if str(self.colony_primary_project.get("buildId") or "") != build_id:
+                return
+            self.colony_primary_project = dict(project)
+            cache = getattr(self, "_colony_projects_cache", None)
+            if isinstance(cache, dict):
+                cache[build_id] = dict(project)
+            self._maybe_confirm_project_complete(project)
+
+        self.root.after(0, apply)
+
+    # ============================================================
+    #  Подтверждение завершения проекта в Raven Colonial
+    # ============================================================
+    def _maybe_confirm_project_complete(self, project):
+        """Остаток потребности занулился — подтвердить завершение проекта.
+
+        Raven Colonial не отмечает проект завершённым сам: клиент, который
+        увидел полную завозку, отправляет `POST /api/project/{buildId}/complete`.
+        Мы видим это при перечитке основного проекта и проекта стройплощадки —
+        когда в `commodities` не осталось положительных остатков. Вызов
+        планируется в главный поток: `_load_site_project` работает в фоне.
+        """
+        if not isinstance(project, dict):
+            return
+        if not str(project.get("buildId") or "").strip():
+            return
+        self.after(0, lambda p=dict(project): self._confirm_project_complete(p))
+
+    def _confirm_project_complete(self, project: dict):
+        """Главный поток: проверить остаток и один раз отправить /complete."""
+        build_id = str(project.get("buildId") or "").strip()
+        if not build_id or not self.raven_api.is_connected:
+            return
+        commodities = project.get("commodities")
+        if not isinstance(commodities, dict) or not commodities:
+            return  # данных о потребности нет — повода завершать нет
+        values = []
+        for amount in commodities.values():
+            try:
+                values.append(int(float(amount)))
+            except (TypeError, ValueError):
+                return  # остаток не читается — лучше не трогать
+        if not values or any(value > 0 for value in values):
+            return
+        notified = {str(item) for item in (self.config.get("raven_complete_notified") or [])}
+        if build_id in notified:
+            return
+        status = str(project.get("status") or "").strip().lower()
+        if status in ("complete", "completed", "done"):
+            # Сервер уже считает проект завершённым — запоминаем и не дёргаем API.
+            notified.add(build_id)
+            self.config["raven_complete_notified"] = sorted(notified)
+            self.save_config()
+            return
+        notified.add(build_id)
+        self.config["raven_complete_notified"] = sorted(notified)
+        self.save_config()
+        name = str(project.get("buildName") or build_id)
+        self.log(f"Raven Colonial: «{name}» — потребность завезена полностью, "
+                 "отправляю подтверждение завершения…", "info")
+        threading.Thread(target=self._confirm_complete_thread,
+                         args=(build_id, name), daemon=True).start()
+
+    def _confirm_complete_thread(self, build_id: str, name: str):
+        """Фоновый POST /complete; сетевой сбой снимает метку ради повтора."""
+        try:
+            result = self.raven_api.mark_complete(build_id)
+        except Exception as exc:
+            result = {"ok": False, "status": 0, "error": str(exc)}
+        if not isinstance(result, dict):
+            result = {"ok": False, "status": 0, "error": "пустой ответ"}
+
+        def done():
+            if result.get("ok"):
+                self.log(f"Raven Colonial: завершение проекта «{name}» подтверждено.",
+                         "success")
+                return
+            try:
+                status = int(result.get("status") or 0)
+            except (TypeError, ValueError):
+                status = 0
+            if status == 0:
+                # Сеть не ответила — убираем метку, следующая перечитка повторит.
+                notified = [str(item)
+                            for item in (self.config.get("raven_complete_notified") or [])
+                            if str(item) != build_id]
+                self.config["raven_complete_notified"] = notified
+                self.save_config()
+                self.log(f"Raven Colonial: подтверждение завершения «{name}» не ушло "
+                         f"({result.get('error') or 'сеть'}) — повторю позже.", "warn")
+            else:
+                self.log(f"Raven Colonial: завершение «{name}» не принял "
+                         f"({result.get('error') or status}).", "error")
+
+        self.after(0, done)
+
+    def _on_raven_supply_sent(self, build_id: str = ""):
+        """ProjectUpdate дошёл до Raven: потребность изменилась — перечитать."""
+        self.after(0, lambda: self._refresh_site_project(force=True))
+        self.after(0, lambda: self._refresh_primary_project(force=True))
 
     def _refresh_site_project(self, force: bool = False):
         """Перечитать из Raven Colonial проект площадки, у которой стоит игрок.
@@ -5359,36 +7458,359 @@ class ColonialHelperApp:
             return
         self._site_remote_market = market_id
         self._site_remote_at = now
+        if force:
+            # «Перечитать сразу» ничего не давало: ответ приходил из кэша на
+            # 300 секунд, и после нашей же доставки пользователь продолжал
+            # видеть прежний остаток потребности.
+            invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+            if callable(invalidate):
+                invalidate(address, market_id)
         threading.Thread(
             target=self._load_site_project, args=(address, market_id), daemon=True
         ).start()
 
     def _load_site_project(self, address: int, market_id: int):
-        """Фоновый запрос: проект стройплощадки из Raven Colonial."""
-        try:
-            project = self.raven_api.get_project(address, market_id)
-        except Exception as exc:
-            self.log(f"Raven Colonial: проект стройплощадки не получен ({exc})", "warn")
-            return
+        """Фоновый запрос: проект стройплощадки из Raven Colonial.
+
+        Ищем тем же путём, что и для отправки доставок (привязка площадки ->
+        market_id -> система), иначе «осталось завезти» показывало бы не тот
+        проект, которому зачисляются тонны.
+        """
+        project, _note = self._resolve_site_project(address, market_id)
         if not isinstance(project, dict) or not project.get("buildId"):
             # Площадка есть в журнале, но проекта на Raven ещё нет (никто не
             # создал) — это не ошибка, а состояние. Молча остаёмся на журнале.
             self.site_project = {}
             return
         self.site_project = dict(project)
+        self._maybe_confirm_project_complete(project)
         commodities = project.get("commodities")
         if isinstance(commodities, dict):
-            left = sum(
-                int(float(v)) for v in commodities.values()
-                if isinstance(v, (int, float)) and not isinstance(v, bool)
-            )
-            # Тысячи разделяем пробелом, но только в самом числе: глобальный
-            # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
-            tons = f"{left:,}".replace(",", " ")
-            self.log(
-                f"Стройплощадка {market_id}: осталось завезти {tons} t "
-                f"({len(commodities)} позиц., данные Raven Colonial)",
-                "info")
+            remaining = {
+                canonical_commodity(key): int(float(value))
+                for key, value in commodities.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
+            self._check_raven_credit(market_id, remaining)
+            left = sum(remaining.values())
+            # Пишем строку только когда остаток действительно изменился:
+            # опрос идёт по таймеру каждые пять минут, и одинаковое
+            # «осталось завезти» на каждом опросе — просто шум.
+            signature = (market_id, tuple(sorted(remaining.items())))
+            if signature != self._site_project_log_sig:
+                self._site_project_log_sig = signature
+                # Тысячи разделяем пробелом, но только в самом числе: глобальный
+                # .replace(",", " ") по всей строке съел бы запятую после «позиц.».
+                tons = f"{left:,}".replace(",", " ")
+                self.log(
+                    f"Стройплощадка {market_id}: осталось завезти {tons} t "
+                    f"({len(remaining)} позиц., данные Raven Colonial)",
+                    "info")
+
+    #: Сколько снимков потребности ждём, прежде чем сказать «тонны не зачтены».
+    #: Raven может применить вклад не мгновенно, а первый снимок делается сразу
+    #: после отправки: ругаться по нему — значит пугать пользователя зря.
+    RAVEN_CREDIT_GRACE_CHECKS = 2
+
+    def _check_raven_credit(self, market_id: int, remaining: dict):
+        """Зачёл ли Raven тонны, которые мы отправили.
+
+        `contribute` отвечает 200 и когда товар не входит в потребность
+        проекта, и когда проект оказался не тем: со стороны это ровно то, на
+        что жаловался пользователь — «запросы уходят, а ресурсы в проект не
+        приходят». Сравниваем остаток потребности до и после отправки и, если
+        он не уменьшился, говорим прямо, что не так.
+
+        Товар считается зачтённым, как только его остаток уменьшился, — после
+        этого он из ожидания убирается и больше не проверяется.
+        """
+        expected = dict(self._raven_credit_pending)
+        previous = dict(self._site_remaining_prev)
+        self._site_remaining_prev = dict(remaining)
+        if not expected or not previous:
+            return
+
+        still_waiting = {}
+        problems = []
+        for name, tons in sorted(expected.items()):
+            after = remaining.get(name)
+            before = previous.get(name)
+            if after is None:
+                problems.append(f"{name} ({tons} t) — товара нет в потребности проекта")
+                still_waiting[name] = tons
+            elif before is not None and int(after) >= int(before):
+                problems.append(f"{name} ({tons} t) — потребность не уменьшилась "
+                                f"({before} -> {after})")
+                still_waiting[name] = tons
+
+        if not problems:
+            # Всё зачтено: сбрасываем ожидание и «память» о прошлой жалобе,
+            # чтобы следующая реальная проблема снова была видна.
+            self._raven_credit_pending = {}
+            self._raven_credit_checks = 0
+            self._raven_credit_warn_sig = None
+            self._raven_credit_prev_sig = None
+            return
+
+        self._raven_credit_pending = still_waiting
+        self._raven_credit_checks += 1
+        if self._raven_credit_checks < self.RAVEN_CREDIT_GRACE_CHECKS:
+            return
+
+        signature = (int(market_id or 0), tuple(sorted(still_waiting)))
+        if signature in (self._raven_credit_warn_sig, self._raven_credit_prev_sig):
+            return
+        self._raven_credit_prev_sig = self._raven_credit_warn_sig
+        self._raven_credit_warn_sig = signature
+        self.log(
+            f"Raven Colonial: запрос принят, но тонны не зачтены проекту "
+            f"{market_id}: " + "; ".join(problems)
+            + ". Проверьте, тот ли это проект (вкладка «Колонизатор» — «Привязать "
+              "площадку к проекту»), и входит ли товар в потребность.",
+            "warn")
+
+    # ============================================================
+    #  Сверка стройплощадки с Raven Colonial
+    #
+    #  Отвечает на вопрос «сколько осталось завезти» честно: журнал знает
+    #  только то, что завезли ВЫ, а остаток потребности на Raven Colonial
+    #  общий на всех командиров. Плюс — досылает то, что не ушло из-за
+    #  прерванной сессии или сбоя сети.
+    # ============================================================
+    #: Сколько последних журналов читаем в поисках доставок на площадку.
+    RECONCILE_MAX_FILES = 10
+    RECONCILE_MAX_BYTES = 20 * 1024 * 1024
+
+    def _journal_site_deliveries(self, market_id: int) -> dict:
+        """Что по журналу завезено на конкретную стройплощадку.
+
+        Возвращает `{"deliveries": [...], "tons": {...}, "total": int,
+        "count": int, "last_at": str}`. Читаем хвост последних журналов:
+        стройка живёт днями, а вся история для сверки не нужна.
+        """
+        deliveries: list = []
+        budget = self.RECONCILE_MAX_BYTES
+        try:
+            files = sorted(
+                self.journal_path.glob("Journal.*.log"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )[: self.RECONCILE_MAX_FILES]
+        except OSError:
+            files = []
+        site = self.construction.site
+        fallback_system = (site.system_name if site is not None else "") or (
+            self.ship.state.current_system if self.ship.state else "")
+        fallback_address = (site.system_address if site is not None else 0) or (
+            self.ship.state.system_address if self.ship.state else 0)
+
+        for path in files:
+            if budget <= 0:
+                break
+            try:
+                size = path.stat().st_size
+                with open(path, "rb") as fh:
+                    chunk = min(size, budget)
+                    if size > chunk:
+                        fh.seek(size - chunk)
+                        fh.readline()  # отбрасываем неполную строку
+                    raw = fh.read()
+                budget -= chunk
+            except OSError:
+                continue
+            deliveries.extend(site_deliveries_from_text(
+                raw.decode("utf-8", errors="replace"),
+                market_id=market_id,
+                current_system=fallback_system,
+                current_system_address=fallback_address,
+            ))
+
+        deliveries.sort(key=lambda d: str(d.get("delivered_at") or ""))
+        tons: dict = {}
+        total = 0
+        for delivery in deliveries:
+            key = normalize_commodity(delivery.get("commodity") or "")
+            amount = int(delivery.get("amount", 0) or 0)
+            if not key or amount <= 0:
+                continue
+            tons[key] = tons.get(key, 0) + amount
+            total += amount
+        return {
+            "deliveries": deliveries,
+            "tons": tons,
+            "total": total,
+            "count": len(deliveries),
+            "last_at": str(deliveries[-1].get("delivered_at") or "") if deliveries else "",
+        }
+
+    def _on_colony_reconcile(self):
+        """Кнопка «Сверить стройплощадку»: журнал против Raven Colonial."""
+        if not self.raven_api.is_connected:
+            self.log("Raven Colonial: ключ RCC не задан — сверка невозможна "
+                     "(вкладка «Колонизатор»)", "warn")
+            return
+        site = self.construction.site
+        if site is None or not site.market_id:
+            self.log("Стройплощадка не найдена: пристыкуйтесь к Construction Ship / "
+                     "площадке или запустите watcher (состояние восстановится из журнала).",
+                     "warn")
+            return
+        if getattr(self, "_colony_reconcile_busy", False):
+            return
+        self._colony_reconcile_busy = True
+        self.colony_status.config(text="Сверяю стройплощадку с Raven Colonial…")
+        threading.Thread(
+            target=self._colony_reconcile_thread,
+            args=(int(site.market_id), int(site.system_address or 0)),
+            daemon=True,
+        ).start()
+
+    def _colony_reconcile_thread(self, market_id: int, address: int):
+        """Фоновая часть сверки: свежие данные проекта из Raven Colonial.
+
+        Проект определяется тем же путём, что и для отправки доставок
+        (привязка площадки -> market_id -> поиск по системе): иначе сверка
+        показывала бы один проект, а тонны уходили в другой.
+        """
+        project = None
+        error = ""
+        how = ""
+        try:
+            invalidate = getattr(self.raven_api, "invalidate_project_cache", None)
+            if callable(invalidate):
+                invalidate(address, market_id)
+            project, note = self._resolve_site_project(address, market_id)
+            if isinstance(project, dict) and project.get("buildId"):
+                how = str(note or "")
+                self._push_raven_supply(project, market_id)
+            else:
+                project = None
+                error = str(note or "")
+        except Exception as exc:
+            error = str(exc)
+        self.after(0, lambda: self._colony_reconcile_done(market_id, address, project,
+                                                          error, how))
+
+    def _push_raven_supply(self, project: dict, market_id: int) -> None:
+        """Дослать остаток потребности в Raven (ProjectUpdate по depot-состоянию).
+
+        Доставки (`contribute`) прибавляют тонны к заслугам командира, но
+        колонку Need по материалам Raven пересчитывает только из ProjectUpdate
+        клиента архитектора. Без этого вызова сайт выглядит так: «груз завезён,
+        а потребность не уменьшилась».
+        """
+        site = getattr(self.construction, "site", None)
+        if site is None or int(getattr(site, "market_id", 0) or 0) != int(market_id or 0):
+            return
+        needed = {res.name: res.remaining for res in getattr(site, "resources", [])
+                  if getattr(res, "name", "")}
+        max_need = sum(res.required for res in getattr(site, "resources", [])
+                       if (getattr(res, "required", 0) or 0) > 0)
+        if not needed:
+            return
+        self.dispatcher.submit_supply_update(
+            int(market_id), int(getattr(site, "system_address", 0) or 0),
+            needed, max_need)
+
+    def _colony_reconcile_done(self, market_id: int, address: int, project, error: str = "",
+                              how: str = ""):
+        self._colony_reconcile_busy = False
+        site = self.construction.site
+        journal = self._journal_site_deliveries(market_id)
+        head = f"Сверка стройплощадки {market_id}"
+        if site is not None and site.system_name:
+            head += f" ({site.system_name})"
+
+        if not isinstance(project, dict) or not project.get("buildId"):
+            self.site_project = {}
+            reason = error or "проекта пока нет в Raven Colonial"
+            self.log(f"{head}: {reason}. По журналу вы завезли {journal['total']:,} t "
+                     f"({journal['count']} дост.) — тонны не зачтутся, пока проект не создан."
+                     .replace(",", " "), "warn")
+            self.colony_status.config(text="Проект на Raven Colonial не найден")
+            return
+
+        self.site_project = dict(project)
+        self._maybe_confirm_project_complete(project)
+        commodities = project.get("commodities") if isinstance(project.get("commodities"), dict) else {}
+        remaining = {
+            canonical_commodity(key): int(float(value))
+            for key, value in commodities.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        left = sum(remaining.values())
+        name = str(project.get("buildName") or site.station_name or "площадка").strip()
+
+        def fmt(number: int) -> str:
+            return f"{number:,}".replace(",", " ")
+
+        def top(mapping: dict, limit: int = 4) -> str:
+            rows = sorted(mapping.items(), key=lambda item: -item[1])[:limit]
+            return ", ".join(f"{key} {fmt(value)}" for key, value in rows if value > 0)
+
+        lines = [f"{head}: проект «{name}» (buildId {project.get('buildId')}"
+                 + (f", найден: {how}" if how and how != "market" else "") + ")"]
+        lines.append(f"  Raven Colonial: осталось завезти {fmt(left)} t"
+                     + (f" — {top(remaining)}" if remaining else " — потребность закрыта"))
+        lines.append(f"  По журналу: вы завезли {fmt(journal['total'])} t "
+                     f"({journal['count']} доставок"
+                     + (f", последняя {journal['last_at'][:16].replace('T', ' ')}" if journal["last_at"] else "")
+                     + ")")
+        sent_rows = [
+            item for item in self._raven_sent.values()
+            if isinstance(item, dict)
+        ]
+        sent_tons = sum(int(item.get("tons", 0) or 0) for item in sent_rows)
+        lines.append(f"  Отправлено этим приложением в Raven Colonial: {fmt(sent_tons)} t "
+                     f"({len(sent_rows)} доставок)")
+        carrier_market = int(self.carrier.state.market_id or 0)
+        if carrier_market:
+            state = self.carrier.state
+            on_board = state.tracked_total
+            source = "Raven Colonial" if state.remote_seen else "локальный учёт по журналу"
+            lines.append(f"  Авианосец {carrier_market}: на борту {fmt(on_board)} t "
+                         f"({source})"
+                         + (f" — {top({row['key']: row['amount'] for row in state.get_state_dict()['commodities'] if row['amount'] > 0})}"
+                            if on_board else ""))
+        self.log("\n".join(lines), "info")
+        self.colony_status.config(
+            text=f"Осталось завезти {fmt(left)} t · по журналу вы завезли {fmt(journal['total'])} t")
+
+        # Состояние рынка авианосца тоже освежаем: груз туда возят и другие
+        # командиры, а журнал знает только наши переводы.
+        if carrier_market:
+            self._refresh_carrier_cargo(carrier_market, force=True)
+
+        # Что не ушло в Raven Colonial: прерванная сессия, сбой сети, отсутствие
+        # ключа в момент доставки. Досылаем только с согласия пользователя —
+        # если он параллельно пользуется SrvSurvey/EDMC, тонны могут быть
+        # уже засчитаны ими.
+        unsent = [
+            delivery for delivery in journal["deliveries"]
+            if self._raven_delivery_key(delivery) not in self._raven_sent
+        ]
+        pending = list(self._pending_raven_deliveries)
+        if pending:
+            summary = self._flush_raven_deliveries(self._current_cmdr_name(), force=True)
+            self.log(f"Raven Colonial: дослано из очереди {summary.get('sent', 0)} доставок "
+                     f"({fmt(int(summary.get('tons', 0)))} t), в очереди осталось "
+                     f"{summary.get('pending', 0)}", "info")
+        if not unsent:
+            return
+        tons = sum(int(d.get("amount", 0) or 0) for d in unsent)
+        if not messagebox.askyesno(
+            "Дослать доставки в Raven Colonial",
+            f"По журналу на эту площадку завезено {fmt(tons)} t ({len(unsent)} доставок), "
+            "которые это приложение в Raven Colonial не отправляло.\n\n"
+            "Отправить их сейчас?\n"
+            "Если вы пользуетесь SrvSurvey или другим плагином, тоннаж может быть "
+            "зачтён проекту дважды.",
+            parent=self.root,
+        ):
+            return
+        summary = self._send_deliveries_to_raven(unsent, self._current_cmdr_name(), force=True)
+        self.log(f"Raven Colonial: дослано из журнала {summary.get('sent', 0)} доставок "
+                 f"({fmt(int(summary.get('tons', 0)))} t)", "success")
 
     def _feed_construction_site(self, event: dict, live: bool = False):
         """Передать событие журнала трекеру стройплощадок.
@@ -5553,27 +7975,32 @@ class ColonialHelperApp:
                 for d in deliveries:
                     if self.route.mark_visited(d["system_name"]):
                         self.root.after(0, self._refresh_route_tree)
-                # Отправка на Raven Colonial.
-                # Раунд 33: раньше здесь была своя копия цикла отправки, и она
-                # разошлась с _send_deliveries_to_raven — отправляла имя товара
-                # как Name_Localised из журнала ("Steel", "Liquid oxygen") без
-                # normalize_commodity, хотя Raven Colonial требует lower-case
-                # language-agnostic имена, и молча теряла доставки без MarketID,
-                # без buildId и при ошибке API. Именно этот код, а не
-                # _send_deliveries_to_raven, выполняется в живом вотчере —
-                # поэтому тоннаж на Raven и не появлялся. Дубликат удалён:
-                # отправка только через _send_deliveries_to_raven, где имена
-                # нормализованы, а каждая пропущенная доставка попадает в
-                # агрегированный отчёт. SystemAddress по-прежнему берётся из
-                # события доставки, а не из текущего положения корабля.
-                self._send_deliveries_to_raven(upload_deliveries, cmdr_name)
-
+            else:
                 # Оставляем события в очереди: следующий тик повторит отправку
                 # с тем же source_hash, а сервер безопасно устранит дубли.
                 self._pending_watcher_deliveries = upload_deliveries + self._pending_watcher_deliveries
+                if len(self._pending_watcher_deliveries) > self.WATCHER_PENDING_LIMIT:
+                    self._pending_watcher_deliveries = self._pending_watcher_deliveries[-self.WATCHER_PENDING_LIMIT:]
                 msg = f"[Watcher] Upload error: {result.get('error')}"
                 self.root.after(0, lambda m=msg: self.log(m, "error"))
                 self.overlay_manager.log(f"Error: {result.get('error')}", "error")
+
+        # Отправка на Raven Colonial — ВСЕГДА, независимо от ответа сайта.
+        #
+        # Раунд 34: этот вызов стоял внутри `if result["ok"]`, а ветка ошибки
+        # потеряла свой `else` — весь код повтора оказался в блоке успеха.
+        # Получалось два сбоя сразу:
+        #   * сайт не ответил — доставка не уходила никуда и молча терялась
+        #     (именно «Raven Colonial не получает инфу о завезённом грузе»);
+        #   * сайт ответил успешно — доставка возвращалась в очередь и на
+        #     КАЖДОМ следующем тике (раз в 5 секунд) уезжала повторно и на
+        #     сайт, и в Raven, завышая тоннаж проекта, плюс в лог писалось
+        #     «[Watcher] Upload error: None».
+        # Очередь Raven теперь своя (`_pending_raven_deliveries`) и с журналом
+        # отправленного по `source_hash`: повтор невозможен даже после
+        # перезапуска программы.
+        if deliveries or self._pending_raven_deliveries:
+            self._send_deliveries_to_raven(deliveries, cmdr_name)
 
         return processed_bytes
 

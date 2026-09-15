@@ -721,3 +721,129 @@ class InaraEventMappingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InaraWhitelistTests(unittest.TestCase):
+    """2.10.9: «This application has no access allowed.» — не временный сбой.
+
+    Inara пускает только приложения из белого списка: личный ключ без
+    одобренного имени приложения отклоняется на каждом запросе. Повторять
+    такой запрос бесполезно, а в лог достаточно одной понятной строки.
+    """
+
+    def setUp(self):
+        from inara_api import InaraAPI
+
+        self.api = InaraAPI("key", "CMDR", app_version="2.10.9")
+        self.api._session = mock.MagicMock()
+        self.api.RETRY_DELAY = 0
+
+    def _answer(self, status_text):
+        self.api._session.post.return_value = _FakeResponse(
+            {"header": {"eventStatus": 400, "eventStatusText": status_text},
+             "events": []})
+
+    def test_not_whitelisted_is_explained_and_not_retried(self):
+        self._answer("This application has no access allowed.")
+        result = self.api.submit("addCommanderTravelDock",
+                                 {"starsystemName": "Sol"}, "2025-01-01T00:00:00Z")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.get("error_kind"), "inara_not_whitelisted")
+        self.assertFalse(result.get("retryable"))
+        self.assertEqual(self.api._session.post.call_count, 1,
+                         "повторы при отказе в доступе бессмысленны")
+        self.assertIn("белом списке", result["error"])
+
+    def test_other_auth_error_is_not_retried_either(self):
+        self._answer("Invalid API key")
+        result = self.api.submit("addCommanderTravelDock",
+                                 {"starsystemName": "Sol"}, "2025-01-01T00:00:00Z")
+        self.assertFalse(result["ok"])
+        self.assertFalse(result.get("retryable"))
+        self.assertNotIn("error_kind", result)
+        self.assertEqual(self.api._session.post.call_count, 1)
+
+    def test_dispatcher_notifies_once_per_session(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        class Denied:
+            enabled = True
+
+            def submit(self, event_name, data, timestamp=""):
+                return {"ok": False, "error_kind": "inara_not_whitelisted",
+                        "error": "Inara: приложение не в белом списке Inara"}
+
+        notes = []
+        dispatcher = ThirdPartyDispatcher(inara_api=Denied())
+        dispatcher.on_result = lambda service, ok, message: notes.append(message)
+        payload = {"event_name": "addCommanderTravelDock", "data": {},
+                   "timestamp": "2025-01-01T00:00:00Z"}
+        dispatcher._do_inara(payload)
+        dispatcher._do_inara(payload)
+        dispatcher._do_inara(payload)
+        self.assertEqual(len(notes), 1, "простыня из одинаковых отказов не нужна")
+        self.assertIn("белом списке", notes[0])
+
+
+class RavenSupplyUpdateTests(unittest.TestCase):
+    """2.10.10: колонка Need на сайте обновляется ProjectUpdate, а не contribute.
+
+    Raven Colonial прибавляет тонны доставок к заслугам командира, но остаток
+    потребности по материалам пересчитывает только из `POST /api/project/{id}`
+    с телом `{buildId, commodities, maxNeed}` — так делает эталонный плагин
+    EDMC-Ravencolonial при каждом `ColonisationConstructionDepot`.
+    """
+
+    def test_update_supply_posts_project_update(self):
+        from raven_colonial_api import RavenColonialAPI
+
+        api = RavenColonialAPI("key")
+        api._session = mock.MagicMock()
+        api._session.post.return_value = _FakeResponse({"buildId": "b-1"})
+        result = api.update_supply("b-1", {"steel": 600}, 1000)
+        self.assertTrue(result["ok"])
+        url = api._session.post.call_args[0][0]
+        self.assertTrue(url.endswith("/project/b-1"), url)
+        self.assertEqual(api._session.post.call_args[1]["json"],
+                         {"buildId": "b-1", "commodities": {"steel": 600},
+                          "maxNeed": 1000})
+
+    def test_depot_event_updates_project_need(self):
+        from event_dispatch import ThirdPartyDispatcher
+
+        calls = []
+
+        class FakeRaven:
+            enabled = True
+            is_connected = True
+
+            def get_project(self, address, market_id, use_cache=True):
+                return {"buildId": "b-42"}
+
+            def update_supply(self, build_id, commodities, max_need):
+                calls.append((build_id, dict(commodities), max_need))
+                return {"ok": True}
+
+            def supply_fc(self, *args, **kwargs):
+                return {"ok": True}
+
+        dispatcher = ThirdPartyDispatcher(raven_api=FakeRaven())
+        sent_ids = []
+        dispatcher.on_supply_sent = sent_ids.append
+        event = {"event": "ColonisationConstructionDepot",
+                 "MarketID": 3951663874, "SystemAddress": 123456789,
+                 "ResourcesRequired": [
+                     {"Name": "$steel_name;", "RequiredAmount": 1000,
+                      "ProvidedAmount": 400},
+                     {"Name": "$water_name;", "RequiredAmount": 500,
+                      "ProvidedAmount": 500},
+                 ]}
+        self.assertEqual(dispatcher._submit_raven_supply(event), "queued")
+        service, payload = dispatcher._queue.get_nowait()
+        self.assertEqual(service, "raven")
+        dispatcher._do_raven(payload)
+        self.assertEqual(calls, [("b-42", {"steel": 600, "water": 0}, 1500)])
+        self.assertEqual(sent_ids, ["b-42"],
+                         "хук on_supply_sent зовётся после принятого ProjectUpdate")
+        # То же состояние depot повторно — ProjectUpdate не дублируем.
+        self.assertEqual(dispatcher._submit_raven_supply(event), "skipped")
