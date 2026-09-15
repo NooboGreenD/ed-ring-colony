@@ -126,7 +126,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.17"
+VERSION = "2.10.18"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2535,6 +2535,8 @@ class ColonialHelperApp:
                        command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT, padx=(2, 6))
         tb.Button(bar, text="Сброс 3D", command=self._on_map_reset_3d,
                   bootstyle="secondary-outline", width=8).pack(side=LEFT, padx=(0, 6))
+        tb.Button(bar, text="Plotly 3D 🌐", command=self._on_map_open_plotly,
+                  bootstyle="warning-outline", width=12).pack(side=LEFT, padx=(2, 6))
         self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
                                          foreground=COLOR_ORANGE)
         self.map_system_label.pack(side=RIGHT)
@@ -2576,6 +2578,9 @@ class ColonialHelperApp:
                   bootstyle="secondary-outline", width=8).pack(side=RIGHT)
         tb.Button(side_top, text="PNG", command=self._on_map_save_png,
                   bootstyle="secondary-outline", width=6).pack(side=RIGHT,
+                                                               padx=(0, 4))
+        tb.Button(side_top, text="Plotly", command=self._on_map_open_plotly,
+                  bootstyle="warning-outline", width=7).pack(side=RIGHT,
                                                                padx=(0, 4))
         filter_row = tb.Frame(side)
         filter_row.pack(fill=X, pady=(0, 4))
@@ -3478,6 +3483,57 @@ class ColonialHelperApp:
         else:
             self._map_update_status(snapshot,
                                     f"Не удалось сохранить карту: {path}")
+
+    def _on_map_open_plotly(self):
+        """Открыть интерактивную карту Plotly в веб-браузере."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not snapshot.system:
+            self._map_set_hint("Нет данных о текущей системе для Plotly")
+            return
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        try:
+            from plotly_map import open_plotly_in_browser
+            path = open_plotly_in_browser(
+                snapshot, view_mode=view_mode, show_moons=show_moons
+            )
+            self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}")
+            self.log(f"Интерактивная карта {snapshot.system} (Plotly {view_mode.upper()}) открыта в браузере", "info")
+        except Exception as err:
+            self._map_update_status(snapshot, f"Ошибка открытия Plotly: {err}")
+            self.log(f"Не удалось открыть карту Plotly: {err}", "warning")
+
+    def _on_map_export_plotly(self):
+        """Экспортировать интерактивную карту Plotly в HTML-файл."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not snapshot.system:
+            self._map_set_hint("Нет данных о системе для экспорта Plotly")
+            return
+        default_name = f"system_map_{snapshot.system.replace(' ', '_')}.html"
+        try:
+            path = filedialog.asksaveasfilename(
+                title="Сохранить интерактивную карту Plotly HTML",
+                initialfile=default_name,
+                defaultextension=".html",
+                filetypes=(("HTML-документ Plotly", "*.html"), ("Все файлы", "*.*")))
+        except Exception:
+            path = ""
+        if not path:
+            return
+        show_moons = not getattr(self, "map_moons_var", None) or bool(
+            self.map_moons_var.get())
+        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        try:
+            from plotly_map import export_plotly_html
+            export_plotly_html(
+                snapshot, filepath=path, view_mode=view_mode, show_moons=show_moons
+            )
+            self._map_update_status(snapshot, f"Карта Plotly сохранена: {path}")
+            self.log(f"Карта системы {snapshot.system} экспортирована в HTML: {path}", "info")
+        except Exception as err:
+            self._map_update_status(snapshot, f"Ошибка экспорта Plotly: {err}")
+            self.log(f"Не удалось сохранить карту Plotly: {err}", "warning")
 
     def _on_map_copy_summary(self):
         """Сводку системы — в буфер обмена: удобно кинуть в чат крыла."""

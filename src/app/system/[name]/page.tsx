@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import dynamic from 'next/dynamic';
 import {
   IconXCircle,
   IconPlane,
@@ -14,6 +15,10 @@ import {
   IconCheck,
   IconGlobe,
 } from '@/components/Icons';
+
+const SystemPlotlyMap = dynamic(() => import('@/components/SystemPlotlyMap'), {
+  ssr: false,
+});
 
 interface ResourceData {
   name: string;
@@ -230,6 +235,13 @@ export default function SystemPage() {
           )}
         </div>
       </div>
+
+      {/* Интерактивная 3D-карта системы Plotly */}
+      <SystemPlotlyMap
+        systemName={systemName}
+        projects={system.projects}
+        initialBodies={system.bodies}
+      />
 
       {/* Проекты / Постройки */}
       {system.projects.length > 0 && (
