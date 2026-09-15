@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -356,6 +357,311 @@ class AtmosphereDetectionTests(unittest.TestCase):
         self.assertEqual(atmosphere_category({"atmosphere": "methane-rich atmosphere"}), "thick")
         self.assertEqual(atmosphere_category({"atmosphere": "No atmosphere"}), "none")
         self.assertEqual(atmosphere_category({"atmosphere": ""}), "unknown")
+
+
+class MultiSessionScanTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.journal_dir = Path(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_journal(self, filename: str, events: list):
+        path = self.journal_dir / filename
+        with open(path, "w", encoding="utf-8") as f:
+            for ev in events:
+                f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        return path
+
+    def test_system_scanned_multiple_sessions_ago_is_fully_restored(self):
+        """Система просканирована 4 игровые сессии назад: сканы и образцы не должны теряться."""
+        # Сессия 1: 5 дней назад — сканирование системы и тела с биосигналами
+        s1 = [
+            {"timestamp": "2026-09-01T10:00:00Z", "event": "FSDJump", "StarSystem": "HIP 54321"},
+            {"timestamp": "2026-09-01T10:01:00Z", "event": "FSSDiscoveryScan", "BodyCount": 6},
+            {
+                "timestamp": "2026-09-01T10:02:00Z",
+                "event": "Scan",
+                "StarSystem": "HIP 54321",
+                "BodyName": "HIP 54321 A",
+                "StarType": "G",
+            },
+            {
+                "timestamp": "2026-09-01T10:05:00Z",
+                "event": "Scan",
+                "StarSystem": "HIP 54321",
+                "BodyName": "HIP 54321 1",
+                "PlanetClass": "Rocky body",
+                "Atmosphere": "thin ammonia atmosphere",
+                "AtmosphereType": "Ammonia",
+                "Landable": True,
+            },
+            {
+                "timestamp": "2026-09-01T10:06:00Z",
+                "event": "FSSBodySignals",
+                "BodyName": "HIP 54321 1",
+                "Signals": [{"Type": "$SAA_SignalType_Biological;", "Count": 3}],
+            },
+            {
+                "timestamp": "2026-09-01T10:07:00Z",
+                "event": "SAASignalsFound",
+                "BodyName": "HIP 54321 1",
+                "Signals": [{"Type": "$SAA_SignalType_Biological;", "Count": 3}],
+                "Genuses": [
+                    {"Genus": "$Codex_Ent_Bacterial_Genus_Name;", "Genus_Localised": "Bacterium"},
+                    {"Genus": "$Codex_Ent_Stratum_Genus_Name;", "Genus_Localised": "Stratum"},
+                ],
+            },
+            {
+                "timestamp": "2026-09-01T10:08:00Z",
+                "event": "SAAScanComplete",
+                "BodyName": "HIP 54321 1",
+            },
+        ]
+        self._write_journal("Journal.2026-09-01T100000.01.log", s1)
+
+        # Сессия 2: 4 дня назад — взятие первого образца
+        s2 = [
+            {"timestamp": "2026-09-02T12:00:00Z", "event": "Location", "StarSystem": "HIP 54321", "Body": "HIP 54321 1"},
+            {
+                "timestamp": "2026-09-02T12:10:00Z",
+                "event": "ScanOrganic",
+                "ScanType": "Sample",
+                "StarSystem": "HIP 54321",
+                "Body": "HIP 54321 1",
+                "Species_Localised": "Bacterium Cerbrus",
+            },
+        ]
+        self._write_journal("Journal.2026-09-02T120000.01.log", s2)
+
+        # Сессия 3: 3 дня назад — игра в другой системе Sol
+        s3 = [
+            {"timestamp": "2026-09-03T15:00:00Z", "event": "FSDJump", "StarSystem": "Sol"},
+            {"timestamp": "2026-09-03T15:05:00Z", "event": "Scan", "StarSystem": "Sol", "BodyName": "Earth"},
+        ]
+        self._write_journal("Journal.2026-09-03T150000.01.log", s3)
+
+        # Сессия 4: Текущая сессия — вход в игру в HIP 54321, скан второго тела (HIP 54321 2)
+        s4 = [
+            {"timestamp": "2026-09-05T09:00:00Z", "event": "Location", "StarSystem": "HIP 54321"},
+            {
+                "timestamp": "2026-09-05T09:01:00Z",
+                "event": "Scan",
+                "StarSystem": "HIP 54321",
+                "BodyName": "HIP 54321 2",
+                "PlanetClass": "Icy body",
+                "Landable": True,
+            },
+        ]
+        self._write_journal("Journal.2026-09-05T090000.01.log", s4)
+
+        tracker = ExobiologyTracker()
+        events = scan_journals_for_system(self.journal_dir, "HIP 54321", handle_func=tracker.handle)
+
+        # Проверяем, что события из сессий 1, 2 и 4 были найдены и применены
+        self.assertEqual(tracker.system_known_body_count(), 6)
+        self.assertEqual(tracker.system_scanned_count(), 2)  # HIP 54321 1 (из сессии 1) + HIP 54321 2 (из сессии 4)
+
+        bodies = tracker.system_bodies()
+        self.assertEqual(len(bodies), 1)
+        b = bodies[0]
+        self.assertEqual(b["body"], "HIP 54321 1")
+        self.assertEqual(b["bio_signals"], 3)
+        self.assertTrue(b["mapped"])
+        self.assertTrue(b["has_organics"])
+
+        # Проверяем образец
+        key = tracker._key("HIP 54321", "HIP 54321 1")
+        state = tracker.body_state(key)
+        self.assertIsNotNone(state)
+        self.assertEqual(len(state.get("organics", [])), 1)
+        self.assertEqual(state["organics"][0]["species"], "Bacterium Cerbrus")
+        self.assertEqual(state["organics"][0]["samples"], 1)
+
+    def test_cache_indexing_skips_indexed_files(self):
+        """Дисковый кэш помнит проиндексированные файлы и пропускает их при повторной проверке."""
+        f1 = self._write_journal("Journal.2026-09-01T100000.01.log", [
+            {"timestamp": "2026-09-01T10:00:00Z", "event": "FSDJump", "StarSystem": "Sys1"},
+            {"timestamp": "2026-09-01T10:02:00Z", "event": "Scan", "StarSystem": "Sys1", "BodyName": "Sys1 1",
+             "PlanetClass": "Icy body", "Landable": True},
+        ])
+        f2 = self._write_journal("Journal.2026-09-02T100000.01.log", [
+            {"timestamp": "2026-09-02T10:00:00Z", "event": "FSDJump", "StarSystem": "Sys2"},
+            {"timestamp": "2026-09-02T10:02:00Z", "event": "Scan", "StarSystem": "Sys2", "BodyName": "Sys2 1",
+             "PlanetClass": "Rocky body", "Landable": True},
+        ])
+
+        cache_path = self.journal_dir / "cache.json"
+        cache = ExobiologyCache(cache_path)
+        tracker = ExobiologyTracker()
+
+        # Первый прогон: оба файла сканируются
+        count1 = scan_all_journals_for_exobio(self.journal_dir, handle_func=tracker.handle, cache=cache)
+        self.assertGreater(count1, 0)
+        self.assertTrue(cache.is_file_indexed(f1.name, f1.stat().st_mtime))
+        self.assertTrue(cache.is_file_indexed(f2.name, f2.stat().st_mtime))
+
+        # Второй прогон: файлы не изменились, обработано 0 файлов
+        tracker2 = ExobiologyTracker()
+        count2 = scan_all_journals_for_exobio(self.journal_dir, handle_func=tracker2.handle, cache=cache)
+        self.assertEqual(count2, 0)
+
+        # Добавили третий файл: обрабатывается только он
+        f3 = self._write_journal("Journal.2026-09-03T100000.01.log", [
+            {"timestamp": "2026-09-03T10:00:00Z", "event": "FSDJump", "StarSystem": "Sys3"},
+            {"timestamp": "2026-09-03T10:02:00Z", "event": "Scan", "StarSystem": "Sys3", "BodyName": "Sys3 1"},
+        ])
+        count3 = scan_all_journals_for_exobio(self.journal_dir, handle_func=tracker2.handle, cache=cache)
+        self.assertGreater(count3, 0)
+        self.assertTrue(cache.is_file_indexed(f3.name, f3.stat().st_mtime))
+
+
+class ColonialHelperMultiSessionIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        from test_initial_upload_flow import install_gui_stubs, make_root
+
+        install_gui_stubs()
+        for name in ("colonial_helper", "api_client", "event_dispatch", "journal_parser",
+                     "overlay", "ship_tracker", "route_tracker", "game_monitor",
+                     "exobiology", "colonisation", "carrier", "raven_colonial_api"):
+            sys.modules.pop(name, None)
+
+        self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.home = Path(self.tmp.name)
+        self.root = make_root()
+
+        import colonial_helper
+
+        self.module = colonial_helper
+        with mock.patch.object(colonial_helper, "DEFAULT_JOURNAL_PATH", self.home), \
+             mock.patch.object(colonial_helper.ColonialHelperApp, "save_config"), \
+             mock.patch("pathlib.Path.home", return_value=self.home):
+            self.app = colonial_helper.ColonialHelperApp(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _write_journal(self, filename: str, events: list):
+        path = self.home / filename
+        with open(path, "w", encoding="utf-8") as f:
+            for ev in events:
+                f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        return path
+
+    def test_ensure_system_exobio_loads_bodies_from_old_sessions(self):
+        # Старая сессия 5 дней назад
+        self._write_journal("Journal.2026-09-05T100000.01.log", [
+            {"timestamp": "2026-09-05T10:00:00Z", "event": "FSDJump", "StarSystem": "OldSessionSys"},
+            {"timestamp": "2026-09-05T10:01:00Z", "event": "FSSDiscoveryScan", "BodyCount": 5},
+            {
+                "timestamp": "2026-09-05T10:02:00Z",
+                "event": "Scan",
+                "StarSystem": "OldSessionSys",
+                "BodyName": "OldSessionSys 2",
+                "PlanetClass": "Rocky body",
+                "Atmosphere": "thin carbon dioxide atmosphere",
+                "Landable": True,
+            },
+            {
+                "timestamp": "2026-09-05T10:03:00Z",
+                "event": "FSSBodySignals",
+                "BodyName": "OldSessionSys 2",
+                "Signals": [{"Type": "$SAA_SignalType_Biological;", "Count": 4}],
+            },
+        ])
+
+        self.app.exobiology.current_system = "OldSessionSys"
+        # В текущей сессии пилот только что отсканировал тело 1
+        self.app.exobiology.handle({
+            "event": "Scan",
+            "StarSystem": "OldSessionSys",
+            "BodyName": "OldSessionSys 1",
+            "PlanetClass": "Icy body",
+            "Landable": True,
+        })
+        self.assertEqual(self.app.exobiology.system_scanned_count(), 1)
+
+        # Вызываем _ensure_system_exobio
+        self.app._ensure_system_exobio("OldSessionSys", force_scan=True)
+
+        # Синхронно проверяем через scan_journals_for_system
+        events = scan_journals_for_system(self.home, "OldSessionSys", handle_func=self.app.exobiology.handle)
+        self.assertGreaterEqual(len(events), 4)
+
+        # Теперь трекер знает и планету 1, и планету 2 из старой сессии с 4 биосигналами!
+        self.assertEqual(self.app.exobiology.system_scanned_count(), 2)
+        bodies = self.app.exobiology.system_bodies()
+        self.assertEqual(len(bodies), 1)
+        self.assertEqual(bodies[0]["body"], "OldSessionSys 2")
+        self.assertEqual(bodies[0]["bio_signals"], 4)
+
+    def test_overlay_state_with_past_session_scans(self):
+        # Сохраняем в кэш систему из прошлой сессии
+        self.app.exobio_cache.store_system("DeepPastSys", {
+            "DeepPastSys 3": {
+                "body_name": "DeepPastSys 3",
+                "planet_class": "Rocky body",
+                "atmosphere": "thin carbon dioxide atmosphere",
+                "landable": True,
+                "bio_signals": 3,
+                "mapped": True,
+            }
+        }, known_body_count=10)
+
+        # В текущей сессии пилот находится в этой системе
+        self.app.exobiology.current_system = "DeepPastSys"
+        # Текущая сессия знает только 1 тело (первичную звезду)
+        self.app.exobiology.handle({
+            "event": "Scan",
+            "StarSystem": "DeepPastSys",
+            "BodyName": "DeepPastSys A",
+            "StarType": "K",
+        })
+
+        # Фильтр на скалистые планеты
+        self.app._exobio_planet_vars["rocky_atmo_land"].set(True)
+        self.app.exobio_show_planets_var.set(True)
+        self.app._on_exobio_filters_changed()
+
+        # Запрашиваем состояние оверлея
+        state = self.app._exobiology_overlay_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(state["system"], "DeepPastSys")
+
+        # Оверлей видит DeepPastSys 3 из прошлой сессии!
+        sys_body_names = [b["body"] for b in state["system_bodies"]]
+        self.assertIn("DeepPastSys 3", sys_body_names)
+
+        # Поиск планет находит DeepPastSys 3!
+        planet_names = [p["body"] for p in state["planets"]]
+        self.assertIn("DeepPastSys 3", planet_names)
+
+    def test_approach_body_from_past_session_loads_biology(self):
+        # 10 сессий назад отсканировано тело с 2 биосигналами
+        self.app.exobio_cache.store_system("TargetSys", {
+            "TargetSys 4": {
+                "body_name": "TargetSys 4",
+                "planet_class": "High metal content body",
+                "atmosphere": "thin carbon dioxide atmosphere",
+                "landable": True,
+                "bio_signals": 2,
+                "mapped": True,
+            }
+        }, known_body_count=8)
+
+        # Текущая сессия: пилот подлетает к TargetSys 4
+        self.app._handle_tracked_event({
+            "event": "ApproachBody",
+            "StarSystem": "TargetSys",
+            "Body": "TargetSys 4",
+        })
+
+        state = self.app.exobiology.current_body_state()
+        self.assertIsNotNone(state)
+        self.assertEqual(state["body"], "TargetSys 4")
+        self.assertEqual(state["bio_signals"], 2)
+        self.assertTrue(state["mapped"])
 
 
 if __name__ == "__main__":

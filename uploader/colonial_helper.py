@@ -268,6 +268,7 @@ class ColonialHelperApp:
         self.exobio_cache = ExobiologyCache(
             self.config_path.with_name(".colonial_helper_exobio_cache.json"))
         self.exobiology.load_from_cache(self.exobio_cache)
+        self._exobio_history_scanned_systems = set()
         self.load_config()
 
         # Raven Colonial API
@@ -3517,10 +3518,8 @@ class ColonialHelperApp:
                 selected_tab = self.notebook.select()
                 if selected_tab == str(self.tab_exobio):
                     self._update_tab_exobio()
-                    if (hasattr(self, "exobiology")
-                            and self.exobiology.current_system
-                            and self.exobiology.system_body_count() == 0):
-                        self._scan_journals_for_current_system(force=False)
+                    if hasattr(self, "exobiology") and self.exobiology.current_system:
+                        self._ensure_system_exobio(self.exobiology.current_system)
             except Exception:
                 pass
 
@@ -4658,20 +4657,89 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
-    def _scan_journals_for_current_system(self, force: bool = False):
-        """Быстро найти сканы текущей системы во всех файлах журналов."""
+    def _start_exobio_history_indexer(self):
+        """Фоновая постепенная индексация всех файлов журналов в дисковый кэш экзобиологии."""
+        if not getattr(self, "journal_path", None):
+            return
+
+        def worker():
+            from exobiology import scan_all_journals_for_exobio
+            tracker = getattr(self, "exobiology", None)
+            cache = getattr(self, "exobio_cache", None)
+            if tracker is None or cache is None:
+                return
+            try:
+                count = scan_all_journals_for_exobio(
+                    self.journal_path,
+                    handle_func=tracker.handle,
+                    cache=cache,
+                )
+                if count > 0:
+                    tracker.save_to_cache(cache)
+                    if hasattr(self, "root") and self.root:
+                        def on_indexed():
+                            if hasattr(self, "overlay_manager") and self.overlay_manager:
+                                self.overlay_manager.refresh_exobio()
+                            self._update_tab_exobio()
+                            self.log(f"Экзобиология: проиндексировано {count} событий из истории журналов", "info")
+                        self.root.after(0, on_indexed)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="exobio-history-indexer").start()
+
+    def _ensure_system_exobio(self, system: str, force_scan: bool = False):
+        """Гарантировать наличие данных обо всех телах системы из всех сессий (кэш + журналы)."""
+        sys_name = str(system or "").strip()
+        if not sys_name:
+            return
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None:
+            return
+
+        # 1. Всегда немедленно подтягиваем всё, что есть в дисковом кэше
+        cache = getattr(self, "exobio_cache", None)
+        if cache:
+            cached = cache.get_system(sys_name)
+            if cached and cached.get("bodies"):
+                tracker.import_system_data(sys_name, cached)
+
+        # 2. Проверяем, сканировали ли мы уже все журналы для этой системы в текущем запуске
+        scanned_systems = getattr(self, "_exobio_history_scanned_systems", None)
+        if scanned_systems is None:
+            self._exobio_history_scanned_systems = set()
+            scanned_systems = self._exobio_history_scanned_systems
+
+        if (force_scan or sys_name not in scanned_systems) and getattr(self, "journal_path", None):
+            scanned_systems.add(sys_name)
+            self._scan_journals_for_current_system(force=True, target_system=sys_name)
+
+    def _ensure_body_exobio(self, system: str, body_name: str):
+        """Гарантировать, что приближаемое тело загружено со всеми сканами из прошлых сессий."""
+        tracker = getattr(self, "exobiology", None)
+        if tracker is None or not system or not body_name:
+            return
+        if tracker.current_system != system:
+            tracker.current_system = system
+        tracker.current_body = body_name
+        key = tracker._key(system, body_name)
+        body = tracker.bodies.get(key)
+        # Если сведений о теле нет или нет класса/сигналов, подтягиваем из истории:
+        if not body or not body.get("planet_class"):
+            self._ensure_system_exobio(system)
+
+    def _scan_journals_for_current_system(self, force: bool = False, target_system: str = ""):
+        """Быстро найти сканы системы во ВСЕХ файлах журналов за все игровые сессии."""
         tracker = getattr(self, "exobiology", None)
         if tracker is None or not getattr(self, "journal_path", None):
             return
-        system = str(tracker.current_system or "").strip()
+        system = str(target_system or tracker.current_system or "").strip()
         if not system:
-            return
-        if not force and tracker.system_body_count() > 0:
             return
 
         now = time.time()
         last_scanned = getattr(self, "_last_exobio_scan_system", None)
-        if not force and last_scanned == system and (now - getattr(self, "_last_exobio_scan_time", 0.0)) < 30.0:
+        if not force and last_scanned == system and (now - getattr(self, "_last_exobio_scan_time", 0.0)) < 15.0:
             return
         self._last_exobio_scan_system = system
         self._last_exobio_scan_time = now
@@ -4694,7 +4762,7 @@ class ColonialHelperApp:
                     if hasattr(self, "overlay_manager") and self.overlay_manager:
                         self.overlay_manager.refresh_exobio()
                     self._update_tab_exobio()
-                    self.log(f"Экзобиология: подтянуто {len(events)} событий для системы {system}", "info")
+                    self.log(f"Экзобиология: подтянуто {len(events)} событий из всех сессий для {system}", "info")
                 if hasattr(self, "root") and self.root:
                     try:
                         self.root.after(0, on_done)
@@ -4703,7 +4771,7 @@ class ColonialHelperApp:
                 else:
                     on_done()
 
-        threading.Thread(target=worker, daemon=True, name="exobio-sys-scan").start()
+        threading.Thread(target=worker, daemon=True, name=f"exobio-sys-scan-{system[:10]}").start()
 
     def _scan_all_journals_for_exobio(self):
         """Полное сканирование всех журналов на события экзобиологии для наполнения кэша."""
@@ -4721,7 +4789,6 @@ class ColonialHelperApp:
 
         def worker():
             from exobiology import scan_all_journals_for_exobio
-            events = []
 
             def on_progress(cur, total):
                 if hasattr(self, "root") and self.root:
@@ -4731,35 +4798,27 @@ class ColonialHelperApp:
                     except Exception:
                         pass
 
-            def collector(ev):
-                events.append(ev)
-
-            scan_all_journals_for_exobio(self.journal_path, handle_func=collector, on_progress=on_progress)
+            cache = getattr(self, "exobio_cache", None)
+            count = scan_all_journals_for_exobio(
+                self.journal_path,
+                handle_func=tracker.handle,
+                on_progress=on_progress,
+                cache=cache,
+            )
 
             def on_finish():
                 self._exobio_full_scanning = False
-                for ev in events:
-                    try:
-                        tracker.handle(ev)
-                    except Exception:
-                        pass
-                cache = getattr(self, "exobio_cache", None)
                 if cache:
-                    systems = set()
-                    for key in tracker.bodies:
-                        if "|" in key:
-                            systems.add(key.split("|", 1)[0])
-                    for sys_name in systems:
-                        sys_data = tracker.export_system_data(sys_name)
-                        cache.store_system(sys_name, sys_data.get("bodies"), sys_data.get("organics"),
-                                           sys_data.get("known_body_count", 0))
+                    tracker.save_to_cache(cache)
                 if hasattr(self, "exobio_status_label"):
                     try:
-                        self.exobio_status_label.config(text=f"Сканирование завершено: учтено {len(events)} событий",
-                                                        foreground=COLOR_GREEN_TEXT)
+                        self.exobio_status_label.config(
+                            text=f"Сканирование завершено: учтено {count} новых событий",
+                            foreground=COLOR_GREEN
+                        )
                     except Exception:
                         pass
-                self.log(f"Полное сканирование экзобиологии: {len(events)} событий обработано", "info")
+                self.log(f"Полное сканирование экзобиологии: {count} событий обработано", "info")
                 if hasattr(self, "overlay_manager") and self.overlay_manager:
                     self.overlay_manager.refresh_exobio()
                 self._update_tab_exobio()
@@ -5404,15 +5463,9 @@ class ColonialHelperApp:
         if tracker is None:
             return None
 
-        # Если для текущей системы в памяти нет тел, пробуем загрузить из кэша или файлов:
-        if tracker.current_system and tracker.system_body_count() == 0:
-            cache = getattr(self, "exobio_cache", None)
-            if cache:
-                sys_data = cache.get_system(tracker.current_system)
-                if sys_data and sys_data.get("bodies"):
-                    tracker.import_system_data(tracker.current_system, sys_data)
-            if tracker.system_body_count() == 0 and getattr(self, "journal_path", None):
-                self._scan_journals_for_current_system(force=False)
+        # Обязательно подтягиваем исторические данные системы из кэша и всех прошлых сессий
+        if tracker.current_system:
+            self._ensure_system_exobio(tracker.current_system)
 
         state = tracker.current_body_state()
         try:
@@ -6035,6 +6088,7 @@ class ColonialHelperApp:
 
         self.watcher_thread = threading.Thread(target=self._watcher_loop, daemon=True)
         self.watcher_thread.start()
+        self._start_exobio_history_indexer()
 
         # Сразу загружаем текущее состояние: сначала Loadout (базовая конфигурация),
         # потом JSON-файлы (текущее состояние — может уточнить систему из Status.json,
@@ -7378,10 +7432,16 @@ class ColonialHelperApp:
             sys_name = ev.get("StarSystem")
             if sys_name:
                 self._session_systems_visited.add(sys_name)
+                self._ensure_system_exobio(sys_name)
                 if self.route.mark_visited(sys_name):
                     self.root.after(0, self._refresh_route_tree)
                     if live:
                         self.overlay_manager.log(f"Jump: {sys_name}", "info")
+        if ev.get("event") in ("ApproachBody", "Touchdown"):
+            bname = ev.get("Body") or ev.get("BodyName")
+            sys_name = ev.get("StarSystem") or getattr(getattr(self, "exobiology", None), "current_system", "")
+            if sys_name and bname:
+                self._ensure_body_exobio(sys_name, bname)
         # Стройплощадка: из неё вкладка «Колонизатор» заполняет форму проекта.
         self._feed_construction_site(ev, live=live)
         # Карта системы: тела, станции, стройплощадки и где сейчас пилот.
