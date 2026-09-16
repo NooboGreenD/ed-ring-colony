@@ -272,5 +272,31 @@ class PositionMigrationTests(unittest.TestCase):
                     self.assertIn(f"{block}_{suffix}", overlay.DEFAULT_SETTINGS)
 
 
+class ShipCompactHeightMigrationTests(unittest.TestCase):
+    """2.10.23: SHIP пересобран в текстовый HUD — прежние 420 px больше не нужны."""
+
+    def test_old_default_ship_height_is_shrunk(self):
+        settings = overlay.load_overlay_settings(
+            _config({"ship_height": 420, "settings_schema": 3}))
+        self.assertEqual(settings["ship_height"], overlay.DEFAULT_SETTINGS["ship_height"])
+        self.assertEqual(settings["ship_height"],
+                         overlay.DEFAULT_BLOCK_POSITIONS["ship"][3])
+        self.assertLess(settings["ship_height"], 420,
+                        "компактный HUD не должен занимать половину экрана")
+
+    def test_manual_ship_height_is_preserved(self):
+        settings = overlay.load_overlay_settings(
+            _config({"ship_height": 520, "settings_schema": 3}))
+        self.assertEqual(settings["ship_height"], 520)
+
+    def test_modules_view_mode_is_default_and_persistable(self):
+        """Новый ключ есть в дефолтах — иначе он не доедет до конфига."""
+        self.assertEqual(overlay.DEFAULT_SETTINGS["ship_modules_view"], "important")
+        path = _config({"ship_modules_view": "all"})
+        settings = overlay.load_overlay_settings(path)
+        overlay.save_overlay_settings(path, settings)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["ship_modules_view"], "all")
+
+
 if __name__ == "__main__":
     unittest.main()

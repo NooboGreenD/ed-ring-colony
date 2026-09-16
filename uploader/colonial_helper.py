@@ -128,7 +128,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.22"
+VERSION = "2.10.23"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -4520,6 +4520,17 @@ class ColonialHelperApp:
             tb.Checkbutton(ship_chk, text=block_label, variable=var,
                            command=lambda k=block_key, v=var: self._on_ship_block_changed(k, v.get())).pack(anchor=W, pady=1)
 
+        # Список модулей: компактный HUD показывает только то, что реально
+        # требует внимания; «все модули» остаётся доступным переключателем.
+        tb.Label(frame, text="Список модулей в SHIP:", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(6, 2))
+        self._ship_modules_var = tk.StringVar(
+            value=str(self.overlay_manager.settings.get("ship_modules_view", "important")))
+        for mode, label in (("important", "только важные (повреждённые, выключенные, ключевые)"),
+                            ("all", "все модули"),
+                            ("off", "только итог — без списка")):
+            tb.Radiobutton(frame, text=label, value=mode, variable=self._ship_modules_var,
+                           command=self._on_ship_modules_view_changed).pack(anchor=W, pady=1)
+
         # ---------- Раскладка: якоря, отступы, профили ----------
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
         tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
@@ -5106,6 +5117,12 @@ class ColonialHelperApp:
 
     def _on_ship_block_changed(self, block: str, show: bool):
         self.overlay_manager.set_ship_block(block, show)
+
+    def _on_ship_modules_view_changed(self):
+        """Режим списка модулей меняется на лету: окно не пересоздаём."""
+        mode = str(self._ship_modules_var.get() or "important")
+        self.overlay_manager.set_ship_modules_view(mode)
+        self.log(f"SHIP: список модулей — {mode}", "info")
 
     def _on_reset_overlay_positions(self):
         self.overlay_manager.reset_positions()
@@ -7187,7 +7204,15 @@ class ColonialHelperApp:
         return restored
 
     def _load_current_state_files(self):
-        """Прочитать текущие JSON-файлы состояния (Status, ModulesInfo, Cargo)."""
+        """Прочитать текущие JSON-файлы состояния (Status, ModulesInfo, Cargo).
+
+        Файлы — это то же содержимое, что и события журнала, только «как сейчас».
+        Поэтому здесь больше нет собственного парсера: `ShipTracker` вызывается с
+        флагом устаревших данных. Прежняя копия разбора и была причиной того, что
+        оверлей врал: `Status.json` читал `HullHealth`, которого в файле нет, а
+        `ModulesInfo.json` принимал `Health` за честное значение и «чинил» им
+        разбитые модули. Теперь оба читает один код.
+        """
         loaded = []
         st = self.ship.state
         try:
@@ -7195,41 +7220,7 @@ class ColonialHelperApp:
             if status_file.exists():
                 with open(status_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Напрямую обновляем состояние корабля
-                fuel = data.get("Fuel")
-                if fuel and isinstance(fuel, dict):
-                    st.fuel_level = float(fuel.get("FuelMain", 0))
-                    st.fuel_reservoir = float(fuel.get("FuelReservoir", 0))
-                pips = data.get("Pips")
-                if pips and isinstance(pips, list) and len(pips) >= 3:
-                    st.pips_sys = int(pips[0])
-                    st.pips_eng = int(pips[1])
-                    st.pips_wep = int(pips[2])
-                st.flags = int(data.get("Flags", 0))
-                st.flags2 = int(data.get("Flags2", 0))
-                st.balance = int(data.get("Balance", 0))
-                st.legal_state = str(data.get("LegalState", "Clean"))
-                st.fire_group = int(data.get("FireGroup", 0))
-                st.gui_focus = int(data.get("GuiFocus", 0))
-                cargo = data.get("Cargo")
-                if cargo is not None:
-                    st.cargo_count = int(cargo)
-                dest = data.get("Destination")
-                if dest and isinstance(dest, dict):
-                    st.destination_system = str(dest.get("System", ""))
-                    st.destination_body = str(dest.get("Body", ""))
-                    st.destination_name = str(dest.get("Name", ""))
-                # HullHealth / ShieldHealth (если есть в новых версиях Status.json)
-                hh = data.get("HullHealth")
-                if hh is not None:
-                    st.hull_health = float(hh)
-                sh = data.get("ShieldHealth")
-                if sh is not None:
-                    st.shield_health = float(sh)
-                # Текущая система из Status.json (fallback если нет Location/FSDJump в журнале)
-                star_system = data.get("StarSystem")
-                if star_system:
-                    st.current_system = star_system
+                self.ship.parse_status_json(data)
                 loaded.append("Status")
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения Status.json: {e}", "warn"))
@@ -7238,56 +7229,7 @@ class ColonialHelperApp:
             if modules_file.exists():
                 with open(modules_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Напрямую обновляем модули
-                for m in data.get("Modules", []):
-                    slot = str(m.get("Slot", ""))
-                    if not slot:
-                        continue
-                    if slot not in st.modules:
-                        from ship_tracker import ShipModule
-                        st.modules[slot] = ShipModule(slot=slot, name=str(m.get("Item", "Unknown")))
-                    health = m.get("Health")
-                    if health is not None:
-                        # Не "чиним" модули из устаревшего JSON:
-                        # ModulesInfo.json обновляется редко и может содержать
-                        # health=1.0 для всех модулей. Принимаем только если
-                        # новый health <= текущего (модуль повредился дальше).
-                        new_health = float(health)
-                        current_health = st.modules[slot].health
-                        if new_health <= current_health:
-                            st.modules[slot].health = new_health
-                    power = m.get("Power")
-                    if power is not None:
-                        st.modules[slot].power = float(power)
-                    if m.get("On") is not None:
-                        st.modules[slot].on = bool(m.get("On"))
-                    if m.get("Engineering") is not None:
-                        st.modules[slot].engineered = bool(m.get("Engineering"))
-                    priority = m.get("Priority")
-                    if priority is not None:
-                        st.modules[slot].priority = int(priority)
-                    item = m.get("Item")
-                    if item is not None:
-                        st.modules[slot].name = str(item)
-                # Пересчитать энергопотребление и мощность PowerPlant
-                used = 0.0
-                for m in st.modules.values():
-                    if m.on and m.power > 0:
-                        used += m.power
-                st.power_used = round(used, 3)
-                pp = st.modules.get("PowerPlant")
-                if pp and "size" in pp.name:
-                    try:
-                        size = int(pp.name.split("size")[1].split("_")[0])
-                        cls = 1
-                        if "class" in pp.name:
-                            cls = int(pp.name.split("class")[1].split("_")[0])
-                        base = {1: 1.20, 2: 1.50, 3: 2.00, 4: 3.00,
-                                5: 5.00, 6: 7.00, 7: 10.00, 8: 12.00}.get(size, size * 1.5)
-                        mult = 1.0 + (cls - 1) * (1.0 / 6.0)
-                        st.power_capacity = round(base * mult, 2)
-                    except (IndexError, ValueError):
-                        pass
+                self.ship.parse_modules_info_json(data)
                 loaded.append("ModulesInfo")
                 damaged = sum(1 for m in st.modules.values() if m.health < 1.0)
                 self._maybe_log_modules(len(st.modules), damaged, st.power_capacity)
@@ -8243,16 +8185,22 @@ class ColonialHelperApp:
         ev_name = ev.get("event")
         if ev_name in ("LoadGame", "Rank", "Progress", "Statistics"):
             self._update_pilot_stats_from_event(ev)
+        # Строка в лог — по тем же событиям, что двигают состояние в HUD
+        # (`ship_tracker`): «ModuleDamage» игра не пишет, зато есть JetCone,
+        # дроны и синтез — без них починка в логе не отображалась вовсе.
         if live and ev_name in (
-            "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
-            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll",
+            "HullDamage", "HeatDamage", "HeatWarning", "ShieldState", "JetConeDamage",
+            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll", "RepairDrone",
+            "RebootRepair", "Synthesis", "SystemsShutdown",
         ):
             st = self.ship.state
             damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
             dmg_str = f" ({', '.join(damaged)})" if damaged else ""
+            shields = {"up": "up", "down": "DOWN", "none": "нет генератора",
+                       "unknown": "нет данных"}.get(st.shield_state, st.shield_state)
             self.overlay_manager.log(
-                f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
-                f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
+                f"{ev_name}: hull {st.hull_health:.0%} ({st.hull_source or '—'}), "
+                f"shields {shields}, damaged {len(st.damaged_modules)} mod.{dmg_str}",
                 "info",
             )
 
