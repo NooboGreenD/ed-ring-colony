@@ -23,6 +23,8 @@ args = [
     "--add-data", f"overlay.py{os.pathsep}.",
     "--add-data", f"hotkeys.py{os.pathsep}.",
     "--add-data", f"ship_tracker.py{os.pathsep}.",
+    # ship_hud — модель SHIP-HUD, её зовёт overlay.py при каждой перерисовке.
+    "--add-data", f"ship_hud.py{os.pathsep}.",
     "--add-data", f"system_map.py{os.pathsep}.",
     "--add-data", f"plotly_map.py{os.pathsep}.",
     "--add-data", f"requirements.txt{os.pathsep}.",
