@@ -1,3 +1,71 @@
+# Раунд 58 — 2.10.22: тело в 3D — шар, а не блин
+
+## Задача
+
+«Доработай 3D визуализации: поверхность должна быть как сфера, а не как сплюснутый блин».
+
+На уровне «поверхность» (и в фокусе на теле вообще) планета выглядела дискотекой-монетой:
+полупрозрачный low-poly пузырь в box'е, который Plotly подобрал по данным.
+
+## Причины (их две, и обе — про одну сцену)
+
+1. **Бокс сцены строился по габаритам данных**: `layout.scene.aspectmode = "data"`.
+   Система почти плоская по z (наклонные орбиты), поэтому Plotly сжимал z-ось boxes,
+   и вместе с орбитами сплющивались сферы — они лежат в том же box'е.
+2. **Материал и сетка тела.** Полупрозрачная сфера 25×15 показывала свои задние грани,
+   а освещение `ambient 0.65` ≫ `diffuse` не давало ни terminator'а, ни блика —
+   силуэт читался плоским пятном независимо от геометрии.
+
+## Что сделано (одинаково на сайте и в приложении)
+
+* **Кубический box сцены.** `orrery.scene_aspect()` / `sceneAspect()` →
+  `aspectmode: "manual"` + `aspectratio {1,1,1}`; оси фокуса и обзора и так задаются
+  равными кубическими размахами (`focus_window` / `overview_window`), поэтому при любой
+  камере юнит по x, y и z одинаков → ортографическая проекция сохраняет круглый силуэт.
+* **Общие константы сферы** в движке (были разведены по трём местам):
+  `SPHERE_MESH = 40×24` для всех уровней, `SPHERE_HAZE_SCALE = 1.06`,
+  `SPHERE_SURFACE_LIFT = 1.03`, `SPHERE_MATERIAL` (`opacity 1`, `flatshading false`,
+  `ambient 0.3 / diffuse 0.85 / specular 0.4 / roughness 0.6 / fresnel 0.55`,
+  косой `lightposition {-1.2, 1, 1.4}`). Дымка — своя оболочка мельче (×0.8 сетки)
+  c `opacity 0.35` поверх тела, а не вторая такая же сфера.
+* **Одна сетка на все зумы — осознанно**: `mesh3d.i/j/k` живут в статичной фигуре,
+  а JS экспорта при зуме перекладывает только вершины; разное их число развалило бы грани.
+  `sphere_geometry(...)` теперь по умолчанию берёт `SPHERE_MESH`, экспорт HTML получает
+  `const SPHERE_MESH / SPHERE_HAZE / HAZE_SCALE / SPHERE_LIFT` из Python-движка.
+* **Постройки на поверхности** ставятся через `SPHERE_SURFACE_LIFT` (были три
+  независимых литерала `1.03` в Python, TS и JS).
+
+## Тесты
+
+* `test_focus_body_is_a_ball_not_a_pancake`: `aspectmode manual` + `1:1:1`; габариты
+  тела равны по всем трём осям; `opacity 1`, `flatshading false`, `diffuse > ambient`,
+  `lightposition` задан; число вершин/граней = `orrery.sphere_mesh()`.
+* `test_haze_is_a_bigger_shell_with_its_own_grid`: радиус оболочки (по максимуму
+  расстояний вершин до центра — все они на сфере) = `radius × SPHERE_HAZE_SCALE`,
+  собственная сетка `×0.8` согласована с индексами.
+* `test_sphere_traces_use_only_valid_mesh3d_keys` — список ключей `mesh3d`
+  (`lighting`/`lightposition`/`legendgroup` …) фиксирован: реальная `go.Figure`
+  в CI валидирует и трассы, выдуманный ключ ронял бы сборку EXE.
+* `test_html_export_shares_the_sphere_grid_with_python` — экспорт отдаёт те же числа,
+  `refreshSphere` берёт размер из `SPHERE_MESH/SPHERE_HAZE`; `test_site_material_and_aspect_match_the_engine`
+  следит за сайтом (TS-движок и `SystemPlotlyMap.tsx`).
+* `scripts/tests/system-orrery.test.mjs`: `test('тело в фокусе — шар, а не блин…')` —
+  `sceneAspect()`, все вершины `sphereGeometry` равноудалены от центра, вершины ↔ индексы,
+  материал и коэффициент дымки.
+* Проверка на живой сборке: `Ran 63 tests … OK` (карты), `node --test scripts/tests/*.test.mjs`
+  → 65 pass / 0 fail, `npx tsc --noEmit` чисто, `npx next build` OK; весь набор Python —
+  1016 тестов, только 5 известной заглушки `requests`; в экспорте числа вершин после
+  перекладки JS совпадают со статичной фигурой (1025 тело / 660 дымка), заполнение кадра
+  телом на уровне «поверхность» — 41% полуразмаха окна.
+
+## Затронутые файлы
+
+- `uploader/orrery.py`, `uploader/plotly_map.py`, `uploader/colonial_helper.py` (VERSION)
+- `src/lib/systemOrrery.ts`, `src/components/SystemPlotlyMap.tsx`
+- `uploader/tests/test_plotly_map.py`, `uploader/tests/test_plotly_map_cards.py`
+- `scripts/tests/system-orrery.test.mjs`
+- `uploader/README.md`, `uploader/CHANGES.md`
+
 # Раунд 57 — 2.10.21: 3D-карта перестала баговать (камера, обрезка, чёрный экран)
 
 ## Задача

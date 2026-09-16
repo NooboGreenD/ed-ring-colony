@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import math
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -181,6 +182,81 @@ class PlotlyMapGeometryTests(unittest.TestCase):
                 self.assertGreaterEqual(high, extent - 1e-6, f"{mode}/{axis}: правый край режет данные")
                 self.assertAlmostEqual(high, -low, places=6, msg="разрез обязан быть кубическим")
 
+    def test_focus_body_is_a_ball_not_a_pancake(self):
+        """Тело в фокусе — шар: равные габариты по осям, свет и непрозрачность."""
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d", selected="TestSys 1", zoom=3)
+        scene = schema["layout"]["scene"]
+        # Бокс обязан быть кубическим: 'data' сплющивает сцену по габариту данных,
+        # а у системы с почти плоским z это превращает планеты в блины.
+        self.assertEqual(scene["aspectmode"], "manual")
+        self.assertEqual(scene["aspectratio"], {"x": 1, "y": 1, "z": 1})
+        mesh = next(t for t in schema["data"] if t.get("meta") == "sphere")
+        radius = {}
+        for axis in ("x", "y", "z"):
+            extent = (max(mesh[axis]) - min(mesh[axis])) / 2.0
+            radius[axis] = extent
+        self.assertAlmostEqual(radius["x"], radius["y"], places=6)
+        self.assertAlmostEqual(radius["y"], radius["z"], places=6)
+        # Непрозрачный материал: иначе просвечивают обратные грани — «блин».
+        self.assertEqual(mesh["opacity"], orrery.SPHERE_MATERIAL["opacity"])
+        self.assertEqual(mesh["opacity"], 1.0)
+        self.assertFalse(mesh["flatshading"])
+        lighting = mesh["lighting"]
+        self.assertGreater(lighting["diffuse"], lighting["ambient"],
+                           "без косого света шар выглядит плоским пятном")
+        self.assertIn("lightposition", mesh)
+        # Сетка — из общего движка (и она же уходит в JS экспорта).
+        segments, rings = orrery.sphere_mesh()
+        self.assertEqual(len(mesh["x"]), (segments + 1) * (rings + 1))
+        self.assertEqual(len(mesh["i"]), 2 * segments * rings)
+
+    def test_sphere_traces_use_only_valid_mesh3d_keys(self):
+        """`go.Figure` валидирует и трассы: выдуманный ключ mesh3d роняет экспорт.
+
+        Локально plotly может отсутствовать, поэтому проверяем список ключей сами —
+        так же, как `test_scene_layout_uses_only_valid_plotly_keys` для layout.
+        """
+        allowed = {"type", "meta", "name", "x", "y", "z", "i", "j", "k",
+                   "color", "colorscale", "cmin", "cmax", "opacity", "flatshading",
+                   "lighting", "lightposition", "contour", "hoverinfo", "showscale",
+                   "visible", "showlegend", "legendgroup", "hovertext", "customdata", "scene"}
+        lighting_keys = {"ambient", "diffuse", "specular", "roughness", "fresnel"}
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d", selected="TestSys 1", zoom=3)
+        meshes = [t for t in schema["data"] if t.get("type") == "mesh3d"]
+        self.assertTrue(meshes)
+        for trace in meshes:
+            self.assertLessEqual(set(trace), allowed, f"{trace.get('meta')}: лишние ключи mesh3d")
+            self.assertLessEqual(set(trace.get("lighting", {})), lighting_keys)
+            for key in trace.get("lightposition", {}):
+                self.assertIn(key, ("x", "y", "z"))
+
+    def test_haze_is_a_bigger_shell_with_its_own_grid(self):
+        body = next(b for b in self.snapshot.bodies if b.name == "TestSys 1")
+        body.atmosphere = "Nitrogen / Oxygen"
+        try:
+            schema = pm.build_plotly_dict(self.snapshot, view_mode="3d",
+                                          selected="TestSys 1", zoom=3)
+        finally:
+            body.atmosphere = ""
+        sphere = next(t for t in schema["data"] if t.get("meta") == "sphere")
+        haze = next(t for t in schema["data"] if t.get("meta") == "sphere_haze")
+
+        def shell_radius(trace):
+            center = ((min(trace["x"]) + max(trace["x"])) / 2.0,
+                      (min(trace["y"]) + max(trace["y"])) / 2.0,
+                      (min(trace["z"]) + max(trace["z"])) / 2.0)
+            # Все вершины широтной сетки лежат на сфере → берём максимум расстояний.
+            return max(math.dist((x, y, z), center)
+                       for x, y, z in zip(trace["x"], trace["y"], trace["z"]))
+
+        self.assertGreater(shell_radius(haze), shell_radius(sphere))
+        self.assertAlmostEqual(shell_radius(haze) / shell_radius(sphere), orrery.SPHERE_HAZE_SCALE, places=3)
+        self.assertLess(haze["opacity"], 1.0, "дымка обязана оставаться полупрозрачной")
+        # Сетка дымки мельче — и её вершины/индексы должны быть между собой согласованы.
+        haze_segments, haze_rings = max(12, int(orrery.sphere_mesh()[0] * 0.8)), max(8, int(orrery.sphere_mesh()[1] * 0.8))
+        self.assertEqual(len(haze["x"]), (haze_segments + 1) * (haze_rings + 1))
+        self.assertEqual(len(haze["i"]), 2 * haze_segments * haze_rings)
+
     def test_sphere_fits_inside_the_focus_window(self):
         """Сфера тела вместе с дымкой помещается в окно уровня 3 — иначе чёрный экран."""
         schema = pm.build_plotly_dict(self.snapshot, view_mode="3d", selected="TestSys 1", zoom=3)
@@ -218,10 +294,11 @@ class PlotlyMapGeometryTests(unittest.TestCase):
                          "у тела без атмосферы дымка не рисуется")
         sphere = meshes[0]
         self.assertEqual(sphere["name"], "TestSys 1")
-        # Сетка совпадает с сайтом: segments=24, rings=14.
-        self.assertEqual(len(sphere["x"]), 25 * 15)
+        # Сетка совпадает с движком сайта: SPHERE_MESH (40×24).
+        segments, rings = orrery.sphere_mesh()
+        self.assertEqual(len(sphere["x"]), (segments + 1) * (rings + 1))
         # по 2 индекса в каждое из i/j/k на квад → 2·rings·segments
-        self.assertEqual(len(sphere["i"]), 2 * 14 * 24)
+        self.assertEqual(len(sphere["i"]), 2 * rings * segments)
         self.assertEqual(len(sphere["j"]), len(sphere["k"]))
         # Сфера сидит ровно на теле (центр = координата планеты в этой же
         # фигуре), а не в начале координат и не «рядом».

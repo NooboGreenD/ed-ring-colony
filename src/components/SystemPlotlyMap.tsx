@@ -33,6 +33,10 @@ import {
   buildOrreryLayout,
   bodySphereRadiusUnits,
   computeFocusView,
+  sceneAspect,
+  SPHERE_HAZE_SCALE,
+  SPHERE_MATERIAL,
+  SPHERE_MESH,
   neighboursOf,
   placeStructures,
   focusWindow,
@@ -426,27 +430,33 @@ export default function SystemPlotlyMap({
       const center = layout.positions[bodyName];
       const body = layout.byName[bodyName];
       if (!center || !body) continue;
-      const mesh = sphereGeometry(center, radius, 24, 14);
+      const mesh = sphereGeometry(center, radius, SPHERE_MESH[0], SPHERE_MESH[1]);
       traces.push({
         type: 'mesh3d',
         name: `${bodyName}`,
         x: mesh.x, y: mesh.y, z: mesh.z,
         i: mesh.i, j: mesh.j, k: mesh.k,
         color: getBodyColor(body.subType, String(body.raw.body_type ?? body.raw.type ?? '')),
-        opacity: 0.92,
-        lighting: { ambient: 0.65, diffuse: 0.6, specular: 0.25, roughness: 0.85, fresnel: 0.15 },
         hoverinfo: 'skip',
         showlegend: false,
         legendgroup: 'focus_body',
+        ...SPHERE_MATERIAL,
       });
       if (body.atmosphere && !/no atmosphere/i.test(body.atmosphere)) {
-        const haze = sphereGeometry(center, radius * 1.1, 20, 10);
+        // Дымка — своя, более грубая сетка: у mesh3d индексы граней живут вместе
+        // с вершинами, поэтому размерность обязана совпадать с числом вершин.
+        const hazeSegments = Math.max(12, Math.floor(SPHERE_MESH[0] * 0.8));
+        const hazeRings = Math.max(8, Math.floor(SPHERE_MESH[1] * 0.8));
+        const haze = sphereGeometry(center, radius * SPHERE_HAZE_SCALE, hazeSegments, hazeRings);
         traces.push({
           type: 'mesh3d',
           name: 'Атмосфера',
           x: haze.x, y: haze.y, z: haze.z,
           i: haze.i, j: haze.j, k: haze.k,
           color: 'rgba(120, 190, 255, 0.16)',
+          opacity: 0.35,
+          lighting: { ambient: 0.7, diffuse: 0.2, specular: 0, roughness: 1, fresnel: 0.5 },
+          flatshading: false,
           hoverinfo: 'skip',
           showlegend: false,
           legendgroup: 'focus_body',
@@ -589,7 +599,8 @@ export default function SystemPlotlyMap({
       // окна уже задан размахом осей. Координата цели в unit'ах системы увела бы
       // камеру в никуда (чёрный экран при фокусе).
       camera: sceneCamera(viewMode),
-      aspectmode: 'data',
+      // Куб вместо «data»: иначе сплющенная по z система превращает шары в блины.
+      ...sceneAspect(),
       xaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.x },
       yaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.y },
       zaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.z },

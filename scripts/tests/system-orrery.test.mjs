@@ -8,7 +8,12 @@ import {
   habitableZoneLs,
   overviewWindow,
   placeStructures,
+  sceneAspect,
   sceneCamera,
+  SPHERE_HAZE_SCALE,
+  SPHERE_MATERIAL,
+  SPHERE_MESH,
+  sphereGeometry,
   summarizeLayout,
   toStructures,
   traceExtent,
@@ -330,4 +335,25 @@ test('обзор из трасс не меньше габарита тел', () 
   const coords = Object.values(layout.positions).flat();
   const span = overviewWindow(Math.max(...coords.map((value) => Math.abs(value))), layout.span);
   assert.ok(span >= Math.max(...coords.map((value) => Math.abs(value))));
+});
+
+test('тело в фокусе — шар, а не блин: кубический бокс и равные габариты', () => {
+  const aspect = sceneAspect();
+  assert.equal(aspect.aspectmode, 'manual', "'data' сплющивает плоскую по z систему вместе с планетами");
+  assert.deepEqual(aspect.aspectratio, { x: 1, y: 1, z: 1 });
+
+  const [segments, rings] = SPHERE_MESH;
+  const mesh = sphereGeometry([10, -4, 2], 3.5, segments, rings);
+  assert.equal(mesh.x.length, (segments + 1) * (rings + 1));
+  assert.equal(mesh.i.length, 2 * segments * rings, 'индексы обязаны соответствовать вершинам');
+  const center = { x: 10, y: -4, z: 2 };
+  const radii = mesh.x.map((x, i) => Math.hypot(x - center.x, mesh.y[i] - center.y, mesh.z[i] - center.z));
+  assert.ok(Math.max(...radii) - Math.min(...radii) < 1e-9, 'все вершины на равном расстоянии — это сфера');
+  // Прозрачность съедает объём (просвечивают обратные грани), а плоское освещение
+  // превращает шар в пятно: оба параметра закреплены движком.
+  assert.equal(SPHERE_MATERIAL.opacity, 1);
+  assert.equal(SPHERE_MATERIAL.flatshading, false);
+  assert.ok(SPHERE_MATERIAL.lighting.diffuse > SPHERE_MATERIAL.lighting.ambient);
+  assert.ok(SPHERE_MATERIAL.lightposition, 'косой источник света обязателен');
+  assert.ok(SPHERE_HAZE_SCALE > 1 && SPHERE_HAZE_SCALE < 1.2, 'дымка — тонкая оболочка поверх тела');
 });

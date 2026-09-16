@@ -1044,30 +1044,39 @@ def build_plotly_dict(
         body_center = positions.get(selected)
         if body_center is not None:
             sphere_r = float(sphere_radii[selected])
-            mesh = orrery.sphere_geometry(body_center, sphere_r, 24, 14)
+            segments, rings = orrery.sphere_mesh()
+            mesh = orrery.sphere_geometry(body_center, sphere_r, segments, rings)
+            material = dict(orrery.SPHERE_MATERIAL)
             data.append({
                 "type": "mesh3d",
                 "name": str(selected),
                 "x": mesh["x"], "y": mesh["y"], "z": mesh["z"],
                 "i": mesh["i"], "j": mesh["j"], "k": mesh["k"],
                 "color": body_color(detail_body),
-                "opacity": 0.92,
-                "lighting": {"ambient": 0.65, "diffuse": 0.6, "specular": 0.25,
-                             "roughness": 0.85, "fresnel": 0.15},
                 "hoverinfo": "skip",
                 "showlegend": False,
                 "legendgroup": "focus_body",
                 "meta": "sphere",
+                **material,
             })
             atmosphere = str(getattr(detail_body, "atmosphere", "") or "")
             if atmosphere and "no atmosphere" not in atmosphere.lower():
-                haze = orrery.sphere_geometry(body_center, sphere_r * 1.1, 20, 10)
+                # Дымка атмосферы: своя сетка (иной размер — свои i/j/k),
+                # полупрозрачная, поверх уже непрозрачной планеты.
+                haze_segments = max(12, int(segments * 0.8))
+                haze_rings = max(8, int(rings * 0.8))
+                haze = orrery.sphere_geometry(body_center, sphere_r * orrery.SPHERE_HAZE_SCALE,
+                                              haze_segments, haze_rings)
                 data.append({
                     "type": "mesh3d",
                     "name": "Атмосфера",
                     "x": haze["x"], "y": haze["y"], "z": haze["z"],
                     "i": haze["i"], "j": haze["j"], "k": haze["k"],
                     "color": "rgba(120, 190, 255, 0.16)",
+                    "opacity": 0.35,
+                    "lighting": {"ambient": 0.7, "diffuse": 0.2, "specular": 0.0,
+                                 "roughness": 1.0, "fresnel": 0.5},
+                    "flatshading": False,
                     "hoverinfo": "skip",
                     "showlegend": False,
                     "legendgroup": "focus_body",
@@ -1270,7 +1279,7 @@ def build_plotly_dict(
         "zaxis": {"title": "", "showgrid": False, "zeroline": False,
                   "showticklabels": False, "showbackground": False},
         "camera": cams[view_name],
-        "aspectmode": "data",
+        **orrery.scene_aspect(),
     }
     layout["scene"]["xaxis"]["range"] = list(base_ranges["x"])
     layout["scene"]["yaxis"]["range"] = list(base_ranges["y"])
@@ -1552,6 +1561,12 @@ def generate_plotly_html(
     camera_json = json.dumps({name: orrery.scene_camera(name) for name in ("iso", "top", "side")},
                              ensure_ascii=False)
     focus_pad = orrery.FOCUS_PAD
+    sphere_segments, sphere_rings = orrery.sphere_mesh()
+    sphere_mesh_json = json.dumps([sphere_segments, sphere_rings])
+    sphere_haze_json = json.dumps([max(12, int(sphere_segments * 0.8)),
+                                   max(8, int(sphere_rings * 0.8))])
+    haze_scale = orrery.SPHERE_HAZE_SCALE
+    sphere_lift = orrery.SPHERE_SURFACE_LIFT
     overview_span = orrery.overview_window(orrery.trace_extent(schema["data"]), float(plan["span"]))
     config_json = json.dumps(schema["config"], ensure_ascii=False)
     payload_json = json.dumps(payload, ensure_ascii=False)
@@ -1698,6 +1713,12 @@ def generate_plotly_html(
     const CAMERA = {camera_json};
     const OVERVIEW_SPAN = {overview_span};
     const FOCUS_PAD = {focus_pad};
+    // Сетка и материал сферы — из orrery: перекладывать вершины при зуме можно
+    // только сеткой ровно того же размера, иначе индексы граней поедут.
+    const SPHERE_MESH = {sphere_mesh_json};
+    const SPHERE_HAZE = {sphere_haze_json};
+    const HAZE_SCALE = {haze_scale};
+    const SPHERE_LIFT = {sphere_lift};
     const CONFIG = {config_json};
     const PLAN = {payload_json};
 
@@ -1796,7 +1817,7 @@ def generate_plotly_html(
           let point;
           const sphereR = sphereBodyFor(anchor, halfSpan);
           if (sphereR > 0) {{
-            point = onSphere(center, sphereR * 1.03, index, list.length);
+            point = onSphere(center, sphereR * SPHERE_LIFT, index, list.length);
           }} else if (anchor === '__none__') {{
             const angle = index * 2.399963229728653;
             const radius = 16 + index * 4;
@@ -1870,10 +1891,11 @@ def generate_plotly_html(
       const radius = center ? Math.max(sphereRadiusFor(state.target, halfSpan), 1e-3) : 1e-3;
       indices.forEach((index) => {{
         const haze = DATA[index].meta === 'sphere_haze';
-        const mesh = sphereGeometry(center || [0, 0, 0], haze ? radius * 1.1 : radius,
-                                    haze ? 20 : 24, haze ? 10 : 14);
+        const size = haze ? SPHERE_HAZE : SPHERE_MESH;
+        const geometry = sphereGeometry(center || [0, 0, 0], haze ? radius * HAZE_SCALE : radius,
+                                        size[0], size[1]);
         Plotly.restyle(gd, {{
-          x: [mesh.x], y: [mesh.y], z: [mesh.z],
+          x: [geometry.x], y: [geometry.y], z: [geometry.z],
           visible: [Boolean(center) && radius > 0.01],
         }}, [index]);
       }});

@@ -503,7 +503,7 @@ def place_stations(plan: Dict[str, Any], stations: Iterable[Dict[str, Any]],
         lift = body_display_radius_units(markers, anchor, half_span, canvas_px) + 0.35
         for index, station in enumerate(group):
             if sphere:
-                position = on_sphere(center, sphere * 1.03, index, len(group))
+                position = on_sphere(center, sphere * SPHERE_SURFACE_LIFT, index, len(group))
             else:
                 angle = math.pi / 2 if len(group) == 1 else math.pi / 2 + 2.0 * math.pi * index / len(group)
                 position = (
@@ -549,6 +549,17 @@ CAMERA_DIR: Dict[str, Tuple[float, float, float]] = {
     "side": (1.0, 0.001, 0.06),
 }
 CAMERA_DISTANCE = 1.35
+
+
+def scene_aspect() -> Dict[str, Any]:
+    """Кубический бокс сцены.
+
+    `aspectmode: "data"` делает пропорции бокса по габариту данных: у системы с
+    малым z-размахом (орбиты почти в одной плоскости) сцена сплющивается в
+    блин — и планеты вместе с ней. Поэтому бокс задаём вручную, 1:1:1, а
+    единство масштаба обеспечивает кубический разрез осей.
+    """
+    return {"aspectmode": "manual", "aspectratio": {"x": 1, "y": 1, "z": 1}}
 
 
 def scene_camera(view: str = "iso") -> Dict[str, Any]:
@@ -608,16 +619,41 @@ def trace_extent(points: Iterable[Any], keys: Sequence[str] = ("x", "y", "z")) -
     return extent
 
 
+# Тело в режиме «поверхность» обязано выглядеть телом, а не блином:
+# `SPHERE_MESH` — сетка (сегменты × пояса), `SPHERE_MATERIAL` — освещение.
+# Числа разделяют сайт (`systemOrrery.ts`) и приложение; HTML-экспорт берёт их
+# отсюда, чтобы перекладывать вершины при зуме сеткой ровно того же размера.
+SPHERE_MESH: Tuple[int, int] = (40, 24)
+SPHERE_HAZE_SCALE = 1.06
+# На сколько «приподнять» постройку над поверхностью сферы, чтобы её не съедала
+# оболочка тела. То же число в `systemOrrery.ts` и в JS HTML-экспорта.
+SPHERE_SURFACE_LIFT = 1.03
+SPHERE_MATERIAL: Dict[str, Any] = {
+    "opacity": 1.0,          # прозрачная сфера просвечивала и выглядела диском
+    "flatshading": False,    # гладкое затенение — граней_low-poly не видно
+    "lighting": {"ambient": 0.3, "diffuse": 0.85, "specular": 0.4,
+                 "roughness": 0.6, "fresnel": 0.55},
+    "lightposition": {"x": -1.2, "y": 1.0, "z": 1.4},  # косой свет: виден терминатор
+}
+
+
+def sphere_mesh() -> Tuple[int, int]:
+    """(segments, rings) для mesh3d-сферы — те же числа использует JS экспорта."""
+    return SPHERE_MESH
+
+
 def sphere_geometry(center: Sequence[float], radius: float,
-                    segments: int = 24, rings: int = 14) -> Dict[str, List[float]]:
+                    segments: Optional[int] = None,
+                    rings: Optional[int] = None) -> Dict[str, List[float]]:
     """Сфера `mesh3d` (вершины + индексы граней) для тела в фокусе.
 
     Повторяет `sphereGeometry` из `src/lib/systemOrrery.ts` — то же число
     сегментов и та же нумерация граней, чтобы «планета» в HTML-карте приложения
     выглядела ровно как на сайте.
     """
-    segments = max(4, int(segments))
-    rings = max(2, int(rings))
+    default_segments, default_rings = SPHERE_MESH
+    segments = max(4, int(default_segments if segments is None else segments))
+    rings = max(2, int(default_rings if rings is None else rings))
     cx, cy, cz = (float(center[0]), float(center[1]), float(center[2]))
     radius = max(1e-3, float(radius))
     xs: List[float] = []

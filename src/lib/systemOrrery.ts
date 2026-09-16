@@ -699,7 +699,7 @@ export function placeStructures(
     const sphere = sphereRadii[bodyName];
     list.forEach((structure, index) => {
       if (sphere && sphere > 0) {
-        const point = onSphere(center, sphere * 1.03, index, list.length);
+        const point = onSphere(center, sphere * SPHERE_SURFACE_LIFT, index, list.length);
         placed.push({ structure, anchorName: bodyName, onSurface: surface, position: point });
         return;
       }
@@ -772,6 +772,35 @@ export interface SphereGeometry {
   i: number[];
   j: number[];
   k: number[];
+}
+
+/**
+ * Материал и сетка сферы тела в режимах «окрестность»/«поверхность».
+ * Числа общие с `uploader/orrery.py` (SPHERE_MESH / SPHERE_MATERIAL), чтобы
+ * карта приложения и карта сайта показывали одно и то же тело.
+ */
+export const SPHERE_MESH: [number, number] = [40, 24];
+export const SPHERE_HAZE_SCALE = 1.06;
+/** На сколько «приподнять» постройку над поверхностью сферы (то же число в JS экспорта). */
+export const SPHERE_SURFACE_LIFT = 1.03;
+export const SPHERE_MATERIAL = {
+  // Непрозрачная сфера: через прозрачную было видно обратные грани, и тело
+  // выглядело блином, а не шаром.
+  opacity: 1,
+  flatshading: false,
+  lighting: { ambient: 0.3, diffuse: 0.85, specular: 0.4, roughness: 0.6, fresnel: 0.55 },
+  // Косой источник: без него при ортографической проекции шар вылизан в пятно.
+  lightposition: { x: -1.2, y: 1, z: 1.4 },
+};
+
+/**
+ * Кубический бокс сцены. `aspectmode: 'data'` берёт пропорции из габарита
+ * данных: у системы, чьи орбиты лежат почти в одной плоскости, сцена сплющивается
+ * в блин — вместе с ней и планеты. Поэтому бокс задаём вручную (1:1:1), а
+ * единство масштаба держит кубический разрез осей.
+ */
+export function sceneAspect(): { aspectmode: 'manual'; aspectratio: { x: number; y: number; z: number } } {
+  return { aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 1 } };
 }
 
 export function sphereGeometry(

@@ -283,10 +283,33 @@ class PlotlySiteParityTests(unittest.TestCase):
                 self.assertIn(trace["type"], ("scatter3d", "mesh3d"),
                               f"view_mode={mode!r}: в карте появилась 2D-трасса")
 
+    def test_html_export_shares_the_sphere_grid_with_python(self):
+        html = pm.generate_plotly_html(self.snapshot, view_mode="3d",
+                                       selected="KELT A 1", zoom=3)
+        # JS перекладывает вершины при зуме — сетка обязана прийти из движка,
+        # иначе индексы граней статичной фигуры не совпадут с новыми вершинами.
+        self.assertIn(f"const SPHERE_MESH = {list(orrery.sphere_mesh())}", html)
+        self.assertIn("SPHERE_HAZE : SPHERE_MESH", html)
+        self.assertIn(f"const HAZE_SCALE = {orrery.SPHERE_HAZE_SCALE}", html)
+        self.assertIn(f"const SPHERE_LIFT = {orrery.SPHERE_SURFACE_LIFT}", html)
+        self.assertNotIn("sphereGeometry(center, radius * 1.1, 20, 10)", html)
+
+    def test_site_material_and_aspect_match_the_engine(self):
+        engine = (HERE.parent.parent / "src" / "lib" / "systemOrrery.ts").read_text(encoding="utf-8")
+        segments, rings = orrery.sphere_mesh()
+        self.assertIn(f"export const SPHERE_MESH: [number, number] = [{segments}, {rings}];", engine)
+        self.assertIn(f"export const SPHERE_HAZE_SCALE = {orrery.SPHERE_HAZE_SCALE};", engine)
+        self.assertIn(f"export const SPHERE_SURFACE_LIFT = {orrery.SPHERE_SURFACE_LIFT};", engine)
+        self.assertIn("opacity: 1,", engine, "сайт сделал сферу полупрозрачной — будет блин")
+        self.assertIn("aspectmode: 'manual'", engine)
+        component = self.SITE.read_text(encoding="utf-8")
+        self.assertIn("...sceneAspect()", component)
+
     def test_sphere_grid_matches_site_constants(self):
-        mesh = orrery.sphere_geometry([0.0, 0.0, 0.0], 1.0, 24, 14)
-        self.assertEqual(len(mesh["x"]), 25 * 15)
-        self.assertEqual(len(mesh["i"]), 2 * 24 * 14)
+        segments, rings = orrery.sphere_mesh()
+        mesh = orrery.sphere_geometry([0.0, 0.0, 0.0], 1.0)
+        self.assertEqual(len(mesh["x"]), (segments + 1) * (rings + 1))
+        self.assertEqual(len(mesh["i"]), 2 * segments * rings)
         # Единичный радиус во всех направлениях — сфера, а не эллипсоид.
         self.assertAlmostEqual(max(mesh["x"]), 1.0, places=6)
         self.assertAlmostEqual(min(mesh["z"]), -1.0, places=6)
