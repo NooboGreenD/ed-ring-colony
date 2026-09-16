@@ -289,7 +289,10 @@ class ColonialHelperPlotlyIntegrationTests(unittest.TestCase):
         with mock.patch("plotly_map.open_plotly_in_browser") as mock_open:
             mock_open.return_value = Path("/tmp/test_map.html")
             self.app_cls._on_map_open_plotly(app)
-            mock_open.assert_called_once_with(snap, view_mode="3d", show_moons=True, selected="")
+            # zoom/labels передаются: карта открывается с тем же приближением,
+            # что выбрано в Tk-вкладке (по умолчанию — общий обзор).
+            mock_open.assert_called_once_with(
+                snap, view_mode="3d", show_moons=True, selected="", zoom=0, show_all_labels=False)
             app._map_update_status.assert_called_once()
             app.log.assert_called_once()
 

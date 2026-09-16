@@ -31,9 +31,10 @@
 
 import json
 import os
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # В журнале тип биосигнала приходит в виде локализационного токена.
 BIO_SIGNAL_TOKENS = (
@@ -76,29 +77,73 @@ MAPPED_BONUS = 3.60246
 # Это **порядок величины**, а не прайс: реальная цена зависит от варианта
 # (какой именно Tussock или Osseus), которого журнал до сдачи образца не
 # сообщает. Таблица своя, округлённая; уточняется в одном месте.
+#: Оценка полного комплекта образцов рода (3 образца), кр — **без** бонуса
+#: карты и первоткрытия (их добавляет `estimate_value`).
+#:
+#: Раньше таблица была «на глаз», из-за чего роды вроде Shards/Tubers вообще не
+#: имели цены (их названия в журнале другие — см. `GENUS_ALIASES`), а порядок
+#: величин расходился с игрой в разы. Числа приведены к базе из публичных
+#: таблиц выплат за биологические образцы (Elite Dangerous Wiki,
+#: «Potential Samples by Planetary Type»: стоимость полного комплекта на
+#: картированном теле делится на бонус карты 3.60246). Это по-прежнему порядок
+#: величины: точная цена зависит от вида и варианта.
 GENUS_VALUE_CR: Dict[str, int] = {
-    "Bacterium": 90_000,
-    "Aleoida": 500_000,
-    "Amphora Plant": 500_000,
-    "Anemone": 400_000,
-    "Bark Mounds": 550_000,
-    "Brain Trees": 800_000,
-    "Cactoida": 550_000,
-    "Clypeus": 600_000,
-    "Conchas": 600_000,
-    "Electricae": 1_000_000,
-    "Fonticulua": 400_000,
-    "Frutexa": 400_000,
-    "Fumerola": 800_000,
-    "Fungoida": 550_000,
-    "Osseus": 750_000,
-    "Recepta": 650_000,
-    "Shards": 600_000,
-    "Stratum": 950_000,
-    "Tubers": 550_000,
-    "Tubus": 800_000,
-    "Tussock": 100_000,
+    "Bacterium": 360_000,
+    "Aleoida": 1_700_000,
+    "Amphora Plant": 1_000_000,
+    "Anemone": 660_000,
+    "Bark Mounds": 400_000,
+    "Brain Trees": 440_000,
+    "Cactoida": 690_000,
+    "Clypeus": 2_800_000,
+    "Conchas": 1_250_000,
+    "Crystalline Shards": 1_000_000,
+    "Electricae": 830_000,
+    "Fonticulua": 690_000,
+    "Frutexa": 1_500_000,
+    "Fumerola": 1_400_000,
+    "Fungoida": 700_000,
+    "Osseus": 670_000,
+    "Recepta": 560_000,
+    "Sinuous Tubers": 550_000,
+    "Stratum": 830_000,
+    "Tubus": 1_700_000,
+    "Tussock": 390_000,
 }
+
+#: Старые/разговорные названия родов → имена, которые даёт журнал
+#: (`SAASignalsFound.Genuses`, `ScanOrganic.Genus`). Без этой таблицы оценка
+#: «Crystalline Shard»/«Sinuous Tuber» давала ноль, и оверлей молчал.
+GENUS_ALIASES: Dict[str, str] = {
+    "shards": "Crystalline Shards",
+    "crystalline shard": "Crystalline Shards",
+    "tubers": "Sinuous Tubers",
+    "sinuous tuber": "Sinuous Tubers",
+    "sinuous tubers": "Sinuous Tubers",
+    "concha": "Conchas",
+    "concha renibus": "Conchas",
+    "brain tree": "Brain Trees",
+    "bark mound": "Bark Mounds",
+    "amphora": "Amphora Plant",
+    "anemones": "Anemone",
+    "amphora plants": "Amphora Plant",
+    "crystalline shards": "Crystalline Shards",
+}
+
+
+def normalize_genus(name: object) -> str:
+    """Привести название рода к каноническому (как в журнале)."""
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    if text in GENUS_RULES:
+        return text
+    alias = GENUS_ALIASES.get(text.lower())
+    if alias:
+        return alias
+    head = text.split()[0].lower() if text.split() else ""
+    return GENUS_ALIASES.get(head, text)
+
 
 # Сколько тел держим в памяти (увеличено для исследователей и длинных экспедиций).
 MAX_TRACKED_BODIES = 10_000
@@ -217,7 +262,8 @@ def estimate_value(genus: str, mapped: bool = False,
     Если род неизвестен таблице — 0, и оверлей цену не показывает вовсе:
     выдуманное число вреднее пустого места.
     """
-    base = GENUS_VALUE_CR.get(str(genus or "").strip(), 0)
+    key = genus if genus in GENUS_VALUE_CR else normalize_genus(genus)
+    base = GENUS_VALUE_CR.get(key, 0)
     if not base:
         return 0
     value = float(base)
@@ -533,112 +579,593 @@ def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, A
 
 
 # ============================================================
-#  Правила предсказания (своя упрощённая модель, уровень — род)
+#  Правила предсказания: роды и виды
 # ============================================================
-# Поля:
-#   atmos     — какие категории атмосферы подходят (none/thin/thick/unknown)
-#   geology   — "require" | "bonus" | None
-#   temp      — (min, max) в K или None (нет достоверных данных)
-#   gravity   — (min, max) в g или None
-#   materials — обязательный материал (нижний регистр) или None
+# Своя модель, собранная по публичным условиям залегания организмов (страницы
+# родов в Elite Dangerous Wiki и сводная таблица «Conditions of occurrence of
+# species»). Код SrvSurvey и его таблицы сюда не переносились — здесь только
+# факты игры, записанные своим форматом.
+#
+# Поля правила рода:
+#   atmos    — подходящие категории атмосферы (none / thin / thick);
+#   gases    — газы (подстрока AtmosphereType / AtmosphereComposition);
+#   classes  — допустимые PlanetClass;
+#   geology  — "require" (нужна активность/гейзеры) | "bonus" | None;
+#   max_g    — предел гравитации в g (или None);
+#   temp     — (min, max) средней температуры поверхности, K;
+#   species  — виды: (название, {уточняющие условия}).
+#
+# Жёстко отсекается то, чего не бывает: атмосфера не того типа, другой газ,
+# чужой класс тела, требуемая геология при известном «нет». Числовые пределы
+# (гравитация, температура вида) — мягкие: они снижают процент, но не убивают
+# род совсем, потому что скан бывает неполным.
 GENUS_RULES: Dict[str, Dict[str, Any]] = {
-    "Bacterium":      {"atmos": ("none", "thin", "thick"), "geology": "bonus"},
-    "Aleoida":        {"atmos": ("thin",)},
-    "Amphora Plant":  {"atmos": ("none",)},
-    "Anemone":        {"atmos": ("thin",)},
-    "Bark Mounds":    {"atmos": ("none",)},
-    "Brain Trees":    {"atmos": ("thin",)},
-    "Cactoida":       {"atmos": ("thin",)},
-    "Clypeus":        {"atmos": ("thin",)},
-    "Conchas":        {"atmos": ("none",), "geology": "require"},
-    "Electricae":     {"atmos": ("thin",), "geology": "require"},
-    "Fonticulua":     {"atmos": ("thin",)},
-    "Frutexa":        {"atmos": ("thin",)},
-    "Fumerola":       {"atmos": ("none", "thin"), "geology": "require"},
-    "Fungoida":       {"atmos": ("thin",)},
-    "Osseus":         {"atmos": ("thin",)},
-    "Recepta":        {"atmos": ("thin",)},
-    "Shards":         {"atmos": ("none",), "geology": "bonus"},
-    "Stratum":        {"atmos": ("thin",)},
-    "Tubers":         {"atmos": ("thin",)},
-    "Tubus":          {"atmos": ("thin",)},
-    "Tussock":        {"atmos": ("thin",)},
+    "Bacterium": {
+        "atmos": ("none", "thin", "thick"), "geology": "bonus",
+        "note": "самый всеядный род: вид зависит от газа и геологии",
+        "species": (
+            ("Bacterium aurasus", {"gases": ("carbon dioxide", "water")}),
+            ("Bacterium alcyoneum", {"gases": ("ammonia",)}),
+            ("Bacterium cerbrus", {"gases": ("sulphur dioxide", "water")}),
+            ("Bacterium informem", {"gases": ("nitrogen",)}),
+            ("Bacterium vesicula", {"gases": ("argon",)}),
+            ("Bacterium bullaris", {"gases": ("methane",)}),
+            ("Bacterium nebulus", {"gases": ("helium",)}),
+            ("Bacterium acies", {"gases": ("neon",)}),
+            ("Bacterium volu", {"gases": ("oxygen",)}),
+            ("Bacterium tela", {"geology": True}),
+        ),
+    },
+    "Aleoida": {
+        "atmos": ("thin",), "gases": ("ammonia", "carbon dioxide"),
+        "classes": ("Rocky body", "High metal content body"), "max_g": 0.27,
+        "species": (
+            ("Aleoida laminiae", {"gases": ("ammonia",)}),
+            ("Aleoida spica", {"gases": ("ammonia",)}),
+            ("Aleoida arcus", {"gases": ("carbon dioxide",), "temp": (175, 180)}),
+            ("Aleoida coronamus", {"gases": ("carbon dioxide",), "temp": (180, 190)}),
+            ("Aleoida gravis", {"gases": ("carbon dioxide",), "temp": (190, 195)}),
+        ),
+    },
+    "Amphora Plant": {
+        "atmos": ("none",),
+        "note": "нужна звезда типа A и тело с водой в системе (ELW, аммиачный или водный гигант)",
+        "species": (("Amphora Plant", {}),),
+    },
+    "Anemone": {
+        "atmos": ("none", "thin"), "geology": "require",
+        "note": "обычно тела без атмосферы; рядом должны быть гейзеры",
+        "species": tuple((f"Anemone {name}", {}) for name in
+                         ("Imperator", "Puniceum", "Croceum", "Luteolum",
+                          "Prasinum", "Rubeum", "Roseum", "Blatteum")),
+    },
+    "Bark Mounds": {
+        "atmos": ("none",),
+        "note": "внутри туманности (≈150 св. лет от её центра)",
+        "species": (("Bark Mounds", {}),),
+    },
+    "Brain Trees": {
+        "atmos": ("none",), "geology": "require",
+        "note": "только тела с вулканизмом/активностью",
+        "species": tuple((f"Brain Trees {name}", {}) for name in
+                         ("Gloriosum", "Praestans", "Alveus", "Bos",
+                          "Cono", "Fragus", "Infestis", "Seditio")),
+    },
+    "Cactoida": {
+        "atmos": ("thin",), "gases": ("ammonia", "carbon dioxide", "water"),
+        "classes": ("Rocky body", "High metal content body"), "max_g": 0.27,
+        "species": (
+            ("Cactoida lapis", {"gases": ("ammonia",)}),
+            ("Cactoida peperatis", {"gases": ("ammonia",)}),
+            ("Cactoida cortexum", {"gases": ("carbon dioxide",), "temp": (180, 195)}),
+            ("Cactoida pullulanta", {"gases": ("carbon dioxide",), "temp": (180, 195)}),
+            ("Cactoida vermis", {"gases": ("water",)}),
+        ),
+    },
+    "Clypeus": {
+        "atmos": ("thin",), "gases": ("carbon dioxide", "water"),
+        "classes": ("Rocky body", "High metal content body"), "max_g": 0.27,
+        "temp": (190, 1000), "note": "только горячие тела: выше ~190 K",
+        "species": (
+            ("Clypeus lacrimam", {"temp": (190, 1000)}),
+            ("Clypeus margaritus", {"temp": (190, 1000)}),
+            ("Clypeus speculumi", {"temp": (190, 1000), "min_distance_ls": 2500}),
+        ),
+    },
+    "Conchas": {
+        "atmos": ("thin",), "gases": ("ammonia", "nitrogen", "water", "carbon dioxide"),
+        "max_g": 0.27,
+        "species": (
+            ("Concha aureolas", {"gases": ("ammonia",)}),
+            ("Concha biconcavis", {"gases": ("nitrogen",)}),
+            ("Concha labiata", {"gases": ("carbon dioxide",), "temp": (0, 190)}),
+            ("Concha renibus", {"gases": ("carbon dioxide", "water"), "temp": (180, 195)}),
+        ),
+    },
+    "Crystalline Shards": {
+        "atmos": ("none",), "min_distance_ls": 12000,
+        "note": "не ближе 12 000 св. с от звезды; в системе нужна вода (ELW/гигант)",
+        "species": (("Crystalline Shards", {}),),
+    },
+    "Electricae": {
+        "atmos": ("thin",), "gases": ("helium", "neon", "argon"),
+        "classes": ("Icy body", "Rocky ice body"), "max_g": 0.27, "geology": "bonus",
+        "species": (
+            ("Electricae vagos", {}),
+            ("Electricae peritos", {}),
+            ("Electricae leyi", {"gases": ("neon", "argon")}),
+            ("Electricae onkylii", {"gases": ("argon",)}),
+        ),
+    },
+    "Fonticulua": {
+        "atmos": ("thin",), "gases": ("argon", "neon", "nitrogen", "oxygen", "methane"),
+        "classes": ("Icy body", "Rocky ice body"), "max_g": 0.27,
+        "species": (
+            ("Fonticulua campestris", {"gases": ("argon",)}),
+            ("Fonticulua upupam", {"gases": ("argon",)}),
+            ("Fonticulua digitos", {"gases": ("methane",)}),
+            ("Fonticulua lapida", {"gases": ("nitrogen",)}),
+            ("Fonticulua fluctus", {"gases": ("oxygen",)}),
+            ("Fonticulua segmentatus", {"gases": ("neon",)}),
+        ),
+    },
+    "Frutexa": {
+        "atmos": ("thin",), "gases": ("ammonia", "carbon dioxide", "water", "sulphur dioxide"),
+        "classes": ("Rocky body", "High metal content body"),
+        "species": (
+            ("Frutexa flabellum", {"gases": ("ammonia",)}),
+            ("Frutexa flammasis", {"gases": ("ammonia",)}),
+            ("Frutexa metallicum", {"gases": ("ammonia", "carbon dioxide"),
+                                     "classes": ("High metal content body",)}),
+            ("Frutexa acus", {"gases": ("carbon dioxide",)}),
+            ("Frutexa fera", {"gases": ("carbon dioxide",)}),
+            ("Frutexa sponsae", {"gases": ("water",)}),
+            ("Frutexa collum", {"gases": ("sulphur dioxide",)}),
+        ),
+    },
+    "Fumerola": {
+        "atmos": ("none", "thin", "thick"), "geology": "require",
+        "note": "вид повторяет тип вулканизма тела",
+        "species": (
+            ("Fumerola aquatis", {"volcanism": ("water",)}),
+            ("Fumerola carbosis", {"volcanism": ("carbon", "methane", "dioxide")}),
+            ("Fumerola extremus", {"volcanism": ("silicate", "iron", "rocky", "magma")}),
+            ("Fumerola nitris", {"volcanism": ("nitrogen", "ammonia")}),
+        ),
+    },
+    "Fungoida": {
+        "atmos": ("thin",), "gases": ("argon", "methane", "carbon dioxide", "water", "ammonia"),
+        "classes": ("Rocky body", "High metal content body"),
+        "species": (
+            ("Fungoida bullarum", {"gases": ("argon",)}),
+            ("Fungoida setisis", {"gases": ("methane", "ammonia")}),
+            ("Fungoida gelata", {"gases": ("carbon dioxide", "water"), "temp": (180, 195)}),
+            ("Fungoida stabitis", {"gases": ("carbon dioxide", "water"), "temp": (180, 195)}),
+        ),
+    },
+    "Osseus": {
+        "atmos": ("thin",), "gases": ("argon", "methane", "carbon dioxide", "water", "ammonia"),
+        "classes": ("Rocky body", "High metal content body"),
+        "species": (
+            ("Osseus pumice", {"gases": ("argon", "methane")}),
+            ("Osseus spiralis", {"gases": ("ammonia",)}),
+            ("Osseus cornibus", {"gases": ("carbon dioxide",), "temp": (180, 195)}),
+            ("Osseus fractus", {"gases": ("carbon dioxide",), "temp": (180, 195)}),
+            ("Osseus pellebantus", {"gases": ("carbon dioxide",), "temp": (190, 195)}),
+            ("Osseus discus", {"gases": ("water",)}),
+        ),
+    },
+    "Recepta": {
+        "atmos": ("thin",), "gases": ("sulphur dioxide",), "max_g": 0.27,
+        "species": (
+            ("Recepta umbrux", {}),
+            ("Recepta deltahedronix", {"classes": ("Rocky body", "High metal content body",
+                                                    "Icy body", "Rocky ice body")}),
+            ("Recepta conditivus", {"classes": ("Icy body", "Rocky ice body")}),
+        ),
+    },
+    "Sinuous Tubers": {
+        "atmos": ("none",), "geology": "require",
+        "note": "без атмосферы и обязательно с вулканизмом; чаще в ядре Галактики",
+        "species": (
+            ("Sinuous Tuber albidum", {"classes": ("Rocky body",)}),
+            ("Sinuous Tuber caeruleum", {"classes": ("Rocky body",)}),
+            ("Sinuous Tuber lindigoticum", {"classes": ("Rocky body",)}),
+            ("Sinuous Tuber blatteum", {"classes": ("Metal rich body", "High metal content body")}),
+            ("Sinuous Tuber prasinum", {"classes": ("Metal rich body", "High metal content body")}),
+            ("Sinuous Tuber violaceum", {"classes": ("Metal rich body", "High metal content body")}),
+            ("Sinuous Tuber viride", {"classes": ("Metal rich body", "High metal content body")}),
+            ("Sinuous Tuber roseus", {"volcanism": ("silicate", "magma", "iron")}),
+        ),
+    },
+    "Stratum": {
+        "atmos": ("thin",), "gases": ("ammonia", "carbon dioxide", "sulphur dioxide", "water", "oxygen"),
+        "classes": ("Rocky body", "High metal content body"), "max_g": 0.62,
+        "temp": (57, 450),
+        "species": (
+            ("Stratum laminamus", {"gases": ("ammonia",), "temp": (57, 177)}),
+            ("Stratum paleas", {"gases": ("ammonia", "carbon dioxide", "water"), "temp": (158, 450)}),
+            ("Stratum excutitus", {"gases": ("carbon dioxide", "sulphur dioxide"), "temp": (165, 190)}),
+            ("Stratum limaxus", {"gases": ("carbon dioxide", "sulphur dioxide"), "temp": (165, 190)}),
+            ("Stratum frigus", {"gases": ("carbon dioxide", "sulphur dioxide"), "temp": (191, 450)}),
+            ("Stratum cucumisis", {"gases": ("carbon dioxide", "sulphur dioxide"), "temp": (190, 450)}),
+            ("Stratum araneamus", {"gases": ("sulphur dioxide",), "temp": (165, 450)}),
+            ("Stratum tectonicas", {"classes": ("High metal content body",), "temp": (61, 450)}),
+        ),
+    },
+    "Tubus": {
+        "atmos": ("thin",), "gases": ("carbon dioxide", "ammonia"),
+        "classes": ("Rocky body", "High metal content body"), "max_g": 0.15,
+        "temp": (160, 195), "note": "только очень лёгкие тела: гравитация ниже 0.15 g",
+        "species": (
+            ("Tubus rosarium", {"gases": ("ammonia",)}),
+            ("Tubus sororibus", {"gases": ("ammonia", "carbon dioxide")}),
+            ("Tubus cavas", {"gases": ("carbon dioxide",), "temp": (160, 190)}),
+            ("Tubus compagibus", {"gases": ("carbon dioxide",), "temp": (160, 190)}),
+            ("Tubus conifer", {"gases": ("carbon dioxide",), "temp": (160, 190)}),
+        ),
+    },
+    "Tussock": {
+        "atmos": ("thin",),
+        "gases": ("argon", "methane", "carbon dioxide", "ammonia", "water", "sulphur dioxide"),
+        "classes": ("Rocky body", "High metal content body"),
+        "species": (
+            ("Tussock capillum", {"gases": ("argon", "methane"), "classes": ("Rocky body",)}),
+            ("Tussock catena", {"gases": ("ammonia",)}),
+            ("Tussock cultro", {"gases": ("ammonia",)}),
+            ("Tussock divisa", {"gases": ("ammonia",)}),
+            ("Tussock pennata", {"gases": ("carbon dioxide",), "temp": (145, 155)}),
+            ("Tussock ventusa", {"gases": ("carbon dioxide",), "temp": (155, 160)}),
+            ("Tussock ignis", {"gases": ("carbon dioxide",), "temp": (160, 170)}),
+            ("Tussock serrati", {"gases": ("carbon dioxide",), "temp": (170, 175)}),
+            ("Tussock albata", {"gases": ("carbon dioxide",), "temp": (175, 180)}),
+            ("Tussock caputus", {"gases": ("carbon dioxide",), "temp": (180, 190)}),
+            ("Tussock triticum", {"gases": ("carbon dioxide",), "temp": (190, 195)}),
+            ("Tussock propagito", {"gases": ("carbon dioxide",)}),
+            ("Tussock pennatis", {"gases": ("carbon dioxide",)}),
+            ("Tussock virgam", {"gases": ("water",)}),
+            ("Tussock stigmasis", {"gases": ("sulphur dioxide",)}),
+        ),
+    },
 }
+
+#: Разговорные/старые названия родов → канонические (журнал и кэш могли
+#: хранить и те и другие).
+GENUS_ALIASES: Dict[str, str] = {
+    "shards": "Crystalline Shards",
+    "crystalline shard": "Crystalline Shards",
+    "tubers": "Sinuous Tubers",
+    "sinuous tuber": "Sinuous Tubers",
+    "concha": "Conchas",
+    "brain tree": "Brain Trees",
+    "bark mound": "Bark Mounds",
+    "amphora": "Amphora Plant",
+    "anemones": "Anemone",
+}
+
+
+def normalize_genus(name: object) -> str:
+    """Привести название рода к каноническому."""
+    text = str(name or "").strip()
+    if not text or text in GENUS_RULES:
+        return text
+    alias = GENUS_ALIASES.get(text.lower())
+    if alias:
+        return alias
+    words = text.split()
+    if not words:
+        return text
+    return GENUS_ALIASES.get(words[0].lower(), text)
+
 
 # Веса совпадений (сумма даёт «уверенность» предсказания).
 WEIGHT_ATMOSPHERE = 3.0
 WEIGHT_GEOLOGY = 2.0
+WEIGHT_GAS = 2.0
+WEIGHT_CLASS = 1.5
 WEIGHT_TEMP = 1.0
 WEIGHT_GRAVITY = 1.0
 WEIGHT_MATERIAL = 1.0
+
+#: Ниже этого порога род в оверлей не попадает: лучше пусто, чем мусор.
+MIN_PREDICTION_PERCENT = 25
+
+
+#: Атмосферы в журнале пишут то «sulfur», то «sulphur», то «SulfurDioxide», то
+#: «$Atmosphere_SulfurDioxide_Name;» — любое сравнение по подстроке на этом
+#: ломается, поэтому газы приводятся к набору токенов.
+_GAS_SYNONYMS: Dict[str, str] = {
+    "sulphur": "sulfur",
+    "co2": "carbon",
+    "h2o": "water",
+    "ch4": "methane",
+    "n2": "nitrogen",
+    "o2": "oxygen",
+}
+_GAS_NOISE = re.compile(
+    r"\b(thin|thick|hot|dense|opaque|global|surface|atmosphere|rich|rich\d*|"
+    r"none|no|atmospheric|name|gas|\$?[a-z]+atom[a-z]*)\b")
+
+
+def _gas_tokens(text: object) -> set:
+    """Набор токенов газа из произвольной строки журнала."""
+    raw = str(text or "")
+    # «SulfurDioxide» → «sulfur dioxide»
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", raw)
+    lowered = spaced.lower()
+    lowered = re.sub(r"\$|_name;?|;", " ", lowered)
+    cleaned = _GAS_NOISE.sub(" ", lowered)
+    cleaned = re.sub(r"[^a-z0-9 ]+", " ", cleaned)
+    words = [word for word in cleaned.split() if len(word) > 1]
+    tokens = set()
+    for index, word in enumerate(words):
+        token = _GAS_SYNONYMS.get(word, word)
+        tokens.add(token)
+        if index + 1 < len(words):
+            following = _GAS_SYNONYMS.get(words[index + 1], words[index + 1])
+            tokens.add(f"{token} {following}")
+    return tokens
+
+
+def _gas_set(body: dict) -> set:
+    """Все газы тела: из подписи атмосферы, AtmosphereType и состава."""
+    tokens: set = set()
+    tokens |= _gas_tokens(body.get("atmosphere"))
+    tokens |= _gas_tokens(body.get("atmosphere_type"))
+    for element in body.get("atmosphere_elements") or []:
+        tokens |= _gas_tokens(element)
+    for entry in body.get("atmosphere_composition") or []:
+        if isinstance(entry, dict):
+            tokens |= _gas_tokens(entry.get("Name") or entry.get("name"))
+        else:
+            tokens |= _gas_tokens(entry)
+    return tokens
+
+
+def _has_any_gas(tokens: set, needles: Sequence[str]) -> bool:
+    if not tokens:
+        return False
+    for needle in needles:
+        needle_tokens = _gas_tokens(needle)
+        if needle_tokens & tokens:
+            return True
+    return False
+
+
+def _volcanism_text(body: dict) -> str:
+    text = str(body.get("volcanism") or "").strip().lower()
+    if text in ("", "no volcanism", "none", "нет"):
+        return ""
+    return text
+
+
+def _temp_of(body: dict) -> float:
+    return _as_float(body.get("surface_temperature") or body.get("temperature"), 0.0)
+
+
+def _gravity_g(body: dict) -> float:
+    """Гравитация в g: журнал отдаёт м/с²."""
+    return _as_float(body.get("surface_gravity") or body.get("gravity"), 0.0) / 9.80665
+
+
+def _conditions_miss(body: dict, conditions: dict) -> bool:
+    """Противоречат ли данные тела условиям вида (жёсткая часть)."""
+    tokens = _gas_set(body)
+    gases = conditions.get("gases") or ()
+    if gases and tokens and not _has_any_gas(tokens, gases):
+        return True
+    classes = conditions.get("classes") or ()
+    planet_class = str(body.get("planet_class") or "")
+    if classes and planet_class and planet_class not in classes:
+        return True
+    volcanic = conditions.get("volcanism") or ()
+    volcanism = _volcanism_text(body)
+    if volcanic and volcanism and not _has_any_gas(_gas_tokens(volcanism), volcanic):
+        return True
+    if conditions.get("geology") and not volcanism and body.get("volcanism") is not None:
+        return True
+    return False
+
+
+def _species_soft_miss(body: dict, conditions: dict) -> bool:
+    temperature = _temp_of(body)
+    temp_range = conditions.get("temp")
+    if temp_range and temperature > 0:
+        low, high = temp_range
+        if not (low <= temperature <= high):
+            return True
+    min_ls = conditions.get("min_distance_ls")
+    distance = _as_float(body.get("distance_ls"), 0.0)
+    if min_ls and distance > 0 and distance < min_ls:
+        return True
+    return False
+
+
+def species_candidates(body: dict, genus: str, limit: int = 6) -> List[str]:
+    """Виды рода, которые не противоречат данным тела."""
+    rule = GENUS_RULES.get(genus) or {}
+    species = rule.get("species") or ()
+    if not species:
+        return []
+    matched: List[str] = []
+    fallback: List[str] = []
+    for name, conditions in species:
+        if _conditions_miss(body, conditions):
+            continue
+        if _species_soft_miss(body, conditions):
+            fallback.append(name)
+        else:
+            matched.append(name)
+    return (matched or fallback)[:limit]
+
+
+def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str], List[str]]]:
+    """Оценка рода для тела: `(score, max, notes, species)` или None.
+
+    None — род противоречит данным (атмосфера/газ/класс/геология): показывать
+    его нельзя. Иначе `score / max` даёт честный процент: в знаменатель
+    попадают только те критерии, которые вообще проверяемы по этому телу.
+    """
+    rule = GENUS_RULES.get(genus)
+    if not rule or not body:
+        return None
+    category = atmosphere_category(body)
+    notes: List[str] = []
+    score = 0.0
+    maximum = 0.0
+
+    allowed_atmos = rule.get("atmos") or ()
+    if allowed_atmos:
+        if category == "unknown":
+            # Принцип модели без изменений: без данных об атмосфере не гадаем —
+            # «возможные роды» из одного только класса тела это шум.
+            return None
+        maximum += WEIGHT_ATMOSPHERE
+        if category in allowed_atmos:
+            score += WEIGHT_ATMOSPHERE
+            notes.append(f"атмосфера: {category}")
+        else:
+            return None
+
+    gas_tokens = _gas_set(body)
+    gases = rule.get("gases") or ()
+    if gases:
+        if gas_tokens:
+            maximum += WEIGHT_GAS
+            if _has_any_gas(gas_tokens, gases):
+                score += WEIGHT_GAS
+                matched_gas = next((gas for gas in gases
+                                    if _gas_tokens(gas) & gas_tokens), gases[0])
+                notes.append(f"газ: {matched_gas}")
+            else:
+                return None
+        else:
+            notes.append("состав атмосферы неизвестен")
+
+    classes = rule.get("classes") or ()
+    planet_class = str(body.get("planet_class") or "")
+    if classes:
+        if planet_class:
+            maximum += WEIGHT_CLASS
+            if planet_class in classes:
+                score += WEIGHT_CLASS
+            else:
+                return None
+        else:
+            notes.append("класс тела неизвестен")
+
+    if rule.get("geology"):
+        maximum += WEIGHT_GEOLOGY
+        volcanism = _volcanism_text(body)
+        if volcanism:
+            score += WEIGHT_GEOLOGY
+            notes.append("геология есть")
+        elif rule["geology"] == "require":
+            return None
+
+    max_g = rule.get("max_g")
+    gravity = _gravity_g(body)
+    if max_g is not None:
+        maximum += WEIGHT_GRAVITY
+        if gravity <= 0:
+            notes.append("гравитация неизвестна")
+        elif gravity <= max_g:
+            score += WEIGHT_GRAVITY
+        else:
+            notes.append(f"гравитация {gravity:.2f} g выше предела {max_g} g")
+
+    temp_range = rule.get("temp")
+    temperature = _temp_of(body)
+    if temp_range:
+        maximum += WEIGHT_TEMP
+        if temperature > 0:
+            low, high = temp_range
+            if low <= temperature <= high:
+                score += WEIGHT_TEMP
+            else:
+                notes.append(f"температура {temperature:.0f} K вне {low}–{high} K")
+
+    material = rule.get("materials")
+    if material:
+        maximum += WEIGHT_MATERIAL
+        if material in {str(item).lower() for item in (body.get("materials") or [])}:
+            score += WEIGHT_MATERIAL
+            notes.append(f"материал: {material}")
+
+    if rule.get("note"):
+        notes.append(str(rule["note"]))
+    species = species_candidates(body, genus)
+    return score, maximum, notes, species
 
 
 def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, float, List[str]]]:
     """Предсказать вероятные роды для тела.
 
-    Возвращает список `(род, оценка, пояснения)`, отсортированный по убыванию.
-    Оценка — абсолютная (сколько правил совпало), а не «процент успеха»: для
-    грубой модели это честнее.
+    Возвращает `(род, оценка, пояснения)`; оценка абсолютная — сумма весов
+    совпавших правил. Роды, противоречащие данным тела, не возвращаются вовсе.
     """
     if not body:
         return []
-
-    category = atmosphere_category(body)
-    has_geology = bool(str(body.get("volcanism") or "").strip().lower()
-                       not in ("", "no volcanism", "none"))
-    temperature = _as_float(body.get("surface_temperature"), 0.0)
-    gravity = _as_float(body.get("surface_gravity"), 0.0) / 10.0  # в журнале — м/с²
-    materials = {str(m).lower() for m in (body.get("materials") or [])}
-
     results: List[Tuple[str, float, List[str]]] = []
-    for genus, rule in GENUS_RULES.items():
-        score = 0.0
-        notes: List[str] = []
-
-        allowed_atmos = rule.get("atmos") or ()
-        if allowed_atmos:
-            if category in allowed_atmos:
-                score += WEIGHT_ATMOSPHERE
-                notes.append(f"атмосфера: {category}")
-            elif category != "unknown":
-                # Атмосфера не подходит — род маловероятен, но не исключён
-                continue
-
-        geology = rule.get("geology")
-        if geology == "require":
-            if has_geology:
-                score += WEIGHT_GEOLOGY
-                notes.append("геология")
-            else:
-                continue
-        elif geology == "bonus" and has_geology:
-            score += WEIGHT_GEOLOGY
-            notes.append("геология рядом")
-
-        temp_range = rule.get("temp")
-        if temp_range and temperature > 0:
-            low, high = temp_range
-            if low <= temperature <= high:
-                score += WEIGHT_TEMP
-                notes.append("температура")
-
-        gravity_range = rule.get("gravity")
-        if gravity_range and gravity > 0:
-            low, high = gravity_range
-            if low <= gravity <= high:
-                score += WEIGHT_GRAVITY
-                notes.append("гравитация")
-
-        material = rule.get("materials")
-        if material and material in materials:
-            score += WEIGHT_MATERIAL
-            notes.append(f"материал: {material}")
-
-        if score > 0:
-            results.append((genus, score, notes))
-
+    for genus in GENUS_RULES:
+        scored = score_genus(body, genus)
+        if scored is None:
+            continue
+        score, _maximum, notes, _species = scored
+        if score <= 0:
+            continue
+        results.append((genus, score, notes))
     results.sort(key=lambda row: (-row[1], row[0]))
     return results[:limit] if limit else results
+
+
+def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """То же, что `predict_genera`, но с процентом, видом и оценкой выплаты.
+
+    Процент считается от максимума, достижимого именно для этого рода при
+    данных конкретного тела, — «6» у Osseus и «3» у Bacterium иначе не
+    сравнимы. Всё, что ниже `MIN_PREDICTION_PERCENT`, игроку не показывается.
+    """
+    rows: List[Dict[str, Any]] = []
+    confirmed = {normalize_genus(item) for item in (body.get("confirmed_genera") or [])}
+    for genus in GENUS_RULES:
+        scored = score_genus(body, genus)
+        if scored is None:
+            continue
+        score, maximum, notes, species = scored
+        percent = int(round(100 * score / maximum)) if maximum else 0
+        if genus in confirmed:
+            percent = 100
+            notes = list(notes) + ["подтверждено DSS"]
+        percent = max(0, min(100, percent))
+        if percent < MIN_PREDICTION_PERCENT and genus not in confirmed:
+            continue
+        rows.append({
+            "genus": genus,
+            "score": score,
+            "percent": percent,
+            "notes": notes,
+            "species": list(species or []),
+            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+            "confirmed": genus in confirmed,
+        })
+
+    seen = {row["genus"] for row in rows}
+    for genus in confirmed:
+        if genus in seen or genus not in GENUS_RULES:
+            continue
+        rows.append({
+            "genus": genus,
+            "score": WEIGHT_ATMOSPHERE + WEIGHT_GAS,
+            "percent": 100,
+            "notes": ["подтверждено DSS"],
+            "species": species_candidates(body, genus),
+            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+            "confirmed": True,
+        })
+
+    rows.sort(key=lambda row: (not row["confirmed"], -row["percent"], -row["value_cr"], row["genus"]))
+    return rows[:limit] if limit else rows
 
 
 # ============================================================

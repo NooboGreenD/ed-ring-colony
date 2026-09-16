@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
 import { persistImportedDeliveries } from '@/lib/deliveryImport';
+import { persistJournalTelemetry } from '@/lib/journalTelemetry';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -107,7 +108,25 @@ export async function POST(req: Request) {
     }
 
     const outcome = await persistImportedDeliveries(svc, userId, deliveries);
-    return NextResponse.json(outcome);
+
+    // Browser-side Journal loader must land the same data as the desktop
+    // Colonial Helper: construction snapshots, body scans and the pilot's
+    // summary stats. Without them the dossier shows only tonnage, and the map
+    // and «первооткрытия» stay empty for pilots who never run the helper.
+    let telemetry = null;
+    try {
+      telemetry = await persistJournalTelemetry(svc, userId, {
+        constructionEvents: body.constructionEvents ?? body.construction_events,
+        systemScans: body.systemScans ?? body.system_scans ?? body.scans,
+        pilotStats: body.pilotStats ?? body.pilot_stats,
+      }, cmdr || null);
+    } catch (telemetryError) {
+      // Доставки уже сохранены — телеметрия не имеет права превращать
+      // успешный импорт в ошибку 500.
+      console.warn('[logs/import] telemetry could not be stored:', (telemetryError as Error).message);
+    }
+
+    return NextResponse.json({ ...outcome, telemetry });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/import] Failed:', message);

@@ -1,7 +1,7 @@
 """Оверлейные окна для Colonial Helper — HUD-стиль ED Ring Colony."""
 import tkinter as tk
 from tkinter import END
-from typing import Dict, Any, Optional, Callable, Tuple
+from typing import Dict, Any, Optional, Callable, Sequence, Tuple
 import threading
 import time
 from pathlib import Path
@@ -187,6 +187,72 @@ COLOR_LINE = "#21262d"
 # ============================================================
 #  Утилиты стиля
 # ============================================================
+#: Моноширинные семейства, в которых таблица выравнивается по колонкам.
+MONO_FONT_HINTS = ("consolas", "courier", "mono", "dejavu sans mono", "menlo",
+                   "liberation mono", "fixedsys", "nsimsun")
+
+
+def is_monospace_font(family: object) -> bool:
+    text = str(family or "").lower()
+    return any(hint in text for hint in MONO_FONT_HINTS)
+
+
+def format_table(headers: Sequence[str], rows: Sequence[Sequence[object]],
+                 aligns: Optional[Sequence[str]] = None,
+                 max_width: Optional[int] = None) -> str:
+    """Моноширинная таблица для оверлея: заголовок + строки по колонкам.
+
+    Оверлей — Tk-Label, поэтому «табличка» здесь это текст с выравниванием, а
+    не Treeview: лишнего окна, фокуса и мигания при перерисовке нет. Выравнивание
+    честно работает только на моноширинном шрифте; для остальных возвращаем
+    обычную «списочную» разбивку, чтобы не разъезжалось.
+    """
+    body = [[str(cell) for cell in row] for row in rows if row]
+    if not body:
+        return ""
+    columns = max([len(headers or ())] + [len(row) for row in body])
+    headers = list(headers or ()) + [""] * (columns - len(headers or ()))
+    aligned = []
+    for row in body:
+        padded = list(row) + [""] * (columns - len(row))
+        aligned.append(padded[:columns])
+    if not is_monospace_font(format_table.font_family):
+        return "\n".join(
+            [" | ".join(cell for cell in ([h for h in headers if h] + row) if cell)]
+            if headers and any(headers) else []
+        ) + ("\n" if headers and any(headers) else "") + "\n".join(
+            " | ".join(cell for cell in row if cell) for row in aligned)
+    widths = []
+    for index in range(columns):
+        widths.append(max([len(str(headers[index]))] + [len(row[index]) for row in aligned]))
+    aligns = list(aligns or ["left"] * columns)
+    aligns += ["left"] * (columns - len(aligns))
+
+    def render(cells: Sequence[str]) -> str:
+        parts = []
+        for index, cell in enumerate(cells):
+            text = str(cell)
+            width = widths[index]
+            parts.append(text.rjust(width) if aligns[index] == "right" else text.ljust(width))
+        return "  ".join(parts).rstrip()
+
+    def fit(line: str) -> str:
+        if not max_width or len(line) <= max_width:
+            return line
+        keep = max(4, int(max_width) - 1)
+        return line[:keep].rstrip() + "…"
+
+    lines = []
+    if any(str(header) for header in headers):
+        lines.append(fit(render(headers)))
+    for row in aligned:
+        lines.append(fit(render(row)))
+    return "\n".join(lines)
+
+
+format_table.font_family = "Consolas"
+
+
 def _make_separator(parent, color=COLOR_LINE) -> tk.Frame:
     sep = tk.Frame(parent, bg=color, height=1)
     return sep
@@ -2047,6 +2113,13 @@ class CarrierOverlay(OverlayWindow):
 # ============================================================
 #  ExobiologyOverlay
 # ============================================================
+def _species_tail(name: object) -> str:
+    """«Tussock stigmasis» → «stigmasis»: род и так показан в своей колонке."""
+    text = str(name or "").strip()
+    parts = text.split(" ", 1)
+    return parts[1] if len(parts) == 2 and parts[1] else text
+
+
 class ExobiologyOverlay(OverlayWindow):
     """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
 
@@ -2076,6 +2149,10 @@ class ExobiologyOverlay(OverlayWindow):
         fs = settings.get("font_size", 10)
         wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
         self._wrap = wrap
+        # Табличный режим (по умолчанию): разделы «образцы», «роды», «тела
+        # системы» и «поиск планет» печатаются колонками, а не простынёй строк.
+        format_table.font_family = ff
+        self._table_mode = str(settings.get("exobio_layout", "table")).lower() != "list"
 
         self._state: Dict[str, Any] = {}
         self._tick_id: Optional[str] = None
@@ -2203,6 +2280,40 @@ class ExobiologyOverlay(OverlayWindow):
             label=f"{'[x] ' if compact else '[ ] '}Компактный вид (значки и шкалы)",
             command=self._toggle_compact_mode,
         )
+        menu.add_command(
+            label=("⊞ Таблица (компактно)" if not self._table_mode else "≡ Лента (по-старому)"),
+            command=self._toggle_layout_mode,
+        )
+
+    def _toggle_layout_mode(self):
+        """Таблица ↔ лента. Режим живёт в настройке, чтобы пережить перезапуск."""
+        self._table_mode = not self._table_mode
+        self.settings["exobio_layout"] = "table" if self._table_mode else "list"
+        try:
+            format_table.font_family = self.settings.get("font_family", "Consolas")
+        except Exception:
+            pass
+        self._render()
+        self._flash_indicator(COLOR_CYAN)
+
+    def _table_width(self) -> int:
+        """Сколько символов влезает в строку таблицы при текущем шрифте.
+
+        Лишнее обрезаем в последней колонке: блок узкий, а перенос внутри
+        моноширинной таблицы сломал бы выравнивание всех строк ниже.
+        """
+        size = max(7, int(self.settings.get("font_size", 10) or 10) - 1)
+        # У Consolas ширина символа ≈ 0.55 кегля в пикселях; берём с запасом,
+        # чтобы последняя колонка не резалась раньше времени.
+        return max(32, int(self._wrap / (size * 0.55)))
+
+    def _short_body(self, state: dict, name: object) -> str:
+        """Имя тела без префикса системы — в блоке мало места."""
+        text = str(name or "?")
+        system = str(state.get("system") or "")
+        if system and text.startswith(system):
+            text = text[len(system):].strip() or text
+        return text
 
     def _toggle_compact_mode(self):
         new_val = not bool(self.settings.get("exobio_compact", True))
@@ -2477,17 +2588,30 @@ class ExobiologyOverlay(OverlayWindow):
             name = str(row.get("species") or "?")
             if row.get("seen_before"):
                 name += " (уже встречалось)"
-            lines.append(f"{name}  {marks} {samples}/3{price}")
+            status = ""
             if complete:
-                lines.append("   ✔ комплект готов — вид засчитан")
+                status = "комплект готов ✓"
             elif samples:
                 wait = int(row.get("wait_seconds") or 0)
                 stage = str(row.get("stage") or "")
-                if wait > 0:
-                    lines.append(f"   ⏱ ждите {wait} с до следующего образца")
-                else:
-                    lines.append(f"   🚀 готов к образцу ({stage or 'Sample'}) — смените точку")
-        self.organics_label.config(text="\n".join(lines))
+                status = (f"ждите {wait} с" if wait > 0
+                          else f"готов к образцу ({stage or 'Sample'}) — смените точку")
+            lines.append((name, f"{marks} {samples}/3", format_credits(value) if value else "—", status))
+        if self._table_mode and lines:
+            self.organics_label.config(text=format_table(
+                ("вид", "образцы", "≈кр", "статус"),
+                [line[:3] + (line[3],) for line in lines],
+                aligns=("left", "left", "right", "left"),
+                max_width=self._table_width(),
+            ))
+        else:
+            flat = []
+            for name, marks_value, price_value, status in lines:
+                price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
+                flat.append(f"{name}  {marks_value}{price}")
+                if status:
+                    flat.append(f"   {'✔ ' if 'готов ✓' in status else ''}{status}")
+            self.organics_label.config(text="\n".join(flat))
         action = self._suggest_next_action(state, organics)
         self.next_action_label.config(text=action)
         self._set_action_visible(bool(action))
@@ -2524,18 +2648,48 @@ class ExobiologyOverlay(OverlayWindow):
                 text="роды отфильтрованы (вкладка «Экзобиология»)" if allowed
                 else "нет подходящих родов")
             return
-        lines = []
+        entries = []
         for row in predictions[:self.MAX_PREDICTIONS]:
             genus = str(row.get("genus") or "?")
             percent = row.get("percent")
-            bar = f" {self._format_prob_bar(percent)}" if percent is not None else ""
-            head = f"{genus}  {percent}%{bar}" if percent is not None else genus
             value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
-            if value:
-                head += f"  ≈ {format_credits(value)}"
-            notes = ", ".join(row.get("notes") or [])
-            lines.append(head + (f"\n   {notes}" if notes else ""))
+            species = [str(item) for item in (row.get("species") or []) if item]
+            short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
+            if len(species) > 2:
+                short_species += f" +{len(species) - 2}"
+            if row.get("confirmed"):
+                short_species = ("DSS ✓ " + short_species).strip()
+            entries.append({
+                "genus": genus,
+                "percent": f"{percent}%" if percent is not None else "—",
+                "bar": self._format_prob_bar(percent) if percent is not None else "",
+                "value": format_credits(value) if value else "",
+                "species": short_species,
+                "notes": ", ".join(str(item) for item in (row.get("notes") or [])[:2]),
+            })
         extra = len(predictions) - self.MAX_PREDICTIONS
+
+        if self._table_mode:
+            rows = [(item["genus"], item["percent"], item["bar"] or "·",
+                     item["value"] or "—",
+                     " · ".join(part for part in (item["species"], item["notes"]) if part) or "—")
+                    for item in entries]
+            text = format_table(("род", "%", "вероятность", "≈кр", "виды и причина"), rows,
+                                aligns=("left", "right", "left", "right", "left"),
+                                max_width=self._table_width())
+            if extra > 0:
+                text += f"\n… и ещё {extra}"
+            self.predict_label.config(text=text)
+            return
+
+        lines = []
+        for item in entries:
+            head = f"{item['genus']}  {item['percent']}" + (f"  {item['bar']}" if item["bar"] else "")
+            if item["value"]:
+                head += f"  ≈ {item['value']}"
+            details = " · ".join(part for part in (
+                (f"виды: {item['species']}" if item["species"] else ""), item["notes"]) if part)
+            lines.append(head + (f"\n   {details}" if details else ""))
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.predict_label.config(text="\n".join(lines))
@@ -2593,13 +2747,12 @@ class ExobiologyOverlay(OverlayWindow):
             self.planets_label.config(text=text, fg=COLOR_TEXT_MUTED)
             return
 
-        system = str(state.get("system") or "")
-        lines = []
-        for row in rows[:self.MAX_PLANETS]:
-            name = str(row.get("body") or "?")
-            if system and name.startswith(system):
-                name = name[len(system):].strip() or name
-            traits = [str(row.get("planet_class") or "?")]
+        limit = max(1, int(self.settings.get("exobio_planet_limit", self.MAX_PLANETS) or self.MAX_PLANETS))
+        table_rows = []
+        matched_lines = []
+        for row in rows[:limit]:
+            name = self._short_body(state, row.get("body"))
+            traits = []
             category = str(row.get("atmosphere_category") or "")
             if category in ("thin", "thick"):
                 traits.append("атмосфера")
@@ -2611,15 +2764,27 @@ class ExobiologyOverlay(OverlayWindow):
             distance = float(row.get("distance_ls") or 0.0)
             if distance > 0:
                 traits.append(f"{distance:.0f} св.с")
-            lines.append(f"{name}  ·  {', '.join(traits)}")
+            table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
             # Почему планета попала в список — иначе фильтры непрозрачны.
             matched = [str(item) for item in (row.get("matched") or []) if item]
             if matched:
-                lines.append(f"   ↳ {', '.join(matched[:2])}")
-        extra = len(rows) - self.MAX_PLANETS
+                matched_lines.append((name, ", ".join(matched[:2])))
+        extra = len(rows) - limit
+        if self._table_mode and table_rows:
+            text = format_table(("тело", "класс", "признаки"), table_rows,
+                                max_width=self._table_width())
+            if matched_lines:
+                text += "\n" + "\n".join(f"↳ {name}: {why}" for name, why in matched_lines)
+            self.planets_label.config(text=text + (f"\n… и ещё {extra}" if extra > 0 else ""),
+                                      fg=COLOR_GREEN_TEXT)
+            return
+        lines = [f"{name}  ·  {planet_class}  ·  {traits}" for name, planet_class, traits in table_rows]
+        for name, why in matched_lines:
+            lines.append(f"   ↳ {why}")
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.planets_label.config(text="\n".join(lines), fg=COLOR_GREEN_TEXT)
+
 
     def _render_bodies(self, state: dict):
         bodies = state.get("system_bodies") or []
@@ -2628,21 +2793,25 @@ class ExobiologyOverlay(OverlayWindow):
         if not bodies:
             self.bodies_label.config(text="в этой системе биосигналов не найдено")
             return
-        lines = []
+        rows = []
         for row in bodies[:self.MAX_BODIES]:
-            name = str(row.get("body") or "?")
-            # Имя тела в журнале начинается с имени системы — оставляем хвост.
-            system = str(state.get("system") or "")
-            if system and name.startswith(system):
-                name = name[len(system):].strip() or name
+            name = self._short_body(state, row.get("body"))
             marks = []
             if row.get("has_organics"):
                 marks.append("образцы")
             marks.append("карта есть" if row.get("mapped") else "карты нет")
             if not row.get("landable"):
                 marks.append("не сесть")
-            lines.append(f"{name}  ·  сигналов {row.get('bio_signals', 0)}  ·  {', '.join(marks)}")
+            rows.append((name, str(row.get("planet_class") or "?"),
+                         str(row.get("bio_signals", 0)), ", ".join(marks)))
         extra = len(bodies) - self.MAX_BODIES
+        if self._table_mode and rows:
+            text = format_table(("тело", "класс", "био", "признаки"), rows,
+                                aligns=("left", "left", "right", "left"),
+                                max_width=self._table_width())
+            self.bodies_label.config(text=text + (f"\n… и ещё {extra}" if extra > 0 else ""))
+            return
+        lines = [f"{name}  ·  сигналов {bio}  ·  {marks}" for name, _cls, bio, marks in rows]
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.bodies_label.config(text="\n".join(lines))
@@ -3894,6 +4063,9 @@ DEFAULT_SETTINGS = {
     "exobio_show_planet_search": True,
     # Компактный режим блока EXOBIO (плашки-бейджи, шкалы вероятности, HUD-акцент).
     "exobio_compact": True,
+    # Как печатать разделы EXOBIO: «table» — колонками (компактно и читаемо),
+    # «list» — прежними многострочными абзацами.
+    "exobio_layout": "table",
     # Сколько найденных планет показывать.
     "exobio_planet_limit": 6,
     "carrier_locked": False,

@@ -24,6 +24,10 @@ from exobiology import (  # noqa: E402
     atmosphere_category,
     estimate_value,
     format_credits,
+    GENUS_RULES,
+    MIN_PREDICTION_PERCENT,
+    estimate_value,
+    normalize_genus,
     predict_genera,
     prediction_rows,
 )
@@ -73,13 +77,24 @@ class PredictionTests(unittest.TestCase):
         self.assertNotIn("Conchas", genera)   # требует геологию
 
     def test_vacuum_with_volcanism_adds_geology_genera(self):
+        """Без атмосферы, но с геологией: Anemone/Brain Trees/Tubers/Fumerola.
+
+        Консервативная правка модели: роды без атмосферы — это Anemone, Brain
+        Trees, Sinuous Tubers, Crystalline Shards, Bark Mounds, Amphora Plant и
+        Fumerola. «Conchas» же, наоборот, живут на тонкой атмосфере
+        (аммиак/азот/вода/CO2), и на вакуумном теле их быть не может — раньше
+        модель ставила их в пару «вакуум + геология», что было ошибкой.
+        """
         body = {"atmosphere": "", "atmosphere_type": "None",
                 "volcanism": "major silicate vapour geysers volcanism",
                 "surface_temperature": 320.0, "surface_gravity": 6.0}
         genera = {genus for genus, _score, _notes in predict_genera(body)}
-        self.assertIn("Conchas", genera)
-        self.assertIn("Shards", genera)
+        self.assertIn("Sinuous Tubers", genera)
+        self.assertIn("Crystalline Shards", genera)
         self.assertIn("Fumerola", genera)
+        self.assertIn("Anemone", genera)
+        self.assertNotIn("Conchas", genera)
+        self.assertNotIn("Tussock", genera)
 
     def test_thin_atmosphere_gives_classic_list(self):
         body = {"atmosphere": "thin carbon dioxide atmosphere", "volcanism": "",
@@ -92,13 +107,18 @@ class PredictionTests(unittest.TestCase):
         self.assertNotIn("Electricae", genera)  # нужна геология
 
     def test_geology_rules_are_scored_higher(self):
+        """Геология добавляет вес там, где она «бонус», и обязательна для Fumerola."""
         plain = {genus: score for genus, score, _n in
-                 predict_genera({"atmosphere": "thin nitrogen atmosphere", "volcanism": ""})}
+                 predict_genera({"atmosphere": "thin argon atmosphere", "volcanism": "",
+                                 "planet_class": "Icy body"})}
         volcanic = {genus: score for genus, score, _n in
-                    predict_genera({"atmosphere": "thin nitrogen atmosphere",
-                                    "volcanism": "carbon dioxide geysers"})}
+                    predict_genera({"atmosphere": "thin argon atmosphere",
+                                    "volcanism": "carbon dioxide geysers",
+                                    "planet_class": "Icy body"})}
         self.assertGreater(volcanic.get("Electricae", 0), plain.get("Electricae", 0))
         self.assertGreater(volcanic.get("Bacterium", 0), plain.get("Bacterium", 0))
+        self.assertNotIn("Fumerola", plain)
+        self.assertIn("Fumerola", volcanic)
 
     def test_unknown_atmosphere_yields_no_guessing(self):
         """Без данных об атмосфере модель не выдаёт случайных родов."""
@@ -193,6 +213,70 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RulesAccuracyTests(unittest.TestCase):
+    """То, ради чего модель переписывали: газ, класс, гравитация и виды."""
+
+    def test_gas_of_atmosphere_matters(self):
+        """Тонкая атмосфера есть, а газа рода нет — рода показывать нельзя."""
+        argon = {"atmosphere": "thin argon atmosphere", "planet_class": "Icy body"}
+        rows = {row["genus"] for row in prediction_rows(argon)}
+        self.assertIn("Electricae", rows)
+        self.assertIn("Fonticulua", rows)
+        co2 = {"atmosphere": "thin carbon dioxide atmosphere", "planet_class": "Rocky body"}
+        rows = {row["genus"] for row in prediction_rows(co2)}
+        self.assertNotIn("Electricae", rows)
+        self.assertIn("Tussock", rows)
+
+    def test_journal_spelling_variants_are_equivalent(self):
+        """«sulphur»/«sulfur»/«SulfurDioxide» — один и тот же газ для модели."""
+        british = {"atmosphere": "thin sulphur dioxide atmosphere", "planet_class": "Rocky body"}
+        american = {"atmosphere": "Thin Sulfur Dioxide atmosphere",
+                    "atmosphere_type": "SulfurDioxide", "planet_class": "Rocky body"}
+        expect = {row["genus"] for row in prediction_rows(british)}
+        self.assertEqual(expect, {row["genus"] for row in prediction_rows(american)})
+        self.assertIn("Recepta", expect)
+
+    def test_wrong_planet_class_excludes_the_genus(self):
+        body = {"atmosphere": "thin ammonia atmosphere", "planet_class": "Icy body"}
+        rows = {row["genus"] for row in prediction_rows(body)}
+        self.assertNotIn("Aleoida", rows)      # только Rocky/HMC
+        self.assertNotIn("Frutexa", rows)     # только Rocky/HMC
+
+    def test_gravity_cap_lowers_the_percent_instead_of_excluding(self):
+        rule = GENUS_RULES["Aleoida"]
+        self.assertEqual(rule["max_g"], 0.27)
+        light = {"atmosphere": "thin ammonia atmosphere", "planet_class": "Rocky body",
+                 "surface_gravity": 1.0}
+        heavy = dict(light, surface_gravity=8.0)
+        rows = {row["genus"]: row for row in prediction_rows(heavy)}
+        self.assertIn("Aleoida", rows)                       # не выбрасываем
+        self.assertLess(rows["Aleoida"]["percent"], 100)      # но снижаем
+        self.assertEqual(100, {row["genus"]: row for row in prediction_rows(light)}["Aleoida"]["percent"])
+        self.assertTrue(any("гравитация" in note for note in rows["Aleoida"]["notes"]))
+
+    def test_species_are_predicted_with_the_genus(self):
+        body = {"atmosphere": "thin carbon dioxide atmosphere", "planet_class": "Rocky body",
+                "surface_temperature": 185.0}
+        rows = {row["genus"]: row for row in prediction_rows(body)}
+        self.assertIn("Aleoida coronamus", rows["Aleoida"]["species"])
+        self.assertNotIn("Aleoida laminiae", rows["Aleoida"]["species"])   # аммиачный вид
+        # Temperature band picks the right Tussock too.
+        self.assertTrue(any("Tussock" in name for name in rows["Tussock"]["species"]))
+
+    def test_confirmed_genera_win_and_aliases_resolve(self):
+        self.assertEqual(normalize_genus("Shards"), "Crystalline Shards")
+        self.assertEqual(normalize_genus("Sinuous Tuber"), "Sinuous Tubers")
+        self.assertGreater(estimate_value("Shards"), 0)
+        self.assertGreater(estimate_value("Tubers"), 0)
+
+    def test_weak_matches_are_not_shown(self):
+        """Тело без данных атмосферы не должно превращаться в «возможно всё»."""
+        self.assertEqual(prediction_rows({"planet_class": "Rocky body"}), [])
+        self.assertEqual(predict_genera({"planet_class": "Rocky body"}), [])
+        rows = prediction_rows({"atmosphere": "thick water atmosphere", "planet_class": "Water world"})
+        self.assertTrue(all(row["percent"] >= MIN_PREDICTION_PERCENT for row in rows))
+
+
 class ValueEstimateTests(unittest.TestCase):
     """Оценка выплаты: порядок величины, а не прайс."""
 
@@ -236,11 +320,13 @@ class PredictionRowsTests(unittest.TestCase):
         self.assertNotIn("Electricae", rows)
 
     def test_geology_genus_reaches_full_percent(self):
-        body = {"atmosphere": "thin sulfur dioxide atmosphere",
-                "volcanism": "minor silicate vapour geysers"}
+        body = {"atmosphere": "thin argon atmosphere", "planet_class": "Icy body",
+                "volcanism": "minor silicate vapour geysers", "surface_gravity": 1.0}
         rows = {row["genus"]: row for row in prediction_rows(body)}
         self.assertEqual(rows["Electricae"]["percent"], 100)
-        self.assertIn("геология", rows["Electricae"]["notes"])
+        self.assertIn("геология есть", rows["Electricae"]["notes"])
+        # Род с обязательной геологией на таком теле тоже на 100 %.
+        self.assertEqual(rows["Fumerola"]["percent"], 100)
 
     def test_rows_carry_value_and_limit(self):
         body = {"atmosphere": "thin sulfur dioxide atmosphere", "volcanism": ""}

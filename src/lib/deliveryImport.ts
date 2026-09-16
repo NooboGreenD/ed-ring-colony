@@ -1,4 +1,6 @@
 import { createHash } from 'crypto';
+
+import { isConstructionSourceName } from './journalParser';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface DeliveryImportOutcome {
@@ -22,7 +24,42 @@ type DeliveryRow = {
   is_hub: boolean;
   route_system_id: number | null;
   source_hash: string;
+  /** Колонка журнала-источник: contribution | cargo_depot | cargo_delta | … */
+  source?: string | null;
+  /** Поставка на стройплощадку (исторические строки — NULL = да). */
+  is_construction?: boolean | null;
+  /** MarketID площадки, к которой привязана доставка (текст: 64-битный ID). */
+  market_id?: string | null;
 };
+
+/**
+ * Дополнительные колонки `deliveries` из миграции
+ * `20260917000000_deliveries_transport_scope.sql`. Как и с `source_hash`,
+ * релиз API может успеть раньше миграции — тогда пишем строки без них, чтобы
+ * загрузка журнала не падала целиком.
+ */
+const TRANSPORT_COLUMNS = ['source', 'is_construction', 'market_id'] as const;
+let transportColumnsMode: 'unknown' | 'present' | 'missing' = 'unknown';
+let transportColumnsProbeAt = 0;
+const TRANSPORT_COLUMNS_REPROBE_MS = 2 * 60_000;
+
+function isMissingTransportColumn(error: { code?: string; message?: string }): boolean {
+  if (error.code !== '42703' && error.code !== 'PGRST204') {
+    return /(?:source|is_construction|market_id).*?(?:does not exist|could not find)/i.test(error.message || '');
+  }
+  return /(?:source|is_construction|market_id)/i.test(error.message || '');
+}
+
+function shouldTryTransportColumns(): boolean {
+  if (transportColumnsMode === 'present') return true;
+  if (transportColumnsMode === 'unknown') return true;
+  return Date.now() >= transportColumnsProbeAt;
+}
+
+function rememberTransportColumnsMode(mode: 'present' | 'missing'): void {
+  transportColumnsMode = mode;
+  transportColumnsProbeAt = mode === 'present' ? 0 : Date.now() + TRANSPORT_COLUMNS_REPROBE_MS;
+}
 
 // A Journal can contain thousands of events. Keep each PostgREST mutation
 // deliberately small: after the source-hash index rollout, a failed request
@@ -210,6 +247,17 @@ async function loadPlacementLookup(
   return placements;
 }
 
+function marketIdOf(delivery: Record<string, unknown>): string | null {
+  for (const key of ['market_id', 'marketId']) {
+    const value = delivery[key];
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return value.trim();
+    // 64-битный MarketID нельзя пропускать через Number: округление сливает
+    // разные площадки в один ключ.
+    if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
+  }
+  return null;
+}
+
 function validRows(userId: string, deliveries: unknown[], placements: Map<string, SystemPlacement>): DeliveryRow[] {
   const rows: DeliveryRow[] = [];
 
@@ -238,6 +286,7 @@ function validRows(userId: string, deliveries: unknown[], placements: Map<string
       delivery.source_hash,
       [userId, systemName, commodity.toLowerCase(), amount, deliveredAt, String(delivery.source ?? '')].join('\u0000'),
     );
+    const source = String(delivery.source ?? '').trim().slice(0, 60) || null;
     rows.push({
       user_id: userId,
       system_name: systemName,
@@ -249,6 +298,19 @@ function validRows(userId: string, deliveries: unknown[], placements: Map<string
       is_hub: placement?.isHub ?? false,
       route_system_id: placement?.routeSystemId ?? null,
       source_hash: sourceHash,
+      source,
+      // Клиент (браузерный загрузчик и Colonial Helper) присылает явный признак
+      // «на стройплощадку»; без него род_source решает: contribution и
+      // cargo_depot — стройка, всё остальное — просто перевозка.
+      is_construction: typeof delivery.is_construction === 'boolean'
+        ? delivery.is_construction
+        : (typeof delivery.isConstruction === 'boolean'
+            ? delivery.isConstruction
+            // Клиент не прислал признак (старый загрузчик) — решаем по
+            // journal-источнику, чтобы «просто перевозка» никогда не
+            // затекала в статистику строек.
+            : isConstructionSourceName(source)),
+      market_id: marketIdOf(delivery),
     });
   }
   return rows;
@@ -280,6 +342,50 @@ function isMissingSourceHash(error: { code?: string; message?: string }): boolea
   );
 }
 
+type WriteMode = 'upsert' | 'insert';
+
+/**
+ * Записать пачку доставок, добавив колонки «источник / на стройку / рынок».
+ *
+ * Релиз API может оказаться в проде раньше миграции (или PostgREST ещё не
+ * перечитал схему). Тогда вставка упала бы целиком и загрузка журнала
+ * выглядела бы поломанной, поэтому при известной об отсутствии колонке ошибке
+ * пачка повторяется без них: тоннаж сохранится, а блок «на стройплощадки»
+ * дорисуется после накатки миграции.
+ */
+async function writeDeliveryRows(
+  svc: SupabaseClient,
+  rows: Array<Record<string, unknown>>,
+  mode: WriteMode,
+  onConflict?: string,
+): Promise<{ ids: unknown[]; error: { code?: string; message?: string } | null; degraded: boolean }> {
+  const run = async (payload: Array<Record<string, unknown>>) => {
+    const query = svc.from('deliveries');
+    if (mode === 'upsert') {
+      return query.upsert(payload, { onConflict, ignoreDuplicates: true }).select('id');
+    }
+    return query.insert(payload).select('id');
+  };
+
+  if (shouldTryTransportColumns()) {
+    const first = await run(rows);
+    if (!first.error) {
+      rememberTransportColumnsMode('present');
+      return { ids: first.data ?? [], error: null, degraded: false };
+    }
+    if (!isMissingTransportColumn(first.error)) {
+      return { ids: [], error: first.error, degraded: false };
+    }
+    rememberTransportColumnsMode('missing');
+  }
+
+  const retry = await run(rows.map((row) => {
+    const { source: _source, is_construction: _isConstruction, market_id: _marketId, ...rest } = row;
+    return rest;
+  }));
+  return { ids: retry.data ?? [], error: retry.error ?? null, degraded: !retry.error };
+}
+
 async function persistDeliveryChunk(
   svc: SupabaseClient,
   userId: string,
@@ -293,14 +399,13 @@ async function persistDeliveryChunk(
   }
 
   if (shouldTryAtomicSourceHashWrite()) {
-    const { data, error } = await svc
-      .from('deliveries')
-      .upsert(collapsed.rows, { onConflict: 'user_id,source_hash', ignoreDuplicates: true })
-      .select('id');
+    const atomic = await writeDeliveryRows(svc, collapsed.rows as unknown as Array<Record<string, unknown>>,
+                                           'upsert', 'user_id,source_hash');
+    const { error } = atomic;
 
     if (!error) {
       rememberSourceHashWriteMode('unique-index');
-      const inserted = data?.length ?? 0;
+      const inserted = atomic.ids.length;
       return {
         inserted,
         duplicates: collapsed.duplicates + Math.max(0, collapsed.rows.length - inserted),
@@ -322,10 +427,9 @@ async function persistDeliveryChunk(
     // PostgREST. Retain valid deliveries rather than rejecting the upload;
     // retries become idempotent after the column/index rollout completes.
     const legacyRows = collapsed.rows.map(({ source_hash: _sourceHash, ...row }) => row);
-    const { data: insertedRows, error: insertError } = await svc
-      .from('deliveries')
-      .insert(legacyRows)
-      .select('id');
+    const legacyWrite = await writeDeliveryRows(svc, legacyRows as unknown as Array<Record<string, unknown>>, 'insert');
+    const insertedRows = { length: legacyWrite.ids.length };
+    const insertError = legacyWrite.error;
     if (insertError) throw new Error(insertError.message);
     return {
       inserted: insertedRows?.length ?? legacyRows.length,
@@ -354,12 +458,9 @@ async function persistDeliveryChunk(
     };
   }
 
-  const { data: insertedRows, error: insertError } = await svc
-    .from('deliveries')
-    .insert(missing)
-    .select('id');
-  if (insertError) throw new Error(insertError.message);
-  const inserted = insertedRows?.length ?? 0;
+  const write = await writeDeliveryRows(svc, missing as unknown as Array<Record<string, unknown>>, 'insert');
+  if (write.error) throw new Error(write.error.message);
+  const inserted = write.ids.length;
   return {
     inserted,
     duplicates: collapsed.duplicates + existingHashes.size + Math.max(0, missing.length - inserted),

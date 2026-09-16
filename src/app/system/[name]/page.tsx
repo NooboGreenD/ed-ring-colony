@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
 import {
   IconXCircle,
+  IconGlobe,
   IconPlane,
   IconExternalLink,
   IconChart,
@@ -13,8 +14,9 @@ import {
   IconConstruction,
   IconPackage,
   IconCheck,
-  IconGlobe,
 } from '@/components/Icons';
+
+import { buildOrreryLayout, summarizeLayout, toStructures } from '@/lib/systemOrrery';
 
 const SystemPlotlyMap = dynamic(() => import('@/components/SystemPlotlyMap'), {
   ssr: false,
@@ -82,14 +84,32 @@ export default function SystemPage() {
   const { name } = useParams();
   const systemName = decodeURIComponent(name as string);
   const [system, setSystem] = useState<SystemData | null>(null);
+  const [bodies, setBodies] = useState<any[]>([]);
+  const [mapFocus, setMapFocus] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch(`/api/systems/progress?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
-      .then((response) => response.json())
-      .then((data) => setSystem(data))
-      .catch(() => setSystem(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    Promise.all([
+      fetch(`/api/systems/progress?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
+        .then((response) => response.json())
+        .catch(() => null),
+      fetch(`/api/atlas/system-bodies?system=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
+        .then((response) => response.json())
+        .then((data) => (Array.isArray(data?.bodies) ? data.bodies : []))
+        .catch(() => []),
+    ])
+      .then(([progress, scanBodies]) => {
+        if (cancelled) return;
+        setSystem(progress);
+        setBodies(scanBodies);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [systemName]);
 
   if (loading) {
@@ -119,6 +139,25 @@ export default function SystemPage() {
     total + (hasExactAmounts(resource) ? resource.provided : 0)
   ), 0);
   const hasImportedCargo = hasSystemCargoTotals || importedCargo > 0;
+
+  const orreryStructures = useMemo(() => toStructures(system.projects), [system.projects]);
+
+  // Та же геометрия, что и у 3D-карты: карточки тел обязаны называть те же
+  // классы/дистанции и те же постройки, что и оверей на карте.
+  const orreryLayout = useMemo(
+    () => buildOrreryLayout(bodies.length ? bodies : system.bodies ?? [], systemName, {}),
+    [bodies, system.bodies, systemName],
+  );
+  const orrerySummary = useMemo(() => summarizeLayout(orreryLayout, orreryStructures), [orreryLayout, orreryStructures]);
+  const structureByBody = useMemo(() => {
+    const map: Record<string, typeof orreryStructures> = {};
+    for (const structure of orreryStructures) {
+      const key = orreryLayout.bodies.find((body) => body.name.toLowerCase() === (structure.bodyName || '').toLowerCase())?.name ?? structure.bodyName;
+      if (!key) continue;
+      (map[key] ??= []).push(structure);
+    }
+    return map;
+  }, [orreryStructures, orreryLayout]);
 
   return (
     <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 32 }}>
@@ -240,7 +279,9 @@ export default function SystemPage() {
       <SystemPlotlyMap
         systemName={systemName}
         projects={system.projects}
-        initialBodies={system.bodies}
+        initialBodies={bodies}
+        focusTarget={mapFocus}
+        onFocusChange={setMapFocus}
       />
 
       {/* Проекты / Постройки */}
@@ -282,6 +323,16 @@ export default function SystemPage() {
                     {project.buildId && (
                       <div style={{ fontSize: 13, color: '#9ca3af' }}>
                         <span style={{ color: '#eeeeee' }}>ID:</span> {project.buildId}
+                      </div>
+                    )}
+                    {project.bodyName && (
+                      <div style={{ fontSize: 13 }}>
+                        <button
+                          onClick={() => setMapFocus(project.bodyName ?? '')}
+                          style={{ background: 'rgba(0,243,255,0.08)', border: '1px solid rgba(0,243,255,0.35)', color: '#00f3ff', borderRadius: 4, fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}
+                        >
+                          🎯 показать на карте
+                        </button>
                       </div>
                     )}
                   </div>
@@ -371,20 +422,73 @@ export default function SystemPage() {
         </div>
       )}
 
-      {/* Тела системы (если есть) */}
-      {system.bodies && system.bodies.length > 0 && (
+      {/* Тела системы карточками — тот же оверей-движок, что и у 3D-карты */}
+      {orreryLayout.bodies.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}>🪐 Тела системы</h2>
-          <div style={{ display: 'grid', gap: 8 }}>
-            {system.bodies.map((body: any, index: number) => (
-              <div key={index} style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 8, padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ color: '#eeeeee', fontSize: 14 }}>{body.name}</span>
-                <span style={{ color: '#9ca3af', fontSize: 13 }}>
-                  {body.type}{body.distance ? ` · ${body.distance.toFixed(0)} LS` : ''}
-                </span>
-              </div>
-            ))}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
+            <h2 style={{ fontSize: 18, color: '#eeeeee', margin: 0 }}>
+              <IconGlobe size={16} color="#9ca3af" /> Тела системы ({orreryLayout.bodies.length})
+            </h2>
+            <span style={{ fontSize: 11, color: '#6b7280' }}>
+              ★ {orrerySummary.stars} · планет {orrerySummary.planets} · лун {orrerySummary.moons} · с посадкой {orrerySummary.landable}
+            </span>
           </div>
+          {orreryLayout.clusters.map((cluster) => (
+            <div key={cluster.starName || 'system'} style={{ marginBottom: 14 }}>
+              {orreryLayout.clusters.length > 1 && (
+                <button
+                  onClick={() => setMapFocus(cluster.starName)}
+                  style={{ background: 'transparent', border: 'none', color: '#e67e22', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '2px 0', marginBottom: 6 }}
+                >
+                  ★ {cluster.starName.replace(`${systemName} `, '')} · тел {cluster.bodies.length} → фокус на карте
+                </button>
+              )}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 8 }}>
+                {cluster.bodies.map((body) => {
+                  const bodyStructures = structureByBody[body.name] ?? [];
+                  return (
+                    <button
+                      key={body.name}
+                      onClick={() => setMapFocus(body.name)}
+                      title="Показать тело на 3D-карте"
+                      style={{ textAlign: 'left', background: '#25282b', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px', cursor: 'pointer', color: '#eeeeee' }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{body.name.replace(`${systemName} `, '')}</span>
+                        <span style={{ fontSize: 10, color: '#9ca3af' }}>{body.kind === 'moon' ? 'луна' : 'планета'}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+                        {body.subType || 'тело'}
+                        {body.distanceLs > 0 ? ` · ${Math.round(body.distanceLs)} св. с` : ''}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                        {body.radiusM > 0 ? `${Math.round(body.radiusM / 1000).toLocaleString('ru-RU')} км` : ''}
+                        {body.gravity > 0 ? ` · ${(body.gravity / 9.80665).toFixed(2)} g` : ''}
+                        {body.tempK > 0 ? ` · ${Math.round(body.tempK)} K` : ''}
+                      </div>
+                      {(body.landable || body.bioSignals > 0 || body.rings.length > 0 || bodyStructures.length > 0) && (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5, fontSize: 10 }}>
+                          {body.landable && <span style={{ color: '#00f3ff', background: 'rgba(0,243,255,0.1)', padding: '1px 6px', borderRadius: 4 }}>🛬 посадка</span>}
+                          {body.bioSignals > 0 && <span style={{ color: '#22c55e', background: 'rgba(34,197,94,0.12)', padding: '1px 6px', borderRadius: 4 }}>🌿 {body.bioSignals}</span>}
+                          {body.rings.length > 0 && <span style={{ color: '#9fd8ef', background: 'rgba(159,216,239,0.12)', padding: '1px 6px', borderRadius: 4 }}>💍 {body.rings.length}</span>}
+                          {bodyStructures.length > 0 && <span style={{ color: '#ff9f43', background: 'rgba(230,126,34,0.14)', padding: '1px 6px', borderRadius: 4 }}>🏗 {bodyStructures.length}</span>}
+                        </div>
+                      )}
+                      {bodyStructures.length > 0 && (
+                        <div style={{ marginTop: 6, fontSize: 11, color: '#c9d1d9', display: 'grid', gap: 2 }}>
+                          {bodyStructures.map((structure) => (
+                            <div key={structure.id}>
+                              🏗 {structure.name} · <span style={{ color: structure.complete ? '#22c55e' : '#e67e22' }}>{structure.complete ? 'готово' : `${structure.progress.toFixed(0)}%`}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </main>

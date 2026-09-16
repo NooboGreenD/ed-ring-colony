@@ -25,6 +25,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
+import system_map as sm
+
 SYSTEM = "HIP 22460"
 ADDRESS = 123456789
 SITE_MARKET = 3951663874
@@ -931,6 +933,50 @@ class MapRavenCacheTests(MapTabTestBase):
         self.app.map_cache.store(SYSTEM, bodies=self.bodies_payload())
         self.app._on_map_refresh()
         self.assertIn(f"{SYSTEM} C 9", self.names())
+
+
+class MapCardsPanelTests(MapTabTestBase):
+    """Боковая панель «карточки системы» — как на сайте проекта."""
+
+    def _prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(), live=True)
+        self.app._map_redraw_now()
+
+    def test_side_mode_switch_renders_cards(self):
+        self._prepare()
+        self.app.map_side_mode.set("cards")
+        self.app._on_map_side_mode()
+        self.assertEqual(self.app.config["map_side_mode"], "cards")
+        self.app.map_cards_canvas.create_window.assert_called()
+
+    def test_cards_show_body_and_its_site(self):
+        self._prepare()
+        created = []
+
+        def record(*args, **kwargs):
+            created.append(str(kwargs.get("text") or ""))
+            return mock.MagicMock(name="Label")
+
+        with mock.patch.object(self.module.tb, "Label", side_effect=record):
+            self.app._fill_map_cards(self.app._map_last_snapshot)
+        text = " ".join(item for item in created if item)
+        self.assertIn(BODY_1.replace(SYSTEM + " ", ""), text)
+        self.assertIn("A 1", text)          # название стройки из depot_event
+        self.assertIn("20%", text)          # прогресс завезённого
+
+    def test_empty_snapshot_shows_hint(self):
+        rows = []
+
+        def record(*args, **kwargs):
+            rows.append(str(kwargs.get("text") or ""))
+            return mock.MagicMock(name="Label")
+
+        with mock.patch.object(self.module.tb, "Label", side_effect=record):
+            self.app._fill_map_cards(sm.MapSnapshot(system="Empty"))
+        self.assertTrue(any("Нет данных" in row for row in rows))
 
 
 class MapCenteringTests(MapTabTestBase):

@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { createClient } from '@/lib/supabaseServer';
 import { fetchRavenColonialData } from '@/lib/ravenColonial';
+import { summarizeCargo } from '@/lib/dossierCargo';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconProfile, IconSquadron, IconLeaderboard } from '@/components/Icons';
 
@@ -26,16 +27,16 @@ export default async function CmdrPage({ params }: { params: { name: string } })
   // строк, чем ожидается, из-за configured maximum. Лидерборд читает страницы
   // по 1000, поэтому досье должно использовать тот же полный набор доставок.
   const profileId = profile?.id ?? null;
-  const loadAllDeliveries = async (): Promise<any[]> => {
+  const pageSize = 1000;
+  const readDeliveries = async (columns: string): Promise<any[]> => {
     if (!profileId) return [];
 
     const rows: any[] = [];
-    const pageSize = 1000;
     let offset = 0;
     while (true) {
       const { data, error } = await supabase
         .from('deliveries')
-        .select('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id')
+        .select(columns)
         .eq('user_id', profileId)
         .order('id', { ascending: true })
         .range(offset, offset + pageSize - 1);
@@ -45,6 +46,20 @@ export default async function CmdrPage({ params }: { params: { name: string } })
       offset += data.length;
     }
     return rows;
+  };
+
+  // Досье разделяет «весь перевозимый груз» и «тоннаж на стройплощадки».
+  // Колонки объёма/признака появляются только после миграции
+  // deliveries_transport_scope: до неё профиль обязан остаться читаемым,
+  // поэтому при unknown-column ошибке перечитываем базовым набором.
+  const loadAllDeliveries = async (): Promise<any[]> => {
+    try {
+      return await readDeliveries('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id, source, is_construction, market_id');
+    } catch (error) {
+      const message = String((error as { message?: unknown })?.message ?? error);
+      if (!/source|is_construction|market_id/i.test(message) || !/does not exist|could not find|column/i.test(message)) throw error;
+      return readDeliveries('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id');
+    }
   };
 
   const [
@@ -131,7 +146,12 @@ export default async function CmdrPage({ params }: { params: { name: string } })
   const validDeliveryRows = deliveryRows.filter((row) => amountOf(row.amount) > 0);
   const opsCount = validDeliveryRows.length;
   const normalizedSystem = (value: unknown) => String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-  const totalTons = deliveryRows.reduce((sum, r) => sum + amountOf(r.amount), 0);
+  // Два разных блока досье из одного набора строк: «весь перевозимый груз» и
+  // «тоннаж на стройплощадки». Логика живёт в lib/dossierCargo.ts, чтобы её
+  // можно было проверить так же, как парсер журнала.
+  const cargo = summarizeCargo(deliveryRows);
+  const totalTons = cargo.totalTons;
+  const { siteTons, siteOps } = cargo;
   const systemsMap = new Map<string, number>();
   const commoditiesMap = new Map<string, number>();
   validDeliveryRows.forEach((r) => {
@@ -232,6 +252,10 @@ export default async function CmdrPage({ params }: { params: { name: string } })
         createdAt={profile?.created_at ?? null}
         rank={rank}
         totalTons={totalTons}
+        siteTons={siteTons}
+        siteOpsCount={siteOps}
+        siteSystems={cargo.siteSystems}
+        siteSharePercent={cargo.siteSharePercent}
         hubsCount={uniqueHubs.size}
         routeCount={uniqueRoutes.size}
         routeSystemsVisited={uniqueRouteSystems.size}
