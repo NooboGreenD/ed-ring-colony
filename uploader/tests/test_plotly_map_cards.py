@@ -133,10 +133,32 @@ class IconsAndFocusTests(unittest.TestCase):
         overview_span = overview["xaxis"]["range"][1] - overview["xaxis"]["range"][0]
         focused_span = focused["xaxis"]["range"][1] - focused["xaxis"]["range"][0]
         self.assertLess(focused_span, overview_span)
-        center = focused["camera"]["center"]
+        # «Центрирование на цели» — в размахе осей: camera.center Plotly меряет в
+        # нормализованных единицах, данные координаты там уносят вид в пустоту.
+        self.assertEqual(focused["camera"]["center"], {"x": 0, "y": 0, "z": 0})
         position = pm.build_system_geometry(self.snapshot)["positions"]["KELT A 1"]
-        self.assertAlmostEqual(center["x"], position[0], places=2)
-        self.assertAlmostEqual(center["z"], position[2], places=2)
+        for axis, key in (("xaxis", 0), ("yaxis", 1), ("zaxis", 2)):
+            low, high = focused[axis]["range"]
+            self.assertAlmostEqual((low + high) / 2.0, position[key], places=2,
+                                   msg=f"{axis}: окно фокуса не по центру цели")
+        # Окно фокуса = разрез движка с запасом FOCUS_PAD.
+        view = orrery.focus_view(orrery.plan_system(self.snapshot.bodies, self.snapshot.system or ""),
+                                 "KELT A 1", 3)
+        self.assertAlmostEqual((focused["xaxis"]["range"][1] - focused["xaxis"]["range"][0]) / 2.0,
+                               orrery.focus_window(view["half_span"]), places=3)
+
+    def test_marker_sits_on_its_own_orbit_curve(self):
+        """Маркер тела лежит на нарисованной эллиптической орбите (а не рядом)."""
+        geom = pm.build_system_geometry(self.snapshot)
+        import math
+        for name, curve in geom["orbit_curves"].items():
+            if name not in geom["positions"] or not curve["x"]:
+                continue
+            point = geom["positions"][name]
+            distance = min(math.dist((curve["x"][i], curve["y"][i], curve["z"][i]), point)
+                           for i in range(len(curve["x"])))
+            self.assertLess(distance, max(0.05, abs(point[0]) * 0.02),
+                            f"{name}: маркер в {distance:.3f} от своей орбиты")
 
     def test_zoom_buttons_are_offered_when_a_target_is_selected(self):
         schema = pm.build_plotly_dict(self.snapshot, selected="KELT A 1", zoom=2)
@@ -168,8 +190,13 @@ class HtmlCardsTests(unittest.TestCase):
     def test_html_view_toggle_switches_camera_only(self):
         """Переключатель вида в HTML — камера+проекция, а не другая фигура."""
         self.assertIn('id="view"', self.html)
-        self.assertIn("scene.projection.type", self.html)
-        self.assertIn("state.flat ? 'orthographic' : 'perspective'", self.html)
+        # Направление камеры приходит из Python-движка, а JS пишет camera целиком
+        # (eye/up/center/projection) — только так переключение вида не уводит камеру.
+        self.assertIn("const CAMERA = ", self.html)
+        self.assertIn("relayout['scene.camera'] = ", self.html)
+        self.assertIn("center: { x: 0, y: 0, z: 0 }", self.html)
+        self.assertIn("const OVERVIEW_SPAN = ", self.html)
+        self.assertNotIn("scene.projection", self.html)
         # Стартовая камера по умолчанию — 3D, как на сайте.
         self.assertIn("flat: false", self.html)
         # Сфера тела переиспользуется при зуме, а не перестраивается заново.
@@ -178,7 +205,7 @@ class HtmlCardsTests(unittest.TestCase):
 
     def test_flat_start_view_documented_in_payload(self):
         schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
-        self.assertEqual(schema["layout"]["scene"]["projection"]["type"], "perspective")
+        self.assertEqual(schema["layout"]["scene"]["camera"]["projection"]["type"], "orthographic")
         flat_html = pm.generate_plotly_html(self.snapshot, view_mode="2d")
         self.assertIn("flat: true", flat_html)
         self.assertIn('id="view" data-on="1"', flat_html)
@@ -218,17 +245,34 @@ class PlotlySiteParityTests(unittest.TestCase):
         self.assertIn("type: 'scatter3d'", source)
         self.assertNotIn("type: 'scatter',", source,
                         "сайт ушёл в отдельную 2D-фигуру — паритет надо переносить сюда")
-        self.assertIn("eyeDistance * 0.62", source)
+        # Камера и окна — из общего движка, а не на коленке в компоненте.
+        self.assertIn("camera: sceneCamera(viewMode)", source)
+        self.assertIn("focusWindow(halfSpan)", source)
+        self.assertIn("overviewWindow(traceExtent(traces), layout.span)", source)
         self.assertIn("sphereGeometry", source)
 
+    def test_camera_and_pads_are_one_source_of_truth(self):
+        engine = (HERE.parent.parent / "src" / "lib" / "systemOrrery.ts").read_text(encoding="utf-8")
+        for constant, value in (("FOCUS_PAD", orrery.FOCUS_PAD), ("OVERVIEW_PAD", orrery.OVERVIEW_PAD),
+                                ("CAMERA_DISTANCE", orrery.CAMERA_DISTANCE)):
+            self.assertIn(f"export const {constant} = {value};", engine,
+                          f"{constant} разошёлся с uploader/orrery.py")
+        iso = orrery.scene_camera("iso")["eye"]
+        norm = (iso["x"] ** 2 + iso["y"] ** 2 + iso["z"] ** 2) ** 0.5
+        self.assertAlmostEqual(norm, orrery.CAMERA_DISTANCE, places=6)
+        self.assertGreater(norm, 1.0, "камера обязана быть снаружи единичного бокса сцены")
+
     def test_app_figure_matches_site_camera(self):
+        """Стартовая камера = `sceneCamera('iso')` из движка сайта."""
         schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
-        eye = schema["layout"]["scene"]["camera"]["eye"]
-        expected = (1.65 * 0.62, -1.65 * 0.62, 1.65 * 0.4)
-        self.assertAlmostEqual(eye["x"], expected[0], places=3)
-        self.assertAlmostEqual(eye["y"], expected[1], places=3)
-        self.assertAlmostEqual(eye["z"], expected[2], places=3)
-        self.assertEqual(schema["layout"]["scene"]["camera"]["up"], {"x": 0, "y": 0, "z": 1})
+        camera = schema["layout"]["scene"]["camera"]
+        self.assertEqual(camera, orrery.scene_camera("iso"))
+        self.assertEqual(camera["up"], {"x": 0, "y": 0, "z": 1})
+        # Направление сайта: x>0, y<0 (азимут 0.62/−0.62/0.4).
+        eye = camera["eye"]
+        self.assertGreater(eye["x"], 0)
+        self.assertLess(eye["y"], 0)
+        self.assertGreater(eye["z"], 0)
 
     def test_app_figure_always_uses_scatter3d(self):
         for mode in ("3d", "2d", ""):

@@ -4,10 +4,14 @@ import {
   buildOrreryLayout,
   computeFocusView,
   extractStarKey,
+  FOCUS_PAD,
   habitableZoneLs,
+  overviewWindow,
   placeStructures,
+  sceneCamera,
   summarizeLayout,
   toStructures,
+  traceExtent,
 } from '../../src/lib/systemOrrery.ts';
 
 const DIST = 'Sol';
@@ -262,4 +266,68 @@ test('тотальность раскладки: пустые и битые ст
     assert.equal(typeof summary.stars, 'number');
     assert.equal(computeFocusView(layout, 'Sol 999', 3), null, 'фокуса на несуществующем теле нет — и это не ошибка');
   }
+});
+
+/* ──────────────── камера и окна: 3D-сцена не должна ломаться ──────────────── */
+
+test('sceneCamera: центр всегда 0 — иначе камера улетает в чёрный экран', () => {
+  for (const view of ['iso', 'top', 'side']) {
+    const camera = sceneCamera(view);
+    assert.deepEqual(camera.center, { x: 0, y: 0, z: 0 });
+    assert.equal(camera.projection.type, 'orthographic');
+    const distance = Math.hypot(camera.eye.x, camera.eye.y, camera.eye.z);
+    assert.ok(distance > 1, `|eye| = ${distance} должен выводить камеру за единичный бокс сцены`);
+    assert.ok(distance < 4, `|eye| = ${distance} — камера слишком далеко, система станет точкой`);
+  }
+  assert.deepEqual(sceneCamera('top').up, { x: 0, y: 1, z: 0 }, 'вид сверху смотрит вдоль −z');
+  assert.deepEqual(sceneCamera('iso').up, { x: 0, y: 0, z: 1 });
+  // Азимут изометрии: x > 0, y < 0 — та же сторона, что и у карты в приложении.
+  assert.ok(sceneCamera('iso').eye.x > 0 && sceneCamera('iso').eye.y < 0);
+});
+
+test('обзор вмещает все нарисованные точки, фокус остаётся окном вокруг цели', () => {
+  const traces = [
+    { x: [0, 120, -95], y: [0, 3, -40], z: [0, 1, -2] },
+    { x: [null, 240], y: [null, -260], z: [null, 5] },
+  ];
+  const extent = traceExtent(traces);
+  assert.equal(extent, 260, 'traceExtent берёт максимум по |координате| всех трасс');
+  const span = overviewWindow(extent, 240);
+  assert.ok(span >= extent, 'иначе часть орбит обрезается краем поля');
+  assert.ok(span <= extent * 2, 'разрез не должен превращать систему в точку');
+  assert.equal(traceExtent([]), 0);
+  assert.ok(FOCUS_PAD > 1 && FOCUS_PAD < 1.2, 'запас окна фокуса — небольшой');
+});
+
+test('окно фокуса центрировано на позиции тела из раскладки', () => {
+  const rows = [
+    star('Sol A', 1, 0),
+    planet('Sol 1', 2, 150, { semi_major_axis_ls: 5e10, eccentricity: 0.35, orbital_inclination: 8 }),
+    planet('Sol 2', 3, 900, { eccentricity: 0.02 }),
+  ];
+  const layout = buildOrreryLayout(rows, 'Sol', {});
+  const position = layout.positions['Sol 1'];
+  assert.ok(position, 'тело должно попасть в раскладку');
+  for (const zoom of [0, 1, 2, 3]) {
+    const focus = computeFocusView(layout, 'Sol 1', zoom);
+    assert.ok(focus, `фокус на Sol 1 для уровня ${zoom}`);
+    const window = zoom === 0 ? layout.span : focus.halfSpan * FOCUS_PAD;
+    assert.ok(window > 0 && Number.isFinite(window), `уровень ${zoom}: разрез окна`);
+    assert.ok(window >= Math.max(...position.map((value) => Math.abs(value))) * 0.5 || zoom > 0,
+              'в обзоре цель не должна вылезать за поле');
+    if (zoom === 2 || zoom === 3) {
+      assert.deepEqual(focus.center, position, 'окно фокуса центрировано ровно на позиции тела');
+    }
+    // Камера при этом смотрит в 0 — иначе координата цели в unit'ах системы
+    // уводит вид в пустоту (чёрный экран вместо тела).
+    assert.deepEqual(sceneCamera('iso').center, { x: 0, y: 0, z: 0 });
+  }
+});
+
+test('обзор из трасс не меньше габарита тел', () => {
+  const rows = [star('Sol A', 1, 0), planet('Sol 1', 2, 150), planet('Sol 2', 3, 4000)];
+  const layout = buildOrreryLayout(rows, 'Sol', {});
+  const coords = Object.values(layout.positions).flat();
+  const span = overviewWindow(Math.max(...coords.map((value) => Math.abs(value))), layout.span);
+  assert.ok(span >= Math.max(...coords.map((value) => Math.abs(value))));
 });

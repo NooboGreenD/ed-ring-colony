@@ -1,3 +1,74 @@
+# Раунд 57 — 2.10.21: 3D-карта перестала баговать (камера, обрезка, чёрный экран)
+
+## Задача
+
+«Доработать 3D-визуализацию системы: она багует и визуально работает некорректно — не всё
+отображается, при фокусе на поверхность вообще чёрный экран, при фокусе на что-то камера
+улетает в никуда; вся система не влазит в координатное поле, часть орбит порезана».
+Плюс: падал билд приложения (`Build Colonial Helper EXE`, шаг «Run uploader tests»).
+
+## Причины (все три — про одну и ту же сцену)
+
+1. **Чёрный экран при фокусе.** `camera.center` заполняли координатой цели в unit'ах
+   системы (`110.6`), а Plotly меряет `center` в нормализованных единицах сцены
+   (1 = половина разреза окна). Камера смотрела в пустоту. То же было и на сайте.
+2. **Обрезка.** Рамки осей обзора брались из бюджета раскладки (`±plan["span"]`),
+   а орбиты, кольца и HZ выходят за него — их резал край поля. Перспектива
+   (дефолт Plotly) добавляла то же с краёв.
+3. **Уровни зума двигали камеру внутрь сцены** (`eye` 0.72…0.9 при |eye| < 1):
+   на «поверхности» камера оказывалась внутри mesh3d-сферы тела → чёрный экран.
+   Маркер к тому же съезжал с нарисованного эллипса (позиция из `plan_system` vs
+   `_body_point` с реальным e) — окно фокуса центрировалось не на теле.
+
+Плюс падение CI: я добавил `layout.scene.projection`, которого в схеме Plotly нет
+(правильно — `scene.camera.projection`). `go.Figure` валидирует layout строго, и тест
+`test_build_plotly_figure_when_plotly_available` падал только там, где plotly установлен.
+
+## Что сделано
+
+* `orrery.scene_camera(view)` / `systemOrrery.ts::sceneCamera(view)` — единая камера:
+  направление (iso / top / side), |eye| = `CAMERA_DISTANCE` = 1.35, `center` = 0,
+  ортографическая проекция. Зум делает размах осей, поэтому расстояние камеры
+  одинаково для всех уровней — улетать внутрь сферы больше некуда.
+* `orrery.trace_extent(traces)` + `focus_window`/`overview_window` (зеркала
+  `traceExtent`/`focusWindow`/`overviewWindow` в движке сайта, `FOCUS_PAD` = 1.02,
+  `OVERVIEW_PAD` = 1.04): обзор = куб по габариту всех нарисованных точек, окно
+  фокуса = разрез движка с запасом. Ничего не режется, цель в центре окна.
+* `plotly_map._orbit_scale` — полуось эллипса подбирается так, чтобы кривая проходила
+  через точку раскладки; маркер больше не «вне своей орбиты», `_body_point` удалён.
+* HTML-экспорт: `const CAMERA`/`OVERVIEW_SPAN`/`FOCUS_PAD` приходят из Python, кнопка
+  `#view` переписывает `scene.camera` целиком, кнопки updatemenu трогают только
+  валидные ключи (`scene.camera`, `scene.camera.projection.type`).
+* Сайт: `camera: sceneCamera(viewMode)`, `focusWindow(halfSpan)`,
+  `overviewWindow(traceExtent(traces), layout.span)` + чипы «🔭 3D / 🧭 сверху / 📐 сбоку».
+* Версия 2.10.21.
+
+## Тесты
+
+* `test_plotly_map.py`: `camera.center == 0` для всех видов и уровней; scene/camera
+  используют только валидные ключи Plotly; кубический обзор вмещает все точки; сфера
+  целиком попадает в окно уровня 3; кнопки вида пишут только в `scene.*`.
+* `test_plotly_map_cards.py`: маркер лежит на своей орбитальной кривой; окно фокуса =
+  `focus_window`; паритет с сайтом — `sceneCamera(viewMode)`, `focusWindow`,
+  `overviewWindow` в компоненте и совпадение `FOCUS_PAD`/`OVERVIEW_PAD`/`CAMERA_DISTANCE`.
+* `scripts/tests/system-orrery.test.mjs`: 4 новых теста на камеру, габарит трасс и
+  центрирование окна (всего 64).
+* Прогон: `python3 -m unittest discover -s uploader/tests` → 1012 тестов; `node --test
+  scripts/tests/*.test.mjs` → 64/64; `tsc --noEmit` и `next build` — чисто.
+
+## Файлы
+
+- `uploader/plotly_map.py`, `uploader/orrery.py`, `uploader/colonial_helper.py`
+- `src/lib/systemOrrery.ts`, `src/components/SystemPlotlyMap.tsx`
+- `uploader/tests/test_plotly_map.py`, `uploader/tests/test_plotly_map_cards.py`
+- `scripts/tests/system-orrery.test.mjs`
+
+## Известное ограничение
+
+`requests`-зависимые тесты (`test_updater`, `test_third_party_api`, `test_raven_deliveries`,
+`test_external_scans_and_orrery`) в этой песочнице идут через заглушку и падают 5 шт. —
+воспроизводятся на чистом дереве, к правке отношения не имеют.
+
 # Раунд 56 — 2.10.20: Plotly-карта приложения стала той же 3D-картой, что на сайте
 
 ## Задача

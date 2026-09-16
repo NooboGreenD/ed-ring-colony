@@ -539,6 +539,75 @@ def body_sphere_radius_units(half_span: float, fraction: float) -> float:
     return max(0.5, half_span * fraction)
 
 
+# ──────────────────────────── камера 3D-сцены ──────────────────────────────
+# Направления взгляда. Значения совпадают с `CAMERA_DIR` из
+# `src/lib/systemOrrery.ts` — карта приложения и карта сайта обязаны смотреть
+# на систему одинаково.
+CAMERA_DIR: Dict[str, Tuple[float, float, float]] = {
+    "iso": (0.62, -0.62, 0.4),
+    "top": (0.001, 0.001, 1.0),
+    "side": (1.0, 0.001, 0.06),
+}
+CAMERA_DISTANCE = 1.35
+
+
+def scene_camera(view: str = "iso") -> Dict[str, Any]:
+    """Камера Plotly для 3D-сцены системы.
+
+    Два правила, без которых «3D багует»:
+
+    1. `center` — всегда ноль. Plotly меряет его в нормализованных единицах
+       сцены (1 = половина разреза окна), а не в unit'ах системы: координата
+       цели вроде 110.6 уносила камеру в пустоту — «при фокусе чёрный экран».
+       Центр окна задают размахи осей, они и так стоят на цели.
+    2. Проекция ортографическая и |eye| > 1. Перспектива + короткий глаз
+       обрезают края системы рамкой сцены, а на уровне «поверхность» камера
+       оказывалась внутри сферы тела (тот же чёрный экран).
+
+    Приближение делает размах осей (`focus_view`), поэтому расстояние камеры
+    одинаково для всех уровней зума.
+    """
+    dir_vec = CAMERA_DIR.get(str(view or "iso"), CAMERA_DIR["iso"])
+    norm = math.sqrt(sum(component * component for component in dir_vec)) or 1.0
+    scale = CAMERA_DISTANCE / norm
+    return {
+        "eye": {"x": dir_vec[0] * scale, "y": dir_vec[1] * scale, "z": dir_vec[2] * scale},
+        "up": {"x": 0, "y": 1, "z": 0} if view == "top" else {"x": 0, "y": 0, "z": 1},
+        "center": {"x": 0, "y": 0, "z": 0},
+        "projection": {"type": "orthographic"},
+    }
+
+
+# Запасы окна: наfocused-уровне — чтобы сфера тела и постройки на ней не липли
+# к краю рамки; в обзоре — чтобы орбиты и кольца не обрезались полем.
+FOCUS_PAD = 1.02
+OVERVIEW_PAD = 1.04
+
+
+def focus_window(half_span: float) -> float:
+    """Разрез окна фокуса с запасом — то же число использует и сайт."""
+    return max(float(half_span), 1e-3) * FOCUS_PAD
+
+
+def overview_window(extent: float, minimum: float = 0.0) -> float:
+    """Кубический разрез обзора: габарит всех точек (и не меньше бюджета системы)."""
+    return max(max(float(extent), float(minimum)) * OVERVIEW_PAD, 1.0)
+
+
+def trace_extent(points: Iterable[Any], keys: Sequence[str] = ("x", "y", "z")) -> float:
+    """Максимальный |координаты| по собранным трассам Plotly (в unit'ах системы)."""
+    extent = 0.0
+    for trace in points or []:
+        if not isinstance(trace, dict):
+            continue
+        for key in keys:
+            for value in trace.get(key) or []:
+                if isinstance(value, (int, float)) and not isinstance(value, bool) \
+                        and math.isfinite(float(value)):
+                    extent = max(extent, abs(float(value)))
+    return extent
+
+
 def sphere_geometry(center: Sequence[float], radius: float,
                     segments: int = 24, rings: int = 14) -> Dict[str, List[float]]:
     """Сфера `mesh3d` (вершины + индексы граней) для тела в фокусе.

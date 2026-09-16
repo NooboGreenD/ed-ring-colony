@@ -822,6 +822,83 @@ export interface FocusView {
  * `zoom` 0 — общий обзор; 1 — кластер звезды; 2 — окрестность тела;
  * 3 — крупно само тело (видно, что постройки стоят на поверхности).
  */
+/** Направление взгляда камеры Plotly: (0.62, −0.62, 0.4), нормализованное до |eye| = 1.35. */
+const CAMERA_DIR: Record<'iso' | 'top' | 'side', [number, number, number]> = {
+  iso: [0.62, -0.62, 0.4],
+  top: [0.001, 0.001, 1],
+  side: [1, 0.001, 0.06],
+};
+
+/** Расстояние камеры до цели в нормализованных единицах сцены (1 = половина разреза). */
+export const CAMERA_DISTANCE = 1.35;
+
+export type SceneCamera = {
+  eye: { x: number; y: number; z: number };
+  up: { x: number; y: number; z: number };
+  center: { x: number; y: number; z: number };
+  projection: { type: 'orthographic' };
+};
+
+/**
+ * Камера сцены. Два правила, без которых 3D ломается:
+ *
+ * 1. `center` — всегда ноль. Plotly берёт его в нормализованных единицах сцены
+ *    (1 = половина разреза окна), а не в unit'ах системы. Координата цели
+ *    (например 110.6) уводила камеру в космос: «при фокусе чёрный экран».
+ *    Центр окна задаётся размахом осей — он и так стоит на цели.
+ * 2. Проекция ортографическая, а |eye| больше 1. Перспектива + короткий глаз
+ *    = часть системы обрезана краем рамки, а на «поверхности» камера
+ *    оказывалась внутри сферы тела.
+ *
+ * Приближение делает размах осей (`computeFocusView`), поэтому расстояние
+ * камеры одинаково для всех уровней зума.
+ */
+export function sceneCamera(view: 'iso' | 'top' | 'side' = 'iso'): SceneCamera {
+  const dir = CAMERA_DIR[view] ?? CAMERA_DIR.iso;
+  const norm = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+  const k = CAMERA_DISTANCE / norm;
+  return {
+    eye: { x: dir[0] * k, y: dir[1] * k, z: dir[2] * k },
+    up: view === 'top' ? { x: 0, y: 1, z: 0 } : { x: 0, y: 0, z: 1 },
+    center: { x: 0, y: 0, z: 0 },
+    projection: { type: 'orthographic' },
+  };
+}
+
+/**
+ * Запас окна. `FOCUS_PAD` — чтобы сфера тела и постройки на ней не липли к
+ * краю рамки, `OVERVIEW_PAD` — чтобы орбиты, кольца и зоны обитаемости не
+ * обрезались краем поля. Зеркало `orrery.FOCUS_PAD` / `orrery.OVERVIEW_PAD`.
+ */
+export const FOCUS_PAD = 1.02;
+export const OVERVIEW_PAD = 1.04;
+
+/** Максимальный |координаты| по собранным трассам — габарит того, что видно. */
+export function traceExtent(traces: Iterable<Record<string, unknown>>): number {
+  let extent = 0;
+  for (const trace of traces) {
+    if (!trace) continue;
+    for (const key of ['x', 'y', 'z']) {
+      const values = (trace as Record<string, unknown>)[key];
+      if (!Array.isArray(values)) continue;
+      for (const value of values) {
+        if (typeof value === 'number' && Number.isFinite(value)) extent = Math.max(extent, Math.abs(value));
+      }
+    }
+  }
+  return extent;
+}
+
+/** Разрез окна фокуса с запасом — то же число, что в `orrery.focus_window`. */
+export function focusWindow(halfSpan: number): number {
+  return Math.max(halfSpan, 1e-3) * FOCUS_PAD;
+}
+
+/** Кубический разрез обзора: габарит всех точек и не меньше бюджета системы. */
+export function overviewWindow(extent: number, minimum = 0): number {
+  return Math.max(Math.max(extent, minimum) * OVERVIEW_PAD, 1);
+}
+
 export function computeFocusView(
   layout: OrreryLayout,
   target: string,

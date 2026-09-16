@@ -16,7 +16,7 @@
  *    теле; в фокусе планета рисуется сферой, а постройки — по её поверхности
  *    (золотая спираль). Плюс список построек карточками в панели фокуса.
  * 4. **Мелкие значки.** Стройки/постройки 11 → 5.5 px, подписи только у цели,
- *    остальное — по ховеру; в плотных системай подписи режутся автоматически.
+ *    остальное — по ховеру; в плотных системах подписи режутся автоматически.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -35,6 +35,10 @@ import {
   computeFocusView,
   neighboursOf,
   placeStructures,
+  focusWindow,
+  overviewWindow,
+  sceneCamera,
+  traceExtent,
   sphereGeometry,
   summarizeLayout,
   toStructures,
@@ -162,6 +166,10 @@ export default function SystemPlotlyMap({
   const [labelMode, setLabelMode] = useState<'auto' | 'all' | 'none'>('auto');
   const [showMoons, setShowMoons] = useState(true);
   const [isolateCluster, setIsolateCluster] = useState(true);
+  // Вид = направление камеры (3D-изометрия / сверху / сбоку). Зум делает размах
+  // осей, поэтому переключение вида ничего не пересчитывает и не может увести
+  // камеру в чёрный экран.
+  const [viewMode, setViewMode] = useState<'iso' | 'top' | 'side'>('iso');
   const [hoveredBody, setHoveredBody] = useState<string>('');
 
   useEffect(() => {
@@ -556,28 +564,31 @@ export default function SystemPlotlyMap({
       });
     }
 
+    // Обзор = куб по габариту реально нарисованных точек: орбиты, кольца и HZ
+    // выходят за бюджет `span`, и ±span обрезал их края («вся система не
+    // влазит, часть орбит порезана»).
+    const overviewSpan = overviewWindow(traceExtent(traces), layout.span);
+    // Окно фокуса с тем же запасом, что в `orrery.focus_window` (приложение):
+    // иначе сфера тела и постройки на ней липнут к краю рамки.
+    const focusSpan = focusWindow(halfSpan);
     const ranges = focus && zoom > 0
       ? {
-        x: [focus.center[0] - halfSpan, focus.center[0] + halfSpan] as [number, number],
-        y: [focus.center[1] - halfSpan, focus.center[1] + halfSpan] as [number, number],
-        z: [focus.center[2] - halfSpan, focus.center[2] + halfSpan] as [number, number],
+        x: [focus.center[0] - focusSpan, focus.center[0] + focusSpan] as [number, number],
+        y: [focus.center[1] - focusSpan, focus.center[1] + focusSpan] as [number, number],
+        z: [focus.center[2] - focusSpan, focus.center[2] + focusSpan] as [number, number],
       }
       : {
-        x: [-layout.span, layout.span] as [number, number],
-        y: [-layout.span, layout.span] as [number, number],
-        z: [-layout.span, layout.span] as [number, number],
+        x: [-overviewSpan, overviewSpan] as [number, number],
+        y: [-overviewSpan, overviewSpan] as [number, number],
+        z: [-overviewSpan, overviewSpan] as [number, number],
       };
 
-    const eyeDistance = focus ? focus.eyeDistance : 1.65;
     const scene: any = {
       bgcolor: '#07090e',
-      camera: {
-        eye: { x: eyeDistance * 0.62, y: -eyeDistance * 0.62, z: eyeDistance * 0.4 },
-        up: { x: 0, y: 0, z: 1 },
-        center: focus && zoom > 0
-          ? { x: focus.center[0], y: focus.center[1], z: focus.center[2] }
-          : { x: 0, y: 0, z: 0 },
-      },
+      // camera.center — нормализованные единицы сцены, поэтому всегда 0: центр
+      // окна уже задан размахом осей. Координата цели в unit'ах системы увела бы
+      // камеру в никуда (чёрный экран при фокусе).
+      camera: sceneCamera(viewMode),
       aspectmode: 'data',
       xaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.x },
       yaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.y },
@@ -630,7 +641,8 @@ export default function SystemPlotlyMap({
   }, [
     scriptLoaded, loading, error, records, layout, structures, visibleStructures, selectedTarget, zoom,
     filterMode, scaleMode, labelMode, showMoons, isolateCluster, activeCluster, focus, halfSpan, detailMode,
-    sphereRadii, hoveredBody, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget, canvasPixels,
+    sphereRadii, hoveredBody, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
+    canvasPixels, viewMode,
   ]);
 
   useEffect(() => {
@@ -749,6 +761,21 @@ export default function SystemPlotlyMap({
           <button onClick={() => selectTarget('', 0)} className="ed-map-chip" title="Снять фокус (Esc)">
             <IconCrosshair size={12} /> сброс
           </button>
+          {([
+            ['iso', '🔭 3D', 'изометрия — как видит систему наблюдатель'],
+            ['top', '🧭 сверху', 'плоский вид на плоскость эклиптики (та же сцена)'],
+            ['side', '📐 сбоку', 'профиль: видно наклонение орбит'],
+          ] as const).map(([mode, label, hint]) => (
+            <button
+              key={mode}
+              className="ed-map-chip"
+              data-on={viewMode === mode ? '1' : '0'}
+              title={hint}
+              onClick={() => setViewMode(mode)}
+            >
+              {label}
+            </button>
+          ))}
           <button onClick={() => setIsFullscreen((value) => !value)} className="ed-map-chip">
             {isFullscreen ? <IconMinimize size={12} /> : <IconMaximize size={12} />}
             {isFullscreen ? 'свернуть' : 'во весь экран'}

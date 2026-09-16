@@ -11,6 +11,7 @@ from unittest import mock
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+import orrery
 import plotly_map as pm
 import system_map as sm
 
@@ -120,35 +121,93 @@ class PlotlyMapGeometryTests(unittest.TestCase):
             self.assertIn("z", trace)
         self.assertIn("scene", schema["layout"])
         self.assertNotIn("xaxis", schema["layout"])
-        scene = schema["layout"]["scene"]
-        self.assertEqual(scene["projection"]["type"], "orthographic")
-        eye = scene["camera"]["eye"]
-        self.assertGreater(eye["z"], 2.0)
+        camera = schema["layout"]["scene"]["camera"]
+        self.assertEqual(camera["projection"]["type"], "orthographic")
+        eye = camera["eye"]
+        self.assertGreater(eye["z"], 1.0)
         self.assertLess(abs(eye["x"]), 0.01)
         self.assertLess(abs(eye["y"]), 0.01)
+        self.assertEqual(camera["up"], {"x": 0, "y": 1, "z": 0})
 
-    def test_view_mode_3d_keeps_perspective_orrery_camera(self):
+    def test_view_mode_3d_uses_site_isometric_camera(self):
         schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
-        scene = schema["layout"]["scene"]
-        self.assertEqual(scene["projection"]["type"], "perspective")
-        eye = scene["camera"]["eye"]
-        self.assertGreater(eye["x"], 1.0)
-        # Азимут как на сайте: eye = (e·0.62, −e·0.62, e·0.4), т.е. y отрицательный.
-        self.assertLess(eye["y"], -1.0)
-        self.assertAlmostEqual(eye["x"], -eye["y"], places=3)
-        self.assertGreater(eye["z"], 0.5)
+        camera = schema["layout"]["scene"]["camera"]
+        # Ортография: в перспективе часть системы обрезается краем рамки.
+        self.assertEqual(camera["projection"]["type"], "orthographic")
+        eye = camera["eye"]
+        # Азимут сайта: (0.62, −0.62, 0.4), т.е. x>0, y<0.
+        self.assertGreater(eye["x"], 0.5)
+        self.assertLess(eye["y"], -0.5)
+        self.assertGreater(eye["z"], 0.3)
+        self.assertAlmostEqual(eye["x"], -eye["y"], places=6)
+        # |eye| > 1 — камера снаружи единичного бокса сцены, иначе она внутри
+        # сферы тела и на «поверхности» был бы чёрный экран.
+        self.assertGreater(sum(value * value for value in eye.values()) ** 0.5, 1.2)
 
-    def test_view_buttons_switch_projection_of_the_same_scene(self):
-        """Кнопки вида обязаны переключать проекцию — иначе 2D/3D не различимы."""
+    def test_camera_center_is_always_normalised_zero(self):
+        """`camera.center` — нормализованные единицы: координаты цели там убивают вид."""
+        for mode in ("3d", "2d"):
+            for zoom in (0, 1, 2, 3):
+                schema = pm.build_plotly_dict(self.snapshot, view_mode=mode,
+                                              selected="TestSys 1", zoom=zoom)
+                self.assertEqual(schema["layout"]["scene"]["camera"]["center"],
+                                 {"x": 0, "y": 0, "z": 0},
+                                 f"view={mode} zoom={zoom}: центр камеры уехал в data-единицы")
+
+    def test_scene_layout_uses_only_valid_plotly_keys(self):
+        """Plotly (go.Figure) валидирует layout: неизвестный ключ роняет сборку.
+
+        Так и сломался CI: `scene.projection` не существует, проекция живёт в
+        `scene.camera.projection`.
+        """
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="2d", selected="TestSys 1", zoom=3)
+        scene = schema["layout"]["scene"]
+        self.assertLessEqual(set(scene), {"bgcolor", "camera", "xaxis", "yaxis", "zaxis",
+                                         "aspectmode", "aspectratio", "dragmode", "annotations",
+                                         "domain", "hovermode"})
+        self.assertLessEqual(set(scene["camera"]), {"eye", "up", "center", "projection"})
+        for key in scene["camera"]["eye"]:
+            self.assertIn(key, ("x", "y", "z"))
+
+    def test_overview_box_contains_every_plotted_point(self):
+        """В обзоре ничего не должно обрезаться краем поля."""
+        for mode in ("3d", "2d"):
+            schema = pm.build_plotly_dict(self.snapshot, view_mode=mode)
+            extent = orrery.trace_extent(schema["data"])
+            self.assertGreater(extent, 0)
+            for axis in ("xaxis", "yaxis", "zaxis"):
+                low, high = schema["layout"]["scene"][axis]["range"]
+                self.assertLessEqual(low, -extent + 1e-6, f"{mode}/{axis}: левый край режет данные")
+                self.assertGreaterEqual(high, extent - 1e-6, f"{mode}/{axis}: правый край режет данные")
+                self.assertAlmostEqual(high, -low, places=6, msg="разрез обязан быть кубическим")
+
+    def test_sphere_fits_inside_the_focus_window(self):
+        """Сфера тела вместе с дымкой помещается в окно уровня 3 — иначе чёрный экран."""
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d", selected="TestSys 1", zoom=3)
+        scene = schema["layout"]["scene"]
+        low, high = scene["xaxis"]["range"]
+        mesh = next(t for t in schema["data"] if t.get("meta") == "sphere")
+        self.assertLessEqual(max(mesh["x"]), high)
+        self.assertGreaterEqual(min(mesh["x"]), low)
+
+    def test_view_buttons_relayout_the_same_scene(self):
+        """Кнопки вида пишут только в валидные ключи scene.camera.*."""
         schema = pm.build_plotly_dict(self.snapshot, view_mode="2d")
         buttons = schema["layout"]["updatemenus"][0]["buttons"]
         labels = {b["label"]: b["args"][0] for b in buttons}
-        self.assertIn("🔭 3D Orrery", labels)
-        self.assertIn("🧭 Сверху (2D)", labels)
-        self.assertEqual(labels["🔭 3D Orrery"]["scene.projection.type"], "perspective")
-        self.assertEqual(labels["🧭 Сверху (2D)"]["scene.projection.type"], "orthographic")
-        for args in labels.values():
-            self.assertIn("scene.camera", args)
+        for label in ("🔭 3D Orrery", "🧭 Сверху (2D)", "📐 Сбоку (Профиль)", "🔄 Сброс",
+                      "🎥 Перспектива", "🧊 Ортография"):
+            self.assertIn(label, labels)
+        self.assertEqual(labels["🧭 Сверху (2D)"]["scene.camera"]["up"], {"x": 0, "y": 1, "z": 0})
+        self.assertEqual(labels["🎥 Перспектива"]["scene.camera.projection.type"], "perspective")
+        self.assertEqual(labels["🧊 Ортография"]["scene.camera.projection.type"], "orthographic")
+        for label, args in labels.items():
+            for key in args:
+                self.assertTrue(key.startswith("scene."), f"{label}: мимо сцены — {key}")
+                self.assertNotIn("scene.projection", key)
+            camera = args.get("scene.camera")
+            if camera:
+                self.assertEqual(camera["center"], {"x": 0, "y": 0, "z": 0})
 
     def test_focus_body_gets_sphere_without_haze(self):
         """В режимах «окрестности»/«поверхность» тело получает mesh3d-сферу."""
@@ -175,9 +234,12 @@ class PlotlyMapGeometryTests(unittest.TestCase):
             self.assertAlmostEqual(got, want, places=6)
         radius = max(abs(pz - bbox_center[2]) for pz in sphere["z"])
         self.assertGreater(radius, 0.0)
-        half_span = (focused["layout"]["scene"]["xaxis"]["range"][1]
-                     - focused["layout"]["scene"]["xaxis"]["range"][0]) / 2.0
-        self.assertAlmostEqual(radius, half_span * 0.42, places=3)
+        window = (focused["layout"]["scene"]["xaxis"]["range"][1]
+                  - focused["layout"]["scene"]["xaxis"]["range"][0]) / 2.0
+        # Окно шире сферы на FOCUS_PAD (запас, чтобы сфера не липла к краю),
+        # радиус при этом = 0.42 от разреза фокуса — как на сайте.
+        self.assertAlmostEqual(radius, orrery.focus_window(radius / 0.42) / orrery.FOCUS_PAD * 0.42, places=6)
+        self.assertGreater(window, radius, 'сфера не должна упираться в край окна')
 
     def test_atmosphere_body_gets_haze_layer(self):
         """Тело с атмосферой дополнительно получает полупрозрачную дымку."""
@@ -271,12 +333,21 @@ class PlotlyMapGeometryTests(unittest.TestCase):
         self.assertIn("Icy", ringed_hover)
 
     def test_target_lock_and_camera_centering(self):
+        """Захват цели = разрез осей вокруг тела; камера при этом смотрит в 0.
+
+        Раньше «центрирование» делали через `camera.center` в unit'ах системы,
+        и Plotly увозил вид в пустоту (чёрный экран вместо цели).
+        """
         schema = pm.build_plotly_dict(self.snapshot, selected="TestSys 1")
         target_trace = next((t for t in schema["data"] if "Цель: TestSys 1" in str(t.get("name"))), None)
         self.assertIsNotNone(target_trace)
         camera = schema["layout"]["scene"]["camera"]
-        self.assertIn("center", camera)
-        self.assertNotEqual(camera["center"]["x"], 0.0)
+        self.assertEqual(camera["center"], {"x": 0, "y": 0, "z": 0})
+        planets = next(t for t in schema["data"] if t.get("name") == "Планеты")
+        for axis, key in (("xaxis", "x"), ("yaxis", "y"), ("zaxis", "z")):
+            low, high = schema["layout"]["scene"][axis]["range"]
+            self.assertAlmostEqual((low + high) / 2.0, planets[key][0], places=4,
+                                   msg=f"{axis} не отцентрован на цели")
 
 
 class ViewModeNormalisationTests(unittest.TestCase):
