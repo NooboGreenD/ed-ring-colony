@@ -107,15 +107,98 @@ class PlotlyMapGeometryTests(unittest.TestCase):
         self.assertIn("scene", schema["layout"])
         self.assertNotIn("xaxis", schema["layout"])
 
-    def test_view_mode_2d_uses_scatter_without_z(self):
+    def test_view_mode_2d_is_a_camera_not_a_flat_figure(self):
+        """«2D» — вид сверху в той же 3D-сцене, а не отдельная плоская фигура.
+
+        Раньше 2D строил scatter-трассы без `scene`, из-за чего все кнопки вида
+        в HTML (они пишут в `scene.*`) молчали, и карта из приложения
+        «работала только в 2D режиме».
+        """
         schema = pm.build_plotly_dict(self.snapshot, view_mode="2d")
         for trace in schema["data"]:
-            self.assertEqual(trace["type"], "scatter")
-            self.assertNotIn("z", trace)
-        self.assertNotIn("scene", schema["layout"])
-        self.assertIn("xaxis", schema["layout"])
-        self.assertIn("yaxis", schema["layout"])
-        self.assertEqual(schema["layout"]["yaxis"]["scaleanchor"], "x")
+            self.assertEqual(trace["type"], "scatter3d")
+            self.assertIn("z", trace)
+        self.assertIn("scene", schema["layout"])
+        self.assertNotIn("xaxis", schema["layout"])
+        scene = schema["layout"]["scene"]
+        self.assertEqual(scene["projection"]["type"], "orthographic")
+        eye = scene["camera"]["eye"]
+        self.assertGreater(eye["z"], 2.0)
+        self.assertLess(abs(eye["x"]), 0.01)
+        self.assertLess(abs(eye["y"]), 0.01)
+
+    def test_view_mode_3d_keeps_perspective_orrery_camera(self):
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
+        scene = schema["layout"]["scene"]
+        self.assertEqual(scene["projection"]["type"], "perspective")
+        eye = scene["camera"]["eye"]
+        self.assertGreater(eye["x"], 1.0)
+        # Азимут как на сайте: eye = (e·0.62, −e·0.62, e·0.4), т.е. y отрицательный.
+        self.assertLess(eye["y"], -1.0)
+        self.assertAlmostEqual(eye["x"], -eye["y"], places=3)
+        self.assertGreater(eye["z"], 0.5)
+
+    def test_view_buttons_switch_projection_of_the_same_scene(self):
+        """Кнопки вида обязаны переключать проекцию — иначе 2D/3D не различимы."""
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="2d")
+        buttons = schema["layout"]["updatemenus"][0]["buttons"]
+        labels = {b["label"]: b["args"][0] for b in buttons}
+        self.assertIn("🔭 3D Orrery", labels)
+        self.assertIn("🧭 Сверху (2D)", labels)
+        self.assertEqual(labels["🔭 3D Orrery"]["scene.projection.type"], "perspective")
+        self.assertEqual(labels["🧭 Сверху (2D)"]["scene.projection.type"], "orthographic")
+        for args in labels.values():
+            self.assertIn("scene.camera", args)
+
+    def test_focus_body_gets_sphere_without_haze(self):
+        """В режимах «окрестности»/«поверхность» тело получает mesh3d-сферу."""
+        focused = pm.build_plotly_dict(
+            self.snapshot, view_mode="3d", selected="TestSys 1", zoom=3)
+        meshes = [t for t in focused["data"] if t.get("type") == "mesh3d"]
+        self.assertEqual([t.get("meta") for t in meshes], ["sphere"],
+                         "у тела без атмосферы дымка не рисуется")
+        sphere = meshes[0]
+        self.assertEqual(sphere["name"], "TestSys 1")
+        # Сетка совпадает с сайтом: segments=24, rings=14.
+        self.assertEqual(len(sphere["x"]), 25 * 15)
+        # по 2 индекса в каждое из i/j/k на квад → 2·rings·segments
+        self.assertEqual(len(sphere["i"]), 2 * 14 * 24)
+        self.assertEqual(len(sphere["j"]), len(sphere["k"]))
+        # Сфера сидит ровно на теле (центр = координата планеты в этой же
+        # фигуре), а не в начале координат и не «рядом».
+        planets = next(t for t in focused["data"] if t.get("name") == "Планеты")
+        body_point = (planets["x"][0], planets["y"][0], planets["z"][0])
+        bbox_center = tuple(
+            (min(sphere[axis]) + max(sphere[axis])) / 2.0 for axis in ("x", "y", "z")
+        )
+        for got, want in zip(bbox_center, body_point):
+            self.assertAlmostEqual(got, want, places=6)
+        radius = max(abs(pz - bbox_center[2]) for pz in sphere["z"])
+        self.assertGreater(radius, 0.0)
+        half_span = (focused["layout"]["scene"]["xaxis"]["range"][1]
+                     - focused["layout"]["scene"]["xaxis"]["range"][0]) / 2.0
+        self.assertAlmostEqual(radius, half_span * 0.42, places=3)
+
+    def test_atmosphere_body_gets_haze_layer(self):
+        """Тело с атмосферой дополнительно получает полупрозрачную дымку."""
+        body = next(b for b in self.snapshot.bodies if b.name == "TestSys 1")
+        body.atmosphere = "Nitrogen / Oxygen"
+        try:
+            focused = pm.build_plotly_dict(
+                self.snapshot, view_mode="3d", selected="TestSys 1", zoom=2)
+        finally:
+            body.atmosphere = ""
+        metas = [t.get("meta") for t in focused["data"] if t.get("type") == "mesh3d"]
+        self.assertEqual(metas, ["sphere", "sphere_haze"])
+
+    def test_star_focus_has_no_sphere(self):
+        focused = pm.build_plotly_dict(
+            self.snapshot, view_mode="3d", selected="TestSys A", zoom=3)
+        self.assertEqual([t for t in focused["data"] if t.get("type") == "mesh3d"], [])
+
+    def test_overview_has_no_stray_sphere(self):
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
+        self.assertEqual([t for t in schema["data"] if t.get("type") == "mesh3d"], [])
 
     def test_hover_contains_exobio_and_gravity(self):
         schema = pm.build_plotly_dict(self.snapshot)
@@ -194,6 +277,16 @@ class PlotlyMapGeometryTests(unittest.TestCase):
         camera = schema["layout"]["scene"]["camera"]
         self.assertIn("center", camera)
         self.assertNotEqual(camera["center"]["x"], 0.0)
+
+
+class ViewModeNormalisationTests(unittest.TestCase):
+    """Нормализатор вида: один источник правды для Tk, фигуры и HTML."""
+
+    def test_aliases(self):
+        for raw in ("3d", "3D", "3D Orrery", None, "", "orrery", "перспектива"):
+            self.assertEqual(pm.normalize_view_mode(raw), "3d")
+        for raw in ("2d", "2D", "2д", "top", "flat", "сверху", "плоский"):
+            self.assertEqual(pm.normalize_view_mode(raw), "2d")
 
 
 class PlotlyMapOutputTests(unittest.TestCase):
@@ -295,6 +388,51 @@ class ColonialHelperPlotlyIntegrationTests(unittest.TestCase):
                 snap, view_mode="3d", show_moons=True, selected="", zoom=0, show_all_labels=False)
             app._map_update_status.assert_called_once()
             app.log.assert_called_once()
+
+    def test_tk_2d_toggle_no_longer_flattens_plotly_map(self):
+        """Переключатель 2D/3D канваса больше не делает Plotly-карту плоской.
+
+        Раньше он же определял и тип трасс в HTML, из-за чего карта, открытая из
+        приложения, «работала только в 2D режиме».
+        """
+        app = mock.MagicMock(spec=self.app_cls)
+        app._map_last_snapshot = sm.MapSnapshot(system="Sol")
+        app.map_moons_var = mock.MagicMock()
+        app.map_moons_var.get.return_value = True
+        app.map_view_mode = mock.MagicMock()
+        app.map_view_mode.get.return_value = "2d"
+        app.config = {"map_plotly_zoom": 0, "map_plotly_labels": False}
+        with mock.patch("plotly_map.open_plotly_in_browser") as mock_open:
+            mock_open.return_value = Path("/tmp/test_map.html")
+            self.app_cls._on_map_open_plotly(app)
+            self.assertEqual(mock_open.call_args.kwargs["view_mode"], "3d")
+
+    def test_map_plotly_view_config_selects_start_camera(self):
+        """Ключ `map_plotly_view` — про стартовую камеру, а не про другой рендер."""
+        app = mock.MagicMock(spec=self.app_cls)
+        app._map_last_snapshot = sm.MapSnapshot(system="Sol")
+        app.map_moons_var = mock.MagicMock()
+        app.map_moons_var.get.return_value = True
+        app.config = {"map_plotly_view": "2d", "map_plotly_zoom": 1}
+        with mock.patch("plotly_map.open_plotly_in_browser") as mock_open:
+            mock_open.return_value = Path("/tmp/test_map.html")
+            self.app_cls._on_map_open_plotly(app)
+            self.assertEqual(mock_open.call_args.kwargs["view_mode"], "2d")
+            self.assertEqual(mock_open.call_args.kwargs["zoom"], 1)
+
+    def test_export_plotly_html_uses_same_view_source(self):
+        app = mock.MagicMock(spec=self.app_cls)
+        app._map_last_snapshot = sm.MapSnapshot(system="Sol")
+        app.map_moons_var = mock.MagicMock()
+        app.map_moons_var.get.return_value = True
+        app.map_view_mode = mock.MagicMock()
+        app.map_view_mode.get.return_value = "2d"
+        app.config = {"map_plotly_zoom": 0, "map_plotly_labels": False}
+        with mock.patch("plotly_map.export_plotly_html") as mock_export, \
+                mock.patch("colonial_helper.filedialog.asksaveasfilename",
+                           return_value="/tmp/sol_map.html"):
+            self.app_cls._on_map_export_plotly(app)
+            self.assertEqual(mock_export.call_args.kwargs["view_mode"], "3d")
 
     def test_copy_map_text_and_context_menu_attributes(self):
         self.assertTrue(hasattr(self.app_cls, "_on_map_tree_context"))

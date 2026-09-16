@@ -277,6 +277,17 @@ def _body_point(a_units: float, center: Tuple[float, float, float], ecc: float,
     )
 
 
+def normalize_view_mode(view_mode: Any) -> str:
+    """Привести настройку вида карты к «3d» / «2d».
+
+    И на сайте, и здесь «2D» — это только стартовая камера (вид сверху в
+    ортографической проекции), а не отдельная плоская фигура: сцена всегда одна,
+    поэтому переключить вид можно и внутри сохранённого HTML.
+    """
+    raw = str(view_mode or "3d").strip().lower()
+    return "2d" if raw in ("2d", "2д", "top", "flat", "плоский", "сверху") else "3d"
+
+
 def build_system_geometry(
     snapshot: MapSnapshot,
     scale_mode: str = "orrery",
@@ -284,6 +295,7 @@ def build_system_geometry(
     is_3d: bool = True,
     view_half_span: Optional[float] = None,
     canvas_px: float = orrery.CANVAS_PX,
+    sphere_radii: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Рассчитать координаты звёзд, планет, лун, колец, орбит и станций.
 
@@ -405,7 +417,8 @@ def build_system_geometry(
             "is_site": bool(station.is_site),
             "complete": bool(station.complete),
         })
-    placements = orrery.place_stations(plan, station_payload, half_span, canvas_px)
+    placements = orrery.place_stations(plan, station_payload, half_span, canvas_px,
+                                       sphere_radii=sphere_radii or {})
     station_positions: Dict[str, Tuple[float, float, float]] = {}
     for placement in placements:
         point = placement["position"]
@@ -549,8 +562,18 @@ def build_plotly_dict(
     камера действительно подлетает к планете, а постройки на её поверхности
     остаются на поверхности при любом зуме.
     """
-    is_3d = (str(view_mode or "3d").lower() == "3d")
-    trace_type = "scatter3d" if is_3d else "scatter"
+    # Карта всегда строится как 3D-сцена — ровно так же, как на сайте
+    # (`SystemPlotlyMap.tsx`). «2D» — это НЕ другой набор трасс, а камера сверху
+    # с ортографической проекцией. Прежняя экономия (scatter + xaxis/yaxis без
+    # scene) ломала саму идею: все кнопки вида в HTML пишут в `scene.*`, поэтому
+    # в 2D-фигуре они молчали, и карта, открытая из приложения, намертво
+    # оставалась плоской — «работает только в 2D режиме».
+    # Геометрия всегда объёмная: `is_3d` оставлен, потому что им пользуется
+    # `build_system_geometry` (и тесты плоской раскладки), но в этой карте он
+    # всегда True — иначе «2D» снова превратился бы в отдельный недо-рендер.
+    is_3d = True
+    top_down = normalize_view_mode(view_mode) == "2d"
+    trace_type = "scatter3d"
     zoom = max(0, min(3, int(zoom or 0)))
 
     plan_preview = orrery.plan_system(
@@ -560,12 +583,28 @@ def build_plotly_dict(
     focus = orrery.focus_view(plan_preview, selected, zoom) if selected else None
     half_span = float(focus["half_span"]) if focus else plan_preview["span"]
 
+    # Сфера тела в фокусе (уровни «окрестности» и «поверхность») — как на сайте:
+    # сама планета получает mesh3d-сферу с дымкой атмосферы, а наземные постройки
+    # ставятся на её видимую поверхность. Без этого постройка в приближении
+    # висела в пустоте рядом с точкой-маркером.
+    sphere_radii: Dict[str, float] = {}
+    detail_body = None
+    if focus is not None and zoom >= 2 and selected:
+        detail_body = next((b for b in (snapshot.bodies or []) if b.name == selected), None)
+        # Уровень 2 не рисует оболочку вокруг центра кластера (обычно это звезда):
+        # там фокус и так на самом теле, сфера только мешает (правило сайта).
+        if zoom == 2 and focus.get("cluster") == selected:
+            detail_body = None
+        if detail_body is not None and detail_body.kind != KIND_STAR:
+            sphere_radii[selected] = orrery.detail_sphere_radius_units(half_span, zoom)
+
     geom = build_system_geometry(
         snapshot,
         scale_mode=scale_mode,
         show_moons=show_moons,
         is_3d=is_3d,
         view_half_span=half_span,
+        sphere_radii=sphere_radii,
     )
     markers = geom["markers"]
     crowded = bool(geom["crowded"])
@@ -993,6 +1032,42 @@ def build_plotly_dict(
     _append_station_trace(_station_trace(carriers, "Авианосцы (Fleet Carriers)", "square", "#a855f7", 5.5, "#c084fc", 9,
                                          False, symbol_emoji="🚀"))
 
+    # 11.5 Сфера фокусируемого тела (mesh3d) + дымка атмосферы — паритет с
+    # сайтом: там те же трассы рисует SystemPlotlyMap в detailMode.
+    if detail_body is not None and selected in sphere_radii:
+        body_center = positions.get(selected)
+        if body_center is not None:
+            sphere_r = float(sphere_radii[selected])
+            mesh = orrery.sphere_geometry(body_center, sphere_r, 24, 14)
+            data.append({
+                "type": "mesh3d",
+                "name": str(selected),
+                "x": mesh["x"], "y": mesh["y"], "z": mesh["z"],
+                "i": mesh["i"], "j": mesh["j"], "k": mesh["k"],
+                "color": body_color(detail_body),
+                "opacity": 0.92,
+                "lighting": {"ambient": 0.65, "diffuse": 0.6, "specular": 0.25,
+                             "roughness": 0.85, "fresnel": 0.15},
+                "hoverinfo": "skip",
+                "showlegend": False,
+                "legendgroup": "focus_body",
+                "meta": "sphere",
+            })
+            atmosphere = str(getattr(detail_body, "atmosphere", "") or "")
+            if atmosphere and "no atmosphere" not in atmosphere.lower():
+                haze = orrery.sphere_geometry(body_center, sphere_r * 1.1, 20, 10)
+                data.append({
+                    "type": "mesh3d",
+                    "name": "Атмосфера",
+                    "x": haze["x"], "y": haze["y"], "z": haze["z"],
+                    "i": haze["i"], "j": haze["j"], "k": haze["k"],
+                    "color": "rgba(120, 190, 255, 0.16)",
+                    "hoverinfo": "skip",
+                    "showlegend": False,
+                    "legendgroup": "focus_body",
+                    "meta": "sphere_haze",
+                })
+
     # 12. Пилот («Вы здесь»)
     if player_pos is not None:
         px, py, pz = player_pos
@@ -1122,136 +1197,118 @@ def build_plotly_dict(
             "z": (fz - fspan, fz + fspan),
         }
 
-    if is_3d:
-        camera_buttons = [
-            {
-                "label": "🔭 3D Orrery",
-                "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 1.5, "y": 1.5, "z": 1.1}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
-            },
-            {
-                "label": "🧭 Сверху (2D)",
-                "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 0.001, "y": 0.001, "z": 2.5}, "up": {"x": 0, "y": 1, "z": 0}, "center": {"x": 0, "y": 0, "z": 0}}}],
-            },
-            {
-                "label": "📐 Сбоку (Профиль)",
-                "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 2.5, "y": 0.001, "z": 0.001}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
-            },
-            {
-                "label": "🔄 Сброс",
-                "method": "relayout",
-                "args": [{"scene.camera": {"eye": {"x": 1.6, "y": 1.6, "z": 1.2}, "up": {"x": 0, "y": 0, "z": 1}, "center": {"x": 0, "y": 0, "z": 0}}}],
-            },
+    # Сцена есть всегда и в 2D, и в 3D (см. комментарий к trace_type):
+    # плоской ветки с xaxis/yaxis больше нет.
+    # Та же стартовая камера, что строит сайт: eye = (e·0.62, −e·0.62, e·0.4)
+    # при e = 1.65 (см. `SystemPlotlyMap.tsx`, секция «scene»).
+    cam3d = {"x": round(1.65 * 0.62, 4), "y": round(-1.65 * 0.62, 4), "z": round(1.65 * 0.4, 4)}
+    cam_top = {"x": 0.001, "y": 0.001, "z": 2.5}
+    cam_side = {"x": 2.5, "y": 0.001, "z": 0.001}
+    up_z = {"x": 0, "y": 0, "z": 1}
+    up_y = {"x": 0, "y": 1, "z": 0}
+    origin = {"x": 0, "y": 0, "z": 0}
+    camera_buttons = [
+        {
+            "label": "🔭 3D Orrery",
+            "method": "relayout",
+            "args": [{"scene.camera": {"eye": cam3d, "up": up_z, "center": origin},
+                      "scene.projection.type": "perspective"}],
+        },
+        {
+            # «2D» на сайте — это вид сверху в той же сцене; orthographic
+            # убирает перспективу, и картина совпадает с плоской картой.
+            "label": "🧭 Сверху (2D)",
+            "method": "relayout",
+            "args": [{"scene.camera": {"eye": cam_top, "up": up_y, "center": origin},
+                      "scene.projection.type": "orthographic"}],
+        },
+        {
+            "label": "📐 Сбоку (Профиль)",
+            "method": "relayout",
+            "args": [{"scene.camera": {"eye": cam_side, "up": up_z, "center": origin},
+                      "scene.projection.type": "orthographic"}],
+        },
+        {
+            "label": "🔄 Сброс",
+            "method": "relayout",
+            "args": [{"scene.camera": {"eye": dict(cam3d), "up": up_z, "center": origin},
+                      "scene.projection.type": "perspective"}],
+        },
+    ]
+    # Кнопки приближения: уровни 0…3 вокруг выбранной цели. Их args —
+    # готовые scene.camera + ranges, поэтому работают и в статичном HTML
+    # без единой строчки JS.
+    if target_pos is not None:
+        levels = [
+            (0, "🔭 система", plan_preview["span"], (0.0, 0.0, 0.0), 1.65),
+            (1, "🪐 кластер", None, None, 1.2),
+            (2, "🛰 окрестности", None, None, 0.9),
+            (3, "🏗 поверхность", None, None, 0.72),
         ]
-        # Кнопки приближения: уровни 0…3 вокруг выбранной цели. Их args —
-        # готовые scene.camera + ranges, поэтому работают и в статичном HTML
-        # без единой строчки JS.
-        if target_pos is not None:
-            levels = [
-                (0, "🔭 система", plan_preview["span"], (0.0, 0.0, 0.0), 1.65),
-                (1, "🪐 кластер", None, None, 1.2),
-                (2, "🛰 окрестности", None, None, 0.9),
-                (3, "🏗 поверхность", None, None, 0.72),
-            ]
-            for level, label, forced_span, forced_center, eye in levels:
-                view = orrery.focus_view(plan_preview, selected, level) if selected else None
-                if view is None:
-                    continue
-                span = forced_span if forced_span is not None else view["half_span"]
-                center = forced_center if forced_center is not None else view["center"]
-                camera_buttons.insert(0 if level == zoom else len(camera_buttons), {
-                    "label": label,
-                    "method": "relayout",
-                    "args": [{
-                        "scene.camera": {
-                            "center": {"x": center[0], "y": center[1], "z": center[2]},
-                            "eye": {"x": eye * 0.62, "y": -eye * 0.62, "z": eye * 0.4},
-                            "up": {"x": 0, "y": 0, "z": 1},
-                        },
-                        "scene.xaxis.range": [center[0] - span, center[0] + span],
-                        "scene.yaxis.range": [center[1] - span, center[1] + span],
-                        "scene.zaxis.range": [center[2] - span, center[2] + span],
-                    }],
-                })
+        for level, label, forced_span, forced_center, eye in levels:
+            view = orrery.focus_view(plan_preview, selected, level) if selected else None
+            if view is None:
+                continue
+            span = forced_span if forced_span is not None else view["half_span"]
+            center = forced_center if forced_center is not None else view["center"]
+            camera_buttons.insert(0 if level == zoom else len(camera_buttons), {
+                "label": label,
+                "method": "relayout",
+                "args": [{
+                    "scene.camera": {
+                        "center": {"x": center[0], "y": center[1], "z": center[2]},
+                        "eye": {"x": eye * 0.62, "y": -eye * 0.62, "z": eye * 0.4},
+                        "up": {"x": 0, "y": 0, "z": 1},
+                    },
+                    "scene.xaxis.range": [center[0] - span, center[0] + span],
+                    "scene.yaxis.range": [center[1] - span, center[1] + span],
+                    "scene.zaxis.range": [center[2] - span, center[2] + span],
+                }],
+            })
 
-        init_cam: Dict[str, Any] = {
-            "eye": {"x": 1.5, "y": 1.5, "z": 1.1},
-            "up": {"x": 0, "y": 0, "z": 1},
-            "center": {"x": 0, "y": 0, "z": 0},
-        }
-        if focus is not None:
-            fx, fy, fz = focus["center"]
-            eye = float(focus["eye"])
-            init_cam["center"] = {"x": fx, "y": fy, "z": fz}
-            init_cam["eye"] = {"x": eye * 0.62, "y": -eye * 0.62, "z": eye * 0.4}
+    init_cam: Dict[str, Any] = {
+        "eye": dict(cam_top) if top_down else dict(cam3d),
+        "up": dict(up_y) if top_down else dict(up_z),
+        "center": dict(origin),
+    }
+    if focus is not None:
+        fx, fy, fz = focus["center"]
+        eye = float(focus["eye"])
+        init_cam["center"] = {"x": fx, "y": fy, "z": fz}
+        init_cam["eye"] = ({"x": 0.001, "y": 0.001, "z": eye} if top_down
+                           else {"x": eye * 0.62, "y": -eye * 0.62, "z": eye * 0.4})
 
-        layout["scene"] = {
-            "bgcolor": ED_BG_CANVAS,
-            "xaxis": {
-                "title": "",
-                "showgrid": True,
-                "gridcolor": ED_COLOR_GRID,
-                "zerolinecolor": "#1e293b",
-                "showticklabels": False,
-                "showbackground": False,
-            },
-            "yaxis": {
-                "title": "",
-                "showgrid": True,
-                "gridcolor": ED_COLOR_GRID,
-                "zerolinecolor": "#1e293b",
-                "showticklabels": False,
-                "showbackground": False,
-            },
-            "zaxis": {
-                "title": "",
-                "showgrid": True,
-                "gridcolor": ED_COLOR_GRID,
-                "zerolinecolor": "#1e293b",
-                "showticklabels": False,
-                "showbackground": False,
-            },
-            "camera": init_cam,
-            "aspectmode": "data",
+    layout["scene"] = {
+        "bgcolor": ED_BG_CANVAS,
+        # Сетки и деления осей сцены глушим, как на сайте: в 3D рамка только
+        # мешает, координаты здесь не читают (за них — подписи и hover).
+        "xaxis": {"title": "", "showgrid": False, "zeroline": False,
+                  "showticklabels": False, "showbackground": False},
+        "yaxis": {"title": "", "showgrid": False, "zeroline": False,
+                  "showticklabels": False, "showbackground": False},
+        "zaxis": {"title": "", "showgrid": False, "zeroline": False,
+                  "showticklabels": False, "showbackground": False},
+        "camera": init_cam,
+        "projection": {"type": "orthographic" if top_down else "perspective"},
+        "aspectmode": "data",
+    }
+    layout["scene"]["xaxis"]["range"] = list(base_ranges["x"])
+    layout["scene"]["yaxis"]["range"] = list(base_ranges["y"])
+    layout["scene"]["zaxis"]["range"] = list(base_ranges["z"])
+    layout["updatemenus"] = [
+        {
+            "type": "buttons",
+            "direction": "left",
+            "x": 0.98,
+            "y": 0.97,
+            "xanchor": "right",
+            "yanchor": "top",
+            "bgcolor": "#1e293b",
+            "bordercolor": "#334155",
+            "font": {"color": "#e2e8f0", "size": 11},
+            "buttons": camera_buttons,
         }
-        layout["scene"]["xaxis"]["range"] = list(base_ranges["x"])
-        layout["scene"]["yaxis"]["range"] = list(base_ranges["y"])
-        layout["scene"]["zaxis"]["range"] = list(base_ranges["z"])
-        layout["updatemenus"] = [
-            {
-                "type": "buttons",
-                "direction": "left",
-                "x": 0.98,
-                "y": 0.97,
-                "xanchor": "right",
-                "yanchor": "top",
-                "bgcolor": "#1e293b",
-                "bordercolor": "#334155",
-                "font": {"color": "#e2e8f0", "size": 11},
-                "buttons": camera_buttons,
-            }
-        ]
-    else:
-        layout["xaxis"] = {
-            "title": "",
-            "showgrid": True,
-            "gridcolor": ED_COLOR_GRID,
-            "zerolinecolor": "#1e293b",
-            "showticklabels": False,
-            "range": list(base_ranges["x"]),
-        }
-        layout["yaxis"] = {
-            "title": "",
-            "showgrid": True,
-            "gridcolor": ED_COLOR_GRID,
-            "zerolinecolor": "#1e293b",
-            "showticklabels": False,
-            "scaleanchor": "x",
-            "scaleratio": 1,
-            "range": list(base_ranges["y"]),
-        }
+    ]
 
     config: Dict[str, Any] = {
         "responsive": True,
@@ -1484,6 +1541,10 @@ def generate_plotly_html(
     Поддерживает:
     - include_plotlyjs='cdn': легкий HTML со скриптом из CDN.
     - include_plotlyjs='inline': полностью автономный HTML с встроенным скриптом.
+
+    `view_mode` выбирает только стартовую камеру: «3d» — изометрия, как на сайте,
+    «2d» — вид сверху в ортографической проекции. Фигура при этом одна и та же
+    3D-сцена, поэтому переключатель вида работает и внутри сохранённого HTML.
     """
     schema = build_plotly_dict(
         snapshot,
@@ -1512,6 +1573,10 @@ def generate_plotly_html(
     sys_name = snapshot.system or "Система"
     active_sites = [s for s in snapshot.stations if s.is_site and not s.complete]
     cards_html = _cards_html(snapshot, plan)
+    # «2D» в этой карте — вид сверху в той же 3D-сцене (кнопка переключает
+    # камеру и проекцию), поэтому стартовое состояние задаём только камерой.
+    flat = normalize_view_mode(view_mode) == "2d"
+    view_label = "🧭 2D сверху" if flat else "🔭 3D"
 
     if include_plotlyjs in ("inline", True) and HAS_PLOTLY and po is not None:
         script_tag = f"<script>{po.get_plotlyjs()}</script>"
@@ -1616,6 +1681,7 @@ def generate_plotly_html(
       <button class="btn" data-zoom="1">🪐 кластер</button>
       <button class="btn" data-zoom="2">🛰 окрестности</button>
       <button class="btn" data-zoom="3">🏗 поверхность</button>
+      <button class="btn" id="view" data-on="{1 if flat else 0}" title="3D-оррерий или плоский вид сверху — та же сцена, меняется только камера">{view_label}</button>
       <button class="btn" id="isolate" data-on="1">⧉ изолировать</button>
       <button class="btn" id="labels">Aa подписи</button>
       <button class="btn" id="fs">⛶ во весь экран</button>
@@ -1646,7 +1712,7 @@ def generate_plotly_html(
     const gd = document.getElementById('map-container');
     Plotly.newPlot(gd, DATA, LAYOUT, CONFIG);
 
-    const state = {{ target: {json.dumps(selected or "", ensure_ascii=False)}, zoom: {int(zoom or 0)}, isolate: true, labels: false }};
+    const state = {{ target: {json.dumps(selected or "", ensure_ascii=False)}, zoom: {int(zoom or 0)}, isolate: true, labels: false, flat: {json.dumps(flat)} }};
 
     const targetSelect = document.getElementById('target');
     const names = Object.keys(PLAN.positions);
@@ -1724,7 +1790,7 @@ def generate_plotly_html(
     function structurePositions() {{
       const view = focusView(state.target || '', state.zoom);
       const halfSpan = state.target ? view.halfSpan : PLAN.span;
-      const sphereBody = state.zoom >= 3 ? state.target : null;
+      const sphereBodyFor = (anchor, span) => sphereRadiusFor(anchor, span);
       const groups = {{}};
       PLAN.structures.forEach((item) => {{
         const key = item.anchor || '__none__';
@@ -1736,8 +1802,9 @@ def generate_plotly_html(
         const center = anchor === '__none__' ? [0, 0, 0] : (PLAN.positions[anchor] || [0, 0, 0]);
         list.forEach((item, index) => {{
           let point;
-          if (sphereBody && anchor === sphereBody) {{
-            point = onSphere(center, halfSpan * 0.42 * 1.03, index, list.length);
+          const sphereR = sphereBodyFor(anchor, halfSpan);
+          if (sphereR > 0) {{
+            point = onSphere(center, sphereR * 1.03, index, list.length);
           }} else if (anchor === '__none__') {{
             const angle = index * 2.399963229728653;
             const radius = 16 + index * 4;
@@ -1753,13 +1820,84 @@ def generate_plotly_html(
       return out;
     }}
 
+    /**
+     * Радиус сферы тела в фокусе — правила уровня 2/3 как в `build_plotly_dict`
+     * (п. 11.5) и на сайте: 0.42 от разреза на «поверхности», 0.14 на
+     * «окрестностях», и только если цель — не центр кластера (звезда).
+     */
+    function sphereRadiusFor(name, halfSpan) {{
+      if (!name || !state.target || name !== state.target) return 0;
+      const body = PLAN.bodies.find((b) => b.name === name) || {{}};
+      if (body.kind === 'star') return 0;
+      if (state.zoom >= 3) return halfSpan * 0.42;
+      if (state.zoom === 2) {{
+        const cluster = clusterOf(name);
+        if (!(cluster && cluster.star === name)) return halfSpan * 0.14;
+      }}
+      return 0;
+    }}
+
+    function sphereGeometry(center, radius, segments, rings) {{
+      const x = [], y = [], z = [], i = [], j = [], k = [];
+      for (let ring = 0; ring <= rings; ring += 1) {{
+        const phi = (Math.PI * ring) / rings;
+        for (let segment = 0; segment <= segments; segment += 1) {{
+          const theta = (2 * Math.PI * segment) / segments;
+          x.push(center[0] + radius * Math.sin(phi) * Math.cos(theta));
+          y.push(center[1] + radius * Math.sin(phi) * Math.sin(theta));
+          z.push(center[2] + radius * Math.cos(phi));
+        }}
+      }}
+      const stride = segments + 1;
+      for (let ring = 0; ring < rings; ring += 1) {{
+        for (let segment = 0; segment < segments; segment += 1) {{
+          const first = ring * stride + segment;
+          const second = first + stride;
+          i.push(first, second);
+          j.push(second, first + 1);
+          k.push(first + 1, second + 1);
+        }}
+      }}
+      return {{ x, y, z, i, j, k }};
+    }}
+
+    /**
+     * mesh3d-сферы уже лежат в фигуре (их собрал Python), но их радиус
+     * зависит от зума — пересчитываем координаты вершин на месте: сетка та же,
+     * поэтому индексы граней остаются валидными.
+     */
+    function refreshSphere() {{
+      const indices = [];
+      DATA.forEach((trace, index) => {{
+        if (trace.meta === 'sphere' || trace.meta === 'sphere_haze') indices.push(index);
+      }});
+      if (!indices.length) return;
+      const view = focusView(state.target || '', state.zoom);
+      const halfSpan = state.target ? view.halfSpan : PLAN.span;
+      const center = state.target ? (PLAN.positions[state.target] || null) : null;
+      const radius = center ? Math.max(sphereRadiusFor(state.target, halfSpan), 1e-3) : 1e-3;
+      indices.forEach((index) => {{
+        const haze = DATA[index].meta === 'sphere_haze';
+        const mesh = sphereGeometry(center || [0, 0, 0], haze ? radius * 1.1 : radius,
+                                    haze ? 20 : 24, haze ? 10 : 14);
+        Plotly.restyle(gd, {{
+          x: [mesh.x], y: [mesh.y], z: [mesh.z],
+          visible: [Boolean(center) && radius > 0.01],
+        }}, [index]);
+      }});
+    }}
+
     function apply() {{
       const view = focusView(state.target || '', state.zoom);
       const halfSpan = state.target ? view.halfSpan : PLAN.span;
       const center = state.target ? view.center : [0, 0, 0];
       const relayout = {{
         'scene.camera.center': {{ x: center[0], y: center[1], z: center[2] }},
-        'scene.camera.eye': {{ x: view.eye * 0.62, y: -view.eye * 0.62, z: view.eye * 0.4 }},
+        'scene.camera.eye': state.flat
+          ? {{ x: 0.001, y: 0.001, z: view.eye }}
+          : {{ x: view.eye * 0.62, y: -view.eye * 0.62, z: view.eye * 0.4 }},
+        'scene.camera.up': state.flat ? {{ x: 0, y: 1, z: 0 }} : {{ x: 0, y: 0, z: 1 }},
+        'scene.projection.type': state.flat ? 'orthographic' : 'perspective',
         'scene.xaxis.range': [center[0] - halfSpan, center[0] + halfSpan],
         'scene.yaxis.range': [center[1] - halfSpan, center[1] + halfSpan],
         'scene.zaxis.range': [center[2] - halfSpan, center[2] + halfSpan],
@@ -1798,6 +1936,7 @@ def generate_plotly_html(
       }});
 
       if (indices.length) Plotly.restyle(gd, restyle, indices);
+      refreshSphere();
       Plotly.relayout(gd, relayout);
 
       const badge = document.getElementById('focus-badge');
@@ -1830,6 +1969,12 @@ def generate_plotly_html(
         }}
         apply();
       }});
+    }});
+    document.getElementById('view').addEventListener('click', (event) => {{
+      state.flat = !state.flat;
+      event.currentTarget.dataset.on = state.flat ? '1' : '0';
+      event.currentTarget.textContent = state.flat ? '🧭 2D сверху' : '🔭 3D';
+      apply();
     }});
     document.getElementById('isolate').addEventListener('click', (event) => {{
       state.isolate = !state.isolate;

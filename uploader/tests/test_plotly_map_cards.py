@@ -165,6 +165,24 @@ class HtmlCardsTests(unittest.TestCase):
         self.assertIn("function structurePositions", self.html)
         self.assertIn("plotly_click", self.html)
 
+    def test_html_view_toggle_switches_camera_only(self):
+        """Переключатель вида в HTML — камера+проекция, а не другая фигура."""
+        self.assertIn('id="view"', self.html)
+        self.assertIn("scene.projection.type", self.html)
+        self.assertIn("state.flat ? 'orthographic' : 'perspective'", self.html)
+        # Стартовая камера по умолчанию — 3D, как на сайте.
+        self.assertIn("flat: false", self.html)
+        # Сфера тела переиспользуется при зуме, а не перестраивается заново.
+        self.assertIn("function refreshSphere", self.html)
+        self.assertIn("function sphereGeometry", self.html)
+
+    def test_flat_start_view_documented_in_payload(self):
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
+        self.assertEqual(schema["layout"]["scene"]["projection"]["type"], "perspective")
+        flat_html = pm.generate_plotly_html(self.snapshot, view_mode="2d")
+        self.assertIn("flat: true", flat_html)
+        self.assertIn('id="view" data-on="1"', flat_html)
+
     def test_empty_system_still_renders(self):
         empty = sm.MapSnapshot(system="EmptySys")
         html = pm.generate_plotly_html(empty)
@@ -179,6 +197,57 @@ class HtmlCardsTests(unittest.TestCase):
         self.assertTrue(restored["structures"])
         self.assertTrue(restored["clusters"])
 
+
+class PlotlySiteParityTests(unittest.TestCase):
+    """Карта приложения и карта сайта — одна модель.
+
+    Сайт (`src/components/SystemPlotlyMap.tsx`) не строит «плоскую» фигуру: там
+    всегда одна 3D-сцена, а «вид сверху» — это камера. Если в приложении снова
+    появится отдельный 2D-рендер (scatter + xaxis/yaxis), кнопки вида в
+    статичном HTML молчат, и карта «работает только в 2D режиме».
+    """
+
+    SITE = HERE.parent.parent / "src" / "components" / "SystemPlotlyMap.tsx"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.snapshot = _snapshot()
+
+    def test_site_and_app_share_the_same_view_model(self):
+        source = self.SITE.read_text(encoding="utf-8")
+        self.assertIn("type: 'scatter3d'", source)
+        self.assertNotIn("type: 'scatter',", source,
+                        "сайт ушёл в отдельную 2D-фигуру — паритет надо переносить сюда")
+        self.assertIn("eyeDistance * 0.62", source)
+        self.assertIn("sphereGeometry", source)
+
+    def test_app_figure_matches_site_camera(self):
+        schema = pm.build_plotly_dict(self.snapshot, view_mode="3d")
+        eye = schema["layout"]["scene"]["camera"]["eye"]
+        expected = (1.65 * 0.62, -1.65 * 0.62, 1.65 * 0.4)
+        self.assertAlmostEqual(eye["x"], expected[0], places=3)
+        self.assertAlmostEqual(eye["y"], expected[1], places=3)
+        self.assertAlmostEqual(eye["z"], expected[2], places=3)
+        self.assertEqual(schema["layout"]["scene"]["camera"]["up"], {"x": 0, "y": 0, "z": 1})
+
+    def test_app_figure_always_uses_scatter3d(self):
+        for mode in ("3d", "2d", ""):
+            schema = pm.build_plotly_dict(self.snapshot, view_mode=mode)
+            self.assertIn("scene", schema["layout"])
+            self.assertNotIn("xaxis", schema["layout"])
+            for trace in schema["data"]:
+                self.assertIn(trace["type"], ("scatter3d", "mesh3d"),
+                              f"view_mode={mode!r}: в карте появилась 2D-трасса")
+
+    def test_sphere_grid_matches_site_constants(self):
+        mesh = orrery.sphere_geometry([0.0, 0.0, 0.0], 1.0, 24, 14)
+        self.assertEqual(len(mesh["x"]), 25 * 15)
+        self.assertEqual(len(mesh["i"]), 2 * 24 * 14)
+        # Единичный радиус во всех направлениях — сфера, а не эллипсоид.
+        self.assertAlmostEqual(max(mesh["x"]), 1.0, places=6)
+        self.assertAlmostEqual(min(mesh["z"]), -1.0, places=6)
+        self.assertAlmostEqual(orrery.detail_sphere_radius_units(100, 3), 42.0, places=6)
+        self.assertAlmostEqual(orrery.detail_sphere_radius_units(100, 2), 14.0, places=6)
 
 if __name__ == "__main__":
     unittest.main()

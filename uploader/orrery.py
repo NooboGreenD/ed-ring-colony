@@ -539,6 +539,48 @@ def body_sphere_radius_units(half_span: float, fraction: float) -> float:
     return max(0.5, half_span * fraction)
 
 
+def sphere_geometry(center: Sequence[float], radius: float,
+                    segments: int = 24, rings: int = 14) -> Dict[str, List[float]]:
+    """Сфера `mesh3d` (вершины + индексы граней) для тела в фокусе.
+
+    Повторяет `sphereGeometry` из `src/lib/systemOrrery.ts` — то же число
+    сегментов и та же нумерация граней, чтобы «планета» в HTML-карте приложения
+    выглядела ровно как на сайте.
+    """
+    segments = max(4, int(segments))
+    rings = max(2, int(rings))
+    cx, cy, cz = (float(center[0]), float(center[1]), float(center[2]))
+    radius = max(1e-3, float(radius))
+    xs: List[float] = []
+    ys: List[float] = []
+    zs: List[float] = []
+    for ring in range(rings + 1):
+        phi = math.pi * ring / rings
+        for segment in range(segments + 1):
+            theta = 2.0 * math.pi * segment / segments
+            xs.append(cx + radius * math.sin(phi) * math.cos(theta))
+            ys.append(cy + radius * math.sin(phi) * math.sin(theta))
+            zs.append(cz + radius * math.cos(phi))
+    tri_i: List[int] = []
+    tri_j: List[int] = []
+    tri_k: List[int] = []
+    stride = segments + 1
+    for ring in range(rings):
+        for segment in range(segments):
+            first = ring * stride + segment
+            second = first + stride
+            tri_i.extend((first, second))
+            tri_j.extend((second, first + 1))
+            tri_k.extend((first + 1, second + 1))
+    return {"x": xs, "y": ys, "z": zs, "i": tri_i, "j": tri_j, "k": tri_k}
+
+
+def detail_sphere_radius_units(half_span: float, zoom: int) -> float:
+    """Радиус сферы в unit'ах сцены для уровней 2/3 — как на сайте (0.14/0.42)."""
+    fraction = 0.42 if int(zoom) >= 3 else 0.14
+    return body_sphere_radius_units(half_span, fraction)
+
+
 def _match_body(plan: Dict[str, Any], name: str) -> Optional[str]:
     """Найти тело по «свободному» имени — Raven шлёт «HD 183092 B 5» без системы."""
     target = str(name or "").strip().lower()

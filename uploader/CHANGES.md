@@ -1,3 +1,81 @@
+# Раунд 56 — 2.10.20: Plotly-карта приложения стала той же 3D-картой, что на сайте
+
+## Задача
+
+«Карта в системе в приложении, которая открывается после кнопки Plotly, работает только
+в 2D режиме. По-хорошему надо переделать 3D режим в приложении, чтоб открывалась точно
+такая же карта, как на сайте».
+
+## Причина
+
+Фигура собиралась по-разному для 2D и 3D (`uploader/plotly_map.py`):
+
+```python
+is_3d = (str(view_mode or "3d").lower() == "3d")
+trace_type = "scatter3d" if is_3d else "scatter"
+```
+
+а `view_mode` приходил из переключателя канваса (`colonial_helper.py`,
+`config.get("map_view_mode", "2d")`). В 2D-фигуре не было `layout.scene` — а все кнопки
+вида (и в `updatemenus`, и в JS экспорта) пишут именно в `scene.camera` / `scene.*`.
+Итог: карта в браузере была плоской, кнопки молчали.
+
+## Что сделано
+
+* **Одна модель вида, как на сайте.** `build_plotly_dict` всегда строит `scatter3d` +
+  `scene`; геометрия больше не «сплющивается» (`is_3d` зафиксирован). `view_mode` теперь
+  выбирает только стартовую камеру: `2d` → `eye (0.001, 0.001, e)` +
+  `projection: orthographic`, `3d` → изометрия сайта. Мёртвая 2D-ветка layout
+  (`xaxis`/`yaxis`, `scaleanchor`) удалена.
+* **Кнопки вида чинят то, что чинят.** «🔭 3D Orrery», «🧭 Сверху (2D)», «📐 Сбоку» и
+  «🔄 Сброс» теперь проставляют и `scene.projection.type`, иначе различить 2D и 3D в
+  статичном HTML было нельзя.
+* **Кнопка вида в шапке HTML** (`#view`): переключает `state.flat`, `apply()` отдаёт
+  камеру/проекцию и `up` — без единого различия трасс.
+* **Сфера фокусируемого тела** (`orrery.sphere_geometry`, `detail_sphere_radius_units`):
+  `mesh3d` 24×14 + дымка атмосферы 20×10 на уровне ×1.1, радиусы 0.42/0.14 от разреза
+  фокуса, не рисуется у звёзд и у центра кластера на уровне 2 — правило сайта
+  (`sphereRadii` + `detailMode`). Постройки в статичной фигуре ставятся на эту сферу
+  (`place_stations(..., sphere_radii=...)`), при зуме в браузере сфера и постройки
+  пересчитываются на месте (`refreshSphere()`, `structurePositions()`).
+* **Стартовая камера 3D = сайт**: `eye = (1.65·0.62, −1.65·0.62, 1.65·0.4)`.
+* **Рамка сцены как на сайте**: `showgrid/zeroline/showticklabels/showbackground`
+  выключены у `scene.xaxis|yaxis|zaxis` (раньше рисовалась сетка `#15202e`), фон
+  `#07090e` совпадает уже давно — карта в браузере выглядит той же самой.
+* **Настройка `map_plotly_view`** (`"3d"` по умолчанию) вместо подвязки к
+  `map_view_mode`; общий `plotly_map.normalize_view_mode()` для Tk, фигуры и HTML.
+  Подпись на панели: «Вид (канвас):».
+
+## Тесты
+
+* `test_plotly_map.py`: `view_mode` не меняет тип трасс (2D — та же сцена),
+  ортографическая камера сверху, проекция в кнопках, `mesh3d`-сфера у тела и её
+  отсутствие у звезды/в обзоре, дымка при атмосфере, нормализация алиасов вида,
+  `map_plotly_view` вместо Tk-переключателя (три интеграционных теста).
+* `test_plotly_map_cards.py`: `PlotlySiteParityTests` читает
+  `src/components/SystemPlotlyMap.tsx` и не даёт сайту и приложению разойтись по
+  модели вида; проверяется сетка сферы и формула камеры.
+* Прогон: `python3 -m unittest discover -s uploader/tests -t uploader/tests -p "test_plotly*.py"`
+  → 53 теста OK; весь набор `uploader/tests` — 1002 теста, падений по коду нет
+  (остались только 5 падений `test_updater`/`test_third_party_api`/`test_raven_deliveries`/
+  `test_external_scans_and_orrery`, воспроизводимых на чистом дереве: в песочнице нет
+  `requests`, тесты идут через заглушку).
+
+## Файлы
+
+- `uploader/plotly_map.py`
+- `uploader/orrery.py`
+- `uploader/colonial_helper.py`
+- `uploader/tests/test_plotly_map.py`, `uploader/tests/test_plotly_map_cards.py`
+- `uploader/README.md`
+
+## Из прошлого раунда (для справки, не менялось)
+
+Хотфикс «Application error: a client-side exception» на `/system/[name]`: четыре
+`useMemo` в `src/app/system/[name]/page.tsx` стояли после ранних `return` — число
+хуков менялось между рендерами. Добавлен `scripts/tests/react-hook-order.test.mjs`,
+который такое больше не пропустит.
+
 # Раунд 55 — 2.10.19: карта системы синхронно с сайтом, EXOBIO таблицей, доставки с признаком стройки
 
 ## Задача

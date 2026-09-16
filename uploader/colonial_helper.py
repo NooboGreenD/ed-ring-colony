@@ -128,7 +128,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.19"
+VERSION = "2.10.20"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2529,7 +2529,9 @@ class ColonialHelperApp:
         tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
                        command=self._on_map_toggle,
                        bootstyle="info-round-toggle").pack(side=LEFT)
-        tb.Label(bar, text="Вид:", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
+        # Вид относится только к канвасу во вкладке: Plotly-карта в браузере
+        # всегда одна 3D-сцена (как на сайте) и переключается кнопкой внутри.
+        tb.Label(bar, text="Вид (канвас):", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
         self.map_view_mode = tk.StringVar(value=str(self.config.get("map_view_mode", "2d")))
         tb.Radiobutton(bar, text="2D", variable=self.map_view_mode, value="2d",
                        command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT)
@@ -3772,15 +3774,19 @@ class ColonialHelperApp:
             zoom = 0
         labels = bool(config.get("map_plotly_labels", False))
         show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
-        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
+        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
+        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
         selected = str(getattr(self, "_map_selected", "") or "")
         try:
-            from plotly_map import open_plotly_in_browser
+            from plotly_map import normalize_view_mode as plotly_view_mode, open_plotly_in_browser
+            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
             path = open_plotly_in_browser(snapshot, view_mode=view_mode, show_moons=show_moons,
                                           selected=selected, zoom=zoom, show_all_labels=labels)
             target_note = f" (фокус: {selected})" if selected else ""
             self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}{target_note}")
-            self.log(f"Интерактивная карта {snapshot.system} (Plotly {view_mode.upper()}){target_note} открыта в браузере", "info")
+            view_note = "вид сверху (2D)" if view_mode == "2d" else "3D-оррерий"
+            self.log(f"Интерактивная карта {snapshot.system} (Plotly, {view_note}){target_note} открыта в браузере", "info")
         except Exception as err:
             self._map_update_status(snapshot, f"Ошибка открытия Plotly: {err}")
             self.log(f"Не удалось открыть карту Plotly: {err}", "warning")
@@ -3813,10 +3819,13 @@ class ColonialHelperApp:
             zoom = 0
         labels = bool(config.get("map_plotly_labels", False))
         show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
-        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
+        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
+        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
+        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
         selected = str(getattr(self, "_map_selected", "") or "")
         try:
-            from plotly_map import export_plotly_html
+            from plotly_map import export_plotly_html, normalize_view_mode as plotly_view_mode
+            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
             export_plotly_html(snapshot, filepath=path, view_mode=view_mode,
                                show_moons=show_moons, selected=selected, zoom=zoom,
                                show_all_labels=labels)
