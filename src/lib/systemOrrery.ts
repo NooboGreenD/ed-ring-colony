@@ -298,10 +298,17 @@ export interface LayoutOptions {
 /**
  * Главный расчёт: координаты звёзд, планет, лун, орбит, колец и обитаемых зон.
  */
-export function buildOrreryLayout(records: Record<string, unknown>[], systemName = '', options: LayoutOptions = {}): OrreryLayout {
+export function buildOrreryLayout(
+  records: Record<string, unknown>[] | null | undefined,
+  systemName = '',
+  options: LayoutOptions = {},
+): OrreryLayout {
   const scaleMode = options.scaleMode ?? 'orrery';
   const showMoons = options.showMoons ?? true;
-  const bodies = records
+  // Функция обязана быть тотальной: карта вызывается на данных из API и журнала,
+  // где `bodies` спокойно может прийти null. Исключение здесь = пустая страница
+  // с «Application error» у клиента, а не деградация вида.
+  const bodies = (records ?? [])
     .filter((record) => record && typeof record === 'object')
     .map((record) => normalizeBody(record, systemName));
 

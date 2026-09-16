@@ -80,6 +80,9 @@ function formatPercent(value: number | null | undefined): string {
     : '—';
 }
 
+/** Стабильный пустой массив: `?? []` на каждом рендере ломал бы зависимости useMemo. */
+const NO_ROWS: any[] = [];
+
 export default function SystemPage() {
   const { name } = useParams();
   const systemName = decodeURIComponent(name as string);
@@ -112,6 +115,31 @@ export default function SystemPage() {
     };
   }, [systemName]);
 
+  // ВСЕ хуки — до ранних return'ов. Если `useMemo` стоит после `if (loading)
+  // return`, то на первом рендере их меньше, чем на втором: React видит другое
+  // число хуков, кидает "Rendered more hooks than during the previous render"
+  // и страница падает с «Application error: a client-side exception».
+  // Поэтому расчёт оверрея идёт здесь, а `system` на этом этапе ещё может быть
+  // null — отсюда NO_ROWS и необязательные поля.
+  const orreryStructures = useMemo(() => toStructures(system?.projects ?? NO_ROWS), [system]);
+
+  // Та же геометрия, что и у 3D-карты: карточки тел обязаны называть те же
+  // классы/дистанции и те же постройки, что и оверей на карте.
+  const orreryLayout = useMemo(
+    () => buildOrreryLayout(bodies.length ? bodies : system?.bodies ?? NO_ROWS, systemName, {}),
+    [bodies, system, systemName],
+  );
+  const orrerySummary = useMemo(() => summarizeLayout(orreryLayout, orreryStructures), [orreryLayout, orreryStructures]);
+  const structureByBody = useMemo(() => {
+    const map: Record<string, typeof orreryStructures> = {};
+    for (const structure of orreryStructures) {
+      const key = orreryLayout.bodies.find((body) => body.name.toLowerCase() === (structure.bodyName || '').toLowerCase())?.name ?? structure.bodyName;
+      if (!key) continue;
+      (map[key] ??= []).push(structure);
+    }
+    return map;
+  }, [orreryStructures, orreryLayout]);
+
   if (loading) {
     return (
       <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 40, textAlign: 'center' }}>
@@ -139,26 +167,6 @@ export default function SystemPage() {
     total + (hasExactAmounts(resource) ? resource.provided : 0)
   ), 0);
   const hasImportedCargo = hasSystemCargoTotals || importedCargo > 0;
-
-  const orreryStructures = useMemo(() => toStructures(system.projects), [system.projects]);
-
-  // Та же геометрия, что и у 3D-карты: карточки тел обязаны называть те же
-  // классы/дистанции и те же постройки, что и оверей на карте.
-  const orreryLayout = useMemo(
-    () => buildOrreryLayout(bodies.length ? bodies : system.bodies ?? [], systemName, {}),
-    [bodies, system.bodies, systemName],
-  );
-  const orrerySummary = useMemo(() => summarizeLayout(orreryLayout, orreryStructures), [orreryLayout, orreryStructures]);
-  const structureByBody = useMemo(() => {
-    const map: Record<string, typeof orreryStructures> = {};
-    for (const structure of orreryStructures) {
-      const key = orreryLayout.bodies.find((body) => body.name.toLowerCase() === (structure.bodyName || '').toLowerCase())?.name ?? structure.bodyName;
-      if (!key) continue;
-      (map[key] ??= []).push(structure);
-    }
-    return map;
-  }, [orreryStructures, orreryLayout]);
-
   return (
     <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 32 }}>
       <div style={{ marginBottom: 24 }}>

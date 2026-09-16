@@ -247,3 +247,19 @@ test('сводка для подписей карточки системы', () 
     ringedBodies: 1, structures: 2, activeSites: 1,
   });
 });
+
+test('тотальность раскладки: пустые и битые строки не роняют карту', () => {
+  // Движок вызывается прямо из клиентского компонента: исключение здесь — это
+  // «Application error: a client-side exception» вместо карты, поэтому он
+  // обязан деградировать в пустую, но валидную раскладку.
+  for (const rows of [[], null, undefined, [null, {}, { body_name: null, parents: 'не массив', rings: 5 }]]) {
+    const layout = buildOrreryLayout(rows, 'Sol', {});
+    assert.ok(layout, 'раскладка обязана вернуться');
+    assert.ok(Array.isArray(layout.bodies));
+    assert.ok(Array.isArray(layout.clusters));
+    assert.ok(layout.span > 0, 'без тел масштаб всё равно числовой');
+    const summary = summarizeLayout(layout, []);
+    assert.equal(typeof summary.stars, 'number');
+    assert.equal(computeFocusView(layout, 'Sol 999', 3), null, 'фокуса на несуществующем теле нет — и это не ошибка');
+  }
+});
