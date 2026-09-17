@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 
+import { normalizeDeliveryKind } from './cargoScope.ts';
 import { isConstructionSourceName } from './journalParser';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
@@ -30,24 +31,40 @@ type DeliveryRow = {
   is_construction?: boolean | null;
   /** MarketID площадки, к которой привязана доставка (текст: 64-битный ID). */
   market_id?: string | null;
+  /** Куда сдан груз: стройплощадка / колонизационный корабль / авианосец / … */
+  delivery_kind?: string | null;
+  /** Станция, у которой сдан груз (имя и вид из `Docked`/`Market`). */
+  station_name?: string | null;
+  station_kind?: string | null;
 };
 
 /**
- * Дополнительные колонки `deliveries` из миграции
- * `20260917000000_deliveries_transport_scope.sql`. Как и с `source_hash`,
+ * Дополнительные колонки `deliveries` из миграций
+ * `20260917000000_deliveries_transport_scope.sql` и
+ * `20260918000000_deliveries_cargo_scope.sql`. Как и с `source_hash`,
  * релиз API может успеть раньше миграции — тогда пишем строки без них, чтобы
  * загрузка журнала не падала целиком.
  */
-const TRANSPORT_COLUMNS = ['source', 'is_construction', 'market_id'] as const;
+const TRANSPORT_COLUMNS = [
+  'source',
+  'is_construction',
+  'market_id',
+  'delivery_kind',
+  'station_name',
+  'station_kind',
+] as const;
 let transportColumnsMode: 'unknown' | 'present' | 'missing' = 'unknown';
 let transportColumnsProbeAt = 0;
 const TRANSPORT_COLUMNS_REPROBE_MS = 2 * 60_000;
 
+const TRANSPORT_COLUMN_PATTERN = 'source|is_construction|market_id|delivery_kind|station_name|station_kind';
+
 function isMissingTransportColumn(error: { code?: string; message?: string }): boolean {
   if (error.code !== '42703' && error.code !== 'PGRST204') {
-    return /(?:source|is_construction|market_id).*?(?:does not exist|could not find)/i.test(error.message || '');
+    return new RegExp(`(?:${TRANSPORT_COLUMN_PATTERN}).*?(?:does not exist|could not find)`, 'i')
+      .test(error.message || '');
   }
-  return /(?:source|is_construction|market_id)/i.test(error.message || '');
+  return new RegExp(TRANSPORT_COLUMN_PATTERN, 'i').test(error.message || '');
 }
 
 function shouldTryTransportColumns(): boolean {
@@ -258,6 +275,52 @@ function marketIdOf(delivery: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Текстовое поле станции из payload клиента (оба стиля именования). */
+function stationFieldOf(delivery: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = delivery[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim().slice(0, 250);
+      if (trimmed) return trimmed;
+    }
+  }
+  return null;
+}
+
+/**
+ * Вид сдачи груза для записи в `deliveries.delivery_kind`.
+ *
+ * Приоритет: явный признак от парсера журнала → вывод из `source` у старых
+ * клиентов. `cargo_depot` без явного вида остаётся грузом миссии: считать его
+ * стройкой по одному имени источника как раз и было ошибкой, из-за которой
+ * тоннаж торговых миссий попадал в статистику колонизации.
+ */
+function resolveDeliveryKind(delivery: Record<string, unknown>, source: string | null): string | null {
+  const explicit = normalizeDeliveryKind(delivery.delivery_kind ?? delivery.deliveryKind);
+  if (explicit) return explicit;
+
+  switch (source) {
+    case 'colonisation_contribution':
+      return 'construction_site';
+    case 'carrier_delivery':
+      return 'fleet_carrier';
+    case 'mission_delivery':
+    case 'cargo_depot':
+      return 'mission_delivery';
+    case 'powerplay_delivery':
+      return 'powerplay_delivery';
+    case 'rescue_delivery':
+      return 'rescue_delivery';
+    case 'cargo_delta':
+      // Дифф трюма без явного вида: стройка только если клиент сам так сказал.
+      return delivery.is_construction === true || delivery.isConstruction === true
+        ? 'construction_site'
+        : 'market_sale';
+    default:
+      return null;
+  }
+}
+
 function validRows(userId: string, deliveries: unknown[], placements: Map<string, SystemPlacement>): DeliveryRow[] {
   const rows: DeliveryRow[] = [];
 
@@ -311,6 +374,13 @@ function validRows(userId: string, deliveries: unknown[], placements: Map<string
             // затекала в статистику строек.
             : isConstructionSourceName(source)),
       market_id: marketIdOf(delivery),
+      // Куда именно сдан груз. Признак приходит от парсера журнала (сайт и
+      // Colonial Helper используют один словарь `cargoScope`); если клиент
+      // старый и вида нет — выводим его из источника, чтобы блок «структура
+      // перевозок» в досье не пустовал.
+      delivery_kind: resolveDeliveryKind(delivery, source),
+      station_name: stationFieldOf(delivery, 'station_name', 'stationName'),
+      station_kind: stationFieldOf(delivery, 'station_kind', 'stationKind'),
     });
   }
   return rows;

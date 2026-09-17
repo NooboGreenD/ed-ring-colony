@@ -5,6 +5,7 @@ import { useI18n } from "@/lib/i18n/I18nContext";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
 import { createJournalParseState, parseJournal, type Delivery } from "@/lib/journalParser";
+import { DEFAULT_PRIVACY, PRIVACY_KEYS, privacyPayload, resolvePrivacy, type PrivacySettings } from "@/lib/privacy";
 import { TelemetryCollector } from "@/lib/journalTelemetry";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
@@ -29,6 +30,32 @@ import {
 
 type Progress = { current: number; total: number; phase: string; pct: number };
 type Tab = "profile" | "squadron" | "journals" | "tokens";
+
+/**
+ * Подписи получателей груза в сводке импорта. Ключи — `delivery_kind` из
+ * парсера журнала (`src/lib/cargoScope.ts`); порядок фиксированный, чтобы
+ * таблица не «прыгала» между загрузками.
+ */
+const CARGO_KIND_LABELS: Record<string, string> = {
+  construction_site: "Стройплощадки колонизации",
+  colonisation_ship: "Колонизационные корабли",
+  fleet_carrier: "Авианосцы",
+  mission_delivery: "Грузовые миссии",
+  powerplay_delivery: "Powerplay",
+  rescue_delivery: "Search and Rescue",
+  market_sale: "Продажа на рынках",
+  legacy_site: "Исторические поставки",
+};
+const CARGO_KIND_ORDER = [
+  "construction_site",
+  "colonisation_ship",
+  "legacy_site",
+  "fleet_carrier",
+  "mission_delivery",
+  "market_sale",
+  "powerplay_delivery",
+  "rescue_delivery",
+];
 
 export default function AccountPage() {
   const { t, setLocale } = useI18n();
@@ -56,6 +83,8 @@ export default function AccountPage() {
   const [tokenMsg, setTokenMsg] = useState("");
   const [language, setLanguage] = useState("ru");
   const [capiLinked, setCapiLinked] = useState(false);
+  // Конфиденциальность досье: что видят другие командиры на странице /cmdr/…
+  const [privacy, setPrivacy] = useState<PrivacySettings>({ ...DEFAULT_PRIVACY });
 
   useEffect(() => {
     if (!user) return;
@@ -100,11 +129,13 @@ export default function AccountPage() {
         setCmdrEdit(ensuredProfile?.cmdr_name ?? "");
         setLanguage(ensuredProfile?.language ?? "ru");
         setLocale(ensuredProfile?.language ?? "ru");
+        setPrivacy(resolvePrivacy(ensuredProfile?.privacy_settings));
       } else {
         setProfile(profileData);
         setCmdrEdit(profileData.cmdr_name ?? "");
         setLanguage(profileData.language ?? "ru");
         setLocale(profileData.language ?? "ru");
+        setPrivacy(resolvePrivacy(profileData.privacy_settings));
       }
     } catch (loadError) {
       console.error("[Account] Could not load session:", loadError);
@@ -190,6 +221,25 @@ export default function AccountPage() {
     else {
       setMsg(t('account.saved'));
       setLocale(language);
+      load();
+    }
+  };
+
+  const savePrivacy = async () => {
+    if (!user) return;
+    setBusy(true);
+    setMsg("");
+    const client = createSupabaseClient();
+    // Пишем только известные ключи: лишнее поле в JSONB потом пришлось бы
+    // вычищать миграцией.
+    const { error } = await client
+      .from("profiles")
+      .update({ privacy_settings: privacyPayload(privacy) })
+      .eq("id", user.id);
+    setBusy(false);
+    if (error) setMsg(t('account.error') + ' ' + error.message);
+    else {
+      setMsg(t('account.privacySaved'));
       load();
     }
   };
@@ -317,6 +367,9 @@ export default function AccountPage() {
         skippedMining: 0,
         skippedEject: 0,
         skippedDuplicates: 0,
+        // Тоннаж по получателю груза: стройплощадки, колонизационные корабли,
+        // авианосцы, миссии, рынки, Powerplay, SAR.
+        kindTons: {} as Record<string, number>,
       };
 
       // Hub/route classification is resolved server-side for each bounded
@@ -374,6 +427,9 @@ export default function AccountPage() {
         allStats.skippedMining += stats.skippedMining;
         allStats.skippedEject += stats.skippedEject;
         allStats.skippedDuplicates += stats.skippedDuplicates;
+        for (const [kind, tons] of Object.entries(stats.kindTons ?? {})) {
+          allStats.kindTons[kind] = (allStats.kindTons[kind] ?? 0) + Number(tons || 0);
+        }
 
         // Let React paint progress while a large multi-file upload is parsed.
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -446,6 +502,12 @@ export default function AccountPage() {
             // стройплощадки» — признак источника решает это на стороне парсера.
             is_construction: delivery.isConstruction ?? null,
             market_id: delivery.marketId,
+            // Куда именно сдан груз: стройплощадка / колонизационный корабль /
+            // авианосец / миссия / рынок. По нему досье строит блок
+            // «структура перевозок».
+            delivery_kind: delivery.deliveryKind ?? null,
+            station_name: delivery.stationName ?? null,
+            station_kind: delivery.stationKind ?? null,
           }));
         const json = await uploadChunk(chunk);
         inserted += json.inserted ?? 0;
@@ -637,6 +699,65 @@ export default function AccountPage() {
             <button type="button" onClick={saveLanguage} className="btn btn-cyan">{t('account.saveLanguage')}</button>
           </div>
 
+          <h2 style={{ marginTop: 32 }}>{t('account.privacyTitle')}</h2>
+          <p style={{ color: '#9ca3af', fontSize: 13, lineHeight: 1.6, maxWidth: 640 }}>
+            {t('account.privacyDesc')}
+          </p>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              maxWidth: 640,
+              marginTop: 12,
+              marginBottom: 16,
+            }}
+          >
+            {PRIVACY_KEYS.map((key) => (
+              <label
+                key={key}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  padding: '10px 12px',
+                  background: '#1e2124',
+                  border: '1px solid #2d3033',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  color: '#eeeeee',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={privacy[key]}
+                  onChange={(event) => setPrivacy((current) => ({ ...current, [key]: event.target.checked }))}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  {t(`account.privacy${key.charAt(0).toUpperCase()}${key.slice(1)}`)}
+                  <span
+                    style={{
+                      display: 'block',
+                      marginTop: 2,
+                      fontSize: 11,
+                      color: privacy[key] ? '#22c55e' : '#e67e22',
+                      fontFamily: 'ui-monospace, monospace',
+                    }}
+                  >
+                    {privacy[key] ? 'видно всем' : 'скрыто от других'}
+                  </span>
+                </span>
+              </label>
+            ))}
+            <div>
+              <button type="button" onClick={savePrivacy} disabled={busy} className="btn btn-cyan">
+                {t('account.save')}
+              </button>
+            </div>
+          </div>
+
           <h2 style={{ marginTop: 32 }}>{t('account.loginMethods')}</h2>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
             <span style={{ padding: "4px 12px", borderRadius: 2, fontSize: 12, background: emailLinked ? "rgba(34,197,94,0.12)" : "#2d3033", color: emailLinked ? "#22c55e" : "#9ca3af", fontFamily: "ui-monospace, monospace" }}>{emailLinked ? <><IconCheck size={12} /> Email</> : <><IconCircle size={12} /> Email</>}</span>
@@ -807,6 +928,23 @@ export default function AccountPage() {
                       <span style={{ color: "#eeeeee" }}>{summary.parserStats.transportedTons.toLocaleString('ru')}</span>
                       <span style={{ color: '#6b7280' }}>{t('account.constructionTonsLabel')}</span>
                       <span style={{ color: "#f39c12" }}>{summary.parserStats.constructionTons.toLocaleString('ru')}</span>
+                    </>
+                  )}
+                  {summary.parserStats?.kindTons && Object.keys(summary.parserStats.kindTons).length > 0 && (
+                    <>
+                      <span style={{ color: '#6b7280' }}>{t('account.cargoKindsLabel')}</span>
+                      <span style={{ color: '#eeeeee' }}>
+                        {CARGO_KIND_ORDER
+                          .filter((kind) => (summary.parserStats.kindTons?.[kind] ?? 0) > 0)
+                          .map((kind) => (
+                            <span key={kind} style={{ display: 'block' }}>
+                              {CARGO_KIND_LABELS[kind] ?? kind}:{' '}
+                              <span style={{ color: '#f39c12' }}>
+                                {(summary.parserStats.kindTons?.[kind] ?? 0).toLocaleString('ru')} т
+                              </span>
+                            </span>
+                          ))}
+                      </span>
                     </>
                   )}
                   {summary.telemetry && (

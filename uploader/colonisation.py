@@ -96,6 +96,80 @@ def is_primary_port_station(station_name: str) -> bool:
     return any(lowered.startswith(value.lower()) for value in COLONISATION_SHIP_NAMES)
 
 
+#: Типы станций журнала, которые сами по себе говорят «это стройплощадка»
+#: (`StationType` из `Docked`/`Market`, иногда без `StationName`).
+CONSTRUCTION_STATION_TYPES = ("planetaryconstructionsite", "orbitalconstructionsite", "constructionsite")
+
+#: Виды станции. Строка пишется в `deliveries.station_kind`, поэтому значения
+#: обязаны совпадать с `src/lib/cargoScope.ts::StationKind`.
+STATION_CONSTRUCTION_SITE = "construction_site"
+STATION_COLONISATION_SHIP = "colonisation_ship"
+STATION_FLEET_CARRIER = "fleet_carrier"
+STATION_MEGASHIP = "megaship"
+STATION_STATION = "station"
+STATION_OUTPOST = "outpost"
+STATION_SURFACE = "surface"
+STATION_UNKNOWN = "unknown"
+
+#: Виды станции, при которых груз считается завезённым на стройку.
+CONSTRUCTION_STATION_KINDS = frozenset({STATION_CONSTRUCTION_SITE, STATION_COLONISATION_SHIP})
+
+
+def classify_station(
+    station_name=None,
+    station_type=None,
+    station_services=None,
+    carrier_id=None,
+) -> str:
+    """Вид станции, у которой стоит командир.
+
+    Именно этот вид решает, попал ли груз в «тоннаж на стройплощадки»:
+    стройплощадка и колонизационный корабль — да, авианосец, обычный порт,
+    аутпост и мегакорабль — нет. Правила совпадают с
+    `src/lib/cargoScope.ts::classifyStation`, поэтому сайт и Colonial Helper
+    считают одинаково.
+
+    Args:
+        station_name: `StationName` из `Docked`/`Location`/`Market`.
+        station_type: `StationType` (иногда единственный признак, если имени нет).
+        station_services: `StationServices` (список строк в нижнем регистре).
+        carrier_id: `CarrierID` — признак авианосца.
+    """
+    name = str(station_name or "").strip()
+    stype = str(station_type or "").strip()
+    services = {
+        str(item).strip().lower()
+        for item in (station_services or [])
+        if str(item or "").strip()
+    }
+    has_carrier = carrier_id not in (None, "") and str(carrier_id).strip() != ""
+
+    if has_carrier or "carrier" in stype.lower():
+        return STATION_FLEET_CARRIER
+
+    if not name:
+        # Без имени станции судим только по типу: «PlanetaryConstructionSite»
+        # журнал пишет и в `Market`, где имени нет вовсе.
+        lowered_type = stype.lower()
+        if any(value in lowered_type for value in CONSTRUCTION_STATION_TYPES):
+            return STATION_CONSTRUCTION_SITE
+        return STATION_UNKNOWN
+
+    if is_construction_site(name, sorted(services) if services else None):
+        return STATION_COLONISATION_SHIP if is_primary_port_station(name) else STATION_CONSTRUCTION_SITE
+
+    lowered_type = stype.lower()
+    if any(value in lowered_type for value in CONSTRUCTION_STATION_TYPES):
+        return STATION_CONSTRUCTION_SITE
+    if "megaship" in lowered_type:
+        return STATION_MEGASHIP
+    if "outpost" in lowered_type:
+        return STATION_OUTPOST
+    if any(value in lowered_type for value in ("planetary", "surface", "installation")):
+        return STATION_SURFACE
+    return STATION_STATION
+
+
 def default_project_name(station_name: str) -> str:
     """Название проекта по имени станции.
 

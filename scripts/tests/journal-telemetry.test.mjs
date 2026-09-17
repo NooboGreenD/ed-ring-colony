@@ -80,24 +80,50 @@ test('колонизация: каждое событие даёт свой об
   assert.equal(stats.constructionTons, 200);
 });
 
-test('CargoDepot (крыльевые поставки) — стройка', () => {
-  const { deliveries } = parse(
+function cargoDepot(count, timestamp = TS) {
+  return line({
+    timestamp,
+    event: 'CargoDepot',
+    UpdateType: 'Deliver',
+    CargoType: 'basicmedicines',
+    CargoType_Localised: 'Basic Medicines',
+    Count: count,
+    CountTotal: count,
+    Need: 100,
+    Wing: false,
+  });
+}
+
+test('CargoDepot без стройплощадки — груз миссии, а не стройка', () => {
+  const { deliveries, stats } = parse(jump(), cargoDepot(64));
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].source, 'cargo_depot');
+  assert.equal(deliveries[0].deliveryKind, 'mission_delivery');
+  assert.equal(deliveries[0].isConstruction, false);
+  assert.equal(stats.constructionTons, 0);
+  assert.equal(stats.transportedTons, 64);
+  assert.equal(stats.kindTons.mission_delivery, 64);
+});
+
+test('CargoDepot у рынка стройплощадки — строительный тоннаж', () => {
+  const { deliveries, stats } = parse(
     jump(),
     line({
       timestamp: TS,
-      event: 'CargoDepot',
-      UpdateType: 'Deliver',
-      CargoType: 'basicmedicines',
-      CargoType_Localised: 'Basic Medicines',
-      Count: 64,
-      CountTotal: 64,
-      Need: 100,
-      Wing: false,
+      event: 'Docked',
+      MarketID: 9001,
+      StationName: 'Planetary Construction Site: Ditceford Depot',
+      StationType: 'PlanetaryInstallation',
+      StationServices: ['dock', 'colonisationcontribution', 'missions'],
     }),
+    cargoDepot(64, '2026-09-14T10:01:00Z'),
   );
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].source, 'cargo_depot');
+  assert.equal(deliveries[0].deliveryKind, 'construction_site');
   assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(stats.constructionTons, 64);
+  assert.equal(stats.kindTons.construction_site, 64);
 });
 
 test('cargo_delta становится стройкой только у известной площадки', () => {
@@ -196,6 +222,180 @@ test('isConstructionSourceName совпадает с множеством ист
   for (const source of ['carrier_delivery', 'mission_delivery', 'powerplay_delivery', 'rescue_delivery', 'cargo_delta', '']) {
     assert.equal(isConstructionSourceName(source), false, source);
   }
+});
+
+/* ── разделение по получателю груза: стройка/корабль vs авианосец/рынок ── */
+
+test('поставка на колонизационный корабль — отдельный вид, но тоже стройка', () => {
+  const { deliveries, stats } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 7001,
+      StationName: 'System Colonisation Ship',
+      StationType: 'Orbis Starport',
+      StationServices: ['dock', 'colonisationcontribution'],
+    }),
+    contribution(320, '2026-09-14T10:01:00Z', 7001),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'colonisation_ship');
+  assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(stats.constructionTons, 320);
+  assert.equal(stats.kindTons.colonisation_ship, 320);
+  assert.equal(stats.kindTons.construction_site, 0);
+});
+
+test('продажа на авианосце и на обычном рынке — разные виды перевозки', () => {
+  const carrier = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: '3700005632',
+    }),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'MarketSell',
+      MarketID: 5001,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 100,
+      CarrierID: '3700005632',
+      StationType: 'FleetCarrier',
+    }),
+  );
+  assert.equal(carrier.deliveries[0].deliveryKind, 'fleet_carrier');
+  assert.equal(carrier.deliveries[0].isConstruction, false);
+  assert.equal(carrier.stats.kindTons.fleet_carrier, 100);
+  assert.equal(carrier.stats.constructionTons, 0);
+
+  const market = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 4242,
+      StationName: 'Jaeger Hub',
+      StationType: 'Orbis Starport',
+    }),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'MarketSell',
+      MarketID: 4242,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 40,
+      StationType: 'Orbis Starport',
+    }),
+  );
+  assert.equal(market.deliveries[0].deliveryKind, 'market_sale');
+  assert.equal(market.deliveries[0].isConstruction, false);
+  assert.equal(market.stats.kindTons.market_sale, 40);
+  assert.equal(market.stats.constructionTons, 0);
+});
+
+test('cargo_delta у авианосца — отгрузка на авианосец, а не продажа на рынке', () => {
+  const { deliveries } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: '3700005632',
+    }),
+    cargo(500, 0, '2026-09-14T10:05:00Z'),
+    cargo(300, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].source, 'cargo_delta');
+  assert.equal(deliveries[0].deliveryKind, 'fleet_carrier');
+  assert.equal(deliveries[0].isConstruction, false);
+  assert.equal(deliveries[0].amount, 200);
+});
+
+test('стройплощадка узнаётся по имени станции даже без depot-события', () => {
+  // Приложение могло стартовать, когда игрок уже стоит у площадки: журнал в
+  // этой сессии `ColonisationConstructionDepot` ещё не показывал.
+  const { deliveries, stats } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 9001,
+      StationName: 'Orbital Construction Site: Ditceford Hub',
+      StationType: 'Orbis Starport',
+    }),
+    cargo(400, 0, '2026-09-14T10:05:00Z'),
+    cargo(150, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'construction_site');
+  assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(deliveries[0].amount, 250);
+  assert.equal(stats.constructionTons, 250);
+  assert.equal(stats.transportedTons, 250);
+});
+
+test('обычный наземный порт с похожим именем без сервиса — не стройка', () => {
+  const { deliveries } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 4242,
+      StationName: 'Planetary Construction Site: Ditceford Depot',
+      StationType: 'PlanetaryInstallation',
+      StationServices: ['dock', 'missions', 'commodities'],
+    }),
+    cargo(200, 0, '2026-09-14T10:05:00Z'),
+    cargo(50, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'market_sale');
+  assert.equal(deliveries[0].isConstruction, false);
+});
+
+test('сводка по видам: стройка, корабль, авианосец, миссии, рынок', () => {
+  const { stats } = parse(
+    jump(),
+    contribution(100, '2026-09-14T10:00:00Z', 9001),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: 'C1',
+    }),
+    line({
+      timestamp: '2026-09-14T10:02:00Z',
+      event: 'MarketSell',
+      MarketID: 5001,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 60,
+      CarrierID: 'C1',
+      StationType: 'FleetCarrier',
+    }),
+    line({
+      timestamp: '2026-09-14T10:03:00Z',
+      event: 'PowerplayDeliver',
+      Commodity: 'metal scraps',
+      Count: 25,
+    }),
+  );
+  assert.equal(stats.kindTons.construction_site, 100);
+  assert.equal(stats.kindTons.fleet_carrier, 60);
+  assert.equal(stats.kindTons.powerplay_delivery, 25);
+  assert.equal(stats.transportedTons, 185);
+  assert.equal(stats.constructionTons, 100);
 });
 
 /* ── телеметрия: те же данные, что отправляет Uploader ── */

@@ -1,7 +1,8 @@
 import { notFound } from 'next/navigation';
-import { createClient } from '@/lib/supabaseServer';
+import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenColonialData } from '@/lib/ravenColonial';
 import { summarizeCargo } from '@/lib/dossierCargo';
+import { maskCapiProfile, maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconProfile, IconSquadron, IconLeaderboard } from '@/components/Icons';
 
@@ -10,6 +11,11 @@ export const dynamic = 'force-dynamic';
 export default async function CmdrPage({ params }: { params: { name: string } }) {
   const name = decodeURIComponent(params.name);
   const supabase = await createClient();
+  // Чувствительные таблицы (`pilot_stats`, `capi_profiles`) после миграции
+  // `20260918010000_profile_privacy_settings` видны только владельцу, поэтому
+  // досье читает их service-role клиентом и само решает, что показать:
+  // фильтрация обязана происходить на сервере, до передачи данных в браузер.
+  const svc = createServiceClient();
 
   const { data: { user } } = await supabase.auth.getUser();
   const currentUserId = user?.id ?? null;
@@ -17,7 +23,7 @@ export default async function CmdrPage({ params }: { params: { name: string } })
   // 1. Находим профиль по cmdr_name (единственный источник имени)
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id, cmdr_name, avatar_url, created_at')
+    .select('id, cmdr_name, avatar_url, created_at, privacy_settings')
     .eq('cmdr_name', name)
     .maybeSingle();
 
@@ -54,10 +60,10 @@ export default async function CmdrPage({ params }: { params: { name: string } })
   // поэтому при unknown-column ошибке перечитываем базовым набором.
   const loadAllDeliveries = async (): Promise<any[]> => {
     try {
-      return await readDeliveries('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id, source, is_construction, market_id');
+      return await readDeliveries('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id, source, is_construction, market_id, delivery_kind, station_name, station_kind');
     } catch (error) {
       const message = String((error as { message?: unknown })?.message ?? error);
-      if (!/source|is_construction|market_id/i.test(message) || !/does not exist|could not find|column/i.test(message)) throw error;
+      if (!/source|is_construction|market_id|delivery_kind|station_name|station_kind/i.test(message) || !/does not exist|could not find|column/i.test(message)) throw error;
       return readDeliveries('id, system_name, commodity, amount, delivered_at, is_hub, route_system_id');
     }
   };
@@ -81,10 +87,10 @@ export default async function CmdrPage({ params }: { params: { name: string } })
       : Promise.resolve({ data: [] }),
     fetchRavenColonialData(name),
     profileId
-      ? supabase.from('capi_profiles').select('*').eq('user_id', profileId).maybeSingle()
+      ? svc.from('capi_profiles').select('*').eq('user_id', profileId).maybeSingle()
       : Promise.resolve({ data: null }),
     profileId
-      ? supabase.from('pilot_stats').select('*').eq('user_id', profileId).maybeSingle()
+      ? svc.from('pilot_stats').select('*').eq('user_id', profileId).maybeSingle()
       : Promise.resolve({ data: null }),
     supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_discovered_by', name),
     supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_mapped_by', name),
@@ -136,6 +142,14 @@ export default async function CmdrPage({ params }: { params: { name: string } })
     },
     last_updated: pilotStatsRow?.last_updated || capiProfile?.last_updated || null,
   };
+
+  // Конфиденциальность: что командир разрешил показывать другим. Владелец на
+  // своей странице видит всё, поэтому фильтрация учитывает текущего зрителя.
+  const privacy = privacyForViewer(profile?.privacy_settings, currentUserId, profileId);
+  const publicPilotStats = maskPilotStats(pilotStats, privacy);
+  const publicCapiProfile = maskCapiProfile(capiProfile, privacy);
+  const cargoIsPublic = privacy.cargo;
+  const deliveriesArePublic = privacy.deliveries;
 
   // Агрегация
   const deliveryRows = allRows || [];
@@ -251,28 +265,35 @@ export default async function CmdrPage({ params }: { params: { name: string } })
         avatarUrl={profile?.avatar_url ?? null}
         createdAt={profile?.created_at ?? null}
         rank={rank}
-        totalTons={totalTons}
-        siteTons={siteTons}
-        siteOpsCount={siteOps}
-        siteSystems={cargo.siteSystems}
-        siteSharePercent={cargo.siteSharePercent}
-        hubsCount={uniqueHubs.size}
-        routeCount={uniqueRoutes.size}
-        routeSystemsVisited={uniqueRouteSystems.size}
-        opsCount={opsCount}
-        lastDelivery={lastDelivery}
-        systems={Array.from(systemsMap.entries()).sort((a, b) => b[1] - a[1])}
-        commodities={Array.from(commoditiesMap.entries()).sort((a, b) => b[1] - a[1])}
-        recent={recentRows || []}
-        allDeliveries={allRows || []}
-        trackTons={trackTons}
+        totalTons={cargoIsPublic ? totalTons : 0}
+        siteTons={cargoIsPublic ? siteTons : 0}
+        siteOpsCount={cargoIsPublic ? siteOps : 0}
+        siteSystems={cargoIsPublic ? cargo.siteSystems : []}
+        siteSharePercent={cargoIsPublic ? cargo.siteSharePercent : 0}
+        transportTons={cargoIsPublic ? cargo.transportTons : 0}
+        transportOpsCount={cargoIsPublic ? cargo.transportOps : 0}
+        transportSystems={cargoIsPublic ? cargo.transportSystems : []}
+        siteCommodities={cargoIsPublic ? cargo.siteCommodities : []}
+        cargoKinds={cargoIsPublic ? cargo.kinds : []}
+        hubsCount={cargoIsPublic ? uniqueHubs.size : 0}
+        routeCount={cargoIsPublic ? uniqueRoutes.size : 0}
+        routeSystemsVisited={cargoIsPublic ? uniqueRouteSystems.size : 0}
+        opsCount={cargoIsPublic ? opsCount : 0}
+        lastDelivery={deliveriesArePublic ? lastDelivery : null}
+        systems={deliveriesArePublic ? Array.from(systemsMap.entries()).sort((a, b) => b[1] - a[1]) : []}
+        commodities={deliveriesArePublic ? Array.from(commoditiesMap.entries()).sort((a, b) => b[1] - a[1]) : []}
+        recent={deliveriesArePublic ? (recentRows || []) : []}
+        allDeliveries={deliveriesArePublic ? (allRows || []) : []}
+        trackTons={cargoIsPublic ? trackTons : {}}
         architectCount={rcData.architectCount}
         architectSystems={rcData.architectSystems}
         squadron={squadron}
         currentUserId={currentUserId}
         profileUserId={profileId}
-        capiProfile={capiProfile}
-        pilotStats={pilotStats}
+        capiProfile={publicCapiProfile}
+        pilotStats={publicPilotStats}
+        privacy={privacy}
+        isOwnProfile={Boolean(currentUserId && profileId && currentUserId === profileId)}
       />
     </div>
   );

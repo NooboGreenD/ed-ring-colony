@@ -29,6 +29,46 @@ export interface OrreryRing {
   outerKm: number;
 }
 
+/**
+ * Орбитальные элементы тела — то, что реально приходит из журнала
+ * (`Scan`) или из EDSM (`raw_data`).
+ *
+ * Пока элементов нет, карта строила окружности с выдуманной фазой и
+ * наклоном. Здесь все величины берутся из данных, а `fromData` честно
+ * говорит, настоящая это орбита или восстановленная по умолчанию: UI
+ * показывает это в подписи, а тесты различают два режима.
+ */
+export interface OrbitalElements {
+  /** Большая полуось в световых секундах (0 — неизвестна). */
+  semiMajorAxisLs: number;
+  /** Эксцентриситет 0..1 (0 — окружность). */
+  eccentricity: number;
+  /** Наклонение орбиты к плоскости эклиптики системы, градусы. */
+  inclinationDeg: number;
+  /** Аргумент перицентра, градусы. */
+  periapsisDeg: number;
+  /** Период обращения, земные сутки. */
+  periodDays: number;
+  /** Средняя аномалия — положение тела на орбите, градусы. */
+  meanAnomalyDeg: number;
+  /** Наклон оси вращения, градусы (для плоскости колец). */
+  axialTiltDeg: number;
+  /** Есть ли в записи хоть один настоящий элемент. */
+  fromData: boolean;
+}
+
+/** Элементы по умолчанию: круговая орбита в плоскости системы. */
+export const DEFAULT_ELEMENTS: OrbitalElements = {
+  semiMajorAxisLs: 0,
+  eccentricity: 0,
+  inclinationDeg: 0,
+  periapsisDeg: 0,
+  periodDays: 0,
+  meanAnomalyDeg: 0,
+  axialTiltDeg: 0,
+  fromData: false,
+};
+
 export interface OrreryBody {
   name: string;
   kind: BodyKind;
@@ -38,6 +78,8 @@ export interface OrreryBody {
   distanceLs: number;
   /** Semi-major axis around its own parent (planet for moons), LS. */
   orbitLs: number;
+  /** Настоящие орбитальные элементы (из `raw_data`/журнала), если есть. */
+  elements: OrbitalElements;
   parentIds: number[];
   /** Name of the star this body belongs to ('' when unknown/single-star). */
   starKey: string;
@@ -184,6 +226,9 @@ export function normalizeBody(record: Record<string, unknown>, systemName = ''):
     subType: subType || type,
     distanceLs,
     orbitLs: Math.max(0, num(record.semi_major_axis_ls ?? record.orbit_ls ?? num(record.semiMajorAxisLy) * LS_PER_AU, distanceLs)),
+    // Настоящие орбитальные элементы лежат в `raw_data` (журнал/EDSM): без
+    // них карта строила бы окружности с выдуманной фазой и наклоном.
+    elements: parseOrbitalElements(record),
     parentIds,
     starKey: extractStarKey(name, systemName),
     radiusM: num(record.radius_m ?? record.radiusM ?? record.radius),
@@ -609,6 +654,230 @@ export function ellipsePath(
     points.push([center[0] + x, center[1] + y * Math.cos(inclination), center[2] + y * Math.sin(inclination)]);
   }
   return points;
+}
+
+/* ── Настоящая орбитальная механика ─────────────────────────────────── */
+
+const TWO_PI = Math.PI * 2;
+const METERS_PER_LIGHT_SECOND = 299_792_458;
+const SECONDS_PER_DAY = 86_400;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * Разобрать орбитальные элементы из записи тела.
+ *
+ * Источники (в порядке приоритета):
+ *  • строка `system_scans` — только `semi_major_axis_ls`, остальное лежит в
+ *    `raw_data` (полный JSON из журнала или EDSM);
+ *  • `raw_data` из журнала Elite Dangerous — `Eccentricity`, `OrbitalInclination`,
+ *    `Periapsis`, `OrbitalPeriod` (секунды), `MeanAnomaly`, `AxialTilt`,
+ *    `SemiMajorAxis` (метры);
+ *  • `raw_data` из EDSM — те же величины в camelCase, период в сутках.
+ *
+ * Всё, чего в данных нет, остаётся нулём, а `fromData` говорит, можно ли
+ * считать орбиту настоящей.
+ */
+export function parseOrbitalElements(record: Record<string, unknown>): OrbitalElements {
+  const raw = record?.raw_data;
+  const source: Record<string, unknown> = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? { ...(raw as Record<string, unknown>) }
+    : {};
+
+  const pick = (...keys: string[]): unknown => {
+    for (const key of keys) {
+      if (record?.[key] != null) return record[key];
+      if (source[key] != null) return source[key];
+    }
+    return null;
+  };
+
+  const semiMajorM = num(pick('semi_major_axis_m', 'SemiMajorAxis'), NaN);
+  const semiMajorLs = Number.isFinite(semiMajorM) && semiMajorM > 0
+    ? semiMajorM / METERS_PER_LIGHT_SECOND
+    : num(pick('semi_major_axis_ls', 'semiMajorAxis', 'SemiMajorAxisLS'), NaN);
+
+  const eccentricity = clamp(num(pick('eccentricity', 'Eccentricity'), NaN), 0, 0.98);
+  const inclinationDeg = num(pick('orbital_inclination', 'OrbitalInclination', 'inclination'), NaN);
+  const periapsisDeg = num(pick('periapsis', 'Periapsis', 'argOfPeriapsis'), NaN);
+  const periodSeconds = num(pick('orbital_period_s', 'OrbitalPeriod'), NaN);
+  // EDSM отдаёт период в сутках, журнал — в секундах: различаем по величине.
+  const periodDays = Number.isFinite(periodSeconds)
+    ? (periodSeconds > 1e5 ? periodSeconds / SECONDS_PER_DAY : periodSeconds)
+    : NaN;
+  const meanAnomalyDeg = num(pick('mean_anomaly', 'MeanAnomaly', 'meanAnomaly'), NaN);
+  const axialTiltDeg = num(pick('axial_tilt', 'AxialTilt', 'axialTilt'), NaN);
+
+  const fromData = [eccentricity, inclinationDeg, periapsisDeg, periodDays, meanAnomalyDeg]
+    .some((value) => Number.isFinite(value));
+
+  return {
+    semiMajorAxisLs: Number.isFinite(semiMajorLs) ? Math.max(0, semiMajorLs) : 0,
+    eccentricity: Number.isFinite(eccentricity) ? eccentricity : 0,
+    inclinationDeg: Number.isFinite(inclinationDeg) ? inclinationDeg : 0,
+    periapsisDeg: Number.isFinite(periapsisDeg) ? periapsisDeg : 0,
+    periodDays: Number.isFinite(periodDays) ? Math.max(0, periodDays) : 0,
+    meanAnomalyDeg: Number.isFinite(meanAnomalyDeg) ? meanAnomalyDeg : 0,
+    axialTiltDeg: Number.isFinite(axialTiltDeg) ? axialTiltDeg : 0,
+    fromData,
+  };
+}
+
+/**
+ * Решить уравнение Кеплера `M = E − e·sin E` относительно эксцентрической
+ * аномалии E (метод Ньютона, 6 итераций сходятся при e < 0.98).
+ */
+export function solveKepler(meanAnomalyRad: number, eccentricity: number): number {
+  const e = clamp(eccentricity, 0, 0.98);
+  const M = ((meanAnomalyRad % TWO_PI) + TWO_PI) % TWO_PI;
+  if (e < 1e-6) return M;
+  let E = M + e * Math.sin(M);
+  for (let i = 0; i < 6; i += 1) {
+    const delta = (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    E -= delta;
+    if (Math.abs(delta) < 1e-9) break;
+  }
+  return E;
+}
+
+/** Истинная аномалия (угол от перицентра) из средней. */
+export function trueAnomaly(meanAnomalyRad: number, eccentricity: number): number {
+  const e = clamp(eccentricity, 0, 0.98);
+  const E = solveKepler(meanAnomalyRad, e);
+  return Math.atan2(Math.sqrt(1 - e * e) * Math.sin(E), Math.cos(E) - e);
+}
+
+export interface OrbitOrientation {
+  /** Наклонение плоскости орбиты, радианы. */
+  inclination: number;
+  /** Аргумент перицентра, радианы (поворот в плоскости орбиты). */
+  periapsis: number;
+}
+
+/**
+ * Точка эллипса в мировых координатах.
+ *
+ * Звезда/планета-родитель находится в ФОКУСЕ эллипса, а не в его центре —
+ * именно это делает картинку похожей на настоящую систему: вытянутые орбиты
+ * комет и внешних тел больше не выглядят окружностями.
+ *
+ * @param semiMajorUnits большая полуось в единицах сцены
+ * @param trueAnomalyRad истинная аномалия
+ * @param elements эксцентриситет и ориентация
+ * @param center мировые координаты фокуса (звезды)
+ */
+export function orbitPoint(
+  semiMajorUnits: number,
+  trueAnomalyRad: number,
+  elements: Pick<OrbitalElements, 'eccentricity'> & OrbitOrientation,
+  center: [number, number, number],
+): [number, number, number] {
+  const e = clamp(elements.eccentricity, 0, 0.98);
+  const a = Math.max(0, semiMajorUnits);
+  // Радиус-вектор в фокальной форме: r = a(1−e²)/(1+e·cos ν).
+  const r = (a * (1 - e * e)) / (1 + e * Math.cos(trueAnomalyRad));
+  const angle = trueAnomalyRad + elements.periapsis;
+  const x = r * Math.cos(angle);
+  const y = r * Math.sin(angle);
+  return [
+    center[0] + x,
+    center[1] + y * Math.cos(elements.inclination),
+    center[2] + y * Math.sin(elements.inclination),
+  ];
+}
+
+/**
+ * Полная орбита по настоящим элементам: эллипс со звездой в фокусе,
+ * наклонённый и повёрнутый так, как в данных системы.
+ */
+export function orbitalPath(
+  semiMajorUnits: number,
+  elements: Pick<OrbitalElements, 'eccentricity'> & OrbitOrientation,
+  center: [number, number, number],
+  steps = 96,
+): [number, number, number][] {
+  const points: [number, number, number][] = [];
+  for (let step = 0; step <= steps; step += 1) {
+    points.push(orbitPoint(semiMajorUnits, (TWO_PI * step) / steps, elements, center));
+  }
+  return points;
+}
+
+/**
+ * Где тело находится на своей орбите прямо сейчас (по средней аномалии из
+ * данных). Если аномалии нет, позиция детерминированно выводится из индекса,
+ * чтобы карта не «прыгала» между загрузками.
+ */
+export function orbitalPosition(
+  semiMajorUnits: number,
+  elements: OrbitalElements,
+  center: [number, number, number],
+  fallbackAngle = 0,
+): [number, number, number] {
+  const meanAnomaly = elements.meanAnomalyDeg !== 0 || elements.fromData
+    ? (elements.meanAnomalyDeg * Math.PI) / 180
+    : fallbackAngle;
+  return orbitPoint(semiMajorUnits, trueAnomaly(meanAnomaly, elements.eccentricity), {
+    eccentricity: elements.eccentricity,
+    inclination: (elements.inclinationDeg * Math.PI) / 180,
+    periapsis: (elements.periapsisDeg * Math.PI) / 180,
+  }, center);
+}
+
+/** Ориентация орбиты из элементов тела. */
+export function orientationOf(elements: OrbitalElements): OrbitOrientation {
+  return {
+    inclination: (elements.inclinationDeg * Math.PI) / 180,
+    periapsis: (elements.periapsisDeg * Math.PI) / 180,
+  };
+}
+
+/**
+ * Реалистичный радиус звезды в единицах сцены — по её настоящему радиусу
+ * относительно Солнца. Раньше все звёзды рисовались маркером одного порядка,
+ * и красный карлик выглядел как сверхгигант.
+ */
+export function starRadiusScale(body: Pick<OrreryBody, 'radiusM' | 'subType'>): number {
+  const radiusSol = body.radiusM > 0 ? body.radiusM / SOL_RADIUS_M : 0;
+  if (!(radiusSol > 0)) return 1;
+  // Логарифм: сверхгиганты в 1000 R☉ не должны съедать всю сцену.
+  return clamp(0.7 + Math.log10(radiusSol) * 0.55, 0.45, 2.6);
+}
+
+/**
+ * Цвет звезды по температуре — приближение излучения абсолютно чёрного тела
+ * (кубический сплайн по контрольным точкам 1 000–40 000 K), а не по букве
+ * спектрального класса: класс мы знаем не всегда, а температуру даёт и
+ * журнал, и EDSM.
+ */
+export function starColorFromTemperature(tempK: number): string | null {
+  if (!(tempK > 0)) return null;
+  const stops: [number, [number, number, number]][] = [
+    [1000, [255, 122, 54]],
+    [2000, [255, 138, 12]],
+    [3000, [255, 180, 107]],
+    [4000, [255, 209, 163]],
+    [5000, [255, 228, 206]],
+    [5778, [255, 244, 234]],
+    [6600, [255, 255, 255]],
+    [7500, [214, 229, 255]],
+    [10000, [178, 205, 255]],
+    [20000, [155, 176, 255]],
+    [40000, [140, 155, 255]],
+  ];
+  const t = clamp(tempK, stops[0][0], stops[stops.length - 1][0]);
+  for (let i = 0; i < stops.length - 1; i += 1) {
+    const [lowTemp, lowRgb] = stops[i];
+    const [highTemp, highRgb] = stops[i + 1];
+    if (t >= lowTemp && t <= highTemp) {
+      const k = (t - lowTemp) / (highTemp - lowTemp || 1);
+      const rgb = lowRgb.map((channel, index) => Math.round(channel + (highRgb[index] - channel) * k));
+      return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+    }
+  }
+  return null;
 }
 
 /**

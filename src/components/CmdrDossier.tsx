@@ -37,6 +37,54 @@ const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
 const MERCENARY_RANKS = ['Defenceless', 'Mostly Defenceless', 'Rookie', 'Soldier', 'Gunslinger', 'Warrior', 'Gladiator', 'Deadeye', 'Elite', 'Elite I', 'Elite II', 'Elite III', 'Elite IV', 'Elite V'];
+
+/**
+ * Подписи и цвета видов сдачи груза (`delivery_kind`). Ключи — те же, что в
+ * `src/lib/cargoScope.ts::DeliveryKind`; неизвестный вид показывается как есть,
+ * поэтому новая колонка журнала не сломает досье.
+ */
+const CARGO_KIND_META: Record<string, { label: string; hint: string; color: string }> = {
+  construction_site: {
+    label: 'Стройплощадки колонизации',
+    hint: 'ColonisationContribution и сдача груза у рынка стройплощадки',
+    color: '#f39c12',
+  },
+  colonisation_ship: {
+    label: 'Колонизационные корабли',
+    hint: 'System Colonisation Ship — первый порт системы',
+    color: '#fbbf24',
+  },
+  legacy_site: {
+    label: 'Исторические поставки',
+    hint: 'Строки, загруженные до введения признака получателя',
+    color: '#a3a3a3',
+  },
+  fleet_carrier: {
+    label: 'Авианосцы',
+    hint: 'Отгрузка на Fleet Carrier, в том числе по торговым ордерам',
+    color: '#60a5fa',
+  },
+  mission_delivery: {
+    label: 'Грузовые миссии',
+    hint: 'CargoDepot и MissionCompleted: груз миссий, не проекты',
+    color: '#22c55e',
+  },
+  market_sale: {
+    label: 'Продажа на рынках',
+    hint: 'MarketSell на обычном рынке, не связанном со стройкой',
+    color: '#e67e22',
+  },
+  powerplay_delivery: {
+    label: 'Powerplay',
+    hint: 'PowerplayDeliver',
+    color: '#a855f7',
+  },
+  rescue_delivery: {
+    label: 'Search and Rescue',
+    hint: 'SearchAndRescue',
+    color: '#ef4444',
+  },
+};
 const EXOBIOLOGIST_RANKS = ['Directionless', 'Mostly Directionless', 'Compiler', 'Collector', 'Explorer', 'Surveyor', 'Taxonomist', 'Geneticist', 'Elite', 'Elite I', 'Elite II', 'Elite III', 'Elite IV', 'Elite V'];
 
 type Delivery = {
@@ -67,6 +115,33 @@ type Props = {
   siteSystems: [string, number][];
   /** Доля строительных поставок в общем тоннаже, 0…100. */
   siteSharePercent: number;
+  /** Тоннаж перевозок, не относящихся к проектам (авианосцы, миссии, рынки). */
+  transportTons: number;
+  /** Число таких перевозок. */
+  transportOpsCount: number;
+  /** Тоннаж перевозок по системам. */
+  transportSystems: [string, number][];
+  /** Топ товаров, сданных на стройплощадки. */
+  siteCommodities: [string, number][];
+  /**
+   * Разбивка тоннажа по получателю груза (`delivery_kind`): стройплощадки,
+   * колонизационные корабли, авианосцы, грузовые миссии, рынки, Powerplay, SAR.
+   */
+  cargoKinds: { kind: string; tons: number; ops: number }[];
+  /**
+   * Что командир разрешил показывать другим. Скрытые блоки сервер не присылает
+   * вовсе — здесь остаётся только подпись-заглушка, чтобы зритель понимал,
+   * что данные есть, но закрыты настройками приватности.
+   */
+  privacy?: {
+    balance?: boolean;
+    ranks?: boolean;
+    cargo?: boolean;
+    deliveries?: boolean;
+    location?: boolean;
+  };
+  /** Текущий зритель — владелец досье (ему видны все блоки). */
+  isOwnProfile?: boolean;
   hubsCount: number;
   routeCount: number;
   routeSystemsVisited: number;
@@ -493,6 +568,24 @@ export default function CmdrDossier(props: Props) {
   const [optimisticSent, setOptimisticSent] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
 
+  // Конфиденциальность досье: скрытые блоки сервер не присылает вовсе, поэтому
+  // здесь остаётся только решить, показать раздел или заглушку. Владелец
+  // всегда видит свои данные целиком.
+  const privacy = props.privacy ?? {};
+  const own = props.isOwnProfile === true;
+  const showBalance = own || privacy.balance !== false;
+  const showRanks = own || privacy.ranks !== false;
+  const showCargo = own || privacy.cargo !== false;
+  const showDeliveries = own || privacy.deliveries !== false;
+  const showLocation = own || privacy.location !== false;
+  const hiddenBlocks = [
+    !showCargo && 'тоннаж и структуру перевозок',
+    !showDeliveries && 'историю поставок',
+    !showBalance && 'баланс',
+    !showRanks && 'ранги',
+    !showLocation && 'текущее положение',
+  ].filter((item): item is string => Boolean(item));
+
   const {
     isFriend, hasPending, isPendingIncoming, sendRequest, acceptRequest, rejectRequest, refresh
   } = useFriends(props.currentUserId || null);
@@ -751,7 +844,28 @@ export default function CmdrDossier(props: Props) {
             />
           </div>
 
+          {hiddenBlocks.length > 0 && (
+            <div
+              style={{
+                border: '1px solid #323538',
+                background: '#17191b',
+                borderRadius: 4,
+                padding: '10px 14px',
+                marginBottom: 24,
+                fontSize: 12,
+                color: '#9ca3af',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
+              <IconInfo size={14} color="#9ca3af" />
+              Командир скрыл в настройках приватности: {hiddenBlocks.join(', ')}.
+            </div>
+          )}
+
           {/* ── Строительный тоннаж: только поставки на площадки проектов ── */}
+          {showCargo && (
           <div style={{ marginBottom: 24 }}>
             <SectionHeader title="Тоннаж на стройплощадки" count={props.siteOpsCount} />
             <div
@@ -833,15 +947,128 @@ export default function CmdrDossier(props: Props) {
                   ))}
                 </div>
               )}
+              {props.siteCommodities.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
+                    ЧАЩЕ ВСЕГО НА СТРОЙКИ ВЕЗЛИ
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {props.siteCommodities.slice(0, 6).map(([commodity, tons]) => (
+                      <span
+                        key={commodity}
+                        style={{
+                          border: '1px solid #323538',
+                          borderRadius: 4,
+                          padding: '4px 8px',
+                          fontSize: 12,
+                          color: '#eeeeee',
+                          fontFamily: 'ui-monospace, monospace',
+                        }}
+                      >
+                        {commodity}{' '}
+                        <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
               {props.siteTons === 0 && (
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
                   Строительных поставок пока нет: блок считает только груз, сданный на площадки
-                  колонизационных проектов (ColonisationContribution, CargoDepot и CargoDelta у
-                  известной площадки), а не любые перевозки.
+                  колонизационных проектов и колонизационные корабли (ColonisationContribution и
+                  сдача груза у рынка стройплощадки), а не любые перевозки.
                 </div>
               )}
             </div>
           </div>
+          )}
+
+          {/* ── Структура перевозок: куда именно ушёл груз ── */}
+          {showCargo && props.cargoKinds.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <SectionHeader title="Структура перевозок" count={props.opsCount} />
+              <div
+                style={{
+                  border: '1px solid #323538',
+                  background: '#1a1c1e',
+                  borderRadius: 4,
+                  padding: '16px 18px',
+                }}
+              >
+                <p style={{ margin: '0 0 14px', fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+                  Один и тот же тоннаж разложен по получателю: стройплощадки и колонизационные корабли
+                  считаются вкладом в проекты, а отгрузки авианосцам, грузовые миссии и продажа на
+                  рынках — перевозками безотносительно к колонизации.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {props.cargoKinds.map((entry) => {
+                    const meta = CARGO_KIND_META[entry.kind];
+                    const share = props.totalTons > 0 ? (entry.tons / props.totalTons) * 100 : 0;
+                    return (
+                      <div key={entry.kind}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                          <span style={{ color: '#eeeeee' }} title={meta?.hint}>
+                            <span
+                              style={{
+                                display: 'inline-block',
+                                width: 8,
+                                height: 8,
+                                borderRadius: 2,
+                                background: meta?.color ?? '#9ca3af',
+                                marginRight: 8,
+                              }}
+                            />
+                            {meta?.label ?? entry.kind}
+                            <span style={{ color: '#6b7280', marginLeft: 8, fontSize: 11 }}>
+                              {entry.ops.toLocaleString('ru-RU')} поставок
+                            </span>
+                          </span>
+                          <span style={{ color: meta?.color ?? '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
+                            {entry.tons.toLocaleString('ru-RU')} т · {share.toFixed(1)}%
+                          </span>
+                        </div>
+                        <div style={{ background: '#25282b', borderRadius: 4, height: 6, marginTop: 6 }}>
+                          <div
+                            style={{
+                              width: `${Math.max(1, Math.min(100, share))}%`,
+                              background: meta?.color ?? '#9ca3af',
+                              height: '100%',
+                              borderRadius: 4,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {props.transportSystems.length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
+                      КУДА ВОЗИЛИ ВНЕ ПРОЕКТОВ
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                      {props.transportSystems.slice(0, 8).map(([systemName, tons]) => (
+                        <span
+                          key={systemName}
+                          style={{
+                            border: '1px solid #323538',
+                            borderRadius: 4,
+                            padding: '4px 8px',
+                            fontSize: 12,
+                            color: '#eeeeee',
+                            fontFamily: 'ui-monospace, monospace',
+                          }}
+                        >
+                          {systemName}{' '}
+                          <span style={{ color: '#e67e22', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* ── Frontier CAPI Profile (Inara style) ── */}
           {props.capiProfile && (
@@ -906,15 +1133,21 @@ export default function CmdrDossier(props: Props) {
                 >
                   <span>
                     Корабль:{' '}
-                    <span style={{ color: '#eeeeee' }}>{props.capiProfile.current_ship ?? '—'}</span>
+                    <span style={{ color: '#eeeeee' }}>
+                      {showLocation ? (props.capiProfile.current_ship ?? '—') : 'скрыто'}
+                    </span>
                   </span>
                   <span>
                     Система:{' '}
-                    <span style={{ color: '#eeeeee' }}>{props.capiProfile.current_system ?? '—'}</span>
+                    <span style={{ color: '#eeeeee' }}>
+                      {showLocation ? (props.capiProfile.current_system ?? '—') : 'скрыто'}
+                    </span>
                   </span>
                   <span>
                     Станция:{' '}
-                    <span style={{ color: '#eeeeee' }}>{props.capiProfile.current_station ?? '—'}</span>
+                    <span style={{ color: '#eeeeee' }}>
+                      {showLocation ? (props.capiProfile.current_station ?? '—') : 'скрыто'}
+                    </span>
                   </span>
                   {props.capiProfile.last_updated && (
                     <span style={{ marginLeft: 'auto' }}>
@@ -958,32 +1191,38 @@ export default function CmdrDossier(props: Props) {
                   >
                     <span>Баланс пилота (Кредиты, ARX, Монеты наемников)</span>
                   </div>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-                      gap: 12,
-                    }}
-                  >
-                    <StatCard
-                      label="Баланс Кредитов"
-                      value={((props.pilotStats?.credits ?? props.capiProfile?.credits ?? 0)).toLocaleString('ru-RU') + ' CR'}
-                      color="#22c55e"
-                      sub="Игровой капитал"
-                    />
-                    <StatCard
-                      label="Баланс ARX"
-                      value={((props.pilotStats?.arx ?? 0)).toLocaleString('ru-RU') + ' ARX'}
-                      color="#a855f7"
-                      sub="Премиум Frontier"
-                    />
-                    <StatCard
-                      label="Монеты наёмников"
-                      value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString('ru-RU')}
-                      color="#f59e0b"
-                      sub="Боевые жетоны"
-                    />
-                  </div>
+                  {showBalance ? (
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                        gap: 12,
+                      }}
+                    >
+                      <StatCard
+                        label="Баланс Кредитов"
+                        value={((props.pilotStats?.credits ?? props.capiProfile?.credits ?? 0)).toLocaleString('ru-RU') + ' CR'}
+                        color="#22c55e"
+                        sub="Игровой капитал"
+                      />
+                      <StatCard
+                        label="Баланс ARX"
+                        value={((props.pilotStats?.arx ?? 0)).toLocaleString('ru-RU') + ' ARX'}
+                        color="#a855f7"
+                        sub="Премиум Frontier"
+                      />
+                      <StatCard
+                        label="Монеты наёмников"
+                        value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString('ru-RU')}
+                        color="#f59e0b"
+                        sub="Боевые жетоны"
+                      />
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                      Баланс скрыт настройками приватности командира.
+                    </div>
+                  )}
                 </div>
 
                 {/* 2. Первооткрывательство */}
@@ -1218,7 +1457,7 @@ export default function CmdrDossier(props: Props) {
           )}
 
           {/* ── Top Systems (Inara table style) ── */}
-          {props.systems.length > 0 && (
+          {showDeliveries && props.systems.length > 0 && (
             <div style={{ marginBottom: 24 }}>
               <SectionHeader title="Топ систем по доставкам" count={props.systems.length} />
               <div
@@ -1304,7 +1543,7 @@ export default function CmdrDossier(props: Props) {
           )}
 
           {/* ── Top Commodities (Inara bar style) ── */}
-          {props.commodities.length > 0 && (
+          {showDeliveries && props.commodities.length > 0 && (
             <div style={{ marginBottom: 24 }}>
               <SectionHeader title="Топ товаров" count={props.commodities.length} />
               <div
@@ -1369,7 +1608,7 @@ export default function CmdrDossier(props: Props) {
           )}
 
           {/* ── Recent Deliveries (Inara table style) ── */}
-          {props.recent.length > 0 && (
+          {showDeliveries && props.recent.length > 0 && (
             <div style={{ marginBottom: 24 }}>
               <SectionHeader title="Последние доставки" count={props.recent.length} />
               <div

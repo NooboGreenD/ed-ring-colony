@@ -4,15 +4,20 @@
 признак `is_construction` обязан рождаться парсером, а не додумываться
 сервером или клиентом. Тесты закрепляют:
 
-* `ColonisationContribution` и `CargoDepot` — поставка на стройку;
-* `Cargo`-дифф — поставка на стройку ТОЛЬКО пока игрок стоит у рынка, про
-  который журнал уже показывал `ColonisationConstructionDepot` (иначе
-  обычная продажа в павильоне превратилась бы в строительный тоннаж);
-* продажа на авианосце — перевозка, а не стройка;
+* `ColonisationContribution` — поставка на стройку (или на колонизационный
+  корабль системы, если это «System Colonisation Ship»);
+* `CargoDepot` — груз МИССИИ, строительным он становится только у рынка
+  стройплощадки (раньше любой CargoDepot записывался колонизационным);
+* `Cargo`-дифф — поставка на стройку, пока игрок стоит у рынка стройплощадки:
+  её узнаём и по `ColonisationConstructionDepot`, и по имени/сервисам станции
+  в `Docked`/`Market` (приложение могло стартовать уже у площадки);
+* отгрузка на авианосце и продажа на обычном рынке — перевозка, а не стройка,
+  и это два разных `delivery_kind`;
 * `PARSER_VERSION` поднят, потому что набор признаков изменился: старые
   записи локального кэша «уже загруженных файлов» должны быть пере-импортированы.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -38,10 +43,29 @@ def loc(ts="2026-09-14T10:00:00Z"):
     )
 
 
-def docked(market_id, ts="2026-09-14T10:00:30Z"):
-    return (
-        '{"timestamp":"%s","event":"Docked","StationName":"Planetary Construction Site: A 1",'
-        '"StationType":"PlanetaryInstallation","MarketID":%d,"StarSystem":"%s"}' % (ts, market_id, SYSTEM)
+def docked(market_id, ts="2026-09-14T10:00:30Z", station_name=None,
+           station_type="PlanetaryInstallation", services=None):
+    payload = {
+        "timestamp": ts,
+        "event": "Docked",
+        "StationName": station_name if station_name is not None else "Planetary Construction Site: A 1",
+        "StationType": station_type,
+        "MarketID": market_id,
+        "StarSystem": SYSTEM,
+    }
+    if services is not None:
+        payload["StationServices"] = services
+    return json.dumps(payload)
+
+
+def ordinary_docked(market_id, ts="2026-09-14T10:00:30Z"):
+    """Обычный порт: ни имени стройплощадки, ни сервиса колонизации."""
+    return docked(
+        market_id,
+        ts=ts,
+        station_name="Jaeger Hub",
+        station_type="Orbis Starport",
+        services=["dock", "missions", "commodities"],
     )
 
 
@@ -103,10 +127,19 @@ class ConstructionFlagTests(unittest.TestCase):
         self.assertIs(deliveries[0]["is_construction"], True)
         self.assertEqual(deliveries[0]["amount"], 50)
 
-    def test_cargo_depot_is_construction(self):
+    def test_cargo_depot_without_site_is_a_mission(self):
+        # `CargoDepot` — склад грузовой миссии. Без стройплощадки рядом это
+        # перевозка, иначе тоннаж миссий записывался колонизационным.
         deliveries = parse(loc(), cargo_depot(30))
         self.assertEqual(len(deliveries), 1)
         self.assertEqual(deliveries[0]["source"], "cargo_depot")
+        self.assertEqual(deliveries[0]["delivery_kind"], "mission_delivery")
+        self.assertIs(deliveries[0]["is_construction"], False)
+
+    def test_cargo_depot_at_construction_site_is_construction(self):
+        deliveries = parse(loc(), docked(SITE_MARKET), cargo_depot(30, "2026-09-14T10:03:30Z"))
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["delivery_kind"], "construction_site")
         self.assertIs(deliveries[0]["is_construction"], True)
 
     def test_cargo_delta_at_known_site_is_construction(self):
@@ -123,17 +156,79 @@ class ConstructionFlagTests(unittest.TestCase):
         self.assertIs(deltas[0]["is_construction"], True)
 
     def test_cargo_delta_at_ordinary_market_is_not_construction(self):
-        # Рынок известен, но про него журнал никогда не показывал depot-событие:
-        # падение груза — это продажа, а не строительный тоннаж.
+        # Обычный порт: ни имени стройплощадки, ни depot-события — падение
+        # груза это продажа на рынке, а не строительный тоннаж.
         deliveries = parse(
             loc(),
-            docked(ORDINARY_MARKET, "2026-09-14T10:00:30Z"),
+            ordinary_docked(ORDINARY_MARKET),
+            cargo(100, "2026-09-14T10:05:00Z"),
+            cargo(10, "2026-09-14T10:06:00Z"),
+        )
+        deltas = [d for d in deliveries if d["source"] == "cargo_delta"]
+        self.assertEqual(len(deltas), 1, deltas)
+        self.assertEqual(deltas[0]["delivery_kind"], "market_sale")
+        self.assertIs(deltas[0]["is_construction"], False)
+
+    def test_site_is_recognised_without_depot_event(self):
+        # Приложение стартовало, когда командир уже стоит у площадки: в этой
+        # сессии `ColonisationConstructionDepot` ещё не приходил, но имя
+        # станции и сервис колонизации говорят всё сами.
+        deliveries = parse(
+            loc(),
+            docked(SITE_MARKET, services=["dock", "colonisationcontribution"]),
+            cargo(100, "2026-09-14T10:05:00Z"),
+            cargo(40, "2026-09-14T10:06:00Z"),
+        )
+        deltas = [d for d in deliveries if d["source"] == "cargo_delta"]
+        self.assertEqual(len(deltas), 1, deltas)
+        self.assertEqual(deltas[0]["delivery_kind"], "construction_site")
+        self.assertEqual(deltas[0]["station_kind"], "construction_site")
+        self.assertIs(deltas[0]["is_construction"], True)
+        self.assertEqual(deltas[0]["station_name"], "Planetary Construction Site: A 1")
+
+    def test_lookalike_name_without_service_is_not_a_site(self):
+        deliveries = parse(
+            loc(),
+            docked(
+                ORDINARY_MARKET,
+                services=["dock", "missions", "commodities"],
+            ),
             cargo(100, "2026-09-14T10:05:00Z"),
             cargo(10, "2026-09-14T10:06:00Z"),
         )
         deltas = [d for d in deliveries if d["source"] == "cargo_delta"]
         self.assertEqual(len(deltas), 1, deltas)
         self.assertIs(deltas[0]["is_construction"], False)
+
+    def test_contribution_at_colonisation_ship_is_separate_kind(self):
+        deliveries = parse(
+            loc(),
+            docked(
+                SITE_MARKET,
+                station_name="System Colonisation Ship",
+                station_type="Orbis Starport",
+                services=["dock", "colonisationcontribution"],
+            ),
+            contribution(120, "2026-09-14T10:02:10Z"),
+        )
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["delivery_kind"], "colonisation_ship")
+        self.assertEqual(deliveries[0]["station_kind"], "colonisation_ship")
+        self.assertIs(deliveries[0]["is_construction"], True)
+
+    def test_ordinary_market_sell_is_recorded_as_market_sale(self):
+        sell = (
+            '{"timestamp":"2026-09-14T10:04:10Z","event":"MarketSell","MarketID":%d,'
+            '"Type":"$titanium_name;","Type_Localised":"Titanium","Count":15,'
+            '"AvgPrice":12000,"GrossRevenue":180000,"StationType":"Orbis Starport"}'
+            % ORDINARY_MARKET
+        )
+        deliveries = parse(loc(), ordinary_docked(ORDINARY_MARKET), sell)
+        sells = [d for d in deliveries if d["delivery_kind"] == "market_sale"]
+        self.assertEqual(len(sells), 1, deliveries)
+        self.assertEqual(sells[0]["source"], "cargo_delta")
+        self.assertEqual(sells[0]["amount"], 15)
+        self.assertIs(sells[0]["is_construction"], False)
 
     def test_undocking_clears_the_site_binding(self):
         # После отстыковки дифф больше не может «приписаться» к площадке,
@@ -176,8 +271,8 @@ class SourceHelpersTests(unittest.TestCase):
     def test_parser_version_bumped_for_new_flags(self):
         self.assertGreaterEqual(
             journal_parser.PARSER_VERSION,
-            3,
-            "признак is_construction меняет смысл записей: кэш файлов обязан устареть",
+            4,
+            "delivery_kind меняет смысл записей: кэш файлов обязан устареть",
         )
 
     def test_construction_sources(self):

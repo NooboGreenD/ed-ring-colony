@@ -6,6 +6,9 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // Явные расширения `.ts` в импортах: тесты (`node --test`) исполняют
+    // исходники напрямую, а ESM не умеет достраивать расширение сам.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

@@ -22,7 +22,9 @@ export class CapiClient {
       },
     });
 
-    if (res.status === 401) {
+    // Frontier отвечает 422 на просроченный access-токен (он живёт ~4 часа),
+    // а 401/403 — на отозванный доступ. Оба случая для нас «нужен refresh».
+    if (res.status === 401 || res.status === 403 || res.status === 422) {
       throw new Error('UNAUTHORIZED');
     }
     if (!res.ok) {

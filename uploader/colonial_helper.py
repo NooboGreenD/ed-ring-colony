@@ -17,7 +17,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from datetime import datetime
 from pathlib import Path
 import traceback
-from typing import Optional, List
+from typing import Dict, Optional, List
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -72,6 +72,8 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
+from companion_api import (CompanionAuth, CompanionAuthError, CompanionClient,
+                           profile_to_stats)
 from journal_parser import (
     parse_file,          # noqa: F401 — оставлен как публичный API парсера
     parse_journal,       # noqa: F401
@@ -265,6 +267,12 @@ class ColonialHelperApp:
         # Отдельное хранилище credentials переживает обновление приложения и
         # не может быть затёрто настройками HUD/overlay.
         self.credentials_path = Path.home() / ".colonial_helper_credentials.json"
+        # Frontier Companion API (досье пилота). Авторизация PKCE, поэтому
+        # секретный ключ FDEV не требуется. Токены храним отдельно от настроек
+        # и с правами 0600.
+        self.capi_auth_path = Path.home() / ".colonial_helper_capi.json"
+        self.capi_auth = CompanionAuth(str(self.capi_auth_path),
+                                       client_id=str(self.config.get("frontier_client_id", "")))
         # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
         self.map_cache = MapRavenCache(
             self.config_path.with_name(".colonial_helper_map_cache.json"))
@@ -363,6 +371,9 @@ class ColonialHelperApp:
         # Авто-проверка токена
         if self.api.token:
             self.after(500, self._auto_validate)
+
+        # Показать сохранённую авторизацию Frontier (досье пилота)
+        self.after(600, self._capi_refresh_status)
 
         # Фоновый индикатор игры (опрос ~1 раз в 1.5 с, сам монитор
         # кэширует результат, лишних снимков процессов не делается).
@@ -610,6 +621,58 @@ class ColonialHelperApp:
 
         self.auth_result = tb.Label(frame, text="", font=("Segoe UI", 11), wraplength=700)
         self.auth_result.pack(anchor=W, pady=(5, 0))
+
+        tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
+
+        # -- Frontier CAPI (досье пилота) --------------------------------
+        # Авторизация идёт через PKCE: секретный ключ FDEV не нужен, поэтому
+        # подключить досье можно сразу, без ожидания ответа поддержки.
+        tb.Label(frame, text="Досье пилота (Frontier CAPI)", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(
+            frame,
+            text=(
+                "Баланс, ранги и счётчики исследований берутся у Frontier напрямую. "
+                "Откроется браузер: нажмите «Разрешить» — дальше Colonial Helper "
+                "сам получит данные и обновит досье на сайте. Секретный ключ "
+                "разработчика не требуется (авторизация PKCE)."
+            ),
+            foreground=COLOR_MUTED,
+            wraplength=700,
+            justify=LEFT,
+        ).pack(anchor=W, pady=(0, 8))
+
+        capi_btn_frame = tb.Frame(frame)
+        capi_btn_frame.pack(anchor=W, pady=(0, 8))
+
+        self.capi_link_btn = tb.Button(
+            capi_btn_frame,
+            text="Подключить Frontier",
+            command=self._on_capi_link,
+            bootstyle="primary",
+            width=22,
+        )
+        self.capi_link_btn.pack(side=LEFT, padx=(0, 10))
+
+        self.capi_fetch_btn = tb.Button(
+            capi_btn_frame,
+            text="Обновить досье",
+            command=self._on_capi_fetch,
+            bootstyle="success-outline",
+            width=18,
+        )
+        self.capi_fetch_btn.pack(side=LEFT, padx=(0, 10))
+
+        tb.Button(
+            capi_btn_frame,
+            text="Отключить",
+            command=self._on_capi_unlink,
+            bootstyle="danger-outline",
+            width=14,
+        ).pack(side=LEFT)
+
+        self.capi_status = tb.Label(frame, text="Frontier не подключён", font=("Segoe UI", 10), foreground=COLOR_MUTED,
+                                    wraplength=700)
+        self.capi_status.pack(anchor=W, pady=(4, 0))
 
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
 
@@ -4043,6 +4106,124 @@ class ColonialHelperApp:
 
         threading.Thread(target=worker, daemon=True, name="UploadScans").start()
 
+    # ============================================================
+    #  Frontier CAPI (досье пилота) — авторизация PKCE
+    # ============================================================
+    def _capi_set_status(self, text: str, ok: Optional[bool] = None):
+        label = getattr(self, "capi_status", None)
+        if not label:
+            return
+        color = COLOR_MUTED if ok is None else (COLOR_GREEN if ok else COLOR_RED)
+        try:
+            label.config(text=text, foreground=color)
+        except Exception:
+            pass
+
+    def _capi_refresh_status(self):
+        """Показать в UI, есть ли сохранённая авторизация Frontier."""
+        try:
+            linked = self.capi_auth.is_linked()
+        except Exception:
+            linked = False
+        if linked:
+            tokens = self.capi_auth.load()
+            obtained = float(tokens.get("obtained_at") or tokens.get("saved_at") or 0)
+            when = datetime.fromtimestamp(obtained).strftime("%d.%m.%Y %H:%M") if obtained else "—"
+            self._capi_set_status(f"Frontier подключён (авторизация от {when})", ok=True)
+        else:
+            self._capi_set_status("Frontier не подключён", ok=None)
+
+    def _on_capi_link(self):
+        """Открыть браузер и пройти авторизацию Frontier (PKCE, без секретного ключа)."""
+        btn = getattr(self, "capi_link_btn", None)
+        if btn:
+            btn.config(state="disabled")
+        self._capi_set_status("Ожидаю подтверждения в браузере…")
+        self.log("Frontier CAPI: открываю браузер для авторизации (PKCE)", "info")
+
+        def worker():
+            error = None
+            try:
+                self.capi_auth.authorize(on_url=lambda url: self.root.after(
+                    0, self.log, f"Ссылка авторизации: {url}", "info"))
+            except CompanionAuthError as exc:
+                error = str(exc)
+            except Exception as exc:
+                error = f"Непредвиденная ошибка авторизации: {exc}"
+
+            def done():
+                if btn:
+                    btn.config(state="normal")
+                if error:
+                    self._capi_set_status(f"Не удалось подключиться: {error}", ok=False)
+                    self.log(f"Frontier CAPI: {error}", "error")
+                    return
+                self._capi_refresh_status()
+                self.log("Frontier CAPI: авторизация получена", "success")
+                self._capi_fetch_and_upload()
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True, name="CapiLink").start()
+
+    def _on_capi_unlink(self):
+        """Забыть токены Frontier."""
+        self.capi_auth.clear()
+        self._capi_refresh_status()
+        self.log("Frontier CAPI: авторизация сброшена", "info")
+
+    def _on_capi_fetch(self):
+        if not self.capi_auth.is_linked():
+            self._capi_set_status("Сначала подключите Frontier", ok=False)
+            return
+        self._capi_fetch_and_upload()
+
+    def _capi_fetch_and_upload(self):
+        """Скачать профиль из CAPI и отправить его на сайт в досье."""
+        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            self.log("Frontier CAPI: нет токена сайта — данные останутся локально", "warning")
+
+        self._capi_set_status("Загружаю досье из Frontier…")
+
+        def worker():
+            error = None
+            stats: dict = {}
+            cmdr = ""
+            try:
+                client = CompanionClient(self.capi_auth)
+                profile = client.get_profile()
+                stats = profile_to_stats(profile)
+                cmdr = str(stats.get("cmdr") or "")
+                if not stats:
+                    error = "Frontier вернул пустой профиль"
+            except CompanionAuthError as exc:
+                error = str(exc)
+            except Exception as exc:
+                error = f"Сбой загрузки досье: {exc}"
+
+            upload_error = None
+            if not error and stats:
+                result = self.api_client.upload_pilot_stats(stats, cmdr or None)
+                if not result.get("ok"):
+                    upload_error = result.get("error")
+
+            def done():
+                if error:
+                    self._capi_set_status(f"Досье не обновлено: {error}", ok=False)
+                    self.log(f"Frontier CAPI: {error}", "error")
+                    return
+                if upload_error:
+                    self._capi_set_status("Данные получены, но не отправлены на сайт", ok=False)
+                    self.log(f"Досье из CAPI получено, загрузка на сайт не удалась: {upload_error}", "warning")
+                    return
+                self._capi_set_status(
+                    f"Досье обновлено из Frontier{f' ({cmdr})' if cmdr else ''}", ok=True)
+                self.log("Досье пилота обновлено из Frontier CAPI", "success")
+
+            self.root.after(0, done)
+
+        threading.Thread(target=worker, daemon=True, name="CapiFetch").start()
+
     def _maybe_sync_pilot_stats(self):
         stats = getattr(self, "_pilot_stats", {})
         if not stats or not getattr(self, "api_client", None) or not self.api_client.is_connected:
@@ -6391,6 +6572,12 @@ class ColonialHelperApp:
             # угадывать источник по набору полей.
             "source": d.get("source"),
             "is_construction": d.get("is_construction"),
+            # Куда именно сдан груз (стройка / колонизационный корабль /
+            # авианосец / миссия / рынок): по нему досье строит блок
+            # «структура перевозок».
+            "delivery_kind": d.get("delivery_kind"),
+            "station_name": d.get("station_name"),
+            "station_kind": d.get("station_kind"),
         }
 
     def _format_import_summary(self, files_count: int, event_counts: "Counter", deliveries: list, elapsed: float) -> str:
@@ -6407,6 +6594,9 @@ class ColonialHelperApp:
         lines.append(f" Найдено доставок:       {len(deliveries)}")
         lines.append(f" Общий вес доставок:     {total_tons:.0f} t")
         lines.append(f" Время обработки:        {elapsed:.1f} с")
+        kind_lines = self._format_delivery_kinds(deliveries, total_tons)
+        if kind_lines:
+            lines.extend(kind_lines)
         if event_counts:
             lines.append("─" * width)
             lines.append(" События по типам:")
@@ -6415,6 +6605,54 @@ class ColonialHelperApp:
                 lines.append(f"   {name:<{name_width}} {count:>7}")
         lines.append("═" * width)
         return "\n".join(lines)
+
+    #: Подписи видов сдачи груза в итоговой таблице импорта. Значения ключей —
+    #: `delivery_kind` из парсера журнала (зеркало `src/lib/cargoScope.ts`).
+    DELIVERY_KIND_LABELS = (
+        ("construction_site", "Стройплощадки колонизации"),
+        ("colonisation_ship", "Колонизационные корабли"),
+        ("fleet_carrier", "Авианосцы"),
+        ("mission_delivery", "Грузовые миссии"),
+        ("market_sale", "Продажа на рынках"),
+        ("powerplay_delivery", "Powerplay"),
+        ("rescue_delivery", "Search and Rescue"),
+    )
+
+    @classmethod
+    def _format_delivery_kinds(cls, deliveries: list, total_tons: float, width: int = 44) -> list:
+        """Разбивка тоннажа по получателю груза для итоговой таблицы импорта.
+
+        Командиру важно видеть не только «всего тонн», но и сколько из них
+        реально ушло на площадки колонизационных проектов, а сколько —
+        авианосцам, грузовым миссиям и обычным рынкам.
+        """
+        tons: Dict[str, float] = {}
+        for delivery in deliveries or []:
+            if not isinstance(delivery, dict):
+                continue
+            kind = str(delivery.get("delivery_kind") or "") or "unknown"
+            try:
+                amount = float(delivery.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            tons[kind] = tons.get(kind, 0.0) + amount
+
+        if not tons:
+            return []
+
+        lines = ["─" * width, " Куда ушёл груз:"]
+        for kind, label in cls.DELIVERY_KIND_LABELS:
+            value = tons.pop(kind, 0.0)
+            if value <= 0:
+                continue
+            share = (value / total_tons * 100.0) if total_tons > 0 else 0.0
+            lines.append(f"   {label:<28} {value:>9.0f} t  {share:>5.1f}%")
+        for kind, value in sorted(tons.items(), key=lambda kv: -kv[1]):
+            if value <= 0:
+                continue
+            share = (value / total_tons * 100.0) if total_tons > 0 else 0.0
+            lines.append(f"   {kind:<28} {value:>9.0f} t  {share:>5.1f}%")
+        return lines
 
     def log_block(self, text: str, level: str = "info"):
         """Вставить многострочный блок текста в лог одним куском, без

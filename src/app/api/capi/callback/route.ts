@@ -5,19 +5,27 @@ import { CapiClient } from '@/lib/capi/client';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * Обмен кода Frontier на токены.
+ *
+ * `code_verifier` берётся из httpOnly-cookie, которую положил
+ * `/api/capi/auth`: это PKCE, поэтому обмен работает без Shared Key.
+ */
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const code = url.searchParams.get('code');
   const state = url.searchParams.get('state');
   const cookieHeader = req.headers.get('cookie') || '';
-  const cookieState = cookieHeader.match(/capi_state=([^;]+)/)?.[1];
+  const readCookie = (name: string) => cookieHeader.match(new RegExp(`${name}=([^;]+)`))?.[1];
+  const cookieState = readCookie('capi_state');
+  const codeVerifier = readCookie('capi_pkce');
 
   if (!code || !state || state !== cookieState) {
     return NextResponse.redirect(new URL('/account/capi?status=error&message=invalid_state', req.url));
   }
 
   try {
-    const tokens = await exchangeCode(code);
+    const tokens = await exchangeCode(code, { codeVerifier: codeVerifier ? decodeURIComponent(codeVerifier) : null });
     const capi = new CapiClient(tokens.access_token);
     const profile = await capi.getProfile();
 
