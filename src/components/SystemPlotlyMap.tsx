@@ -1241,7 +1241,12 @@ function FocusPanel({
   return (
     <div style={{
       flex: '0 1 330px', minWidth: 270, background: '#1e2022', border: '1px solid #323538',
-      borderRadius: 8, padding: 12, maxHeight: isFullscreen ? 'calc(100vh - 190px)' : 470, overflowY: 'auto',
+      borderRadius: 8, padding: 12,
+      // В полноэкране панель — flex-потомок строки, высота которой уже
+      // посчитана, поэтому 100% точен. Прежний `calc(100vh - 190px)` гадал
+      // высоту шапки: при другом chrome панель либо не дорастала до низа
+      // (пустая полоса справа от карты), либо вылезала за окно.
+      maxHeight: isFullscreen ? '100%' : 470, overflowY: 'auto',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: '#eeeeee', wordBreak: 'break-word' }}>{body?.name ?? systemName}</span>

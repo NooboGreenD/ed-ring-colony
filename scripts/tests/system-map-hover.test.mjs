@@ -362,9 +362,24 @@ maybe('в полноэкранном режиме карта растягива�
     // `calc(100vh - 190px)`, из-за которой снизу оставалась пустая полоса.
     assert.equal(shell.style.display, 'flex');
     assert.equal(shell.style.flexDirection, 'column');
+    // Фокусируем тело, чтобы отрендерилась боковая панель FocusPanel.
+    // Без этого проверка на магический calc проходила ВХОЛУСТУЮ: панель
+    // возвращает null, когда тело не выбрано, и строки просто не было в DOM.
+    const select = doc.querySelector('select');
+    assert.ok(select, 'нет селектора тела');
+    const option = [...select.querySelectorAll('option')]
+      .find((o) => o.value && o.value !== '');
+    assert.ok(option, 'в селекторе нет ни одного тела');
+    await map.act(async () => {
+      select.value = option.value;
+      select.dispatchEvent(new global.window.Event('change', { bubbles: true }));
+    });
+
     const html = shell.innerHTML;
+    assert.ok(/Класс|Дистанция/.test(html),
+      'боковая панель не отрендерилась — проверка на calc бессмысленна');
     assert.equal(html.includes('calc(100vh - 190px)'), false,
-      'высота карты всё ещё зашита магическим calc(100vh - 190px)');
+      'высота всё ещё зашита магическим calc(100vh - 190px)');
     const flexed = [...shell.querySelectorAll('div')]
       .some((d) => d.style.flex === '1 1 auto' && d.style.minHeight === '0px');
     assert.ok(flexed, 'область карты не растягивается на остаток высоты окна');
