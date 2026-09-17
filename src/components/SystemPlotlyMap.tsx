@@ -724,7 +724,16 @@ export default function SystemPlotlyMap({
         align: 'left',
       },
       scene,
-    }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
+    }, {
+      responsive: true,
+      displayModeBar: false,
+      displaylogo: false,
+      // Зум колесом — только в полном экране. Карта встроена в страницу высотой
+      // 470 px, а сразу под ней идут «Постройки»: при постоянно включённом
+      // `scrollZoom` колесо над картой зумило сцену и не давало пролистнуть
+      // страницу дальше. В полном окне прокручивать нечего, там зум уместен.
+      scrollZoom: isFullscreen,
+    });
 
     // Снимок исходных размеров/подписей маркеров по трэкам. Подсветка при
     // наведении правит их через `restyle`, поэтому нужен нетронутый оригинал,
@@ -1145,7 +1154,10 @@ export default function SystemPlotlyMap({
             )}
           </div>
           <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <span>колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность · ←/→ — перебор тел · 0 — вернуть вид</span>
+            <span>
+              ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность ·
+              ←/→ — перебор тел · 0 — вернуть вид{isFullscreen ? ' · колесо — зум' : ''}
+            </span>
             {selectedTarget && <span style={{ color: '#00f3ff' }}>🎯 {selectedTarget}</span>}
           </div>
         </div>

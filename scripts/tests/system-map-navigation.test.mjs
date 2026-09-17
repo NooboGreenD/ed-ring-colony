@@ -92,8 +92,8 @@ async function renderMap() {
   const handlers = {};
   let gd = null;
   dom.window.Plotly = {
-    react(node, traces, layout) {
-      calls.react.push({ traces, layout });
+    react(node, traces, layout, config) {
+      calls.react.push({ traces, layout, config });
       gd = node;
       node._fullLayout = { scene: { camera: JSON.parse(JSON.stringify(layout.scene.camera)) } };
       node.on = (name, fn) => { handlers[name] = fn; };
@@ -124,6 +124,8 @@ async function renderMap() {
     dom,
     /** Камера последней отрисовки. */
     lastCamera: () => calls.react[calls.react.length - 1]?.layout?.scene?.camera,
+    /** Config последней отрисовки (scrollZoom и прочее). */
+    lastConfig: () => calls.react[calls.react.length - 1]?.config,
     /** Камера, которую Plotly считает текущей (её правит пользователь). */
     setLiveCamera(eye) { gd._fullLayout.scene.camera.eye = eye; },
     liveEye() { return gd._fullLayout.scene.camera.eye; },
@@ -131,6 +133,13 @@ async function renderMap() {
     async fire(name, event) {
       await act(async () => {
         handlers[name]?.(event);
+        await new Promise((r) => setTimeout(r, 15));
+      });
+    },
+    /** Клик по элементу внутри React-окружения. */
+    async click(element) {
+      await act(async () => {
+        element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
         await new Promise((r) => setTimeout(r, 15));
       });
     },
@@ -160,6 +169,8 @@ maybe('карта рисуется по готовым данным', async () =
   const map = await renderMap();
   try {
     assert.ok(map.calls.react.length > 0, 'Plotly.react не вызван');
+    const config = map.lastConfig();
+    assert.ok(config, 'config не доходит до Plotly.react — тесты scrollZoom ничего не проверяют');
   } finally {
     await map.cleanup();
   }
@@ -254,6 +265,33 @@ maybe('клавиша 0 возвращает стандартный вид, со
       map.focusChanges[map.focusChanges.length - 1], focused,
       'сброс камеры снял фокус с тела',
     );
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('колесо не перехвачено, пока карта встроена в страницу', async () => {
+  // Карта занимает 470 px, а сразу под ней на странице системы идёт блок
+  // «Постройки». При `scrollZoom: true` колесо над картой зумило сцену вместо
+  // прокрутки страницы — пользователь не мог пролистнуть дальше карты.
+  const map = await renderMap();
+  try {
+    assert.equal(map.lastConfig().scrollZoom, false, 'встроенная карта перехватывает колесо');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('в полном экране колесо снова зумит карту', async () => {
+  // В полном экране карта занимает всё окно, прокручивать страницу нечего —
+  // там зум колесом уместен и полезен.
+  const map = await renderMap();
+  try {
+    const button = [...map.dom.window.document.querySelectorAll('button')]
+      .find((node) => node.textContent.includes('во весь экран'));
+    assert.ok(button, 'кнопка полного экрана не найдена — тест ничего не проверяет');
+    await map.click(button);
+    assert.equal(map.lastConfig().scrollZoom, true, 'в полном экране зум колесом пропал');
   } finally {
     await map.cleanup();
   }
