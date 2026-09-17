@@ -119,6 +119,12 @@ export interface OrreryOrbitPath {
   points: [number, number, number][];
   center: [number, number, number];
   radius: number;
+  /** True, когда орбита построена по настоящим элементам из данных. */
+  real?: boolean;
+  /** Эксцентриситет (0 — окружность): нужен подписям и тестам. */
+  eccentricity?: number;
+  /** Период обращения в земных сутках, если известен. */
+  periodDays?: number;
 }
 
 export interface OrreryCluster {
@@ -429,18 +435,46 @@ export function buildOrreryLayout(
 
   secondaryStars.forEach((star, index) => {
     const radius = starRadii[star.name] ?? SCENE_SPAN * 0.8;
-    const angle = index * GOLDEN_ANGLE;
-    const inclination = (((-1) ** index) * (4 + (index * 7) % 12) * Math.PI) / 180;
-    const center: [number, number, number] = [
-      radius * Math.cos(angle),
-      radius * Math.sin(angle) * Math.cos(inclination),
-      radius * Math.sin(angle) * Math.sin(inclination),
-    ];
+    const elements = star.elements;
+    let center: [number, number, number];
+    let orbit: [number, number, number][];
+    let semiMajor = radius;
+
+    if (elements.fromData) {
+      // Компонент пары тоже ходит по эллипсу с главной звездой в фокусе.
+      // Распределённый радиус трактуем как апоцентр: вытянутая орбита не
+      // вылезет за габарит сцены.
+      semiMajor = radius / (1 + elements.eccentricity);
+      const oriented = {
+        eccentricity: elements.eccentricity,
+        inclination: (elements.inclinationDeg * Math.PI) / 180,
+        periapsis: (elements.periapsisDeg * Math.PI) / 180,
+      };
+      center = orbitPoint(
+        semiMajor,
+        trueAnomaly((elements.meanAnomalyDeg * Math.PI) / 180, elements.eccentricity),
+        oriented,
+        [0, 0, 0],
+      );
+      orbit = orbitalPath(semiMajor, oriented, [0, 0, 0], 72);
+    } else {
+      const angle = index * GOLDEN_ANGLE;
+      const inclination = (((-1) ** index) * (4 + (index * 7) % 12) * Math.PI) / 180;
+      center = [
+        radius * Math.cos(angle),
+        radius * Math.sin(angle) * Math.cos(inclination),
+        radius * Math.sin(angle) * Math.sin(inclination),
+      ];
+      orbit = ellipsePath(radius, center, 0, inclination, 48);
+    }
+
     positions[star.name] = center;
     starCenter[star.name] = center;
     // Орбита второй звезды вокруг главной — по ней видно реальную ширину пары.
-    const orbit = ellipsePath(radius, center, 0, inclination, 48);
-    orbits.push({ name: star.name, owner: star.name, kind: 'star', points: orbit, center: [0, 0, 0], radius });
+    orbits.push({
+      name: star.name, owner: star.name, kind: 'star', points: orbit, center: [0, 0, 0], radius: semiMajor,
+      real: elements.fromData, eccentricity: elements.eccentricity,
+    });
   });
 
   const allStars: OrreryBody[] = primary ? [primary, ...secondaryStars] : secondaryStars;
@@ -457,22 +491,57 @@ export function buildOrreryLayout(
     const radii = distributeRadii(planetsOnly, ownBudget, scaleMode);
     planetsOnly.forEach((body, index) => {
       const radius = radii[index] ?? ownBudget * 0.5;
-      const angle = (index * GOLDEN_ANGLE) % (Math.PI * 2);
-      const inclinationDeg = (((-1) ** index) * (2.5 + ((index * 5) % 9)));
-      const inclination = (inclinationDeg * Math.PI) / 180;
-      const point: [number, number, number] = [
-        center[0] + radius * Math.cos(angle),
-        center[1] + radius * Math.sin(angle) * Math.cos(inclination),
-        center[2] + radius * Math.sin(angle) * Math.sin(inclination),
-      ];
+      const elements = body.elements;
+      let point: [number, number, number];
+      let orbit: [number, number, number][];
+      let semiMajor = radius;
+      // Плоскость колец — плоскость экватора тела, поэтому наклон колец
+      // берём из осевого наклона, а не из наклона орбиты.
+      let ringInclination: number;
+
+      if (elements.fromData) {
+        // Настоящая орбита: эллипс с звездой в фокусе, наклон и аргумент
+        // перицентра из данных, положение тела — по средней аномалии.
+        // `radius` трактуем как апоцентр: орбита гарантированно остаётся
+        // в бюджете кластера и порядок тел по дистанции сохраняется.
+        semiMajor = radius / (1 + elements.eccentricity);
+        const oriented = {
+          eccentricity: elements.eccentricity,
+          inclination: (elements.inclinationDeg * Math.PI) / 180,
+          periapsis: (elements.periapsisDeg * Math.PI) / 180,
+        };
+        point = orbitPoint(
+          semiMajor,
+          trueAnomaly((elements.meanAnomalyDeg * Math.PI) / 180, elements.eccentricity),
+          oriented,
+          center,
+        );
+        orbit = orbitalPath(semiMajor, oriented, center, crowded ? 64 : 96);
+        ringInclination = ((elements.axialTiltDeg || elements.inclinationDeg) * Math.PI) / 180;
+      } else {
+        const angle = (index * GOLDEN_ANGLE) % (Math.PI * 2);
+        const inclinationDeg = (((-1) ** index) * (2.5 + ((index * 5) % 9)));
+        const inclination = (inclinationDeg * Math.PI) / 180;
+        point = [
+          center[0] + radius * Math.cos(angle),
+          center[1] + radius * Math.sin(angle) * Math.cos(inclination),
+          center[2] + radius * Math.sin(angle) * Math.sin(inclination),
+        ];
+        orbit = ellipsePath(radius, center, 0, inclination, crowded ? 48 : 72);
+        ringInclination = inclination;
+      }
+
       positions[body.name] = point;
       orbits.push({
         name: body.name,
         owner: star.name,
         kind: 'planet',
         center,
-        radius,
-        points: ellipsePath(radius, center, 0, inclination, crowded ? 48 : 72),
+        radius: semiMajor,
+        points: orbit,
+        real: elements.fromData,
+        eccentricity: elements.eccentricity,
+        periodDays: elements.periodDays,
       });
       if (body.rings.length > 0) {
         const ringBase = ringDisplayRadius(markerSizes[body.name] ?? 8, ownBudget);
@@ -483,7 +552,7 @@ export function buildOrreryLayout(
             kind: 'planet',
             center: point,
             radius: ringBase + ringIndex * 2.4,
-            points: ellipsePath(ringBase + ringIndex * 2.4, point, 0, inclination, 40),
+            points: ellipsePath(ringBase + ringIndex * 2.4, point, 0, ringInclination, 40),
           });
         });
       }
@@ -508,13 +577,38 @@ export function buildOrreryLayout(
       list.sort((left, right) => left.orbitLs - right.orbitLs || left.name.localeCompare(right.name));
       list.forEach((moon, index) => {
         const radius = baseRadius + 1.8 + index * Math.max(1.6, baseRadius * 0.45);
-        const angle = (index * 2.1 + 0.6) % (Math.PI * 2);
-        const inclination = (((-1) ** index) * 4 * Math.PI) / 180;
-        const point: [number, number, number] = [
-          parentPoint[0] + radius * Math.cos(angle),
-          parentPoint[1] + radius * Math.sin(angle) * Math.cos(inclination),
-          parentPoint[2] + radius * Math.sin(angle) * Math.sin(inclination),
-        ];
+        const elements = moon.elements;
+        let point: [number, number, number];
+        let orbit: [number, number, number][];
+        let semiMajor = radius;
+
+        if (elements.fromData) {
+          // У лун элементы тоже есть в журнале: рисуем настоящий эллипс
+          // с планетой в фокусе, а не окружность с выдуманной фазой.
+          semiMajor = radius / (1 + elements.eccentricity);
+          const oriented = {
+            eccentricity: elements.eccentricity,
+            inclination: (elements.inclinationDeg * Math.PI) / 180,
+            periapsis: (elements.periapsisDeg * Math.PI) / 180,
+          };
+          point = orbitPoint(
+            semiMajor,
+            trueAnomaly((elements.meanAnomalyDeg * Math.PI) / 180, elements.eccentricity),
+            oriented,
+            parentPoint,
+          );
+          orbit = orbitalPath(semiMajor, oriented, parentPoint, 40);
+        } else {
+          const angle = (index * 2.1 + 0.6) % (Math.PI * 2);
+          const inclination = (((-1) ** index) * 4 * Math.PI) / 180;
+          point = [
+            parentPoint[0] + radius * Math.cos(angle),
+            parentPoint[1] + radius * Math.sin(angle) * Math.cos(inclination),
+            parentPoint[2] + radius * Math.sin(angle) * Math.sin(inclination),
+          ];
+          orbit = ellipsePath(radius, parentPoint, 0, inclination, 32);
+        }
+
         positions[moon.name] = point;
         if (showMoons) {
           moonOrbits.push({
@@ -522,8 +616,11 @@ export function buildOrreryLayout(
             owner: parentName,
             kind: 'moon',
             center: parentPoint,
-            radius,
-            points: ellipsePath(radius, parentPoint, 0, inclination, 32),
+            radius: semiMajor,
+            points: orbit,
+            real: elements.fromData,
+            eccentricity: elements.eccentricity,
+            periodDays: elements.periodDays,
           });
         }
       });
@@ -669,13 +766,24 @@ function clamp(value: number, min: number, max: number): number {
 /**
  * Разобрать орбитальные элементы из записи тела.
  *
- * Источники (в порядке приоритета):
- *  • строка `system_scans` — только `semi_major_axis_ls`, остальное лежит в
- *    `raw_data` (полный JSON из журнала или EDSM);
- *  • `raw_data` из журнала Elite Dangerous — `Eccentricity`, `OrbitalInclination`,
- *    `Periapsis`, `OrbitalPeriod` (секунды), `MeanAnomaly`, `AxialTilt`,
- *    `SemiMajorAxis` (метры);
- *  • `raw_data` из EDSM — те же величины в camelCase, период в сутках.
+ * Источники и ЕДИНИЦЫ (проверено по живым данным, а не по догадке):
+ *
+ * • строка `system_scans` — только `semi_major_axis_ls` (св. секунды);
+ *   остальное лежит в `raw_data` — полном JSON из журнала или EDSM.
+ *
+ * • `raw_data` из журнала Elite Dangerous (событие `Scan`) — имена в
+ *   PascalCase: `Eccentricity`, `OrbitalInclination` (°), `Periapsis` (°),
+ *   `OrbitalPeriod` (СЕКУНДЫ), `MeanAnomaly` (°), `AxialTilt` (°),
+ *   `SemiMajorAxis` (МЕТРЫ).
+ *
+ * • `raw_data` из EDSM (`/api-system-v1/bodies`) — имена в camelCase и
+ *   другие единицы: `orbitalEccentricity`, `orbitalInclination` (°),
+ *   `argOfPeriapsis` (°), `orbitalPeriod` (СУТКИ), `axialTilt` (°),
+ *   `semiMajorAxis` (АСТРОНОМИЧЕСКИЕ ЕДИНИЦЫ). Средней аномалии EDSM не
+ *   отдаёт вовсе — фаза берётся только из журнала.
+ *
+ * Период и полуось различаем ПО ИМЕНИ ПОЛЯ, а не по величине: планета с
+ * периодом 300 лет (> 1e5 суток) в EDSM иначе превратилась бы в секунды.
  *
  * Всё, чего в данных нет, остаётся нулём, а `fromData` говорит, можно ли
  * считать орбиту настоящей.
@@ -691,24 +799,45 @@ export function parseOrbitalElements(record: Record<string, unknown>): OrbitalEl
       if (record?.[key] != null) return record[key];
       if (source[key] != null) return source[key];
     }
-    return null;
+    return undefined;
   };
 
-  const semiMajorM = num(pick('semi_major_axis_m', 'SemiMajorAxis'), NaN);
+  // `Number(null) === 0`, поэтому отсутствующее поле нельзя гнать через
+  // обычный `num`: иначе «нет данных» превращается в ноль, `fromData`
+  // становится истинной всегда, и карта рисует выдуманный эллипс как
+  // настоящий. Только явное число считается значением.
+  const opt = (...keys: string[]): number => {
+    const value = pick(...keys);
+    if (typeof value !== 'number' && typeof value !== 'string') return NaN;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  };
+
+  // Полуось: журнал — метры (`SemiMajorAxis`), EDSM — астрономические
+  // единицы (`semiMajorAxis`), БД — уже световые секунды.
+  const semiMajorM = opt('semi_major_axis_m', 'SemiMajorAxis');
+  const semiMajorAu = opt('semiMajorAxis');
   const semiMajorLs = Number.isFinite(semiMajorM) && semiMajorM > 0
     ? semiMajorM / METERS_PER_LIGHT_SECOND
-    : num(pick('semi_major_axis_ls', 'semiMajorAxis', 'SemiMajorAxisLS'), NaN);
+    : Number.isFinite(semiMajorAu) && semiMajorAu > 0
+      ? semiMajorAu * LS_PER_AU
+      : opt('semi_major_axis_ls');
 
-  const eccentricity = clamp(num(pick('eccentricity', 'Eccentricity'), NaN), 0, 0.98);
-  const inclinationDeg = num(pick('orbital_inclination', 'OrbitalInclination', 'inclination'), NaN);
-  const periapsisDeg = num(pick('periapsis', 'Periapsis', 'argOfPeriapsis'), NaN);
-  const periodSeconds = num(pick('orbital_period_s', 'OrbitalPeriod'), NaN);
-  // EDSM отдаёт период в сутках, журнал — в секундах: различаем по величине.
-  const periodDays = Number.isFinite(periodSeconds)
-    ? (periodSeconds > 1e5 ? periodSeconds / SECONDS_PER_DAY : periodSeconds)
-    : NaN;
-  const meanAnomalyDeg = num(pick('mean_anomaly', 'MeanAnomaly', 'meanAnomaly'), NaN);
-  const axialTiltDeg = num(pick('axial_tilt', 'AxialTilt', 'axialTilt'), NaN);
+  const eccentricity = clamp(opt('orbitalEccentricity', 'eccentricity', 'Eccentricity'), 0, 0.98);
+  const inclinationDeg = opt('orbitalInclination', 'orbital_inclination', 'OrbitalInclination', 'inclination');
+  const periapsisDeg = opt('argOfPeriapsis', 'periapsis', 'Periapsis');
+  // Период: EDSM — сутки, журнал — секунды. Решает имя поля, а не величина:
+  // планета с периодом в 300 лет (> 1e5 суток) иначе стала бы «секундами».
+  const periodDaysFromEdsm = opt('orbitalPeriod', 'orbital_period_days');
+  const periodSecondsFromJournal = opt('OrbitalPeriod', 'orbital_period_s');
+  const periodDays = Number.isFinite(periodDaysFromEdsm)
+    ? periodDaysFromEdsm
+    : Number.isFinite(periodSecondsFromJournal)
+      ? periodSecondsFromJournal / SECONDS_PER_DAY
+      : NaN;
+  // Среднюю аномалию отдаёт только журнал: в EDSM такого поля нет.
+  const meanAnomalyDeg = opt('MeanAnomaly', 'mean_anomaly');
+  const axialTiltDeg = opt('axialTilt', 'axial_tilt', 'AxialTilt');
 
   const fromData = [eccentricity, inclinationDeg, periapsisDeg, periodDays, meanAnomalyDeg]
     .some((value) => Number.isFinite(value));

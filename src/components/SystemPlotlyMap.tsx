@@ -44,6 +44,8 @@ import {
   sceneCamera,
   traceExtent,
   sphereGeometry,
+  starColorFromTemperature,
+  starRadiusScale,
   summarizeLayout,
   toStructures,
   type OrreryBody,
@@ -114,12 +116,47 @@ const ZOOM_STEPS = [
   { level: 3, label: 'Поверхность', hint: 'Тело крупно: постройки на поверхности' },
 ] as const;
 
-function getStarColor(subType?: string | null): string {
+/**
+ * Цвет звезды.
+ *
+ * Приоритет — настоящая температура поверхности (есть и в журнале, и в EDSM):
+ * цвет считается как у излучения абсолютно чёрного тела. Спектральный класс
+ * остаётся запасным вариантом для записей без температуры.
+ */
+function getStarColor(subType?: string | null, tempK = 0): string {
+  const byTemperature = starColorFromTemperature(tempK);
+  if (byTemperature) return byTemperature;
   const clean = (subType || '').trim();
   for (const [key, color] of Object.entries(STAR_SPECTRAL_COLORS)) {
     if (clean.toUpperCase().startsWith(key.toUpperCase())) return color;
   }
   return '#ffd166';
+}
+
+/**
+ * Строки всплывающей подсказки с настоящими орбитальными элементами.
+
+ * Пустой массив, когда элементов в данных нет: карта тогда строит орбиту по
+ * прежней схеме и подписывать там нечего (иначе пользователь решит, что
+ * «период 0 суток» — это правда).
+ */
+function orbitalHover(body: OrreryBody): string[] {
+  const elements = body.elements;
+  if (!elements || !elements.fromData) return [];
+  const lines: string[] = ["<span style='color:#7f8fa6'>— орбита (по данным сканов) —</span>"];
+  if (elements.semiMajorAxisLs > 0) {
+    lines.push(`Большая полуось: <b>${formatNumber(elements.semiMajorAxisLs)}</b> св. с (${formatNumber(elements.semiMajorAxisLs / 499.00478)} а.е.)`);
+  }
+  if (elements.periodDays > 0) {
+    lines.push(elements.periodDays >= 365
+      ? `Период обращения: <b>${formatNumber(elements.periodDays / 365.25)}</b> лет`
+      : `Период обращения: <b>${formatNumber(elements.periodDays)}</b> сут`);
+  }
+  lines.push(`Эксцентриситет: <b>${elements.eccentricity.toFixed(4)}</b>`);
+  if (elements.inclinationDeg !== 0) lines.push(`Наклонение: <b>${elements.inclinationDeg.toFixed(2)}°</b>`);
+  if (elements.periapsisDeg !== 0) lines.push(`Аргумент перицентра: <b>${elements.periapsisDeg.toFixed(2)}°</b>`);
+  if (elements.axialTiltDeg !== 0) lines.push(`Наклон оси: <b>${elements.axialTiltDeg.toFixed(2)}°</b>`);
+  return lines;
 }
 
 function getBodyColor(subType?: string | null, bodyType?: string | null): string {
@@ -391,8 +428,11 @@ export default function SystemPlotlyMap({
         if (!point) continue;
         const selected = star.name === selectedTarget;
         xs.push(point[0]); ys.push(point[1]); zs.push(point[2]);
-        colors.push(getStarColor(star.subType));
-        sizes.push(selected ? Math.min(34, (layout.markerSizes[star.name] ?? 14) * 1.25) : layout.markerSizes[star.name] ?? 14);
+        colors.push(getStarColor(star.subType, star.tempK));
+        // Размер — по настоящему радиусу звезды: сверхгигант обязан быть
+        // заметно крупнее красного карлика, а не отличаться на пару пикселей.
+        const starSize = (layout.markerSizes[star.name] ?? 14) * starRadiusScale(star);
+        sizes.push(selected ? Math.min(38, starSize * 1.25) : starSize);
         texts.push(showLabels || selected ? shortName(star.name, systemName) : '');
         lineColors.push(selected ? '#00f3ff' : 'rgba(255,255,255,0.65)');
         lineWidths.push(selected ? 2 : 0.8);
@@ -518,6 +558,8 @@ export default function SystemPlotlyMap({
           body.rings.length > 0 ? `<span style='color:#9fd8ef'>💍 кольца: <b>${body.rings.length}</b></span>` : '',
           withSite > 0 ? `<span style='color:#ff9f43'>🏗 постройки на теле: <b>${withSite}</b></span>` : '',
           body.firstDiscoveredBy ? `<span style='color:#94a3b8'>открыто: CMDR ${body.firstDiscoveredBy}</span>` : '',
+          // Настоящие орбитальные элементы — то, по чему построена орбита.
+          ...orbitalHover(body),
           '',
           '<span style="color:#64748b">клик — фокус · двойной клик — поверхность</span>',
         ].filter(Boolean).join('<br>'));

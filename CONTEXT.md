@@ -130,7 +130,29 @@ Invariants that must stay identical in both languages:
   (9 when targeted), stations 5.0, carriers 5.5, label font 9 px.
 - Habitable zone is computed per star from luminosity
   (`habitableZoneLs` / `habitable_zone_ls`), not per system.
-- Tests pin the parity: `scripts/tests/system-orrery.test.mjs` (12 cases) and
+- **Real orbital elements.** When a body carries elements, both engines draw the
+  same physical orbit instead of a decorative circle:
+  `parseOrbitalElements` / `has_real_elements` read eccentricity, inclination,
+  argument of periapsis, period, mean anomaly and axial tilt; `solveKepler` /
+  `solve_kepler` solve `M = E − e·sin E` (Newton, 6 iterations, `e` clamped to
+  0.98); `orbitPoint` / `orbit_point` place the star at the **focus**
+  (`r = a(1−e²)/(1+e·cos ν)`), not at the centre. The distributed radius is
+  treated as the **apoapsis** (`a = radius / (1 + e)`), so an eccentric orbit can
+  never leave its cluster budget and the distance ordering stays monotonic.
+  Bodies without elements keep the golden-angle fallback, and `fromData` /
+  `has_real_elements` is what tells the UI not to label a fallback orbit as real.
+- **Element units differ by source** and are disambiguated by field name, never by
+  magnitude: the journal's `Scan` gives `SemiMajorAxis` in metres and
+  `OrbitalPeriod` in seconds; EDSM `/api-system-v1/bodies` gives `semiMajorAxis`
+  in AU, `orbitalPeriod` in days, `orbitalEccentricity` (not `eccentricity`) and
+  no mean anomaly at all. A long-period body (> 1e5 days) must not be
+  reinterpreted as seconds.
+- Star colour comes from surface temperature (blackbody stops shared by
+  `starColorFromTemperature` / `star_color_from_temperature`) with the spectral
+  class only as a fallback; marker size scales with the star's true radius
+  (`starRadiusScale` / `star_radius_scale`, log-scaled and clamped to 0.45–2.6).
+  Ring planes follow axial tilt, not orbital inclination.
+- Tests pin the parity: `scripts/tests/system-orrery.test.mjs` (28 cases) and
   `uploader/tests/test_orrery_layout.py` + `test_plotly_map_cards.py`.
 - The dossier cargo split lives in `src/lib/dossierCargo.ts` (`summarizeCargo`),
   fed by the same rows the leaderboard uses: `totalTons` = every `deliveries`

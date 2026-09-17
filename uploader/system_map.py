@@ -320,6 +320,12 @@ class MapBody:
     eccentricity: float = 0.0
     orbital_inclination: float = 0.0
     arg_of_periapsis: float = 0.0
+    # Полный набор элементов нужен карте: по эксцентриситету, наклонению и
+    # аргументу перицентра строится настоящий эллипс, по средней аномалии —
+    # положение тела на нём, по периоду — подпись в подсказке.
+    orbital_period_days: float = 0.0
+    mean_anomaly_deg: float = 0.0
+    axial_tilt_deg: float = 0.0
     rings: List[Dict[str, Any]] = field(default_factory=list)
     from_raven: bool = False              # тело из Raven v2, журнал его не видел
     from_external: bool = False           # тело из EDSM / базы проекта
@@ -816,6 +822,13 @@ class SystemMapBuilder:
             body.orbital_inclination = _as_float(event.get("OrbitalInclination"), 0.0)
         if "Periapsis" in event:
             body.arg_of_periapsis = _as_float(event.get("Periapsis"), 0.0)
+        if "OrbitalPeriod" in event:
+            # Журнал отдаёт период в секундах.
+            body.orbital_period_days = _as_float(event.get("OrbitalPeriod"), 0.0) / 86400.0
+        if "MeanAnomaly" in event:
+            body.mean_anomaly_deg = _as_float(event.get("MeanAnomaly"), 0.0)
+        if "AxialTilt" in event:
+            body.axial_tilt_deg = _as_float(event.get("AxialTilt"), 0.0)
         if "Rings" in event and isinstance(event.get("Rings"), list):
             body.rings = [r for r in event["Rings"] if isinstance(r, dict)]
         if event.get("WasDiscovered") is False:

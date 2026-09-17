@@ -133,6 +133,120 @@ def ellipse_path(radius: float, center: Sequence[float], phase: float = 0.0,
 
 
 # ---------------------------------------------------------------------------
+#  Настоящая орбитальная механика (зеркало src/lib/systemOrrery.ts)
+# ---------------------------------------------------------------------------
+#: Ключи элементов в плоском view тела (`_body_view`).
+ELEMENT_KEYS = ("eccentricity", "orbital_inclination", "arg_of_periapsis",
+                "orbital_period_days", "mean_anomaly_deg", "axial_tilt_deg")
+
+
+def has_real_elements(view: Dict[str, Any]) -> bool:
+    """Есть ли в теле хоть один настоящий орбитальный элемент.
+
+    Соответствует `OrbitalElements.fromData` на сайте: без этого карта
+    выдавала бы выдуманную окружность за настоящую орбиту.
+    """
+    return any(_num(view.get(key), 0.0) != 0.0 for key in ELEMENT_KEYS)
+
+
+def solve_kepler(mean_anomaly: float, eccentricity: float) -> float:
+    """Решить уравнение Кеплера M = E − e·sin E (Ньютон, 6 итераций)."""
+    e = min(0.98, max(0.0, eccentricity))
+    M = mean_anomaly % (2.0 * math.pi)
+    if e < 1e-6:
+        return M
+    E = M + e * math.sin(M)
+    for _ in range(6):
+        delta = (E - e * math.sin(E) - M) / (1.0 - e * math.cos(E))
+        E -= delta
+        if abs(delta) < 1e-9:
+            break
+    return E
+
+
+def true_anomaly(mean_anomaly: float, eccentricity: float) -> float:
+    """Истинная аномалия (угол от перицентра) из средней."""
+    e = min(0.98, max(0.0, eccentricity))
+    E = solve_kepler(mean_anomaly, e)
+    return math.atan2(math.sqrt(1.0 - e * e) * math.sin(E), math.cos(E) - e)
+
+
+def orbit_point(semi_major: float, true_anomaly_rad: float, eccentricity: float,
+                inclination: float, periapsis: float,
+                center: Sequence[float]) -> Tuple[float, float, float]:
+    """Точка эллипса: звезда в ФОКУСЕ, а не в центре орбиты."""
+    e = min(0.98, max(0.0, eccentricity))
+    a = max(0.0, semi_major)
+    radius = (a * (1.0 - e * e)) / (1.0 + e * math.cos(true_anomaly_rad))
+    angle = true_anomaly_rad + periapsis
+    x = radius * math.cos(angle)
+    y = radius * math.sin(angle)
+    cx, cy, cz = (list(center) + [0.0, 0.0, 0.0])[:3]
+    return (cx + x, cy + y * math.cos(inclination), cz + y * math.sin(inclination))
+
+
+def orbital_path(semi_major: float, eccentricity: float, inclination: float,
+                 periapsis: float, center: Sequence[float],
+                 steps: int = 96) -> List[Tuple[float, float, float]]:
+    """Полная орбита по настоящим элементам."""
+    return [
+        orbit_point(semi_major, 2.0 * math.pi * step / steps, eccentricity, inclination, periapsis, center)
+        for step in range(steps + 1)
+    ]
+
+
+def orbital_position(semi_major: float, view: Dict[str, Any],
+                     center: Sequence[float]) -> Tuple[float, float, float]:
+    """Положение тела на орбите по средней аномалии из данных."""
+    e = min(0.98, max(0.0, _num(view.get("eccentricity"), 0.0)))
+    return orbit_point(
+        semi_major,
+        true_anomaly(math.radians(_num(view.get("mean_anomaly_deg"), 0.0)), e),
+        e,
+        math.radians(_num(view.get("orbital_inclination"), 0.0)),
+        math.radians(_num(view.get("arg_of_periapsis"), 0.0)),
+        center,
+    )
+
+
+#: Контрольные точки цвета излучения абсолютно чёрного тела (K → RGB).
+_BLACKBODY_STOPS = (
+    (1000.0, (255, 122, 54)),
+    (2000.0, (255, 138, 12)),
+    (3000.0, (255, 180, 107)),
+    (4000.0, (255, 209, 163)),
+    (5000.0, (255, 228, 206)),
+    (5778.0, (255, 244, 234)),
+    (6600.0, (255, 255, 255)),
+    (7500.0, (214, 229, 255)),
+    (10000.0, (178, 205, 255)),
+    (20000.0, (155, 176, 255)),
+    (40000.0, (140, 155, 255)),
+)
+
+
+def star_color_from_temperature(temp_k: float) -> Optional[str]:
+    """Цвет звезды по температуре поверхности (как на сайте)."""
+    if not temp_k or temp_k <= 0:
+        return None
+    t = min(max(temp_k, _BLACKBODY_STOPS[0][0]), _BLACKBODY_STOPS[-1][0])
+    for (low_t, low_rgb), (high_t, high_rgb) in zip(_BLACKBODY_STOPS, _BLACKBODY_STOPS[1:]):
+        if low_t <= t <= high_t:
+            k = (t - low_t) / (high_t - low_t or 1.0)
+            rgb = [int(round(low_rgb[i] + (high_rgb[i] - low_rgb[i]) * k)) for i in range(3)]
+            return f"rgb({rgb[0]}, {rgb[1]}, {rgb[2]})"
+    return None
+
+
+def star_radius_scale(radius_m: float) -> float:
+    """Масштаб маркера звезды по её настоящему радиусу (R☉)."""
+    radius_sol = radius_m / SOL_RADIUS_M if radius_m > 0 else 0.0
+    if radius_sol <= 0:
+        return 1.0
+    return min(2.6, max(0.45, 0.7 + math.log10(radius_sol) * 0.55))
+
+
+# ---------------------------------------------------------------------------
 #  Планировщик кластеров
 # ---------------------------------------------------------------------------
 def _body_view(body: Any) -> Dict[str, Any]:
@@ -175,6 +289,14 @@ def _body_view(body: Any) -> Dict[str, Any]:
         "first_mapped_by": str(getattr(body, "first_mapped_by", "") or ""),
         "rings": rings,
         "star_key": "",
+        # Орбитальные элементы: по ним карта строит настоящий эллипс
+        # (зеркало `OrbitalElements` в src/lib/systemOrrery.ts).
+        "eccentricity": _num(getattr(body, "eccentricity", 0.0)),
+        "orbital_inclination": _num(getattr(body, "orbital_inclination", 0.0)),
+        "arg_of_periapsis": _num(getattr(body, "arg_of_periapsis", 0.0)),
+        "orbital_period_days": _num(getattr(body, "orbital_period_days", 0.0)),
+        "mean_anomaly_deg": _num(getattr(body, "mean_anomaly_deg", 0.0)),
+        "axial_tilt_deg": _num(getattr(body, "axial_tilt_deg", 0.0)),
     }
 
 
@@ -290,18 +412,33 @@ def plan_system(bodies: Iterable[Any], system_name: str = "", scale_mode: str = 
 
     for index, star in enumerate(secondary):
         radius = star_radii.get(star["name"], SCENE_SPAN * 0.8)
-        angle = index * GOLDEN_ANGLE
-        inclination = ((-1.0) ** index) * math.radians(4.0 + (index * 7) % 12)
-        center = (
-            radius * math.cos(angle),
-            radius * math.sin(angle) * math.cos(inclination),
-            radius * math.sin(angle) * math.sin(inclination),
-        )
+        real = has_real_elements(star)
+        if real:
+            # Компонент пары тоже ходит по эллипсу с главной звездой в фокусе.
+            eccentricity = min(0.98, max(0.0, _num(star.get("eccentricity"), 0.0)))
+            semi_major = radius / (1.0 + eccentricity)
+            inclination = math.radians(_num(star.get("orbital_inclination"), 0.0))
+            periapsis = math.radians(_num(star.get("arg_of_periapsis"), 0.0))
+            center = orbital_position(semi_major, star, (0.0, 0.0, 0.0))
+            points = orbital_path(semi_major, eccentricity, inclination, periapsis, (0.0, 0.0, 0.0), 72)
+        else:
+            eccentricity = 0.0
+            semi_major = radius
+            angle = index * GOLDEN_ANGLE
+            inclination = ((-1.0) ** index) * math.radians(4.0 + (index * 7) % 12)
+            center = (
+                radius * math.cos(angle),
+                radius * math.sin(angle) * math.cos(inclination),
+                radius * math.sin(angle) * math.sin(inclination),
+            )
+            points = ellipse_path(radius, (0.0, 0.0, 0.0), 0.0, inclination, 48)
         positions[star["name"]] = center
         star_centers[star["name"]] = center
-        orbits.append({"owner": star["name"], "kind": "star", "radius": radius,
-                       "center": (0.0, 0.0, 0.0), "angle": angle, "inc": inclination,
-                       "points": ellipse_path(radius, (0.0, 0.0, 0.0), 0.0, inclination, 48)})
+        orbits.append({"owner": star["name"], "kind": "star", "radius": semi_major,
+                       "center": (0.0, 0.0, 0.0), "inc": inclination,
+                       "real": real, "eccentricity": eccentricity,
+                       "period_days": _num(star.get("orbital_period_days"), 0.0),
+                       "points": points})
 
     for star in stars:
         center = star_centers.get(star["name"], (0.0, 0.0, 0.0))
@@ -314,24 +451,48 @@ def plan_system(bodies: Iterable[Any], system_name: str = "", scale_mode: str = 
         radii = _distribute_radii(own_planets, own_budget, scale_mode)
         for index, view in enumerate(own_planets):
             radius = radii[index] if index < len(radii) else own_budget * 0.5
-            angle = (index * GOLDEN_ANGLE) % (2.0 * math.pi)
-            inclination = math.radians(((-1.0) ** index) * (2.5 + (index * 5) % 9))
-            point = (
-                center[0] + radius * math.cos(angle),
-                center[1] + radius * math.sin(angle) * math.cos(inclination),
-                center[2] + radius * math.sin(angle) * math.sin(inclination),
-            )
+            real = has_real_elements(view)
+            if real:
+                # Настоящая орбита: эллипс со звездой в фокусе, наклон и
+                # аргумент перицентра из данных, положение — по средней
+                # аномалии. Распределённый радиус трактуем как апоцентр,
+                # чтобы вытянутая орбита не вышла за бюджет кластера.
+                eccentricity = min(0.98, max(0.0, _num(view.get("eccentricity"), 0.0)))
+                semi_major = radius / (1.0 + eccentricity)
+                inclination = math.radians(_num(view.get("orbital_inclination"), 0.0))
+                periapsis = math.radians(_num(view.get("arg_of_periapsis"), 0.0))
+                point = orbital_position(semi_major, view, center)
+                points = orbital_path(semi_major, eccentricity, inclination, periapsis, center,
+                                      64 if crowded else 96)
+                # Кольца лежат в плоскости экватора тела.
+                ring_inc = math.radians(_num(view.get("axial_tilt_deg"), 0.0)
+                                        or _num(view.get("orbital_inclination"), 0.0))
+            else:
+                eccentricity = 0.0
+                semi_major = radius
+                angle = (index * GOLDEN_ANGLE) % (2.0 * math.pi)
+                inclination = math.radians(((-1.0) ** index) * (2.5 + (index * 5) % 9))
+                point = (
+                    center[0] + radius * math.cos(angle),
+                    center[1] + radius * math.sin(angle) * math.cos(inclination),
+                    center[2] + radius * math.sin(angle) * math.sin(inclination),
+                )
+                points = ellipse_path(radius, center, 0.0, inclination, 48 if crowded else 72)
+                ring_inc = inclination
             positions[view["name"]] = point
-            orbit_info[view["name"]] = {"radius": radius, "center": center, "angle": angle,
-                                        "inc": inclination, "kind": "planet", "star": star["name"]}
+            orbit_info[view["name"]] = {"radius": semi_major, "center": center,
+                                        "inc": inclination, "kind": "planet", "star": star["name"],
+                                        "real": real, "eccentricity": eccentricity}
             orbits.append({"owner": star["name"], "kind": "planet", "name": view["name"],
-                           "radius": radius, "center": center, "angle": angle, "inc": inclination,
-                           "points": ellipse_path(radius, center, 0.0, inclination, 48 if crowded else 72)})
+                           "radius": semi_major, "center": center, "inc": inclination,
+                           "real": real, "eccentricity": eccentricity,
+                           "period_days": _num(view.get("orbital_period_days"), 0.0),
+                           "points": points})
             for ring_index, ring in enumerate(view["rings"]):
                 ring_radius = min(own_budget * 0.18, max(2.6, markers.get(view["name"], 8.0) * 0.42)) + ring_index * 2.4
                 ring_paths.append({"owner": view["name"], "name": ring["name"], "class": ring["class"],
-                                   "radius": ring_radius, "center": point, "angle": angle, "inc": inclination,
-                                   "points": ellipse_path(ring_radius, point, 0.0, inclination, 40)})
+                                   "radius": ring_radius, "center": point, "inc": ring_inc,
+                                   "points": ellipse_path(ring_radius, point, 0.0, ring_inc, 40)})
 
         member_moons = [view for view in members if view["kind"] == "moon"]
         grouped: Dict[str, List[Dict[str, Any]]] = {}
@@ -348,21 +509,37 @@ def plan_system(bodies: Iterable[Any], system_name: str = "", scale_mode: str = 
             group.sort(key=lambda view: (view["orbit_ls"], view["name"]))
             for index, moon in enumerate(group):
                 radius = base_radius + 1.8 + index * max(1.6, base_radius * 0.45)
-                angle = (index * 2.1 + 0.6) % (2.0 * math.pi)
-                inclination = math.radians(((-1.0) ** index) * 4.0)
-                point = (
-                    parent_point[0] + radius * math.cos(angle),
-                    parent_point[1] + radius * math.sin(angle) * math.cos(inclination),
-                    parent_point[2] + radius * math.sin(angle) * math.sin(inclination),
-                )
+                real = has_real_elements(moon)
+                if real:
+                    # У лун элементы тоже есть: эллипс с планетой в фокусе.
+                    eccentricity = min(0.98, max(0.0, _num(moon.get("eccentricity"), 0.0)))
+                    semi_major = radius / (1.0 + eccentricity)
+                    inclination = math.radians(_num(moon.get("orbital_inclination"), 0.0))
+                    periapsis = math.radians(_num(moon.get("arg_of_periapsis"), 0.0))
+                    point = orbital_position(semi_major, moon, parent_point)
+                    points = orbital_path(semi_major, eccentricity, inclination, periapsis, parent_point, 40)
+                else:
+                    eccentricity = 0.0
+                    semi_major = radius
+                    angle = (index * 2.1 + 0.6) % (2.0 * math.pi)
+                    inclination = math.radians(((-1.0) ** index) * 4.0)
+                    point = (
+                        parent_point[0] + radius * math.cos(angle),
+                        parent_point[1] + radius * math.sin(angle) * math.cos(inclination),
+                        parent_point[2] + radius * math.sin(angle) * math.sin(inclination),
+                    )
+                    points = ellipse_path(radius, parent_point, 0.0, inclination, 32)
                 positions[moon["name"]] = point
-                orbit_info[moon["name"]] = {"radius": radius, "center": parent_point, "angle": angle,
+                orbit_info[moon["name"]] = {"radius": semi_major, "center": parent_point,
                                             "inc": inclination, "kind": "moon", "star": star["name"],
-                                            "parent": parent_name}
+                                            "parent": parent_name, "real": real,
+                                            "eccentricity": eccentricity}
                 if show_moons:
-                    moon_orbits.append({"owner": parent_name, "name": moon["name"], "radius": radius,
-                                        "center": parent_point, "angle": angle, "inc": inclination,
-                                        "points": ellipse_path(radius, parent_point, 0.0, inclination, 32)})
+                    moon_orbits.append({"owner": parent_name, "name": moon["name"], "radius": semi_major,
+                                        "center": parent_point, "inc": inclination,
+                                        "real": real, "eccentricity": eccentricity,
+                                        "period_days": _num(moon.get("orbital_period_days"), 0.0),
+                                        "points": points})
 
         inner_ls, outer_ls = habitable_zone_ls(star)
         mapped_radius = _map_ls_to_units(inner_ls, outer_ls, own_planets, radii, own_budget, scale_mode)
