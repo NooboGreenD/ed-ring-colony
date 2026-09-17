@@ -173,12 +173,30 @@ class HullTests(unittest.TestCase):
         self.assertEqual(tracker.state.hull_percent, 100)
 
     def test_heat_damage_drops_hull_and_marks_modules_stale(self):
+        # `heat_active` — это «перегрев был не дольше HEAT_WINDOW_SECONDS назад»,
+        # то есть свойство зависит от текущего времени. Без зафиксированных
+        # часов тест проходит только в первые две минуты после своего же
+        # timestamp'а, а потом краснеет сам по себе. Часы подменяем.
+        import calendar
+        import datetime as dt
+        from unittest import mock
+
+        event_time = calendar.timegm(dt.datetime(2026, 9, 17, 12, 21, 0).timetuple())
+
         tracker = tracker_with()
         tracker.parse_event({"timestamp": "2026-09-17T12:21:00Z", "event": "HeatDamage"})
         state = tracker.state
         self.assertEqual(state.hull_percent, 98)
-        self.assertTrue(state.heat_active)
         self.assertTrue(state.modules_incomplete)
+
+        with mock.patch.object(st.time, "time", return_value=float(event_time)):
+            self.assertTrue(state.heat_active, "сразу после события перегрев активен")
+        with mock.patch.object(st.time, "time",
+                               return_value=float(event_time + st.HEAT_WINDOW_SECONDS)):
+            self.assertTrue(state.heat_active, "на границе окна ещё активен")
+        with mock.patch.object(st.time, "time",
+                               return_value=float(event_time + st.HEAT_WINDOW_SECONDS + 1)):
+            self.assertFalse(state.heat_active, "после окна перегрев снят")
 
     def test_repair_drone_adds_only_what_was_repaired(self):
         tracker = tracker_with(

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -91,7 +92,28 @@ export async function GET(req: Request) {
       last_updated: pilotStats?.last_updated || capiProfile?.last_updated || null,
     };
 
-    return NextResponse.json({ ok: true, stats: merged });
+    // Конфиденциальность: этот эндпоинт публичный, а данные в нём личные.
+    // Без фильтрации любой мог снять баланс, ранги и текущее положение
+    // командира, который их скрыл в настройках.
+    const ownerId = pilotStats?.user_id || capiProfile?.user_id || null;
+    let viewerId: string | null = null;
+    try {
+      const { user } = await authFromRequest(req);
+      viewerId = user?.id ?? null;
+    } catch {
+      viewerId = null;
+    }
+
+    const { data: ownerProfile } = ownerId
+      ? await supabaseAdmin.from('profiles').select('privacy_settings').eq('id', ownerId).maybeSingle()
+      : { data: null };
+
+    const privacy = privacyForViewer(ownerProfile?.privacy_settings, viewerId, ownerId);
+    const visible = maskPilotStats(merged, privacy);
+
+    // Скрытые поля отдаём как null, а не как 0: «0 кредитов» — это ложь,
+    // а null клиент показывает как «—».
+    return NextResponse.json({ ok: true, stats: visible, privacy });
   } catch (err: any) {
     console.error('[cmdr/stats] GET error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

@@ -152,8 +152,17 @@ def get_ring_color(ring_class: str) -> str:
     return RING_CLASS_COLORS["default"]
 
 
-def get_star_color(star_type: str) -> str:
-    """Вернуть цвет звезды по спектральному коду."""
+def get_star_color(star_type: str, temp_k: float = 0.0) -> str:
+    """Вернуть цвет звезды.
+
+    Приоритет — настоящая температура поверхности (как на сайте): цвет
+    считается по излучению абсолютно чёрного тела. Спектральный класс остаётся
+    запасным вариантом для записей без температуры — иначе экспорт десктопа и
+    3D-карта сайта показывали бы одну звезду разными цветами.
+    """
+    by_temperature = orrery.star_color_from_temperature(_as_float(temp_k, 0.0))
+    if by_temperature:
+        return by_temperature
     clean = (star_type or "").strip()
     if clean in STAR_SPECTRAL_COLORS:
         return STAR_SPECTRAL_COLORS[clean]
@@ -759,7 +768,7 @@ def build_plotly_dict(
 
     # 5. Основная звезда системы
     if primary_star:
-        p_color = get_star_color(primary_star.star_type)
+        p_color = get_star_color(primary_star.star_type, primary_star.surface_temp_k)
         m_size = markers.get(primary_star.name, 20.0) * (1.25 if selected == primary_star.name or zoom >= 3 else 1.0)
         tr_star: Dict[str, Any] = {
             "type": trace_type,
@@ -826,7 +835,7 @@ def build_plotly_dict(
                 is_target = bool(selected) and selected == star.name
                 s_texts.append(short_label(star.name, snapshot.system) if (label_all or is_target) else "")
                 s_hovers.append(_build_body_hover(star))
-                s_colors.append(get_star_color(star.star_type))
+                s_colors.append(get_star_color(star.star_type, star.surface_temp_k))
                 s_sizes.append(markers.get(star.name, 13.0) * (1.2 if is_target else 1.0))
                 s_custom.append(star.name)
         if s_xs:
