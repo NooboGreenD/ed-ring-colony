@@ -93,21 +93,32 @@ export async function POST(req: Request) {
 
     // Телеметрия журнала: snapshots строек, сканы тел и сводка пилота.
     // Общий код с браузерным загрузчиком (см. `persistJournalTelemetry`).
-    const telemetry = await persistJournalTelemetry(svc, userId, {
-      constructionEvents: body.construction_events ?? body.constructionEvents,
-      systemScans: body.system_scans ?? body.systemScans ?? body.scans,
-      pilotStats: body.pilot_stats ?? body.pilotStats,
-    }, cmdr || null);
-    for (const warning of telemetry.warnings) {
-      console.warn('[logs/upload]', warning);
+    //
+    // Обёрнуто в try/catch так же, как в /api/logs/import: доставки уже
+    // сохранены, и сбой телеметрии не имеет права превращать успешную
+    // загрузку в 500. Для Colonial Helper это особенно важно — он ретраит
+    // пачку на 5xx, то есть на голой ошибке телеметрии журнал отправлялся бы
+    // заново без всякого толку.
+    let telemetry = null;
+    try {
+      telemetry = await persistJournalTelemetry(svc, userId, {
+        constructionEvents: body.construction_events ?? body.constructionEvents,
+        systemScans: body.system_scans ?? body.systemScans ?? body.scans,
+        pilotStats: body.pilot_stats ?? body.pilotStats,
+      }, cmdr || null);
+      for (const warning of telemetry.warnings) {
+        console.warn('[logs/upload]', warning);
+      }
+    } catch (telemetryError) {
+      console.warn('[logs/upload] telemetry could not be stored:', (telemetryError as Error).message);
     }
 
     return NextResponse.json({
       ...outcome,
-      constructionInserted: telemetry.constructionInserted,
-      snapshotInserted: telemetry.snapshotInserted,
-      pilotStatsUpdated: telemetry.pilotStatsUpdated,
-      systemScansInserted: telemetry.systemScansInserted,
+      constructionInserted: telemetry?.constructionInserted ?? 0,
+      snapshotInserted: telemetry?.snapshotInserted ?? 0,
+      pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
+      systemScansInserted: telemetry?.systemScansInserted ?? 0,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
