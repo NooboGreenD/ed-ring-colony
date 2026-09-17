@@ -373,6 +373,38 @@ maybe('в полноэкранном режиме карта растягива�
   }
 });
 
+maybe('после перерисовки фигуры та же точка снова подсвечивается', async () => {
+  // `Plotly.react` пересоздаёт трэки, и маркеры возвращаются к базовым
+  // размерам. Если `highlightRef` при этом не сбросить, он продолжит
+  // утверждать, что точка уже подсвечена, — и повторное наведение на неё
+  // уйдёт в ранний return без подсветки.
+  const map = await renderMap(SOL);
+  try {
+    const doc = global.document;
+    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
+    const event = { points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }] };
+
+    await map.fire('plotly_hover', event);
+    assert.equal(map.calls.restyle.length, 1, 'первое наведение не подсветило маркер');
+
+    // Перерисовка фигуры: переключаем фильтр лун — это новый `Plotly.react`.
+    const reactBefore = map.calls.react.length;
+    const moonsChip = [...doc.querySelectorAll('.ed-map-chip')]
+      .find((b) => /луны/.test(b.textContent || ''));
+    assert.ok(moonsChip, 'нет переключателя лун');
+    await map.click(moonsChip);
+    assert.ok(map.calls.react.length > reactBefore, 'фигура не перерисовалась');
+
+    // Наводим на ту же точку заново — подсветка обязана сработать.
+    map.calls.restyle.length = 0;
+    await map.fire('plotly_hover', event);
+    assert.equal(map.calls.restyle.length, 1,
+      'после перерисовки наведение на ту же точку не подсвечивает маркер');
+  } finally {
+    await map.cleanup();
+  }
+});
+
 maybe('камера пользователя переживает перерисовку, не связанную со сменой вида', async () => {
   const map = await renderMap(SOL);
   try {

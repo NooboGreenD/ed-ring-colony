@@ -724,6 +724,11 @@ export default function SystemPlotlyMap({
     // Снимок исходных размеров/подписей маркеров по трэкам. Подсветка при
     // наведении правит их через `restyle`, поэтому нужен нетронутый оригинал,
     // к которому возвращаемся на `unhover`.
+    // Фигура пересобрана — маркеры вернулись к базовым размерам, значит
+    // «подсвечено» больше ничего не. Без сброса `highlightRef` продолжал
+    // утверждать обратное, и повторное наведение на ту же точку уходило в
+    // ранний return уже без подсветки.
+    highlightRef.current = null;
     baseSizesRef.current = traces.map((trace: any) =>
       (Array.isArray(trace?.marker?.size) ? trace.marker.size.slice() : null) as number[] | null);
     baseTextsRef.current = traces.map((trace: any) =>
