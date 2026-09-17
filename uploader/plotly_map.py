@@ -271,6 +271,27 @@ def _ellipse_curve(a_units: float, center: Tuple[float, float, float], ecc: floa
     return xs, ys, zs
 
 
+def _flatten_orbit_points(points: Any, is_3d: bool) -> Tuple[List[float], List[float], List[float]]:
+    """Точки орбиты из плана → плоские x/y/z для Plotly.
+
+    План (`orrery.plan_system`) уже посчитал настоящий эллипс со звездой в
+    фокусе; здесь его остаётся только разложить по осям. В 2D z обнуляется —
+    вид сверху, как и для всех остальных кривых.
+    """
+    xs: List[float] = []
+    ys: List[float] = []
+    zs: List[float] = []
+    for point in points or []:
+        try:
+            x, y, z = (list(point) + [0.0, 0.0, 0.0])[:3]
+        except (TypeError, ValueError):
+            continue
+        xs.append(float(x))
+        ys.append(float(y))
+        zs.append(float(z) if is_3d else 0.0)
+    return xs, ys, zs
+
+
 def _orbit_scale(a_plan: float, ecc: float, theta: float, arg_rad: float) -> float:
     """Полуось кривой, при которой эллипс проходит через точку из плана.
 
@@ -362,12 +383,23 @@ def build_system_geometry(
         arg = math.radians(float(body.arg_of_periapsis or 0.0))
         theta = float(orbit.get("angle") or 0.0)
         center = tuple(orbit["center"]) if is_3d else (orbit["center"][0], orbit["center"][1], 0.0)
-        a_units = _orbit_scale(orbit["radius"], ecc, theta, arg)
-        xs, ys, zs = _ellipse_curve(a_units, center, ecc, inc, arg, theta, is_3d,
-                                    48 if plan["crowded"] else 72)
-        orbit_curves[name] = {"x": xs, "y": ys, "z": zs, "inc_deg": math.degrees(inc), "ecc": ecc}
+        if orbit.get("points"):
+            # Орбита уже посчитана движком раскладки — для настоящих элементов
+            # это эллипс со звездой в фокусе, для тел без элементов прежняя
+            # окружность. Рисуем ЕЁ, а не пересчитываем свою: маркер обязан
+            # стоять на нарисованной кривой, а `_orbit_scale` подгонял эллипс
+            # под раскладку, которой больше нет.
+            xs, ys, zs = _flatten_orbit_points(orbit["points"], is_3d)
+            a_units = float(orbit["radius"])
+        else:
+            a_units = _orbit_scale(orbit["radius"], ecc, theta, arg)
+            xs, ys, zs = _ellipse_curve(a_units, center, ecc, inc, arg, theta, is_3d,
+                                        48 if plan["crowded"] else 72)
+        orbit_curves[name] = {"x": xs, "y": ys, "z": zs, "inc_deg": math.degrees(inc), "ecc": ecc,
+                              "real": bool(orbit.get("real")),
+                              "period_days": float(orbit.get("period_days") or 0.0)}
         # Маркер — ровно там, где его видит движок раскладки (и фокус, и JS в
-        # HTML считают от той же точки); эллипс подстроён под неё выше.
+        # HTML считают от той же точки).
         radius_by_body[name] = a_units
     for orbit in plan["orbits"]:
         if orbit.get("kind") != "star":
@@ -378,9 +410,13 @@ def build_system_geometry(
         inc = float(orbit.get("inc") or 0.0)
         center = (0.0, 0.0, 0.0)
         star_theta = float(orbit.get("angle") or 0.0)
-        xs, ys, zs = _ellipse_curve(_orbit_scale(orbit["radius"], ecc, star_theta, 0.0),
-                                    center, ecc, inc, 0.0, star_theta, is_3d, 48)
-        orbit_curves[f"__star__:{name}"] = {"x": xs, "y": ys, "z": zs, "inc_deg": math.degrees(inc), "ecc": ecc}
+        if orbit.get("points"):
+            xs, ys, zs = _flatten_orbit_points(orbit["points"], is_3d)
+        else:
+            xs, ys, zs = _ellipse_curve(_orbit_scale(orbit["radius"], ecc, star_theta, 0.0),
+                                        center, ecc, inc, 0.0, star_theta, is_3d, 48)
+        orbit_curves[f"__star__:{name}"] = {"x": xs, "y": ys, "z": zs, "inc_deg": math.degrees(inc),
+                                            "ecc": ecc, "real": bool(orbit.get("real"))}
         if name in plan["positions"]:
             positions[name] = flatten(plan["positions"][name])
 
@@ -392,9 +428,12 @@ def build_system_geometry(
         inc = float(orbit.get("inc") or 0.0)
         center = tuple(orbit["center"]) if is_3d else (orbit["center"][0], orbit["center"][1], 0.0)
         theta = float(orbit.get("angle") or 0.0)
-        xs, ys, zs = _ellipse_curve(_orbit_scale(orbit["radius"], ecc, theta, 0.0),
-                                    center, ecc, inc, 0.0, theta, is_3d, 32)
-        moon_orbit_curves[name] = {"x": xs, "y": ys, "z": zs}
+        if orbit.get("points"):
+            xs, ys, zs = _flatten_orbit_points(orbit["points"], is_3d)
+        else:
+            xs, ys, zs = _ellipse_curve(_orbit_scale(orbit["radius"], ecc, theta, 0.0),
+                                        center, ecc, inc, 0.0, theta, is_3d, 32)
+        moon_orbit_curves[name] = {"x": xs, "y": ys, "z": zs, "real": bool(orbit.get("real"))}
         if name in plan["positions"]:
             positions[name] = flatten(plan["positions"][name])
         radius_by_body[name] = orbit["radius"]

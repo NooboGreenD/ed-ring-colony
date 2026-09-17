@@ -9,6 +9,7 @@
 * HTML-экспорт несёт правую колонку карточек и JS, пересчитывающий зум.
 """
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -315,6 +316,96 @@ class PlotlySiteParityTests(unittest.TestCase):
         self.assertAlmostEqual(min(mesh["z"]), -1.0, places=6)
         self.assertAlmostEqual(orrery.detail_sphere_radius_units(100, 3), 42.0, places=6)
         self.assertAlmostEqual(orrery.detail_sphere_radius_units(100, 2), 14.0, places=6)
+
+
+class OrbitCurveMatchesMarkerTests(unittest.TestCase):
+    """Маркер тела обязан лежать на нарисованной орбите.
+
+    Повод: `plotly_map` рисовал орбиту своим эллипсом и подгонял его под
+    точку из плана через `_orbit_scale` — компенсацию для прежней КРУГОВОЙ
+    раскладки. Когда `orrery.plan_system` начал ставить тела на настоящие
+    эллипсы (звезда в фокусе), подгонка стала двойной и маркер съезжал с
+    орбиты на ~e·a. Тест сравнивает маркер с той кривой, что реально уходит
+    в Plotly, с поправкой на дискретизацию полилинии (сагитта хорды).
+    """
+
+    @staticmethod
+    def _point_to_polyline(point, points):
+        best = float("inf")
+        for a, b in zip(points, points[1:]):
+            ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+            ap = (point[0] - a[0], point[1] - a[1], point[2] - a[2])
+            denom = sum(v * v for v in ab) or 1e-12
+            t = max(0.0, min(1.0, sum(x * y for x, y in zip(ap, ab)) / denom))
+            proj = (a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t)
+            best = min(best, math.dist(point, proj))
+        return best
+
+    def _geometry(self):
+        builder = sm.SystemMapBuilder()
+        builder.handle({"event": "FSDJump", "StarSystem": "Sol", "SystemAddress": 1})
+        builder.handle({"event": "Scan", "StarSystem": "Sol", "BodyName": "Sol",
+                        "ScanType": "Detailed", "StarType": "G", "BodyID": 1,
+                        "Radius": 6.957e8, "DistanceFromArrivalLS": 0.0,
+                        "EffectiveTemperature": 5778})
+        # Планета с настоящими элементами: вытянутая орбита, наклон, перицентр.
+        builder.handle({"event": "Scan", "StarSystem": "Sol", "BodyName": "Sol 3",
+                        "ScanType": "Detailed", "PlanetClass": "Rocky body", "BodyID": 3,
+                        "Radius": 6.4e6, "DistanceFromArrivalLS": 499.0,
+                        "SemiMajorAxis": 1.496e11, "Eccentricity": 0.5,
+                        "OrbitalInclination": 3.0, "Periapsis": 102.9,
+                        "OrbitalPeriod": 31558149.0, "MeanAnomaly": 358.6,
+                        "Parents": [{"Star": 1}]})
+        # Луна тоже с элементами.
+        builder.handle({"event": "Scan", "StarSystem": "Sol", "BodyName": "Sol 3 a",
+                        "ScanType": "Detailed", "PlanetClass": "Rocky body", "BodyID": 4,
+                        "Radius": 1.7e6, "DistanceFromArrivalLS": 499.0,
+                        "SemiMajorAxis": 3.84e8, "Eccentricity": 0.0549,
+                        "OrbitalInclination": -23.4, "OrbitalPeriod": 2360591.0,
+                        "MeanAnomaly": 90.0, "Parents": [{"Planet": 3}, {"Star": 1}]})
+        # И тело без элементов — прежняя схема.
+        builder.handle({"event": "Scan", "StarSystem": "Sol", "BodyName": "Sol 4",
+                        "ScanType": "Detailed", "PlanetClass": "Icy body", "BodyID": 5,
+                        "Radius": 5e6, "DistanceFromArrivalLS": 900.0,
+                        "SemiMajorAxis": 2.7e11, "Parents": [{"Star": 1}]})
+        return pm.build_system_geometry(builder.snapshot(), show_moons=True)
+
+    def test_planet_marker_sits_on_its_drawn_orbit(self):
+        geom = self._geometry()
+        curve = geom["orbit_curves"]["Sol 3"]
+        points = list(zip(curve["x"], curve["y"], curve["z"]))
+        distance = self._point_to_polyline(tuple(geom["positions"]["Sol 3"]), points)
+        # Главное — геометрия: сагитта хорды при 96 сегментах это десятые
+        # unit'а, а съезд при двойной подгонке был ~e·a (несколько unit'ов).
+        self.assertLess(distance, 0.05, f"маркер съехал с орбиты на {distance}")
+        self.assertTrue(curve.get("real"), "орбита с элементами помечена настоящей")
+        self.assertAlmostEqual(curve.get("period_days", 0.0), 365.256, places=2)
+
+    def test_moon_marker_sits_on_its_drawn_orbit(self):
+        geom = self._geometry()
+        curve = geom["moon_orbit_curves"]["Sol 3 a"]
+        points = list(zip(curve["x"], curve["y"], curve["z"]))
+        distance = self._point_to_polyline(tuple(geom["positions"]["Sol 3 a"]), points)
+        self.assertLess(distance, 0.05, f"маркер луны съехал на {distance}")
+        self.assertTrue(curve.get("real"))
+
+    def test_body_without_elements_still_matches_its_circle(self):
+        geom = self._geometry()
+        curve = geom["orbit_curves"]["Sol 4"]
+        points = list(zip(curve["x"], curve["y"], curve["z"]))
+        radius = max(math.dist((0.0, 0.0, 0.0), p) for p in points)
+        # Допуск — сагитта хорды полилинии, а не произвольное число.
+        sagitta = radius * (1.0 - math.cos(math.pi / max(1, len(points) - 1)))
+        distance = self._point_to_polyline(tuple(geom["positions"]["Sol 4"]), points)
+        self.assertLessEqual(distance, sagitta * 1.5 + 1e-9,
+                             f"{distance} больше сагитты {sagitta}")
+        self.assertNotEqual(curve.get("real"), True, "без элементов орбита не «настоящая»")
+
+    def test_star_color_follows_temperature(self):
+        # Тот же цвет, что на сайте: сначала температура, класс — запасной.
+        self.assertEqual(pm.get_star_color("G", 5778.0), "rgb(255, 244, 234)")
+        self.assertEqual(pm.get_star_color("G", 0.0), pm.get_star_color("G"))
+        self.assertEqual(pm.get_star_color("", 0.0), pm.ED_COLOR_STAR_DEFAULT)
 
 if __name__ == "__main__":
     unittest.main()
