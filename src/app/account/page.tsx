@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
-import { createJournalParseState, parseJournal } from "@/lib/journalParser";
+import { createJournalParseState, parseJournal, type Delivery } from "@/lib/journalParser";
+import { TelemetryCollector } from "@/lib/journalTelemetry";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import { SQUADRON_MEMBER_LIMIT } from "@/lib/squadronConstants";
@@ -291,14 +292,15 @@ export default function AccountPage() {
         left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
         || left.lastModified - right.lastModified,
       );
-      const allDeliveries: Array<{
-        systemName: string;
-        commodity: string;
-        amount: number;
-        timestamp: string;
-        sourceHash: string;
-        source: string;
-      }> = [];
+      const allDeliveries: Delivery[] = [];
+      // Телеметрия того же разбора: сканы тел, snapshots строек и сводка
+      // пилота. Собирается тем же проходом по журналу, что и доставки, —
+      // второй раз гонять по сотням файлов JSON.parse было бы расточительно.
+      const telemetry = new TelemetryCollector();
+      const allConstructionEvents: unknown[] = [];
+      const allScans = new Map<string, any>();
+      let pilotStats: Record<string, number> | null = null;
+      const telemetryStats = { constructionSnapshots: 0, constructionDuplicates: 0, scans: 0, bioSignals: 0 };
       let cmdr: string | null = null;
       const allStats = {
         eventsParsed: 0,
@@ -307,6 +309,9 @@ export default function AccountPage() {
         colonisationDeliveries: 0,
         cargoDepotDeliveries: 0,
         cargoDeltaDeliveries: 0,
+        transportedTons: 0,
+        constructionTons: 0,
+        transportDeliveries: 0,
         skippedNoSystem: 0,
         skippedMarketTrade: 0,
         skippedMining: 0,
@@ -342,7 +347,17 @@ export default function AccountPage() {
 
         // Keep parserState between files: a Cargo snapshot and a cumulative
         // ColonisationContribution amount commonly straddle file rotation.
-        const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState);
+        const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState, [
+          (line, event) => telemetry.feed(line, event),
+        ]);
+        const telemetryResult = telemetry.finish();
+        allConstructionEvents.push(...telemetryResult.constructionEvents);
+        for (const scan of telemetryResult.scans) allScans.set(`${scan.system_name}\u0000${scan.body_name}`, scan);
+        if (Object.keys(telemetryResult.pilotStats).length > 0) pilotStats = { ...(pilotStats ?? {}), ...telemetryResult.pilotStats };
+        telemetryStats.constructionSnapshots += telemetryResult.stats.constructionSnapshots;
+        telemetryStats.constructionDuplicates += telemetryResult.stats.constructionDuplicates;
+        telemetryStats.scans += telemetryResult.stats.scans;
+        telemetryStats.bioSignals += telemetryResult.stats.bioSignals;
         if (!cmdr && cmdrName) cmdr = cmdrName;
         allDeliveries.push(...deliveries);
         allStats.eventsParsed += stats.eventsParsed;
@@ -351,6 +366,9 @@ export default function AccountPage() {
         allStats.colonisationDeliveries += stats.colonisationDeliveries;
         allStats.cargoDepotDeliveries += stats.cargoDepotDeliveries;
         allStats.cargoDeltaDeliveries += stats.cargoDeltaDeliveries;
+        allStats.transportedTons += stats.transportedTons ?? 0;
+        allStats.constructionTons += stats.constructionTons ?? 0;
+        allStats.transportDeliveries += stats.transportDeliveries ?? 0;
         allStats.skippedNoSystem += stats.skippedNoSystem;
         allStats.skippedMarketTrade += stats.skippedMarketTrade;
         allStats.skippedMining += stats.skippedMining;
@@ -424,11 +442,65 @@ export default function AccountPage() {
             timestamp: delivery.timestamp,
             source_hash: delivery.sourceHash,
             source: delivery.source,
+            // Досье разделяет «весь перевезённый груз» и «завезено на
+            // стройплощадки» — признак источника решает это на стороне парсера.
+            is_construction: delivery.isConstruction ?? null,
+            market_id: delivery.marketId,
           }));
         const json = await uploadChunk(chunk);
         inserted += json.inserted ?? 0;
         duplicates += json.duplicates ?? 0;
         eventsFound += json.eventsFound ?? 0;
+      }
+
+      // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
+      // собранное браузером, всегда было бы беднее досье игрока с хелпером.
+      let telemetryResult = { constructionInserted: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false };
+      const constructionEvents = allConstructionEvents;
+      const scans = Array.from(allScans.values());
+      const TELEMETRY_CHUNKS: Array<{ label: string; items: unknown[]; size: number; field: string }> = [
+        { label: 'construction', items: constructionEvents, size: 100, field: 'constructionEvents' },
+        { label: 'scans', items: scans, size: 200, field: 'systemScans' },
+      ];
+      for (const group of TELEMETRY_CHUNKS) {
+        for (let index = 0; index < group.items.length; index += group.size) {
+          setProgress({
+            current: list.length,
+            total: list.length,
+            phase: `${t('account.sendingBatch')} ${group.label} ${Math.floor(index / group.size) + 1}`,
+            pct: 92,
+          });
+          try {
+            const response = await authFetch('/api/logs/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cmdr, deliveries: [], [group.field]: group.items.slice(index, index + group.size) }),
+            });
+            const json = await response.json().catch(() => ({}));
+            if (response.ok && json.telemetry) {
+              telemetryResult.constructionInserted += json.telemetry.constructionInserted ?? 0;
+              telemetryResult.snapshotInserted += json.telemetry.snapshotInserted ?? 0;
+              telemetryResult.systemScansInserted += json.telemetry.systemScansInserted ?? 0;
+            }
+          } catch (error) {
+            // Телеметрия — приложение к тоннажу: её потеря не должна
+            // выглядел как упавшая загрузка доставок.
+            console.warn('[Account] telemetry upload failed:', (error as Error).message);
+          }
+        }
+      }
+      if (pilotStats) {
+        try {
+          const response = await authFetch('/api/logs/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmdr, deliveries: [], pilotStats }),
+          });
+          const json = await response.json().catch(() => ({}));
+          if (response.ok) telemetryResult.pilotStatsUpdated = Boolean(json.telemetry?.pilotStatsUpdated);
+        } catch (error) {
+          console.warn('[Account] pilot stats upload failed:', (error as Error).message);
+        }
       }
 
       setSummary({
@@ -439,6 +511,8 @@ export default function AccountPage() {
         duplicates,
         cmdr,
         parserStats: allStats,
+        telemetry: telemetryResult,
+        telemetryStats,
       });
     } catch (error) {
       console.error('[Account] Journal import failed:', error);
@@ -727,6 +801,23 @@ export default function AccountPage() {
                   <span style={{ color: '#6b7280' }}>{t('account.records')}</span><span style={{ color: "#22c55e" }}>{summary.inserted?.toLocaleString('ru')}</span>
                   <span style={{ color: '#6b7280' }}>{t('account.duplicatesLabel')}</span><span style={{ color: "#9ca3af" }}>{summary.duplicates?.toLocaleString('ru')}</span>
                   {summary.cmdr && (<><span style={{ color: '#6b7280' }}>{t('account.cmdrLabel')}</span><span style={{ color: "#eeeeee" }}>{summary.cmdr}</span></>)}
+                  {summary.parserStats?.transportedTons != null && (
+                    <>
+                      <span style={{ color: '#6b7280' }}>{t('account.transportedTonsLabel')}</span>
+                      <span style={{ color: "#eeeeee" }}>{summary.parserStats.transportedTons.toLocaleString('ru')}</span>
+                      <span style={{ color: '#6b7280' }}>{t('account.constructionTonsLabel')}</span>
+                      <span style={{ color: "#f39c12" }}>{summary.parserStats.constructionTons.toLocaleString('ru')}</span>
+                    </>
+                  )}
+                  {summary.telemetry && (
+                    <>
+                      <span style={{ color: '#6b7280' }}>{t('account.telemetryLabel')}</span>
+                      <span style={{ color: "#9ca3af" }}>
+                        {(summary.telemetry.systemScansInserted ?? 0).toLocaleString('ru')} /{' '}
+                        {(summary.telemetry.constructionInserted ?? summary.telemetry.snapshotInserted ?? 0).toLocaleString('ru')}
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
             </div>

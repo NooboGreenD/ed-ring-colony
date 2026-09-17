@@ -1537,6 +1537,21 @@ BODY_COLORS = {
     "default": "#8d99ae",
 }
 
+#: Типы объектов, которые стоят НА ПОВЕРХНОСТИ тела (а не летают вокруг него).
+#: До этого все станции рисовались на фиксированном кольце в 20–22 px от центра
+#: планеты — для наземного поселения это выглядело как «постройка в космосе».
+GROUND_STATION_KINDS = frozenset({
+    STATION_SITE, STATION_PRIMARY_PORT, STATION_SETTLEMENT, STATION_INSTALLATION,
+})
+
+#: Насколько наземный маркер отстоит от видимого края тела (px) и с каким шагом
+#: расходятся несколько построек одного тела.
+GROUND_LIFT_PX = 4.0
+GROUND_STEP_PX = 1.6
+#: Орбитальные объекты (порты, аванпосты, авианосцы) — чуть дальше от лимба.
+ORBIT_LIFT_PX = 15.0
+ORBIT_STEP_PX = 4.0
+
 SITE_COLOR = "#e67e22"
 SITE_DONE_COLOR = "#2ecc71"
 SITE_PLAN_COLOR = "#8d99ae"
@@ -1614,6 +1629,7 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
 
     items: List[PlacedItem] = []
     positions: Dict[str, Tuple[float, float, float]] = {}
+    body_radius: Dict[str, float] = {}
 
     star = snapshot.star
     if star is not None:
@@ -1703,6 +1719,7 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (sx, sy, depth)
+        body_radius[body.name] = radius
 
     # Планеты
     for index, body in enumerate(planets):
@@ -1731,6 +1748,7 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (sx, sy, depth)
+        body_radius[body.name] = radius
 
     # Луны
     moons = sorted((body for body in snapshot.bodies if body.kind == KIND_MOON),
@@ -1791,10 +1809,12 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
             depth = zr * cos_p
             floating_index += 1
         else:
-            angle = math.pi / 3.0 + 0.7 * len([
-                item for item in snapshot.stations if item.body_name == station.body_name])
-            sx = anchor[0] + 22.0 * math.cos(angle)
-            sy = anchor[1] + 22.0 * sin_p * math.sin(angle)
+            siblings = [item for item in snapshot.stations if item.body_name == station.body_name]
+            index = siblings.index(station) if station in siblings else 0
+            angle = math.pi / 2.0 + (2.0 * math.pi * index / max(1, len(siblings)))
+            lift = _station_lift_px(station, body_radius.get(station.body_name or "", 5.0))
+            sx = anchor[0] + lift * math.cos(angle) * 0.55
+            sy = anchor[1] - lift * sin_p * math.sin(angle)
             depth = anchor[2] + 0.2
 
         items.append(PlacedItem(
@@ -1850,6 +1870,19 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
     return items
 
 
+def _station_lift_px(station: "MapStation", body_radius_px: float) -> float:
+    """Насколько от центра тела отрисовать маркер станции, px.
+
+    Наземные постройки — на видимом крае тела (радиус тела + пара пикселей),
+    орбитальные — кольцом чуть дальше. Так «поселение на поверхности» больше не
+    выглядит как объект, висящий в пустоте рядом с планетой.
+    """
+    base = max(3.0, float(body_radius_px or 0.0))
+    if getattr(station, "kind", "") in GROUND_STATION_KINDS:
+        return base + GROUND_LIFT_PX
+    return base + ORBIT_LIFT_PX
+
+
 def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
            show_moons: bool = True, selected: str = "",
            center_on: str = "", mode: str = "2d",
@@ -1875,6 +1908,8 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
 
     items: List[PlacedItem] = []
     positions: Dict[str, Tuple[float, float]] = {}
+    #: Видимый радиус тела в px — по нему сажаем наземные постройки на лимб.
+    body_radius: Dict[str, float] = {}
 
     star = snapshot.star
     if star is not None:
@@ -1887,6 +1922,7 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             plane_x=center_x, plane_y=center_y, distance_ls=0.0,
         ))
         positions[star.name] = (center_x, center_y)
+        body_radius[star.name] = star_radius
     else:
         items.append(PlacedItem(kind="star", x=center_x, y=center_y, radius=4.0,
                                 label="", caption="звезда не отсканирована",
@@ -1986,6 +2022,7 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (x, y)
+        body_radius[body.name] = radius
 
     # Луны — рядом со своей планетой; если планеты на карте нет, ставим луну
     # на её собственное кольцо, чтобы тело не пропало.
@@ -2022,8 +2059,14 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
                 ref=body, selected=(selected == body.name),
             ))
             positions[body.name] = (x, y)
+            body_radius[body.name] = 3.5
 
     # Станции и стройплощадки.
+    #
+    # Наземные объекты (поселения, стройплощадки, планетарные инсталляции)
+    # ставим на видимый край тела — сразу за ним, веером, чтобы несколько
+    # построек одного тела не сливались. Орбитальные (порты, аванпосты,
+    # авианосцы) остаются на своём маленьком кольце вокруг планеты.
     floating_index = 0
     for station in snapshot.stations:
         anchor = positions.get(station.body_name) if station.body_name else None
@@ -2036,15 +2079,17 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             y = center_y + orbit * math.sin(angle)
             floating_index += 1
         else:
-            angle = math.pi / 3 + 0.7 * len([
-                item for item in snapshot.stations if item.body_name == station.body_name])
-            x = anchor[0] + 20.0 * math.cos(angle)
-            y = anchor[1] + 20.0 * math.sin(angle)
+            siblings = [item for item in snapshot.stations if item.body_name == station.body_name]
+            index = siblings.index(station) if station in siblings else 0
+            angle = math.pi / 2.0 + (2.0 * math.pi * index / max(1, len(siblings)))
+            lift = _station_lift_px(station, body_radius.get(station.body_name or "", 5.0))
+            x = anchor[0] + lift * math.cos(angle) * 0.45
+            y = anchor[1] - lift * math.sin(angle)
         x = max(30.0, min(width - 30.0, x))
         y = max(26.0, min(height - 34.0, y))
         items.append(PlacedItem(
             kind="station", x=x, y=y,
-            radius=7.0 if station.is_site else 5.0,
+            radius=4.2 if station.is_site else 3.2,
             label=station.title, caption=station.caption,
             color=station_color(station),
             progress=station.percent_delivered if station.is_site and not station.planned else None,

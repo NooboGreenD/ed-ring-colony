@@ -99,6 +99,49 @@ Browser → Next.js App Router → API Route (if needed) → Supabase
 - **Notifications**: `user_notifications` table, filtered by `user_id`
 - **Forum**: Thread views, new posts
 
+### 3.6 System orrery layout engine (site ↔ uploader)
+Both map clients share one pure layout model, so the website and the desktop
+helper cannot disagree about where a body sits:
+
+| Side | Engine | Renderer |
+|------|--------|----------|
+| Website `/system/[name]` | `src/lib/systemOrrery.ts` | `src/components/SystemPlotlyMap.tsx` (Plotly WebGL) |
+| Colonial Helper «Карта системы» | `uploader/orrery.py` | `uploader/system_map.py` (Tk canvas) + `uploader/plotly_map.py` (2D/3D HTML export) |
+
+Invariants that must stay identical in both languages:
+
+- Scene units, not kilometres: positions are normalised into `SCENE_SPAN = 240`
+  (Python `CANVAS_PX = 1000` is the pixel space the same span is projected into).
+- Bodies attach to their star by the letter key in the name (`extractStarKey`:
+  `Sol A 3` → `A`, `Sol AB 5` → `AB`); each star gets its own radial budget, moons
+  stay on their parent planet, rings around their own body.
+- Ground structures are anchored to the body sphere:
+  `unitsPerPixel = 2 * halfSpan / canvasPx`,
+  `bodyDisplayRadiusUnits = max(0.6, markerPx / 2 * unitsPerPixel * 1.25)`,
+  station lift = that radius + `0.35`, fanned by the golden angle. The same
+  formula re-runs in browser JS (`structurePositions()`) on every relayout, so
+  zooming never leaves a station floating off the surface.
+- Focus levels are monotonic in `halfSpan`: 0 system → 1 star cluster → 2 body
+  neighbourhood → 3 surface, camera `eye = 1.65 / 1.2 / 0.9 / 0.72`, sphere
+  fraction `0.14` at level 2 and `0.42` at level 3.
+- Decluttering thresholds: labels are suppressed when
+  `bodies.length > 28 || extraMarks > 6` or `zoom >= 2`, and re-enabled for the
+  selected target or by the explicit "all labels" switch. Marker sizes: sites 5.5 px
+  (9 when targeted), stations 5.0, carriers 5.5, label font 9 px.
+- Habitable zone is computed per star from luminosity
+  (`habitableZoneLs` / `habitable_zone_ls`), not per system.
+- Tests pin the parity: `scripts/tests/system-orrery.test.mjs` (12 cases) and
+  `uploader/tests/test_orrery_layout.py` + `test_plotly_map_cards.py`.
+- The dossier cargo split lives in `src/lib/dossierCargo.ts` (`summarizeCargo`),
+  fed by the same rows the leaderboard uses: `totalTons` = every `deliveries`
+  row, `siteTons` = rows where `is_construction IS DISTINCT FROM false` never
+  holds. `scripts/tests/dossier-cargo.test.mjs` and the end-to-end case in
+  `journal-telemetry.test.mjs` assert that the dossier numbers equal the
+  parser's own `transportedTons`/`constructionTons` for one and the same
+  journal. The leaderboard is deliberately not filtered by the flag: it has
+  always summed every delivery, and re-defining it would silently rewrite
+  existing commanders' ranks.
+
 ---
 
 ## 4. Database Schema
@@ -132,6 +175,11 @@ Browser → Next.js App Router → API Route (if needed) → Supabase
 | `friends` | Friend relationships |
 | `direct_messages` | P2P messages |
 | `push_subscriptions` | Web push subscriptions |
+| `deliveries` | Per-commander cargo events (see 8.6); `source`, `is_construction`, `market_id` split "all cargo" from "delivered to construction sites" |
+| `colonisation_events` | Shared `ColonisationConstructionDepot` records (system, market, progress, required resources) |
+| `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
+| `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
+| `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
 
 ### 4.2 Key Relationships
 ```
@@ -299,7 +347,8 @@ Applied via `npx supabase db push`.
 | FriendsPanel | `components/FriendsPanel.tsx` | Client | Friend list |
 | Starfield | `components/Starfield.tsx` | Client | Canvas starfield background |
 | Leaderboard | `components/Leaderboard.tsx` | Server | Leaderboard table |
-| CmdrDossier | `components/CmdrDossier.tsx` | Server | Player profile |
+| CmdrDossier | `components/CmdrDossier.tsx` | Server | Player profile — cargo totals, construction-site tonnage, achievements, squadron |
+| SystemPlotlyMap | `components/SystemPlotlyMap.tsx` | Client | 3D/2D orrery of one system: focus fly-to, star clusters, isolate, body card with ground structures |
 | AdminComments | `app/admin/components/AdminComments.tsx` | Client | Admin moderation |
 | RavenSyncTab | `components/Admin/RavenSyncTab.tsx` | Client | Raven sync UI |
 
@@ -356,10 +405,28 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
   into `colonisation_events` and `construction_depot_snapshots`.
 - Delivery semantics:
-  - `ColonisationContribution` is a direct per-event construction delta;
+  - `ColonisationContribution` is a direct per-event construction delta (the
+    Journal `Amount` is per event, not cumulative — subtracting the previous
+    value dropped every delivery after the first);
   - Fleet Carrier `MarketSell` is FC cargo `+Count`;
   - Fleet Carrier `MarketBuy` is FC cargo `-Count` and is not a project delivery;
   - ordinary station sales are not construction deliveries.
+- Every delivery carries why it exists, so the dossier can separate "all cargo
+  transported" from "delivered to construction sites" without guessing:
+  `source` (`colonisation_contribution` | `cargo_depot` | `cargo_delta` |
+  `carrier_delivery` | `mission_delivery` | `powerplay_delivery` |
+  `rescue_delivery`) and `is_construction`. A `cargo_delta` counts as a site
+  delivery only while the commander is docked at a market that published a
+  `ColonisationConstructionDepot`; `MarketSell` no longer suppresses the next
+  `Cargo` snapshot. Historical rows keep `is_construction IS NULL` = site, so
+  existing dossiers never shrink. `PARSER_VERSION = 3` forces a re-import of
+  already-cached journals.
+- The website log importer (`/account` → `POST /api/logs/import`) parses with
+  the same rules (`src/lib/journalParser.ts`) and, through the same pass, the
+  same telemetry (`src/lib/journalTelemetry.ts`): construction snapshots,
+  body scans and pilot stats. If the transport columns are not migrated yet,
+  `deliveryImport.ts` retries the batch without them and remembers that the
+  schema lags, so a journal upload never fails because of a pending migration.
 - The uploader never sends raw Journal files to the website. It sends structured
   delivery/snapshot records and keeps local byte offsets in
   `.colonial_helper_journal_offsets.json`.
@@ -410,11 +477,28 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   which is useless in game). Callbacks are marshalled back through
   `master.after(0, ...)`; outside Windows the manager stays inert.
 - Exobiology lives in `uploader/exobiology.py`: journal-only tracking (Scan,
-  SAAScanComplete, FSSBodySignals, ScanOrganic, CodexEntry) plus a deliberately
-  simplified **genus-level** prediction model (`GENUS_RULES`). Precise
-  species/variant criteria exist only in SrvSurvey (GPL-3.0), and this repo has
-  no license, so nothing was copied from it — the overlay states this.
-  Rendered by `ExobiologyOverlay` (HUD block `exobio`).
+  SAAScanComplete, FSSBodySignals, ScanOrganic, CodexEntry) plus a genus
+  prediction model (`GENUS_RULES`) written from public in-game occurrence rules
+  (atmosphere category and gas list, planet class, volcanism, gravity cap,
+  temperature window) — nothing was copied from SrvSurvey (GPL-3.0), which this
+  repo may not link against; the overlay states the model is an estimate.
+  - Hard exclusions (a genus cannot appear): atmosphere category, missing
+    required gas, wrong planet class, `geology: "require"` while volcanism is
+    known to be absent. Soft penalties (they lower the percentage only):
+    gravity caps and temperature windows. Unknown atmosphere ⇒ no prediction.
+  - `species_candidates()` adds per-species windows inside a genus; candidates
+    below `MIN_PREDICTION_PERCENT = 25` are not shown at all.
+  - `GENUS_ALIASES`/`normalize_genus` reconcile short Journal genus names with
+    reference names (`Shards` → `Crystalline Shards`, `Tubers` →
+    `Sinuous Tubers`, `Concha` → `Conchas`) — this also fixed zero-valued
+    `estimate_value()` payouts, and `GENUS_VALUE_CR` is calibrated against the
+    published sample values (mapping bonus divided out).
+  - Galactic-sector restrictions are known to exist in game but are
+    intentionally not modelled as hard exclusions.
+  - `ExobiologyOverlay` (HUD block `exobio`) renders samples, predictions,
+    bodies and planets either as a list or, by default, as a monospace table
+    (`overlay.format_table`, `exobio_layout` setting, automatic list fallback on
+    non-monospace fonts).
 - The "Колонизатор" tab drives the full Raven Colonial project cycle through
   `uploader/raven_colonial_api.py`: `GET /api/cmdr/{cmdr}/active`,
   `PUT /api/project` (create), `PATCH /api/project/{buildId}` (update),

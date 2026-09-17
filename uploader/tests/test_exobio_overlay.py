@@ -163,11 +163,25 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
         self.assertIn("все комплекты собраны", _text(self.overlay.next_action_label))
 
     def test_predictions_show_percent_and_reason(self):
+        """Таблица: род, процент, оценка и причина — одной строкой на род."""
+        self.overlay.update_exobiology(state())
+        text = _text(self.overlay.predict_label)
+        self.assertIn("род", text)
+        self.assertIn("Tussock", text)
+        self.assertIn("100%", text)
+        self.assertIn("атмосфера: thin", text)
+        # Одна строка на род — ради этого режим таблицы и заводили.
+        self.assertEqual(len([line for line in text.split("\n") if line.startswith("Tussock")]), 1)
+        self.assertNotIn("###", text)
+
+    def test_predictions_table_keeps_list_mode_available(self):
+        """Старый «ленточный» режим остаётся: его выбирают настройки блока."""
+        self.overlay.settings["exobio_layout"] = "list"
+        self.overlay._table_mode = False
         self.overlay.update_exobiology(state())
         text = _text(self.overlay.predict_label)
         self.assertIn("Tussock  100%", text)
         self.assertIn("атмосфера: thin", text)
-        self.assertNotIn("###", text)
 
     def test_predictions_are_capped(self):
         rows = [{"genus": f"Genus{i}", "score": 3.0, "percent": 100,
@@ -232,8 +246,9 @@ class ExobioOverlayRenderTests(_OverlayTestCase):
         }
         self.overlay.update_exobiology(st)
         planets_text = _text(self.overlay.planets_label)
-        self.assertIn("3  ·  Rocky body", planets_text)
+        self.assertIn("Rocky body", planets_text)
         self.assertIn("сигналов 3", planets_text)
+        self.assertIn("тело", planets_text)      # заголовок таблицы
 
 
 class ExobioOverlayTickerTests(_OverlayTestCase):

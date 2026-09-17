@@ -1,7 +1,77 @@
-"""Отслеживание состояния корабля Elite Dangerous."""
+"""Отслеживание состояния корабля Elite Dangerous.
+
+Поля читаем так, как их пишет журнал, а не «как удобнее»: имена полей в разных
+версиях игры разъезжаются, и часть статусов вообще нигде не дублируется.
+Проверенные источники на 2026 год:
+
+* ``Loadout`` — единственный снимок с ``Modules[].Health`` (прочность каждого
+  модуля), ``HullHealth``, ``AmmoInClip``/``AmmoInHopper``;
+* ``ModuleInfo`` (и файл ``ModulesInfo.json``) — ``Power``/``Priority`` всегда,
+  ``Health``/``Ammo`` только в новых сборках игры, а список лежит то под
+  ``Slots``, то под ``Modules``;
+* ``Status``/``Status.json`` — ``Flags`` (бит 3 = щиты вверх), ``Pips``,
+  ``Fuel``, ``Cargo``, ``LegalState``, процента щитов и прочности модулей там нет;
+* ``HullDamage`` — ``Health`` (пишется шагами), плюс ``Fighter``/``PlayerPilot``;
+* ``AfmuRepairs`` — ``Module`` (локализационный id), ``FullyRepaired``, ``Health``;
+* ``Repair`` — ``Item`` (устаревшие сборки писали ``Type``), ``RepairAll`` —
+  всё сразу; ``RebootRepair`` — список **слотов**; ``JetConeDamage`` — ``Module``;
+* ``RepairDrone`` — ``HullRepaired``/``CockpitRepaired``/``CorrosionRepaired``
+  (сколько единиц починено), ``Synthesis`` с «Repair …» чинит корпус целиком;
+* ``AmmoUsed`` — ``Clip``/``Restock`` (расход боезапаса), ``BuyAmmo`` — сумма
+  покупки, то есть новое количество из события не узнать.
+
+Отсюда правило: число, которого журнал не даёт, не выдумываем — показываем
+состояние («щиты упали», «прочность по снимку Loadout 7м назад»), а не красивую
+единицу.
+"""
 import json
+import time
 from typing import Dict, List, Any, Optional
+from collections import deque
 from dataclasses import dataclass, field
+
+
+#: Сколько записей об инцидентах держать (последние починки и попадания).
+INCIDENTS_HISTORY = 6
+#: Сколько секунд считаем «перегрев активным» после последнего HeatWarning:
+#: события «нагрелось» нет, поэтому состояние снимаем по времени.
+HEAT_WINDOW_SECONDS = 120
+
+
+def normalize_module_ref(value: Any) -> str:
+    """Ключ модуля из того, что пишет журнал: имя, loc-id или локаль.
+
+    Журнал в разных местах то даёт ``int_shieldbooster_size3_class5``, то
+    ``$ShieldBooster_Name;``, то ``$int_shieldbooster_size3_class5_name;``.
+    Приводим к «голой» строке из букв и цифр — по ней и ищем.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = text.replace("$", "").rstrip(";")
+    if text.endswith("_name"):
+        text = text[: -len("_name")]
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def find_slot_for_ref(modules: Dict[str, "ShipModule"], ref: Any) -> Optional[str]:
+    """Слот модуля по его имени/loc-id из журнала (``AfmuRepairs``, ``Repair``…).
+
+    Сначала точное совпадение нормализованного имени, потом совпадение «одно
+    содержит другое»: ``shieldbooster`` из ``$ShieldBooster_Name;`` должно
+    находиться и в ``int_shieldbooster_size3_class5``.
+    """
+    key = normalize_module_ref(ref)
+    if not key:
+        return None
+    for slot, module in modules.items():
+        if normalize_module_ref(module.name) == key or normalize_module_ref(slot) == key:
+            return slot
+    for slot, module in modules.items():
+        name = normalize_module_ref(module.name)
+        if name and (key in name or name in key):
+            return slot
+    return None
 
 
 @dataclass
@@ -14,6 +84,23 @@ class ShipModule:
     on: bool = True
     engineered: bool = False
     power: float = 0.0
+    #: Боезапас: clip — в магазине, hopper — в резерве (из Loadout/ModuleInfo),
+    #: capacity — вместимость (ModuleInfo пишет ``MaxAmmo`` для AFMU и шахт).
+    ammo_clip: Optional[int] = None
+    ammo_hopper: Optional[int] = None
+    ammo_capacity: Optional[int] = None
+    #: Прочность получена не из журнала (подозрение после JetCone/наводки):
+    #: число не меняем, но показываем, что оно под вопросом.
+    suspect: bool = False
+    #: Когда это значение прочности было получено в последний раз.
+    health_at: str = ""
+
+    @property
+    def total_ammo(self) -> Optional[int]:
+        if self.ammo_clip is None and self.ammo_hopper is None:
+            return None
+        return int(self.ammo_clip or 0) + int(self.ammo_hopper or 0)
+
 
 
 @dataclass
@@ -49,10 +136,90 @@ class ShipState:
     modules: Dict[str, ShipModule] = field(default_factory=dict)
     inventory: List[Dict[str, Any]] = field(default_factory=list)
     last_update: str = ""
+    # --- состояние корабля: источник и свежесть каждого числа -------------
+    #: Откуда взят процент корпуса: «Loadout», «HullDamage», «RepairAll» …
+    hull_source: str = ""
+    hull_at: str = ""
+    #: None — игра ещё не сообщала, True — щиты вверх, False — упали.
+    shield_up: Optional[bool] = None
+    shield_at: str = ""
+    #: Когда список модулей получил прочность (снимок Loadout/ModuleInfo).
+    modules_at: str = ""
+    #: Прочность модулей известна не по ``Loadout`` (например, только из
+    #: ``ModulesInfo.json``, где ``Health`` бывает не во всех версиях игры).
+    modules_incomplete: bool = True
+    #: Фонарь пробит (CockpitBreached) — пока не починен.
+    canopy_breached: bool = False
+    #: SystemsShutdown: бортовые системы отключены (таргары).
+    systems_offline: bool = False
+    #: Штамповка последнего HeatWarning — «перегрев» снимаем по времени.
+    heat_at: str = ""
+    #: Боезапас хардпоинтов: None — не знаем, int — снарядов всего.
+    ammo_clip: Optional[int] = None
+    ammo_hopper: Optional[int] = None
+    #: Боезапас изменился без точного знания (покупка/скуп) — цифра «?»
+    ammo_stale: bool = False
+    #: Последние инциденты: попадания, починки, перегрев (лента в HUD).
+    incidents: Any = field(default_factory=lambda: deque(maxlen=INCIDENTS_HISTORY))
+
+    def note(self, timestamp: str, text: str) -> None:
+        """Записать инцидент в ленту оверлея (не молча терять)."""
+        if not text:
+            return
+        self.incidents.append({"at": str(timestamp or ""), "text": text})
+
+    @property
+    def has_shield_generator(self) -> bool:
+        return any("shieldgenerator" in (m.name or "").lower() for m in self.modules.values())
+
+    @property
+    def shield_state(self) -> str:
+        """«up» / «down» / «none» / «unknown» — процента щитов в журнале нет."""
+        if not self.modules:
+            return "unknown"
+        if not self.has_shield_generator:
+            return "none"
+        if self.shield_up is None:
+            return "unknown"
+        return "up" if self.shield_up else "down"
+
+    @property
+    def heat_active(self) -> bool:
+        if not self.heat_at:
+            return False
+        stamp = str(self.heat_at).replace("Z", "").split(".")[0]
+        try:
+            import calendar
+            import datetime as _dt
+            parsed = _dt.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S")
+            return (time.time() - calendar.timegm(parsed.timetuple())) <= HEAT_WINDOW_SECONDS
+        except (ValueError, TypeError):
+            return False
+
+    @property
+    def ammo_total(self) -> Optional[int]:
+        if self.ammo_clip is None and self.ammo_hopper is None:
+            return None
+        return int(self.ammo_clip or 0) + int(self.ammo_hopper or 0)
+
+    @property
+    def afmu(self) -> Dict[str, Optional[int]]:
+        """AFMU: сколько ремонтов осталось (модуль ``int_repairer_*``)."""
+        for module in self.modules.values():
+            if "repairer" not in (module.name or "").lower():
+                continue
+            charges = module.ammo_clip
+            if charges is None:
+                charges = module.ammo_hopper
+            capacity = module.ammo_capacity
+            if capacity is None and charges is not None and module.ammo_hopper is not None:
+                capacity = int(charges or 0) + int(module.ammo_hopper)
+            return {"charges": charges, "capacity": capacity}
+        return {"charges": None, "capacity": None}
 
     @property
     def hull_percent(self) -> int:
-        return int(self.hull_health * 100)
+        return int(round(self.hull_health * 100))
 
     @property
     def shield_percent(self) -> int:
@@ -198,26 +365,45 @@ class ShipTracker:
             updated |= self._handle_module_info(ev)
         elif event == "HullDamage":
             updated |= self._handle_hull_damage(ev)
+        elif event == "HeatWarning":
+            self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
+            updated = True
         elif event == "HeatDamage":
             updated |= self._handle_heat_damage(ev)
         elif event == "ShieldState":
             updated |= self._handle_shield_state(ev)
         elif event == "ModuleDamage":
+            # События с таким именем игра не пишет (остаток старых спецификаций),
+            # но формат совпадает с AfmuRepairs — держим как запасной канал.
             updated |= self._handle_module_damage(ev)
+        elif event == "JetConeDamage":
+            updated |= self._handle_jet_cone_damage(ev)
         elif event == "CockpitBreached":
             updated |= self._handle_cockpit_breached(ev)
         elif event == "Repair":
             updated |= self._handle_repair(ev)
         elif event == "RepairAll":
             updated |= self._handle_repair_all(ev)
+        elif event == "RepairDrone":
+            updated |= self._handle_repair_drone(ev)
+        elif event == "Synthesis":
+            updated |= self._handle_synthesis(ev)
         elif event == "AfmuRepairs":
             updated |= self._handle_afmu_repair(ev)
         elif event == "RebootRepair":
             updated |= self._handle_reboot_repair(ev)
+        elif event == "SystemsShutdown":
+            self.state.systems_offline = True
+            self.state.note(ev.get("timestamp", ""), "SystemsShutdown: системы отключены")
+            updated = True
         elif event == "LoadGame":
             updated |= self._handle_load_game(ev)
         elif event == "ShipTargeted":
             pass
+        elif event == "AmmoUsed":
+            updated |= self._handle_ammo_used(ev)
+        elif event in ("BuyAmmo", "AmmoScoop"):
+            updated |= self._handle_ammo_refilled(ev)
         elif event == "ModuleBuy":
             updated |= self._handle_module_buy(ev)
         elif event == "ModuleSell":
@@ -228,6 +414,8 @@ class ShipTracker:
             updated |= self._handle_cargo(ev)
         elif event == "ReservoirReplenished":
             updated |= self._handle_reservoir_replenished(ev)
+        elif event == "FuelScoop":
+            updated |= self._handle_fuel_scoop(ev)
         elif event == "RefuelAll":
             updated |= self._handle_refuel_all(ev)
         elif event == "RefuelPartial":
@@ -244,6 +432,8 @@ class ShipTracker:
             self.state.ship_name = name.strip()
         self.state.ship_ident = ev.get("ShipIdent", self.state.ship_ident)
         self.state.hull_health = ev.get("HullHealth", self.state.hull_health)
+        self.state.hull_source = "Loadout"
+        self.state.hull_at = ev.get("timestamp", "") or self.state.hull_at
         # ShieldHealth: если в Loadout нет, определим по наличию ShieldGenerator
         sh = ev.get("ShieldHealth")
         if sh is not None:
@@ -260,6 +450,9 @@ class ShipTracker:
 
         modules = ev.get("Modules", [])
         self.state.modules.clear()
+        clip_total = 0
+        hopper_total = 0
+        ammo_known = False
         for m in modules:
             slot = str(m.get("Slot", "Unknown"))
             name = str(m.get("Item", "Unknown"))
@@ -268,8 +461,9 @@ class ShipTracker:
             on = bool(m.get("On", True))
             engineered = bool(m.get("Engineering"))
             power = float(m.get("Power", 0.0))
-
-            self.state.modules[slot] = ShipModule(
+            clip = m.get("AmmoInClip")
+            hopper = m.get("AmmoInHopper")
+            module = ShipModule(
                 slot=slot,
                 name=name,
                 health=health,
@@ -277,7 +471,25 @@ class ShipTracker:
                 on=on,
                 engineered=engineered,
                 power=power,
+                ammo_clip=int(clip) if clip is not None else None,
+                ammo_hopper=int(hopper) if hopper is not None else None,
+                health_at=ev.get("timestamp", "") or "",
             )
+            self.state.modules[slot] = module
+            if clip is not None or hopper is not None:
+                # AFMU — тоже «модуль с боезапасом», но в общий боезапас его
+                # считать нельзя: счётчик ремонтов живёт отдельно (state.afmu).
+                if "repairer" not in name.lower():
+                    clip_total += int(clip or 0)
+                    hopper_total += int(hopper or 0)
+                    ammo_known = True
+        self.state.ammo_clip = clip_total if ammo_known else None
+        self.state.ammo_hopper = hopper_total if ammo_known else None
+        self.state.ammo_stale = False
+        self.state.modules_at = ev.get("timestamp", "") or ""
+        self.state.modules_incomplete = False
+        self.state.canopy_breached = False
+        self.state.heat_at = ""
         # Если ShieldHealth не было в Loadout, проверяем наличие ShieldGenerator
         if sh is None:
             has_shield = any(
@@ -290,11 +502,25 @@ class ShipTracker:
         return True
 
     def _handle_status(self, ev: dict) -> bool:
-        """Обработать событие Status из журнала или Status.json."""
+        """Обработать событие Status из журнала или Status.json.
+
+        `HullHealth`/`ShieldHealth` в файле состояния появляются не во всех
+        версиях игры — читаем как есть, а отсутствие не считаем нулём.
+        """
         updated = False
         hull = ev.get("HullHealth")
         if hull is not None:
             self.state.hull_health = float(hull)
+            self.state.hull_source = "Status"
+            self.state.hull_at = ev.get("timestamp", "") or self.state.hull_at
+            updated = True
+        sh = ev.get("ShieldHealth")
+        if sh is not None:
+            self.state.shield_health = float(sh)
+            updated = True
+        star_system = ev.get("StarSystem")
+        if star_system:
+            self.state.current_system = str(star_system)
             updated = True
 
         pips = ev.get("Pips")
@@ -353,6 +579,16 @@ class ShipTracker:
         flags = ev.get("Flags")
         if flags is not None:
             self.state.flags = int(flags)
+            # Бит 3 = «щиты вверх» (таблица флагов журнала). Именно он, а не
+            # «ShieldState», даёт актуальное состояние на каждом тике: событие
+            # ShieldState пишется только в моменты переключения.
+            shield_up = bool(int(flags) & 0x8)
+            if self.state.shield_up != shield_up:
+                self.state.shield_up = shield_up
+                self.state.shield_at = ev.get("timestamp", "") or self.state.shield_at
+                self.state.shield_health = 1.0 if shield_up else 0.0
+            if int(flags) & (1 << 20):  # Overheat
+                self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
             updated = True
 
         flags2 = ev.get("Flags2")
@@ -362,43 +598,95 @@ class ShipTracker:
 
         return updated
 
-    def _handle_module_info(self, ev: dict) -> bool:
-        modules = ev.get("Modules", [])
-        for m in modules:
-            slot = str(m.get("Slot", ""))
+    @staticmethod
+    def _health_value(raw: Any) -> Optional[float]:
+        """``Health`` журнала -> доля 0..1 (встречались и проценты)."""
+        if raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value > 1.5:
+            value /= 100.0
+        return max(0.0, min(1.0, value))
+
+    def _handle_module_info(self, ev: dict, *, stale: bool = False) -> bool:
+        """Правая панель корабля: ``Power``/``Priority`` есть всегда, ``Health`` и
+        ``Ammo`` — только в новых сборках игры, а сам список лежит то под
+        ``Slots``, то под ``Modules`` (и в файле ``ModulesInfo.json``). Читаем оба
+        ключа: иначе панель вообще ничего не приносила в оверлей.
+
+        ``stale=True`` — это файл ``ModulesInfo.json``: он обновляется редко,
+        поэтому прочность берём только в сторону ухудшения, иначе устаревший
+        файл «починил» бы разбитые модули.
+        """
+        entries = ev.get("Slots") or ev.get("Modules") or []
+        health_seen = False
+        ammo_seen = False
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            slot = str(item.get("Slot", ""))
             if not slot:
                 continue
-            # Создать модуль, если его ещё нет (например, из ModulesInfo.json)
             if slot not in self.state.modules:
-                name = str(m.get("Item", "Unknown"))
-                self.state.modules[slot] = ShipModule(slot=slot, name=name)
-            # Обновить поля
-            health = m.get("Health")
+                self.state.modules[slot] = ShipModule(slot=slot, name=str(item.get("Item", "Unknown")))
+            module = self.state.modules[slot]
+            health = self._health_value(item.get("Health"))
             if health is not None:
-                new_health = float(health)
-                current_health = self.state.modules[slot].health
-                # Не "чиним" модули из устаревших данных:
-                # ModuleInfo в журнале — snapshot при старте игры (все health=1.0),
-                # а ModulesInfo.json обновляется редко. Принимаем health только
-                # если оно <= текущего (модуль повредился дальше) или модуль
-                # только что создан (default health=1.0).
-                if new_health <= current_health:
-                    self.state.modules[slot].health = new_health
-            power = m.get("Power")
+                health_seen = True
+                if not stale or health <= module.health:
+                    module.health = health
+                    module.suspect = False
+                    module.health_at = str(ev.get("timestamp", "") or "")
+            power = item.get("Power")
             if power is not None:
-                self.state.modules[slot].power = float(power)
-            if m.get("On") is not None:
-                self.state.modules[slot].on = bool(m.get("On"))
-            if m.get("Engineering") is not None:
-                self.state.modules[slot].engineered = bool(m.get("Engineering"))
-            priority = m.get("Priority")
+                module.power = float(power)
+            if item.get("On") is not None:
+                module.on = bool(item.get("On"))
+            if item.get("Engineering") is not None:
+                module.engineered = bool(item.get("Engineering"))
+            priority = item.get("Priority")
             if priority is not None:
-                self.state.modules[slot].priority = int(priority)
-            item = m.get("Item")
-            if item is not None:
-                self.state.modules[slot].name = str(item)
+                module.priority = int(priority)
+            name = item.get("Item")
+            if name is not None:
+                module.name = str(name)
+            if item.get("Ammo") is not None or item.get("MaxAmmo") is not None:
+                ammo_seen = True
+                if item.get("Ammo") is not None:
+                    module.ammo_clip = int(float(item["Ammo"]))
+                if item.get("MaxAmmo") is not None:
+                    module.ammo_capacity = int(float(item["MaxAmmo"]))
         self._recalc_power()
-        return bool(modules)
+        if ammo_seen:
+            self._recalc_ammo()
+        if health_seen and not stale:
+            self.state.modules_at = str(ev.get("timestamp", "") or "")
+            self.state.modules_incomplete = False
+        elif entries:
+            # Панель отдала только энергию и приоритеты: прочность по-прежнему
+            # известна лишь по снимку Loadout — честнее сказать это в HUD.
+            self.state.modules_incomplete = True
+        return bool(entries)
+
+    def _recalc_ammo(self) -> None:
+        """Свести боезапас хардпоинтов по модулям (AFMU считается отдельно)."""
+        clip = 0
+        hopper = 0
+        known = False
+        for module in self.state.modules.values():
+            if "repairer" in (module.name or "").lower():
+                continue
+            if module.ammo_clip is None and module.ammo_hopper is None:
+                continue
+            known = True
+            clip += int(module.ammo_clip or 0)
+            hopper += int(module.ammo_hopper or 0)
+        if known:
+            self.state.ammo_clip = clip
+            self.state.ammo_hopper = hopper
 
     def _recalc_power(self):
         """Пересчитать потребление энергии и мощность PowerPlant."""
@@ -424,96 +712,270 @@ class ShipTracker:
             except (IndexError, ValueError):
                 pass
 
+    def _apply_hull(self, value: Optional[float], source: str, ev: dict) -> bool:
+        """Записать процент корпуса вместе с источником и штампом времени."""
+        if value is None:
+            return False
+        self.state.hull_health = max(0.0, min(1.0, float(value)))
+        self.state.hull_source = source
+        self.state.hull_at = str(ev.get("timestamp", "") or "")
+        return True
+
     def _handle_hull_damage(self, ev: dict) -> bool:
-        # Пропускаем урон fighter/SRV — это не наш основной корабль
+        """``HullDamage``: ``Health`` (шаги по 20 %), ``Fighter``/``PlayerPilot``.
+
+        Урон истребителю или кораблю, которым управляет не игрок, к нашему
+        корпусу отношения не имеет — иначе HUD «чинил» бы hull после каждого
+        боя напарника.
+        """
         if ev.get("Fighter") or ev.get("SRV"):
             return False
-        health = ev.get("Health")
-        if health is not None:
-            self.state.hull_health = float(health)
-            return True
-        return False
+        if ev.get("PlayerPilot") is False:
+            return False
+        health = self._health_value(ev.get("Health", ev.get("TotalPercentHull", ev.get("HullHealth"))))
+        if health is None:
+            return False
+        self.state.note(ev.get("timestamp", ""), f"корпус {int(health * 100)} %")
+        return self._apply_hull(health, "HullDamage", ev)
 
     def _handle_heat_damage(self, ev: dict) -> bool:
-        """Урон корпусу и модулям от перегрева."""
+        """Урон от перегрева.
+
+        ``HeatDamage`` в актуальном журнале несёт только ``ID`` — числа нет,
+        поэтому корпус уменьшаем на типичные 2 % и честно помечаем, что
+        прочность модулей после этого снимка не актуальна.
+        """
+        self.state.heat_at = str(ev.get("timestamp", "") or self.state.heat_at)
+        health = self._health_value(ev.get("Health", ev.get("TotalPercentHull")))
         updated = False
-        # Урон корпусу
-        health = ev.get("Health")
         if health is not None:
-            self.state.hull_health = float(health)
-            updated = True
+            updated = self._apply_hull(health, "HeatDamage", ev)
         else:
-            # Если Health нет, уменьшаем на 2% (стандартный урон от перегрева)
-            self.state.hull_health = max(0.0, self.state.hull_health - 0.02)
+            self._apply_hull(max(0.0, self.state.hull_health - 0.02), "HeatDamage (оценка)", ev)
             updated = True
-        # Урон модулям от перегрева (список слотов в поле Modules)
-        modules = ev.get("Modules", [])
-        for slot in modules:
-            if slot and slot in self.state.modules:
-                # Перегрев обычно наносит ~5% урон модулю
-                self.state.modules[slot].health = max(0.0, self.state.modules[slot].health - 0.05)
-                updated = True
+        for slot in ev.get("Modules", []) or []:
+            module = self.state.modules.get(str(slot))
+            if module is not None:
+                module.health = max(0.0, module.health - 0.05)
+                module.health_at = str(ev.get("timestamp", "") or "")
+        self.state.modules_incomplete = True
+        self.state.note(ev.get("timestamp", ""), "перегрев: корпус и модули под вопросом")
         return updated
 
     def _handle_shield_state(self, ev: dict) -> bool:
-        """Щиты упали или восстановились."""
+        """Щиты упали или восстановились (процента журнал не отдаёт)."""
         up = ev.get("ShieldsUp")
-        if up is not None:
-            self.state.shield_health = 1.0 if up else 0.0
-            return True
-        return False
+        if up is None:
+            return False
+        self.state.shield_up = bool(up)
+        self.state.shield_at = str(ev.get("timestamp", "") or "")
+        self.state.shield_health = 1.0 if up else 0.0
+        self.state.note(ev.get("timestamp", ""), "щиты восстановлены" if up else "ЩИТЫ УПАЛИ")
+        return True
 
     def _handle_module_damage(self, ev: dict) -> bool:
-        """Урон конкретному модулю (столкновение, перегрев, бой)."""
-        # Slot — основной идентификатор, Module — fallback
-        slot = ev.get("Slot") or ev.get("Module")
-        health = ev.get("Health")
-        if slot and health is not None:
-            if slot not in self.state.modules:
-                self.state.modules[slot] = ShipModule(slot=str(slot), name=str(ev.get("Module", slot)))
-            self.state.modules[slot].health = max(0.0, min(1.0, float(health)))
-            return True
-        return False
+        """Изменение прочности конкретного модуля (слот или имя)."""
+        ref = ev.get("Slot") or ev.get("Module") or ev.get("Item")
+        health = self._health_value(ev.get("Health"))
+        if ref is None or health is None:
+            return False
+        slot = find_slot_for_ref(self.state.modules, ref) or str(ref)
+        if slot not in self.state.modules:
+            self.state.modules[slot] = ShipModule(slot=slot, name=str(ev.get("Module", ref)))
+        self.state.modules[slot].health = health
+        self.state.modules[slot].health_at = str(ev.get("timestamp", "") or "")
+        return True
+
+    def _handle_jet_cone_damage(self, ev: dict) -> bool:
+        """Струя белого карлика: журнал называет модуль, но не величину урона.
+
+        Выдумывать процент нельзя — помечаем модуль «под вопросом» и пишем в
+        ленту: пользователь увидит, какой системе стоит посмотреть состояние.
+        """
+        ref = ev.get("Module") or ev.get("Item")
+        if not ref:
+            return False
+        slot = find_slot_for_ref(self.state.modules, ref)
+        if slot:
+            module = self.state.modules[slot]
+            module.suspect = True
+            self.state.modules_incomplete = True
+            self.state.note(ev.get("timestamp", ""), f"JetCone: {slot} — под вопросом")
+        else:
+            self.state.note(ev.get("timestamp", ""), "JetCone: модуль повреждён")
+        return True
 
     def _handle_cockpit_breached(self, ev: dict) -> bool:
-        """Пробоина кабины — урон корпусу."""
-        self.state.hull_health = max(0.0, self.state.hull_health - 0.05)
+        """Пробоина кабины: фоняр — модуль, и он же даёт течь по корпусу."""
+        self.state.canopy_breached = True
+        self._apply_hull(max(0.0, self.state.hull_health - 0.05), "CockpitBreached", ev)
+        for slot, module in self.state.modules.items():
+            if "cockpit" in slot.lower() or "canopy" in module.name.lower():
+                module.health = max(0.0, module.health - 0.2)
+                module.suspect = True
+        self.state.note(ev.get("timestamp", ""), "КАБИНА ПРОБИТА")
         return True
 
     def _handle_repair(self, ev: dict) -> bool:
-        slot = ev.get("Module")
-        if slot and slot in self.state.modules:
-            self.state.modules[slot].health = 1.0
+        """``Repair``: поле ``Item`` (в старых сборках — ``Type``).
+
+        ``"all"``/«Armour» чинят корпус, остальное — один модуль по имени.
+        """
+        ref = ev.get("Item") or ev.get("Type") or ev.get("Module")
+        if not ref:
+            return False
+        text = str(ref).lower()
+        if text in ("all", "armour", "hull", "int_armour"):
+            self._apply_hull(1.0, "Repair (корпус)", ev)
+            for module in self.state.modules.values():
+                module.health = 1.0
+                module.suspect = False
+            self.state.canopy_breached = False
+            self.state.note(ev.get("timestamp", ""), "Repair: корпус и модули восстановлены")
             return True
-        return False
+        slot = find_slot_for_ref(self.state.modules, ref)
+        if not slot:
+            return False
+        self.state.modules[slot].health = 1.0
+        self.state.modules[slot].suspect = False
+        self.state.modules[slot].health_at = str(ev.get("timestamp", "") or "")
+        if "cockpit" in slot.lower() or "canopy" in text:
+            self.state.canopy_breached = False
+        self.state.note(ev.get("timestamp", ""), f"Repair: {slot} → 100 %")
+        return True
 
     def _handle_repair_all(self, ev: dict) -> bool:
-        for m in self.state.modules.values():
-            m.health = 1.0
-        self.state.hull_health = 1.0
+        for module in self.state.modules.values():
+            module.health = 1.0
+            module.suspect = False
+            module.health_at = str(ev.get("timestamp", "") or "")
+        self._apply_hull(1.0, "RepairAll", ev)
+        self.state.canopy_breached = False
+        self.state.modules_incomplete = False
+        self.state.note(ev.get("timestamp", ""), "RepairAll: всё восстановлено")
+        return True
+
+    def _handle_repair_drone(self, ev: dict) -> bool:
+        """Ремонтные дроны: ``HullRepaired``/``CockpitRepaired``/``CorrosionRepaired``.
+
+        Это количества отремонтированных единиц, а не итоговый процент, поэтому
+        прибавляем к известному состоянию и не выходим за 100 %.
+        """
+        updated = False
+        hull_repaired = ev.get("HullRepaired")
+        if hull_repaired is not None:
+            self._apply_hull(min(1.0, self.state.hull_health + float(hull_repaired)),
+                             "RepairDrone", ev)
+            updated = True
+        if ev.get("CockpitRepaired"):
+            self.state.canopy_breached = False
+            for slot, module in self.state.modules.items():
+                if "cockpit" in slot.lower() or "canopy" in module.name.lower():
+                    module.health = min(1.0, module.health + float(ev["CockpitRepaired"]))
+                    module.suspect = False
+            updated = True
+        if ev.get("CorrosionRepaired"):
+            # Коррозия (после боя с Thargoid) снимается со всех модулей сразу.
+            step = float(ev["CorrosionRepaired"])
+            for module in self.state.modules.values():
+                if module.health < 1.0:
+                    module.health = min(1.0, module.health + step)
+            self.state.modules_incomplete = True
+            updated = True
+        if updated:
+            self.state.note(ev.get("timestamp", ""), "ремонт дронами")
+        return updated
+
+    def _handle_synthesis(self, ev: dict) -> bool:
+        """Синтез «Repair …» в Odyssey восстанавливает корпус целиком."""
+        name = str(ev.get("Name", "") or ev.get("Name_Localised", "")).lower()
+        if "repair" not in name and "ремонт" not in name:
+            return False
+        self._apply_hull(1.0, f"Synthesis ({name or 'repair'})", ev)
+        self.state.canopy_breached = False
+        self.state.modules_incomplete = True
+        self.state.note(ev.get("timestamp", ""), "Synthesis: корпус восстановлен")
         return True
 
     def _handle_afmu_repair(self, ev: dict) -> bool:
-        slot = ev.get("Module")
-        health = ev.get("Health")
-        if slot and slot in self.state.modules and health is not None:
-            self.state.modules[slot].health = float(health)
-            return True
-        return False
+        """AFMU чинит один модуль; ``Module`` — loc-id, а не слот."""
+        ref = ev.get("Module") or ev.get("Item")
+        if not ref:
+            return False
+        slot = find_slot_for_ref(self.state.modules, ref)
+        if not slot:
+            return False
+        module = self.state.modules[slot]
+        health = self._health_value(ev.get("Health"))
+        if health is None:
+            health = 1.0 if ev.get("FullyRepaired") else min(1.0, module.health + 0.1)
+        module.health = health
+        module.suspect = False
+        module.health_at = str(ev.get("timestamp", "") or "")
+        if "cockpit" in slot.lower() or "canopy" in normalize_module_ref(ref):
+            self.state.canopy_breached = False
+        self.state.note(ev.get("timestamp", ""),
+                        f"AFMU: {slot} → {int(module.health * 100)} %")
+        return True
 
     def _handle_reboot_repair(self, ev: dict) -> bool:
-        slots = ev.get("Modules", [])
-        for slot in slots:
-            if slot in self.state.modules:
-                self.state.modules[slot].health = 1.0
-        return bool(slots)
+        """``RebootRepair`` пишет список **слотов** (иногда — имён модулей).
+
+        Перезагрузка чинит отказ, но не физическое повреждение: прочность не
+        поднимаем, зато снимаем «выключенность» и подозрение.
+        """
+        entries = ev.get("Modules", []) or []
+        touched = 0
+        for ref in entries:
+            slot = find_slot_for_ref(self.state.modules, ref) or str(ref)
+            module = self.state.modules.get(slot)
+            if module is None:
+                continue
+            module.on = True
+            module.suspect = False
+            touched += 1
+        if touched:
+            self.state.note(ev.get("timestamp", ""), f"Reboot: {touched} мод. в работе")
+        return bool(touched)
+
+    def _handle_ammo_used(self, ev: dict) -> bool:
+        """``AmmoUsed``: ``Clip`` — израсходовано из магазина, ``Restock`` — поднято из резерва."""
+        used = int(ev.get("Clip") or 0)
+        restock = int(ev.get("Restock") or 0)
+        if self.state.ammo_clip is None and self.state.ammo_hopper is None:
+            return False
+        # Всего снарядов становится меньше ровно на израсходованное: перекладка
+        # из резерва в магазин ничего не добавляет.
+        total = (self.state.ammo_clip or 0) + (self.state.ammo_hopper or 0) - used
+        self.state.ammo_clip = 0
+        self.state.ammo_hopper = max(0, total)
+        return used > 0 or restock > 0
+
+    def _handle_ammo_refilled(self, ev: dict) -> bool:
+        """Покупка или скуп ячеек: ``BuyAmmo.Total`` — кредиты, а не снаряды.
+
+        Точное число из события не взять, поэтому боезапас помечаем «?»:
+        актуальным он станет после ``ModuleInfo``/``Loadout``.
+        """
+        if self.state.ammo_clip is None and self.state.ammo_hopper is None:
+            return False
+        self.state.ammo_stale = True
+        return True
+
+    def _handle_fuel_scoop(self, ev: dict) -> bool:
+        """``FuelScoop``: ``Total`` — уровень топлива после заправки."""
+        total = ev.get("Total")
+        if total is None:
+            return False
+        self.state.fuel_level = float(total)
+        return True
 
     def _handle_load_game(self, ev: dict) -> bool:
         ship = ev.get("Ship")
         if ship:
             self.state.ship_type = str(ship)
+        self.state.systems_offline = False
         return bool(ship)
-
     def _handle_module_buy(self, ev: dict) -> bool:
         slot = ev.get("Slot")
         if slot:
@@ -558,23 +1020,26 @@ class ShipTracker:
         return True
 
     def _handle_refuel_all(self, ev: dict) -> bool:
-        amount = ev.get("Amount")
-        if amount is not None:
-            added = self.state.fuel_level + float(amount)
-            if self.state.fuel_capacity > 0:
-                self.state.fuel_level = min(added, self.state.fuel_capacity)
-            else:
-                self.state.fuel_level = added
+        """``RefuelAll.Amount`` — это кредиты за заправку, а не тонны.
+
+        Полная заправка значит «бак полон», поэтому так и считаем: раньше
+        стоимость в кру credited уезжала в уровень топлива (32 t превращались
+        в сотни).
+        """
+        if self.state.fuel_capacity > 0:
+            self.state.fuel_level = float(self.state.fuel_capacity)
         return True
 
     def _handle_refuel_partial(self, ev: dict) -> bool:
+        """``RefuelPartial.Amount`` — купленное количество тонн."""
         amount = ev.get("Amount")
-        if amount is not None:
-            added = self.state.fuel_level + float(amount)
-            if self.state.fuel_capacity > 0:
-                self.state.fuel_level = min(added, self.state.fuel_capacity)
-            else:
-                self.state.fuel_level = added
+        if amount is None:
+            return False
+        added = self.state.fuel_level + float(amount)
+        if self.state.fuel_capacity > 0:
+            self.state.fuel_level = min(added, self.state.fuel_capacity)
+        else:
+            self.state.fuel_level = added
         return True
 
     def parse_journal_text(self, text: str):
@@ -595,9 +1060,16 @@ class ShipTracker:
         self.parse_event(data)
 
     def parse_modules_info_json(self, data: dict):
-        """Разобрать ModulesInfo.json файл."""
+        """Разобрать ModulesInfo.json файл.
+
+        Файл обновляется редко (игрок открыл правую панель), поэтому прочность
+        принимаем только в сторону ухудшения — иначе файл «починил» бы модули,
+        разбитые после его записи.
+        """
         data["event"] = "ModuleInfo"
-        self.parse_event(data)
+        if self._handle_module_info(data, stale=True):
+            self.state.last_update = str(data.get("timestamp", "") or "")
+            self._notify()
 
     def parse_cargo_json(self, data: dict):
         """Разобрать Cargo.json файл."""
@@ -605,7 +1077,7 @@ class ShipTracker:
         self.parse_event(data)
 
     def reset(self):
-        """Сбросить состояние."""
+        """Сбросить состояние (в т.ч. ленту инцидентов: это другой полёт)."""
         self.state = ShipState()
         self._notify()
 
@@ -653,6 +1125,11 @@ class ShipTracker:
                     "on": m.on,
                     "engineered": m.engineered,
                     "power": m.power,
+                    "ammo_clip": m.ammo_clip,
+                    "ammo_hopper": m.ammo_hopper,
+                    "ammo_capacity": m.ammo_capacity,
+                    "suspect": m.suspect,
+                    "health_at": m.health_at,
                 }
                 for m in sorted(self.state.modules.values(), key=lambda x: x.slot)
             ],
@@ -667,4 +1144,20 @@ class ShipTracker:
             ],
             "inventory": self.state.inventory,
             "last_update": self.state.last_update,
+            # --- состояние корабля: значение + источник + свежесть ---
+            "hull_source": self.state.hull_source,
+            "hull_at": self.state.hull_at,
+            "shield_state": self.state.shield_state,
+            "shield_up": self.state.shield_up,
+            "shield_at": self.state.shield_at,
+            "modules_at": self.state.modules_at,
+            "modules_incomplete": self.state.modules_incomplete,
+            "canopy_breached": self.state.canopy_breached,
+            "systems_offline": self.state.systems_offline,
+            "overheat": self.state.heat_active,
+            "heat_at": self.state.heat_at,
+            "ammo_total": self.state.ammo_total,
+            "ammo_stale": self.state.ammo_stale,
+            "afmu": dict(self.state.afmu),
+            "incidents": [dict(row) for row in list(self.state.incidents)[-4:]],
         }

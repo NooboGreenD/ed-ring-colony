@@ -98,7 +98,9 @@ from colonisation import (
     format_commodities,
 )
 from map_export import save_map_png
+import orrery
 from system_map import (
+    due_note,
     due_timestamp,
     BODY_LABELS,
     KIND_MOON,
@@ -126,7 +128,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.18"
+VERSION = "2.10.23"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2527,7 +2529,9 @@ class ColonialHelperApp:
         tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
                        command=self._on_map_toggle,
                        bootstyle="info-round-toggle").pack(side=LEFT)
-        tb.Label(bar, text="Вид:", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
+        # Вид относится только к канвасу во вкладке: Plotly-карта в браузере
+        # всегда одна 3D-сцена (как на сайте) и переключается кнопкой внутри.
+        tb.Label(bar, text="Вид (канвас):", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
         self.map_view_mode = tk.StringVar(value=str(self.config.get("map_view_mode", "2d")))
         tb.Radiobutton(bar, text="2D", variable=self.map_view_mode, value="2d",
                        command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT)
@@ -2578,6 +2582,14 @@ class ColonialHelperApp:
         side_top.pack(fill=X, pady=(0, 4))
         tb.Label(side_top, text="Объекты системы",
                  font=("Segoe UI", 10, "bold")).pack(side=LEFT)
+        # Режим боковой панели: таблицей или карточками — как на сайте проекта.
+        self.map_side_mode = tk.StringVar(value=str(self.config.get("map_side_mode", "list")))
+        tb.Radiobutton(side_top, text="лента", variable=self.map_side_mode, value="list",
+                       command=self._on_map_side_mode,
+                       bootstyle="secondary-toolbutton").pack(side=RIGHT, padx=(0, 2))
+        tb.Radiobutton(side_top, text="карточки", variable=self.map_side_mode, value="cards",
+                       command=self._on_map_side_mode,
+                       bootstyle="warning-toolbutton").pack(side=RIGHT)
         tb.Button(side_top, text="Сводка", command=self._on_map_copy_summary,
                   bootstyle="secondary-outline", width=8).pack(side=RIGHT)
         tb.Button(side_top, text="PNG", command=self._on_map_save_png,
@@ -2630,6 +2642,37 @@ class ColonialHelperApp:
         tree_vsb.pack(side=RIGHT, fill=Y)
         self.map_tree.bind("<<TreeviewSelect>>", self._on_map_tree_select)
         self.map_tree.bind("<Button-3>", self._on_map_tree_context)
+
+        # ---- Карточки системы (тот же формат, что и на сайте) ----
+        #
+        # Дерево удобно для «что ещё сканировать», но карточка показывает тело
+        # целиком: класс, дистанцию, гравитацию, биосигналы и все его постройки
+        # с прогрессом. Канвас с рамкой — единственный способ скроллить набор
+        # фреймов без внешних зависимостей.
+        self.map_cards_frame = tb.Frame(side)
+        self.map_cards_canvas = tk.Canvas(self.map_cards_frame, bg=COLOR_BG,
+                                          highlightthickness=0, borderwidth=0)
+        cards_vsb = tb.Scrollbar(self.map_cards_frame, orient=VERTICAL,
+                                 command=self.map_cards_canvas.yview)
+        self.map_cards_inner = tb.Frame(self.map_cards_canvas)
+        self._map_cards_window = self.map_cards_canvas.create_window(
+            (0, 0), window=self.map_cards_inner, anchor="nw")
+        self.map_cards_inner.bind(
+            "<Configure>",
+            lambda _event: self.map_cards_canvas.configure(
+                scrollregion=self.map_cards_canvas.bbox("all") or (0, 0, 0, 0)))
+        self.map_cards_canvas.bind(
+            "<Configure>",
+            lambda event: self.map_cards_canvas.itemconfigure(self._map_cards_window,
+                                                              width=event.width))
+        self.map_cards_canvas.configure(yscrollcommand=cards_vsb.set)
+        for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.map_cards_canvas.bind(binding, self._on_map_cards_wheel)
+        self.map_cards_canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        cards_vsb.pack(side=RIGHT, fill=Y)
+        if str(self.config.get("map_side_mode", "list")) == "cards":
+            tree_frame.pack_forget()
+            self.map_cards_frame.pack(fill=BOTH, expand=True)
 
         # ---- Состояние ----
         footer = tb.Frame(outer)
@@ -2720,6 +2763,8 @@ class ColonialHelperApp:
         self._map_last_snapshot = snapshot
         self._draw_system_map(snapshot)
         self._fill_map_tree(snapshot)
+        if str(getattr(self, "map_side_mode", None) and self.map_side_mode.get() or "list") == "cards":
+            self._fill_map_cards(snapshot)
         self._map_update_status(snapshot)
 
     def _on_map_mode_change(self):
@@ -3263,7 +3308,16 @@ class ColonialHelperApp:
 
     # ---------- карта: мышь и выбор ----------
     def _map_item_at(self, x, y):
-        """Объект под курсором. Станции важнее тел: они нарисованы поверх."""
+        """Объект под курсором.
+
+        Раньше выбор решал только тип объекта («станция важнее тела»), и это
+        работало, пока станции висели на отдельном кольце. Теперь наземные
+        постройки стоят на краю тела — то есть буквально в паре пикселей от
+        его центра, — и клик по планете «принадлежать» стройке. Поэтому
+        сначала берём расстояние (округлённое до 2 px, чтобы мелкие наложения
+        решались в пользу станции — она нарисована поверх и в неё труднее
+        попасть), и только затем тип.
+        """
         priority = {"station": 0, "player": 1, "body": 2, "star": 3}
         best = None
         best_key = None
@@ -3273,7 +3327,7 @@ class ColonialHelperApp:
                         + (float(item.y) - float(y)) ** 2) ** 0.5
             if distance > reach:
                 continue
-            key = (priority.get(item.kind, 9), distance)
+            key = (round(distance / 2.0), priority.get(item.kind, 9), distance)
             if best_key is None or key < best_key:
                 best_key = key
                 best = item
@@ -3409,6 +3463,220 @@ class ColonialHelperApp:
             return
         self._map_set_hint(" · ".join(part for part in (item.label, item.caption) if part))
 
+    # ---------- карта: боковая панель карточками ----------
+    def _on_map_side_mode(self):
+        """Переключить боковую панель: лента (дерево) ↔ карточки."""
+        mode = "cards" if str(self.map_side_mode.get()) == "cards" else "list"
+        self.map_side_mode.set(mode)
+        self.config["map_side_mode"] = mode
+        self.save_config()
+        tree_pack = getattr(self.map_tree, "master", None)
+        try:
+            if mode == "cards":
+                if tree_pack is not None:
+                    tree_pack.pack_forget()
+                self.map_cards_frame.pack(fill=BOTH, expand=True)
+                self._fill_map_cards(self._map_last_snapshot or self.system_map.snapshot())
+            else:
+                self.map_cards_frame.pack_forget()
+                if tree_pack is not None:
+                    tree_pack.pack(fill=BOTH, expand=True)
+        except Exception:
+            pass
+
+    def _on_map_cards_wheel(self, event):
+        """Колесо мыши над карточками — прокрутка, а не зум карты."""
+        delta = getattr(event, "delta", 0) or 0
+        if sys.platform == "darwin":
+            step = -int(delta)
+        elif delta:
+            step = -120 if delta > 0 else 120
+        else:                                   # Linux: кнопки 4/5
+            step = -120 if getattr(event, "num", 4) == 5 else 120
+        try:
+            self.map_cards_canvas.yview_scroll(int(step / 60.0) or (1 if step > 0 else -1), "units")
+        except Exception:
+            pass
+        return "break"
+
+    def _map_card_row(self, parent, text, *, color=None, bold=False, size=9):
+        label = tb.Label(parent, text=text, foreground=color or COLOR_TEXT,
+                         font=("Segoe UI", size, "bold" if bold else "normal"),
+                         anchor=W, justify=LEFT, wraplength=250)
+        label.pack(fill=X)
+        return label
+
+    def _map_site_card(self, parent, station) -> None:
+        """Мини-карточка стройки/станции внутри карточки тела."""
+        card = tb.Frame(parent)
+        card.pack(fill=X, pady=(3, 0))
+        percent = station.percent_delivered
+        state = ""
+        if station.planned and percent is None:
+            state = "план"
+        elif percent is not None:
+            filled = int(round(percent / 100.0 * 10))
+            state = f"{'▰' * filled}{'▱' * (10 - filled)} {percent}%"
+        elif station.progress is not None:
+            state = f"{float(station.progress) * 100:.0f}%"
+        head = tb.Frame(card)
+        head.pack(fill=X)
+        tb.Label(head, text=self._map_short_label(station.title or station.name),
+                 font=("Segoe UI", 9, "bold"),
+                 foreground=COLOR_ORANGE if station.is_site else COLOR_TEXT,
+                 anchor=W).pack(side=LEFT, fill=X, expand=True)
+        if station.is_site:
+            tb.Label(head, text=state, font=("Consolas", 8),
+                     foreground=COLOR_GREEN if percent == 100 else COLOR_ORANGE).pack(side=RIGHT)
+        details = []
+        if station.required_tons > 0:
+            details.append(f"{station.provided_tons:,} / {station.required_tons:,} т".replace(",", " "))
+        elif station.remaining_tons:
+            details.append(f"осталось {station.remaining_tons:,} т".replace(",", " "))
+        note = self._map_carry_note(station)
+        if note:
+            details.append(f"везти: {note}")
+        due = due_note(station.due_at) if station.is_site and not station.complete else ""
+        if due:
+            details.append(f"срок: {due}")
+        if details:
+            self._map_card_row(card, " · ".join(details), color=COLOR_MUTED, size=8)
+        card.bind("<Button-1>", lambda _e, key=str(station.build_id or station.name): self._select_map_object(key))
+        card.bind("<Double-Button-1>", lambda _e, key=str(station.build_id or station.name): self._map_center_on_key(key))
+        for child in card.winfo_children():
+            try:
+                child.bind("<Button-1>", lambda _e, key=str(station.build_id or station.name): self._select_map_object(key))
+            except Exception:
+                pass
+
+    def _map_center_on_key(self, key: str):
+        """Двойной клик по карточке — отцентровать холст на объекте."""
+        if not key:
+            return
+        self._map_center = key
+        self._map_redraw_now()
+
+    def _fill_map_cards(self, snapshot):
+        """Собрать карточки: тело, его параметры и все его постройки."""
+        inner = getattr(self, "map_cards_inner", None)
+        if inner is None:
+            return
+        # Очистка previous-содержимого. Список детей мог не отдаться (заглушки
+        # Tk в тестах) — это не повод ничего не рисовать.
+        try:
+            children = list(inner.winfo_children())
+        except Exception:
+            children = []
+        for child in children:
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        if snapshot is None or not getattr(snapshot, "bodies", None):
+            try:
+                self._map_card_row(inner, "Нет данных о телах системы: отсканируйте "
+                                           "систему (FSS/DSS) — карточки появятся.",
+                                   color=COLOR_MUTED, size=9)
+            except Exception:
+                pass
+            return
+        try:
+            plan = orrery.plan_system(snapshot.bodies, snapshot.system or "",
+                                      show_moons=True, extra_marks=len(snapshot.stations or []))
+        except Exception:
+            plan = {"clusters": [{"star": (snapshot.star.name if snapshot.star else ""),
+                                  "bodies": [body.name for body in snapshot.bodies
+                                             if body.kind != KIND_STAR]}],
+                    "positions": {}}
+        by_name = {body.name: body for body in snapshot.bodies}
+        stations_by_body = {}
+        for station in snapshot.stations:
+            stations_by_body.setdefault(str(station.body_name or ""), []).append(station)
+        needle = str(getattr(self, "map_filter_var", None) and self.map_filter_var.get() or "").strip().lower()
+        unscanned_only = bool(getattr(self, "map_unscanned_var", None) and self.map_unscanned_var.get())
+        shown = 0
+        for cluster in plan.get("clusters", []):
+            names = list(cluster.get("bodies", []))
+            star_name = str(cluster.get("star") or "")
+            if len(plan.get("clusters", [])) > 1 and star_name:
+                try:
+                    self._map_card_row(inner, f"★ {self._map_short_label(star_name)} · тел: {len(names)}",
+                                       color=COLOR_YELLOW, bold=True, size=9)
+                except Exception:
+                    pass
+            if star_name and not needle:
+                self._map_body_card(inner, by_name.get(star_name), stations_by_body.get(star_name, []))
+            for name in names:
+                body = by_name.get(name)
+                if body is None:
+                    continue
+                if unscanned_only and body.scanned:
+                    continue
+                stations = stations_by_body.get(name, [])
+                if needle and needle not in f"{name} {body.body_class} {body.star_type}".lower():
+                    if not any(needle in f"{station.title} {station.name}".lower() for station in stations):
+                        continue
+                self._map_body_card(inner, body, stations)
+                shown += 1
+        for station in [item for item in snapshot.stations if not item.body_name or item.body_name not in by_name]:
+            if needle and needle not in f"{station.title} {station.name}".lower():
+                continue
+            self._map_site_card(inner, station)
+            shown += 1
+        if not shown:
+            try:
+                self._map_card_row(inner, "Ничего не найдено по фильтру.", color=COLOR_MUTED, size=9)
+            except Exception:
+                pass
+
+    def _map_body_card(self, parent, body, stations) -> None:
+        """Карточка тела: имя, класс, параметры, флаги и постройки на нём."""
+        if body is None:
+            return
+        card = tb.Frame(parent, padding=4)
+        card.pack(fill=X, pady=(4, 0))
+        head = tb.Frame(card)
+        head.pack(fill=X)
+        kind_label = BODY_LABELS.get(body.kind, "тело")
+        if body.kind == KIND_STAR and body.star_type:
+            kind_label = f"звезда {body.star_type}"
+        tb.Label(head, text=self._map_short_label(body.name), font=("Segoe UI", 10, "bold"),
+                 foreground=COLOR_TEXT, anchor=W).pack(side=LEFT, fill=X, expand=True)
+        tb.Label(head, text=kind_label, font=("Segoe UI", 8), foreground=COLOR_MUTED).pack(side=RIGHT)
+        details = []
+        if body.body_class:
+            details.append(body.body_class)
+        if body.distance_ls:
+            details.append(f"{body.distance_ls:,.1f} ls".replace(",", " "))
+        if body.gravity:
+            details.append(f"{body.gravity / 9.80665:.2f} g")
+        if body.surface_temp_k:
+            details.append(f"{body.surface_temp_k:.0f} K")
+        if body.atmosphere:
+            details.append(self._map_short_label(body.atmosphere))
+        if details:
+            self._map_card_row(card, " · ".join(details), color=COLOR_MUTED, size=8)
+        flags = []
+        if body.landable:
+            flags.append("🛬 посадка")
+        if body.bio_signals:
+            flags.append(f"🌿 {body.bio_signals}")
+        if getattr(body, "rings", None):
+            flags.append(f"💍 {len(body.rings)}")
+        if body.scanned:
+            flags.append("скан")
+        if body.mapped:
+            flags.append("карта")
+        if flags:
+            self._map_card_row(card, " · ".join(flags),
+                               color=COLOR_CYAN if body.landable else COLOR_GREEN if body.bio_signals else COLOR_MUTED,
+                               size=8)
+        key = str(body.name or "")
+        card.bind("<Button-1>", lambda _e, value=key: self._select_map_object(value))
+        card.bind("<Double-Button-1>", lambda _e, value=key: self._map_center_on_key(value))
+        for station in sorted(stations, key=self._map_station_sort_key):
+            self._map_site_card(card, station)
+
     def _on_map_tree_select(self, _event=None):
         tree = getattr(self, "map_tree", None)
         if tree is None:
@@ -3495,18 +3763,30 @@ class ColonialHelperApp:
         if not snapshot.system:
             self._map_set_hint("Нет данных о текущей системе для Plotly")
             return
-        show_moons = not getattr(self, "map_moons_var", None) or bool(
-            self.map_moons_var.get())
-        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
-        selected = getattr(self, "_map_selected", "") or ""
+        # Параметры интерактивной карты: вид, луны, цель и уровень приближения
+        # (0 — система, 1 — кластер звезды, 2 — окрестности цели, 3 — поверхность).
+        # Читаем защищённо: у mock-приложения в тестах `config` не словарь.
+        config = getattr(self, "config", None)
+        config = config if isinstance(config, dict) else {}
         try:
-            from plotly_map import open_plotly_in_browser
-            path = open_plotly_in_browser(
-                snapshot, view_mode=view_mode, show_moons=show_moons, selected=selected
-            )
+            zoom = max(0, min(3, int(config.get("map_plotly_zoom", 0) or 0)))
+        except (TypeError, ValueError):
+            zoom = 0
+        labels = bool(config.get("map_plotly_labels", False))
+        show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
+        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
+        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
+        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
+        selected = str(getattr(self, "_map_selected", "") or "")
+        try:
+            from plotly_map import normalize_view_mode as plotly_view_mode, open_plotly_in_browser
+            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
+            path = open_plotly_in_browser(snapshot, view_mode=view_mode, show_moons=show_moons,
+                                          selected=selected, zoom=zoom, show_all_labels=labels)
             target_note = f" (фокус: {selected})" if selected else ""
             self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}{target_note}")
-            self.log(f"Интерактивная карта {snapshot.system} (Plotly {view_mode.upper()}){target_note} открыта в браузере", "info")
+            view_note = "вид сверху (2D)" if view_mode == "2d" else "3D-оррерий"
+            self.log(f"Интерактивная карта {snapshot.system} (Plotly, {view_note}){target_note} открыта в браузере", "info")
         except Exception as err:
             self._map_update_status(snapshot, f"Ошибка открытия Plotly: {err}")
             self.log(f"Не удалось открыть карту Plotly: {err}", "warning")
@@ -3528,15 +3808,27 @@ class ColonialHelperApp:
             path = ""
         if not path:
             return
-        show_moons = not getattr(self, "map_moons_var", None) or bool(
-            self.map_moons_var.get())
-        view_mode = str(getattr(self, "map_view_mode", None) and self.map_view_mode.get() or "3d")
-        selected = getattr(self, "_map_selected", "") or ""
+        # Параметры интерактивной карты: вид, луны, цель и уровень приближения
+        # (0 — система, 1 — кластер звезды, 2 — окрестности цели, 3 — поверхность).
+        # Читаем защищённо: у mock-приложения в тестах `config` не словарь.
+        config = getattr(self, "config", None)
+        config = config if isinstance(config, dict) else {}
         try:
-            from plotly_map import export_plotly_html
-            export_plotly_html(
-                snapshot, filepath=path, view_mode=view_mode, show_moons=show_moons, selected=selected
-            )
+            zoom = max(0, min(3, int(config.get("map_plotly_zoom", 0) or 0)))
+        except (TypeError, ValueError):
+            zoom = 0
+        labels = bool(config.get("map_plotly_labels", False))
+        show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
+        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
+        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
+        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
+        selected = str(getattr(self, "_map_selected", "") or "")
+        try:
+            from plotly_map import export_plotly_html, normalize_view_mode as plotly_view_mode
+            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
+            export_plotly_html(snapshot, filepath=path, view_mode=view_mode,
+                               show_moons=show_moons, selected=selected, zoom=zoom,
+                               show_all_labels=labels)
             self._map_update_status(snapshot, f"Карта Plotly сохранена: {path}")
             self.log(f"Карта системы {snapshot.system} экспортирована в HTML: {path}", "info")
         except Exception as err:
@@ -4228,6 +4520,17 @@ class ColonialHelperApp:
             tb.Checkbutton(ship_chk, text=block_label, variable=var,
                            command=lambda k=block_key, v=var: self._on_ship_block_changed(k, v.get())).pack(anchor=W, pady=1)
 
+        # Список модулей: компактный HUD показывает только то, что реально
+        # требует внимания; «все модули» остаётся доступным переключателем.
+        tb.Label(frame, text="Список модулей в SHIP:", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(6, 2))
+        self._ship_modules_var = tk.StringVar(
+            value=str(self.overlay_manager.settings.get("ship_modules_view", "important")))
+        for mode, label in (("important", "только важные (повреждённые, выключенные, ключевые)"),
+                            ("all", "все модули"),
+                            ("off", "только итог — без списка")):
+            tb.Radiobutton(frame, text=label, value=mode, variable=self._ship_modules_var,
+                           command=self._on_ship_modules_view_changed).pack(anchor=W, pady=1)
+
         # ---------- Раскладка: якоря, отступы, профили ----------
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=15)
         tb.Label(frame, text="Раскладка и привязка", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
@@ -4814,6 +5117,12 @@ class ColonialHelperApp:
 
     def _on_ship_block_changed(self, block: str, show: bool):
         self.overlay_manager.set_ship_block(block, show)
+
+    def _on_ship_modules_view_changed(self):
+        """Режим списка модулей меняется на лету: окно не пересоздаём."""
+        mode = str(self._ship_modules_var.get() or "important")
+        self.overlay_manager.set_ship_modules_view(mode)
+        self.log(f"SHIP: список модулей — {mode}", "info")
 
     def _on_reset_overlay_positions(self):
         self.overlay_manager.reset_positions()
@@ -6076,6 +6385,12 @@ class ColonialHelperApp:
             "is_hub": d.get("is_hub"),
             "route_system_id": d.get("route_system_id"),
             "source_hash": d.get("source_hash"),
+            # Сайт разделяет «весь перевозимый груз» и «завезено на
+            # стройплощадки» (новый блок досье). Признак считается парсером
+            # журнала, поэтому уезжает вместе с поставкой: серверу незачем
+            # угадывать источник по набору полей.
+            "source": d.get("source"),
+            "is_construction": d.get("is_construction"),
         }
 
     def _format_import_summary(self, files_count: int, event_counts: "Counter", deliveries: list, elapsed: float) -> str:
@@ -6889,7 +7204,15 @@ class ColonialHelperApp:
         return restored
 
     def _load_current_state_files(self):
-        """Прочитать текущие JSON-файлы состояния (Status, ModulesInfo, Cargo)."""
+        """Прочитать текущие JSON-файлы состояния (Status, ModulesInfo, Cargo).
+
+        Файлы — это то же содержимое, что и события журнала, только «как сейчас».
+        Поэтому здесь больше нет собственного парсера: `ShipTracker` вызывается с
+        флагом устаревших данных. Прежняя копия разбора и была причиной того, что
+        оверлей врал: `Status.json` читал `HullHealth`, которого в файле нет, а
+        `ModulesInfo.json` принимал `Health` за честное значение и «чинил» им
+        разбитые модули. Теперь оба читает один код.
+        """
         loaded = []
         st = self.ship.state
         try:
@@ -6897,41 +7220,7 @@ class ColonialHelperApp:
             if status_file.exists():
                 with open(status_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Напрямую обновляем состояние корабля
-                fuel = data.get("Fuel")
-                if fuel and isinstance(fuel, dict):
-                    st.fuel_level = float(fuel.get("FuelMain", 0))
-                    st.fuel_reservoir = float(fuel.get("FuelReservoir", 0))
-                pips = data.get("Pips")
-                if pips and isinstance(pips, list) and len(pips) >= 3:
-                    st.pips_sys = int(pips[0])
-                    st.pips_eng = int(pips[1])
-                    st.pips_wep = int(pips[2])
-                st.flags = int(data.get("Flags", 0))
-                st.flags2 = int(data.get("Flags2", 0))
-                st.balance = int(data.get("Balance", 0))
-                st.legal_state = str(data.get("LegalState", "Clean"))
-                st.fire_group = int(data.get("FireGroup", 0))
-                st.gui_focus = int(data.get("GuiFocus", 0))
-                cargo = data.get("Cargo")
-                if cargo is not None:
-                    st.cargo_count = int(cargo)
-                dest = data.get("Destination")
-                if dest and isinstance(dest, dict):
-                    st.destination_system = str(dest.get("System", ""))
-                    st.destination_body = str(dest.get("Body", ""))
-                    st.destination_name = str(dest.get("Name", ""))
-                # HullHealth / ShieldHealth (если есть в новых версиях Status.json)
-                hh = data.get("HullHealth")
-                if hh is not None:
-                    st.hull_health = float(hh)
-                sh = data.get("ShieldHealth")
-                if sh is not None:
-                    st.shield_health = float(sh)
-                # Текущая система из Status.json (fallback если нет Location/FSDJump в журнале)
-                star_system = data.get("StarSystem")
-                if star_system:
-                    st.current_system = star_system
+                self.ship.parse_status_json(data)
                 loaded.append("Status")
         except Exception as e:
             self.root.after(0, lambda e=e: self.log(f"Ошибка чтения Status.json: {e}", "warn"))
@@ -6940,56 +7229,7 @@ class ColonialHelperApp:
             if modules_file.exists():
                 with open(modules_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Напрямую обновляем модули
-                for m in data.get("Modules", []):
-                    slot = str(m.get("Slot", ""))
-                    if not slot:
-                        continue
-                    if slot not in st.modules:
-                        from ship_tracker import ShipModule
-                        st.modules[slot] = ShipModule(slot=slot, name=str(m.get("Item", "Unknown")))
-                    health = m.get("Health")
-                    if health is not None:
-                        # Не "чиним" модули из устаревшего JSON:
-                        # ModulesInfo.json обновляется редко и может содержать
-                        # health=1.0 для всех модулей. Принимаем только если
-                        # новый health <= текущего (модуль повредился дальше).
-                        new_health = float(health)
-                        current_health = st.modules[slot].health
-                        if new_health <= current_health:
-                            st.modules[slot].health = new_health
-                    power = m.get("Power")
-                    if power is not None:
-                        st.modules[slot].power = float(power)
-                    if m.get("On") is not None:
-                        st.modules[slot].on = bool(m.get("On"))
-                    if m.get("Engineering") is not None:
-                        st.modules[slot].engineered = bool(m.get("Engineering"))
-                    priority = m.get("Priority")
-                    if priority is not None:
-                        st.modules[slot].priority = int(priority)
-                    item = m.get("Item")
-                    if item is not None:
-                        st.modules[slot].name = str(item)
-                # Пересчитать энергопотребление и мощность PowerPlant
-                used = 0.0
-                for m in st.modules.values():
-                    if m.on and m.power > 0:
-                        used += m.power
-                st.power_used = round(used, 3)
-                pp = st.modules.get("PowerPlant")
-                if pp and "size" in pp.name:
-                    try:
-                        size = int(pp.name.split("size")[1].split("_")[0])
-                        cls = 1
-                        if "class" in pp.name:
-                            cls = int(pp.name.split("class")[1].split("_")[0])
-                        base = {1: 1.20, 2: 1.50, 3: 2.00, 4: 3.00,
-                                5: 5.00, 6: 7.00, 7: 10.00, 8: 12.00}.get(size, size * 1.5)
-                        mult = 1.0 + (cls - 1) * (1.0 / 6.0)
-                        st.power_capacity = round(base * mult, 2)
-                    except (IndexError, ValueError):
-                        pass
+                self.ship.parse_modules_info_json(data)
                 loaded.append("ModulesInfo")
                 damaged = sum(1 for m in st.modules.values() if m.health < 1.0)
                 self._maybe_log_modules(len(st.modules), damaged, st.power_capacity)
@@ -7945,16 +8185,22 @@ class ColonialHelperApp:
         ev_name = ev.get("event")
         if ev_name in ("LoadGame", "Rank", "Progress", "Statistics"):
             self._update_pilot_stats_from_event(ev)
+        # Строка в лог — по тем же событиям, что двигают состояние в HUD
+        # (`ship_tracker`): «ModuleDamage» игра не пишет, зато есть JetCone,
+        # дроны и синтез — без них починка в логе не отображалась вовсе.
         if live and ev_name in (
-            "HullDamage", "HeatDamage", "ShieldState", "ModuleDamage",
-            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll",
+            "HullDamage", "HeatDamage", "HeatWarning", "ShieldState", "JetConeDamage",
+            "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll", "RepairDrone",
+            "RebootRepair", "Synthesis", "SystemsShutdown",
         ):
             st = self.ship.state
             damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
             dmg_str = f" ({', '.join(damaged)})" if damaged else ""
+            shields = {"up": "up", "down": "DOWN", "none": "нет генератора",
+                       "unknown": "нет данных"}.get(st.shield_state, st.shield_state)
             self.overlay_manager.log(
-                f"{ev_name}: hull {st.hull_health:.0%}, shields {st.shield_health:.0%}, "
-                f"damaged {len(st.damaged_modules)} mod.{dmg_str}",
+                f"{ev_name}: hull {st.hull_health:.0%} ({st.hull_source or '—'}), "
+                f"shields {shields}, damaged {len(st.damaged_modules)} mod.{dmg_str}",
                 "info",
             )
 

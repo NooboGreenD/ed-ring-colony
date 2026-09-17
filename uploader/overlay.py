@@ -1,12 +1,13 @@
 """Оверлейные окна для Colonial Helper — HUD-стиль ED Ring Colony."""
 import tkinter as tk
 from tkinter import END
-from typing import Dict, Any, Optional, Callable, Tuple
+from typing import Dict, Any, List, Optional, Callable, Sequence, Tuple
 import threading
 import time
 from pathlib import Path
 from collections import deque
 
+import ship_hud
 from ship_tracker import decode_status_flags
 from game_monitor import (
     GameMonitor,
@@ -187,6 +188,72 @@ COLOR_LINE = "#21262d"
 # ============================================================
 #  Утилиты стиля
 # ============================================================
+#: Моноширинные семейства, в которых таблица выравнивается по колонкам.
+MONO_FONT_HINTS = ("consolas", "courier", "mono", "dejavu sans mono", "menlo",
+                   "liberation mono", "fixedsys", "nsimsun")
+
+
+def is_monospace_font(family: object) -> bool:
+    text = str(family or "").lower()
+    return any(hint in text for hint in MONO_FONT_HINTS)
+
+
+def format_table(headers: Sequence[str], rows: Sequence[Sequence[object]],
+                 aligns: Optional[Sequence[str]] = None,
+                 max_width: Optional[int] = None) -> str:
+    """Моноширинная таблица для оверлея: заголовок + строки по колонкам.
+
+    Оверлей — Tk-Label, поэтому «табличка» здесь это текст с выравниванием, а
+    не Treeview: лишнего окна, фокуса и мигания при перерисовке нет. Выравнивание
+    честно работает только на моноширинном шрифте; для остальных возвращаем
+    обычную «списочную» разбивку, чтобы не разъезжалось.
+    """
+    body = [[str(cell) for cell in row] for row in rows if row]
+    if not body:
+        return ""
+    columns = max([len(headers or ())] + [len(row) for row in body])
+    headers = list(headers or ()) + [""] * (columns - len(headers or ()))
+    aligned = []
+    for row in body:
+        padded = list(row) + [""] * (columns - len(row))
+        aligned.append(padded[:columns])
+    if not is_monospace_font(format_table.font_family):
+        return "\n".join(
+            [" | ".join(cell for cell in ([h for h in headers if h] + row) if cell)]
+            if headers and any(headers) else []
+        ) + ("\n" if headers and any(headers) else "") + "\n".join(
+            " | ".join(cell for cell in row if cell) for row in aligned)
+    widths = []
+    for index in range(columns):
+        widths.append(max([len(str(headers[index]))] + [len(row[index]) for row in aligned]))
+    aligns = list(aligns or ["left"] * columns)
+    aligns += ["left"] * (columns - len(aligns))
+
+    def render(cells: Sequence[str]) -> str:
+        parts = []
+        for index, cell in enumerate(cells):
+            text = str(cell)
+            width = widths[index]
+            parts.append(text.rjust(width) if aligns[index] == "right" else text.ljust(width))
+        return "  ".join(parts).rstrip()
+
+    def fit(line: str) -> str:
+        if not max_width or len(line) <= max_width:
+            return line
+        keep = max(4, int(max_width) - 1)
+        return line[:keep].rstrip() + "…"
+
+    lines = []
+    if any(str(header) for header in headers):
+        lines.append(fit(render(headers)))
+    for row in aligned:
+        lines.append(fit(render(row)))
+    return "\n".join(lines)
+
+
+format_table.font_family = "Consolas"
+
+
 def _make_separator(parent, color=COLOR_LINE) -> tk.Frame:
     sep = tk.Frame(parent, bg=color, height=1)
     return sep
@@ -213,7 +280,7 @@ BLOCK_LABELS = {
 DEFAULT_BLOCK_POSITIONS = {
     "route": (50, 50, 280, 160),
     "status": (50, 220, 280, 220),
-    "ship": (50, 450, 360, 420),
+    "ship": (50, 450, 360, 330),
     "cargo": (430, 450, 300, 340),
     "session": (430, 50, 320, 300),
     "events": (770, 50, 320, 260),
@@ -1287,336 +1354,163 @@ class StatusOverlay(OverlayWindow):
 #  ShipOverlay
 # ============================================================
 class ShipOverlay(OverlayWindow):
+    """Корабль: прочность корпуса и модулей, щиты, энергия, топливо, лента.
+
+    Компактный текстовый HUD вместо набора плашек. Причина переписки — не
+    «красивее», а корректность: раньше блок рисовал числа, которых в журнале
+    нет (100 % щитов при пустом значении), и терял те, что есть (прочность
+    модулей не обновлялась, потому что ``ModuleInfo`` читался под чужим
+    ключом). Теперь состав и текст каждой строки считает ``ship_hud``, а здесь
+    только печать: строка = Label из пула, перекрашивается по тону.
+
+    Одна строка — один Label: при обновлении раз в секунду это не дёргает
+    геометрию (окно не мигает), а лишних виджетов нет — блок остаётся
+    компактным даже со списком модулей.
+    """
+
+    #: Тон HUD -> цвет текста.
+    TONE_COLORS = {
+        "ok": COLOR_GREEN_TEXT,
+        "warn": COLOR_YELLOW,
+        "bad": COLOR_RED_TEXT,
+        "muted": COLOR_TEXT_MUTED,
+        "text": COLOR_TEXT,
+        "info": COLOR_CYAN,
+    }
+    #: Тон чипа -> (цвет текста, фон плашки).
+    CHIP_COLORS = {
+        "ok": (COLOR_GREEN_TEXT, "#123324"),
+        "info": (COLOR_CYAN, "#10253d"),
+        "warn": (COLOR_YELLOW, "#3a2c10"),
+        "bad": (COLOR_RED_TEXT, "#3d1418"),
+        "muted": (COLOR_TEXT_MUTED, "#21262d"),
+    }
+
     def __init__(self, master: tk.Tk, settings: Dict[str, Any]):
-        # The module list has its own scrollbar, so the whole ship overlay
-        # does not need to occupy half of a 1080p screen.
-        h = max(settings.get("ship_height", 420), 300)
+        # Высота подбиралась под список плашек; текстовые строки компактнее,
+        # поэтому окно стартует ниже — и не режет список модулей.
+        h = max(settings.get("ship_height", 330), 180)
         super().__init__(
             master, "SHIP",
             settings.get("ship_x", 50), settings.get("ship_y", 440),
             settings.get("ship_width", 360), h,
             settings, "ship",
         )
-        ff = settings.get("font_family", "Consolas")
-        fs = settings.get("font_size", 10)
-        s = settings
+        self._ff = settings.get("font_family", "Consolas")
+        self._fs = settings.get("font_size", 10)
+        wrap = max(150, int(settings.get("ship_width", 360)) - 26)
+        self._wrap = wrap
+        self._last_data: Dict[str, Any] = {}
 
-        self.ship_header = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.ship_header.pack(fill=tk.X, pady=(4, 0))
-        self.ship_icon = tk.Label(self.ship_header, text="[+]", font=(ff, 10), fg=COLOR_ACCENT, bg=COLOR_PANEL)
-        self.ship_icon.pack(side=tk.LEFT, padx=(0, 6))
-        self.ship_name_label = tk.Label(self.ship_header, text="Unknown", font=(ff, fs + 1, "bold"), fg=COLOR_ACCENT, bg=COLOR_PANEL)
-        self.ship_name_label.pack(side=tk.LEFT)
+        self.ship_name_label = tk.Label(self.content, text="Корабль не определён",
+                                        font=(self._ff, self._fs + 1, "bold"), fg=COLOR_ACCENT,
+                                        bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT,
+                                        wraplength=wrap)
+        self.ship_name_label.pack(fill=tk.X, pady=(2, 0))
 
-        self.flags_label = tk.Label(self.content, text="", font=(ff, fs - 2), fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W)
-        self.flags_label.pack(fill=tk.X, pady=(2, 0))
-        if not s.get("show_flags", True):
-            self.flags_label.pack_forget()
+        # Чипы состояния: строка плашек над показателями.
+        self.chips_frame = tk.Frame(self.content, bg=COLOR_PANEL)
+        self.chips_frame.pack(fill=tk.X, pady=(2, 0))
+        self._chip_widgets: List[tk.Label] = []
+        self._chips_signature = ""
 
-        self.pips_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.pips_frame.pack(fill=tk.X, pady=(4, 0))
-        self.pips_sys = self._make_pip_bar(self.pips_frame, "SYS", COLOR_CYAN, ff, fs)
-        self.pips_eng = self._make_pip_bar(self.pips_frame, "ENG", COLOR_ACCENT, ff, fs)
-        self.pips_wep = self._make_pip_bar(self.pips_frame, "WEP", COLOR_RED_TEXT, ff, fs)
-        if not s.get("show_pips", True):
-            self.pips_frame.pack_forget()
+        # Пул строк HUD: переиспользуем Label, лишние прячем.
+        self._row_labels: List[tk.Label] = []
+        self._last_signature = ""
+        self._last_rows = 0
+        self._hud: Dict[str, Any] = {}
 
-        _make_separator(self.content).pack(fill=tk.X, pady=4)
+    def _row_widget(self, index: int) -> tk.Label:
+        """i-я строка HUD: создать при необходимости, иначе переиспользовать."""
+        while len(self._row_labels) <= index:
+            label = tk.Label(self.content, text="", font=(self._ff, self._fs), fg=COLOR_TEXT,
+                             bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT,
+                             wraplength=self._wrap)
+            label.pack(fill=tk.X)
+            self._row_labels.append(label)
+        return self._row_labels[index]
 
-        self.hull_frame = self._make_stat_bar("HULL", COLOR_GREEN_TEXT)
-        self.hull_frame.pack(fill=tk.X, pady=(2, 0))
-        if not s.get("show_hull", True):
-            self.hull_frame.pack_forget()
+    def _render_chips(self, chips: Sequence[Dict[str, str]]) -> None:
+        signature = ",".join(f"{c['text']}:{c['tone']}" for c in chips)
+        if signature == self._chips_signature:
+            # Те же чипы — не трогаем виджеты: пересборка ряда на каждом тике
+            # и есть та вспышка, за которую оверлей ругали.
+            return
+        self._chips_signature = signature
+        for widget in self._chip_widgets:
+            widget.destroy()
+        self._chip_widgets = []
+        size = max(7, int(self._fs) - 2)
+        for chip in chips:
+            color, background = self.CHIP_COLORS.get(chip.get("tone", "muted"),
+                                                     self.CHIP_COLORS["muted"])
+            widget = tk.Label(self.chips_frame, text=chip.get("text", ""),
+                              font=(self._ff, size, "bold"), fg=color, bg=background,
+                              padx=4, pady=0, relief=tk.SOLID, bd=1)
+            widget.pack(side=tk.LEFT, padx=(0, 3))
+            self._chip_widgets.append(widget)
 
-        self.shield_frame = self._make_stat_bar("SHIELD", COLOR_CYAN)
-        self.shield_frame.pack(fill=tk.X, pady=(2, 0))
-        if not s.get("show_shield", True):
-            self.shield_frame.pack_forget()
+    def update_ship(self, data: dict, force: bool = False):
+        """Нарисовать состояние корабля по данным ``ShipTracker.get_state_dict()``.
 
-        self.fuel_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.fuel_frame.pack(fill=tk.X, pady=(2, 0))
-        tk.Label(self.fuel_frame, text="FUEL", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, width=10, anchor=tk.W).pack(side=tk.LEFT)
-        self.fuel_text = tk.Label(self.fuel_frame, text="0.00 / 0.00", font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_PANEL)
-        self.fuel_text.pack(side=tk.LEFT, padx=(6, 0))
-        self.fuel_res_text = tk.Label(self.fuel_frame, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
-        self.fuel_res_text.pack(side=tk.RIGHT)
-        if not s.get("show_fuel", True):
-            self.fuel_frame.pack_forget()
+        `force=True` — перерисовать даже при неизменной подписи данных: так
+        выглядит смена настроек блока (режим списка модулей, шрифт), при которых
+        цифры те же, а экран обязан обновиться.
+        """
+        hud = ship_hud.build_ship_hud(data, settings=self.settings)
+        self._hud = hud
+        self._last_data = dict(data or {})
+        self.ship_name_label.config(text=hud["title"])
+        self._render_chips(hud.get("chips") or [])
 
-        self.power_frame = self._make_stat_bar("POWER", COLOR_YELLOW)
-        self.power_frame.pack(fill=tk.X, pady=(2, 0))
-        if not s.get("show_power", True):
-            self.power_frame.pack_forget()
+        rows = ship_hud.hud_rows(hud)
+        if not force and hud.get("signature") == self._last_signature and len(rows) == self._last_rows:
+            # Ничего не изменилось — не перекрашиваем и не перепакуем.
+            return
+        self._last_signature = str(hud.get("signature", ""))
+        self._last_rows = len(rows)
 
-        self.info_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.info_frame.pack(fill=tk.X, pady=(4, 0))
-        self.cargo_text = tk.Label(self.info_frame, text="Cargo: 0 / 0 t", font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
-        self.cargo_text.pack(side=tk.LEFT)
-        self.balance_text = tk.Label(self.info_frame, text="", font=(ff, fs - 1), fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.E)
-        self.balance_text.pack(side=tk.RIGHT)
-        if not s.get("show_cargo_info", True):
-            self.cargo_text.pack_forget()
-        if not s.get("show_balance", True):
-            self.balance_text.pack_forget()
-        if not s.get("show_cargo_info", True) and not s.get("show_balance", True):
-            self.info_frame.pack_forget()
+        for index, row in enumerate(rows):
+            label = self._row_widget(index)
+            delta = ship_hud.ROW_FONT_DELTA.get(row["kind"], 0)
+            color = self.TONE_COLORS.get(row.get("tone", "text"), COLOR_TEXT)
+            label.config(text=row["text"], fg=color,
+                         font=(self._ff, max(7, int(self._fs) + delta)))
+            if not label.winfo_manager():
+                label.pack(fill=tk.X)
+        for label in self._row_labels[len(rows):]:
+            if label.winfo_manager():
+                label.pack_forget()
 
-        self.legal_text = tk.Label(self.content, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
-        self.legal_text.pack(fill=tk.X, pady=(2, 0))
-        if not s.get("show_legal", True):
-            self.legal_text.pack_forget()
+    def get_hud(self) -> Dict[str, Any]:
+        """Последняя модель HUD — тестам и отладочной печати."""
+        return dict(self._hud)
 
-        self.dest_text = tk.Label(self.content, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
-        self.dest_text.pack(fill=tk.X, pady=(0, 2))
-        if not s.get("show_destination", True):
-            self.dest_text.pack_forget()
+    def apply_font(self, family: str, size: int):
+        """Шрифт блока: строки перекраиваем сами, базу масштабирования помечаем заново.
 
-        _make_separator(self.content).pack(fill=tk.X, pady=4)
-
-        self.mod_header = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.mod_header.pack(fill=tk.X)
-        tk.Label(self.mod_header, text="MODULES", font=(ff, fs - 2, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(side=tk.LEFT)
-        self.mod_count_text = tk.Label(self.mod_header, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
-        self.mod_count_text.pack(side=tk.RIGHT)
-
-        self.modules_canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=260)
-        self.modules_canvas.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
-
-        scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.modules_canvas.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.modules_canvas.configure(yscrollcommand=scrollbar.set)
-
-        self.modules_inner = tk.Frame(self.modules_canvas, bg=COLOR_PANEL)
-        self.modules_canvas.create_window((0, 0), window=self.modules_inner, anchor=tk.NW, width=330)
-        self.modules_inner.bind("<Configure>", lambda e: self.modules_canvas.configure(scrollregion=self.modules_canvas.bbox("all")))
-
-        self.damage_counter = tk.Label(self.content, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
-        self.damage_counter.pack(fill=tk.X, pady=(2, 0))
-
-        # Кэш виджетов модулей: slot -> widget dict
-        self._module_widgets: Dict[str, dict] = {}
-        self._last_modules_hash = ""
-
-        if not s.get("show_modules", True):
-            self.mod_header.pack_forget()
-            self.modules_canvas.pack_forget()
-            scrollbar.pack_forget()
-            self.damage_counter.pack_forget()
-
-    def _make_pip_bar(self, parent, name, color, ff, fs):
-        frame = tk.Frame(parent, bg=COLOR_PANEL)
-        frame.pack(side=tk.LEFT, padx=(0, 10))
-        tk.Label(frame, text=name, font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(side=tk.LEFT)
-        bar_frame = tk.Frame(frame, bg=COLOR_LINE, width=60, height=10)
-        bar_frame.pack(side=tk.LEFT, padx=(4, 0))
-        bar_frame.pack_propagate(False)
-        fill = tk.Frame(bar_frame, bg=color, width=0, height=10)
-        fill.place(x=0, y=0)
-        lbl = tk.Label(frame, text="0/8", font=(ff, fs - 2), fg=color, bg=COLOR_PANEL, width=3)
-        lbl.pack(side=tk.LEFT, padx=(4, 0))
-        lbl._fill = fill
-        lbl._bar_frame = bar_frame
-        return lbl
-
-    def _make_stat_bar(self, label, color):
-        ff = self.settings.get("font_family", "Consolas")
-        fs = self.settings.get("font_size", 10)
-        frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        tk.Label(frame, text=label, font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, width=10, anchor=tk.W).pack(side=tk.LEFT)
-        bar_bg = tk.Frame(frame, bg=COLOR_LINE, height=12, width=120)
-        bar_bg.pack(side=tk.LEFT, padx=(6, 0))
-        bar_bg.pack_propagate(False)
-        bar_fill = tk.Frame(bar_bg, bg=color, height=12, width=0)
-        bar_fill.place(x=0, y=0)
-        bar_text = tk.Label(frame, text="100%", font=(ff, fs - 1, "bold"), fg=color, bg=COLOR_PANEL)
-        bar_text.pack(side=tk.RIGHT)
-        frame._bar_fill = bar_fill
-        frame._bar_text = bar_text
-        frame._bar_bg = bar_bg
-        return frame
-
-    def _health_color(self, percent: int) -> str:
-        if percent >= 80:
-            return COLOR_GREEN_TEXT
-        elif percent >= 50:
-            return COLOR_YELLOW
+        Обычный механизм OverlayWindow масштабирует виджеты, зарегистрированные при
+        сборке содержимого, а строки HUD создаются по ходу перерисовки — они бы
+        остались старого размера. Поэтому размер храним у себя и печатаем его в
+        каждую строку, а базу пересчитываем уже после перерисовки.
+        """
+        try:
+            size = max(6, min(28, int(size)))
+        except (TypeError, ValueError):
+            return
+        family = str(family or self._ff)
+        if size == int(self._fs) and family == self._ff:
+            return
+        self._fs = size
+        self._ff = family
+        self._chips_signature = ""      # чипы — под новый размер
+        if self._last_data:
+            self.update_ship(self._last_data, force=True)
         else:
-            return COLOR_RED_TEXT
-
-    def _modules_hash(self, modules: list) -> str:
-        """Быстрый хеш списка модулей для сравнения."""
-        parts = []
-        for m in sorted(modules, key=lambda x: x.get("slot", "")):
-            parts.append(f"{m.get('slot')}:{m.get('health',100)}:{m.get('power',0):.3f}")
-        return "|".join(parts)
-
-    def update_ship(self, data: dict):
-        ship_type = data.get("ship_type", "Unknown")
-        ship_name = data.get("ship_name", "")
-        ident = data.get("ship_ident", "")
-        display = f"{ship_type}"
-        if ship_name:
-            display += f"  '{ship_name}'"
-        if ident:
-            display += f"  [{ident}]"
-        self.ship_name_label.config(text=display[:42])
-
-        flags = data.get("flags_list", [])
-        important = [f for f in flags if f in ("Supercruise", "Hardpoints", "MassLock", "FsdCharging", "FsdCooldown", "LowFuel", "Overheat", "Danger", "Interdicted", "Scooping", "FsdJump", "FsdHyper", "FsdTransit")]
-        self.flags_label.config(text="  ".join(important) if important else "")
-
-        for pips_label, pips_key in [(self.pips_sys, "pips_sys"), (self.pips_eng, "pips_eng"), (self.pips_wep, "pips_wep")]:
-            pips = data.get(pips_key, 0)
-            pips_label.config(text=f"{pips}/8")
-            if hasattr(pips_label, '_fill'):
-                fill_width = int((pips / 8) * 60)
-                pips_label._fill.config(width=fill_width)
-
-        hull = data.get("hull_percent", 100)
-        hull_color = self._health_color(hull)
-        if hasattr(self.hull_frame, '_bar_fill'):
-            fill_w = int((hull / 100) * 120)
-            self.hull_frame._bar_fill.config(width=fill_w, bg=hull_color)
-            self.hull_frame._bar_text.config(text=f"{hull}%", fg=hull_color)
-
-        shield = data.get("shield_percent", 100)
-        has_shield_gen = any("shieldgenerator" in m.get("name", "").lower() for m in data.get("modules", []))
-        if not has_shield_gen and shield == 100:
-            if hasattr(self.shield_frame, '_bar_fill'):
-                self.shield_frame._bar_fill.config(width=0)
-                self.shield_frame._bar_text.config(text="NO", fg=COLOR_TEXT_MUTED)
-        else:
-            shield_color = self._health_color(shield)
-            if hasattr(self.shield_frame, '_bar_fill'):
-                fill_w = int((shield / 100) * 120)
-                self.shield_frame._bar_fill.config(width=fill_w, bg=shield_color)
-                self.shield_frame._bar_text.config(text=f"{shield}%", fg=shield_color)
-
-        fuel_lvl = data.get("fuel_level", 0)
-        fuel_cap = data.get("fuel_capacity", 0)
-        fuel_res = data.get("fuel_reservoir", 0)
-        self.fuel_text.config(text=f"{fuel_lvl:.2f} / {fuel_cap:.2f} t")
-        self.fuel_res_text.config(text=f"Res: {fuel_res:.3f} t" if fuel_res > 0 else "")
-
-        power_used = data.get("power_used", 0)
-        power_cap = data.get("power_capacity", 0)
-        power_pct = data.get("power_percent", 0)
-        if power_cap > 0:
-            pcolor = COLOR_GREEN_TEXT if power_pct < 80 else (COLOR_YELLOW if power_pct < 100 else COLOR_RED_TEXT)
-            if hasattr(self.power_frame, '_bar_fill'):
-                fill_w = int((min(power_pct, 100) / 100) * 120)
-                self.power_frame._bar_fill.config(width=fill_w, bg=pcolor)
-                self.power_frame._bar_text.config(text=f"{power_used:.2f} / {power_cap:.2f} MW ({power_pct}%)", fg=pcolor)
-        elif power_used > 0:
-            if hasattr(self.power_frame, '_bar_fill'):
-                self.power_frame._bar_fill.config(width=0)
-                self.power_frame._bar_text.config(text=f"{power_used:.2f} MW (no gen data)", fg=COLOR_YELLOW)
-        else:
-            if hasattr(self.power_frame, '_bar_fill'):
-                self.power_frame._bar_fill.config(width=0)
-                self.power_frame._bar_text.config(text="-", fg=COLOR_TEXT_MUTED)
-
-        cargo = data.get("cargo_count", 0)
-        cargo_cap = data.get("cargo_capacity", 0)
-        self.cargo_text.config(text=f"Cargo: {cargo} / {cargo_cap} t")
-
-        balance = data.get("balance", 0)
-        self.balance_text.config(text=f"{balance:,} CR".replace(",", " ") if balance > 0 else "")
-
-        legal = data.get("legal_state", "Clean")
-        lcolor = COLOR_GREEN_TEXT if legal == "Clean" else COLOR_RED_TEXT
-        self.legal_text.config(text=f"Legal: {legal}", fg=lcolor)
-
-        dest = data.get("destination_name", "")
-        self.dest_text.config(text=f"-> {dest}" if dest else "")
-
-        modules = data.get("modules", [])
-        show_modules = sorted(modules, key=lambda m: (m.get("health", 100), -m.get("power", 0)))
-
-        # Проверяем, изменился ли список модулей (health/power)
-        current_hash = self._modules_hash(show_modules)
-        if current_hash != self._last_modules_hash:
-            self._last_modules_hash = current_hash
-            self._update_module_widgets(show_modules)
-
-        self.mod_count_text.config(text=f"{len(modules)} mod." if modules else "")
-
-        damaged_count = data.get("damaged_count", 0)
-        critical_count = data.get("critical_count", 0)
-        if damaged_count > 0:
-            color = COLOR_RED_TEXT if critical_count > 0 else COLOR_YELLOW
-            self.damage_counter.config(text=f"! Damaged: {damaged_count}  Critical: {critical_count}", fg=color)
-        else:
-            self.damage_counter.config(text="OK All modules functional", fg=COLOR_GREEN_TEXT)
-
-    def _update_module_widgets(self, show_modules: list):
-        """Обновить виджеты модулей: переиспользуем существующие, создаём новые, удаляем лишние."""
-        ff = self.settings.get("font_family", "Consolas")
-        fs = self.settings.get("font_size", 10)
-        needed_slots = set()
-
-        for m in show_modules:
-            slot = m.get("slot", "")
-            if not slot:
-                continue
-            needed_slots.add(slot)
-            hp = m.get("health", 100)
-            color = self._health_color(hp)
-            power = m.get("power", 0)
-
-            if slot in self._module_widgets:
-                # Обновляем существующий виджет
-                widgets = self._module_widgets[slot]
-                widgets["bar_fill"].config(width=int((hp / 100) * 30), bg=color)
-                widgets["name_label"].config(text=m['name'].replace("int_", "").replace("hpt_", "")[:20], fg=color)
-                widgets["hp_label"].config(text=f"{hp:3}%", fg=color)
-                if power > 0:
-                    widgets["power_label"].config(text=f"{power:.2f}MW")
-            else:
-                # Создаём новый виджет
-                row = tk.Frame(self.modules_inner, bg=COLOR_PANEL)
-                row.pack(fill=tk.X, pady=1)
-                bar_bg = tk.Frame(row, bg=COLOR_LINE, width=30, height=8)
-                bar_bg.pack(side=tk.LEFT, padx=(0, 6))
-                bar_bg.pack_propagate(False)
-                fill_w = int((hp / 100) * 30)
-                bar_fill = tk.Frame(bar_bg, bg=color, width=fill_w, height=8)
-                bar_fill.place(x=0, y=0)
-                name_text = m['name'].replace("int_", "").replace("hpt_", "")[:20]
-                name_label = tk.Label(row, text=name_text, font=(ff, fs - 2), fg=color, bg=COLOR_PANEL, anchor=tk.W, width=18)
-                name_label.pack(side=tk.LEFT)
-                hp_label = tk.Label(row, text=f"{hp:3}%", font=(ff, fs - 2), fg=color, bg=COLOR_PANEL, anchor=tk.E, width=4)
-                hp_label.pack(side=tk.LEFT)
-                power_label = tk.Label(row, text=f"{power:.2f}MW" if power > 0 else "", font=(ff, fs - 3), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E, width=6)
-                power_label.pack(side=tk.RIGHT)
-                self._module_widgets[slot] = {
-                    "row": row,
-                    "bar_fill": bar_fill,
-                    "name_label": name_label,
-                    "hp_label": hp_label,
-                    "power_label": power_label,
-                }
-
-        # Удаляем виджеты для модулей, которых больше нет
-        for slot in list(self._module_widgets.keys()):
-            if slot not in needed_slots:
-                widgets = self._module_widgets.pop(slot)
-                widgets["row"].destroy()
-
-        # Перепаковываем строки в правильном порядке (show_modules уже
-        # отсортирован по health/power). Обновление одних только цветов/
-        # текста в существующих виджетах не двигает их в списке — без
-        # этого порядок застывал на первом кадре и переставал отражать
-        # актуальное состояние модулей.
-        for m in show_modules:
-            slot = m.get("slot", "")
-            widgets = self._module_widgets.get(slot)
-            if widgets:
-                widgets["row"].pack_forget()
-                widgets["row"].pack(fill=tk.X, pady=1)
-
-        self.modules_inner.update_idletasks()
-        self.modules_canvas.configure(scrollregion=self.modules_canvas.bbox("all"))
+            self.ship_name_label.config(font=(family, size + 1, "bold"))
+        self._font_specs = {}
+        self._register_fonts()
+        self._font_base = size
 
 
 # ============================================================
@@ -2047,6 +1941,13 @@ class CarrierOverlay(OverlayWindow):
 # ============================================================
 #  ExobiologyOverlay
 # ============================================================
+def _species_tail(name: object) -> str:
+    """«Tussock stigmasis» → «stigmasis»: род и так показан в своей колонке."""
+    text = str(name or "").strip()
+    parts = text.split(" ", 1)
+    return parts[1] if len(parts) == 2 and parts[1] else text
+
+
 class ExobiologyOverlay(OverlayWindow):
     """Экзобиология: тело, образцы с обратным отсчётом, роды и тела системы.
 
@@ -2076,6 +1977,10 @@ class ExobiologyOverlay(OverlayWindow):
         fs = settings.get("font_size", 10)
         wrap = max(160, int(settings.get("exobio_width", 360)) - 30)
         self._wrap = wrap
+        # Табличный режим (по умолчанию): разделы «образцы», «роды», «тела
+        # системы» и «поиск планет» печатаются колонками, а не простынёй строк.
+        format_table.font_family = ff
+        self._table_mode = str(settings.get("exobio_layout", "table")).lower() != "list"
 
         self._state: Dict[str, Any] = {}
         self._tick_id: Optional[str] = None
@@ -2203,6 +2108,40 @@ class ExobiologyOverlay(OverlayWindow):
             label=f"{'[x] ' if compact else '[ ] '}Компактный вид (значки и шкалы)",
             command=self._toggle_compact_mode,
         )
+        menu.add_command(
+            label=("⊞ Таблица (компактно)" if not self._table_mode else "≡ Лента (по-старому)"),
+            command=self._toggle_layout_mode,
+        )
+
+    def _toggle_layout_mode(self):
+        """Таблица ↔ лента. Режим живёт в настройке, чтобы пережить перезапуск."""
+        self._table_mode = not self._table_mode
+        self.settings["exobio_layout"] = "table" if self._table_mode else "list"
+        try:
+            format_table.font_family = self.settings.get("font_family", "Consolas")
+        except Exception:
+            pass
+        self._render()
+        self._flash_indicator(COLOR_CYAN)
+
+    def _table_width(self) -> int:
+        """Сколько символов влезает в строку таблицы при текущем шрифте.
+
+        Лишнее обрезаем в последней колонке: блок узкий, а перенос внутри
+        моноширинной таблицы сломал бы выравнивание всех строк ниже.
+        """
+        size = max(7, int(self.settings.get("font_size", 10) or 10) - 1)
+        # У Consolas ширина символа ≈ 0.55 кегля в пикселях; берём с запасом,
+        # чтобы последняя колонка не резалась раньше времени.
+        return max(32, int(self._wrap / (size * 0.55)))
+
+    def _short_body(self, state: dict, name: object) -> str:
+        """Имя тела без префикса системы — в блоке мало места."""
+        text = str(name or "?")
+        system = str(state.get("system") or "")
+        if system and text.startswith(system):
+            text = text[len(system):].strip() or text
+        return text
 
     def _toggle_compact_mode(self):
         new_val = not bool(self.settings.get("exobio_compact", True))
@@ -2477,17 +2416,30 @@ class ExobiologyOverlay(OverlayWindow):
             name = str(row.get("species") or "?")
             if row.get("seen_before"):
                 name += " (уже встречалось)"
-            lines.append(f"{name}  {marks} {samples}/3{price}")
+            status = ""
             if complete:
-                lines.append("   ✔ комплект готов — вид засчитан")
+                status = "комплект готов ✓"
             elif samples:
                 wait = int(row.get("wait_seconds") or 0)
                 stage = str(row.get("stage") or "")
-                if wait > 0:
-                    lines.append(f"   ⏱ ждите {wait} с до следующего образца")
-                else:
-                    lines.append(f"   🚀 готов к образцу ({stage or 'Sample'}) — смените точку")
-        self.organics_label.config(text="\n".join(lines))
+                status = (f"ждите {wait} с" if wait > 0
+                          else f"готов к образцу ({stage or 'Sample'}) — смените точку")
+            lines.append((name, f"{marks} {samples}/3", format_credits(value) if value else "—", status))
+        if self._table_mode and lines:
+            self.organics_label.config(text=format_table(
+                ("вид", "образцы", "≈кр", "статус"),
+                [line[:3] + (line[3],) for line in lines],
+                aligns=("left", "left", "right", "left"),
+                max_width=self._table_width(),
+            ))
+        else:
+            flat = []
+            for name, marks_value, price_value, status in lines:
+                price = "" if price_value in ("", "—") else f"  ≈ {price_value}"
+                flat.append(f"{name}  {marks_value}{price}")
+                if status:
+                    flat.append(f"   {'✔ ' if 'готов ✓' in status else ''}{status}")
+            self.organics_label.config(text="\n".join(flat))
         action = self._suggest_next_action(state, organics)
         self.next_action_label.config(text=action)
         self._set_action_visible(bool(action))
@@ -2524,18 +2476,48 @@ class ExobiologyOverlay(OverlayWindow):
                 text="роды отфильтрованы (вкладка «Экзобиология»)" if allowed
                 else "нет подходящих родов")
             return
-        lines = []
+        entries = []
         for row in predictions[:self.MAX_PREDICTIONS]:
             genus = str(row.get("genus") or "?")
             percent = row.get("percent")
-            bar = f" {self._format_prob_bar(percent)}" if percent is not None else ""
-            head = f"{genus}  {percent}%{bar}" if percent is not None else genus
             value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
-            if value:
-                head += f"  ≈ {format_credits(value)}"
-            notes = ", ".join(row.get("notes") or [])
-            lines.append(head + (f"\n   {notes}" if notes else ""))
+            species = [str(item) for item in (row.get("species") or []) if item]
+            short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
+            if len(species) > 2:
+                short_species += f" +{len(species) - 2}"
+            if row.get("confirmed"):
+                short_species = ("DSS ✓ " + short_species).strip()
+            entries.append({
+                "genus": genus,
+                "percent": f"{percent}%" if percent is not None else "—",
+                "bar": self._format_prob_bar(percent) if percent is not None else "",
+                "value": format_credits(value) if value else "",
+                "species": short_species,
+                "notes": ", ".join(str(item) for item in (row.get("notes") or [])[:2]),
+            })
         extra = len(predictions) - self.MAX_PREDICTIONS
+
+        if self._table_mode:
+            rows = [(item["genus"], item["percent"], item["bar"] or "·",
+                     item["value"] or "—",
+                     " · ".join(part for part in (item["species"], item["notes"]) if part) or "—")
+                    for item in entries]
+            text = format_table(("род", "%", "вероятность", "≈кр", "виды и причина"), rows,
+                                aligns=("left", "right", "left", "right", "left"),
+                                max_width=self._table_width())
+            if extra > 0:
+                text += f"\n… и ещё {extra}"
+            self.predict_label.config(text=text)
+            return
+
+        lines = []
+        for item in entries:
+            head = f"{item['genus']}  {item['percent']}" + (f"  {item['bar']}" if item["bar"] else "")
+            if item["value"]:
+                head += f"  ≈ {item['value']}"
+            details = " · ".join(part for part in (
+                (f"виды: {item['species']}" if item["species"] else ""), item["notes"]) if part)
+            lines.append(head + (f"\n   {details}" if details else ""))
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.predict_label.config(text="\n".join(lines))
@@ -2593,13 +2575,12 @@ class ExobiologyOverlay(OverlayWindow):
             self.planets_label.config(text=text, fg=COLOR_TEXT_MUTED)
             return
 
-        system = str(state.get("system") or "")
-        lines = []
-        for row in rows[:self.MAX_PLANETS]:
-            name = str(row.get("body") or "?")
-            if system and name.startswith(system):
-                name = name[len(system):].strip() or name
-            traits = [str(row.get("planet_class") or "?")]
+        limit = max(1, int(self.settings.get("exobio_planet_limit", self.MAX_PLANETS) or self.MAX_PLANETS))
+        table_rows = []
+        matched_lines = []
+        for row in rows[:limit]:
+            name = self._short_body(state, row.get("body"))
+            traits = []
             category = str(row.get("atmosphere_category") or "")
             if category in ("thin", "thick"):
                 traits.append("атмосфера")
@@ -2611,15 +2592,27 @@ class ExobiologyOverlay(OverlayWindow):
             distance = float(row.get("distance_ls") or 0.0)
             if distance > 0:
                 traits.append(f"{distance:.0f} св.с")
-            lines.append(f"{name}  ·  {', '.join(traits)}")
+            table_rows.append((name, str(row.get("planet_class") or "?"), ", ".join(traits)))
             # Почему планета попала в список — иначе фильтры непрозрачны.
             matched = [str(item) for item in (row.get("matched") or []) if item]
             if matched:
-                lines.append(f"   ↳ {', '.join(matched[:2])}")
-        extra = len(rows) - self.MAX_PLANETS
+                matched_lines.append((name, ", ".join(matched[:2])))
+        extra = len(rows) - limit
+        if self._table_mode and table_rows:
+            text = format_table(("тело", "класс", "признаки"), table_rows,
+                                max_width=self._table_width())
+            if matched_lines:
+                text += "\n" + "\n".join(f"↳ {name}: {why}" for name, why in matched_lines)
+            self.planets_label.config(text=text + (f"\n… и ещё {extra}" if extra > 0 else ""),
+                                      fg=COLOR_GREEN_TEXT)
+            return
+        lines = [f"{name}  ·  {planet_class}  ·  {traits}" for name, planet_class, traits in table_rows]
+        for name, why in matched_lines:
+            lines.append(f"   ↳ {why}")
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.planets_label.config(text="\n".join(lines), fg=COLOR_GREEN_TEXT)
+
 
     def _render_bodies(self, state: dict):
         bodies = state.get("system_bodies") or []
@@ -2628,21 +2621,25 @@ class ExobiologyOverlay(OverlayWindow):
         if not bodies:
             self.bodies_label.config(text="в этой системе биосигналов не найдено")
             return
-        lines = []
+        rows = []
         for row in bodies[:self.MAX_BODIES]:
-            name = str(row.get("body") or "?")
-            # Имя тела в журнале начинается с имени системы — оставляем хвост.
-            system = str(state.get("system") or "")
-            if system and name.startswith(system):
-                name = name[len(system):].strip() or name
+            name = self._short_body(state, row.get("body"))
             marks = []
             if row.get("has_organics"):
                 marks.append("образцы")
             marks.append("карта есть" if row.get("mapped") else "карты нет")
             if not row.get("landable"):
                 marks.append("не сесть")
-            lines.append(f"{name}  ·  сигналов {row.get('bio_signals', 0)}  ·  {', '.join(marks)}")
+            rows.append((name, str(row.get("planet_class") or "?"),
+                         str(row.get("bio_signals", 0)), ", ".join(marks)))
         extra = len(bodies) - self.MAX_BODIES
+        if self._table_mode and rows:
+            text = format_table(("тело", "класс", "био", "признаки"), rows,
+                                aligns=("left", "left", "right", "left"),
+                                max_width=self._table_width())
+            self.bodies_label.config(text=text + (f"\n… и ещё {extra}" if extra > 0 else ""))
+            return
+        lines = [f"{name}  ·  сигналов {bio}  ·  {marks}" for name, _cls, bio, marks in rows]
         if extra > 0:
             lines.append(f"… и ещё {extra}")
         self.bodies_label.config(text="\n".join(lines))
@@ -3298,6 +3295,7 @@ class OverlayManager:
         if self.ship_overlay:
             ship_data = data.get("ship", {})
             if ship_data:
+                self._last_ship_data = ship_data
                 self.ship_overlay.update_ship(ship_data)
         if self.cargo_overlay:
             cargo_data = data.get("cargo", {})
@@ -3407,6 +3405,39 @@ class OverlayManager:
 
     def set_show_session(self, show: bool):
         self.set_block_visible("session", show)
+
+    def refresh_ship(self):
+        """Перерисовать SHIP сразу, не дожидаясь нового события журнала.
+
+        Смена режима списка модулей или шрифта данные не меняет: подпись HUD
+        та же, и без принудительной перерисовки блок выглядел бы «не отреагировавшим».
+        """
+        overlay = self.ship_overlay
+        if overlay is None or not self.enabled:
+            return
+        data = getattr(self, "_last_ship_data", None)
+        if not data:
+            return
+        try:
+            overlay.update_ship(data, force=True)
+        except Exception:
+            pass
+
+    def set_ship_modules_view(self, mode: str):
+        """Режим списка модулей в SHIP: «important» / «all» / «off».
+
+        Окно не пересоздаём — список строится при каждой перерисовке, поэтому
+        достаточно принудительно отдать ему текущие данные.
+        """
+        mode = str(mode or "important").lower()
+        if mode not in ("important", "all", "off"):
+            mode = "important"
+        if self.settings.get("ship_modules_view") == mode:
+            return
+        self.settings["ship_modules_view"] = mode
+        self.save_settings()
+        self._notify_block("ship", "ship_modules_view", mode)
+        self.refresh_ship()
 
     def set_ship_block(self, block: str, show: bool):
         """Внутренние блоки SHIP (pips, щиты, модули…).
@@ -3787,7 +3818,7 @@ class OverlayManager:
 #: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
 #: поэтому без миграции прежний пользователь навсегда остался бы на старом
 #: значении и не увидел бы исправления.
-SETTINGS_SCHEMA_VERSION = 3
+SETTINGS_SCHEMA_VERSION = 4
 
 #: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
 #: Ключ получает новый дефолт только если пользователь его не менял, то есть
@@ -3796,6 +3827,9 @@ SETTINGS_SCHEMA_VERSION = 3
 SETTINGS_DEFAULT_CHANGES = {
     # 2.8.3: раздел «Поиск планет» обрезался при высоте 470 px
     2: {"exobio_height": 470},
+    # 2.10.23: SHIP пересобран в компактный текстовый HUD — прежние 420 px
+    # оставляли под списком модулей пустоту, а 330 px хватает с лентой.
+    4: {"ship_height": 420},
 }
 
 #: Миграции позиций: версия схемы -> {блок: (прежний x, прежний y)}.
@@ -3868,6 +3902,10 @@ DEFAULT_SETTINGS = {
     "show_legal": True,
     "show_destination": True,
     "show_modules": True,
+    #: Список модулей в SHIP: «important» — повреждённые, выключенные и
+    #: ключевые системы; «all» — все; «off» — только итог по повреждениям.
+    #: `show_modules: False` (старая настройка) всегда значит «off».
+    "ship_modules_view": "important",
     # Позиции и размеры блоков здесь не заданы: их подставляет цикл сразу
     # после словаря из DEFAULT_BLOCK_POSITIONS. Раньше значения дублировались
     # и разошлись — EXOBIO наезжал на CARRIER, а CARGO уходил за нижний край.
@@ -3894,6 +3932,9 @@ DEFAULT_SETTINGS = {
     "exobio_show_planet_search": True,
     # Компактный режим блока EXOBIO (плашки-бейджи, шкалы вероятности, HUD-акцент).
     "exobio_compact": True,
+    # Как печатать разделы EXOBIO: «table» — колонками (компактно и читаемо),
+    # «list» — прежними многострочными абзацами.
+    "exobio_layout": "table",
     # Сколько найденных планет показывать.
     "exobio_planet_limit": 6,
     "carrier_locked": False,

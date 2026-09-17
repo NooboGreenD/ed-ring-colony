@@ -57,7 +57,16 @@ type Props = {
   avatarUrl: string | null;
   createdAt: string | null;
   rank: number | null;
+  /** Весь перевозимый груз за всё время (все строки deliveries, любой источник). */
   totalTons: number;
+  /** Тоннаж, реально сданный на стройплощадки колонизационных проектов. */
+  siteTons: number;
+  /** Число поставок на стройплощадки (для подписи к блоку строительства). */
+  siteOpsCount: number;
+  /** Тоннаж по системам, посчитанный только по строительным поставкам. */
+  siteSystems: [string, number][];
+  /** Доля строительных поставок в общем тоннаже, 0…100. */
+  siteSharePercent: number;
   hubsCount: number;
   routeCount: number;
   routeSystemsVisited: number;
@@ -676,6 +685,13 @@ export default function CmdrDossier(props: Props) {
               }
             />
             <StatCard
+              label="На стройки"
+              value={props.siteTons.toLocaleString('ru-RU')}
+              color="#f39c12"
+              icon={<IconBuilding size={14} color="#f39c12" />}
+              sub={props.totalTons > 0 ? `${props.siteSharePercent.toFixed(0)}% всего груза` : undefined}
+            />
+            <StatCard
               label="Операций"
               value={props.opsCount.toLocaleString('ru-RU')}
               color="#f472b6"
@@ -733,6 +749,98 @@ export default function CmdrDossier(props: Props) {
                     : undefined
               }
             />
+          </div>
+
+          {/* ── Строительный тоннаж: только поставки на площадки проектов ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader title="Тоннаж на стройплощадки" count={props.siteOpsCount} />
+            <div
+              style={{
+                border: '1px solid #f39c1233',
+                background: '#1a1c1e',
+                borderRadius: 4,
+                padding: '16px 18px',
+              }}
+            >
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                  gap: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <StatCard
+                  label="Завезено на стройки"
+                  value={props.siteTons.toLocaleString('ru-RU')}
+                  color="#f39c12"
+                  icon={<IconBuilding size={14} color="#f39c12" />}
+                  sub="только площадки проектов"
+                />
+                <StatCard
+                  label="Весь перевозимый груз"
+                  value={props.totalTons.toLocaleString('ru-RU')}
+                  color="#e67e22"
+                  icon={<IconAnchor size={14} color="#e67e22" />}
+                  sub="все поставки за всё время"
+                />
+                <StatCard
+                  label="Поставок на стройки"
+                  value={props.siteOpsCount.toLocaleString('ru-RU')}
+                  color="#7dd3fc"
+                  icon={<IconRadio size={14} color="#7dd3fc" />}
+                />
+                <StatCard
+                  label="Систем со стройками"
+                  value={props.siteSystems.length}
+                  color="#22c55e"
+                  icon={<IconAtlas size={14} color="#22c55e" />}
+                />
+              </div>
+              {props.totalTons > 0 && (
+                <InaraProgress
+                  value={props.siteTons}
+                  max={props.totalTons}
+                  color="#f39c12"
+                  label="Доля строительных поставок"
+                  sub={`${props.siteSharePercent.toFixed(1)}% груза ушло на площадки колонизационных проектов, остальное — ${Math.max(0, props.totalTons - props.siteTons).toLocaleString('ru-RU')} т`}
+                />
+              )}
+              {props.siteSystems.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    marginTop: props.totalTons > 0 ? 2 : 0,
+                  }}
+                >
+                  {props.siteSystems.slice(0, 8).map(([systemName, tons]) => (
+                    <span
+                      key={systemName}
+                      style={{
+                        border: '1px solid #323538',
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        color: '#eeeeee',
+                        fontFamily: 'ui-monospace, monospace',
+                      }}
+                    >
+                      {systemName}{' '}
+                      <span style={{ color: '#f39c12', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {props.siteTons === 0 && (
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  Строительных поставок пока нет: блок считает только груз, сданный на площадки
+                  колонизационных проектов (ColonisationContribution, CargoDepot и CargoDelta у
+                  известной площадки), а не любые перевозки.
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ── Frontier CAPI Profile (Inara style) ── */}

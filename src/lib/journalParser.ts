@@ -1,7 +1,31 @@
 export type DeliverySource =
   | 'colonisation_contribution'
   | 'cargo_depot'
-  | 'cargo_delta';
+  | 'cargo_delta'
+  /** Продажа груза на авианосце — фактическая отгрузка (как в Colonial Helper). */
+  | 'carrier_delivery'
+  /** Грузовые миссии: MissionCompleted с CargoDelivered. */
+  | 'mission_delivery'
+  /** Powerplay-поставки. */
+  | 'powerplay_delivery'
+  /** Search and Rescue: сдача груза. */
+  | 'rescue_delivery';
+
+/** Источники, которые засчитываются как доставка на стройплощадку. */
+export const CONSTRUCTION_SOURCES: ReadonlySet<DeliverySource> = new Set<DeliverySource>([
+  'colonisation_contribution',
+  'cargo_depot',
+]);
+
+/**
+ * Строка `deliveries.source` приходит из разных клиентов (браузерный
+ * загрузчик, Colonial Helper), поэтому проверяется как текст, а не как
+ * union-тип. Единая точка правды для серверного fallback'а.
+ */
+export function isConstructionSourceName(source: string | null | undefined): boolean {
+  if (!source) return false;
+  return (CONSTRUCTION_SOURCES as ReadonlySet<string>).has(source.trim().toLowerCase());
+}
 
 export interface Delivery {
   systemName: string;
@@ -16,6 +40,11 @@ export interface Delivery {
   sourceHash: string;
   isHub?: boolean;
   routeSystemId?: number | null;
+  /**
+   * Доставка именно на стройплощадку (колонизационный проект), а не «вообще
+   * куда»: по этому полю досье считает отдельный блок «тоннаж на стройки».
+   */
+  isConstruction?: boolean;
 }
 
 export interface JournalParseStats {
@@ -28,6 +57,12 @@ export interface JournalParseStats {
   cargoDepotDeliveries: number;
   /** Inventory-diff fallback when the journal has no explicit delivery event. */
   cargoDeltaDeliveries: number;
+  /** Всё, что НЕ является доставкой на стройплощадку: продажи, миссии, спасатели. */
+  transportDeliveries: number;
+  /** Сколько тонн ушло именно на стройплощадки. */
+  constructionTons: number;
+  /** Сколько тонн перевезено всего (все источники). */
+  transportedTons: number;
   skippedNoSystem: number;
   skippedMarketTrade: number;
   skippedMining: number;
@@ -67,6 +102,15 @@ export interface JournalParseState {
   skipNextCargo: boolean;
   /** Delivery fingerprints across all selected files, not every raw journal event. */
   seenDeliveryHashes: Set<string>;
+  /**
+   * MarketID стройплощадок, замеченных в этом же разборе
+   * (`ColonisationConstructionDepot`). Cargo-снимок сам по себе не говорит,
+   * куда именно сдали груз, — привязка к рынку и делает доставку
+   * «стройковой».
+   */
+  constructionMarkets: Set<string>;
+  /** Рынок, к которому игрока причалил (`Docked`/`Market`), для той же привязки. */
+  currentMarketId: string | null;
   sequence: number;
 }
 
@@ -80,6 +124,8 @@ export function createJournalParseState(): JournalParseState {
     accountedCargoKeys: new Set(),
     skipNextCargo: false,
     seenDeliveryHashes: new Set(),
+    constructionMarkets: new Set(),
+    currentMarketId: null,
     sequence: 0,
   };
 }
@@ -180,7 +226,6 @@ function buildInventory(inventory: unknown): CargoInventory | null {
 
 const CARGO_RESET_EVENTS = new Set([
   'MarketBuy',
-  'MarketSell',
   'BuyDrones',
   'SellDrones',
   'MiningRefined',
@@ -209,6 +254,13 @@ const CARGO_RESET_EVENTS = new Set([
   'ShipyardTransfer',
   'ShipyardSwap',
 ]);
+
+/**
+ * События, которые одновременно обнуляют трюмный baseline И сами несут
+ * поставки. Их нельзя отбрасывать вместе с остальными reset-событиями,
+ * иначе «перевезено миссиями/Powerplay» никогда не попадёт в «всего тонн».
+ */
+const DELIVERY_BEARING_RESET_EVENTS = new Set(['MissionCompleted', 'PowerplayDeliver', 'SearchAndRescue']);
 
 function updateLocation(state: JournalParseState, event: Record<string, unknown>, rawLine: string) {
   const starSystem = typeof event.StarSystem === 'string' ? event.StarSystem.trim() : '';
@@ -256,12 +308,22 @@ function emitDelivery(
     return;
   }
   state.seenDeliveryHashes.add(delivery.sourceHash);
-  deliveries.push(tagDelivery(delivery, lookup));
+  const withFlag: Delivery = {
+    ...delivery,
+    // Стройковый источник — всегда «на стройку»; cargo_delta становится
+    // стройковым, только если игрок стоял у рынка известной стройплощадки.
+    isConstruction: delivery.isConstruction ?? CONSTRUCTION_SOURCES.has(delivery.source),
+  };
+  deliveries.push(tagDelivery(withFlag, lookup));
   stats.deliveriesFound += 1;
-
-  if (delivery.source === 'colonisation_contribution') stats.colonisationDeliveries += 1;
-  else if (delivery.source === 'cargo_depot') stats.cargoDepotDeliveries += 1;
-  else stats.cargoDeltaDeliveries += 1;
+  // Две разные метрики, ради которых и заводился флаг: «всё, что перевезено»
+  // (блок «Всего тонн» в досье) и «только на стройплощадки» (новый блок).
+  stats.transportedTons += withFlag.amount;
+  if (withFlag.isConstruction) stats.constructionTons += withFlag.amount;
+  else stats.transportDeliveries += 1;
+  if (withFlag.source === 'colonisation_contribution') stats.colonisationDeliveries += 1;
+  else if (withFlag.source === 'cargo_depot') stats.cargoDepotDeliveries += 1;
+  else if (withFlag.source === 'cargo_delta') stats.cargoDeltaDeliveries += 1;
 }
 
 type Contribution = { key: string; display: string; amount: number };
@@ -291,10 +353,35 @@ function colonisationContributions(event: Record<string, unknown>): Contribution
 }
 
 /**
+ * Хук на каждое корректно разобранное событие журнала.
+ *
+ * Нужен, чтобы второй проход по тексту (телеметрия: сканы тел, snapshots
+ * строек, статистика пилота) не удваивал стоимость разбора всей истории.
+ * Исключение из хука не должно ломать импорт, поэтому вызов обёрнут.
+ */
+export type JournalEventHook = (line: string, event: Record<string, unknown>) => void;
+
+function runHooks(hooks: JournalEventHook[] | undefined, line: string, event: Record<string, unknown>) {
+  if (!hooks || hooks.length === 0) return;
+  for (const hook of hooks) {
+    try {
+      hook(line, event);
+    } catch {
+      // Коллекторы — best-effort: телеметрия не имеет права обрывать импорт.
+    }
+  }
+}
+
+/**
  * Parse one journal text buffer. Pass the `state` returned from the preceding
  * file to preserve inventory and contribution context across a large upload.
  */
-export function parseJournal(text: string, lookup?: SystemLookup, state: JournalParseState = createJournalParseState()): ParseResult {
+export function parseJournal(
+  text: string,
+  lookup?: SystemLookup,
+  state: JournalParseState = createJournalParseState(),
+  hooks?: JournalEventHook[],
+): ParseResult {
   const deliveries: Delivery[] = [];
   const stats: JournalParseStats = {
     eventsParsed: 0,
@@ -303,6 +390,9 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
     colonisationDeliveries: 0,
     cargoDepotDeliveries: 0,
     cargoDeltaDeliveries: 0,
+    transportDeliveries: 0,
+    constructionTons: 0,
+    transportedTons: 0,
     skippedNoSystem: 0,
     skippedMarketTrade: 0,
     skippedMining: 0,
@@ -325,6 +415,7 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
 
     state.sequence += 1;
     stats.eventsParsed += 1;
+    runHooks(hooks, line, event);
     const eventName = typeof event.event === 'string' ? event.event : 'Unknown';
 
     if (eventName === 'Commander' && typeof event.Name === 'string' && event.Name.trim()) {
@@ -341,6 +432,17 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
 
     if (eventName === 'Location' || eventName === 'FSDJump' || eventName === 'Docked' || eventName === 'CarrierJump') {
       updateLocation(state, event, line);
+      // Догадываться о рынке можно только по самим этим событиям: ветка
+      // «Docked/Undocked/Market» ниже до них не доходит (continue здесь).
+      // Прыжок без MarketID — это отстыковка, поэтому предыдущий рынок
+      // обязательно сбрасывается, иначе cargo_delta записался бы на стройку
+      // в системе, где игрока уже нет.
+      const arrivedMarketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
+      if (eventName === 'Docked' || eventName === 'CarrierJump') {
+        if (arrivedMarketId) state.currentMarketId = arrivedMarketId;
+      } else {
+        state.currentMarketId = arrivedMarketId ?? null;
+      }
       continue;
     }
 
@@ -350,7 +452,7 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
       updateLocation(state, event, line);
     }
 
-    if (CARGO_RESET_EVENTS.has(eventName)) {
+    if (CARGO_RESET_EVENTS.has(eventName) && !DELIVERY_BEARING_RESET_EVENTS.has(eventName)) {
       state.skipNextCargo = true;
       if (eventName === 'MarketBuy' || eventName === 'MarketSell' || eventName === 'BuyDrones' || eventName === 'SellDrones') {
         stats.skippedMarketTrade += 1;
@@ -377,19 +479,16 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
       }
 
       for (const contribution of contributions) {
-        // In this journal event Amount is cumulative per depot/commodity. A
-        // lower amount means a new construction context, so it becomes a new
-        // baseline rather than producing a negative delivery.
+        // Amount в ColonisationContribution — сколько завезено ЭТИМ событием
+        // (то же чтение, что и в Uploader: `journal_parser.parse_events`).
+        // Прежняя «накопительная» трактовка съедала вторую и последующие
+        // поставки на той же стройке. Тоталь всё же копим: он нужен, чтобы
+        // отличить повтор строки журнала от новой поставки (sourceHash ниже).
         const contributionKey = `${marketId ?? `system:${systemKey(systemName)}`}:${contribution.key}`;
-        const previous = state.contributionTotals.get(contributionKey);
-        const amount = previous == null
-          ? contribution.amount
-          : contribution.amount >= previous
-            ? contribution.amount - previous
-            : contribution.amount;
         state.contributionTotals.set(contributionKey, contribution.amount);
         state.accountedCargoKeys.add(contribution.key);
 
+        const amount = contribution.amount;
         if (amount <= 0) continue;
         emitDelivery(deliveries, state, stats, {
           systemName,
@@ -398,10 +497,99 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
           timestamp,
           marketId,
           systemAddress: state.currentSystemAddress,
+          isConstruction: true,
           source: 'colonisation_contribution',
           sourceHash: `journal-v2-${fingerprint(`contribution\u0000${line}\u0000${contribution.key}\u0000${amount}`)}`,
         }, lookup);
       }
+      continue;
+    }
+
+    if (eventName === 'ColonisationConstructionDepot') {
+      // Не доставка, а состояние стройки: рынок, привязанный к ней, делает
+      // последующие cargo_delta «поставкой на стройплощадку».
+      const marketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
+      if (marketId) state.constructionMarkets.add(marketId);
+      continue;
+    }
+
+    if (eventName === 'Docked' || eventName === 'Undocked' || eventName === 'Market') {
+      const marketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
+      state.currentMarketId = eventName === 'Undocked' ? null : (marketId ?? state.currentMarketId);
+      continue;
+    }
+
+    if (eventName === 'MarketSell') {
+      // Продажа груза — тоже перевезённый груз, но не поставка на стройку.
+      // На авианосце это фактическая отгрузка (ровно как в Uploader).
+      const count = finitePositive(event.Count);
+      if (systemName && count != null) {
+        const stationType = String(event.StationType ?? '');
+        const onCarrier = Boolean(event.CarrierID) || /carrier/i.test(stationType);
+        const rawCommodity = event.Type ?? event.Commodity ?? '';
+        emitDelivery(deliveries, state, stats, {
+          systemName,
+          commodity: displayCommodity(event.Type_Localised, String(rawCommodity || 'Unknown commodity')),
+          amount: count,
+          timestamp,
+          marketId: journalId(event.MarketID, rawJournalInteger(line, 'MarketID')),
+          systemAddress: state.currentSystemAddress,
+          isConstruction: false,
+          source: onCarrier ? 'carrier_delivery' : 'cargo_delta',
+          sourceHash: `journal-v3-${fingerprint(`${onCarrier ? 'carrier' : 'sell'}\u0000${line}\u0000${rawCommodity}\u0000${count}`)}`,
+        }, lookup);
+      }
+      state.skipNextCargo = true;
+      continue;
+    }
+
+    if (eventName === 'MissionCompleted') {
+      // Грузовые миссии (в том числе крыльевые Cargo Run): CargoDelivered —
+      // самый честный источник «перевезено», пока Cargo-снимок его не удвоил.
+      const delivered = Array.isArray(event.CargoDelivered) ? event.CargoDelivered : [];
+      const parts: Array<{ commodity: unknown; localised: unknown; amount: unknown }> = delivered.map((item) => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        return { commodity: entry.Commodity, localised: entry.Commodity_Localised, amount: entry.Count ?? entry.Delivered };
+      });
+      if (parts.length === 0 && typeof event.Commodity === 'string') {
+        parts.push({ commodity: event.Commodity, localised: event.Commodity_Localised, amount: event.Count });
+      }
+      for (const part of parts) {
+        const count = finitePositive(part.amount);
+        const key = commodityKey(part.commodity);
+        if (count == null || !key || !systemName) continue;
+        emitDelivery(deliveries, state, stats, {
+          systemName,
+          commodity: displayCommodity(part.localised, String(part.commodity)),
+          amount: count,
+          timestamp,
+          systemAddress: state.currentSystemAddress,
+          isConstruction: false,
+          source: 'mission_delivery',
+          sourceHash: `journal-v3-${fingerprint(`mission\u0000${line}\u0000${key}\u0000${count}`)}`,
+        }, lookup);
+        state.accountedCargoKeys.add(key);
+      }
+      state.skipNextCargo = true;
+      continue;
+    }
+
+    if (eventName === 'PowerplayDeliver' || eventName === 'SearchAndRescue') {
+      const count = finitePositive(event.Count);
+      const key = commodityKey(event.Commodity ?? event.Type ?? '');
+      if (count != null && key && systemName) {
+        emitDelivery(deliveries, state, stats, {
+          systemName,
+          commodity: displayCommodity(event.Commodity_Localised, String(event.Commodity ?? event.Type ?? key)),
+          amount: count,
+          timestamp,
+          systemAddress: state.currentSystemAddress,
+          isConstruction: false,
+          source: eventName === 'PowerplayDeliver' ? 'powerplay_delivery' : 'rescue_delivery',
+          sourceHash: `journal-v3-${fingerprint(`${eventName.toLowerCase()}\u0000${line}\u0000${key}\u0000${count}`)}`,
+        }, lookup);
+      }
+      state.skipNextCargo = true;
       continue;
     }
 
@@ -423,6 +611,7 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
         amount,
         timestamp,
         systemAddress: state.currentSystemAddress,
+        isConstruction: true,
         source: 'cargo_depot',
         sourceHash: `journal-v2-${fingerprint(`cargo-depot\u0000${line}\u0000${key}\u0000${amount}`)}`,
       }, lookup);
@@ -474,7 +663,11 @@ export function parseJournal(text: string, lookup?: SystemLookup, state: Journal
         commodity: previous.display,
         amount,
         timestamp,
+        marketId: state.currentMarketId,
         systemAddress: state.currentSystemAddress,
+        // Груз «испарился» из трюка, пока игрок стоит у рынка стройплощадки, —
+        // значит это поставка на стройку, а не продажа в павильоне.
+        isConstruction: state.currentMarketId != null && state.constructionMarkets.has(state.currentMarketId),
         source: 'cargo_delta',
         sourceHash: `journal-v2-${fingerprint(`cargo-delta\u0000${line}\u0000${key}\u0000${previous.count}\u0000${currentCount}`)}`,
       }, lookup);

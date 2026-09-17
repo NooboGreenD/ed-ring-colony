@@ -13,6 +13,14 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 ## Features
 
 - **Galaxy Map** — Interactive 3D visualization of the colonization ring (Three.js + React Three Fiber)
+- **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemPlotlyMap.tsx`): планета-сфера с
+  постройками на поверхности, фокус-зум по телам (кластер → окрестность → поверхность), LOD подписей для
+  систем с десятками звёзд, карточка фокуса с фактами тела и списком станций/строек. Общая раскладка живёт в
+  `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`, чтобы сайт и десктоп рисовали одинаково
+- **Pilot Dossier** — раздельные блоки «весь перевозимый груз» (все поставки за всё время) и «тоннаж на
+  стройплощадки» (только поставки на площадки колонизационных проектов)
+- **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
+  правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота
 - **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
 - **Projects** — Plan and track colonization projects with route optimization
 - **Forum** — Community discussions with markdown support, reactions, search, and moderation
@@ -144,6 +152,7 @@ ed-ring-colony/
       Sidebar.tsx           # Navigation
       Starfield.tsx         # Canvas starfield
       GalaxyMap/            # 3D map components
+      SystemPlotlyMap.tsx   # 3D system orrery for /system/[name]
       Forum/                # Forum components
       Wiki/                 # Wiki components
       Atlas/                # Atlas components
@@ -161,7 +170,10 @@ ed-ring-colony/
       eddnClient.ts         # EDDN ingestion
       pushNotifications.ts  # Push notification utils
       routeEngine.ts        # Route engine
-      journalParser.ts      # ED journal parser
+      journalParser.ts      # ED journal parser (deliveries + construction flag)
+      journalTelemetry.ts   # Journal telemetry: depot snapshots, body scans, pilot stats
+      dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
+      systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
     types/                  # TypeScript types
   supabase/
     migrations/             # SQL migrations
@@ -273,6 +285,24 @@ npm test
   требования ресурсов, прогресс, construction ID, MarketID, система и время;
 - повторные доставки не дублируются благодаря `source_hash`, а события
   стройки используют серверную дедупликацию.
+
+Каждая доставка несёт объяснение своего происхождения, поэтому досье может
+делить «весь груз» и «груз на стройплощадки» без догадок (`source`,
+`is_construction`, `market_id` — миграция
+`supabase/migrations/20260917000000_deliveries_transport_scope.sql`).
+`is_construction` выставляет парсер журнала: `ColonisationContribution` и
+`CargoDepot` — всегда стройка, `cargo_delta` — только если игрок стоял у рынка,
+про который журнал показывал `ColonisationConstructionDepot`, а отгрузка на
+авианосец, грузовые миссии, Powerplay и Search-and-Rescue — просто перевозка.
+Исторические строки имеют `is_construction IS NULL` и считаются стройкой,
+иначе старые профили обнулились бы. Если колонки ещё не применены, сервер
+откатывается к базовому набору полей и загрузка продолжается.
+
+Браузерная загрузка (`/account` → `POST /api/logs/import`) и десктопный
+uploader отправляют один и тот же набор данных: помимо доставок это snapshots
+строек, сканы тел (`system_scans`) и сводка пилота (`pilot_stats`). Разбор
+делается одним проходом по журналу — `lib/journalParser.ts` считает доставки и
+одновременно кормит событиями `lib/journalTelemetry.ts`.
 
 `MarketBuy` с Fleet Carrier уменьшает его запас и не считается доставкой на
 проект. Обычные продажи на станции не загружаются как construction delivery.
