@@ -630,5 +630,69 @@ class InitialLoadSmokeTest(unittest.TestCase):
             tmp.cleanup()
 
 
+class ApiClientDeferredRowsTests(unittest.TestCase):
+    """Сервер больше не падает на statement_timeout, а возвращает `deferred`.
+
+    Помощник обязан показать остаток: иначе загрузка отрапортует об успехе,
+    молча потеряв часть журнала.
+    """
+
+    def _client(self, deferred_per_chunk):
+        import api_client
+
+        client = api_client.ApiClient(token="test-token")
+        calls = {"count": 0}
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.ok = 200 <= status_code < 300
+                self.text = json.dumps(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_post(payload, timeout=30):
+            calls["count"] += 1
+            rows = payload.get("deliveries") or []
+            deferred = min(deferred_per_chunk, len(rows))
+            body = {
+                "inserted": len(rows) - deferred,
+                "eventsFound": len(rows),
+                "deferred": deferred,
+            }
+            return FakeResponse(200, body), body
+
+        client._post_upload = fake_post
+        return client, calls
+
+    def _deliveries(self, count):
+        return [{"system_name": "Sol", "commodity": "steel", "amount": 1,
+                 "delivered_at": "2025-01-01T00:00:00Z", "source_hash": "h%d" % i}
+                for i in range(count)]
+
+    def test_deferred_rows_are_counted_and_flagged_partial(self):
+        client, _calls = self._client(deferred_per_chunk=3)
+        result = client.upload_deliveries(self._deliveries(200), "CMDR")
+
+        self.assertTrue(result["ok"], "таймаут базы не должен ронять загрузку")
+        self.assertEqual(result["deferred"], 6, "по 3 строки с каждой из двух пачек")
+        self.assertEqual(result["inserted"], 194)
+        self.assertTrue(result.get("partial"), "незаписанные строки обязаны помечать загрузку частичной")
+        self.assertIn("6", result.get("error", ""),
+                      "сообщение должно называть число незаписанных строк")
+
+    def test_clean_upload_reports_no_deferred(self):
+        client, _calls = self._client(deferred_per_chunk=0)
+        result = client.upload_deliveries(self._deliveries(200), "CMDR")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deferred"], 0)
+        self.assertEqual(result["inserted"], 200)
+        self.assertFalse(result.get("partial"), "чистая загрузка не должна считаться частичной")
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

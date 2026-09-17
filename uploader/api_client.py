@@ -152,7 +152,8 @@ class ApiClient:
         """Параллельно отправить пачки на /api/logs/upload и собрать результат."""
         total_chunks = len(chunks)
         lock = threading.Lock()
-        state = {"inserted": 0, "events": 0, "snapshots": 0, "failed": 0, "done": 0, "last_error": ""}
+        state = {"inserted": 0, "events": 0, "snapshots": 0, "deferred": 0,
+                 "failed": 0, "done": 0, "last_error": ""}
 
         def notify_progress():
             if not progress_cb:
@@ -235,6 +236,11 @@ class ApiClient:
                     else:
                         state["inserted"] += int((data or {}).get("constructionInserted", 0) or 0)
                         state["snapshots"] += int((data or {}).get("snapshotInserted", 0) or 0)
+                    # Сервер больше не отвечает 500 на statement_timeout, а
+                    # возвращает число строк, которые база не приняла. Без
+                    # этого счётчика помощник отчитался бы об успехе, молча
+                    # потеряв часть журнала.
+                    state["deferred"] += int((data or {}).get("deferred", 0) or 0)
                 else:
                     state["failed"] += 1
                     state["last_error"] = error
@@ -252,6 +258,16 @@ class ApiClient:
                 "inserted": state["inserted"],
                 "partial": True,
             }
+        elif state["deferred"] > 0:
+            # Загрузка не упала, но часть строк база не приняла. Это не
+            # «успех»: повтор идемпотентен благодаря source_hash, поэтому
+            # помощник обязан показать остаток, а не промолчать.
+            result = {
+                "ok": True,
+                "inserted": state["inserted"],
+                "partial": True,
+                "error": f"База не приняла {state['deferred']} строк (таймаут); повторите отправку",
+            }
         else:
             result = {"ok": True, "inserted": state["inserted"]}
         if field == "deliveries":
@@ -261,6 +277,7 @@ class ApiClient:
             result["snapshotInserted"] = state["snapshots"]
         result["chunks"] = total_chunks
         result["chunks_failed"] = state["failed"]
+        result["deferred"] = state["deferred"]
         return result
 
     @property
