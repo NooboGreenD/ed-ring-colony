@@ -247,10 +247,32 @@ class PlotlySiteParityTests(unittest.TestCase):
         self.assertNotIn("type: 'scatter',", source,
                         "сайт ушёл в отдельную 2D-фигуру — паритет надо переносить сюда")
         # Камера и окна — из общего движка, а не на коленке в компоненте.
-        self.assertIn("camera: sceneCamera(viewMode)", source)
+        # Проверяем именно вызов `sceneCamera(viewMode)`, а не точную строку
+        # `camera: sceneCamera(...)`: камера теперь кладётся в сцену через
+        # переменную, чтобы перерисовка не сбрасывала ту, что накрутил
+        # пользователь (см. `cameraViewRef` в компоненте).
+        self.assertIn("sceneCamera(viewMode)", source)
         self.assertIn("focusWindow(halfSpan)", source)
         self.assertIn("overviewWindow(traceExtent(traces), layout.span)", source)
         self.assertIn("sphereGeometry", source)
+
+    def test_hover_does_not_rebuild_the_figure(self):
+        """Наведение подсвечивает маркер, но не пересобирает сцену.
+
+        Раньше `hoveredBody` лежал в зависимостях эффекта с `Plotly.react`, и
+        каждое наведение пересоздавало фигуру вместе с `scene.camera` — камера
+        пользователя молча улетала в стандартный «обзор». Подсветка обязана
+        идти через `restyle`, а стандартная камера — ставиться только при смене
+        вида (`cameraViewRef`), не при любой перерисовке.
+        """
+        source = self.SITE.read_text(encoding="utf-8")
+        self.assertIn("cameraViewRef", source,
+                      "камера снова сбрасывается при любой перерисовке")
+        self.assertIn("Plotly?.restyle(gd", source,
+                      "подсветка наведением ушла обратно в полный Plotly.react")
+        # Состояние `hoveredBody` — признак прежней схемы: оно дёргало эффект.
+        self.assertNotIn("setHoveredBody", source,
+                         "наведение снова перерисовывает фигуру через setState")
 
     def test_camera_and_pads_are_one_source_of_truth(self):
         engine = (HERE.parent.parent / "src" / "lib" / "systemOrrery.ts").read_text(encoding="utf-8")

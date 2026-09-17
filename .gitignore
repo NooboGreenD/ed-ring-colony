@@ -17,6 +17,9 @@ target/
 *.tmp
 *.swp
 *.swo
+# Бандлы, которые scripts/tests/system-map-hover.test.mjs собирает внутри репо
+# (react помечен external, поэтому бандл обязан видеть node_modules).
+.tmp-edmap-*/
 *.html
 supabase/.temp/
 

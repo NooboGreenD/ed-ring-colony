@@ -42,6 +42,7 @@ import {
   focusWindow,
   overviewWindow,
   sceneCamera,
+  type SceneCamera,
   traceExtent,
   sphereGeometry,
   starColorFromTemperature,
@@ -211,7 +212,15 @@ export default function SystemPlotlyMap({
   // осей, поэтому переключение вида ничего не пересчитывает и не может увести
   // камеру в чёрный экран.
   const [viewMode, setViewMode] = useState<'iso' | 'top' | 'side'>('iso');
-  const [hoveredBody, setHoveredBody] = useState<string>('');
+
+  // Камера принадлежит пользователю: он её крутит и зумит колесом. Сбрасывать её
+  // на стандартную можно только когда сменился сам вид (зум/цель/режим), а не
+  // при любой перерисовке. Иначе наведение на тело — и вид улетал в «обзор».
+  const cameraViewRef = useRef<string>('');
+  // Базовые размеры маркеров по трэкам: подсветка при наведении меняет их через
+  // `restyle`, поэтому нужен неизменённый оригинал, к которому возвращаемся.
+  const baseSizesRef = useRef<(number[] | null)[]>([]);
+  const baseTextsRef = useRef<(string[] | null)[]>([]);
 
   useEffect(() => {
     if (focusTarget) {
@@ -447,7 +456,10 @@ export default function SystemPlotlyMap({
         ].join('<br>'));
         custom.push(star.name);
       }
-      traces.push({
+      // Пустой трэк маркеров Plotly отдаёт в WebGL с нулевыми буферами, а тот
+      // падает на `uniform3fv` («cannot be converted to a sequence»). У планет
+      // и построек такой guard уже был — у звёзд его не хватало.
+      if (xs.length > 0) traces.push({
         type: 'scatter3d',
         name: `★ Звёзды (${layout.stars.length})`,
         x: xs, y: ys, z: zs,
@@ -535,14 +547,13 @@ export default function SystemPlotlyMap({
         const point = layout.positions[body.name];
         if (!point) continue;
         const selected = body.name === selectedTarget;
-        const hovered = body.name === hoveredBody;
         // Тело, ради которого включён режим сферы, не дублируем маркером.
         if (sphereRadii[body.name]) continue;
         xs.push(point[0]); ys.push(point[1]); zs.push(point[2]);
         colors.push(getBodyColor(body.subType, String(body.raw.body_type ?? body.raw.type ?? '')));
-        sizes.push((layout.markerSizes[body.name] ?? 7) * (selected || hovered ? 1.3 : 1) * detailScale);
+        sizes.push((layout.markerSizes[body.name] ?? 7) * (selected ? 1.3 : 1) * detailScale);
         const withSite = structuresForBody(body.name).length;
-        texts.push(selected || hovered || showLabels ? shortName(body.name, systemName) : '');
+        texts.push(selected || showLabels ? shortName(body.name, systemName) : '');
         lineColors.push(selected ? '#00f3ff' : body.landable ? 'rgba(0,243,255,0.7)' : body.bioSignals > 0 ? 'rgba(0,255,136,0.65)' : 'rgba(30,41,59,0.9)');
         hovers.push([
           `<b>${body.name}</b>`,
@@ -635,12 +646,23 @@ export default function SystemPlotlyMap({
         z: [-overviewSpan, overviewSpan] as [number, number],
       };
 
+    // Вид сменился (зум, цель, режим проекции) — камеру ставим стандартную.
+    // Иначе берём ту, что пользователь накрутил сам: `Plotly.react` иначе
+    // молча возвращал сцену в «обзор» при любом чихе, включая наведение.
+    const viewSignature = `${viewMode}|${zoom}|${selectedTarget}|${halfSpan}|${isolateCluster}`;
+    const viewChanged = cameraViewRef.current !== viewSignature;
+    cameraViewRef.current = viewSignature;
+    const liveCamera = viewChanged ? null : (gd as any)?._fullLayout?.scene?.camera;
+    const camera: SceneCamera = viewChanged || !liveCamera
+      ? sceneCamera(viewMode)
+      : { ...sceneCamera(viewMode), eye: liveCamera.eye, up: liveCamera.up, center: liveCamera.center };
+
     const scene: any = {
       bgcolor: '#07090e',
       // camera.center — нормализованные единицы сцены, поэтому всегда 0: центр
       // окна уже задан размахом осей. Координата цели в unit'ах системы увела бы
       // камеру в никуда (чёрный экран при фокусе).
-      camera: sceneCamera(viewMode),
+      camera,
       // Куб вместо «data»: иначе сплющенная по z система превращает шары в блины.
       ...sceneAspect(),
       xaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.x },
@@ -671,6 +693,14 @@ export default function SystemPlotlyMap({
       scene,
     }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
 
+    // Снимок исходных размеров/подписей маркеров по трэкам. Подсветка при
+    // наведении правит их через `restyle`, поэтому нужен нетронутый оригинал,
+    // к которому возвращаемся на `unhover`.
+    baseSizesRef.current = traces.map((trace: any) =>
+      (Array.isArray(trace?.marker?.size) ? trace.marker.size.slice() : null) as number[] | null);
+    baseTextsRef.current = traces.map((trace: any) =>
+      (Array.isArray(trace?.text) ? trace.text.slice() : null) as string[] | null);
+
     const gdAny = gd as any;
     if (!gdAny.__edMapBound && typeof gdAny.on === 'function') {
       gdAny.__edMapBound = true;
@@ -684,17 +714,53 @@ export default function SystemPlotlyMap({
         const name = String(point?.customdata ?? '');
         if (name) selectTarget(name, 3);
       });
+      // Подсветка наведением — только `restyle`, без `Plotly.react`.
+      // Полный перерасчёт фигуры на каждое наведение сбрасывал камеру
+      // пользователя в «обзор» и дёргал WebGL-контекст.
       gdAny.on('plotly_hover', (event: any) => {
         const point = event?.points?.[0];
+        const curve = Number(point?.curveNumber);
+        const index = Number(point?.pointNumber);
+        if (!Number.isInteger(curve) || !Number.isInteger(index)) return;
+        const baseSizes = baseSizesRef.current[curve];
+        if (!baseSizes || index < 0 || index >= baseSizes.length) return;
+        const sizes = baseSizes.slice();
+        sizes[index] = sizes[index] * 1.3;
+        const update: Record<string, unknown> = { 'marker.size': [sizes] };
+        const baseTexts = baseTextsRef.current[curve];
         const name = point?.customdata;
-        if (typeof name === 'string' && name) setHoveredBody(name);
+        if (baseTexts && typeof name === 'string' && name) {
+          const texts = baseTexts.slice();
+          texts[index] = shortName(name, systemName);
+          update.text = [texts];
+        }
+        try {
+          window.Plotly?.restyle(gd, update, [curve]);
+        } catch {
+          // Подсветка — косметика: сбой не должен ломать карту.
+        }
       });
-      gdAny.on('plotly_unhover', () => setHoveredBody(''));
+      gdAny.on('plotly_unhover', () => {
+        // Восстанавливаем по одному трэку за раз: общий вызов `restyle` с
+        // массивами требует, чтобы длины совпадали со списком трэков, а
+        // подписи есть не у каждого трэка — индексы бы разъехались.
+        baseSizesRef.current.forEach((sizes, curve) => {
+          if (!sizes) return;
+          const update: Record<string, unknown> = { 'marker.size': [sizes] };
+          const texts = baseTextsRef.current[curve];
+          if (texts) update.text = [texts];
+          try {
+            window.Plotly?.restyle(gd, update, [curve]);
+          } catch {
+            // то же: косметика
+          }
+        });
+      });
     }
   }, [
     scriptLoaded, loading, error, records, layout, structures, visibleStructures, selectedTarget, zoom,
     filterMode, scaleMode, labelMode, showMoons, isolateCluster, activeCluster, focus, halfSpan, detailMode,
-    sphereRadii, hoveredBody, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
+    sphereRadii, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
     canvasPixels, viewMode,
   ]);
 
