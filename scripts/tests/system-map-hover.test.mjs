@@ -79,6 +79,7 @@ async function renderMap(bodies) {
   global.Element = dom.window.Element;
   global.Node = dom.window.Node;
   global.IS_REACT_ACT_ENVIRONMENT = true;
+  global.getComputedStyle = dom.window.getComputedStyle;
   Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true });
   const raf = (cb) => setTimeout(() => cb(Date.now()), 0);
   global.requestAnimationFrame = raf;
@@ -110,6 +111,13 @@ async function renderMap(bodies) {
   return {
     calls,
     handlers,
+    act,
+    /** Клик по элементу внутри React-окружения. */
+    async click(element) {
+      await act(async () => {
+        element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      });
+    },
     /** Камера, которую Plotly сейчас считает текущей. */
     setLiveCamera(eye) { gd._fullLayout.scene.camera.eye = eye; },
     async fire(name, event) {
@@ -212,6 +220,154 @@ maybe('снятие наведения возвращает исходные р�
       .pop();
     assert.ok(restored, 'unhover не вернул размеры трэку планет');
     assert.deepEqual(restored, baseSizes, 'размеры после unhover не совпали с исходными');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('повторное наведение на ту же точку не дёргает restyle', async () => {
+  // `plotly_hover` приходит на каждое движение мыши, в том числе когда курсор
+  // стоит на месте. Без защиты «та же точка?» карта получала десятки restyle в
+  // секунду и висла — это и было «зависание после фокуса/наведения».
+  const map = await renderMap(SOL);
+  try {
+    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
+    const event = { points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }] };
+
+    await map.fire('plotly_hover', event);
+    const afterFirst = map.calls.restyle.length;
+    assert.equal(afterFirst, 1, 'первое наведение должно подсветить маркер одним restyle');
+
+    // Курсор «дрожит» на той же точке 40 раз.
+    for (let i = 0; i < 40; i += 1) await map.fire('plotly_hover', event);
+    assert.equal(map.calls.restyle.length, afterFirst,
+      'наведение на ту же точку снова вызвало restyle — карта будет виснуть');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('переход на другую точку гасит прежнюю подсветку ровно одним restyle', async () => {
+  const map = await renderMap(SOL);
+  try {
+    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
+    await map.fire('plotly_hover', {
+      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
+    });
+    map.calls.restyle.length = 0;
+
+    await map.fire('plotly_hover', {
+      points: [{ curveNumber: planets, pointNumber: 1, customdata: 'Mercury' }],
+    });
+    // Два: снять старую + поставить новую. Больше — значит трогаем лишние трэки.
+    assert.ok(map.calls.restyle.length <= 2,
+      `переход между точками сделал ${map.calls.restyle.length} restyle вместо ≤2`);
+    const sizes = map.calls.restyle[map.calls.restyle.length - 1].update['marker.size'][0];
+    assert.ok(sizes[1] > sizes[0], 'новой точке не досталась подсветка');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('unhover гасит только затронутый трэк, а не всю фигуру', async () => {
+  // Прежняя реализация шла по всем трэкам и на каждое снятие наведения делала
+  // по одному restyle на трэк — при десятке трэков это десятки перерисовок.
+  const map = await renderMap(SOL);
+  try {
+    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
+    await map.fire('plotly_hover', {
+      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
+    });
+    map.calls.restyle.length = 0;
+
+    await map.fire('plotly_unhover', {});
+    assert.equal(map.calls.restyle.length, 1,
+      `unhover сделал ${map.calls.restyle.length} restyle вместо одного`);
+    assert.deepEqual(map.calls.restyle[0].curves, [planets],
+      'unhover тронул не тот трэк');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('повторный unhover ничего не перерисовывает', async () => {
+  const map = await renderMap(SOL);
+  try {
+    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
+    await map.fire('plotly_hover', {
+      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
+    });
+    await map.fire('plotly_unhover', {});
+    map.calls.restyle.length = 0;
+    await map.fire('plotly_unhover', {});
+    await map.fire('plotly_unhover', {});
+    assert.equal(map.calls.restyle.length, 0,
+      'unhover без активной подсветки всё равно дёргает restyle');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('прицел рисуется поверх карты и переключается', async () => {
+  const map = await renderMap(SOL);
+  try {
+    const doc = global.document;
+    // По умолчанию — «полный» прицел: и кольца, и координатные линии.
+    assert.ok(doc.querySelector('.ed-reticle'), 'нет колец прицела');
+    assert.ok(doc.querySelector('.ed-reticle-lines'), 'нет координатных линий в режиме «полный»');
+    for (const cls of ['.ed-ret-ring1', '.ed-ret-ring2', '.ed-ret-tick-h', '.ed-ret-tick-v', '.ed-ret-dot']) {
+      assert.ok(doc.querySelector(cls), `нет элемента ${cls}`);
+    }
+
+    // Прицел не должен перехватывать мышь у Plotly.
+    const reticle = doc.querySelector('.ed-reticle');
+    assert.equal(reticle.style.pointerEvents || getComputedStyle(reticle).pointerEvents, 'none',
+      'прицел перехватывает события мыши — карта перестанет крутиться');
+
+    const chip = [...doc.querySelectorAll('.ed-map-chip')]
+      .find((b) => /прицел|курсор/.test(b.textContent || ''));
+    assert.ok(chip, 'нет переключателя прицела');
+
+    // полный → только кольца: линии исчезают, кольца остаются
+    await map.click(chip);
+    assert.ok(doc.querySelector('.ed-reticle'), 'кольца пропали в режиме «только кольца»');
+    assert.equal(doc.querySelector('.ed-reticle-lines'), null,
+      'координатные линии не выключились');
+
+    // только кольца → выкл: не остаётся ничего
+    await map.click(chip);
+    assert.equal(doc.querySelector('.ed-reticle'), null, 'прицел не выключился');
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('в полноэкранном режиме карта растягивается на остаток окна', async () => {
+  const map = await renderMap(SOL);
+  try {
+    const doc = global.document;
+    const before = doc.getElementById('root').firstElementChild;
+    assert.equal(before.style.position, 'relative', 'до полноэкрана карта не fixed');
+    assert.equal(before.style.display, 'block', 'вне полноэкрана колонка не нужна');
+
+    const chip = [...doc.querySelectorAll('.ed-map-chip')]
+      .find((b) => /во весь экран|свернуть/.test(b.textContent || ''));
+    assert.ok(chip, 'нет кнопки полноэкранного режима');
+    await map.click(chip);
+
+    const shell = doc.getElementById('root').firstElementChild;
+    assert.equal(shell.style.position, 'fixed', 'полноэкран не включился');
+    assert.equal(shell.style.height, '100vh');
+    // Колонка + flex у области карты: высота больше не зашита магией
+    // `calc(100vh - 190px)`, из-за которой снизу оставалась пустая полоса.
+    assert.equal(shell.style.display, 'flex');
+    assert.equal(shell.style.flexDirection, 'column');
+    const html = shell.innerHTML;
+    assert.equal(html.includes('calc(100vh - 190px)'), false,
+      'высота карты всё ещё зашита магическим calc(100vh - 190px)');
+    const flexed = [...shell.querySelectorAll('div')]
+      .some((d) => d.style.flex === '1 1 auto' && d.style.minHeight === '0px');
+    assert.ok(flexed, 'область карты не растягивается на остаток высоты окна');
   } finally {
     await map.cleanup();
   }

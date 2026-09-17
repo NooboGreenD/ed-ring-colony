@@ -55,3 +55,6 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+
+# Заглушка `requests` для локального прогона uploader-тестов без pip
+.teststub/
