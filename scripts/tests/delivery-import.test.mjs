@@ -22,6 +22,8 @@ function createMockClient(options = {}) {
     existingTimeoutsLeft: options.existingTimeouts ?? 0,
     /** При каком размере пачки запись начинает успевать. */
     maxRowsBeforeTimeout: options.maxRowsBeforeTimeout ?? Infinity,
+    /** source_hash строк, которые база не принимает даже по одной. */
+    timeoutHashes: options.timeoutHashes ?? [],
     /** Есть ли уникальный индекс под ON CONFLICT. */
     uniqueIndex: options.uniqueIndex ?? false,
     /** Есть ли колонки transport-scope. */
@@ -86,6 +88,9 @@ function createMockClient(options = {}) {
             return { data: null, error: { code: '42P10', message: 'there is no unique or exclusion constraint matching the ON CONFLICT specification' } };
           }
           if (rows.length > state.maxRowsBeforeTimeout) {
+            return { data: null, error: STATEMENT_TIMEOUT };
+          }
+          if (rows.some((row) => (state.timeoutHashes ?? []).includes(row.source_hash))) {
             return { data: null, error: STATEMENT_TIMEOUT };
           }
           state.insertedRows.push(...rows);
@@ -186,4 +191,82 @@ test('импорт продолжает следующие чанки после
 
   assert.equal(outcome.eventsFound, rows.length, 'учтены не все события');
   assert.equal(client.state.insertedRows.length, rows.length, 'в базу легли не все чанки');
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Регрессия собственного адаптивного деления: поиск размещений не должен
+   выполняться повторно для каждой половины пачки.
+   ────────────────────────────────────────────────────────────────────────── */
+
+test('адаптивное деление не умножает поиск размещений', async () => {
+  // `loadPlacementLookup` ходит в hubs/route_systems, где на точное имя
+  // индекса может не быть вовсе. Если при делении пачки пополам искать
+  // размещения заново для каждой половины, дорогой запрос выполняется
+  // вместо одного раза несколько — и таймаут не уходит, а усугубляется.
+  const client = createMockClient({ maxRowsBeforeTimeout: 4 });
+
+  // Система уникальна для этого теста: кэш размещений живёт на уровне модуля,
+  // и на уже встречавшемся имени обращений к базе не будет вовсе.
+  const rows = Array.from({ length: DELIVERY_IMPORT_WRITE_BATCH_SIZE },
+    (_unused, index) => delivery(index, 'Adaptive Split Probe System'));
+  await persistImportedDeliveries(client, 'user-1', rows);
+
+  const placementCalls = client.calls.filter(
+    (call) => call.rpc === 'resolve_delivery_system_placements'
+      || (call.table === 'hubs' || call.table === 'route_systems'),
+  ).length;
+
+  assert.equal(
+    placementCalls, 1,
+    `поиск размещений выполнен ${placementCalls} раз вместо одного — деление пачки умножает дорогой запрос`,
+  );
+});
+
+test('неразрешимый таймаут откладывает одну строку, а не весь чанк', async () => {
+  // Если база не принимает конкретную строку даже отдельно, раньше из-за неё
+  // откладывался весь чанк: соседние записываемые доставки терялись вместе с
+  // проблемной. Откладываться должна ровно проблемная строка.
+  const size = DELIVERY_IMPORT_WRITE_BATCH_SIZE;
+  const rows = Array.from({ length: size * 3 }, (_unused, index) => delivery(index));
+  const poisoned = rows[size + 3].source_hash;
+
+  const client = createMockClient({ timeoutHashes: [poisoned] });
+  const outcome = await persistImportedDeliveries(client, 'user-1', rows);
+
+  assert.equal(outcome.deferred, 1, 'отложено больше, чем одна проблемная строка');
+  assert.equal(outcome.inserted, rows.length - 1, 'соседние строки потеряны вместе с проблемной');
+  assert.equal(client.state.insertedRows.length, rows.length - 1, 'в базу легло не всё, что могло');
+  assert.equal(outcome.eventsFound, rows.length, 'учтены не все события');
+});
+
+test('импорт больше не отвечает 500 на таймаут базы', async () => {
+  // Собственно баг из отчёта: 500 → клиент трижды повторял пакет → обрыв
+  // загрузки на 30-м пакете из 500+. Таймаут обязан оставаться внутри импорта.
+  const client = createMockClient({ maxRowsBeforeTimeout: 0 });
+
+  const rows = Array.from({ length: DELIVERY_IMPORT_WRITE_BATCH_SIZE * 4 }, (_unused, index) => delivery(index));
+  const outcome = await persistImportedDeliveries(client, 'user-1', rows);
+
+  assert.equal(outcome.inserted, 0);
+  assert.equal(outcome.deferred, rows.length, 'ничего не записано — всё должно быть отложено, а не брошено');
+});
+
+test('повторная загрузка тех же систем не ходит в базу за размещениями', async () => {
+  // В журнале одни и те же системы повторяются сотни раз. Поиск размещения —
+  // самая дорогая часть импорта, поэтому между пачками он обязан кэшироваться,
+  // иначе загрузка из 500+ пакетов упирается в statement_timeout.
+  const system = 'Cached Placement System';
+  const first = createMockClient();
+  await persistImportedDeliveries(first, 'user-1', [delivery(1, system), delivery(2, system)]);
+  const firstCalls = first.calls.filter(
+    (call) => call.rpc === 'resolve_delivery_system_placements' || call.table === 'hubs',
+  ).length;
+  assert.ok(firstCalls > 0, 'первая загрузка должна была сходить в базу');
+
+  const second = createMockClient();
+  await persistImportedDeliveries(second, 'user-2', [delivery(3, system), delivery(4, system)]);
+  const secondCalls = second.calls.filter(
+    (call) => call.rpc === 'resolve_delivery_system_placements' || call.table === 'hubs',
+  ).length;
+  assert.equal(secondCalls, 0, 'размещения запрошены заново вместо использования кэша');
 });

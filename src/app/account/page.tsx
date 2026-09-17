@@ -446,6 +446,9 @@ export default function AccountPage() {
       let inserted = 0;
       let duplicates = allStats.skippedDuplicates;
       let eventsFound = 0;
+      // Пачки, которые сервер не смог записать из-за statement_timeout.
+      // Повторяются отдельным проходом после основного цикла.
+      const deferredChunks: unknown[][] = [];
 
       const uploadChunk = async (deliveries: unknown[]) => {
         let lastError = new Error(t('account.serverError'));
@@ -513,6 +516,33 @@ export default function AccountPage() {
         inserted += json.inserted ?? 0;
         duplicates += json.duplicates ?? 0;
         eventsFound += json.eventsFound ?? 0;
+        if ((json.deferred ?? 0) > 0) deferredChunks.push(chunk);
+      }
+
+      // Повторный проход по отложенным пачкам. Сервер больше не отвечает 500 на
+      // statement_timeout — он возвращает `deferred`, поэтому основной цикл
+      // доходит до конца, а не обрывается на 30-м пакете из 500+. Повтор
+      // идемпотентен: у каждой доставки стабильный source_hash.
+      let stillDeferred = 0;
+      for (let pass = 0; pass < 2 && deferredChunks.length > 0; pass += 1) {
+        const retry = deferredChunks.splice(0, deferredChunks.length);
+        for (const chunk of retry) {
+          setProgress({
+            current: list.length,
+            total: list.length,
+            phase: `${t('account.sendingBatch')} ↻`,
+            pct: 99,
+          });
+          try {
+            const json = await uploadChunk(chunk);
+            inserted += json.inserted ?? 0;
+            duplicates += json.duplicates ?? 0;
+            if ((json.deferred ?? 0) > 0) deferredChunks.push(chunk);
+          } catch {
+            deferredChunks.push(chunk);
+          }
+        }
+        stillDeferred = deferredChunks.reduce((sum, chunk) => sum + chunk.length, 0);
       }
 
       // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
@@ -571,6 +601,7 @@ export default function AccountPage() {
         eventsFound,
         inserted,
         duplicates,
+        deferred: stillDeferred,
         cmdr,
         parserStats: allStats,
         telemetry: telemetryResult,
@@ -921,6 +952,12 @@ export default function AccountPage() {
                   <span style={{ color: '#6b7280' }}>{t('account.events')}</span><span style={{ color: "#eeeeee" }}>{summary.eventsFound?.toLocaleString('ru')}</span>
                   <span style={{ color: '#6b7280' }}>{t('account.records')}</span><span style={{ color: "#22c55e" }}>{summary.inserted?.toLocaleString('ru')}</span>
                   <span style={{ color: '#6b7280' }}>{t('account.duplicatesLabel')}</span><span style={{ color: "#9ca3af" }}>{summary.duplicates?.toLocaleString('ru')}</span>
+                  {summary.deferred > 0 && (
+                    <>
+                      <span style={{ color: '#6b7280' }}>{t('account.deferredLabel')}</span>
+                      <span style={{ color: "#e74c3c" }}>{summary.deferred.toLocaleString('ru')}</span>
+                    </>
+                  )}
                   {summary.cmdr && (<><span style={{ color: '#6b7280' }}>{t('account.cmdrLabel')}</span><span style={{ color: "#eeeeee" }}>{summary.cmdr}</span></>)}
                   {summary.parserStats?.transportedTons != null && (
                     <>
@@ -957,6 +994,11 @@ export default function AccountPage() {
                     </>
                   )}
                 </div>
+              )}
+              {summary.deferred > 0 && (
+                <p style={{ color: '#f39c12', fontSize: 12, margin: '10px 0 0' }}>
+                  {t('account.deferredHint')}
+                </p>
               )}
             </div>
           )}
