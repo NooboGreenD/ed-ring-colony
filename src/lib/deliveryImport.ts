@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 
 import { normalizeDeliveryKind } from './cargoScope.ts';
-import { isConstructionSourceName } from './journalParser';
+import { isConstructionSourceName } from './journalParser.ts';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface DeliveryImportOutcome {
@@ -130,6 +130,33 @@ function safeSourceHash(value: unknown, fallback: string): string {
     return sourceHash;
   }
   return fallbackHash(fallback);
+}
+
+/**
+ * Ошибка БД с сохранённым SQLSTATE.
+ *
+ * Прежние `throw new Error(error.message)` выбрасывали код ошибки, из-за чего
+ * вызывающая сторона не могла отличить «база не успела» от «схема не та» и
+ * превращала временный таймаут в окончательный отказ всего импорта.
+ */
+function dbError(error: { code?: string; message?: string }): Error {
+  const wrapped = new Error(error.message ?? 'Database request failed') as Error & { code?: string };
+  wrapped.code = error.code;
+  return wrapped;
+}
+
+/**
+ * Postgres отменил statement по `statement_timeout` (SQLSTATE 57014).
+ *
+ * Supabase ограничивает запросы PostgREST несколькими секундами, поэтому на
+ * большой истории доставок один крупный INSERT/SELECT может не успеть. Это
+ * временный сбой: тот же объём меньшей пачкой проходит.
+ */
+function isStatementTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: string; message?: string };
+  if (candidate.code === '57014') return true;
+  return /canceling statement due to statement timeout|statement timeout/i.test(candidate.message || '');
 }
 
 function chunk<T>(values: T[], size: number): T[][] {
@@ -488,7 +515,7 @@ async function persistDeliveryChunk(
     } else if (isMissingConflictTarget(error)) {
       rememberSourceHashWriteMode('column-without-index');
     } else {
-      throw new Error(error.message);
+      throw dbError(error);
     }
   }
 
@@ -500,7 +527,7 @@ async function persistDeliveryChunk(
     const legacyWrite = await writeDeliveryRows(svc, legacyRows as unknown as Array<Record<string, unknown>>, 'insert');
     const insertedRows = { length: legacyWrite.ids.length };
     const insertError = legacyWrite.error;
-    if (insertError) throw new Error(insertError.message);
+    if (insertError) throw dbError(insertError);
     return {
       inserted: insertedRows?.length ?? legacyRows.length,
       duplicates: collapsed.duplicates,
@@ -512,12 +539,19 @@ async function persistDeliveryChunk(
   // optional concurrent unique index. It is not race-proof, but each lookup
   // and write stays bounded and repeated sequential imports remain safe.
   const hashes = collapsed.rows.map((row) => row.source_hash);
+  // `IS NOT NULL` здесь не косметика. Индекс `idx_deliveries_user_source_hash`
+  // частичный (`WHERE source_hash IS NOT NULL`), а планировщик применяет
+  // частичный индекс, только если его предикат выводится из предиката запроса.
+  // Из `source_hash IN (константы)` Postgres выводить `IS NOT NULL` не обязан —
+  // без явного фильтра запрос уходит в seq scan по всей таблице `deliveries` и
+  // на большой истории упирается в `statement_timeout`.
   const { data: existing, error: existingError } = await svc
     .from('deliveries')
     .select('source_hash')
     .eq('user_id', userId)
+    .not('source_hash', 'is', null)
     .in('source_hash', hashes);
-  if (existingError) throw new Error(existingError.message);
+  if (existingError) throw dbError(existingError);
   const existingHashes = new Set((existing || []).map((row: { source_hash?: string | null }) => row.source_hash).filter(Boolean));
   const missing = collapsed.rows.filter((row) => !existingHashes.has(row.source_hash));
   if (missing.length === 0) {
@@ -529,13 +563,47 @@ async function persistDeliveryChunk(
   }
 
   const write = await writeDeliveryRows(svc, missing as unknown as Array<Record<string, unknown>>, 'insert');
-  if (write.error) throw new Error(write.error.message);
+  if (write.error) throw dbError(write.error);
   const inserted = write.ids.length;
   return {
     inserted,
     duplicates: collapsed.duplicates + existingHashes.size + Math.max(0, missing.length - inserted),
     eventsFound: initialRows.length,
   };
+}
+
+/**
+ * Записать пачку, не выходя за `statement_timeout` базы.
+ *
+ * Причина бага «импорт журнала падает на 30-м пакете из 500»: Supabase
+ * ограничивает каждый запрос PostgREST несколькими секундами, и на большой
+ * истории один statement с пачкой в 25 строк периодически не успевает. Клиент
+ * получал 500, трижды повторял тот же пакет и обрывал загрузку, теряя остаток
+ * журнала.
+ *
+ * Таймаут — сбой временный, поэтому пачка делится пополам и половины
+ * записываются отдельно: тот же объём меньшими порциями проходит. Деление
+ * идёт до одной строки; если таймаутит даже одна строка, ошибка честно
+ * пробрасывается наружу.
+ */
+async function persistChunkWithinStatementTimeout(
+  svc: SupabaseClient,
+  userId: string,
+  rows: unknown[],
+): Promise<DeliveryImportOutcome> {
+  try {
+    return await persistDeliveryChunk(svc, userId, rows);
+  } catch (error) {
+    if (!isStatementTimeout(error) || rows.length <= 1) throw error;
+    const middle = Math.floor(rows.length / 2);
+    const left = await persistChunkWithinStatementTimeout(svc, userId, rows.slice(0, middle));
+    const right = await persistChunkWithinStatementTimeout(svc, userId, rows.slice(middle));
+    return {
+      inserted: left.inserted + right.inserted,
+      duplicates: left.duplicates + right.duplicates,
+      eventsFound: left.eventsFound + right.eventsFound,
+    };
+  }
 }
 
 /**
@@ -553,7 +621,7 @@ export async function persistImportedDeliveries(
   let eventsFound = 0;
 
   for (const deliveryChunk of chunk(incomingDeliveries, DELIVERY_IMPORT_WRITE_BATCH_SIZE)) {
-    const outcome = await persistDeliveryChunk(svc, userId, deliveryChunk);
+    const outcome = await persistChunkWithinStatementTimeout(svc, userId, deliveryChunk);
     inserted += outcome.inserted;
     duplicates += outcome.duplicates;
     eventsFound += outcome.eventsFound;

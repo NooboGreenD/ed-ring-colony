@@ -6,7 +6,7 @@ import {
   isConstructionSourceName,
   parseJournal,
 } from '../../src/lib/journalParser.ts';
-import { TelemetryCollector, parseJournalTelemetry } from '../../src/lib/journalTelemetry.ts';
+import { TelemetryCollector, parseJournalTelemetry, persistJournalTelemetry } from '../../src/lib/journalTelemetry.ts';
 
 /* ── helpers ── */
 
@@ -584,4 +584,49 @@ test('досье из тех же строк журнала: «всего» и �
   // Досье обязано показывать ровно то, что насчитал парсер.
   assert.equal(summary.totalTons, parsed.stats.transportedTons);
   assert.equal(summary.siteTons, parsed.stats.constructionTons);
+});
+
+/* ── запись сканов при statement_timeout ── */
+
+test('пачка сканов не теряется целиком при таймауте базы', async () => {
+  // Пачка в 200 сканов несёт тяжёлый JSON, и Supabase обрывает такой запрос по
+  // statement_timeout. Раньше вся пачка уходила в warnings и карта с
+  // «первооткрытиями» оставалась пустой при формально успешной загрузке.
+  const STATEMENT_TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const written = [];
+  const client = {
+    from: (table) => ({
+      upsert: async (rows) => {
+        if (table !== 'system_scans') return { error: null };
+        if (rows.length > 4) return { error: STATEMENT_TIMEOUT };
+        written.push(...rows);
+        return { error: null };
+      },
+    }),
+  };
+
+  const scans = Array.from({ length: 12 }, (_unused, index) => ({
+    system_name: 'Delta Velorum',
+    body_name: `Body ${index}`,
+    body_id: index,
+  }));
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', { systemScans: scans }, 'Test Cmdr');
+
+  assert.deepEqual(outcome.warnings, [], 'таймаут не должен был остаться неразрешённым');
+  assert.equal(written.length, scans.length, 'часть сканов потеряна вместо записи меньшей пачкой');
+  assert.equal(outcome.systemScansInserted, scans.length, 'счётчик записанных сканов расходится с фактом');
+});
+
+test('неразрешимый таймаут сканов остаётся в warnings, а не роняет импорт', async () => {
+  const STATEMENT_TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const client = { from: () => ({ upsert: async () => ({ error: STATEMENT_TIMEOUT }) }) };
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    systemScans: [{ system_name: 'Sol', body_name: 'Sol A 1', body_id: 1 }],
+  }, 'Test Cmdr');
+
+  assert.equal(outcome.systemScansInserted, 0);
+  assert.equal(outcome.warnings.length, 1, 'сбой должен быть виден в предупреждениях');
+  assert.match(outcome.warnings[0], /statement timeout/);
 });

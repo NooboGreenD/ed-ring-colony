@@ -467,6 +467,49 @@ type DbClient = {
 const CONSTRUCTION_BATCH = 100;
 const SCAN_BATCH = 200;
 
+/**
+ * Postgres отменил statement по `statement_timeout` (SQLSTATE 57014).
+ *
+ * Supabase обрывает запросы PostgREST через несколько секунд. Пачка сканов
+ * несёт тяжёлый JSON (`atmosphere_composition`, `parents`, `rings`), поэтому
+ * именно она чаще всего не успевает. Сбой временный: тот же объём меньшей
+ * пачкой проходит.
+ */
+function isStatementTimeout(error: { code?: string; message?: string }): boolean {
+  if (error.code === '57014') return true;
+  return /canceling statement due to statement timeout|statement timeout/i.test(error.message || '');
+}
+
+/**
+ * Записать пачку, при таймауте деля её пополам.
+ *
+ * Без этого одна не успевшая пачка в 200 сканов терялась целиком: ошибка
+ * попадала в `warnings`, и карта с «первооткрытиями» оставалась пустой, хотя
+ * загрузка журнала считалась успешной.
+ */
+async function upsertWithinStatementTimeout(
+  svc: DbClient,
+  table: 'system_scans' | 'colonisation_events',
+  rows: Array<Record<string, unknown>>,
+  onConflict: string,
+  ignoreDuplicates: boolean,
+): Promise<number> {
+  try {
+    const { error } = await svc.from(table).upsert(rows, { onConflict, ignoreDuplicates });
+    if (error) throw error as { code?: string; message?: string };
+    return rows.length;
+  } catch (error) {
+    const failure = error as { code?: string; message?: string };
+    if (!isStatementTimeout(failure) || rows.length <= 1) throw failure;
+    const middle = Math.floor(rows.length / 2);
+    const left = await upsertWithinStatementTimeout(
+      svc, table, rows.slice(0, middle), onConflict, ignoreDuplicates);
+    const right = await upsertWithinStatementTimeout(
+      svc, table, rows.slice(middle), onConflict, ignoreDuplicates);
+    return left + right;
+  }
+}
+
 function batches<T>(rows: T[], size: number): T[][] {
   const result: T[][] = [];
   for (let index = 0; index < rows.length; index += size) {
@@ -621,12 +664,8 @@ export async function persistJournalTelemetry(
 
     for (const batch of batches(rows, SCAN_BATCH)) {
       try {
-        const { error } = await svc.from('system_scans').upsert(batch, {
-          onConflict: 'system_name,body_name',
-          ignoreDuplicates: false,
-        });
-        if (error) throw new Error(error.message);
-        outcome.systemScansInserted += batch.length;
+        outcome.systemScansInserted += await upsertWithinStatementTimeout(
+          svc, 'system_scans', batch as Array<Record<string, unknown>>, 'system_name,body_name', false);
       } catch (error) {
         warnings.push(`system scans: ${(error as Error).message}`);
       }
