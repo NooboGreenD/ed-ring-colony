@@ -215,6 +215,11 @@ export default function SystemPlotlyMap({
   // Прицел: «полный» — концентрические круги + координатные линии во всю карту,
   // «круг» — только кольца у курсора, «нет» — обычный курсор.
   const [reticleMode, setReticleMode] = useState<'full' | 'ring' | 'off'>('full');
+  // Счётчик явных сбросов камеры. Камера принадлежит пользователю и живёт между
+  // перерисовками, поэтому без отдельного сигнала вернуть стандартный вид было
+  // нельзя: приходилось снимать фокус со всего тела. Прибавка к счётчику входит
+  // в подпись вида и заставляет следующий `Plotly.react` поставить камеру заново.
+  const [cameraReset, setCameraReset] = useState(0);
 
   // Камера принадлежит пользователю: он её крутит и зумит колесом. Сбрасывать её
   // на стандартную можно только когда сменился сам вид (зум/цель/режим), а не
@@ -677,7 +682,7 @@ export default function SystemPlotlyMap({
     // Вид сменился (зум, цель, режим проекции) — камеру ставим стандартную.
     // Иначе берём ту, что пользователь накрутил сам: `Plotly.react` иначе
     // молча возвращал сцену в «обзор» при любом чихе, включая наведение.
-    const viewSignature = `${viewMode}|${zoom}|${selectedTarget}|${halfSpan}|${isolateCluster}`;
+    const viewSignature = `${viewMode}|${zoom}|${selectedTarget}|${halfSpan}|${isolateCluster}|${cameraReset}`;
     const viewChanged = cameraViewRef.current !== viewSignature;
     cameraViewRef.current = viewSignature;
     const liveCamera = viewChanged ? null : (gd as any)?._fullLayout?.scene?.camera;
@@ -804,7 +809,7 @@ export default function SystemPlotlyMap({
     scriptLoaded, loading, error, records, layout, structures, visibleStructures, selectedTarget, zoom,
     filterMode, scaleMode, labelMode, showMoons, isolateCluster, activeCluster, focus, halfSpan, detailMode,
     sphereRadii, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
-    canvasPixels, viewMode,
+    canvasPixels, viewMode, cameraReset,
   ]);
 
   useEffect(() => {
@@ -822,6 +827,10 @@ export default function SystemPlotlyMap({
       }
       if (event.key === 'Escape') {
         selectTarget('', 0);
+      } else if (event.key === '0') {
+        // Вернуть стандартный вид, сохранив выбранное тело: до этого единственным
+        // способом был полный сброс фокуса.
+        setCameraReset((value) => value + 1);
       } else if (event.key === '[' || event.key === 'ArrowLeft') {
         cycleTarget(-1);
       } else if (event.key === ']' || event.key === 'ArrowRight') {
@@ -951,6 +960,13 @@ export default function SystemPlotlyMap({
           </select>
           <button onClick={() => cycleTarget(-1)} className="ed-map-chip" title="Предыдущее тело (←)"><IconArrowLeft size={12} /></button>
           <button onClick={() => cycleTarget(1)} className="ed-map-chip" title="Следующее тело (→)"><IconArrowRight size={12} /></button>
+          <button
+            onClick={() => setCameraReset((value) => value + 1)}
+            className="ed-map-chip"
+            title="Вернуть стандартный вид камеры, сохранив фокус (0)"
+          >
+            ⟲ камера
+          </button>
           <button onClick={() => selectTarget('', 0)} className="ed-map-chip" title="Снять фокус (Esc)">
             <IconCrosshair size={12} /> сброс
           </button>
@@ -1129,7 +1145,7 @@ export default function SystemPlotlyMap({
             )}
           </div>
           <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <span>колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность · ←/→ — перебор тел</span>
+            <span>колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность · ←/→ — перебор тел · 0 — вернуть вид</span>
             {selectedTarget && <span style={{ color: '#00f3ff' }}>🎯 {selectedTarget}</span>}
           </div>
         </div>

@@ -235,6 +235,30 @@ maybe('стрелки не перехватываются, когда польз
   }
 });
 
+maybe('клавиша 0 возвращает стандартный вид, сохраняя фокус', async () => {
+  // Камера принадлежит пользователю и живёт между перерисовками. До появления
+  // явного сброса вернуть стандартный вид можно было только сняв фокус с тела.
+  const map = await renderMap();
+  try {
+    await map.key('ArrowRight');
+    const focused = map.focusChanges[map.focusChanges.length - 1];
+    assert.ok(focused, 'фокус не выставился — тест не проверяет сохранение цели');
+
+    map.setLiveCamera({ x: 0.4, y: -1.9, z: 0.8 });
+    await map.key('0');
+
+    const camera = map.lastCamera();
+    assert.ok(camera, 'после сброса не было перерисовки');
+    assert.notDeepEqual(camera.eye, { x: 0.4, y: -1.9, z: 0.8 }, 'камера не сброшена');
+    assert.equal(
+      map.focusChanges[map.focusChanges.length - 1], focused,
+      'сброс камеры снял фокус с тела',
+    );
+  } finally {
+    await map.cleanup();
+  }
+});
+
 maybe('наведение не перерисовывает фигуру и не трогает камеру', async () => {
   const map = await renderMap();
   try {
