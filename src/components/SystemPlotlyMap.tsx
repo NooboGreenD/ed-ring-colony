@@ -235,6 +235,10 @@ export default function SystemPlotlyMap({
   // Прицел двигается напрямую по DOM: `setState` на каждый `mousemove`
   // перерисовывал бы компонент десятки раз в секунду, и карта бы висла.
   const reticleRef = useRef<HTMLDivElement>(null);
+  // Где было нажатие. `plotly_click` приходит и тогда, когда пользователь
+  // просто вращал камеру и отпустил кнопку над телом — без этой отметки такое
+  // «вращение» неожиданно меняло фокус.
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const reticleLinesRef = useRef<HTMLDivElement>(null);
 
   const onMapMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -752,6 +756,14 @@ export default function SystemPlotlyMap({
     if (!gdAny.__edMapBound && typeof gdAny.on === 'function') {
       gdAny.__edMapBound = true;
       gdAny.on('plotly_click', (event: any) => {
+        // Порог в пикселях: движение мыши между нажатием и отпусканием значит,
+        // что пользователь вращал или панорамировал сцену, а не выбирал тело.
+        const down = pointerDownRef.current;
+        const native = event?.event as { clientX?: number; clientY?: number } | undefined;
+        if (down && native && typeof native.clientX === 'number' && typeof native.clientY === 'number') {
+          const moved = Math.hypot(native.clientX - down.x, native.clientY - down.y);
+          if (moved > 5) return;
+        }
         const point = event?.points?.[0] ?? event?.data?.[0];
         const name = String(point?.customdata ?? point?.data?.customdata?.[point?.pointNumber ?? 0] ?? '');
         if (name) selectTarget(name, 2);
@@ -1124,6 +1136,10 @@ export default function SystemPlotlyMap({
           }}
         >
           <div
+            data-ed-map-host="1"
+            onPointerDown={(event) => {
+              pointerDownRef.current = { x: event.clientX, y: event.clientY };
+            }}
             onMouseMove={reticleMode === 'off' ? undefined : onMapMouseMove}
             onMouseLeave={() => { if (reticleRef.current) reticleRef.current.style.opacity = '0'; }}
             style={{

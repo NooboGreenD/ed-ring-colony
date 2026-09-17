@@ -136,6 +136,19 @@ async function renderMap() {
         await new Promise((r) => setTimeout(r, 15));
       });
     },
+    /** Div, в котором живёт Plotly (на нём висит onPointerDown). */
+    mapHost() {
+      return dom.window.document.querySelector('[data-ed-map-host]');
+    },
+    /** Нажатие указателя с координатами — так начинается вращение камеры. */
+    async pointerDown(element, clientX, clientY) {
+      await act(async () => {
+        const event = new dom.window.Event('pointerdown', { bubbles: true });
+        event.clientX = clientX;
+        event.clientY = clientY;
+        element.dispatchEvent(event);
+      });
+    },
     /** Клик по элементу внутри React-окружения. */
     async click(element) {
       await act(async () => {
@@ -265,6 +278,33 @@ maybe('клавиша 0 возвращает стандартный вид, со
       map.focusChanges[map.focusChanges.length - 1], focused,
       'сброс камеры снял фокус с тела',
     );
+  } finally {
+    await map.cleanup();
+  }
+});
+
+maybe('вращение камеры не меняет фокус', async () => {
+  // `plotly_click` приходит и когда пользователь вращал сцену и отпустил кнопку
+  // над телом. Без порога перемещения такое «вращение» неожиданно меняло фокус —
+  // карта прыгала в момент, когда её просто поворачивали.
+  const map = await renderMap();
+  try {
+    const host = map.mapHost();
+    assert.ok(host, 'хост карты не найден — тест ничего не проверяет');
+    await map.pointerDown(host, 100, 100);
+    await map.fire('plotly_click', {
+      event: { clientX: 240, clientY: 190 },
+      points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }],
+    });
+    assert.deepEqual(map.focusChanges, [], 'поворот камеры сменил фокус');
+
+    // Контроль: клик без движения обязан фокусировать тело.
+    await map.pointerDown(host, 100, 100);
+    await map.fire('plotly_click', {
+      event: { clientX: 102, clientY: 101 },
+      points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }],
+    });
+    assert.deepEqual(map.focusChanges, ['Earth'], 'обычный клик перестал фокусировать тело');
   } finally {
     await map.cleanup();
   }
