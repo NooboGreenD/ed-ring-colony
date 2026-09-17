@@ -139,15 +139,24 @@ function safeSourceHash(value: unknown, fallback: string): string {
 }
 
 /**
- * Ошибка БД с сохранённым SQLSTATE.
+ * Ошибка БД с сохранённым SQLSTATE и именем операции.
  *
  * Прежние `throw new Error(error.message)` выбрасывали код ошибки, из-за чего
  * вызывающая сторона не могла отличить «база не успела» от «схема не та» и
  * превращала временный таймаут в окончательный отказ всего импорта.
+ *
+ * Имя операции нужно потому, что сообщение Postgres при таймауте одинаковое
+ * для любого запроса: «canceling statement due to statement timeout». Без
+ * имени в серверном логе невозможно понять, какой именно statement не успел,
+ * и диагностика превращается в перебор гипотез.
  */
-function dbError(error: { code?: string; message?: string }): Error {
-  const wrapped = new Error(error.message ?? 'Database request failed') as Error & { code?: string };
+function dbError(error: { code?: string; message?: string }, operation: string): Error {
+  const wrapped = new Error(`${operation}: ${error.message ?? 'database request failed'}`) as Error & {
+    code?: string;
+    operation?: string;
+  };
   wrapped.code = error.code;
+  wrapped.operation = operation;
   return wrapped;
 }
 
@@ -580,7 +589,7 @@ async function writeRowsOnce(
     } else if (isMissingConflictTarget(error)) {
       rememberSourceHashWriteMode('column-without-index');
     } else {
-      throw dbError(error);
+      throw dbError(error, 'deliveries upsert (on conflict user_id,source_hash)');
     }
   }
 
@@ -590,7 +599,7 @@ async function writeRowsOnce(
     // retries become idempotent after the column/index rollout completes.
     const legacyRows = rows.map(({ source_hash: _sourceHash, ...row }) => row);
     const legacyWrite = await writeDeliveryRows(svc, legacyRows as unknown as Array<Record<string, unknown>>, 'insert');
-    if (legacyWrite.error) throw dbError(legacyWrite.error);
+    if (legacyWrite.error) throw dbError(legacyWrite.error, 'deliveries insert (legacy, no source_hash)');
     return { inserted: legacyWrite.ids.length, duplicates: 0 };
   }
 
@@ -609,7 +618,7 @@ async function writeRowsOnce(
     .eq('user_id', userId)
     .not('source_hash', 'is', null)
     .in('source_hash', hashes);
-  if (existingError) throw dbError(existingError);
+  if (existingError) throw dbError(existingError, 'deliveries select existing source_hash');
   const existingHashes = new Set((existing || []).map((row: { source_hash?: string | null }) => row.source_hash).filter(Boolean));
   const missing = rows.filter((row) => !existingHashes.has(row.source_hash));
   if (missing.length === 0) {
@@ -617,7 +626,7 @@ async function writeRowsOnce(
   }
 
   const write = await writeDeliveryRows(svc, missing as unknown as Array<Record<string, unknown>>, 'insert');
-  if (write.error) throw dbError(write.error);
+  if (write.error) throw dbError(write.error, 'deliveries insert');
   return {
     inserted: write.ids.length,
     duplicates: existingHashes.size + Math.max(0, missing.length - write.ids.length),
@@ -646,6 +655,10 @@ async function writePreparedRows(
     return { inserted: written.inserted, duplicates: written.duplicates, deferred: 0 };
   } catch (error) {
     if (!isStatementTimeout(error)) throw error;
+    // Сообщение Postgres при таймауте одинаково для любого запроса, поэтому
+    // без имени операции в логе не понять, какой statement не успел.
+    const operation = (error as { operation?: string }).operation ?? 'unknown operation';
+    console.warn('[delivery import] statement timeout:', operation, '| rows:', rows.length);
     if (rows.length <= 1) return { inserted: 0, duplicates: 0, deferred: rows.length };
     const middle = Math.floor(rows.length / 2);
     const left = await writePreparedRows(svc, userId, rows.slice(0, middle));

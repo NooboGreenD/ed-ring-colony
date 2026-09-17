@@ -24,6 +24,8 @@ function createMockClient(options = {}) {
     maxRowsBeforeTimeout: options.maxRowsBeforeTimeout ?? Infinity,
     /** source_hash строк, которые база не принимает даже по одной. */
     timeoutHashes: options.timeoutHashes ?? [],
+    /** Произвольная ошибка записи — проверить, что дойдёт вместе с именем операции. */
+    writeError: options.writeError ?? null,
     /** Есть ли уникальный индекс под ON CONFLICT. */
     uniqueIndex: options.uniqueIndex ?? false,
     /** Есть ли колонки transport-scope. */
@@ -93,6 +95,7 @@ function createMockClient(options = {}) {
           if (rows.some((row) => (state.timeoutHashes ?? []).includes(row.source_hash))) {
             return { data: null, error: STATEMENT_TIMEOUT };
           }
+          if (state.writeError) return { data: null, error: state.writeError };
           state.insertedRows.push(...rows);
           return { data: rows.map((_row, index) => ({ id: state.insertedRows.length + index })), error: null };
         }
@@ -269,4 +272,30 @@ test('повторная загрузка тех же систем не ходи
     (call) => call.rpc === 'resolve_delivery_system_placements' || call.table === 'hubs',
   ).length;
   assert.equal(secondCalls, 0, 'размещения запрошены заново вместо использования кэша');
+});
+
+test('ошибка базы доходит вместе с именем операции и SQLSTATE', async () => {
+  // Сообщение Postgres при таймауте одинаково для любого запроса, поэтому без
+  // имени операции в серверном логе нельзя понять, какой statement не успел,
+  // и диагностика превращается в перебор гипотез. Берём не-таймаутную ошибку:
+  // таймаут одиночной строки теперь откладывается, а не пробрасывается.
+  const client = createMockClient({
+    uniqueIndex: true,
+    writeError: { code: '42501', message: 'permission denied for table deliveries' },
+  });
+
+  await assert.rejects(
+    () => persistImportedDeliveries(client, 'user-1', [delivery(1, 'Operation Name Probe')]),
+    (error) => {
+      assert.match(error.message, /permission denied for table deliveries/);
+      // Конкретная ветка записи зависит от модульного `sourceHashWriteMode`,
+      // который накапливается между тестами, поэтому проверяем намерение:
+      // операция опознана и относится к deliveries.
+      assert.equal(typeof error.operation, 'string', 'имя операции потеряно');
+      assert.match(error.operation, /^deliveries /, `не опознана операция: ${error.operation}`);
+      assert.match(error.message, new RegExp(`^${error.operation}: `), 'имя операции не попало в сообщение');
+      assert.equal(error.code, '42501', 'SQLSTATE потерян');
+      return true;
+    },
+  );
 });
