@@ -809,6 +809,17 @@ export default function SystemPlotlyMap({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Обработчик висит на `window`, поэтому обязан уступать полям ввода:
+      // иначе стрелки в поиске или комментарии листали тела системы вместо
+      // перемещения курсора в тексте.
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        target?.isContentEditable === true
+      ) {
+        return;
+      }
       if (event.key === 'Escape') {
         selectTarget('', 0);
       } else if (event.key === '[' || event.key === 'ArrowLeft') {
