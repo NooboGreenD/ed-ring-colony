@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
+import { sendInChunks } from "@/lib/importRetry";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { startDiscordOAuthAction } from "../login/actions";
 import { createJournalParseState, parseJournal, type Delivery } from "@/lib/journalParser";
@@ -446,9 +447,6 @@ export default function AccountPage() {
       let inserted = 0;
       let duplicates = allStats.skippedDuplicates;
       let eventsFound = 0;
-      // Пачки, которые сервер не смог записать из-за statement_timeout.
-      // Повторяются отдельным проходом после основного цикла.
-      const deferredChunks: unknown[][] = [];
 
       const uploadChunk = async (deliveries: unknown[]) => {
         let lastError = new Error(t('account.serverError'));
@@ -485,14 +483,9 @@ export default function AccountPage() {
         throw lastError;
       };
 
+      const deliveryChunks: Record<string, unknown>[][] = [];
       for (let chunkIndex = 0; chunkIndex < chunks; chunkIndex += 1) {
-        setProgress({
-          current: list.length,
-          total: list.length,
-          phase: `${t('account.sendingBatch')} ${chunkIndex + 1} ${t('account.of')} ${chunks}`,
-          pct: 82 + Math.round(((chunkIndex + 1) / Math.max(chunks, 1)) * 18),
-        });
-        const chunk = allDeliveries
+        deliveryChunks.push(allDeliveries
           .slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE)
           .map((delivery) => ({
             system_name: delivery.systemName,
@@ -511,39 +504,32 @@ export default function AccountPage() {
             delivery_kind: delivery.deliveryKind ?? null,
             station_name: delivery.stationName ?? null,
             station_kind: delivery.stationKind ?? null,
-          }));
-        const json = await uploadChunk(chunk);
-        inserted += json.inserted ?? 0;
-        duplicates += json.duplicates ?? 0;
-        eventsFound += json.eventsFound ?? 0;
-        if ((json.deferred ?? 0) > 0) deferredChunks.push(chunk);
+          })));
       }
 
-      // Повторный проход по отложенным пачкам. Сервер больше не отвечает 500 на
-      // statement_timeout — он возвращает `deferred`, поэтому основной цикл
-      // доходит до конца, а не обрывается на 30-м пакете из 500+. Повтор
-      // идемпотентен: у каждой доставки стабильный source_hash.
-      let stillDeferred = 0;
-      for (let pass = 0; pass < 2 && deferredChunks.length > 0; pass += 1) {
-        const retry = deferredChunks.splice(0, deferredChunks.length);
-        for (const chunk of retry) {
-          setProgress({
-            current: list.length,
-            total: list.length,
-            phase: `${t('account.sendingBatch')} ↻`,
-            pct: 99,
-          });
-          try {
-            const json = await uploadChunk(chunk);
-            inserted += json.inserted ?? 0;
-            duplicates += json.duplicates ?? 0;
-            if ((json.deferred ?? 0) > 0) deferredChunks.push(chunk);
-          } catch {
-            deferredChunks.push(chunk);
-          }
-        }
-        stillDeferred = deferredChunks.reduce((sum, chunk) => sum + chunk.length, 0);
-      }
+      // Сервер больше не отвечает 500 на statement_timeout, а возвращает
+      // `deferred`, поэтому основной проход доходит до конца, а не обрывается
+      // на 30-м пакете из 500+. Отложенные пачки повторяются отдельным
+      // проходом с паузой; повтор идемпотентен благодаря source_hash.
+      const uploadOutcome = await sendInChunks(deliveryChunks, {
+        send: uploadChunk,
+        onProgress: (index, total) => setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} ${index} ${t('account.of')} ${total}`,
+          pct: 82 + Math.round((index / Math.max(total, 1)) * 18),
+        }),
+        onRetryPass: (pass, remaining) => setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} ↻ ${pass} (${remaining})`,
+          pct: 99,
+        }),
+      });
+      inserted += uploadOutcome.inserted;
+      duplicates += uploadOutcome.duplicates;
+      eventsFound += uploadOutcome.eventsFound;
+      const stillDeferred = uploadOutcome.deferred;
 
       // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
       // собранное браузером, всегда было бы беднее досье игрока с хелпером.
