@@ -58,3 +58,6 @@ venv/
 
 # Заглушка `requests` для локального прогона uploader-тестов без pip
 .teststub/
+
+# Собранный архив дистрибутива (создаётся ./deploy/make-dist.sh)
+dist-archive/
