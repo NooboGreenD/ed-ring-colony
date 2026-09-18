@@ -603,7 +603,12 @@ class ConstructionSnapshotCollector:
         self.duplicates = 0
         self.seen = 0
         self._current_system = None
-        self._last_signature = None
+        # Множество всех увиденных состояний, а не только последнее. Сравнение
+        # с `_last_signature` ловило подряд идущие повторы, но игрок летает
+        # между площадками: при чередовании A, B, A, B состояние каждой из них
+        # не меняется, а «последняя подпись» всякий раз другая — и на сервер
+        # уходили тысячи одинаковых строк.
+        self._signatures = set()
 
     def __call__(self, line: str, ev: dict):
         event_name = ev.get("event")
@@ -618,10 +623,10 @@ class ConstructionSnapshotCollector:
         if event is None:
             return
         signature = _construction_signature(event)
-        if signature == self._last_signature:
+        if signature in self._signatures:
             self.duplicates += 1
             return
-        self._last_signature = signature
+        self._signatures.add(signature)
         self.events.append(event)
 
 

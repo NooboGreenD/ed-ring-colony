@@ -455,6 +455,8 @@ export interface JournalTelemetryPayload {
 export interface JournalTelemetryOutcome {
   constructionInserted: number;
   snapshotInserted: number;
+  /** Сколько снимков не записано, потому что они уже есть в базе. */
+  snapshotDuplicates: number;
   systemScansInserted: number;
   pilotStatsUpdated: boolean;
   warnings: string[];
@@ -547,6 +549,7 @@ export async function persistJournalTelemetry(
   const outcome: JournalTelemetryOutcome = {
     constructionInserted: 0,
     snapshotInserted: 0,
+    snapshotDuplicates: 0,
     systemScansInserted: 0,
     pilotStatsUpdated: false,
     warnings,
@@ -607,7 +610,47 @@ export async function persistJournalTelemetry(
       snapshot_at: row.event_timestamp,
       source: 'journal',
     }));
-    for (const batch of batches(snapshots, CONSTRUCTION_BATCH)) {
+    // Повторный импорт того же журнала не должен удваивать историю.
+    // Уникального ограничения в схеме нет (только `id SERIAL PRIMARY KEY`),
+    // поэтому сверяемся с уже записанными снимками сами: ключ — конструкция и
+    // момент снимка. Один SELECT на запрос дешевле, чем тысячи лишних строк,
+    // которые потом приходится разгребать графикам прогресса.
+    const snapshotKey = (id: unknown, name: unknown, at: unknown): string => {
+      const parsed = Date.parse(String(at ?? ''));
+      const stamp = Number.isFinite(parsed) ? new Date(parsed).toISOString() : String(at ?? '');
+      return `${id ?? name ?? ''}\u0000${stamp}`;
+    };
+
+    let freshSnapshots = snapshots;
+    if (snapshots.length > 0) {
+      const systemNames = Array.from(new Set(snapshots.map((row) => row.system_name)));
+      const constructionIds = Array.from(
+        new Set(snapshots.map((row) => row.construction_id).filter((id) => id != null)),
+      );
+      try {
+        let query = svc
+          .from('construction_depot_snapshots')
+          .select('construction_id, construction_name, snapshot_at')
+          .in('system_name', systemNames);
+        if (constructionIds.length > 0) query = query.in('construction_id', constructionIds);
+        const { data: existing, error } = await query;
+        if (error) throw new Error(error.message);
+        const seen = new Set(
+          (existing ?? []).map((row: Record<string, unknown>) =>
+            snapshotKey(row.construction_id, row.construction_name, row.snapshot_at)),
+        );
+        freshSnapshots = snapshots.filter(
+          (row) => !seen.has(snapshotKey(row.construction_id, row.construction_name, row.snapshot_at)),
+        );
+        outcome.snapshotDuplicates += snapshots.length - freshSnapshots.length;
+      } catch (error) {
+        // Сверка не удалась — пишем как раньше: лучше возможный повтор, чем
+        // потерянный снимок прогресса.
+        warnings.push(`depot snapshot dedup: ${(error as Error).message}`);
+      }
+    }
+
+    for (const batch of batches(freshSnapshots, CONSTRUCTION_BATCH)) {
       try {
         const { error } = await svc.from('construction_depot_snapshots').insert(batch);
         if (error) throw new Error(error.message);

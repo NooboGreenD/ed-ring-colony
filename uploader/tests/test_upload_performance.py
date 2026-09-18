@@ -219,6 +219,64 @@ class JournalParserTests(unittest.TestCase):
         collector("", changed)
         self.assertEqual(len(collector.events), 2)
 
+    def test_interleaved_duplicate_snapshots_are_dropped(self):
+        """Повторы отсеиваются и когда площадки чередуются.
+
+        Регрессия: дедупликация сравнивала состояние только с ПОСЛЕДНИМ
+        snapshot'ом. Игрок летает между стройками, поэтому при чередовании
+        A, B, A, B «последняя подпись» всякий раз другая — и на сервер уходили
+        тысячи одинаковых строк. Именно это и делало отправку Construction
+        самой медленной частью загрузки журнала.
+        """
+        collector = ConstructionSnapshotCollector()
+
+        def depot(system, construction_id, progress, minute):
+            return {
+                "timestamp": "2025-01-01T00:%02d:00Z" % minute,
+                "event": "ColonisationConstructionDepot",
+                "StarSystem": system,
+                "MarketID": 100,
+                "ConstructionID": construction_id,
+                "ConstructionProgress": progress,
+                "ResourcesRequired": [],
+            }
+
+        # Шесть перелётов между двумя площадками; состояние каждой не меняется.
+        for minute in range(6):
+            collector("", depot("Alpha", 1, 0.50, minute))
+            collector("", depot("Beta", 2, 0.70, minute + 30))
+
+        self.assertEqual(collector.seen, 12)
+        self.assertEqual(len(collector.events), 2, "чередование обошло дедупликацию")
+        self.assertEqual(collector.duplicates, 10)
+
+        # Контроль: реальное изменение состояния обязано пройти.
+        changed = depot("Alpha", 1, 0.65, 59)
+        collector("", changed)
+        self.assertEqual(len(collector.events), 3, "изменившееся состояние отброшено как дубликат")
+
+    def test_snapshot_dedup_survives_thousands_of_events(self):
+        """Объём отправки не растёт вместе с числом одинаковых событий.
+
+        В реальном журнале из обращения пользователя было 4990 событий
+        `ColonisationConstructionDepot` в одном файле при единицах реальных изменений.
+        """
+        collector = ConstructionSnapshotCollector()
+        for index in range(5000):
+            collector("", {
+                "timestamp": "2025-01-01T00:00:%02dZ" % (index % 60),
+                "event": "ColonisationConstructionDepot",
+                "StarSystem": "Alpha",
+                "MarketID": 100,
+                "ConstructionID": 1,
+                # Прогресс меняется только 5 раз из 5000.
+                "ConstructionProgress": round(0.1 + 0.2 * (index // 1000), 2),
+                "ResourcesRequired": [],
+            })
+        self.assertEqual(collector.seen, 5000)
+        self.assertLessEqual(len(collector.events), 5,
+                             "тысячи одинаковых snapshots уходят на сервер: %d" % len(collector.events))
+
     def test_hooks_see_every_event_and_never_break_parsing(self):
         """Хук вызывается для каждого события, его исключение не ломает разбор."""
         seen_events = []

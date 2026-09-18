@@ -630,3 +630,102 @@ test('неразрешимый таймаут сканов остаётся в w
   assert.equal(outcome.warnings.length, 1, 'сбой должен быть виден в предупреждениях');
   assert.match(outcome.warnings[0], /statement timeout/);
 });
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Дедупликация снимков строек на сервере.
+
+   У `construction_depot_snapshots` в схеме нет уникального ограничения
+   (только `id SERIAL PRIMARY KEY`), а запись шла обычным `insert()`. Поэтому
+   повторный импорт того же журнала удваивал историю прогресса: каждая
+   загрузка добавляла те же строки заново.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** Мок-клиент с «уже записанными» снимками в таблице. */
+function snapshotClient(existingRows = []) {
+  const inserted = [];
+  const chain = (table) => {
+    const self = {
+      select: () => self,
+      insert: async (rows) => {
+        if (table === 'construction_depot_snapshots') inserted.push(...rows);
+        return { error: null };
+      },
+      upsert: async () => ({ error: null }),
+      eq: () => self,
+      in: () => self,
+      then: (resolve) => resolve({
+        data: table === 'construction_depot_snapshots' ? existingRows : [],
+        error: null,
+      }),
+    };
+    return self;
+  };
+  return { client: { from: chain }, inserted };
+}
+
+const depotEvent = (constructionId, progress, timestamp) => ({
+  timestamp,
+  system_name: 'Delta Velorum',
+  market_id: 9001,
+  construction_id: constructionId,
+  construction_name: 'Ditceford Hub',
+  construction_progress: progress,
+  resources_total: [],
+});
+
+test('повторный импорт не удваивает историю снимков', async () => {
+  // В базе уже есть снимок этой конструкции за этот момент.
+  const { client, inserted } = snapshotClient([
+    { construction_id: 7, construction_name: 'Ditceford Hub', snapshot_at: '2026-09-14T10:00:00.000Z' },
+  ]);
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 0, 'уже записанный снимок вставлен повторно');
+  assert.equal(outcome.snapshotInserted, 0);
+  assert.equal(outcome.snapshotDuplicates, 1, 'повтор не учтён в счётчике');
+});
+
+test('новый снимок той же стройки записывается', async () => {
+  const { client, inserted } = snapshotClient([
+    { construction_id: 7, construction_name: 'Ditceford Hub', snapshot_at: '2026-09-14T10:00:00.000Z' },
+  ]);
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.65, '2026-09-14T11:30:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 1, 'изменившийся снимок отброшен как дубликат');
+  assert.equal(outcome.snapshotInserted, 1);
+  assert.equal(outcome.snapshotDuplicates, 0);
+});
+
+test('сбой сверки не теряет снимки', async () => {
+  // Если SELECT не удался, пишем как раньше: лучше возможный повтор, чем
+  // потерянный прогресс стройки.
+  const inserted = [];
+  const chain = (table) => {
+    const self = {
+      select: () => self,
+      insert: async (rows) => {
+        if (table === 'construction_depot_snapshots') inserted.push(...rows);
+        return { error: null };
+      },
+      upsert: async () => ({ error: null }),
+      eq: () => self,
+      in: () => self,
+      then: (resolve) => resolve({ data: null, error: { message: 'permission denied' } }),
+    };
+    return self;
+  };
+
+  const outcome = await persistJournalTelemetry({ from: chain }, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 1, 'снимок потерян из-за сбоя сверки');
+  assert.equal(outcome.snapshotInserted, 1);
+  assert.ok(outcome.warnings.some((w) => /dedup/.test(w)), 'сбой сверки не попал в warnings');
+});
