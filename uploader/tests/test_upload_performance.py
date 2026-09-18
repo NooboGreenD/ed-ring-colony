@@ -462,7 +462,7 @@ class ApiClientUploadTests(unittest.TestCase):
         import api_client
 
         client = api_client.ApiClient(token="test-token")
-        calls = {"count": 0, "rows": 0}
+        calls = {"count": 0, "rows": 0, "max_rows": 0}
 
         class FakeResponse:
             def __init__(self, status_code, payload):
@@ -479,6 +479,7 @@ class ApiClientUploadTests(unittest.TestCase):
             calls["count"] += 1
             rows = payload.get("deliveries") or payload.get("construction_events") or []
             calls["rows"] += len(rows)
+            calls["max_rows"] = max(calls["max_rows"], len(rows))
             if fail_predicate is not None and fail_predicate(payload):
                 return FakeResponse(500, {"error": "server busy"}), {"error": "server busy"}
             return FakeResponse(200, {
@@ -573,13 +574,29 @@ class ApiClientUploadTests(unittest.TestCase):
         self.assertGreater(calls["count"], 0)
 
     def test_construction_events_respect_server_limit(self):
+        """Размер пачки равен лимиту сервера — не больше и не меньше нужного.
+
+        Лимит поднят со 100 до 500: при тысячах snapshots это впятеро меньше
+        HTTP-обращений. Ниже проверяется и верхняя граница (пачка не превышает
+        500, иначе сервер ответит 413), и то, что зря дробить мы перестали.
+        """
         client, calls = self._client_with_stub(latency=0.0)
         events = [{"timestamp": "2025-01-01T00:00:00Z", "system_name": "Sol"} for _ in range(250)]
         result = client.upload_construction_events(events, "CMDR")
         self.assertTrue(result["ok"])
-        # Лимит сервера — 100 snapshots на запрос.
-        self.assertEqual(calls["count"], 3)
+        # 250 событий умещаются в один запрос — дробить больше не нужно.
+        self.assertEqual(calls["count"], 1)
         self.assertEqual(result["constructionInserted"], 250)
+        self.assertLessEqual(calls["max_rows"], 500, "пачка превысила лимит сервера")
+
+        # Больше лимита — режем ровно по 500.
+        client, calls = self._client_with_stub(latency=0.0)
+        many = [{"timestamp": "2025-01-01T00:00:00Z", "system_name": "Sol"} for _ in range(1200)]
+        result = client.upload_construction_events(many, "CMDR")
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["count"], 3)
+        self.assertLessEqual(calls["max_rows"], 500, "пачка превысила лимит сервера")
+        self.assertEqual(result["constructionInserted"], 1200)
 
     def test_empty_payloads_are_noop(self):
         client, calls = self._client_with_stub()

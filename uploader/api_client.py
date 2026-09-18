@@ -17,7 +17,7 @@ API_BASE = "https://ed-ring-colony.vercel.app/api"
 # остаются идемпотентными (source_hash), так что порядок не важен.
 DELIVERY_CHUNK_SIZE = 100
 # Лимит сервера на snapshots ColonisationConstructionDepot в одном запросе.
-CONSTRUCTION_CHUNK_SIZE = 100
+CONSTRUCTION_CHUNK_SIZE = 500
 UPLOAD_WORKERS = 4
 MAX_UPLOAD_ATTEMPTS = 3
 # Если пачка стабильно не проходит (5xx/429 — Vercel не успел), дробим её:
@@ -143,8 +143,9 @@ class ApiClient:
             return {"ok": False, "error": "Нет токена"}
         if not events:
             return {"ok": True, "inserted": 0}
-        # Сервер отклоняет больше 100 snapshots в одном запросе (413).
-        chunk_size = max(1, min(int(chunk_size), 100))
+        # Сервер отклоняет больше 500 snapshots в одном запросе (413).
+        # Было 100 — при тысячах событий это десятки лишних HTTP-обращений.
+        chunk_size = max(1, min(int(chunk_size), 500))
         chunks = [events[i : i + chunk_size] for i in range(0, len(events), chunk_size)]
         return self._upload_chunks(chunks, "construction_events", cmdr, max_workers, progress_cb)
 

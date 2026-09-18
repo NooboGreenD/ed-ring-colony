@@ -8,7 +8,11 @@ import { persistJournalTelemetry } from '@/lib/journalTelemetry';
 // older helpers, while preventing an unbounded legacy payload from turning one
 // serverless request into many sequential database batches.
 const MAX_DELIVERIES_PER_REQUEST = 500;
-const MAX_CONSTRUCTION_EVENTS_PER_REQUEST = 100;
+// Было 100, и клиент резал пачки именно по этому числу — но проверка на
+// сервере отсутствовала вовсе: константа была объявлена и не использовалась.
+// Пятьсот snapshots в запросе означают впятеро меньше HTTP-обращений при том
+// же объёме, а внутри записи всё равно режутся по CONSTRUCTION_BATCH.
+const MAX_CONSTRUCTION_EVENTS_PER_REQUEST = 500;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -48,6 +52,16 @@ export async function POST(req: Request) {
     if (deliveries.length > MAX_DELIVERIES_PER_REQUEST) {
       return NextResponse.json(
         { error: `Too many deliveries in one request (max ${MAX_DELIVERIES_PER_REQUEST})` },
+        { status: 413 },
+      );
+    }
+
+    const constructionEvents = Array.isArray(body.construction_events)
+      ? body.construction_events
+      : (Array.isArray(body.constructionEvents) ? body.constructionEvents : []);
+    if (constructionEvents.length > MAX_CONSTRUCTION_EVENTS_PER_REQUEST) {
+      return NextResponse.json(
+        { error: `Too many construction events in one request (max ${MAX_CONSTRUCTION_EVENTS_PER_REQUEST})` },
         { status: 413 },
       );
     }
