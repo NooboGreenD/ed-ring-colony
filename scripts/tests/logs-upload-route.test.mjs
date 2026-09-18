@@ -35,7 +35,7 @@ const maybe = esbuild ? test : test.skip;
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://example.supabase.co';
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'service-role-key';
 
-async function buildRoute() {
+async function buildRoute(route = 'upload') {
   const dir = mkdtempSync(join(ROOT, '.tmp-upload-route-'));
 
   // NextResponse.json — единственное, что роут берёт из next/server.
@@ -68,7 +68,7 @@ async function buildRoute() {
 
   const entry = join(dir, 'entry.ts');
   const bundle = join(dir, 'bundle.mjs');
-  writeFileSync(entry, "export { POST } from '@/app/api/logs/upload/route';\n");
+  writeFileSync(entry, `export { POST } from '@/app/api/logs/${route}/route';\n`);
 
   await esbuild.build({
     entryPoints: [entry],
@@ -177,6 +177,45 @@ maybe('не-JSON тело отклоняется 400, а не падает в 50
     }));
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error, 'Invalid JSON');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/* ─────────── /api/logs/import (браузерный загрузчик) ───────────
+   Тот же лимит, что и у десктопного роута: браузер теперь режет пачки
+   snapshots по 500, и без проверки на сервере размер запроса не ограничен. */
+
+const postImport = (POST, body) =>
+  POST(new Request('http://localhost/api/logs/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }));
+
+maybe('браузерный роут: snapshots сверх лимита отклоняются 413', async () => {
+  const { dir, POST } = await buildRoute('import');
+  try {
+    const over = await postImport(POST, { constructionEvents: Array.from({ length: 501 }, construction) });
+    assert.equal(over.status, 413);
+    assert.match((await over.json()).error, /Too many construction events/);
+
+    // Проверка обязана учитывать и snake_case: старый клиент мог слать так.
+    const snake = await postImport(POST, { construction_events: Array.from({ length: 600 }, construction) });
+    assert.equal(snake.status, 413);
+    assert.match((await snake.json()).error, /Too many construction events/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('браузерный роут: ровно лимит snapshots проходит проверку размера', async () => {
+  const { dir, POST } = await buildRoute('import');
+  try {
+    // Без авторизации такой запрос упирается в 401 — значит проверку размера
+    // он прошёл. 413 здесь означал бы, что лимит задран слишком низко.
+    const response = await postImport(POST, { constructionEvents: Array.from({ length: 500 }, construction) });
+    assert.notEqual(response.status, 413, '500 snapshots — это ровно лимит, отклонять нельзя');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
