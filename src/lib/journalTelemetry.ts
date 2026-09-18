@@ -92,8 +92,13 @@ export interface JournalTelemetry {
 export interface TelemetryState {
   cmdrName: string | null;
   currentSystem: string | null;
-  /** Подпись последнего принятого snapshot'а стройки — дубли журнала режут шум. */
-  lastConstructionSignature: string | null;
+  /**
+   * Подписи всех принятых snapshot'ов стройки — дубли журнала режут шум.
+   * Именно множество, а не «последняя подпись»: игрок возит ресурсы между
+   * несколькими площадками, и журнал пишет их вперемешку (A,B,A,B). Сравнение
+   * только с предыдущим snapshot'ом пропускало каждый второй как «новый».
+   */
+  constructionSignatures: Set<string>;
   /** Один scan на тело за разбор: журнал пишет `Scan` по нескольку раз. */
   scanByKey: Map<string, SystemScanRow>;
   pilotStats: PilotStats;
@@ -106,7 +111,7 @@ export function createTelemetryState(): TelemetryState {
   return {
     cmdrName: null,
     currentSystem: null,
-    lastConstructionSignature: null,
+    constructionSignatures: new Set(),
     scanByKey: new Map(),
     pilotStats: {},
     seenOrganicSpecies: new Set(),
@@ -212,11 +217,11 @@ export class TelemetryCollector {
       // Журнал пишет это событие каждые несколько секунд, пока игрок стоит у
       // площадки: в наборе остаётся только реально изменившееся состояние.
       const signature = constructionSignature(snapshot);
-      if (signature === state.lastConstructionSignature) {
+      if (state.constructionSignatures.has(signature)) {
         state.stats.constructionDuplicates += 1;
         return;
       }
-      state.lastConstructionSignature = signature;
+      state.constructionSignatures.add(signature);
       state.stats.constructionSnapshots += 1;
       this.constructionEvents.push(snapshot);
       return;

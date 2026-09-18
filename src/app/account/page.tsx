@@ -537,7 +537,10 @@ export default function AccountPage() {
       const constructionEvents = allConstructionEvents;
       const scans = Array.from(allScans.values());
       const TELEMETRY_CHUNKS: Array<{ label: string; items: unknown[]; size: number; field: string }> = [
-        { label: 'construction', items: constructionEvents, size: 100, field: 'constructionEvents' },
+        // Сервер принимает до MAX_CONSTRUCTION_EVENTS_PER_REQUEST (500) за раз;
+        // внутри он всё равно пишет по CONSTRUCTION_BATCH = 100, поэтому пачка
+        // крупнее не нагружает базу сильнее — только реже ходит по сети.
+        { label: 'construction', items: constructionEvents, size: 500, field: 'constructionEvents' },
         { label: 'scans', items: scans, size: 200, field: 'systemScans' },
       ];
       for (const group of TELEMETRY_CHUNKS) {

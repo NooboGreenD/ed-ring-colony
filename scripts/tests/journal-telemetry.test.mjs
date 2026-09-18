@@ -729,3 +729,28 @@ test('сбой сверки не теряет снимки', async () => {
   assert.equal(outcome.snapshotInserted, 1);
   assert.ok(outcome.warnings.some((w) => /dedup/.test(w)), 'сбой сверки не попал в warnings');
 });
+
+test('чередование стройплощадок не обходит дедупликацию snapshots', () => {
+  // Игрок возит ресурсы между двумя площадками: журнал пишет их вперемешку.
+  // Сравнение только с предыдущим snapshot'ом пропускало каждый второй.
+  const collector = new TelemetryCollector();
+  const site = (constructionId, progress) => line({
+    timestamp: TS,
+    event: 'ColonisationConstructionDepot',
+    StarSystem: SYSTEM,
+    MarketID: 9001,
+    ConstructionID: constructionId,
+    ConstructionName: 'Ditceford Hub',
+    ConstructionProgress: progress,
+    ResourcesRequired: [],
+  });
+
+  for (const raw of [site(7, 0.5), site(8, 0.5), site(7, 0.5), site(8, 0.5), site(7, 0.5)]) {
+    collector.feed(raw, JSON.parse(raw));
+  }
+
+  const telemetry = collector.finish();
+  assert.equal(telemetry.constructionEvents.length, 2, 'чередование площадок обходит дедупликацию');
+  assert.equal(telemetry.stats.constructionDuplicates, 3);
+  assert.equal(telemetry.stats.constructionSnapshots, 2);
+});
