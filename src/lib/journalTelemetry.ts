@@ -92,8 +92,13 @@ export interface JournalTelemetry {
 export interface TelemetryState {
   cmdrName: string | null;
   currentSystem: string | null;
-  /** Подпись последнего принятого snapshot'а стройки — дубли журнала режут шум. */
-  lastConstructionSignature: string | null;
+  /**
+   * Подписи всех принятых snapshot'ов стройки — дубли журнала режут шум.
+   * Именно множество, а не «последняя подпись»: игрок возит ресурсы между
+   * несколькими площадками, и журнал пишет их вперемешку (A,B,A,B). Сравнение
+   * только с предыдущим snapshot'ом пропускало каждый второй как «новый».
+   */
+  constructionSignatures: Set<string>;
   /** Один scan на тело за разбор: журнал пишет `Scan` по нескольку раз. */
   scanByKey: Map<string, SystemScanRow>;
   pilotStats: PilotStats;
@@ -106,7 +111,7 @@ export function createTelemetryState(): TelemetryState {
   return {
     cmdrName: null,
     currentSystem: null,
-    lastConstructionSignature: null,
+    constructionSignatures: new Set(),
     scanByKey: new Map(),
     pilotStats: {},
     seenOrganicSpecies: new Set(),
@@ -212,11 +217,11 @@ export class TelemetryCollector {
       // Журнал пишет это событие каждые несколько секунд, пока игрок стоит у
       // площадки: в наборе остаётся только реально изменившееся состояние.
       const signature = constructionSignature(snapshot);
-      if (signature === state.lastConstructionSignature) {
+      if (state.constructionSignatures.has(signature)) {
         state.stats.constructionDuplicates += 1;
         return;
       }
-      state.lastConstructionSignature = signature;
+      state.constructionSignatures.add(signature);
       state.stats.constructionSnapshots += 1;
       this.constructionEvents.push(snapshot);
       return;
@@ -455,6 +460,8 @@ export interface JournalTelemetryPayload {
 export interface JournalTelemetryOutcome {
   constructionInserted: number;
   snapshotInserted: number;
+  /** Сколько снимков не записано, потому что они уже есть в базе. */
+  snapshotDuplicates: number;
   systemScansInserted: number;
   pilotStatsUpdated: boolean;
   warnings: string[];
@@ -466,6 +473,49 @@ type DbClient = {
 
 const CONSTRUCTION_BATCH = 100;
 const SCAN_BATCH = 200;
+
+/**
+ * Postgres отменил statement по `statement_timeout` (SQLSTATE 57014).
+ *
+ * Supabase обрывает запросы PostgREST через несколько секунд. Пачка сканов
+ * несёт тяжёлый JSON (`atmosphere_composition`, `parents`, `rings`), поэтому
+ * именно она чаще всего не успевает. Сбой временный: тот же объём меньшей
+ * пачкой проходит.
+ */
+function isStatementTimeout(error: { code?: string; message?: string }): boolean {
+  if (error.code === '57014') return true;
+  return /canceling statement due to statement timeout|statement timeout/i.test(error.message || '');
+}
+
+/**
+ * Записать пачку, при таймауте деля её пополам.
+ *
+ * Без этого одна не успевшая пачка в 200 сканов терялась целиком: ошибка
+ * попадала в `warnings`, и карта с «первооткрытиями» оставалась пустой, хотя
+ * загрузка журнала считалась успешной.
+ */
+async function upsertWithinStatementTimeout(
+  svc: DbClient,
+  table: 'system_scans' | 'colonisation_events',
+  rows: Array<Record<string, unknown>>,
+  onConflict: string,
+  ignoreDuplicates: boolean,
+): Promise<number> {
+  try {
+    const { error } = await svc.from(table).upsert(rows, { onConflict, ignoreDuplicates });
+    if (error) throw error as { code?: string; message?: string };
+    return rows.length;
+  } catch (error) {
+    const failure = error as { code?: string; message?: string };
+    if (!isStatementTimeout(failure) || rows.length <= 1) throw failure;
+    const middle = Math.floor(rows.length / 2);
+    const left = await upsertWithinStatementTimeout(
+      svc, table, rows.slice(0, middle), onConflict, ignoreDuplicates);
+    const right = await upsertWithinStatementTimeout(
+      svc, table, rows.slice(middle), onConflict, ignoreDuplicates);
+    return left + right;
+  }
+}
 
 function batches<T>(rows: T[], size: number): T[][] {
   const result: T[][] = [];
@@ -504,6 +554,7 @@ export async function persistJournalTelemetry(
   const outcome: JournalTelemetryOutcome = {
     constructionInserted: 0,
     snapshotInserted: 0,
+    snapshotDuplicates: 0,
     systemScansInserted: 0,
     pilotStatsUpdated: false,
     warnings,
@@ -564,7 +615,47 @@ export async function persistJournalTelemetry(
       snapshot_at: row.event_timestamp,
       source: 'journal',
     }));
-    for (const batch of batches(snapshots, CONSTRUCTION_BATCH)) {
+    // Повторный импорт того же журнала не должен удваивать историю.
+    // Уникального ограничения в схеме нет (только `id SERIAL PRIMARY KEY`),
+    // поэтому сверяемся с уже записанными снимками сами: ключ — конструкция и
+    // момент снимка. Один SELECT на запрос дешевле, чем тысячи лишних строк,
+    // которые потом приходится разгребать графикам прогресса.
+    const snapshotKey = (id: unknown, name: unknown, at: unknown): string => {
+      const parsed = Date.parse(String(at ?? ''));
+      const stamp = Number.isFinite(parsed) ? new Date(parsed).toISOString() : String(at ?? '');
+      return `${id ?? name ?? ''}\u0000${stamp}`;
+    };
+
+    let freshSnapshots = snapshots;
+    if (snapshots.length > 0) {
+      const systemNames = Array.from(new Set(snapshots.map((row) => row.system_name)));
+      const constructionIds = Array.from(
+        new Set(snapshots.map((row) => row.construction_id).filter((id) => id != null)),
+      );
+      try {
+        let query = svc
+          .from('construction_depot_snapshots')
+          .select('construction_id, construction_name, snapshot_at')
+          .in('system_name', systemNames);
+        if (constructionIds.length > 0) query = query.in('construction_id', constructionIds);
+        const { data: existing, error } = await query;
+        if (error) throw new Error(error.message);
+        const seen = new Set(
+          (existing ?? []).map((row: Record<string, unknown>) =>
+            snapshotKey(row.construction_id, row.construction_name, row.snapshot_at)),
+        );
+        freshSnapshots = snapshots.filter(
+          (row) => !seen.has(snapshotKey(row.construction_id, row.construction_name, row.snapshot_at)),
+        );
+        outcome.snapshotDuplicates += snapshots.length - freshSnapshots.length;
+      } catch (error) {
+        // Сверка не удалась — пишем как раньше: лучше возможный повтор, чем
+        // потерянный снимок прогресса.
+        warnings.push(`depot snapshot dedup: ${(error as Error).message}`);
+      }
+    }
+
+    for (const batch of batches(freshSnapshots, CONSTRUCTION_BATCH)) {
       try {
         const { error } = await svc.from('construction_depot_snapshots').insert(batch);
         if (error) throw new Error(error.message);
@@ -621,12 +712,8 @@ export async function persistJournalTelemetry(
 
     for (const batch of batches(rows, SCAN_BATCH)) {
       try {
-        const { error } = await svc.from('system_scans').upsert(batch, {
-          onConflict: 'system_name,body_name',
-          ignoreDuplicates: false,
-        });
-        if (error) throw new Error(error.message);
-        outcome.systemScansInserted += batch.length;
+        outcome.systemScansInserted += await upsertWithinStatementTimeout(
+          svc, 'system_scans', batch as Array<Record<string, unknown>>, 'system_name,body_name', false);
       } catch (error) {
         warnings.push(`system scans: ${(error as Error).message}`);
       }

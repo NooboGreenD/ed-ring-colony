@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { authFromRequest } from '@/lib/supabaseServer';
+import { maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { createHash } from 'crypto';
 
 export const dynamic = 'force-dynamic';
@@ -50,11 +51,14 @@ export async function GET(req: Request) {
       mercenary_coins: pilotStats?.mercenary_coins ?? capiProfile?.mercenary_coins ?? 0,
       mercenary_rank: pilotStats?.mercenary_rank ?? capiProfile?.mercenary_rank ?? 0,
       exobiologist_rank: pilotStats?.exobiologist_rank ?? capiProfile?.exobiologist_rank ?? 0,
-      combat_rank: capiProfile?.combat_rank ?? 0,
-      trade_rank: capiProfile?.trade_rank ?? 0,
-      explore_rank: capiProfile?.explore_rank ?? 0,
-      empire_rank: capiProfile?.empire_rank ?? 0,
-      federation_rank: capiProfile?.federation_rank ?? 0,
+      combat_rank: pilotStats?.combat_rank ?? capiProfile?.combat_rank ?? 0,
+      trade_rank: pilotStats?.trade_rank ?? capiProfile?.trade_rank ?? 0,
+      explore_rank: pilotStats?.explore_rank ?? capiProfile?.explore_rank ?? 0,
+      empire_rank: pilotStats?.empire_rank ?? capiProfile?.empire_rank ?? 0,
+      federation_rank: pilotStats?.federation_rank ?? capiProfile?.federation_rank ?? 0,
+      current_ship: pilotStats?.current_ship || capiProfile?.current_ship || null,
+      current_system: pilotStats?.current_system || capiProfile?.current_system || null,
+      current_station: pilotStats?.current_station || capiProfile?.current_station || null,
       first_discoveries_count: Math.max(
         pilotStats?.first_discoveries_count ?? 0,
         capiProfile?.first_discoveries_count ?? 0,
@@ -88,7 +92,28 @@ export async function GET(req: Request) {
       last_updated: pilotStats?.last_updated || capiProfile?.last_updated || null,
     };
 
-    return NextResponse.json({ ok: true, stats: merged });
+    // Конфиденциальность: этот эндпоинт публичный, а данные в нём личные.
+    // Без фильтрации любой мог снять баланс, ранги и текущее положение
+    // командира, который их скрыл в настройках.
+    const ownerId = pilotStats?.user_id || capiProfile?.user_id || null;
+    let viewerId: string | null = null;
+    try {
+      const { user } = await authFromRequest(req);
+      viewerId = user?.id ?? null;
+    } catch {
+      viewerId = null;
+    }
+
+    const { data: ownerProfile } = ownerId
+      ? await supabaseAdmin.from('profiles').select('privacy_settings').eq('id', ownerId).maybeSingle()
+      : { data: null };
+
+    const privacy = privacyForViewer(ownerProfile?.privacy_settings, viewerId, ownerId);
+    const visible = maskPilotStats(merged, privacy);
+
+    // Скрытые поля отдаём как null, а не как 0: «0 кредитов» — это ложь,
+    // а null клиент показывает как «—».
+    return NextResponse.json({ ok: true, stats: visible, privacy });
   } catch (err: any) {
     console.error('[cmdr/stats] GET error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
@@ -151,6 +176,17 @@ export async function POST(req: Request) {
     if (body.mercenary_coins != null) statsPayload.mercenary_coins = Number(body.mercenary_coins) || 0;
     if (body.mercenary_rank != null) statsPayload.mercenary_rank = Number(body.mercenary_rank) || 0;
     if (body.exobiologist_rank != null) statsPayload.exobiologist_rank = Number(body.exobiologist_rank) || 0;
+    // Боевые/торговые/исследовательские ранги и фракции: приходят из CAPI
+    // (авторизация PKCE в Colonial Helper), поэтому раньше в pilot_stats не
+    // попадали вовсе, хотя досье их показывает.
+    if (body.combat_rank != null) statsPayload.combat_rank = Number(body.combat_rank) || 0;
+    if (body.trade_rank != null) statsPayload.trade_rank = Number(body.trade_rank) || 0;
+    if (body.explore_rank != null) statsPayload.explore_rank = Number(body.explore_rank) || 0;
+    if (body.empire_rank != null) statsPayload.empire_rank = Number(body.empire_rank) || 0;
+    if (body.federation_rank != null) statsPayload.federation_rank = Number(body.federation_rank) || 0;
+    if (typeof body.current_ship === 'string') statsPayload.current_ship = body.current_ship.slice(0, 200);
+    if (typeof body.current_system === 'string') statsPayload.current_system = body.current_system.slice(0, 200);
+    if (typeof body.current_station === 'string') statsPayload.current_station = body.current_station.slice(0, 200);
     if (body.first_discoveries_count != null) statsPayload.first_discoveries_count = Number(body.first_discoveries_count) || 0;
     if (body.first_mapped_count != null) statsPayload.first_mapped_count = Number(body.first_mapped_count) || 0;
     if (body.first_footfalls_count != null) statsPayload.first_footfalls_count = Number(body.first_footfalls_count) || 0;

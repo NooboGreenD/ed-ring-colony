@@ -6,17 +6,24 @@ import {
   extractStarKey,
   FOCUS_PAD,
   habitableZoneLs,
+  orbitPoint,
+  orbitalPath,
   overviewWindow,
+  parseOrbitalElements,
   placeStructures,
   sceneAspect,
   sceneCamera,
+  solveKepler,
   SPHERE_HAZE_SCALE,
   SPHERE_MATERIAL,
   SPHERE_MESH,
   sphereGeometry,
+  starColorFromTemperature,
+  starRadiusScale,
   summarizeLayout,
   toStructures,
   traceExtent,
+  trueAnomaly,
 } from '../../src/lib/systemOrrery.ts';
 
 const DIST = 'Sol';
@@ -356,4 +363,198 @@ test('тело в фокусе — шар, а не блин: кубически�
   assert.ok(SPHERE_MATERIAL.lighting.diffuse > SPHERE_MATERIAL.lighting.ambient);
   assert.ok(SPHERE_MATERIAL.lightposition, 'косой источник света обязателен');
   assert.ok(SPHERE_HAZE_SCALE > 1 && SPHERE_HAZE_SCALE < 1.2, 'дымка — тонкая оболочка поверх тела');
+});
+
+/* ── Настоящая орбитальная механика ─────────────────────────────────── */
+
+test('уравнение Кеплера: круговая орбита и вытянутая сходятся', () => {
+  // e = 0 → E = M (иначе «реализм» ломает даже простейший случай).
+  for (const M of [0, 0.5, 1.7, 3.14, 6.2]) {
+    assert.ok(Math.abs(solveKepler(M, 0) - M) < 1e-12);
+  }
+  // Для e > 0 решение обязано удовлетворять M = E − e·sin E.
+  for (const e of [0.1, 0.5, 0.9]) {
+    for (const M of [0.3, 1.0, 2.5, 4.0, 5.9]) {
+      const E = solveKepler(M, e);
+      assert.ok(Math.abs(E - e * Math.sin(E) - M) < 1e-8, `e=${e} M=${M}`);
+    }
+  }
+});
+
+test('истинная аномалия: перицентр и апоцентр на своих местах', () => {
+  const e = 0.6;
+  assert.ok(Math.abs(trueAnomaly(0, e) - 0) < 1e-9, 'в перицентре ν = 0');
+  assert.ok(Math.abs(Math.abs(trueAnomaly(Math.PI, e)) - Math.PI) < 1e-9, 'в апоцентре ν = π');
+});
+
+test('эллипс со звездой в фокусе: радиусы перицентра и апоцентра', () => {
+  const a = 100;
+  const e = 0.5;
+  const focus = [0, 0, 0];
+  const peri = orbitPoint(a, 0, { eccentricity: e, inclination: 0, periapsis: 0 }, focus);
+  const apo = orbitPoint(a, Math.PI, { eccentricity: e, inclination: 0, periapsis: 0 }, focus);
+  // r = a(1−e) и r = a(1+e) — главное отличие от прежних окружностей.
+  assert.ok(Math.abs(Math.hypot(...peri) - a * (1 - e)) < 1e-9);
+  assert.ok(Math.abs(Math.hypot(...apo) - a * (1 + e)) < 1e-9);
+});
+
+test('аргумент перицентра поворачивает орбиту в плоскости', () => {
+  const a = 50;
+  const elements = { eccentricity: 0.4, inclination: 0, periapsis: Math.PI / 2 };
+  const peri = orbitPoint(a, 0, elements, [0, 0, 0]);
+  assert.ok(Math.abs(peri[0]) < 1e-9, 'перицентр развёрнут на 90° — x = 0');
+  assert.ok(peri[1] > 0);
+});
+
+test('наклонение поднимает орбиту из плоскости системы', () => {
+  const elements = { eccentricity: 0.2, inclination: Math.PI / 6, periapsis: 0 };
+  const path = orbitalPath(40, elements, [0, 0, 0], 48);
+  const maxZ = Math.max(...path.map((point) => Math.abs(point[2])));
+  assert.ok(maxZ > 0, 'орбита обязана выходить из плоскости XY');
+  assert.ok(Math.abs(maxZ - 40 * 0.5) < 1.5, 'подъём соответствует sin(i)');
+});
+
+test('элементы читаются из raw_data журнала и из EDSM', () => {
+  // Журнал: период в секундах, полуось в метрах.
+  const fromJournal = parseOrbitalElements({
+    body_name: 'Sol 3',
+    raw_data: {
+      Eccentricity: 0.0167,
+      OrbitalInclination: 0.00005,
+      Periapsis: 102.9,
+      OrbitalPeriod: 31_558_149,
+      MeanAnomaly: 358.6,
+      AxialTilt: 23.44,
+      SemiMajorAxis: 1.496e11,
+    },
+  });
+  assert.ok(fromJournal.fromData);
+  assert.ok(Math.abs(fromJournal.eccentricity - 0.0167) < 1e-9);
+  assert.ok(Math.abs(fromJournal.periodDays - 365.25) < 0.5);
+  assert.ok(Math.abs(fromJournal.axialTiltDeg - 23.44) < 1e-9);
+  assert.ok(Math.abs(fromJournal.semiMajorAxisLs - 499.0) < 1.0, '1 а.е. ≈ 499 св. с');
+
+  // EDSM: camelCase, период в СУТКАХ, полуось в АСТРОНОМИЧЕСКИХ ЕДИНИЦАХ,
+  // эксцентриситет — `orbitalEccentricity`, средней аномалии нет вовсе.
+  // Значения — настоящие из /api-system-v1/bodies для Марса.
+  const fromEdsm = parseOrbitalElements({
+    body_name: 'Sol 5',
+    raw_data: {
+      orbitalEccentricity: 0.0934,
+      orbitalInclination: 1.85,
+      argOfPeriapsis: 286.536985,
+      orbitalPeriod: 686.9710016029861,
+      semiMajorAxis: 1.5236785671113833,
+      axialTilt: 0.439648,
+    },
+  });
+  assert.ok(fromEdsm.fromData);
+  // Период EDSM уже в сутках — переводить в секунды и обратно нельзя.
+  assert.equal(fromEdsm.periodDays, 686.9710016029861);
+  assert.ok(Math.abs(fromEdsm.semiMajorAxisLs - 1.5236785671113833 * 499.00478) < 1e-6, 'а.е. → св. с');
+  assert.ok(Math.abs(fromEdsm.eccentricity - 0.0934) < 1e-9);
+  assert.equal(fromEdsm.meanAnomalyDeg, 0, 'EDSM среднюю аномалию не отдаёт');
+
+  // Долгая орбита в EDSM (> 1e5 суток) обязана остаться сутками:
+  // различаем источник по имени поля, а не по величине.
+  const longOrbit = parseOrbitalElements({
+    body_name: 'HD 1 8',
+    raw_data: { orbitalPeriod: 500_000, semiMajorAxis: 1200 },
+  });
+  assert.ok(Math.abs(longOrbit.periodDays - 500_000) < 1e-6);
+
+  // Пустая запись: никаких элементов, карта строит прежнюю схему.
+  const empty = parseOrbitalElements({ body_name: 'Sol 5' });
+  assert.equal(empty.fromData, false);
+  assert.equal(empty.eccentricity, 0);
+});
+
+test('карта строит настоящие эллипсы, когда элементы есть', () => {
+  const layout = buildOrreryLayout([
+    star('Sol', 1, 0),
+    {
+      ...planet('Sol 3', 2, 499),
+      raw_data: { Eccentricity: 0.0167, OrbitalInclination: 0, Periapsis: 102.9, MeanAnomaly: 358.6, OrbitalPeriod: 31558149 },
+    },
+    planet('Sol 4', 3, 2298),
+  ], 'Sol');
+
+  const earth = layout.orbits.find((orbit) => orbit.name === 'Sol 3');
+  const mars = layout.orbits.find((orbit) => orbit.name === 'Sol 4');
+  assert.equal(earth.real, true, 'орбита с элементами помечена настоящей');
+  assert.equal(earth.eccentricity, 0.0167);
+  assert.ok(earth.periodDays > 360 && earth.periodDays < 370);
+  assert.notEqual(mars.real, true, 'без элементов остаётся прежняя схема');
+
+  // Тело стоит НА СВОЁМ ЭЛЛИПСЕ. Сверяем с фокальным уравнением конического
+  // сечения r = a(1−e²)/(1+e·cos ν), а не с вершинами отсэмплированной
+  // линии: планета обязана попадать между узлами сетки.
+  const position = layout.positions['Sol 3'];
+  const center = earth.center;
+  const radius = Math.hypot(position[0] - center[0], position[1] - center[1], position[2] - center[2]);
+  const e = 0.0167;
+  const periapsisRad = (102.9 * Math.PI) / 180;
+  const nu = Math.atan2(position[1] - center[1], position[0] - center[0]) - periapsisRad;
+  const conic = (earth.radius * (1 - e * e)) / (1 + e * Math.cos(nu));
+  assert.ok(Math.abs(radius - conic) < 1e-9, `планета не на эллипсе: ${radius} vs ${conic}`);
+
+  const radii = earth.points.map((point) =>
+    Math.hypot(point[0] - center[0], point[1] - center[1], point[2] - center[2]));
+  const a = earth.radius;
+  assert.ok(Math.min(...radii) >= a * (1 - e) - 1e-6, 'перицентр');
+  assert.ok(Math.max(...radii) <= a * (1 + e) + 1e-6, 'апоцентр');
+  assert.ok(Math.max(...radii) - Math.min(...radii) > 1e-3, 'орбита действительно вытянута, не окружность');
+
+  // Порядок по дистанции сохраняется и в реальном режиме.
+  assert.ok(Math.hypot(...layout.positions['Sol 3']) < Math.hypot(...layout.positions['Sol 4']));
+});
+
+test('настоящая орбита остаётся в габарите сцены', () => {
+  // Вытянутая орбита (e = 0.9) не должна вылезать за SCENE_SPAN:
+  // распределённый радиус трактуется как апоцентр.
+  const layout = buildOrreryLayout([
+    star('HD 1', 1, 0),
+    {
+      ...planet('HD 1 1', 2, 300),
+      raw_data: { Eccentricity: 0.9, OrbitalInclination: 12, Periapsis: 40, MeanAnomaly: 200, OrbitalPeriod: 864000 },
+    },
+  ], 'HD 1');
+  for (const point of Object.values(layout.positions)) {
+    for (const value of point) {
+      assert.ok(Number.isFinite(value));
+      assert.ok(Math.abs(value) <= layout.span + 1e-6, 'тело вышло за сцену');
+    }
+  }
+});
+
+test('цвет звезды по температуре: красные карлики и голубые гиганты', () => {
+  const cool = starColorFromTemperature(3000);
+  const hot = starColorFromTemperature(20000);
+  const solar = starColorFromTemperature(5778);
+  assert.match(cool, /^rgb\(/);
+  const parse = (rgb) => rgb.match(/\d+/g).map(Number);
+  const [cr, cg, cb] = parse(cool);
+  const [hr, hg, hb] = parse(hot);
+  assert.ok(cr > cb, 'холодная звезда краснее');
+  assert.ok(hb > hr, 'горячая звезда голубее');
+  const [sr, sg, sb] = parse(solar);
+  // Солнце (5778 K) — белое с лёгкой желтизной: синий канал ниже красного,
+  // но все три близки к максимуму. Голубее красного оно не бывает.
+  assert.ok(sr > 250 && sg > 235 && sb > 225, `почти белое: ${solar}`);
+  assert.ok(sr >= sg && sg >= sb, 'тёплый белый: R ≥ G ≥ B');
+  // Порядок от холодных к горячим: доля синего растёт.
+  const blueShare = ([r, g, b]) => b / (r + g + b);
+  assert.ok(blueShare(parse(cool)) < blueShare(parse(solar))
+    && blueShare(parse(solar)) < blueShare(parse(hot)), 'чем горячее, тем голубее');
+  assert.equal(starColorFromTemperature(0), null, 'без температуры цвет не выдумываем');
+  assert.equal(starColorFromTemperature(-100), null);
+});
+
+test('радиус звезды растёт с её настоящим размером, но без безумия', () => {
+  const small = starRadiusScale({ radiusM: 6.957e8 * 0.1, subType: 'M' });
+  const solar = starRadiusScale({ radiusM: 6.957e8, subType: 'G' });
+  const giant = starRadiusScale({ radiusM: 6.957e8 * 1000, subType: 'M' });
+  assert.ok(small < solar && solar < giant, 'порядок размеров сохранён');
+  assert.ok(giant < 3, 'сверхгигант не съедает сцену');
+  assert.equal(starRadiusScale({ radiusM: 0, subType: '' }), 1, 'нет данных — масштаб 1');
 });

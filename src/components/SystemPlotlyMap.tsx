@@ -42,8 +42,11 @@ import {
   focusWindow,
   overviewWindow,
   sceneCamera,
+  type SceneCamera,
   traceExtent,
   sphereGeometry,
+  starColorFromTemperature,
+  starRadiusScale,
   summarizeLayout,
   toStructures,
   type OrreryBody,
@@ -114,12 +117,47 @@ const ZOOM_STEPS = [
   { level: 3, label: 'Поверхность', hint: 'Тело крупно: постройки на поверхности' },
 ] as const;
 
-function getStarColor(subType?: string | null): string {
+/**
+ * Цвет звезды.
+ *
+ * Приоритет — настоящая температура поверхности (есть и в журнале, и в EDSM):
+ * цвет считается как у излучения абсолютно чёрного тела. Спектральный класс
+ * остаётся запасным вариантом для записей без температуры.
+ */
+function getStarColor(subType?: string | null, tempK = 0): string {
+  const byTemperature = starColorFromTemperature(tempK);
+  if (byTemperature) return byTemperature;
   const clean = (subType || '').trim();
   for (const [key, color] of Object.entries(STAR_SPECTRAL_COLORS)) {
     if (clean.toUpperCase().startsWith(key.toUpperCase())) return color;
   }
   return '#ffd166';
+}
+
+/**
+ * Строки всплывающей подсказки с настоящими орбитальными элементами.
+
+ * Пустой массив, когда элементов в данных нет: карта тогда строит орбиту по
+ * прежней схеме и подписывать там нечего (иначе пользователь решит, что
+ * «период 0 суток» — это правда).
+ */
+function orbitalHover(body: OrreryBody): string[] {
+  const elements = body.elements;
+  if (!elements || !elements.fromData) return [];
+  const lines: string[] = ["<span style='color:#7f8fa6'>— орбита (по данным сканов) —</span>"];
+  if (elements.semiMajorAxisLs > 0) {
+    lines.push(`Большая полуось: <b>${formatNumber(elements.semiMajorAxisLs)}</b> св. с (${formatNumber(elements.semiMajorAxisLs / 499.00478)} а.е.)`);
+  }
+  if (elements.periodDays > 0) {
+    lines.push(elements.periodDays >= 365
+      ? `Период обращения: <b>${formatNumber(elements.periodDays / 365.25)}</b> лет`
+      : `Период обращения: <b>${formatNumber(elements.periodDays)}</b> сут`);
+  }
+  lines.push(`Эксцентриситет: <b>${elements.eccentricity.toFixed(4)}</b>`);
+  if (elements.inclinationDeg !== 0) lines.push(`Наклонение: <b>${elements.inclinationDeg.toFixed(2)}°</b>`);
+  if (elements.periapsisDeg !== 0) lines.push(`Аргумент перицентра: <b>${elements.periapsisDeg.toFixed(2)}°</b>`);
+  if (elements.axialTiltDeg !== 0) lines.push(`Наклон оси: <b>${elements.axialTiltDeg.toFixed(2)}°</b>`);
+  return lines;
 }
 
 function getBodyColor(subType?: string | null, bodyType?: string | null): string {
@@ -174,7 +212,52 @@ export default function SystemPlotlyMap({
   // осей, поэтому переключение вида ничего не пересчитывает и не может увести
   // камеру в чёрный экран.
   const [viewMode, setViewMode] = useState<'iso' | 'top' | 'side'>('iso');
-  const [hoveredBody, setHoveredBody] = useState<string>('');
+  // Прицел: «полный» — концентрические круги + координатные линии во всю карту,
+  // «круг» — только кольца у курсора, «нет» — обычный курсор.
+  const [reticleMode, setReticleMode] = useState<'full' | 'ring' | 'off'>('full');
+  // Счётчик явных сбросов камеры. Камера принадлежит пользователю и живёт между
+  // перерисовками, поэтому без отдельного сигнала вернуть стандартный вид было
+  // нельзя: приходилось снимать фокус со всего тела. Прибавка к счётчику входит
+  // в подпись вида и заставляет следующий `Plotly.react` поставить камеру заново.
+  const [cameraReset, setCameraReset] = useState(0);
+
+  // Камера принадлежит пользователю: он её крутит и зумит колесом. Сбрасывать её
+  // на стандартную можно только когда сменился сам вид (зум/цель/режим), а не
+  // при любой перерисовке. Иначе наведение на тело — и вид улетал в «обзор».
+  const cameraViewRef = useRef<string>('');
+  // Базовые размеры маркеров по трэкам: подсветка при наведении меняет их через
+  // `restyle`, поэтому нужен неизменённый оригинал, к которому возвращаемся.
+  const baseSizesRef = useRef<(number[] | null)[]>([]);
+  const baseTextsRef = useRef<(string[] | null)[]>([]);
+  // Какая точка сейчас подсвечена: без этого `plotly_hover` (он приходит на
+  // каждое движение мыши) дёргал бы `restyle` по 수십 раз в секунду.
+  const highlightRef = useRef<{ curve: number; point: number } | null>(null);
+  // Прицел двигается напрямую по DOM: `setState` на каждый `mousemove`
+  // перерисовывал бы компонент десятки раз в секунду, и карта бы висла.
+  const reticleRef = useRef<HTMLDivElement>(null);
+  // Где было нажатие. `plotly_click` приходит и тогда, когда пользователь
+  // просто вращал камеру и отпустил кнопку над телом — без этой отметки такое
+  // «вращение» неожиданно меняло фокус.
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  const reticleLinesRef = useRef<HTMLDivElement>(null);
+
+  const onMapMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const host = reticleRef.current;
+    if (!host) return;
+    const box = host.getBoundingClientRect();
+    const x = event.clientX - box.left;
+    const y = event.clientY - box.top;
+    host.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    // Показываем только вместе с первой реальной позицией: иначе на
+    // `mouseenter` прицел на мгновение вспыхивал в левом верхнем углу.
+    host.style.opacity = '1';
+    const lines = reticleLinesRef.current;
+    if (lines) {
+      // Координатные линии во всю карту: горизонталь живёт по Y, вертикаль — по X.
+      lines.style.setProperty('--rx', `${x}px`);
+      lines.style.setProperty('--ry', `${y}px`);
+    }
+  }, []);
 
   useEffect(() => {
     if (focusTarget) {
@@ -391,8 +474,11 @@ export default function SystemPlotlyMap({
         if (!point) continue;
         const selected = star.name === selectedTarget;
         xs.push(point[0]); ys.push(point[1]); zs.push(point[2]);
-        colors.push(getStarColor(star.subType));
-        sizes.push(selected ? Math.min(34, (layout.markerSizes[star.name] ?? 14) * 1.25) : layout.markerSizes[star.name] ?? 14);
+        colors.push(getStarColor(star.subType, star.tempK));
+        // Размер — по настоящему радиусу звезды: сверхгигант обязан быть
+        // заметно крупнее красного карлика, а не отличаться на пару пикселей.
+        const starSize = (layout.markerSizes[star.name] ?? 14) * starRadiusScale(star);
+        sizes.push(selected ? Math.min(38, starSize * 1.25) : starSize);
         texts.push(showLabels || selected ? shortName(star.name, systemName) : '');
         lineColors.push(selected ? '#00f3ff' : 'rgba(255,255,255,0.65)');
         lineWidths.push(selected ? 2 : 0.8);
@@ -407,7 +493,10 @@ export default function SystemPlotlyMap({
         ].join('<br>'));
         custom.push(star.name);
       }
-      traces.push({
+      // Пустой трэк маркеров Plotly отдаёт в WebGL с нулевыми буферами, а тот
+      // падает на `uniform3fv` («cannot be converted to a sequence»). У планет
+      // и построек такой guard уже был — у звёзд его не хватало.
+      if (xs.length > 0) traces.push({
         type: 'scatter3d',
         name: `★ Звёзды (${layout.stars.length})`,
         x: xs, y: ys, z: zs,
@@ -495,14 +584,13 @@ export default function SystemPlotlyMap({
         const point = layout.positions[body.name];
         if (!point) continue;
         const selected = body.name === selectedTarget;
-        const hovered = body.name === hoveredBody;
         // Тело, ради которого включён режим сферы, не дублируем маркером.
         if (sphereRadii[body.name]) continue;
         xs.push(point[0]); ys.push(point[1]); zs.push(point[2]);
         colors.push(getBodyColor(body.subType, String(body.raw.body_type ?? body.raw.type ?? '')));
-        sizes.push((layout.markerSizes[body.name] ?? 7) * (selected || hovered ? 1.3 : 1) * detailScale);
+        sizes.push((layout.markerSizes[body.name] ?? 7) * (selected ? 1.3 : 1) * detailScale);
         const withSite = structuresForBody(body.name).length;
-        texts.push(selected || hovered || showLabels ? shortName(body.name, systemName) : '');
+        texts.push(selected || showLabels ? shortName(body.name, systemName) : '');
         lineColors.push(selected ? '#00f3ff' : body.landable ? 'rgba(0,243,255,0.7)' : body.bioSignals > 0 ? 'rgba(0,255,136,0.65)' : 'rgba(30,41,59,0.9)');
         hovers.push([
           `<b>${body.name}</b>`,
@@ -518,6 +606,8 @@ export default function SystemPlotlyMap({
           body.rings.length > 0 ? `<span style='color:#9fd8ef'>💍 кольца: <b>${body.rings.length}</b></span>` : '',
           withSite > 0 ? `<span style='color:#ff9f43'>🏗 постройки на теле: <b>${withSite}</b></span>` : '',
           body.firstDiscoveredBy ? `<span style='color:#94a3b8'>открыто: CMDR ${body.firstDiscoveredBy}</span>` : '',
+          // Настоящие орбитальные элементы — то, по чему построена орбита.
+          ...orbitalHover(body),
           '',
           '<span style="color:#64748b">клик — фокус · двойной клик — поверхность</span>',
         ].filter(Boolean).join('<br>'));
@@ -593,12 +683,23 @@ export default function SystemPlotlyMap({
         z: [-overviewSpan, overviewSpan] as [number, number],
       };
 
+    // Вид сменился (зум, цель, режим проекции) — камеру ставим стандартную.
+    // Иначе берём ту, что пользователь накрутил сам: `Plotly.react` иначе
+    // молча возвращал сцену в «обзор» при любом чихе, включая наведение.
+    const viewSignature = `${viewMode}|${zoom}|${selectedTarget}|${halfSpan}|${isolateCluster}|${cameraReset}`;
+    const viewChanged = cameraViewRef.current !== viewSignature;
+    cameraViewRef.current = viewSignature;
+    const liveCamera = viewChanged ? null : (gd as any)?._fullLayout?.scene?.camera;
+    const camera: SceneCamera = viewChanged || !liveCamera
+      ? sceneCamera(viewMode)
+      : { ...sceneCamera(viewMode), eye: liveCamera.eye, up: liveCamera.up, center: liveCamera.center };
+
     const scene: any = {
       bgcolor: '#07090e',
       // camera.center — нормализованные единицы сцены, поэтому всегда 0: центр
       // окна уже задан размахом осей. Координата цели в unit'ах системы увела бы
       // камеру в никуда (чёрный экран при фокусе).
-      camera: sceneCamera(viewMode),
+      camera,
       // Куб вместо «data»: иначе сплющенная по z система превращает шары в блины.
       ...sceneAspect(),
       xaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.x },
@@ -627,12 +728,42 @@ export default function SystemPlotlyMap({
         align: 'left',
       },
       scene,
-    }, { responsive: true, displayModeBar: false, displaylogo: false, scrollZoom: true });
+    }, {
+      responsive: true,
+      displayModeBar: false,
+      displaylogo: false,
+      // Зум колесом — только в полном экране. Карта встроена в страницу высотой
+      // 470 px, а сразу под ней идут «Постройки»: при постоянно включённом
+      // `scrollZoom` колесо над картой зумило сцену и не давало пролистнуть
+      // страницу дальше. В полном окне прокручивать нечего, там зум уместен.
+      scrollZoom: isFullscreen,
+    });
+
+    // Снимок исходных размеров/подписей маркеров по трэкам. Подсветка при
+    // наведении правит их через `restyle`, поэтому нужен нетронутый оригинал,
+    // к которому возвращаемся на `unhover`.
+    // Фигура пересобрана — маркеры вернулись к базовым размерам, значит
+    // «подсвечено» больше ничего не. Без сброса `highlightRef` продолжал
+    // утверждать обратное, и повторное наведение на ту же точку уходило в
+    // ранний return уже без подсветки.
+    highlightRef.current = null;
+    baseSizesRef.current = traces.map((trace: any) =>
+      (Array.isArray(trace?.marker?.size) ? trace.marker.size.slice() : null) as number[] | null);
+    baseTextsRef.current = traces.map((trace: any) =>
+      (Array.isArray(trace?.text) ? trace.text.slice() : null) as string[] | null);
 
     const gdAny = gd as any;
     if (!gdAny.__edMapBound && typeof gdAny.on === 'function') {
       gdAny.__edMapBound = true;
       gdAny.on('plotly_click', (event: any) => {
+        // Порог в пикселях: движение мыши между нажатием и отпусканием значит,
+        // что пользователь вращал или панорамировал сцену, а не выбирал тело.
+        const down = pointerDownRef.current;
+        const native = event?.event as { clientX?: number; clientY?: number } | undefined;
+        if (down && native && typeof native.clientX === 'number' && typeof native.clientY === 'number') {
+          const moved = Math.hypot(native.clientX - down.x, native.clientY - down.y);
+          if (moved > 5) return;
+        }
         const point = event?.points?.[0] ?? event?.data?.[0];
         const name = String(point?.customdata ?? point?.data?.customdata?.[point?.pointNumber ?? 0] ?? '');
         if (name) selectTarget(name, 2);
@@ -642,24 +773,85 @@ export default function SystemPlotlyMap({
         const name = String(point?.customdata ?? '');
         if (name) selectTarget(name, 3);
       });
+      // Подсветка наведением — только `restyle`, без `Plotly.react`.
+      // Полный перерасчёт фигуры на каждое наведение сбрасывал камеру
+      // пользователя в «обзор» и дёргал WebGL-контекст.
+      //
+      // `plotly_hover` приходит на КАЖДОЕ движение мыши, в том числе когда
+      // курсор стоит на той же точке. Без проверки «та же точка?» `restyle`
+      // вызывался десятки раз в секунду и карта висла — поэтому подсвечиваем
+      // только при реальной смене точки и гасим ровно один затронутый трэк.
+      const clearHighlight = () => {
+        const prev = highlightRef.current;
+        if (!prev) return;
+        highlightRef.current = null;
+        const baseSizes = baseSizesRef.current[prev.curve];
+        if (!baseSizes) return;
+        const update: Record<string, unknown> = { 'marker.size': [baseSizes] };
+        const baseTexts = baseTextsRef.current[prev.curve];
+        if (baseTexts) update.text = [baseTexts];
+        try {
+          window.Plotly?.restyle(gd, update, [prev.curve]);
+        } catch {
+          // Подсветка — косметика: сбой не должен ломать карту.
+        }
+      };
+
       gdAny.on('plotly_hover', (event: any) => {
         const point = event?.points?.[0];
+        const curve = Number(point?.curveNumber);
+        const index = Number(point?.pointNumber);
+        if (!Number.isInteger(curve) || !Number.isInteger(index)) return;
+        const prev = highlightRef.current;
+        if (prev && prev.curve === curve && prev.point === index) return;
+        const baseSizes = baseSizesRef.current[curve];
+        if (!baseSizes || index < 0 || index >= baseSizes.length) return;
+        clearHighlight();
+        const sizes = baseSizes.slice();
+        sizes[index] = sizes[index] * 1.3;
+        const update: Record<string, unknown> = { 'marker.size': [sizes] };
+        const baseTexts = baseTextsRef.current[curve];
         const name = point?.customdata;
-        if (typeof name === 'string' && name) setHoveredBody(name);
+        if (baseTexts && typeof name === 'string' && name) {
+          const texts = baseTexts.slice();
+          texts[index] = shortName(name, systemName);
+          update.text = [texts];
+        }
+        try {
+          window.Plotly?.restyle(gd, update, [curve]);
+          highlightRef.current = { curve, point: index };
+        } catch {
+          // то же: косметика
+        }
       });
-      gdAny.on('plotly_unhover', () => setHoveredBody(''));
+      gdAny.on('plotly_unhover', clearHighlight);
     }
   }, [
     scriptLoaded, loading, error, records, layout, structures, visibleStructures, selectedTarget, zoom,
     filterMode, scaleMode, labelMode, showMoons, isolateCluster, activeCluster, focus, halfSpan, detailMode,
-    sphereRadii, hoveredBody, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
-    canvasPixels, viewMode,
+    sphereRadii, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
+    canvasPixels, viewMode, cameraReset,
   ]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      // Обработчик висит на `window`, поэтому обязан уступать полям ввода:
+      // иначе стрелки в поиске или комментарии листали тела системы вместо
+      // перемещения курсора в тексте.
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        target?.isContentEditable === true
+      ) {
+        return;
+      }
       if (event.key === 'Escape') {
         selectTarget('', 0);
+      } else if (event.key === '0') {
+        // Вернуть стандартный вид, сохранив выбранное тело: до этого единственным
+        // способом был полный сброс фокуса.
+        setCameraReset((value) => value + 1);
       } else if (event.key === '[' || event.key === 'ArrowLeft') {
         cycleTarget(-1);
       } else if (event.key === ']' || event.key === 'ArrowRight') {
@@ -698,11 +890,18 @@ export default function SystemPlotlyMap({
         border: '1px solid #323538',
         borderRadius: 10,
         padding: isFullscreen ? 14 : 18,
-        marginBottom: 24,
+        marginBottom: isFullscreen ? 0 : 24,
         position: isFullscreen ? 'fixed' : 'relative',
         inset: isFullscreen ? 0 : 'auto',
         width: isFullscreen ? '100vw' : '100%',
         height: isFullscreen ? '100vh' : 'auto',
+        // Во весь экран — колонка: карта растягивается на всё, что осталось
+        // после шапки и тулбара. Прежний `calc(100vh - 190px)` был магией и
+        // оставлял снизу пустую полосу, как только тулбар переносился на
+        // вторую строку (узкое окно, полный экран на небольшом мониторе).
+        display: isFullscreen ? 'flex' : 'block',
+        flexDirection: isFullscreen ? 'column' : undefined,
+        boxSizing: 'border-box',
         zIndex: isFullscreen ? 9999 : 1,
       }}
     >
@@ -719,6 +918,19 @@ export default function SystemPlotlyMap({
         .ed-map-scroll::-webkit-scrollbar-thumb{background:#3a3d40;border-radius:3px}
         .ed-map-card{background:#25282b;border:1px solid #323538;border-radius:6px;padding:7px 9px}
         .ed-map-card[data-target="1"]{border-color:#00f3ff}
+        /* Прицел: концентрические кольца вместо системного курсора.
+           Двигается через transform (не left/top) — без reflow на каждый mousemove. */
+        .ed-reticle{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;opacity:0;transition:opacity .12s ease;will-change:transform;z-index:5}
+        .ed-reticle span{position:absolute;display:block}
+        .ed-ret-ring1{left:-15px;top:-15px;width:30px;height:30px;border:1px solid rgba(0,243,255,.8);border-radius:50%}
+        .ed-ret-ring2{left:-7px;top:-7px;width:14px;height:14px;border:1px solid rgba(0,243,255,.5);border-radius:50%}
+        .ed-ret-dot{left:-1.5px;top:-1.5px;width:3px;height:3px;background:#00f3ff;border-radius:50%}
+        .ed-ret-tick-h{left:-24px;top:-0.5px;width:48px;height:1px;background:linear-gradient(90deg,rgba(0,243,255,0),rgba(0,243,255,.75) 35%,rgba(0,243,255,.75) 65%,rgba(0,243,255,0))}
+        .ed-ret-tick-v{top:-24px;left:-0.5px;width:1px;height:48px;background:linear-gradient(180deg,rgba(0,243,255,0),rgba(0,243,255,.75) 35%,rgba(0,243,255,.75) 65%,rgba(0,243,255,0))}
+        /* Координатные линии во всю карту — включаются отдельно от колец. */
+        .ed-reticle-lines{position:absolute;inset:0;pointer-events:none;--rx:0px;--ry:0px;z-index:4}
+        .ed-reticle-lines::before{content:'';position:absolute;left:0;right:0;top:var(--ry);height:1px;background:rgba(0,243,255,.22)}
+        .ed-reticle-lines::after{content:'';position:absolute;top:0;bottom:0;left:var(--rx);width:1px;background:rgba(0,243,255,.22)}
       `}</style>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
@@ -769,6 +981,13 @@ export default function SystemPlotlyMap({
           </select>
           <button onClick={() => cycleTarget(-1)} className="ed-map-chip" title="Предыдущее тело (←)"><IconArrowLeft size={12} /></button>
           <button onClick={() => cycleTarget(1)} className="ed-map-chip" title="Следующее тело (→)"><IconArrowRight size={12} /></button>
+          <button
+            onClick={() => setCameraReset((value) => value + 1)}
+            className="ed-map-chip"
+            title="Вернуть стандартный вид камеры, сохранив фокус (0)"
+          >
+            ⟲ камера
+          </button>
           <button onClick={() => selectTarget('', 0)} className="ed-map-chip" title="Снять фокус (Esc)">
             <IconCrosshair size={12} /> сброс
           </button>
@@ -787,6 +1006,15 @@ export default function SystemPlotlyMap({
               {label}
             </button>
           ))}
+          <button
+            className="ed-map-chip"
+            data-on={reticleMode !== 'off' ? '1' : '0'}
+            data-tone="cyan"
+            title="Прицел: полный (кольца + координатные линии) → только кольца → выкл"
+            onClick={() => setReticleMode((mode) => (mode === 'full' ? 'ring' : mode === 'ring' ? 'off' : 'full'))}
+          >
+            {reticleMode === 'full' ? '⊕ прицел+линии' : reticleMode === 'ring' ? '⊙ прицел' : '⊘ курсор'}
+          </button>
           <button onClick={() => setIsFullscreen((value) => !value)} className="ed-map-chip">
             {isFullscreen ? <IconMinimize size={12} /> : <IconMaximize size={12} />}
             {isFullscreen ? 'свернуть' : 'во весь экран'}
@@ -889,20 +1117,63 @@ export default function SystemPlotlyMap({
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 12, alignItems: 'stretch', flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 520px', minWidth: 300 }}>
+      <div
+        style={{
+          display: 'flex', gap: 12, alignItems: 'stretch', flexWrap: 'wrap',
+          // Растягиваем на остаток высоты окна и не даём содержимому
+          // выдавливать контейнер за пределы 100vh.
+          flex: isFullscreen ? '1 1 auto' : undefined,
+          minHeight: isFullscreen ? 0 : undefined,
+        }}
+      >
+        <div
+          style={{
+            flex: '1 1 520px', minWidth: 300,
+            display: isFullscreen ? 'flex' : 'block',
+            flexDirection: isFullscreen ? 'column' : undefined,
+            minHeight: isFullscreen ? 0 : undefined,
+            position: 'relative',
+          }}
+        >
           <div
-            ref={containerRef}
-            style={{
-              width: '100%',
-              height: isFullscreen ? 'calc(100vh - 190px)' : 470,
-              borderRadius: 8,
-              overflow: 'hidden',
-              display: loading || error || records.length === 0 ? 'none' : 'block',
+            data-ed-map-host="1"
+            onPointerDown={(event) => {
+              pointerDownRef.current = { x: event.clientX, y: event.clientY };
             }}
-          />
+            onMouseMove={reticleMode === 'off' ? undefined : onMapMouseMove}
+            onMouseLeave={() => { if (reticleRef.current) reticleRef.current.style.opacity = '0'; }}
+            style={{
+              position: 'relative',
+              width: '100%',
+              height: isFullscreen ? undefined : 470,
+              flex: isFullscreen ? '1 1 auto' : undefined,
+              minHeight: isFullscreen ? 240 : undefined,
+              borderRadius: 8,
+              display: loading || error || records.length === 0 ? 'none' : 'block',
+              // Свой прицел заменяет системный курсор — иначе два накладываются.
+              cursor: reticleMode === 'off' ? undefined : 'none',
+            }}
+          >
+            <div
+              ref={containerRef}
+              style={{ width: '100%', height: '100%', borderRadius: 8, overflow: 'hidden' }}
+            />
+            {reticleMode === 'full' && <div ref={reticleLinesRef} className="ed-reticle-lines" />}
+            {reticleMode !== 'off' && (
+              <div ref={reticleRef} className="ed-reticle">
+                <span className="ed-ret-ring1" />
+                <span className="ed-ret-ring2" />
+                <span className="ed-ret-tick-h" />
+                <span className="ed-ret-tick-v" />
+                <span className="ed-ret-dot" />
+              </div>
+            )}
+          </div>
           <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <span>колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность · ←/→ — перебор тел</span>
+            <span>
+              ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность ·
+              ←/→ — перебор тел · 0 — вернуть вид{isFullscreen ? ' · колесо — зум' : ''}
+            </span>
             {selectedTarget && <span style={{ color: '#00f3ff' }}>🎯 {selectedTarget}</span>}
           </div>
         </div>
@@ -1025,7 +1296,12 @@ function FocusPanel({
   return (
     <div style={{
       flex: '0 1 330px', minWidth: 270, background: '#1e2022', border: '1px solid #323538',
-      borderRadius: 8, padding: 12, maxHeight: isFullscreen ? 'calc(100vh - 190px)' : 470, overflowY: 'auto',
+      borderRadius: 8, padding: 12,
+      // В полноэкране панель — flex-потомок строки, высота которой уже
+      // посчитана, поэтому 100% точен. Прежний `calc(100vh - 190px)` гадал
+      // высоту шапки: при другом chrome панель либо не дорастала до низа
+      // (пустая полоса справа от карты), либо вылезала за окно.
+      maxHeight: isFullscreen ? '100%' : 470, overflowY: 'auto',
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: '#eeeeee', wordBreak: 'break-word' }}>{body?.name ?? systemName}</span>

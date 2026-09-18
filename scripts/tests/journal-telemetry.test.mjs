@@ -6,7 +6,7 @@ import {
   isConstructionSourceName,
   parseJournal,
 } from '../../src/lib/journalParser.ts';
-import { TelemetryCollector, parseJournalTelemetry } from '../../src/lib/journalTelemetry.ts';
+import { TelemetryCollector, parseJournalTelemetry, persistJournalTelemetry } from '../../src/lib/journalTelemetry.ts';
 
 /* ── helpers ── */
 
@@ -80,24 +80,50 @@ test('колонизация: каждое событие даёт свой об
   assert.equal(stats.constructionTons, 200);
 });
 
-test('CargoDepot (крыльевые поставки) — стройка', () => {
-  const { deliveries } = parse(
+function cargoDepot(count, timestamp = TS) {
+  return line({
+    timestamp,
+    event: 'CargoDepot',
+    UpdateType: 'Deliver',
+    CargoType: 'basicmedicines',
+    CargoType_Localised: 'Basic Medicines',
+    Count: count,
+    CountTotal: count,
+    Need: 100,
+    Wing: false,
+  });
+}
+
+test('CargoDepot без стройплощадки — груз миссии, а не стройка', () => {
+  const { deliveries, stats } = parse(jump(), cargoDepot(64));
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].source, 'cargo_depot');
+  assert.equal(deliveries[0].deliveryKind, 'mission_delivery');
+  assert.equal(deliveries[0].isConstruction, false);
+  assert.equal(stats.constructionTons, 0);
+  assert.equal(stats.transportedTons, 64);
+  assert.equal(stats.kindTons.mission_delivery, 64);
+});
+
+test('CargoDepot у рынка стройплощадки — строительный тоннаж', () => {
+  const { deliveries, stats } = parse(
     jump(),
     line({
       timestamp: TS,
-      event: 'CargoDepot',
-      UpdateType: 'Deliver',
-      CargoType: 'basicmedicines',
-      CargoType_Localised: 'Basic Medicines',
-      Count: 64,
-      CountTotal: 64,
-      Need: 100,
-      Wing: false,
+      event: 'Docked',
+      MarketID: 9001,
+      StationName: 'Planetary Construction Site: Ditceford Depot',
+      StationType: 'PlanetaryInstallation',
+      StationServices: ['dock', 'colonisationcontribution', 'missions'],
     }),
+    cargoDepot(64, '2026-09-14T10:01:00Z'),
   );
   assert.equal(deliveries.length, 1);
   assert.equal(deliveries[0].source, 'cargo_depot');
+  assert.equal(deliveries[0].deliveryKind, 'construction_site');
   assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(stats.constructionTons, 64);
+  assert.equal(stats.kindTons.construction_site, 64);
 });
 
 test('cargo_delta становится стройкой только у известной площадки', () => {
@@ -196,6 +222,180 @@ test('isConstructionSourceName совпадает с множеством ист
   for (const source of ['carrier_delivery', 'mission_delivery', 'powerplay_delivery', 'rescue_delivery', 'cargo_delta', '']) {
     assert.equal(isConstructionSourceName(source), false, source);
   }
+});
+
+/* ── разделение по получателю груза: стройка/корабль vs авианосец/рынок ── */
+
+test('поставка на колонизационный корабль — отдельный вид, но тоже стройка', () => {
+  const { deliveries, stats } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 7001,
+      StationName: 'System Colonisation Ship',
+      StationType: 'Orbis Starport',
+      StationServices: ['dock', 'colonisationcontribution'],
+    }),
+    contribution(320, '2026-09-14T10:01:00Z', 7001),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'colonisation_ship');
+  assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(stats.constructionTons, 320);
+  assert.equal(stats.kindTons.colonisation_ship, 320);
+  assert.equal(stats.kindTons.construction_site, 0);
+});
+
+test('продажа на авианосце и на обычном рынке — разные виды перевозки', () => {
+  const carrier = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: '3700005632',
+    }),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'MarketSell',
+      MarketID: 5001,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 100,
+      CarrierID: '3700005632',
+      StationType: 'FleetCarrier',
+    }),
+  );
+  assert.equal(carrier.deliveries[0].deliveryKind, 'fleet_carrier');
+  assert.equal(carrier.deliveries[0].isConstruction, false);
+  assert.equal(carrier.stats.kindTons.fleet_carrier, 100);
+  assert.equal(carrier.stats.constructionTons, 0);
+
+  const market = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 4242,
+      StationName: 'Jaeger Hub',
+      StationType: 'Orbis Starport',
+    }),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'MarketSell',
+      MarketID: 4242,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 40,
+      StationType: 'Orbis Starport',
+    }),
+  );
+  assert.equal(market.deliveries[0].deliveryKind, 'market_sale');
+  assert.equal(market.deliveries[0].isConstruction, false);
+  assert.equal(market.stats.kindTons.market_sale, 40);
+  assert.equal(market.stats.constructionTons, 0);
+});
+
+test('cargo_delta у авианосца — отгрузка на авианосец, а не продажа на рынке', () => {
+  const { deliveries } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: '3700005632',
+    }),
+    cargo(500, 0, '2026-09-14T10:05:00Z'),
+    cargo(300, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].source, 'cargo_delta');
+  assert.equal(deliveries[0].deliveryKind, 'fleet_carrier');
+  assert.equal(deliveries[0].isConstruction, false);
+  assert.equal(deliveries[0].amount, 200);
+});
+
+test('стройплощадка узнаётся по имени станции даже без depot-события', () => {
+  // Приложение могло стартовать, когда игрок уже стоит у площадки: журнал в
+  // этой сессии `ColonisationConstructionDepot` ещё не показывал.
+  const { deliveries, stats } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 9001,
+      StationName: 'Orbital Construction Site: Ditceford Hub',
+      StationType: 'Orbis Starport',
+    }),
+    cargo(400, 0, '2026-09-14T10:05:00Z'),
+    cargo(150, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'construction_site');
+  assert.equal(deliveries[0].isConstruction, true);
+  assert.equal(deliveries[0].amount, 250);
+  assert.equal(stats.constructionTons, 250);
+  assert.equal(stats.transportedTons, 250);
+});
+
+test('обычный наземный порт с похожим именем без сервиса — не стройка', () => {
+  const { deliveries } = parse(
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Docked',
+      MarketID: 4242,
+      StationName: 'Planetary Construction Site: Ditceford Depot',
+      StationType: 'PlanetaryInstallation',
+      StationServices: ['dock', 'missions', 'commodities'],
+    }),
+    cargo(200, 0, '2026-09-14T10:05:00Z'),
+    cargo(50, 0, '2026-09-14T10:06:00Z'),
+  );
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].deliveryKind, 'market_sale');
+  assert.equal(deliveries[0].isConstruction, false);
+});
+
+test('сводка по видам: стройка, корабль, авианосец, миссии, рынок', () => {
+  const { stats } = parse(
+    jump(),
+    contribution(100, '2026-09-14T10:00:00Z', 9001),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'Docked',
+      MarketID: 5001,
+      StationName: 'FC Spirula',
+      StationType: 'FleetCarrier',
+      CarrierID: 'C1',
+    }),
+    line({
+      timestamp: '2026-09-14T10:02:00Z',
+      event: 'MarketSell',
+      MarketID: 5001,
+      Type: 'titanium',
+      Type_Localised: 'Titanium',
+      Count: 60,
+      CarrierID: 'C1',
+      StationType: 'FleetCarrier',
+    }),
+    line({
+      timestamp: '2026-09-14T10:03:00Z',
+      event: 'PowerplayDeliver',
+      Commodity: 'metal scraps',
+      Count: 25,
+    }),
+  );
+  assert.equal(stats.kindTons.construction_site, 100);
+  assert.equal(stats.kindTons.fleet_carrier, 60);
+  assert.equal(stats.kindTons.powerplay_delivery, 25);
+  assert.equal(stats.transportedTons, 185);
+  assert.equal(stats.constructionTons, 100);
 });
 
 /* ── телеметрия: те же данные, что отправляет Uploader ── */
@@ -384,4 +584,173 @@ test('досье из тех же строк журнала: «всего» и �
   // Досье обязано показывать ровно то, что насчитал парсер.
   assert.equal(summary.totalTons, parsed.stats.transportedTons);
   assert.equal(summary.siteTons, parsed.stats.constructionTons);
+});
+
+/* ── запись сканов при statement_timeout ── */
+
+test('пачка сканов не теряется целиком при таймауте базы', async () => {
+  // Пачка в 200 сканов несёт тяжёлый JSON, и Supabase обрывает такой запрос по
+  // statement_timeout. Раньше вся пачка уходила в warnings и карта с
+  // «первооткрытиями» оставалась пустой при формально успешной загрузке.
+  const STATEMENT_TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const written = [];
+  const client = {
+    from: (table) => ({
+      upsert: async (rows) => {
+        if (table !== 'system_scans') return { error: null };
+        if (rows.length > 4) return { error: STATEMENT_TIMEOUT };
+        written.push(...rows);
+        return { error: null };
+      },
+    }),
+  };
+
+  const scans = Array.from({ length: 12 }, (_unused, index) => ({
+    system_name: 'Delta Velorum',
+    body_name: `Body ${index}`,
+    body_id: index,
+  }));
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', { systemScans: scans }, 'Test Cmdr');
+
+  assert.deepEqual(outcome.warnings, [], 'таймаут не должен был остаться неразрешённым');
+  assert.equal(written.length, scans.length, 'часть сканов потеряна вместо записи меньшей пачкой');
+  assert.equal(outcome.systemScansInserted, scans.length, 'счётчик записанных сканов расходится с фактом');
+});
+
+test('неразрешимый таймаут сканов остаётся в warnings, а не роняет импорт', async () => {
+  const STATEMENT_TIMEOUT = { code: '57014', message: 'canceling statement due to statement timeout' };
+  const client = { from: () => ({ upsert: async () => ({ error: STATEMENT_TIMEOUT }) }) };
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    systemScans: [{ system_name: 'Sol', body_name: 'Sol A 1', body_id: 1 }],
+  }, 'Test Cmdr');
+
+  assert.equal(outcome.systemScansInserted, 0);
+  assert.equal(outcome.warnings.length, 1, 'сбой должен быть виден в предупреждениях');
+  assert.match(outcome.warnings[0], /statement timeout/);
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Дедупликация снимков строек на сервере.
+
+   У `construction_depot_snapshots` в схеме нет уникального ограничения
+   (только `id SERIAL PRIMARY KEY`), а запись шла обычным `insert()`. Поэтому
+   повторный импорт того же журнала удваивал историю прогресса: каждая
+   загрузка добавляла те же строки заново.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** Мок-клиент с «уже записанными» снимками в таблице. */
+function snapshotClient(existingRows = []) {
+  const inserted = [];
+  const chain = (table) => {
+    const self = {
+      select: () => self,
+      insert: async (rows) => {
+        if (table === 'construction_depot_snapshots') inserted.push(...rows);
+        return { error: null };
+      },
+      upsert: async () => ({ error: null }),
+      eq: () => self,
+      in: () => self,
+      then: (resolve) => resolve({
+        data: table === 'construction_depot_snapshots' ? existingRows : [],
+        error: null,
+      }),
+    };
+    return self;
+  };
+  return { client: { from: chain }, inserted };
+}
+
+const depotEvent = (constructionId, progress, timestamp) => ({
+  timestamp,
+  system_name: 'Delta Velorum',
+  market_id: 9001,
+  construction_id: constructionId,
+  construction_name: 'Ditceford Hub',
+  construction_progress: progress,
+  resources_total: [],
+});
+
+test('повторный импорт не удваивает историю снимков', async () => {
+  // В базе уже есть снимок этой конструкции за этот момент.
+  const { client, inserted } = snapshotClient([
+    { construction_id: 7, construction_name: 'Ditceford Hub', snapshot_at: '2026-09-14T10:00:00.000Z' },
+  ]);
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 0, 'уже записанный снимок вставлен повторно');
+  assert.equal(outcome.snapshotInserted, 0);
+  assert.equal(outcome.snapshotDuplicates, 1, 'повтор не учтён в счётчике');
+});
+
+test('новый снимок той же стройки записывается', async () => {
+  const { client, inserted } = snapshotClient([
+    { construction_id: 7, construction_name: 'Ditceford Hub', snapshot_at: '2026-09-14T10:00:00.000Z' },
+  ]);
+
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.65, '2026-09-14T11:30:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 1, 'изменившийся снимок отброшен как дубликат');
+  assert.equal(outcome.snapshotInserted, 1);
+  assert.equal(outcome.snapshotDuplicates, 0);
+});
+
+test('сбой сверки не теряет снимки', async () => {
+  // Если SELECT не удался, пишем как раньше: лучше возможный повтор, чем
+  // потерянный прогресс стройки.
+  const inserted = [];
+  const chain = (table) => {
+    const self = {
+      select: () => self,
+      insert: async (rows) => {
+        if (table === 'construction_depot_snapshots') inserted.push(...rows);
+        return { error: null };
+      },
+      upsert: async () => ({ error: null }),
+      eq: () => self,
+      in: () => self,
+      then: (resolve) => resolve({ data: null, error: { message: 'permission denied' } }),
+    };
+    return self;
+  };
+
+  const outcome = await persistJournalTelemetry({ from: chain }, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:00Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(inserted.length, 1, 'снимок потерян из-за сбоя сверки');
+  assert.equal(outcome.snapshotInserted, 1);
+  assert.ok(outcome.warnings.some((w) => /dedup/.test(w)), 'сбой сверки не попал в warnings');
+});
+
+test('чередование стройплощадок не обходит дедупликацию snapshots', () => {
+  // Игрок возит ресурсы между двумя площадками: журнал пишет их вперемешку.
+  // Сравнение только с предыдущим snapshot'ом пропускало каждый второй.
+  const collector = new TelemetryCollector();
+  const site = (constructionId, progress) => line({
+    timestamp: TS,
+    event: 'ColonisationConstructionDepot',
+    StarSystem: SYSTEM,
+    MarketID: 9001,
+    ConstructionID: constructionId,
+    ConstructionName: 'Ditceford Hub',
+    ConstructionProgress: progress,
+    ResourcesRequired: [],
+  });
+
+  for (const raw of [site(7, 0.5), site(8, 0.5), site(7, 0.5), site(8, 0.5), site(7, 0.5)]) {
+    collector.feed(raw, JSON.parse(raw));
+  }
+
+  const telemetry = collector.finish();
+  assert.equal(telemetry.constructionEvents.length, 2, 'чередование площадок обходит дедупликацию');
+  assert.equal(telemetry.stats.constructionDuplicates, 3);
+  assert.equal(telemetry.stats.constructionSnapshots, 2);
 });

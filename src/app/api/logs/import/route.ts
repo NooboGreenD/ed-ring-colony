@@ -8,6 +8,10 @@ import { persistJournalTelemetry } from '@/lib/journalTelemetry';
 // older helpers, while preventing an unbounded legacy payload from turning one
 // serverless request into many sequential database batches.
 const MAX_DELIVERIES_PER_REQUEST = 500;
+// Тот же лимит, что и в /api/logs/upload: браузер режет пачки snapshots по 500,
+// а без проверки ничто не мешает прислать неограниченное количество строк и
+// превратить один serverless-запрос в длинную цепочку записей в базу.
+const MAX_CONSTRUCTION_EVENTS_PER_REQUEST = 500;
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -46,6 +50,16 @@ export async function POST(req: Request) {
         { status: 413 },
       );
     }
+    const constructionEvents = Array.isArray(body.constructionEvents)
+      ? body.constructionEvents
+      : (Array.isArray(body.construction_events) ? body.construction_events : []);
+    if (constructionEvents.length > MAX_CONSTRUCTION_EVENTS_PER_REQUEST) {
+      return NextResponse.json(
+        { error: `Too many construction events in one request (max ${MAX_CONSTRUCTION_EVENTS_PER_REQUEST})` },
+        { status: 413 },
+      );
+    }
+
     const cmdr = typeof body.cmdr === 'string' ? body.cmdr.trim() : '';
 
     // Поддержка двух способов авторизации:

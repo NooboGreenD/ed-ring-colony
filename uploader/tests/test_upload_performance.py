@@ -219,6 +219,64 @@ class JournalParserTests(unittest.TestCase):
         collector("", changed)
         self.assertEqual(len(collector.events), 2)
 
+    def test_interleaved_duplicate_snapshots_are_dropped(self):
+        """Повторы отсеиваются и когда площадки чередуются.
+
+        Регрессия: дедупликация сравнивала состояние только с ПОСЛЕДНИМ
+        snapshot'ом. Игрок летает между стройками, поэтому при чередовании
+        A, B, A, B «последняя подпись» всякий раз другая — и на сервер уходили
+        тысячи одинаковых строк. Именно это и делало отправку Construction
+        самой медленной частью загрузки журнала.
+        """
+        collector = ConstructionSnapshotCollector()
+
+        def depot(system, construction_id, progress, minute):
+            return {
+                "timestamp": "2025-01-01T00:%02d:00Z" % minute,
+                "event": "ColonisationConstructionDepot",
+                "StarSystem": system,
+                "MarketID": 100,
+                "ConstructionID": construction_id,
+                "ConstructionProgress": progress,
+                "ResourcesRequired": [],
+            }
+
+        # Шесть перелётов между двумя площадками; состояние каждой не меняется.
+        for minute in range(6):
+            collector("", depot("Alpha", 1, 0.50, minute))
+            collector("", depot("Beta", 2, 0.70, minute + 30))
+
+        self.assertEqual(collector.seen, 12)
+        self.assertEqual(len(collector.events), 2, "чередование обошло дедупликацию")
+        self.assertEqual(collector.duplicates, 10)
+
+        # Контроль: реальное изменение состояния обязано пройти.
+        changed = depot("Alpha", 1, 0.65, 59)
+        collector("", changed)
+        self.assertEqual(len(collector.events), 3, "изменившееся состояние отброшено как дубликат")
+
+    def test_snapshot_dedup_survives_thousands_of_events(self):
+        """Объём отправки не растёт вместе с числом одинаковых событий.
+
+        В реальном журнале из обращения пользователя было 4990 событий
+        `ColonisationConstructionDepot` в одном файле при единицах реальных изменений.
+        """
+        collector = ConstructionSnapshotCollector()
+        for index in range(5000):
+            collector("", {
+                "timestamp": "2025-01-01T00:00:%02dZ" % (index % 60),
+                "event": "ColonisationConstructionDepot",
+                "StarSystem": "Alpha",
+                "MarketID": 100,
+                "ConstructionID": 1,
+                # Прогресс меняется только 5 раз из 5000.
+                "ConstructionProgress": round(0.1 + 0.2 * (index // 1000), 2),
+                "ResourcesRequired": [],
+            })
+        self.assertEqual(collector.seen, 5000)
+        self.assertLessEqual(len(collector.events), 5,
+                             "тысячи одинаковых snapshots уходят на сервер: %d" % len(collector.events))
+
     def test_hooks_see_every_event_and_never_break_parsing(self):
         """Хук вызывается для каждого события, его исключение не ломает разбор."""
         seen_events = []
@@ -404,7 +462,7 @@ class ApiClientUploadTests(unittest.TestCase):
         import api_client
 
         client = api_client.ApiClient(token="test-token")
-        calls = {"count": 0, "rows": 0}
+        calls = {"count": 0, "rows": 0, "max_rows": 0}
 
         class FakeResponse:
             def __init__(self, status_code, payload):
@@ -421,6 +479,7 @@ class ApiClientUploadTests(unittest.TestCase):
             calls["count"] += 1
             rows = payload.get("deliveries") or payload.get("construction_events") or []
             calls["rows"] += len(rows)
+            calls["max_rows"] = max(calls["max_rows"], len(rows))
             if fail_predicate is not None and fail_predicate(payload):
                 return FakeResponse(500, {"error": "server busy"}), {"error": "server busy"}
             return FakeResponse(200, {
@@ -515,13 +574,29 @@ class ApiClientUploadTests(unittest.TestCase):
         self.assertGreater(calls["count"], 0)
 
     def test_construction_events_respect_server_limit(self):
+        """Размер пачки равен лимиту сервера — не больше и не меньше нужного.
+
+        Лимит поднят со 100 до 500: при тысячах snapshots это впятеро меньше
+        HTTP-обращений. Ниже проверяется и верхняя граница (пачка не превышает
+        500, иначе сервер ответит 413), и то, что зря дробить мы перестали.
+        """
         client, calls = self._client_with_stub(latency=0.0)
         events = [{"timestamp": "2025-01-01T00:00:00Z", "system_name": "Sol"} for _ in range(250)]
         result = client.upload_construction_events(events, "CMDR")
         self.assertTrue(result["ok"])
-        # Лимит сервера — 100 snapshots на запрос.
-        self.assertEqual(calls["count"], 3)
+        # 250 событий умещаются в один запрос — дробить больше не нужно.
+        self.assertEqual(calls["count"], 1)
         self.assertEqual(result["constructionInserted"], 250)
+        self.assertLessEqual(calls["max_rows"], 500, "пачка превысила лимит сервера")
+
+        # Больше лимита — режем ровно по 500.
+        client, calls = self._client_with_stub(latency=0.0)
+        many = [{"timestamp": "2025-01-01T00:00:00Z", "system_name": "Sol"} for _ in range(1200)]
+        result = client.upload_construction_events(many, "CMDR")
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls["count"], 3)
+        self.assertLessEqual(calls["max_rows"], 500, "пачка превысила лимит сервера")
+        self.assertEqual(result["constructionInserted"], 1200)
 
     def test_empty_payloads_are_noop(self):
         client, calls = self._client_with_stub()
@@ -628,6 +703,70 @@ class InitialLoadSmokeTest(unittest.TestCase):
             self.assertLess(parse_seconds, 15.0)
         finally:
             tmp.cleanup()
+
+
+class ApiClientDeferredRowsTests(unittest.TestCase):
+    """Сервер больше не падает на statement_timeout, а возвращает `deferred`.
+
+    Помощник обязан показать остаток: иначе загрузка отрапортует об успехе,
+    молча потеряв часть журнала.
+    """
+
+    def _client(self, deferred_per_chunk):
+        import api_client
+
+        client = api_client.ApiClient(token="test-token")
+        calls = {"count": 0}
+
+        class FakeResponse:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.ok = 200 <= status_code < 300
+                self.text = json.dumps(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_post(payload, timeout=30):
+            calls["count"] += 1
+            rows = payload.get("deliveries") or []
+            deferred = min(deferred_per_chunk, len(rows))
+            body = {
+                "inserted": len(rows) - deferred,
+                "eventsFound": len(rows),
+                "deferred": deferred,
+            }
+            return FakeResponse(200, body), body
+
+        client._post_upload = fake_post
+        return client, calls
+
+    def _deliveries(self, count):
+        return [{"system_name": "Sol", "commodity": "steel", "amount": 1,
+                 "delivered_at": "2025-01-01T00:00:00Z", "source_hash": "h%d" % i}
+                for i in range(count)]
+
+    def test_deferred_rows_are_counted_and_flagged_partial(self):
+        client, _calls = self._client(deferred_per_chunk=3)
+        result = client.upload_deliveries(self._deliveries(200), "CMDR")
+
+        self.assertTrue(result["ok"], "таймаут базы не должен ронять загрузку")
+        self.assertEqual(result["deferred"], 6, "по 3 строки с каждой из двух пачек")
+        self.assertEqual(result["inserted"], 194)
+        self.assertTrue(result.get("partial"), "незаписанные строки обязаны помечать загрузку частичной")
+        self.assertIn("6", result.get("error", ""),
+                      "сообщение должно называть число незаписанных строк")
+
+    def test_clean_upload_reports_no_deferred(self):
+        client, _calls = self._client(deferred_per_chunk=0)
+        result = client.upload_deliveries(self._deliveries(200), "CMDR")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["deferred"], 0)
+        self.assertEqual(result["inserted"], 200)
+        self.assertFalse(result.get("partial"), "чистая загрузка не должна считаться частичной")
+
 
 
 if __name__ == "__main__":

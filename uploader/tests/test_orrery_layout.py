@@ -6,6 +6,7 @@
 кластере. Тесты фиксируют новое поведение и не дают ему уплыть обратно.
 """
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -224,6 +225,119 @@ class GeometryTests(unittest.TestCase):
                                    MapBody(name="Sol 7", kind="", body_id=7, distance_ls=900)], "Sol")
         self.assertIn("Sol 7", plan["positions"])
         self.assertEqual(plan["by_name"]["Sol 7"]["kind"], "planet")
+
+
+class OrbitalMechanicsTests(unittest.TestCase):
+    """Настоящие орбиты: эллипс со звездой в фокусе (зеркало сайта)."""
+
+    def test_kepler_equation_solved(self):
+        # e = 0 -> E = M
+        for M in (0.0, 0.5, 1.7, 3.14, 6.2):
+            self.assertLess(abs(orrery.solve_kepler(M, 0.0) - M), 1e-12)
+        # e > 0 -> решение удовлетворяет M = E - e*sin(E)
+        for e in (0.1, 0.5, 0.9):
+            for M in (0.3, 1.0, 2.5, 4.0, 5.9):
+                E = orrery.solve_kepler(M, e)
+                self.assertLess(abs(E - e * math.sin(E) - M), 1e-8, f"e={e} M={M}")
+
+    def test_periapsis_and_apoapsis_radii(self):
+        # Звезда в ФОКУСЕ: r = a(1-e) и r = a(1+e) - главное отличие от окружностей.
+        a, e = 100.0, 0.5
+        peri = orrery.orbit_point(a, 0.0, e, 0.0, 0.0, (0.0, 0.0, 0.0))
+        apo = orrery.orbit_point(a, math.pi, e, 0.0, 0.0, (0.0, 0.0, 0.0))
+        self.assertAlmostEqual(math.dist(peri, (0.0, 0.0, 0.0)), a * (1 - e), places=9)
+        self.assertAlmostEqual(math.dist(apo, (0.0, 0.0, 0.0)), a * (1 + e), places=9)
+
+    def test_periapsis_argument_rotates_orbit(self):
+        peri = orrery.orbit_point(50.0, 0.0, 0.4, 0.0, math.pi / 2, (0.0, 0.0, 0.0))
+        self.assertLess(abs(peri[0]), 1e-9)
+        self.assertGreater(peri[1], 0.0)
+
+    def test_inclination_lifts_orbit_out_of_plane(self):
+        path = orrery.orbital_path(40.0, 0.2, math.radians(30.0), 0.0, (0.0, 0.0, 0.0), 48)
+        max_z = max(abs(point[2]) for point in path)
+        self.assertGreater(max_z, 0.0)
+
+    def test_body_without_elements_is_not_marked_real(self):
+        self.assertFalse(orrery.has_real_elements({"name": "Sol 4"}))
+        self.assertTrue(orrery.has_real_elements({"name": "Sol 3", "eccentricity": 0.0167}))
+        self.assertTrue(orrery.has_real_elements({"name": "Sol 3", "orbital_inclination": 1.5}))
+
+    def test_plan_uses_real_elements_when_present(self):
+        snapshot = MapSnapshot(system="Sol", bodies=[
+            star("Sol", 1),
+            planet("Sol 3", 3, 499.0, parent=1, eccentricity=0.0167,
+                   orbital_inclination=0.0, arg_of_periapsis=102.9,
+                   mean_anomaly_deg=358.6, orbital_period_days=365.256),
+            planet("Sol 4", 4, 805.0, parent=1),
+        ])
+        plan = orrery.plan_system(snapshot.bodies, "Sol")
+        earth = next(o for o in plan["orbits"] if o["name"] == "Sol 3")
+        mars = next(o for o in plan["orbits"] if o["name"] == "Sol 4")
+        self.assertTrue(earth["real"])
+        self.assertAlmostEqual(earth["eccentricity"], 0.0167, places=9)
+        self.assertAlmostEqual(earth["period_days"], 365.256, places=6)
+        self.assertNotEqual(mars.get("real"), True)
+
+        # Планета стоит на своём эллипсе: r = a(1-e^2)/(1+e*cos(v)).
+        point = plan["positions"]["Sol 3"]
+        center = earth["center"]
+        radius = math.dist(point, center)
+        e = 0.0167
+        nu = math.atan2(point[1] - center[1], point[0] - center[0]) - math.radians(102.9)
+        conic = earth["radius"] * (1 - e * e) / (1 + e * math.cos(nu))
+        self.assertLess(abs(radius - conic), 1e-9)
+
+        # Порядок по дистанции сохраняется и в «реальном» режиме.
+        self.assertLess(math.dist(plan["positions"]["Sol 3"], (0, 0, 0)),
+                        math.dist(plan["positions"]["Sol 4"], (0, 0, 0)))
+
+    def test_eccentric_orbit_stays_inside_scene(self):
+        snapshot = MapSnapshot(system="HD 1", bodies=[
+            star("HD 1", 1),
+            planet("HD 1 1", 2, 300.0, parent=1, eccentricity=0.9,
+                   orbital_inclination=12.0, arg_of_periapsis=40.0,
+                   mean_anomaly_deg=200.0, orbital_period_days=10.0),
+        ])
+        plan = orrery.plan_system(snapshot.bodies, "HD 1")
+        for point in plan["positions"].values():
+            for value in point:
+                self.assertTrue(math.isfinite(value))
+                self.assertLessEqual(abs(value), plan["span"] + 1e-6)
+
+    def test_moon_orbit_uses_real_elements(self):
+        snapshot = MapSnapshot(system="Sol", bodies=[
+            star("Sol", 1),
+            planet("Sol 5", 5, 400.0, parent=1),
+            MapBody(name="Sol 5 a", kind=KIND_MOON, body_id=6, distance_ls=400.0,
+                    parent_ids=[5, 1], eccentricity=0.0549, orbital_inclination=-23.4,
+                    arg_of_periapsis=0.0, mean_anomaly_deg=90.0, orbital_period_days=27.32),
+        ])
+        plan = orrery.plan_system(snapshot.bodies, "Sol")
+        moon_orbit = next(o for o in plan["moon_orbits"] if o["name"] == "Sol 5 a")
+        self.assertTrue(moon_orbit["real"])
+        self.assertAlmostEqual(moon_orbit["period_days"], 27.32, places=6)
+        self.assertAlmostEqual(moon_orbit["eccentricity"], 0.0549, places=9)
+
+    def test_star_color_from_temperature_matches_site(self):
+        # Те же контрольные точки, что в src/lib/systemOrrery.ts.
+        self.assertEqual(orrery.star_color_from_temperature(3000.0), "rgb(255, 180, 107)")
+        self.assertEqual(orrery.star_color_from_temperature(5778.0), "rgb(255, 244, 234)")
+        self.assertIsNone(orrery.star_color_from_temperature(0.0))
+        cool = orrery.star_color_from_temperature(3000.0)
+        hot = orrery.star_color_from_temperature(20000.0)
+        parse = lambda rgb: [int(v) for v in rgb[4:-1].split(",")]
+        self.assertGreater(parse(cool)[0], parse(cool)[2], "холодная звезда краснее")
+        self.assertGreater(parse(hot)[2], parse(hot)[0], "горячая звезда голубее")
+
+    def test_star_radius_scale_orders_by_true_size(self):
+        small = orrery.star_radius_scale(6.957e8 * 0.1)
+        solar = orrery.star_radius_scale(6.957e8)
+        giant = orrery.star_radius_scale(6.957e8 * 1000)
+        self.assertLess(small, solar)
+        self.assertLess(solar, giant)
+        self.assertLess(giant, 3.0)
+        self.assertEqual(orrery.star_radius_scale(0.0), 1.0)
 
 
 if __name__ == "__main__":

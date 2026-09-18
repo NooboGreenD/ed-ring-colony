@@ -1,3 +1,14 @@
+import {
+  CONSTRUCTION_KINDS,
+  classifyStation,
+  constructionKindForStation,
+  deliveryKindForStation,
+  isConstructionStationKind,
+  type DeliveryKind,
+  type StationContext,
+  type StationKind,
+} from './cargoScope.ts';
+
 export type DeliverySource =
   | 'colonisation_contribution'
   | 'cargo_depot'
@@ -20,7 +31,14 @@ export const CONSTRUCTION_SOURCES: ReadonlySet<DeliverySource> = new Set<Deliver
 /**
  * Строка `deliveries.source` приходит из разных клиентов (браузерный
  * загрузчик, Colonial Helper), поэтому проверяется как текст, а не как
- * union-тип. Единая точка правды для серверного fallback'а.
+ * union-тип. Это fallback сервера для строк, где клиент не прислал ни
+ * `is_construction`, ни `delivery_kind` (старые версии загрузчика): тогда
+ * `colonisation_contribution` и `cargo_depot` считаются стройкой, как это
+ * было до появления классификации станций.
+ *
+ * Сам парсер так больше не решает: `cargo_depot` — это груз миссий, и
+ * строительным он становится только у рынка стройплощадки
+ * (см. `classifyStation` в `cargoScope.ts`).
  */
 export function isConstructionSourceName(source: string | null | undefined): boolean {
   if (!source) return false;
@@ -45,6 +63,16 @@ export interface Delivery {
    * куда»: по этому полю досье считает отдельный блок «тоннаж на стройки».
    */
   isConstruction?: boolean;
+  /**
+   * Куда именно ушёл груз: стройплощадка, колонизационный корабль, авианосец,
+   * грузовая миссия, продажа на рынке, Powerplay, SAR. Из него
+   * `isConstruction` выводится однозначно, но не наоборот — отсюда отдельное
+   * поле в `deliveries` и отдельный блок «структура перевозок» в досье.
+   */
+  deliveryKind: DeliveryKind;
+  /** Станция, у которой сдан груз (имя/тип из `Docked`/`Market`). */
+  stationName?: string | null;
+  stationKind?: StationKind | null;
 }
 
 export interface JournalParseStats {
@@ -63,6 +91,9 @@ export interface JournalParseStats {
   constructionTons: number;
   /** Сколько тонн перевезено всего (все источники). */
   transportedTons: number;
+  /** Тоннаж и число операций по видам сдачи груза (`DeliveryKind`). */
+  kindTons: Record<DeliveryKind, number>;
+  kindOps: Record<DeliveryKind, number>;
   skippedNoSystem: number;
   skippedMarketTrade: number;
   skippedMining: number;
@@ -111,6 +142,12 @@ export interface JournalParseState {
   constructionMarkets: Set<string>;
   /** Рынок, к которому игрока причалил (`Docked`/`Market`), для той же привязки. */
   currentMarketId: string | null;
+  /**
+   * Станция, у которой стоит игрок: имя, тип и классификация. Именно она
+   * решает, стройка это или обычная продажа, когда явного события поставки нет
+   * (cargo_delta) или событие ничего не говорит о получателе (CargoDepot).
+   */
+  station: StationContext | null;
   sequence: number;
 }
 
@@ -126,6 +163,7 @@ export function createJournalParseState(): JournalParseState {
     seenDeliveryHashes: new Set(),
     constructionMarkets: new Set(),
     currentMarketId: null,
+    station: null,
     sequence: 0,
   };
 }
@@ -284,6 +322,80 @@ function updateLocation(state: JournalParseState, event: Record<string, unknown>
   if (address) state.currentSystemAddress = address;
 }
 
+/**
+ * Обновить «где стоит игрок» по событию `Docked`/`Location`/`Market`/
+ * `CarrierJump`/`FSDJump`/`Undocked`.
+ *
+ * Имя и тип станции — единственный способ отличить рынок стройплощадки от
+ * обычного порта, когда явного события поставки нет. Правила совпадают с
+ * `uploader/colonisation.py`, поэтому сайт и Colonial Helper не могут
+ * разойтись в том, что считать строительным тоннажом.
+ */
+function updateStation(
+  state: JournalParseState,
+  eventName: string,
+  event: Record<string, unknown>,
+  rawLine: string,
+) {
+  if (eventName === 'Undocked') {
+    state.station = null;
+    state.currentMarketId = null;
+    return;
+  }
+
+  const marketId = journalId(event.MarketID, rawJournalInteger(rawLine, 'MarketID'));
+  // `Location` с Docked:false и прыжок без станции — игрок не у рынка.
+  const docked = event.Docked === true || eventName === 'Docked' || eventName === 'Market';
+  const stationName = typeof event.StationName === 'string' ? event.StationName.trim() : '';
+
+  if (!docked && eventName !== 'CarrierJump') {
+    state.station = null;
+    state.currentMarketId = null;
+    return;
+  }
+
+  const previous = state.station;
+  const kind = classifyStation({
+    name: stationName || previous?.name,
+    type: event.StationType,
+    services: event.StationServices,
+    economy: event.StationEconomy,
+    carrierId: event.CarrierID,
+  });
+  state.station = {
+    marketId: marketId ?? previous?.marketId ?? null,
+    name: stationName || previous?.name || '',
+    type: typeof event.StationType === 'string' && event.StationType.trim()
+      ? event.StationType.trim()
+      : previous?.type || '',
+    kind,
+  };
+  state.currentMarketId = marketId ?? previous?.marketId ?? null;
+}
+
+/**
+ * Классификация станции, у которой сдан груз.
+ *
+ * `ColonisationConstructionDepot` остаётся дополнительным признаком: рынок,
+ * про который журнал показывал состояние стройки, — точно стройплощадка, даже
+ * если `Docked` пришёл без имени станции (старые записи, ретрансляторы CAPI).
+ */
+function stationKindAt(state: JournalParseState, marketId: string | null): StationKind {
+  const stationKind = state.station?.kind ?? 'unknown';
+  if (isConstructionStationKind(stationKind)) return stationKind;
+  const market = marketId ?? state.currentMarketId ?? state.station?.marketId ?? null;
+  if (market && state.constructionMarkets.has(market)) return 'construction_site';
+  if (state.station && state.station.marketId && state.constructionMarkets.has(state.station.marketId)) {
+    return 'construction_site';
+  }
+  return stationKind;
+}
+
+function stationNameAt(state: JournalParseState): string | null {
+  const name = state.station?.name?.trim();
+  return name ? name : null;
+}
+
 function tagDelivery(delivery: Delivery, lookup?: SystemLookup): Delivery {
   if (!lookup) return delivery;
   const key = systemKey(delivery.systemName);
@@ -310,9 +422,12 @@ function emitDelivery(
   state.seenDeliveryHashes.add(delivery.sourceHash);
   const withFlag: Delivery = {
     ...delivery,
-    // Стройковый источник — всегда «на стройку»; cargo_delta становится
-    // стройковым, только если игрок стоял у рынка известной стройплощадки.
-    isConstruction: delivery.isConstruction ?? CONSTRUCTION_SOURCES.has(delivery.source),
+    // Признак стройки выводится из вида сдачи груза: стройплощадка и
+    // колонизационный корабль — стройка, авианосец/миссия/рынок — перевозка.
+    // Явно переданный `isConstruction` (тесты, особые случаи) имеет приоритет.
+    isConstruction: delivery.isConstruction ?? CONSTRUCTION_KINDS.has(delivery.deliveryKind),
+    stationName: delivery.stationName ?? stationNameAt(state),
+    stationKind: delivery.stationKind ?? state.station?.kind ?? null,
   };
   deliveries.push(tagDelivery(withFlag, lookup));
   stats.deliveriesFound += 1;
@@ -321,9 +436,25 @@ function emitDelivery(
   stats.transportedTons += withFlag.amount;
   if (withFlag.isConstruction) stats.constructionTons += withFlag.amount;
   else stats.transportDeliveries += 1;
+  stats.kindTons[withFlag.deliveryKind] = (stats.kindTons[withFlag.deliveryKind] ?? 0) + withFlag.amount;
+  stats.kindOps[withFlag.deliveryKind] = (stats.kindOps[withFlag.deliveryKind] ?? 0) + 1;
   if (withFlag.source === 'colonisation_contribution') stats.colonisationDeliveries += 1;
   else if (withFlag.source === 'cargo_depot') stats.cargoDepotDeliveries += 1;
   else if (withFlag.source === 'cargo_delta') stats.cargoDeltaDeliveries += 1;
+}
+
+/** Нулевые счётчики по видам сдачи груза (см. `DeliveryKind`). */
+export function emptyKindRecord(): Record<DeliveryKind, number> {
+  return {
+    construction_site: 0,
+    colonisation_ship: 0,
+    fleet_carrier: 0,
+    mission_delivery: 0,
+    powerplay_delivery: 0,
+    rescue_delivery: 0,
+    market_sale: 0,
+    legacy_site: 0,
+  };
 }
 
 type Contribution = { key: string; display: string; amount: number };
@@ -393,6 +524,8 @@ export function parseJournal(
     transportDeliveries: 0,
     constructionTons: 0,
     transportedTons: 0,
+    kindTons: emptyKindRecord(),
+    kindOps: emptyKindRecord(),
     skippedNoSystem: 0,
     skippedMarketTrade: 0,
     skippedMining: 0,
@@ -440,8 +573,10 @@ export function parseJournal(
       const arrivedMarketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
       if (eventName === 'Docked' || eventName === 'CarrierJump') {
         if (arrivedMarketId) state.currentMarketId = arrivedMarketId;
+        updateStation(state, eventName, event, line);
       } else {
         state.currentMarketId = arrivedMarketId ?? null;
+        updateStation(state, eventName, event, line);
       }
       continue;
     }
@@ -490,6 +625,8 @@ export function parseJournal(
 
         const amount = contribution.amount;
         if (amount <= 0) continue;
+        // Куда именно сдано: стройплощадка или колонизационный корабль
+        // (первый порт системы). Оба — строительный тоннаж.
         emitDelivery(deliveries, state, stats, {
           systemName,
           commodity: contribution.display,
@@ -498,6 +635,7 @@ export function parseJournal(
           marketId,
           systemAddress: state.currentSystemAddress,
           isConstruction: true,
+          deliveryKind: constructionKindForStation(stationKindAt(state, marketId)),
           source: 'colonisation_contribution',
           sourceHash: `journal-v2-${fingerprint(`contribution\u0000${line}\u0000${contribution.key}\u0000${amount}`)}`,
         }, lookup);
@@ -516,12 +654,18 @@ export function parseJournal(
     if (eventName === 'Docked' || eventName === 'Undocked' || eventName === 'Market') {
       const marketId = journalId(event.MarketID, rawJournalInteger(line, 'MarketID'));
       state.currentMarketId = eventName === 'Undocked' ? null : (marketId ?? state.currentMarketId);
+      // `Market` и `Undocked` приходят отдельно от `Docked`: без них рынок
+      // стройплощадки остался бы неизвестным, если игрок открыл павильон
+      // позже пристыковки или улетел, не дожидаясь нового `Docked`.
+      updateStation(state, eventName, event, line);
       continue;
     }
 
     if (eventName === 'MarketSell') {
-      // Продажа груза — тоже перевезённый груз, но не поставка на стройку.
-      // На авианосце это фактическая отгрузка (ровно как в Uploader).
+      // Продажа груза — тоже перевезённый груз, но не поставка на стройку:
+      // на стройплощадке груз сдаётся через вклад в колонизацию
+      // (`ColonisationContribution`), а не продажей. На авианосце это
+      // фактическая отгрузка (ровно как в Uploader).
       const count = finitePositive(event.Count);
       if (systemName && count != null) {
         const stationType = String(event.StationType ?? '');
@@ -535,6 +679,7 @@ export function parseJournal(
           marketId: journalId(event.MarketID, rawJournalInteger(line, 'MarketID')),
           systemAddress: state.currentSystemAddress,
           isConstruction: false,
+          deliveryKind: onCarrier ? 'fleet_carrier' : 'market_sale',
           source: onCarrier ? 'carrier_delivery' : 'cargo_delta',
           sourceHash: `journal-v3-${fingerprint(`${onCarrier ? 'carrier' : 'sell'}\u0000${line}\u0000${rawCommodity}\u0000${count}`)}`,
         }, lookup);
@@ -565,6 +710,7 @@ export function parseJournal(
           timestamp,
           systemAddress: state.currentSystemAddress,
           isConstruction: false,
+          deliveryKind: 'mission_delivery',
           source: 'mission_delivery',
           sourceHash: `journal-v3-${fingerprint(`mission\u0000${line}\u0000${key}\u0000${count}`)}`,
         }, lookup);
@@ -585,6 +731,7 @@ export function parseJournal(
           timestamp,
           systemAddress: state.currentSystemAddress,
           isConstruction: false,
+          deliveryKind: eventName === 'PowerplayDeliver' ? 'powerplay_delivery' : 'rescue_delivery',
           source: eventName === 'PowerplayDeliver' ? 'powerplay_delivery' : 'rescue_delivery',
           sourceHash: `journal-v3-${fingerprint(`${eventName.toLowerCase()}\u0000${line}\u0000${key}\u0000${count}`)}`,
         }, lookup);
@@ -605,13 +752,20 @@ export function parseJournal(
       }
 
       state.accountedCargoKeys.add(key);
+      // `CargoDepot` — это склад грузовой миссии (в том числе крыльевой
+      // Cargo Run). Стройкой он становится только тогда, когда сдан у рынка
+      // стройплощадки/колонизационного корабля: иначе тоннаж миссий
+      // молча записывался колонизационным.
+      const stationKind = stationKindAt(state, state.currentMarketId);
       emitDelivery(deliveries, state, stats, {
         systemName,
         commodity: displayCommodity(event.CargoType_Localised, String(rawCommodity)),
         amount,
         timestamp,
+        marketId: state.currentMarketId,
         systemAddress: state.currentSystemAddress,
-        isConstruction: true,
+        deliveryKind: deliveryKindForStation(stationKind, 'mission_delivery'),
+        stationKind,
         source: 'cargo_depot',
         sourceHash: `journal-v2-${fingerprint(`cargo-depot\u0000${line}\u0000${key}\u0000${amount}`)}`,
       }, lookup);
@@ -658,6 +812,7 @@ export function parseJournal(
       // Their accompanying Cargo snapshot must not create a second trip.
       if (state.accountedCargoKeys.has(key)) continue;
 
+      const deltaStationKind = stationKindAt(state, state.currentMarketId);
       emitDelivery(deliveries, state, stats, {
         systemName,
         commodity: previous.display,
@@ -665,9 +820,11 @@ export function parseJournal(
         timestamp,
         marketId: state.currentMarketId,
         systemAddress: state.currentSystemAddress,
-        // Груз «испарился» из трюка, пока игрок стоит у рынка стройплощадки, —
-        // значит это поставка на стройку, а не продажа в павильоне.
-        isConstruction: state.currentMarketId != null && state.constructionMarkets.has(state.currentMarketId),
+        // Груз «испарился» из трюма, пока игрок стоит у рынка стройплощадки
+        // или колонизационного корабля, — значит это поставка на стройку.
+        // У авианосца это отгрузка, в обычном павильоне — продажа.
+        deliveryKind: deliveryKindForStation(deltaStationKind, 'market_sale'),
+        stationKind: deltaStationKind,
         source: 'cargo_delta',
         sourceHash: `journal-v2-${fingerprint(`cargo-delta\u0000${line}\u0000${key}\u0000${previous.count}\u0000${currentCount}`)}`,
       }, lookup);

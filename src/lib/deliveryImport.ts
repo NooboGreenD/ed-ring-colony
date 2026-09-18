@@ -1,12 +1,19 @@
 import { createHash } from 'crypto';
 
-import { isConstructionSourceName } from './journalParser';
+import { normalizeDeliveryKind } from './cargoScope.ts';
+import { isConstructionSourceName } from './journalParser.ts';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface DeliveryImportOutcome {
   inserted: number;
   duplicates: number;
   eventsFound: number;
+  /**
+   * Сколько строк не удалось записать из-за `statement_timeout` даже после
+   * деления пачки до одной строки. Клиент обязан повторить их отдельным
+   * проходом: `source_hash` делает повтор идемпотентным.
+   */
+  deferred: number;
 }
 
 type SystemPlacement = {
@@ -30,24 +37,40 @@ type DeliveryRow = {
   is_construction?: boolean | null;
   /** MarketID площадки, к которой привязана доставка (текст: 64-битный ID). */
   market_id?: string | null;
+  /** Куда сдан груз: стройплощадка / колонизационный корабль / авианосец / … */
+  delivery_kind?: string | null;
+  /** Станция, у которой сдан груз (имя и вид из `Docked`/`Market`). */
+  station_name?: string | null;
+  station_kind?: string | null;
 };
 
 /**
- * Дополнительные колонки `deliveries` из миграции
- * `20260917000000_deliveries_transport_scope.sql`. Как и с `source_hash`,
+ * Дополнительные колонки `deliveries` из миграций
+ * `20260917000000_deliveries_transport_scope.sql` и
+ * `20260918000000_deliveries_cargo_scope.sql`. Как и с `source_hash`,
  * релиз API может успеть раньше миграции — тогда пишем строки без них, чтобы
  * загрузка журнала не падала целиком.
  */
-const TRANSPORT_COLUMNS = ['source', 'is_construction', 'market_id'] as const;
+const TRANSPORT_COLUMNS = [
+  'source',
+  'is_construction',
+  'market_id',
+  'delivery_kind',
+  'station_name',
+  'station_kind',
+] as const;
 let transportColumnsMode: 'unknown' | 'present' | 'missing' = 'unknown';
 let transportColumnsProbeAt = 0;
 const TRANSPORT_COLUMNS_REPROBE_MS = 2 * 60_000;
 
+const TRANSPORT_COLUMN_PATTERN = 'source|is_construction|market_id|delivery_kind|station_name|station_kind';
+
 function isMissingTransportColumn(error: { code?: string; message?: string }): boolean {
   if (error.code !== '42703' && error.code !== 'PGRST204') {
-    return /(?:source|is_construction|market_id).*?(?:does not exist|could not find)/i.test(error.message || '');
+    return new RegExp(`(?:${TRANSPORT_COLUMN_PATTERN}).*?(?:does not exist|could not find)`, 'i')
+      .test(error.message || '');
   }
-  return /(?:source|is_construction|market_id)/i.test(error.message || '');
+  return new RegExp(TRANSPORT_COLUMN_PATTERN, 'i').test(error.message || '');
 }
 
 function shouldTryTransportColumns(): boolean {
@@ -113,6 +136,42 @@ function safeSourceHash(value: unknown, fallback: string): string {
     return sourceHash;
   }
   return fallbackHash(fallback);
+}
+
+/**
+ * Ошибка БД с сохранённым SQLSTATE и именем операции.
+ *
+ * Прежние `throw new Error(error.message)` выбрасывали код ошибки, из-за чего
+ * вызывающая сторона не могла отличить «база не успела» от «схема не та» и
+ * превращала временный таймаут в окончательный отказ всего импорта.
+ *
+ * Имя операции нужно потому, что сообщение Postgres при таймауте одинаковое
+ * для любого запроса: «canceling statement due to statement timeout». Без
+ * имени в серверном логе невозможно понять, какой именно statement не успел,
+ * и диагностика превращается в перебор гипотез.
+ */
+function dbError(error: { code?: string; message?: string }, operation: string): Error {
+  const wrapped = new Error(`${operation}: ${error.message ?? 'database request failed'}`) as Error & {
+    code?: string;
+    operation?: string;
+  };
+  wrapped.code = error.code;
+  wrapped.operation = operation;
+  return wrapped;
+}
+
+/**
+ * Postgres отменил statement по `statement_timeout` (SQLSTATE 57014).
+ *
+ * Supabase ограничивает запросы PostgREST несколькими секундами, поэтому на
+ * большой истории доставок один крупный INSERT/SELECT может не успеть. Это
+ * временный сбой: тот же объём меньшей пачкой проходит.
+ */
+function isStatementTimeout(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as { code?: string; message?: string };
+  if (candidate.code === '57014') return true;
+  return /canceling statement due to statement timeout|statement timeout/i.test(candidate.message || '');
 }
 
 function chunk<T>(values: T[], size: number): T[][] {
@@ -201,6 +260,35 @@ async function loadExactPlacementLookup(
   return placementMap(hubs, routeSystems);
 }
 
+/**
+ * Кэш размещений в пределах тёплого инстанса.
+ *
+ * В журнале одни и те же системы встречаются сотни раз, а поиск размещения —
+ * самая дорогая часть импорта: на точное `system_name` в `hubs`/`route_systems`
+ * индекса может не быть вовсе. Без кэша каждая пачка заново ходит в эти
+ * таблицы, и на загрузке из 500+ пакетов именно это упирается в
+ * `statement_timeout`. Кэш живой всего несколько минут: состав хабов меняется
+ * редко, а в пределах одной загрузки он обязан быть согласованным.
+ */
+const PLACEMENT_CACHE_TTL_MS = 5 * 60_000;
+const PLACEMENT_CACHE_MAX = 5000;
+const placementCache = new Map<string, { at: number; placement: SystemPlacement | null }>();
+
+function rememberPlacements(resolved: Map<string, SystemPlacement>, names: string[]): void {
+  const now = Date.now();
+  for (const name of names) {
+    const key = normalized(name);
+    if (!key) continue;
+    if (placementCache.size >= PLACEMENT_CACHE_MAX) {
+      const oldest = placementCache.keys().next();
+      if (!oldest.done) placementCache.delete(oldest.value);
+    }
+    // Кэшируем и «не найдено»: иначе отсутствующая система запрашивается
+    // в каждой пачке заново.
+    placementCache.set(key, { at: now, placement: resolved.get(key) ?? null });
+  }
+}
+
 async function loadPlacementLookup(
   svc: SupabaseClient,
   deliveries: unknown[],
@@ -208,16 +296,29 @@ async function loadPlacementLookup(
   const candidateNames = placementCandidates(deliveries);
   if (candidateNames.length === 0) return new Map();
 
+  const placements = new Map<string, SystemPlacement>();
+  const unresolved: string[] = [];
+  const now = Date.now();
+  for (const name of candidateNames) {
+    const key = normalized(name);
+    const hit = placementCache.get(key);
+    if (hit && now - hit.at < PLACEMENT_CACHE_TTL_MS) {
+      if (hit.placement) placements.set(key, hit.placement);
+      continue;
+    }
+    unresolved.push(name);
+  }
+  if (unresolved.length === 0) return placements;
+
   // The SQL resolver added with the import-performance migration matches the
   // same case/whitespace-normalized key as the Journal parser and uses
   // expression indexes. Do not scan the complete hubs/route_systems tables on
   // every batch.
-  const placements = new Map<string, SystemPlacement>();
   // Resolve small groups instead of passing the whole upload to one SQL
   // statement. This is important during rollout: an installation without the
   // expression indexes must still be able to import a log without one large
   // resolver statement exceeding statement_timeout.
-  for (const names of chunk(candidateNames, PLACEMENT_LOOKUP_BATCH_SIZE)) {
+  for (const names of chunk(unresolved, PLACEMENT_LOOKUP_BATCH_SIZE)) {
     const { data, error } = await svc.rpc('resolve_delivery_system_placements', {
       system_names: names,
     });
@@ -242,8 +343,12 @@ async function loadPlacementLookup(
     if (!isMissingPlacementResolver(error)) {
       console.warn('[delivery import] Placement resolver failed; using bounded fallback:', error.message);
     }
-    return loadExactPlacementLookup(svc, candidateNames);
+    const fallback = await loadExactPlacementLookup(svc, unresolved);
+    for (const [key, value] of fallback) placements.set(key, value);
+    rememberPlacements(fallback, unresolved);
+    return placements;
   }
+  rememberPlacements(placements, unresolved);
   return placements;
 }
 
@@ -256,6 +361,52 @@ function marketIdOf(delivery: Record<string, unknown>): string | null {
     if (typeof value === 'number' && Number.isSafeInteger(value)) return String(value);
   }
   return null;
+}
+
+/** Текстовое поле станции из payload клиента (оба стиля именования). */
+function stationFieldOf(delivery: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = delivery[key];
+    if (typeof value === 'string') {
+      const trimmed = value.trim().slice(0, 250);
+      if (trimmed) return trimmed;
+    }
+  }
+  return null;
+}
+
+/**
+ * Вид сдачи груза для записи в `deliveries.delivery_kind`.
+ *
+ * Приоритет: явный признак от парсера журнала → вывод из `source` у старых
+ * клиентов. `cargo_depot` без явного вида остаётся грузом миссии: считать его
+ * стройкой по одному имени источника как раз и было ошибкой, из-за которой
+ * тоннаж торговых миссий попадал в статистику колонизации.
+ */
+function resolveDeliveryKind(delivery: Record<string, unknown>, source: string | null): string | null {
+  const explicit = normalizeDeliveryKind(delivery.delivery_kind ?? delivery.deliveryKind);
+  if (explicit) return explicit;
+
+  switch (source) {
+    case 'colonisation_contribution':
+      return 'construction_site';
+    case 'carrier_delivery':
+      return 'fleet_carrier';
+    case 'mission_delivery':
+    case 'cargo_depot':
+      return 'mission_delivery';
+    case 'powerplay_delivery':
+      return 'powerplay_delivery';
+    case 'rescue_delivery':
+      return 'rescue_delivery';
+    case 'cargo_delta':
+      // Дифф трюма без явного вида: стройка только если клиент сам так сказал.
+      return delivery.is_construction === true || delivery.isConstruction === true
+        ? 'construction_site'
+        : 'market_sale';
+    default:
+      return null;
+  }
 }
 
 function validRows(userId: string, deliveries: unknown[], placements: Map<string, SystemPlacement>): DeliveryRow[] {
@@ -311,6 +462,13 @@ function validRows(userId: string, deliveries: unknown[], placements: Map<string
             // затекала в статистику строек.
             : isConstructionSourceName(source)),
       market_id: marketIdOf(delivery),
+      // Куда именно сдан груз. Признак приходит от парсера журнала (сайт и
+      // Colonial Helper используют один словарь `cargoScope`); если клиент
+      // старый и вида нет — выводим его из источника, чтобы блок «структура
+      // перевозок» в досье не пустовал.
+      delivery_kind: resolveDeliveryKind(delivery, source),
+      station_name: stationFieldOf(delivery, 'station_name', 'stationName'),
+      station_kind: stationFieldOf(delivery, 'station_kind', 'stationKind'),
     });
   }
   return rows;
@@ -386,30 +544,43 @@ async function writeDeliveryRows(
   return { ids: retry.data ?? [], error: retry.error ?? null, degraded: !retry.error };
 }
 
-async function persistDeliveryChunk(
+/**
+ * Подготовка строк: поиск размещений, валидация, схлопывание дубликатов.
+ *
+ * Вынесено отдельно от записи намеренно. Поиск размещений ходит в
+ * `hubs`/`route_systems`, где на точное `system_name` индекса может не быть
+ * вовсе, — это самая дорогая часть запроса. Если делить пачку при таймауте
+ * вместе с подготовкой, дорогой поиск выполняется заново для каждой половины
+ * (замер на пачке из 25 строк давал 15 обращений вместо одного), и таймаут не
+ * уходит, а усугубляется.
+ */
+async function prepareDeliveryRows(
   svc: SupabaseClient,
   userId: string,
   incomingDeliveries: unknown[],
-): Promise<DeliveryImportOutcome> {
+): Promise<{ rows: DeliveryRow[]; duplicates: number; eventsFound: number }> {
   const placements = await loadPlacementLookup(svc, incomingDeliveries);
   const initialRows = validRows(userId, incomingDeliveries, placements);
   const collapsed = collapseBatchDuplicates(initialRows);
-  if (collapsed.rows.length === 0) {
-    return { inserted: 0, duplicates: collapsed.duplicates, eventsFound: 0 };
-  }
+  return { rows: collapsed.rows, duplicates: collapsed.duplicates, eventsFound: initialRows.length };
+}
 
+/** Однократная попытка записать подготовленные строки. */
+async function writeRowsOnce(
+  svc: SupabaseClient,
+  userId: string,
+  rows: DeliveryRow[],
+): Promise<{ inserted: number; duplicates: number }> {
   if (shouldTryAtomicSourceHashWrite()) {
-    const atomic = await writeDeliveryRows(svc, collapsed.rows as unknown as Array<Record<string, unknown>>,
+    const atomic = await writeDeliveryRows(svc, rows as unknown as Array<Record<string, unknown>>,
                                            'upsert', 'user_id,source_hash');
     const { error } = atomic;
 
     if (!error) {
       rememberSourceHashWriteMode('unique-index');
-      const inserted = atomic.ids.length;
       return {
-        inserted,
-        duplicates: collapsed.duplicates + Math.max(0, collapsed.rows.length - inserted),
-        eventsFound: initialRows.length,
+        inserted: atomic.ids.length,
+        duplicates: Math.max(0, rows.length - atomic.ids.length),
       };
     }
 
@@ -418,7 +589,7 @@ async function persistDeliveryChunk(
     } else if (isMissingConflictTarget(error)) {
       rememberSourceHashWriteMode('column-without-index');
     } else {
-      throw new Error(error.message);
+      throw dbError(error, 'deliveries upsert (on conflict user_id,source_hash)');
     }
   }
 
@@ -426,45 +597,98 @@ async function persistDeliveryChunk(
     // A rolling deploy can serve the API before ADD COLUMN source_hash reaches
     // PostgREST. Retain valid deliveries rather than rejecting the upload;
     // retries become idempotent after the column/index rollout completes.
-    const legacyRows = collapsed.rows.map(({ source_hash: _sourceHash, ...row }) => row);
+    const legacyRows = rows.map(({ source_hash: _sourceHash, ...row }) => row);
     const legacyWrite = await writeDeliveryRows(svc, legacyRows as unknown as Array<Record<string, unknown>>, 'insert');
-    const insertedRows = { length: legacyWrite.ids.length };
-    const insertError = legacyWrite.error;
-    if (insertError) throw new Error(insertError.message);
-    return {
-      inserted: insertedRows?.length ?? legacyRows.length,
-      duplicates: collapsed.duplicates,
-      eventsFound: initialRows.length,
-    };
+    if (legacyWrite.error) throw dbError(legacyWrite.error, 'deliveries insert (legacy, no source_hash)');
+    return { inserted: legacyWrite.ids.length, duplicates: 0 };
   }
 
   // Compatibility path for a deployment with source_hash but before the
   // optional concurrent unique index. It is not race-proof, but each lookup
   // and write stays bounded and repeated sequential imports remain safe.
-  const hashes = collapsed.rows.map((row) => row.source_hash);
+  const hashes = rows.map((row) => row.source_hash);
+  // `IS NOT NULL` здесь не косметика. Индекс `idx_deliveries_user_source_hash`
+  // частичный (`WHERE source_hash IS NOT NULL`), а планировщик применяет
+  // частичный индекс, только если его предикат выводится из предиката запроса.
+  // Из `source_hash IN (константы)` Postgres выводить `IS NOT NULL` не обязан —
+  // без явного фильтра запрос рискует уйти в seq scan по таблице `deliveries`.
   const { data: existing, error: existingError } = await svc
     .from('deliveries')
     .select('source_hash')
     .eq('user_id', userId)
+    .not('source_hash', 'is', null)
     .in('source_hash', hashes);
-  if (existingError) throw new Error(existingError.message);
+  if (existingError) throw dbError(existingError, 'deliveries select existing source_hash');
   const existingHashes = new Set((existing || []).map((row: { source_hash?: string | null }) => row.source_hash).filter(Boolean));
-  const missing = collapsed.rows.filter((row) => !existingHashes.has(row.source_hash));
+  const missing = rows.filter((row) => !existingHashes.has(row.source_hash));
   if (missing.length === 0) {
-    return {
-      inserted: 0,
-      duplicates: collapsed.duplicates + collapsed.rows.length,
-      eventsFound: initialRows.length,
-    };
+    return { inserted: 0, duplicates: rows.length };
   }
 
   const write = await writeDeliveryRows(svc, missing as unknown as Array<Record<string, unknown>>, 'insert');
-  if (write.error) throw new Error(write.error.message);
-  const inserted = write.ids.length;
+  if (write.error) throw dbError(write.error, 'deliveries insert');
   return {
-    inserted,
-    duplicates: collapsed.duplicates + existingHashes.size + Math.max(0, missing.length - inserted),
-    eventsFound: initialRows.length,
+    inserted: write.ids.length,
+    duplicates: existingHashes.size + Math.max(0, missing.length - write.ids.length),
+  };
+}
+
+/**
+ * Записать подготовленные строки, при таймауте деля пачку пополам.
+ *
+ * Supabase обрывает каждый запрос PostgREST через несколько секунд, и на
+ * большой истории пачка периодически не успевает. Сбой временный, поэтому
+ * пачка делится и половины пишутся отдельно. Деление идёт до одной строки;
+ * строка, которую база не приняла даже по отдельности, уходит в `deferred`, а не роняет
+ * соседние: откладывать весь чанк из-за одной строки означало бы терять
+ * записываемые данные.
+ *
+ * Подготовка сюда намеренно не входит — см. `prepareDeliveryRows`.
+ */
+async function writePreparedRows(
+  svc: SupabaseClient,
+  userId: string,
+  rows: DeliveryRow[],
+): Promise<{ inserted: number; duplicates: number; deferred: number }> {
+  try {
+    const written = await writeRowsOnce(svc, userId, rows);
+    return { inserted: written.inserted, duplicates: written.duplicates, deferred: 0 };
+  } catch (error) {
+    if (!isStatementTimeout(error)) throw error;
+    // Сообщение Postgres при таймауте одинаково для любого запроса, поэтому
+    // без имени операции в логе не понять, какой statement не успел.
+    const operation = (error as { operation?: string }).operation ?? 'unknown operation';
+    console.warn('[delivery import] statement timeout:', operation, '| rows:', rows.length);
+    if (rows.length <= 1) return { inserted: 0, duplicates: 0, deferred: rows.length };
+    const middle = Math.floor(rows.length / 2);
+    const left = await writePreparedRows(svc, userId, rows.slice(0, middle));
+    const right = await writePreparedRows(svc, userId, rows.slice(middle));
+    return {
+      inserted: left.inserted + right.inserted,
+      duplicates: left.duplicates + right.duplicates,
+      deferred: left.deferred + right.deferred,
+    };
+  }
+}
+
+async function persistDeliveryChunk(
+  svc: SupabaseClient,
+  userId: string,
+  incomingDeliveries: unknown[],
+): Promise<DeliveryImportOutcome> {
+  const prepared = await prepareDeliveryRows(svc, userId, incomingDeliveries);
+  if (prepared.rows.length === 0) {
+    return { inserted: 0, duplicates: prepared.duplicates, eventsFound: 0, deferred: 0 };
+  }
+  const written = await writePreparedRows(svc, userId, prepared.rows);
+  if (written.deferred > 0) {
+    console.warn('[delivery import] statement timeout; rows deferred:', written.deferred);
+  }
+  return {
+    inserted: written.inserted,
+    duplicates: prepared.duplicates + written.duplicates,
+    eventsFound: prepared.eventsFound,
+    deferred: written.deferred,
   };
 }
 
@@ -481,13 +705,15 @@ export async function persistImportedDeliveries(
   let inserted = 0;
   let duplicates = 0;
   let eventsFound = 0;
+  let deferred = 0;
 
   for (const deliveryChunk of chunk(incomingDeliveries, DELIVERY_IMPORT_WRITE_BATCH_SIZE)) {
     const outcome = await persistDeliveryChunk(svc, userId, deliveryChunk);
     inserted += outcome.inserted;
     duplicates += outcome.duplicates;
     eventsFound += outcome.eventsFound;
+    deferred += outcome.deferred;
   }
 
-  return { inserted, duplicates, eventsFound };
+  return { inserted, duplicates, eventsFound, deferred };
 }

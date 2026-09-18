@@ -3,6 +3,18 @@ import hashlib as _hashlib
 import json as _std_json
 from typing import List, Dict, Any, Optional, Tuple
 
+# Классификация станции («это стройплощадка?») живёт в `colonisation`: там же
+# её использует форма создания проекта, и там же — зеркало правил сайта
+# (`src/lib/cargoScope.ts`). Парсер импортирует её, а не дублирует.
+from colonisation import (
+    CONSTRUCTION_STATION_KINDS,
+    STATION_COLONISATION_SHIP,
+    STATION_CONSTRUCTION_SITE,
+    STATION_FLEET_CARRIER,
+    STATION_UNKNOWN,
+    classify_station,
+)
+
 # Опциональный быстрый JSON-декодер. orjson может давать заметное ускорение
 # на файлах с большим числом строк (например, ColonisationConstructionDepot
 # сыпется каждые несколько секунд рядом со стройплощадкой и может составлять
@@ -28,19 +40,87 @@ _JSON_ERROR = ValueError
 # файлов»: если правила разбора меняются (новые/исправленные источники
 # доставок), версия растёт, и старые записи кэша перестают подходить — файлы
 # будут пере-импортированы, а не молча пропущены.
-PARSER_VERSION = 3
+#
+# 4 — появился `delivery_kind`/`station_kind`: `CargoDepot` больше не
+#     считается стройкой сам по себе (это груз миссий), а стройка определяется
+#     станцией, у которой сдан груз.
+PARSER_VERSION = 4
 
 #: Журнальные источники, которые считаются поставкой НА СТРОЙПЛОЩАДКУ
 #: колонизационного проекта. Остальные (продажа на авианосце, грузовые
 #: миссии, Powerplay, SAR) — это просто перевозимый груз: они попадают в
 #: блок «всего тонн», но не в строительный тоннаж. Сайт хранит ровно это
 #: же множество в `src/lib/journalParser.ts::CONSTRUCTION_SOURCES`.
+#:
+#: Это fallback для строк, где клиент не прислал ни `is_construction`, ни
+#: `delivery_kind` (старые версии загрузчика). Сам парсер так больше не
+#: решает: `cargo_depot` становится стройкой только у рынка стройплощадки.
 CONSTRUCTION_SOURCES = frozenset({"colonisation_contribution", "cargo_depot"})
+
+#: Виды сдачи груза (`deliveries.delivery_kind`). Значения обязаны совпадать
+#: с `src/lib/cargoScope.ts::DeliveryKind`.
+KIND_CONSTRUCTION_SITE = "construction_site"
+KIND_COLONISATION_SHIP = "colonisation_ship"
+KIND_FLEET_CARRIER = "fleet_carrier"
+KIND_MISSION = "mission_delivery"
+KIND_POWERPLAY = "powerplay_delivery"
+KIND_RESCUE = "rescue_delivery"
+KIND_MARKET_SALE = "market_sale"
+
+#: Виды, попадающие в блок «завезено на стройплощадки» досье.
+CONSTRUCTION_KINDS = frozenset({KIND_CONSTRUCTION_SITE, KIND_COLONISATION_SHIP})
 
 
 def is_construction_source(source) -> bool:
     """Принадлежит ли источник к строительным поставкам."""
     return str(source or "").strip().lower() in CONSTRUCTION_SOURCES
+
+
+def is_construction_kind(kind) -> bool:
+    """Является ли вид сдачи груза строительным."""
+    return str(kind or "").strip().lower() in CONSTRUCTION_KINDS
+
+
+def _update_station(previous, ev) -> dict:
+    """Обновить «где стоит командир» по событию журнала.
+
+    Имя и тип станции — единственный способ отличить рынок стройплощадки от
+    обычного порта, когда явного события поставки нет (груз «исчез» из трюма)
+    или событие о получателе молчит (`CargoDepot`). Правила классификации —
+    в `colonisation.classify_station`, общие с сайтом.
+    """
+    previous = previous or {}
+    market_id = ev.get("MarketID")
+    name = str(ev.get("StationName") or "").strip()
+    stype = str(ev.get("StationType") or "").strip() or previous.get("type", "")
+    kind = classify_station(
+        station_name=name or previous.get("name"),
+        station_type=ev.get("StationType"),
+        station_services=ev.get("StationServices"),
+        carrier_id=ev.get("CarrierID"),
+    )
+    return {
+        "market_id": str(market_id or "") or previous.get("market_id", ""),
+        "name": name or previous.get("name", ""),
+        "type": stype,
+        "kind": kind,
+    }
+
+
+def _station_kind_at(station, current_market_id, construction_markets) -> str:
+    """Вид станции, у которой сдан груз.
+
+    `ColonisationConstructionDepot` остаётся дополнительным признаком: рынок,
+    про который журнал показывал состояние стройки, — точно стройплощадка,
+    даже если `Docked` пришёл без имени станции.
+    """
+    kind = (station or {}).get("kind") or STATION_UNKNOWN
+    if kind in CONSTRUCTION_STATION_KINDS:
+        return kind
+    for market in (current_market_id, (station or {}).get("market_id", "")):
+        if market and str(market) in construction_markets:
+            return STATION_CONSTRUCTION_SITE
+    return kind
 
 
 def build_inventory(inventory: list) -> dict:
@@ -176,6 +256,14 @@ def parse_events(
         last_depot_state["_construction_markets"] = construction_markets
     current_market_id = str(last_depot_state.get("_market_id", "") or "")
 
+    # Станция, у которой стоит командир. Хранится в `last_depot_state`, чтобы
+    # пережить ротацию `Journal.*.log`: пристыковка к стройплощадке и сдача
+    # груза нередко попадают в разные файлы.
+    current_station = last_depot_state.get("_station")
+    if not isinstance(current_station, dict):
+        current_station = {}
+        last_depot_state["_station"] = current_station
+
     skip_next_cargo = False
     deliveries = []
     cargo_depot_items: set = set()
@@ -216,20 +304,42 @@ def parse_events(
                 # Рынок, к которому «пристыкован» груз: нужен, чтобы понять,
                 # была ли следующая потеря Cargo сдачей на стройплощадку.
                 current_market_id = str(ev.get("MarketID", "") or "")
+            # Прыжок без станции — командир не у рынка: привязку к станции
+            # обязательно сбрасываем, иначе следующий дифф трюма записался бы
+            # на стройплощадку в системе, где игрока уже нет.
+            docked_now = ev.get("Docked") is True or event in ("Docked", "CarrierJump")
+            if docked_now:
+                current_station = _update_station(current_station, ev)
+                last_depot_state["_station"] = current_station
+                if event == "Docked" and current_station.get("market_id"):
+                    current_market_id = current_station["market_id"]
+            else:
+                current_station = {}
+                last_depot_state["_station"] = current_station
+                current_market_id = ""
         elif event == "Undocked":
             current_market_id = ""
+            current_station = {}
+            last_depot_state["_station"] = current_station
         elif event == "Market":
             last_depot_state["_station_type"] = ev.get("StationType", "")
             last_depot_state["_market_id"] = ev.get("MarketID", 0)
             current_market_id = str(ev.get("MarketID", "") or "")
+            # `Market` приходит отдельно от `Docked`: без него рынок
+            # стройплощадки остался бы неизвестным, если игрок открыл павильон
+            # позже пристыковки.
+            current_station = _update_station(current_station, ev)
+            last_depot_state["_station"] = current_station
         elif event == "MarketSell":
-            # Продажа груза на Fleet Carrier — это фактическая отгрузка.
-            # Раньше MarketSell всегда подавлял следующий Cargo-снимок и
-            # поэтому не попадал ни в основной uploader, ни в Raven Colonial.
+            # Продажа груза — тоже перевезённый груз, но не поставка на стройку:
+            # на стройплощадке груз сдаётся вкладом в колонизацию
+            # (`ColonisationContribution`), а не продажей. На Fleet Carrier это
+            # фактическая отгрузка (уходит в Raven Colonial отдельным путём),
+            # в обычном павильоне — просто продажа на рынке.
             station_type = str(ev.get("StationType", "") or last_depot_state.get("_station_type", ""))
             is_carrier = bool(ev.get("CarrierID")) or "carrier" in station_type.lower()
             count = ev.get("Count", 0)
-            if current_system and is_carrier and count > 0:
+            if current_system and count > 0:
                 commodity = ev.get("Type_Localised") or _normalize_name(ev.get("Type", "Unknown"))
                 deliveries.append({
                     "system_name": current_system,
@@ -240,10 +350,17 @@ def parse_events(
                     "system_address": current_system_address,
                     "is_hub": None,
                     "route_system_id": None,
-                    "source": "carrier_delivery",
-                    # Отгрузка на авианосец — перевозка, а не стройка.
+                    # `cargo_delta` для обычной продажи — тот же источник, что
+                    # ставит сайт (`src/lib/journalParser.ts`): Raven Colonial
+                    # его не трогает, а досье видит «перевезено».
+                    "source": "carrier_delivery" if is_carrier else "cargo_delta",
+                    "delivery_kind": KIND_FLEET_CARRIER if is_carrier else KIND_MARKET_SALE,
+                    "station_name": current_station.get("name") or None,
+                    "station_kind": current_station.get("kind") or None,
                     "is_construction": False,
-                    "source_hash": _source_hash("carrier", line, commodity, count),
+                    "source_hash": _source_hash(
+                        "carrier" if is_carrier else "sell", line, commodity, count
+                    ),
                 })
             skip_next_cargo = True
         elif event in (
@@ -285,6 +402,11 @@ def parse_events(
                     # is the amount contributed by this event, not a cumulative
                     # project total. Subtracting the previous event caused the
                     # second and subsequent deliveries to disappear.
+                    # Куда именно сдано: стройплощадка или колонизационный
+                    # корабль (первый порт системы). Оба — строительный тоннаж.
+                    kind = KIND_COLONISATION_SHIP if _station_kind_at(
+                        current_station, current_market_id, construction_markets,
+                    ) == STATION_COLONISATION_SHIP else KIND_CONSTRUCTION_SITE
                     deliveries.append({
                         "system_name": current_system,
                         "commodity": name,
@@ -295,26 +417,48 @@ def parse_events(
                         "is_hub": None,
                         "route_system_id": None,
                         "source": "colonisation_contribution",
+                        "delivery_kind": kind,
+                        "station_name": current_station.get("name") or None,
+                        "station_kind": current_station.get("kind") or None,
                         "is_construction": True,
                         "source_hash": _source_hash("contribution", line, name, amount),
                     })
         elif event == "CargoDepot":
-            # Wing mission delivery
+            # Грузовой склад миссии (в том числе крыльевой Cargo Run). Стройкой
+            # он становится только у рынка стройплощадки/колонизационного
+            # корабля: иначе тоннаж миссий молча записывался колонизационным.
             if current_system:
                 update_type = ev.get("UpdateType", "")
                 count = ev.get("Count", 0)
                 if update_type == "Deliver" and count > 0:
                     cargo_type = ev.get("CargoType_Localised") or ev.get("CargoType", "Unknown")
+                    station_kind = _station_kind_at(
+                        current_station, current_market_id, construction_markets,
+                    )
+                    if station_kind in CONSTRUCTION_STATION_KINDS:
+                        depot_kind = (
+                            KIND_COLONISATION_SHIP
+                            if station_kind == STATION_COLONISATION_SHIP
+                            else KIND_CONSTRUCTION_SITE
+                        )
+                    elif station_kind == STATION_FLEET_CARRIER:
+                        depot_kind = KIND_FLEET_CARRIER
+                    else:
+                        depot_kind = KIND_MISSION
                     deliveries.append({
                         "system_name": current_system,
                         "commodity": cargo_type,
                         "amount": count,
                         "delivered_at": ev.get("timestamp"),
+                        "market_id": ev.get("MarketID", 0) or (current_market_id or None),
                         "system_address": current_system_address,
                         "is_hub": None,
                         "route_system_id": None,
                         "source": "cargo_depot",
-                        "is_construction": True,
+                        "delivery_kind": depot_kind,
+                        "station_name": current_station.get("name") or None,
+                        "station_kind": station_kind or None,
+                        "is_construction": is_construction_kind(depot_kind),
                         "source_hash": _source_hash("cargo-depot", line, cargo_type, count),
                     })
                     cargo_depot_items.add(str(ev.get("CargoType", "")).lower())
@@ -352,6 +496,24 @@ def parse_events(
                         # Пропускаем, если уже учтено через CargoDepot
                         if key in cargo_depot_items:
                             continue
+                        # Дифференциальный метод не знает, КУДА ушёл груз:
+                        # решает станция, у которой стоит командир. У рынка
+                        # стройплощадки или колонизационного корабля это
+                        # поставка на стройку, у авианосца — отгрузка,
+                        # в обычном павильоне — продажа.
+                        delta_station = _station_kind_at(
+                            current_station, current_market_id, construction_markets,
+                        )
+                        if delta_station in CONSTRUCTION_STATION_KINDS:
+                            delta_kind = (
+                                KIND_COLONISATION_SHIP
+                                if delta_station == STATION_COLONISATION_SHIP
+                                else KIND_CONSTRUCTION_SITE
+                            )
+                        elif delta_station == STATION_FLEET_CARRIER:
+                            delta_kind = KIND_FLEET_CARRIER
+                        else:
+                            delta_kind = KIND_MARKET_SALE
                         deliveries.append({
                             "system_name": current_system,
                             "commodity": prev["display"],
@@ -361,10 +523,10 @@ def parse_events(
                             "is_hub": None,
                             "route_system_id": None,
                             "source": "cargo_delta",
-                            # Дифференциальный метод не знает, КУДА ушёл груз,
-                            # поэтому стройкой он считается только у известной
-                            # площадки (Market/Docking видел её depot-событие).
-                            "is_construction": bool(current_market_id) and current_market_id in construction_markets,
+                            "delivery_kind": delta_kind,
+                            "station_name": current_station.get("name") or None,
+                            "station_kind": delta_station or None,
+                            "is_construction": is_construction_kind(delta_kind),
                             "source_hash": _source_hash("cargo-delta", line, key, prev["count"], now_count),
                         })
             last_cargo = inv
@@ -427,8 +589,8 @@ class ConstructionSnapshotCollector:
     несколько секунд. В реальном журнале из обращения пользователя их было
     4990 штук в ОДНОМ файле, а по всей истории — многие тысячи, при этом само
     состояние (прогресс + объёмы ресурсов) меняется в разы реже. Каждый такой
-    snapshot уходил на сайт отдельной строкой (лимит API — 100 за запрос, т.е.
-    десятки последовательных запросов только под это).
+    snapshot уходил на сайт отдельной строкой, а пачки резались мелко — десятки
+    последовательных запросов только под это.
 
     Здесь остаются только те snapshots, у которых реально изменилось состояние
     стройки: система, MarketID, ConstructionID, прогресс, имя или объёмы
@@ -441,7 +603,12 @@ class ConstructionSnapshotCollector:
         self.duplicates = 0
         self.seen = 0
         self._current_system = None
-        self._last_signature = None
+        # Множество всех увиденных состояний, а не только последнее. Сравнение
+        # с `_last_signature` ловило подряд идущие повторы, но игрок летает
+        # между площадками: при чередовании A, B, A, B состояние каждой из них
+        # не меняется, а «последняя подпись» всякий раз другая — и на сервер
+        # уходили тысячи одинаковых строк.
+        self._signatures = set()
 
     def __call__(self, line: str, ev: dict):
         event_name = ev.get("event")
@@ -456,10 +623,10 @@ class ConstructionSnapshotCollector:
         if event is None:
             return
         signature = _construction_signature(event)
-        if signature == self._last_signature:
+        if signature in self._signatures:
             self.duplicates += 1
             return
-        self._last_signature = signature
+        self._signatures.add(signature)
         self.events.append(event)
 
 
