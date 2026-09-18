@@ -1,0 +1,28 @@
+# ED Ring Colony — cron-задачи на VPS (замена Vercel Cron)
+#
+# Установка:  crontab -e  → вставьте нужные строки, заменив плейсхолдеры.
+# CRON_SECRET должен совпадать со значением в .env.production.
+#
+# ВАЖНО: если крон-задачи уже запускаются из GitHub Actions
+# (.github/workflows/cron-*.yml, galnet-sync.yml, auto-translate.yml),
+# этот файл не нужен — достаточно поменять секрет VERCEL_URL в GitHub
+# на новый адрес сайта. Локальный crontab — автономная альтернатива,
+# чтобы вообще не зависеть от GitHub.
+
+SITE=https://your-domain.example
+SECRET=ваш_CRON_SECRET
+
+# CAPI-синхронизация досье пилотов — каждые 5 минут
+*/5 * * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/capi-sync"  > /dev/null
+
+# Проверка Community Goals — каждые 6 часов
+0 */6 * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/cg-check"   > /dev/null
+
+# Очистка устаревших данных EDDN — каждые 6 часов
+30 */6 * * * curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/eddn-cleanup" > /dev/null
+
+# Синхронизация Galnet — раз в сутки (роут сам скачает и сохранит ленту)
+20 6 * * *   curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/galnet" > /dev/null
+
+# Доперевод новостей и Galnet (Yandex Translate) — каждые 6 часов
+40 */6 * * * curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/cron/translate?limit=10" > /dev/null

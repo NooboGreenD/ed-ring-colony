@@ -1,0 +1,46 @@
+# ED Ring Colony — docker compose для VPS
+#
+#   1. cp .env.example .env.production и заполните значения
+#   2. docker compose up -d --build
+#
+# Веб-приложение слушает 127.0.0.1:3000 — наружу его отдаёт nginx/caddy
+# (см. deploy/nginx.conf). Если reverse-proxy не нужен, поменяйте
+# "127.0.0.1:3000:3000" на "3000:3000".
+
+services:
+  web:
+    build:
+      context: .
+      args:
+        # NEXT_PUBLIC_* вшиваются в бандл на этапе сборки
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
+    env_file:
+      - .env.production
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Опционально: EDDN-воркер (ZeroMQ-подписка на рыночные данные).
+  # На Vercel он не работал в принципе — на VPS можно включить.
+  # Раскомментируйте и выполните `npm i zeromq` перед сборкой,
+  # либо запускайте его отдельно через pm2/systemd (см. DEPLOY.md).
+  # eddn-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: deploy/Dockerfile.eddn
+  #   env_file:
+  #     - .env.production
+  #   environment:
+  #     EDDN_INGEST_URL: http://web:3000/api/eddn/ingest
+  #   depends_on:
+  #     - web
+  #   restart: unless-stopped
