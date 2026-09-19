@@ -20,6 +20,53 @@ IP, ОС **Ubuntu Server 20.04 LTS**, на машине разворачивае
 
 ---
 
+## ⚡ Быстрый путь: установка одной командой
+
+Всё, что описано в Частях 2–6 ниже, автоматизировано скриптом
+`deploy/selfhost/install.sh`. Вся установка прямо с сервера — только
+команды терминала:
+
+```bash
+# 1. Зайти на сервер
+ssh root@ВАШ_IP
+
+# 2. Получить дистрибутив — любой из двух способов:
+#    а) сервер имеет доступ в интернет:
+apt-get update && apt-get install -y git
+git clone https://github.com/NooboGreenD/ed-ring-colony.git /opt/ed-ring-colony/src
+#    б) без git — архивом со своего компьютера (см. Часть 1):
+#       scp ed-ring-colony-dist.tar.gz root@ВАШ_IP:/tmp/
+#       mkdir -p /opt/ed-ring-colony && tar xzf /tmp/ed-ring-colony-dist.tar.gz -C /opt/ed-ring-colony
+#       mv /opt/ed-ring-colony/ed-ring-colony /opt/ed-ring-colony/src
+
+# 3. Запустить установщик (ОДНА команда — дальше всё само):
+cd /opt/ed-ring-colony/src
+
+#    вариант со статическим IP (без HTTPS):
+sudo bash deploy/selfhost/install.sh --ip ВАШ_IP
+
+#    вариант с доменом (сайт + supabase.домен + HTTPS автоматически):
+sudo bash deploy/selfhost/install.sh --domain ваш-домен --email you@mail.com
+```
+
+Скрипт сам: ставит пакеты и Docker, настраивает ufw и swap, скачивает
+и запускает Supabase-стек, генерирует все секреты (пишет их в
+`/opt/ed-ring-colony/credentials.txt`), заливает схему БД из
+`full_schema.sql`, собирает и запускает сайт, настраивает nginx
+(+certbot при `--domain`), прописывает крон-задачи и ежедневные бэкапы.
+В конце печатает сводку с адресами и паролями. ~10–20 минут, из них
+большая часть — скачивание docker-образов.
+
+Скрипт **идемпотентен**: если что-то прервалось (сеть, перезагрузка) —
+просто запустите ту же команду ещё раз, он продолжит с недоделанного,
+секреты не перегенерирует.
+
+Флаги: `--no-certbot` (домен без HTTPS), `--no-cron`, `--no-ufw`,
+`--help`. Проверка после установки — Часть 7; ручной путь со всеми
+объяснениями — Части 1–6 ниже.
+
+---
+
 ## Часть 0. Что понадобится
 
 | Что | Значение |
