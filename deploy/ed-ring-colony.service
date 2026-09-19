@@ -1,0 +1,39 @@
+# ED Ring Colony — systemd unit для запуска без Docker
+#
+# Предполагается, что проект собран на сервере:
+#   npm ci && npm run build
+# и standalone-выхлоп подготовлен скриптом deploy/prepare-standalone.sh
+# в каталоге /opt/ed-ring-colony/app
+#
+# Установка:
+#   sudo cp deploy/ed-ring-colony.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ed-ring-colony
+#
+# Логи:  journalctl -u ed-ring-colony -f
+
+[Unit]
+Description=ED Ring Colony (Next.js standalone)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/ed-ring-colony/app
+# Все секреты — в этом файле (chmod 600, владелец root:www-data)
+EnvironmentFile=/opt/ed-ring-colony/.env.production
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+
+# Ужесточение
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
