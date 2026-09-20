@@ -4,9 +4,10 @@ import { createAdminClient } from '@/lib/supabaseAdmin';
 import { greedyRoute } from '@/lib/routeEngine';
 
 export const dynamic = 'force-dynamic';
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { start_system } = await req.json();
     const supabase = await createClient();
 

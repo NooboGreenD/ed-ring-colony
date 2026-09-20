@@ -1,28 +1,18 @@
-# ED Ring Colony — cron-задачи на VPS (замена Vercel Cron)
-#
-# Установка:  crontab -e  → вставьте нужные строки, заменив плейсхолдеры.
-# CRON_SECRET должен совпадать со значением в .env.production.
-#
-# ВАЖНО: если крон-задачи уже запускаются из GitHub Actions
-# (.github/workflows/cron-*.yml, galnet-sync.yml, auto-translate.yml),
-# этот файл не нужен — достаточно поменять секрет VERCEL_URL в GitHub
-# на новый адрес сайта. Локальный crontab — автономная альтернатива,
-# чтобы вообще не зависеть от GitHub.
+# LEGACY ALTERNATIVE ONLY. Docker deployment already has the `jobs` service.
+# Do NOT run this in parallel with jobs, systemd or the old GitHub schedules.
+# There is deliberately no secret in crontab: put it in a mode-0600 env file.
+# Requires Node.js >=22.18 for the repository tests; scheduler itself needs Node 22.
+# Example for a non-Docker installation (paths/user adjusted by the operator):
+# JOBS_BASE_URL=http://127.0.0.1:3000 must be in /opt/ed-ring-colony/.env.production.
+# Create /opt/ed-ring-colony/jobs owned by the crontab user (mode 0700).
+# flock serializes each manual cron job; failure output must be collected by cron mail/logging.
+# Schedule timezone is the server's timezone; set the host to UTC for the calendar below.
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
 
-SITE=https://your-domain.example
-SECRET=ваш_CRON_SECRET
-
-# CAPI-синхронизация досье пилотов — каждые 5 минут
-*/5 * * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/capi-sync"  > /dev/null
-
-# Проверка Community Goals — каждые 6 часов
-0 */6 * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/cg-check"   > /dev/null
-
-# Очистка устаревших данных EDDN — каждые 6 часов
-30 */6 * * * curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/eddn-cleanup" > /dev/null
-
-# Синхронизация Galnet — раз в сутки (роут сам скачает и сохранит ленту)
-20 6 * * *   curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/galnet" > /dev/null
-
-# Доперевод новостей и Galnet (Yandex Translate) — каждые 6 часов
-40 */6 * * * curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/cron/translate?limit=10" > /dev/null
+*/5 * * * * flock -n /opt/ed-ring-colony/jobs/capi.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once capi-sync
+*/30 * * * * flock -n /opt/ed-ring-colony/jobs/progress.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once update-progress
+0 */6 * * * flock -n /opt/ed-ring-colony/jobs/cg.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once cg-check
+30 */6 * * * flock -n /opt/ed-ring-colony/jobs/eddn.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once eddn-cleanup
+20 6 * * * flock -n /opt/ed-ring-colony/jobs/translation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once galnet-sync
+40 */6 * * * flock -n /opt/ed-ring-colony/jobs/translation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once translate

@@ -1,10 +1,21 @@
 # ED Ring Colony — The Galaxy Ring Project
 
 > Elite Dangerous colonization coordination platform.
-> Live: https://ed-ring-colony.vercel.app
+> Live: https://edringcolony.ru
 > Repo: https://github.com/NooboGreenD/ed-ring-colony
 
 ---
+
+## После переезда на собственный сервер
+
+**Команда для Ubuntu 20.04: [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md).**
+Подробности изменений: [POST-MIGRATION.md](POST-MIGRATION.md).
+Сайт и Supabase работают на `edringcolony.ru` / `supabase.edringcolony.ru`.
+Для всех шести фоновых задач подготовлен Docker-сервис `jobs`; в этой ветке GitHub Actions оставлен
+только для EXE Uploader. В инструкции — Discord, дополнительные способы входа,
+порядок переключения без двойных расписаний, подтверждение почты и откат.
+Next.js 16 / React 19; существующие пароли и UUID сохраняются. Само изменение
+ветки не обновляет production и не отключает расписания на default branch.
 
 ## About
 
@@ -47,12 +58,12 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 
 ## Tech Stack
 
-- **Framework**: Next.js 14.2.5 (App Router)
+- **Framework**: Next.js 16.3.5 / React 19.2.8 (App Router)
 - **Language**: TypeScript 5 (strict mode)
 - **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`)
 - **Database**: Supabase (PostgreSQL + Realtime)
-- **Auth**: Supabase Auth (Email + Discord OAuth)
-- **3D**: Three.js 0.185.1 + React Three Fiber 8.18.0 + Drei 9.122.0
+- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub)
+- **3D**: Three.js 0.185.1 + React Three Fiber 9.7.0 + Drei 10.7.8
 - **Push**: web-push 3.6.7
 - **Markdown**: react-markdown 10.1.0 + remark-gfm + rehype-sanitize
 - **Validation**: zod 4.4.3
@@ -62,8 +73,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 ## Quick Start
 
 ### Prerequisites
-- Node.js 20+
-- pnpm
+- Node.js 22.18+
+- npm (в репозитории есть package-lock.json)
 - Supabase CLI (optional, for database management)
 
 ### Installation
@@ -74,7 +85,7 @@ git clone https://github.com/NooboGreenD/ed-ring-colony.git
 cd ed-ring-colony
 
 # Install dependencies
-pnpm install
+npm ci
 
 # Set up environment variables
 cp .env.example .env.local
@@ -87,13 +98,14 @@ The repository includes a safe, placeholder-only [`.env.example`](.env.example).
 
 ```env
 # Required
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SITE_URL=https://edringcolony.ru
+NEXT_PUBLIC_SUPABASE_URL=https://supabase.edringcolony.ru
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 # Optional
-DISCORD_CLIENT_ID=your-discord-client-id
-DISCORD_CLIENT_SECRET=your-discord-client-secret
+AUTH_OAUTH_PROVIDERS=discord
+# OAuth client secrets belong in the Supabase Auth stack, not the website.
 DISCORD_WEBHOOK_URL=your-discord-webhook-url
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your-vapid-public-key
 VAPID_PRIVATE_KEY=your-vapid-private-key
@@ -114,6 +126,12 @@ pnpm build      # Production build
 ```
 
 ## Database Setup
+
+For the existing self-hosted installation, preserve `auth.users`, identities,
+profiles and API tokens. This update adds **no SQL migrations**; do not re-run
+`full_schema.sql`. See [POST-MIGRATION.md](POST-MIGRATION.md).
+The CLI linking example below is for a **hosted Supabase project**; a self-hosted
+DB uses a direct connection (`--db-url`) or reviewed SQL via local `psql`.
 
 For a remote migration deployment, set these temporary, **server-only** values in `.env.local` in addition to the application values:
 
@@ -253,15 +271,15 @@ ed-ring-colony/
 в таблицу `galnet_news` и автоматически переводятся через
 Yandex Cloud Translate API v2 на ru/en/de/it/ko/zh/ja.
 
-Расписание (GitHub Actions):
+Расписание на своём сервере (`scripts/server-jobs.mjs`, Docker-сервис `jobs`):
 
-| Workflow | Расписание | Что делает |
-|----------|-----------|------------|
-| `galnet-sync.yml` | раз в сутки, 06:20 UTC | синхронизация ленты + перевод новых статей |
-| `auto-translate.yml` | раз в 6 часов | догон очереди переводов (`news`, `galnet_news`) |
+| Задача | Расписание | Что делает |
+|--------|------------|------------|
+| `galnet-sync` | раз в сутки, 06:20 UTC | синхронизация ленты + догон переводов |
+| `translate` | раз в 6 часов, на 40-й минуте | очередь переводов (`news`, `galnet_news`) |
 
-Синхронизация работает напрямую с БД (минуя Vercel), поэтому не зависит от
-`CRON_SECRET` и от лимита длительности serverless-функции:
+Scheduler вызывает защищённые API внутри Docker-сети с `CRON_SECRET`.
+Для ручной диагностики остался CLI, работающий с БД напрямую:
 
 ```bash
 node scripts/galnet-sync.mjs                  # синхронизация + перевод
@@ -270,7 +288,7 @@ node scripts/galnet-sync.mjs --translate-only # только очередь пе
 node scripts/galnet-sync.mjs --no-translate   # только синхронизация
 ```
 
-Нужные секреты репозитория: `NEXT_PUBLIC_SUPABASE_URL`,
+Нужные серверные переменные для CLI: `NEXT_PUBLIC_SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, `YANDEX_TRANSLATE_API_KEY`
 (опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
 
@@ -280,7 +298,7 @@ node scripts/galnet-sync.mjs --no-translate   # только синхрониз�
 npm test
 ```
 
-## Colonial Helper uploader 2.0
+## Colonial Helper uploader 2.10.25
 
 В репозитории находится Windows/Python uploader `uploader/colonial_helper.py`
 для загрузки данных Elite Dangerous на ED Ring Colony.
@@ -324,18 +342,19 @@ progress bar показывает процент по байтам, файлы, 
 
 ## Deployment
 
-### Vercel (Recommended)
-
-1. Connect GitHub repository to Vercel
-2. Set environment variables in Vercel dashboard
-3. Deploy on every push to `main`
-
-### Manual
+### Собственный сервер (Docker Compose)
 
 ```bash
-pnpm build
-# Upload .next/ folder to your hosting
+# При обновлении существующего сервера НЕ перезаписывайте рабочий env-файл.
+docker compose --env-file .env.production build web jobs
+docker compose --env-file .env.production up -d web jobs
+docker compose --env-file .env.production logs --tail=100 jobs
 ```
+
+Перед первым запуском `jobs` отключите старые Actions/cron, сохранив задания
+резервного копирования. Подробности и Supabase Auth override —
+[POST-MIGRATION.md](POST-MIGRATION.md). Vercel git deployment отключён в
+`vercel.json`. Для нового сервера см. `SELFHOST.md`.
 
 ## Design System
 

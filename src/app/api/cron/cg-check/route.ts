@@ -1,20 +1,16 @@
+import { runCronTask } from '@/lib/cronAuth';
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { InaraClient } from '@/lib/inara/client';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request) {
-  const secret = req.headers.get('x-cron-secret') || new URL(req.url).searchParams.get('secret');
-  if (secret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+async function handle() {
   const svc = createServiceClient();
   const apiKey = process.env.INARA_API_KEY;
 
   if (!apiKey) {
-    return NextResponse.json({ error: 'INARA_API_KEY not configured' }, { status: 500 });
+    return NextResponse.json({ ok: true, skipped: true, reason: 'INARA_API_KEY not configured' });
   }
 
   try {
@@ -40,7 +36,7 @@ export async function GET(req: Request) {
         is_complete: g.isCompleted,
         is_colonisation_related: isColonisation,
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'cg_id' });
+      }, { onConflict: 'cg_id' }).throwOnError();
     }
 
     return NextResponse.json({ updated: goals.length });
@@ -49,3 +45,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
+
+export async function GET(req: Request) {
+  return runCronTask(req, 'cg-check', handle);
+}
+
+export const POST = GET;

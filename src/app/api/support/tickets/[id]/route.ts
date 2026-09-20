@@ -41,15 +41,16 @@ function profileLabel(
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const resolvedParams = await params;
   try {
     const context = await getSupportRequestContext(req);
     if (!context.user || !context.db) {
       return response({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const id = params.id;
+    const id = resolvedParams.id;
     const { data: ticket, error: ticketError } = await context.db
       .from("support_tickets")
       .select("*")
@@ -149,8 +150,9 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const resolvedParams = await params;
   try {
     const context = await getSupportRequestContext(req);
     if (!context.user || !context.db) {
@@ -212,7 +214,7 @@ export async function PATCH(
         await context.db
           .from("support_tickets")
           .select("user_id,status")
-          .eq("id", params.id)
+          .eq("id", resolvedParams.id)
           .maybeSingle();
       if (existingTicketError) {
         console.error(
@@ -249,7 +251,7 @@ export async function PATCH(
     let updateQuery = context.db
       .from("support_tickets")
       .update(updates)
-      .eq("id", params.id);
+      .eq("id", resolvedParams.id);
     if (!context.isStaff) {
       updateQuery = updateQuery
         .eq("user_id", context.user.id)

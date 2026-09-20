@@ -4,7 +4,7 @@
 
 import { startEddnListener } from '../src/lib/eddn/subscriber';
 
-const INGEST_URL = process.env.EDDN_INGEST_URL || 'https://ed-ring-colony.vercel.app/api/eddn/ingest';
+const INGEST_URL = process.env.EDDN_INGEST_URL || 'https://edringcolony.ru/api/eddn/ingest';
 const INGEST_SECRET = process.env.EDDN_INGEST_SECRET || '';
 
 if (!INGEST_SECRET) {

@@ -32,7 +32,8 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_VAPID_PUBLIC_KEY=$NEXT_PUBLIC_VAPID_PUBLIC_KEY \
     NEXT_TELEMETRY_DISABLED=1
 
-RUN npm run build
+# Former site CI checks now run during the server-side image build.
+RUN npm test && npm run build
 
 # ── 3. Рантайм ───────────────────────────────────────────────────────
 FROM node:22-alpine AS runner

@@ -1,5 +1,17 @@
 # ED Ring Colony на ОДНОЙ машине: сайт + база данных (self-hosted Supabase)
 
+> **Уже работающий сервер Ubuntu 20.04 / Docker Compose:** начните с
+> [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md), не переустанавливайте стек.
+> Новые регистрации требуют SMTP и подтверждения; autoconfirm не включать.
+> Для исходников нужен Node >=22.18; Docker-образы используют Node 22.
+
+
+> **Обновление 20.09.2026:** для уже работающего `edringcolony.ru` используйте
+> [POST-MIGRATION.md](POST-MIGRATION.md), а не повторную первоначальную установку.
+> Фоновые задачи теперь запускает Docker-сервис `jobs`; Actions оставлен только
+> для сборки Uploader. OAuth в self-hosted GoTrue требует compose override,
+> одного добавления переменных в `.env` недостаточно.
+
 Сценарий: собственный сервер со статическим IP, на нём живёт всё —
 Next.js-сайт, Postgres, авторизация, realtime и хранилище файлов.
 Никаких внешних облаков.
@@ -152,12 +164,13 @@ SUPABASE_PUBLIC_URL=http://ВАШ_IP:8000
 # SUPABASE_PUBLIC_URL=https://supabase.ваш-домен
 
 # Разрешённые OAuth-редиректы (вход/привязка Discord)
-ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback
-# [DOMAIN]: ADDITIONAL_REDIRECT_URLS=https://ваш-домен/api/auth/callback
+ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback,http://ВАШ_IP/auth/email
+# [DOMAIN]: ADDITIONAL_REDIRECT_URLS=https://ваш-домен/api/auth/callback,https://ваш-домен/auth/email
 
-# Регистрация по email без SMTP-сервера: подтверждение почты выключаем.
-# (Если есть SMTP — заполните SMTP_* и оставьте false.)
-ENABLE_EMAIL_AUTOCONFIRM=true
+# До настройки настоящего SMTP новые регистрации закрыты.
+# Подтверждение email не отключать; см. UBUNTU20-UPGRADE.md, раздел почты.
+ENABLE_EMAIL_AUTOCONFIRM=false
+DISABLE_SIGNUP=true
 ```
 
 Для входа через Discord дополнительно (создать приложение на
@@ -284,13 +297,10 @@ sudo ufw delete allow 8000/tcp
 
 ## 5. Крон-задачи
 
-Проще всего локальный cron (машина-то своя, GitHub не нужен):
-
-```bash
-crontab -e
-# вставьте строки из /opt/ed-ring-colony/src/deploy/crontab.example,
-# SITE=http://ВАШ_IP (или https://ваш-домен), SECRET=ваш CRON_SECRET
-```
+В Docker работает сервис `jobs` из основного compose. Не добавляйте поверх
+него cron-вызовы API. Все шесть задач, секреты, расписание UTC и переключение
+описаны в [POST-MIGRATION.md](POST-MIGRATION.md). Для установки без Docker
+есть альтернативный `deploy/crontab.example`.
 
 ## 6. Резервное копирование (теперь база ваша — бэкапы тоже ваши!)
 
@@ -310,7 +320,7 @@ tar czf /opt/backups/storage-$(date +%F).tgz /opt/supabase/volumes/storage
 
 - [ ] `docker compose ps` в /opt/supabase — все контейнеры healthy;
 - [ ] Studio открывается, в Table Editor видны таблицы (profiles, hubs…);
-- [ ] сайт открывается, регистрация по email работает (автоподтверждение);
+- [ ] сайт открывается, после настройки SMTP регистрация требует письма подтверждения;
 - [ ] после регистрации в profiles появилась строка (триггер);
 - [ ] форум: тема + ответ; карта /map рендерится;
 - [ ] личные сообщения приходят без перезагрузки (Realtime/WebSocket);
@@ -329,7 +339,7 @@ sudo tail -f /var/log/nginx/error.log
 |---|---|
 | Сайт: «Missing env vars …SUPABASE…» | .env.production не подхвачен при сборке |
 | Браузер: запросы к supabase падают CORS/refused | `NEXT_PUBLIC_SUPABASE_URL` указывает на localhost или закрытый порт — см. 3.1 |
-| Вход письмом «Email not confirmed» | нет SMTP и не включён `ENABLE_EMAIL_AUTOCONFIRM=true` |
+| «Email not confirmed» | Настроить SMTP/шаблоны и повторно отправить письмо; автоподтверждение не включать. См. UBUNTU20-UPGRADE.md. |
 | Realtime не работает, сообщения по F5 | [DOMAIN] в nginx-блоке Supabase нет заголовков Upgrade/Connection |
 | Push-уведомления молчат | нужен HTTPS → нужен домен |
 | «relation does not exist» | схема не применена — шаг 2.5 |
@@ -359,6 +369,6 @@ cd /opt/supabase && docker compose pull && docker compose up -d
 | 2 | Supabase docker-стек + generate-keys.sh + full_schema.sql | своя БД |
 | 3 | .env.production → docker compose up -d --build | сайт на :3000 |
 | 4 | nginx-selfhost.conf (+certbot при домене) | вход с :80/:443 |
-| 5 | crontab.example | фоновые задачи |
+| 5 | Docker-сервис jobs (без дублирующего cron) | фоновые задачи |
 | 6 | pg_dump + tar по крону | бэкапы |
 | 7 | чек-лист | всё работает |

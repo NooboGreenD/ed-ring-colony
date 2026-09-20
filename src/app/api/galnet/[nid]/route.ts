@@ -13,10 +13,11 @@ function safeLocale(value: string | null): string {
   return SAFE_LOCALES.has(locale) ? locale : 'en';
 }
 
-export async function GET(req: Request, { params }: { params: { nid: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ nid: string }> }) {
+  const resolvedParams = await params;
   const { searchParams } = new URL(req.url);
   const locale = safeLocale(searchParams.get('locale'));
-  const nid = String(params?.nid || '').trim();
+  const nid = String(resolvedParams?.nid || '').trim();
 
   if (!nid) return NextResponse.json({ item: null });
 

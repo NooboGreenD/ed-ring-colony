@@ -9,7 +9,7 @@ function assertEnv(name: string, value: string | undefined): string {
 }
 
 function getSupabaseUrl() {
-  return process.env.NEXT_PUBLIC_SUPABASE_URL || "https://sgukfplhxdhmkqponwft.supabase.co";
+  return process.env.NEXT_PUBLIC_SUPABASE_URL || "https://supabase.edringcolony.ru";
 }
 
 function getSupabaseConfig() {
@@ -19,8 +19,8 @@ function getSupabaseConfig() {
   };
 }
 
-export function createClient() {
-  const cookieStore = cookies();
+export async function createClient() {
+  const cookieStore = await cookies();
   const { url, key } = getSupabaseConfig();
 
   return createServerClient(url, key, {

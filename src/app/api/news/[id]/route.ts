@@ -1,7 +1,8 @@
 import { createClient } from '@/lib/supabaseServer';
 import { NextResponse } from 'next/server';
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   const { searchParams } = new URL(req.url);
   const locale = searchParams.get('locale') || 'ru';
 
@@ -9,7 +10,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const { data: item } = await supabase
     .from('news')
     .select('*')
-    .eq('id', params.id)
+    .eq('id', resolvedParams.id)
     .maybeSingle();
 
   if (!item) {

@@ -11,9 +11,10 @@ const createSchema = z.object({
   icon: z.string().max(50).optional(),
 });
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = Number.parseInt(params.id, 10)
+    const squadronId = Number.parseInt(resolvedParams.id, 10)
     if (!Number.isSafeInteger(squadronId) || squadronId <= 0) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
@@ -27,9 +28,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const parsed = createSchema.parse(body)
     const { user, supabase } = await authFromRequest(req)

@@ -1,3 +1,4 @@
+import { getSiteUrl } from '@/lib/siteUrl';
 import { NextRequest, NextResponse } from 'next/server';
 import { exchangeCode } from '@/lib/capi/oauth';
 import { createServiceClient, createRouteClient } from '@/lib/supabaseServer';
@@ -21,7 +22,7 @@ export async function GET(req: NextRequest) {
   const codeVerifier = readCookie('capi_pkce');
 
   if (!code || !state || state !== cookieState) {
-    return NextResponse.redirect(new URL('/account/capi?status=error&message=invalid_state', req.url));
+    return NextResponse.redirect(new URL('/account/capi?status=error&message=invalid_state', getSiteUrl()));
   }
 
   try {
@@ -33,7 +34,7 @@ export async function GET(req: NextRequest) {
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
-      return NextResponse.redirect(new URL('/account/capi?status=error&message=not_logged_in', req.url));
+      return NextResponse.redirect(new URL('/account/capi?status=error&message=not_logged_in', getSiteUrl()));
     }
 
     const svc = createServiceClient();
@@ -50,9 +51,9 @@ export async function GET(req: NextRequest) {
       last_synced_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
 
-    return NextResponse.redirect(new URL('/account/capi?status=success', req.url));
+    return NextResponse.redirect(new URL('/account/capi?status=success', getSiteUrl()));
   } catch (err: any) {
     console.error('[CAPI Callback]', err);
-    return NextResponse.redirect(new URL(`/account/capi?status=error&message=${encodeURIComponent(err.message)}`, req.url));
+    return NextResponse.redirect(new URL(`/account/capi?status=error&message=${encodeURIComponent(err.message)}`, getSiteUrl()));
   }
 }

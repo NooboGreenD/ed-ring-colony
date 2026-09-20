@@ -3,9 +3,10 @@ import { authFromRequest } from '@/lib/supabaseServer'
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const { searchParams } = new URL(req.url)
     const chatType = searchParams.get('type') || 'general'
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
@@ -66,9 +67,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const { content, chat_type = 'general' } = body
 

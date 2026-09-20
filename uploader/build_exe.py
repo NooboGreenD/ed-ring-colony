@@ -13,6 +13,7 @@ args = [
     "--windowed",
     "--name", "ColonialHelper",
     "--add-data", f"api_client.py{os.pathsep}.",
+    "--add-data", f"site_config.py{os.pathsep}.",
     "--add-data", f"journal_parser.py{os.pathsep}.",
     "--add-data", f"event_dispatch.py{os.pathsep}.",
     "--add-data", f"colonisation.py{os.pathsep}.",

@@ -13,19 +13,21 @@ const rankSchema = z.object({
   can_edit_squadron: z.boolean().optional(),
 });
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   const supabase = await createClient()
   const { data } = await supabase
     .from('squadron_ranks')
     .select('*')
-    .eq('squadron_id', parseInt(params.id))
+    .eq('squadron_id', parseInt(resolvedParams.id))
     .order('sort_order', { ascending: true })
   return NextResponse.json({ ranks: data || [] })
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const parsed = rankSchema.parse(body)
     const { user, supabase } = await authFromRequest(req)
@@ -70,9 +72,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const { rank_id, ...updates } = await req.json()
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -122,9 +125,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const { rank_id } = await req.json()
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

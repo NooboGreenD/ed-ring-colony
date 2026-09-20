@@ -1,70 +1,36 @@
-import { NextResponse } from 'next/server';
-import { createAdminClient, upsertProfile } from '@/lib/supabaseAdmin';
-import { checkRateLimit } from '@/lib/rateLimit';
+import { authError, authJson, EmailAuthError, normalizedEmail, publicAuthClient,
+  readAuthBody, requireEmailDelivery, EMAIL_SENT_MESSAGE } from '@/lib/emailAuth';
+import { passwordError } from '@/lib/passwordPolicy';
+import { getSiteUrl } from '@/lib/siteUrl';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
-export async function POST(req: Request) {
-  // Rate limiting
-  const ip = req.headers.get('x-forwarded-for') || 'unknown';
-  if (!checkRateLimit(ip, 3)) {
-    return NextResponse.json({ error: 'Слишком много попыток. Попробуйте позже.' }, { status: 429 });
-  }
-
-  let body: { email?: string; password?: string; cmdr_name?: string } = {};
+export async function POST(request: Request) {
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: 'Некорректный JSON' }, { status: 400 });
-  }
-  const email = String(body.email ?? '').trim().toLowerCase();
-  const password = String(body.password ?? '');
-  const cmdr_name = String(body.cmdr_name ?? '').trim();
-  if (!email || !password || !cmdr_name) {
-    return NextResponse.json({ error: 'Заполните ник, почту и пароль.' }, { status: 400 });
-  }
-  if (password.length < 6) {
-    return NextResponse.json({ error: 'Пароль должен быть не короче 6 символов.' }, { status: 400 });
-  }
-  const admin = createAdminClient();
-  if (!admin) {
-    return NextResponse.json(
-      { error: 'На сервере не задан SUPABASE_SERVICE_ROLE_KEY — регистрация через API недоступна.' },
-      { status: 500 },
-    );
-  }
-  const { data, error } = await admin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: { cmdr_name },
-  });
-  if (error || !data.user) {
-    const msg = error?.message ?? 'Не удалось создать пользователя.';
-    if (/already been registered|already registered|exists/i.test(msg)) {
-      return NextResponse.json({ error: 'Этот email уже зарегистрирован.' }, { status: 409 });
+    const body = await readAuthBody(request, 'register');
+    const email = normalizedEmail(body.email);
+    const problem = passwordError(body.password);
+    if (problem) throw new EmailAuthError(problem);
+    const nickname = typeof body.cmdr_name === 'string' ? body.cmdr_name.trim() : '';
+    if (!nickname || nickname.length > 250 || /[\x00-\x1f]/.test(nickname)) throw new EmailAuthError('Укажите никнейм / CMDR (до 250 символов).');
+    await requireEmailDelivery(true);
+    const client = publicAuthClient();
+    // Never admin.createUser(email_confirm:true); no service-role profile upsert.
+    // GoTrue sends a verification email. Duplicate addresses receive the same response.
+    const { data, error } = await client.auth.signUp({
+      email, password: body.password as string,
+      options: { data: { cmdr_name: nickname }, emailRedirectTo: `${getSiteUrl()}/auth/email` },
+    });
+    if (data?.session) {
+      await client.auth.signOut({ scope: 'global' });
+      console.error('[auth/register] Unexpected auto-confirmed signup; check GoTrue configuration');
+      throw new EmailAuthError('Подтверждение почты не настроено.', 503);
     }
-    if (/database error saving new user/i.test(msg)) {
-      return NextResponse.json(
-        {
-          error:
-            'Supabase отклонил создание пользователя (триггер профиля). Выполните SQL из инструкции и повторите.',
-        },
-        { status: 500 },
-      );
-    }
-    return NextResponse.json({ error: msg }, { status: 400 });
-  }
-  const profile = await upsertProfile({
-    id: data.user.id,
-    email,
-    cmdr_name,
-  });
-  if (profile.error) {
-    return NextResponse.json(
-      { error: 'Пользователь создан, но профиль не записался: ' + profile.error },
-      { status: 500 },
-    );
-  }
-  return NextResponse.json({ ok: true });
+    // Do not turn per-address delivery/rate-limit/duplicate errors into an
+    // account-existence oracle. The UI validates the common password policy;
+    // GoTrue/SMTP diagnostics stay on the server, never in the response.
+    if (error) console.warn('[auth/register] Signup/email delivery was not completed; inspect GoTrue/SMTP logs');
+    return authJson({ ok: true, confirmationRequired: true, message: EMAIL_SENT_MESSAGE }, 202);
+  } catch (error) { return authError(error); }
 }

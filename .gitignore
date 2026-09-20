@@ -61,3 +61,6 @@ venv/
 
 # Собранный архив дистрибутива (создаётся ./deploy/make-dist.sh)
 dist-archive/
+
+# Local verification and deployment scratch files
+.cache/

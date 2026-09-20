@@ -4,9 +4,10 @@ import { createClient, createServiceClient } from '@/lib/supabaseServer'
 export const dynamic = 'force-dynamic';
 
 // GET — список комнат и участников
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const { searchParams } = new URL(req.url)
     const roomId = searchParams.get('roomId')
 
@@ -98,9 +99,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 }
 
 // POST — отправить сигнал или управлять комнатой
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const { action } = body
 

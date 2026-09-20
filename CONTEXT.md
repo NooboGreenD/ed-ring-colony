@@ -1,12 +1,39 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-13.
-> Uploader release: 2.3.0.
+> Last updated: 2026-09-21.
+> Uploader release: 2.10.25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
-> Live: https://ed-ring-colony.vercel.app
+> Live: https://edringcolony.ru
 
 ---
+
+## Current deployment
+
+Production already uses self-hosted Docker and Supabase at
+`https://supabase.edringcolony.ru`. This branch prepares `web` + `jobs`; it has NOT
+been deployed. Start with **UBUNTU20-UPGRADE.md** (existing-install updater and
+rollback); details in POST-MIGRATION.md. Six scheduled workflow files are removed
+on this branch, but remote main schedules must remain until server handoff.
+The only retained workflow builds the Windows uploader (main stable / arena prerelease).
+Continue development on `arena/01a0c073-ed-ring-colony` through its PR; do not merge
+or deploy automatically. UBUNTU20-UPGRADE.md downloads source directly from GitHub,
+not from the temporary chat archive. Check the branch Windows workflow for EXE
+build status; preparing a PR alone is not proof that an EXE has been published.
+
+Next 16.3.5 + React 19.2.8, Fiber 9.7.0 / Drei 10.7.8, Supabase SSR 0.12.7;
+Previously tracked generated node_modules entries are removed from Git; use npm ci and the lockfile.
+Node >=22.18. Request cookies/params are async; `proxy.ts` replaces middleware.
+SSR cookie refreshes preserve no-store headers. Browser URL autologin is disabled.
+OAuth link/login shares a signed, UUID-bound PKCE flow for Discord and opt-in
+Google/GitHub. Provider credentials belong in GoTrue, not just site env.
+
+Email signup now uses anonymous signUp, requires GoTrue autoconfirm=false and
+AUTH_EMAIL_ENABLED=true. No SMTP means new signups are closed; existing passwords
+are untouched. New email links carry TokenHash in the fragment, then require POST
+consent. Recovery has a signed 10-minute user/session-bound grant and revokes
+refresh sessions + uploader tokens; it does not silently unlink social methods.
+Legacy auto-confirmed email claims need targeted review, not mass account mutation.
 
 ## 1. Project Overview
 
@@ -35,12 +62,12 @@
 
 | Layer | Technology | Version | Notes |
 |-------|-----------|---------|-------|
-| Framework | Next.js | 14.2.5 | App Router only |
+| Framework | Next.js / React | 16.3.5 / 19.2.8 | App Router; async cookies/params, proxy.ts |
 | Language | TypeScript | 5.x | Strict mode |
 | Styling | Tailwind CSS | 4.3.3 | + custom CSS in globals.css, forum-extra.css |
 | UI Library | None | — | Custom components only |
 | Icons | Custom SVG | — | src/components/Icons.tsx |
-| 3D | Three.js + R3F | 0.185.1 | Galaxy map only |
+| 3D | Three.js / R3F / Drei | 0.185.1 / 9.7.0 / 10.7.8 | WebGL2 browser smoke tested |
 | Database | Supabase | latest | PostgreSQL + Realtime |
 | Auth | Supabase Auth | latest | Email + Discord OAuth |
 | ORM | None | — | Direct Supabase queries |
@@ -580,7 +607,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   (`Accept: application/vnd.api+json` обязателен)
 - Парсер: `scripts/lib/galnet-source.mjs`
 - Оркестрация: `scripts/lib/galnet-sync.mjs` (лента → БД → перевод)
-- CLI: `scripts/galnet-sync.mjs` (запускается в GitHub Actions)
+- CLI: `scripts/galnet-sync.mjs` (ручная диагностика); расписание — `scripts/server-jobs.mjs`
 - Next.js endpoints: `GET/POST/PATCH /api/galnet`, `GET /api/galnet/[nid]`
 - Stored in `galnet_news` table (колонки переводов — миграция
   `20260915000000_galnet_translations.sql`)
@@ -649,7 +676,8 @@ npx supabase db push
 ### 10.3 Build & Deploy
 ```bash
 pnpm build      # Production build
-# Vercel auto-deploys on git push to main
+# Build and deploy on the server; do not enable duplicate cron schedules.
+docker compose --env-file .env.production up -d --build web jobs
 ```
 
 ### 10.4 Git Workflow

@@ -4,7 +4,8 @@ import { createAdminClient } from '@/lib/supabaseAdmin';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) {
@@ -15,15 +16,16 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const { data, error } = await admin
     .from('project_members')
     .select('*, profile:profiles(cmdr_name, avatar_url, squadron)')
-    .eq('project_id', parseInt(params.id))
+    .eq('project_id', parseInt(resolvedParams.id))
     .order('role');
   if (error) console.error('[members GET] error:', error);
   return NextResponse.json({ members: data || [] });
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { user_id, role = 'member', callsign } = await req.json();
     const supabase = await createClient();
 
@@ -98,9 +100,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { user_id, role, callsign } = await req.json();
     const supabase = await createClient();
 
@@ -137,9 +140,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { user_id } = await req.json();
     const supabase = await createClient();
 

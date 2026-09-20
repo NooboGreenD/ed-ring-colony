@@ -1,3 +1,5 @@
+import { hasTranslateCredentials } from '../../../../scripts/lib/translate.mjs';
+import { runCronTask } from '@/lib/cronAuth';
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
 import { NextResponse } from 'next/server';
@@ -90,26 +92,13 @@ export async function GET(request: Request) {
 }
 
 /* ───────────── POST (синхронизация + перевод) ───────────── */
-export async function POST(request: Request) {
-  // ── auth: Bearer CRON_SECRET или Vercel Cron ──
-  const authHeader = request.headers.get('authorization') || '';
-  const userAgent = request.headers.get('user-agent') || '';
-  const cronSecret = process.env.CRON_SECRET;
-
-  const bearerOk = Boolean(cronSecret) && authHeader === `Bearer ${cronSecret}`;
-  const vercelCronOk = userAgent.startsWith('vercel-cron/');
-
-  if (!bearerOk && !vercelCronOk) {
-    return NextResponse.json(
-      { success: false, error: 'Unauthorized' },
-      { status: 401 }
-    );
-  }
-
+async function sync(request: Request) {
   const { searchParams } = new URL(request.url);
   const limit = intFrom(searchParams.get('limit'), DEFAULT_FEED_LIMIT, 100);
   const translateLimit = intFrom(searchParams.get('translateLimit'), DEFAULT_TRANSLATE_LIMIT, 50);
-  const withTranslate = searchParams.get('translate') !== '0';
+  // Missing optional credentials must not turn a successful feed sync into
+  // a permanent scheduler failure. The translate job reports an explicit skip.
+  const withTranslate = searchParams.get('translate') !== '0' && hasTranslateCredentials();
 
   let supabase;
   try {
@@ -142,14 +131,7 @@ export async function POST(request: Request) {
 }
 
 /* ───────────── PATCH (догон очереди переводов) ───────────── */
-export async function PATCH(request: Request) {
-  const authHeader = request.headers.get('authorization') || '';
-  const cronSecret = process.env.CRON_SECRET;
-
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
-  }
-
+async function translate(request: Request) {
   const { searchParams } = new URL(request.url);
   const limit = intFrom(searchParams.get('limit'), DEFAULT_TRANSLATE_LIMIT, 50);
 
@@ -162,4 +144,12 @@ export async function PATCH(request: Request) {
   });
 
   return NextResponse.json(result, { status: result.ok ? 200 : 500 });
+}
+
+export async function POST(request: Request) {
+  return runCronTask(request, 'galnet-translation', () => sync(request));
+}
+
+export async function PATCH(request: Request) {
+  return runCronTask(request, 'galnet-translation', () => translate(request));
 }

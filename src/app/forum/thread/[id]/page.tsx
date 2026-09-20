@@ -5,15 +5,16 @@ import { ThreadPageClient } from "./ThreadPageClient";
 export const revalidate = 10;
 
 interface Props {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function generateMetadata({ params }: Props) {
-  const supabase = createClient();
+  const resolvedParams = await params;
+  const supabase = await createClient();
   const { data: thread } = await supabase
     .from("forum_threads")
     .select("title")
-    .eq("id", params.id)
+    .eq("id", resolvedParams.id)
     .single();
 
   return {
@@ -23,8 +24,9 @@ export async function generateMetadata({ params }: Props) {
 }
 
 export default async function ThreadPage({ params }: Props) {
-  const supabase = createClient();
-  const threadId = parseInt(params.id);
+  const resolvedParams = await params;
+  const supabase = await createClient();
+  const threadId = parseInt(resolvedParams.id);
   if (isNaN(threadId)) notFound();
 
   const { data: thread } = await supabase

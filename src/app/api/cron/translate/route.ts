@@ -1,3 +1,5 @@
+import { hasTranslateCredentials } from '../../../../../scripts/lib/translate.mjs';
+import { runCronTask } from '@/lib/cronAuth';
 import { createAdminClient } from '@/lib/supabaseAdmin';
 import { NextResponse } from 'next/server';
 import { DEFAULT_TRANSLATE_LIMIT, translatePending } from '../../../../../scripts/lib/galnet-sync.mjs';
@@ -6,29 +8,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-// Vercel Cron присылает GET с User-Agent вида vercel-cron/1.0.
-const VERCEL_CRON_USER_AGENT = 'vercel-cron/';
-
-function isVercelCron(request: Request): boolean {
-  const ua = request.headers.get('user-agent') || '';
-  return ua.startsWith(VERCEL_CRON_USER_AGENT);
-}
-
-function isAuthorized(request: Request): boolean {
-  if (isVercelCron(request)) return true;
-
-  const authHeader = request.headers.get('authorization') || '';
-  const cronSecret = process.env.CRON_SECRET;
-  return Boolean(cronSecret) && authHeader === `Bearer ${cronSecret}`;
-}
-
 /**
  * Догоняет очередь переводов для `news` и `galnet_news`.
  * За раз обрабатывается ограниченная пачка, остаток дойдёт следующим запуском.
  */
 async function handle(request: Request) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
+  if (!hasTranslateCredentials()) {
+    return NextResponse.json({ ok: true, skipped: true, reason: 'Yandex Translate credentials not configured' });
   }
 
   const { searchParams } = new URL(request.url);
@@ -53,9 +39,9 @@ async function handle(request: Request) {
 }
 
 export async function GET(request: Request) {
-  return handle(request);
+  return runCronTask(request, 'galnet-translation', () => handle(request));
 }
 
 export async function POST(request: Request) {
-  return handle(request);
+  return runCronTask(request, 'galnet-translation', () => handle(request));
 }

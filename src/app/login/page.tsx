@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { authFetch, supabase } from '@/lib/supabaseClient';
-import { startDiscordOAuthAction } from './actions';
+import AuthMethods from '@/components/AuthMethods';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,16 +12,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
-  const discord = async () => {
-    setError('');
-    try {
-      const url = await startDiscordOAuthAction('login');
-      if (url) window.location.href = url;
-    } catch (err: any) {
-      setError(err.message || 'Ошибка Discord OAuth');
-    }
-  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +28,9 @@ export default function LoginPage() {
         setError(
           signInError?.message === 'Invalid login credentials'
             ? 'Неверный логин или пароль.'
-            : signInError?.message || 'Не удалось создать сессию. Попробуйте ещё раз.',
+            : signInError?.code === 'email_not_confirmed'
+              ? 'Сначала подтвердите почту. Можно отправить письмо повторно по ссылке ниже.'
+              : signInError?.message || 'Не удалось создать сессию. Попробуйте ещё раз.',
         );
         return;
       }
@@ -107,13 +99,12 @@ export default function LoginPage() {
           {busy ? 'Вход...' : 'Войти'}
         </button>
       </form>
+      <p className="auth-switch"><Link href="/forgot-password">Забыли пароль?</Link> · <Link href="/resend-confirmation">Подтвердить почту</Link></p>
       <p className="auth-switch">
         Нет аккаунта? <Link href="/register">Регистрация</Link>
       </p>
       <div className="auth-or">или</div>
-      <button type="button" onClick={discord} disabled={busy}>
-        Войти через Discord
-      </button>
+      <AuthMethods disabled={busy} />
     </main>
   );
 }

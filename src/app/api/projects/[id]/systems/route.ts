@@ -4,9 +4,10 @@ import { createAdminClient } from '@/lib/supabaseAdmin';
 import { latestProgressBySystem, readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 
 export const dynamic = 'force-dynamic';
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   const admin = createAdminClient();
-  const projectId = Number.parseInt(params.id, 10);
+  const projectId = Number.parseInt(resolvedParams.id, 10);
   if (!Number.isSafeInteger(projectId)) {
     return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
   }
@@ -97,9 +98,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   );
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const body = await req.json();
     const supabase = await createClient();
 
@@ -152,9 +154,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { system_id, ...updates } = await req.json();
     const supabase = await createClient();
 
@@ -212,9 +215,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const body = await req.json().catch(() => ({}));
     const supabase = await createClient();
 

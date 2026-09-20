@@ -1,66 +1,44 @@
 'use server';
 
-import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+import { createClient } from '@/lib/supabaseServer';
+import { getSiteUrl } from '@/lib/siteUrl';
+import { createOAuthFlow, OAUTH_FLOW_COOKIE, OAUTH_FLOW_TTL } from '@/lib/oauthFlow';
+import { enabledOAuthProviders, isOAuthProvider, OAUTH_PROVIDERS, oauthErrorMessage,
+  type OAuthMode, type OAuthProvider } from '@/lib/oauthProviders';
 
-function getBaseUrl() {
-  if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL;
+export async function startOAuthAction(provider: OAuthProvider, mode: OAuthMode) {
+  if (!isOAuthProvider(provider) || !enabledOAuthProviders().includes(provider) || !['login', 'link'].includes(mode)) {
+    return { url: null, error: 'Этот способ входа не включён на сайте.' };
   }
-  return 'https://ed-ring-colony.vercel.app';
+  try {
+    const cookieStore = await cookies();
+    cookieStore.delete(OAUTH_FLOW_COOKIE);
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (mode === 'link' && !user) return { url: null, error: oauthErrorMessage('not_authenticated') };
+    // An already signed-in visitor must add an identity to their current UUID,
+    // never inadvertently switch to or create a second commander profile.
+    const intent = user ? 'link' : 'login';
+    const origin = getSiteUrl();
+    const flow = createOAuthFlow(provider, intent, user?.id ?? null);
+    const options = { redirectTo: `${origin}/api/auth/callback`,
+      scopes: OAUTH_PROVIDERS[provider].scopes, skipBrowserRedirect: true };
+    const { data, error } = intent === 'link'
+      ? await supabase.auth.linkIdentity({ provider, options })
+      : await supabase.auth.signInWithOAuth({ provider, options });
+    if (error || !data?.url) return { url: null, error: oauthErrorMessage(error?.message ?? '', provider) };
+    cookieStore.set(OAUTH_FLOW_COOKIE, flow, {
+      httpOnly: true, sameSite: 'lax', secure: origin.startsWith('https:'), path: '/', maxAge: OAUTH_FLOW_TTL,
+    });
+    return { url: data.url, error: null };
+  } catch {
+    // Expected errors are returned, not thrown: production Server Actions hide
+    // exception messages. Never log the OAuth URL, code, JWT or PKCE verifier.
+    return { url: null, error: 'Не удалось начать авторизацию. Проверьте соединение и настройки сервера.' };
+  }
 }
 
-export async function startDiscordOAuthAction(mode: 'login' | 'link') {
-  const cookieStore = await cookies();
-  
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet: { name: string; value: string; options: any }[]) {
-          cookiesToSet.forEach(({ name, value, options }) => {
-            cookieStore.set(name, value, options);
-          });
-        },
-      },
-    }
-  );
-
-  const redirectTo = `${getBaseUrl()}/api/auth/callback`;
-  
-  const options = {
-    redirectTo,
-    scopes: 'identify email' as const,
-    skipBrowserRedirect: true,
-  };
-
-  // A browser can still reach /login with an active email/password session.
-  // In that situation Discord is an additional identity for the same account,
-  // not an instruction to create/sign into a second account. Never merge a
-  // different account solely because Discord returns a matching email.
-  const { data: { user } } = await supabase.auth.getUser();
-  const shouldLinkIdentity = mode === 'link' || Boolean(user);
-
-  console.log('[ServerAction] Discord OAuth mode:', shouldLinkIdentity ? 'link' : 'login');
-
-  if (shouldLinkIdentity) {
-    const { data, error } = await supabase.auth.linkIdentity({ provider: 'discord', options });
-    if (error) {
-      console.error('[ServerAction] linkIdentity error:', error.message);
-      throw new Error(error.message);
-    }
-    return data?.url;
-  }
-
-  const { data, error } = await supabase.auth.signInWithOAuth({ provider: 'discord', options });
-  if (error) {
-    console.error('[ServerAction] signInWithOAuth error:', error.message);
-    throw new Error(error.message);
-  }
-  console.log('[ServerAction] signInWithOAuth URL:', data?.url ? 'present' : 'missing');
-  return data?.url;
+export async function startDiscordOAuthAction(mode: OAuthMode) {
+  return startOAuthAction('discord', mode);
 }

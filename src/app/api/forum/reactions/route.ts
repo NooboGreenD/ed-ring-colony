@@ -7,7 +7,7 @@ export async function GET(req: Request) {
   const postId = searchParams.get("post_id");
   if (!postId) return NextResponse.json({ error: "No post_id" }, { status: 400 });
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data } = await supabase.from("forum_reactions").select("*").eq("post_id", postId);
   return NextResponse.json({ reactions: data });
 }

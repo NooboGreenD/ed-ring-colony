@@ -14,8 +14,9 @@ function response(body: unknown, init?: ResponseInit) {
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } },
+  { params }: { params: Promise<{ id: string }> },
 ) {
+  const resolvedParams = await params;
   try {
     const context = await getSupportRequestContext(req);
     if (!context.user || !context.db) {
@@ -32,7 +33,7 @@ export async function POST(
       return response({ error: "Message is too long" }, { status: 400 });
     }
 
-    const id = params.id;
+    const id = resolvedParams.id;
     const { data: ticket, error: ticketError } = await context.db
       .from("support_tickets")
       .select("user_id,status")
