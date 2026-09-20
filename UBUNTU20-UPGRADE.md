@@ -13,16 +13,17 @@
 
 После проверки PR и подготовки к обновлению выполните блок в обычном
 SSH-терминале Ubuntu 20.04. Нужны уже работающий Docker, **Compose 2.20+**,
-`curl`, `git`, `tar`, Python **3.8+** и `sudo`. Node на хост ставить не нужно.
+`curl`, `tar`, Python **3.8+** и `sudo`. Node на хост ставить не нужно.
 Не запускайте `install.sh`, `full_schema.sql`, `docker compose down -v`.
 
-Команда фиксирует полный SHA исходников до скачивания. Путь release содержит
-этот SHA; дальнейшие коммиты PR не изменяют уже скачанный каталог.
+Команда закреплена за ревизией `e3ca81bdd3b6d9faa34c613558bd47c744b752f9`.
+Путь release содержит этот SHA; дальнейшие коммиты PR не изменяют уже
+скачанный каталог. Перед production обновите ревизию после итоговой приёмки PR.
 
 ```bash
 bash <<'EDRC_UPDATE'
 set -euo pipefail
-REV="$(git ls-remote https://github.com/NooboGreenD/ed-ring-colony.git refs/heads/arena/01a0c073-ed-ring-colony | awk '{print $1}')"
+REV=e3ca81bdd3b6d9faa34c613558bd47c744b752f9
 [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || { echo 'Не удалось определить ревизию'; exit 1; }
 RELEASE="/opt/ed-ring-colony-releases/$REV"
 TMP="$(mktemp -d)"
