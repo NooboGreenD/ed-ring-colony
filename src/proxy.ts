@@ -13,7 +13,7 @@ export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
   if (path.startsWith('/api/auth/email/') || path.startsWith('/auth/') ||
       path === '/api/health' || path === '/api/auth/register' || path === '/api/auth/password' ||
-      path.startsWith('/api/cron/') ||
+      path.startsWith('/api/cron/') || path === '/api/auth/vk/callback' ||
       ['/auth/callback', '/api/auth/callback', '/api/auth/token', '/api/auth/providers', '/api/logs/upload'].includes(path) ||
       (path === '/api/galnet' && request.method !== 'GET')) return response;
 

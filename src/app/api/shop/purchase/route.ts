@@ -1,55 +1,26 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
-import { authFromRequest } from '@/lib/requestUser';
-import { nickFromUser } from '@/lib/authProfile';
+import { requireUser, errorResponse } from '@/lib/billing/auth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+/** Purchase with credits. Card/other real-money purchases go through /api/billing/checkout. */
 export async function POST(req: Request) {
   try {
-    const { user, supabase } = await authFromRequest(req);
-    const body = await req.json();
-    const { itemId, useCredits = true, autoEquip = true } = body;
+    const auth = await requireUser(req);
+    if ('response' in auth) return auth.response;
+    const { actor } = auth;
+    const body = await req.json().catch(() => ({}));
+    const { itemId, autoEquip = true } = body;
+    if (!itemId) return NextResponse.json({ error: 'Item ID required' }, { status: 400 });
 
-    if (!itemId) {
-      return NextResponse.json({ error: 'Item ID required' }, { status: 400 });
-    }
+    const result = await billingRepo.purchaseItem({ userId: actor.userId, cmdrName: actor.cmdrName, itemId, useCredits: true, autoEquip });
+    if (!result.success) return NextResponse.json({ error: result.error }, { status: 400 });
 
-    let userId = user?.id || 'preview-user-guest';
-    let cmdrName = 'Пилот';
-
-    if (user) {
-      const { data: profile } = await supabase.from('profiles').select('cmdr_name').eq('id', user.id).maybeSingle();
-      cmdrName = profile?.cmdr_name || nickFromUser(user, profile);
-    } else {
-      cmdrName = 'CMDR Guest Navigator';
-    }
-
-    const result = billingRepo.purchaseItem({
-      userId,
-      cmdrName,
-      itemId,
-      useCredits,
-      autoEquip,
-    });
-
-    if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 400 });
-    }
-
-    const equipped = billingRepo.getUserEquippedCosmetics(userId);
-    const inventory = billingRepo.getUserInventory(userId);
-
-    return NextResponse.json({
-      success: true,
-      item: result.item,
-      balance: result.balance,
-      transaction: result.transaction,
-      equipped,
-      inventory,
-    });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 });
+    const [equipped, inventory] = await Promise.all([billingRepo.getUserEquippedCosmetics(actor.userId), billingRepo.getUserInventory(actor.userId)]);
+    return NextResponse.json({ success: true, item: result.item, balance: result.balance, transaction: result.transaction, equipped, inventory });
+  } catch (err) {
+    return errorResponse(err);
   }
 }

@@ -1,41 +1,16 @@
 import { NextResponse } from 'next/server';
-import { billingRepo } from '@/lib/billingData';
-import { authFromRequest } from '@/lib/requestUser';
-import { nickFromUser } from '@/lib/authProfile';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+/**
+ * Deprecated: direct top-ups are no longer allowed — money must go through a
+ * payment provider. Use POST /api/billing/checkout with purpose=credit_topup.
+ */
 export async function POST(req: Request) {
-  try {
-    const { user, supabase } = await authFromRequest(req);
-    const body = await req.json();
-    const { amountCredits, amountRub, paymentMethod = 'sbp' } = body;
-
-    if (!amountCredits || !amountRub) {
-      return NextResponse.json({ error: 'Amounts required' }, { status: 400 });
-    }
-
-    let userId = user?.id || 'preview-user-guest';
-    let cmdrName = 'Пилот';
-
-    if (user) {
-      const { data: profile } = await supabase.from('profiles').select('cmdr_name').eq('id', user.id).maybeSingle();
-      cmdrName = profile?.cmdr_name || nickFromUser(user, profile);
-    } else {
-      cmdrName = 'CMDR Guest Navigator';
-    }
-
-    const { balance, transaction } = billingRepo.topupBalance({
-      userId,
-      cmdrName,
-      amountCredits: Number(amountCredits),
-      amountRub: Number(amountRub),
-      paymentMethod,
-    });
-
-    return NextResponse.json({ success: true, balance, transaction });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 });
-  }
+  const url = new URL(req.url);
+  return NextResponse.json(
+    { error: 'Пополнение выполняется через платёжную систему: POST /api/billing/checkout { purpose: "credit_topup", packId, providerId }', redirect: `${url.origin}/api/billing/checkout` },
+    { status: 410 },
+  );
 }

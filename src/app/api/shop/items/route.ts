@@ -1,48 +1,44 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
-import { authFromRequest } from '@/lib/requestUser';
+import { billingActor, errorResponse } from '@/lib/billing/auth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: Request) {
   try {
-    const { user } = await authFromRequest(req);
+    const actor = await billingActor(req);
     const { searchParams } = new URL(req.url);
     const category = searchParams.get('category') || undefined;
     const rarity = searchParams.get('rarity') || undefined;
     const search = searchParams.get('search') || undefined;
 
-    const rawItems = billingRepo.getShopItems({ category, rarity, search });
-
-    // If user is authenticated, check their active subscription for discounts
-    let sub = user ? billingRepo.getUserSubscription(user.id) : null;
-    let userTier = sub?.plan_id || null;
+    const [rawItems, plans, discount] = await Promise.all([
+      billingRepo.getShopItems({ category, rarity, search }),
+      billingRepo.getPlans(),
+      billingRepo.getUserDiscountPct(actor?.userId),
+    ]);
+    const sub = discount.sub;
+    const haveOrder = sub?.plan?.display_order ?? -1;
 
     const items = rawItems.map((item) => {
-      let discountPct = item.subscriber_discount_pct || 0;
-      if (sub) {
-        if (sub.plan_id === 'admiral') discountPct = Math.max(discountPct, 75);
-        else if (sub.plan_id === 'elite') discountPct = Math.max(discountPct, 50);
-        else if (sub.plan_id === 'pioneer') discountPct = Math.max(discountPct, 25);
+      const discountPct = Math.min(100, Math.max(sub && item.subscriber_discount_pct ? item.subscriber_discount_pct : 0, discount.pct));
+      let locked = false;
+      if (item.requires_subscription) {
+        const req = plans.find((p) => p.id === item.requires_subscription);
+        locked = !sub || haveOrder < (req?.display_order ?? 0);
       }
-
-      const discountedCredits = Math.round(item.price_credits * (1 - discountPct / 100));
-      const discountedRub = Math.round(item.price_rub * (1 - discountPct / 100));
-
       return {
         ...item,
         applied_discount_pct: discountPct,
-        final_price_credits: discountedCredits,
-        final_price_rub: discountedRub,
-        is_locked_for_user: item.requires_subscription
-          ? !sub || (item.requires_subscription === 'admiral' && sub.plan_id !== 'admiral')
-          : false,
+        final_price_credits: Math.round(item.price_credits * (1 - discountPct / 100)),
+        final_price_rub: Math.round(item.price_rub * (1 - discountPct / 100)),
+        is_locked_for_user: locked,
       };
     });
 
-    return NextResponse.json({ success: true, items, userTier });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json({ success: true, items, userTier: sub?.plan_id || null, plans });
+  } catch (err) {
+    return errorResponse(err);
   }
 }

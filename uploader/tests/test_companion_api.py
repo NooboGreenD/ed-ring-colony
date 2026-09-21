@@ -89,9 +89,10 @@ class TokenStorageTests(unittest.TestCase):
         auth.clear()
         self.assertFalse(auth.is_linked())
 
-    def test_public_client_id_by_default(self):
+    def test_app_client_id_by_default(self):
         auth = CompanionAuth(self.path)
-        self.assertEqual(auth.client_id, companion_api.PUBLIC_CLIENT_ID)
+        self.assertEqual(auth.client_id, companion_api.APP_CLIENT_ID)
+        self.assertEqual(auth.client_id, "0d6027a7-2561-4e1b-af2e-2fe71b296bdd")
 
     def test_explicit_client_id_wins(self):
         auth = CompanionAuth(self.path, client_id="mine")

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
-  FRONTIER_PUBLIC_CLIENT_ID,
+  FRONTIER_APP_CLIENT_ID,
   buildAuthUrl,
   createCodeChallenge,
   createCodeVerifier,
@@ -79,10 +79,11 @@ test('ссылка авторизации содержит PKCE-параметр
   assert.equal(parsed.searchParams.has('client_secret'), false);
 });
 
-test('client_id по умолчанию — публичный клиент Frontier, секрет не нужен', () => {
+test('client_id по умолчанию — приложение ED Ring Colony (CAPI), секрет не нужен', () => {
   const clientId = withEnv({ FRONTIER_CLIENT_ID: undefined, FRONTIER_CLIENT_SECRET: undefined },
     () => frontierClientId());
-  assert.equal(clientId, FRONTIER_PUBLIC_CLIENT_ID);
+  assert.equal(clientId, FRONTIER_APP_CLIENT_ID);
+  assert.equal(clientId, '0d6027a7-2561-4e1b-af2e-2fe71b296bdd');
   // «Настроен» означает наличие redirect_uri, а не секрета.
   assert.equal(withEnv({ FRONTIER_REDIRECT_URI: REDIRECT }, () => isPkceConfigured()), true);
   assert.equal(withEnv({ FRONTIER_REDIRECT_URI: undefined }, () => isPkceConfigured()), false);

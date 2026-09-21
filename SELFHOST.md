@@ -183,6 +183,35 @@ GOTRUE_EXTERNAL_DISCORD_SECRET=…
 GOTRUE_EXTERNAL_DISCORD_REDIRECT_URI=http://ВАШ_IP:8000/auth/v1/callback
 ```
 
+#### Вход через VK ID
+
+VK не поддерживается GoTrue, поэтому VK ID реализован на стороне сайта
+(OAuth 2.1 + PKCE, `src/lib/vkId.ts`). Настройка целиком в `.env.production`
+сервиса **web**, в GoTrue ничего менять не нужно:
+
+1. Создайте приложение на <https://id.vk.com/about/business/go> (платформа *Web*),
+   укажите базовый домен `edringcolony.ru` и **Redirect URL**
+   `https://edringcolony.ru/api/auth/vk/callback`.
+2. Примените миграцию `supabase/migrations/20260923000000_vk_identities.sql`
+   (таблица соответствия VK ↔ аккаунт; пишет только service role).
+3. В `.env.production` сайта:
+
+```env
+VK_ID_CLIENT_ID=51234567          # числовой ID приложения
+VK_ID_CLIENT_SECRET=              # только если приложение confidential
+```
+
+Кнопка «Войти через VK ID» **по умолчанию скрыта**: её включает
+администратор на вкладке «Авторизация» в `/admin` (там же можно ввести
+Client ID вместо env). Пошагово — `VK-ID-SETUP.md`. Вход выпускает обычную Supabase-сессию через админский
+magic-link-хэш (`SUPABASE_SERVICE_ROLE_KEY` обязателен) — письма не
+отправляются. Если VK не отдал e-mail, аккаунт создаётся с технической почтой
+`vk-<id>@vk.<домен>`; она не считается способом входа при отвязке.
+`DISABLE_SIGNUP=true` в GoTrue на VK-регистрацию не влияет (аккаунт создаёт
+service role). Слияния аккаунтов по e-mail нет: если почта из VK уже
+зарегистрирована, пользователь получит подсказку войти прежним способом и
+привязать VK в профиле.
+
 ### 2.4. Запуск
 
 ```bash

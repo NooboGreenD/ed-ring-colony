@@ -6,7 +6,11 @@ import BillingInfographics from "./Billing/BillingInfographics";
 import SubscriptionManager from "./Billing/SubscriptionManager";
 import TransactionLedger from "./Billing/TransactionLedger";
 import StoreAnalytics from "./Billing/StoreAnalytics";
-import { IconChart, IconCoins, IconCreditCard, IconStore, IconActivity } from "@/components/Icons";
+import ProductManager from "./Billing/ProductManager";
+import PaymentProvidersPanel from "./Billing/PaymentProvidersPanel";
+import PaymentsPanel from "./Billing/PaymentsPanel";
+import { authFetch } from "@/lib/supabaseClient";
+import { IconChart, IconCoins, IconCreditCard, IconStore, IconActivity, IconSettings } from "@/components/Icons";
 
 interface Props {
   currentUser?: {
@@ -17,7 +21,7 @@ interface Props {
 }
 
 export default function BillingDashboard({ currentUser }: Props) {
-  const [subTab, setSubTab] = useState<"infographics" | "subscriptions" | "transactions" | "store">("infographics");
+  const [subTab, setSubTab] = useState<"infographics" | "products" | "subscriptions" | "payments" | "providers" | "transactions" | "store">("infographics");
   const [period, setPeriod] = useState<"7d" | "30d" | "90d" | "1y" | "all">("30d");
   const [stats, setStats] = useState<ProjectBillingStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -27,7 +31,7 @@ export default function BillingDashboard({ currentUser }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/admin/billing/stats?period=${period}`);
+      const res = await authFetch(`/api/admin/billing/stats?period=${period}`, { cache: "no-store" });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || "Не удалось загрузить статистику");
@@ -80,6 +84,21 @@ export default function BillingDashboard({ currentUser }: Props) {
         >
           <IconCoins size={13} />
           УПРАВЛЕНИЕ ПОДПИСКАМИ
+        </button>
+
+        <button type="button" className={subTab === "products" ? "tab tab-active" : "tab"} onClick={() => setSubTab("products")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <IconStore size={13} />
+          ТОВАРЫ МАГАЗИНА
+        </button>
+
+        <button type="button" className={subTab === "payments" ? "tab tab-active" : "tab"} onClick={() => setSubTab("payments")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <IconCreditCard size={13} />
+          ПЛАТЕЖИ И НАСТРОЙКИ
+        </button>
+
+        <button type="button" className={subTab === "providers" ? "tab tab-active" : "tab"} onClick={() => setSubTab("providers")} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <IconSettings size={13} />
+          ПЛАТЁЖНЫЕ СИСТЕМЫ
         </button>
 
         <button
@@ -144,6 +163,10 @@ export default function BillingDashboard({ currentUser }: Props) {
           onRefreshStats={fetchStats}
         />
       )}
+
+      {subTab === "products" && <ProductManager onChanged={fetchStats} />}
+      {subTab === "payments" && <PaymentsPanel onChanged={fetchStats} />}
+      {subTab === "providers" && <PaymentProvidersPanel />}
 
       {subTab === "transactions" && (
         <TransactionLedger onRefreshStats={fetchStats} />

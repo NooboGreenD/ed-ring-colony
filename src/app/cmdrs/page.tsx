@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import { supabase } from "@/lib/supabaseClient";
 import { useFriends } from "@/hooks/useFriends";
 import { IconSearch, IconCheck, IconError } from "@/components/Icons";
@@ -111,18 +112,16 @@ export default function CmdrsPage() {
           const isSending = sendingId === cmdr.id;
           return (
             <div key={cmdr.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 12, background: "#1a1c1e", borderRadius: 6 }}>
-              {cmdr.avatar_url ? (
-                <img src={cmdr.avatar_url} style={{ width: 40, height: 40, borderRadius: "50%" }} alt="" />
-              ) : (
-                <div style={{ width: 40, height: 40, borderRadius: "50%", background: "#323538" }} />
-              )}
-              <div style={{ flex: 1 }}>
-                <Link href={`/cmdr/${encodeURIComponent(cmdr.cmdr_name || "")}`} style={{ color: "var(--text)", fontWeight: 600, textDecoration: "none" }}>
-                  {cmdr.cmdr_name || "Unknown"}
-                </Link>
-                <div style={{ fontSize: 11, color: "var(--muted)" }}>
-                  С нами с {new Date(cmdr.created_at).toLocaleDateString("ru-RU")}
-                </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <PilotIdentity
+                  userId={cmdr.id}
+                  cmdrName={cmdr.cmdr_name || "Unknown"}
+                  avatarUrl={cmdr.avatar_url}
+                  size={40}
+                  fontSize={14}
+                  showTitle
+                  subtitle={`С нами с ${new Date(cmdr.created_at).toLocaleDateString("ru-RU")}`}
+                />
               </div>
               {isSelf ? (
                 <span style={{ color: "#e67e22", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>Вы</span>

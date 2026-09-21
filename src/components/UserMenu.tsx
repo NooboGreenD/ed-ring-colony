@@ -7,6 +7,10 @@ import { useRouter } from "next/navigation";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
 import { avatarFromUser, nickFromUser } from "@/lib/authProfile";
 import { useI18n } from "@/lib/i18n/I18nContext";
+import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
+import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
+import { useCosmeticsFor } from "@/components/Cosmetics/useCosmetics";
+import { IconStore } from "@/components/Icons";
 
 type Profile = {
   cmdr_name?: string | null;
@@ -26,6 +30,7 @@ export default function UserMenu() {
   const [friendRequestCount, setFriendRequestCount] = useState(0);
   const [mySquadron, setMySquadron] = useState<{ id: number; name: string; tag?: string | null } | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const cosmetics = useCosmeticsFor(user?.id || null);
   const supabaseRef = useRef<ReturnType<typeof createSupabaseClient> | null>(null);
 
   const load = useCallback(async () => {
@@ -157,8 +162,18 @@ export default function UserMenu() {
   return (
     <div className="user-menu" ref={boxRef}>
       <button type="button" className="user-menu-btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {avatar ? <img src={avatar} alt="" className="avatar-sm" /> : <span className="avatar-sm" style={{ background: "#3a3d40", display: "inline-block" }} />}
-        <span className="user-menu-nick">{nick}</span>
+        {cosmetics?.frame ? (
+          <CosmeticAvatar avatarUrl={avatar} cmdrName={nick} frameId={cosmetics.frame.id} framePreview={cosmetics.frame.preview} size={30} />
+        ) : avatar ? (
+          <img src={avatar} alt="" className="avatar-sm" />
+        ) : (
+          <span className="avatar-sm" style={{ background: "#3a3d40", display: "inline-block" }} />
+        )}
+        <span className="user-menu-nick">
+          {cosmetics?.glow || cosmetics?.tier ? (
+            <CosmeticCallsign name={nick} glowId={cosmetics.glow?.id} glowPreview={cosmetics.glow?.preview} tier={cosmetics.tier?.label || null} tierColor={cosmetics.tier?.color || null} fontSize={13} monospace={false} />
+          ) : nick}
+        </span>
       </button>
       {open && (
         <div className="user-menu-drop">
@@ -185,6 +200,7 @@ export default function UserMenu() {
             )}
           </Link>
           <Link href={statsHref} className="user-menu-item" onClick={() => setOpen(false)}>{t('account.myStats') || 'Моя статистика'}</Link>
+          <Link href="/premium-shop" className="user-menu-item" onClick={() => setOpen(false)}><IconStore size={14} color="#e67e22" /> {t('account.shop') || 'Премиум-магазин'}</Link>
           <Link href="/support" className="user-menu-item" onClick={() => setOpen(false)}><IconHeadphones size={14} /> {t('support.title') || 'Техподдержка'}</Link>
           {staff && <Link href="/admin" className="user-menu-item" onClick={() => setOpen(false)}>{t('account.admin') || 'Админ-панель'}</Link>}
           {profile?.role === "admin" && (

@@ -36,8 +36,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   powerplay, спасательных рейсов и продаж на рынке. Видимость блоков (баланс, ранги, груз, доставки, позиция)
   пилот настраивает сам
 - **Frontier CAPI** — досье заполняется из Companion API по потоку **PKCE**, поэтому Shared Key от FDEV не
-  требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — публичный
-  client_id компаньон-приложения Elite Dangerous). Десктопный Colonial Helper авторизуется сам и присылает
+  требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — ключ
+  приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper). Десктопный Colonial Helper авторизуется сам и присылает
   профиль на сайт
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
   правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота
@@ -62,7 +62,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Language**: TypeScript 5 (strict mode)
 - **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`)
 - **Database**: Supabase (PostgreSQL + Realtime)
-- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub)
+- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub) + VK ID (собственный OAuth 2.1/PKCE-поток, выключен по умолчанию — см. VK-ID-SETUP.md); управление кнопками входа — админка, вкладка «Авторизация»
 - **3D**: Three.js 0.185.1 + React Three Fiber 9.7.0 + Drei 10.7.8
 - **Push**: web-push 3.6.7
 - **Markdown**: react-markdown 10.1.0 + remark-gfm + rehype-sanitize
@@ -291,6 +291,33 @@ node scripts/galnet-sync.mjs --no-translate   # только синхрониз�
 Нужные серверные переменные для CLI: `NEXT_PUBLIC_SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, `YANDEX_TRANSLATE_API_KEY`
 (опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
+
+### Если переводы не появляются
+
+Перевод выполняет контейнер `web` (по запросу планировщика `jobs`), поэтому
+ключ Yandex должен быть в окружении именно сервиса `web`. Порядок проверки:
+
+```bash
+# 1. Ключ виден внутри web? (после deploy/selfhost/upgrade.py env_file не используется —
+#    ключ должен быть в `environment` сервиса web в docker-compose.yml)
+docker compose exec web sh -c 'env | grep -c YANDEX_TRANSLATE'
+
+# 2. Что говорит планировщик: event:"skipped"/"warning" = нет ключа, event:"failure" = ошибка API
+docker compose logs --since 48h jobs | grep -E '"job":"(translate|galnet-sync)"'
+
+# 3. Размер очереди и конфигурация переводчика
+curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  'http://127.0.0.1:3000/api/galnet?limit=1' | jq '{translateConfigured, pendingGalnetTranslations, errors}'
+
+# 4. Ручной догон очереди с подробными ошибками Yandex (401/403 — ключ, 429 — квота)
+docker compose exec web node scripts/galnet-sync.mjs --translate-only
+```
+
+Типичные причины: ключ был только в `.env.production` и потерялся при обновлении
+(теперь `upgrade.py` переносит его из работающего контейнера); для API-ключа
+сервисного аккаунта нужна роль `ai.translate.user`; исчерпана квота символов
+(429 — статьи остаются `failed` и будут повторно взяты следующим запуском —
+свежие статьи обрабатываются первыми).
 
 Тесты парсера и синхронизации (сеть не нужна):
 

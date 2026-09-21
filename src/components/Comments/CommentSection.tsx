@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
 import { supabase } from '@/lib/supabaseClient';
 import { useI18n } from '@/lib/i18n/I18nContext';
 
@@ -180,7 +181,14 @@ export default function CommentSection({ targetType, targetId }: CommentSectionP
             <div key={comment.id} className="comment">
               <div className="comment-header">
                 <span className="comment-author">
-                  {comment.author?.cmdr_name || t('comments.anonymous')}
+                  <PilotIdentity
+                    userId={comment.author_id}
+                    cmdrName={comment.author?.cmdr_name || t('comments.anonymous')}
+                    avatarUrl={comment.author?.avatar_url}
+                    size={22}
+                    fontSize={13}
+                    link={Boolean(comment.author?.cmdr_name)}
+                  />
                 </span>
                 <span className="comment-date">
                   {new Date(comment.created_at).toLocaleString(locale, {

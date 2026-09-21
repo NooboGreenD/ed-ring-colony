@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 
 type Props = { userId: string; myName: string; myAvatar: string | null };
 
@@ -178,17 +179,7 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
               onClick={() => handleSelectPeer(u.id)}
               style={{ position: "relative" }}
             >
-              {u.avatar_url ? (
-                <img src={u.avatar_url} className="avatar-sm" alt="" />
-              ) : (
-                <span
-                  className="avatar-sm"
-                  style={{ background: "#3a3d40", display: "inline-block" }}
-                />
-              )}
-              <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {u.cmdr_name || u.email}
-              </span>
+              <PilotIdentity userId={u.id} cmdrName={u.cmdr_name || u.email || "Unknown"} avatarUrl={u.avatar_url} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
               {unread > 0 && (
                 <span
                   style={{
@@ -229,17 +220,9 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
               )}
               {messages.map((m) => (
                 <div key={m.id} className="chat-msg">
-                  {m.avatar_url ? (
-                    <img src={m.avatar_url} className="avatar-sm" alt="" />
-                  ) : (
-                    <span
-                      className="avatar-sm"
-                      style={{ background: "#3a3d40", display: "inline-block" }}
-                    />
-                  )}
                   <div className="chat-body">
-                    <span className="chat-meta">
-                      {m.author_name}
+                    <span className="chat-meta" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <PilotIdentity userId={m.sender_id} cmdrName={m.author_name || "Unknown"} avatarUrl={m.avatar_url} size={28} fontSize={12} />
                       <span className="chat-time">
                         {new Date(m.created_at).toLocaleString("ru-RU")}
                       </span>

@@ -105,6 +105,15 @@ def dc(context, *args):
         command += ['-f', file]
     return command + list(args)
 
+# Secrets carried over from the running web container when the compose file lacks them.
+OPTIONAL_WEB_SECRETS = (
+    'YANDEX_TRANSLATE_API_KEY', 'YANDEX_TRANSLATE_IAM_TOKEN', 'YANDEX_TRANSLATE_FOLDER_ID',
+    'VK_ID_CLIENT_ID', 'VK_ID_CLIENT_SECRET',
+    'FRONTIER_CLIENT_ID', 'FRONTIER_CLIENT_SECRET', 'NEXT_PUBLIC_VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY',
+    'VAPID_SUBJECT', 'EDDN_INGEST_SECRET', 'EDDN_INGEST_URL', 'INARA_API_KEY', 'DISCORD_WEBHOOK_URL',
+    'RAVEN_API_BASE', 'GALNET_FEED_LIMIT', 'GALNET_TRANSLATE_LIMIT', 'BILLING_STORAGE', 'BILLING_PREVIEW_ADMIN',
+)
+
 def env_dict(container):
     return dict(item.split('=', 1) for item in container['Config'].get('Env', []) if '=' in item)
 
@@ -437,6 +446,14 @@ def apply(args, source, root):
         env[name] = env.get(name) or live.get(name)
         if not env[name]:
             raise UpgradeError('Не найден ' + name + '. Нельзя пересобирать сайт с пустыми ключами.')
+    # Optional secrets that older installs kept only in env_file (which we drop below).
+    # Without this the Galnet translator silently stops after the first upgrade.
+    for name in OPTIONAL_WEB_SECRETS:
+        if not env.get(name) and live.get(name):
+            env[name] = live[name]
+    if not (env.get('YANDEX_TRANSLATE_API_KEY') or env.get('YANDEX_TRANSLATE_IAM_TOKEN')):
+        print('Внимание: ключ Yandex Translate не найден — новости Galnet останутся без перевода '
+              '(добавьте YANDEX_TRANSLATE_API_KEY в environment web).')
     env.update({'NEXT_PUBLIC_SITE_URL': SITE, 'NEXT_PUBLIC_SUPABASE_URL': SUPABASE,
                 'FRONTIER_REDIRECT_URI': SITE + '/api/capi/callback', 'AUTH_EMAIL_ENABLED': 'false'})
     env['CRON_SECRET'] = env.get('CRON_SECRET') or secrets.token_hex(32)

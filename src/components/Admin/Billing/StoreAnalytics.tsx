@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import type { ShopItem, ProjectBillingStats } from "@/types/billing";
 import { IconStore, IconExternalLink, IconDiamond, IconCrown, IconSearch } from "@/components/Icons";
+import { authFetch } from "@/lib/supabaseClient";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
@@ -20,7 +21,7 @@ export default function StoreAnalytics({ stats }: Props) {
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    fetch("/api/shop/items")
+    authFetch("/api/shop/items")
       .then((res) => res.json())
       .then((data) => {
         if (data.success) setItems(data.items || []);

@@ -14,7 +14,7 @@
 работают десктопные инструменты сообщества (EDMC, EDDI). Нужен только Client ID,
 а его можно создать самостоятельно за минуту в Developer Zone
 (https://user.frontierstore.net → «CREATE CLIENT»); по умолчанию используется
-публичный client_id официального компаньон-приложения Elite Dangerous.
+client_id приложения «ED Ring Colony», зарегистрированного проектом.
 
 Как это устроено здесь
 ----------------------
@@ -61,8 +61,12 @@ TOKEN_URL = "https://auth.frontierstore.net/token"
 DECODE_URL = "https://auth.frontierstore.net/decode"
 CAPI_BASE = "https://companion.orerve.net"
 
+#: Client ID приложения «ED Ring Colony» в Frontier Developer Zone (CAPI).
+#: Публичный PKCE-клиент без секрета — тот же, что использует сайт.
+APP_CLIENT_ID = "0d6027a7-2561-4e1b-af2e-2fe71b296bdd"
+
 #: Публичный client_id официального компаньон-приложения Elite Dangerous.
-#: Клиент без секрета: работает в PKCE-потоке и не требует одобрения FDEV.
+#: Запасной вариант для совместимости (им пользуются EDMC/EDDI).
 PUBLIC_CLIENT_ID = "2360653316734633"
 
 #: Access-токен живёт ~4 часа; обновляем заранее, чтобы запрос не попал в
@@ -153,7 +157,7 @@ class CompanionAuth:
 
     def __init__(self, token_path: str, client_id: str = "", audience: str = "frontier"):
         self.token_path = token_path
-        self.client_id = (client_id or os.environ.get("FRONTIER_CLIENT_ID") or PUBLIC_CLIENT_ID).strip()
+        self.client_id = (client_id or os.environ.get("FRONTIER_CLIENT_ID") or APP_CLIENT_ID).strip()
         self.audience = audience
         self._lock = threading.Lock()
 

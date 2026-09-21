@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useFriends } from "@/hooks/useFriends";
 import { supabase } from "@/lib/supabaseClient";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 import {
   IconSearch,
   IconCheck,
@@ -90,8 +91,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 </div>
                 {searchResults.map((u) => (
                   <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid #25282b" }}>
-                    {u.avatar_url ? <img src={u.avatar_url} className="avatar-sm" alt="" /> : <div className="avatar-sm" style={{ background: "#323538" }} />}
-                    <span style={{ flex: 1, fontSize: 13 }}>{u.cmdr_name || "Unknown"}</span>
+                    <PilotIdentity userId={u.id} cmdrName={u.cmdr_name || "Unknown"} avatarUrl={u.avatar_url} size={28} fontSize={13} style={{ flex: 1 }} />
                     <button
                       onClick={async () => {
                         const { ok } = await sendRequest(u.id);
@@ -121,14 +121,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 onClick={() => selectFriend(f)}
                 style={{ position: "relative" }}
               >
-                {f.friend_avatar ? (
-                  <img src={f.friend_avatar} className="avatar-sm" alt="" />
-                ) : (
-                  <span className="avatar-sm" style={{ background: "#3a3d40", display: "inline-block" }} />
-                )}
-                <span style={{ flex: 1, textAlign: "left", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {f.friend_name || "Unknown"}
-                </span>
+                <PilotIdentity userId={f.friend_id} cmdrName={f.friend_name || "Unknown"} avatarUrl={f.friend_avatar} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
                 <button
                   onClick={(e) => { e.stopPropagation(); removeFriend(f.id); }}
                   style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.4, padding: 2 }}
@@ -359,16 +352,9 @@ function DirectChat({
           const isMe = m.sender_id === userId;
           return (
             <div key={m.id} style={{ display: "flex", gap: 8, alignItems: "flex-start", flexDirection: isMe ? "row-reverse" : "row" }}>
-              {m.avatar_url ? (
-                <img src={m.avatar_url} style={{ width: 28, height: 28, borderRadius: "50%", flexShrink: 0 }} alt="" />
-              ) : (
-                <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#323538", flexShrink: 0 }} />
-              )}
-              <div style={{ maxWidth: "70%" }}>
+              <div style={{ maxWidth: "80%" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexDirection: isMe ? "row-reverse" : "row" }}>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: isMe ? "#e67e22" : "#9ca3af", fontFamily: "ui-monospace, monospace" }}>
-                    {m.author_name || "Unknown"}
-                  </span>
+                  <PilotIdentity userId={m.sender_id} cmdrName={m.author_name || "Unknown"} avatarUrl={m.avatar_url} size={28} fontSize={11} showTier={false} />
                   <span style={{ fontSize: 10, color: "#6b7280", fontFamily: "ui-monospace, monospace" }}>
                     {formatTime(m.created_at)}
                   </span>

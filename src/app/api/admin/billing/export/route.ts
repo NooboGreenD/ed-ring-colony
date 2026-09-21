@@ -1,26 +1,21 @@
 import { NextResponse } from 'next/server';
 import { billingRepo } from '@/lib/billingData';
-import { authFromRequest } from '@/lib/requestUser';
+import { requireStaff, errorResponse } from '@/lib/billing/auth';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: Request) {
   try {
-    const { user, supabase } = await authFromRequest(req);
-    if (user) {
-      const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle();
-      if (profile && !['admin', 'moderator', 'support_manager'].includes(profile.role ?? '')) {
-        return NextResponse.json({ error: 'Access denied: Administrator required' }, { status: 403 });
-      }
-    }
+    const auth = await requireStaff(req);
+    if ('response' in auth) return auth.response;
 
     const { searchParams } = new URL(req.url);
     const format = searchParams.get('format') || 'json';
 
     const stats = await billingRepo.getProjectStatistics('all');
-    const { transactions } = billingRepo.getTransactions({ limit: 500 });
-    const subscriptions = billingRepo.getSubscriptions();
+    const { transactions } = await billingRepo.getTransactions({ limit: 5000 });
+    const subscriptions = await billingRepo.getSubscriptions();
 
     if (format === 'csv') {
       const headers = ['ID', 'Date', 'CMDR', 'Type', 'Item/Plan', 'Amount RUB', 'Amount Credits', 'Method', 'Status'];
@@ -52,7 +47,7 @@ export async function GET(req: Request) {
       subscriptions,
       transactions,
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Internal Server Error' }, { status: 500 });
+  } catch (err) {
+    return errorResponse(err);
   }
 }

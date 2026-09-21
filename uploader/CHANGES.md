@@ -4072,3 +4072,19 @@ journal-файлы с конца (самые новые файлы и строк
 `SUPABASE_ACCESS_TOKEN`, Vercel токен), нужно ротировать, если это ещё не
 сделано.
 
+
+Ключ приложения CAPI
+--------------------
+
+Проект зарегистрировал собственное приложение «ED Ring Colony» в Frontier
+Developer Zone: `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`. Этот Client ID теперь
+используется по умолчанию и сайтом (`FRONTIER_APP_CLIENT_ID` в
+`src/lib/capi/oauth.ts`), и Colonial Helper (`APP_CLIENT_ID` в
+`companion_api.py`), поэтому в диалоге согласия Frontier пользователь видит имя
+нашего сервиса. Переопределение прежнее: настройка `frontier_client_id` в
+конфиге приложения или переменная окружения `FRONTIER_CLIENT_ID`. Публичный
+client_id компаньон-приложения оставлен как `PUBLIC_CLIENT_ID` на случай отката.
+
+Для работы у клиента в Developer Zone должны быть разрешены redirect URI:
+`https://edringcolony.ru/api/capi/callback` (сайт) и `http://127.0.0.1/`
+(локальный обработчик Colonial Helper, порт выбирается динамически).

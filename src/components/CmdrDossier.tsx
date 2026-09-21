@@ -563,7 +563,7 @@ function AchievementTrackCard({
 }
 
 export default function CmdrDossier(props: Props) {
-  const [tab, setTab] = useState<'overview' | 'achievements' | 'squadron'>('overview');
+  const [tab, setTab] = useState<'overview' | 'transport' | 'architect' | 'achievements' | 'squadron'>('overview');
   const [sending, setSending] = useState(false);
   const [optimisticSent, setOptimisticSent] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null);
@@ -736,6 +736,20 @@ export default function CmdrDossier(props: Props) {
           onClick={() => setTab('overview')}
         >
           Обзор
+        </button>
+        <button
+          type="button"
+          className={tab === 'transport' ? 'tab tab-active' : 'tab'}
+          onClick={() => setTab('transport')}
+        >
+          Структура перевозок{props.opsCount ? ` (${props.opsCount})` : ''}
+        </button>
+        <button
+          type="button"
+          className={tab === 'architect' ? 'tab tab-active' : 'tab'}
+          onClick={() => setTab('architect')}
+        >
+          Системы архитектора{props.architectSystems.length ? ` (${props.architectSystems.length})` : ''}
         </button>
         <button
           type="button"
@@ -981,93 +995,6 @@ export default function CmdrDossier(props: Props) {
               )}
             </div>
           </div>
-          )}
-
-          {/* ── Структура перевозок: куда именно ушёл груз ── */}
-          {showCargo && props.cargoKinds.length > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <SectionHeader title="Структура перевозок" count={props.opsCount} />
-              <div
-                style={{
-                  border: '1px solid #323538',
-                  background: '#1a1c1e',
-                  borderRadius: 4,
-                  padding: '16px 18px',
-                }}
-              >
-                <p style={{ margin: '0 0 14px', fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
-                  Один и тот же тоннаж разложен по получателю: стройплощадки и колонизационные корабли
-                  считаются вкладом в проекты, а отгрузки авианосцам, грузовые миссии и продажа на
-                  рынках — перевозками безотносительно к колонизации.
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {props.cargoKinds.map((entry) => {
-                    const meta = CARGO_KIND_META[entry.kind];
-                    const share = props.totalTons > 0 ? (entry.tons / props.totalTons) * 100 : 0;
-                    return (
-                      <div key={entry.kind}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
-                          <span style={{ color: '#eeeeee' }} title={meta?.hint}>
-                            <span
-                              style={{
-                                display: 'inline-block',
-                                width: 8,
-                                height: 8,
-                                borderRadius: 2,
-                                background: meta?.color ?? '#9ca3af',
-                                marginRight: 8,
-                              }}
-                            />
-                            {meta?.label ?? entry.kind}
-                            <span style={{ color: '#6b7280', marginLeft: 8, fontSize: 11 }}>
-                              {entry.ops.toLocaleString('ru-RU')} поставок
-                            </span>
-                          </span>
-                          <span style={{ color: meta?.color ?? '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
-                            {entry.tons.toLocaleString('ru-RU')} т · {share.toFixed(1)}%
-                          </span>
-                        </div>
-                        <div style={{ background: '#25282b', borderRadius: 4, height: 6, marginTop: 6 }}>
-                          <div
-                            style={{
-                              width: `${Math.max(1, Math.min(100, share))}%`,
-                              background: meta?.color ?? '#9ca3af',
-                              height: '100%',
-                              borderRadius: 4,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {props.transportSystems.length > 0 && (
-                  <div style={{ marginTop: 16 }}>
-                    <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
-                      КУДА ВОЗИЛИ ВНЕ ПРОЕКТОВ
-                    </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {props.transportSystems.slice(0, 8).map(([systemName, tons]) => (
-                        <span
-                          key={systemName}
-                          style={{
-                            border: '1px solid #323538',
-                            borderRadius: 4,
-                            padding: '4px 8px',
-                            fontSize: 12,
-                            color: '#eeeeee',
-                            fontFamily: 'ui-monospace, monospace',
-                          }}
-                        >
-                          {systemName}{' '}
-                          <span style={{ color: '#e67e22', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
           )}
 
           {/* ── Frontier CAPI Profile (Inara style) ── */}
@@ -1421,41 +1348,6 @@ export default function CmdrDossier(props: Props) {
             </div>
           )}
 
-          {/* ── Architect Systems (RavenColonial) ── */}
-          {props.architectCount > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <SectionHeader
-                title="Системы архитектора"
-                count={props.architectSystems.length}
-              />
-              <div
-                style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 8,
-                }}
-              >
-                {props.architectSystems.map((sys) => (
-                  <span
-                    key={sys}
-                    style={{
-                      padding: '5px 12px',
-                      background: '#1a1c1e',
-                      border: '1px solid #e67e2255',
-                      borderRadius: 3,
-                      fontSize: 12,
-                      color: '#f39c12',
-                      fontFamily: 'ui-monospace, monospace',
-                      letterSpacing: 0.5,
-                    }}
-                  >
-                    {sys}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* ── Top Systems (Inara table style) ── */}
           {showDeliveries && props.systems.length > 0 && (
             <div style={{ marginBottom: 24 }}>
@@ -1696,6 +1588,153 @@ export default function CmdrDossier(props: Props) {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {tab === 'transport' && (
+        <div>
+          {props.cargoKinds.length === 0 || !showCargo ? (
+            <div className="card" style={{ margin: 0, padding: 30, textAlign: 'center', color: 'var(--muted)' }}>
+              {showCargo ? 'Данных о структуре перевозок пока нет.' : 'Командир скрыл структуру перевозок.'}
+            </div>
+          ) : null}
+      {/* ── Структура перевозок: куда именно ушёл груз ── */}
+      {showCargo && props.cargoKinds.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <SectionHeader title="Структура перевозок" count={props.opsCount} />
+          <div
+            style={{
+              border: '1px solid #323538',
+              background: '#1a1c1e',
+              borderRadius: 4,
+              padding: '16px 18px',
+            }}
+          >
+            <p style={{ margin: '0 0 14px', fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+              Один и тот же тоннаж разложен по получателю: стройплощадки и колонизационные корабли
+              считаются вкладом в проекты, а отгрузки авианосцам, грузовые миссии и продажа на
+              рынках — перевозками безотносительно к колонизации.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {props.cargoKinds.map((entry) => {
+                const meta = CARGO_KIND_META[entry.kind];
+                const share = props.totalTons > 0 ? (entry.tons / props.totalTons) * 100 : 0;
+                return (
+                  <div key={entry.kind}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 13 }}>
+                      <span style={{ color: '#eeeeee' }} title={meta?.hint}>
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            width: 8,
+                            height: 8,
+                            borderRadius: 2,
+                            background: meta?.color ?? '#9ca3af',
+                            marginRight: 8,
+                          }}
+                        />
+                        {meta?.label ?? entry.kind}
+                        <span style={{ color: '#6b7280', marginLeft: 8, fontSize: 11 }}>
+                          {entry.ops.toLocaleString('ru-RU')} поставок
+                        </span>
+                      </span>
+                      <span style={{ color: meta?.color ?? '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
+                        {entry.tons.toLocaleString('ru-RU')} т · {share.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div style={{ background: '#25282b', borderRadius: 4, height: 6, marginTop: 6 }}>
+                      <div
+                        style={{
+                          width: `${Math.max(1, Math.min(100, share))}%`,
+                          background: meta?.color ?? '#9ca3af',
+                          height: '100%',
+                          borderRadius: 4,
+                        }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {props.transportSystems.length > 0 && (
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 6, letterSpacing: 0.4 }}>
+                  КУДА ВОЗИЛИ ВНЕ ПРОЕКТОВ
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {props.transportSystems.slice(0, 8).map(([systemName, tons]) => (
+                    <span
+                      key={systemName}
+                      style={{
+                        border: '1px solid #323538',
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        color: '#eeeeee',
+                        fontFamily: 'ui-monospace, monospace',
+                      }}
+                    >
+                      {systemName}{' '}
+                      <span style={{ color: '#e67e22', fontWeight: 600 }}>{tons.toLocaleString('ru-RU')} т</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+        </div>
+      )}
+
+      {tab === 'architect' && (
+        <div>
+          {props.architectCount === 0 && (
+            <div className="card" style={{ margin: 0, padding: 30, textAlign: 'center', color: 'var(--muted)' }}>
+              Командир пока не является архитектором ни одной системы (по данным Raven Colonial).
+            </div>
+          )}
+          <p style={{ margin: '0 0 14px', fontSize: 12, color: 'var(--muted)' }}>
+            Системы, где командир зарегистрирован архитектором колонизации. Нажмите на систему, чтобы открыть её страницу.
+          </p>
+      {/* ── Architect Systems (RavenColonial) ── */}
+      {props.architectCount > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <SectionHeader
+            title="Системы архитектора"
+            count={props.architectSystems.length}
+          />
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            {props.architectSystems.map((sys) => (
+              <Link
+                href={`/system/${encodeURIComponent(sys)}`}
+                key={sys}
+                title={`Открыть систему ${sys}`}
+                className="dossier-arch-link"
+                style={{
+                  textDecoration: 'none',
+                  padding: '5px 12px',
+                  background: '#1a1c1e',
+                  border: '1px solid #e67e2255',
+                  borderRadius: 3,
+                  fontSize: 12,
+                  color: '#f39c12',
+                  fontFamily: 'ui-monospace, monospace',
+                  letterSpacing: 0.5,
+                }}
+              >
+                {sys} →
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
         </div>
       )}
 

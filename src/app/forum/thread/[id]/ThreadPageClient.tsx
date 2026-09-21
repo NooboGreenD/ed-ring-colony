@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import Link from "next/link";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
@@ -259,20 +260,15 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-              {avatarUrl(post) ? (
-                <img src={avatarUrl(post)!} alt="" style={{ width: 32, height: 32, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--line)" }} />
-              ) : (
-                <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#323538" }} />
-              )}
-              <div>
-                <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
-                  {post.author?.cmdr_name || "Unknown"}
-                </span>
-                <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>
-                  {new Date(post.created_at).toLocaleString("ru-RU")}
-                  {post.updated_at !== post.created_at && ` ${t("forum.edited")}`}
-                </span>
-              </div>
+              <PilotIdentity
+                userId={post.author_id}
+                cmdrName={post.author?.cmdr_name || "Unknown"}
+                avatarUrl={avatarUrl(post)}
+                size={32}
+                fontSize={13}
+                showTitle
+                subtitle={`${new Date(post.created_at).toLocaleString("ru-RU")}${post.updated_at !== post.created_at ? ` ${t("forum.edited")}` : ""}`}
+              />
             </div>
 
             {editingPost === post.id ? (
