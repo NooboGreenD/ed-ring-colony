@@ -11,7 +11,9 @@
     "galnet:sync": "node scripts/galnet-sync.mjs",
     "galnet:dry-run": "node scripts/galnet-sync.mjs --dry-run",
     "typecheck": "next typegen && tsc --noEmit",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "spansh:import": "node scripts/import-spansh-systems.mjs",
+    "spansh:selftest": "node scripts/import-spansh-systems.mjs --selftest"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",
@@ -20,6 +22,7 @@
     "@supabase/supabase-js": "^2.114.0",
     "lru-cache": "^11.5.2",
     "next": "16.3.5",
+    "pg": "^8.23.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-markdown": "^10.1.0",

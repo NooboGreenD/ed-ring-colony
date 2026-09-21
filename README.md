@@ -251,6 +251,12 @@ ed-ring-colony/
 - `PATCH /api/galnet` — Догон очереди переводов (cron)
 - `GET /api/galnet/[nid]` — Одна статья (по `nid`, `guid` или `slug`)
 
+### Galaxy Systems (Spansh) Endpoints
+- `GET /api/galaxy/stats` — Статус загрузки полной таблицы систем
+- `GET /api/galaxy/systems/search?q=…` — Поиск по всем системам галактики
+- `GET /api/galaxy/systems/:id64` — Система по Spansh ID64
+- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты (экспериментальный слой)
+
 ### Other Endpoints
 - `GET /api/leaderboard` — Player stats
 - `GET /api/atlas/search` — System search
@@ -263,6 +269,20 @@ ed-ring-colony/
 - `POST /api/journal/import` — authenticated browser/CAPI Journal import
 - `POST /api/translate` — Translate content
 - `POST /api/cron/translate` — Cron translation job
+
+## Spansh: все системы галактики
+
+Полная таблица всех известных систем (`galaxy_systems`, ~1.3M строк) загружается
+ночным дампом Spansh. Она ускоряет поиск в Атласе (опорные координаты и
+звёздные кандидаты берутся из локальной БД) и подпитывает экспериментальный
+слой «Все системы ⚗» на 3D-карте галактики.
+
+```bash
+npm run spansh:import     # скачать systems.json.gz и загрузить в БД
+npm run spansh:selftest   # офлайн-проверка конвейера (без БД и сети)
+```
+
+Подробности: [SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
 
 ## Galnet Sync
 

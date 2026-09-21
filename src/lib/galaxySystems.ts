@@ -1,0 +1,299 @@
+/**
+ * Shared logic for the Spansh galaxy-systems pipeline.
+ *
+ * Used by:
+ *  - `scripts/import-spansh-systems.mjs` (Node ≥22.18 type-stripping import)
+ *  - API routes (atlas search, /api/galaxy/*) and the GalaxyMap "all systems"
+ *    experimental layer.
+ *
+ * Coordinate frame: the same Sol-centered frame the whole site already uses
+ * (ed3dCanon.ts): Sol = (0,0,0), Sagittarius A* = (25.21875, -20.90625, 25899.96875).
+ * Spansh/EDSM coordinates live in this frame, so no conversion is needed.
+ */
+
+import type { WorldType } from '../types/atlas.ts';
+
+export const SAGA_LY = { x: 25.21875, y: -20.90625, z: 25899.96875 };
+
+export type StarClass =
+  | 'o' | 'b' | 'a' | 'f' | 'g' | 'k' | 'm'
+  | 'brown_dwarf' | 'neutron' | 'black_hole' | 'white_dwarf'
+  | 'wolf_rayet' | 'herbig_ae_be' | 't_tauri' | 'carbon'
+  | 'unknown';
+
+export type GiantClass = 'dwarf' | 'giant' | 'supergiant' | null;
+
+export interface StarClassification {
+  /** Normalized spectral/exotic class (map color + atlas filters). */
+  starType: StarClass;
+  /** Luminosity class for ordinary stars; null for exotic objects. */
+  giantClass: GiantClass;
+  /** Atlas WorldTypes this main star matches (star candidates). */
+  worldTypes: WorldType[];
+}
+
+const CLASS_BY_PREFIX: Array<[RegExp, StarClass]> = [
+  [/^O \(Blue-White\)/, 'o'],
+  [/^B \(Blue-White/, 'b'],
+  [/^A \(Blue-White/, 'a'],
+  [/^F \(White/, 'f'],
+  [/^G \(White-Yellow/, 'g'],
+  [/^K \(Yellow-Orange/, 'k'],
+  [/^M \(Red (?:dwarf|giant|super giant)/, 'm'],
+  [/^(?:L|T|Y) \(Brown dwarf\)/, 'brown_dwarf'],
+];
+
+/**
+ * Map the raw Spansh `mainStar` string (BriefDumpSystem enum) to a normalized
+ * class. See systems.schema.json in spansh/elite_dangerous_schemas.
+ */
+export function classifyStar(mainStar: string | null | undefined): StarClassification {
+  const s = (mainStar || '').trim();
+  if (!s) return { starType: 'unknown', giantClass: null, worldTypes: [] };
+
+  let starType: StarClass | null = null;
+
+  if (s === 'Neutron Star') starType = 'neutron';
+  else if (s === 'Black Hole' || s === 'Supermassive Black Hole') starType = 'black_hole';
+  else if (/^White Dwarf \(D/.test(s)) starType = 'white_dwarf';
+  else if (/^Wolf-Rayet (?:C|N|NC|O)?-? ?Star$/.test(s)) starType = 'wolf_rayet';
+  else if (s === 'Herbig Ae/Be Star') starType = 'herbig_ae_be';
+  else if (s === 'T Tauri Star') starType = 't_tauri';
+  else if (s === 'C Star' || s === 'CJ Star' || s === 'CN Star') starType = 'carbon';
+  else for (const [re, cls] of CLASS_BY_PREFIX) { if (re.test(s)) { starType = cls; break; } }
+
+  if (!starType) return { starType: 'unknown', giantClass: null, worldTypes: [] };
+
+  // Luminosity only makes sense for ordinary spectral classes.
+  let giantClass: GiantClass = 'dwarf';
+  if (starType === 'brown_dwarf') giantClass = 'dwarf';
+  else if (/(super )?giant/.test(s)) giantClass = /super giant/.test(s) ? 'supergiant' : 'giant';
+  else giantClass = 'dwarf';
+  if (!/^(?:o|b|a|f|g|k|m)$/.test(starType)) giantClass = null;
+
+  const worldTypes: WorldType[] = [];
+  switch (starType) {
+    case 'neutron': worldTypes.push('neutron_star'); break;
+    case 'black_hole': worldTypes.push('black_hole'); break;
+    case 'white_dwarf': worldTypes.push('white_dwarf'); break;
+    case 'wolf_rayet': worldTypes.push('wolf_rayet'); break;
+    case 'herbig_ae_be': worldTypes.push('herbig_ae_be'); break;
+    case 't_tauri': worldTypes.push('t_tauri'); break;
+    case 'carbon': worldTypes.push('carbon_star'); break;
+    default:
+      if (giantClass === 'supergiant') worldTypes.push('supergiant');
+      else if (giantClass === 'giant') worldTypes.push('giant');
+      break;
+  }
+
+  return { starType, giantClass, worldTypes };
+}
+
+/** Map color per normalized star class. Index === value stored in the points file. */
+export const STAR_CLASS_INDEX: Record<StarClass, number> = {
+  o: 0, b: 1, a: 2, f: 3, g: 4, k: 5, m: 6, brown_dwarf: 7,
+  neutron: 8, black_hole: 9, white_dwarf: 10, wolf_rayet: 11,
+  herbig_ae_be: 12, t_tauri: 13, carbon: 14, unknown: 15,
+};
+
+export const STAR_CLASS_LIST: StarClass[] = [
+  'o', 'b', 'a', 'f', 'g', 'k', 'm', 'brown_dwarf',
+  'neutron', 'black_hole', 'white_dwarf', 'wolf_rayet',
+  'herbig_ae_be', 't_tauri', 'carbon', 'unknown',
+];
+
+/** [r,g,b] 0..1 per STAR_CLASS_LIST index. */
+export const STAR_CLASS_COLORS: Array<[number, number, number]> = [
+  [0.61, 0.76, 1.00], // o
+  [0.63, 0.78, 1.00], // b
+  [0.84, 0.90, 1.00], // a
+  [1.00, 0.95, 0.86], // f
+  [1.00, 0.88, 0.55], // g
+  [1.00, 0.72, 0.44], // k
+  [1.00, 0.55, 0.34], // m
+  [0.62, 0.32, 0.28], // brown_dwarf
+  [0.75, 0.88, 1.00], // neutron
+  [0.58, 0.38, 0.85], // black_hole
+  [0.85, 0.95, 1.00], // white_dwarf
+  [0.55, 0.80, 1.00], // wolf_rayet
+  [1.00, 0.70, 0.90], // herbig_ae_be
+  [1.00, 0.62, 0.48], // t_tauri
+  [1.00, 0.80, 0.58], // carbon
+  [0.62, 0.66, 0.74], // unknown
+];
+
+export const STAR_CLASS_LABELS: Record<StarClass, string> = {
+  o: 'O-класс', b: 'B-класс', a: 'A-класс', f: 'F-класс', g: 'G-класс',
+  k: 'K-класс', m: 'M-класс', brown_dwarf: 'Коричневый карлик',
+  neutron: 'Нейтронная звезда', black_hole: 'Чёрная дыра', white_dwarf: 'Белый карлик',
+  wolf_rayet: 'Звезда Вольфа–Райе', herbig_ae_be: 'Herbig Ae/Be', t_tauri: 'T Tauri',
+  carbon: 'Углеродистая звезда', unknown: 'Не определён',
+};
+
+/** Normalized search key for a system name (matches galaxy_systems.name_lc). */
+export function normalizeSystemName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+export function distanceFromSols(x: number, y: number, z: number): number {
+  return Math.sqrt(x * x + y * y + z * z);
+}
+
+export function distanceFromSgra(x: number, y: number, z: number): number {
+  const dx = x - SAGA_LY.x;
+  const dy = y - SAGA_LY.y;
+  const dz = z - SAGA_LY.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Points file (experimental "all systems" galaxy-map layer)
+//
+// Layout v1 (little-endian):
+//   4B  magic 'EDGS'
+//   1B  version (=1)
+//   3B  reserved (0) — keeps the header 4-byte aligned
+//   4B  count (uint32)
+//   count * 3 x float32  positions — elite/Sol-centered coords (x,y,z)
+//   count x uint32       id64 high 32 bits
+//   count x uint32       id64 low 32 bits
+//   count x uint8        star class index (STAR_CLASS_LIST)
+// (float/uint32 sections start on 4-byte boundaries; the 1-byte section
+//  is last so no padding is needed — 29 bytes per point)
+// Point order MUST match `ORDER BY id` in the galaxy_systems table (the
+// import script generates both in the same pass, which is how the map
+// resolves a clicked point back to a system id).
+// ════════════════════════════════════════════════════════════════
+
+export const POINTS_MAGIC = 'EDGS';
+export const POINTS_VERSION = 1;
+export const POINTS_HEADER_SIZE = 12;
+/** Bytes per point: 3*float32 + 1*uint8 + 2*uint32 = 29. */
+export const POINTS_BYTES_PER_POINT = 29;
+
+export interface AllSystemsData {
+  count: number;
+  /** count * 3 float32, elite coords, point order = ORDER BY id. */
+  positions: Float32Array;
+  /** count uint8 star-class indices. */
+  starTypes: Uint8Array;
+  /** count uint32 id64 high parts. */
+  id64Hi: Uint32Array;
+  /** count uint32 id64 low parts. */
+  id64Lo: Uint32Array;
+}
+
+export interface GalaxySystemPoint {
+  x: number;
+  y: number;
+  z: number;
+  /** Spansh id64 as a decimal string (fits unsigned 64-bit). */
+  id64: string;
+  starType: StarClass;
+}
+
+/** Incremental builder: feed rows in `ORDER BY id` without holding them all. Grows on demand. */
+export class PointsBuilder {
+  private positions: Float32Array;
+  private starTypes: Uint8Array;
+  private id64Hi: Uint32Array;
+  private id64Lo: Uint32Array;
+  private count = 0;
+
+  constructor(initialCapacity = 1_000_000) {
+    this.positions = new Float32Array(initialCapacity * 3);
+    this.starTypes = new Uint8Array(initialCapacity);
+    this.id64Hi = new Uint32Array(initialCapacity);
+    this.id64Lo = new Uint32Array(initialCapacity);
+  }
+
+  get size(): number {
+    return this.count;
+  }
+
+  private grow(): void {
+    const capacity = Math.max(this.positions.length / 3 * 2, 1_000_000);
+    const next = new Float32Array(capacity * 3);
+    next.set(this.positions.subarray(0, this.count * 3));
+    this.positions = next;
+    const starTypes = new Uint8Array(capacity);
+    starTypes.set(this.starTypes.subarray(0, this.count));
+    this.starTypes = starTypes;
+    const hi = new Uint32Array(capacity);
+    hi.set(this.id64Hi.subarray(0, this.count));
+    this.id64Hi = hi;
+    const lo = new Uint32Array(capacity);
+    lo.set(this.id64Lo.subarray(0, this.count));
+    this.id64Lo = lo;
+  }
+
+  add(row: GalaxySystemPoint): void {
+    if (this.count >= this.positions.length / 3) this.grow();
+    const i = this.count++;
+    this.positions[i * 3] = row.x;
+    this.positions[i * 3 + 1] = row.y;
+    this.positions[i * 3 + 2] = row.z;
+    this.starTypes[i] = STAR_CLASS_INDEX[row.starType] ?? STAR_CLASS_INDEX.unknown;
+    let value: bigint;
+    try {
+      value = BigInt(row.id64);
+    } catch {
+      value = BigInt(0);
+    }
+    const U32_MASK = BigInt(4294967295);
+    this.id64Hi[i] = Number((value >> BigInt(32)) & U32_MASK);
+    this.id64Lo[i] = Number(value & U32_MASK);
+  }
+
+  build(): ArrayBuffer {
+    const buffer = new ArrayBuffer(POINTS_HEADER_SIZE + this.count * POINTS_BYTES_PER_POINT);
+    const view = new DataView(buffer);
+    const magic = new TextEncoder().encode(POINTS_MAGIC);
+    view.setUint8(0, magic[0]);
+    view.setUint8(1, magic[1]);
+    view.setUint8(2, magic[2]);
+    view.setUint8(3, magic[3]);
+    view.setUint8(4, POINTS_VERSION);
+    // bytes 5..7 reserved
+    view.setUint32(8, this.count, true);
+    const dst = new Uint8Array(buffer);
+    dst.set(new Uint8Array(this.positions.buffer, 0, this.count * 12), POINTS_HEADER_SIZE);
+    const hiOff = POINTS_HEADER_SIZE + this.count * 12;
+    dst.set(new Uint8Array(this.id64Hi.buffer, 0, this.count * 4), hiOff);
+    dst.set(new Uint8Array(this.id64Lo.buffer, 0, this.count * 4), hiOff + this.count * 4);
+    dst.set(this.starTypes.subarray(0, this.count), hiOff + this.count * 8);
+    return buffer;
+  }
+}
+
+export function encodePointsFile(rows: GalaxySystemPoint[]): ArrayBuffer {
+  const builder = new PointsBuilder(rows.length);
+  for (const row of rows) builder.add(row);
+  return builder.build();
+}
+
+export function parsePointsFile(buffer: ArrayBuffer): AllSystemsData {
+  const view = new DataView(buffer);
+  if (buffer.byteLength < POINTS_HEADER_SIZE) throw new Error('Points file too small');
+  const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 4));
+  if (magic !== POINTS_MAGIC) throw new Error(`Bad points magic: ${magic}`);
+  const version = view.getUint8(4);
+  if (version !== POINTS_VERSION) throw new Error(`Unsupported points version: ${version}`);
+  const count = view.getUint32(8, true);
+  const expected = POINTS_HEADER_SIZE + count * POINTS_BYTES_PER_POINT;
+  if (buffer.byteLength < expected) throw new Error('Points file truncated');
+
+  const hiOff = POINTS_HEADER_SIZE + count * 12;
+  return {
+    count,
+    positions: new Float32Array(buffer, POINTS_HEADER_SIZE, count * 3),
+    id64Hi: new Uint32Array(buffer, hiOff, count),
+    id64Lo: new Uint32Array(buffer, hiOff + count * 4, count),
+    starTypes: new Uint8Array(buffer, hiOff + count * 8, count),
+  };
+}
+
+/** Reconstruct the Spansh id64 (decimal string) from the packed halves. */
+export function id64FromParts(hi: number, lo: number): string {
+  return ((BigInt(hi) << BigInt(32)) | BigInt(lo >>> 0)).toString(10);
+}

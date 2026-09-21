@@ -12,6 +12,8 @@ import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
+import { loadAllSystemsData } from './AllSystemsPoints';
+import type { AllSystemsData } from '@/lib/galaxySystems';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((module) => module.GalaxyScene),
@@ -123,12 +125,38 @@ export default function GalaxyMap({
   const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
   const [showNebulae, setShowNebulae] = useState(true);
   const [showRingZone, setShowRingZone] = useState(true);
+  // Экспериментальный слой «все системы» (данные: Spansh-дамп в БД).
+  const [showAllSystems, setShowAllSystems] = useState(false);
+  const [allSystemsData, setAllSystemsData] = useState<AllSystemsData | null>(null);
+  const [allSystemsLoading, setAllSystemsLoading] = useState(false);
+  const [allSystemsError, setAllSystemsError] = useState('');
   const [statusFilters, setStatusFilters] = useState<StatusFilters>({
     planned: true,
     building: true,
     done: true,
   });
   const compactMap = showOnlyMainRoute;
+
+  // Ленивая загрузка облака точек: файл ~30 МБ генерируется одним запросом.
+  useEffect(() => {
+    if (!showAllSystems || allSystemsData || allSystemsLoading) return;
+    let cancelled = false;
+    setAllSystemsLoading(true);
+    setAllSystemsError('');
+    loadAllSystemsData()
+      .then((data) => {
+        if (!cancelled) setAllSystemsData(data);
+      })
+      .catch((err: any) => {
+        if (!cancelled) setAllSystemsError(err?.message || 'Не удалось загрузить все системы');
+      })
+      .finally(() => {
+        if (!cancelled) setAllSystemsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showAllSystems, allSystemsData, allSystemsLoading]);
 
   useEffect(() => {
     const loadHubs = async () => {
@@ -305,6 +333,28 @@ export default function GalaxyMap({
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
   }, []);
 
+  // Клик по точке облака «все системы»: id64 → карточка системы.
+  const handlePickAllSystem = useCallback(async (id64: string) => {
+    try {
+      const response = await fetch(`/api/galaxy/systems/${encodeURIComponent(id64)}`);
+      const data = await response.json();
+      if (!response.ok || !data.name) throw new Error(data.error || 'Система не найдена');
+      const point: RouteSystem = {
+        id: -(800000 + (Date.now() % 100000)),
+        system_name: data.name,
+        sort_order: -1,
+        status: 'planned',
+        x: Number(data.x),
+        y: Number(data.y),
+        z: Number(data.z),
+        isHub: false,
+      };
+      handleSelectRouteSystem(point);
+    } catch (error: any) {
+      setAllSystemsError(error?.message || 'Не удалось открыть систему');
+    }
+  }, [handleSelectRouteSystem]);
+
   const searchForSystem = useCallback(async () => {
     const query = systemSearch.trim();
     if (!query) return;
@@ -314,6 +364,30 @@ export default function GalaxyMap({
     const knownHub = uniqueHubs.find((hub) => systemNameKey(hub.system_name) === key);
     if (knownHub) { handleSelectHub(knownHub); setSystemSearchLoading(false); return; }
     if (knownRoute) { handleSelectRouteSystem({ ...knownRoute, status: mapStatus(knownRoute) }); setSystemSearchLoading(false); return; }
+    // Сначала локальная таблица Spansh (все системы галактики), затем EDSM.
+    try {
+      const local = await fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}`);
+      const localData = await local.json();
+      const best = localData?.results?.[0];
+      if (local.ok && best) {
+        const point: RouteSystem = {
+          id: -(900000 - (Date.now() % 100000)),
+          system_name: best.name,
+          sort_order: -1,
+          status: 'planned',
+          x: Number(best.x),
+          y: Number(best.y),
+          z: Number(best.z),
+          isHub: false,
+        };
+        setSearchSystem(point);
+        handleSelectRouteSystem(point);
+        setSystemSearchLoading(false);
+        return;
+      }
+    } catch {
+      // local systems table is optional — fall through to EDSM
+    }
     try {
       const response = await fetch(`/api/edsm/system?name=${encodeURIComponent(query)}`);
       const data = await response.json();
@@ -432,6 +506,15 @@ export default function GalaxyMap({
             <input type="checkbox" checked={showKnownSystems} onChange={(event) => setShowKnownSystems(event.target.checked)} />
             Маршрут и хабы ({routeMarkerSystems.length + uniqueHubs.length})
           </label>
+          <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Экспериментально: все известные системы галактики (Spansh, ~1.3M точек). Первый включение скачивает ~30 МБ.">
+            <input type="checkbox" checked={showAllSystems} onChange={(event) => setShowAllSystems(event.target.checked)} />
+            Все системы{allSystemsData ? ` (${(allSystemsData.count / 1000).toFixed(0)}k)` : ''} ⚗
+          </label>
+          {(allSystemsLoading || allSystemsError) && (
+            <div style={{ fontSize: 10, color: allSystemsError ? '#f87171' : '#ffd166', paddingLeft: 22 }}>
+              {allSystemsLoading ? 'Загрузка всех систем…' : allSystemsError}
+            </div>
+          )}
           {!compactMap && (
             <>
               <label style={{ fontSize: 11, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -576,6 +659,9 @@ export default function GalaxyMap({
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}
             showRingZone={showRingZone}
+            allSystemsData={allSystemsData}
+            showAllSystems={showAllSystems && !!allSystemsData}
+            onPickAllSystem={handlePickAllSystem}
             onSelectHub={handleSelectHub}
             onSelectRouteSystem={handleSelectRouteSystem}
             onSelectAtlasCandidate={handleSelectAtlasCandidate}

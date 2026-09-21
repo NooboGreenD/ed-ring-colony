@@ -19,7 +19,9 @@ import { AtlasMarkers } from './AtlasMarkers';
 import { PilotMarkers } from './PilotMarkers';
 import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
+import { AllSystemsPoints } from './AllSystemsPoints';
 import type { Pilot } from './PilotMarkers';
+import type { AllSystemsData } from '@/lib/galaxySystems';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 
@@ -73,6 +75,10 @@ interface GalaxySceneProps {
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
   showRingZone?: boolean;
+  /** Experimental layer: every known system in the galaxy (Spansh dump). */
+  allSystemsData?: AllSystemsData | null;
+  showAllSystems?: boolean;
+  onPickAllSystem?: (id64: string, index: number) => void;
   onSelectHub?: (hub: Hub | null) => void;
   onSelectRouteSystem?: (point: RouteSystem | null) => void;
   onSelectAtlasCandidate?: (candidate: AtlasCandidate | null) => void;
@@ -104,6 +110,9 @@ export function GalaxyScene({
   showRegionBoundaries = true,
   showNebulae = true,
   showRingZone = true,
+  allSystemsData = null,
+  showAllSystems = false,
+  onPickAllSystem,
   onSelectHub,
   onSelectRouteSystem,
   onSelectAtlasCandidate,
@@ -194,6 +203,10 @@ export function GalaxyScene({
       <GalacticRegions />
       <GalaxyRegionMarkers showLabels={showRegionLabels} />
       {showRegionBoundaries && <GalaxyRegionBoundaries />}
+
+      {showAllSystems && allSystemsData && (
+        <AllSystemsPoints data={allSystemsData} onPick={onPickAllSystem} />
+      )}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (
