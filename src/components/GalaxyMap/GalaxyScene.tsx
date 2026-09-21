@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -19,7 +19,10 @@ import { AtlasMarkers } from './AtlasMarkers';
 import { PilotMarkers } from './PilotMarkers';
 import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
+import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions } from './AllSystemsPoints';
 import type { Pilot } from './PilotMarkers';
+import { eliteToThreeCentered } from '@/lib/ed3dCanon';
+import type { AllSystemsData } from '@/lib/galaxySystems';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 
@@ -73,6 +76,13 @@ interface GalaxySceneProps {
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
   showRingZone?: boolean;
+  /** Experimental layer: every known system in the galaxy (Spansh dump). */
+  allSystemsData?: AllSystemsData | null;
+  showAllSystems?: boolean;
+  allSystemsMask?: number;
+  selectedAllSystem?: { x: number; y: number; z: number } | null;
+  onPickAllSystem?: (id64: string, index: number) => void;
+  onEmptyMapClick?: () => void;
   onSelectHub?: (hub: Hub | null) => void;
   onSelectRouteSystem?: (point: RouteSystem | null) => void;
   onSelectAtlasCandidate?: (candidate: AtlasCandidate | null) => void;
@@ -104,6 +114,12 @@ export function GalaxyScene({
   showRegionBoundaries = true,
   showNebulae = true,
   showRingZone = true,
+  allSystemsData = null,
+  showAllSystems = false,
+  allSystemsMask = 0x3ffff,
+  selectedAllSystem = null,
+  onPickAllSystem,
+  onEmptyMapClick,
   onSelectHub,
   onSelectRouteSystem,
   onSelectAtlasCandidate,
@@ -117,6 +133,13 @@ export function GalaxyScene({
 }: GalaxySceneProps) {
   const controlsRef = useRef<any>(null);
   const { camera, invalidate } = useThree();
+  const mapPositions = useMapPositions(showAllSystems ? allSystemsData : null);
+  const selectedPosition = selectedAllSystem
+    ? (() => {
+        const p = eliteToThreeCentered(selectedAllSystem);
+        return [p.x, p.y, p.z] as [number, number, number];
+      })()
+    : null;
 
   useEffect(() => {
     if (!focusTarget || !controlsRef.current) return;
@@ -194,6 +217,19 @@ export function GalaxyScene({
       <GalacticRegions />
       <GalaxyRegionMarkers showLabels={showRegionLabels} />
       {showRegionBoundaries && <GalaxyRegionBoundaries />}
+
+      <MapClickLayer
+        data={showAllSystems ? allSystemsData : null}
+        positions={mapPositions}
+        visibleMask={allSystemsMask}
+        enabled={showAllSystems && !!allSystemsData && !!mapPositions}
+        onPick={onPickAllSystem}
+        onEmpty={onEmptyMapClick}
+      />
+      {showAllSystems && allSystemsData && mapPositions && (
+        <AllSystemsPoints data={allSystemsData} positions={mapPositions} visibleMask={allSystemsMask} />
+      )}
+      {selectedPosition && <SelectedStarRing position={selectedPosition} />}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (

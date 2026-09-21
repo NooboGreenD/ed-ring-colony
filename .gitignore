@@ -64,3 +64,7 @@ dist-archive/
 
 # Local verification and deployment scratch files
 .cache/
+
+# Spansh dump download + generated points file (scripts/import-spansh-systems.mjs)
+data/spansh/
+public/data/

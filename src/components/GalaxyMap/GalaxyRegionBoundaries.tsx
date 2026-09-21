@@ -50,7 +50,7 @@ export function GalaxyRegionBoundaries() {
   }), []);
 
   return <group>
-    <lineSegments geometry={geometry} material={glowMaterial} renderOrder={19} frustumCulled={false} />
-    <lineSegments geometry={geometry} material={material} renderOrder={20} frustumCulled={false} />
+    <lineSegments geometry={geometry} material={glowMaterial} renderOrder={19} frustumCulled={false} raycast={() => null} />
+    <lineSegments geometry={geometry} material={material} renderOrder={20} frustumCulled={false} raycast={() => null} />
   </group>;
 }

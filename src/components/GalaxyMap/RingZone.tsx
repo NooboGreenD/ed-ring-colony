@@ -50,6 +50,7 @@ export function RingZone({
       material={material}
       rotation={[-Math.PI / 2, 0, 0]}
       position={[0, 0, 0]}
+      raycast={() => null}
     />
   );
 }

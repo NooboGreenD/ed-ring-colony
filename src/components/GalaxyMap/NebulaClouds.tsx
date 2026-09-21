@@ -122,6 +122,7 @@ export function NebulaClouds() {
       ref={pointsRef}
       geometry={geometry}
       material={material}
+      raycast={() => null}
     />
   );
 }

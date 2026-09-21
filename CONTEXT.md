@@ -237,6 +237,7 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
+| `galaxy_systems` | Full Spansh catalog (~1.3M): coords, main star class, permit. Public read. |
 
 ### 4.2 Key Relationships
 ```
@@ -449,6 +450,12 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 ### 8.4 Spansh
 - Route planning API client: `src/lib/spanshClient.ts`
 - Used for: Neutron highway routes
+- Full catalog: `galaxy_systems` (import `scripts/import-spansh-systems.mjs`,
+  see SPANSH-IMPORT.md). Atlas star candidates and the route finder prefer
+  this table. `/system/[name]` falls back to the catalog when there is no
+  construction row. The map layer «Все системы» reads `edgs-v1` from
+  `public/data` or storage bucket `galaxy-data`; it does not raycast 1.3M
+  points. Migration `20260924000000_galaxy_systems_finish.sql`.
 
 ### 8.5 Raven Colonial
 - Sync API: `/api/ravencolonial/sync`

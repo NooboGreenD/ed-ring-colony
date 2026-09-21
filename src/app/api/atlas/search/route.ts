@@ -5,6 +5,21 @@ import { spanshBodiesSearch, spanshSearch, mapSpanshSubtypeToWorldType, isTerraf
 import type { WorldType, AtlasSearchParams } from '@/types/atlas';
 import { atlasSearchSchema } from '@/lib/zodSchemas';
 import { checkRateLimit } from '@/lib/rateLimit';
+import {
+  findSystemByName,
+  findSystemsByNames,
+  findStarCandidates,
+  getGalaxyStats,
+  catalogIsComplete,
+  rowWorldType,
+} from '@/lib/galaxySystemsDb';
+import { normalizeSystemName } from '@/lib/galaxySystems';
+
+/** Звёздные типы, которые закрывает локальная таблица Spansh (galaxy_systems). */
+const DB_STAR_WORLD_TYPES: WorldType[] = [
+  'neutron_star', 'black_hole', 'white_dwarf', 'wolf_rayet',
+  'herbig_ae_be', 't_tauri', 'carbon_star', 'supergiant', 'giant',
+];
 
 export const dynamic = 'force-dynamic';
 const WORLD_TYPE_TO_SPANSH_FILTER: Record<WorldType, { subtype?: string; type?: string; is_terraformable?: boolean }> = {
@@ -65,6 +80,29 @@ async function resolveEdsmCoordinates(names: string[]): Promise<Record<string, {
   return results;
 }
 
+/**
+ * Координаты систем: сначала из локальной таблицы Spansh (мгновенно,
+ * без лимитов EDSM), недостающее — из EDSM.
+ */
+async function resolveCoordinates(names: string[]): Promise<Record<string, { x: number; y: number; z: number }>> {
+  const result: Record<string, { x: number; y: number; z: number }> = {};
+  const stats = await getGalaxyStats().catch(() => null);
+  if (stats && stats.systems_count > 0) {
+    try {
+      const byName = await findSystemsByNames(names);
+      for (const [key, row] of byName) result[key] = { x: row.x, y: row.y, z: row.z };
+    } catch (e: any) {
+      console.error('[Atlas Search] DB coords error:', e.message);
+    }
+  }
+  const missing = names.filter((n) => !result[normalizeSystemName(n)]);
+  if (missing.length > 0) {
+    const edsm = await resolveEdsmCoordinates(missing);
+    for (const [name, coord] of Object.entries(edsm)) result[normalizeSystemName(name)] = coord;
+  }
+  return result;
+}
+
 async function edsmSphereSystems(refSystem: string, radius: number) {
   const params = new URLSearchParams();
   params.append('systemName', refSystem);
@@ -116,13 +154,22 @@ export async function POST(req: Request) {
 
   let refCoords: { x: number; y: number; z: number } | null = null;
   try {
-    const nearest = await spanshSearch({ q: params.reference_system, limit: 1 });
-    if (nearest.results?.length > 0 && nearest.results[0].record?.x != null) {
-      const sys = nearest.results[0].record;
-      refCoords = { x: sys.x!, y: sys.y!, z: sys.z! };
-    }
+    const local = await findSystemByName(params.reference_system);
+    if (local) refCoords = { x: local.x, y: local.y, z: local.z };
   } catch (err: any) {
-    console.error('[Atlas Search] Spansh search error:', err.message);
+    console.error('[Atlas Search] Local systems lookup error:', err.message);
+  }
+
+  if (!refCoords) {
+    try {
+      const nearest = await spanshSearch({ q: params.reference_system, limit: 1 });
+      if (nearest.results?.length > 0 && nearest.results[0].record?.x != null) {
+        const sys = nearest.results[0].record;
+        refCoords = { x: sys.x!, y: sys.y!, z: sys.z! };
+      }
+    } catch (err: any) {
+      console.error('[Atlas Search] Spansh search error:', err.message);
+    }
   }
 
   if (!refCoords) {
@@ -202,17 +249,49 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
     const seenSystems = new Set<string>();
     const halfCube = params.cube_size_ly / 2;
 
-    const starTypes = params.world_types.filter(t => ['neutron_star','black_hole','white_dwarf','wolf_rayet','carbon_star','supergiant','giant'].includes(t));
+    const starTypes = params.world_types.filter(t => ['neutron_star','black_hole','white_dwarf','wolf_rayet','herbig_ae_be','t_tauri','proto_star','carbon_star','supergiant','giant'].includes(t));
     const planetTypes = params.world_types.filter(t => ['earth_like','water_world','ammonia','terraformable'].includes(t));
     const rockyTypes = params.world_types.filter(t => ['rocky_atmosphere','rocky_bio'].includes(t));
 
-    if (starTypes.length > 0) {
+    // ── Star candidates from the local Spansh table (whole cube, no 100 ly cap) ──
+    const dbStarTypes = starTypes.filter(t => DB_STAR_WORLD_TYPES.includes(t));
+    const onlineStarTypes = starTypes.filter(t => !DB_STAR_WORLD_TYPES.includes(t));
+    let dbStarUsed = false;
+    let dbStarSearchFailed = false;
+    if (dbStarTypes.length > 0) {
+      const stats = await getGalaxyStats().catch(() => null);
+      if (catalogIsComplete(stats)) {
+        try {
+          dbStarUsed = true;
+          const rows = await findStarCandidates({ x: refCoords.x, y: refCoords.y, z: refCoords.z, half: halfCube, worldTypes: dbStarTypes });
+          for (const row of rows) {
+            const dist = Math.sqrt((row.x - refCoords.x)**2 + (row.y - refCoords.y)**2 + (row.z - refCoords.z)**2);
+            if (dist > halfCube) continue;
+            const wt = rowWorldType(row, dbStarTypes);
+            if (!wt) continue;
+            const key = `${normalizeSystemName(row.name)}|${wt}`;
+            if (seenSystems.has(key)) continue;
+            seenSystems.add(key);
+            candidates.push({ id: crypto.randomUUID(), search_id: sessionId, system_name: row.name, x: row.x, y: row.y, z: row.z, world_type: wt, body_name: row.name, distance_from_ref: dist, distance_to_arrival: 0, estimated_value: 0, is_main_star: true, metadata: { mainStar: row.main_star, star_type: row.star_type, id64: row.id64, needs_permit: row.needs_permit }, created_at: new Date().toISOString() });
+          }
+        } catch (err: any) {
+          console.error('[Atlas Search] DB star candidates error:', err.message);
+          dbStarSearchFailed = true;
+        }
+      }
+    }
+
+    // ── Remaining star types — EDSM, как раньше. DB, если отработала, уже
+    //    дала своих кандидатов, поэтому EDSM только то, что DB не покрывает
+    //    (proto_star) или весь набор, если DB пуста/сломана. ──
+    const edsmStarTypes = (dbStarUsed && !dbStarSearchFailed) ? onlineStarTypes : starTypes;
+    if (edsmStarTypes.length > 0) {
       const systems = await edsmSphereSystems(params.reference_system, halfCube);
       for (const sys of systems) {
         const dist = Math.sqrt((sys.x - refCoords.x)**2 + (sys.y - refCoords.y)**2 + (sys.z - refCoords.z)**2);
         if (dist > halfCube) continue;
         const wt = mapEdsmStarType(sys.primaryStar?.type || '');
-        if (!wt || !starTypes.includes(wt)) continue;
+        if (!wt || !edsmStarTypes.includes(wt)) continue;
         const key = `${sys.name}|${wt}`;
         if (seenSystems.has(key)) continue;
         seenSystems.add(key);
@@ -239,11 +318,11 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
           const searchResult = await spanshBodiesSearch({ referenceSystem: params.reference_system, filters, sort: [{ distance: { direction: 'asc' } }], size: 2000 });
           const sysNames = new Set<string>();
           for (const b of searchResult.results) sysNames.add(extractSystemName(b.name));
-          const coords = await resolveEdsmCoordinates([...sysNames]);
+          const coords = await resolveCoordinates([...sysNames]);
 
           for (const b of searchResult.results) {
             const sysName = extractSystemName(b.name);
-            const coord = coords[sysName];
+            const coord = coords[normalizeSystemName(sysName)];
             if (!coord) continue;
             const dist = Math.sqrt((coord.x - refCoords.x)**2 + (coord.y - refCoords.y)**2 + (coord.z - refCoords.z)**2);
             if (dist > halfCube) continue;
@@ -274,11 +353,11 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
         const searchResult = await spanshBodiesSearch({ referenceSystem: params.reference_system, filters: spanshFilters, sort: [{ distance: { direction: 'asc' } }], size: 2000 });
         const sysNames = new Set<string>();
         for (const b of searchResult.results) sysNames.add(extractSystemName(b.name));
-        const coords = await resolveEdsmCoordinates([...sysNames]);
+        const coords = await resolveCoordinates([...sysNames]);
 
         for (const b of searchResult.results) {
           const sysName = extractSystemName(b.name);
-          const coord = coords[sysName];
+          const coord = coords[normalizeSystemName(sysName)];
           if (!coord) continue;
           const dist = Math.sqrt((coord.x - refCoords.x)**2 + (coord.y - refCoords.y)**2 + (coord.z - refCoords.z)**2);
           if (dist > halfCube) continue;
@@ -299,10 +378,12 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
     }
 
     if (candidates.length > 0) {
-      const { error: insertError } = await supabaseAdmin.from('atlas_candidates').insert(
-        candidates.map(c => ({ search_id: c.search_id, system_name: c.system_name, x: c.x, y: c.y, z: c.z, world_type: c.world_type, body_name: c.body_name, distance_from_ref: c.distance_from_ref, distance_to_arrival: c.distance_to_arrival, estimated_value: c.estimated_value, is_main_star: c.is_main_star, metadata: c.metadata }))
-      );
-      if (insertError) console.error('[Atlas Search] Insert error:', insertError);
+      const rows = candidates.map(c => ({ search_id: c.search_id, system_name: c.system_name, x: c.x, y: c.y, z: c.z, world_type: c.world_type, body_name: c.body_name, distance_from_ref: c.distance_from_ref, distance_to_arrival: c.distance_to_arrival, estimated_value: c.estimated_value, is_main_star: c.is_main_star, metadata: c.metadata }));
+      const BATCH = 400;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const { error: insertError } = await supabaseAdmin.from('atlas_candidates').insert(rows.slice(i, i + BATCH));
+        if (insertError) console.error('[Atlas Search] Insert error:', insertError);
+      }
     }
 
     await supabaseAdmin.from('atlas_searches').update({ status: 'completed', completed_at: new Date().toISOString(), total_found: candidates.length }).eq('id', sessionId);
