@@ -36,6 +36,8 @@ export interface GalaxyStats {
   points_uploaded?: boolean;
   points_bytes?: number | null;
   points_count?: number | null;
+  /** True when the last import used --limit and must not replace live EDSM scans. */
+  partial?: boolean;
 }
 
 /** How many systems the import has loaded (5-minute in-memory cache). */
@@ -55,6 +57,7 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
       points_uploaded?: boolean;
       points_bytes?: number;
       points_count?: number;
+      partial?: boolean;
     } | null;
     if (v && typeof v.systems_count === 'number') {
       value = {
@@ -64,6 +67,7 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
         points_uploaded: v.points_uploaded === true,
         points_bytes: typeof v.points_bytes === 'number' ? v.points_bytes : null,
         points_count: typeof v.points_count === 'number' ? v.points_count : null,
+        partial: v.partial === true,
       };
     }
   } catch {

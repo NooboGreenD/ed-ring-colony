@@ -73,7 +73,8 @@ function uniqueBySystemName<T extends CoordinateSystem>(items: T[]): T[] {
 }
 
 function formatCoordinate(value: unknown): string {
-  return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : '?';
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : NaN;
+  return Number.isFinite(n) ? n.toFixed(1) : '?';
 }
 
 type GalaxyPick = {
@@ -88,6 +89,7 @@ type GalaxyPick = {
   needs_permit: boolean | null;
   distance_from_sols: number | null;
   distance_from_sgra: number | null;
+  source?: 'spansh' | 'edsm';
 };
 
 const ALL_CLASS_MASK = (1 << STAR_CLASS_LIST.length) - 1;
@@ -132,7 +134,6 @@ export default function GalaxyMap({
   const [pilots, setPilots] = useState<any[]>([]);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
-  const [searchSystem, setSearchSystem] = useState<RouteSystem | null>(null);
   const [systemSearch, setSystemSearch] = useState('');
   const [systemSearchLoading, setSystemSearchLoading] = useState(false);
   const [systemSearchError, setSystemSearchError] = useState('');
@@ -295,10 +296,10 @@ export default function GalaxyMap({
     [uniqueRouteSystems, hubSystemNames],
   );
   const visibleRouteMarkers = useMemo(
-    () => [...routeMarkerSystems, ...(searchSystem ? [searchSystem] : [])]
+    () => routeMarkerSystems
       .filter((system) => statusFilters[mapStatus(system)])
       .map((system) => ({ ...system, status: mapStatus(system) })),
-    [routeMarkerSystems, searchSystem, statusFilters],
+    [routeMarkerSystems, statusFilters],
   );
   const visibleHubs = useMemo(
     () => uniqueHubs
@@ -432,7 +433,9 @@ export default function GalaxyMap({
       const local = await fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}`);
       const localData = await local.json();
       const best = localData?.results?.[0];
-      if (local.ok && best?.name) {
+      // Prefix hits belong in the dropdown. The Find button opens a system only
+      // when the name matches, otherwise EDSM — never a fake "planned" marker.
+      if (local.ok && best?.name && systemNameKey(best.name) === key) {
         openGalaxy(best);
         setSystemSearchLoading(false);
         return;
@@ -444,12 +447,23 @@ export default function GalaxyMap({
       const response = await fetch(`/api/edsm/system?name=${encodeURIComponent(query)}`);
       const data = await response.json();
       if (!response.ok || !data.coords) throw new Error(data.error || 'Система не найдена');
-      const point: RouteSystem = { id: -900000 - Date.now() % 100000, system_name: data.name || query, sort_order: -1, status: 'planned', x: Number(data.coords.x), y: Number(data.coords.y), z: Number(data.coords.z), isHub: false };
-      setSearchSystem(point);
-      handleSelectRouteSystem(point);
+      openGalaxy({
+        id64: data.id64 != null ? String(data.id64) : '',
+        name: data.name || query,
+        x: Number(data.coords.x),
+        y: Number(data.coords.y),
+        z: Number(data.coords.z),
+        main_star: typeof data.primaryStar?.type === 'string' ? data.primaryStar.type : null,
+        star_type: 'unknown',
+        star_giant_class: null,
+        needs_permit: !!data.requirePermit,
+        distance_from_sols: typeof data.distanceToSol === 'number' ? data.distanceToSol : null,
+        distance_from_sgra: null,
+        source: 'edsm',
+      });
     } catch (error) { setSystemSearchError(error instanceof Error ? error.message : 'Система не найдена'); }
     finally { setSystemSearchLoading(false); }
-  }, [handleSelectHub, handleSelectRouteSystem, systemSearch, uniqueHubs, uniqueRouteSystems]);
+  }, [handleSelectHub, handleSelectRouteSystem, openGalaxy, systemSearch, uniqueHubs, uniqueRouteSystems]);
 
   const handleClearSelection = useCallback(() => {
     setSelectedHub(null);
@@ -709,7 +723,7 @@ export default function GalaxyMap({
           <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none' }}>EDSM</a>
             <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none' }}>Raven</a>
-            <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxyPick.id64)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#ffd166', textDecoration: 'none' }}>Spansh</a>
+            {galaxyPick.id64 && <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxyPick.id64)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#ffd166', textDecoration: 'none' }}>Spansh</a>}
             <a href={`https://inara.cz/elite/starsystem/?search=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#9ca3af', textDecoration: 'none' }}>Inara</a>
           </div>
         </div>
@@ -767,9 +781,6 @@ export default function GalaxyMap({
       )}
 
       <Canvas
-        // Clicking open space should close the detail card just like clicking
-        // an already selected marker; marker handlers stop propagation first.
-        onPointerMissed={handleClearSelection}
         camera={{ position: [0, 35000, 0], fov: 45, near: 1, far: 200000 }}
         gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
         style={{ background: '#000000', width: '100%', height: '100%' }}
@@ -814,6 +825,10 @@ export default function GalaxyMap({
           />
         </Suspense>
       </Canvas>
+    </div>
+  );
+}
+    </Canvas>
     </div>
   );
 }

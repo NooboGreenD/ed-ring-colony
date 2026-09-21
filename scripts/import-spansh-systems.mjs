@@ -657,6 +657,8 @@ async function selftest(args, log) {
   assert.equal(counts.wolf_rayet, expectCount(14) + expectCount(15) + expectCount(16) + expectCount(17) + expectCount(18), 'wolf-rayet count');
   assert.equal(counts.carbon, expectCount(21) + expectCount(22) + expectCount(23), 'carbon count');
   assert.equal(counts.unknown, expectCount(28) + expectCount(29) + expectCount(30), 'unknown count (planet-ish/null)');
+  assert.equal(counts.s_type, expectCount(31), 's-type count');
+  assert.equal(counts.ms_type, expectCount(32), 'ms-type count');
   assert.equal(id64Set.size, n + 1, 'id64 uniqueness');
   // Exact u64 digits survive the pipeline (row 0 has the max uint64 value).
   assert.equal(id64FromParts(parsed.id64Hi[0], parsed.id64Lo[0]), '18446744073709551615', 'id64 hi/lo round-trip (max u64)');

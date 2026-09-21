@@ -186,7 +186,9 @@ export async function POST(req: Request) {
     let catalogReady = false;
     try {
       const stats = await getGalaxyStats();
-      catalogReady = !!stats && stats.systems_count > 0;
+      // A --limit import is a sample, not the galaxy. Using it for cubes would
+      // hide real systems and fill the route with synthetic waypoints.
+      catalogReady = !!stats && !stats.partial && stats.systems_count >= 1_000_000;
     } catch {
       catalogReady = false;
     }
