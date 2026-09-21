@@ -4,13 +4,14 @@ import { notFound } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
-export default async function WikiCategoryPage({ params }: { params: { slug: string } }) {
+export default async function WikiCategoryPage({ params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const supabase = createServiceClient();
 
   const { data: category, error: catError } = await supabase
     .from('wiki_categories')
     .select('*')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .maybeSingle();
 
   if (catError) {

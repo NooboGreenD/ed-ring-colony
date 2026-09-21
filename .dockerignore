@@ -18,3 +18,8 @@ venv
 .vscode
 .idea
 .DS_Store
+
+.cache
+
+.edrc-release.json
+.source-*-complete

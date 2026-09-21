@@ -15,8 +15,8 @@ function normalizeLocale(raw: string | null): string {
 
 function getLocaleFromStorage(): string {
   if (typeof window === 'undefined') return 'ru';
-  const stored = localStorage.getItem(STORAGE_KEY);
-  return normalizeLocale(stored);
+  try { return normalizeLocale(localStorage.getItem(STORAGE_KEY)); }
+  catch { return 'ru'; }
 }
 
 function setLocaleCookie(locale: string) {
@@ -43,9 +43,11 @@ const I18nContext = createContext<I18nContextType>({
 });
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
-  const [locale, setLocaleState] = useState(() => getLocaleFromStorage());
+  const [locale, setLocaleState] = useState('ru');
 
   useEffect(() => {
+    // Match the prerendered Russian tree, then restore the browser preference.
+    setLocaleState(getLocaleFromStorage());
     const handler = (e: StorageEvent) => {
       if (e.key === STORAGE_KEY) {
         const next = normalizeLocale(e.newValue);

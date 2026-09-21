@@ -4,13 +4,14 @@ import { notFound } from 'next/navigation';
 
 export const dynamic = 'force-dynamic';
 
-export default async function WikiTagPage({ params }: { params: { slug: string } }) {
+export default async function WikiTagPage({ params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const supabase = createServiceClient();
 
   const { data: tag, error: tagError } = await supabase
     .from('wiki_tags')
     .select('id, name, slug')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .maybeSingle();
 
   if (tagError) {

@@ -13,9 +13,10 @@ const patchSchema = z.object({
   status: z.enum(['active', 'paused', 'completed', 'cancelled']).optional(),
 });
 
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const supabase = await createClient();
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -70,9 +71,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const body = await req.json();
     const supabase = await createClient();
 
@@ -145,9 +147,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

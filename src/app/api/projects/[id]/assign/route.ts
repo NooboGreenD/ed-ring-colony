@@ -3,9 +3,10 @@ import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
 
 export const dynamic = 'force-dynamic';
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { user_id, role = 'member', callsign } = await req.json();
     const supabase = await createClient();
 
@@ -79,9 +80,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { user_id } = await req.json();
     const supabase = await createClient();
 

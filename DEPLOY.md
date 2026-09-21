@@ -1,5 +1,17 @@
 # Перенос ED Ring Colony с Vercel на VPS / другой хостинг
 
+> **Уже работающий сервер Ubuntu 20.04 / Docker Compose:** начните с
+> [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md), не переустанавливайте стек.
+> Новые регистрации требуют SMTP и подтверждения; autoconfirm не включать.
+> Для исходников нужен Node >=22.18; Docker-образы используют Node 22.
+
+
+> **Обновление 20.09.2026:** для уже работающего `edringcolony.ru` используйте
+> [POST-MIGRATION.md](POST-MIGRATION.md), а не повторную первоначальную установку.
+> Фоновые задачи теперь запускает Docker-сервис `jobs`; Actions оставлен только
+> для сборки Uploader. OAuth в self-hosted GoTrue требует compose override,
+> одного добавления переменных в `.env` недостаточно.
+
 Инструкция по результатам анализа дистрибутива. Проект подготовлен к переносу:
 включён `output: 'standalone'` в `next.config.mjs`, добавлены `Dockerfile`,
 `docker-compose.yml`, конфиги nginx/systemd/cron в `deploy/` и расширен
@@ -9,27 +21,28 @@
 
 ## 1. Что показал анализ дистрибутива
 
-**Архитектура.** Next.js 14.2.5 (App Router), один Node.js-процесс. Вся
+**Архитектура.** Next.js 16.3.5 / React 19.2.8 (App Router), один Node.js-процесс. Вся
 персистентность — во внешнем **Supabase** (Postgres + Auth + Realtime):
 на самом хостинге ни базы, ни загруженных файлов нет. Это сильно упрощает
 переезд — переносится только веб-приложение.
 
 **Зависимость от Vercel — минимальная.** Проект НЕ использует:
 - Vercel Cron (`vercel.json` содержит только настройку git-деплоя, секции
-  `crons` нет — все крон-задачи уже идут через **GitHub Actions**);
+  `crons` нет — все фоновые задачи идут через локальный **Docker-сервис jobs**);
 - Vercel Image Optimization (`images.unoptimized: true`);
 - Vercel Blob/KV/Postgres/Edge Config;
-- Edge Runtime (все роуты — обычный Node.js runtime).
+
+API-роуты используют Node.js runtime; middleware Next.js остаётся в Edge runtime.
 
 **Что привязано к Vercel и учтено при переносе:**
 
 | Место | Проблема | Решение |
 |---|---|---|
-| `vercel.json` | только git-деплой Vercel | на VPS не используется, можно удалить после переезда |
-| `src/app/login/actions.ts`, `src/lib/discordOAuth.ts` | fallback на `https://ed-ring-colony.vercel.app`, если не задан `NEXT_PUBLIC_SITE_URL` | задать `NEXT_PUBLIC_SITE_URL` (добавлен в `.env.example`) |
+| `vercel.json` | прежний git-деплой Vercel | теперь выключен: `deploymentEnabled: false` |
+| `src/app/login/actions.ts`, `src/lib/siteUrl.ts` | OAuth origin за reverse proxy | канонический HTTPS `NEXT_PUBLIC_SITE_URL`, default edringcolony.ru |
 | `src/app/layout.tsx` | жёсткий OG-url | теперь берётся из `NEXT_PUBLIC_SITE_URL` |
-| `src/app/api/cron/translate/route.ts`, `api/galnet` | принимают запросы по User-Agent `vercel-cron/` | не мешает: параллельно принимается `Bearer CRON_SECRET` / `x-cron-secret` — так и работают GitHub Actions и `deploy/crontab.example` |
-| `.github/workflows/cron-*.yml` | дергают сайт по секрету `VERCEL_URL` | поменять значение секрета `VERCEL_URL` в GitHub на новый домен (переименовывать не обязательно) |
+| `src/app/api/cron/translate/route.ts`, `api/galnet` | доверяли `vercel-cron/` User-Agent | обход удалён; только `Bearer CRON_SECRET` / `x-cron-secret` |
+| старые Actions cron workflows | внешний scheduler | удалены; все 6 задач перенесены в `jobs`, см. POST-MIGRATION.md |
 | `api/atlas/ring-route` | `maxDuration = 300` (на Vercel Hobby ограничен 10–60 с) | на VPS ограничений нет; в `deploy/nginx.conf` выставлен `proxy_read_timeout 310s` |
 | `scripts/eddn-worker.ts` | ZeroMQ-воркер, на Vercel не запускался вовсе | на VPS можно наконец включить (см. §7) |
 
@@ -154,16 +167,10 @@ sudo certbot --nginx -d ваш-домен
 
 ## 7. Крон-задачи
 
-Сейчас все задачи идут из GitHub Actions и стучатся на адрес из секрета
-`VERCEL_URL`. **Единственное действие:** в GitHub → Settings → Secrets →
-Actions поменять значение `VERCEL_URL` на `https://ваш-домен` (без слэша).
-
-Затрагиваются: `cron-capi-sync.yml` (каждые 5 мин), `cron-cg-check.yml`,
-`cron-eddn-cleanup.yml` (каждые 6 ч), `auto-translate.yml` (fallback-ветка),
-`galnet-sync.yml` (работает с Supabase напрямую — менять не нужно).
-
-Автономная альтернатива без GitHub — локальный crontab на VPS:
-готовый шаблон в `deploy/crontab.example`.
+Все шесть задач перенесены в Docker-сервис `jobs`. Отключите старые Actions
+на default branch и cron-вызовы API перед включением сервиса; задания backup
+оставьте. Проверки сайта выполняются во время Docker build; сборка Windows EXE
+остаётся в Actions. Полный порядок: [POST-MIGRATION.md](POST-MIGRATION.md).
 
 ## 8. Внешние сервисы — smена адреса
 
@@ -223,17 +230,16 @@ npx esbuild scripts/eddn-worker.ts --bundle --platform=node \
 - [ ] Сайт поднят (§3/§4/§5), `curl -I http://127.0.0.1:3000` → 200
 - [ ] nginx + certbot, сайт открывается по HTTPS
 - [ ] Supabase Redirect URLs обновлены; вход по email и Discord работает
-- [ ] GitHub-секрет `VERCEL_URL` → новый домен (или crontab на VPS)
+- [ ] jobs включён, старые Actions/cron отключены без удаления backup-задач
 - [ ] Проверены: логин, форум, вики, атлас, карта, push-уведомления, CAPI
 - [ ] DNS переключён на VPS; старый деплой Vercel можно перевести в
       режим редиректа или отключить (Project → Settings → Domains)
 - [ ] (опц.) EDDN-воркер запущен
-- [ ] (опц.) `vercel.json` удалён из репозитория
+- [ ] Vercel git deployment отключён
 
 ## 11. Откат
 
-Vercel-проект остаётся рабочим до его удаления. Для отката достаточно
-вернуть DNS на Vercel и секрет `VERCEL_URL` на старый адрес. Изменения в
-репозитории обратной совместимости не ломают: `output: 'standalone'` не
-мешает деплою на Vercel, все новые файлы (`Dockerfile`, `deploy/`) Vercel
-игнорирует.
+После переноса БД нельзя считать старый Vercel-деплой актуальным резервом.
+Откат делается к сохранённому образу сайта и конфигурациям на своём сервере:
+сначала остановите `jobs`, затем верните сайт; не включайте два расписания.
+Подробности — [POST-MIGRATION.md](POST-MIGRATION.md), раздел «Откат».

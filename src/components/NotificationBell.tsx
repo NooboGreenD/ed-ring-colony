@@ -4,6 +4,7 @@ import { IconShield, IconGlobe, IconMessage, IconMembers, IconPin, IconRocket, I
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { useRealtimeUserId } from "@/hooks/useRealtimeUserId";
 
 interface Notification {
   id: string;
@@ -32,16 +33,20 @@ interface Notification {
 export default function NotificationBell() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [user, setUser] = useState<any>(null);
+  const userId = useRealtimeUserId();
+  const activeUserId = useRef<string | null>(userId);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [totalUnread, setTotalUnread] = useState(0);
   const [pushEnabled, setPushEnabled] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // Загрузка пользователя
   useEffect(() => {
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-  }, []);
+    activeUserId.current = userId;
+    setNotifications([]);
+    setTotalUnread(0);
+    setOpen(false);
+    return () => { activeUserId.current = null; };
+  }, [userId]);
 
   // Проверка push-разрешения
   useEffect(() => {
@@ -52,7 +57,7 @@ export default function NotificationBell() {
 
   // Загрузка уведомлений
   const loadNotifications = useCallback(async () => {
-    if (!user) {
+    if (!userId) {
       setNotifications([]);
       setTotalUnread(0);
       return;
@@ -64,7 +69,7 @@ export default function NotificationBell() {
     const { data: unreadMsgs } = await supabase
       .from("messages")
       .select("sender_id, author_name, content, created_at")
-      .eq("recipient_id", user.id)
+      .eq("recipient_id", userId)
       .is("read_at", null)
       .order("created_at", { ascending: false });
 
@@ -102,7 +107,7 @@ export default function NotificationBell() {
     const { data: forumNotifs } = await supabase
       .from("forum_notifications")
       .select("id, thread_id, post_id, title, body, is_read, created_at")
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("is_read", false)
       .order("created_at", { ascending: false })
       .limit(20);
@@ -148,7 +153,7 @@ export default function NotificationBell() {
     const { data: userNotifs } = await supabase
       .from("user_notifications")
       .select("id, type, title, body, href, metadata, is_read, created_at")
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("is_read", false)
       .order("created_at", { ascending: false })
       .limit(30);
@@ -169,30 +174,34 @@ export default function NotificationBell() {
     // Сортируем по времени
     list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
+    if (activeUserId.current !== userId) return;
     setNotifications(list);
     setTotalUnread(list.filter((n) => !n.isRead).length);
-  }, [user]);
+  }, [userId]);
 
   useEffect(() => {
-    loadNotifications();
-    const t = setInterval(loadNotifications, 15000);
+    // A globally mounted bell used to open a guest socket with eq.undefined.
+    if (!userId) return;
+    void loadNotifications();
+    const t = setInterval(() => void loadNotifications(), 15000);
     const channel = supabase
-      .channel("notifications")
+      .channel(`notifications:${userId}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "messages" },
+        { event: "*", schema: "public", table: "messages", filter: `recipient_id=eq.${userId}` },
         () => loadNotifications()
       )
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "forum_notifications", filter: `user_id=eq.${user?.id}` },
+        { event: "INSERT", schema: "public", table: "forum_notifications", filter: `user_id=eq.${userId}` },
         () => loadNotifications()
       )
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "user_notifications", filter: `user_id=eq.${user?.id}` },
+        { event: "INSERT", schema: "public", table: "user_notifications", filter: `user_id=eq.${userId}` },
         (payload) => {
-          loadNotifications();
+          if (activeUserId.current !== userId) return;
+          void loadNotifications();
           // Показать браузерное уведомление если вкладка не активна
           if (document.hidden && "Notification" in window && Notification.permission === "granted") {
             const n = payload.new as any;
@@ -206,15 +215,15 @@ export default function NotificationBell() {
       )
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "friends", filter: `addressee_id=eq.${user?.id}` },
+        { event: "*", schema: "public", table: "friends", filter: `addressee_id=eq.${userId}` },
         () => loadNotifications()
       )
       .subscribe();
     return () => {
       clearInterval(t);
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
-  }, [loadNotifications, user?.id]);
+  }, [loadNotifications, userId]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -225,6 +234,7 @@ export default function NotificationBell() {
   }, []);
 
   const handleClick = async (n: Notification) => {
+    if (!userId) return;
     setOpen(false);
 
     // Mark forum notification as read
@@ -233,7 +243,7 @@ export default function NotificationBell() {
         .from("forum_notifications")
         .update({ is_read: true, read_at: new Date().toISOString() })
         .eq("id", n.id)
-        .eq("user_id", user.id);
+        .eq("user_id", userId);
     }
 
     // Mark user_notification as read
@@ -242,7 +252,7 @@ export default function NotificationBell() {
         .from("user_notifications")
         .update({ is_read: true, read_at: new Date().toISOString() })
         .eq("id", n.dbId)
-        .eq("user_id", user.id);
+        .eq("user_id", userId);
     }
 
     if (n.type === "news") {
@@ -253,27 +263,27 @@ export default function NotificationBell() {
   };
 
   const markAllRead = async () => {
-    if (!user) return;
+    if (!userId) return;
 
     // Mark messages read
     await supabase
       .from("messages")
       .update({ read_at: new Date().toISOString() })
-      .eq("recipient_id", user.id)
+      .eq("recipient_id", userId)
       .is("read_at", null);
 
     // Mark forum notifications read
     await supabase
       .from("forum_notifications")
       .update({ is_read: true, read_at: new Date().toISOString() })
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("is_read", false);
 
     // Mark user notifications read
     await supabase
       .from("user_notifications")
       .update({ is_read: true, read_at: new Date().toISOString() })
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("is_read", false);
 
     localStorage.setItem("lastReadNewsAt", new Date().toISOString());
@@ -472,7 +482,7 @@ export default function NotificationBell() {
           </div>
 
           {/* Push toggle */}
-          {user && (
+          {userId && (
             <div style={{
               padding: "8px 14px",
               borderBottom: "1px solid #323538",

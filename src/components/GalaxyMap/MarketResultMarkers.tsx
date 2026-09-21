@@ -60,7 +60,7 @@ function MarketResultPoint({ result }: { result: MarketResult & { x: number; y: 
         <sphereGeometry args={[2.5, 16, 16]} />
         <meshStandardMaterial color="#22c55e" emissive="#22c55e" emissiveIntensity={0.6} transparent opacity={0.9} />
       </mesh>
-      <Text position={[0, 5, 0]} fontSize={2.5} color="#22c55e" anchorX="center" anchorY="bottom" visible={hovered} raycast={() => null}>
+      <Text font="/fonts/DejaVuSans.ttf" position={[0, 5, 0]} fontSize={2.5} color="#22c55e" anchorX="center" anchorY="bottom" visible={hovered} raycast={() => null}>
         {result.system_name}{result.station_name ? ` — ${result.station_name}` : ''}
       </Text>
     </group>

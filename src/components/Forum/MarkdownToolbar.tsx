@@ -4,7 +4,7 @@ import { IconLink, IconQuote } from "@/components/Icons";
 import { useRef } from "react";
 
 interface MarkdownToolbarProps {
-  textareaRef?: React.RefObject<HTMLTextAreaElement> | null;
+  textareaRef?: React.RefObject<HTMLTextAreaElement | null> | null;
   onChange: (value: string) => void;
   getValue: () => string;
 }

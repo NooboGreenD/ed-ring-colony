@@ -2,11 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
-import { supabase } from '@/lib/supabaseClient';
+import { passwordError } from '@/lib/passwordPolicy';
 
 export default function RegisterPage() {
-  const router = useRouter();
   const [cmdr, setCmdr] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -19,8 +17,9 @@ export default function RegisterPage() {
     e.preventDefault();
     setError('');
     setInfo('');
-    if (password.length < 6) {
-      setError('Пароль должен быть не короче 6 символов.');
+    const problem = passwordError(password);
+    if (problem) {
+      setError(problem);
       return;
     }
     if (password !== confirm) {
@@ -33,28 +32,18 @@ export default function RegisterPage() {
       return;
     }
     setBusy(true);
-    const res = await fetch('/api/auth/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.trim(), password, cmdr_name: nick }),
-    });
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setBusy(false);
-      setError(payload.error || 'Не удалось создать аккаунт.');
-      return;
-    }
-    const { error: loginErr } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password,
-    });
-    setBusy(false);
-    if (loginErr) {
-      setInfo('Аккаунт создан. Войдите на странице входа.');
-      return;
-    }
-    router.push('/account');
-    router.refresh();
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password, cmdr_name: nick }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) { setError(payload.error || 'Не удалось отправить письмо.'); return; }
+      setPassword(''); setConfirm('');
+      setInfo(payload.message || 'Подтвердите адрес по ссылке в письме, чтобы войти.');
+    } catch { setError('Ошибка соединения. Попробуйте ещё раз.'); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -62,7 +51,7 @@ export default function RegisterPage() {
       <div className="kicker">Новый пилот</div>
       <h1>Регистрация</h1>
       {info ? (
-        <p>{info}</p>
+        <div role="status"><p>{info}</p><p>Автоматического входа до подтверждения почты нет.</p><Link href="/resend-confirmation">Отправить письмо повторно</Link></div>
       ) : (
         <form className="auth-form" onSubmit={onSubmit}>
           <label>
@@ -72,6 +61,7 @@ export default function RegisterPage() {
               required
               autoComplete="nickname"
               placeholder="CMDR Name"
+              maxLength={250}
               value={cmdr}
               onChange={(e) => setCmdr(e.target.value)}
             />
@@ -96,6 +86,7 @@ export default function RegisterPage() {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
+          <p>Не менее 12 символов. Можно использовать длинную парольную фразу.</p>
           <label>
             Повтор пароля
             <input

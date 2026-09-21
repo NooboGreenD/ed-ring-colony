@@ -3,10 +3,11 @@ import { authFromRequest } from '@/lib/supabaseServer'
 
 export const dynamic = 'force-dynamic';
 
-export async function DELETE(req: Request, { params }: { params: { id: string; messageId: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string; messageId: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
-    const messageId = parseInt(params.messageId)
+    const squadronId = parseInt(resolvedParams.id)
+    const messageId = parseInt(resolvedParams.messageId)
 
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })

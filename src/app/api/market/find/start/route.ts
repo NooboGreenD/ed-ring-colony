@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 
-const EDSM_UA = 'ED-Ring-Colony/1.0 (https://ed-ring-colony.vercel.app)';
+const EDSM_UA = 'ED-Ring-Colony/1.0 (https://edringcolony.ru)';
 const SPHERE_MAX = 100;
 
 interface EDSMCoords {

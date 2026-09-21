@@ -5,22 +5,24 @@ import CategoryPageClient from './CategoryPageClient';
 export const revalidate = 30;
 
 interface Props {
-  params: { slug: string };
-  searchParams: { page?: string; currentPage?: string };
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ page?: string; currentPage?: string }>;
 }
 
 export default async function CategoryPage({ params, searchParams }: Props) {
+  const resolvedParams = await params;
+  const resolvedSearchParams = await searchParams;
   const supabase = await createClient();
   // Older links in the category client used currentPage; accept both names
   // so pagination never silently falls back to page one.
-  const page = Math.max(1, parseInt(searchParams.page || searchParams.currentPage || '1'));
+  const page = Math.max(1, parseInt(resolvedSearchParams.page || resolvedSearchParams.currentPage || '1'));
   const limit = 20;
   const offset = (page - 1) * limit;
 
   const { data: category } = await supabase
     .from('forum_categories')
     .select('*')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .single();
 
   if (!category) notFound();

@@ -75,6 +75,7 @@ function RoutePoint({ point, isSelected, onClick }: { point: RouteSystem; isSele
         </mesh>
       )}
       <Text
+        font="/fonts/DejaVuSans.ttf"
         position={[0, 5, 0]}
         fontSize={2.5}
         color="#9ca3af"

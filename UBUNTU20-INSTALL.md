@@ -1,5 +1,17 @@
 # Установка ED Ring Colony на Ubuntu 20.04 (сайт + БД на одной машине)
 
+> **Уже работающий сервер Ubuntu 20.04 / Docker Compose:** начните с
+> [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md), не переустанавливайте стек.
+> Новые регистрации требуют SMTP и подтверждения; autoconfirm не включать.
+> Для исходников нужен Node >=22.18; Docker-образы используют Node 22.
+
+
+> **Обновление 20.09.2026:** для уже работающего `edringcolony.ru` используйте
+> [POST-MIGRATION.md](POST-MIGRATION.md), а не повторную первоначальную установку.
+> Фоновые задачи теперь запускает Docker-сервис `jobs`; Actions оставлен только
+> для сборки Uploader. OAuth в self-hosted GoTrue требует compose override,
+> одного добавления переменных в `.env` недостаточно.
+
 Подробная инструкция под ваш случай: собственный сервер со статическим
 IP, ОС **Ubuntu Server 20.04 LTS**, на машине разворачивается всё —
 сайт и база данных (self-hosted Supabase). Перенос файлов — архивом
@@ -232,16 +244,17 @@ DASHBOARD_PASSWORD=…из генератора…
 SITE_URL=http://ВАШ_IP
 API_EXTERNAL_URL=http://ВАШ_IP:8000
 SUPABASE_PUBLIC_URL=http://ВАШ_IP:8000
-ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback
+ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback,http://ВАШ_IP/auth/email
 
 # [DOMAIN] (вместо блока выше):
 # SITE_URL=https://ваш-домен
 # API_EXTERNAL_URL=https://supabase.ваш-домен
 # SUPABASE_PUBLIC_URL=https://supabase.ваш-домен
-# ADDITIONAL_REDIRECT_URLS=https://ваш-домен/api/auth/callback
+# ADDITIONAL_REDIRECT_URLS=https://ваш-домен/api/auth/callback,https://ваш-домен/auth/email
 
-# Регистрация по email без своего SMTP: отключаем подтверждение почты
-ENABLE_EMAIL_AUTOCONFIRM=true
+# До настройки SMTP новые регистрации закрыты; autoconfirm не включать.
+ENABLE_EMAIL_AUTOCONFIRM=false
+DISABLE_SIGNUP=true
 ```
 
 Опционально — вход через Discord (приложение создаётся на
@@ -397,19 +410,10 @@ mkdir -p /opt/backups
 crontab -e
 ```
 
-Вставьте (подставив свой адрес и CRON_SECRET):
+Фоновые задачи сайта выполняет Docker-сервис `jobs`; не дублируйте их в cron
+(см. [POST-MIGRATION.md](POST-MIGRATION.md)). В cron остаются только бэкапы:
 
 ```cron
-SITE=http://ВАШ_IP
-SECRET=ваш_CRON_SECRET
-
-# ── фоновые задачи сайта ──
-*/5 * * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/capi-sync"  > /dev/null
-0 */6 * * *  curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/cg-check"   > /dev/null
-30 */6 * * * curl -sf -H "x-cron-secret: $SECRET" "$SITE/api/cron/eddn-cleanup" > /dev/null
-20 6 * * *   curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/galnet" > /dev/null
-40 */6 * * * curl -sf -X POST -H "Authorization: Bearer $SECRET" "$SITE/api/cron/translate?limit=10" > /dev/null
-
 # ── бэкапы (база теперь ваша — бэкапы тоже ваши) ──
 0 4 * * *  docker exec supabase-db pg_dump -U postgres -d postgres -Fc > /opt/backups/edrc-$(date +\%F).dump
 30 4 * * * tar czf /opt/backups/storage-$(date +\%F).tgz /opt/supabase/volumes/storage 2>/dev/null
@@ -426,7 +430,7 @@ SECRET=ваш_CRON_SECRET
 - [ ] Studio (`:8000` или `https://supabase.ваш-домен`) открывается, в
       Table Editor видны таблицы `profiles`, `hubs`, `wiki_articles`…;
 - [ ] сайт открывается снаружи;
-- [ ] регистрация по email проходит, в `profiles` появляется строка;
+- [ ] SMTP/шаблоны настроены: регистрация требует письма, после подтверждения можно войти;
 - [ ] форум: тема и ответ создаются, у темы обновился «последний ответ»;
 - [ ] карта `/map` рендерится, `/systems` грузится;
 - [ ] личные сообщения приходят без перезагрузки страницы (Realtime);
@@ -448,7 +452,7 @@ sudo tail -f /var/log/nginx/error.log
 | 502 на сайте | контейнер сайта не поднялся → `docker logs src-web-1` |
 | Браузер не может достучаться до Supabase | `NEXT_PUBLIC_SUPABASE_URL` = localhost или порт 8000 закрыт → шаг 4.1 |
 | «Invalid JWT» / «JWSError» | ANON_KEY/SERVICE_ROLE_KEY не от этого JWT_SECRET → перегенерировать всё троицей (3.2) |
-| «Email not confirmed» при входе | нет SMTP и не включён `ENABLE_EMAIL_AUTOCONFIRM=true` |
+| «Email not confirmed» при входе | Настроить SMTP/шаблоны и повторно отправить письмо; не включать autoconfirm. См. UBUNTU20-UPGRADE.md. |
 | Сообщения только по F5 | [DOMAIN]: в nginx-блоке Supabase нет `Upgrade/Connection` (WebSocket) |
 | «relation … does not exist» | схема не залита → шаг 3.5 |
 | Сборка сайта: Killed | кончилась RAM → swap (2.4) уже есть? увеличьте до 4G |
@@ -491,5 +495,5 @@ docker compose up -d` (перед этим — бэкап!).
 | 4 | Supabase: стек в `/opt/supabase`, `generate-keys.sh`, `.env`, `up -d`, залить `full_schema.sql` |
 | 5 | Сайт: `.env.production` (ключи из генератора, URL с ВАШ_IP), `docker compose up -d --build` |
 | 6 | nginx из `deploy/selfhost/nginx-selfhost.conf` (+snap-certbot при домене) |
-| 7 | crontab: фоновые задачи + ежедневные pg_dump-бэкапы |
+| 7 | jobs: фоновые задачи; crontab: ежедневные pg_dump-бэкапы |
 | 8 | Чек-лист проверки из Части 7 |

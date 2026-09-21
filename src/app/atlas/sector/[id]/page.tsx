@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 
-export default function SectorStatisticsPage({ params }: { params: { id: string } }) {
+export default function SectorStatisticsPage({ params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = use(params);
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState('');
-  useEffect(() => { fetch(`/api/atlas/sector/${params.id}`).then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error); setData(body); }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Ошибка загрузки')); }, [params.id]);
+  useEffect(() => { fetch(`/api/atlas/sector/${resolvedParams.id}`).then(async (response) => { const body = await response.json(); if (!response.ok) throw new Error(body.error); setData(body); }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Ошибка загрузки')); }, [resolvedParams.id]);
   if (error) return <main className="atlas-page"><Link href="/atlas">← Вернуться в Atlas</Link><h1>Ошибка</h1><p>{error}</p></main>;
   if (!data) return <main className="atlas-page"><p>Загрузка статистики сектора...</p></main>;
   const stat = data.statistics;

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Galnet sync CLI — точка входа для GitHub Actions.
+ * Galnet sync CLI — ручной запуск на собственном сервере.
  *
- * Запускается раз в сутки (см. .github/workflows/galnet-sync.yml):
+ * Сервис jobs вызывает HTTP API; этот CLI оставлен для ручной диагностики:
  *   1) забирает ленту Galnet с cms.zaonce.net;
  *   2) складывает новые/изменённые статьи в Supabase;
  *   3) переводит их через Yandex Cloud Translate API v2.
@@ -140,7 +140,7 @@ async function main() {
 
   if (!url || !key) {
     fail(
-      'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required (add them as repository secrets)'
+      'NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required (set them in the server environment)'
     );
     return;
   }

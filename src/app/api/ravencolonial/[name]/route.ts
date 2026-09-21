@@ -4,9 +4,10 @@ const RC_API_BASE = "https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.
 
 export async function GET(
   req: Request,
-  { params }: { params: { name: string } }
+  { params }: { params: Promise<{ name: string }> }
 ) {
-  const name = decodeURIComponent(params.name);
+  const resolvedParams = await params;
+  const name = decodeURIComponent(resolvedParams.name);
   if (!name) {
     return NextResponse.json({ error: "No CMDR name provided" }, { status: 400 });
   }

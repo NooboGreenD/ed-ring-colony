@@ -1,7 +1,7 @@
 # ED Ring Colony — docker compose для VPS
 #
 #   1. cp .env.example .env.production и заполните значения
-#   2. docker compose up -d --build
+#   2. docker compose --env-file .env.production up -d --build
 #
 # Веб-приложение слушает 127.0.0.1:3000 — наружу его отдаёт nginx/caddy
 # (см. deploy/nginx.conf). Если reverse-proxy не нужен, поменяйте
@@ -23,11 +23,43 @@ services:
       - "127.0.0.1:3000:3000"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # All six former Actions jobs, on the server. Exactly ONE scheduler instance.
+  # No public ports; requests use the Docker network, bypassing public nginx/TLS.
+  jobs:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.jobs
+    environment:
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env.production and pass --env-file .env.production}
+      JOBS_BASE_URL: http://web:3000
+      JOBS_STATE_FILE: /data/jobs-state.json
+      JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,galnet-sync,translate}
+      GALNET_FEED_LIMIT: ${GALNET_FEED_LIMIT:-30}
+      GALNET_TRANSLATE_LIMIT: ${GALNET_TRANSLATE_LIMIT:-10}
+      JOBS_TRANSLATE_PASSES: ${JOBS_TRANSLATE_PASSES:-4}
+    volumes:
+      - jobs-state:/data
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Опционально: EDDN-воркер (ZeroMQ-подписка на рыночные данные).
   # На Vercel он не работал в принципе — на VPS можно включить.
@@ -44,3 +76,6 @@ services:
   #   depends_on:
   #     - web
   #   restart: unless-stopped
+
+volumes:
+  jobs-state:

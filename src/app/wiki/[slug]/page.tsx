@@ -4,12 +4,14 @@ import WikiArticleContent from '@/components/Wiki/WikiArticleContent';
 
 export const dynamic = 'force-dynamic';
 
-export async function generateMetadata({ params }: { params: { slug: string } }) {
-  return { title: `${params.slug} — ED Ring Colony Wiki` };
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
+  return { title: `${resolvedParams.slug} — ED Ring Colony Wiki` };
 }
 
-export default async function WikiArticlePage({ params }: { params: { slug: string } }) {
-  console.log('[WikiArticlePage] slug param:', params.slug);
+export default async function WikiArticlePage({ params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
+  console.log('[WikiArticlePage] slug param:', resolvedParams.slug);
   
   let supabase;
   try {
@@ -30,7 +32,7 @@ export default async function WikiArticlePage({ params }: { params: { slug: stri
     const { data: redirectData } = await supabase
       .from('wiki_redirects')
       .select('to_slug')
-      .eq('from_slug', params.slug)
+      .eq('from_slug', resolvedParams.slug)
       .maybeSingle();
 
     if (redirectData?.to_slug) {
@@ -41,7 +43,7 @@ export default async function WikiArticlePage({ params }: { params: { slug: stri
     const { data: article, error } = await supabase
       .from('wiki_articles')
       .select('*')
-      .eq('slug', params.slug)
+      .eq('slug', resolvedParams.slug)
       .eq('status', 'published')
       .maybeSingle();
 

@@ -16,9 +16,10 @@ function parseSystemNames(raw: string): string[] {
   return names;
 }
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const { names: rawNames } = await req.json();
     const supabase = await createClient();
 

@@ -8,8 +8,9 @@ import { IconProfile, IconSquadron, IconLeaderboard } from '@/components/Icons';
 
 export const dynamic = 'force-dynamic';
 
-export default async function CmdrPage({ params }: { params: { name: string } }) {
-  const name = decodeURIComponent(params.name);
+export default async function CmdrPage({ params }: { params: Promise<{ name: string }> }) {
+  const resolvedParams = await params;
+  const name = decodeURIComponent(resolvedParams.name);
   const supabase = await createClient();
   // Чувствительные таблицы (`pilot_stats`, `capi_profiles`) после миграции
   // `20260918010000_profile_privacy_settings` видны только владельцу, поэтому

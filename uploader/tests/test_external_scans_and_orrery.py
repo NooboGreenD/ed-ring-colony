@@ -230,6 +230,7 @@ class ClientApiExtScansTests(unittest.TestCase):
         with mock.patch.object(client._session, "post") as mock_post:
             mock_resp = mock.MagicMock()
             mock_resp.ok = True
+            mock_resp.status_code = 200
             mock_resp.json.return_value = {"ok": True, "stats": {"credits": 50000000}}
             mock_post.return_value = mock_resp
 

@@ -2,14 +2,15 @@ import { NextResponse } from 'next/server';
 import { createServiceClient } from "@/lib/supabaseServer";
 import { authFromRequest } from '@/lib/supabaseServer';
 
-export async function GET(request: Request, { params }: { params: { slug: string } }) {
+export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const { user } = await authFromRequest(request);
   const supabase = createServiceClient();
 
   const { data: article } = await supabase
     .from('wiki_articles')
     .select('id')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .single();
 
   if (!article) return NextResponse.json({ error: 'Not found' }, { status: 404 });

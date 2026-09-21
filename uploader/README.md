@@ -1,6 +1,19 @@
 # Colonial Helper
 
-Standalone desktop uploader for **ED Ring Colony**.
+Standalone desktop uploader for **ED Ring Colony** — https://edringcolony.ru.
+
+## Версия 2.10.25 — собственный сервер
+
+API по умолчанию — `https://edringcolony.ru/api`, **не** адрес Supabase.
+На вкладке подключения можно открыть страницу API-токенов или сменить сервер
+(с перезапуском; старый токен на новый сервер не передаётся). При переезде
+сохранённый токен работает, если перенесены `api_tokens` и UUID пользователей;
+иначе создайте новый на `https://edringcolony.ru/account?tab=tokens`.
+
+Кэш импортов/offsets теперь связан с сервером и аккаунтом. После обновления
+возможна однократная повторная сверка истории. GitHub Releases остаётся каналом
+обновлений. Подробности для администратора — [POST-MIGRATION.md](../POST-MIGRATION.md).
+
 
 ## Что делает
 

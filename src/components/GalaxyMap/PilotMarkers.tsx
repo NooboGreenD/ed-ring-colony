@@ -69,7 +69,7 @@ function PilotSphere({ pilot, isSelected, onClick }: { pilot: Pilot; isSelected:
           <meshBasicMaterial color="#e67e22" side={THREE.DoubleSide} transparent opacity={0.8} />
         </mesh>
       )}
-      <Text position={[0, 5, 0]} fontSize={2.5} color="#eeeeee" anchorX="center" anchorY="bottom" visible={hovered || isSelected} raycast={() => null}>
+      <Text font="/fonts/DejaVuSans.ttf" position={[0, 5, 0]} fontSize={2.5} color="#eeeeee" anchorX="center" anchorY="bottom" visible={hovered || isSelected} raycast={() => null}>
         {pilot.cmdr_name}
       </Text>
     </group>

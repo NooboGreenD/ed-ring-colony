@@ -7,9 +7,10 @@ import { persistRavenSystemProgress, statusFromProgress } from '@/lib/systemProg
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-export async function POST(req: Request, { params }: { params: { id: string } }) {
+export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const projectId = parseInt(params.id);
+    const projectId = parseInt(resolvedParams.id);
     const supabase = await createClient();
 
     const { data: systems } = await supabase

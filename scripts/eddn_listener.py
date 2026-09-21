@@ -12,7 +12,8 @@ import os
 import time
 from supabase import create_client, Client
 
-SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://sgukfplhxdhmkqponwft.supabase.co')
+SUPABASE_URL = (os.getenv('SUPABASE_URL') or os.getenv('NEXT_PUBLIC_SUPABASE_URL')
+                or 'https://supabase.edringcolony.ru')
 SUPABASE_KEY = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '')
 EDDN_RELAY = 'tcp://eddn.edcd.io:9500'
 BATCH_SIZE = 50

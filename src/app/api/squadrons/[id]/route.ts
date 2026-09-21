@@ -4,9 +4,10 @@ import { NAME_CHANGE_COOLDOWN_DAYS } from '@/lib/squadronConstants'
 import { getSquadronMembership, loadSquadronMembers, loadSquadronProjects } from '@/lib/squadronData'
 
 export const dynamic = 'force-dynamic';
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = Number.parseInt(params.id, 10)
+    const squadronId = Number.parseInt(resolvedParams.id, 10)
     if (!Number.isSafeInteger(squadronId) || squadronId <= 0) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     }
@@ -59,9 +60,10 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 }
 
-export async function PATCH(req: Request, { params }: { params: { id: string } }) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const body = await req.json()
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -136,9 +138,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
   }
 }
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const squadronId = parseInt(params.id)
+    const squadronId = parseInt(resolvedParams.id)
     const { user, supabase } = await authFromRequest(req)
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 

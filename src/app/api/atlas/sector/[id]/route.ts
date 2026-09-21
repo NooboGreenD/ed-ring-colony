@@ -12,8 +12,8 @@ function inside(x: number, z: number, path: number[][]) {
   return result;
 }
 
-export async function GET(_request: Request, context: { params: { id: string } }) {
-  const id = Number(context.params.id);
+export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+  const id = Number((await context.params).id);
   const region = (regionPack as any).regions.find((item: any) => item.id === id);
   if (!region) return NextResponse.json({ error: 'Сектор не найден' }, { status: 404 });
   try {

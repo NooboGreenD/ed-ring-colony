@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest } from '@/lib/supabaseServer';
 
-export async function GET(request: Request, { params }: { params: { slug: string } }) {
+export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const { supabase } = await authFromRequest(request);
 
   const { data: tag } = await supabase
     .from('wiki_tags')
     .select('id, name, slug')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .single();
 
   if (!tag) return NextResponse.json({ error: 'Not found' }, { status: 404 });

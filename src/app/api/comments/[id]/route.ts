@@ -3,9 +3,10 @@ import { createServiceClient } from '@/lib/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 
-export async function DELETE(req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const resolvedParams = await params;
   try {
-    const commentId = parseInt(params.id);
+    const commentId = parseInt(resolvedParams.id);
     if (isNaN(commentId)) {
       return NextResponse.json({ error: 'Invalid comment ID' }, { status: 400 });
     }

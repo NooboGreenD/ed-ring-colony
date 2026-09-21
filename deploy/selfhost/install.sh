@@ -185,8 +185,11 @@ set_env "$E" DASHBOARD_PASSWORD       "$DASHBOARD_PASSWORD"
 set_env "$E" SITE_URL                 "$SITE_URL"
 set_env "$E" API_EXTERNAL_URL         "$SUPA_URL"
 set_env "$E" SUPABASE_PUBLIC_URL      "$SUPA_URL"
-set_env "$E" ADDITIONAL_REDIRECT_URLS "$SITE_URL/api/auth/callback"
-set_env "$E" ENABLE_EMAIL_AUTOCONFIRM "true"
+set_env "$E" ADDITIONAL_REDIRECT_URLS "$SITE_URL/api/auth/callback,$SITE_URL/auth/email"
+# Production email ownership must be verified. Finish SMTP/templates before
+# enabling new signups; see POST-MIGRATION.md (never auto-confirm mailboxes).
+set_env "$E" ENABLE_EMAIL_AUTOCONFIRM "false"
+set_env "$E" DISABLE_SIGNUP "true"
 echo "$E настроен"
 
 ( cd "$SUPA_DIR" && docker compose pull -q && docker compose up -d )
@@ -253,6 +256,24 @@ cat >> "$NG" <<EOF
 server {
     listen 80;
     server_name $SUPA_HOST;
+    location ^~ /realtime/v1/ {
+        # No URI suffix / trailing slash here: Kong must receive /realtime/v1/...
+        # Kong itself rewrites it to /socket/... in Realtime.
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        # apikey is present in the WebSocket URL. Never include it in access logs.
+        access_log off;
+    }
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
@@ -301,10 +322,11 @@ set_env "$SE" SUPABASE_SERVICE_ROLE_KEY     "$SERVICE_ROLE_KEY"
 set_env "$SE" NEXT_PUBLIC_SITE_URL          "$SITE_URL"
 set_env "$SE" CRON_SECRET                   "$CRON_SECRET"
 set_env "$SE" FRONTIER_REDIRECT_URI         "$SITE_URL/api/capi/callback"
+if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
 chmod 600 "$SE"
 ln -sf .env.production "$SRC_DIR/.env"
 
-( cd "$SRC_DIR" && docker compose up -d --build )
+( cd "$SRC_DIR" && docker compose --env-file .env.production up -d --build )
 
 echo -n "жду ответа сайта"
 for i in $(seq 1 36); do
@@ -320,19 +342,14 @@ if [ "$DO_CRON" = 1 ]; then
   mkdir -p /opt/backups
   cat > /etc/cron.d/ed-ring-colony <<EOF
 SHELL=/bin/bash
-# фоновые задачи сайта
-*/5 * * * *  root curl -sf -H "x-cron-secret: $CRON_SECRET" "$SITE_URL/api/cron/capi-sync"  > /dev/null
-0 */6 * * *  root curl -sf -H "x-cron-secret: $CRON_SECRET" "$SITE_URL/api/cron/cg-check"   > /dev/null
-30 */6 * * * root curl -sf -H "x-cron-secret: $CRON_SECRET" "$SITE_URL/api/cron/eddn-cleanup" > /dev/null
-20 6 * * *   root curl -sf -X POST -H "Authorization: Bearer $CRON_SECRET" "$SITE_URL/api/galnet" > /dev/null
-40 */6 * * * root curl -sf -X POST -H "Authorization: Bearer $CRON_SECRET" "$SITE_URL/api/cron/translate?limit=10" > /dev/null
+# Фоновые задачи выполняет compose-сервис jobs. Здесь только бэкапы.
 # бэкапы
 0 4 * * *  root docker exec supabase-db pg_dump -U postgres -d postgres -Fc > /opt/backups/edrc-\$(date +\%F).dump
 30 4 * * * root tar czf /opt/backups/storage-\$(date +\%F).tgz $SUPA_DIR/volumes/storage 2>/dev/null
 0 5 * * *  root find /opt/backups -mtime +14 -delete
 EOF
   chmod 644 /etc/cron.d/ed-ring-colony
-  echo "крон и бэкапы настроены (/etc/cron.d/ed-ring-colony)"
+  echo "бэкапы настроены (/etc/cron.d/ed-ring-colony); фоновые задачи — docker compose --env-file .env.production logs jobs"
 fi
 
 # ═════════════════════════════════════════════════════════════════════

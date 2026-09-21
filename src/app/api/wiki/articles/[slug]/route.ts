@@ -1,14 +1,15 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest } from '@/lib/supabaseServer';
 
-export async function GET(request: Request, { params }: { params: { slug: string } }) {
+export async function GET(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const { supabase } = await authFromRequest(request);
 
   // Check redirect first
   const { data: redirect } = await supabase
     .from('wiki_redirects')
     .select('to_slug')
-    .eq('from_slug', params.slug)
+    .eq('from_slug', resolvedParams.slug)
     .maybeSingle();
 
   if (redirect?.to_slug) {
@@ -19,7 +20,7 @@ export async function GET(request: Request, { params }: { params: { slug: string
   const { data: article, error } = await supabase
     .from('wiki_articles')
     .select('*')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .eq('status', 'published')
     .maybeSingle();
 
@@ -69,7 +70,8 @@ export async function GET(request: Request, { params }: { params: { slug: string
   return NextResponse.json(article);
 }
 
-export async function PATCH(request: Request, { params }: { params: { slug: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const { user, supabase } = await authFromRequest(request);
   
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -81,7 +83,7 @@ export async function PATCH(request: Request, { params }: { params: { slug: stri
   const { data: current } = await supabase
     .from('wiki_articles')
     .select('*')
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .single();
 
   if (!current) return NextResponse.json({ error: 'Not found' }, { status: 404 });
@@ -106,7 +108,7 @@ export async function PATCH(request: Request, { params }: { params: { slug: stri
       last_editor_id: user.id,
       version: current.version + 1,
     })
-    .eq('slug', params.slug)
+    .eq('slug', resolvedParams.slug)
     .select()
     .single();
 
@@ -114,12 +116,13 @@ export async function PATCH(request: Request, { params }: { params: { slug: stri
   return NextResponse.json(data);
 }
 
-export async function DELETE(request: Request, { params }: { params: { slug: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ slug: string }> }) {
+  const resolvedParams = await params;
   const { user, supabase } = await authFromRequest(request);
   
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  const { error } = await supabase.from('wiki_articles').delete().eq('slug', params.slug);
+  const { error } = await supabase.from('wiki_articles').delete().eq('slug', resolvedParams.slug);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });
 }

@@ -1,3 +1,4 @@
+import { runCronTask } from '@/lib/cronAuth';
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 import { CapiClient } from '@/lib/capi/client';
@@ -8,19 +9,16 @@ import { syncMemberLocation } from '@/lib/capi/locationSync';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(req: Request) {
-  const secret = req.headers.get('x-cron-secret') || new URL(req.url).searchParams.get('secret');
-  if (secret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+async function handle() {
   const svc = createServiceClient();
-  const { data: tokens } = await svc
+  const { data: tokens, error: tokenError } = await svc
     .from('capi_tokens')
     .select('*')
     .eq('is_active', true)
     .order('last_synced_at', { ascending: true })
     .limit(10);
+
+  if (tokenError) throw new Error(tokenError.message);
 
   if (!tokens || tokens.length === 0) {
     return NextResponse.json({ synced: 0 });
@@ -43,7 +41,7 @@ export async function GET(req: Request) {
             access_token: refreshed.access_token,
             refresh_token: refreshed.refresh_token,
             expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
-          }).eq('id', token.id);
+          }).eq('id', token.id).throwOnError();
           profile = await new CapiClient(accessToken).getProfile();
         } else {
           throw e;
@@ -64,7 +62,7 @@ export async function GET(req: Request) {
         current_station: profile.currentStation?.name || null,
         ships: profile.ships || [],
         last_updated: new Date().toISOString(),
-      }, { onConflict: 'user_id' });
+      }, { onConflict: 'user_id' }).throwOnError();
 
       await syncMemberLocation(token.user_id, accessToken);
 
@@ -79,7 +77,7 @@ export async function GET(req: Request) {
 
       await svc.from('capi_tokens').update({
         last_synced_at: new Date().toISOString(),
-      }).eq('id', token.id);
+      }).eq('id', token.id).throwOnError();
 
       synced++;
     } catch (err) {
@@ -87,5 +85,13 @@ export async function GET(req: Request) {
     }
   }
 
-  return NextResponse.json({ synced, total: tokens.length });
+  const failed = tokens.length - synced;
+  return NextResponse.json({ ok: failed === 0, synced, failed, total: tokens.length },
+    { status: failed === 0 ? 200 : 502 });
 }
+
+export async function GET(req: Request) {
+  return runCronTask(req, 'capi-sync', handle);
+}
+
+export const POST = GET;

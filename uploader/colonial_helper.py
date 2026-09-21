@@ -72,6 +72,7 @@ except ImportError:
     pyperclip = None
 
 from api_client import ApiClient
+from site_config import normalize_site_url, saved_connection
 from companion_api import (CompanionAuth, CompanionAuthError, CompanionClient,
                            profile_to_stats)
 from journal_parser import (
@@ -130,7 +131,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.24"
+VERSION = "2.10.25"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -579,6 +580,16 @@ class ColonialHelperApp:
 
         tb.Label(frame, text="Основной API ED Ring Colony", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
 
+        tb.Label(frame, text=f"Сервер: {self.api.site_url}", foreground=COLOR_CYAN).pack(anchor=W)
+        server_buttons = tb.Frame(frame)
+        server_buttons.pack(anchor=W, pady=(5, 10))
+        tb.Button(server_buttons, text="Открыть API-токены на сайте", command=self._open_site_account,
+                  bootstyle="info-outline").pack(side=LEFT, padx=(0, 10))
+        tb.Button(server_buttons, text="Другой сервер…", command=self._change_site_url,
+                  bootstyle="secondary-outline").pack(side=LEFT)
+        if getattr(self, "_site_config_error", ""):
+            tb.Label(frame, text=self._site_config_error, foreground=COLOR_RED, wraplength=700).pack(anchor=W)
+
         tb.Label(frame, text="API-токен сайта", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 4))
         tb.Label(
             frame,
@@ -586,7 +597,7 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         ).pack(anchor=W)
 
-        self.token_entry = tb.Entry(frame, width=60, font=("Consolas", 11))
+        self.token_entry = tb.Entry(frame, width=60, font=("Consolas", 11), show="•")
         self.token_entry.pack(fill=X, pady=(5, 10))
         if self.api.token:
             self.token_entry.insert(0, self.api.token)
@@ -612,7 +623,7 @@ class ColonialHelperApp:
 
         self.toggle_token_btn = tb.Button(
             btn_frame,
-            text="Скрыть",
+            text="Показать",
             command=self._toggle_token_visibility,
             bootstyle="secondary-outline",
             width=12,
@@ -6122,7 +6133,8 @@ class ColonialHelperApp:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     self.config = json.load(f)
-                self.api.token = self.config.get("token", "")
+                if not isinstance(self.config, dict):
+                    self.config = {}
                 self.journal_path = Path(self.config.get("journal_path", str(DEFAULT_JOURNAL_PATH)))
                 # Восстанавливаем Raven Colonial ключ
                 raven_key = self.config.get("raven_colonial_key", "")
@@ -6136,12 +6148,13 @@ class ColonialHelperApp:
         # Сначала используем legacy-конфиг, затем накладываем отдельное
         # credentials-хранилище. Это даёт бесшовную миграцию для старых
         # установок и сохраняет ключи при обновлении EXE.
+        credentials = {}
         try:
             with open(self.credentials_path, "r", encoding="utf-8") as f:
                 credentials = json.load(f)
             if isinstance(credentials, dict):
                 for key in (
-                    "token", "raven_colonial_key", "edsm_api_key",
+                    "raven_colonial_key", "edsm_api_key",
                     "edsm_commander_name", "inara_api_key", "inara_commander_name",
                 ):
                     if credentials.get(key):
@@ -6149,8 +6162,20 @@ class ColonialHelperApp:
         except (OSError, ValueError):
             pass
 
+        try:
+            site, token = saved_connection(self.config, credentials if isinstance(credentials, dict) else {})
+            self.api = ApiClient(token=token, site_url=site)
+            self.config["site_url"] = site
+        except ValueError as exc:
+            # Never silently send a saved token to a fallback host after a typo.
+            self.api = ApiClient()
+            self._site_config_error = f"Ошибка адреса сервера: {exc}. Токен не загружен."
+
     def save_config(self):
-        self.config["token"] = self.api.token
+        site = getattr(self, "_next_site_url", self.api.site_url)
+        self.config["site_url"] = site
+        self.config["token_site_url"] = site
+        self.config["token"] = self.api.token if site == self.api.site_url else ""
         self.config["journal_path"] = str(self.journal_path)
         # Поле ввода могло быть изменено (вставлен/вписан новый ключ), но
         # пользователь мог не нажать "Проверить" перед закрытием приложения —
@@ -6176,6 +6201,7 @@ class ColonialHelperApp:
         try:
             with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, indent=2)
+            os.chmod(self.config_path, 0o600)
         except Exception as e:
             self.log(f"Не удалось сохранить конфиг: {e}", "warn")
         # Дублируем только credentials в отдельном state-файле. Он не зависит
@@ -6183,7 +6209,7 @@ class ColonialHelperApp:
         credentials = {
             key: self.config.get(key, "")
             for key in (
-                "token", "raven_colonial_key", "edsm_api_key",
+                "site_url", "token", "raven_colonial_key", "edsm_api_key",
                 "edsm_commander_name", "inara_api_key", "inara_commander_name",
             )
         }
@@ -6191,6 +6217,7 @@ class ColonialHelperApp:
             tmp = self.credentials_path.with_suffix(self.credentials_path.suffix + ".tmp")
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(credentials, f, indent=2, ensure_ascii=False)
+            os.chmod(tmp, 0o600)
             tmp.replace(self.credentials_path)
         except Exception as e:
             self.log(f"Не удалось сохранить credentials: {e}", "warn")
@@ -6237,6 +6264,7 @@ class ColonialHelperApp:
             int(record.get("size", -1)) == int(stat.st_size)
             and int(record.get("mtime", -1)) == int(stat.st_mtime)
             and int(record.get("parser", -1)) == int(PARSER_VERSION)
+            and record.get("target") == self._upload_target()
         )
 
     def _mark_files_imported(self, files: list):
@@ -6255,6 +6283,7 @@ class ColonialHelperApp:
                 "size": int(stat.st_size),
                 "mtime": int(stat.st_mtime),
                 "parser": int(PARSER_VERSION),
+                "target": self._upload_target(),
                 "at": now_iso,
             }
         self._save_imported_files()
@@ -6295,11 +6324,43 @@ class ColonialHelperApp:
     # ============================================================
     #  Обработчики: Подключение
     # ============================================================
+    def _open_site_account(self):
+        import webbrowser
+        webbrowser.open(f"{self.api.site_url}/account?tab=tokens", new=2)
+
+    def _change_site_url(self):
+        value = simpledialog.askstring("Сервер ED Ring Colony", "HTTPS-адрес сайта (не Supabase):",
+                                       initialvalue=self.api.site_url, parent=self.root)
+        if value is None:
+            return
+        try:
+            site = normalize_site_url(value)
+        except ValueError as exc:
+            messagebox.showerror("Адрес сервера", str(exc), parent=self.root)
+            return
+        if site == self.api.site_url:
+            return
+        if not messagebox.askyesno("Смена сервера",
+                f"Новый сервер: {site}\n\nТокен сайта будет удалён из настроек. "
+                "Приложение закроется: запустите его снова и введите токен нового сервера. "
+                "Ключи Raven/EDSM/Inara сохранятся. Продолжить?", parent=self.root):
+            return
+        # In-flight requests retain the old client/host. Never repoint a client
+        # carrying the previous host's token while worker threads are running.
+        self._next_site_url = site
+        if self.watcher_active:
+            self._stop_watcher()
+        self._on_close()
+
     def _on_validate_token(self):
         token = self.token_entry.get().strip()
         if not token:
             self.set_connection_status(False, "Токен не введён")
             self.log("Введите API токен", "error")
+            return
+
+        if self.watcher_active and token != self.api.token:
+            self.log("Перед сменой API-токена остановите Watcher, чтобы не смешать аккаунты.", "error")
             return
 
         self.log("Проверка токена...", "info")
@@ -6550,7 +6611,7 @@ class ColonialHelperApp:
         `system_address` — поле, добавленное локально для группировки
         доставок по Raven Colonial (сторонний API, raven-colonial.com), и
         никогда не было частью схемы, которую ожидает основной сервер
-        (ed-ring-colony.vercel.app). Если там Zod-схема строгая
+        (edringcolony.ru). Если там Zod-схема строгая
         (.strict()) — отправка неизвестного поля роняет запрос целиком
         ошибкой валидации, что выглядит как "ошибка загрузки логов".
         Поэтому наружу уходит только исторически ожидаемый набор полей, а
@@ -7595,12 +7656,17 @@ class ColonialHelperApp:
         self.bottom_status.config(text="Готов")
         self.overlay_manager.log("Watcher остановлен", "info")
 
+    def _upload_target(self) -> str:
+        return f"{self.api.site_url}|{self.api.user_id or ''}"
+
     def _load_journal_offsets(self) -> dict:
         path = self.config_path.with_name(".colonial_helper_journal_offsets.json")
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
+            return (data.get("offsets", {}) if isinstance(data, dict)
+                    and data.get("target") == self._upload_target()
+                    and isinstance(data.get("offsets"), dict) else {})
         except (OSError, ValueError):
             return {}
 
@@ -7609,7 +7675,7 @@ class ColonialHelperApp:
         tmp = path.with_suffix(".tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(self.last_file_mtimes, fh)
+                json.dump({"target": self._upload_target(), "offsets": self.last_file_mtimes}, fh)
             tmp.replace(path)
         except OSError as exc:
             self.root.after(0, lambda e=exc: self.log(f"Не удалось сохранить состояние журналов: {e}", "warn"))

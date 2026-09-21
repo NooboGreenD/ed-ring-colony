@@ -145,6 +145,8 @@ class AppTestCase(unittest.TestCase):
             is_connected = True
             cmdr_name = "Test CMDR"
             token = "token"
+            site_url = "https://edringcolony.ru"
+            user_id = "test-user"
             user_id = "user-1"
 
             def upload_deliveries(_self, rows, cmdr, progress_cb=None):

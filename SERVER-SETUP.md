@@ -1,5 +1,17 @@
 # Развёртывание ED Ring Colony на собственном сервере — пошагово
 
+> **Уже работающий сервер Ubuntu 20.04 / Docker Compose:** начните с
+> [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md), не переустанавливайте стек.
+> Новые регистрации требуют SMTP и подтверждения; autoconfirm не включать.
+> Для исходников нужен Node >=22.18; Docker-образы используют Node 22.
+
+
+> **Обновление 20.09.2026:** для уже работающего `edringcolony.ru` используйте
+> [POST-MIGRATION.md](POST-MIGRATION.md), а не повторную первоначальную установку.
+> Фоновые задачи теперь запускает Docker-сервис `jobs`; Actions оставлен только
+> для сборки Uploader. OAuth в self-hosted GoTrue требует compose override,
+> одного добавления переменных в `.env` недостаточно.
+
 Полная инструкция «с нуля до работающего сайта»: выбор ОС и железа,
 подготовка сервера, база данных, деплой, домен, HTTPS, автозапуск,
 крон-задачи, обновления и диагностика.
@@ -298,20 +310,10 @@ Certbot сам допишет SSL-блоки в конфиг nginx и настр
 
 ## Шаг 8. Крон-задачи
 
-Фоновые задачи (CAPI-синк каждые 5 минут, Galnet раз в сутки, переводы,
-очистки) уже запускаются из GitHub Actions этого репозитория.
-
-**Если используете GitHub Actions** (форк/оригинальный репо ваш):
-GitHub → Settings → Secrets and variables → Actions → секрет `VERCEL_URL`
-установить в `https://ваш-домен` (без слэша). Всё.
-
-**Если хотите автономность от GitHub** — локальный cron на сервере:
-
-```bash
-crontab -e
-# вставьте строки из /opt/ed-ring-colony/src/deploy/crontab.example,
-# заменив SITE на https://ваш-домен и SECRET на ваш CRON_SECRET
-```
+Все шесть фоновых задач выполняет Docker-сервис `jobs`, а не GitHub Actions.
+Для варианта Node.js/systemd вместо Docker используйте `deploy/crontab.example`
+с тем же runner и закрытым env-файлом. Не запускайте два планировщика одновременно.
+Инструкция перехода: [POST-MIGRATION.md](POST-MIGRATION.md).
 
 ## Шаг 9. Проверка работоспособности
 
@@ -401,7 +403,7 @@ Environment=EDDN_INGEST_URL=http://127.0.0.1:3000/api/eddn/ingest
 | 5 | Docker compose **или** Node+systemd, `.env.production` | сайт на 127.0.0.1:3000 |
 | 6 | nginx из `deploy/nginx.conf` | сайт на :80 |
 | 7 | certbot | HTTPS |
-| 8 | секрет `VERCEL_URL` в GitHub **или** crontab | фоновые задачи |
+| 8 | jobs в Docker **или** альтернативный crontab | фоновые задачи |
 | 9 | чек-лист проверки | всё работает |
 | 10 | git pull + rebuild | обновления |
 | 11 | EDDN-воркер | опционально |

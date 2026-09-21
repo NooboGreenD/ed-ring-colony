@@ -16,6 +16,7 @@ export class CapiClient {
 
   private async fetchJson(endpoint: string): Promise<unknown> {
     const res = await fetch(`${CAPI_BASE}${endpoint}`, {
+      signal: AbortSignal.timeout(30_000),
       headers: {
         Authorization: `Bearer ${this.accessToken}`,
         Accept: 'application/json',

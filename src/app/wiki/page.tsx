@@ -6,7 +6,7 @@ import WikiSearchBox from '@/components/Wiki/WikiSearchBox';
 export const dynamic = 'force-dynamic';
 
 export default async function WikiPage() {
-  const supabase = createClient();
+  const supabase = await createClient();
 
   const { data: categories } = await supabase
     .from('wiki_categories')

@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { sendInChunks } from "@/lib/importRetry";
 import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseClient";
-import { startDiscordOAuthAction } from "../login/actions";
+import AuthMethods from "@/components/AuthMethods";
 import { createJournalParseState, parseJournal, type Delivery } from "@/lib/journalParser";
 import { DEFAULT_PRIVACY, PRIVACY_KEYS, privacyPayload, resolvePrivacy, type PrivacySettings } from "@/lib/privacy";
 import { TelemetryCollector } from "@/lib/journalTelemetry";
@@ -148,6 +148,7 @@ export default function AccountPage() {
   };
 
   useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('tab') === 'tokens') setTab('tokens');
     load();
   }, []);
 
@@ -191,7 +192,6 @@ export default function AccountPage() {
     );
   }
 
-  const discordLinked = hasProvider(user, "discord");
   const emailLinked = hasProvider(user, "email");
 
   const saveCmdr = async () => {
@@ -243,32 +243,6 @@ export default function AccountPage() {
       setMsg(t('account.privacySaved'));
       load();
     }
-  };
-
-  const linkDiscord = async () => {
-    setMsg("");
-    try {
-      const url = await startDiscordOAuthAction("link");
-      if (url) window.location.href = url;
-    } catch (err: any) {
-      setMsg(err.message || t('account.discordLinkError'));
-    }
-  };
-
-  const unlinkDiscord = async () => {
-    setMsg("");
-    const client = createSupabaseClient();
-    const { data: { user: currentUser } } = await client.auth.getUser();
-    if (!currentUser) return;
-    const discordIdentity = (currentUser.identities ?? []).find((i: any) => i.provider === "discord");
-    if (!discordIdentity) { setMsg(t('account.discordNotLinked')); return; }
-    if ((currentUser.identities ?? []).length < 2) {
-      setMsg(t('account.discordUnlinkNeedPassword'));
-      return;
-    }
-    const { error } = await client.auth.unlinkIdentity(discordIdentity);
-    if (error) setMsg(t('account.error') + ' ' + error.message);
-    else { setMsg(t('account.discordUnlinked')); load(); }
   };
 
   const linkFrontier = () => {
@@ -781,14 +755,10 @@ export default function AccountPage() {
           <h2 style={{ marginTop: 32 }}>{t('account.loginMethods')}</h2>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
             <span style={{ padding: "4px 12px", borderRadius: 2, fontSize: 12, background: emailLinked ? "rgba(34,197,94,0.12)" : "#2d3033", color: emailLinked ? "#22c55e" : "#9ca3af", fontFamily: "ui-monospace, monospace" }}>{emailLinked ? <><IconCheck size={12} /> Email</> : <><IconCircle size={12} /> Email</>}</span>
-            <span style={{ padding: "4px 12px", borderRadius: 2, fontSize: 12, background: discordLinked ? "rgba(88,101,242,0.12)" : "#2d3033", color: discordLinked ? "#5865F2" : "#9ca3af", fontFamily: "ui-monospace, monospace" }}>{discordLinked ? <><IconCheck size={12} /> Discord</> : <><IconCircle size={12} /> Discord</>}</span>
+
           </div>
 
-          {discordLinked ? (
-            <button type="button" onClick={unlinkDiscord} className="btn danger-btn" style={{ fontSize: 12 }}>{t('account.unlinkDiscord')}</button>
-          ) : (
-            <button type="button" onClick={linkDiscord} className="btn btn-cyan" style={{ fontSize: 12 }}>{t('account.linkDiscord')}</button>
-          )}
+          <AuthMethods user={user} onChanged={load} />
 
           <h2 style={{ marginTop: 32 }}>{t('account.frontierCapi')}</h2>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>

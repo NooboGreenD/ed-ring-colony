@@ -69,6 +69,7 @@ function HubSphere({ hub, isSelected, onClick }: { hub: Hub; isSelected: boolean
         </mesh>
       )}
       <Text
+        font="/fonts/DejaVuSans.ttf"
         position={[0, 6, 0]}
         fontSize={3}
         color="#eeeeee"

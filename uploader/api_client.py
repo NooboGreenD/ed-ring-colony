@@ -5,13 +5,15 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-API_BASE = "https://ed-ring-colony.vercel.app/api"
+from site_config import DEFAULT_SITE_URL, normalize_site_url
+
+API_BASE = f"{DEFAULT_SITE_URL}/api"
 
 # Сколько доставок уходит в одном запросе и сколько запросов идёт параллельно.
 #
 # Раньше доставки отправлялись пачками по 25 СТРОГО последовательно: при
 # первичной загрузке всей истории это давало больше тысячи последовательных
-# запросов (каждый — отдельный round trip до Vercel), и только на сайт уходили
+# запросов (каждый — отдельный round trip до сайта), и только на сайт уходили
 # десятки минут. Сервер принимает до 500 доставок в одном запросе, поэтому
 # пачку увеличиваем, а запросы распараллеливаем — сами доставки при этом
 # остаются идемпотентными (source_hash), так что порядок не важен.
@@ -20,7 +22,7 @@ DELIVERY_CHUNK_SIZE = 100
 CONSTRUCTION_CHUNK_SIZE = 500
 UPLOAD_WORKERS = 4
 MAX_UPLOAD_ATTEMPTS = 3
-# Если пачка стабильно не проходит (5xx/429 — Vercel не успел), дробим её:
+# Если пачка стабильно не проходит (5xx/429 — сервер не успел), дробим её:
 # глубина дробления и минимальный размер, ниже которого дробить бессмысленно.
 MAX_CHUNK_SPLIT_DEPTH = 3
 MIN_CHUNK_SPLIT_SIZE = 25
@@ -44,14 +46,19 @@ def _safe_json(resp: requests.Response) -> dict:
     """Безопасно распарсить JSON-ответ.
 
     Если сервер вернул не-JSON (HTML-страница ошибки 500/502/504,
-    "413 Payload Too Large" от Vercel, обрыв serverless-функции по таймауту,
+    "413 Payload Too Large" от reverse proxy, обрыв соединения по таймауту,
     пустое тело и т.п.) — resp.json() кидает json.JSONDecodeError, который
     раньше НИКЕМ не ловился (только requests.RequestException) и падал как
     необработанное исключение прямо в фоновом потоке загрузки, оставляя UI
     в подвешенном состоянии без понятной ошибки пользователю.
     """
+    if 300 <= resp.status_code < 400:
+        return {"ok": False, "error": "Сервер перенаправляет запрос. Проверьте HTTPS-адрес сайта; токен не переслан."}
     try:
-        return resp.json()
+        data = resp.json()
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "Сервер вернул JSON неверного формата"}
+        return data
     except ValueError:
         snippet = (resp.text or "")[:200].replace("\n", " ").strip()
         return {
@@ -61,7 +68,9 @@ def _safe_json(resp: requests.Response) -> dict:
 
 
 class ApiClient:
-    def __init__(self, token: str = ""):
+    def __init__(self, token: str = "", site_url: str = DEFAULT_SITE_URL):
+        self.site_url = normalize_site_url(site_url)
+        self.api_base = f"{self.site_url}/api"
         self.token = token
         self.user_id = None
         self.cmdr_name = None
@@ -71,10 +80,15 @@ class ApiClient:
 
     def validate_token(self, token: str) -> dict:
         """Проверить API токен. Возвращает {ok, user_id, cmdr_name, email, token_name}."""
+        # A failed validation must not leave the previous account connected.
+        self.token = ""
+        self.user_id = self.cmdr_name = self.email = self.token_name = None
+        token = token.strip()
         try:
             resp = self._session.post(
-                f"{API_BASE}/auth/token",
+                f"{self.api_base}/auth/token",
                 json={"token": token},
+                allow_redirects=False,
                 timeout=15,
             )
             data = _safe_json(resp)
@@ -85,15 +99,23 @@ class ApiClient:
                 self.email = data.get("email")
                 self.token_name = data.get("token_name")
                 return {"ok": True, **data}
+            if resp.status_code == 401:
+                return {"ok": False, "error": (
+                    "Токен не найден или отозван на этом сервере. Если api_tokens не переносили "
+                    f"в новую базу, создайте новый токен: {self.site_url}/account?tab=tokens"
+                )}
             return {"ok": False, "error": data.get("error", "Unknown error")}
+        except requests.exceptions.SSLError:
+            return {"ok": False, "error": "Ошибка HTTPS-сертификата сервера. Проверка TLS не отключается; проверьте сертификат и системное время."}
         except requests.RequestException as e:
             return {"ok": False, "error": f"Сетевая ошибка: {e}"}
 
     def _post_upload(self, payload: dict, timeout: int = 30):
         """Один POST на /api/logs/upload из текущего потока."""
         resp = _session_for_thread().post(
-            f"{API_BASE}/logs/upload",
+            f"{self.api_base}/logs/upload",
             json=payload,
+            allow_redirects=False,
             timeout=timeout,
         )
         return resp, _safe_json(resp)
@@ -113,7 +135,7 @@ class ApiClient:
         в разы по сравнению с последовательной отправкой.
 
         Повторяем попытку только на "временных" сбоях: 429 (rate limit) и 5xx
-        (сервер/таймаут serverless-функции). 4xx (400/401/403) — это ошибка
+        (сервер/таймаут). 4xx (400/401/403) — это ошибка
         валидации/авторизации, повтор не поможет и только тратит время впустую
         при большом импорте.
         """
@@ -168,7 +190,7 @@ class ApiClient:
             """Отправить одну пачку. Вернуть (ok, data, error).
 
             Если сервер не справляется с пачкой (5xx/429/таймаут — например,
-            Vercel оборвал serverless-функцию на большой пачке), пачка
+            reverse proxy прервал запрос на большой пачке), пачка
             дробится пополам и отправляется частями: лучше несколько мелких
             запросов, чем потерянные доставки.
             """
@@ -183,7 +205,7 @@ class ApiClient:
                             time.sleep(0.5 * attempt)
                             continue
                         break
-                    if not resp.ok:
+                    if not resp.ok or data.get("ok") is False or data.get("error"):
                         return False, None, data.get("error", f"Upload failed (HTTP {status})")
                     return True, data, ""
                 except requests.RequestException as e:
@@ -296,8 +318,9 @@ class ApiClient:
             return {"ok": False, "error": "Пустое имя системы"}
         try:
             resp = self._session.get(
-                f"{API_BASE}/atlas/system-bodies",
+                f"{self.api_base}/atlas/system-bodies",
                 params={"system": name},
+                allow_redirects=False,
                 timeout=12,
             )
             data = _safe_json(resp)
@@ -320,8 +343,9 @@ class ApiClient:
         }
         try:
             resp = self._session.post(
-                f"{API_BASE}/atlas/system-bodies",
+                f"{self.api_base}/atlas/system-bodies",
                 json=payload,
+                allow_redirects=False,
                 timeout=15,
             )
             data = _safe_json(resp)
@@ -333,7 +357,7 @@ class ApiClient:
 
     def upload_pilot_stats(self, stats: dict, cmdr: str = None) -> dict:
         """Отправить баланс и статистику пилота в БД проекта (/api/cmdr/stats)."""
-        if not self.token and not stats:
+        if not self.token or not stats:
             return {"ok": False, "error": "Нет токена или данных"}
         payload = {
             "token": self.token,
@@ -342,8 +366,9 @@ class ApiClient:
         }
         try:
             resp = self._session.post(
-                f"{API_BASE}/cmdr/stats",
+                f"{self.api_base}/cmdr/stats",
                 json=payload,
+                allow_redirects=False,
                 timeout=15,
             )
             data = _safe_json(resp)

@@ -1,10 +1,10 @@
 import { createBrowserClient } from "@supabase/ssr";
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://sgukfplhxdhmkqponwft.supabase.co";
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://supabase.edringcolony.ru";
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dummy";
 
 // One browser client owns the Supabase SSR cookie session for the whole app.
-export const supabase = createBrowserClient(url, key);
+export const supabase = createBrowserClient(url, key, { auth: { detectSessionInUrl: false } });
 
 export function createSupabaseClient() {
   return supabase;
