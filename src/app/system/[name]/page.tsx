@@ -168,12 +168,12 @@ export default function SystemPage() {
   ), 0);
   const hasImportedCargo = hasSystemCargoTotals || importedCargo > 0;
   return (
-    <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 32 }}>
-      <div style={{ marginBottom: 24 }}>
-        <Link href="/map" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: 13 }}>← Назад к карте</Link>
+    <main className="card" style={{ maxWidth: 1280, margin: '24px auto', padding: 28, borderRadius: 4 }}>
+      <div style={{ marginBottom: 20 }}>
+        <Link href="/map" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
       </div>
 
-      <h1 style={{ fontSize: 28, color: '#eeeeee', marginBottom: 8 }}>{systemName}</h1>
+      <h1 style={{ fontSize: 28, color: '#eeeeee', marginBottom: 8, letterSpacing: -0.5 }}>{systemName}</h1>
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
         <a
@@ -185,7 +185,7 @@ export default function SystemPage() {
             background: 'rgba(230,126,34,0.15)',
             border: '1px solid rgba(230,126,34,0.4)',
             color: '#e67e22',
-            borderRadius: 6,
+            borderRadius: 3,
             textDecoration: 'none',
             fontSize: 13,
             fontWeight: 600,
@@ -201,7 +201,7 @@ export default function SystemPage() {
           style={{
             padding: '8px 16px', background: 'rgba(34,197,94,0.12)',
             border: '1px solid rgba(34,197,94,0.4)', color: '#22c55e',
-            borderRadius: 6, textDecoration: 'none', fontSize: 13,
+            borderRadius: 3, textDecoration: 'none', fontSize: 13,
             fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6,
           }}
         >
@@ -216,7 +216,7 @@ export default function SystemPage() {
             background: 'rgba(59,130,246,0.15)',
             border: '1px solid rgba(59,130,246,0.4)',
             color: '#3b82f6',
-            borderRadius: 6,
+            borderRadius: 3,
             textDecoration: 'none',
             fontSize: 13,
             fontWeight: 600,
@@ -236,7 +236,7 @@ export default function SystemPage() {
       )}
 
       {/* Статус строительства */}
-      <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 10, padding: 20, marginBottom: 24 }}>
+      <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 4, padding: 20, marginBottom: 24 }}>
         <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconChart size={18} /> Статус строительства</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
           <div>
