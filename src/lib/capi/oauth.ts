@@ -34,11 +34,11 @@
 //     когда он истёк; refresh-токен работает не дольше 25 дней с момента
 //     авторизации, после чего нужна повторная авторизация пользователя.
 //
-// Что остаётся от пользователя: только Client ID. Его можно создать
-// самостоятельно в Developer Zone (https://user.frontierstore.net →
-// «CREATE CLIENT») — это мгновенно и не требует одобрения FDEV. Если
-// `FRONTIER_CLIENT_ID` не задан, используется client_id официального
-// компаньон-приложения Elite Dangerous — публичного клиента без секрета.
+// Что остаётся от пользователя: только Client ID. Проект зарегистрировал
+// собственное приложение «ED Ring Colony» в Developer Zone
+// (https://user.frontierstore.net) — его ключ используется по умолчанию,
+// поэтому диалог согласия Frontier показывает имя нашего сервиса.
+// `FRONTIER_CLIENT_ID` переопределяет его (например, для отдельного стенда).
 
 import { createHash, randomBytes } from 'crypto';
 
@@ -49,17 +49,21 @@ export const FRONTIER_DECODE_URL = 'https://auth.frontierstore.net/decode';
 export const FRONTIER_ME_URL = 'https://auth.frontierstore.net/me';
 
 /**
- * Client ID официального компаньон-приложения Elite Dangerous.
+ * Client ID приложения «ED Ring Colony» в Frontier Developer Zone (CAPI).
  *
- * Это публичный клиент (без секрета), которым пользуются сторонние
- * инструменты; пользователь видит в диалоге согласия Frontier имя этого
- * приложения. Переопределяется `FRONTIER_CLIENT_ID` — например, собственным
- * клиентом из Developer Zone, чтобы согласие показывало имя вашего сервиса.
+ * Публичный PKCE-клиент без секрета: используется сайтом и десктопным
+ * Colonial Helper. Переопределяется `FRONTIER_CLIENT_ID`.
+ */
+export const FRONTIER_APP_CLIENT_ID = '0d6027a7-2561-4e1b-af2e-2fe71b296bdd';
+
+/**
+ * Client ID официального компаньон-приложения Elite Dangerous — запасной
+ * публичный клиент (им пользуются EDMC/EDDI). Оставлен для совместимости.
  */
 export const FRONTIER_PUBLIC_CLIENT_ID = '2360653316734633';
 
 export function frontierClientId(): string {
-  return (process.env.FRONTIER_CLIENT_ID || FRONTIER_PUBLIC_CLIENT_ID).trim();
+  return (process.env.FRONTIER_CLIENT_ID || FRONTIER_APP_CLIENT_ID).trim();
 }
 
 /**

@@ -36,8 +36,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   powerplay, спасательных рейсов и продаж на рынке. Видимость блоков (баланс, ранги, груз, доставки, позиция)
   пилот настраивает сам
 - **Frontier CAPI** — досье заполняется из Companion API по потоку **PKCE**, поэтому Shared Key от FDEV не
-  требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — публичный
-  client_id компаньон-приложения Elite Dangerous). Десктопный Colonial Helper авторизуется сам и присылает
+  требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — ключ
+  приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper). Десктопный Colonial Helper авторизуется сам и присылает
   профиль на сайт
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
   правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота
