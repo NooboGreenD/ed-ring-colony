@@ -22,6 +22,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 
@@ -33,6 +34,8 @@ import {
   PointsBuilder,
   parsePointsFile,
   id64FromParts,
+  POINTS_STORAGE_BUCKET,
+  POINTS_STORAGE_OBJECT,
 } from '../src/lib/galaxySystems.ts';
 
 const requireNode = createRequire(import.meta.url);
@@ -142,6 +145,7 @@ async function download(url, dest, log) {
 class JsonArrayObjects extends Transform {
   constructor(opts) {
     super({ ...opts, objectMode: true });
+    this.decoder = new StringDecoder('utf8');
     this.state = 'skip'; // skip → between → object
     this.depth = 0;
     this.inString = false;
@@ -153,49 +157,65 @@ class JsonArrayObjects extends Transform {
   _transform(chunk, _enc, done) {
     if (this.finished) return done();
     try {
-      const text = chunk.toString('utf8');
-      for (let i = 0; i < text.length; i++) {
-        const ch = text[i];
-        switch (this.state) {
-          case 'skip':
-            if (ch === '[') this.state = 'between';
-            break;
-          case 'between':
-            if (ch === ']') { this.finished = true; this.push(null); return done(); }
-            if (ch === '{') { this.state = 'object'; this.depth = 1; this.inString = false; this.raw = '{'; }
-            break;
-          case 'object':
-            if (this.inString) {
-              this.raw += ch;
-              if (this.escaped) this.escaped = false;
-              else if (ch === '\\') this.escaped = true;
-              else if (ch === '"') this.inString = false;
-              break;
-            }
-            if (ch === '"') { this.inString = true; this.raw += ch; break; }
-            if (ch === '{') { this.depth++; this.raw += ch; break; }
-            if (ch === '}') {
-              this.depth--;
-              this.raw += ch;
-              if (this.depth === 0) {
-                const idMatch = /"id64"\s*:\s*(\d+)/.exec(this.raw);
-                const obj = JSON.parse(this.raw);
-                if (idMatch) obj.__id64Exact = idMatch[1];
-                this.raw = '';
-                this.state = 'between';
-                this.push(obj);
-              }
-              break;
-            }
-            this.raw += ch;
-            break;
-          default:
-            break;
-        }
-      }
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      this._consume(this.decoder.write(bytes));
       done();
     } catch (err) {
       done(err);
+    }
+  }
+
+  _flush(done) {
+    if (this.finished) return done();
+    try {
+      const tail = this.decoder.end();
+      if (tail) this._consume(tail);
+      done();
+    } catch (err) {
+      done(err);
+    }
+  }
+
+  _consume(text) {
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      switch (this.state) {
+        case 'skip':
+          if (ch === '[') this.state = 'between';
+          break;
+        case 'between':
+          if (ch === ']') { this.finished = true; return; }
+          if (ch === '{') { this.state = 'object'; this.depth = 1; this.inString = false; this.raw = '{'; }
+          break;
+        case 'object':
+          if (this.inString) {
+            this.raw += ch;
+            if (this.escaped) this.escaped = false;
+            else if (ch === '\\') this.escaped = true;
+            else if (ch === '"') this.inString = false;
+            break;
+          }
+          if (ch === '"') { this.inString = true; this.raw += ch; break; }
+          if (ch === '{') { this.depth++; this.raw += ch; break; }
+          if (ch === '}') {
+            this.depth--;
+            this.raw += ch;
+            if (this.depth === 0) {
+              const idMatch = /"id64"\s*:\s*(\d+)/.exec(this.raw);
+              const obj = JSON.parse(this.raw);
+              if (idMatch) obj.__id64Exact = idMatch[1];
+              this.raw = '';
+              this.state = 'between';
+              this.push(obj);
+            }
+            break;
+          }
+          this.raw += ch;
+          break;
+        default:
+          break;
+      }
+      if (this.finished) return;
     }
   }
 }
@@ -305,12 +325,19 @@ class PgWriter {
     }
   }
 
+  async countRows() {
+    const { error, res } = await this.query('SELECT COUNT(*)::bigint AS n FROM galaxy_systems');
+    if (error) throw error;
+    return Number(res.rows[0].n);
+  }
+
   async writeMeta(value) {
     const json = JSON.stringify(value);
+    // Merge so a partial import does not wipe points_uploaded from a full run.
     const sql =
       `INSERT INTO galaxy_systems_meta (key, value, updated_at) VALUES ('stats', ` +
       pgLiteral(json) + `::jsonb, NOW()) ` +
-      `ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`;
+      `ON CONFLICT (key) DO UPDATE SET value = galaxy_systems_meta.value || EXCLUDED.value, updated_at = NOW()`;
     const { error } = await this.query(sql);
     if (error) this.log(`WARNING: could not write galaxy_systems_meta: ${error.message}`);
   }
@@ -350,10 +377,24 @@ class SupabaseWriter {
     return n;
   }
 
+  async countRows() {
+    const { count, error } = await this.supabase
+      .from('galaxy_systems')
+      .select('id', { count: 'exact', head: true });
+    if (error) throw new Error(error.message);
+    return count ?? this.written;
+  }
+
   async writeMeta(value) {
+    const existing = await this.supabase
+      .from('galaxy_systems_meta')
+      .select('value')
+      .eq('key', 'stats')
+      .maybeSingle();
+    const merged = { ...(existing.data?.value || {}), ...value };
     const { error } = await this.supabase
       .from('galaxy_systems_meta')
-      .upsert({ key: 'stats', value }, { onConflict: 'key' });
+      .upsert({ key: 'stats', value: merged }, { onConflict: 'key' });
     if (error) this.log(`WARNING: could not write galaxy_systems_meta: ${error.message}`);
   }
 
@@ -401,41 +442,87 @@ async function runImport(args, db, log) {
     }
   }
 
-  if (db) {
-    await db.flush();
-    log(`Inserted/updated ${db.written.toLocaleString()} rows`);
-    if (!args.dryRun) {
-      await db.writeMeta({
-        systems_count: db.written,
-        invalid_records: invalid,
-        partial: args.limit > 0,
-        source: args.file ? path.basename(args.file) : args.url,
-        imported_at: new Date().toISOString(),
-        note: 'Full Spansh systems dump (nightly at https://spansh.co.uk/dumps). Re-run the import to refresh.',
-      });
-    }
-    await db.close();
-  }
+  if (db) await db.flush();
 
   let pointsInfo = null;
+  let pointsUploaded = false;
   if (pointsBuilder) {
     const buffer = pointsBuilder.build();
+    const bytes = Buffer.from(buffer);
     fs.mkdirSync(path.dirname(args.pointsFile), { recursive: true });
-    fs.writeFileSync(args.pointsFile, Buffer.from(buffer));
+    fs.writeFileSync(args.pointsFile, bytes);
     const meta = {
       format: 'edgs-v1',
       count: pointsBuilder.size,
       imported_at: new Date().toISOString(),
       source: args.file ? path.basename(args.file) : args.url,
-      bytes: buffer.byteLength,
+      bytes: bytes.length,
     };
     fs.writeFileSync(args.pointsFile + '.meta.json', JSON.stringify(meta, null, 2));
     pointsInfo = meta;
     log(`Points file: ${args.pointsFile} (${meta.count.toLocaleString()} systems, ${(meta.bytes / 1024 / 1024).toFixed(1)} MB)`);
+    if (args.limit > 0) {
+      log('Partial import: not uploading the points file (it would replace the full cloud)');
+    } else if (!args.dryRun) {
+      pointsUploaded = await uploadPoints(args.pointsFile, log);
+    }
+  }
+
+  if (db) {
+    log(`Inserted/updated ${db.written.toLocaleString()} rows`);
+    if (!args.dryRun) {
+      let systemsCount = db.written;
+      try {
+        systemsCount = await db.countRows();
+      } catch (error) {
+        log(`WARNING: COUNT(*) failed, meta will use the batch counter: ${error.message}`);
+      }
+      const meta = {
+        systems_count: systemsCount,
+        invalid_records: invalid,
+        partial: args.limit > 0,
+        source: args.file ? path.basename(args.file) : args.url,
+        imported_at: new Date().toISOString(),
+        note: 'Full Spansh systems dump (nightly at https://spansh.co.uk/dumps). Re-run the import to refresh.',
+      };
+      if (pointsUploaded && pointsInfo) {
+        meta.points_uploaded = true;
+        meta.points_bytes = pointsInfo.bytes;
+        meta.points_count = pointsInfo.count;
+      }
+      await db.writeMeta(meta);
+    }
+    await db.close();
   }
 
   log(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)} s: ${processed.toLocaleString()} systems processed, ${invalid} invalid, ${db ? db.written.toLocaleString() : 0} rows written`);
   return { processed, invalid, points: pointsInfo };
+}
+
+async function uploadPoints(filePath, log) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) {
+    log('Points file kept locally (no Supabase credentials for storage upload)');
+    return false;
+  }
+  const bytes = fs.readFileSync(filePath);
+  if (bytes.length > 50 * 1024 * 1024) {
+    log(`WARNING: points file is ${bytes.length} bytes, over the 50 MB bucket limit — not uploaded`);
+    return false;
+  }
+  const { createClient } = await import('@supabase/supabase-js');
+  const client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { error } = await client.storage.from(POINTS_STORAGE_BUCKET).upload(POINTS_STORAGE_OBJECT, bytes, {
+    contentType: 'application/octet-stream',
+    upsert: true,
+  });
+  if (error) {
+    log(`WARNING: points upload failed: ${error.message}`);
+    return false;
+  }
+  log(`Points file uploaded to storage ${POINTS_STORAGE_BUCKET}/${POINTS_STORAGE_OBJECT}`);
+  return true;
 }
 
 async function resolveDb(args, log) {
@@ -488,6 +575,8 @@ const SELFTEST_STARS = [
   'Herbig Ae/Be Star', 'T Tauri Star', 'C Star', 'CJ Star', 'CN Star',
   'A (Blue-White super giant) Star', 'M (Red super giant) Star', 'M (Red giant) Star', 'K (Yellow-Orange giant) Star',
   'Ammonia world', 'Earth-like world', null,
+  // Appended after index 30 so the count assertions above stay valid.
+  'S-type Star', 'MS-type Star',
 ];
 
 function countMod(n, mod, target) {

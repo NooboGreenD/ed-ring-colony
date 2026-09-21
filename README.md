@@ -130,6 +130,10 @@ pnpm build      # Production build
 For the existing self-hosted installation, preserve `auth.users`, identities,
 profiles and API tokens. This update adds **no SQL migrations**; do not re-run
 `full_schema.sql`. See [POST-MIGRATION.md](POST-MIGRATION.md).
+The full-galaxy catalog is the exception: apply
+`supabase/migrations/20260924000000_galaxy_systems_finish.sql` before the
+map point cloud and nearest-star search can use the database. See
+[SPANSH-IMPORT.md](SPANSH-IMPORT.md).
 The CLI linking example below is for a **hosted Supabase project**; a self-hosted
 DB uses a direct connection (`--db-url`) or reviewed SQL via local `psql`.
 
@@ -254,8 +258,9 @@ ed-ring-colony/
 ### Galaxy Systems (Spansh) Endpoints
 - `GET /api/galaxy/stats` — Статус загрузки полной таблицы систем
 - `GET /api/galaxy/systems/search?q=…` — Поиск по всем системам галактики
+- `GET /api/galaxy/systems/by-name?name=…` — Система по имени
 - `GET /api/galaxy/systems/:id64` — Система по Spansh ID64
-- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты (экспериментальный слой)
+- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты
 
 ### Other Endpoints
 - `GET /api/leaderboard` — Player stats
@@ -275,7 +280,8 @@ ed-ring-colony/
 Полная таблица всех известных систем (`galaxy_systems`, ~1.3M строк) загружается
 ночным дампом Spansh. Она ускоряет поиск в Атласе (опорные координаты и
 звёздные кандидаты берутся из локальной БД) и подпитывает экспериментальный
-слой «Все системы ⚗» на 3D-карте галактики.
+слой «Все системы ⚗» на 3D-карте (фильтр классов, карточка по клику).
+Страница системы открывается и для систем без стройки, если они есть в каталоге.
 
 ```bash
 npm run spansh:import     # скачать systems.json.gz и загрузить в БД

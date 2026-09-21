@@ -16,7 +16,9 @@ import {
   id64FromParts,
   PointsBuilder,
   STAR_CLASS_LIST,
+  toMapPositions,
 } from '../../src/lib/galaxySystems.ts';
+import { Readable } from 'node:stream';
 import { streamObjects, toGalaxySystemRow } from '../import-spansh-systems.mjs';
 
 // ─── classifyStar ───
@@ -56,6 +58,16 @@ test('classifyStar: все значения mainStar из схемы Spansh', ()
     ['M (Red super giant) Star', 'm', 'supergiant'],
     ['K (Yellow-Orange giant) Star', 'k', 'giant'],
     ['M (Red giant) Star', 'm', 'giant'],
+    ['S-type Star', 's_type', null],
+    ['MS-type Star', 'ms_type', null],
+    ['White Dwarf (DAB) Star', 'white_dwarf', null],
+    ['White Dwarf (DAV) Star', 'white_dwarf', null],
+    ['White Dwarf (DAZ) Star', 'white_dwarf', null],
+    ['White Dwarf (DB) Star', 'white_dwarf', null],
+    ['White Dwarf (DBV) Star', 'white_dwarf', null],
+    ['White Dwarf (DBZ) Star', 'white_dwarf', null],
+    ['White Dwarf (DC) Star', 'white_dwarf', null],
+    ['White Dwarf (DCV) Star', 'white_dwarf', null],
   ];
   for (const [mainStar, starType, giantClass] of cases) {
     const cls = classifyStar(mainStar);
@@ -88,6 +100,17 @@ test('normalizeSystemName и расстояния', () => {
   const d = distanceFromSgra(0, 0, 0);
   assert.ok(Math.abs(d - Math.hypot(SAGA_LY.x, SAGA_LY.y, SAGA_LY.z)) < 1e-9);
   assert.ok(d > 25000 && d < 27000, `SgrA distance ${d}`);
+});
+
+test('toMapPositions совпадает с кадром карты (Sgr A* в нуле)', () => {
+  const elite = new Float32Array([0, 0, 0, SAGA_LY.x, SAGA_LY.y, SAGA_LY.z]);
+  const mapped = toMapPositions(elite, 2);
+  assert.equal(mapped[0], -SAGA_LY.x);
+  assert.equal(mapped[1], -SAGA_LY.y);
+  assert.equal(mapped[2], SAGA_LY.z);
+  assert.equal(mapped[3], 0);
+  assert.equal(mapped[4], 0);
+  assert.equal(mapped[5], 0);
 });
 
 // ─── бинарный файл точек ───
@@ -137,6 +160,23 @@ async function parseText(text, { gzip = false } = {}) {
   fs.rmSync(dir, { recursive: true, force: true });
   return objects;
 }
+
+test('streamObjects: utf-8, разрезанный посередине символа', async () => {
+  const text = '[{"id64":1,"name":"Сириус","coords":{"x":1,"y":2,"z":3}}]';
+  const buf = Buffer.from(text);
+  let split = 1;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] >= 0x80) { split = i + 1; break; }
+  }
+  const stream = Readable.from([buf.subarray(0, split), buf.subarray(split)]);
+  const objects = [];
+  for await (const obj of streamObjects(stream)) objects.push(obj);
+  assert.equal(objects.length, 1);
+  assert.equal(objects[0].name, 'Сириус');
+  const row = toGalaxySystemRow(objects[0]);
+  assert.equal(row.name, 'Сириус');
+  assert.equal(row.name_lc, 'сириус');
+});
 
 test('streamObjects: одна запись на строку (канонический формат)', async () => {
   const text = [

@@ -12,11 +12,14 @@
    систем тоже резолвятся из БД.
 2. **Поиск системы на карте** (поле «Поиск системы») — сначала локальная
    таблица (все ~1.3M систем), потом EDSM.
-3. **Экспериментальный слой «Все системы ⚗»** на 3D-карте галактики —
-   облако из ~1.3M точек (цвет по классу главной звезды, клик по точке
-   открывает карточку системы). Данные: бинарный файл `edgs-v1`
-   (~30 МБ), который генерируется импортом или строится на лету из БД
-   (`/api/galaxy/all-systems`).
+3. **Слой «Все системы ⚗»** на 3D-карте — облако ~1.3M точек. Цвет по
+   классу звезды, фильтр классов, клик (не наведение) открывает карточку
+   каталога: имя, класс, permit, расстояния, ссылки. Это не статус
+   стройки. Файл `edgs-v1` (~36 МБ) отдаёт `/api/galaxy/all-systems`:
+   локальный `public/data`, иначе storage `galaxy-data`, иначе прямая
+   сборка из Postgres, если у веб-процесса есть `DATABASE_URL` или
+   `SUPABASE_DB_URL`. Сборки чанками через PostgREST больше нет — она
+   обрезалась лимитом API.
 
 Формат дампа (schema `BriefDumpSystem`,
 [spansh/elite_dangerous_schemas](https://github.com/spansh/elite_dangerous_schemas)):
@@ -78,7 +81,12 @@ node scripts/import-spansh-systems.mjs --help
 5. пишет в `galaxy_systems` (upsert по `name_lc`) + статистику в
    `galaxy_systems_meta` (key `stats`);
 6. генерирует `public/data/galaxy-systems-points.bin` (`.meta.json` рядом)
-   для экспериментального слоя карты.
+   и, если это полный импорт и заданы ключи Supabase, заливает его в
+   bucket `galaxy-data` (миграция `20260924000000_galaxy_systems_finish.sql`,
+   лимит 50 МБ). `--limit` файл в storage не заливает, чтобы не затереть
+   полное облако. В `galaxy_systems_meta` пишется фактический `COUNT(*)`,
+   а не счётчик батча; `points_uploaded` выставляется только после
+   успешной заливки и не затирается частичным импортом.
 
 Повторный импорт безопасен (upsert); для полной перезаписи — `--truncate`.
 
@@ -97,7 +105,7 @@ npm run test                     # все тесты, включая scripts/tes
 | `name` / `name_lc` | каноническое имя / нормализованный ключ поиска |
 | `x, y, z` | координаты (ly, Sol-centered frame) |
 | `main_star` | сырой класс: `G (White-Yellow) Star`, `Neutron Star`, … |
-| `star_type` | `o\|b\|a\|f\|g\|k\|m\|brown_dwarf\|neutron\|black_hole\|white_dwarf\|wolf_rayet\|herbig_ae_be\|t_tauri\|carbon\|unknown` |
+| `star_type` | `o\|b\|a\|f\|g\|k\|m\|brown_dwarf\|neutron\|black_hole\|white_dwarf\|wolf_rayet\|herbig_ae_be\|t_tauri\|carbon\|unknown\|s_type\|ms_type` |
 | `star_giant_class` | `dwarf\|giant\|supergiant` (для обычных классов) |
 | `needs_permit` | нужен ли permit |
 | `distance_from_sols`, `distance_from_sgra` | расстояния (ly) |
@@ -107,8 +115,14 @@ npm run test                     # все тесты, включая scripts/tes
 
 - `GET /api/galaxy/stats` — статус загрузки (ready, count, imported_at);
 - `GET /api/galaxy/systems/search?q=…` — автодополнение (exact → prefix → substring);
+- `GET /api/galaxy/systems/by-name?name=…` — одна система по имени (страница `/system/:name` открывает каталог, даже если стройки нет);
 - `GET /api/galaxy/systems/:id64` — одна система по ID64;
-- `GET /api/galaxy/all-systems` — бинарный файл точек (`edgs-v1`, ETag).
+- `GET /api/galaxy/all-systems` — бинарный файл точек (`edgs-v1`, ETag). 404, если файла нет ни локально, ни в storage, ни прямого Postgres.
+
+Перед импортом примените миграцию `20260924000000_galaxy_systems_finish.sql`:
+функции ближайших звёзд/систем в кубе, триграммный индекс имени и bucket
+`galaxy-data`. Без неё атлас и поиск маршрута откатываются к прежним
+лимитам, а карта не получит облако в production-образе.
 
 Если импорт ещё не выполнялся, все эти эндпоинты возвращают «пусто»
 (404 для all-systems), а поиск и Атлас работают в прежнем режиме

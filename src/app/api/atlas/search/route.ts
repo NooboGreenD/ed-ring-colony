@@ -377,10 +377,12 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
     }
 
     if (candidates.length > 0) {
-      const { error: insertError } = await supabaseAdmin.from('atlas_candidates').insert(
-        candidates.map(c => ({ search_id: c.search_id, system_name: c.system_name, x: c.x, y: c.y, z: c.z, world_type: c.world_type, body_name: c.body_name, distance_from_ref: c.distance_from_ref, distance_to_arrival: c.distance_to_arrival, estimated_value: c.estimated_value, is_main_star: c.is_main_star, metadata: c.metadata }))
-      );
-      if (insertError) console.error('[Atlas Search] Insert error:', insertError);
+      const rows = candidates.map(c => ({ search_id: c.search_id, system_name: c.system_name, x: c.x, y: c.y, z: c.z, world_type: c.world_type, body_name: c.body_name, distance_from_ref: c.distance_from_ref, distance_to_arrival: c.distance_to_arrival, estimated_value: c.estimated_value, is_main_star: c.is_main_star, metadata: c.metadata }));
+      const BATCH = 400;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const { error: insertError } = await supabaseAdmin.from('atlas_candidates').insert(rows.slice(i, i + BATCH));
+        if (insertError) console.error('[Atlas Search] Insert error:', insertError);
+      }
     }
 
     await supabaseAdmin.from('atlas_searches').update({ status: 'completed', completed_at: new Date().toISOString(), total_found: candidates.length }).eq('id', sessionId);

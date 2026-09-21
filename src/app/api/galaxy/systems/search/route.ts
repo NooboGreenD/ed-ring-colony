@@ -22,7 +22,10 @@ export async function GET(req: Request) {
         x: r.x, y: r.y, z: r.z,
         main_star: r.main_star,
         star_type: r.star_type,
+        star_giant_class: r.star_giant_class,
+        needs_permit: r.needs_permit,
         distance_from_sols: r.distance_from_sols != null ? Number(r.distance_from_sols.toFixed(1)) : null,
+        distance_from_sgra: r.distance_from_sgra != null ? Number(r.distance_from_sgra.toFixed(1)) : null,
       })),
     });
   } catch (err: any) {

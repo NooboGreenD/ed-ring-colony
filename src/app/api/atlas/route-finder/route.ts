@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
 
 const MAX_RETRIES = 3;
 const MAX_JUMP = 15;
@@ -153,10 +154,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'from_system and to_system required' }, { status: 400 });
     }
 
-    /* ── 1. Координаты ── */
+    /* ── 1. Координаты: каталог Spansh, затем EDSM ── */
+    const resolveCoords = async (name: string) => {
+      try {
+        const row = await findSystemByName(name);
+        if (row) return { x: row.x, y: row.y, z: row.z };
+      } catch (err: any) {
+        console.error('[RouteFinder] local coords:', err?.message);
+      }
+      return fetchEdsmCoords(name);
+    };
     const [fromCoords, toCoords] = await Promise.all([
-      fetchEdsmCoords(from_system),
-      fetchEdsmCoords(to_system),
+      resolveCoords(from_system),
+      resolveCoords(to_system),
     ]);
     if (!fromCoords) return NextResponse.json({ error: `System "${from_system}" not found` }, { status: 404 });
     if (!toCoords) return NextResponse.json({ error: `System "${to_system}" not found` }, { status: 404 });
@@ -173,6 +183,14 @@ export async function POST(req: Request) {
     const steps = Math.min(rawSteps, MAX_SCAN_POINTS);
     const actualStep = steps > 1 ? directDist / steps : directDist;
 
+    let catalogReady = false;
+    try {
+      const stats = await getGalaxyStats();
+      catalogReady = !!stats && stats.systems_count > 0;
+    } catch {
+      catalogReady = false;
+    }
+
     const allSystems = new Map<string, { name: string; x: number; y: number; z: number }>();
     let scanPoints = 0;
     let apiRequests = 0;
@@ -187,13 +205,26 @@ export async function POST(req: Request) {
       };
 
       let systemsBatch: { name: string; x: number; y: number; z: number }[] = [];
-
-      if (useCube) {
+      let usedCatalog = false;
+      if (catalogReady) {
+        try {
+          const rows = await findSystemsInCube({
+            x: point.x, y: point.y, z: point.z, half: effectiveRadius, limit: 800,
+          });
+          systemsBatch = rows.filter((sys) => dist(sys, point) <= effectiveRadius);
+          usedCatalog = true;
+          scanPoints++;
+        } catch (err: any) {
+          console.error('[RouteFinder] catalog cube:', err?.message);
+          catalogReady = false;
+        }
+      }
+      if (!usedCatalog && useCube) {
         /* Для больших радиусов: cube-systems напрямую по координатам */
         systemsBatch = await fetchEdsmCube(point, cubeSize);
         apiRequests++;
         scanPoints++;
-      } else {
+      } else if (!usedCatalog) {
         /* Для малых радиусов: найти ближайшую систему, затем sphere */
         const nearest = await findNearestSystem(point);
         apiRequests++;
@@ -318,7 +349,7 @@ export async function POST(req: Request) {
         graph_nodes: graphNodes,
         graph_edges: graphEdges,
         elapsed_ms: elapsedMs,
-        strategy: useCube ? 'cube-systems' : 'sphere-systems',
+        strategy: catalogReady ? 'galaxy-catalog' : useCube ? 'cube-systems' : 'sphere-systems',
         systems_per_scan: systemsPerScan,
       },
     });

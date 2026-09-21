@@ -60,6 +60,7 @@ type EdsmSystem = {
   bodyCount: number | null;
   requirePermit: boolean;
   permitName: string | null;
+  starLabel?: string | null;
 };
 
 type EdsmStar = {
@@ -412,6 +413,7 @@ export default function SystemsPage() {
   const [selectedSystem, setSelectedSystem] = useState<EdsmSystemDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [searchHistory, setSearchHistory] = useState<string[]>([]);
+  const [searchSource, setSearchSource] = useState<'catalog' | 'edsm' | null>(null);
 
   useEffect(() => {
     const loadHubs = async () => {
@@ -544,6 +546,24 @@ export default function SystemsPage() {
     setSearchLoading(true);
     setSelectedSystem(null);
     try {
+      const local = await fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(q)}&limit=20`);
+      const localData = await local.json().catch(() => ({ results: [] }));
+      if (local.ok && Array.isArray(localData.results) && localData.results.length > 0) {
+        setSearchSource('catalog');
+        setSearchResults(localData.results.map((row: any, index: number) => ({
+          id: index + 1,
+          name: row.name,
+          coords: { x: Number(row.x), y: Number(row.y), z: Number(row.z) },
+          distance: row.distance_from_sols ?? null,
+          bodyCount: null,
+          requirePermit: !!row.needs_permit,
+          permitName: row.needs_permit ? 'Permit' : null,
+          starLabel: row.main_star || row.star_type || null,
+        })));
+        setSearchHistory((prev) => [q, ...prev.filter((h) => h !== q)].slice(0, 10));
+        return;
+      }
+      setSearchSource('edsm');
       const res = await fetch(`/api/edsm/search?q=${encodeURIComponent(q)}`);
       const data = await res.json();
       if (!res.ok) {
@@ -641,7 +661,7 @@ export default function SystemsPage() {
         <a href="https://ravencolonial.com" target="_blank" rel="noreferrer" style={{ color: '#e67e22' }}>
           Raven Colonial
         </a>
-        . Поиск систем работает через{' '}
+        . Поиск систем сначала идёт по локальному каталогу Spansh, затем через{' '}
         <a href="https://www.edsm.net" target="_blank" rel="noreferrer" style={{ color: '#e67e22' }}>
           EDSM
         </a>
@@ -740,7 +760,7 @@ export default function SystemsPage() {
                         {s.distance != null ? `${s.distance.toFixed(2)} св.г.` : '—'}
                       </td>
                       <td style={{ textAlign: 'center' }}>
-                        {s.bodyCount ?? '—'}
+                        {s.bodyCount ?? s.starLabel ?? '—'}
                       </td>
                       <td>
                         {s.requirePermit ? (
@@ -754,7 +774,9 @@ export default function SystemsPage() {
                 </tbody>
               </table>
               <p style={{ fontSize: 12, color: '#6b7280', marginTop: 8 }}>
-                Найдено {searchResults.length} систем. Кликните по строке для детальной информации.
+                Найдено {searchResults.length} систем
+                {searchSource === 'catalog' ? ' в каталоге Spansh' : searchSource === 'edsm' ? ' в EDSM' : ''}.
+                Кликните по строке для детальной информации.
               </p>
             </div>
           )}
@@ -823,6 +845,13 @@ export default function SystemsPage() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <a
+                      href={`/system/${encodeURIComponent(selectedSystem.name)}`}
+                      className="btn btn-orange"
+                      style={{ fontSize: 11, padding: '6px 14px' }}
+                    >
+                      Карточка
+                    </a>
                     <a
                       href={selectedSystem.edsmUrl}
                       target="_blank"

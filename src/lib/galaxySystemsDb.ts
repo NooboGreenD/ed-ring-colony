@@ -33,6 +33,9 @@ export interface GalaxyStats {
   systems_count: number;
   imported_at: string | null;
   source: string | null;
+  points_uploaded?: boolean;
+  points_bytes?: number | null;
+  points_count?: number | null;
 }
 
 /** How many systems the import has loaded (5-minute in-memory cache). */
@@ -45,9 +48,23 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
       .select('value')
       .eq('key', 'stats')
       .maybeSingle();
-    const v = data?.value as { systems_count?: number; imported_at?: string; source?: string } | null;
+    const v = data?.value as {
+      systems_count?: number;
+      imported_at?: string;
+      source?: string;
+      points_uploaded?: boolean;
+      points_bytes?: number;
+      points_count?: number;
+    } | null;
     if (v && typeof v.systems_count === 'number') {
-      value = { systems_count: v.systems_count, imported_at: v.imported_at ?? null, source: v.source ?? null };
+      value = {
+        systems_count: v.systems_count,
+        imported_at: v.imported_at ?? null,
+        source: v.source ?? null,
+        points_uploaded: v.points_uploaded === true,
+        points_bytes: typeof v.points_bytes === 'number' ? v.points_bytes : null,
+        points_count: typeof v.points_count === 'number' ? v.points_count : null,
+      };
     }
   } catch {
     value = null;
@@ -104,7 +121,11 @@ export async function findSystemsByNames(names: string[]): Promise<Map<string, G
 export async function searchSystems(q: string, limit = 8): Promise<GalaxySystemRow[]> {
   const key = normalizeSystemName(q);
   if (!key) return [];
-  const escaped = key.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+  // `%`, `_` and `*` are LIKE wildcards (PostgREST also treats `*` as `%`).
+  // System names do not contain them; stripping is safer than a backslash
+  // escape that PostgREST does not honour.
+  const escaped = key.replace(/[%_*]/g, '');
+  if (!escaped) return [];
 
   const exact = await supabaseAdmin
     .from('galaxy_systems').select(SELECT).eq('name_lc', key).limit(1);
@@ -137,7 +158,32 @@ const WORLD_TYPE_TO_DB_FILTER: Record<string, string> = {
   giant: 'star_giant_class.eq.giant',
 };
 
-/** Atlas star-candidate lookup: exotic/giant main stars inside an axis-aligned cube. */
+const STAR_TYPE_BY_WORLD: Record<string, string> = {
+  neutron_star: 'neutron',
+  black_hole: 'black_hole',
+  white_dwarf: 'white_dwarf',
+  wolf_rayet: 'wolf_rayet',
+  herbig_ae_be: 'herbig_ae_be',
+  t_tauri: 't_tauri',
+  carbon_star: 'carbon',
+};
+
+function splitWorldFilters(worldTypes: string[]): { starTypes: string[]; giantClasses: string[] } {
+  const starTypes: string[] = [];
+  const giantClasses: string[] = [];
+  for (const worldType of worldTypes) {
+    if (worldType === 'supergiant' || worldType === 'giant') giantClasses.push(worldType);
+    else if (STAR_TYPE_BY_WORLD[worldType]) starTypes.push(STAR_TYPE_BY_WORLD[worldType]);
+  }
+  return { starTypes, giantClasses };
+}
+
+/**
+ * Atlas star-candidate lookup: exotic/giant main stars inside an axis-aligned
+ * cube, nearest first. The SQL function is the source of truth. The PostgREST
+ * fallback is an arbitrary row cap (not "the nearest 1000") and is only used
+ * when that function has not been migrated yet.
+ */
 export async function findStarCandidates(params: {
   x: number;
   y: number;
@@ -146,12 +192,23 @@ export async function findStarCandidates(params: {
   worldTypes: string[];
   limit?: number;
 }): Promise<GalaxySystemRow[]> {
-  const filters = params.worldTypes
-    .map((t) => WORLD_TYPE_TO_DB_FILTER[t])
-    .filter(Boolean);
-  if (filters.length === 0) return [];
-  const limit = Math.min(params.limit ?? 1000, 1000);
+  const { starTypes, giantClasses } = splitWorldFilters(params.worldTypes);
+  if (starTypes.length === 0 && giantClasses.length === 0) return [];
+  const limit = Math.min(params.limit ?? 2000, 2000);
 
+  const rpc = await supabaseAdmin.rpc('galaxy_star_candidates', {
+    cx: params.x,
+    cy: params.y,
+    cz: params.z,
+    half: params.half,
+    star_types: starTypes,
+    giant_classes: giantClasses,
+    lim: limit,
+  });
+  if (!rpc.error && Array.isArray(rpc.data)) return rpc.data as GalaxySystemRow[];
+
+  console.error('[galaxy] galaxy_star_candidates unavailable, using capped fallback:', rpc.error?.message);
+  const filters = params.worldTypes.map((t) => WORLD_TYPE_TO_DB_FILTER[t]).filter(Boolean);
   const { data, error } = await supabaseAdmin
     .from('galaxy_systems')
     .select(SELECT)
@@ -162,10 +219,35 @@ export async function findStarCandidates(params: {
     .gte('z', params.z - params.half)
     .lte('z', params.z + params.half)
     .or(filters.join(','))
-    .order('id', { ascending: true })
-    .limit(limit);
+    .limit(Math.min(limit, 1000));
   if (error) throw error;
   return (data || []) as GalaxySystemRow[];
+}
+
+/** Systems inside a cube, nearest first. Empty when the catalog or function is missing. */
+export async function findSystemsInCube(params: {
+  x: number;
+  y: number;
+  z: number;
+  half: number;
+  limit?: number;
+}): Promise<Array<{ name: string; x: number; y: number; z: number }>> {
+  const limit = Math.min(params.limit ?? 800, 2000);
+  const rpc = await supabaseAdmin.rpc('galaxy_systems_near', {
+    cx: params.x,
+    cy: params.y,
+    cz: params.z,
+    half: params.half,
+    lim: limit,
+  });
+  if (rpc.error) throw new Error(rpc.error.message);
+  if (!Array.isArray(rpc.data)) return [];
+  return (rpc.data as Array<{ name: string; x: number; y: number; z: number }>).map((row) => ({
+    name: row.name,
+    x: Number(row.x),
+    y: Number(row.y),
+    z: Number(row.z),
+  }));
 }
 
 /**

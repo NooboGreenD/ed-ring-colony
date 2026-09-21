@@ -17,6 +17,7 @@ import {
 } from '@/components/Icons';
 
 import { buildOrreryLayout, summarizeLayout, toStructures } from '@/lib/systemOrrery';
+import { STAR_CLASS_LABELS, type StarClass } from '@/lib/galaxySystems';
 
 const SystemPlotlyMap = dynamic(() => import('@/components/SystemPlotlyMap'), {
   ssr: false,
@@ -87,6 +88,19 @@ export default function SystemPage() {
   const { name } = useParams();
   const systemName = decodeURIComponent(name as string);
   const [system, setSystem] = useState<SystemData | null>(null);
+  const [galaxy, setGalaxy] = useState<{
+    id64: string;
+    name: string;
+    x: number;
+    y: number;
+    z: number;
+    main_star: string | null;
+    star_type: StarClass;
+    star_giant_class: string | null;
+    needs_permit: boolean | null;
+    distance_from_sols: number | null;
+    distance_from_sgra: number | null;
+  } | null>(null);
   const [bodies, setBodies] = useState<any[]>([]);
   const [mapFocus, setMapFocus] = useState('');
   const [loading, setLoading] = useState(true);
@@ -101,11 +115,15 @@ export default function SystemPage() {
         .then((response) => response.json())
         .then((data) => (Array.isArray(data?.bodies) ? data.bodies : []))
         .catch(() => []),
+      fetch(`/api/galaxy/systems/by-name?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .catch(() => null),
     ])
-      .then(([progress, scanBodies]) => {
+      .then(([progress, scanBodies, catalog]) => {
         if (cancelled) return;
         setSystem(progress);
         setBodies(scanBodies);
+        setGalaxy(catalog?.name ? catalog : null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -146,6 +164,56 @@ export default function SystemPage() {
         <div style={{ color: '#e67e22', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2 }}>
           Загрузка системы...
         </div>
+      </main>
+    );
+  }
+
+  if ((!system || !system.found) && galaxy) {
+    const starLabel = STAR_CLASS_LABELS[galaxy.star_type] || galaxy.star_type;
+    return (
+      <main className="card" style={{ maxWidth: 1280, margin: '24px auto', padding: 28, borderRadius: 4 }}>
+        <div style={{ marginBottom: 20 }}>
+          <Link href="/map" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+        </div>
+        <h1 style={{ fontSize: 28, color: '#eeeeee', marginBottom: 8 }}>{galaxy.name}</h1>
+        <p style={{ color: '#9ca3af', marginTop: 0 }}>
+          Система есть в каталоге Spansh. Стройки на маршруте колонии здесь нет — это не статус «запланировано».
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>Главная звезда</div>
+            <div style={{ color: '#eeeeee' }}>{starLabel}</div>
+            {galaxy.main_star && <div style={{ fontSize: 12, color: '#9ca3af' }}>{galaxy.main_star}</div>}
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>Координаты</div>
+            <div style={{ color: '#eeeeee', fontFamily: 'ui-monospace, monospace', fontSize: 13 }}>
+              {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>До Sol / Sgr A*</div>
+            <div style={{ color: '#eeeeee' }}>
+              {galaxy.distance_from_sols != null ? `${Number(galaxy.distance_from_sols).toFixed(1)} св.лет` : '—'}
+              {' · '}
+              {galaxy.distance_from_sgra != null ? `${Number(galaxy.distance_from_sgra).toFixed(1)} св.лет` : '—'}
+            </div>
+          </div>
+          {galaxy.needs_permit && (
+            <div style={{ color: '#f87171' }}>Нужен permit</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
+          <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.4)', color: '#3b82f6', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>EDSM <IconExternalLink size={10} /></a>
+          <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(230,126,34,0.15)', border: '1px solid rgba(230,126,34,0.4)', color: '#e67e22', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>Raven <IconExternalLink size={10} /></a>
+          <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(255,209,102,0.12)', border: '1px solid rgba(255,209,102,0.35)', color: '#ffd166', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>Spansh <IconExternalLink size={10} /></a>
+        </div>
+        {bodies.length > 0 && (
+          <SystemPlotlyMap systemName={galaxy.name} projects={[]} initialBodies={bodies} focusTarget={mapFocus} onFocusChange={setMapFocus} />
+        )}
+        {orreryLayout.bodies.length > 0 && (
+          <p style={{ color: '#9ca3af', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
+        )}
       </main>
     );
   }

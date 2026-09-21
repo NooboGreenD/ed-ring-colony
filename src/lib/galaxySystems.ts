@@ -19,7 +19,9 @@ export type StarClass =
   | 'o' | 'b' | 'a' | 'f' | 'g' | 'k' | 'm'
   | 'brown_dwarf' | 'neutron' | 'black_hole' | 'white_dwarf'
   | 'wolf_rayet' | 'herbig_ae_be' | 't_tauri' | 'carbon'
-  | 'unknown';
+  | 'unknown'
+  // Append-only. The points file stores this index in one byte.
+  | 's_type' | 'ms_type';
 
 export type GiantClass = 'dwarf' | 'giant' | 'supergiant' | null;
 
@@ -59,7 +61,9 @@ export function classifyStar(mainStar: string | null | undefined): StarClassific
   else if (/^Wolf-Rayet (?:C|N|NC|O)?-? ?Star$/.test(s)) starType = 'wolf_rayet';
   else if (s === 'Herbig Ae/Be Star') starType = 'herbig_ae_be';
   else if (s === 'T Tauri Star') starType = 't_tauri';
-  else if (s === 'C Star' || s === 'CJ Star' || s === 'CN Star') starType = 'carbon';
+  else if (s === 'C Star' || s === 'CJ Star' || s === 'CN Star' || s === 'C-type Star') starType = 'carbon';
+  else if (s === 'S-type Star' || s === 'S Star') starType = 's_type';
+  else if (s === 'MS-type Star' || s === 'MS Star') starType = 'ms_type';
   else for (const [re, cls] of CLASS_BY_PREFIX) { if (re.test(s)) { starType = cls; break; } }
 
   if (!starType) return { starType: 'unknown', giantClass: null, worldTypes: [] };
@@ -94,12 +98,14 @@ export const STAR_CLASS_INDEX: Record<StarClass, number> = {
   o: 0, b: 1, a: 2, f: 3, g: 4, k: 5, m: 6, brown_dwarf: 7,
   neutron: 8, black_hole: 9, white_dwarf: 10, wolf_rayet: 11,
   herbig_ae_be: 12, t_tauri: 13, carbon: 14, unknown: 15,
+  s_type: 16, ms_type: 17,
 };
 
 export const STAR_CLASS_LIST: StarClass[] = [
   'o', 'b', 'a', 'f', 'g', 'k', 'm', 'brown_dwarf',
   'neutron', 'black_hole', 'white_dwarf', 'wolf_rayet',
   'herbig_ae_be', 't_tauri', 'carbon', 'unknown',
+  's_type', 'ms_type',
 ];
 
 /** [r,g,b] 0..1 per STAR_CLASS_LIST index. */
@@ -120,6 +126,8 @@ export const STAR_CLASS_COLORS: Array<[number, number, number]> = [
   [1.00, 0.62, 0.48], // t_tauri
   [1.00, 0.80, 0.58], // carbon
   [0.62, 0.66, 0.74], // unknown
+  [1.00, 0.42, 0.22], // s_type
+  [0.92, 0.28, 0.32], // ms_type
 ];
 
 export const STAR_CLASS_LABELS: Record<StarClass, string> = {
@@ -128,6 +136,7 @@ export const STAR_CLASS_LABELS: Record<StarClass, string> = {
   neutron: 'Нейтронная звезда', black_hole: 'Чёрная дыра', white_dwarf: 'Белый карлик',
   wolf_rayet: 'Звезда Вольфа–Райе', herbig_ae_be: 'Herbig Ae/Be', t_tauri: 'T Tauri',
   carbon: 'Углеродистая звезда', unknown: 'Не определён',
+  s_type: 'S-тип', ms_type: 'MS-тип',
 };
 
 /** Normalized search key for a system name (matches galaxy_systems.name_lc). */
@@ -160,14 +169,17 @@ export function distanceFromSgra(x: number, y: number, z: number): number {
 //   count x uint8        star class index (STAR_CLASS_LIST)
 // (float/uint32 sections start on 4-byte boundaries; the 1-byte section
 //  is last so no padding is needed — 29 bytes per point)
-// Point order MUST match `ORDER BY id` in the galaxy_systems table (the
-// import script generates both in the same pass, which is how the map
-// resolves a clicked point back to a system id).
+// Each point carries its own id64, so a click does not depend on dump order.
+// A file built from the table is still emitted `ORDER BY id` so two builds
+// of the same catalog compare equal.
 // ════════════════════════════════════════════════════════════════
 
 export const POINTS_MAGIC = 'EDGS';
 export const POINTS_VERSION = 1;
 export const POINTS_HEADER_SIZE = 12;
+/** Public bucket the importer uploads the map point cloud into. */
+export const POINTS_STORAGE_BUCKET = 'galaxy-data';
+export const POINTS_STORAGE_OBJECT = 'galaxy-systems-points.bin';
 /** Bytes per point: 3*float32 + 1*uint8 + 2*uint32 = 29. */
 export const POINTS_BYTES_PER_POINT = 29;
 
@@ -291,6 +303,25 @@ export function parsePointsFile(buffer: ArrayBuffer): AllSystemsData {
     id64Lo: new Uint32Array(buffer, hiOff + count * 4, count),
     starTypes: new Uint8Array(buffer, hiOff + count * 8, count),
   };
+}
+
+/**
+ * Elite/Sol-centered positions → the map frame used by `eliteToThreeCentered`:
+ * x' = x − Sgr A*.x, y' = y − Sgr A*.y, z' = −z + Sgr A*.z.
+ * Kept here (not in ed3dCanon) so the point cloud does not pull in three.js.
+ */
+export function toMapPositions(elite: Float32Array, count: number): Float32Array {
+  const out = new Float32Array(count * 3);
+  const sx = SAGA_LY.x;
+  const sy = SAGA_LY.y;
+  const sz = SAGA_LY.z;
+  const n = Math.min(count, Math.floor(elite.length / 3));
+  for (let i = 0; i < n; i++) {
+    out[i * 3] = elite[i * 3] - sx;
+    out[i * 3 + 1] = elite[i * 3 + 1] - sy;
+    out[i * 3 + 2] = -elite[i * 3 + 2] + sz;
+  }
+  return out;
 }
 
 /** Reconstruct the Spansh id64 (decimal string) from the packed halves. */

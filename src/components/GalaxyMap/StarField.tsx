@@ -97,5 +97,5 @@ export function StarField() {
   });
 
   if (!geometry) return null;
-  return <points ref={pointsRef} geometry={geometry} material={material} />;
+  return <points ref={pointsRef} geometry={geometry} material={material} raycast={() => null} />;
 }

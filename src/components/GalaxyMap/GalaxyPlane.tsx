@@ -40,5 +40,5 @@ export function GalaxyPlane() {
 
   if (!material) return null;
 
-  return <mesh geometry={geometry} material={material} rotation={[-Math.PI / 2, 0, 0]} />;
+  return <mesh geometry={geometry} material={material} rotation={[-Math.PI / 2, 0, 0]} raycast={() => null} />;
 }

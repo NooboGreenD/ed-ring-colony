@@ -13,7 +13,7 @@ import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/syste
 import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import { loadAllSystemsData } from './AllSystemsPoints';
-import type { AllSystemsData } from '@/lib/galaxySystems';
+import { STAR_CLASS_COLORS, STAR_CLASS_LABELS, STAR_CLASS_LIST, type AllSystemsData } from '@/lib/galaxySystems';
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((module) => module.GalaxyScene),
@@ -76,6 +76,34 @@ function formatCoordinate(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(1) : '?';
 }
 
+type GalaxyPick = {
+  id64: string;
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  main_star: string | null;
+  star_type: string;
+  star_giant_class: string | null;
+  needs_permit: boolean | null;
+  distance_from_sols: number | null;
+  distance_from_sgra: number | null;
+};
+
+const ALL_CLASS_MASK = (1 << STAR_CLASS_LIST.length) - 1;
+const EXOTIC_CLASSES = new Set([
+  'brown_dwarf', 'neutron', 'black_hole', 'white_dwarf', 'wolf_rayet',
+  'herbig_ae_be', 't_tauri', 'carbon', 's_type', 'ms_type',
+]);
+const EXOTIC_CLASS_MASK = STAR_CLASS_LIST.reduce(
+  (mask, cls, index) => (EXOTIC_CLASSES.has(cls) ? mask | (1 << index) : mask),
+  0,
+);
+
+function cssColor(rgb: [number, number, number]): string {
+  return `rgb(${Math.round(rgb[0] * 255)}, ${Math.round(rgb[1] * 255)}, ${Math.round(rgb[2] * 255)})`;
+}
+
 function formatProgress(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value)
     ? value.toLocaleString('ru-RU', { maximumFractionDigits: 2 })
@@ -130,6 +158,11 @@ export default function GalaxyMap({
   const [allSystemsData, setAllSystemsData] = useState<AllSystemsData | null>(null);
   const [allSystemsLoading, setAllSystemsLoading] = useState(false);
   const [allSystemsError, setAllSystemsError] = useState('');
+  const [galaxyPick, setGalaxyPick] = useState<GalaxyPick | null>(null);
+  const [classMask, setClassMask] = useState(ALL_CLASS_MASK);
+  const [suggestions, setSuggestions] = useState<GalaxyPick[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestIndex, setSuggestIndex] = useState(0);
   const [statusFilters, setStatusFilters] = useState<StatusFilters>({
     planned: true,
     building: true,
@@ -157,6 +190,31 @@ export default function GalaxyMap({
       cancelled = true;
     };
   }, [showAllSystems, allSystemsData, allSystemsLoading]);
+
+  useEffect(() => {
+    const query = systemSearch.trim();
+    if (query.length < 2) {
+      setSuggestions([]);
+      setSuggestOpen(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}&limit=8`, { signal: ctrl.signal })
+        .then((response) => response.json())
+        .then((data) => {
+          const rows = Array.isArray(data?.results) ? data.results as GalaxyPick[] : [];
+          setSuggestions(rows);
+          setSuggestIndex(0);
+          setSuggestOpen(rows.length > 0);
+        })
+        .catch(() => undefined);
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [systemSearch]);
 
   useEffect(() => {
     const loadHubs = async () => {
@@ -306,6 +364,7 @@ export default function GalaxyMap({
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
+    setGalaxyPick(null);
     if (hub) setFocusTarget(eliteToThreeCentered(hub));
   }, []);
 
@@ -314,6 +373,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
+    setGalaxyPick(null);
     if (point) setFocusTarget(eliteToThreeCentered(point));
   }, []);
 
@@ -322,6 +382,7 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedPilot(null);
+    setGalaxyPick(null);
     if (candidate) setFocusTarget(eliteToThreeCentered(candidate));
   }, []);
 
@@ -330,30 +391,32 @@ export default function GalaxyMap({
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
+    setGalaxyPick(null);
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
   }, []);
 
-  // Клик по точке облака «все системы»: id64 → карточка системы.
+  const openGalaxy = useCallback((data: GalaxyPick) => {
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    setGalaxyPick(data);
+    setFocusTarget(eliteToThreeCentered(data));
+    setSuggestOpen(false);
+    setAllSystemsError('');
+  }, []);
+
+  // Клик по точке облака «все системы»: id64 → карточка каталога, не «запланировано».
   const handlePickAllSystem = useCallback(async (id64: string) => {
     try {
       const response = await fetch(`/api/galaxy/systems/${encodeURIComponent(id64)}`);
       const data = await response.json();
       if (!response.ok || !data.name) throw new Error(data.error || 'Система не найдена');
-      const point: RouteSystem = {
-        id: -(800000 + (Date.now() % 100000)),
-        system_name: data.name,
-        sort_order: -1,
-        status: 'planned',
-        x: Number(data.x),
-        y: Number(data.y),
-        z: Number(data.z),
-        isHub: false,
-      };
-      handleSelectRouteSystem(point);
+      openGalaxy(data);
     } catch (error: any) {
       setAllSystemsError(error?.message || 'Не удалось открыть систему');
     }
-  }, [handleSelectRouteSystem]);
+  }, [openGalaxy]);
 
   const searchForSystem = useCallback(async () => {
     const query = systemSearch.trim();
@@ -369,19 +432,8 @@ export default function GalaxyMap({
       const local = await fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}`);
       const localData = await local.json();
       const best = localData?.results?.[0];
-      if (local.ok && best) {
-        const point: RouteSystem = {
-          id: -(900000 - (Date.now() % 100000)),
-          system_name: best.name,
-          sort_order: -1,
-          status: 'planned',
-          x: Number(best.x),
-          y: Number(best.y),
-          z: Number(best.z),
-          isHub: false,
-        };
-        setSearchSystem(point);
-        handleSelectRouteSystem(point);
+      if (local.ok && best?.name) {
+        openGalaxy(best);
         setSystemSearchLoading(false);
         return;
       }
@@ -404,6 +456,7 @@ export default function GalaxyMap({
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
+    setGalaxyPick(null);
   }, []);
 
   const handleResetView = useCallback(() => {
@@ -477,9 +530,45 @@ export default function GalaxyMap({
           <button onClick={focusLastProgressPoint} style={{ marginTop: 6, background: 'rgba(230,126,34,0.14)', border: '1px solid rgba(230,126,34,0.45)', color: '#e67e22', padding: '5px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconMapPin size={12} /> Последняя стройка
           </button>
-          <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-            <input value={systemSearch} onChange={(event) => setSystemSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void searchForSystem(); }} placeholder="Поиск системы..." style={{ minWidth: 0, flex: 1, background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '5px 7px', borderRadius: 4, fontSize: 11 }} />
+          <div style={{ display: 'flex', gap: 4, marginTop: 6, position: 'relative' }}>
+            <input
+              value={systemSearch}
+              onChange={(event) => setSystemSearch(event.target.value)}
+              onFocus={() => { if (suggestions.length > 0) setSuggestOpen(true); }}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown') {
+                  event.preventDefault();
+                  setSuggestOpen(true);
+                  setSuggestIndex((index) => Math.min(suggestions.length - 1, index + 1));
+                } else if (event.key === 'ArrowUp') {
+                  event.preventDefault();
+                  setSuggestIndex((index) => Math.max(0, index - 1));
+                } else if (event.key === 'Escape') {
+                  setSuggestOpen(false);
+                } else if (event.key === 'Enter') {
+                  if (suggestOpen && suggestions[suggestIndex]) openGalaxy(suggestions[suggestIndex]);
+                  else void searchForSystem();
+                }
+              }}
+              placeholder="Поиск системы..."
+              style={{ minWidth: 0, flex: 1, background: '#323538', border: '1px solid #3a3d40', color: '#eeeeee', padding: '5px 7px', borderRadius: 4, fontSize: 11 }}
+            />
             <button onClick={() => void searchForSystem()} disabled={systemSearchLoading} style={{ background: 'rgba(59,130,246,.18)', border: '1px solid rgba(59,130,246,.5)', color: '#8bbcff', padding: '4px 7px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }}>{systemSearchLoading ? '…' : 'Найти'}</button>
+            {suggestOpen && suggestions.length > 0 && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, background: '#1a1c1f', border: '1px solid #3a3d40', borderRadius: 4, maxHeight: 220, overflow: 'auto' }}>
+                {suggestions.map((hit, index) => (
+                  <button
+                    key={hit.id64 || hit.name}
+                    type="button"
+                    onMouseDown={(event) => { event.preventDefault(); openGalaxy(hit); }}
+                    style={{ display: 'block', width: '100%', textAlign: 'left', background: index === suggestIndex ? 'rgba(230,126,34,0.16)' : 'transparent', border: 'none', color: '#eeeeee', padding: '6px 8px', cursor: 'pointer', fontSize: 11 }}
+                  >
+                    <div>{hit.name}</div>
+                    <div style={{ color: '#9ca3af', fontSize: 10 }}>{hit.main_star || STAR_CLASS_LABELS[hit.star_type as keyof typeof STAR_CLASS_LABELS] || hit.star_type}</div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {systemSearchError && <div style={{ color: '#f87171', fontSize: 10, marginTop: 4 }}>{systemSearchError}</div>}
         </div>
@@ -510,6 +599,22 @@ export default function GalaxyMap({
             <input type="checkbox" checked={showAllSystems} onChange={(event) => setShowAllSystems(event.target.checked)} />
             Все системы{allSystemsData ? ` (${(allSystemsData.count / 1000).toFixed(0)}k)` : ''} ⚗
           </label>
+          {showAllSystems && allSystemsData && (
+            <div style={{ paddingLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
+              <button type="button" onClick={() => setClassMask(ALL_CLASS_MASK)} style={{ fontSize: 9, color: '#ffd166', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>Все</button>
+              <button type="button" onClick={() => setClassMask(EXOTIC_CLASS_MASK)} style={{ fontSize: 9, color: '#c4b5fd', background: 'transparent', border: '1px solid #3a3d40', borderRadius: 3, cursor: 'pointer' }}>Редкие</button>
+              {STAR_CLASS_LIST.map((cls, index) => (
+                <label key={cls} title={STAR_CLASS_LABELS[cls]} style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={(classMask & (1 << index)) !== 0}
+                    onChange={() => setClassMask((mask) => mask ^ (1 << index))}
+                  />
+                  <span style={{ width: 8, height: 8, borderRadius: 8, background: cssColor(STAR_CLASS_COLORS[index]), display: 'inline-block' }} />
+                </label>
+              ))}
+            </div>
+          )}
           {(allSystemsLoading || allSystemsError) && (
             <div style={{ fontSize: 10, color: allSystemsError ? '#f87171' : '#ffd166', paddingLeft: 22 }}>
               {allSystemsLoading ? 'Загрузка всех систем…' : allSystemsError}
@@ -579,7 +684,38 @@ export default function GalaxyMap({
         )}
       </div>
 
-      {selected && (
+      {galaxyPick && (
+        <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.92)', backdropFilter: 'blur(8px)', border: '1px solid #3a3d40', borderRadius: 8, padding: 12, minWidth: 240, maxWidth: 320, pointerEvents: 'auto' }}>
+          <Link href={`/system/${encodeURIComponent(galaxyPick.name)}`} style={{ textDecoration: 'none' }}>
+            <div style={{ fontWeight: 700, fontSize: 15, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6 }}>
+              {galaxyPick.name}
+              <IconExternalLink size={12} />
+            </div>
+          </Link>
+          <div style={{ marginTop: 6, fontSize: 12, color: '#eeeeee' }}>
+            {STAR_CLASS_LABELS[galaxyPick.star_type as keyof typeof STAR_CLASS_LABELS] || galaxyPick.star_type}
+            {galaxyPick.star_giant_class && galaxyPick.star_giant_class !== 'dwarf' ? ` · ${galaxyPick.star_giant_class === 'supergiant' ? 'сверхгигант' : 'гигант'}` : ''}
+          </div>
+          {galaxyPick.main_star && <div style={{ marginTop: 2, fontSize: 11, color: '#9ca3af' }}>{galaxyPick.main_star}</div>}
+          <div style={{ marginTop: 6, fontSize: 12, color: '#9ca3af' }}>
+            <IconMapPin size={12} /> {formatCoordinate(galaxyPick.x)}, {formatCoordinate(galaxyPick.y)}, {formatCoordinate(galaxyPick.z)}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af' }}>
+            До Sol: {galaxyPick.distance_from_sols != null ? `${Number(galaxyPick.distance_from_sols).toFixed(1)} св.лет` : '—'}
+            {' · '}до Sgr A*: {galaxyPick.distance_from_sgra != null ? `${Number(galaxyPick.distance_from_sgra).toFixed(1)} св.лет` : '—'}
+          </div>
+          {galaxyPick.needs_permit && <div style={{ marginTop: 4, fontSize: 11, color: '#f87171' }}>Нужен permit</div>}
+          <div style={{ marginTop: 4, fontSize: 10, color: '#6b7280' }}>Каталог Spansh · не стройка маршрута</div>
+          <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none' }}>EDSM</a>
+            <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none' }}>Raven</a>
+            <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxyPick.id64)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#ffd166', textDecoration: 'none' }}>Spansh</a>
+            <a href={`https://inara.cz/elite/starsystem/?search=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#9ca3af', textDecoration: 'none' }}>Inara</a>
+          </div>
+        </div>
+      )}
+
+      {selected && !galaxyPick && (
         <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'auto' }}>
           <Link href={`/system/${encodeURIComponent((selected as any).system_name || (selected as any).name)}`} style={{ textDecoration: 'none' }}>
             <div style={{ fontWeight: 700, fontSize: 15, color: '#e67e22', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -661,7 +797,10 @@ export default function GalaxyMap({
             showRingZone={showRingZone}
             allSystemsData={allSystemsData}
             showAllSystems={showAllSystems && !!allSystemsData}
+            allSystemsMask={classMask}
+            selectedAllSystem={galaxyPick}
             onPickAllSystem={handlePickAllSystem}
+            onEmptyMapClick={handleClearSelection}
             onSelectHub={handleSelectHub}
             onSelectRouteSystem={handleSelectRouteSystem}
             onSelectAtlasCandidate={handleSelectAtlasCandidate}
