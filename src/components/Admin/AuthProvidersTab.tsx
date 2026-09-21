@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import type { AuthProviderMeta } from '@/lib/authProviders/registry';
+import { IconInfo } from '@/components/Icons';
 
 type PublicSetting = { enabled: boolean; client_id: string; notes: string; updated_at: string | null; has_secret: boolean };
 type Payload = {
@@ -43,6 +44,28 @@ function Status({ meta, setting, env }: { meta: AuthProviderMeta; setting: Publi
   return <span style={{ fontSize: 12, color }}>{text}</span>;
 }
 
+function HelpButton({ meta, open, onToggle }: { meta: AuthProviderMeta; open: boolean; onToggle: () => void }) {
+  const help = meta.help;
+  if (!help && !meta.docs) return null;
+  return <span style={{ position: 'relative', display: 'inline-flex' }}>
+    <button type="button" aria-label={`Как настроить ${meta.label}`} aria-expanded={open} title="Как это настроить" onClick={onToggle}
+      style={{ width: 22, height: 22, padding: 0, borderRadius: '50%', border: '1px solid #4b5563', background: open ? 'rgba(255,157,46,0.15)' : 'transparent', color: '#e67e22', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+      <IconInfo size={13} color="#e67e22" />
+    </button>
+    {open && <div role="dialog" aria-label={`Подсказка: ${meta.label}`}
+      style={{ position: 'absolute', top: 28, left: 0, zIndex: 20, width: 'min(420px, 80vw)', background: '#1b1e21', border: '1px solid #4b5563', borderRadius: 2, padding: '10px 12px', fontSize: 12, color: '#d1d5db', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+      <strong style={{ display: 'block', marginBottom: 6, color: '#f3f4f6' }}>Как включить {meta.label}</strong>
+      {help && <ol style={{ margin: '0 0 8px', paddingLeft: 18, display: 'grid', gap: 4 }}>
+        {help.steps.map((step, i) => <li key={i}>{step}</li>)}
+      </ol>}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        {help?.guide && <a href={help.guide} target="_blank" rel="noreferrer">📄 {help.guideLabel || 'Подробная инструкция'}</a>}
+        {meta.docs && <a href={meta.docs} target="_blank" rel="noreferrer">↗ Консоль провайдера</a>}
+      </div>
+    </div>}
+  </span>;
+}
+
 export default function AuthProvidersTab() {
   const [data, setData] = useState<Payload | null>(null);
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
@@ -50,6 +73,13 @@ export default function AuthProvidersTab() {
   const [msg, setMsg] = useState('');
   const [open, setOpen] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const [help, setHelp] = useState<string | null>(null);
+  useEffect(() => {
+    if (!help) return;
+    const close = (e: KeyboardEvent) => { if (e.key === 'Escape') setHelp(null); };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [help]);
 
   const load = useCallback(async () => {
     setMsg('');
@@ -116,6 +146,7 @@ export default function AuthProvidersTab() {
         return <div key={meta.id} style={{ border: '1px solid #323538', borderRadius: 2, padding: '10px 12px', background: 'rgba(255,255,255,0.02)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <strong style={{ minWidth: 180 }}>{meta.label}</strong>
+            <HelpButton meta={meta} open={help === meta.id} onToggle={() => setHelp(help === meta.id ? null : meta.id)} />
             <span style={{ fontSize: 11, padding: '2px 6px', border: `1px solid ${KIND_COLOR[meta.kind]}`, color: KIND_COLOR[meta.kind], borderRadius: 2 }}>{KIND_LABEL[meta.kind]}</span>
             <Status meta={meta} setting={s} env={data.env} />
             <span style={{ flex: 1 }} />
