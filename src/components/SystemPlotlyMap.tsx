@@ -212,6 +212,15 @@ export default function SystemPlotlyMap({
   // осей, поэтому переключение вида ничего не пересчитывает и не может увести
   // камеру в чёрный экран.
   const [viewMode, setViewMode] = useState<'iso' | 'top' | 'side'>('iso');
+  // Режим перетаскивания мышью: 'orbit' (свободное сферическое 3D-вращение),
+  // 'pan' (панорамирование / смещение сцены), 'turntable' (вращение вокруг вертикали).
+  const [dragMode, setDragMode] = useState<'orbit' | 'pan' | 'turntable'>('orbit');
+  // Разрешить зум колесом мыши в обычном (неполноэкранном) режиме
+  const [wheelZoomEnabled, setWheelZoomEnabled] = useState(false);
+  // Состояние зажатой мыши для визуального фидбека курсора ('grabbing')
+  const [isDragging, setIsDragging] = useState(false);
+  // Отображение наэкранной тактической HUD-панели управления 3D-камерой
+  const [showNavHud, setShowNavHud] = useState(true);
   // Прицел: «полный» — концентрические круги + координатные линии во всю карту,
   // «круг» — только кольца у курсора, «нет» — обычный курсор.
   const [reticleMode, setReticleMode] = useState<'full' | 'ring' | 'off'>('full');
@@ -241,16 +250,27 @@ export default function SystemPlotlyMap({
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const reticleLinesRef = useRef<HTMLDivElement>(null);
 
+  // Сброс состояния перетаскивания мыши при отпускании в любой точке окна
+  useEffect(() => {
+    const onWindowPointerUp = () => setIsDragging(false);
+    window.addEventListener('pointerup', onWindowPointerUp);
+    return () => window.removeEventListener('pointerup', onWindowPointerUp);
+  }, []);
+
   const onMapMouseMove = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    const host = reticleRef.current;
-    if (!host) return;
-    const box = host.getBoundingClientRect();
+    const reticle = reticleRef.current;
+    if (!reticle) return;
+    // Координаты считаем относительно стабильного хост-контейнера карты,
+    // а не самого прицела — иначе прицел прыгает и улетает в бесконечный сдвиг.
+    const container = reticle.parentElement;
+    if (!container) return;
+    const box = container.getBoundingClientRect();
     const x = event.clientX - box.left;
     const y = event.clientY - box.top;
-    host.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    reticle.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     // Показываем только вместе с первой реальной позицией: иначе на
     // `mouseenter` прицел на мгновение вспыхивал в левом верхнем углу.
-    host.style.opacity = '1';
+    reticle.style.opacity = '1';
     const lines = reticleLinesRef.current;
     if (lines) {
       // Координатные линии во всю карту: горизонталь живёт по Y, вертикаль — по X.
@@ -258,6 +278,106 @@ export default function SystemPlotlyMap({
       lines.style.setProperty('--ry', `${y}px`);
     }
   }, []);
+
+  const updateDragMode = useCallback((newMode: 'orbit' | 'pan' | 'turntable') => {
+    setDragMode(newMode);
+    const gd = containerRef.current;
+    if (gd && window.Plotly?.relayout) {
+      try {
+        window.Plotly.relayout(gd, {
+          dragmode: newMode,
+          'scene.dragmode': newMode,
+        });
+      } catch {
+        // Fallback через обычный цикл обновления
+      }
+    }
+  }, []);
+
+  const rotateCamera = useCallback(
+    (deltaPhiDeg: number, deltaThetaDeg: number) => {
+      const gd = containerRef.current;
+      if (!gd) return;
+      const liveCamera = (gd as any)?._fullLayout?.scene?.camera;
+      const currentEye = liveCamera?.eye ?? sceneCamera(viewMode).eye;
+
+      const r = Math.hypot(currentEye.x, currentEye.y, currentEye.z) || 1.35;
+      const phi = Math.atan2(currentEye.y, currentEye.x);
+      const currentZRatio = Math.max(-0.999, Math.min(0.999, currentEye.z / r));
+      const theta = Math.asin(currentZRatio);
+
+      const newPhi = phi + (deltaPhiDeg * Math.PI) / 180;
+      const newTheta = Math.max(
+        -Math.PI / 2 + 0.05,
+        Math.min(Math.PI / 2 - 0.05, theta + (deltaThetaDeg * Math.PI) / 180),
+      );
+
+      const cosTheta = Math.cos(newTheta);
+      const newEye = {
+        x: Number((r * cosTheta * Math.cos(newPhi)).toFixed(4)),
+        y: Number((r * cosTheta * Math.sin(newPhi)).toFixed(4)),
+        z: Number((r * Math.sin(newTheta)).toFixed(4)),
+      };
+
+      const newUp = Math.abs(cosTheta) < 0.08
+        ? { x: 0, y: Math.sign(currentEye.y || 1), z: 0 }
+        : { x: 0, y: 0, z: 1 };
+
+      try {
+        if (window.Plotly?.relayout) {
+          window.Plotly.relayout(gd, {
+            'scene.camera.eye': newEye,
+            'scene.camera.up': newUp,
+            'scene.camera.center': { x: 0, y: 0, z: 0 },
+          });
+        }
+      } catch {
+        // Fallback
+      }
+    },
+    [viewMode],
+  );
+
+  const zoomStep = useCallback(
+    (direction: 'in' | 'out') => {
+      const gd = containerRef.current;
+      if (!gd) return;
+      const factor = direction === 'in' ? 0.75 : 1.33;
+
+      const currentX = (gd as any)?._fullLayout?.scene?.xaxis?.range;
+      const currentY = (gd as any)?._fullLayout?.scene?.yaxis?.range;
+      const currentZ = (gd as any)?._fullLayout?.scene?.zaxis?.range;
+
+      if (Array.isArray(currentX) && Array.isArray(currentY) && Array.isArray(currentZ)) {
+        const midX = (currentX[0] + currentX[1]) / 2;
+        const spanX = ((currentX[1] - currentX[0]) * factor) / 2;
+        const midY = (currentY[0] + currentY[1]) / 2;
+        const spanY = ((currentY[1] - currentY[0]) * factor) / 2;
+        const midZ = (currentZ[0] + currentZ[1]) / 2;
+        const spanZ = ((currentZ[1] - currentZ[0]) * factor) / 2;
+
+        try {
+          if (window.Plotly?.relayout) {
+            window.Plotly.relayout(gd, {
+              'scene.xaxis.range': [midX - spanX, midX + spanX],
+              'scene.yaxis.range': [midY - spanY, midY + spanY],
+              'scene.zaxis.range': [midZ - spanZ, midZ + spanZ],
+            });
+            return;
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      if (direction === 'in' && zoom < 3 && selectedTarget) {
+        setZoom((z) => Math.min(3, z + 1) as any);
+      } else if (direction === 'out' && zoom > 0) {
+        setZoom((z) => Math.max(0, z - 1) as any);
+      }
+    },
+    [zoom, selectedTarget],
+  );
 
   useEffect(() => {
     if (focusTarget) {
@@ -700,6 +820,7 @@ export default function SystemPlotlyMap({
       // окна уже задан размахом осей. Координата цели в unit'ах системы увела бы
       // камеру в никуда (чёрный экран при фокусе).
       camera,
+      dragmode: dragMode,
       // Куб вместо «data»: иначе сплющенная по z система превращает шары в блины.
       ...sceneAspect(),
       xaxis: { showgrid: false, showticklabels: false, showbackground: false, zeroline: false, range: ranges.x },
@@ -710,6 +831,7 @@ export default function SystemPlotlyMap({
     Plotly.react(gd, traces, {
       paper_bgcolor: '#0b0e14',
       plot_bgcolor: '#07090e',
+      dragmode: dragMode,
       margin: { l: 0, r: 0, t: 4, b: 0 },
       showlegend: summary.stars + layout.bodies.length <= 400,
       legend: {
@@ -732,11 +854,8 @@ export default function SystemPlotlyMap({
       responsive: true,
       displayModeBar: false,
       displaylogo: false,
-      // Зум колесом — только в полном экране. Карта встроена в страницу высотой
-      // 470 px, а сразу под ней идут «Постройки»: при постоянно включённом
-      // `scrollZoom` колесо над картой зумило сцену и не давало пролистнуть
-      // страницу дальше. В полном окне прокручивать нечего, там зум уместен.
-      scrollZoom: isFullscreen,
+      // Зум колесом — в полном экране либо при явном включении тумблером в HUD.
+      scrollZoom: isFullscreen || wheelZoomEnabled,
     });
 
     // Снимок исходных размеров/подписей маркеров по трэкам. Подсветка при
@@ -830,7 +949,7 @@ export default function SystemPlotlyMap({
     scriptLoaded, loading, error, records, layout, structures, visibleStructures, selectedTarget, zoom,
     filterMode, scaleMode, labelMode, showMoons, isolateCluster, activeCluster, focus, halfSpan, detailMode,
     sphereRadii, isFullscreen, showLabels, systemName, summary, structuresForBody, selectTarget,
-    canvasPixels, viewMode, cameraReset,
+    canvasPixels, viewMode, cameraReset, dragMode, wheelZoomEnabled,
   ]);
 
   useEffect(() => {
@@ -856,12 +975,16 @@ export default function SystemPlotlyMap({
         cycleTarget(-1);
       } else if (event.key === ']' || event.key === 'ArrowRight') {
         cycleTarget(1);
+      } else if (event.key === '+' || event.key === '=') {
+        zoomStep('in');
+      } else if (event.key === '-' || event.key === '_') {
+        zoomStep('out');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTarget, layout, zoom]);
+  }, [selectedTarget, layout, zoom, zoomStep]);
 
   function cycleTarget(direction: number) {
     const names = layout.bodies.map((body) => body.name);
@@ -906,13 +1029,16 @@ export default function SystemPlotlyMap({
       }}
     >
       <style>{`
-        .ed-map-chip{border:1px solid #4a4d50;background:#1e2022;color:#cbd5e1;border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap;transition:all .15s ease}
+        .ed-map-chip{border:1px solid #4a4d50;background:#1e2022;color:#cbd5e1;border-radius:2px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap;transition:all .15s ease}
         .ed-map-chip:hover:not(:disabled){border-color:#e67e22;color:#ff9f43}
         .ed-map-chip:disabled{opacity:.4;cursor:not-allowed}
         .ed-map-chip[data-on="1"]{background:#e67e22;border-color:#e67e22;color:#0b0e14;font-weight:600}
         .ed-map-chip[data-tone="cyan"][data-on="1"]{background:#00f3ff;border-color:#00f3ff;color:#04222a}
         .ed-map-chip[data-tone="green"][data-on="1"]{background:#2ecc71;border-color:#2ecc71;color:#04240f}
         .ed-map-chip[data-tone="violet"][data-on="1"]{background:#b39ddb;border-color:#b39ddb;color:#1b1230}
+        .ed-hud-btn{border:1px solid #3a3d40;background:#1e2022;color:#cbd5e1;border-radius:2px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;transition:all .12s ease}
+        .ed-hud-btn:hover:not(:disabled){border-color:#e67e22;color:#ff9f43;background:#2a2d30}
+        .ed-hud-btn:active:not(:disabled){background:#e67e22;color:#0b0e14}
         .ed-map-scroll{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;scrollbar-width:thin}
         .ed-map-scroll::-webkit-scrollbar{height:6px}
         .ed-map-scroll::-webkit-scrollbar-thumb{background:#3a3d40;border-radius:3px}
@@ -991,6 +1117,33 @@ export default function SystemPlotlyMap({
           <button onClick={() => selectTarget('', 0)} className="ed-map-chip" title="Снять фокус (Esc)">
             <IconCrosshair size={12} /> сброс
           </button>
+          <span style={{ width: 1, height: 16, background: '#3a3d40', margin: '0 2px' }} />
+          {/* Режимы управления мышью */}
+          <button
+            className="ed-map-chip"
+            data-on={dragMode === 'orbit' ? '1' : '0'}
+            onClick={() => updateDragMode('orbit')}
+            title="ЛКМ: свободное 3D вращение камеры (Orbit)"
+          >
+            🔄 орбита
+          </button>
+          <button
+            className="ed-map-chip"
+            data-on={dragMode === 'pan' ? '1' : '0'}
+            onClick={() => updateDragMode('pan')}
+            title="ЛКМ: перемещение / панорамирование карты (Pan)"
+          >
+            🖐️ панорама
+          </button>
+          <button
+            className="ed-map-chip"
+            data-on={dragMode === 'turntable' ? '1' : '0'}
+            onClick={() => updateDragMode('turntable')}
+            title="ЛКМ: вращение вокруг вертикали (Turntable)"
+          >
+            🎠 карусель
+          </button>
+          <span style={{ width: 1, height: 16, background: '#3a3d40', margin: '0 2px' }} />
           {([
             ['iso', '🔭 3D', 'изометрия — как видит систему наблюдатель'],
             ['top', '🧭 сверху', 'плоский вид на плоскость эклиптики (та же сцена)'],
@@ -1006,6 +1159,15 @@ export default function SystemPlotlyMap({
               {label}
             </button>
           ))}
+          <span style={{ width: 1, height: 16, background: '#3a3d40', margin: '0 2px' }} />
+          <button
+            className="ed-map-chip"
+            data-on={wheelZoomEnabled ? '1' : '0'}
+            onClick={() => setWheelZoomEnabled((v) => !v)}
+            title="Включить / отключить зум колесиком мыши во встроенном режиме"
+          >
+            🔍 колесо {wheelZoomEnabled ? 'вкл' : 'выкл'}
+          </button>
           <button
             className="ed-map-chip"
             data-on={reticleMode !== 'off' ? '1' : '0'}
@@ -1138,29 +1300,43 @@ export default function SystemPlotlyMap({
           <div
             data-ed-map-host="1"
             onPointerDown={(event) => {
+              setIsDragging(true);
               pointerDownRef.current = { x: event.clientX, y: event.clientY };
             }}
+            onPointerUp={() => {
+              setIsDragging(false);
+            }}
             onMouseMove={reticleMode === 'off' ? undefined : onMapMouseMove}
-            onMouseLeave={() => { if (reticleRef.current) reticleRef.current.style.opacity = '0'; }}
+            onMouseLeave={() => {
+              setIsDragging(false);
+              if (reticleRef.current) reticleRef.current.style.opacity = '0';
+            }}
             style={{
               position: 'relative',
               width: '100%',
               height: isFullscreen ? undefined : 470,
               flex: isFullscreen ? '1 1 auto' : undefined,
               minHeight: isFullscreen ? 240 : undefined,
-              borderRadius: 8,
+              borderRadius: 4,
+              border: '1px solid #323538',
+              overflow: 'hidden',
               display: loading || error || records.length === 0 ? 'none' : 'block',
-              // Свой прицел заменяет системный курсор — иначе два накладываются.
-              cursor: reticleMode === 'off' ? undefined : 'none',
+              cursor: isDragging
+                ? 'grabbing'
+                : dragMode === 'pan'
+                  ? 'grab'
+                  : reticleMode === 'off'
+                    ? 'default'
+                    : 'crosshair',
             }}
           >
             <div
               ref={containerRef}
-              style={{ width: '100%', height: '100%', borderRadius: 8, overflow: 'hidden' }}
+              style={{ width: '100%', height: '100%', borderRadius: 4, overflow: 'hidden' }}
             />
             {reticleMode === 'full' && <div ref={reticleLinesRef} className="ed-reticle-lines" />}
             {reticleMode !== 'off' && (
-              <div ref={reticleRef} className="ed-reticle">
+              <div ref={reticleRef} className="ed-reticle" style={{ pointerEvents: 'none' }}>
                 <span className="ed-ret-ring1" />
                 <span className="ed-ret-ring2" />
                 <span className="ed-ret-tick-h" />
@@ -1168,13 +1344,170 @@ export default function SystemPlotlyMap({
                 <span className="ed-ret-dot" />
               </div>
             )}
+
+            {/* Tactical 3D HUD Navigation Compass Pad */}
+            <div
+              className="ed-3d-compass-hud"
+              style={{
+                position: 'absolute',
+                top: 10,
+                right: 10,
+                zIndex: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 5,
+                background: 'rgba(26, 28, 30, 0.90)',
+                border: '1px solid #3a3d40',
+                borderRadius: 2,
+                padding: showNavHud ? '6px 8px' : '4px 8px',
+                backdropFilter: 'blur(6px)',
+                userSelect: 'none',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                pointerEvents: 'auto',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, width: '100%' }}>
+                <span style={{ fontSize: 9, fontFamily: 'ui-monospace, monospace', color: '#e67e22', letterSpacing: 1, fontWeight: 700 }}>
+                  HUD 3D NAV
+                </span>
+                <button
+                  type="button"
+                  className="ed-hud-btn"
+                  style={{ width: 18, height: 16, fontSize: 9, padding: 0 }}
+                  onClick={() => setShowNavHud((prev) => !prev)}
+                  title={showNavHud ? 'Свернуть HUD навигации' : 'Развернуть HUD навигации'}
+                >
+                  {showNavHud ? '▲' : '▼'}
+                </button>
+              </div>
+
+              {showNavHud && (
+                <>
+                  {/* Directional Pad */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(3, 24px)',
+                      gridTemplateRows: 'repeat(3, 24px)',
+                      gap: 3,
+                      justifyContent: 'center',
+                      marginTop: 2,
+                    }}
+                  >
+                    <span />
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      onClick={() => rotateCamera(0, 15)}
+                      title="Наклонить вверх (Tilt Up)"
+                    >
+                      ▲
+                    </button>
+                    <span />
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      onClick={() => rotateCamera(-25, 0)}
+                      title="Повернуть влево (Yaw Left)"
+                    >
+                      ◀
+                    </button>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      onClick={() => setCameraReset((c) => c + 1)}
+                      title="Сброс вида камеры (горячая клавиша: 0)"
+                      style={{ color: '#00f3ff', fontWeight: 'bold' }}
+                    >
+                      ⟲
+                    </button>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      onClick={() => rotateCamera(25, 0)}
+                      title="Повернуть вправо (Yaw Right)"
+                    >
+                      ▶
+                    </button>
+                    <span />
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      onClick={() => rotateCamera(0, -15)}
+                      title="Наклонить вниз (Tilt Down)"
+                    >
+                      ▼
+                    </button>
+                    <span />
+                  </div>
+
+                  {/* Zoom Controls */}
+                  <div style={{ display: 'flex', gap: 3, width: '100%', marginTop: 2 }}>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      style={{ flex: 1, height: 22, fontSize: 13, fontWeight: 'bold' }}
+                      onClick={() => zoomStep('in')}
+                      title="Приблизить масштаб (горячая клавиша: +)"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      style={{ flex: 1, height: 22, fontSize: 13, fontWeight: 'bold' }}
+                      onClick={() => zoomStep('out')}
+                      title="Отдалить масштаб (горячая клавиша: -)"
+                    >
+                      −
+                    </button>
+                  </div>
+
+                  {/* Mode Toggles */}
+                  <div style={{ display: 'flex', gap: 3, width: '100%', marginTop: 2 }}>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      style={{
+                        flex: 1,
+                        fontSize: 9,
+                        padding: '3px 0',
+                        background: dragMode === 'orbit' ? '#e67e22' : undefined,
+                        color: dragMode === 'orbit' ? '#0b0e14' : undefined,
+                        fontWeight: dragMode === 'orbit' ? 700 : 500,
+                      }}
+                      onClick={() => updateDragMode('orbit')}
+                      title="Режим ЛКМ: вращение 3D (Orbit)"
+                    >
+                      ОРБИТА
+                    </button>
+                    <button
+                      type="button"
+                      className="ed-hud-btn"
+                      style={{
+                        flex: 1,
+                        fontSize: 9,
+                        padding: '3px 0',
+                        background: dragMode === 'pan' ? '#00f3ff' : undefined,
+                        color: dragMode === 'pan' ? '#04222a' : undefined,
+                        fontWeight: dragMode === 'pan' ? 700 : 500,
+                      }}
+                      onClick={() => updateDragMode('pan')}
+                      title="Режим ЛКМ: перемещение (Pan)"
+                    >
+                      ПАНОРАМА
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
-          <div style={{ marginTop: 6, fontSize: 11, color: '#6b7280', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ marginTop: 6, fontSize: 11, color: '#9ca3af', fontFamily: 'ui-monospace, monospace', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
             <span>
-              ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность ·
-              ←/→ — перебор тел · 0 — вернуть вид{isFullscreen ? ' · колесо — зум' : ''}
+              ЛКМ — {dragMode === 'orbit' ? 'вращение' : dragMode === 'pan' ? 'панорама' : 'карусель'} · ПКМ — панорама · клик по телу — фокус · двойной клик — поверхность ·
+              ←/→ — тела · +/- — зум · 0 — вид{isFullscreen || wheelZoomEnabled ? ' · колесо — зум' : ''}
             </span>
-            {selectedTarget && <span style={{ color: '#00f3ff' }}>🎯 {selectedTarget}</span>}
+            {selectedTarget && <span style={{ color: '#00f3ff', fontWeight: 600 }}>🎯 {selectedTarget}</span>}
           </div>
         </div>
 

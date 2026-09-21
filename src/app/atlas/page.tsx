@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAtlasData } from '@/hooks/useAtlasData';
@@ -303,7 +304,17 @@ function AtlasPageInner() {
       {/* ── Sidebar ── */}
       <div className="atlas-sidebar">
         <div className="atlas-sidebar-header">
-          <h1>ATLAS</h1>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h1>ATLAS</h1>
+            <Link
+              href="/atlas/sector"
+              className="btn"
+              style={{ padding: '3px 8px', fontSize: 10, letterSpacing: 1 }}
+              title="Реестр секторов галактики"
+            >
+              СЕКТОРЫ (42)
+            </Link>
+          </div>
           <p className="kicker">World Finder for Colonization</p>
         </div>
 

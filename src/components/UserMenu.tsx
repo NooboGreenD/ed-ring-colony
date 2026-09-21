@@ -1,5 +1,5 @@
 "use client";
-import { IconHeadphones } from "@/components/Icons";
+import { IconHeadphones, IconCoins } from "@/components/Icons";
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
@@ -187,6 +187,11 @@ export default function UserMenu() {
           <Link href={statsHref} className="user-menu-item" onClick={() => setOpen(false)}>{t('account.myStats') || 'Моя статистика'}</Link>
           <Link href="/support" className="user-menu-item" onClick={() => setOpen(false)}><IconHeadphones size={14} /> {t('support.title') || 'Техподдержка'}</Link>
           {staff && <Link href="/admin" className="user-menu-item" onClick={() => setOpen(false)}>{t('account.admin') || 'Админ-панель'}</Link>}
+          {profile?.role === "admin" && (
+            <Link href="/admin?tab=billing" className="user-menu-item" onClick={() => setOpen(false)}>
+              <IconCoins size={14} color="#e67e22" /> {t('account.billing') || 'Биллинг и статистика'}
+            </Link>
+          )}
           <button type="button" className="user-menu-item" onClick={logout}>{t('account.logout')}</button>
         </div>
       )}

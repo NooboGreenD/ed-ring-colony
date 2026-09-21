@@ -662,6 +662,35 @@ export default function AccountPage() {
 
       {msg && <p style={{ color: "#e67e22", fontSize: 14, marginBottom: 16 }}>{msg}</p>}
 
+      {profile?.role === "admin" && (
+        <div
+          style={{
+            marginBottom: 20,
+            padding: "12px 18px",
+            background: "rgba(230, 126, 34, 0.08)",
+            border: "1px solid rgba(230, 126, 34, 0.3)",
+            borderRadius: 2,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 12,
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "var(--orange, #e67e22)", fontWeight: 700, letterSpacing: 1 }}>
+              ПАНЕЛЬ АДМИНИСТРАТОРА // ФИНАНСЫ И СТАТИСТИКА
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text, #eeeeee)", marginTop: 2 }}>
+              Доступен модуль биллинга, аналитика выручки, инфографика и управление премиум-подписками.
+            </div>
+          </div>
+          <Link href="/admin?tab=billing" className="btn btn-orange" style={{ padding: "6px 14px", fontSize: 11 }}>
+            Открыть биллинг
+          </Link>
+        </div>
+      )}
+
       <div className="tabs" style={{ marginBottom: 20 }}>
         <button className={tab === "profile" ? "tab tab-active" : "tab"} onClick={() => setTab("profile")}>{t('account.tabProfile')}</button>
         <button className={tab === "squadron" ? "tab tab-active" : "tab"} onClick={() => setTab("squadron")}>{t('account.tabSquadron')}</button>
