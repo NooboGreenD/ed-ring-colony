@@ -42,3 +42,25 @@ export async function startOAuthAction(provider: OAuthProvider, mode: OAuthMode)
 export async function startDiscordOAuthAction(mode: OAuthMode) {
   return startOAuthAction('discord', mode);
 }
+
+/** VK ID is not a GoTrue provider: the site issues the PKCE request itself. */
+export async function startVkAuthAction(mode: OAuthMode) {
+  const { vkEnabled, vkConfig, createVkFlow, vkAuthorizeUrl, VK_FLOW_COOKIE, VK_FLOW_TTL, vkErrorMessage } = await import('@/lib/vkId');
+  if (!vkEnabled() || !['login', 'link'].includes(mode)) return { url: null, error: vkErrorMessage('not_configured') };
+  try {
+    const cookieStore = await cookies();
+    cookieStore.delete(VK_FLOW_COOKIE);
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (mode === 'link' && !user) return { url: null, error: vkErrorMessage('not_authenticated') };
+    const intent = user ? 'link' : 'login';
+    const origin = getSiteUrl();
+    const { flow, cookie } = createVkFlow(intent, user?.id ?? null);
+    cookieStore.set(VK_FLOW_COOKIE, cookie, {
+      httpOnly: true, sameSite: 'lax', secure: origin.startsWith('https:'), path: '/', maxAge: VK_FLOW_TTL,
+    });
+    return { url: vkAuthorizeUrl(flow, vkConfig().clientId, origin), error: null };
+  } catch {
+    return { url: null, error: 'Не удалось начать авторизацию VK. Проверьте настройки сервера.' };
+  }
+}

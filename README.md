@@ -62,7 +62,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Language**: TypeScript 5 (strict mode)
 - **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`)
 - **Database**: Supabase (PostgreSQL + Realtime)
-- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub)
+- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub) + VK ID (собственный OAuth 2.1/PKCE-поток, см. SELFHOST.md)
 - **3D**: Three.js 0.185.1 + React Three Fiber 9.7.0 + Drei 10.7.8
 - **Push**: web-push 3.6.7
 - **Markdown**: react-markdown 10.1.0 + remark-gfm + rehype-sanitize
