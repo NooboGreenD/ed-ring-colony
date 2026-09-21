@@ -1,656 +1,420 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
-import {
-  ShopItem,
-  UserInventoryItem,
-  EquippedCosmetics,
-  UserBalance,
-  UserSubscription,
-} from "@/types/billing";
+import type { ShopItem, UserInventoryItem, EquippedCosmetics, UserBalance, UserSubscription, BillingPlan, CreditPack, PublicPaymentProvider } from "@/types/billing";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
 import CosmeticTitle from "@/components/Cosmetics/CosmeticTitle";
-import {
-  IconStore,
-  IconCoins,
-  IconCrown,
-  IconCheck,
-  IconX,
-  IconSearch,
-  IconDiamond,
-  IconActivity,
-  IconExternalLink,
-} from "@/components/Icons";
+import { invalidateCosmetics } from "@/components/Cosmetics/useCosmetics";
+import { authFetch } from "@/lib/supabaseClient";
+import { IconCoins, IconCrown, IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
+
+type Category = "all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory" | "plans";
+
+const CATEGORY_LABEL: Record<string, string> = { frame: "Рамка аватара", badge: "Знак отличия", skin: "HUD-тема", glow: "Свечение позывного", title: "Почетный титул" };
+const RARITY_COLOR: Record<string, string> = { legendary: "#fbbf24", epic: "#c084fc", rare: "#38bdf8", common: "#9ca3af" };
+const METHOD_LABEL: Record<string, string> = { card: "Карта", sbp: "СБП", crypto: "Крипто", manual: "Перевод" };
+
+/** Small visual preview of an item, driven by its preview_data. */
+function ItemPreview({ item, size = "md" }: { item: ShopItem; size?: "sm" | "md" | "lg" }) {
+  const s = size === "sm" ? 32 : size === "lg" ? 64 : 48;
+  const color = item.preview_data?.color || "#e67e22";
+  switch (item.category) {
+    case "frame":
+      return <CosmeticAvatar frameId={item.id} framePreview={item.preview_data} size={s} showScanlines />;
+    case "badge":
+      return <CosmeticBadge badgeId={item.id} badgePreview={item.preview_data} title={item.title} size={Math.round(s * 0.7)} />;
+    case "glow":
+      return <CosmeticCallsign name="CMDR PILOT" glowId={item.id} glowPreview={item.preview_data} fontSize={size === "sm" ? 12 : 15} />;
+    case "title":
+      return <CosmeticTitle titleId={item.id} titlePreview={item.preview_data} text={item.title} />;
+    case "skin":
+      return (
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ width: s, height: Math.round(s * 0.6), borderRadius: 3, background: `linear-gradient(135deg, ${color}, ${item.preview_data?.accentColor || color})`, border: "1px solid rgba(255,255,255,0.25)", boxShadow: `0 0 10px ${color}55` }} />
+          {size !== "sm" && <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Палитра интерфейса</span>}
+        </div>
+      );
+    default:
+      return null;
+  }
+}
 
 export default function PremiumShopPage() {
   const [items, setItems] = useState<ShopItem[]>([]);
+  const [plans, setPlans] = useState<BillingPlan[]>([]);
   const [inventory, setInventory] = useState<UserInventoryItem[]>([]);
   const [equipped, setEquipped] = useState<EquippedCosmetics>({ user_id: "" });
-  const [balance, setBalance] = useState<UserBalance>({
-    user_id: "",
-    credits: 1500,
-    total_spent_rub: 0,
-    total_spent_credits: 0,
-    updated_at: "",
-  });
+  const [balance, setBalance] = useState<UserBalance | null>(null);
   const [subscription, setSubscription] = useState<UserSubscription | null>(null);
-  const [cmdrName, setCmdrName] = useState("CMDR Navigator");
-  const [userRole, setUserRole] = useState("user");
+  const [cmdrName, setCmdrName] = useState("CMDR");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState("guest");
+  const [authenticated, setAuthenticated] = useState(false);
+  const [providers, setProviders] = useState<PublicPaymentProvider[]>([]);
+  const [packs, setPacks] = useState<CreditPack[]>([]);
+  const [pendingPayments, setPendingPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Active Category Filter
-  const [category, setCategory] = useState<"all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory">("all");
+  const [category, setCategory] = useState<Category>("all");
   const [search, setSearch] = useState("");
 
-  // Fitting room preview state (previewing before buying or equipping)
-  const [previewFrame, setPreviewFrame] = useState<string | null>(null);
-  const [previewBadge, setPreviewBadge] = useState<string | null>(null);
-  const [previewGlow, setPreviewGlow] = useState<string | null>(null);
-  const [previewTitle, setPreviewTitle] = useState<string | null>(null);
-  const [previewSkin, setPreviewSkin] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Partial<Record<"frame" | "badge" | "glow" | "title" | "skin", string | null>>>({});
 
-  // Top-up Modal
-  const [showTopupModal, setShowTopupModal] = useState(false);
-  const [topupCredits, setTopupCredits] = useState(1500);
-  const [topupRub, setTopupRub] = useState(199);
-  const [topupBusy, setTopupBusy] = useState(false);
-
-  // Purchase Modal
+  // modals
+  const [showTopup, setShowTopup] = useState(false);
+  const [selectedPack, setSelectedPack] = useState<string | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [buyingItem, setBuyingItem] = useState<ShopItem | null>(null);
-  const [purchasing, setPurchasing] = useState(false);
-
-  // Toast
+  const [buyingPlan, setBuyingPlan] = useState<BillingPlan | null>(null);
+  const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
 
   const showToast = (text: string, ok = true) => {
     setToast({ text, ok });
-    setTimeout(() => setToast(null), 4000);
+    setTimeout(() => setToast(null), 5000);
   };
 
-  const loadShopData = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [itemsRes, userStateRes] = await Promise.all([
-        fetch("/api/shop/items"),
-        fetch("/api/shop/user-state"),
-      ]);
-
+      const [itemsRes, stateRes] = await Promise.all([authFetch("/api/shop/items", { cache: "no-store" }), authFetch("/api/shop/user-state", { cache: "no-store" })]);
       const itemsData = await itemsRes.json();
-      const userStateData = await userStateRes.json();
-
+      const st = await stateRes.json();
       if (itemsData.success) setItems(itemsData.items || []);
-      if (userStateData.success) {
-        setCmdrName(userStateData.cmdrName || "CMDR Navigator");
-        setUserRole(userStateData.role || "user");
-        setBalance(userStateData.balance || { user_id: "", credits: 1500, total_spent_rub: 0, total_spent_credits: 0, updated_at: "" });
-        setSubscription(userStateData.subscription || null);
-        setInventory(userStateData.inventory || []);
-
-        const eq = userStateData.equipped || { user_id: "" };
+      if (st.success) {
+        setAuthenticated(Boolean(st.authenticated || st.isPreview));
+        setCmdrName(st.cmdrName || "CMDR");
+        setUserId(st.userId || null);
+        setUserRole(st.role || "guest");
+        setBalance(st.balance);
+        setSubscription(st.subscription || null);
+        setInventory(st.inventory || []);
+        setPlans(st.plans || []);
+        setProviders(st.providers || []);
+        setPacks(st.settings?.credit_packs || []);
+        setPendingPayments(st.pendingPayments || []);
+        const eq = st.equipped || { user_id: "" };
         setEquipped(eq);
-        // Initialize fitting room with currently equipped cosmetics
-        setPreviewFrame(eq.frame_id || null);
-        setPreviewBadge(eq.badge_id || null);
-        setPreviewGlow(eq.glow_id || null);
-        setPreviewTitle(eq.title_id || null);
-        setPreviewSkin(eq.skin_id || null);
+        setPreview({ frame: eq.frame_id, badge: eq.badge_id, glow: eq.glow_id, title: eq.title_id, skin: eq.skin_id });
+        if (!selectedProvider && st.providers?.length) setSelectedProvider(st.providers[0].id);
+        if (!selectedPack && st.settings?.credit_packs?.length) setSelectedPack(st.settings.credit_packs[1]?.id || st.settings.credit_packs[0].id);
       }
-    } catch (err: any) {
-      showToast("Ошибка загрузки магазина: " + err.message, false);
+    } catch (e: any) {
+      showToast("Ошибка загрузки магазина: " + e.message, false);
     } finally {
       setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    loadShopData();
-  }, [loadShopData]);
+    load();
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("topup")) setShowTopup(true);
+    if (q.get("tab") === "plans") setCategory("plans");
+  }, [load]);
 
-  // Try on cosmetic
-  const handleTryOn = (item: ShopItem) => {
-    switch (item.category) {
-      case "frame":
-        setPreviewFrame(item.id);
-        break;
-      case "badge":
-        setPreviewBadge(item.id);
-        break;
-      case "glow":
-        setPreviewGlow(item.id);
-        break;
-      case "title":
-        setPreviewTitle(item.id);
-        break;
-      case "skin":
-        setPreviewSkin(item.id);
-        break;
-    }
-    showToast(`Примерка: «${item.title}» в примерочной блоке выше`);
-  };
+  const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  const itemOf = (id?: string | null) => (id ? byId.get(id) || inventory.find((v) => v.item_id === id)?.item : undefined);
+  const isOwned = (id: string) => inventory.some((v) => v.item_id === id);
+  const isEquipped = (item: ShopItem) => (equipped as any)[`${item.category}_id`] === item.id;
+  const counts = useMemo(() => items.reduce<Record<string, number>>((a, i) => ((a[i.category] = (a[i.category] || 0) + 1), a), {}), [items]);
 
-  // Reset fitting room to currently equipped
-  const handleResetFitting = () => {
-    setPreviewFrame(equipped.frame_id || null);
-    setPreviewBadge(equipped.badge_id || null);
-    setPreviewGlow(equipped.glow_id || null);
-    setPreviewTitle(equipped.title_id || null);
-    setPreviewSkin(equipped.skin_id || null);
-    showToast("Примерочная сброшена к текущему снаряжению");
-  };
-
-  // Equip / unequip owned item
-  const handleToggleEquip = async (categoryType: string, itemId: string | null) => {
-    try {
-      const res = await fetch("/api/shop/equip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ category: categoryType, itemId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-
-      setEquipped(data.equipped);
-      if (itemId === null) {
-        showToast("Улучшение снято");
-      } else {
-        showToast("Улучшение успешно экипировано!");
-      }
-      loadShopData();
-    } catch (err: any) {
-      showToast(err.message, false);
-    }
-  };
-
-  // Confirm Purchase
-  const handleConfirmPurchase = async (useCredits = true) => {
-    if (!buyingItem) return;
-    setPurchasing(true);
-    try {
-      const res = await fetch("/api/shop/purchase", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          itemId: buyingItem.id,
-          useCredits,
-          autoEquip: true,
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка покупки");
-
-      showToast(`Успешно приобретено: «${buyingItem.title}»! Транзакция #${data.transaction?.id} зафиксирована в биллинге.`);
-      setBuyingItem(null);
-      loadShopData();
-    } catch (err: any) {
-      showToast(err.message, false);
-    } finally {
-      setPurchasing(false);
-    }
-  };
-
-  // Confirm Top-up
-  const handleTopup = async () => {
-    setTopupBusy(true);
-    try {
-      const res = await fetch("/api/shop/topup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amountCredits: topupCredits,
-          amountRub: topupRub,
-          paymentMethod: "sbp",
-        }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Ошибка пополнения");
-
-      showToast(`Счет пополнен на +${topupCredits.toLocaleString("ru-RU")} Кредитов! Чек #${data.transaction?.id}`);
-      setShowTopupModal(false);
-      loadShopData();
-    } catch (err: any) {
-      showToast(err.message, false);
-    } finally {
-      setTopupBusy(false);
-    }
-  };
-
-  const isOwned = (itemId: string) => inventory.some((inv) => inv.item_id === itemId);
-  const isEquipped = (itemId: string, cat: string) => {
-    switch (cat) {
-      case "frame":
-        return equipped.frame_id === itemId;
-      case "badge":
-        return equipped.badge_id === itemId;
-      case "glow":
-        return equipped.glow_id === itemId;
-      case "title":
-        return equipped.title_id === itemId;
-      case "skin":
-        return equipped.skin_id === itemId;
-      default:
-        return false;
-    }
-  };
-
-  const filteredItems = items.filter((i) => {
-    if (category !== "all" && category !== "inventory" && i.category !== category) return false;
-    if (search && !i.title.toLowerCase().includes(search.toLowerCase()) && !i.description.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
+  const filtered = items.filter((i) => {
+    if (category !== "all" && i.category !== category) return false;
+    const q = search.toLowerCase();
+    return !q || i.title.toLowerCase().includes(q) || (i.description || "").toLowerCase().includes(q);
   });
 
+  const requireAuth = () => {
+    if (!authenticated) {
+      showToast("Войдите в аккаунт, чтобы покупать и экипировать улучшения", false);
+      return false;
+    }
+    return true;
+  };
+
+  const tryOn = (item: ShopItem) => {
+    setPreview((p) => ({ ...p, [item.category]: item.id }));
+    showToast(`Примерка: «${item.title}» — смотрите в примерочной выше`);
+  };
+
+  const toggleEquip = async (item: ShopItem, on: boolean) => {
+    if (!requireAuth()) return;
+    try {
+      const res = await authFetch("/api/shop/equip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: item.category, itemId: on ? item.id : null }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Ошибка");
+      setEquipped(data.equipped);
+      setPreview((p) => ({ ...p, [item.category]: on ? item.id : null }));
+      invalidateCosmetics(userId || undefined);
+      window.dispatchEvent(new Event("cosmetics:changed"));
+      showToast(on ? `«${item.title}» экипировано — теперь это видно во всём проекте` : `«${item.title}» снято`);
+      load();
+    } catch (e: any) {
+      showToast(e.message, false);
+    }
+  };
+
+  const buyWithCredits = async () => {
+    if (!buyingItem || !requireAuth()) return;
+    setBusy(true);
+    try {
+      const res = await authFetch("/api/shop/purchase", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ itemId: buyingItem.id, autoEquip: true }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Ошибка покупки");
+      showToast(`Куплено: «${buyingItem.title}». Транзакция ${data.transaction?.id}. Предмет надет и виден во всём проекте.`);
+      setBuyingItem(null);
+      invalidateCosmetics(userId || undefined);
+      window.dispatchEvent(new Event("cosmetics:changed"));
+      load();
+    } catch (e: any) {
+      showToast(e.message, false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkout = async (payload: Record<string, any>) => {
+    if (!requireAuth()) return;
+    if (!selectedProvider) {
+      showToast("Платёжные системы ещё не подключены администратором", false);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await authFetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ providerId: selectedProvider, ...payload }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Не удалось создать платёж");
+      if (data.paymentUrl) window.location.href = data.paymentUrl;
+      else showToast("Платёж создан, ожидает подтверждения");
+    } catch (e: any) {
+      showToast(e.message, false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const subscribeWithCredits = async () => {
+    if (!buyingPlan || !requireAuth()) return;
+    setBusy(true);
+    try {
+      const res = await authFetch("/api/billing/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId: buyingPlan.id }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Ошибка");
+      showToast(`Подписка «${buyingPlan.name}» активирована!`);
+      setBuyingPlan(null);
+      invalidateCosmetics(userId || undefined);
+      load();
+    } catch (e: any) {
+      showToast(e.message, false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pack = packs.find((p) => p.id === selectedPack);
+  const credits = balance?.credits || 0;
+  const pFrame = itemOf(preview.frame);
+  const pBadge = itemOf(preview.badge);
+  const pGlow = itemOf(preview.glow);
+  const pTitle = itemOf(preview.title);
+  const pSkin = itemOf(preview.skin);
+
+  const ProviderPicker = () =>
+    providers.length === 0 ? (
+      <div style={{ fontSize: 12, color: "#f39c12", padding: "8px 10px", border: "1px solid rgba(243,156,18,0.4)", background: "rgba(243,156,18,0.08)" }}>
+        Оплата реальными деньгами пока недоступна: администратор не подключил ни одной платёжной системы.
+      </div>
+    ) : (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1 }}>Способ оплаты</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {providers.map((p) => (
+            <button key={p.id} type="button" onClick={() => setSelectedProvider(p.id)} style={{ fontSize: 11, padding: "5px 10px", borderColor: selectedProvider === p.id ? "var(--orange)" : "var(--line)", color: selectedProvider === p.id ? "var(--orange)" : "var(--muted)", background: selectedProvider === p.id ? "rgba(230,126,34,0.12)" : "transparent", display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <IconCreditCard size={11} /> {p.name} <span style={{ opacity: 0.7 }}>({p.methods.map((m) => METHOD_LABEL[m] || m).join("/")})</span>
+              {p.test_mode && <span style={{ fontSize: 9, color: "#f39c12" }}>TEST</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+
   return (
-    <div style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 24, padding: "10px 0 40px" }}>
-      {/* Toast */}
+    <div style={{ width: "100%", maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 22, padding: "10px 0 40px" }}>
       {toast && (
-        <div
-          style={{
-            position: "fixed",
-            top: 24,
-            right: 24,
-            zIndex: 9999,
-            padding: "12px 18px",
-            borderRadius: 3,
-            background: toast.ok ? "rgba(46, 204, 113, 0.2)" : "rgba(231, 76, 60, 0.2)",
-            border: `1px solid ${toast.ok ? "#2ecc71" : "#e74c3c"}`,
-            color: toast.ok ? "#2ecc71" : "#e74c3c",
-            fontSize: 13,
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
-          }}
-        >
+        <div style={{ position: "fixed", top: 24, right: 24, zIndex: 9999, padding: "12px 18px", borderRadius: 3, background: toast.ok ? "rgba(46,204,113,0.2)" : "rgba(231,76,60,0.2)", border: `1px solid ${toast.ok ? "#2ecc71" : "#e74c3c"}`, color: toast.ok ? "#2ecc71" : "#e74c3c", fontSize: 13, display: "flex", alignItems: "center", gap: 10, boxShadow: "0 4px 20px rgba(0,0,0,0.5)", maxWidth: 420 }}>
           {toast.ok ? <IconCheck size={16} /> : <IconX size={16} />}
           <span>{toast.text}</span>
         </div>
       )}
 
-      {/* ── Top Sci-Fi WIP / Beta Banner ── */}
-      <div
-        style={{
-          border: "1px solid rgba(230, 126, 34, 0.4)",
-          background: "linear-gradient(90deg, rgba(230, 126, 34, 0.12) 0%, rgba(30, 32, 34, 0.8) 100%)",
-          padding: "14px 20px",
-          borderRadius: 2,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 12,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span
-            style={{
-              fontSize: 10,
-              padding: "3px 8px",
-              background: "rgba(230, 126, 34, 0.25)",
-              border: "1px solid var(--orange, #e67e22)",
-              color: "var(--orange, #e67e22)",
-              fontFamily: "ui-monospace, monospace",
-              fontWeight: 700,
-              letterSpacing: 1.5,
-            }}
-          >
-            BETA // В СТАДИИ РАЗРАБОТКИ
-          </span>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text, #eeeeee)", letterSpacing: 1, textTransform: "uppercase" }}>
-              СЕКТОР СНАБЖЕНИЯ // ПРЕМИУМ-МАГАЗИН МОДИФИКАЦИЙ
-            </div>
-            <div style={{ fontSize: 12, color: "var(--muted, #9ca3af)", marginTop: 2 }}>
-              Закрытое тестирование модификаций интерфейса, знаков отличия и титулов командиров
-            </div>
-          </div>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div className="kicker">Сектор снабжения</div>
+          <h1 style={{ margin: "4px 0 0" }}>ПРЕМИУМ-МАГАЗИН</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--muted)" }}>Рамки, знаки, титулы, свечение позывного и HUD-темы. Всё купленное отображается в профиле, на форуме, в реестре и лидерборде.</p>
         </div>
-
-        {userRole === "admin" && (
-          <Link
-            href="/admin?tab=billing"
-            style={{
-              fontSize: 11,
-              fontFamily: "ui-monospace, monospace",
-              padding: "6px 12px",
-              border: "1px solid var(--line, #3a3d40)",
-              color: "var(--cyan, #3498db)",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <span>🛠️ Перейти в панель биллинга</span>
+        {["admin", "moderator", "support_manager"].includes(userRole) && (
+          <Link href="/admin?tab=billing" style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", padding: "6px 12px", border: "1px solid var(--line)", color: "var(--cyan)" }}>
+            Панель биллинга →
           </Link>
         )}
       </div>
 
-      {/* ── Status HUD & Balance Header ── */}
-      <div
-        className="card"
-        style={{
-          margin: 0,
-          padding: "18px 24px",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: 16,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <CosmeticAvatar frameId={equipped.frame_id} size={54} />
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <CosmeticBadge badgeId={equipped.badge_id} size={22} />
-              <CosmeticCallsign
-                name={cmdrName}
-                glowId={equipped.glow_id}
-                tier={subscription?.plan?.badge_label || null}
-                fontSize={18}
-              />
-            </div>
-            <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8 }}>
-              {equipped.title_id ? (
-                <CosmeticTitle titleId={equipped.title_id} />
-              ) : (
-                <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                  Титул не выбран
-                </span>
-              )}
-              {subscription ? (
-                <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>
-                  • Подписка активна (до {new Date(subscription.expires_at || "").toLocaleDateString("ru-RU")})
-                </span>
-              ) : (
-                <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                  • Стандартный статус
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Balance & Topup button */}
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1, fontFamily: "ui-monospace, monospace" }}>
-              Баланс снабжения
-            </div>
-            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>
-              {balance.credits.toLocaleString("ru-RU")}{" "}
-              <span style={{ fontSize: 13, color: "var(--muted, #9ca3af)" }}>Кр.</span>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            className="btn-orange"
-            onClick={() => setShowTopupModal(true)}
-            style={{ padding: "8px 16px" }}
-          >
-            + Пополнить счет
-          </button>
-        </div>
-      </div>
-
-      {/* ── Interactive Fitting Room (Примерочная) ── */}
-      <div
-        className="card"
-        style={{
-          margin: 0,
-          background: "radial-gradient(ellipse at center, #2e3236 0%, #202225 100%)",
-          border: "1px solid var(--orange, #e67e22)",
-          padding: 24,
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ width: 8, height: 8, background: "#2ecc71", borderRadius: "50%", boxShadow: "0 0 8px #2ecc71" }} />
-            <h3 style={{ margin: 0, letterSpacing: 2, color: "var(--orange, #e67e22)" }}>
-              ГОЛОГРАФИЧЕСКАЯ ПРИМЕРОЧНАЯ (LIVE PREVIEW)
-            </h3>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              onClick={handleResetFitting}
-              style={{
-                fontSize: 11,
-                padding: "4px 10px",
-                borderColor: "var(--line, #3a3d40)",
-                color: "var(--muted, #9ca3af)",
-              }}
-            >
-              Сбросить вид
-            </button>
-          </div>
-        </div>
-
-        {/* Live Fitting Preview Showcase */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            flexWrap: "wrap",
-            gap: 20,
-            padding: "16px 20px",
-            background: "#181a1c",
-            border: "1px dashed rgba(230, 126, 34, 0.4)",
-            borderRadius: 4,
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <CosmeticAvatar
-              frameId={previewFrame}
-              size={76}
-              showScanlines={true}
-            />
-
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <CosmeticBadge badgeId={previewBadge} size={26} />
-                <CosmeticCallsign
-                  name={cmdrName}
-                  glowId={previewGlow}
-                  tier={subscription?.plan?.badge_label || "COMMANDER"}
-                  fontSize={20}
-                />
-              </div>
-
-              <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10 }}>
-                {previewTitle ? (
-                  <CosmeticTitle titleId={previewTitle} />
-                ) : (
-                  <span style={{ fontSize: 12, color: "var(--muted, #9ca3af)", fontStyle: "italic" }}>
-                    Выберите титул в каталоге
-                  </span>
-                )}
-
-                {previewSkin && (
-                  <span style={{ fontSize: 11, color: "var(--orange, #e67e22)", fontFamily: "ui-monospace, monospace" }}>
-                    [Тема: {previewSkin}]
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div style={{ fontSize: 12, color: "var(--muted, #9ca3af)", maxWidth: 320, lineHeight: 1.5 }}>
-            Нажимайте <strong>«Примерить»</strong> на любых товарах ниже, чтобы в реальном времени оценить их вид на карточке коммандера.
-          </div>
-        </div>
-      </div>
-
-      {/* ── Category Filter Tabs ── */}
-      <div
-        className="tabs"
-        style={{
-          display: "flex",
-          gap: 6,
-          flexWrap: "wrap",
-        }}
-      >
-        <button
-          type="button"
-          className={category === "all" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("all")}
-        >
-          ВСЕ ТОВАРЫ ({items.length})
-        </button>
-        <button
-          type="button"
-          className={category === "frame" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("frame")}
-        >
-          РАМКИ АВАТАРА (5)
-        </button>
-        <button
-          type="button"
-          className={category === "badge" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("badge")}
-        >
-          ЗНАКИ ОТЛИЧИЯ (5)
-        </button>
-        <button
-          type="button"
-          className={category === "skin" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("skin")}
-        >
-          HUD-ТЕМЫ (5)
-        </button>
-        <button
-          type="button"
-          className={category === "glow" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("glow")}
-        >
-          СВЕЧЕНИЕ ПОЗЫВНОГО (4)
-        </button>
-        <button
-          type="button"
-          className={category === "title" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("title")}
-        >
-          ПОЧЕТНЫЕ ТИТУЛЫ (4)
-        </button>
-        <button
-          type="button"
-          className={category === "inventory" ? "tab tab-active" : "tab"}
-          onClick={() => setCategory("inventory")}
-          style={{ borderColor: "var(--cyan, #3498db)", color: category === "inventory" ? "var(--cyan, #3498db)" : "var(--muted, #9ca3af)" }}
-        >
-          МОЙ ИНВЕНТАРЬ ({inventory.length})
-        </button>
-      </div>
-
-      {/* ── Search Bar ── */}
-      {category !== "inventory" && (
-        <div style={{ position: "relative", maxWidth: 360 }}>
-          <input
-            type="text"
-            placeholder="Поиск по каталогу модификаций..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            style={{ width: "100%", paddingLeft: 32 }}
-          />
-          <span style={{ position: "absolute", left: 10, top: 12, pointerEvents: "none" }}>
-            <IconSearch size={14} color="#9ca3af" />
-          </span>
+      {!authenticated && !loading && (
+        <div style={{ padding: "10px 14px", border: "1px solid rgba(52,152,219,0.5)", background: "rgba(52,152,219,0.08)", fontSize: 13 }}>
+          Вы просматриваете каталог как гость. <Link href="/login" style={{ color: "var(--cyan)" }}>Войдите</Link>, чтобы покупать и экипировать улучшения.
         </div>
       )}
 
-      {/* ── Inventory View ── */}
+      {pendingPayments.length > 0 && (
+        <div style={{ padding: "10px 14px", border: "1px solid #f39c12", background: "rgba(243,156,18,0.08)", fontSize: 13 }}>
+          <b style={{ color: "#f39c12" }}>Незавершённые платежи:</b>{" "}
+          {pendingPayments.map((p) => (
+            <Link key={p.id} href={`/premium-shop/pay/${p.id}`} style={{ marginRight: 12, color: "var(--orange)" }}>
+              {p.amount_rub} ₽ ({p.provider_id}) →
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {/* Status card */}
+      <div className="card" style={{ margin: 0, padding: "18px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <CosmeticAvatar frameId={equipped.frame_id} framePreview={itemOf(equipped.frame_id)?.preview_data} size={54} />
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <CosmeticBadge badgeId={equipped.badge_id} badgePreview={itemOf(equipped.badge_id)?.preview_data} title={itemOf(equipped.badge_id)?.title} size={22} />
+              <CosmeticCallsign name={cmdrName} glowId={equipped.glow_id} glowPreview={itemOf(equipped.glow_id)?.preview_data} tier={subscription?.plan?.badge_label || null} tierColor={subscription?.plan?.color || null} fontSize={18} />
+            </div>
+            <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              {equipped.title_id ? <CosmeticTitle titleId={equipped.title_id} titlePreview={itemOf(equipped.title_id)?.preview_data} text={itemOf(equipped.title_id)?.title} /> : <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Титул не выбран</span>}
+              {subscription ? (
+                <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>• {subscription.plan?.name} до {new Date(subscription.expires_at || "").toLocaleDateString("ru-RU")} • скидка {subscription.plan?.discount_pct || 0}%</span>
+              ) : (
+                <button type="button" onClick={() => setCategory("plans")} style={{ fontSize: 11, padding: "1px 8px", border: "none", color: "var(--cyan)", background: "transparent", fontFamily: "ui-monospace, monospace" }}>• Стандартный статус — оформить подписку →</button>
+              )}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1, fontFamily: "ui-monospace, monospace" }}>Баланс кредитов</div>
+            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>
+              {credits.toLocaleString("ru-RU")} <span style={{ fontSize: 13, color: "var(--muted)" }}>Кр.</span>
+            </div>
+          </div>
+          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setShowTopup(true) : null)} style={{ padding: "8px 16px" }}>+ Пополнить</button>
+        </div>
+      </div>
+
+      {/* Fitting room */}
+      <div className="card" style={{ margin: 0, background: "radial-gradient(ellipse at center, #2e3236 0%, #202225 100%)", border: "1px solid var(--orange)", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+          <h3 style={{ margin: 0, letterSpacing: 2, color: "var(--orange)", display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ width: 8, height: 8, background: "#2ecc71", borderRadius: "50%", boxShadow: "0 0 8px #2ecc71" }} /> ПРИМЕРОЧНАЯ (LIVE PREVIEW)
+          </h3>
+          <button type="button" onClick={() => setPreview({ frame: equipped.frame_id, badge: equipped.badge_id, glow: equipped.glow_id, title: equipped.title_id, skin: equipped.skin_id })} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>Сбросить к текущему</button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20, padding: "16px 20px", background: "#181a1c", border: "1px dashed rgba(230,126,34,0.4)", borderRadius: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+            <CosmeticAvatar frameId={preview.frame} framePreview={pFrame?.preview_data} size={76} showScanlines />
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <CosmeticBadge badgeId={preview.badge} badgePreview={pBadge?.preview_data} title={pBadge?.title} size={26} />
+                <CosmeticCallsign name={cmdrName} glowId={preview.glow} glowPreview={pGlow?.preview_data} tier={subscription?.plan?.badge_label || "CMDR"} tierColor={subscription?.plan?.color || null} fontSize={20} />
+              </div>
+              <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                {preview.title ? <CosmeticTitle titleId={preview.title} titlePreview={pTitle?.preview_data} text={pTitle?.title} /> : <span style={{ fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}>Выберите титул в каталоге</span>}
+                {pSkin && <span style={{ fontSize: 11, color: pSkin.preview_data?.color || "var(--orange)", fontFamily: "ui-monospace, monospace" }}>[HUD: {pSkin.title}]</span>}
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)", maxWidth: 320, lineHeight: 1.5 }}>Нажимайте <strong>«Примерить»</strong> на товарах — карточка обновится мгновенно. После покупки предмет надевается автоматически.</div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="tabs" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        <button type="button" className={category === "all" ? "tab tab-active" : "tab"} onClick={() => setCategory("all")}>ВСЕ ({items.length})</button>
+        {(["frame", "badge", "skin", "glow", "title"] as const).map((c) => (
+          <button key={c} type="button" className={category === c ? "tab tab-active" : "tab"} onClick={() => setCategory(c)}>{CATEGORY_LABEL[c].toUpperCase()} ({counts[c] || 0})</button>
+        ))}
+        <button type="button" className={category === "plans" ? "tab tab-active" : "tab"} onClick={() => setCategory("plans")} style={{ borderColor: "rgba(155,89,182,0.5)", color: category === "plans" ? "#c084fc" : "var(--muted)" }}><IconCrown size={11} /> ПОДПИСКИ</button>
+        <button type="button" className={category === "inventory" ? "tab tab-active" : "tab"} onClick={() => setCategory("inventory")} style={{ borderColor: "var(--cyan)", color: category === "inventory" ? "var(--cyan)" : "var(--muted)" }}>МОЙ ИНВЕНТАРЬ ({inventory.length})</button>
+      </div>
+
+      {/* Plans */}
+      {category === "plans" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 18 }}>
+          {plans.map((plan) => {
+            const active = subscription?.plan_id === plan.id;
+            return (
+              <div key={plan.id} className="card" style={{ margin: 0, padding: 20, borderTop: `3px solid ${plan.color}`, display: "flex", flexDirection: "column", justifyContent: "space-between", position: "relative" }}>
+                {plan.is_popular && <span style={{ position: "absolute", top: 10, right: 10, fontSize: 9, padding: "2px 6px", background: `${plan.color}30`, color: plan.color, border: `1px solid ${plan.color}`, letterSpacing: 1, fontWeight: 700 }}>ПОПУЛЯРНЫЙ</span>}
+                <div>
+                  <div style={{ fontSize: 10, color: plan.color, letterSpacing: 2, fontWeight: 700 }}>{plan.badge_label}</div>
+                  <h3 style={{ margin: "4px 0 6px", color: "var(--text)" }}>{plan.name}</h3>
+                  <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 12px", lineHeight: 1.5 }}>{plan.description}</p>
+                  <ul style={{ margin: "0 0 14px", paddingLeft: 18, fontSize: 12, color: "var(--text)", lineHeight: 1.7 }}>
+                    {plan.perks.map((p, i) => <li key={i}>{p}</li>)}
+                    {plan.discount_pct ? <li style={{ color: "#2ecc71" }}>Скидка {plan.discount_pct}% на все товары магазина</li> : null}
+                  </ul>
+                </div>
+                <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+                    <span style={{ fontSize: 20, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: plan.color }}>{plan.price_rub} ₽<span style={{ fontSize: 11, color: "var(--muted)" }}> / {plan.period_days} дн</span></span>
+                    {plan.price_credits > 0 && <span style={{ fontSize: 12, color: "#38bdf8", fontFamily: "ui-monospace, monospace" }}>или {plan.price_credits.toLocaleString("ru-RU")} Кр.</span>}
+                  </div>
+                  <button type="button" className="btn-orange" style={{ width: "100%", padding: 8, fontSize: 12 }} onClick={() => (requireAuth() ? setBuyingPlan(plan) : null)}>
+                    {active ? "Продлить" : subscription ? "Сменить план" : "Оформить"}
+                  </button>
+                  {active && <div style={{ fontSize: 11, color: "#2ecc71", marginTop: 6, textAlign: "center" }}>✓ Активна до {new Date(subscription!.expires_at || "").toLocaleDateString("ru-RU")}</div>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Inventory */}
       {category === "inventory" && (
         <div className="card" style={{ margin: 0 }}>
-          <h3 style={{ margin: "0 0 16px" }}>ВАШИ ПРИОБРЕТЕННЫЕ МОДИФИКАЦИИ</h3>
+          <h3 style={{ margin: "0 0 16px" }}>ВАШИ ПРИОБРЕТЁННЫЕ МОДИФИКАЦИИ</h3>
           {inventory.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted, #9ca3af)" }}>
-              У вас пока нет купленных украшений. Ознакомьтесь с каталогом товаров выше!
-            </div>
+            <div style={{ textAlign: "center", padding: "40px 0", color: "var(--muted)" }}>Пока ничего не куплено.</div>
           ) : (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-                gap: 16,
-              }}
-            >
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
               {inventory.map((inv) => {
-                const item = inv.item || items.find((i) => i.id === inv.item_id);
+                const item = inv.item || byId.get(inv.item_id);
                 if (!item) return null;
-                const active = isEquipped(item.id, item.category);
-
+                const active = isEquipped(item);
                 return (
-                  <div
-                    key={inv.id}
-                    style={{
-                      padding: "16px",
-                      background: "#25282b",
-                      border: active ? "1px solid var(--orange, #e67e22)" : "1px solid var(--line, #3a3d40)",
-                      borderRadius: 3,
-                      display: "flex",
-                      flexDirection: "column",
-                      justifyContent: "space-between",
-                    }}
-                  >
+                  <div key={inv.id} style={{ padding: 16, background: "#25282b", border: active ? "1px solid var(--orange)" : "1px solid var(--line)", borderRadius: 3, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
                     <div>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                        <span style={{ fontSize: 10, color: "var(--muted, #9ca3af)", textTransform: "uppercase" }}>
-                          {item.category}
-                        </span>
-                        {active && (
-                          <span style={{ fontSize: 10, color: "#2ecc71", fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
-                            ✓ ЭКИПИРОВАНО
-                          </span>
-                        )}
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                        <span style={{ fontSize: 10, color: "var(--muted)", textTransform: "uppercase" }}>{CATEGORY_LABEL[item.category]}</span>
+                        {active && <span style={{ fontSize: 10, color: "#2ecc71", fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>✓ ЭКИПИРОВАНО</span>}
                       </div>
-
                       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-                        {item.category === "frame" && <CosmeticAvatar frameId={item.id} size={42} />}
-                        {item.category === "badge" && <CosmeticBadge badgeId={item.id} size={30} />}
-                        {item.category === "glow" && <CosmeticCallsign name="CMDR" glowId={item.id} fontSize={14} />}
-                        {item.category === "title" && <CosmeticTitle titleId={item.id} />}
-                        {item.category === "skin" && (
-                          <span style={{ width: 32, height: 20, background: item.preview_data.color || "#e67e22", borderRadius: 2 }} />
-                        )}
-
+                        <ItemPreview item={item} size="sm" />
                         <div>
-                          <div style={{ fontWeight: 600, color: "var(--text, #eeeeee)" }}>{item.title}</div>
-                          <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)", marginTop: 2 }}>{item.description}</div>
+                          <div style={{ fontWeight: 600, color: "var(--text)" }}>{item.title}</div>
+                          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>Куплено {new Date(inv.purchased_at).toLocaleDateString("ru-RU")}{inv.price_paid_credits ? ` за ${inv.price_paid_credits} Кр.` : inv.price_paid_rub ? ` за ${inv.price_paid_rub} ₽` : ""}</div>
                         </div>
                       </div>
                     </div>
-
-                    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                      <button
-                        type="button"
-                        onClick={() => handleTryOn(item)}
-                        style={{ flex: 1, padding: "6px", fontSize: 11, borderColor: "var(--line, #3a3d40)" }}
-                      >
-                        Примерить
-                      </button>
-
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "var(--line)" }}>Примерить</button>
                       {active ? (
-                        <button
-                          type="button"
-                          onClick={() => handleToggleEquip(item.category, null)}
-                          style={{ flex: 1, padding: "6px", fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}
-                        >
-                          Снять
-                        </button>
+                        <button type="button" onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 6, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
                       ) : (
-                        <button
-                          type="button"
-                          className="btn-orange"
-                          onClick={() => handleToggleEquip(item.category, item.id)}
-                          style={{ flex: 1, padding: "6px", fontSize: 11 }}
-                        >
-                          Экипировать
-                        </button>
+                        <button type="button" className="btn-orange" onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 6, fontSize: 11 }}>Экипировать</button>
                       )}
                     </div>
                   </div>
@@ -661,421 +425,186 @@ export default function PremiumShopPage() {
         </div>
       )}
 
-      {/* ── Catalog Grid ── */}
-      {category !== "inventory" && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-            gap: 18,
-          }}
-        >
-          {loading ? (
-            <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted, #9ca3af)" }}>
-              Загрузка каталога магазина...
-            </div>
-          ) : filteredItems.length === 0 ? (
-            <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted, #9ca3af)" }}>
-              По вашему запросу товары не найдены
-            </div>
-          ) : (
-            filteredItems.map((item) => {
-              const owned = isOwned(item.id);
-              const equippedNow = isEquipped(item.id, item.category);
-
-              // Colors by rarity
-              const rarityColor =
-                item.rarity === "legendary"
-                  ? "#fbbf24"
-                  : item.rarity === "epic"
-                  ? "#c084fc"
-                  : item.rarity === "rare"
-                  ? "#38bdf8"
-                  : "#9ca3af";
-
-              return (
-                <div
-                  key={item.id}
-                  className="card"
-                  style={{
-                    margin: 0,
-                    padding: 20,
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                    borderTop: `2px solid ${rarityColor}`,
-                  }}
-                >
-                  <div>
-                    {/* Header tags */}
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                      <span
-                        style={{
-                          fontSize: 9,
-                          padding: "2px 6px",
-                          borderRadius: 2,
-                          background: `${rarityColor}20`,
-                          color: rarityColor,
-                          border: `1px solid ${rarityColor}60`,
-                          fontFamily: "ui-monospace, monospace",
-                          fontWeight: 700,
-                          letterSpacing: 1,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        {item.rarity}
-                      </span>
-
-                      <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                        {item.category === "frame"
-                          ? "Рамка аватара"
-                          : item.category === "badge"
-                          ? "Знак отличия"
-                          : item.category === "skin"
-                          ? "HUD-тема"
-                          : item.category === "glow"
-                          ? "Свечение позывного"
-                          : "Почетный титул"}
-                      </span>
-                    </div>
-
-                    {/* Visual Preview Box */}
-                    <div
-                      style={{
-                        height: 90,
-                        background: "#1c1e20",
-                        borderRadius: 3,
-                        border: "1px solid var(--line, #3a3d40)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        marginBottom: 14,
-                        position: "relative",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {item.category === "frame" && (
-                        <CosmeticAvatar frameId={item.id} size={56} showScanlines={true} />
-                      )}
-
-                      {item.category === "badge" && (
-                        <CosmeticBadge badgeId={item.id} size={40} />
-                      )}
-
-                      {item.category === "glow" && (
-                        <CosmeticCallsign name="CMDR PILOT" glowId={item.id} fontSize={16} />
-                      )}
-
-                      {item.category === "title" && (
-                        <CosmeticTitle titleId={item.id} />
-                      )}
-
-                      {item.category === "skin" && (
-                        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                          <span
-                            style={{
-                              width: 48,
-                              height: 28,
-                              background: item.preview_data.color || "#e67e22",
-                              borderRadius: 2,
-                              border: "1px solid rgba(255,255,255,0.3)",
-                            }}
-                          />
-                          <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", fontFamily: "ui-monospace, monospace" }}>
-                            Цветовая палитра
+      {/* Catalog */}
+      {category !== "inventory" && category !== "plans" && (
+        <>
+          <div style={{ position: "relative", maxWidth: 360 }}>
+            <input type="text" placeholder="Поиск по каталогу..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ width: "100%", paddingLeft: 32 }} />
+            <span style={{ position: "absolute", left: 10, top: 12, pointerEvents: "none" }}><IconSearch size={14} color="#9ca3af" /></span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 18 }}>
+            {loading ? (
+              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>Загрузка каталога...</div>
+            ) : filtered.length === 0 ? (
+              <div style={{ gridColumn: "1 / -1", textAlign: "center", padding: 60, color: "var(--muted)" }}>Товары не найдены</div>
+            ) : (
+              filtered.map((item) => {
+                const owned = isOwned(item.id);
+                const eq = isEquipped(item);
+                const rc = RARITY_COLOR[item.rarity] || "#9ca3af";
+                const disc = item.applied_discount_pct || 0;
+                const finalCredits = item.final_price_credits ?? item.price_credits;
+                const finalRub = item.final_price_rub ?? item.price_rub;
+                const reqPlan = item.requires_subscription ? plans.find((p) => p.id === item.requires_subscription) : null;
+                return (
+                  <div key={item.id} className="card" style={{ margin: 0, padding: 18, display: "flex", flexDirection: "column", justifyContent: "space-between", borderTop: `2px solid ${rc}`, opacity: item.is_locked_for_user ? 0.85 : 1 }}>
+                    <div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                        <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 2, background: `${rc}20`, color: rc, border: `1px solid ${rc}60`, fontFamily: "ui-monospace, monospace", fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>{item.rarity}{item.is_featured ? " ★" : ""}</span>
+                        <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>{CATEGORY_LABEL[item.category]}</span>
+                      </div>
+                      <div style={{ height: 90, background: "#1c1e20", borderRadius: 3, border: "1px solid var(--line)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 12, position: "relative", overflow: "hidden" }}>
+                        <ItemPreview item={item} size="lg" />
+                        {item.is_locked_for_user && (
+                          <span title={`Требуется подписка ${reqPlan?.name || item.requires_subscription}`} style={{ position: "absolute", top: 6, right: 6, display: "inline-flex", alignItems: "center", gap: 4, fontSize: 9, padding: "2px 6px", background: "rgba(0,0,0,0.6)", color: reqPlan?.color || "#c084fc", border: `1px solid ${reqPlan?.color || "#c084fc"}` }}>
+                            <IconLock size={9} /> {reqPlan?.badge_label || "PREMIUM"}
                           </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Title & Lore Description */}
-                    <h3 style={{ margin: "0 0 6px", fontSize: 15, color: "var(--text, #eeeeee)" }}>
-                      {item.title}
-                    </h3>
-
-                    <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--muted, #9ca3af)", lineHeight: 1.5 }}>
-                      {item.description}
-                    </p>
-                  </div>
-
-                  {/* Pricing and Action */}
-                  <div style={{ borderTop: "1px solid var(--line, #3a3d40)", paddingTop: 14 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
-                      <div>
-                        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                          <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>
-                            {item.price_credits.toLocaleString("ru-RU")} Кр.
-                          </span>
-                          <span style={{ fontSize: 12, color: "var(--muted, #9ca3af)" }}>
-                            ({item.price_rub} ₽)
-                          </span>
-                        </div>
-                        {item.subscriber_discount_pct > 0 && (
-                          <div style={{ fontSize: 10, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>
-                            Скидка подписчикам: -{item.subscriber_discount_pct}%
-                          </div>
                         )}
                       </div>
-
-                      {owned && (
-                        <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>
-                          {equippedNow ? "✓ НАДЕТО" : "В ИНВЕНТАРЕ"}
-                        </span>
-                      )}
+                      <h3 style={{ margin: "0 0 6px", fontSize: 15, color: "var(--text)" }}>{item.title}</h3>
+                      <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--muted)", lineHeight: 1.5 }}>{item.description}</p>
                     </div>
-
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button
-                        type="button"
-                        onClick={() => handleTryOn(item)}
-                        style={{
-                          flex: 1,
-                          padding: "8px",
-                          fontSize: 11,
-                          borderColor: "var(--line, #3a3d40)",
-                          color: "var(--text, #eeeeee)",
-                        }}
-                      >
-                        Примерить
-                      </button>
-
-                      {owned ? (
-                        equippedNow ? (
-                          <button
-                            type="button"
-                            onClick={() => handleToggleEquip(item.category, null)}
-                            style={{
-                              flex: 1,
-                              padding: "8px",
-                              fontSize: 11,
-                              borderColor: "rgba(231,76,60,0.4)",
-                              color: "#e74c3c",
-                            }}
-                          >
-                            Снять
-                          </button>
+                    <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+                        <div>
+                          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                            <span style={{ fontSize: 18, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "#38bdf8" }}>{finalCredits.toLocaleString("ru-RU")} Кр.</span>
+                            {disc > 0 && <span style={{ fontSize: 11, color: "var(--muted)", textDecoration: "line-through" }}>{item.price_credits.toLocaleString("ru-RU")}</span>}
+                            {finalRub > 0 && <span style={{ fontSize: 12, color: "var(--muted)" }}>· {finalRub} ₽</span>}
+                          </div>
+                          {disc > 0 ? <div style={{ fontSize: 10, color: "#2ecc71", fontFamily: "ui-monospace, monospace" }}>Ваша скидка подписчика: −{disc}%</div> : item.subscriber_discount_pct > 0 ? <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Подписчикам −{item.subscriber_discount_pct}%</div> : null}
+                        </div>
+                        {owned && <span style={{ fontSize: 11, color: "#2ecc71", fontFamily: "ui-monospace, monospace", fontWeight: 700 }}>{eq ? "✓ НАДЕТО" : "В ИНВЕНТАРЕ"}</span>}
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button type="button" onClick={() => tryOn(item)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "var(--line)", color: "var(--text)" }}>Примерить</button>
+                        {owned ? (
+                          eq ? (
+                            <button type="button" onClick={() => toggleEquip(item, false)} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: "rgba(231,76,60,0.4)", color: "#e74c3c" }}>Снять</button>
+                          ) : (
+                            <button type="button" className="btn-orange" onClick={() => toggleEquip(item, true)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Надеть</button>
+                          )
+                        ) : item.is_locked_for_user ? (
+                          <button type="button" onClick={() => setCategory("plans")} style={{ flex: 1, padding: 8, fontSize: 11, borderColor: reqPlan?.color || "#c084fc", color: reqPlan?.color || "#c084fc" }}>Нужна подписка</button>
                         ) : (
-                          <button
-                            type="button"
-                            className="btn-orange"
-                            onClick={() => handleToggleEquip(item.category, item.id)}
-                            style={{ flex: 1, padding: "8px", fontSize: 11 }}
-                          >
-                            Надеть
-                          </button>
-                        )
-                      ) : (
-                        <button
-                          type="button"
-                          className="btn-orange"
-                          onClick={() => setBuyingItem(item)}
-                          style={{ flex: 1, padding: "8px", fontSize: 11 }}
-                        >
-                          Купить
-                        </button>
-                      )}
+                          <button type="button" className="btn-orange" onClick={() => (requireAuth() ? setBuyingItem(item) : null)} style={{ flex: 1, padding: 8, fontSize: 11 }}>Купить</button>
+                        )}
+                      </div>
                     </div>
                   </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Purchase modal */}
+      {buyingItem && (
+        <Modal title="ПОДТВЕРЖДЕНИЕ ПОКУПКИ" onClose={() => setBuyingItem(null)}>
+          <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 14 }}>
+            <ItemPreview item={buyingItem} size="md" />
+            <div>
+              <div style={{ fontWeight: 700, color: "var(--text)", fontSize: 16 }}>{buyingItem.title}</div>
+              <div style={{ fontSize: 11, color: "var(--muted)" }}>{CATEGORY_LABEL[buyingItem.category]} • {buyingItem.rarity}</div>
+            </div>
+          </div>
+          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>{buyingItem.description}</p>
+          <div style={{ padding: "12px 14px", background: "#1c1e20", border: "1px solid var(--line)", borderRadius: 2, marginBottom: 14, fontSize: 13 }}>
+            <Row label="Цена в кредитах:" value={`${(buyingItem.final_price_credits ?? buyingItem.price_credits).toLocaleString("ru-RU")} Кр.`} color="#38bdf8" />
+            <Row label="Ваш баланс:" value={`${credits.toLocaleString("ru-RU")} Кр.`} />
+            {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && <Row label="Или картой:" value={`${buyingItem.final_price_rub ?? buyingItem.price_rub} ₽`} color="var(--orange)" />}
+            {(buyingItem.applied_discount_pct || 0) > 0 && <Row label="Скидка подписчика:" value={`−${buyingItem.applied_discount_pct}%`} color="#2ecc71" />}
+          </div>
+          {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && <div style={{ marginBottom: 14 }}><ProviderPicker /></div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <button type="button" onClick={() => setBuyingItem(null)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
+            {(buyingItem.final_price_rub ?? buyingItem.price_rub) > 0 && providers.length > 0 && (
+              <button type="button" className="btn-cyan" disabled={busy} onClick={() => checkout({ purpose: "shop_purchase", itemId: buyingItem.id })}>{busy ? "..." : `Оплатить ${buyingItem.final_price_rub ?? buyingItem.price_rub} ₽`}</button>
+            )}
+            <button type="button" className="btn-orange" disabled={busy || credits < (buyingItem.final_price_credits ?? buyingItem.price_credits)} onClick={buyWithCredits}>
+              {busy ? "Списание..." : credits < (buyingItem.final_price_credits ?? buyingItem.price_credits) ? "Недостаточно кредитов" : "Оплатить кредитами"}
+            </button>
+          </div>
+          {credits < (buyingItem.final_price_credits ?? buyingItem.price_credits) && (
+            <div style={{ marginTop: 10, textAlign: "right" }}>
+              <button type="button" onClick={() => { setBuyingItem(null); setShowTopup(true); }} style={{ fontSize: 11, border: "none", color: "var(--cyan)", background: "transparent" }}>Пополнить баланс →</button>
+            </div>
+          )}
+        </Modal>
+      )}
+
+      {/* Plan modal */}
+      {buyingPlan && (
+        <Modal title={`ПОДПИСКА «${buyingPlan.name.toUpperCase()}»`} onClose={() => setBuyingPlan(null)}>
+          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>{buyingPlan.description}</p>
+          <div style={{ padding: "12px 14px", background: "#1c1e20", border: "1px solid var(--line)", borderRadius: 2, marginBottom: 14, fontSize: 13 }}>
+            <Row label="Период:" value={`${buyingPlan.period_days} дней`} />
+            <Row label="Цена:" value={`${buyingPlan.price_rub} ₽`} color={buyingPlan.color} />
+            {buyingPlan.price_credits > 0 && <Row label="Или кредитами:" value={`${buyingPlan.price_credits.toLocaleString("ru-RU")} Кр. (баланс ${credits.toLocaleString("ru-RU")})`} color="#38bdf8" />}
+            {subscription && subscription.plan_id === buyingPlan.id && <Row label="Текущая подписка:" value="будет продлена" color="#2ecc71" />}
+            {subscription && subscription.plan_id !== buyingPlan.id && <Row label="Текущая подписка:" value="будет заменена" color="#f39c12" />}
+          </div>
+          <div style={{ marginBottom: 14 }}><ProviderPicker /></div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <button type="button" onClick={() => setBuyingPlan(null)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
+            {providers.length > 0 && <button type="button" className="btn-cyan" disabled={busy} onClick={() => checkout({ purpose: "subscription", planId: buyingPlan.id })}>{busy ? "..." : `Оплатить ${buyingPlan.price_rub} ₽`}</button>}
+            {buyingPlan.price_credits > 0 && <button type="button" className="btn-orange" disabled={busy || credits < buyingPlan.price_credits} onClick={subscribeWithCredits}>{credits < buyingPlan.price_credits ? "Недостаточно кредитов" : "Оплатить кредитами"}</button>}
+          </div>
+        </Modal>
+      )}
+
+      {/* Top-up modal */}
+      {showTopup && (
+        <Modal title="ПОПОЛНЕНИЕ БАЛАНСА КРЕДИТОВ" onClose={() => setShowTopup(false)} width={500}>
+          <p style={{ fontSize: 13, color: "var(--muted)", marginBottom: 14 }}>Выберите пакет. Кредиты зачисляются автоматически после подтверждения платежа платёжной системой.</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            {packs.map((p) => {
+              const total = Math.round(p.credits * (1 + (p.bonus_pct || 0) / 100));
+              const sel = selectedPack === p.id;
+              return (
+                <div key={p.id} onClick={() => setSelectedPack(p.id)} style={{ padding: "12px 16px", background: sel ? "rgba(230,126,34,0.15)" : "#25282b", border: sel ? "1px solid var(--orange)" : "1px solid var(--line)", borderRadius: 2, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: "var(--text)", fontSize: 14 }}>+{total.toLocaleString("ru-RU")} Кредитов</div>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>{p.label}{p.bonus_pct ? ` • бонус +${p.bonus_pct}%` : ""}</div>
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange)" }}>{p.price_rub} ₽</div>
                 </div>
               );
-            })
-          )}
-        </div>
-      )}
-
-      {/* ── Purchase Modal ── */}
-      {buyingItem && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.8)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 16,
-          }}
-        >
-          <div className="card" style={{ maxWidth: 440, margin: 0, padding: 24 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0, color: "var(--orange, #e67e22)" }}>ПОДТВЕРЖДЕНИЕ ПРИОБРЕТЕНИЯ</h3>
-              <button
-                type="button"
-                onClick={() => setBuyingItem(null)}
-                style={{ border: "none", color: "var(--muted, #9ca3af)", padding: 4 }}
-              >
-                <IconX size={18} />
-              </button>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16 }}>
-              {buyingItem.category === "frame" && <CosmeticAvatar frameId={buyingItem.id} size={50} />}
-              {buyingItem.category === "badge" && <CosmeticBadge badgeId={buyingItem.id} size={36} />}
-              {buyingItem.category === "glow" && <CosmeticCallsign name="CMDR" glowId={buyingItem.id} fontSize={16} />}
-              {buyingItem.category === "title" && <CosmeticTitle titleId={buyingItem.id} />}
-              {buyingItem.category === "skin" && (
-                <span style={{ width: 36, height: 24, background: buyingItem.preview_data.color || "#e67e22", borderRadius: 2 }} />
-              )}
-              <div>
-                <div style={{ fontWeight: 700, color: "var(--text, #eeeeee)", fontSize: 16 }}>{buyingItem.title}</div>
-                <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)" }}>{buyingItem.category.toUpperCase()}</div>
-              </div>
-            </div>
-
-            <p style={{ fontSize: 13, color: "var(--muted, #9ca3af)", marginBottom: 18 }}>
-              {buyingItem.description}
-            </p>
-
-            <div
-              style={{
-                padding: "12px 14px",
-                background: "#1c1e20",
-                border: "1px solid var(--line, #3a3d40)",
-                borderRadius: 2,
-                marginBottom: 20,
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                <span style={{ color: "var(--muted, #9ca3af)" }}>Стоимость:</span>
-                <strong style={{ color: "#38bdf8", fontFamily: "ui-monospace, monospace" }}>
-                  {buyingItem.price_credits.toLocaleString("ru-RU")} Кр.
-                </strong>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-                <span style={{ color: "var(--muted, #9ca3af)" }}>Ваш текущий баланс:</span>
-                <span style={{ fontFamily: "ui-monospace, monospace", color: "var(--text, #eeeeee)" }}>
-                  {balance.credits.toLocaleString("ru-RU")} Кр.
-                </span>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button
-                type="button"
-                onClick={() => setBuyingItem(null)}
-                style={{ borderColor: "var(--line, #3a3d40)", color: "var(--muted, #9ca3af)" }}
-              >
-                Отмена
-              </button>
-
-              <button
-                type="button"
-                className="btn-orange"
-                disabled={purchasing || balance.credits < buyingItem.price_credits}
-                onClick={() => handleConfirmPurchase(true)}
-              >
-                {purchasing
-                  ? "Списание..."
-                  : balance.credits < buyingItem.price_credits
-                  ? "Недостаточно кредитов"
-                  : "Оплатить кредитами"}
-              </button>
-            </div>
+            })}
           </div>
-        </div>
-      )}
-
-      {/* ── Top-up Modal ── */}
-      {showTopupModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.8)",
-            backdropFilter: "blur(4px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 16,
-          }}
-        >
-          <div className="card" style={{ maxWidth: 480, margin: 0, padding: 24 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <h3 style={{ margin: 0, color: "var(--orange, #e67e22)" }}>ПОПОЛНЕНИЕ БАЛАНСА СНАБЖЕНИЯ</h3>
-              <button
-                type="button"
-                onClick={() => setShowTopupModal(false)}
-                style={{ border: "none", color: "var(--muted, #9ca3af)", padding: 4 }}
-              >
-                <IconX size={18} />
-              </button>
-            </div>
-
-            <p style={{ fontSize: 13, color: "var(--muted, #9ca3af)", marginBottom: 16 }}>
-              Выберите пакет кредитов для приобретения интерфейсных украшений и пожертвований на развитие инфраструктуры Кольца:
-            </p>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-              {[
-                { credits: 1500, rub: 199, label: "Стартовый набор пилота", bonus: null },
-                { credits: 3500, rub: 399, label: "Набор исследователя дальних рубежей", bonus: "+250 Кр. БОНУС" },
-                { credits: 7500, rub: 799, label: "Казначейский пакет эскадрильи", bonus: "+800 Кр. БОНУС" },
-                { credits: 18000, rub: 1690, label: "Флагманский запас Основателя", bonus: "+3000 Кр. БОНУС" },
-              ].map((pack) => (
-                <div
-                  key={pack.credits}
-                  onClick={() => {
-                    setTopupCredits(pack.credits);
-                    setTopupRub(pack.rub);
-                  }}
-                  style={{
-                    padding: "12px 16px",
-                    background: topupCredits === pack.credits ? "rgba(230, 126, 34, 0.15)" : "#25282b",
-                    border: topupCredits === pack.credits ? "1px solid var(--orange, #e67e22)" : "1px solid var(--line, #3a3d40)",
-                    borderRadius: 2,
-                    cursor: "pointer",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600, color: "var(--text, #eeeeee)", fontSize: 14 }}>
-                      +{pack.credits.toLocaleString("ru-RU")} Кредитов
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--muted, #9ca3af)", marginTop: 2 }}>
-                      {pack.label}
-                    </div>
-                  </div>
-
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 16, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange, #e67e22)" }}>
-                      {pack.rub} ₽
-                    </div>
-                    {pack.bonus && (
-                      <span style={{ fontSize: 9, color: "#2ecc71", fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
-                        {pack.bonus}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button
-                type="button"
-                onClick={() => setShowTopupModal(false)}
-                style={{ borderColor: "var(--line, #3a3d40)", color: "var(--muted, #9ca3af)" }}
-              >
-                Отмена
-              </button>
-
-              <button
-                type="button"
-                className="btn-orange"
-                disabled={topupBusy}
-                onClick={handleTopup}
-              >
-                {topupBusy ? "Обработка платежа..." : `Оплатить ${topupRub} ₽ (СБП/Карта)`}
-              </button>
-            </div>
+          <div style={{ marginBottom: 16 }}><ProviderPicker /></div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+            <button type="button" onClick={() => setShowTopup(false)} style={{ borderColor: "var(--line)", color: "var(--muted)" }}>Отмена</button>
+            <button type="button" className="btn-orange" disabled={busy || !pack || providers.length === 0} onClick={() => pack && checkout({ purpose: "credit_topup", packId: pack.id })}>
+              {busy ? "Создание платежа..." : pack ? `Оплатить ${pack.price_rub} ₽` : "Выберите пакет"}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
+    </div>
+  );
+}
+
+function Modal({ title, onClose, children, width = 460 }: { title: string; onClose: () => void; children: React.ReactNode; width?: number }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 16 }} onClick={onClose}>
+      <div className="card" style={{ maxWidth: width, width: "100%", margin: 0, padding: 22, maxHeight: "90vh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h3 style={{ margin: 0, color: "var(--orange)", fontSize: 14, letterSpacing: 1 }}>{title}</h3>
+          <button type="button" onClick={onClose} style={{ border: "none", color: "var(--muted)", padding: 4, background: "transparent" }}><IconX size={18} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Row({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+      <span style={{ color: "var(--muted)" }}>{label}</span>
+      <strong style={{ color: color || "var(--text)", fontFamily: "ui-monospace, monospace" }}>{value}</strong>
     </div>
   );
 }

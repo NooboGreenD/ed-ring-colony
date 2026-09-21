@@ -25,7 +25,9 @@ export interface BillingPlan {
   is_active: boolean;
   is_popular?: boolean;
   display_order: number;
+  discount_pct?: number;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface UserSubscription {
@@ -39,6 +41,8 @@ export interface UserSubscription {
   auto_renew: boolean;
   payment_method: string;
   notes?: string;
+  provider_id?: string | null;
+  external_id?: string | null;
   created_at: string;
   updated_at: string;
   plan?: BillingPlan;
@@ -74,7 +78,14 @@ export interface ShopItem {
   is_active: boolean;
   is_featured: boolean;
   sales_count: number;
+  display_order?: number;
   created_at: string;
+  updated_at?: string;
+  // computed for the current viewer (API only)
+  applied_discount_pct?: number;
+  final_price_credits?: number;
+  final_price_rub?: number;
+  is_locked_for_user?: boolean;
 }
 
 export interface UserInventoryItem {
@@ -111,7 +122,10 @@ export interface BillingTransaction {
   payment_method: PaymentMethod;
   status: TransactionStatus;
   metadata?: Record<string, any>;
+  provider_id?: string | null;
+  external_id?: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface UserBalance {
@@ -197,6 +211,8 @@ export interface ProjectBillingStats {
     apiTokensActive: number;
     serverUptimePct: number;
     avgLatencyMs: number;
+    pendingPayments?: number;
+    storageBackend?: 'supabase' | 'file';
   };
   recentTransactions: BillingTransaction[];
   topSpenders: {
@@ -206,4 +222,90 @@ export interface ProjectBillingStats {
     purchasesCount: number;
     avatarUrl?: string;
   }[];
+}
+
+// ── Payment providers & intents ──
+
+export type PaymentProviderId = 'yookassa' | 'robokassa' | 'stripe' | 'cryptobot' | 'manual' | (string & {});
+
+export type PaymentIntentStatus = 'pending' | 'paid' | 'failed' | 'canceled' | 'expired';
+
+export type PaymentPurpose = 'credit_topup' | 'subscription' | 'shop_purchase';
+
+export interface ProviderConfigField {
+  key: string;
+  label: string;
+  type: 'text' | 'secret' | 'url' | 'select' | 'boolean';
+  placeholder?: string;
+  help?: string;
+  required?: boolean;
+  options?: { value: string; label: string }[];
+}
+
+export interface PaymentProvider {
+  id: PaymentProviderId;
+  name: string;
+  is_enabled: boolean;
+  test_mode: boolean;
+  config: Record<string, any>;
+  methods: string[];
+  display_order: number;
+  last_check_at?: string | null;
+  last_check_ok?: boolean | null;
+  last_check_msg?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Provider as exposed to admin UI: secrets are masked. */
+export interface PaymentProviderView extends Omit<PaymentProvider, 'config'> {
+  config: Record<string, any>;
+  config_fields: ProviderConfigField[];
+  webhook_url: string;
+  docs_url?: string;
+  description?: string;
+  configured: boolean;
+}
+
+/** Provider as exposed to end users (checkout). */
+export interface PublicPaymentProvider {
+  id: PaymentProviderId;
+  name: string;
+  methods: string[];
+  test_mode: boolean;
+}
+
+export interface PaymentIntent {
+  id: string;
+  user_id: string | null;
+  cmdr_name: string | null;
+  provider_id: PaymentProviderId | null;
+  external_id: string | null;
+  purpose: PaymentPurpose;
+  target_id: string | null;
+  amount_rub: number;
+  amount_credits: number;
+  currency: string;
+  status: PaymentIntentStatus;
+  payment_url: string | null;
+  transaction_id: string | null;
+  metadata: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+  paid_at?: string | null;
+}
+
+export interface CreditPack {
+  id: string;
+  credits: number;
+  price_rub: number;
+  bonus_pct: number;
+  label: string;
+}
+
+export interface BillingSettings {
+  welcome_credits: number;
+  credit_packs: CreditPack[];
+  currency: string;
+  shop_enabled: boolean;
 }

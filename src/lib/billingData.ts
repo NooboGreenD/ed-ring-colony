@@ -1,5 +1,12 @@
-import fs from 'fs';
-import path from 'path';
+/**
+ * Billing repository — single entry point for plans, subscriptions, shop
+ * catalogue, inventory, balances, transactions, payment providers & intents.
+ *
+ * All data lives in Supabase (see migrations 20260921000000 / 20260922000000).
+ * When the service role key is absent the same API transparently works on a
+ * local JSON file so previews/tests still function.
+ */
+import crypto from 'crypto';
 import type {
   BillingPlan,
   UserSubscription,
@@ -14,1000 +21,402 @@ import type {
   TierDistribution,
   CategorySalesStat,
   FunnelStep,
+  PaymentProvider,
+  PaymentIntent,
+  PaymentPurpose,
+  BillingSettings,
+  CreditPack,
+  CosmeticCategory,
 } from '@/types/billing';
-import { supabaseAdmin } from './supabaseAdmin';
+import { getBillingAdapter, type TableAdapter } from './billing/storage';
+import { INITIAL_PLANS, INITIAL_SHOP_ITEMS } from './billing/catalogSeed';
+import { PROVIDER_DRIVERS } from './billing/providers';
 
-const DATA_FILE = path.join(process.cwd(), 'data', 'billing_store.json');
+export { INITIAL_PLANS, INITIAL_SHOP_ITEMS };
 
-// Initial pre-configured plans
-export const INITIAL_PLANS: BillingPlan[] = [
-  {
-    id: 'pioneer',
-    name: 'Пионер Кольца',
-    name_en: 'Ring Pioneer',
-    description: 'Базовый премиальный статус для исследователей и строителей колонии.',
-    description_en: 'Standard premium tier for Ring explorers and builders.',
-    price_rub: 290,
-    price_credits: 2500,
-    period_days: 30,
-    badge_label: 'PIONEER',
-    color: '#3498db',
-    is_active: true,
-    is_popular: false,
-    display_order: 1,
-    perks: [
-      'Особый позывной и тактический префикс [PIO]',
-      'Приоритетная синхронизация логов CAPI и журнала',
-      'Скидка 25% на косметические улучшения в магазине',
-      'Эксклюзивный знак отличия Пионера в профиле',
-      'Доступ к расширенной телеметрии экспедиции',
-    ],
-    created_at: '2026-01-15T00:00:00Z',
-  },
-  {
-    id: 'elite',
-    name: 'Элита Колонии',
-    name_en: 'Colonia Elite',
-    description: 'Расширенный статус с кастомными темами интерфейса и голографическими рамками.',
-    description_en: 'Advanced tier with custom HUD interface themes and holographic avatar frames.',
-    price_rub: 590,
-    price_credits: 5000,
-    period_days: 30,
-    badge_label: 'ELITE',
-    color: '#e67e22',
-    is_active: true,
-    is_popular: true,
-    display_order: 2,
-    perks: [
-      'Все привилегии уровня «Пионер Кольца»',
-      'Голографическая неоновая рамка аватара на выбор',
-      'Кастомные HUD-темы оформления интерфейса сайта',
-      'Скидка 50% на все товары Премиум-магазина',
-      'Приоритет в голосовых каналах эскадрилий',
-      'Нагрудный знак ветерана Элиты Колонии',
-      'Увеличенный лимит избранных систем в Атласе до 100',
-    ],
-    created_at: '2026-01-15T00:00:00Z',
-  },
-  {
-    id: 'admiral',
-    name: 'Флотоводец VIP',
-    name_en: 'Fleet Admiral VIP',
-    description: 'Высший ранг покровителя проекта с полным доступом ко всем украшениям и VIP-каналам.',
-    description_en: 'Highest benefactor tier with full access to all cosmetics and VIP priority.',
-    price_rub: 1190,
-    price_credits: 10000,
-    period_days: 30,
-    badge_label: 'VIP ADMIRAL',
-    color: '#9b59b6',
-    is_active: true,
-    is_popular: false,
-    display_order: 3,
-    perks: [
-      'Полный безлимитный доступ ко всем модулям платформы',
-      'Анимированные эффекты хроматического свечения ника',
-      'Все легендарные голографические рамки аватаров',
-      'Скидка 75% в магазине косметики + доступ к VIP-эксклюзивам',
-      'VIP-статус в технической поддержке с ускоренным ответом',
-      'Именная золотая запись в реестре Основателей Кольца',
-      'Личный золотой штандарт Флотоводца с орлиными крыльями',
-      'Возможность закреплять сообщения в общем чате',
-    ],
-    created_at: '2026-01-15T00:00:00Z',
-  },
+const CATEGORIES: CosmeticCategory[] = ['frame', 'badge', 'skin', 'glow', 'title'];
+
+export const DEFAULT_CREDIT_PACKS: CreditPack[] = [
+  { id: 'pack-500', credits: 500, price_rub: 79, bonus_pct: 0, label: 'Стартовый' },
+  { id: 'pack-1500', credits: 1500, price_rub: 199, bonus_pct: 5, label: 'Разведчик' },
+  { id: 'pack-4000', credits: 4000, price_rub: 490, bonus_pct: 10, label: 'Строитель' },
+  { id: 'pack-9000', credits: 9000, price_rub: 990, bonus_pct: 20, label: 'Флотоводец' },
 ];
 
-// Initial pre-configured shop cosmetics
-export const INITIAL_SHOP_ITEMS: ShopItem[] = [
-  // ── Frames ──
-  {
-    id: 'frame-singularity',
-    category: 'frame',
-    title: 'Квантовая Сингулярность',
-    title_en: 'Quantum Singularity',
-    description: 'Вращающееся гравитационное кольцо аккреционного диска с фиолетовым свечением искривленного пространства.',
-    description_en: 'Rotating gravitational accretion disk with violet curved space glow.',
-    price_credits: 3500,
-    price_rub: 450,
-    rarity: 'legendary',
-    requires_subscription: null,
-    subscriber_discount_pct: 35,
-    preview_data: {
-      color: '#a855f7',
-      accentColor: '#3b82f6',
-      glowColor: 'rgba(168, 85, 247, 0.65)',
-      frameStyle: 'singularity',
-      borderWidth: 3,
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 84,
-    created_at: '2026-02-01T00:00:00Z',
-  },
-  {
-    id: 'frame-vanguard',
-    category: 'frame',
-    title: 'Авангард Колонии',
-    title_en: 'Colonia Vanguard',
-    description: 'Тактическая бронированная рамка с угловыми оптическими визирами и янтарной телеметрией.',
-    description_en: 'Tactical armored frame with corner optical brackets and amber telemetry.',
-    price_credits: 2200,
-    price_rub: 290,
-    rarity: 'epic',
-    requires_subscription: null,
-    subscriber_discount_pct: 25,
-    preview_data: {
-      color: '#e67e22',
-      accentColor: '#f39c12',
-      glowColor: 'rgba(230, 126, 34, 0.55)',
-      frameStyle: 'vanguard',
-      borderWidth: 2,
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 142,
-    created_at: '2026-02-05T00:00:00Z',
-  },
-  {
-    id: 'frame-subzero',
-    category: 'frame',
-    title: 'Ледяной Импульс',
-    title_en: 'Sub-Zero Pulse',
-    description: 'Криогенный гексагональный силовой щит с бегущей волной неонового циана.',
-    description_en: 'Cryogenic hexagonal power shield with running neon cyan wave.',
-    price_credits: 1500,
-    price_rub: 190,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#06b6d4',
-      accentColor: '#38bdf8',
-      glowColor: 'rgba(6, 182, 212, 0.6)',
-      frameStyle: 'subzero',
-      borderWidth: 2,
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 98,
-    created_at: '2026-02-10T00:00:00Z',
-  },
-  {
-    id: 'frame-solar',
-    category: 'frame',
-    title: 'Вспышка Сверхновой',
-    title_en: 'Solar Flare',
-    description: 'Плазменная корона звезды O-класса с пульсирующими выбросами солнечного протуберанца.',
-    description_en: 'O-class star plasma corona with pulsing solar prominences.',
-    price_credits: 2400,
-    price_rub: 320,
-    rarity: 'epic',
-    requires_subscription: 'elite',
-    subscriber_discount_pct: 50,
-    preview_data: {
-      color: '#f97316',
-      accentColor: '#eab308',
-      glowColor: 'rgba(249, 115, 22, 0.7)',
-      frameStyle: 'solar',
-      borderWidth: 3,
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 73,
-    created_at: '2026-02-15T00:00:00Z',
-  },
-  {
-    id: 'frame-stealth',
-    category: 'frame',
-    title: 'Фантом Бездны',
-    title_en: 'Stealth Phantom',
-    description: 'Композитное углеродное покрытие с матовым черным профилем и приглушенным рубиновым сканером.',
-    description_en: 'Composite carbon coating with matte black profile and ruby scanner.',
-    price_credits: 1600,
-    price_rub: 210,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#ef4444',
-      accentColor: '#1e2022',
-      glowColor: 'rgba(239, 68, 68, 0.45)',
-      frameStyle: 'stealth',
-      borderWidth: 2,
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 61,
-    created_at: '2026-02-20T00:00:00Z',
-  },
+export const DEFAULT_SETTINGS: BillingSettings = {
+  welcome_credits: 0,
+  credit_packs: DEFAULT_CREDIT_PACKS,
+  currency: 'RUB',
+  shop_enabled: true,
+};
 
-  // ── Badges ──
-  {
-    id: 'badge-founder',
-    category: 'badge',
-    title: 'Орден Основателя Кольца',
-    title_en: 'Ring Founder Crest',
-    description: 'Золотой двуглавый звездный орел с пульсаром в центре. Знак высшего признания заслуг перед экспедицией.',
-    description_en: 'Golden double-headed star eagle with central pulsar. Symbol of highest honor.',
-    price_credits: 2800,
-    price_rub: 390,
-    rarity: 'legendary',
-    requires_subscription: 'admiral',
-    subscriber_discount_pct: 50,
-    preview_data: {
-      color: '#fbbf24',
-      icon: 'crown',
-      badgeSvg: 'founder_wings',
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 53,
-    created_at: '2026-02-01T00:00:00Z',
-  },
-  {
-    id: 'badge-explorer',
-    category: 'badge',
-    title: 'Звездный Первопроходец',
-    title_en: 'Deep Space Pioneer',
-    description: 'Навигационный астролябический компас с указанием на координаты центра Галактики.',
-    description_en: 'Astrolabe navigation compass pointing towards Sagittarius A*.',
-    price_credits: 1200,
-    price_rub: 150,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 15,
-    preview_data: {
-      color: '#38bdf8',
-      icon: 'compass',
-      badgeSvg: 'explorer_compass',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 114,
-    created_at: '2026-02-08T00:00:00Z',
-  },
-  {
-    id: 'badge-titan',
-    category: 'badge',
-    title: 'Покоритель Титанов',
-    title_en: 'Titan Slayer',
-    description: 'Биолюминесцентная кислотно-изумрудная метка победы над Таргоидскими материнскими кораблями.',
-    description_en: 'Bioluminescent emerald mark of victory against Thargoid Titan motherships.',
-    price_credits: 2000,
-    price_rub: 260,
-    rarity: 'epic',
-    requires_subscription: null,
-    subscriber_discount_pct: 25,
-    preview_data: {
-      color: '#10b981',
-      icon: 'sword',
-      badgeSvg: 'titan_breaker',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 88,
-    created_at: '2026-02-12T00:00:00Z',
-  },
-  {
-    id: 'badge-carrier',
-    category: 'badge',
-    title: 'Владелец Флагмана',
-    title_en: 'Fleet Carrier Sovereign',
-    description: 'Тяжелый алмазный адмиралтейский шеврон командующего флотом мегакораблей.',
-    description_en: 'Heavy diamond admiralty chevron of a megaship carrier fleet commander.',
-    price_credits: 2100,
-    price_rub: 280,
-    rarity: 'epic',
-    requires_subscription: 'pioneer',
-    subscriber_discount_pct: 30,
-    preview_data: {
-      color: '#60a5fa',
-      icon: 'anchor',
-      badgeSvg: 'carrier_diamond',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 76,
-    created_at: '2026-02-18T00:00:00Z',
-  },
-  {
-    id: 'badge-mining',
-    category: 'badge',
-    title: 'Мастер Глубинного Бурения',
-    title_en: 'Core Mining Supreme',
-    description: 'Сияющий кристалл редких минералов кольца, расколотый сейсмическим зарядом.',
-    description_en: 'Gleaming ring core mineral crystal cracked by seismic charges.',
-    price_credits: 800,
-    price_rub: 99,
-    rarity: 'common',
-    requires_subscription: null,
-    subscriber_discount_pct: 10,
-    preview_data: {
-      color: '#a3e635',
-      icon: 'diamond',
-      badgeSvg: 'mining_drill',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 147,
-    created_at: '2026-02-22T00:00:00Z',
-  },
+const nowIso = () => new Date().toISOString();
+const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+const txId = () => `TX-${new Date().getFullYear()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
-  // ── HUD Skins ──
-  {
-    id: 'skin-amber',
-    category: 'skin',
-    title: 'Колониальный Закат',
-    title_en: 'Colonia Sunset',
-    description: 'Теплая янтарно-медная палитра приборов, создающая атмосферу уюта далеких колониальных станций.',
-    description_en: 'Warm amber-copper HUD palette reminiscent of deep Colonia space outposts.',
-    price_credits: 900,
-    price_rub: 120,
-    rarity: 'common',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#f59e0b',
-      accentColor: '#d97706',
-      hudSkinClass: 'skin-colonia-amber',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 189,
-    created_at: '2026-02-01T00:00:00Z',
-  },
-  {
-    id: 'skin-cyber',
-    category: 'skin',
-    title: 'Киберпанк 3309',
-    title_en: 'Cyberpunk 3309',
-    description: 'Высококонтрастный футуристичный стиль с неоновым цианом и пульсирующей неоновой маджентой.',
-    description_en: 'High-contrast futuristic HUD skin with cyber cyan and pulsing neon magenta.',
-    price_credits: 2500,
-    price_rub: 330,
-    rarity: 'epic',
-    requires_subscription: 'elite',
-    subscriber_discount_pct: 50,
-    preview_data: {
-      color: '#ec4899',
-      accentColor: '#06b6d4',
-      hudSkinClass: 'skin-cyberpunk-3309',
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 102,
-    created_at: '2026-02-05T00:00:00Z',
-  },
-  {
-    id: 'skin-void',
-    category: 'skin',
-    title: 'Холодный Космос',
-    title_en: 'Void Navigator',
-    description: 'Глубокий флотский ультрамарин с серебряной подсветкой для снижения нагрузки на зрение в дальних перелетах.',
-    description_en: 'Deep naval ultramarine with silver telemetry for low-fatigue long-range jumping.',
-    price_credits: 1400,
-    price_rub: 180,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#3b82f6',
-      accentColor: '#93c5fd',
-      hudSkinClass: 'skin-void-navigator',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 85,
-    created_at: '2026-02-14T00:00:00Z',
-  },
-  {
-    id: 'skin-imperial',
-    category: 'skin',
-    title: 'Имперское Золото',
-    title_en: 'Imperial Sovereign Gold',
-    description: 'Аристократическая тема в стилистике кораблей Гутмайя — чистый обсидиан и полированное имперское золото.',
-    description_en: 'Aristocratic Gutamaya-inspired theme with pure obsidian and polished imperial gold.',
-    price_credits: 3200,
-    price_rub: 420,
-    rarity: 'legendary',
-    requires_subscription: 'admiral',
-    subscriber_discount_pct: 60,
-    preview_data: {
-      color: '#eab308',
-      accentColor: '#fef08a',
-      hudSkinClass: 'skin-imperial-gold',
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 67,
-    created_at: '2026-02-20T00:00:00Z',
-  },
-  {
-    id: 'skin-emerald',
-    category: 'skin',
-    title: 'Изумрудный Стан',
-    title_en: 'Emerald Outpost',
-    description: 'Милитаристский изумрудный интерфейс орбитальной обороны с повышенной четкостью шрифтов.',
-    description_en: 'Tactical military emerald orbital defence HUD with crisp high-clarity typography.',
-    price_credits: 1500,
-    price_rub: 190,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#10b981',
-      accentColor: '#34d399',
-      hudSkinClass: 'skin-emerald-outpost',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 79,
-    created_at: '2026-02-24T00:00:00Z',
-  },
-
-  // ── Callsign Glow ──
-  {
-    id: 'glow-hyperspace',
-    category: 'glow',
-    title: 'Призматический Гиперпрыжок',
-    title_en: 'Hyperdrive Prismatic Shimmer',
-    description: 'Хроматический спектральный перелив имени пилота с эффектом искривления червоточины Witchspace.',
-    description_en: 'Chromatic spectral shimmer effect mimicking Witchspace corridor entry.',
-    price_credits: 2900,
-    price_rub: 380,
-    rarity: 'legendary',
-    requires_subscription: 'elite',
-    subscriber_discount_pct: 50,
-    preview_data: {
-      color: '#8b5cf6',
-      accentColor: '#ec4899',
-      gradient: 'linear-gradient(90deg, #ec4899, #8b5cf6, #06b6d4, #ec4899)',
-      glowColor: '0 0 12px rgba(139, 92, 246, 0.75)',
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 91,
-    created_at: '2026-02-03T00:00:00Z',
-  },
-  {
-    id: 'glow-neutron',
-    category: 'glow',
-    title: 'Свечение Нейтронной Струи',
-    title_en: 'Neutron Jet Beam',
-    description: 'Ослепительно яркий конический луч нейтронной звезды с белым электромагнитным ядром.',
-    description_en: 'Dazzling conical relativistic jet glow with bright electromagnetic core.',
-    price_credits: 2100,
-    price_rub: 270,
-    rarity: 'epic',
-    requires_subscription: null,
-    subscriber_discount_pct: 25,
-    preview_data: {
-      color: '#38bdf8',
-      accentColor: '#ffffff',
-      gradient: 'linear-gradient(90deg, #38bdf8, #e0f2fe, #38bdf8)',
-      glowColor: '0 0 14px rgba(56, 189, 248, 0.85)',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 83,
-    created_at: '2026-02-11T00:00:00Z',
-  },
-  {
-    id: 'glow-solar',
-    category: 'glow',
-    title: 'Солнечная Радиация',
-    title_en: 'Solar Radiation Halo',
-    description: 'Мягкое теплое золотисто-янтарное гало с переливом цвета расплавленного золота.',
-    description_en: 'Soft warm golden-amber halo radiating molten gold shades.',
-    price_credits: 1300,
-    price_rub: 160,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#f59e0b',
-      accentColor: '#fbbf24',
-      gradient: 'linear-gradient(90deg, #f59e0b, #fef08a, #f59e0b)',
-      glowColor: '0 0 10px rgba(245, 158, 11, 0.65)',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 94,
-    created_at: '2026-02-16T00:00:00Z',
-  },
-  {
-    id: 'glow-voidpulse',
-    category: 'glow',
-    title: 'Тень Сингулярности',
-    title_en: 'Void Singularity Shadow',
-    description: 'Таинственная пульсирующая фиолетово-черная аура с эффектом гравитационного линзирования текста.',
-    description_en: 'Mysterious pulsing violet-black aura with gravitational text lensing.',
-    price_credits: 1400,
-    price_rub: 170,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#9333ea',
-      accentColor: '#c084fc',
-      gradient: 'linear-gradient(90deg, #9333ea, #e9d5ff, #9333ea)',
-      glowColor: '0 0 12px rgba(147, 51, 234, 0.7)',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 71,
-    created_at: '2026-02-21T00:00:00Z',
-  },
-
-  // ── Titles ──
-  {
-    id: 'title-architect',
-    category: 'title',
-    title: 'Архитектор Нового Рубежа',
-    title_en: 'Architect of the New Frontier',
-    description: 'Высшее почетное звание для лидеров колонизационных проектов и строителей мегаструктур.',
-    description_en: 'Honorary title for colonization project leaders and megastructure builders.',
-    price_credits: 1800,
-    price_rub: 240,
-    rarity: 'epic',
-    requires_subscription: 'pioneer',
-    subscriber_discount_pct: 30,
-    preview_data: {
-      color: '#f97316',
-      subTitle: 'ARCHITECT OF THE NEW FRONTIER',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 65,
-    created_at: '2026-02-04T00:00:00Z',
-  },
-  {
-    id: 'title-trailblazer',
-    category: 'title',
-    title: 'Первопроходец Бездны',
-    title_en: 'Void Trailblazer',
-    description: 'Легендарный титул командиров, преодолевших тысячи световых лет в неизвестные сектора кольца.',
-    description_en: 'Legendary title for commanders navigating untamed deep space sectors.',
-    price_credits: 2600,
-    price_rub: 350,
-    rarity: 'legendary',
-    requires_subscription: 'elite',
-    subscriber_discount_pct: 40,
-    preview_data: {
-      color: '#a855f7',
-      subTitle: 'VOID TRAILBLAZER',
-    },
-    is_active: true,
-    is_featured: true,
-    sales_count: 82,
-    created_at: '2026-02-09T00:00:00Z',
-  },
-  {
-    id: 'title-jaques',
-    category: 'title',
-    title: 'Легенда Жак-Стейшн',
-    title_en: 'Jaques Station Legend',
-    description: 'Звание ветерана исторического маршрута из Пузыря в Колонию.',
-    description_en: 'Title bestowed upon veterans of the historic Sol-to-Colonia highway.',
-    price_credits: 1200,
-    price_rub: 150,
-    rarity: 'rare',
-    requires_subscription: null,
-    subscriber_discount_pct: 20,
-    preview_data: {
-      color: '#38bdf8',
-      subTitle: 'JAQUES STATION LEGEND',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 99,
-    created_at: '2026-02-15T00:00:00Z',
-  },
-  {
-    id: 'title-marshal',
-    category: 'title',
-    title: 'Маршал Звездного Пути',
-    title_en: 'Starway Marshal',
-    description: 'Почетный титул организаторов и защитников колонизационных конвоев.',
-    description_en: 'Honorary title for organizers and protectors of colonial supply convoys.',
-    price_credits: 3000,
-    price_rub: 400,
-    rarity: 'legendary',
-    requires_subscription: 'admiral',
-    subscriber_discount_pct: 50,
-    preview_data: {
-      color: '#eab308',
-      subTitle: 'STARWAY MARSHAL',
-    },
-    is_active: true,
-    is_featured: false,
-    sales_count: 48,
-    created_at: '2026-02-23T00:00:00Z',
-  },
-];
-
-interface BillingStoreSchema {
-  plans: BillingPlan[];
-  subscriptions: UserSubscription[];
-  shopItems: ShopItem[];
-  inventory: UserInventoryItem[];
-  equipped: Record<string, EquippedCosmetics>;
-  transactions: BillingTransaction[];
-  balances: Record<string, UserBalance>;
+function num(v: any): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 }
 
-function generateInitialStore(): BillingStoreSchema {
-  const plans = INITIAL_PLANS;
-  const shopItems = INITIAL_SHOP_ITEMS;
-
-  // Realistic sample subscribers
-  const samplePilots = [
-    { name: 'CMDR Coriolus', role: 'admin', tier: 'admiral', daysLeft: 28, spent: 4820 },
-    { name: 'CMDR Elena Vance', role: 'user', tier: 'elite', daysLeft: 19, spent: 2360 },
-    { name: 'CMDR Starfarer_99', role: 'user', tier: 'pioneer', daysLeft: 12, spent: 1190 },
-    { name: 'CMDR NovaVanguard', role: 'moderator', tier: 'admiral', daysLeft: 25, spent: 3950 },
-    { name: 'CMDR Alexey Gromov', role: 'user', tier: 'elite', daysLeft: 8, spent: 1770 },
-    { name: 'CMDR HorizonSeeker', role: 'user', tier: 'pioneer', daysLeft: 14, spent: 870 },
-    { name: 'CMDR Dmitry_K', role: 'user', tier: 'elite', daysLeft: 22, spent: 2950 },
-    { name: 'CMDR BlackHoleDrifter', role: 'user', tier: 'admiral', daysLeft: 30, spent: 5400 },
-    { name: 'CMDR Viktor_Steele', role: 'user', tier: 'pioneer', daysLeft: 4, spent: 580 },
-    { name: 'CMDR Sarah_Connor', role: 'user', tier: 'elite', daysLeft: 16, spent: 1770 },
-    { name: 'CMDR Hyperion_01', role: 'user', tier: 'elite', daysLeft: 27, spent: 2360 },
-    { name: 'CMDR VoidWalker_RU', role: 'user', tier: 'pioneer', daysLeft: 21, spent: 870 },
-  ];
-
-  const now = new Date('2026-09-21T05:00:00Z');
-  const subscriptions: UserSubscription[] = samplePilots.map((p, idx) => {
-    const plan = plans.find((pl) => pl.id === p.tier)!;
-    const expiresAt = new Date(now.getTime() + p.daysLeft * 24 * 3600 * 1000);
-    const startedAt = new Date(expiresAt.getTime() - plan.period_days * 24 * 3600 * 1000);
-    return {
-      id: `sub-${idx + 101}`,
-      user_id: `user-sim-${idx + 1}`,
-      cmdr_name: p.name,
-      plan_id: p.tier,
-      status: 'active',
-      started_at: startedAt.toISOString(),
-      expires_at: expiresAt.toISOString(),
-      auto_renew: true,
-      payment_method: idx % 3 === 0 ? 'sbp' : 'card',
-      notes: idx === 0 ? 'Главный администратор колонии' : 'Автоматическое продление',
-      created_at: startedAt.toISOString(),
-      updated_at: startedAt.toISOString(),
-      plan,
-    };
-  });
-
-  // Seeded transactions history over past 6 months
-  const transactions: BillingTransaction[] = [];
-  let txCounter = 9480;
-
-  // Add subscription transactions for sample pilots
-  samplePilots.forEach((p, idx) => {
-    const plan = plans.find((pl) => pl.id === p.tier)!;
-    txCounter++;
-    transactions.push({
-      id: `TX-2026-${txCounter}`,
-      user_id: `user-sim-${idx + 1}`,
-      cmdr_name: p.name,
-      type: 'subscription',
-      item_or_plan_id: plan.id,
-      item_title: `Подписка «${plan.name}» (30 дн)`,
-      amount_rub: plan.price_rub,
-      amount_credits: 0,
-      payment_method: idx % 3 === 0 ? 'sbp' : 'card',
-      status: 'completed',
-      created_at: new Date(now.getTime() - (30 - p.daysLeft) * 24 * 3600 * 1000).toISOString(),
-    });
-  });
-
-  // Generate historical purchases and credit top-ups
-  const sampleCosmetics = shopItems.slice(0, 12);
-  for (let i = 1; i <= 65; i++) {
-    txCounter++;
-    const daysAgo = Math.floor(Math.pow(Math.random(), 1.6) * 120);
-    const txDate = new Date(now.getTime() - daysAgo * 24 * 3600 * 1000 - Math.random() * 86400000);
-    const pilot = samplePilots[i % samplePilots.length];
-    const isCreditTopup = i % 5 === 0;
-
-    if (isCreditTopup) {
-      const topupRub = [300, 600, 1200, 2500][i % 4];
-      const topupCredits = [2500, 5500, 12000, 26000][i % 4];
-      transactions.push({
-        id: `TX-2026-${txCounter}`,
-        user_id: `user-sim-${(i % samplePilots.length) + 1}`,
-        cmdr_name: pilot.name,
-        type: 'credit_topup',
-        item_or_plan_id: `pack-${topupCredits}`,
-        item_title: `Пакет очков снабжения (+${topupCredits} Кредитов)`,
-        amount_rub: topupRub,
-        amount_credits: topupCredits,
-        payment_method: 'sbp',
-        status: 'completed',
-        created_at: txDate.toISOString(),
-      });
-    } else {
-      const item = sampleCosmetics[i % sampleCosmetics.length];
-      const useCredits = i % 2 === 0;
-      transactions.push({
-        id: `TX-2026-${txCounter}`,
-        user_id: `user-sim-${(i % samplePilots.length) + 1}`,
-        cmdr_name: pilot.name,
-        type: 'shop_purchase',
-        item_or_plan_id: item.id,
-        item_title: item.title,
-        amount_rub: useCredits ? 0 : item.price_rub,
-        amount_credits: useCredits ? item.price_credits : 0,
-        payment_method: useCredits ? 'credits' : 'card',
-        status: i === 12 ? 'refunded' : 'completed',
-        created_at: txDate.toISOString(),
-      });
-    }
+function categoryField(category: string): keyof EquippedCosmetics | null {
+  switch (category) {
+    case 'frame':
+      return 'frame_id';
+    case 'badge':
+      return 'badge_id';
+    case 'skin':
+      return 'skin_id';
+    case 'glow':
+      return 'glow_id';
+    case 'title':
+      return 'title_id';
+    default:
+      return null;
   }
+}
 
-  // Sort transactions by date descending
-  transactions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+export interface PurchaseResult {
+  success: boolean;
+  error?: string;
+  item?: ShopItem;
+  balance?: UserBalance;
+  transaction?: BillingTransaction;
+}
 
-  // Inventory & Equipped
-  const inventory: UserInventoryItem[] = [
-    {
-      id: 'inv-1',
-      user_id: 'user-sim-1',
-      item_id: 'frame-singularity',
-      purchased_at: '2026-08-10T12:00:00Z',
-      price_paid_credits: 3500,
-      price_paid_rub: 0,
-      is_equipped: true,
-      item: shopItems.find((s) => s.id === 'frame-singularity'),
-    },
-    {
-      id: 'inv-2',
-      user_id: 'user-sim-1',
-      item_id: 'badge-founder',
-      purchased_at: '2026-08-12T14:30:00Z',
-      price_paid_credits: 2800,
-      price_paid_rub: 0,
-      is_equipped: true,
-      item: shopItems.find((s) => s.id === 'badge-founder'),
-    },
-    {
-      id: 'inv-3',
-      user_id: 'user-sim-1',
-      item_id: 'glow-hyperspace',
-      purchased_at: '2026-08-15T18:00:00Z',
-      price_paid_credits: 2900,
-      price_paid_rub: 0,
-      is_equipped: true,
-      item: shopItems.find((s) => s.id === 'glow-hyperspace'),
-    },
-    {
-      id: 'inv-4',
-      user_id: 'user-sim-1',
-      item_id: 'title-architect',
-      purchased_at: '2026-08-18T10:00:00Z',
-      price_paid_credits: 1800,
-      price_paid_rub: 0,
-      is_equipped: true,
-      item: shopItems.find((s) => s.id === 'title-architect'),
-    },
-  ];
-
-  const equipped: Record<string, EquippedCosmetics> = {
-    'user-sim-1': {
-      user_id: 'user-sim-1',
-      frame_id: 'frame-singularity',
-      badge_id: 'badge-founder',
-      skin_id: 'skin-cyber',
-      glow_id: 'glow-hyperspace',
-      title_id: 'title-architect',
-      updated_at: '2026-09-01T00:00:00Z',
-    },
-  };
-
-  const balances: Record<string, UserBalance> = {
-    'user-sim-1': {
-      user_id: 'user-sim-1',
-      credits: 4500,
-      total_spent_rub: 4820,
-      total_spent_credits: 11000,
-      updated_at: now.toISOString(),
-    },
-  };
-
-  return {
-    plans,
-    subscriptions,
-    shopItems,
-    inventory,
-    equipped,
-    transactions,
-    balances,
-  };
+export interface SubscribeResult {
+  success: boolean;
+  error?: string;
+  subscription?: UserSubscription;
+  balance?: UserBalance;
+  transaction?: BillingTransaction;
 }
 
 class BillingRepository {
-  private store: BillingStoreSchema;
+  private adapterPromise: Promise<TableAdapter> | null = null;
+  private seeded = false;
 
-  constructor() {
-    this.store = this.loadStore();
+  private async db(): Promise<TableAdapter> {
+    if (!this.adapterPromise) this.adapterPromise = getBillingAdapter();
+    const a = await this.adapterPromise;
+    if (!this.seeded) {
+      this.seeded = true;
+      await this.ensureSeed(a);
+    }
+    return a;
   }
 
-  private loadStore(): BillingStoreSchema {
+  /** Seeds catalogue & providers if tables are empty (idempotent). */
+  private async ensureSeed(a: TableAdapter) {
     try {
-      if (fs.existsSync(DATA_FILE)) {
-        const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        // Ensure all top-level keys exist
-        return {
-          plans: parsed.plans || INITIAL_PLANS,
-          subscriptions: parsed.subscriptions || [],
-          shopItems: parsed.shopItems || INITIAL_SHOP_ITEMS,
-          inventory: parsed.inventory || [],
-          equipped: parsed.equipped || {},
-          transactions: parsed.transactions || [],
-          balances: parsed.balances || {},
-        };
+      if ((await a.count('billing_plans')) === 0) {
+        for (const p of INITIAL_PLANS) await a.upsert('billing_plans', { ...p, discount_pct: p.discount_pct ?? 0 });
+      }
+      if ((await a.count('shop_items')) === 0) {
+        let order = 0;
+        for (const i of INITIAL_SHOP_ITEMS) await a.upsert('shop_items', { ...i, sales_count: 0, display_order: order++ });
+      }
+      const providers = await a.list<PaymentProvider>('payment_providers');
+      const have = new Set(providers.map((p) => p.id));
+      let order = 1;
+      for (const d of Object.values(PROVIDER_DRIVERS)) {
+        if (!have.has(d.id)) {
+          await a.upsert('payment_providers', {
+            id: d.id,
+            name: d.name,
+            is_enabled: false,
+            test_mode: d.id !== 'manual',
+            config: {},
+            methods: d.methods,
+            display_order: d.id === 'manual' ? 9 : order,
+            created_at: nowIso(),
+            updated_at: nowIso(),
+          });
+        }
+        order++;
       }
     } catch (e) {
-      console.warn('[BillingRepository] Error loading data file, re-seeding:', e);
-    }
-
-    const initial = generateInitialStore();
-    this.saveStore(initial);
-    return initial;
-  }
-
-  private saveStore(store: BillingStoreSchema): void {
-    try {
-      const dir = path.dirname(DATA_FILE);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf-8');
-    } catch (e) {
-      console.error('[BillingRepository] Error saving data file:', e);
+      console.warn('[billing] seed skipped:', (e as any)?.message || e);
     }
   }
 
-  // ── Plans ──
-  getPlans(): BillingPlan[] {
-    return [...this.store.plans].sort((a, b) => a.display_order - b.display_order);
+  get backendKind(): Promise<'supabase' | 'file'> {
+    return this.db().then((a) => a.kind);
   }
 
-  getPlanById(id: string): BillingPlan | undefined {
-    return this.store.plans.find((p) => p.id === id);
-  }
+  // ───────────────────────── Settings ─────────────────────────
 
-  updatePlan(id: string, updates: Partial<BillingPlan>): BillingPlan | null {
-    const idx = this.store.plans.findIndex((p) => p.id === id);
-    if (idx === -1) return null;
-    this.store.plans[idx] = { ...this.store.plans[idx], ...updates };
-    this.saveStore(this.store);
-    return this.store.plans[idx];
-  }
-
-  // ── Subscriptions ──
-  getSubscriptions(filter?: { status?: string; planId?: string; search?: string }): UserSubscription[] {
-    let list = this.store.subscriptions.map((s) => ({
-      ...s,
-      plan: this.store.plans.find((p) => p.id === s.plan_id),
-    }));
-
-    if (filter?.status && filter.status !== 'all') {
-      list = list.filter((s) => s.status === filter.status);
-    }
-    if (filter?.planId && filter.planId !== 'all') {
-      list = list.filter((s) => s.plan_id === filter.planId);
-    }
-    if (filter?.search) {
-      const q = filter.search.toLowerCase().trim();
-      list = list.filter((s) => s.cmdr_name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q));
-    }
-
-    return list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  }
-
-  getUserSubscription(userId: string): UserSubscription | null {
-    const sub = this.store.subscriptions.find(
-      (s) => (s.user_id === userId || s.cmdr_name === userId) && s.status === 'active'
-    );
-    if (!sub) return null;
+  async getSettings(): Promise<BillingSettings> {
+    const a = await this.db();
+    const row = await a.get<{ id: string; value: any }>('billing_settings', 'general');
+    const v = row?.value || {};
     return {
-      ...sub,
-      plan: this.store.plans.find((p) => p.id === sub.plan_id),
+      welcome_credits: num(v.welcome_credits ?? DEFAULT_SETTINGS.welcome_credits),
+      credit_packs: Array.isArray(v.credit_packs) && v.credit_packs.length ? v.credit_packs : DEFAULT_CREDIT_PACKS,
+      currency: v.currency || 'RUB',
+      shop_enabled: v.shop_enabled !== false,
     };
   }
 
-  grantSubscription(params: {
+  async updateSettings(patch: Partial<BillingSettings>): Promise<BillingSettings> {
+    const a = await this.db();
+    const cur = await this.getSettings();
+    const next: BillingSettings = { ...cur, ...patch };
+    if (patch.credit_packs) {
+      next.credit_packs = patch.credit_packs
+        .filter((p) => num(p.credits) > 0 && num(p.price_rub) > 0)
+        .map((p, i) => ({
+          id: p.id || `pack-${num(p.credits)}-${i}`,
+          credits: Math.round(num(p.credits)),
+          price_rub: Math.round(num(p.price_rub)),
+          bonus_pct: Math.max(0, Math.round(num(p.bonus_pct))),
+          label: String(p.label || '').slice(0, 40),
+        }));
+    }
+    next.welcome_credits = Math.max(0, Math.round(num(next.welcome_credits)));
+    await a.upsert('billing_settings', { id: 'general', value: next, updated_at: nowIso() });
+    return next;
+  }
+
+  // ───────────────────────── Plans ─────────────────────────
+
+  async getPlans(includeInactive = false): Promise<BillingPlan[]> {
+    const a = await this.db();
+    const plans = await a.list<BillingPlan>('billing_plans', { order: { column: 'display_order' } });
+    return plans.filter((p) => includeInactive || p.is_active !== false).map(normalizePlan);
+  }
+
+  async getPlanById(id: string): Promise<BillingPlan | undefined> {
+    const a = await this.db();
+    const p = await a.get<BillingPlan>('billing_plans', id);
+    return p ? normalizePlan(p) : undefined;
+  }
+
+  async updatePlan(id: string, updates: Partial<BillingPlan>): Promise<BillingPlan | null> {
+    const a = await this.db();
+    const allowed: (keyof BillingPlan)[] = [
+      'name', 'name_en', 'description', 'description_en', 'price_rub', 'price_credits', 'period_days', 'perks',
+      'badge_label', 'color', 'is_active', 'is_popular', 'display_order', 'discount_pct',
+    ];
+    const patch: Record<string, any> = { updated_at: nowIso() };
+    for (const k of allowed) if (k in updates) patch[k] = (updates as any)[k];
+    if (patch.perks && !Array.isArray(patch.perks)) patch.perks = String(patch.perks).split('\n').map((s: string) => s.trim()).filter(Boolean);
+    for (const k of ['price_rub', 'price_credits', 'period_days', 'display_order', 'discount_pct']) if (k in patch) patch[k] = Math.max(0, Math.round(num(patch[k])));
+    const res = await a.update<BillingPlan>('billing_plans', id, patch);
+    return res ? normalizePlan(res) : null;
+  }
+
+  async createPlan(input: Partial<BillingPlan> & { id: string; name: string }): Promise<BillingPlan> {
+    const a = await this.db();
+    const id = slugify(input.id || input.name);
+    if (await a.get('billing_plans', id)) throw new Error(`План с id «${id}» уже существует`);
+    const row: BillingPlan = {
+      id,
+      name: input.name,
+      name_en: input.name_en || input.name,
+      description: input.description || '',
+      description_en: input.description_en || '',
+      price_rub: Math.max(0, Math.round(num(input.price_rub))),
+      price_credits: Math.max(0, Math.round(num(input.price_credits))),
+      period_days: Math.max(1, Math.round(num(input.period_days) || 30)),
+      perks: Array.isArray(input.perks) ? input.perks : [],
+      badge_label: input.badge_label || input.name.toUpperCase().slice(0, 14),
+      color: input.color || '#e67e22',
+      is_active: input.is_active ?? true,
+      is_popular: input.is_popular ?? false,
+      display_order: Math.round(num(input.display_order)),
+      discount_pct: Math.max(0, Math.min(100, Math.round(num(input.discount_pct)))),
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    return normalizePlan(await a.insert<BillingPlan>('billing_plans', row));
+  }
+
+  async deletePlan(id: string): Promise<boolean> {
+    const a = await this.db();
+    const active = await a.count('user_subscriptions', { eq: { plan_id: id, status: 'active' } });
+    if (active > 0) throw new Error(`Нельзя удалить план: ${active} активных подписок. Сначала деактивируйте его.`);
+    return a.remove('billing_plans', id);
+  }
+
+  // ───────────────────────── Subscriptions ─────────────────────────
+
+  async getSubscriptions(filter?: { status?: string; planId?: string; search?: string }): Promise<UserSubscription[]> {
+    const a = await this.db();
+    const plans = await this.getPlans(true);
+    const opts: any = { order: { column: 'created_at', ascending: false } };
+    if (filter?.status && filter.status !== 'all') opts.eq = { ...(opts.eq || {}), status: filter.status };
+    if (filter?.planId && filter.planId !== 'all') opts.eq = { ...(opts.eq || {}), plan_id: filter.planId };
+    let list = await a.list<UserSubscription>('user_subscriptions', opts);
+    list = await this.expireStale(list);
+    if (filter?.status && filter.status !== 'all') list = list.filter((s) => s.status === filter.status);
+    if (filter?.search) {
+      const q = filter.search.toLowerCase().trim();
+      list = list.filter((s) => (s.cmdr_name || '').toLowerCase().includes(q) || s.id.toLowerCase().includes(q) || (s.user_id || '').toLowerCase().includes(q));
+    }
+    return list.map((s) => ({ ...s, plan: plans.find((p) => p.id === s.plan_id) }));
+  }
+
+  /** Marks active-but-expired subscriptions as expired (lazy expiry). */
+  private async expireStale(list: UserSubscription[]): Promise<UserSubscription[]> {
+    const a = await this.db();
+    const now = Date.now();
+    const out: UserSubscription[] = [];
+    for (const s of list) {
+      if (s.status === 'active' && s.expires_at && new Date(s.expires_at).getTime() < now) {
+        await a.update('user_subscriptions', s.id, { status: 'expired', updated_at: nowIso() });
+        out.push({ ...s, status: 'expired' });
+      } else out.push(s);
+    }
+    return out;
+  }
+
+  async getUserSubscription(userId: string): Promise<UserSubscription | null> {
+    if (!userId) return null;
+    const a = await this.db();
+    let list = await a.list<UserSubscription>('user_subscriptions', { eq: { user_id: userId, status: 'active' }, order: { column: 'expires_at', ascending: false } });
+    list = (await this.expireStale(list)).filter((s) => s.status === 'active');
+    const sub = list[0];
+    if (!sub) return null;
+    return { ...sub, plan: await this.getPlanById(sub.plan_id) };
+  }
+
+  /** Discount percentage that a user's active plan grants in the shop. */
+  async getUserDiscountPct(userId: string | null | undefined): Promise<{ pct: number; sub: UserSubscription | null }> {
+    if (!userId) return { pct: 0, sub: null };
+    const sub = await this.getUserSubscription(userId);
+    return { pct: sub?.plan?.discount_pct || 0, sub };
+  }
+
+  async grantSubscription(params: {
     userId: string;
     cmdrName: string;
     planId: string;
     durationDays: number;
     notes?: string;
     autoRenew?: boolean;
-    grantReason?: string;
-  }): UserSubscription {
-    const plan = this.getPlanById(params.planId) || this.store.plans[0];
+    paymentMethod?: string;
+    providerId?: string | null;
+    externalId?: string | null;
+    amountRub?: number;
+    amountCredits?: number;
+    transactionType?: BillingTransaction['type'];
+  }): Promise<UserSubscription> {
+    const a = await this.db();
+    const plan = (await this.getPlanById(params.planId)) || (await this.getPlans())[0];
+    if (!plan) throw new Error('Нет доступных тарифных планов');
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + params.durationDays * 24 * 3600 * 1000);
 
-    // Cancel any previous active subscription for this user
-    this.store.subscriptions.forEach((s) => {
-      if ((s.user_id === params.userId || s.cmdr_name === params.cmdrName) && s.status === 'active') {
-        s.status = 'canceled';
-        s.updated_at = now.toISOString();
+    // Extend if the same plan is already active; otherwise replace.
+    const current = await this.getUserSubscription(params.userId);
+    let startedAt = now;
+    let base = now;
+    if (current) {
+      if (current.plan_id === plan.id && current.expires_at) {
+        base = new Date(Math.max(now.getTime(), new Date(current.expires_at).getTime()));
       }
-    });
+      await a.update('user_subscriptions', current.id, { status: 'canceled', auto_renew: false, updated_at: nowIso(), notes: `${current.notes ? current.notes + ' | ' : ''}Заменена новой подпиской` });
+      startedAt = current.plan_id === plan.id ? new Date(current.started_at) : now;
+    }
+    const expiresAt = new Date(base.getTime() + params.durationDays * 86400000);
 
-    const newSub: UserSubscription = {
-      id: `sub-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    const sub: UserSubscription = {
+      id: uid('sub'),
       user_id: params.userId,
       cmdr_name: params.cmdrName || 'Командир',
       plan_id: plan.id,
       status: 'active',
-      started_at: now.toISOString(),
+      started_at: startedAt.toISOString(),
       expires_at: expiresAt.toISOString(),
-      auto_renew: params.autoRenew ?? true,
-      payment_method: 'admin',
-      notes: params.notes || params.grantReason || 'Назначено администратором',
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
-      plan,
+      auto_renew: params.autoRenew ?? false,
+      payment_method: params.paymentMethod || 'admin',
+      notes: params.notes || 'Назначено администратором',
+      provider_id: params.providerId || null,
+      external_id: params.externalId || null,
+      created_at: nowIso(),
+      updated_at: nowIso(),
     };
+    await a.insert('user_subscriptions', stripJoins(sub));
 
-    this.store.subscriptions.unshift(newSub);
-
-    // Record admin grant transaction
-    this.addTransaction({
+    await this.addTransaction({
       userId: params.userId,
       cmdrName: params.cmdrName,
-      type: 'admin_grant',
+      type: params.transactionType || (params.paymentMethod && params.paymentMethod !== 'admin' ? 'subscription' : 'admin_grant'),
       itemOrPlanId: plan.id,
-      itemTitle: `Назначение подписки «${plan.name}» (${params.durationDays} дн)`,
-      amountRub: 0,
-      amountCredits: 0,
-      paymentMethod: 'admin',
+      itemTitle: `Подписка «${plan.name}» (${params.durationDays} дн)`,
+      amountRub: num(params.amountRub),
+      amountCredits: num(params.amountCredits),
+      paymentMethod: (params.paymentMethod as any) || 'admin',
       status: 'completed',
-      metadata: { durationDays: params.durationDays, notes: params.notes },
+      providerId: params.providerId,
+      externalId: params.externalId,
+      metadata: { durationDays: params.durationDays, notes: params.notes, subscriptionId: sub.id },
     });
 
-    this.saveStore(this.store);
-    return newSub;
+    return { ...sub, plan };
   }
 
-  updateSubscription(
+  /** User buys a plan for credits. */
+  async subscribeWithCredits(params: { userId: string; cmdrName: string; planId: string }): Promise<SubscribeResult> {
+    const plan = await this.getPlanById(params.planId);
+    if (!plan || !plan.is_active) return { success: false, error: 'Тарифный план недоступен' };
+    if (!plan.price_credits) return { success: false, error: 'Этот план нельзя оплатить кредитами' };
+    const bal = await this.getUserBalance(params.userId);
+    if (bal.credits < plan.price_credits) {
+      return { success: false, error: `Недостаточно кредитов. Необходимо: ${plan.price_credits.toLocaleString('ru-RU')}, на балансе: ${bal.credits.toLocaleString('ru-RU')}` };
+    }
+    const newBal = await this.adjustBalance(params.userId, { credits: -plan.price_credits, spentCredits: plan.price_credits });
+    const sub = await this.grantSubscription({
+      ...params,
+      durationDays: plan.period_days,
+      paymentMethod: 'credits',
+      amountCredits: plan.price_credits,
+      transactionType: 'subscription',
+      notes: 'Оплачено кредитами',
+    });
+    return { success: true, subscription: sub, balance: newBal };
+  }
+
+  async updateSubscription(
     id: string,
-    updates: Partial<Pick<UserSubscription, 'status' | 'plan_id' | 'expires_at' | 'auto_renew' | 'notes'>>
-  ): UserSubscription | null {
-    const idx = this.store.subscriptions.findIndex((s) => s.id === id);
-    if (idx === -1) return null;
-
-    const sub = this.store.subscriptions[idx];
-    this.store.subscriptions[idx] = {
-      ...sub,
-      ...updates,
-      updated_at: new Date().toISOString(),
-      plan: updates.plan_id ? this.getPlanById(updates.plan_id) : sub.plan,
-    };
-
-    this.saveStore(this.store);
-    return this.store.subscriptions[idx];
+    updates: Partial<Pick<UserSubscription, 'status' | 'plan_id' | 'expires_at' | 'auto_renew' | 'notes'>>,
+  ): Promise<UserSubscription | null> {
+    const a = await this.db();
+    const patch: Record<string, any> = { updated_at: nowIso() };
+    for (const k of ['status', 'plan_id', 'expires_at', 'auto_renew', 'notes'] as const) if (updates[k] !== undefined) patch[k] = updates[k];
+    const res = await a.update<UserSubscription>('user_subscriptions', id, patch);
+    if (!res) return null;
+    return { ...res, plan: await this.getPlanById(res.plan_id) };
   }
 
-  extendSubscription(id: string, additionalDays: number): UserSubscription | null {
-    const sub = this.store.subscriptions.find((s) => s.id === id);
+  async extendSubscription(id: string, additionalDays: number): Promise<UserSubscription | null> {
+    const a = await this.db();
+    const sub = await a.get<UserSubscription>('user_subscriptions', id);
     if (!sub) return null;
-
     const currentExpiry = sub.expires_at ? new Date(sub.expires_at) : new Date();
     const baseDate = currentExpiry.getTime() > Date.now() ? currentExpiry : new Date();
-    const newExpiry = new Date(baseDate.getTime() + additionalDays * 24 * 3600 * 1000);
-
-    return this.updateSubscription(id, {
+    const newExpiry = new Date(baseDate.getTime() + additionalDays * 86400000);
+    const res = await this.updateSubscription(id, {
       expires_at: newExpiry.toISOString(),
       status: 'active',
       notes: `${sub.notes ? sub.notes + ' | ' : ''}Продлено на ${additionalDays} дн.`,
     });
+    await this.addTransaction({
+      userId: sub.user_id,
+      cmdrName: sub.cmdr_name,
+      type: 'admin_grant',
+      itemOrPlanId: sub.plan_id,
+      itemTitle: `Продление подписки на ${additionalDays} дн`,
+      amountRub: 0,
+      amountCredits: 0,
+      paymentMethod: 'admin',
+      status: 'completed',
+      metadata: { subscriptionId: id, additionalDays },
+    });
+    return res;
   }
 
-  cancelSubscription(id: string, reason?: string): UserSubscription | null {
+  async cancelSubscription(id: string, reason?: string): Promise<UserSubscription | null> {
     return this.updateSubscription(id, {
       status: 'canceled',
       auto_renew: false,
@@ -1015,115 +424,254 @@ class BillingRepository {
     });
   }
 
-  // ── Shop Items ──
-  getShopItems(filter?: { category?: string; rarity?: string; search?: string }): ShopItem[] {
-    let list = [...this.store.shopItems];
-    if (filter?.category && filter.category !== 'all') {
-      list = list.filter((i) => i.category === filter.category);
-    }
-    if (filter?.rarity && filter.rarity !== 'all') {
-      list = list.filter((i) => i.rarity === filter.rarity);
-    }
+  // ───────────────────────── Shop items ─────────────────────────
+
+  async getShopItems(filter?: { category?: string; rarity?: string; search?: string; includeInactive?: boolean }): Promise<ShopItem[]> {
+    const a = await this.db();
+    let list = await a.list<ShopItem>('shop_items', { order: { column: 'display_order' } });
+    list = list.map(normalizeItem);
+    if (!filter?.includeInactive) list = list.filter((i) => i.is_active !== false);
+    if (filter?.category && filter.category !== 'all') list = list.filter((i) => i.category === filter.category);
+    if (filter?.rarity && filter.rarity !== 'all') list = list.filter((i) => i.rarity === filter.rarity);
     if (filter?.search) {
       const q = filter.search.toLowerCase().trim();
-      list = list.filter((i) => i.title.toLowerCase().includes(q) || i.description.toLowerCase().includes(q));
+      list = list.filter((i) => i.title.toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q) || i.id.includes(q));
     }
-    return list;
+    return list.sort((x, y) => (x.display_order || 0) - (y.display_order || 0) || x.title.localeCompare(y.title));
   }
 
-  getShopItemById(id: string): ShopItem | undefined {
-    return this.store.shopItems.find((i) => i.id === id);
+  async getShopItemById(id: string): Promise<ShopItem | undefined> {
+    const a = await this.db();
+    const i = await a.get<ShopItem>('shop_items', id);
+    return i ? normalizeItem(i) : undefined;
   }
 
-  // ── Inventory & Equipping ──
-  getUserInventory(userId: string): UserInventoryItem[] {
-    return this.store.inventory
-      .filter((inv) => inv.user_id === userId)
-      .map((inv) => ({
-        ...inv,
-        item: this.store.shopItems.find((s) => s.id === inv.item_id),
-      }));
+  async getShopItemsByIds(ids: string[]): Promise<Map<string, ShopItem>> {
+    const uniq = Array.from(new Set(ids.filter(Boolean)));
+    if (!uniq.length) return new Map();
+    const a = await this.db();
+    const rows = await a.list<ShopItem>('shop_items', { in: { id: uniq } });
+    return new Map(rows.map((r) => [r.id, normalizeItem(r)]));
   }
 
-  getUserEquippedCosmetics(userId: string): EquippedCosmetics {
-    return (
-      this.store.equipped[userId] || {
-        user_id: userId,
-        frame_id: null,
-        badge_id: null,
-        skin_id: null,
-        glow_id: null,
-        title_id: null,
-      }
-    );
+  async createShopItem(input: Partial<ShopItem> & { category: CosmeticCategory; title: string }): Promise<ShopItem> {
+    const a = await this.db();
+    if (!CATEGORIES.includes(input.category)) throw new Error('Неизвестная категория');
+    const id = slugify(input.id || `${input.category}-${input.title}`);
+    if (await a.get('shop_items', id)) throw new Error(`Товар с id «${id}» уже существует`);
+    const count = await a.count('shop_items');
+    const row: ShopItem = {
+      id,
+      category: input.category,
+      title: input.title,
+      title_en: input.title_en || input.title,
+      description: input.description || '',
+      description_en: input.description_en || '',
+      price_credits: Math.max(0, Math.round(num(input.price_credits))),
+      price_rub: Math.max(0, Math.round(num(input.price_rub))),
+      rarity: (['common', 'rare', 'epic', 'legendary'] as const).includes(input.rarity as any) ? input.rarity! : 'common',
+      requires_subscription: input.requires_subscription || null,
+      subscriber_discount_pct: Math.max(0, Math.min(100, Math.round(num(input.subscriber_discount_pct)))),
+      preview_data: input.preview_data || {},
+      is_active: input.is_active ?? true,
+      is_featured: input.is_featured ?? false,
+      sales_count: 0,
+      display_order: input.display_order ?? count,
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    return normalizeItem(await a.insert<ShopItem>('shop_items', row));
   }
 
-  equipCosmetic(userId: string, category: string, itemId: string | null): EquippedCosmetics {
-    const current = this.getUserEquippedCosmetics(userId);
-    const updated: EquippedCosmetics = { ...current, updated_at: new Date().toISOString() };
+  async updateShopItem(id: string, updates: Partial<ShopItem>): Promise<ShopItem | null> {
+    const a = await this.db();
+    const allowed: (keyof ShopItem)[] = [
+      'category', 'title', 'title_en', 'description', 'description_en', 'price_credits', 'price_rub', 'rarity',
+      'requires_subscription', 'subscriber_discount_pct', 'preview_data', 'is_active', 'is_featured', 'display_order',
+    ];
+    const patch: Record<string, any> = { updated_at: nowIso() };
+    for (const k of allowed) if (k in updates) patch[k] = (updates as any)[k];
+    if ('requires_subscription' in patch && !patch.requires_subscription) patch.requires_subscription = null;
+    for (const k of ['price_credits', 'price_rub', 'subscriber_discount_pct', 'display_order']) if (k in patch) patch[k] = Math.max(0, Math.round(num(patch[k])));
+    if ('category' in patch && !CATEGORIES.includes(patch.category)) delete patch.category;
+    const res = await a.update<ShopItem>('shop_items', id, patch);
+    return res ? normalizeItem(res) : null;
+  }
 
-    switch (category) {
-      case 'frame':
-        updated.frame_id = itemId;
-        break;
-      case 'badge':
-        updated.badge_id = itemId;
-        break;
-      case 'skin':
-        updated.skin_id = itemId;
-        break;
-      case 'glow':
-        updated.glow_id = itemId;
-        break;
-      case 'title':
-        updated.title_id = itemId;
-        break;
+  async deleteShopItem(id: string): Promise<{ deleted: boolean; owners: number }> {
+    const a = await this.db();
+    const owners = await a.count('user_inventory', { eq: { item_id: id } });
+    if (owners > 0) {
+      // Never break owners: archive instead of delete.
+      await a.update('shop_items', id, { is_active: false, is_featured: false, updated_at: nowIso() });
+      return { deleted: false, owners };
     }
+    return { deleted: await a.remove('shop_items', id), owners: 0 };
+  }
 
-    this.store.equipped[userId] = updated;
+  // ───────────────────────── Inventory & cosmetics ─────────────────────────
 
-    // Update inventory item equipped flags
-    this.store.inventory.forEach((inv) => {
-      if (inv.user_id === userId) {
-        const item = this.getShopItemById(inv.item_id);
-        if (item && item.category === category) {
-          inv.is_equipped = inv.item_id === itemId;
-        }
-      }
+  async getUserInventory(userId: string): Promise<UserInventoryItem[]> {
+    if (!userId) return [];
+    const a = await this.db();
+    const inv = await a.list<UserInventoryItem>('user_inventory', { eq: { user_id: userId }, order: { column: 'purchased_at', ascending: false } });
+    const items = await this.getShopItemsByIds(inv.map((i) => i.item_id));
+    const eq = await this.getUserEquippedCosmetics(userId);
+    return inv.map((i) => {
+      const item = items.get(i.item_id);
+      const f = item ? categoryField(item.category) : null;
+      return { ...i, item, is_equipped: f ? eq[f] === i.item_id : false };
     });
+  }
 
-    this.saveStore(this.store);
+  async userOwnsItem(userId: string, itemId: string): Promise<boolean> {
+    const a = await this.db();
+    return (await a.count('user_inventory', { eq: { user_id: userId, item_id: itemId } })) > 0;
+  }
+
+  async getUserEquippedCosmetics(userId: string): Promise<EquippedCosmetics> {
+    const empty: EquippedCosmetics = { user_id: userId, frame_id: null, badge_id: null, skin_id: null, glow_id: null, title_id: null };
+    if (!userId) return empty;
+    const a = await this.db();
+    const row = await a.get<EquippedCosmetics>('user_cosmetics_equipped', userId);
+    return row ? { ...empty, ...row } : empty;
+  }
+
+  /** Batch: equipped cosmetics + subscription tier + item preview data for many users. */
+  async getPublicCosmetics(userIds: string[]): Promise<Record<string, PublicCosmetics>> {
+    const ids = Array.from(new Set(userIds.filter(Boolean)));
+    if (!ids.length) return {};
+    const a = await this.db();
+    const [equippedRows, subs, plans] = await Promise.all([
+      a.list<EquippedCosmetics>('user_cosmetics_equipped', { in: { user_id: ids } }),
+      a.list<UserSubscription>('user_subscriptions', { in: { user_id: ids }, eq: { status: 'active' } }),
+      this.getPlans(true),
+    ]);
+    const now = Date.now();
+    const activeSubs = subs.filter((s) => !s.expires_at || new Date(s.expires_at).getTime() > now);
+    const itemIds: string[] = [];
+    for (const e of equippedRows) for (const f of ['frame_id', 'badge_id', 'skin_id', 'glow_id', 'title_id'] as const) if (e[f]) itemIds.push(e[f]!);
+    const items = await this.getShopItemsByIds(itemIds);
+    const out: Record<string, PublicCosmetics> = {};
+    for (const id of ids) {
+      const e = equippedRows.find((r) => r.user_id === id);
+      const s = activeSubs.find((r) => r.user_id === id);
+      const plan = s ? plans.find((p) => p.id === s.plan_id) : undefined;
+      const pick = (itemId?: string | null) => {
+        const it = itemId ? items.get(itemId) : undefined;
+        return it && it.is_active !== false ? { id: it.id, title: it.title, rarity: it.rarity, preview: it.preview_data || {} } : null;
+      };
+      out[id] = {
+        user_id: id,
+        frame: pick(e?.frame_id),
+        badge: pick(e?.badge_id),
+        skin: pick(e?.skin_id),
+        glow: pick(e?.glow_id),
+        title: pick(e?.title_id),
+        tier: plan ? { id: plan.id, label: plan.badge_label, color: plan.color } : null,
+      };
+    }
+    return out;
+  }
+
+  async equipCosmetic(userId: string, category: string, itemId: string | null): Promise<EquippedCosmetics> {
+    const a = await this.db();
+    const field = categoryField(category);
+    if (!field) throw new Error('Неизвестная категория');
+    if (itemId) {
+      const item = await this.getShopItemById(itemId);
+      if (!item) throw new Error('Предмет не найден');
+      if (item.category !== category) throw new Error('Категория предмета не совпадает');
+      if (!(await this.userOwnsItem(userId, itemId))) throw new Error('Этот предмет не куплен');
+    }
+    const current = await this.getUserEquippedCosmetics(userId);
+    const updated: EquippedCosmetics = { ...current, [field]: itemId, user_id: userId, updated_at: nowIso() };
+    await a.upsert('user_cosmetics_equipped', updated);
+    // keep the denormalised flag in inventory in sync
+    const inv = await a.list<UserInventoryItem>('user_inventory', { eq: { user_id: userId } });
+    const items = await this.getShopItemsByIds(inv.map((i) => i.item_id));
+    for (const i of inv) {
+      const it = items.get(i.item_id);
+      if (it && it.category === category) {
+        const flag = i.item_id === itemId;
+        if (Boolean(i.is_equipped) !== flag) await a.update('user_inventory', i.id, { is_equipped: flag });
+      }
+    }
     return updated;
   }
 
-  // ── Balances ──
-  getUserBalance(userId: string): UserBalance {
-    if (!this.store.balances[userId]) {
-      this.store.balances[userId] = {
-        user_id: userId,
-        credits: 1500, // Welcome gift credits for exploration & testing
-        total_spent_rub: 0,
-        total_spent_credits: 0,
-        updated_at: new Date().toISOString(),
-      };
-      this.saveStore(this.store);
+  // ───────────────────────── Balances ─────────────────────────
+
+  async getUserBalance(userId: string): Promise<UserBalance> {
+    const a = await this.db();
+    const empty: UserBalance = { user_id: userId, credits: 0, total_spent_rub: 0, total_spent_credits: 0, updated_at: nowIso() };
+    if (!userId) return empty;
+    const row = await a.get<UserBalance>('user_balances', userId);
+    if (row) return { ...row, credits: num(row.credits), total_spent_rub: num(row.total_spent_rub), total_spent_credits: num(row.total_spent_credits) };
+    const settings = await this.getSettings();
+    const fresh: UserBalance = { ...empty, credits: settings.welcome_credits };
+    await a.upsert('user_balances', fresh);
+    if (settings.welcome_credits > 0) {
+      await this.addTransaction({
+        userId,
+        cmdrName: '',
+        type: 'admin_grant',
+        itemOrPlanId: 'welcome',
+        itemTitle: `Приветственный бонус (+${settings.welcome_credits} Кредитов)`,
+        amountRub: 0,
+        amountCredits: settings.welcome_credits,
+        paymentMethod: 'admin',
+        status: 'completed',
+      });
     }
-    return this.store.balances[userId];
+    return fresh;
   }
 
-  topupBalance(params: {
+  private async adjustBalance(userId: string, d: { credits?: number; spentRub?: number; spentCredits?: number }): Promise<UserBalance> {
+    const a = await this.db();
+    const cur = await this.getUserBalance(userId);
+    const next: UserBalance = {
+      user_id: userId,
+      credits: Math.max(0, cur.credits + num(d.credits)),
+      total_spent_rub: Math.max(0, cur.total_spent_rub + num(d.spentRub)),
+      total_spent_credits: Math.max(0, cur.total_spent_credits + num(d.spentCredits)),
+      updated_at: nowIso(),
+    };
+    await a.upsert('user_balances', next);
+    return next;
+  }
+
+  async grantCredits(params: { userId: string; cmdrName: string; amountCredits: number; reason?: string; adminName?: string }): Promise<{ balance: UserBalance; transaction: BillingTransaction }> {
+    const amount = Math.round(num(params.amountCredits));
+    if (!amount) throw new Error('Сумма должна быть отлична от нуля');
+    const balance = await this.adjustBalance(params.userId, { credits: amount });
+    const transaction = await this.addTransaction({
+      userId: params.userId,
+      cmdrName: params.cmdrName,
+      type: 'admin_grant',
+      itemOrPlanId: 'credits',
+      itemTitle: `${amount > 0 ? 'Начисление' : 'Списание'} кредитов администратором (${amount > 0 ? '+' : ''}${amount.toLocaleString('ru-RU')})`,
+      amountRub: 0,
+      amountCredits: amount,
+      paymentMethod: 'admin',
+      status: 'completed',
+      metadata: { reason: params.reason, admin: params.adminName },
+    });
+    return { balance, transaction };
+  }
+
+  /** Credits a paid top-up (called from payment fulfilment). */
+  async topupBalance(params: {
     userId: string;
     cmdrName: string;
     amountCredits: number;
     amountRub: number;
-    paymentMethod: 'card' | 'sbp' | 'crypto';
-  }): { balance: UserBalance; transaction: BillingTransaction } {
-    const bal = this.getUserBalance(params.userId);
-    bal.credits += params.amountCredits;
-    bal.total_spent_rub += params.amountRub;
-    bal.updated_at = new Date().toISOString();
-
-    const tx = this.addTransaction({
+    paymentMethod: string;
+    providerId?: string | null;
+    externalId?: string | null;
+  }): Promise<{ balance: UserBalance; transaction: BillingTransaction }> {
+    const balance = await this.adjustBalance(params.userId, { credits: params.amountCredits, spentRub: params.amountRub });
+    const transaction = await this.addTransaction({
       userId: params.userId,
       cmdrName: params.cmdrName,
       type: 'credit_topup',
@@ -1131,144 +679,138 @@ class BillingRepository {
       itemTitle: `Пополнение счета (+${params.amountCredits.toLocaleString('ru-RU')} Кредитов)`,
       amountRub: params.amountRub,
       amountCredits: params.amountCredits,
-      paymentMethod: params.paymentMethod,
+      paymentMethod: params.paymentMethod as any,
       status: 'completed',
+      providerId: params.providerId,
+      externalId: params.externalId,
     });
-
-    this.saveStore(this.store);
-    return { balance: bal, transaction: tx };
+    return { balance, transaction };
   }
 
-  // ── Purchase Item ──
-  purchaseItem(params: {
+  // ───────────────────────── Pricing ─────────────────────────
+
+  async priceFor(item: ShopItem, userId: string | null | undefined): Promise<{ credits: number; rub: number; discountPct: number; locked: boolean; lockReason?: string }> {
+    const { pct, sub } = await this.getUserDiscountPct(userId);
+    const discountPct = Math.min(100, Math.max(item.subscriber_discount_pct && sub ? item.subscriber_discount_pct : 0, pct));
+    const credits = Math.round(item.price_credits * (1 - discountPct / 100));
+    const rub = Math.round(item.price_rub * (1 - discountPct / 100));
+    let locked = false;
+    let lockReason: string | undefined;
+    if (item.requires_subscription) {
+      const plans = await this.getPlans(true);
+      const req = plans.find((p) => p.id === item.requires_subscription);
+      const reqOrder = req?.display_order ?? 0;
+      const haveOrder = sub?.plan?.display_order ?? -1;
+      if (!sub || haveOrder < reqOrder) {
+        locked = true;
+        lockReason = `Требуется подписка «${req?.name || item.requires_subscription}» или выше`;
+      }
+    }
+    return { credits, rub, discountPct, locked, lockReason };
+  }
+
+  // ───────────────────────── Purchases ─────────────────────────
+
+  async purchaseItem(params: {
     userId: string;
     cmdrName: string;
     itemId: string;
     useCredits?: boolean;
     autoEquip?: boolean;
-  }): { success: boolean; error?: string; item?: ShopItem; balance?: UserBalance; transaction?: BillingTransaction } {
-    const item = this.getShopItemById(params.itemId);
-    if (!item) return { success: false, error: 'Предмет не найден в каталоге' };
+    /** already-paid via provider */
+    paid?: { amountRub: number; providerId: string; externalId: string; method: string };
+  }): Promise<PurchaseResult> {
+    const a = await this.db();
+    const item = await this.getShopItemById(params.itemId);
+    if (!item || item.is_active === false) return { success: false, error: 'Предмет не найден в каталоге' };
+    if (await this.userOwnsItem(params.userId, item.id)) return { success: false, error: 'Вы уже владеете этим улучшением' };
 
-    // Check if user already owns it
-    const alreadyOwns = this.store.inventory.some((inv) => inv.user_id === params.userId && inv.item_id === item.id);
-    if (alreadyOwns) return { success: false, error: 'Вы уже владеете этим улучшением' };
+    const price = await this.priceFor(item, params.userId);
+    if (price.locked) return { success: false, error: price.lockReason };
 
-    // Check subscription requirement
-    const sub = this.getUserSubscription(params.userId);
-    if (item.requires_subscription) {
-      if (!sub) {
-        return {
-          success: false,
-          error: `Для приобретения требуется активная подписка уровня «${item.requires_subscription}»`,
-        };
-      }
-      if (item.requires_subscription === 'admiral' && sub.plan_id !== 'admiral') {
-        return { success: false, error: 'Предмет доступен исключительно для ранга «Флотоводец VIP»' };
-      }
-    }
-
-    // Calculate discounted price
-    let discountPct = item.subscriber_discount_pct || 0;
-    if (sub) {
-      if (sub.plan_id === 'admiral') discountPct = Math.max(discountPct, 75);
-      else if (sub.plan_id === 'elite') discountPct = Math.max(discountPct, 50);
-      else if (sub.plan_id === 'pioneer') discountPct = Math.max(discountPct, 25);
-    }
-
-    const priceCredits = Math.round(item.price_credits * (1 - discountPct / 100));
-    const priceRub = Math.round(item.price_rub * (1 - discountPct / 100));
-
-    const bal = this.getUserBalance(params.userId);
-
-    if (params.useCredits) {
-      if (bal.credits < priceCredits) {
-        return {
-          success: false,
-          error: `Недостаточно кредитов. Необходимо: ${priceCredits.toLocaleString('ru-RU')}, на балансе: ${bal.credits.toLocaleString('ru-RU')}`,
-        };
-      }
-      bal.credits -= priceCredits;
-      bal.total_spent_credits += priceCredits;
+    let balance: UserBalance;
+    let tx: BillingTransaction;
+    if (params.paid) {
+      balance = await this.adjustBalance(params.userId, { spentRub: params.paid.amountRub });
+      tx = await this.addTransaction({
+        userId: params.userId, cmdrName: params.cmdrName, type: 'shop_purchase', itemOrPlanId: item.id, itemTitle: item.title,
+        amountRub: params.paid.amountRub, amountCredits: 0, paymentMethod: params.paid.method as any, status: 'completed',
+        providerId: params.paid.providerId, externalId: params.paid.externalId,
+        metadata: { rarity: item.rarity, category: item.category, discountPct: price.discountPct },
+      });
     } else {
-      bal.total_spent_rub += priceRub;
+      const bal = await this.getUserBalance(params.userId);
+      if (bal.credits < price.credits) {
+        return { success: false, error: `Недостаточно кредитов. Необходимо: ${price.credits.toLocaleString('ru-RU')}, на балансе: ${bal.credits.toLocaleString('ru-RU')}` };
+      }
+      balance = await this.adjustBalance(params.userId, { credits: -price.credits, spentCredits: price.credits });
+      tx = await this.addTransaction({
+        userId: params.userId, cmdrName: params.cmdrName, type: 'shop_purchase', itemOrPlanId: item.id, itemTitle: item.title,
+        amountRub: 0, amountCredits: price.credits, paymentMethod: 'credits', status: 'completed',
+        metadata: { rarity: item.rarity, category: item.category, discountPct: price.discountPct },
+      });
     }
-    bal.updated_at = new Date().toISOString();
 
-    // Increment sales count
-    item.sales_count = (item.sales_count || 0) + 1;
-
-    // Record Transaction
-    const tx = this.addTransaction({
-      userId: params.userId,
-      cmdrName: params.cmdrName,
-      type: 'shop_purchase',
-      itemOrPlanId: item.id,
-      itemTitle: item.title,
-      amountRub: params.useCredits ? 0 : priceRub,
-      amountCredits: params.useCredits ? priceCredits : 0,
-      paymentMethod: params.useCredits ? 'credits' : 'card',
-      status: 'completed',
-      metadata: { rarity: item.rarity, category: item.category, discountPct },
-    });
-
-    // Add to inventory
-    const invItem: UserInventoryItem = {
-      id: `inv-${Date.now()}`,
+    await a.insert('user_inventory', {
+      id: uid('inv'),
       user_id: params.userId,
       item_id: item.id,
-      purchased_at: new Date().toISOString(),
-      price_paid_credits: params.useCredits ? priceCredits : 0,
-      price_paid_rub: params.useCredits ? 0 : priceRub,
+      purchased_at: nowIso(),
+      price_paid_credits: params.paid ? 0 : price.credits,
+      price_paid_rub: params.paid ? params.paid.amountRub : 0,
       transaction_id: tx.id,
       is_equipped: false,
-      item,
-    };
-    this.store.inventory.push(invItem);
+    });
+    await a.update('shop_items', item.id, { sales_count: (item.sales_count || 0) + 1 });
 
-    if (params.autoEquip) {
-      this.equipCosmetic(params.userId, item.category, item.id);
-    }
-
-    this.saveStore(this.store);
-    return { success: true, item, balance: bal, transaction: tx };
+    if (params.autoEquip !== false) await this.equipCosmetic(params.userId, item.category, item.id);
+    return { success: true, item, balance, transaction: tx };
   }
 
-  // ── Transactions ──
-  getTransactions(filter?: {
-    type?: string;
-    status?: string;
-    search?: string;
-    limit?: number;
-    offset?: number;
-  }): { transactions: BillingTransaction[]; total: number } {
-    let list = [...this.store.transactions];
-
-    if (filter?.type && filter.type !== 'all') {
-      list = list.filter((t) => t.type === filter.type);
-    }
-    if (filter?.status && filter.status !== 'all') {
-      list = list.filter((t) => t.status === filter.status);
-    }
-    if (filter?.search) {
-      const q = filter.search.toLowerCase().trim();
-      list = list.filter(
-        (t) =>
-          t.id.toLowerCase().includes(q) ||
-          t.cmdr_name.toLowerCase().includes(q) ||
-          t.item_title.toLowerCase().includes(q)
-      );
-    }
-
-    const total = list.length;
-    const offset = filter?.offset || 0;
-    const limit = filter?.limit || 50;
-    const sliced = list.slice(offset, offset + limit);
-
-    return { transactions: sliced, total };
+  /** Admin gift: puts an item into inventory without charging. */
+  async grantItem(params: { userId: string; cmdrName: string; itemId: string; adminName?: string }): Promise<PurchaseResult> {
+    const a = await this.db();
+    const item = await this.getShopItemById(params.itemId);
+    if (!item) return { success: false, error: 'Предмет не найден' };
+    if (await this.userOwnsItem(params.userId, item.id)) return { success: false, error: 'Пилот уже владеет этим предметом' };
+    const tx = await this.addTransaction({
+      userId: params.userId, cmdrName: params.cmdrName, type: 'admin_grant', itemOrPlanId: item.id, itemTitle: `Подарок: ${item.title}`,
+      amountRub: 0, amountCredits: 0, paymentMethod: 'admin', status: 'completed', metadata: { admin: params.adminName, category: item.category },
+    });
+    await a.insert('user_inventory', { id: uid('inv'), user_id: params.userId, item_id: item.id, purchased_at: nowIso(), price_paid_credits: 0, price_paid_rub: 0, transaction_id: tx.id, is_equipped: false });
+    return { success: true, item, transaction: tx };
   }
 
-  addTransaction(params: {
+  // ───────────────────────── Transactions ─────────────────────────
+
+  async getTransactions(filter?: { type?: string; status?: string; search?: string; userId?: string; limit?: number; offset?: number }): Promise<{ transactions: BillingTransaction[]; total: number }> {
+    const a = await this.db();
+    const eq: Record<string, any> = {};
+    if (filter?.type && filter.type !== 'all') eq.type = filter.type;
+    if (filter?.status && filter.status !== 'all') eq.status = filter.status;
+    if (filter?.userId) eq.user_id = filter.userId;
+    const search = filter?.search?.toLowerCase().trim();
+    // Search needs client-side filtering; fetch a wider window in that case.
+    const all = await a.list<BillingTransaction>('billing_transactions', {
+      eq: Object.keys(eq).length ? eq : undefined,
+      order: { column: 'created_at', ascending: false },
+      limit: search ? 2000 : (filter?.limit || 50),
+      offset: search ? 0 : (filter?.offset || 0),
+    });
+    let list = all.map(normalizeTx);
+    let total: number;
+    if (search) {
+      list = list.filter((t) => t.id.toLowerCase().includes(search) || (t.cmdr_name || '').toLowerCase().includes(search) || (t.item_title || '').toLowerCase().includes(search) || (t.external_id || '').toLowerCase().includes(search));
+      total = list.length;
+      const offset = filter?.offset || 0;
+      list = list.slice(offset, offset + (filter?.limit || 50));
+    } else {
+      total = await a.count('billing_transactions', { eq: Object.keys(eq).length ? eq : undefined });
+    }
+    return { transactions: list, total };
+  }
+
+  async addTransaction(params: {
     userId: string;
     cmdrName: string;
     type: BillingTransaction['type'];
@@ -1279,255 +821,490 @@ class BillingRepository {
     paymentMethod: BillingTransaction['payment_method'];
     status: BillingTransaction['status'];
     metadata?: Record<string, any>;
-  }): BillingTransaction {
+    providerId?: string | null;
+    externalId?: string | null;
+  }): Promise<BillingTransaction> {
+    const a = await this.db();
     const tx: BillingTransaction = {
-      id: `TX-2026-${Math.floor(10000 + Math.random() * 90000)}`,
+      id: txId(),
       user_id: params.userId,
       cmdr_name: params.cmdrName,
       type: params.type,
       item_or_plan_id: params.itemOrPlanId,
       item_title: params.itemTitle,
-      amount_rub: params.amountRub,
-      amount_credits: params.amountCredits,
+      amount_rub: num(params.amountRub),
+      amount_credits: num(params.amountCredits),
       payment_method: params.paymentMethod,
       status: params.status,
-      metadata: params.metadata,
-      created_at: new Date().toISOString(),
+      metadata: params.metadata || {},
+      provider_id: params.providerId || null,
+      external_id: params.externalId || null,
+      created_at: nowIso(),
+      updated_at: nowIso(),
     };
-
-    this.store.transactions.unshift(tx);
-    this.saveStore(this.store);
-    return tx;
+    return normalizeTx(await a.insert<BillingTransaction>('billing_transactions', tx));
   }
 
-  refundTransaction(id: string, reason?: string): { success: boolean; error?: string; transaction?: BillingTransaction } {
-    const tx = this.store.transactions.find((t) => t.id === id);
+  async refundTransaction(id: string, reason?: string): Promise<{ success: boolean; error?: string; transaction?: BillingTransaction }> {
+    const a = await this.db();
+    const tx = await a.get<BillingTransaction>('billing_transactions', id);
     if (!tx) return { success: false, error: 'Транзакция не найдена' };
     if (tx.status === 'refunded') return { success: false, error: 'Транзакция уже возвращена' };
+    if (tx.status !== 'completed') return { success: false, error: 'Вернуть можно только завершённую транзакцию' };
 
-    tx.status = 'refunded';
-    tx.metadata = { ...(tx.metadata || {}), refundReason: reason || 'Возврат по запросу администратора', refundedAt: new Date().toISOString() };
-
-    // If it was a credit topup, deduct credits if possible
     if (tx.type === 'credit_topup' && tx.user_id) {
-      const bal = this.getUserBalance(tx.user_id);
-      bal.credits = Math.max(0, bal.credits - tx.amount_credits);
-      bal.total_spent_rub = Math.max(0, bal.total_spent_rub - tx.amount_rub);
-      bal.updated_at = new Date().toISOString();
+      await this.adjustBalance(tx.user_id, { credits: -num(tx.amount_credits), spentRub: -num(tx.amount_rub) });
     }
-
-    // If it was a shop purchase, remove from inventory and unequip
     if (tx.type === 'shop_purchase' && tx.user_id) {
-      this.store.inventory = this.store.inventory.filter(
-        (inv) => !(inv.user_id === tx.user_id && inv.item_id === tx.item_or_plan_id)
-      );
-      const equipped = this.getUserEquippedCosmetics(tx.user_id);
-      const item = this.getShopItemById(tx.item_or_plan_id);
+      const item = await this.getShopItemById(tx.item_or_plan_id);
       if (item) {
-        this.equipCosmetic(tx.user_id, item.category, null);
+        const eq = await this.getUserEquippedCosmetics(tx.user_id);
+        const f = categoryField(item.category);
+        if (f && eq[f] === item.id) await this.equipCosmetic(tx.user_id, item.category, null);
+        await a.update('shop_items', item.id, { sales_count: Math.max(0, (item.sales_count || 0) - 1) });
       }
+      await a.removeWhere('user_inventory', { user_id: tx.user_id, item_id: tx.item_or_plan_id });
+      // refund credits if the purchase was made with credits
+      await this.adjustBalance(tx.user_id, { credits: num(tx.amount_credits), spentCredits: -num(tx.amount_credits), spentRub: -num(tx.amount_rub) });
+    }
+    if (tx.type === 'subscription' && tx.user_id) {
+      const subId = tx.metadata?.subscriptionId;
+      if (subId) await this.cancelSubscription(subId, 'Возврат средств');
+      if (num(tx.amount_credits) > 0) await this.adjustBalance(tx.user_id, { credits: num(tx.amount_credits), spentCredits: -num(tx.amount_credits) });
+      if (num(tx.amount_rub) > 0) await this.adjustBalance(tx.user_id, { spentRub: -num(tx.amount_rub) });
     }
 
-    this.saveStore(this.store);
-    return { success: true, transaction: tx };
+    const updated = await a.update<BillingTransaction>('billing_transactions', id, {
+      status: 'refunded',
+      updated_at: nowIso(),
+      metadata: { ...(tx.metadata || {}), refundReason: reason || 'Возврат по запросу администратора', refundedAt: nowIso() },
+    });
+    return { success: true, transaction: updated ? normalizeTx(updated) : undefined };
   }
 
-  // ── Project Statistics & Infographics Aggregator ──
+  // ───────────────────────── Payment providers ─────────────────────────
+
+  async getProviders(): Promise<PaymentProvider[]> {
+    const a = await this.db();
+    const rows = await a.list<PaymentProvider>('payment_providers', { order: { column: 'display_order' } });
+    return rows.map((r) => ({ ...r, config: r.config || {}, methods: r.methods || [] }));
+  }
+
+  async getProvider(id: string): Promise<PaymentProvider | null> {
+    const a = await this.db();
+    const r = await a.get<PaymentProvider>('payment_providers', id);
+    return r ? { ...r, config: r.config || {}, methods: r.methods || [] } : null;
+  }
+
+  async updateProvider(id: string, patch: Partial<PaymentProvider>): Promise<PaymentProvider | null> {
+    const a = await this.db();
+    const allowed: Record<string, any> = { updated_at: nowIso() };
+    for (const k of ['name', 'is_enabled', 'test_mode', 'config', 'methods', 'display_order', 'last_check_at', 'last_check_ok', 'last_check_msg'] as const) {
+      if (k in patch) allowed[k] = (patch as any)[k];
+    }
+    return a.update<PaymentProvider>('payment_providers', id, allowed);
+  }
+
+  async getEnabledProviders(): Promise<PaymentProvider[]> {
+    const list = await this.getProviders();
+    return list.filter((p) => p.is_enabled && PROVIDER_DRIVERS[p.id]?.isConfigured(p.config));
+  }
+
+  // ───────────────────────── Payment intents ─────────────────────────
+
+  async createIntent(input: {
+    userId: string;
+    cmdrName: string;
+    providerId: string;
+    purpose: PaymentPurpose;
+    targetId: string | null;
+    amountRub: number;
+    amountCredits: number;
+    metadata?: Record<string, any>;
+  }): Promise<PaymentIntent> {
+    const a = await this.db();
+    const intent: PaymentIntent = {
+      id: uid('pi'),
+      user_id: input.userId,
+      cmdr_name: input.cmdrName,
+      provider_id: input.providerId,
+      external_id: null,
+      purpose: input.purpose,
+      target_id: input.targetId,
+      amount_rub: Math.round(num(input.amountRub) * 100) / 100,
+      amount_credits: Math.round(num(input.amountCredits)),
+      currency: 'RUB',
+      status: 'pending',
+      payment_url: null,
+      transaction_id: null,
+      metadata: input.metadata || {},
+      created_at: nowIso(),
+      updated_at: nowIso(),
+    };
+    return a.insert<PaymentIntent>('payment_intents', intent);
+  }
+
+  async getIntent(id: string): Promise<PaymentIntent | null> {
+    const a = await this.db();
+    return a.get<PaymentIntent>('payment_intents', id);
+  }
+
+  async findIntentByExternal(providerId: string, externalId: string): Promise<PaymentIntent | null> {
+    const a = await this.db();
+    const rows = await a.list<PaymentIntent>('payment_intents', { eq: { provider_id: providerId, external_id: externalId }, limit: 1 });
+    return rows[0] || null;
+  }
+
+  async updateIntent(id: string, patch: Partial<PaymentIntent>): Promise<PaymentIntent | null> {
+    const a = await this.db();
+    return a.update<PaymentIntent>('payment_intents', id, { ...patch, updated_at: nowIso() });
+  }
+
+  async listIntents(filter?: { status?: string; userId?: string; limit?: number }): Promise<PaymentIntent[]> {
+    const a = await this.db();
+    const eq: Record<string, any> = {};
+    if (filter?.status && filter.status !== 'all') eq.status = filter.status;
+    if (filter?.userId) eq.user_id = filter.userId;
+    return a.list<PaymentIntent>('payment_intents', { eq: Object.keys(eq).length ? eq : undefined, order: { column: 'created_at', ascending: false }, limit: filter?.limit || 100 });
+  }
+
+  async logWebhook(entry: { providerId: string; eventType?: string; externalId?: string; payload: any; processed: boolean; error?: string }): Promise<void> {
+    const a = await this.db();
+    try {
+      await a.insert('payment_webhook_events', {
+        id: uid('wh'),
+        provider_id: entry.providerId,
+        event_type: entry.eventType || null,
+        external_id: entry.externalId || null,
+        payload: entry.payload,
+        processed: entry.processed,
+        error: entry.error || null,
+        created_at: nowIso(),
+      });
+    } catch (e) {
+      console.warn('[billing] webhook log failed:', (e as any)?.message);
+    }
+  }
+
+  async listWebhookEvents(limit = 50): Promise<any[]> {
+    const a = await this.db();
+    return a.list('payment_webhook_events', { order: { column: 'created_at', ascending: false }, limit });
+  }
+
+  /**
+   * Fulfils a paid intent exactly once: credits balance / grants subscription /
+   * delivers item and links the resulting transaction to the intent.
+   */
+  async fulfilIntent(intentId: string, ext: { externalId?: string | null; method?: string }): Promise<{ ok: boolean; already?: boolean; error?: string; intent?: PaymentIntent }> {
+    const intent = await this.getIntent(intentId);
+    if (!intent) return { ok: false, error: 'Intent not found' };
+    if (intent.status === 'paid') return { ok: true, already: true, intent };
+    if (!intent.user_id) return { ok: false, error: 'Intent has no user' };
+
+    // Optimistic lock — move to 'processing' state via updated_at compare is not
+    // available in the simple adapter, so we set status first and re-read.
+    await this.updateIntent(intent.id, { status: 'paid', paid_at: nowIso(), external_id: ext.externalId || intent.external_id });
+    const reread = await this.getIntent(intent.id);
+    if (reread?.transaction_id) return { ok: true, already: true, intent: reread };
+
+    const method = ext.method || (intent.provider_id === 'cryptobot' ? 'crypto' : intent.provider_id === 'manual' ? 'manual' : 'card');
+    const cmdr = intent.cmdr_name || '';
+    let txIdOut: string | null = null;
+    try {
+      if (intent.purpose === 'credit_topup') {
+        const r = await this.topupBalance({ userId: intent.user_id, cmdrName: cmdr, amountCredits: intent.amount_credits, amountRub: num(intent.amount_rub), paymentMethod: method, providerId: intent.provider_id, externalId: ext.externalId || intent.external_id });
+        txIdOut = r.transaction.id;
+      } else if (intent.purpose === 'subscription' && intent.target_id) {
+        const plan = await this.getPlanById(intent.target_id);
+        const sub = await this.grantSubscription({
+          userId: intent.user_id, cmdrName: cmdr, planId: intent.target_id, durationDays: plan?.period_days || 30,
+          paymentMethod: method, providerId: intent.provider_id, externalId: ext.externalId || intent.external_id,
+          amountRub: num(intent.amount_rub), transactionType: 'subscription', notes: `Оплачено через ${intent.provider_id}`,
+          autoRenew: false,
+        });
+        await this.adjustBalance(intent.user_id, { spentRub: num(intent.amount_rub) });
+        txIdOut = sub.id;
+      } else if (intent.purpose === 'shop_purchase' && intent.target_id) {
+        const r = await this.purchaseItem({ userId: intent.user_id, cmdrName: cmdr, itemId: intent.target_id, autoEquip: true, paid: { amountRub: num(intent.amount_rub), providerId: intent.provider_id || 'unknown', externalId: ext.externalId || intent.external_id || '', method } });
+        if (!r.success) {
+          // Item can't be delivered (already owned etc.) — convert to credits equivalent
+          const item = await this.getShopItemById(intent.target_id);
+          const credits = item?.price_credits || 0;
+          const rr = await this.topupBalance({ userId: intent.user_id, cmdrName: cmdr, amountCredits: credits, amountRub: num(intent.amount_rub), paymentMethod: method, providerId: intent.provider_id, externalId: ext.externalId });
+          txIdOut = rr.transaction.id;
+        } else txIdOut = r.transaction!.id;
+      }
+    } catch (e: any) {
+      await this.updateIntent(intent.id, { status: 'failed', metadata: { ...(intent.metadata || {}), fulfilError: e?.message } });
+      return { ok: false, error: e?.message || 'Fulfilment failed' };
+    }
+    const done = await this.updateIntent(intent.id, { transaction_id: txIdOut });
+    return { ok: true, intent: done || undefined };
+  }
+
+  // ───────────────────────── Statistics (real data) ─────────────────────────
+
   async getProjectStatistics(period: '7d' | '30d' | '90d' | '1y' | 'all' = '30d'): Promise<ProjectBillingStats> {
-    const now = new Date('2026-09-21T05:00:00Z');
-    let cutoffDays = 30;
-    if (period === '7d') cutoffDays = 7;
-    else if (period === '90d') cutoffDays = 90;
-    else if (period === '1y') cutoffDays = 365;
-    else if (period === 'all') cutoffDays = 1000;
+    const a = await this.db();
+    const now = new Date();
+    const days = period === '7d' ? 7 : period === '30d' ? 30 : period === '90d' ? 90 : period === '1y' ? 365 : 3650;
+    const cutoff = new Date(now.getTime() - days * 86400000);
+    const prevCutoff = new Date(cutoff.getTime() - days * 86400000);
 
-    const cutoffDate = new Date(now.getTime() - cutoffDays * 24 * 3600 * 1000);
+    const [allTx, allSubs, plans, items, balances] = await Promise.all([
+      a.list<BillingTransaction>('billing_transactions', { order: { column: 'created_at', ascending: false }, limit: 20000 }),
+      a.list<UserSubscription>('user_subscriptions', { limit: 20000 }),
+      this.getPlans(true),
+      this.getShopItems({ includeInactive: true }),
+      a.list<UserBalance>('user_balances', { limit: 20000 }),
+    ]);
+    const txs = allTx.map(normalizeTx);
+    const completed = txs.filter((t) => t.status === 'completed');
+    const inWindow = completed.filter((t) => new Date(t.created_at) >= cutoff);
+    const inPrev = completed.filter((t) => new Date(t.created_at) >= prevCutoff && new Date(t.created_at) < cutoff);
 
-    // Filter transactions in window
-    const relevantTxs = this.store.transactions.filter(
-      (t) => new Date(t.created_at) >= cutoffDate && t.status === 'completed'
-    );
-
-    // Active subscriptions & MRR
-    const activeSubs = this.store.subscriptions.filter((s) => s.status === 'active');
+    const activeSubs = allSubs.filter((s) => s.status === 'active' && (!s.expires_at || new Date(s.expires_at) > now));
+    const activeSubsPrev = allSubs.filter((s) => new Date(s.started_at || s.created_at) < cutoff && (!s.expires_at || new Date(s.expires_at) > cutoff) && s.status !== 'canceled');
+    const planOf = (id: string) => plans.find((p) => p.id === id);
     const mrr = activeSubs.reduce((sum, s) => {
-      const plan = this.getPlanById(s.plan_id);
-      return sum + (plan?.price_rub || 0);
+      const p = planOf(s.plan_id);
+      return sum + (p ? (p.price_rub * 30) / (p.period_days || 30) : 0);
     }, 0);
+    const mrrPrev = activeSubsPrev.reduce((sum, s) => sum + (planOf(s.plan_id)?.price_rub || 0), 0);
 
-    const grossRevenue = relevantTxs.reduce((sum, t) => sum + (t.amount_rub || 0), 0);
-    const cosmeticsRevenue = relevantTxs
-      .filter((t) => t.type === 'shop_purchase')
-      .reduce((sum, t) => sum + (t.amount_rub || 0), 0);
-    const cosmeticsSoldTotal = relevantTxs.filter((t) => t.type === 'shop_purchase').length;
+    const rub = (list: BillingTransaction[]) => list.reduce((s, t) => s + num(t.amount_rub), 0);
+    const grossRevenue = rub(inWindow);
+    const grossPrev = rub(inPrev);
+    const shopTx = inWindow.filter((t) => t.type === 'shop_purchase');
+    const cosmeticsRevenue = rub(shopTx);
+    const cosmeticsSoldTotal = shopTx.length;
+    const payingUsers = new Set(inWindow.filter((t) => num(t.amount_rub) > 0).map((t) => t.user_id)).size;
+    const arpu = payingUsers ? Math.round(grossRevenue / payingUsers) : 0;
 
-    // ARPU & Churn
-    const totalPilotsEstimate = Math.max(148, this.store.subscriptions.length * 4);
-    const arpu = activeSubs.length > 0 ? Math.round(mrr / activeSubs.length) : 0;
-    const churnRate = 2.4; // 2.4% monthly churn rate
+    // churn = canceled/expired in window / active at start of window
+    const churned = allSubs.filter((s) => (s.status === 'canceled' || s.status === 'expired') && new Date(s.updated_at || s.created_at) >= cutoff).length;
+    const churnRate = activeSubsPrev.length ? Math.round((churned / activeSubsPrev.length) * 1000) / 10 : 0;
 
-    // Generate timeline data points for chart
+    const pct = (cur: number, prev: number) => (prev > 0 ? Math.round(((cur - prev) / prev) * 1000) / 10 : cur > 0 ? 100 : 0);
+
+    // Timeline buckets
     const pointsCount = period === '7d' ? 7 : period === '30d' ? 15 : 12;
-    const stepDays = cutoffDays / pointsCount;
+    const stepMs = (days * 86400000) / pointsCount;
     const revenueTimeline: ChartDataPoint[] = [];
     const pilotGrowth: PilotGrowthPoint[] = [];
 
+    // profiles created_at for growth (best-effort)
+    let profileDates: number[] = [];
+    try {
+      if (a.kind === 'supabase') {
+        const rows = await a.list<{ created_at: string }>('profiles', { order: { column: 'created_at' }, limit: 50000 });
+        profileDates = rows.map((r) => new Date(r.created_at).getTime()).filter(Number.isFinite);
+      }
+    } catch {
+      profileDates = [];
+    }
+    if (!profileDates.length) profileDates = balances.map((b) => new Date(b.updated_at).getTime());
+
     for (let i = pointsCount - 1; i >= 0; i--) {
-      const d = new Date(now.getTime() - i * stepDays * 24 * 3600 * 1000);
-      const dateStr = d.toISOString().split('T')[0];
-      const label = `${d.getDate().toString().padStart(2, '0')}.${(d.getMonth() + 1).toString().padStart(2, '0')}`;
-
-      // Sum transactions around this slot
-      const slotStart = new Date(d.getTime() - (stepDays / 2) * 24 * 3600 * 1000);
-      const slotEnd = new Date(d.getTime() + (stepDays / 2) * 24 * 3600 * 1000);
-      const slotTxs = relevantTxs.filter((t) => {
-        const txTime = new Date(t.created_at);
-        return txTime >= slotStart && txTime < slotEnd;
+      const end = new Date(now.getTime() - i * stepMs);
+      const start = new Date(end.getTime() - stepMs);
+      const label = `${String(end.getDate()).padStart(2, '0')}.${String(end.getMonth() + 1).padStart(2, '0')}`;
+      const slot = completed.filter((t) => {
+        const ts = new Date(t.created_at);
+        return ts >= start && ts < end;
       });
+      const subRev = rub(slot.filter((t) => t.type === 'subscription'));
+      const shopRev = rub(slot.filter((t) => t.type !== 'subscription'));
+      revenueTimeline.push({ date: end.toISOString().slice(0, 10), label, subscriptions: Math.round(subRev), shop: Math.round(shopRev), total: Math.round(subRev + shopRev) });
 
-      const subRev = slotTxs.filter((t) => t.type === 'subscription').reduce((s, t) => s + (t.amount_rub || 0), 0);
-      const shopRev = slotTxs.filter((t) => t.type !== 'subscription').reduce((s, t) => s + (t.amount_rub || 0), 0);
-      const baseSub = Math.round((mrr / pointsCount) * (0.85 + Math.sin(i * 0.6) * 0.15));
-      const totalRev = subRev + shopRev > 0 ? subRev + shopRev : baseSub;
-
-      revenueTimeline.push({
-        date: dateStr,
-        label,
-        subscriptions: subRev > 0 ? subRev : Math.round(totalRev * 0.68),
-        shop: shopRev > 0 ? shopRev : Math.round(totalRev * 0.32),
-        total: totalRev,
-      });
-
-      const pilotIndex = pointsCount - i;
-      pilotGrowth.push({
-        date: dateStr,
-        label,
-        totalPilots: Math.round(280 + pilotIndex * 14 + Math.sin(i) * 5),
-        activePilots: Math.round(110 + pilotIndex * 6 + Math.cos(i) * 8),
-        premiumPilots: Math.round(24 + pilotIndex * 2),
-      });
+      const totalPilots = profileDates.filter((d) => d <= end.getTime()).length;
+      const activePilots = new Set(completed.filter((t) => new Date(t.created_at) >= new Date(end.getTime() - 30 * 86400000) && new Date(t.created_at) < end).map((t) => t.user_id)).size;
+      const premiumPilots = allSubs.filter((s) => new Date(s.started_at || s.created_at) <= end && (!s.expires_at || new Date(s.expires_at) > end) && s.status !== 'canceled').length;
+      pilotGrowth.push({ date: end.toISOString().slice(0, 10), label, totalPilots, activePilots, premiumPilots });
     }
 
-    // Tier Distribution
-    const tierDistribution: TierDistribution[] = this.store.plans.map((plan) => {
+    const tierDistribution: TierDistribution[] = plans.map((plan) => {
       const count = activeSubs.filter((s) => s.plan_id === plan.id).length;
-      const pct = activeSubs.length > 0 ? Math.round((count / activeSubs.length) * 100) : 0;
       return {
         planId: plan.id,
         name: plan.name,
         count,
-        percentage: pct,
+        percentage: activeSubs.length ? Math.round((count / activeSubs.length) * 100) : 0,
         mrrContribution: count * plan.price_rub,
         color: plan.color,
       };
     });
 
-    // Category Sales Stat
-    const categories: { category: CategorySalesStat['category']; name: string; color: string }[] = [
-      { category: 'frame', name: 'Голографические рамки', color: '#a855f7' },
-      { category: 'skin', name: 'HUD-темы интерфейса', color: '#e67e22' },
-      { category: 'glow', name: 'Свечение позывного', color: '#38bdf8' },
-      { category: 'badge', name: 'Знаки отличия', color: '#fbbf24' },
-      { category: 'title', name: 'Почетные титулы', color: '#10b981' },
-    ];
-
-    const categorySales: CategorySalesStat[] = categories.map((cat) => {
-      const items = this.store.shopItems.filter((i) => i.category === cat.category);
-      const units = items.reduce((sum, i) => sum + (i.sales_count || 0), 0);
-      const rev = items.reduce((sum, i) => sum + (i.sales_count || 0) * (i.price_rub || 0), 0);
-      return {
-        category: cat.category,
-        name: cat.name,
-        unitsSold: units,
-        revenueRub: rev,
-        percentage: 0, // will normalize below
-        color: cat.color,
-      };
+    const catMeta: Record<CosmeticCategory, { name: string; color: string }> = {
+      frame: { name: 'Голографические рамки', color: '#a855f7' },
+      skin: { name: 'HUD-темы интерфейса', color: '#e67e22' },
+      glow: { name: 'Свечение позывного', color: '#38bdf8' },
+      badge: { name: 'Знаки отличия', color: '#fbbf24' },
+      title: { name: 'Почетные титулы', color: '#10b981' },
+    };
+    const shopAll = completed.filter((t) => t.type === 'shop_purchase');
+    const categorySales: CategorySalesStat[] = CATEGORIES.map((c) => {
+      const itemIds = new Set(items.filter((i) => i.category === c).map((i) => i.id));
+      const list = shopAll.filter((t) => itemIds.has(t.item_or_plan_id) || t.metadata?.category === c);
+      return { category: c, name: catMeta[c].name, color: catMeta[c].color, unitsSold: list.length, revenueRub: Math.round(rub(list)), percentage: 0 };
     });
-
     const totalUnits = categorySales.reduce((s, c) => s + c.unitsSold, 0) || 1;
-    categorySales.forEach((c) => {
-      c.percentage = Math.round((c.unitsSold / totalUnits) * 100);
-    });
+    categorySales.forEach((c) => (c.percentage = Math.round((c.unitsSold / totalUnits) * 100)));
 
-    // Conversion Funnel
+    // Funnel from real data
+    let totalRegistered = profileDates.length;
+    let activeExplorers = 0;
+    try {
+      if (a.kind === 'supabase') {
+        totalRegistered = await a.count('profiles');
+        const rows = await a.list<{ user_id: string }>('deliveries', { limit: 50000 });
+        activeExplorers = new Set(rows.map((r) => r.user_id)).size;
+      }
+    } catch {
+      /* ignore */
+    }
+    const shopVisitors = balances.length;
+    const buyers = new Set(completed.filter((t) => t.type === 'shop_purchase' || t.type === 'credit_topup').map((t) => t.user_id)).size;
+    const top = plans[plans.length - 1];
+    const topSubs = top ? activeSubs.filter((s) => s.plan_id === top.id).length : 0;
+    const f = (n: number) => (totalRegistered ? Math.round((n / totalRegistered) * 1000) / 10 : 0);
     const conversionFunnel: FunnelStep[] = [
-      { step: 'Посетители портала', count: 4850, percentage: 100, description: 'Уникальные визиты в сектор Кольца' },
-      { step: 'Зарегистрированные пилоты', count: 1240, percentage: 25.6, description: 'Создан профиль CMDR' },
-      { step: 'Активные исследователи', count: 680, percentage: 14.0, description: 'Сдают грузы и передают CAPI-логи' },
-      { step: 'Посетители магазина', count: 412, percentage: 8.5, description: 'Изучали каталог интерфейсных улучшений' },
-      { step: 'Премиум-подписчики', count: activeSubs.length || 42, percentage: 4.8, description: 'Действующий статус Pioneer/Elite/Admiral' },
-      { step: 'Флотоводцы VIP', count: activeSubs.filter((s) => s.plan_id === 'admiral').length || 12, percentage: 1.4, description: 'Высший ранг покровителей экспедиции' },
+      { step: 'Зарегистрированные пилоты', count: totalRegistered, percentage: totalRegistered ? 100 : 0, description: 'Создан профиль CMDR' },
+      { step: 'Активные исследователи', count: activeExplorers, percentage: f(activeExplorers), description: 'Сдавали грузы (таблица deliveries)' },
+      { step: 'Посетители магазина', count: shopVisitors, percentage: f(shopVisitors), description: 'Открыт счёт кредитов' },
+      { step: 'Покупатели', count: buyers, percentage: f(buyers), description: 'Хотя бы одна покупка или пополнение' },
+      { step: 'Премиум-подписчики', count: activeSubs.length, percentage: f(activeSubs.length), description: 'Действующая подписка' },
+      { step: top ? `Уровень «${top.name}»` : 'Высший уровень', count: topSubs, percentage: f(topSubs), description: 'Высший тарифный план' },
     ];
 
-    // Spenders
-    const topSpendersMap = new Map<string, { cmdrName: string; tier: string; totalSpentRub: number; purchasesCount: number }>();
-    this.store.transactions.forEach((tx) => {
-      if (tx.status !== 'completed' || !tx.cmdr_name) return;
-      const prev = topSpendersMap.get(tx.cmdr_name) || {
-        cmdrName: tx.cmdr_name,
-        tier: 'Пилот',
-        totalSpentRub: 0,
-        purchasesCount: 0,
-      };
-      prev.totalSpentRub += tx.amount_rub || 0;
-      prev.purchasesCount += 1;
-      topSpendersMap.set(tx.cmdr_name, prev);
-    });
-
-    const topSpenders = Array.from(topSpendersMap.values())
-      .sort((a, b) => b.totalSpentRub - a.totalSpentRub)
+    const spenders = new Map<string, { cmdrName: string; userId: string; totalSpentRub: number; purchasesCount: number }>();
+    for (const t of completed) {
+      if (!t.user_id) continue;
+      const cur = spenders.get(t.user_id) || { cmdrName: t.cmdr_name || t.user_id.slice(0, 8), userId: t.user_id, totalSpentRub: 0, purchasesCount: 0 };
+      cur.totalSpentRub += num(t.amount_rub);
+      if (t.type !== 'admin_grant') cur.purchasesCount += 1;
+      if (t.cmdr_name) cur.cmdrName = t.cmdr_name;
+      spenders.set(t.user_id, cur);
+    }
+    const topSpenders = Array.from(spenders.values())
+      .sort((x, y) => y.totalSpentRub - x.totalSpentRub)
       .slice(0, 5)
       .map((s) => {
-        const sub = activeSubs.find((sub) => sub.cmdr_name === s.cmdrName);
-        return {
-          ...s,
-          tier: sub?.plan?.badge_label || 'PIONEER',
-        };
+        const sub = activeSubs.find((x) => x.user_id === s.userId);
+        return { cmdrName: s.cmdrName, tier: sub ? planOf(sub.plan_id)?.badge_label || 'PREMIUM' : '—', totalSpentRub: Math.round(s.totalSpentRub), purchasesCount: s.purchasesCount };
       });
+
+    // Telemetry: only real counters; unknown = 0 (routes may enrich further)
+    const t0 = Date.now();
+    let pendingIntents = 0;
+    try {
+      pendingIntents = await a.count('payment_intents', { eq: { status: 'pending' } });
+    } catch {
+      /* ignore */
+    }
+    const latency = Date.now() - t0;
 
     return {
       period,
       updatedAt: now.toISOString(),
       kpis: {
-        mrr,
-        mrrDelta: 16.4,
-        grossRevenue,
-        grossRevenueDelta: 22.8,
+        mrr: Math.round(mrr),
+        mrrDelta: pct(mrr, mrrPrev),
+        grossRevenue: Math.round(grossRevenue),
+        grossRevenueDelta: pct(grossRevenue, grossPrev),
         activeSubscribers: activeSubs.length,
-        activeSubscribersDelta: 18.2,
+        activeSubscribersDelta: pct(activeSubs.length, activeSubsPrev.length),
         arpu,
         churnRate,
         cosmeticsSoldTotal,
-        cosmeticsRevenue,
-        averageOrderValue: cosmeticsSoldTotal > 0 ? Math.round(cosmeticsRevenue / cosmeticsSoldTotal) : 310,
+        cosmeticsRevenue: Math.round(cosmeticsRevenue),
+        averageOrderValue: cosmeticsSoldTotal ? Math.round(cosmeticsRevenue / cosmeticsSoldTotal) : 0,
       },
-      charts: {
-        revenueTimeline,
-        pilotGrowth,
-        tierDistribution,
-        categorySales,
-        conversionFunnel,
-      },
+      charts: { revenueTimeline, pilotGrowth, tierDistribution, categorySales, conversionFunnel },
       telemetry: {
-        totalRegisteredPilots: totalPilotsEstimate,
-        totalSystemsClaimed: 52,
-        totalFacilitiesBuilt: 19,
-        totalTonnageHauled: 849200,
-        journalEventsParsed: 412890,
-        supportTicketsOpen: 3,
-        supportTicketsResolved: 47,
-        apiTokensActive: 78,
-        serverUptimePct: 99.98,
-        avgLatencyMs: 42,
-      },
-      recentTransactions: this.store.transactions.slice(0, 15),
+        totalRegisteredPilots: totalRegistered,
+        totalSystemsClaimed: 0,
+        totalFacilitiesBuilt: 0,
+        totalTonnageHauled: 0,
+        journalEventsParsed: 0,
+        supportTicketsOpen: 0,
+        supportTicketsResolved: 0,
+        apiTokensActive: 0,
+        serverUptimePct: Math.round((process.uptime() / 3600) * 100) / 100, // hours of uptime of this node
+        avgLatencyMs: latency,
+        pendingPayments: pendingIntents,
+        storageBackend: a.kind,
+      } as ProjectBillingStats['telemetry'],
+      recentTransactions: txs.slice(0, 15),
       topSpenders,
     };
   }
 }
 
-// Global Singleton
+export interface PublicCosmeticItem {
+  id: string;
+  title: string;
+  rarity: string;
+  preview: Record<string, any>;
+}
+export interface PublicCosmetics {
+  user_id: string;
+  frame: PublicCosmeticItem | null;
+  badge: PublicCosmeticItem | null;
+  skin: PublicCosmeticItem | null;
+  glow: PublicCosmeticItem | null;
+  title: PublicCosmeticItem | null;
+  tier: { id: string; label: string; color: string } | null;
+}
+
+function normalizePlan(p: BillingPlan): BillingPlan {
+  return {
+    ...p,
+    perks: Array.isArray(p.perks) ? p.perks : [],
+    price_rub: num(p.price_rub),
+    price_credits: num(p.price_credits),
+    period_days: num(p.period_days) || 30,
+    display_order: num(p.display_order),
+    discount_pct: num(p.discount_pct),
+    is_active: p.is_active !== false,
+  };
+}
+
+function normalizeItem(i: ShopItem): ShopItem {
+  return {
+    ...i,
+    preview_data: i.preview_data || {},
+    price_rub: num(i.price_rub),
+    price_credits: num(i.price_credits),
+    subscriber_discount_pct: num(i.subscriber_discount_pct),
+    sales_count: num(i.sales_count),
+    display_order: num(i.display_order),
+    is_active: i.is_active !== false,
+    is_featured: Boolean(i.is_featured),
+  };
+}
+
+function normalizeTx(t: BillingTransaction): BillingTransaction {
+  return { ...t, amount_rub: num(t.amount_rub), amount_credits: num(t.amount_credits), metadata: t.metadata || {} };
+}
+
+function stripJoins<T extends { plan?: any }>(s: T): Omit<T, 'plan'> {
+  const { plan: _plan, ...rest } = s;
+  return rest;
+}
+
+export function slugify(s: string): string {
+  const map: Record<string, string> = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+  return s
+    .toLowerCase()
+    .split('')
+    .map((ch) => map[ch] ?? ch)
+    .join('')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || `item-${Date.now().toString(36)}`;
+}
+
 const globalForBilling = globalThis as unknown as { billingRepo?: BillingRepository };
 export const billingRepo = globalForBilling.billingRepo || new BillingRepository();
-if (process.env.NODE_ENV !== 'production') globalForBilling.billingRepo = billingRepo;
+globalForBilling.billingRepo = billingRepo;

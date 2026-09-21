@@ -4,7 +4,8 @@ import { fetchRavenColonialData } from '@/lib/ravenColonial';
 import { summarizeCargo } from '@/lib/dossierCargo';
 import { maskCapiProfile, maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import CmdrDossier from '@/components/CmdrDossier';
-import { IconProfile, IconSquadron, IconLeaderboard } from '@/components/Icons';
+import { IconSquadron, IconLeaderboard } from '@/components/Icons';
+import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
 
 export const dynamic = 'force-dynamic';
 
@@ -248,13 +249,11 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
   return (
     <div className="card" style={{ width: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24 }}>
-        {profile?.avatar_url ? (
-          <img src={profile.avatar_url} alt="" style={{ width: 64, height: 64, borderRadius: '50%', border: '2px solid #3b82f6' }} />
-        ) : (
-          <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#323538', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><IconProfile size={28} color='#9ca3af' /></div>
-        )}
+        <CmdrProfileHeader userId={profileId ?? null} name={name} avatarUrl={profile?.avatar_url ?? null} />
         <div>
-          <h1 style={{ margin: 0, color: '#eeeeee' }}>{name}</h1>
+          <h1 style={{ margin: 0, color: '#eeeeee', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <CmdrProfileName userId={profileId ?? null} name={name} />
+          </h1>
           {squadron?.name && <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}><IconSquadron size={14} color='#9ca3af' /> {squadron.name}</p>}
           {rank && <p style={{ margin: '4px 0 0', color: '#e67e22', fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}><IconLeaderboard size={14} color='#e67e22' /> Место в лидерборде: #{rank}</p>}
           {profile?.created_at && <p style={{ margin: '4px 0 0', color: '#9ca3af', fontSize: 12 }}>С нами с {new Date(profile.created_at).toLocaleDateString('ru-RU')}</p>}

@@ -1,85 +1,47 @@
 "use client";
 
 import React from "react";
-import { IconCrown, IconDiamond, IconSword, IconAnchor, IconStar } from "@/components/Icons";
+import { IconCrown, IconDiamond, IconSword, IconAnchor, IconStar, IconShield, IconRocket, IconBolt, IconFlame, IconHeart, IconGlobe, IconTarget, IconSun, IconRingPlanet } from "@/components/Icons";
+import { resolvePreview, withAlpha } from "./types";
 
 interface CosmeticBadgeProps {
   badgeId?: string | null;
+  badgePreview?: Record<string, any> | null;
+  title?: string | null;
   size?: number;
   showTitleTooltip?: boolean;
 }
 
-export default function CosmeticBadge({
-  badgeId,
-  size = 22,
-  showTitleTooltip = true,
-}: CosmeticBadgeProps) {
-  if (!badgeId) return null;
+export const BADGE_ICONS: Record<string, React.ComponentType<{ size?: number; color?: string }>> = {
+  crown: IconCrown,
+  diamond: IconDiamond,
+  sword: IconSword,
+  anchor: IconAnchor,
+  star: IconStar,
+  shield: IconShield,
+  rocket: IconRocket,
+  bolt: IconBolt,
+  flame: IconFlame,
+  heart: IconHeart,
+  globe: IconGlobe,
+  target: IconTarget,
+  sun: IconSun,
+  planet: IconRingPlanet,
+};
 
-  let title = "Знак отличия";
-  let content = null;
-  let bg = "#1e2022";
-  let border = "#3a3d40";
-
-  switch (badgeId) {
-    case "badge-founder":
-      title = "Орден Основателя Кольца (Legendary)";
-      bg = "rgba(251, 191, 36, 0.15)";
-      border = "#fbbf24";
-      content = <IconCrown size={size - 6} color="#fbbf24" />;
-      break;
-
-    case "badge-explorer":
-      title = "Звездный Первопроходец (Rare)";
-      bg = "rgba(56, 189, 248, 0.15)";
-      border = "#38bdf8";
-      content = <IconStar size={size - 6} color="#38bdf8" />;
-      break;
-
-    case "badge-titan":
-      title = "Покоритель Титанов (Epic)";
-      bg = "rgba(16, 185, 129, 0.15)";
-      border = "#10b981";
-      content = <IconSword size={size - 6} color="#10b981" />;
-      break;
-
-    case "badge-carrier":
-      title = "Владелец Флагмана (Epic)";
-      bg = "rgba(96, 165, 250, 0.15)";
-      border = "#60a5fa";
-      content = <IconAnchor size={size - 6} color="#60a5fa" />;
-      break;
-
-    case "badge-mining":
-      title = "Мастер Глубинного Бурения (Common)";
-      bg = "rgba(163, 230, 53, 0.15)";
-      border = "#a3e635";
-      content = <IconDiamond size={size - 6} color="#a3e635" />;
-      break;
-
-    default:
-      return null;
-  }
+export default function CosmeticBadge({ badgeId, badgePreview, title, size = 22, showTitleTooltip = true }: CosmeticBadgeProps) {
+  const p = resolvePreview(badgeId, badgePreview);
+  if (!p) return null;
+  const color = p.color || "#fbbf24";
+  const Icon = BADGE_ICONS[p.icon || "star"] || IconStar;
+  const label = title || p.subTitle || "Знак отличия";
 
   return (
     <span
-      title={showTitleTooltip ? title : undefined}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: size,
-        height: size,
-        borderRadius: 3,
-        background: bg,
-        border: `1px solid ${border}`,
-        boxShadow: `0 0 6px ${border}40`,
-        verticalAlign: "middle",
-        flexShrink: 0,
-        cursor: "help",
-      }}
+      title={showTitleTooltip ? label : undefined}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: size, height: size, borderRadius: 3, background: withAlpha(color, 0.15), border: `1px solid ${color}`, boxShadow: `0 0 6px ${withAlpha(color, 0.25)}`, verticalAlign: "middle", flexShrink: 0, cursor: "help" }}
     >
-      {content}
+      {p.emoji ? <span style={{ fontSize: size - 8, lineHeight: 1 }}>{p.emoji}</span> : <Icon size={size - 6} color={color} />}
     </span>
   );
 }

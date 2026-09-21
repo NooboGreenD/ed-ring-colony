@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useCallback } from "react";
 import type { BillingPlan, UserSubscription } from "@/types/billing";
 import { IconCheck, IconCrown, IconSearch, IconX, IconRefresh } from "@/components/Icons";
+import { authFetch } from "@/lib/supabaseClient";
+import ProfilePicker, { type PickedProfile } from "./ProfilePicker";
 
 interface Props {
   currentAdminCmdr?: string;
@@ -19,7 +21,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
 
   // Grant Modal
   const [showGrantModal, setShowGrantModal] = useState(false);
-  const [grantCmdr, setGrantCmdr] = useState("");
+  const [grantProfile, setGrantProfile] = useState<PickedProfile | null>(null);
   const [grantPlanId, setGrantPlanId] = useState("elite");
   const [grantDuration, setGrantDuration] = useState("30");
   const [grantNotes, setGrantNotes] = useState("");
@@ -66,20 +68,20 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
 
   const handleGrant = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!grantCmdr.trim()) {
-      showToast("Укажите позывной командира", false);
+    if (!grantProfile) {
+      showToast("Выберите зарегистрированного пилота", false);
       return;
     }
 
     setGranting(true);
     try {
-      const res = await fetch("/api/admin/billing/subscriptions", {
+      const res = await authFetch("/api/admin/billing/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "grant",
-          cmdrName: grantCmdr.trim(),
-          userId: `user-${grantCmdr.trim().toLowerCase().replace(/\s+/g, "_")}`,
+          cmdrName: grantProfile.cmdr_name,
+          userId: grantProfile.id,
           planId: grantPlanId,
           durationDays: Number(grantDuration),
           notes: grantNotes.trim() || "Назначено через панель администратора",
@@ -89,9 +91,9 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Ошибка выдачи");
 
-      showToast(`Подписка успешно выдана командиру ${grantCmdr}`);
+      showToast(`Подписка успешно выдана командиру ${grantProfile.cmdr_name || grantProfile.id}`);
       setShowGrantModal(false);
-      setGrantCmdr("");
+      setGrantProfile(null);
       setGrantNotes("");
       loadData();
       if (onRefreshStats) onRefreshStats();
@@ -104,7 +106,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
 
   const handleExtend = async (subId: string, days = 30) => {
     try {
-      const res = await fetch("/api/admin/billing/subscriptions", {
+      const res = await authFetch("/api/admin/billing/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -127,7 +129,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
   const handleCancel = async (subId: string) => {
     if (!confirm("Вы уверены, что хотите отозвать эту подписку?")) return;
     try {
-      const res = await fetch(`/api/admin/billing/subscriptions?id=${subId}&reason=Отозвано_администратором`, {
+      const res = await authFetch(`/api/admin/billing/subscriptions?id=${subId}&reason=Отозвано_администратором`, {
         method: "DELETE",
       });
       const data = await res.json();
@@ -144,14 +146,13 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
   const handleSelfVipGrant = async () => {
     const name = currentAdminCmdr || "Администратор";
     try {
-      const res = await fetch("/api/admin/billing/subscriptions", {
+      const res = await authFetch("/api/admin/billing/subscriptions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "grant",
           cmdrName: name,
-          userId: "preview-user-guest",
-          planId: "admiral",
+          planId: plans.find((p) => p.id === "admiral")?.id || plans[plans.length - 1]?.id,
           durationDays: 365,
           notes: "Тестовая VIP-подписка администратора",
         }),
@@ -171,7 +172,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
     if (!editingPlan) return;
     setSavingPlan(true);
     try {
-      const res = await fetch("/api/admin/billing/plans", {
+      const res = await authFetch("/api/admin/billing/plans", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -562,14 +563,7 @@ export default function SubscriptionManager({ currentAdminCmdr, onRefreshStats }
                 <span style={{ fontSize: 11, color: "var(--muted, #9ca3af)", textTransform: "uppercase", letterSpacing: 1 }}>
                   Позывной командира (CMDR):
                 </span>
-                <input
-                  type="text"
-                  required
-                  placeholder="Например: CMDR Valeriy_77"
-                  value={grantCmdr}
-                  onChange={(e) => setGrantCmdr(e.target.value)}
-                  style={{ width: "100%" }}
-                />
+                <ProfilePicker value={grantProfile} onChange={setGrantProfile} autoFocus />
               </label>
 
               <label style={{ display: "block", marginBottom: 12 }}>

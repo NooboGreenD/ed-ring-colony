@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from 'react';
-import Link from 'next/link';
+import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
 import type { LeaderboardEntry } from '@/types/atlas';
 import { ACHIEVEMENT_TRACKS, rankProgress, tierColor, tierBg, tierBorder } from '@/lib/achievements';
 import { IconLeaderboard } from '@/components/Icons';
@@ -150,13 +150,7 @@ export function Leaderboard() {
                 >
                   <td style={{ padding: '10px 8px' }}><RankBadge rank={e.rank} /></td>
                   <td style={{ padding: '10px 8px' }}>
-                    <Link
-                      href={`/cmdr/${encodeURIComponent(e.cmdr_name)}`}
-                      style={{ color: '#e67e22', textDecoration: 'none', fontWeight: 500 }}
-                      title="Перейти к досье пилота"
-                    >
-                      {e.cmdr_name}
-                    </Link>
+                    <PilotIdentity userId={e.user_id} cmdrName={e.cmdr_name} showAvatar={false} fontSize={13} style={{ color: '#e67e22' }} />
                   </td>
                   <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace', color: '#e67e22', fontWeight: 600 }}>{e.total_amount.toLocaleString('ru')}</td>
                   <td style={{ padding: '10px 8px', fontFamily: 'ui-monospace, monospace' }}>{e.deliveries_count}</td>

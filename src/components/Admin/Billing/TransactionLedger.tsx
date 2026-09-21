@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import type { BillingTransaction } from "@/types/billing";
 import { IconSearch, IconCheck, IconX, IconRefresh } from "@/components/Icons";
+import { authFetch } from "@/lib/supabaseClient";
 
 interface Props {
   onRefreshStats?: () => void;
@@ -26,7 +27,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
   const loadTransactions = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `/api/admin/billing/transactions?type=${typeFilter}&status=${statusFilter}&search=${encodeURIComponent(search)}&limit=100`
       );
       const data = await res.json();
@@ -51,7 +52,7 @@ export default function TransactionLedger({ onRefreshStats }: Props) {
 
     setRefundingId(txId);
     try {
-      const res = await fetch("/api/admin/billing/refund", {
+      const res = await authFetch("/api/admin/billing/refund", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transactionId: txId, reason }),

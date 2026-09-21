@@ -10,6 +10,12 @@ import { DEFAULT_PRIVACY, PRIVACY_KEYS, privacyPayload, resolvePrivacy, type Pri
 import { TelemetryCollector } from "@/lib/journalTelemetry";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
+import AccountPremiumPanel from "@/components/Cosmetics/AccountPremiumPanel";
+import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
+import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
+import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
+import CosmeticTitle from "@/components/Cosmetics/CosmeticTitle";
+import { useCosmeticsFor } from "@/components/Cosmetics/useCosmetics";
 import { SQUADRON_MEMBER_LIMIT } from "@/lib/squadronConstants";
 import {
   AllegianceIcon,
@@ -30,7 +36,7 @@ import {
 
 
 type Progress = { current: number; total: number; phase: string; pct: number };
-type Tab = "profile" | "squadron" | "journals" | "tokens";
+type Tab = "profile" | "squadron" | "journals" | "tokens" | "premium";
 
 /**
  * Подписи получателей груза в сводке импорта. Ключи — `delivery_kind` из
@@ -63,6 +69,7 @@ export default function AccountPage() {
   const [user, setUser] = useState<any>(null);
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<any>(null);
+  const cosmetics = useCosmeticsFor(user?.id || null);
   const [files, setFiles] = useState<FileList | null>(null);
   const [summary, setSummary] = useState<any>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -148,7 +155,9 @@ export default function AccountPage() {
   };
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get('tab') === 'tokens') setTab('tokens');
+    const qTab = new URLSearchParams(window.location.search).get('tab');
+    if (qTab === 'tokens') setTab('tokens');
+    if (qTab === 'premium') setTab('premium');
     load();
   }, []);
 
@@ -644,14 +653,16 @@ export default function AccountPage() {
   return (
     <div className="card" style={{ width: "100%" }}>
       <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 24 }}>
-        {avatarFromUser(user, profile) ? (
-          <img src={avatarFromUser(user, profile)!} className="avatar" alt="avatar" style={{ width: 64, height: 64 }} />
-        ) : (
-          <div className="avatar" style={{ width: 64, height: 64, background: "#3a3d40" }} />
-        )}
+        <CosmeticAvatar avatarUrl={avatarFromUser(user, profile)} cmdrName={nickFromUser(user, profile)} frameId={cosmetics?.frame?.id} framePreview={cosmetics?.frame?.preview} size={72} />
         <div>
-          <div className="kicker">CMDR</div>
-          <h1 style={{ margin: "4px 0 0", fontSize: 22 }}>{nickFromUser(user, profile)}</h1>
+          <div className="kicker" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            CMDR
+            {cosmetics?.title && <CosmeticTitle titleId={cosmetics.title.id} titlePreview={cosmetics.title.preview} text={cosmetics.title.title} size={10} />}
+          </div>
+          <h1 style={{ margin: "4px 0 0", fontSize: 22, display: "flex", alignItems: "center", gap: 8 }}>
+            {cosmetics?.badge && <CosmeticBadge badgeId={cosmetics.badge.id} badgePreview={cosmetics.badge.preview} title={cosmetics.badge.title} size={24} />}
+            <CosmeticCallsign name={nickFromUser(user, profile)} glowId={cosmetics?.glow?.id} glowPreview={cosmetics?.glow?.preview} tier={cosmetics?.tier?.label || null} tierColor={cosmetics?.tier?.color || null} fontSize={22} monospace={false} />
+          </h1>
           <p style={{ margin: "4px 0", color: "#9ca3af", fontSize: 13 }}>{user.email}</p>
           <label className="btn btn-cyan" style={{ padding: "6px 14px", cursor: "pointer", fontSize: 11, marginTop: 6 }}>
             {t('account.changeAvatar')}
@@ -696,6 +707,7 @@ export default function AccountPage() {
         <button className={tab === "squadron" ? "tab tab-active" : "tab"} onClick={() => setTab("squadron")}>{t('account.tabSquadron')}</button>
         <button className={tab === "journals" ? "tab tab-active" : "tab"} onClick={() => setTab("journals")}>{t('account.tabJournals')}</button>
         <button className={tab === "tokens" ? "tab tab-active" : "tab"} onClick={() => { setTab("tokens"); loadTokens(); }}>{t('account.tabTokens')}</button>
+        <button className={tab === "premium" ? "tab tab-active" : "tab"} onClick={() => setTab("premium")} style={{ borderColor: tab === "premium" ? undefined : "rgba(230,126,34,0.4)", color: tab === "premium" ? undefined : "var(--orange)" }}>{t('account.tabPremium') || 'Премиум и покупки'}</button>
       </div>
 
       {tab === "profile" && (
@@ -1033,6 +1045,8 @@ export default function AccountPage() {
           )}
         </div>
       )}
+
+      {tab === "premium" && <AccountPremiumPanel />}
     </div>
   );
 }
