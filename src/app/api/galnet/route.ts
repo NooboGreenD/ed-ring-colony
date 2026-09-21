@@ -119,11 +119,16 @@ async function sync(request: Request) {
   });
 
   const pending = await countPendingTranslations(supabase, 'galnet_news');
+  const translateConfigured = hasTranslateCredentials();
+  if (!translateConfigured) {
+    console.warn('[galnet] Yandex Translate credentials are not configured — articles stay pending');
+  }
 
   return NextResponse.json(
     {
       success: result.ok && result.errors.length === 0,
       ...result,
+      translateConfigured,
       pendingGalnetTranslations: pending,
     },
     { status: result.ok ? 200 : 502 }

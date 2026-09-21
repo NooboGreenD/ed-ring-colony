@@ -180,8 +180,8 @@ function createFakeSupabase(initialTables = {}) {
         state.orExpr = expression;
         return builder;
       },
-      order(column) {
-        state.orderCol = column;
+      order(column, options) {
+        state.orderCol = options?.ascending === false ? `-${column}` : column;
         return builder;
       },
       limit(value) {
@@ -220,10 +220,12 @@ function fakeFetchFactory({ failTranslateFor = [] } = {}) {
       const body = JSON.parse(init.body);
       translateCalls.push({ lang: body.targetLanguageCode, count: body.texts.length });
       if (failTranslateFor.includes(body.targetLanguageCode)) {
+        // 403 — неретраибельная ошибка, чтобы тест не ждал бэкофф.
         return {
           ok: false,
-          status: 429,
-          text: async () => 'Too Many Requests',
+          status: 403,
+          headers: { get: () => null },
+          text: async () => 'Forbidden',
         };
       }
       return {

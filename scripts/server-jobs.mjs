@@ -96,6 +96,12 @@ export async function executeJob(config, job, fetchImpl = fetch, signal) {
       translation = await callEndpoint(config, translate, fetchImpl, signal);
       if (translation.skipped || !(translation.remaining > 0)) break;
     }
+    if (translation?.skipped) {
+      // Loud, not fatal: the feed synced, but nothing will ever be translated until fixed.
+      console.warn(JSON.stringify({ job: 'translate', event: 'warning',
+        message: 'translation skipped — set YANDEX_TRANSLATE_API_KEY in the web service environment',
+        reason: translation.reason, remaining: translation.remaining }));
+    }
     return { ...result, translation };
   }
   // The old 6-hour auto-translate Action processed ONE batch, not four.

@@ -35,8 +35,9 @@ const YANDEX_TRANSLATE_URL = 'https://translate.api.cloud.yandex.net/translate/v
 /** Yandex ограничивает суммарный размер текстов в одном запросе (10000 символов). */
 const MAX_CHARS_PER_REQUEST = 8000;
 const MAX_TEXTS_PER_REQUEST = 50;
-const DEFAULT_RETRIES = 3;
-const DEFAULT_LANG_CONCURRENCY = 3;
+const DEFAULT_RETRIES = 4;
+// Yandex быстро отдаёт 429 при параллельных запросах с одного ключа.
+const DEFAULT_LANG_CONCURRENCY = 2;
 const RETRY_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -185,11 +186,15 @@ async function callTranslateApi(texts, targetLang, sourceLang, opts = {}) {
       const raw = await res.text();
 
       if (!res.ok) {
-        // 4xx (кроме 408/425/429) — ошибка в запросе, повторять бессмысленно.
-        if (!RETRY_STATUSES.has(res.status)) {
-          throw new Error(`Yandex Translate API error ${res.status}: ${raw.slice(0, 300)}`);
+        const error = new Error(`Yandex Translate API error ${res.status}: ${raw.slice(0, 300)}`);
+        // 4xx (кроме 408/425/429) — ошибка в запросе или ключе, повторять бессмысленно.
+        error.retriable = RETRY_STATUSES.has(res.status);
+        // Лимит запросов: уважаем Retry-After, иначе ждём заметно дольше обычного бэкоффа.
+        if (res.status === 429) {
+          const retryAfter = Number(res.headers?.get?.('retry-after'));
+          error.retryDelayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 3000 * attempt;
         }
-        throw new Error(`Yandex Translate API error ${res.status}: ${raw.slice(0, 300)}`);
+        throw error;
       }
 
       let json = null;
@@ -210,10 +215,11 @@ async function callTranslateApi(texts, targetLang, sourceLang, opts = {}) {
       return json.translations.map((item) => String(item?.text ?? ''));
     } catch (err) {
       lastError = err;
-      const message = String(err?.message || err);
-      const retriable = !/^Yandex Translate API error 4\d\d/.test(message);
+      // Сетевые ошибки/таймауты и статусы из RETRY_STATUSES (в т.ч. 429) повторяем;
+      // прочие 4xx (401/403 неверный ключ, 400 плохой запрос) — нет.
+      const retriable = err?.retriable !== undefined ? err.retriable : true;
       if (attempt >= retries || !retriable) break;
-      await sleep(500 * 2 ** (attempt - 1));
+      await sleep(err?.retryDelayMs || 500 * 2 ** (attempt - 1));
     } finally {
       clearTimeout(timer);
     }
@@ -255,6 +261,8 @@ export async function translateTexts(texts, targetLang, sourceLang = 'en', opts 
   let currentChars = 0;
 
   for (const segment of segments) {
+    // Пустые строки API отвергает (400) — они и так вернутся как есть.
+    if (!segment.text.trim()) continue;
     const length = segment.text.length;
     if (
       current.length > 0 &&

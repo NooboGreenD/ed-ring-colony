@@ -443,7 +443,9 @@ export async function translatePending(options) {
       .from(table)
       .select('id, title, body')
       .or(`translation_status.in.(${RETRY_STATUSES}),translated_at.is.null`)
-      .order('id', { ascending: true })
+      // Свежие статьи первыми: иначе несколько старых «вечно failed» строк
+      // занимают весь лимит и новые новости никогда не доходят до перевода.
+      .order('id', { ascending: false })
       .limit(limit);
 
     if (error) {

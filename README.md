@@ -292,6 +292,33 @@ node scripts/galnet-sync.mjs --no-translate   # только синхрониз�
 `SUPABASE_SERVICE_ROLE_KEY`, `YANDEX_TRANSLATE_API_KEY`
 (опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
 
+### Если переводы не появляются
+
+Перевод выполняет контейнер `web` (по запросу планировщика `jobs`), поэтому
+ключ Yandex должен быть в окружении именно сервиса `web`. Порядок проверки:
+
+```bash
+# 1. Ключ виден внутри web? (после deploy/selfhost/upgrade.py env_file не используется —
+#    ключ должен быть в `environment` сервиса web в docker-compose.yml)
+docker compose exec web sh -c 'env | grep -c YANDEX_TRANSLATE'
+
+# 2. Что говорит планировщик: event:"skipped"/"warning" = нет ключа, event:"failure" = ошибка API
+docker compose logs --since 48h jobs | grep -E '"job":"(translate|galnet-sync)"'
+
+# 3. Размер очереди и конфигурация переводчика
+curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" \
+  'http://127.0.0.1:3000/api/galnet?limit=1' | jq '{translateConfigured, pendingGalnetTranslations, errors}'
+
+# 4. Ручной догон очереди с подробными ошибками Yandex (401/403 — ключ, 429 — квота)
+docker compose exec web node scripts/galnet-sync.mjs --translate-only
+```
+
+Типичные причины: ключ был только в `.env.production` и потерялся при обновлении
+(теперь `upgrade.py` переносит его из работающего контейнера); для API-ключа
+сервисного аккаунта нужна роль `ai.translate.user`; исчерпана квота символов
+(429 — статьи остаются `failed` и будут повторно взяты следующим запуском —
+свежие статьи обрабатываются первыми).
+
 Тесты парсера и синхронизации (сеть не нужна):
 
 ```bash
