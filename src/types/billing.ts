@@ -60,6 +60,27 @@ export interface ShopItemPreviewData {
   badgeSvg?: string;
   subTitle?: string;
   cssEffects?: Record<string, string>;
+  /** Full-site colour scheme (skin category): CSS variable overrides applied to <html>. */
+  theme?: {
+    bg?: string;
+    panel?: string;
+    panelHover?: string;
+    line?: string;
+    text?: string;
+    muted?: string;
+    orange?: string;
+    orangeHover?: string;
+    cyan?: string;
+    green?: string;
+    red?: string;
+    /** optional page background (gradient/image) */
+    background?: string;
+    /** subtle visual effect: 'scanlines' | 'grid' | 'stars' | 'vignette' */
+    effect?: string;
+    /** font stack override for the whole site */
+    font?: string;
+  };
+  emoji?: string;
 }
 
 export interface ShopItem {

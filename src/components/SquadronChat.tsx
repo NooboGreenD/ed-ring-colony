@@ -4,6 +4,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { authFetch, getAuthenticatedSupabase } from '@/lib/supabaseClient';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { IconSend, IconTrash, IconLock } from '@/components/Icons';
+import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
+import CosmeticAvatar from '@/components/Cosmetics/CosmeticAvatar';
+import { useCosmeticsFor } from '@/components/Cosmetics/useCosmetics';
+
+function SquadronAvatar({ userId, name, avatarUrl }: { userId: string; name: string; avatarUrl?: string | null }) {
+  const c = useCosmeticsFor(userId);
+  return <CosmeticAvatar avatarUrl={avatarUrl} cmdrName={name} frameId={c?.frame?.id} framePreview={c?.frame?.preview} size={32} />;
+}
 
 interface ChatMessage {
   id: number;
@@ -233,14 +241,7 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
             >
               {/* Avatar column */}
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-                {avatar ? (
-                  <img src={avatar} alt="" className="avatar-sm" />
-                ) : (
-                  <span
-                    className="avatar-sm"
-                    style={{ background: '#3a3d40', display: 'inline-block' }}
-                  />
-                )}
+                <SquadronAvatar userId={msg.user_id} name={name} avatarUrl={avatar} />
                 {isMe && (
                   <button
                     onClick={() => deleteMessage(msg.id)}
@@ -263,8 +264,8 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
 
               {/* Message body */}
               <div className="chat-body" style={isMe ? { marginRight: 8, borderColor: 'var(--orange)' } : { marginLeft: 8 }}>
-                <span className="chat-meta">
-                  {name}
+                <span className="chat-meta" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <PilotIdentity userId={msg.user_id} cmdrName={name} showAvatar={false} fontSize={12} />
                   <span className="chat-time">{formatDateTime(msg.created_at)}</span>
                 </span>
                 <div className="chat-text">{renderMentions(msg.content)}</div>

@@ -8,8 +8,10 @@ import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
 import CosmeticTitle from "@/components/Cosmetics/CosmeticTitle";
 import { invalidateCosmetics } from "@/components/Cosmetics/useCosmetics";
+import { previewSkin } from "@/components/Cosmetics/HudSkinProvider";
 import { authFetch } from "@/lib/supabaseClient";
-import { IconCoins, IconCrown, IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
+import { IconCrown, IconCheck, IconX, IconSearch, IconLock, IconCreditCard } from "@/components/Icons";
+import { ThemeSwatch } from "@/components/Admin/Billing/ProductManager";
 
 type Category = "all" | "frame" | "badge" | "skin" | "glow" | "title" | "inventory" | "plans";
 
@@ -31,12 +33,8 @@ function ItemPreview({ item, size = "md" }: { item: ShopItem; size?: "sm" | "md"
     case "title":
       return <CosmeticTitle titleId={item.id} titlePreview={item.preview_data} text={item.title} />;
     case "skin":
-      return (
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ width: s, height: Math.round(s * 0.6), borderRadius: 3, background: `linear-gradient(135deg, ${color}, ${item.preview_data?.accentColor || color})`, border: "1px solid rgba(255,255,255,0.25)", boxShadow: `0 0 10px ${color}55` }} />
-          {size !== "sm" && <span style={{ fontSize: 11, color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}>Палитра интерфейса</span>}
-        </div>
-      );
+      if (size === "sm") return <span style={{ width: s, height: Math.round(s * 0.6), borderRadius: 3, background: `linear-gradient(135deg, ${item.preview_data?.theme?.bg || "#1e2022"}, ${color})`, border: `1px solid ${color}`, boxShadow: `0 0 8px ${color}55`, display: "inline-block" }} />;
+      return <div style={{ width: size === "lg" ? 240 : 180 }}><ThemeSwatch theme={item.preview_data?.theme} accent={color} compact /></div>;
     default:
       return null;
   }
@@ -139,8 +137,21 @@ export default function PremiumShopPage() {
 
   const tryOn = (item: ShopItem) => {
     setPreview((p) => ({ ...p, [item.category]: item.id }));
+    if (item.category === "skin") {
+      previewSkin({ id: item.id, preview: item.preview_data });
+      showToast(`Цветовая схема «${item.title}» применена к сайту для предпросмотра`);
+      return;
+    }
     showToast(`Примерка: «${item.title}» — смотрите в примерочной выше`);
   };
+
+  const resetPreview = () => {
+    setPreview({ frame: equipped.frame_id, badge: equipped.badge_id, glow: equipped.glow_id, title: equipped.title_id, skin: equipped.skin_id });
+    previewSkin(null);
+  };
+
+  // leaving the shop drops any temporary site-wide skin preview
+  useEffect(() => () => previewSkin(null), []);
 
   const toggleEquip = async (item: ShopItem, on: boolean) => {
     if (!requireAuth()) return;
@@ -150,6 +161,7 @@ export default function PremiumShopPage() {
       if (!res.ok) throw new Error(data.error || "Ошибка");
       setEquipped(data.equipped);
       setPreview((p) => ({ ...p, [item.category]: on ? item.id : null }));
+      if (item.category === "skin") previewSkin(null);
       invalidateCosmetics(userId || undefined);
       window.dispatchEvent(new Event("cosmetics:changed"));
       showToast(on ? `«${item.title}» экипировано — теперь это видно во всём проекте` : `«${item.title}» снято`);
@@ -168,6 +180,7 @@ export default function PremiumShopPage() {
       if (!res.ok) throw new Error(data.error || "Ошибка покупки");
       showToast(`Куплено: «${buyingItem.title}». Транзакция ${data.transaction?.id}. Предмет надет и виден во всём проекте.`);
       setBuyingItem(null);
+      if (buyingItem.category === "skin") previewSkin(null);
       invalidateCosmetics(userId || undefined);
       window.dispatchEvent(new Event("cosmetics:changed"));
       load();
@@ -319,7 +332,7 @@ export default function PremiumShopPage() {
           <h3 style={{ margin: 0, letterSpacing: 2, color: "var(--orange)", display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ width: 8, height: 8, background: "#2ecc71", borderRadius: "50%", boxShadow: "0 0 8px #2ecc71" }} /> ПРИМЕРОЧНАЯ (LIVE PREVIEW)
           </h3>
-          <button type="button" onClick={() => setPreview({ frame: equipped.frame_id, badge: equipped.badge_id, glow: equipped.glow_id, title: equipped.title_id, skin: equipped.skin_id })} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>Сбросить к текущему</button>
+          <button type="button" onClick={resetPreview} style={{ fontSize: 11, padding: "4px 10px", borderColor: "var(--line)", color: "var(--muted)" }}>Сбросить к текущему</button>
         </div>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20, padding: "16px 20px", background: "#181a1c", border: "1px dashed rgba(230,126,34,0.4)", borderRadius: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
@@ -331,7 +344,7 @@ export default function PremiumShopPage() {
               </div>
               <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 {preview.title ? <CosmeticTitle titleId={preview.title} titlePreview={pTitle?.preview_data} text={pTitle?.title} /> : <span style={{ fontSize: 12, color: "var(--muted)", fontStyle: "italic" }}>Выберите титул в каталоге</span>}
-                {pSkin && <span style={{ fontSize: 11, color: pSkin.preview_data?.color || "var(--orange)", fontFamily: "ui-monospace, monospace" }}>[HUD: {pSkin.title}]</span>}
+                {pSkin && <span style={{ fontSize: 11, color: pSkin.preview_data?.color || "var(--orange)", fontFamily: "ui-monospace, monospace" }}>[Схема: {pSkin.title}{preview.skin !== equipped.skin_id ? " — предпросмотр применён к сайту" : ""}]</span>}
               </div>
             </div>
           </div>

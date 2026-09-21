@@ -282,7 +282,28 @@ export default function ProductManager({ onChanged }: { onChanged?: () => void }
                   </Field>
                 )}
                 {editing.category === "skin" && (
-                  <Field label="CSS-класс темы (hud-<класс> на <html>)" full><input value={editing.preview_data.hudSkinClass || ""} placeholder="skin-my-theme" onChange={(e) => setPD({ hudSkinClass: e.target.value })} /></Field>
+                  <>
+                    <Field label="CSS-класс темы (hud-<класс> на <html>)" full><input value={editing.preview_data.hudSkinClass || ""} placeholder="skin-my-theme" onChange={(e) => setPD({ hudSkinClass: e.target.value })} /></Field>
+                    <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 1, marginTop: 4 }}>Цветовая схема сайта (применяется ко всему интерфейсу)</div>
+                    {([["bg", "Фон страницы"], ["panel", "Панели / карточки"], ["panelHover", "Панели (hover)"], ["line", "Линии / рамки"], ["text", "Текст"], ["muted", "Приглушённый текст"], ["orange", "Акцент (оранжевый)"], ["orangeHover", "Акцент hover"], ["cyan", "Вторичный акцент (циан)"], ["green", "Успех (зелёный)"], ["red", "Ошибка (красный)"]] as const).map(([k, label]) => (
+                      <Field key={k} label={label}>
+                        <ColorInput value={(editing.preview_data.theme as any)?.[k] || ""} onChange={(v) => setPD({ theme: { ...(editing.preview_data.theme || {}), [k]: v } })} />
+                      </Field>
+                    ))}
+                    <Field label="Фон страницы (CSS background, опционально)" full><input value={editing.preview_data.theme?.background || ""} placeholder="radial-gradient(ellipse at top, #222 0%, #111 60%)" onChange={(e) => setPD({ theme: { ...(editing.preview_data.theme || {}), background: e.target.value } })} /></Field>
+                    <Field label="Визуальный эффект">
+                      <select value={editing.preview_data.theme?.effect || ""} onChange={(e) => setPD({ theme: { ...(editing.preview_data.theme || {}), effect: e.target.value } })}>
+                        <option value="">— нет —</option>
+                        <option value="scanlines">Сканлайны</option>
+                        <option value="grid">Сетка</option>
+                        <option value="stars">Звёзды (анимация)</option>
+                        <option value="vignette">Виньетка</option>
+                        <option value="glow">Свечение краёв</option>
+                      </select>
+                    </Field>
+                    <Field label="Шрифт сайта (CSS font-family, опционально)"><input value={editing.preview_data.theme?.font || ""} placeholder="'JetBrains Mono', monospace" onChange={(e) => setPD({ theme: { ...(editing.preview_data.theme || {}), font: e.target.value } })} /></Field>
+                    <div style={{ gridColumn: "1 / -1" }}><ThemeSwatch theme={editing.preview_data.theme} accent={editing.preview_data.color} /></div>
+                  </>
                 )}
                 {editing.category === "title" && (
                   <Field label="Подзаголовок / надпись под титулом" full><input value={editing.preview_data.subTitle || ""} onChange={(e) => setPD({ subTitle: e.target.value })} /></Field>
@@ -345,6 +366,33 @@ function Field({ label, children, full }: { label: string; children: React.React
       {label}
       {children}
     </label>
+  );
+}
+
+/** Miniature of the site rendered with the given colour scheme. */
+export function ThemeSwatch({ theme, accent, compact }: { theme?: ShopItemPreviewData["theme"]; accent?: string; compact?: boolean }) {
+  const t = theme || {};
+  const bg = t.bg || "#1e2022", panel = t.panel || "#2a2d30", line = t.line || "#3a3d40", text = t.text || "#eeeeee", muted = t.muted || "#9ca3af", orange = t.orange || accent || "#e67e22", cyan = t.cyan || "#3498db";
+  const h = compact ? 64 : 110;
+  return (
+    <div style={{ background: t.background || bg, border: `1px solid ${line}`, borderRadius: 4, padding: compact ? 6 : 10, height: h, display: "flex", flexDirection: "column", gap: compact ? 4 : 6, fontFamily: t.font || undefined, overflow: "hidden" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <span style={{ width: compact ? 22 : 40, height: compact ? 4 : 6, background: orange, borderRadius: 2 }} />
+        <span style={{ width: compact ? 16 : 28, height: compact ? 4 : 6, background: muted, borderRadius: 2, opacity: 0.6 }} />
+        <span style={{ width: compact ? 16 : 28, height: compact ? 4 : 6, background: muted, borderRadius: 2, opacity: 0.6 }} />
+        <span style={{ marginLeft: "auto", width: compact ? 14 : 24, height: compact ? 4 : 6, background: cyan, borderRadius: 2 }} />
+      </div>
+      <div style={{ display: "flex", gap: 6, flex: 1 }}>
+        <div style={{ flex: 2, background: panel, border: `1px solid ${line}`, borderRadius: 3, padding: compact ? 4 : 8 }}>
+          {!compact && <div style={{ fontSize: 9, color: orange, letterSpacing: 1, fontWeight: 700 }}>ПАНЕЛЬ</div>}
+          <div style={{ width: "70%", height: 4, background: text, opacity: 0.8, borderRadius: 2, marginTop: compact ? 0 : 4 }} />
+          <div style={{ width: "50%", height: 4, background: muted, opacity: 0.6, borderRadius: 2, marginTop: 4 }} />
+        </div>
+        <div style={{ flex: 1, background: panel, border: `1px solid ${line}`, borderRadius: 3, padding: compact ? 4 : 8, display: "flex", alignItems: "flex-end" }}>
+          <span style={{ width: "100%", height: compact ? 8 : 14, background: orange, borderRadius: 2, opacity: 0.9 }} />
+        </div>
+      </div>
+    </div>
   );
 }
 

@@ -20,6 +20,8 @@ interface PilotIdentityProps {
   showTitle?: boolean;
   showTier?: boolean;
   showAvatar?: boolean;
+  /** render only the framed avatar (no name) */
+  avatarOnly?: boolean;
   link?: boolean;
   tag?: string | null;
   subtitle?: React.ReactNode;
@@ -43,6 +45,7 @@ export default function PilotIdentity({
   showTitle = false,
   showTier = true,
   showAvatar = true,
+  avatarOnly = false,
   link = true,
   tag,
   subtitle,
@@ -66,6 +69,10 @@ export default function PilotIdentity({
       monospace={monospace}
     />
   );
+
+  if (avatarOnly) {
+    return <CosmeticAvatar avatarUrl={avatarUrl} cmdrName={name} frameId={c?.frame?.id} framePreview={c?.frame?.preview} size={size} />;
+  }
 
   return (
     <span className={`pilot-identity ${className}`} style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0, ...style }}>

@@ -115,6 +115,16 @@ class BillingRepository {
       if ((await a.count('shop_items')) === 0) {
         let order = 0;
         for (const i of INITIAL_SHOP_ITEMS) await a.upsert('shop_items', { ...i, sales_count: 0, display_order: order++ });
+      } else {
+        // Catalogue upgrade: seed skins created before full-site colour schemes
+        // existed get their `preview_data.theme` filled in (never overwrites admin edits).
+        for (const seed of INITIAL_SHOP_ITEMS) {
+          if (seed.category !== 'skin' || !seed.preview_data?.theme) continue;
+          const cur = await a.get<ShopItem>('shop_items', seed.id);
+          if (cur && !cur.preview_data?.theme) {
+            await a.update('shop_items', seed.id, { preview_data: { ...cur.preview_data, theme: seed.preview_data.theme }, updated_at: nowIso() });
+          }
+        }
       }
       const providers = await a.list<PaymentProvider>('payment_providers');
       const have = new Set(providers.map((p) => p.id));

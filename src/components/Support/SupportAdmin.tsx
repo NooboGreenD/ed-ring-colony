@@ -4,6 +4,7 @@ import { IconImage, IconPaperclip, IconExternalLink } from "@/components/Icons";
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { authFetch } from "@/lib/supabaseClient";
+import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
 
 type Ticket = {
   id: string;
@@ -343,7 +344,7 @@ export default function SupportAdmin() {
                     <span>·</span>
                     <span>{CATEGORIES[t.category] || t.category}</span>
                     <span>·</span>
-                    <span>{t.user?.cmdr_name || t.user?.email || "—"}</span>
+                    <PilotIdentity userId={t.user_id} cmdrName={t.user?.cmdr_name || t.user?.email || "—"} showAvatar={false} link={false} showTier={false} fontSize={12} />
                   </div>
                   <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
                     {fmtDate(t.updated_at)}
@@ -400,13 +401,15 @@ export default function SupportAdmin() {
                   ) : (
                     messages.map((m) => (
                       <div key={m.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", alignSelf: m.is_internal ? "flex-end" : "flex-start", flexDirection: "row", maxWidth: "90%" }}>
-                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: m.is_internal ? "#e74c3c" : "#3a3d40", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff", flexShrink: 0 }}>
-                          {m.is_internal ? "!" : (m.sender?.cmdr_name?.[0]?.toUpperCase() || "?")}
-                        </div>
+                        {m.is_internal ? (
+                          <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#e74c3c", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#fff", flexShrink: 0 }}>!</div>
+                        ) : (
+                          <PilotIdentity userId={m.sender_id} cmdrName={m.sender?.cmdr_name || "—"} avatarUrl={m.sender?.avatar_url} size={28} avatarOnly />
+                        )}
                         <div style={{ background: m.is_internal ? "rgba(231,76,60,0.08)" : "var(--panel)", border: `1px solid ${m.is_internal ? "rgba(231,76,60,0.25)" : "var(--line)"}`, borderRadius: 8, padding: "8px 12px", maxWidth: "100%" }}>
                           <div style={{ fontSize: 11, marginBottom: 3, display: "flex", gap: 8, alignItems: "center" }}>
-                            <span style={{ color: m.is_internal ? "#e74c3c" : "var(--orange)", fontWeight: 600 }}>
-                              {m.sender?.cmdr_name || "—"}
+                            <span style={{ color: m.is_internal ? "#e74c3c" : "var(--orange)", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              {m.is_internal ? (m.sender?.cmdr_name || "—") : <PilotIdentity userId={m.sender_id} cmdrName={m.sender?.cmdr_name || "—"} showAvatar={false} fontSize={11} />}
                               {m.is_internal && (
                                 <span style={{ fontSize: 9, background: "#e74c3c", color: "#fff", padding: "1px 4px", borderRadius: 3, marginLeft: 4 }}>ВНУТР</span>
                               )}
