@@ -40,6 +40,13 @@ export interface GalaxyStats {
   partial?: boolean;
 }
 
+/** A --limit import is a sample. Cube scans must not replace EDSM until the dump is complete. */
+export const FULL_CATALOG_MIN = 1_000_000;
+
+export function catalogIsComplete(stats: GalaxyStats | null | undefined): boolean {
+  return !!stats && stats.partial !== true && stats.systems_count >= FULL_CATALOG_MIN;
+}
+
 /** How many systems the import has loaded (5-minute in-memory cache). */
 export async function getGalaxyStats(): Promise<GalaxyStats | null> {
   if (statsCache && Date.now() - statsCache.at < 5 * 60_000) return statsCache.value;
@@ -150,18 +157,6 @@ export async function searchSystems(q: string, limit = 8): Promise<GalaxySystemR
   return [...rows, ...extra].slice(0, limit);
 }
 
-const WORLD_TYPE_TO_DB_FILTER: Record<string, string> = {
-  neutron_star: 'star_type.eq.neutron',
-  black_hole: 'star_type.eq.black_hole',
-  white_dwarf: 'star_type.eq.white_dwarf',
-  wolf_rayet: 'star_type.eq.wolf_rayet',
-  herbig_ae_be: 'star_type.eq.herbig_ae_be',
-  t_tauri: 'star_type.eq.t_tauri',
-  carbon_star: 'star_type.eq.carbon',
-  supergiant: 'star_giant_class.eq.supergiant',
-  giant: 'star_giant_class.eq.giant',
-};
-
 const STAR_TYPE_BY_WORLD: Record<string, string> = {
   neutron_star: 'neutron',
   black_hole: 'black_hole',
@@ -184,9 +179,8 @@ function splitWorldFilters(worldTypes: string[]): { starTypes: string[]; giantCl
 
 /**
  * Atlas star-candidate lookup: exotic/giant main stars inside an axis-aligned
- * cube, nearest first. The SQL function is the source of truth. The PostgREST
- * fallback is an arbitrary row cap (not "the nearest 1000") and is only used
- * when that function has not been migrated yet.
+ * cube, nearest first. Throws when the SQL function is missing so the caller
+ * can fall back to EDSM instead of treating an unordered row cap as complete.
  */
 export async function findStarCandidates(params: {
   x: number;
@@ -209,23 +203,9 @@ export async function findStarCandidates(params: {
     giant_classes: giantClasses,
     lim: limit,
   });
-  if (!rpc.error && Array.isArray(rpc.data)) return rpc.data as GalaxySystemRow[];
-
-  console.error('[galaxy] galaxy_star_candidates unavailable, using capped fallback:', rpc.error?.message);
-  const filters = params.worldTypes.map((t) => WORLD_TYPE_TO_DB_FILTER[t]).filter(Boolean);
-  const { data, error } = await supabaseAdmin
-    .from('galaxy_systems')
-    .select(SELECT)
-    .gte('x', params.x - params.half)
-    .lte('x', params.x + params.half)
-    .gte('y', params.y - params.half)
-    .lte('y', params.y + params.half)
-    .gte('z', params.z - params.half)
-    .lte('z', params.z + params.half)
-    .or(filters.join(','))
-    .limit(Math.min(limit, 1000));
-  if (error) throw error;
-  return (data || []) as GalaxySystemRow[];
+  if (rpc.error) throw new Error(rpc.error.message);
+  if (!Array.isArray(rpc.data)) return [];
+  return rpc.data as GalaxySystemRow[];
 }
 
 /** Systems inside a cube, nearest first. Empty when the catalog or function is missing. */

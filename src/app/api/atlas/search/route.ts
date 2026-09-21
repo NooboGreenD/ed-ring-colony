@@ -10,6 +10,7 @@ import {
   findSystemsByNames,
   findStarCandidates,
   getGalaxyStats,
+  catalogIsComplete,
   rowWorldType,
 } from '@/lib/galaxySystemsDb';
 import { normalizeSystemName } from '@/lib/galaxySystems';
@@ -259,7 +260,7 @@ async function processSearchAsync(sessionId: string, params: AtlasSearchParams, 
     let dbStarSearchFailed = false;
     if (dbStarTypes.length > 0) {
       const stats = await getGalaxyStats().catch(() => null);
-      if (stats && stats.systems_count > 0) {
+      if (catalogIsComplete(stats)) {
         try {
           dbStarUsed = true;
           const rows = await findStarCandidates({ x: refCoords.x, y: refCoords.y, z: refCoords.z, half: halfCube, worldTypes: dbStarTypes });

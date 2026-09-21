@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
+import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
 
 const MAX_RETRIES = 3;
 const MAX_JUMP = 15;
@@ -188,7 +188,7 @@ export async function POST(req: Request) {
       const stats = await getGalaxyStats();
       // A --limit import is a sample, not the galaxy. Using it for cubes would
       // hide real systems and fill the route with synthetic waypoints.
-      catalogReady = !!stats && !stats.partial && stats.systems_count >= 1_000_000;
+      catalogReady = catalogIsComplete(stats);
     } catch {
       catalogReady = false;
     }

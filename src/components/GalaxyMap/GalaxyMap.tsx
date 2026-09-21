@@ -719,7 +719,7 @@ export default function GalaxyMap({
             {' · '}до Sgr A*: {galaxyPick.distance_from_sgra != null ? `${Number(galaxyPick.distance_from_sgra).toFixed(1)} св.лет` : '—'}
           </div>
           {galaxyPick.needs_permit && <div style={{ marginTop: 4, fontSize: 11, color: '#f87171' }}>Нужен permit</div>}
-          <div style={{ marginTop: 4, fontSize: 10, color: '#6b7280' }}>Каталог Spansh · не стройка маршрута</div>
+          <div style={{ marginTop: 4, fontSize: 10, color: '#6b7280' }}>{galaxyPick.source === 'edsm' ? 'EDSM' : 'Каталог Spansh'} · не стройка маршрута</div>
           <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#3b82f6', textDecoration: 'none' }}>EDSM</a>
             <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#e67e22', textDecoration: 'none' }}>Raven</a>
@@ -825,10 +825,6 @@ export default function GalaxyMap({
           />
         </Suspense>
       </Canvas>
-    </div>
-  );
-}
-    </Canvas>
     </div>
   );
 }

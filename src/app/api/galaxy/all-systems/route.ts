@@ -18,8 +18,10 @@ export const maxDuration = 120;
 const STATIC_POINTS = path.join(process.cwd(), 'public', 'data', 'galaxy-systems-points.bin');
 const STATIC_META = `${STATIC_POINTS}.meta.json`;
 
-let memoryCache: { buffer: Buffer; etag: string } | null = null;
-let building: Promise<{ buffer: Buffer; etag: string } | null> | null = null;
+type PointsFile = { buffer: Buffer; etag: string; count: number };
+
+let memoryCache: PointsFile | null = null;
+let building: Promise<PointsFile | null> | null = null;
 
 function asArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer;
@@ -35,20 +37,20 @@ function pointCount(buffer: Buffer): number | null {
   }
 }
 
-function tryLocal(): { buffer: Buffer; etag: string } | null {
+function tryLocal(): PointsFile | null {
   try {
     if (!fs.existsSync(STATIC_POINTS)) return null;
     const buffer = fs.readFileSync(STATIC_POINTS);
     const count = pointCount(buffer);
     if (count == null || count === 0) return null;
     const stat = fs.statSync(STATIC_POINTS);
-    return { buffer, etag: `edgs-${count}-${stat.mtimeMs.toFixed(0)}` };
+    return { buffer, count, etag: `edgs-${count}-${stat.mtimeMs.toFixed(0)}` };
   } catch {
     return null;
   }
 }
 
-async function tryStorage(): Promise<{ buffer: Buffer; etag: string } | null> {
+async function tryStorage(): Promise<PointsFile | null> {
   try {
     const { supabaseAdmin } = await import('@/lib/supabaseAdmin');
     const { data, error } = await supabaseAdmin.storage
@@ -58,7 +60,7 @@ async function tryStorage(): Promise<{ buffer: Buffer; etag: string } | null> {
     const buffer = Buffer.from(await data.arrayBuffer());
     const count = pointCount(buffer);
     if (count == null || count === 0) return null;
-    return { buffer, etag: `edgs-storage-${count}-${buffer.length}` };
+    return { buffer, count, etag: `edgs-storage-${count}-${buffer.length}` };
   } catch {
     return null;
   }
@@ -68,7 +70,7 @@ function dbUrl(): string | null {
   return process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || null;
 }
 
-async function buildFromPg(): Promise<{ buffer: Buffer; etag: string } | null> {
+async function buildFromPg(): Promise<PointsFile | null> {
   const url = dbUrl();
   if (!url) return null;
   // Streaming Query, not a buffered result: 1.3M rows must not sit in memory.
@@ -126,13 +128,13 @@ async function buildFromPg(): Promise<{ buffer: Buffer; etag: string } | null> {
       client.query(query);
     });
     if (builder.size === 0) return null;
-    return { buffer: Buffer.from(builder.build()), etag: `edgs-pg-${builder.size}` };
+    return { buffer: Buffer.from(builder.build()), count: builder.size, etag: `edgs-pg-${builder.size}` };
   } finally {
     await client.end().catch(() => undefined);
   }
 }
 
-function remember(file: { buffer: Buffer; etag: string }) {
+function remember(file: PointsFile) {
   memoryCache = file;
   try {
     fs.mkdirSync(path.dirname(STATIC_POINTS), { recursive: true });
@@ -162,19 +164,32 @@ function respond(req: Request, file: { buffer: Buffer; etag: string }) {
   return new NextResponse(new Uint8Array(file.buffer), { status: 200, headers });
 }
 
+function shorterThanUpload(file: PointsFile, uploadedCount: number | null | undefined): boolean {
+  if (uploadedCount != null && uploadedCount > file.count) return true;
+  // A leftover --limit file must not hide the full cloud once storage has one.
+  return uploadedCount == null && file.count < 1_000_000;
+}
+
 export async function GET(req: Request) {
   const local = tryLocal();
-  if (local) return respond(req, local);
-  if (memoryCache) return respond(req, memoryCache);
-
   const stats = await getGalaxyStats().catch(() => null);
+  const uploadedCount = stats?.points_uploaded ? (stats.points_count ?? null) : null;
+  const localIsStale = !!local && stats?.points_uploaded === true && shorterThanUpload(local, uploadedCount);
+  const memoryIsStale = !!memoryCache && stats?.points_uploaded === true && shorterThanUpload(memoryCache, uploadedCount);
+
+  if (local && !localIsStale) return respond(req, local);
+  if (memoryCache && !memoryIsStale) return respond(req, memoryCache);
+
   if (stats?.points_uploaded) {
     const stored = await tryStorage();
-    if (stored) {
+    if (stored && (!local || stored.count >= local.count)) {
       remember(stored);
       return respond(req, stored);
     }
   }
+
+  if (local) return respond(req, local);
+  if (memoryCache) return respond(req, memoryCache);
 
   if (!building) {
     building = buildFromPg()
