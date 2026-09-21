@@ -18,6 +18,8 @@ test.beforeEach(async ({ page }) => {
 
 test('login retains password entry and exposes recovery, confirmation and Discord', async ({ page }) => {
   const errors: string[] = [];
+  const realtimeSockets: string[] = [];
+  page.on('websocket', socket => { if (socket.url().includes('/realtime/')) realtimeSockets.push(socket.url()); });
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/login');
   await expect(page.getByRole('heading', { name: 'Вход', exact: true })).toBeVisible();
@@ -25,6 +27,7 @@ test('login retains password entry and exposes recovery, confirmation and Discor
   await expect(page.getByRole('link', { name: 'Подтвердить почту' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Войти через Discord' })).toBeVisible();
   expect(errors).toEqual([]);
+  expect(realtimeSockets).toEqual([]);
 });
 
 test('registration waits for email instead of signing in automatically', async ({ page }) => {

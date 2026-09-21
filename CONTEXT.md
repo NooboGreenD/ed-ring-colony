@@ -35,6 +35,14 @@ consent. Recovery has a signed 10-minute user/session-bound grant and revokes
 refresh sessions + uploader tokens; it does not silently unlink social methods.
 Legacy auto-confirmed email claims need targeted review, not mass account mutation.
 
+Realtime troubleshooting: see REALTIME-FIX.md and the standalone read-only
+`deploy/selfhost/realtime-check.py` (Kong vs direct Realtime vs public WSS,
+validated Upgrade + Phoenix heartbeat, no keys/env/logs in the report).
+NotificationBell/UnreadBadge must never subscribe for guests or with eq.undefined;
+subscriptions follow the current auth UUID and clean up on logout/account change.
+Fresh nginx templates include a dedicated /realtime/v1/ upgrade route; existing
+production TLS configs require a reviewed merge, not rerunning install.sh.
+
 ## 1. Project Overview
 
 **ED Ring Colony** is a web platform for coordinating colonization efforts in the game Elite Dangerous. It serves as a command center for player squadrons, project management, system atlas, forum, wiki, and leaderboard.
