@@ -29,12 +29,19 @@ export class NextResponse extends Response {
 writeFileSync(join(dir, 'ssr.mjs'), `export function createServerClient(url, key, options) {
   globalThis.__vkTest.cookieOptions = options.cookies; return globalThis.__vkTest.client; }`);
 writeFileSync(join(dir, 'admin.mjs'), `export function createAdminClient() { return globalThis.__vkTest.admin; }`);
+// Admin-panel settings: the test decides whether VK is switched on.
+writeFileSync(join(dir, 'settings.mjs'), `export async function resolveVkSettings() {
+  const id = (process.env.VK_ID_CLIENT_ID || '').trim();
+  const on = globalThis.__vkTest.adminEnabled !== false;
+  return { enabled: on && /^\\d+$/.test(id), clientId: id, clientSecret: process.env.VK_ID_CLIENT_SECRET || '', adminEnabled: on };
+}
+export async function visibleGotrueProviders(list) { return list; }`);
 
 async function bundle(entry, name) {
   const outfile = join(dir, `${name}.mjs`);
   await build({ entryPoints: [join(root, entry)], outfile, bundle: true, format: 'esm', platform: 'node', logLevel: 'silent',
     alias: { 'next/server': join(dir, 'next.mjs'), '@supabase/ssr': join(dir, 'ssr.mjs'),
-      '@/lib/supabaseAdmin': join(dir, 'admin.mjs'), '@': join(root, 'src') } });
+      '@/lib/supabaseAdmin': join(dir, 'admin.mjs'), '@/lib/authProviders/settings': join(dir, 'settings.mjs'), '@': join(root, 'src') } });
   return import(outfile);
 }
 const callback = await bundle('src/app/api/auth/vk/callback/route.ts', 'vk-callback');
@@ -246,4 +253,38 @@ test('callback: VK disabled or e-mail already registered ends without a session'
   process.env.VK_ID_CLIENT_ID = '';
   const off = await callback.GET(request().req);
   assert.equal(new URL(off.headers.get('location')).searchParams.get('oauth_error'), 'not_configured');
+  reset();
+  globalThis.__vkTest.adminEnabled = false;
+  const hidden = await callback.GET(request().req);
+  assert.equal(new URL(hidden.headers.get('location')).searchParams.get('oauth_error'), 'not_configured', 'admin toggle off = provider off');
+});
+
+test('admin settings: VK hidden by default, secrets never exposed, toggle + client id gate the button', async () => {
+  process.env.BILLING_STORAGE = 'file';
+  process.env.BILLING_DATA_FILE = join(dir, 'billing_store.json'); // never touch the tracked data file
+  process.env.VK_ID_CLIENT_ID = '';
+  const { getAuthProviderSettings, updateAuthProviderSettings, publicAuthProviderSettings, resolveVkSettings, visibleGotrueProviders } =
+    await bundle('src/lib/authProviders/settings.ts', 'settings-real');
+  const { resetBillingAdapter } = await bundle('src/lib/billing/storage.ts', 'storage-real');
+  resetBillingAdapter();
+  const initial = await getAuthProviderSettings();
+  assert.equal(initial.vk.enabled, false);
+  assert.equal(initial.discord.enabled, true);
+  assert.equal((await resolveVkSettings({})).enabled, false);
+  await updateAuthProviderSettings({ vk: { enabled: true, client_id: '51234567', client_secret: 'top-secret' }, discord: { enabled: false } });
+  try {
+    const after = await getAuthProviderSettings();
+    assert.equal(after.vk.client_secret, 'top-secret');
+    const pub = publicAuthProviderSettings(after);
+    assert.equal(pub.vk.has_secret, true);
+    assert.equal(JSON.stringify(pub).includes('top-secret'), false);
+    const resolved = await resolveVkSettings({});
+    assert.deepEqual([resolved.enabled, resolved.clientId, resolved.clientSecret], [true, '51234567', 'top-secret']);
+    assert.deepEqual(await visibleGotrueProviders(['discord', 'google']), ['google']);
+    await updateAuthProviderSettings({ vk: { clear_secret: true } });
+    assert.equal((await getAuthProviderSettings()).vk.client_secret, undefined);
+  } finally {
+    await updateAuthProviderSettings({ vk: { enabled: false, client_id: '', clear_secret: true }, discord: { enabled: true } });
+    resetBillingAdapter();
+  }
 });

@@ -57,7 +57,7 @@ function pkOf(table: string): string {
 
 // ───────────────────────────── JSON file backend ─────────────────────────────
 
-const DATA_FILE = path.join(process.cwd(), 'data', 'billing_store.json');
+const DATA_FILE = process.env.BILLING_DATA_FILE || path.join(process.cwd(), 'data', 'billing_store.json');
 
 function matches(row: Row, opts?: ListOptions): boolean {
   if (!opts) return true;

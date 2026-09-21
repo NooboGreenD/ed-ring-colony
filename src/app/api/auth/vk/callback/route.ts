@@ -3,7 +3,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { getSiteUrl } from '@/lib/siteUrl';
 import { ensureUserProfile } from '@/lib/ensureProfile';
 import { createAdminClient } from '@/lib/supabaseAdmin';
-import { exchangeVkCode, fetchVkUserInfo, readVkFlow, vkConfig, VK_FLOW_COOKIE, VK_PROVIDER, VkAuthError } from '@/lib/vkId';
+import { exchangeVkCode, fetchVkUserInfo, readVkFlow, VK_FLOW_COOKIE, VK_PROVIDER, VkAuthError } from '@/lib/vkId';
+import { resolveVkSettings } from '@/lib/authProviders/settings';
 import { linkVkIdentity, resolveVkLogin, sessionTokenHash } from '@/lib/vkAccount';
 
 export const dynamic = 'force-dynamic';
@@ -33,7 +34,7 @@ export async function GET(request: NextRequest) {
     return response;
   }
 
-  const config = vkConfig();
+  const config = await resolveVkSettings();
   if (!config.enabled) return redirect('/login', 'not_configured');
   if (!flow) return redirect('/login', 'expired');
   if (params.has('error')) return redirect(destination, params.get('error') === 'access_denied' ? 'cancelled' : 'vk_failed');
