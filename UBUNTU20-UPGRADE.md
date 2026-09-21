@@ -16,14 +16,14 @@ SSH-терминале Ubuntu 20.04. Нужны уже работающий Dock
 `curl`, `tar`, Python **3.8+** и `sudo`. Node на хост ставить не нужно.
 Не запускайте `install.sh`, `full_schema.sql`, `docker compose down -v`.
 
-Команда закреплена за ревизией `e3ca81bdd3b6d9faa34c613558bd47c744b752f9`.
+Команда закреплена за ревизией `97507eb2e0de1a13aff0e44d88ce8cf25b595ec0`.
 Путь release содержит этот SHA; дальнейшие коммиты PR не изменяют уже
 скачанный каталог. Перед production обновите ревизию после итоговой приёмки PR.
 
 ```bash
 bash <<'EDRC_UPDATE'
 set -euo pipefail
-REV=e3ca81bdd3b6d9faa34c613558bd47c744b752f9
+REV=97507eb2e0de1a13aff0e44d88ce8cf25b595ec0
 [[ "$REV" =~ ^[0-9a-f]{40}$ ]] || { echo 'Не удалось определить ревизию'; exit 1; }
 RELEASE="/opt/ed-ring-colony-releases/$REV"
 TMP="$(mktemp -d)"

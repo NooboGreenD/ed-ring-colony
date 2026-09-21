@@ -28,7 +28,7 @@ Phoenix heartbeat, не подписывается на таблицы и не �
 
 ```bash
 curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-  https://raw.githubusercontent.com/NooboGreenD/ed-ring-colony/arena/01a0c073-ed-ring-colony/deploy/selfhost/realtime-check.py \
+  https://raw.githubusercontent.com/NooboGreenD/ed-ring-colony/97507eb2e0de1a13aff0e44d88ce8cf25b595ec0/deploy/selfhost/realtime-check.py \
   --output /tmp/edrc-realtime-check.py && \
 sudo python3 /tmp/edrc-realtime-check.py
 ```
