@@ -26,6 +26,25 @@ interface CatalogStats {
   partial?: boolean;
 }
 
+interface ArchiveState {
+  phase: 'idle' | 'downloading' | 'done' | 'failed' | 'cancelled';
+  source: string | null;
+  path: string | null;
+  bytes_done: number;
+  bytes_total: number | null;
+  downloaded_at: string | null;
+  error: string | null;
+  updated_at: string | null;
+}
+
+interface ArchiveStatus {
+  state: ArchiveState;
+  live: boolean;
+  interrupted: boolean;
+  percent: number | null;
+  log: string[];
+}
+
 interface Status {
   state: GalaxyCatalogImport;
   live: boolean;
@@ -35,6 +54,8 @@ interface Status {
   backends: { backend: 'pg' | 'supabase' | null; dbUrl: boolean; supabase: boolean };
   stats: CatalogStats | null;
   dump_url: string;
+  archive_dir: string;
+  archive: ArchiveStatus | null;
 }
 
 const POLL_MS = 4000;
@@ -102,11 +123,14 @@ export default function GalaxyCatalogTab() {
 
   // While the import runs in the web process, poll for progress.
   const running = !!status && (status.live || (status.state.phase === 'running' && !status.interrupted));
+  const archive = status?.archive ?? null;
+  const downloadRunning = !!archive && (archive.live || (archive.state.phase === 'downloading' && !archive.interrupted));
+  const interruptedDownload = !!archive && archive.state.phase === 'downloading' && !archive.live && archive.interrupted;
   useEffect(() => {
-    if (!running) return;
+    if (!running && !downloadRunning) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [running, load]);
+  }, [running, downloadRunning, load]);
 
   const act = async (action: string, extra: Record<string, unknown> = {}) => {
     setBusy(action);
@@ -122,6 +146,8 @@ export default function GalaxyCatalogTab() {
       if (!response.ok && response.status !== 409) throw new Error(payload?.error || `HTTP ${response.status}`);
       if (response.status === 409) setMessage(payload?.reason || 'Импорт уже запущен');
       else if (action === 'cancel') setMessage(payload?.cancelled ? 'Импорт остановлен' : 'Импорт не выполнялся');
+      else if (action === 'cancel-download') setMessage(payload?.cancelled ? 'Скачивание остановлено' : 'Скачивание не выполнялось');
+      else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
       else setMessage('Импорт запущен в фоне. Страницу можно закрыть — процесс продолжится.');
       await load();
     } catch (error) {
@@ -181,21 +207,104 @@ export default function GalaxyCatalogTab() {
       </div>
 
       <div style={cardStyle}>
+        <div style={labelStyle}>Архив дампа на диске</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <button
+            type="button"
+            className={downloadRunning ? 'btn' : 'btn btn-cyan'}
+            disabled={busy !== null || downloadRunning || running}
+            onClick={() => void act('download')}
+            title={running ? 'Дождитесь окончания импорта: он читает этот файл' : undefined}
+          >
+            {interruptedDownload ? 'Продолжить скачивание' : 'Скачать архив'}
+          </button>
+          <button type="button" className="btn" disabled={busy !== null || !downloadRunning} onClick={() => void act('cancel-download')}>
+            Остановить скачивание
+          </button>
+        </div>
+
+        {archive && downloadRunning && archive.percent != null && (
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ height: 8, background: '#22252a', borderRadius: 4, overflow: 'hidden' }}>
+              <div style={{ width: `${archive.percent}%`, height: '100%', background: '#38bdf8', transition: 'width 0.6s' }} />
+            </div>
+            <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 4 }}>
+              {archive.percent.toFixed(1)}% — {formatBytes(archive.state.bytes_done)}
+              {archive.state.bytes_total ? ` из ${formatBytes(archive.state.bytes_total)}` : ''}
+            </div>
+          </div>
+        )}
+
+        {archive?.state.phase === 'done' && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginBottom: 8 }}>
+            <IconCheckCircle size={14} color="#22c55e" />
+            <span>
+              На диске: {formatBytes(archive.state.bytes_done)}
+              {archive.state.downloaded_at ? `, скачан ${formatTime(archive.state.downloaded_at)}` : ''}
+            </span>
+          </div>
+        )}
+        {archive?.state.phase === 'failed' && archive.state.error && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
+            <IconXCircle size={14} color="#ef4444" />
+            <span>Скачивание: {archive.state.error}</span>
+          </div>
+        )}
+        {interruptedDownload && (
+          <div style={{ fontSize: 12, color: '#e67e22', marginBottom: 8 }}>
+            Скачивание прервано перезапуском процесса — уже скачанные байты на месте, нажмите «Продолжить скачивание».
+          </div>
+        )}
+
+        <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Дамп <code>systems.json.gz</code> (~6 ГиБ) хранится в <code>{status?.archive_dir || 'data/spansh'}</code>
+          (в контейнере — томовый volume, переживает пересборку образа). Импорт всегда читает дамп <strong>с диска</strong>:
+          при обрыве соединения скачивание продолжает с сохранённого байта (HTTP Range), а «Продолжить импорт»
+          перечитывает локальный файл и пропускает уже записанные системы — заново скачивать 6 ГиБ не нужно.
+          Повреждённый архив определяется проверкой gzip и скачивается заново.
+        </div>
+
+        {!!archive?.log?.length && (
+          <pre
+            style={{
+              marginTop: 10,
+              maxHeight: 140,
+              overflow: 'auto',
+              background: '#0f1113',
+              border: '1px solid #262a2e',
+              borderRadius: 4,
+              padding: 8,
+              fontSize: 11,
+              color: '#9ca3af',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {archive.log.join('\n')}
+          </pre>
+        )}
+      </div>
+
+      <div style={cardStyle}>
         <div style={labelStyle}>Импорт</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <button
             type="button"
             className="btn btn-cyan"
-            disabled={busy !== null || running || backendMissing}
-            onClick={() => void act('start', canResume ? {} : { fresh: true })}
+            disabled={busy !== null || running || backendMissing || downloadRunning}
+            title={downloadRunning ? 'Дождитесь окончания скачивания архива' : undefined}
+            onClick={() => void act('start')}
           >
             {canResume ? 'Продолжить импорт' : 'Запустить импорт'}
           </button>
-          {canResume && (
-            <button type="button" className="btn" disabled={busy !== null} onClick={() => void act('start', { fresh: true })}>
-              Начать заново
-            </button>
-          )}
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null || running || downloadRunning || backendMissing}
+            onClick={() => void act('start', { fresh: true })}
+            title="Скачать свежий дамп заново и импортировать с первой записи"
+          >
+            Начать заново (свежий дамп)
+          </button>
           <button type="button" className="btn" disabled={busy !== null || !running} onClick={() => void act('cancel')}>
             Остановить
           </button>
@@ -264,15 +373,14 @@ export default function GalaxyCatalogTab() {
           Режим записи: <strong style={{ color: '#e5e7eb' }}>{status?.backends.backend ?? 'недоступен'}</strong>
           {status?.backends.backend === 'supabase' && ' (PostgREST, медленнее — добавьте SUPABASE_DB_URL для прямого Postgres)'}
           <br />
-          Скачивается ночной дамп <code>systems.json.gz</code> (~6 ГиБ) потоком, без записи на диск; RAM &lt; 1 ГБ,
-          время — от 20 минут до нескольких часов в зависимости от канала. Прерванный импорт продолжается: дамп
-          скачивается заново (gzip нельзя начать с середины), но уже записанные системы пропускаются, поэтому
-          повторная запись в базу не идёт. Повторы одной системы в дампе (то же имя или тот же id64 в одной пачке)
-          схлопываются в одну строку — иначе Postgres обрывает upsert ошибкой «cannot affect row a second time».
-          Пачки, не уложившиеся в statement timeout базы, автоматически делятся пополам и повторяются.
-          После завершения файл точек (~36 МБ) загружается в бакет
-          <code> galaxy-data</code>, и слой «Все системы» на карте начинает работать. Счётчики каталога ниже
-          могут отставать на минуту — их отдаёт кэш.
+          Если архива на диске ещё нет, импорт сначала скачает его (с возобновлением при обрывах), а затем
+          прочитает с диска; RAM &lt; 1 ГБ. Прерванный импорт продолжается: дамп перечитывается с диска (сеть
+          уже не нужна), уже записанные системы пропускаются, поэтому повторная запись в базу не идёт.
+          Повторы одной системы в дампе (то же имя или тот же id64 в одной пачке) схлопываются в одну строку —
+          иначе Postgres обрывает upsert ошибкой «cannot affect row a second time». Пачки, не уложившиеся в
+          statement timeout базы, автоматически делятся пополам и повторяются. После завершения файл точек
+          (~36 МБ) загружается в бакет <code>galaxy-data</code>, и слой «Все системы» на карте начинает
+          работать. Счётчики каталога ниже могут отставать на минуту — их отдаёт кэш.
         </div>
 
         {!!status?.log?.length && (
