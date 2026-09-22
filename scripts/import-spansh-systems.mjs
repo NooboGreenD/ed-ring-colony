@@ -40,7 +40,7 @@ import {
   streamObjects,
   toGalaxySystemRow,
 } from '../src/lib/galaxySpanshStream.ts';
-import { PG_BATCH_SIZE, SUPABASE_BATCH_SIZE, pgInsertSql, pgLiteral } from '../src/lib/galaxyImport.ts';
+import { PG_BATCH_SIZE, SUPABASE_BATCH_SIZE, pgLiteral, writeGalaxyRowsPg, writeGalaxyRowsSupabase } from '../src/lib/galaxyImport.ts';
 
 export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
 
@@ -172,13 +172,17 @@ class PgWriter {
 
   async flush() {
     if (this.rows.length === 0) return 0;
-    const sql = pgInsertSql(this.rows);
-    const { error } = await this.query(sql);
-    if (error) throw error;
-    const n = this.rows.length;
-    this.written += n;
+    const batch = this.rows;
     this.rows = [];
-    return n;
+    // One connection for the whole batch: a conflict retry runs BEGIN/DELETE/INSERT/COMMIT.
+    const client = await this.pool.connect();
+    try {
+      const n = await writeGalaxyRowsPg((sql) => client.query(sql), batch);
+      this.written += n;
+      return n;
+    } finally {
+      client.release();
+    }
   }
 
   async query(sql) {
@@ -235,13 +239,10 @@ class SupabaseWriter {
 
   async flush() {
     if (this.rows.length === 0) return 0;
-    const { error } = await this.supabase
-      .from('galaxy_systems')
-      .upsert(this.rows, { onConflict: 'name_lc' });
-    if (error) throw new Error(`supabase upsert failed: ${error.message}`);
-    const n = this.rows.length;
-    this.written += n;
+    const batch = this.rows;
     this.rows = [];
+    const n = await writeGalaxyRowsSupabase(this.supabase, batch);
+    this.written += n;
     return n;
   }
 

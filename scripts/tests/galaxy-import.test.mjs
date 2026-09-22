@@ -10,12 +10,15 @@ import {
 } from '../../src/lib/galaxySpanshStream.ts';
 import {
   SUPABASE_BATCH_SIZE,
+  collapseGalaxyBatch,
   createSupabaseWriter,
   formatBytes,
+  pgDeleteConflictsSql,
   pgInsertSql,
   pgLiteral,
   readPointsFromSupabase,
   runGalaxyImport,
+  writeGalaxyRowsPg,
 } from '../../src/lib/galaxyImport.ts';
 import {
   EMPTY_IMPORT_STATE,
@@ -155,7 +158,7 @@ function memoryWriter(table, batchSize = 100) {
 }
 
 /** Chainable PostgREST look-alike over the fake table, with an optional row cap. */
-function fakeSupabase(table, { maxRows = null, failUpsert = null, countBias = 0 } = {}) {
+function fakeSupabase(table, { maxRows = null, failUpsert = null, countBias = 0, rejectDuplicateConflictKeys = false } = {}) {
   const calls = { upserts: [], pages: [], counts: 0 };
 
   const from = (name) => {
@@ -183,9 +186,26 @@ function fakeSupabase(table, { maxRows = null, failUpsert = null, countBias = 0 
         return builder;
       },
       async upsert(rows, options) {
-        calls.upserts.push({ size: rows.length, options });
+        calls.upserts.push({ size: rows.length, options, rows });
         if (failUpsert) return { error: { message: failUpsert }, data: null };
         assert.equal(options.onConflict, 'name_lc');
+        if (rejectDuplicateConflictKeys) {
+          const names = new Set();
+          const ids = new Set();
+          for (const row of rows) {
+            if (names.has(row.name_lc) || ids.has(row.id64)) {
+              return {
+                error: {
+                  code: '21000',
+                  message: 'ON CONFLICT DO UPDATE command cannot affect row a second time',
+                },
+                data: null,
+              };
+            }
+            names.add(row.name_lc);
+            ids.add(row.id64);
+          }
+        }
         table.upsert(rows);
         return { error: null, data: null };
       },
@@ -281,6 +301,81 @@ test('pgInsertSql escapes names and upserts on name_lc', () => {
   assert.equal(pgLiteral(undefined), 'NULL');
   assert.equal(pgLiteral(Number.NaN), 'NULL');
   assert.equal(pgLiteral(12.5), '12.5');
+});
+
+test('collapseGalaxyBatch keeps one row per name_lc and per id64', () => {
+  const [first, second, third] = rowsOf(makeRecords(3));
+  const newerSameName = {
+    ...first,
+    id64: '9001',
+    x: 42,
+    updated_at: '2026-09-21T00:00:00Z',
+    name: `  ${first.name.toUpperCase()}  `,
+  };
+  // Same physical system (id64) under a new name, older than `third`'s timestamp
+  // so the fresher catalog row wins and the stale name is dropped.
+  const renamedOlder = {
+    ...second,
+    name: 'Renamed Twin',
+    name_lc: 'renamed twin',
+    id64: third.id64,
+    updated_at: '2020-01-01T00:00:00Z',
+  };
+
+  const collapsed = collapseGalaxyBatch([first, second, third, newerSameName, renamedOlder]);
+  const names = collapsed.map((row) => row.name_lc);
+  assert.equal(new Set(names).size, names.length, 'name_lc is unique in the batch');
+  assert.equal(new Set(collapsed.map((row) => row.id64)).size, collapsed.length, 'id64 is unique in the batch');
+  assert.deepEqual(names, [first.name_lc, second.name_lc, third.name_lc]);
+  assert.equal(collapsed[0].x, 42, 'the newer snapshot of a repeated name wins');
+  assert.equal(collapsed[0].id64, '9001');
+  assert.equal(collapsed.find((row) => row.name_lc === 'renamed twin'), undefined, 'stale id64 twin is dropped');
+  assert.equal(collapsed[2].id64, third.id64);
+
+  const sql = pgInsertSql([first, newerSameName]);
+  assert.equal(sql.split('),(').length, 1, 'duplicate name_lc is not emitted twice');
+  assert.match(sql, /ON CONFLICT \(name_lc\) DO UPDATE SET/);
+  assert.ok(sql.includes("'9001'"), 'the fresher id64 is the one written');
+  const deleteSql = pgDeleteConflictsSql([collapsed[0], collapsed[2]]);
+  assert.match(deleteSql, /^DELETE FROM galaxy_systems WHERE name_lc IN \(/);
+  assert.match(deleteSql, / OR id64 IN \(/);
+  assert.ok(deleteSql.includes("'9001'"));
+});
+
+test('writeGalaxyRowsPg retries a unique violation inside one transaction', async () => {
+  const rows = rowsOf(makeRecords(2));
+  const statements = [];
+  let inserts = 0;
+  const written = await writeGalaxyRowsPg(async (sql) => {
+    statements.push(sql);
+    if (sql.startsWith('INSERT') && inserts++ === 0) {
+      const error = new Error('duplicate key value violates unique constraint "uq_galaxy_systems_id64"');
+      error.code = '23505';
+      throw error;
+    }
+  }, rows);
+  assert.equal(written, 2);
+  assert.equal(statements[0].startsWith('INSERT'), true);
+  assert.equal(statements[1], 'BEGIN');
+  assert.match(statements[2], /^DELETE FROM galaxy_systems/);
+  assert.equal(statements[3].startsWith('INSERT'), true);
+  assert.equal(statements[4], 'COMMIT');
+});
+
+test('writeGalaxyRowsPg splits a batch Postgres refuses to upsert twice', async () => {
+  const statements = [];
+  await writeGalaxyRowsPg(async (sql) => {
+    statements.push(sql);
+    if (sql.startsWith('INSERT') && sql.includes('),(')) {
+      const error = new Error('ON CONFLICT DO UPDATE command cannot affect row a second time');
+      error.code = '21000';
+      throw error;
+    }
+  }, rowsOf(makeRecords(4)));
+  const inserts = statements.filter((sql) => sql.startsWith('INSERT'));
+  assert.ok(inserts.some((sql) => sql.includes('),(')), 'the full batch is attempted first');
+  assert.ok(inserts.some((sql) => !sql.includes('),(')), 'a rejected batch is retried row by row');
+  assert.equal(statements.includes('BEGIN'), false, 'cardinality is not "fixed" by deleting the batch');
 });
 
 // ─────────────────────── the pipeline ───────────────────────
@@ -454,6 +549,152 @@ test('supabase writer batches upserts and reports failures', async () => {
   const failing = fakeSupabase(fakeTable(), { failUpsert: 'duplicate key value' });
   const badWriter = createSupabaseWriter(failing.client, { batchSize: 1 });
   await assert.rejects(() => badWriter.add(rows[0]), /supabase upsert failed: duplicate key value/);
+});
+
+test('supabase writer collapses duplicate names instead of failing the admin import', async () => {
+  const records = makeRecords(5);
+  records.push({
+    ...records[0],
+    id64Raw: records[0].id64Raw,
+    name: `  ${records[0].name.toUpperCase()}  `,
+    updateTime: '2026-09-21T00:00:00Z',
+    coords: { ...records[0].coords, x: 1234 },
+  });
+  const table = fakeTable();
+  const { client, calls } = fakeSupabase(table, { rejectDuplicateConflictKeys: true });
+  const result = await runGalaxyImport({
+    writer: createSupabaseWriter(client, { batchSize: 10 }),
+    fetchImpl: async () => dumpResponse(gzDump(records)),
+  });
+
+  assert.equal(result.processed, records.length);
+  assert.equal(result.systemsCount, 5, 'the repeated name is one row, not a failed upsert');
+  assert.equal(result.written, 5);
+  assert.equal(calls.upserts.length, 1, 'duplicates are collapsed before the request, not retried');
+  assert.equal(calls.upserts[0].size, 5);
+  assert.equal(table.rows.get('synthetic system 0').x, 1234, 'the newer dump snapshot wins');
+  assert.equal(result.points.rebuiltFromTable, true, 'the streamed cloud counted the duplicate');
+  assert.equal(result.points.count, 5);
+});
+
+test('supabase writer splits a batch that PostgREST still rejects as affecting a row twice', async () => {
+  const table = fakeTable();
+  let rejected = 0;
+  const client = {
+    from(name) {
+      assert.equal(name, 'galaxy_systems');
+      return {
+        async upsert(rows, options) {
+          assert.equal(options.onConflict, 'name_lc');
+          if (rows.length > 1) {
+            rejected += 1;
+            return {
+              error: {
+                code: '21000',
+                message: 'ON CONFLICT DO UPDATE command cannot affect row a second time',
+              },
+              data: null,
+            };
+          }
+          table.upsert(rows);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  const writer = createSupabaseWriter(client, { batchSize: 4 });
+  for (const row of rowsOf(makeRecords(4))) await writer.add(row);
+  assert.equal(writer.written, 4);
+  assert.equal(table.count(), 4);
+  assert.ok(rejected > 0, 'the exact admin-panel error is retried, not fatal');
+});
+
+test('supabase writer updates a system whose id64 is already stored under another name', async () => {
+  const stored = new Map();
+  stored.set(1, {
+    id: 1,
+    id64: '1',
+    name: 'Old Name',
+    name_lc: 'old name',
+    x: 0,
+    y: 0,
+    z: 0,
+    main_star: null,
+    star_type: 'g',
+    star_giant_class: 'dwarf',
+    needs_permit: null,
+    distance_from_sols: 0,
+    distance_from_sgra: 1,
+    updated_at: '2020-01-01T00:00:00Z',
+  });
+  const client = {
+    from() {
+      return {
+        async upsert(rows) {
+          for (const row of rows) {
+            for (const existing of stored.values()) {
+              if (existing.id64 === row.id64 && existing.name_lc !== row.name_lc) {
+                return {
+                  error: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "uq_galaxy_systems_id64"',
+                  },
+                  data: null,
+                };
+              }
+            }
+          }
+          for (const row of rows) stored.set(stored.size + 1, { id: stored.size + 1, ...row });
+          return { error: null, data: null };
+        },
+        select() {
+          return {
+            eq(column, value) {
+              return {
+                async maybeSingle() {
+                  const found = [...stored.values()].find((row) => row[column] === value) ?? null;
+                  return { data: found, error: null };
+                },
+              };
+            },
+          };
+        },
+        update(patch) {
+          return {
+            async eq(column, value) {
+              const found = [...stored.values()].find((row) => row[column] === value);
+              if (!found) return { error: { message: 'missing row' }, data: null };
+              Object.assign(found, patch);
+              return { error: null, data: null };
+            },
+          };
+        },
+        delete() {
+          return {
+            async eq(column, value) {
+              for (const [id, row] of stored) {
+                if (row[column] === value) stored.delete(id);
+              }
+              return { error: null, data: null };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const writer = createSupabaseWriter(client, { batchSize: 1 });
+  const row = rowsOf(makeRecords(1))[0];
+  row.id64 = '1';
+  row.name = 'New Name';
+  row.name_lc = 'new name';
+  await writer.add(row);
+
+  assert.equal(stored.size, 1);
+  const kept = [...stored.values()][0];
+  assert.equal(kept.name_lc, 'new name');
+  assert.equal(kept.id64, '1');
+  assert.equal(kept.name, 'New Name');
 });
 
 test('readPointsFromSupabase pages past a PostgREST row cap and rejects truncation', async () => {

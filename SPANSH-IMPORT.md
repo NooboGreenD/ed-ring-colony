@@ -208,7 +208,13 @@ GET https://edringcolony.ru/api/galaxy/all-systems 404 (Not Found)
 1. `curl -s https://edringcolony.ru/api/galaxy/stats | python3 -m json.tool`
    - `systems_count: 0` → каталог пуст, запустите импорт (Админка →
      «Каталог систем» либо `POST /api/cron/galaxy-import`);
-   - `import.phase: "failed"` → там же текст ошибки (`import.error`);
+   - `import.phase: "failed"` → там же текст ошибки (`import.error`).
+     Текст `ON CONFLICT DO UPDATE command cannot affect row a second time`
+     значит, что в одной пачке upsert было два одинаковых `name_lc` (или
+     `id64`): дамп иногда повторяет систему, а нормализация имени схлопывает
+     варианты написания. Текущий импорт убирает такие повторы до записи;
+     если ошибка всё ещё видна — веб-образ не обновлён, пересоберите его и
+     запустите импорт снова;
    - `import.phase: "running"` → импорт идёт, облако появится после завершения;
    - `systems_count > 0`, но `points.uploaded: false` → файл точек не залился
      в storage: карта соберёт его из таблицы при первом включении слоя

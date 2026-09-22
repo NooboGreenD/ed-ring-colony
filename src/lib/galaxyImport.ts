@@ -85,9 +85,99 @@ export const GALAXY_ROW_COLUMNS = [
   'star_giant_class', 'needs_permit', 'distance_from_sols', 'distance_from_sgra', 'updated_at',
 ] as const;
 
+/**
+ * Later dump row replaces the one already chosen when timestamps tie or are
+ * missing. A parsed `updated_at` wins only when both sides have one and they
+ * differ — that is the fresher catalog snapshot.
+ */
+export function galaxyRowSupersedes(candidate: GalaxySystemRecord, incumbent: GalaxySystemRecord): boolean {
+  const next = Date.parse(candidate.updated_at ?? '');
+  const prev = Date.parse(incumbent.updated_at ?? '');
+  if (Number.isFinite(next) && Number.isFinite(prev) && next !== prev) return next > prev;
+  return true;
+}
+
+/**
+ * One `INSERT … ON CONFLICT DO UPDATE` cannot touch the same row twice.
+ * Postgres raises `ON CONFLICT DO UPDATE command cannot affect row a second
+ * time` (21000) when a batch contains two `name_lc` values, and the second
+ * unique index (`id64`) then fails the statement with 23505 if those rows
+ * differ only by name. The Spansh dump does contain such repeats (renames,
+ * whitespace/case variants that collapse under `normalizeSystemName`).
+ *
+ * Keep one row per `name_lc` and one per `id64`. Order of the survivors follows
+ * the first time their name was seen, so two builds of the same batch match.
+ */
+export function collapseGalaxyBatch(rows: GalaxySystemRecord[]): GalaxySystemRecord[] {
+  if (rows.length < 2) return rows.slice();
+
+  const byName = new Map<string, GalaxySystemRecord>();
+  for (const row of rows) {
+    const prev = byName.get(row.name_lc);
+    if (!prev || galaxyRowSupersedes(row, prev)) byName.set(row.name_lc, row);
+  }
+
+  const byId = new Map<string, GalaxySystemRecord>();
+  const dropped = new Set<string>();
+  for (const row of byName.values()) {
+    const prev = byId.get(row.id64);
+    if (!prev) {
+      byId.set(row.id64, row);
+      continue;
+    }
+    if (galaxyRowSupersedes(row, prev)) {
+      dropped.add(prev.name_lc);
+      byId.set(row.id64, row);
+    } else {
+      dropped.add(row.name_lc);
+    }
+  }
+
+  const out: GalaxySystemRecord[] = [];
+  const emitted = new Set<string>();
+  for (const row of rows) {
+    if (dropped.has(row.name_lc) || emitted.has(row.name_lc)) continue;
+    const kept = byName.get(row.name_lc);
+    if (!kept || byId.get(kept.id64) !== kept) continue;
+    out.push(kept);
+    emitted.add(kept.name_lc);
+  }
+  return out;
+}
+
+interface DbErrorLike {
+  code?: string;
+  message?: string;
+}
+
+function asDbError(error: unknown): DbErrorLike {
+  if (error && typeof error === 'object') {
+    const record = error as { code?: unknown; message?: unknown };
+    return {
+      code: typeof record.code === 'string' ? record.code : undefined,
+      message: typeof record.message === 'string' ? record.message : String(error),
+    };
+  }
+  return { message: String(error) };
+}
+
+/** Postgres 21000: the same conflict key appears twice in one upsert. */
+export function isGalaxyCardinalityViolation(error: unknown): boolean {
+  const failure = asDbError(error);
+  return failure.code === '21000' || /cannot affect row a second time/i.test(failure.message || '');
+}
+
+/** Postgres 23505: the other unique index (`id64` or `name_lc`) already holds the value. */
+export function isGalaxyUniqueViolation(error: unknown): boolean {
+  const failure = asDbError(error);
+  return failure.code === '23505' || /duplicate key value violates unique constraint/i.test(failure.message || '');
+}
+
 /** `INSERT … ON CONFLICT (name_lc) DO UPDATE` for a whole batch (no parameters). */
 export function pgInsertSql(rows: GalaxySystemRecord[]): string {
-  const values = rows
+  const batch = collapseGalaxyBatch(rows);
+  if (batch.length === 0) throw new Error('pgInsertSql: empty batch');
+  const values = batch
     .map((row) => `(${GALAXY_ROW_COLUMNS.map((column) => pgLiteral(row[column])).join(',')})`)
     .join(',');
   return (
@@ -97,6 +187,202 @@ export function pgInsertSql(rows: GalaxySystemRecord[]): string {
       .map((column) => `${column} = EXCLUDED.${column}`)
       .join(', ')
   );
+}
+
+/**
+ * Remove stored rows that would block this batch on either unique index.
+ * Run inside the same transaction as the following insert: a resumed import
+ * skips records it believes are already stored, so a delete must not commit
+ * unless the replacement insert commits too.
+ */
+export function pgDeleteConflictsSql(rows: GalaxySystemRecord[]): string {
+  const batch = collapseGalaxyBatch(rows);
+  if (batch.length === 0) throw new Error('pgDeleteConflictsSql: empty batch');
+  const names = batch.map((row) => pgLiteral(row.name_lc)).join(',');
+  const ids = batch.map((row) => pgLiteral(row.id64)).join(',');
+  return `DELETE FROM ${GALAXY_TABLE} WHERE name_lc IN (${names}) OR id64 IN (${ids})`;
+}
+
+async function rollbackQuietly(query: (sql: string) => Promise<unknown>): Promise<void> {
+  try {
+    await query('ROLLBACK');
+  } catch {
+    // The connection may already be dead. The original error is the one to surface.
+  }
+}
+
+/**
+ * Write one batch through a direct Postgres connection.
+ *
+ * Duplicate keys inside the batch are collapsed first (that is the admin-panel
+ * failure: PostgREST and this SQL both raise 21000). A unique violation against
+ * a row already stored under the other key is reconciled in a transaction.
+ * A cardinality error that somehow survives the collapse is retried on halves,
+ * down to a single row, instead of aborting the whole catalog download.
+ */
+export async function writeGalaxyRowsPg(
+  query: (sql: string) => Promise<unknown>,
+  rows: GalaxySystemRecord[],
+): Promise<number> {
+  const batch = collapseGalaxyBatch(rows);
+  if (batch.length === 0) return 0;
+  await insertPgChunk(query, batch);
+  return batch.length;
+}
+
+async function insertPgChunk(
+  query: (sql: string) => Promise<unknown>,
+  rows: GalaxySystemRecord[],
+): Promise<void> {
+  try {
+    await query(pgInsertSql(rows));
+    return;
+  } catch (error) {
+    if (isGalaxyCardinalityViolation(error) && rows.length > 1) {
+      const middle = Math.floor(rows.length / 2);
+      await insertPgChunk(query, rows.slice(0, middle));
+      await insertPgChunk(query, rows.slice(middle));
+      return;
+    }
+    if (!isGalaxyUniqueViolation(error)) throw error;
+  }
+
+  await query('BEGIN');
+  try {
+    await query(pgDeleteConflictsSql(rows));
+    await query(pgInsertSql(rows));
+    await query('COMMIT');
+  } catch (error) {
+    await rollbackQuietly(query);
+    throw error;
+  }
+}
+
+interface ConflictRow {
+  id: number;
+  id64: string;
+  name: string;
+  name_lc: string;
+}
+
+interface GalaxyWriteError {
+  message: string;
+  code?: string;
+}
+
+/**
+ * The slice of a Supabase client the catalog writer uses. Kept narrow so the
+ * CLI script and the tests can stand in for PostgREST without the SDK.
+ */
+export interface GalaxyWriteClient {
+  from(table: string): {
+    upsert(
+      values: unknown,
+      options: { onConflict: string },
+    ): PromiseLike<{ error: GalaxyWriteError | null }>;
+    select(columns: string): {
+      eq(column: string, value: string): {
+        maybeSingle(): PromiseLike<{ data: ConflictRow | null; error: GalaxyWriteError | null }>;
+      };
+    };
+    update(values: unknown): {
+      eq(column: string, value: number | string): PromiseLike<{ error: GalaxyWriteError | null }>;
+    };
+    delete(): {
+      eq(column: string, value: number | string): PromiseLike<{ error: GalaxyWriteError | null }>;
+    };
+  };
+}
+
+function upsertFailure(error: GalaxyWriteError, row?: GalaxySystemRecord): Error {
+  const where = row ? ` (${row.name_lc} / ${row.id64})` : '';
+  return new Error(`supabase upsert failed: ${error.message}${where}`);
+}
+
+/**
+ * Write one batch through PostgREST — the path the admin tab uses when the
+ * web process has no `DATABASE_URL`.
+ *
+ * Same rules as {@link writeGalaxyRowsPg}: collapse duplicates before the
+ * upsert (otherwise the browser-started import dies on the first repeated
+ * system), then split a batch Postgres still rejects, and finally reconcile a
+ * single row whose `id64` is already stored under another name.
+ */
+export async function writeGalaxyRowsSupabase(
+  client: GalaxyWriteClient,
+  rows: GalaxySystemRecord[],
+): Promise<number> {
+  const batch = collapseGalaxyBatch(rows);
+  if (batch.length === 0) return 0;
+  await upsertSupabaseChunk(client, batch);
+  return batch.length;
+}
+
+async function upsertSupabaseChunk(client: GalaxyWriteClient, rows: GalaxySystemRecord[]): Promise<void> {
+  const { error } = await client
+    .from(GALAXY_TABLE)
+    .upsert(rows as unknown as Record<string, unknown>[], { onConflict: 'name_lc' });
+  if (!error) return;
+  if (rows.length > 1 && (isGalaxyCardinalityViolation(error) || isGalaxyUniqueViolation(error))) {
+    const middle = Math.floor(rows.length / 2);
+    await upsertSupabaseChunk(client, rows.slice(0, middle));
+    await upsertSupabaseChunk(client, rows.slice(middle));
+    return;
+  }
+  if (rows.length === 1 && isGalaxyUniqueViolation(error)) {
+    await reconcileGalaxyRow(client, rows[0]);
+    return;
+  }
+  throw upsertFailure(error, rows.length === 1 ? rows[0] : undefined);
+}
+
+/**
+ * A single row lost the upsert because the other unique index already holds
+ * `id64` or `name_lc`. Update the id64 row in place (it is the physical
+ * system) after moving a stale name occupant out of the way. The name occupant
+ * is restored if that update fails, so a resumed import — which will not
+ * rewrite records it already skipped — does not lose the only copy.
+ */
+async function reconcileGalaxyRow(client: GalaxyWriteClient, row: GalaxySystemRecord): Promise<void> {
+  const table = () => client.from(GALAXY_TABLE);
+  const byId = await table().select('id,id64,name,name_lc').eq('id64', row.id64).maybeSingle();
+  if (byId.error) throw upsertFailure(byId.error, row);
+  const byName = await table().select('id,id64,name,name_lc').eq('name_lc', row.name_lc).maybeSingle();
+  if (byName.error) throw upsertFailure(byName.error, row);
+
+  const idRow = byId.data;
+  const nameRow = byName.data;
+  const nameIsOther = Boolean(nameRow && (!idRow || nameRow.id !== idRow.id));
+
+  if (nameIsOther && nameRow) {
+    const tombstone = `__edrc_replaced_${nameRow.id}__`;
+    const renamed = await table().update({ name: tombstone, name_lc: tombstone }).eq('id', nameRow.id);
+    if (renamed.error) throw upsertFailure(renamed.error, row);
+  }
+
+  try {
+    if (idRow) {
+      const updated = await table().update(row).eq('id', idRow.id);
+      if (updated.error) throw upsertFailure(updated.error, row);
+    } else {
+      const inserted = await table().upsert([row], { onConflict: 'name_lc' });
+      if (inserted.error) throw upsertFailure(inserted.error, row);
+    }
+  } catch (error) {
+    if (nameIsOther && nameRow) {
+      await table().update({ name: nameRow.name, name_lc: nameRow.name_lc }).eq('id', nameRow.id);
+    }
+    throw error;
+  }
+
+  if (nameIsOther && nameRow) {
+    const removed = await table().delete().eq('id', nameRow.id);
+    if (removed.error) {
+      // The canonical row already has the new data. A leftover tombstone must
+      // not fail the import; the next full pass does not look it up by name.
+      console.error(`[galaxy-import] could not delete replaced row ${nameRow.id}: ${removed.error.message}`);
+    }
+  }
 }
 
 function starTypeOf(value: unknown): StarClass {
@@ -143,9 +429,9 @@ export async function createPgWriter(
     if (rows.length === 0) return 0;
     const batch = rows;
     rows = [];
-    await client.query(pgInsertSql(batch));
-    written += batch.length;
-    return batch.length;
+    const count = await writeGalaxyRowsPg((sql) => client.query(sql), batch);
+    written += count;
+    return count;
   };
 
   return {
@@ -196,12 +482,12 @@ export function createSupabaseWriter(
     if (rows.length === 0) return 0;
     const batch = rows;
     rows = [];
-    const { error } = await client
-      .from(GALAXY_TABLE)
-      .upsert(batch as unknown as Record<string, unknown>[], { onConflict: 'name_lc' });
-    if (error) throw new Error(`supabase upsert failed: ${error.message}`);
-    written += batch.length;
-    return batch.length;
+    // The admin tab hits this writer whenever the web process has no direct
+    // Postgres URL. A repeated system name in the batch is a hard Postgres
+    // error ("cannot affect row a second time"), not a conflict update.
+    const count = await writeGalaxyRowsSupabase(client as unknown as GalaxyWriteClient, batch);
+    written += count;
+    return count;
   };
 
   return {
@@ -483,10 +769,11 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
 
   let points: GalaxyImportRunResult['points'] = null;
   if (streamed) {
-    if (resumeFrom > 0 || streamed.size < systemsCount) {
-      // A resumed pass only saw the tail of the dump, so the streamed cloud is
-      // partial by construction: rebuild it from the table instead.
-      log('Rebuilding the point cloud from the table (resumed or incomplete pass)');
+    if (resumeFrom > 0 || streamed.size !== systemsCount) {
+      // A resumed pass only saw the tail of the dump, and a pass that collapsed
+      // duplicate names streamed more points than rows. Either way the streamed
+      // cloud is not the catalog: rebuild it from the table instead.
+      log('Rebuilding the point cloud from the table (resumed, duplicate or incomplete pass)');
       // Release the partial cloud before allocating the full one (~24 MB each).
       streamed = null;
       const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024));
@@ -501,9 +788,13 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   }
 
   const durationMs = now() - startedAt;
+  // On a full pass the table is exactly this dump, so parsed-minus-rows is the
+  // number of repeated names/id64s that were collapsed instead of failing the upsert.
+  const collapsed = resumeFrom === 0 ? Math.max(0, processed - systemsCount) : 0;
   log(
     `Import pass done in ${(durationMs / 1000).toFixed(1)} s: ${processed.toLocaleString()} parsed, ` +
-    `${skipped.toLocaleString()} skipped, ${invalid} invalid, ${systemsCount.toLocaleString()} rows in the table`,
+    `${skipped.toLocaleString()} skipped, ${invalid} invalid, ${systemsCount.toLocaleString()} rows in the table` +
+    (collapsed ? ` (${collapsed.toLocaleString()} duplicate names collapsed)` : ''),
   );
   return {
     processed,
