@@ -103,7 +103,9 @@ docker run --rm --env-file .env.production \
 - `DATABASE_URL` или `SUPABASE_DB_URL` — прямой Postgres (быстрее: крупные
   `INSERT … ON CONFLICT` пачками по 2000 строк, поддерживается `--truncate`);
 - `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` — через PostgREST
-  (upsert пачками по 1000 строк).
+  (upsert пачками по 200 строк; PostgREST даёт каждому запросу лишь несколько
+  секунд, поэтому пачки маленькие, а не уложившиеся в `statement_timeout`
+  автоматически делятся пополам и повторяются).
 
 Полезные флаги:
 
@@ -215,6 +217,12 @@ GET https://edringcolony.ru/api/galaxy/all-systems 404 (Not Found)
      варианты написания. Текущий импорт убирает такие повторы до записи;
      если ошибка всё ещё видна — веб-образ не обновлён, пересоберите его и
      запустите импорт снова;
+   - `supabase upsert failed: canceling statement due to statement timeout`
+     значит, что база не уложила пачку в лимит времени PostgREST. Текущий
+     импорт пишет маленькими пачками (200 строк), а медленные пачки сам делит
+     пополам и повторяет с backoff — просто продолжите импорт. Если ошибка
+     повторяется регулярно, задайте веб-процессу `SUPABASE_DB_URL` (прямой
+     Postgres вместо PostgREST) или запускайте импорт при меньшей загрузке БД;
    - `import.phase: "running"` → импорт идёт, облако появится после завершения;
    - `systems_count > 0`, но `points.uploaded: false` → файл точек не залился
      в storage: карта соберёт его из таблицы при первом включении слоя

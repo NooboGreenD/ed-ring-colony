@@ -57,7 +57,7 @@ const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
   --out <dir>            Download directory (default data/spansh)
   --points-file <path>   Points file for the map layer (default public/data/galaxy-systems-points.bin)
   --limit <n>            Process at most n systems (testing)
-  --batch <n>            DB batch size (default: 2000 pg / 1000 supabase)
+  --batch <n>            DB batch size (default: 2000 pg / 200 supabase)
   --truncate             Clear galaxy_systems before import (pg mode only)
   --no-points            Skip generating the points file
   --dry-run              Parse only; do not write to the database
