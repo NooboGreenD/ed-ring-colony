@@ -247,9 +247,9 @@ export interface ProjectBillingStats {
 
 // ── Payment providers & intents ──
 
-export type PaymentProviderId = 'yookassa' | 'robokassa' | 'stripe' | 'cryptobot' | 'manual' | (string & {});
+export type PaymentProviderId = 'tbank' | 'yookassa' | 'robokassa' | 'stripe' | 'cryptobot' | 'manual' | (string & {});
 
-export type PaymentIntentStatus = 'pending' | 'paid' | 'failed' | 'canceled' | 'expired';
+export type PaymentIntentStatus = 'processing' | 'pending' | 'paid' | 'failed' | 'canceled' | 'expired';
 
 export type PaymentPurpose = 'credit_topup' | 'subscription' | 'shop_purchase';
 

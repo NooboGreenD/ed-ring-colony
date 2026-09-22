@@ -55,6 +55,13 @@ export async function PATCH(req: Request) {
     if (patch.is_enabled && !driver.isConfigured(merged.config)) {
       return NextResponse.json({ error: 'Нельзя включить провайдера: заполните обязательные поля' }, { status: 400 });
     }
+    if (id === 'tbank' && merged.is_enabled) {
+      const checked = await driver.check(merged);
+      if (!checked.ok) return NextResponse.json({ error: checked.message }, { status: 400 });
+      if (!merged.test_mode && await billingRepo.backendKind !== 'supabase') {
+        return NextResponse.json({ error: 'Для боевых платежей Т-Банка требуется хранилище Supabase' }, { status: 400 });
+      }
+    }
     await billingRepo.updateProvider(id, patch);
     return NextResponse.json({ success: true, providers: await views() });
   } catch (err) {

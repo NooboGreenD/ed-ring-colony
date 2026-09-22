@@ -36,7 +36,7 @@ export async function POST(req: Request) {
     }
     if (action === 'cancel') {
       if (intent.status !== 'pending') return NextResponse.json({ error: 'Можно отменить только ожидающий платёж' }, { status: 400 });
-      const updated = await billingRepo.updateIntent(id, { status: 'canceled' });
+      const updated = await billingRepo.updatePendingIntent(id, { status: 'canceled' });
       return NextResponse.json({ success: true, intent: updated });
     }
     return NextResponse.json({ error: 'Неизвестное действие' }, { status: 400 });
