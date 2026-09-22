@@ -64,6 +64,7 @@ API-роуты используют Node.js runtime; middleware Next.js оста
 | `SUPABASE_SERVICE_ROLE_KEY` | да | серверный ключ для привилегированных роутов |
 | `NEXT_PUBLIC_SITE_URL` | **да (на VPS)** | публичный адрес сайта, напр. `https://ring.example.com` — иначе OAuth-редиректы уйдут на старый vercel.app |
 | `CRON_SECRET` | да | секрет крон-эндпоинтов |
+| `MONITOR_AGENT_TOKEN` | для Docker-мониторинга | отдельный ключ web → private monitor-agent; включите Compose-профиль `monitoring`, настройка в [MONITORING.md](MONITORING.md) |
 | `FRONTIER_REDIRECT_URI` | для CAPI | `https://<домен>/api/capi/callback` |
 | `YANDEX_TRANSLATE_API_KEY` / `_FOLDER_ID` | для переводов | Yandex Translate |
 | `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` | для push | `npx web-push generate-vapid-keys` |

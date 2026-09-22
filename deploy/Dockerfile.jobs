@@ -1,7 +1,7 @@
 # Scheduler needs no npm dependencies and no database credentials.
 FROM node:22-alpine
 WORKDIR /app
-COPY scripts/server-jobs.mjs ./scripts/server-jobs.mjs
+COPY scripts/server-jobs.mjs scripts/job-schedule.mjs ./scripts/
 RUN mkdir /data && chown node:node /data
 USER node
 ENV NODE_ENV=production TZ=UTC

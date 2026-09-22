@@ -271,6 +271,7 @@ ed-ring-colony/
 - `GET|POST /api/cron/galaxy-import` — Импорт каталога по `CRON_SECRET`
 
 ### Other Endpoints
+- `GET /api/admin/monitor` — protected admin-only server, DB, Docker, scheduler and deployment snapshot
 - `GET /api/leaderboard` — Player stats
 - `GET /api/atlas/search` — System search
 - `GET /api/news` — Site news
@@ -414,8 +415,8 @@ progress bar показывает процент по байтам, файлы, 
 
 ```bash
 # При обновлении существующего сервера НЕ перезаписывайте рабочий env-файл.
-docker compose --env-file .env.production build web jobs
-docker compose --env-file .env.production up -d web jobs
+docker compose --env-file .env.production --profile monitoring build web jobs monitor-agent
+docker compose --env-file .env.production --profile monitoring up -d web jobs monitor-agent
 docker compose --env-file .env.production logs --tail=100 jobs
 ```
 
@@ -423,6 +424,15 @@ docker compose --env-file .env.production logs --tail=100 jobs
 резервного копирования. Подробности и Supabase Auth override —
 [POST-MIGRATION.md](POST-MIGRATION.md). Vercel git deployment отключён в
 `vercel.json`. Для нового сервера см. `SELFHOST.md`.
+
+### Операционный мониторинг
+
+В **Админка → Мониторинг** доступны статус сайта, Supabase/БД, Docker-сервисов,
+планировщика и версия развёрнутого проекта. Для Docker и задач задайте отдельный
+`MONITOR_AGENT_TOKEN` в закрытом env-файле и включите Compose-профиль
+`monitoring` (сервис `monitor-agent`); не публикуйте его порт. Полная безопасная
+настройка и команда обновления:
+[MONITORING.md](MONITORING.md).
 
 ## Design System
 

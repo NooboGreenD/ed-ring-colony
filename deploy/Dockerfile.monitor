@@ -1,0 +1,15 @@
+# Private read-only Docker/scheduler status agent.
+# The main web container never receives /var/run/docker.sock.
+FROM node:22-alpine
+
+WORKDIR /app
+COPY scripts/monitor-agent.mjs scripts/job-schedule.mjs ./scripts/
+
+ENV NODE_ENV=production \
+    MONITOR_AGENT_PORT=8080
+
+# It needs root only because Docker's unix socket is normally root-owned. The
+# Compose service drops Linux capabilities, uses a read-only filesystem and is
+# never published on a host port.
+EXPOSE 8080
+CMD ["node", "scripts/monitor-agent.mjs"]
