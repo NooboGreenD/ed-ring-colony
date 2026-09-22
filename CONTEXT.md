@@ -140,8 +140,8 @@ helper cannot disagree about where a body sits:
 
 | Side | Engine | Renderer |
 |------|--------|----------|
-| Website `/system/[name]` | `src/lib/systemOrrery.ts` | `src/components/SystemPlotlyMap.tsx` (Plotly WebGL) |
-| Colonial Helper «Карта системы» | `uploader/orrery.py` | `uploader/system_map.py` (Tk canvas) + `uploader/plotly_map.py` (2D/3D HTML export) |
+| Website `/system/[name]` | `src/lib/systemOrrery.ts` | `src/components/SystemMap/SystemOrrery3D.tsx` (three.js via `src/lib/orrery3d`) |
+| Colonial Helper «Карта системы» | `uploader/orrery.py` | `uploader/system_map.py` (Tk canvas) + `uploader/system_view.py` (payload + standalone HTML with the same three.js bundle) |
 
 Invariants that must stay identical in both languages:
 
@@ -187,8 +187,13 @@ Invariants that must stay identical in both languages:
   class only as a fallback; marker size scales with the star's true radius
   (`starRadiusScale` / `star_radius_scale`, log-scaled and clamped to 0.45–2.6).
   Ring planes follow axial tilt, not orbital inclination.
-- Tests pin the parity: `scripts/tests/system-orrery.test.mjs` (28 cases) and
-  `uploader/tests/test_orrery_layout.py` + `test_plotly_map_cards.py`.
+- The payload fed to the renderer is versioned: `ORRERY_VIEW_VERSION` (TS) must
+  equal `uploader/system_view.py:VIEW_VERSION` and the `contract=` marker of the
+  committed bundle; `uploader/tests/test_system_view.py` checks all three.
+- Tests pin the parity: `scripts/tests/system-orrery.test.mjs` (28 cases),
+  `scripts/tests/system-orrery-3d.test.mjs` (engine: payload, scene, camera,
+  picking, bundle freshness) and `uploader/tests/test_orrery_layout.py` +
+  `test_system_view.py`.
 - The dossier cargo split lives in `src/lib/dossierCargo.ts` (`summarizeCargo`),
   fed by the same rows the leaderboard uses: `totalTons` = every `deliveries`
   row, `siteTons` = rows where `is_construction IS DISTINCT FROM false` never

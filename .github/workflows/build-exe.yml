@@ -54,7 +54,7 @@ jobs:
 
       - name: Validate uploader sources
         run: |
-          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/site_config.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py uploader/colonisation.py uploader/carrier.py uploader/updater.py uploader/http_errors.py uploader/system_map.py uploader/plotly_map.py uploader/map_export.py uploader/map_font.py
+          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/site_config.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py uploader/colonisation.py uploader/carrier.py uploader/updater.py uploader/http_errors.py uploader/system_map.py uploader/orrery.py uploader/system_view.py uploader/map_export.py uploader/map_font.py
 
       - name: Run uploader tests
         shell: bash

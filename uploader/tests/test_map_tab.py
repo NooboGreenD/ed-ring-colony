@@ -143,7 +143,7 @@ class MapTabBuildTests(MapTabTestBase):
     def test_tab_widgets_created(self):
         for attribute in ("tab_map", "map_canvas", "map_tree", "map_status", "map_hint",
                           "map_zoom_label", "map_system_label", "map_moons_var",
-                          "map_labels_var"):
+                          "map_labels_var", "map_only_sites_var", "map_view_mode"):
             self.assertTrue(hasattr(self.app, attribute), f"нет {attribute}")
         self.assertIsNotNone(self.app.system_map)
 
@@ -312,6 +312,57 @@ class MapDrawingTests(MapTabTestBase):
         self.app.map_canvas.reset_mock()
         self.app._map_redraw_now()
         self.assertNotIn(f"{SYSTEM} A 2 a", self.canvas_texts())
+
+    def test_habitable_zone_band_is_drawn(self):
+        """Полоса обитаемой зоны: видно, какие тела в неё попали, а какие нет."""
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        zone = next((item for item in self.app._map_items if item.kind == "zone"), None)
+        self.assertIsNotNone(zone, "зона обитаемости не построена")
+        self.assertLess(zone.zone_inner, zone.zone_outer)
+        texts = self.canvas_texts()
+        self.assertTrue(any(text.startswith("обитаемая зона") for text in texts),
+                        f"подпись зоны не нарисована: {texts}")
+        # Полоса — это заливка (stipple) плюс две границы-окружности.
+        outlines = [call for call in self.app.map_canvas.create_oval.call_args_list
+                    if call.kwargs.get("fill") == "#2ecc71"]
+        self.assertTrue(outlines, "заливка зоны не нарисована")
+
+    def test_site_progress_arc_shows_delivered_percent(self):
+        """Дуга вокруг ромба стройки — тот же процент, что в полосе прогресса."""
+        self.prepare()
+        arcs = [call for call in self.app.map_canvas.create_arc.call_args_list
+                if call.kwargs.get("style") == "arc"]
+        self.assertGreaterEqual(len(arcs), 2, "нет дуги прогресса у стройки")
+        extents = [call.kwargs.get("extent") for call in arcs]
+        self.assertTrue(any(abs(extent + 72.0) < 0.01 for extent in extents if extent),
+                        f"дуга не соответствует 20%: {extents}")
+
+    def test_only_sites_filter_hides_bodies_without_builds(self):
+        """Фильтр «только стройки» прячет тела без площадок: их ищут глазами."""
+        self.prepare()
+        self.app._handle_tracked_event(
+            {"event": "Scan", "BodyName": f"{SYSTEM} A 4", "BodyID": 7, "StarSystem": SYSTEM,
+             "Parents": [{"Star": 1}], "PlanetClass": "Icy body",
+             "DistanceFromArrivalLS": 2400.0}, live=True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        self.assertIn(f"{SYSTEM} A 4", self.canvas_texts())
+
+        self.app.map_only_sites_var.set(True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        texts = self.canvas_texts()
+        self.assertNotIn(f"{SYSTEM} A 4", texts, "тело без строек осталось на карте")
+        self.assertIn(BODY_1, texts, "тело со стройкой пропало вместе с фильтром")
+        self.assertIn("Вы здесь", texts, "отметка пилота пропала под фильтром")
+
+        # Фильтр запоминается между запусками приложения.
+        self.app._map_remember_view()
+        self.assertTrue(self.app.config.get("map_only_sites"))
 
     def test_zoom_buttons(self):
         self.prepare()

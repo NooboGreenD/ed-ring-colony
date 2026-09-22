@@ -21,7 +21,9 @@
     "update:enable": "bash deploy/start-update-agent.sh",
     "update:keys": "bash deploy/start-update-agent.sh --keys-only",
     "update:check": "bash deploy/start-update-agent.sh --check",
-    "update:disable": "bash deploy/start-update-agent.sh --stop"
+    "update:disable": "bash deploy/start-update-agent.sh --stop",
+    "viewer:build": "node scripts/build-orrery-viewer.mjs",
+    "viewer:check": "node scripts/build-orrery-viewer.mjs --check"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",
@@ -59,5 +61,6 @@
   },
   "engines": {
     "node": ">=22.18.0"
-  }
+  },
+  "orreryViewerContract": 3
 }

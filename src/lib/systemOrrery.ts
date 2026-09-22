@@ -191,8 +191,12 @@ export function normalizeBody(record: Record<string, unknown>, systemName = ''):
   const subType = str(record.sub_type ?? record.subType ?? record.planet_class ?? record.star_type);
   const name = str(record.body_name ?? record.name ?? record.bodyName) || (systemName ? `${systemName} Body` : 'Неизвестное тело');
   const combined = `${type} ${subType}`.toLowerCase();
+  // Планетные слова перевешивают буквенный признак: раньше регулярка по
+  // спектральному классу ловила «Gas giant» (G) и «T Tauri»-подобные названия,
+  // из-за чего газовые гиганты рисовались звёздами.
+  const planetish = /planet|moon|giant|world|body|belt|cluster|asteroid|comet|husk/.test(combined);
   const isStar = combined.includes('star') || combined.includes('звезд')
-    || /^([obafgkm](\d)?|t|y|neutron|black ?hole|white ?dwarf)/i.test(subType);
+    || (!planetish && /^(?:[obafgkm]\d?|[lty]\d?|tts|aebe|w[nco]?|c[s jnh]?|chd?|ms|d[a-z]{0,3}|neutron|black\s?hole|supermassiveblackhole|n|h|s)(?=\s|\(|$)/i.test(subType));
   const rawParents = Array.isArray(record.parents) ? record.parents : [];
   const parentIds: number[] = [];
   let hasPlanetParent = false;

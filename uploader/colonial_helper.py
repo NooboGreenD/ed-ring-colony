@@ -103,6 +103,7 @@ from colonisation import (
 from map_export import save_map_png
 import orrery
 from system_map import (
+    ZONE_COLOR,
     due_note,
     due_timestamp,
     BODY_LABELS,
@@ -131,7 +132,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.25"
+VERSION = "2.10.26"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -2602,9 +2603,16 @@ class ColonialHelperApp:
             value=bool(self.config.get("map_show_labels", True)))
         tb.Checkbutton(bar, text="Подписи", variable=self.map_labels_var,
                        command=self._on_map_toggle,
-                       bootstyle="info-round-toggle").pack(side=LEFT)
-        # Вид относится только к канвасу во вкладке: Plotly-карта в браузере
-        # всегда одна 3D-сцена (как на сайте) и переключается кнопкой внутри.
+                       bootstyle="info-round-toggle").pack(side=LEFT, padx=(0, 8))
+        # Обжитую систему без фильтра читать трудно: три десятка безымянных
+        # планет прячут пару нужных площадок.
+        self.map_only_sites_var = tk.BooleanVar(
+            value=bool(self.config.get("map_only_sites", False)))
+        tb.Checkbutton(bar, text="Только стройки", variable=self.map_only_sites_var,
+                       command=self._on_map_toggle,
+                       bootstyle="warning-round-toggle").pack(side=LEFT)
+        # Вид относится только к канвасу во вкладке: карта в браузере — всегда
+        # одна 3D-сцена (та же, что на сайте) и переключается изнутри.
         tb.Label(bar, text="Вид (канвас):", foreground=COLOR_MUTED).pack(side=LEFT, padx=(10, 4))
         self.map_view_mode = tk.StringVar(value=str(self.config.get("map_view_mode", "2d")))
         tb.Radiobutton(bar, text="2D", variable=self.map_view_mode, value="2d",
@@ -2613,7 +2621,7 @@ class ColonialHelperApp:
                        command=self._on_map_mode_change, bootstyle="info-toolbutton").pack(side=LEFT, padx=(2, 6))
         tb.Button(bar, text="Сброс 3D", command=self._on_map_reset_3d,
                   bootstyle="secondary-outline", width=8).pack(side=LEFT, padx=(0, 6))
-        tb.Button(bar, text="Plotly 3D 🌐", command=self._on_map_open_plotly,
+        tb.Button(bar, text="3D-карта 🌐", command=self._on_map_open_3d,
                   bootstyle="warning-outline", width=12).pack(side=LEFT, padx=(2, 6))
         self.map_system_label = tb.Label(bar, text="", font=("Consolas", 10),
                                          foreground=COLOR_ORANGE)
@@ -2646,9 +2654,9 @@ class ColonialHelperApp:
         for binding in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.map_canvas.bind(binding, self._on_map_wheel)
         # Горячие клавиши для интерактивной карты Plotly
-        self.map_canvas.bind("<Control-p>", lambda _event: self._on_map_open_plotly())
-        self.map_canvas.bind("<Control-P>", lambda _event: self._on_map_open_plotly())
-        self.map_canvas.bind("<F4>", lambda _event: self._on_map_open_plotly())
+        self.map_canvas.bind("<Control-p>", lambda _event: self._on_map_open_3d())
+        self.map_canvas.bind("<Control-P>", lambda _event: self._on_map_open_3d())
+        self.map_canvas.bind("<F4>", lambda _event: self._on_map_open_3d())
 
         side = tb.Frame(body)
         side.pack(side=RIGHT, fill=Y, padx=(8, 0))
@@ -2669,9 +2677,9 @@ class ColonialHelperApp:
         tb.Button(side_top, text="PNG", command=self._on_map_save_png,
                   bootstyle="secondary-outline", width=6).pack(side=RIGHT,
                                                                padx=(0, 4))
-        tb.Button(side_top, text="Plotly", command=self._on_map_open_plotly,
+        tb.Button(side_top, text="3D 🌐", command=self._on_map_open_3d,
                   bootstyle="warning-outline", width=7).pack(side=RIGHT,
-                                                               padx=(0, 4))
+                                                              padx=(0, 4))
         filter_row = tb.Frame(side)
         filter_row.pack(fill=X, pady=(0, 4))
         tb.Label(filter_row, text="Фильтр:", foreground=COLOR_MUTED).pack(side=LEFT)
@@ -3025,6 +3033,21 @@ class ColonialHelperApp:
                            show_moons=show_moons, selected=self._map_selected,
                            center_on=self._map_center, mode=mode,
                            pitch_deg=pitch_deg, yaw_deg=yaw_deg)
+        # Фильтр «только со стройками»: тела без строек и их орбиты не рисуем,
+        # иначе в обжитой системе нужную площадку приходится искать глазами.
+        only_sites = bool(getattr(self, "map_only_sites_var", None)
+                          and self.map_only_sites_var.get())
+        site_bodies = {station.body_name for station in snapshot.stations
+                       if station.body_name and (station.is_site or station.required_tons
+                                                 or station.remaining_by_commodity)}
+        if only_sites and site_bodies:
+            items = [item for item in items
+                     if item.kind in ("zone", "player")
+                     or (item.kind == "star" and item.label in site_bodies)
+                     or (item.kind == "body" and item.label in site_bodies)
+                     or (item.kind == "station" and (
+                         getattr(item.ref, "body_name", "") in site_bodies
+                         or getattr(item.ref, "is_site", False)))]
         self._map_items = items
         try:
             canvas.delete("all")
@@ -3037,16 +3060,19 @@ class ColonialHelperApp:
                             (0.0, 0.0))
         ring_x, ring_y = center_x + pan_x, center_y + pan_y
 
+        # Обитаемые зоны — под всем остальным: это фон, а не объект.
+        self._map_draw_zones(canvas, items, width, height, mode, pitch_deg)
+
         if mode == "3d":
             self._map_draw_3d_grid(canvas, width, height, ring_x, ring_y, pitch_deg, yaw_deg)
             for item in items:
-                if item.kind == "body" and item.orbit_a > 0:
+                if item.kind in ("body", "star") and item.orbit_a > 0:
                     cx = ring_x if item.orbit_cx is None else item.orbit_cx
                     cy = ring_y if item.orbit_cy is None else item.orbit_cy
                     canvas.create_oval(
                         cx - item.orbit_a, cy - item.orbit_b,
                         cx + item.orbit_a, cy + item.orbit_b,
-                        outline="#13314d", dash=(2, 4))
+                        outline=item.orbit_color or "#13314d", dash=(2, 4))
                 if item.kind == "body" and abs(item.y - item.plane_y) > 2.0:
                     canvas.create_line(item.plane_x, item.plane_y, item.x, item.y,
                                        fill="#1a4269", dash=(1, 3))
@@ -3066,13 +3092,15 @@ class ColonialHelperApp:
         else:
             # 2D плоская схема
             for item in items:
-                if item.kind == "body" and item.orbit_radius > 0:
+                # Орбиты не только планет, но и вторых звёзд: раньше кольцо
+                # второй звезды в 2D просто не рисовалось.
+                if item.kind in ("body", "star") and item.orbit_radius > 0:
                     cx = ring_x if item.orbit_cx is None else item.orbit_cx
                     cy = ring_y if item.orbit_cy is None else item.orbit_cy
                     canvas.create_oval(
                         cx - item.orbit_radius, cy - item.orbit_radius,
                         cx + item.orbit_radius, cy + item.orbit_radius,
-                        outline=COLOR_LINE, dash=(2, 4))
+                        outline=item.orbit_color or COLOR_LINE, dash=(2, 4))
             for wanted, painter in (
                 ("star", self._map_draw_star), ("body", self._map_draw_body),
                 ("station", self._map_draw_station), ("player", self._map_draw_player),
@@ -3084,6 +3112,39 @@ class ColonialHelperApp:
         if show_labels:
             self._map_draw_hud_panels(canvas, snapshot, items)
         self._map_draw_legend(canvas)
+
+    def _map_draw_zones(self, canvas, items, width, height, mode, pitch_deg=38.0):
+        """Полосы обитаемых зон звёзд.
+
+        Сайт показывает зону прозрачным кольцом; на холсте Tk прозрачности нет,
+        поэтому полоса собирается из двух овалов: внешний — крапчатой заливкой
+        (stipple), внутренний — цветом фона. В 3D кольцо проецируется в эллипс
+        так же, как орбиты.
+        """
+        for item in items:
+            if item.kind != "zone" or item.zone_outer <= 0:
+                continue
+            cx, cy = item.orbit_cx or item.x, item.orbit_cy or item.y
+            if mode == "3d":
+                inner_a, outer_a = item.zone_inner, item.zone_outer
+                squash = max(0.12, math.sin(math.radians(
+                    max(10.0, min(85.0, float(pitch_deg or 38.0))))))
+                inner_b, outer_b = inner_a * squash, outer_a * squash
+            else:
+                inner_a = inner_b = item.zone_inner
+                outer_a = outer_b = item.zone_outer
+            canvas.create_oval(cx - outer_a, cy - outer_b, cx + outer_a, cy + outer_b,
+                               fill=ZONE_COLOR, stipple="gray12", outline="")
+            canvas.create_oval(cx - inner_a, cy - inner_b, cx + inner_a, cy + inner_b,
+                               fill=COLOR_BG, outline="")
+            canvas.create_oval(cx - outer_a, cy - outer_b, cx + outer_a, cy + outer_b,
+                               outline=ZONE_COLOR, dash=(3, 5))
+            canvas.create_oval(cx - inner_a, cy - inner_b, cx + inner_a, cy + inner_b,
+                               outline=ZONE_COLOR, dash=(3, 5))
+            if item.zone_ls[0] > 0:
+                canvas.create_text(cx, cy - outer_b - 4,
+                                   text=f"обитаемая зона {item.zone_ls[0]:,.0f}–{item.zone_ls[1]:,.0f} св. с".replace(",", " "),
+                                   fill=ZONE_COLOR, font=("Consolas", 7), anchor="s")
 
     @classmethod
     def _map_short_label(cls, text) -> str:
@@ -3170,9 +3231,24 @@ class ColonialHelperApp:
             canvas.create_oval(item.x - radius, item.y - radius, item.x + radius,
                                item.y + radius, fill=item.color, outline=outline,
                                width=line_width)
+        if item.progress is not None and is_site:
+            # Дуговая шкала вокруг ромба: доля завезённого груза видна и когда
+            # подписи выключены, и в плотной системе, где полоса не влезает.
+            progress = max(0, min(100, int(item.progress or 0)))
+            arc_radius = radius + 5.0
+            canvas.create_arc(item.x - arc_radius, item.y - arc_radius,
+                              item.x + arc_radius, item.y + arc_radius,
+                              start=90, extent=-359.9, style="arc",
+                              outline="#2a2d30", width=3)
+            if progress > 0:
+                canvas.create_arc(item.x - arc_radius, item.y - arc_radius,
+                                  item.x + arc_radius, item.y + arc_radius,
+                                  start=90, extent=-3.6 * progress, style="arc",
+                                  outline=COLOR_GREEN if progress >= 100 else item.color,
+                                  width=3)
         if item.selected:
             self._map_draw_target_lock(canvas, item)
-        used = radius + 4.0
+        used = radius + 8.0
         if item.progress is not None:
             used += self._map_draw_progress(canvas, item, radius, dy)
         if not show_labels or not item.label:
@@ -3230,6 +3306,7 @@ class ColonialHelperApp:
             ("станция", "#eeeeee"),
             ("авианосец", COLOR_CYAN),
             ("вы", COLOR_GREEN),
+            ("обитаемая зона", ZONE_COLOR),
         )
         x = 12.0
         for text, color in entries:
@@ -3440,6 +3517,8 @@ class ColonialHelperApp:
         self.config["map_show_labels"] = bool(self.map_labels_var.get())
         self.config["map_unscanned"] = bool(getattr(self, "map_unscanned_var", None)
                                             and self.map_unscanned_var.get())
+        self.config["map_only_sites"] = bool(getattr(self, "map_only_sites_var", None)
+                                             and self.map_only_sites_var.get())
         # Запись файла откладываем: колесо мыши даёт несколько шагов зума подряд.
         if self._map_save_job is not None:
             try:
@@ -3831,83 +3910,99 @@ class ColonialHelperApp:
             self._map_update_status(snapshot,
                                     f"Не удалось сохранить карту: {path}")
 
-    def _on_map_open_plotly(self):
-        """Открыть интерактивную карту Plotly в веб-браузере."""
-        snapshot = self._map_last_snapshot or self.system_map.snapshot()
-        if not snapshot.system:
-            self._map_set_hint("Нет данных о текущей системе для Plotly")
-            return
-        # Параметры интерактивной карты: вид, луны, цель и уровень приближения
-        # (0 — система, 1 — кластер звезды, 2 — окрестности цели, 3 — поверхность).
-        # Читаем защищённо: у mock-приложения в тестах `config` не словарь.
+    def _map_viewer_options(self):
+        """Параметры карты в браузере: приближение, подписи, вид, масштаб.
+
+        Ключи `map_plotly_*` остались от прежней Plotly-карты: читаем их как
+        запасные, чтобы настройки старых установок не потерялись.
+        """
         config = getattr(self, "config", None)
         config = config if isinstance(config, dict) else {}
         try:
-            zoom = max(0, min(3, int(config.get("map_plotly_zoom", 0) or 0)))
+            zoom = max(0, min(3, int(config.get("map_viewer_zoom",
+                                                config.get("map_plotly_zoom", 0)) or 0)))
         except (TypeError, ValueError):
             zoom = 0
-        labels = bool(config.get("map_plotly_labels", False))
+        labels = bool(config.get("map_viewer_labels", config.get("map_plotly_labels", False)))
+        view_mode = str(config.get("map_viewer_view", config.get("map_plotly_view", "3d")) or "3d")
+        scale_mode = str(config.get("map_viewer_scale", "orrery") or "orrery")
         show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
-        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
-        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
-        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
         selected = str(getattr(self, "_map_selected", "") or "")
-        try:
-            from plotly_map import normalize_view_mode as plotly_view_mode, open_plotly_in_browser
-            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
-            path = open_plotly_in_browser(snapshot, view_mode=view_mode, show_moons=show_moons,
-                                          selected=selected, zoom=zoom, show_all_labels=labels)
-            target_note = f" (фокус: {selected})" if selected else ""
-            self._map_update_status(snapshot, f"Карта Plotly открыта в браузере: {path.name}{target_note}")
-            view_note = "вид сверху (2D)" if view_mode == "2d" else "3D-оррерий"
-            self.log(f"Интерактивная карта {snapshot.system} (Plotly, {view_note}){target_note} открыта в браузере", "info")
-        except Exception as err:
-            self._map_update_status(snapshot, f"Ошибка открытия Plotly: {err}")
-            self.log(f"Не удалось открыть карту Plotly: {err}", "warning")
+        return {
+            "zoom": zoom,
+            "labels": labels,
+            "view_mode": "2d" if view_mode.strip().lower() in ("2d", "top", "сверху") else "3d",
+            "scale_mode": "linear" if scale_mode.strip().lower() in ("linear", "линейный") else "orrery",
+            "show_moons": show_moons,
+            "selected": selected,
+        }
 
-    def _on_map_export_plotly(self):
-        """Экспортировать интерактивную карту Plotly в HTML-файл."""
+    def _on_map_open_3d(self):
+        """Открыть интерактивную 3D-карту системы в браузере.
+
+        Карту рисует тот же движок three.js, что и на сайте (`system_view.py`
+        — его питоновская половина): сцена, подписи, подсказки и панели те же,
+        поэтому запускать приложение рядом с сайтом незачем.
+        """
         snapshot = self._map_last_snapshot or self.system_map.snapshot()
         if not snapshot.system:
-            self._map_set_hint("Нет данных о системе для экспорта Plotly")
+            self._map_set_hint("Нет данных о текущей системе для карты")
+            return
+        options = self._map_viewer_options()
+        try:
+            import system_view
+
+            path = system_view.open_map_in_browser(
+                snapshot, view_mode=options["view_mode"], scale_mode=options["scale_mode"],
+                show_moons=options["show_moons"], selected=options["selected"],
+                zoom=options["zoom"], labels=options["labels"],
+                player=getattr(snapshot, "player", None),
+            )
+            target_note = f" (фокус: {options['selected']})" if options["selected"] else ""
+            self._map_update_status(snapshot, f"3D-карта открыта в браузере: {path.name}{target_note}")
+            view_note = "вид сверху" if options["view_mode"] == "2d" else "3D-оррерий"
+            self.log(f"Интерактивная карта {snapshot.system} ({view_note}, three.js){target_note} "
+                     "открыта в браузере", "info")
+        except Exception as err:
+            self._map_update_status(snapshot, f"Ошибка открытия 3D-карты: {err}")
+            self.log(f"Не удалось открыть 3D-карту: {err}", "warning")
+
+    def _on_map_export_3d(self):
+        """Сохранить автономную интерактивную 3D-карту системы в HTML-файл."""
+        snapshot = self._map_last_snapshot or self.system_map.snapshot()
+        if not snapshot.system:
+            self._map_set_hint("Нет данных о системе для экспорта карты")
             return
         default_name = f"system_map_{snapshot.system.replace(' ', '_')}.html"
         try:
             path = filedialog.asksaveasfilename(
-                title="Сохранить интерактивную карту Plotly HTML",
+                title="Сохранить интерактивную 3D-карту системы",
                 initialfile=default_name,
                 defaultextension=".html",
-                filetypes=(("HTML-документ Plotly", "*.html"), ("Все файлы", "*.*")))
+                filetypes=(("HTML-документ с 3D-картой", "*.html"), ("Все файлы", "*.*")))
         except Exception:
             path = ""
         if not path:
             return
-        # Параметры интерактивной карты: вид, луны, цель и уровень приближения
-        # (0 — система, 1 — кластер звезды, 2 — окрестности цели, 3 — поверхность).
-        # Читаем защищённо: у mock-приложения в тестах `config` не словарь.
-        config = getattr(self, "config", None)
-        config = config if isinstance(config, dict) else {}
+        options = self._map_viewer_options()
         try:
-            zoom = max(0, min(3, int(config.get("map_plotly_zoom", 0) or 0)))
-        except (TypeError, ValueError):
-            zoom = 0
-        labels = bool(config.get("map_plotly_labels", False))
-        show_moons = not getattr(self, "map_moons_var", None) or bool(self.map_moons_var.get())
-        # Вид HTML-карты не берётся из переключателя 2D/3D канваса: фигура всегда
-        # одна 3D-сцена (как на сайте), «2d» = стартовая камера сверху. Ключ
-        # config `map_plotly_view` — для тех, кто хочет открывать карту сразу плашмя.
-        selected = str(getattr(self, "_map_selected", "") or "")
-        try:
-            from plotly_map import export_plotly_html, normalize_view_mode as plotly_view_mode
-            view_mode = plotly_view_mode(config.get("map_plotly_view", "3d"))
-            export_plotly_html(snapshot, filepath=path, view_mode=view_mode,
-                               show_moons=show_moons, selected=selected, zoom=zoom,
-                               show_all_labels=labels)
-            self._map_update_status(snapshot, f"Карта Plotly сохранена: {path}")
-            self.log(f"Карта системы {snapshot.system} экспортирована в HTML: {path}", "info")
+            import system_view
+
+            system_view.export_map_html(
+                snapshot, filepath=path, view_mode=options["view_mode"],
+                scale_mode=options["scale_mode"], show_moons=options["show_moons"],
+                selected=options["selected"], zoom=options["zoom"], labels=options["labels"],
+                player=getattr(snapshot, "player", None),
+            )
+            self._map_update_status(snapshot, f"3D-карта сохранена: {path}")
+            self.log(f"Карта системы {snapshot.system} экспортирована в HTML (three.js): {path}", "info")
         except Exception as err:
-            self._map_update_status(snapshot, f"Ошибка экспорта Plotly: {err}")
-            self.log(f"Не удалось сохранить карту Plotly: {err}", "warning")
+            self._map_update_status(snapshot, f"Ошибка экспорта 3D-карты: {err}")
+            self.log(f"Не удалось сохранить 3D-карту: {err}", "warning")
+
+    #: Прежние имена обработчиков: их зовут привязки клавиш и тесты.
+    _on_map_open_plotly = _on_map_open_3d
+    _on_map_export_plotly = _on_map_export_3d
 
     def _on_map_tree_context(self, event):
         """Контекстное меню по правой кнопке мыши в списке объектов карты."""
@@ -3922,8 +4017,8 @@ class ColonialHelperApp:
         self._select_map_object(key)
         menu = tk.Menu(self.root, tearoff=0)
         menu.add_command(
-            label=f"🎯 Открыть в Plotly 3D (фокус: {key[:18]})",
-            command=self._on_map_open_plotly,
+            label=f"🎯 Открыть 3D-карту (фокус: {key[:18]})",
+            command=self._on_map_open_3d,
         )
         menu.add_command(
             label="📋 Скопировать название",
@@ -3940,8 +4035,8 @@ class ColonialHelperApp:
                     break
         menu.add_separator()
         menu.add_command(
-            label="💾 Экспорт Plotly HTML...",
-            command=self._on_map_export_plotly,
+            label="💾 Экспорт 3D-карты в HTML...",
+            command=self._on_map_export_3d,
         )
         try:
             menu.tk_popup(event.x_root, event.y_root)
