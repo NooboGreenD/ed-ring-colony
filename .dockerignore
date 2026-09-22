@@ -3,6 +3,8 @@
 .next
 node_modules
 uploader
+# Spansh dump archive (up to ~6 GiB) must never enter a build context.
+data/spansh/
 supabase/.temp
 *.log
 .env

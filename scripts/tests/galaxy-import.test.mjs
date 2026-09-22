@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import { Readable } from 'node:stream';
 import { createGunzip, gzipSync } from 'node:zlib';
 
@@ -12,19 +16,29 @@ import {
   SUPABASE_BATCH_SIZE,
   collapseGalaxyBatch,
   createSupabaseWriter,
+  downloadDumpFile,
   formatBytes,
+  galaxyArchiveDir,
+  galaxyArchivePath,
+  galaxyImportFile,
   isGalaxyStatementTimeout,
+  parseContentRangeTotal,
   pgDeleteConflictsSql,
   pgInsertSql,
   pgLiteral,
   readPointsFromSupabase,
   runGalaxyImport,
+  verifyGzipFile,
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../../src/lib/galaxyImport.ts';
 import {
+  EMPTY_ARCHIVE_STATE,
   EMPTY_IMPORT_STATE,
+  archiveIsFresh,
+  archivePercent,
   importPercent,
+  parseArchiveState,
   parseImportState,
 } from '../../src/lib/galaxyImportJob.ts';
 import {
@@ -1052,4 +1066,462 @@ test('decideScheduledImport re-imports a stale or incomplete catalog', () => {
     now,
   });
   assert.deepEqual(cancelled, { action: 'start', reason: 'resume' });
+});
+
+// ─────────────────── on-disk archive: download with resume ───────────────────
+//
+// Regression for the "terminated" import: a dropped connection used to kill
+// the whole job and force a 6 GiB re-download. The download is now resumable
+// (HTTP Range) and retries interrupted connections.
+
+function tmpArchiveDir() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'spansh-archive-'));
+}
+
+function startServer(handler) {
+  const server = http.createServer(handler);
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({ server, url: `http://127.0.0.1:${port}/systems.json.gz` });
+    });
+  });
+}
+
+async function stopServer({ server }) {
+  await new Promise((resolve) => server.close(resolve));
+}
+
+/**
+ * A Range-aware dump server. `dropFirst` simulates middleboxes killing the
+ * connection mid-body (undici reports those as `terminated`), `ignoreRange`
+ * simulates a host that does not support partial responses.
+ */
+function dumpRangeHandler(buffer, { dropFirst = 0, ignoreRange = false } = {}) {
+  let dropsLeft = dropFirst;
+  const state = { requests: 0, ranges: [] };
+  return {
+    state,
+    handler(req, res) {
+      state.requests++;
+      state.ranges.push(req.headers.range ?? null);
+      if (dropsLeft > 0) {
+        dropsLeft--;
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buffer.length });
+        res.write(buffer.subarray(0, Math.min(4096, buffer.length)));
+        req.socket.destroy();
+        return;
+      }
+      if (ignoreRange) {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': buffer.length });
+        res.end(buffer);
+        return;
+      }
+      const match = /bytes=(\d+)-?/.exec(req.headers.range ?? '');
+      const start = match ? Number(match[1]) : 0;
+      if (start >= buffer.length) {
+        res.writeHead(416, { 'Content-Range': `bytes */${buffer.length}` });
+        res.end();
+        return;
+      }
+      res.writeHead(206, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Range': `bytes ${start}-${buffer.length - 1}/${buffer.length}`,
+        'Content-Length': buffer.length - start,
+      });
+      res.end(buffer.subarray(start));
+    },
+  };
+}
+
+test('parseContentRangeTotal reads the total from Content-Range', () => {
+  assert.equal(parseContentRangeTotal('bytes 100-200/300'), 300);
+  assert.equal(parseContentRangeTotal('bytes */6208543744'), 6208543744);
+  assert.equal(parseContentRangeTotal('bytes 0-0/1'), 1);
+  assert.equal(parseContentRangeTotal(null), null);
+  assert.equal(parseContentRangeTotal('bytes 0-0'), null);
+  assert.equal(parseContentRangeTotal('garbage'), null);
+});
+
+test('verifyGzipFile accepts a valid archive and rejects truncated ones', async () => {
+  const dir = tmpArchiveDir();
+  const good = path.join(dir, 'good.json.gz');
+  const bad = path.join(dir, 'bad.json.gz');
+  const complete = gzipSync(Buffer.from('payload payload payload'));
+  fs.writeFileSync(good, complete);
+  fs.writeFileSync(bad, complete.subarray(0, Math.floor(complete.length / 2)));
+  fs.writeFileSync(path.join(dir, 'empty.json.gz'), Buffer.alloc(0));
+
+  await verifyGzipFile(good);
+  await assert.rejects(() => verifyGzipFile(bad), /unexpected end|incorrect|error/i);
+  await assert.rejects(() => verifyGzipFile(path.join(dir, 'empty.json.gz')), /unexpected end/i);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('downloadDumpFile downloads a dump to disk', async () => {
+  const dir = tmpArchiveDir();
+  const buffer = gzDump(makeRecords(2000));
+  const { state, handler } = dumpRangeHandler(buffer);
+  const { server, url } = await startServer(handler);
+  const dest = path.join(dir, 'systems.json.gz');
+  const progress = [];
+  try {
+    const result = await downloadDumpFile({
+      url,
+      dest,
+      sleep: async () => {},
+      onProgress: (info) => progress.push({ ...info }),
+    });
+    assert.equal(result.bytes, buffer.length);
+    assert.equal(result.total, buffer.length);
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'file on disk is the dump');
+    assert.equal(state.requests, 1);
+    assert.equal(state.ranges[0], null, 'a fresh download sends no Range');
+    assert.ok(progress.length >= 1, 'progress is reported');
+    assert.equal(progress.at(-1).received, buffer.length);
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadDumpFile resumes an interrupted connection from the stored bytes', async () => {
+  const dir = tmpArchiveDir();
+  const buffer = gzDump(makeRecords(3000));
+  assert.ok(buffer.length > 16384, 'the drop simulators need a multi-chunk body');
+  const { state, handler } = dumpRangeHandler(buffer, { dropFirst: 2 });
+  const { server, url } = await startServer(handler);
+  const dest = path.join(dir, 'systems.json.gz');
+  // A partial file from an earlier pass: every attempt must continue it.
+  fs.writeFileSync(dest, buffer.subarray(0, 8192));
+  const logs = [];
+  try {
+    const result = await downloadDumpFile({
+      url,
+      dest,
+      retries: 5,
+      sleep: async () => {},
+      log: (line) => logs.push(line),
+    });
+    assert.equal(result.bytes, buffer.length);
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'the reassembled file is complete');
+    assert.ok(state.requests >= 3, `expected at least 3 attempts, got ${state.requests}`);
+    assert.ok(state.ranges.every((range) => range !== null), 'every attempt continues with Range');
+    assert.ok(logs.some((line) => /продолжаю/i.test(line)), 'the resume is logged');
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadDumpFile restarts when the server ignores Range', async () => {
+  const dir = tmpArchiveDir();
+  const buffer = gzDump(makeRecords(1500));
+  const { state, handler } = dumpRangeHandler(buffer, { ignoreRange: true });
+  const { server, url } = await startServer(handler);
+  const dest = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(dest, buffer.subarray(0, 1234), { flag: 'w' });
+  try {
+    const result = await downloadDumpFile({ url, dest, sleep: async () => {} });
+    assert.equal(result.bytes, buffer.length);
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'the stale partial was replaced');
+    assert.equal(state.requests, 1);
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadDumpFile accepts a 416 as "already complete"', async () => {
+  const dir = tmpArchiveDir();
+  const buffer = gzDump(makeRecords(800));
+  const { state, handler } = dumpRangeHandler(buffer);
+  const { server, url } = await startServer(handler);
+  const dest = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(dest, buffer);
+  try {
+    const result = await downloadDumpFile({ url, dest, sleep: async () => {} });
+    assert.equal(result.bytes, buffer.length);
+    assert.equal(result.total, buffer.length);
+    assert.equal(state.requests, 1);
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadDumpFile deletes a corrupted partial and re-downloads', async () => {
+  const dir = tmpArchiveDir();
+  const buffer = gzDump(makeRecords(2500));
+  const cut = Math.floor(buffer.length * 0.5);
+  const partial = Buffer.from(buffer.subarray(0, cut));
+  partial[Math.floor(cut / 2)] ^= 0xff; // corrupt the middle of the prefix
+  const { state, handler } = dumpRangeHandler(buffer);
+  const { server, url } = await startServer(handler);
+  const dest = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(dest, partial);
+  try {
+    const result = await downloadDumpFile({ url, dest, sleep: async () => {} });
+    assert.equal(result.bytes, buffer.length);
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'the intact dump is back on disk');
+    assert.equal(state.requests, 2, 'attempt one appended, failed the check and was re-downloaded');
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('downloadDumpFile keeps the partial and reports a dead network', async () => {
+  const dir = tmpArchiveDir();
+  const dest = path.join(dir, 'systems.json.gz');
+  let fetches = 0;
+  const fetchImpl = async () => {
+    fetches++;
+    const error = new TypeError('fetch failed');
+    error.cause = new Error('terminated');
+    throw error;
+  };
+  try {
+    await assert.rejects(
+      () =>
+        downloadDumpFile({
+          url: 'http://127.0.0.1:1/systems.json.gz',
+          dest,
+          fetchImpl,
+          retries: Infinity,
+          maxStagnantFailures: 3,
+          sleep: async () => {},
+        }),
+      /оборв|не удалось/i,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(fetches, 4, 'first try plus the stagnant budget');
+});
+
+test('downloadDumpFile does not retry a 404', async () => {
+  const dir = tmpArchiveDir();
+  const dest = path.join(dir, 'systems.json.gz');
+  let fetches = 0;
+  try {
+    await assert.rejects(
+      () =>
+        downloadDumpFile({
+          url: 'http://127.0.0.1:1/systems.json.gz',
+          dest,
+          fetchImpl: async () => {
+            fetches++;
+            return new Response('nope', { status: 404 });
+          },
+          sleep: async () => {},
+        }),
+      /HTTP 404/,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.equal(fetches, 1);
+});
+
+test('downloadDumpFile stops on abort and keeps the partial file', async () => {
+  const dir = tmpArchiveDir();
+  const dest = path.join(dir, 'systems.json.gz');
+  const controller = new AbortController();
+  const chunk = new Uint8Array(1024).fill(7);
+  const fetchImpl = async (_url, { signal }) => {
+    const stream = new ReadableStream({
+      start(streamController) {
+        const timer = setInterval(() => streamController.enqueue(chunk), 5);
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearInterval(timer);
+            streamController.error(new Error('aborted'));
+          },
+          { once: true },
+        );
+      },
+    });
+    return new Response(stream, { status: 200 });
+  };
+  setTimeout(() => controller.abort(), 50);
+  try {
+    await assert.rejects(
+      () =>
+        downloadDumpFile({
+          url: 'http://unused/systems.json.gz',
+          dest,
+          fetchImpl,
+          signal: controller.signal,
+          sleep: async () => {},
+        }),
+      /aborted/i,
+    );
+    assert.ok(fs.existsSync(dest) && fs.statSync(dest).size > 0, 'the partial stays for a resume');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─────────────────── import from a local file ───────────────────
+
+test('runGalaxyImport imports from a local file without touching the network', async () => {
+  const records = makeRecords(900);
+  const dir = tmpArchiveDir();
+  const file = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(file, gzDump(records));
+  const table = fakeTable();
+  try {
+    const result = await runGalaxyImport({
+      writer: memoryWriter(table, 100),
+      file,
+      fetchImpl: async () => {
+        throw new Error('the network must not be touched');
+      },
+    });
+    assert.equal(result.processed, records.length);
+    assert.equal(result.invalid, 0);
+    assert.equal(result.systemsCount, records.length);
+    assert.equal(table.count(), records.length);
+    assert.equal(result.bytesDone, fs.statSync(file).size, 'bytes counted from the file');
+    assert.equal(result.bytesTotal, fs.statSync(file).size, 'the file size is the total');
+    assert.equal(result.points.count, records.length);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runGalaxyImport fails clearly when the local file is missing or empty', async () => {
+  const dir = tmpArchiveDir();
+  const missing = path.join(dir, 'absent.json.gz');
+  const empty = path.join(dir, 'empty.json.gz');
+  fs.writeFileSync(empty, Buffer.alloc(0));
+  const table = fakeTable();
+  try {
+    await assert.rejects(
+      () => runGalaxyImport({ writer: memoryWriter(table), file: missing }),
+      /not found/i,
+    );
+    await assert.rejects(
+      () => runGalaxyImport({ writer: memoryWriter(table), file: empty }),
+      /empty/i,
+    );
+    assert.equal(table.count(), 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a resumed pass from a local file skips the stored records', async () => {
+  const records = makeRecords(1200);
+  const dir = tmpArchiveDir();
+  const file = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(file, gzDump(records));
+
+  // The restart point is the offset a record completes at, as a run stores it.
+  let cutOffset = 0;
+  let count = 0;
+  for await (const object of streamObjects(fs.createReadStream(file).pipe(createGunzip()))) {
+    if (count === 600) cutOffset = object.__streamOffset;
+    count++;
+  }
+  assert.ok(cutOffset > 0);
+
+  const table = fakeTable();
+  // Seed half of the catalog, as the first (aborted) pass would have.
+  table.upsert(rowsOf(records.slice(0, 600)));
+
+  try {
+    const resumed = await runGalaxyImport({
+      writer: memoryWriter(table, 100),
+      file,
+      resumeFrom: cutOffset,
+    });
+    assert.ok(resumed.skipped > 0, 'records before the restart point are skipped');
+    assert.equal(table.count(), records.length, 'the catalog is complete');
+    assert.equal(resumed.resumedFrom, cutOffset);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ─────────────────── archive helpers and state ───────────────────
+
+test('archive path helpers honour the env overrides', () => {
+  assert.equal(galaxyArchiveDir({}), 'data/spansh');
+  assert.equal(galaxyArchiveDir({ GALAXY_ARCHIVE_DIR: '  /custom/dir  ' }), '/custom/dir');
+  assert.equal(galaxyArchivePath({}), 'data/spansh/systems.json.gz');
+  assert.equal(galaxyArchivePath({ GALAXY_ARCHIVE_DIR: '/custom' }), path.join('/custom', 'systems.json.gz'));
+  assert.equal(galaxyImportFile({}), null);
+  assert.equal(galaxyImportFile({ GALAXY_IMPORT_FILE: '  ' }), null);
+  assert.equal(galaxyImportFile({ GALAXY_IMPORT_FILE: '/srv/dump.json.gz' }), '/srv/dump.json.gz');
+});
+
+test('archiveIsFresh uses mtime and requires non-empty files', () => {
+  const dir = tmpArchiveDir();
+  const file = path.join(dir, 'systems.json.gz');
+  fs.writeFileSync(file, Buffer.from([1, 2, 3]));
+  const now = Date.now();
+  try {
+    assert.equal(archiveIsFresh(file, now), true);
+    const stale = new Date(now - 21 * 3600 * 1000);
+    fs.utimesSync(file, stale, stale);
+    assert.equal(archiveIsFresh(file, now), false, 'older than the 20 h window');
+    assert.equal(archiveIsFresh(file, now, 48 * 3600 * 1000), true, 'a wider window is honoured');
+    fs.rmSync(file);
+    assert.equal(archiveIsFresh(file, now), false, 'missing file is not fresh');
+    fs.writeFileSync(file, Buffer.alloc(0));
+    assert.equal(archiveIsFresh(file, now), false, 'an empty file is not fresh');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('archive state parsing tolerates junk and computes percent', () => {
+  assert.deepEqual(parseArchiveState(null), EMPTY_ARCHIVE_STATE);
+  assert.deepEqual(parseArchiveState(undefined), EMPTY_ARCHIVE_STATE);
+  assert.equal(parseArchiveState({ phase: 'nonsense' }).phase, 'idle');
+  assert.equal(parseArchiveState({ phase: 'downloading', bytes_done: '100' }).bytes_done, 100);
+  assert.equal(parseArchiveState({ phase: 'done', downloaded_at: 42 }).downloaded_at, null);
+
+  assert.equal(archivePercent(parseArchiveState({ bytes_done: 50, bytes_total: 200 })), 25);
+  assert.equal(archivePercent(parseArchiveState({ bytes_done: 10, bytes_total: null })), null);
+  assert.equal(archivePercent(parseArchiveState({ bytes_done: 900, bytes_total: 100 })), 100);
+});
+
+// ─────────────────── end to end: download (with a drop) → import from disk ───────────────────
+
+test('two-phase flow: a dropped download is resumed, then the import runs from disk', async () => {
+  const records = makeRecords(2000);
+  const buffer = gzDump(records);
+  assert.ok(buffer.length > 16384);
+  const dir = tmpArchiveDir();
+  const dest = path.join(dir, 'systems.json.gz');
+  const { state, handler } = dumpRangeHandler(buffer, { dropFirst: 1 });
+  const { server, url } = await startServer(handler);
+  const table = fakeTable();
+  try {
+    // Phase 1: the download survives one dropped connection.
+    await downloadDumpFile({ url, dest, retries: 5, sleep: async () => {} });
+    assert.equal(state.requests, 2, 'one drop, one successful retry');
+    assert.deepEqual(fs.readFileSync(dest), buffer);
+
+    // Phase 2: the import reads the file; the network is out of reach entirely.
+    const offlineFetch = async () => {
+      throw new Error('offline');
+    };
+    const result = await runGalaxyImport({
+      writer: memoryWriter(table, 200),
+      file: dest,
+      fetchImpl: offlineFetch,
+    });
+    assert.equal(result.processed, records.length);
+    assert.equal(result.systemsCount, records.length);
+    assert.equal(table.count(), records.length);
+    assert.equal(result.bytesTotal, buffer.length);
+  } finally {
+    await stopServer({ server });
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
