@@ -17,6 +17,9 @@
 #   --email EMAIL      email для Let's Encrypt (обязателен с --domain)
 #   --no-certbot       в режиме --domain пропустить выпуск сертификата
 #   --no-cron          не настраивать крон-задачи и бэкапы
+#   --no-monitor       не запускать monitor-agent (Админка → Мониторинг
+#                      останется без Docker/задач; включается позже скриптом
+#                      deploy/start-monitoring.sh)
 #   --no-ufw           не трогать файрвол
 #
 # Что делает: пакеты → ufw → swap → Docker → Supabase-стек → секреты →
@@ -27,7 +30,7 @@
 set -euo pipefail
 
 # ── разбор аргументов ────────────────────────────────────────────────
-MODE="" ADDR="" EMAIL="" DO_CERTBOT=1 DO_CRON=1 DO_UFW=1
+MODE="" ADDR="" EMAIL="" DO_CERTBOT=1 DO_CRON=1 DO_MONITOR=1 DO_UFW=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --ip)         MODE="ip";     ADDR="${2:?}"; shift 2;;
@@ -35,6 +38,7 @@ while [ $# -gt 0 ]; do
     --email)      EMAIL="${2:?}"; shift 2;;
     --no-certbot) DO_CERTBOT=0; shift;;
     --no-cron)    DO_CRON=0; shift;;
+    --no-monitor) DO_MONITOR=0; shift;;
     --no-ufw)     DO_UFW=0; shift;;
     -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30; exit 0;;
     *) echo "Неизвестный флаг: $1 (см. --help)" >&2; exit 1;;
@@ -129,6 +133,13 @@ if [ -f "$CRED" ]; then
   echo "секреты уже сгенерированы ($CRED) — переиспользую"
   # shellcheck disable=SC1090
   . "$CRED"
+  # Старые установки могли быть созданы до появления мониторинга: дописываем
+  # отдельный ключ web → monitor-agent, не трогая остальные секреты.
+  if [ -z "${MONITOR_AGENT_TOKEN:-}" ]; then
+    MONITOR_AGENT_TOKEN=$(openssl rand -hex 32)
+    echo "MONITOR_AGENT_TOKEN=$MONITOR_AGENT_TOKEN" >> "$CRED"
+    echo "дозаписан MONITOR_AGENT_TOKEN в $CRED"
+  fi
 else
   POSTGRES_PASSWORD=$(openssl rand -hex 24)
   JWT_SECRET=$(openssl rand -hex 32)
@@ -136,6 +147,8 @@ else
   SERVICE_ROLE_KEY=$(make_jwt service_role "$JWT_SECRET")
   DASHBOARD_PASSWORD=$(openssl rand -hex 12)
   CRON_SECRET=$(openssl rand -hex 32)
+  # Не переиспользует CRON_SECRET: отдельный ключ только для web → agent.
+  MONITOR_AGENT_TOKEN=$(openssl rand -hex 32)
   cat > "$CRED" <<EOF
 # ED Ring Colony — секреты установки $(date -Iseconds). НЕ УДАЛЯТЬ.
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -145,6 +158,7 @@ SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD
 CRON_SECRET=$CRON_SECRET
+MONITOR_AGENT_TOKEN=$MONITOR_AGENT_TOKEN
 EOF
   chmod 600 "$CRED"
   echo "секреты сгенерированы → $CRED"
@@ -322,11 +336,30 @@ set_env "$SE" SUPABASE_SERVICE_ROLE_KEY     "$SERVICE_ROLE_KEY"
 set_env "$SE" NEXT_PUBLIC_SITE_URL          "$SITE_URL"
 set_env "$SE" CRON_SECRET                   "$CRON_SECRET"
 set_env "$SE" FRONTIER_REDIRECT_URI         "$SITE_URL/api/capi/callback"
+# Ключи вкладки Админка → Мониторинг (см. MONITORING.md).
+set_env "$SE" MONITOR_AGENT_TOKEN           "$MONITOR_AGENT_TOKEN"
+set_env "$SE" PROJECT_REPOSITORY            "NooboGreenD/ed-ring-colony"
+set_env "$SE" PROJECT_UPDATE_BRANCH         "main"
 if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
 chmod 600 "$SE"
 ln -sf .env.production "$SRC_DIR/.env"
 
-( cd "$SRC_DIR" && docker compose --env-file .env.production up -d --build )
+# Метаданные ревизии для блока «Версия проекта» (не секреты). Если исходники
+# скопированы без .git, сайт соберётся со значением unknown — это безопасно.
+if [ -d "$SRC_DIR/.git" ]; then
+  export APP_GIT_SHA="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+  APP_GIT_REF_VAL="$(git -C "$SRC_DIR" branch --show-current 2>/dev/null || true)"
+  export APP_GIT_REF="${APP_GIT_REF_VAL:-unknown}"
+fi
+export APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+if [ "$DO_MONITOR" = 1 ]; then
+  # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
+  # он единственный получает docker.sock, web ходит к нему только с токеном.
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production --profile monitoring up -d --build web jobs monitor-agent )
+else
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production up -d --build )
+fi
 
 echo -n "жду ответа сайта"
 for i in $(seq 1 36); do
@@ -361,14 +394,18 @@ cat <<EOF
   Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED)
   Секреты:         $CRED  (сделайте копию в надёжное место!)
   Бэкапы:          /opt/backups (ежедневно 04:00, ротация 14 дней)
+$( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent запущен, ключ в $CRED)" \
+     || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh" )
 
   Проверка:
     docker compose -f $SUPA_DIR/docker-compose.yml ps
     docker ps
     curl -I $SITE_URL
+$( [ "$DO_MONITOR" = 1 ] && echo "    bash $SRC_DIR/deploy/start-monitoring.sh --check" )
 
   Логи:
     docker logs -f src-web-1
     docker compose -f $SUPA_DIR/docker-compose.yml logs -f auth
+$( [ "$DO_MONITOR" = 1 ] && echo "    docker compose --env-file $SRC_DIR/.env.production --profile monitoring logs -f monitor-agent" )
 
 EOF

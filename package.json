@@ -13,7 +13,11 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test:browser": "playwright test",
     "spansh:import": "node scripts/import-spansh-systems.mjs",
-    "spansh:selftest": "node scripts/import-spansh-systems.mjs --selftest"
+    "spansh:selftest": "node scripts/import-spansh-systems.mjs --selftest",
+    "monitoring:up": "bash deploy/start-monitoring.sh",
+    "monitoring:keys": "bash deploy/start-monitoring.sh --keys-only",
+    "monitoring:check": "bash deploy/start-monitoring.sh --check",
+    "monitoring:stop": "bash deploy/start-monitoring.sh --stop"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",
