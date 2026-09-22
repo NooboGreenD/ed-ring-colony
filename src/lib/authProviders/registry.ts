@@ -5,8 +5,8 @@
  *  - builtin — always part of Supabase Auth (e-mail/password, magic link)
  *  - gotrue  — OAuth provider handled by Supabase Auth (configured in GoTrue env,
  *              the site only decides whether to show the button)
- *  - site    — OAuth flow implemented by the site itself (VK ID); client id /
- *              secret may be stored here or in the web env
+ *  - site    — OAuth flow implemented by the site itself (VK ID, Яндекс ID);
+ *              client id / secret may be stored here or in the web env
  *  - planned — known service without an implementation yet; settings are kept
  *              for the future, no button is ever shown
  */
@@ -20,7 +20,7 @@ export type AuthProviderMeta = {
   gotrue?: string;
   docs?: string;
   /** Where the provider must redirect. */
-  redirect: 'gotrue' | 'site-vk' | 'none';
+  redirect: 'gotrue' | 'site-vk' | 'site-yandex' | 'none';
   /** Env variables the admin needs to know about (names only). */
   env: string[];
   note?: string;
@@ -65,9 +65,10 @@ export const AUTH_PROVIDER_REGISTRY: AuthProviderMeta[] = [
     docs: 'https://id.vk.com/about/business/go', env: ['VK_ID_CLIENT_ID', 'VK_ID_CLIENT_SECRET'],
     note: 'Собственный OAuth 2.1 / PKCE поток сайта. Кнопка появляется только когда включено здесь И задан Client ID (здесь или в env). См. VK-ID-SETUP.md.' ,
     help: { guide: 'https://github.com/NooboGreenD/ed-ring-colony/blob/main/VK-ID-SETUP.md', guideLabel: 'VK-ID-SETUP.md (пошагово)', steps: ['id.vk.com/about/business/go → создать приложение, платформа Web, домен edringcolony.ru.', 'Доверенный Redirect URL: адрес «Redirect для VK ID» выше.', 'Примените миграцию supabase/migrations/20260923000000_vk_identities.sql.', 'Вставьте числовой ID приложения в поле Client ID ниже (или VK_ID_CLIENT_ID в env) и сохраните.', 'Поставьте галочку «показывать». Нужен SUPABASE_SERVICE_ROLE_KEY на сервере.'] } },
-  { id: 'yandex', label: 'Яндекс ID', kind: 'planned', redirect: 'none', docs: 'https://oauth.yandex.ru/',
-    env: ['YANDEX_ID_CLIENT_ID', 'YANDEX_ID_CLIENT_SECRET'], note: 'Нет в GoTrue; потребует собственного потока по образцу VK ID.' ,
-    help: { steps: ['Пока не реализовано. oauth.yandex.ru → создать приложение (Web), redirect https://edringcolony.ru/api/auth/yandex/callback.', 'Реализация — по образцу VK ID (src/lib/vkId.ts, отдельная таблица идентичностей).', 'Client ID/секрет можно сохранить здесь заранее.'] } },
+  { id: 'yandex', label: 'Яндекс ID', kind: 'site', redirect: 'site-yandex',
+    docs: 'https://oauth.yandex.ru/', env: ['YANDEX_ID_CLIENT_ID', 'YANDEX_ID_CLIENT_SECRET'],
+    note: 'Собственный OAuth 2.0 / PKCE поток сайта (в GoTrue Яндекса нет). Кнопка появляется только когда включено здесь И задан Client ID (здесь или в env). См. YANDEX-ID-SETUP.md.' ,
+    help: { guide: 'https://github.com/NooboGreenD/ed-ring-colony/blob/main/YANDEX-ID-SETUP.md', guideLabel: 'YANDEX-ID-SETUP.md (пошагово)', steps: ['oauth.yandex.ru → «Создать приложение», платформа «Веб-сервисы», Callback URI = адрес «Redirect для Яндекс ID» выше.', 'В доступах отметьте: Яндекс ID — почта (login:email), основная информация (login:info), аватарка (login:avatar).', 'Примените миграцию supabase/migrations/20260925000000_yandex_identities.sql.', 'Вставьте ClientID (32 hex-символа) и Client secret из кабинета Яндекса ниже (или YANDEX_ID_CLIENT_ID/SECRET в env) и сохраните.', 'Поставьте галочку «показывать». Нужен SUPABASE_SERVICE_ROLE_KEY на сервере.'] } },
   { id: 'telegram', label: 'Telegram Login', kind: 'planned', redirect: 'none', docs: 'https://core.telegram.org/widgets/login',
     env: ['TELEGRAM_BOT_TOKEN'], note: 'Виджет с подписью HMAC от бота; отдельная реализация.' ,
     help: { steps: ['Пока не реализовано. @BotFather → /newbot → /setdomain edringcolony.ru.', 'Login Widget присылает данные с HMAC-подписью токеном бота; проверка на сервере.', 'Токен бота можно сохранить в поле Client Secret заранее.'] } },

@@ -212,6 +212,27 @@ service role). Слияния аккаунтов по e-mail нет: если п
 зарегистрирована, пользователь получит подсказку войти прежним способом и
 привязать VK в профиле.
 
+#### Вход через Яндекс ID
+
+Яндекса тоже нет в GoTrue, поэтому поток реализован на стороне сайта
+(OAuth 2.0 + PKCE, `src/lib/yandexId.ts`) — полный аналог VK ID:
+
+1. Создайте приложение на <https://oauth.yandex.ru> (платформа *Веб-сервисы*),
+   **Callback URI** `https://edringcolony.ru/api/auth/yandex/callback`,
+   доступы `login:email`, `login:info`, `login:avatar`.
+2. Примените миграцию `supabase/migrations/20260925000000_yandex_identities.sql`.
+3. В `.env.production` сайта (или в карточке «Яндекс ID» в админке):
+
+```env
+YANDEX_ID_CLIENT_ID=a1b2…f0       # 32 hex-символа
+YANDEX_ID_CLIENT_SECRET=…         # обязателен для веб-приложений
+```
+
+Кнопка по умолчанию скрыта и включается на вкладке «Авторизация» в `/admin`.
+Пошагово — `YANDEX-ID-SETUP.md`. Сессия, техническая почта
+(`yandex-<id>@ya.<домен>`), запрет слияния по e-mail и отвязка последнего
+способа входа — как у VK ID.
+
 ### 2.4. Запуск
 
 ```bash

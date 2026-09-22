@@ -3,9 +3,10 @@
 import { useEffect, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabaseClient';
-import { startOAuthAction, startVkAuthAction } from '@/app/login/actions';
+import { startOAuthAction, startVkAuthAction, startYandexAuthAction } from '@/app/login/actions';
 import { OAUTH_PROVIDERS, isOAuthProvider, oauthErrorMessage, canUnlinkOAuthIdentity, type OAuthProvider } from '@/lib/oauthProviders';
 import { VK_LABEL, VK_PROVIDER, vkErrorMessage } from '@/lib/vkShared';
+import { YANDEX_LABEL, YANDEX_PROVIDER, yandexErrorMessage } from '@/lib/yandexShared';
 
 export function OAuthNotice() {
   const [notice, setNotice] = useState('');
@@ -15,10 +16,14 @@ export function OAuthNotice() {
     const provider = url.searchParams.get('provider');
     const error = url.searchParams.get('oauth_error') || url.searchParams.get('error');
     if (error) {
-      setNotice(provider === VK_PROVIDER ? vkErrorMessage(error) : oauthErrorMessage(error, isOAuthProvider(provider) ? provider : undefined));
+      setNotice(provider === VK_PROVIDER ? vkErrorMessage(error)
+        : provider === YANDEX_PROVIDER ? yandexErrorMessage(error)
+        : oauthErrorMessage(error, isOAuthProvider(provider) ? provider : undefined));
       setIsError(true);
     } else if (url.searchParams.get('oauth') === 'linked' && provider === VK_PROVIDER) {
       setNotice(`${VK_LABEL} привязан к этому аккаунту.`);
+    } else if (url.searchParams.get('oauth') === 'linked' && provider === YANDEX_PROVIDER) {
+      setNotice(`${YANDEX_LABEL} привязан к этому аккаунту.`);
     } else if (url.searchParams.get('oauth') === 'linked' && isOAuthProvider(provider)) {
       setNotice(`${OAUTH_PROVIDERS[provider].label} привязан к этому аккаунту.`);
     }
@@ -47,6 +52,17 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
       setVk({ linked: Boolean(data.linked), name: data.vk?.name ?? null, canUnlink: Boolean(data.canUnlink) });
     } catch { /* status stays unknown; the button still works */ }
   };
+  const [yandexEnabled, setYandexEnabled] = useState(false);
+  const [yandex, setYandex] = useState<{ linked: boolean; name: string | null; canUnlink: boolean } | null>(null);
+  const loadYandex = async () => {
+    if (!user) return;
+    try {
+      const response = await fetch('/api/auth/yandex', { cache: 'no-store' });
+      if (!response.ok) return;
+      const data = await response.json();
+      setYandex({ linked: Boolean(data.linked), name: data.yandex?.name ?? null, canUnlink: Boolean(data.canUnlink) });
+    } catch { /* status stays unknown; the button still works */ }
+  };
   useEffect(() => {
     let active = true;
     fetch('/api/auth/providers', { cache: 'no-store' })
@@ -54,10 +70,16 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
         if (!response.ok) throw new Error('providers');
         const data = await response.json();
         if (!Array.isArray(data.providers)) throw new Error('providers');
-        if (active) { setEnabled(data.providers.filter(isOAuthProvider)); setVkEnabled(Boolean(data.vk)); setLoaded(true); }
+        if (active) {
+          setEnabled(data.providers.filter(isOAuthProvider));
+          setVkEnabled(Boolean(data.vk));
+          setYandexEnabled(Boolean(data.yandex));
+          setLoaded(true);
+        }
       })
       .catch(() => { if (active) setMessage('Не удалось загрузить способы входа. Обновите страницу.'); });
     void loadVk();
+    void loadYandex();
     return () => { active = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -83,6 +105,30 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
       await onChanged?.();
     } catch (error) {
       setMessage(vkErrorMessage(error instanceof Error ? error.message : ''));
+    } finally { setBusy(false); }
+  };
+
+  const startYandex = async () => {
+    setBusy(true); setMessage('');
+    try {
+      const result = await startYandexAuthAction(user ? 'link' : 'login');
+      if (result.error || !result.url) setMessage(result.error || 'Не получен адрес авторизации.');
+      else { window.location.assign(result.url); return; }
+    } catch { setMessage('Ошибка соединения. Повторите попытку.'); }
+    setBusy(false);
+  };
+  const unlinkYandex = async () => {
+    if (!window.confirm(`Отвязать ${YANDEX_LABEL}? Убедитесь, что можете войти другим способом.`)) return;
+    setBusy(true); setMessage('');
+    try {
+      const response = await fetch('/api/auth/yandex', { method: 'DELETE' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'yandex_failed');
+      setMessage(`${YANDEX_LABEL} отвязан.`);
+      await loadYandex();
+      await onChanged?.();
+    } catch (error) {
+      setMessage(yandexErrorMessage(error instanceof Error ? error.message : ''));
     } finally { setBusy(false); }
   };
 
@@ -144,6 +190,17 @@ export default function AuthMethods({ user, onChanged, disabled = false }: {
           title={vk?.linked && !vk.canUnlink ? vkErrorMessage('last_identity') : undefined}
           onClick={() => vk?.linked ? void unlinkVk() : void startVk()}>
           {vk?.linked ? 'Отвязать' : user ? 'Привязать' : 'Войти через'} {VK_LABEL}
+        </button>
+      </div>}
+      {(yandexEnabled || yandex?.linked) && <div key={YANDEX_PROVIDER}>
+        {user && <p style={{ fontSize: 12, marginBottom: 6 }}>
+          {YANDEX_LABEL}: {yandex?.linked ? `привязан${yandex.name ? ` (${yandex.name})` : ''}` : 'не привязан'}
+        </p>}
+        <button type="button" className={yandex?.linked ? 'btn danger-btn' : 'btn btn-cyan'}
+          disabled={disabled || busy || !loaded || (yandex?.linked && !yandex.canUnlink)}
+          title={yandex?.linked && !yandex.canUnlink ? yandexErrorMessage('last_identity') : undefined}
+          onClick={() => yandex?.linked ? void unlinkYandex() : void startYandex()}>
+          {yandex?.linked ? 'Отвязать' : user ? 'Привязать' : 'Войти через'} {YANDEX_LABEL}
         </button>
       </div>}
     </div>
