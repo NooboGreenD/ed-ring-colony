@@ -52,8 +52,17 @@ export const GALAXY_META_TABLE = 'galaxy_systems_meta';
 
 /** Rows per statement. 2000 × 13 columns stays far below any parameter/size cap. */
 export const PG_BATCH_SIZE = 2000;
-/** Rows per PostgREST upsert (the script's default for the HTTP path). */
-export const SUPABASE_BATCH_SIZE = 1000;
+/**
+ * Rows per PostgREST upsert (the script's default for the HTTP path).
+ *
+ * Deliberately small: Supabase cancels every PostgREST statement after a few
+ * seconds (`statement_timeout`, SQLSTATE 57014), and a 1000-row upsert against
+ * seven indexes — including the GIN trigram on `name_lc` — stops fitting once
+ * the table grows. A batch that still times out is split in halves and retried
+ * (see `upsertSupabaseChunk`), so a smaller start only costs extra round-trips,
+ * never correctness.
+ */
+export const SUPABASE_BATCH_SIZE = 200;
 /** Expected catalog size: the builder is allocated once, without regrowth. */
 export const POINTS_CAPACITY = 1_400_000;
 export type GalaxyImportBackend = 'pg' | 'supabase';
@@ -173,6 +182,21 @@ export function isGalaxyUniqueViolation(error: unknown): boolean {
   return failure.code === '23505' || /duplicate key value violates unique constraint/i.test(failure.message || '');
 }
 
+/**
+ * Postgres 57014: the statement ran into `statement_timeout`
+ * («canceling statement due to statement timeout»).
+ *
+ * Supabase caps every PostgREST statement at a few seconds, so on a large
+ * catalog a full batch periodically does not fit. This is transient: the same
+ * rows in smaller chunks go through — see `deliveryImport.ts`, which retries
+ * the same failure by halving the batch.
+ */
+export function isGalaxyStatementTimeout(error: unknown): boolean {
+  const failure = asDbError(error);
+  if (failure.code === '57014') return true;
+  return /canceling statement due to statement timeout|statement timeout/i.test(failure.message || '');
+}
+
 /** `INSERT … ON CONFLICT (name_lc) DO UPDATE` for a whole batch (no parameters). */
 export function pgInsertSql(rows: GalaxySystemRecord[]): string {
   const batch = collapseGalaxyBatch(rows);
@@ -217,8 +241,9 @@ async function rollbackQuietly(query: (sql: string) => Promise<unknown>): Promis
  * Duplicate keys inside the batch are collapsed first (that is the admin-panel
  * failure: PostgREST and this SQL both raise 21000). A unique violation against
  * a row already stored under the other key is reconciled in a transaction.
- * A cardinality error that somehow survives the collapse is retried on halves,
- * down to a single row, instead of aborting the whole catalog download.
+ * A cardinality error that somehow survives the collapse — or a statement the
+ * server cancelled on `statement_timeout` — is retried on halves, down to a
+ * single row, instead of aborting the whole catalog download.
  */
 export async function writeGalaxyRowsPg(
   query: (sql: string) => Promise<unknown>,
@@ -238,7 +263,13 @@ async function insertPgChunk(
     await query(pgInsertSql(rows));
     return;
   } catch (error) {
-    if (isGalaxyCardinalityViolation(error) && rows.length > 1) {
+    // The direct writer sets `statement_timeout: 0`, but a server-side setting
+    // (or a pooler in front of Postgres) can still cancel a huge statement —
+    // halve it like the transient Supabase failure instead of dying on it.
+    if (
+      rows.length > 1 &&
+      (isGalaxyCardinalityViolation(error) || isGalaxyStatementTimeout(error))
+    ) {
       const middle = Math.floor(rows.length / 2);
       await insertPgChunk(query, rows.slice(0, middle));
       await insertPgChunk(query, rows.slice(middle));
@@ -299,6 +330,25 @@ function upsertFailure(error: GalaxyWriteError, row?: GalaxySystemRecord): Error
   return new Error(`supabase upsert failed: ${error.message}${where}`);
 }
 
+export interface GalaxySupabaseWriteOptions {
+  /**
+   * How many times a single-row batch cancelled by `statement_timeout` is
+   * retried with backoff before the import fails (default 3). Multi-row
+   * batches are halved instead, so this only bounds the last-resort loop.
+   */
+  timeoutRetries?: number;
+  /** Injectable sleep for the retry backoff (tests pass a no-op). */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/** Single-row statement-timeout retries after the first failure. */
+export const SUPABASE_TIMEOUT_RETRIES = 3;
+/** Backoff between those retries; a loaded database needs seconds, not ms. */
+const SUPABASE_TIMEOUT_BACKOFF_MS = [1000, 2000, 4000];
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /**
  * Write one batch through PostgREST — the path the admin tab uses when the
  * web process has no `DATABASE_URL`.
@@ -307,31 +357,58 @@ function upsertFailure(error: GalaxyWriteError, row?: GalaxySystemRecord): Error
  * upsert (otherwise the browser-started import dies on the first repeated
  * system), then split a batch Postgres still rejects, and finally reconcile a
  * single row whose `id64` is already stored under another name.
+ *
+ * A batch cancelled by `statement_timeout` (SQLSTATE 57014 — Supabase gives
+ * every PostgREST statement only a few seconds) is halved and retried like a
+ * rejected one; a lone row that still does not fit is retried with backoff.
+ * Without this the admin-panel import died on the first slow upsert with
+ * «supabase upsert failed: canceling statement due to statement timeout».
  */
 export async function writeGalaxyRowsSupabase(
   client: GalaxyWriteClient,
   rows: GalaxySystemRecord[],
+  options: GalaxySupabaseWriteOptions = {},
 ): Promise<number> {
   const batch = collapseGalaxyBatch(rows);
   if (batch.length === 0) return 0;
-  await upsertSupabaseChunk(client, batch);
+  await upsertSupabaseChunk(client, batch, options, 0);
   return batch.length;
 }
 
-async function upsertSupabaseChunk(client: GalaxyWriteClient, rows: GalaxySystemRecord[]): Promise<void> {
+async function upsertSupabaseChunk(
+  client: GalaxyWriteClient,
+  rows: GalaxySystemRecord[],
+  options: GalaxySupabaseWriteOptions,
+  attempt: number,
+): Promise<void> {
   const { error } = await client
     .from(GALAXY_TABLE)
     .upsert(rows as unknown as Record<string, unknown>[], { onConflict: 'name_lc' });
   if (!error) return;
-  if (rows.length > 1 && (isGalaxyCardinalityViolation(error) || isGalaxyUniqueViolation(error))) {
+  if (
+    rows.length > 1 &&
+    (isGalaxyCardinalityViolation(error) || isGalaxyUniqueViolation(error) || isGalaxyStatementTimeout(error))
+  ) {
     const middle = Math.floor(rows.length / 2);
-    await upsertSupabaseChunk(client, rows.slice(0, middle));
-    await upsertSupabaseChunk(client, rows.slice(middle));
+    await upsertSupabaseChunk(client, rows.slice(0, middle), options, 0);
+    await upsertSupabaseChunk(client, rows.slice(middle), options, 0);
     return;
   }
   if (rows.length === 1 && isGalaxyUniqueViolation(error)) {
     await reconcileGalaxyRow(client, rows[0]);
     return;
+  }
+  if (isGalaxyStatementTimeout(error)) {
+    const retries = Math.max(0, Math.floor(options.timeoutRetries ?? SUPABASE_TIMEOUT_RETRIES));
+    if (attempt < retries) {
+      const backoff = SUPABASE_TIMEOUT_BACKOFF_MS[Math.min(attempt, SUPABASE_TIMEOUT_BACKOFF_MS.length - 1)];
+      console.error(
+        `[galaxy-import] statement timeout on ${rows.length} row(s), retry ${attempt + 1}/${retries} after ${backoff} ms`,
+      );
+      await (options.sleep ?? defaultSleep)(backoff);
+      await upsertSupabaseChunk(client, rows, options, attempt + 1);
+      return;
+    }
   }
   throw upsertFailure(error, rows.length === 1 ? rows[0] : undefined);
 }
@@ -472,9 +549,10 @@ export async function createPgWriter(
 /** PostgREST writer: works with nothing but the service-role key. */
 export function createSupabaseWriter(
   client: SupabaseClient,
-  options: { batchSize?: number } = {},
+  options: { batchSize?: number } & GalaxySupabaseWriteOptions = {},
 ): GalaxyRowWriter {
   const batchSize = Math.max(1, options.batchSize ?? SUPABASE_BATCH_SIZE);
+  const writeOptions: GalaxySupabaseWriteOptions = { timeoutRetries: options.timeoutRetries, sleep: options.sleep };
   let rows: GalaxySystemRecord[] = [];
   let written = 0;
 
@@ -484,8 +562,10 @@ export function createSupabaseWriter(
     rows = [];
     // The admin tab hits this writer whenever the web process has no direct
     // Postgres URL. A repeated system name in the batch is a hard Postgres
-    // error ("cannot affect row a second time"), not a conflict update.
-    const count = await writeGalaxyRowsSupabase(client as unknown as GalaxyWriteClient, batch);
+    // error ("cannot affect row a second time"), not a conflict update — and a
+    // slow batch is cancelled by `statement_timeout`, hence the halve-and-retry
+    // inside `writeGalaxyRowsSupabase`.
+    const count = await writeGalaxyRowsSupabase(client as unknown as GalaxyWriteClient, batch, writeOptions);
     written += count;
     return count;
   };

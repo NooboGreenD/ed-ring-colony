@@ -13,12 +13,14 @@ import {
   collapseGalaxyBatch,
   createSupabaseWriter,
   formatBytes,
+  isGalaxyStatementTimeout,
   pgDeleteConflictsSql,
   pgInsertSql,
   pgLiteral,
   readPointsFromSupabase,
   runGalaxyImport,
   writeGalaxyRowsPg,
+  writeGalaxyRowsSupabase,
 } from '../../src/lib/galaxyImport.ts';
 import {
   EMPTY_IMPORT_STATE,
@@ -607,6 +609,106 @@ test('supabase writer splits a batch that PostgREST still rejects as affecting a
   assert.equal(writer.written, 4);
   assert.equal(table.count(), 4);
   assert.ok(rejected > 0, 'the exact admin-panel error is retried, not fatal');
+});
+
+test('statement timeouts are detected by SQLSTATE and by message', () => {
+  assert.equal(isGalaxyStatementTimeout({ code: '57014', message: 'canceling statement due to statement timeout' }), true);
+  assert.equal(isGalaxyStatementTimeout({ message: 'canceling statement due to statement timeout' }), true);
+  assert.equal(isGalaxyStatementTimeout({ message: 'statement timeout' }), true);
+  assert.equal(isGalaxyStatementTimeout({ code: '23505', message: 'duplicate key value violates unique constraint \"x\"' }), false);
+  assert.equal(isGalaxyStatementTimeout({ code: '21000', message: 'cannot affect row a second time' }), false);
+  assert.equal(isGalaxyStatementTimeout(null), false);
+  assert.equal(isGalaxyStatementTimeout(new Error('fetch failed')), false);
+});
+
+test('supabase writer halves a batch the database cancels on statement_timeout', async () => {
+  const table = fakeTable();
+  let timedOut = 0;
+  const client = {
+    from(name) {
+      assert.equal(name, 'galaxy_systems');
+      return {
+        async upsert(rows, options) {
+          assert.equal(options.onConflict, 'name_lc');
+          if (rows.length > 1) {
+            timedOut += 1;
+            return {
+              error: { code: '57014', message: 'canceling statement due to statement timeout' },
+              data: null,
+            };
+          }
+          table.upsert(rows);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  // A no-op sleep keeps the test fast; the multi-row path splits without backoff anyway.
+  const writer = createSupabaseWriter(client, { batchSize: 4, sleep: async () => {} });
+  for (const row of rowsOf(makeRecords(4))) await writer.add(row);
+  assert.equal(writer.written, 4);
+  assert.equal(table.count(), 4);
+  assert.ok(timedOut > 0, 'timed-out batches are retried in halves, not fatal');
+});
+
+test('supabase writer retries a lone timed-out row with backoff, then fails loudly', async () => {
+  const table = fakeTable();
+  let attempts = 0;
+  const sleeps = [];
+  const flaky = {
+    from() {
+      return {
+        async upsert(rows) {
+          attempts += 1;
+          if (attempts <= 2) {
+            return { error: { code: '57014', message: 'canceling statement due to statement timeout' }, data: null };
+          }
+          table.upsert(rows);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  const written = await writeGalaxyRowsSupabase(flaky, rowsOf(makeRecords(1)), {
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  assert.equal(written, 1);
+  assert.equal(table.count(), 1);
+  assert.deepEqual(sleeps, [1000, 2000], 'backoff grows between retries');
+
+  attempts = 0;
+  const stubborn = {
+    from() {
+      return {
+        async upsert() {
+          attempts += 1;
+          // No code: the PostgREST error shape only guarantees the message.
+          return { error: { message: 'canceling statement due to statement timeout' }, data: null };
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    () => writeGalaxyRowsSupabase(stubborn, rowsOf(makeRecords(1)), { timeoutRetries: 2, sleep: async () => {} }),
+    /supabase upsert failed: canceling statement due to statement timeout/,
+  );
+  assert.equal(attempts, 3, 'one try plus the configured retries');
+});
+
+test('writeGalaxyRowsPg halves a batch cancelled by statement_timeout', async () => {
+  const statements = [];
+  await writeGalaxyRowsPg(async (sql) => {
+    statements.push(sql);
+    if (sql.startsWith('INSERT') && sql.includes('),(')) {
+      const error = new Error('canceling statement due to statement timeout');
+      error.code = '57014';
+      throw error;
+    }
+  }, rowsOf(makeRecords(4)));
+  const inserts = statements.filter((sql) => sql.startsWith('INSERT'));
+  assert.ok(inserts.some((sql) => sql.includes('),(')), 'the full batch is attempted first');
+  assert.ok(inserts.some((sql) => !sql.includes('),(')), 'a timed-out batch is retried row by row');
+  assert.equal(statements.includes('BEGIN'), false, 'a timeout is not \"fixed\" by deleting the batch');
 });
 
 test('supabase writer updates a system whose id64 is already stored under another name', async () => {
