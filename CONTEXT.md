@@ -454,16 +454,23 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   (`src/lib/galaxySpanshStream.ts`, `src/lib/galaxyImport.ts`): the in-app job
   (`src/lib/galaxyImportJob.ts` → `/api/admin/galaxy`, `/api/cron/galaxy-import`,
   admin tab «Каталог систем») and the CLI `scripts/import-spansh-systems.mjs`.
-  The in-app one exists because the standalone image has no `scripts/`; it
-  streams the dump, writes in batches (pg or PostgREST), persists a resume
-  point in `galaxy_systems_meta` (key `import`) and uploads the point cloud to
-  storage. See SPANSH-IMPORT.md. Atlas star candidates and the route finder
-  prefer this table. `/system/[name]` falls back to the catalog when there is
-  no construction row. The map layer «Все системы» reads `edgs-v1` from
-  `public/data`, storage bucket `galaxy-data`, Postgres or paged PostgREST, and
-  asks `/api/galaxy/stats` first so an empty catalog is a message, not a 404;
-  it does not raycast 1.3M points. Migration
-  `20260924000000_galaxy_systems_finish.sql`.
+  The in-app one exists because the standalone image has no `scripts/`. It runs
+  in two phases: (1) download the ~6 GiB `systems.json.gz` to disk —
+  `GALAXY_ARCHIVE_DIR` (default `data/spansh`; the compose `galaxy-dump` volume
+  at `/app/data/spansh`), resumable by HTTP Range with retry/backoff on dropped
+  connections (undici's `terminated`), CRC-verified, state in
+  `galaxy_systems_meta` (key `archive`), downloadable on demand via
+  `{"action":"download"}`; (2) import from that local file (never over the
+  network again), writing in batches (pg or PostgREST), resume point in
+  `galaxy_systems_meta` (key `import`), point cloud uploaded to storage.
+  `GALAXY_IMPORT_FILE` pins a hand-placed dump (nothing is downloaded),
+  `GALAXY_IMPORT_URL` points the download at a mirror. See SPANSH-IMPORT.md.
+  Atlas star candidates and the route finder prefer this table.
+  `/system/[name]` falls back to the catalog when there is no construction row.
+  The map layer «Все системы» reads `edgs-v1` from `public/data`, storage bucket
+  `galaxy-data`, Postgres or paged PostgREST, and asks `/api/galaxy/stats` first
+  so an empty catalog is a message, not a 404; it does not raycast 1.3M points.
+  Migration `20260924000000_galaxy_systems_finish.sql`.
 
 ### 8.5 Raven Colonial
 - Sync API: `/api/ravencolonial/sync`
@@ -667,6 +674,11 @@ CRON_SECRET=...
 # Galnet sync (scripts/galnet-sync.mjs)
 GALNET_FEED_LIMIT=30
 GALNET_TRANSLATE_LIMIT=10
+
+# Spansh catalog import (in-app + CLI)
+GALAXY_IMPORT_URL=...      # mirror of the nightly dump (default downloads.spansh.co.uk)
+GALAXY_ARCHIVE_DIR=...     # on-disk dump archive dir (default data/spansh; compose: /app/data/spansh)
+GALAXY_IMPORT_FILE=...     # pin a local dump; import reads it, downloads nothing
 
 # External APIs
 RAVEN_API_BASE=...

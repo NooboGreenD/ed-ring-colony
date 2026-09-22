@@ -15,7 +15,10 @@
  * a synthetic dump without network or database.
  */
 
+import { createReadStream, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { createGunzip } from 'node:zlib';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -44,6 +47,318 @@ export const SPANSH_DUMP_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
  */
 export function galaxyImportUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env.GALAXY_IMPORT_URL?.trim() || SPANSH_DUMP_URL;
+}
+
+// ─────────────────── on-disk archive (pre-download) ───────────────────
+//
+// The dump is ~6 GiB of gzip. Streaming it straight into the import made every
+// aborted connection cost a full re-download, and a dropped socket surfaces as
+// an undici `terminated` error that killed the whole job. Instead the web
+// process first downloads the archive to disk (resumable HTTP Range + retries),
+// and the import itself reads the local file — a resumed import re-reads the
+// disk, not the network.
+
+/** Archive directory inside the web container (`/app/data/spansh`). */
+export const DEFAULT_ARCHIVE_DIR = 'data/spansh';
+/** One fixed name so the admin UI, the import job and the CLI share the file. */
+export const ARCHIVE_FILE_NAME = 'systems.json.gz';
+
+export function galaxyArchiveDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.GALAXY_ARCHIVE_DIR?.trim() || DEFAULT_ARCHIVE_DIR;
+}
+
+export function galaxyArchivePath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(galaxyArchiveDir(env), ARCHIVE_FILE_NAME);
+}
+
+/**
+ * `GALAXY_IMPORT_FILE` pins a local dump to import directly (it is never
+ * downloaded or replaced). Servers that keep their own mirror on disk set this.
+ */
+export function galaxyImportFile(env: NodeJS.ProcessEnv = process.env): string | null {
+  const file = env.GALAXY_IMPORT_FILE?.trim();
+  return file ? resolve(file) : null;
+}
+
+export interface DumpDownloadInfo {
+  /** Bytes on disk after this attempt's chunk (offset + received so far). */
+  received: number;
+  total: number | null;
+  /** The attempt continued a partial file. */
+  resuming: boolean;
+  /** Consecutive interrupted connections. */
+  failures: number;
+}
+
+export interface DownloadDumpOptions {
+  url: string;
+  dest: string;
+  fetchImpl?: typeof fetch;
+  signal?: AbortSignal;
+  log?: (line: string) => void;
+  onProgress?: (info: DumpDownloadInfo) => void | Promise<void>;
+  /**
+   * Consecutive interrupted connections before the download gives up
+   * (default 5; the in-app job passes `Infinity` and relies on
+   * `maxStagnantFailures` to fail a truly dead network).
+   */
+  retries?: number;
+  /**
+   * Consecutive failures that moved no bytes at all (default 10). Bounds an
+   * infinite retry loop when the network is down: a flaky line that keeps
+   * advancing never trips it.
+   */
+  maxStagnantFailures?: number;
+  sleep?: (ms: number) => Promise<void>;
+  /** onProgress throttle (default 5000 ms). */
+  progressIntervalMs?: number;
+  /** Skip the final gzip integrity check (default false). */
+  verify?: boolean;
+}
+
+/** Backoff between interrupted connections, capped at 60 s. */
+const DUMP_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000, 60_000];
+
+/** Total size from a `Content-Range` header, e.g. `bytes 100-200/300` or `bytes 300-599/600`. */
+export function parseContentRangeTotal(header: string | null): number | null {
+  if (!header) return null;
+  const match = /\/(\d+)\s*$/.exec(header);
+  const total = match ? Number(match[1]) : NaN;
+  return Number.isFinite(total) && total >= 0 ? total : null;
+}
+
+function safeSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/** `fetch failed` hides the real reason in `.cause` (e.g. undici's `terminated`). */
+function networkErrorMessage(error: unknown, fallback: string): string {
+  const cause = (error as { cause?: { message?: string } } | null)?.cause;
+  if (cause?.message) return cause.message;
+  const message = (error as Error)?.message;
+  return message && message !== 'fetch failed' ? message : fallback;
+}
+
+/**
+ * Stream the dump through gunzip and discard, verifying the gzip trailer
+ * (CRC32 + original size). A truncated or corrupted archive fails here
+ * instead of mid-import.
+ */
+export async function verifyGzipFile(path: string): Promise<void> {
+  await new Promise<void>((resolveCheck, reject) => {
+    const source = createReadStream(path);
+    const gunzip = createGunzip();
+    gunzip.resume(); // bytes are discarded; the CRC check happens in the trailer
+    source.on('error', (error) => {
+      source.destroy();
+      gunzip.destroy();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+    gunzip.on('error', (error) => {
+      source.destroy();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+    gunzip.on('end', () => resolveCheck());
+    source.pipe(gunzip);
+  });
+}
+
+/**
+ * Download a dump to disk with resume and retry.
+ *
+ * - Continues an existing partial file with `Range: bytes=<size>-`;
+ * - a dropped connection (undici reports it as `terminated`), a 5xx or a short
+ *   EOF only interrupts the CURRENT attempt — the bytes already on disk stay
+ *   and the next attempt continues from them;
+ * - an ignored `Range` (200 instead of 206) or a shrunken upstream file starts
+ *   over from byte 0;
+ * - a completed `.gz` file is gunzip-verified; a corrupted one is deleted and
+ *   re-downloaded instead of failing the import.
+ */
+export async function downloadDumpFile(
+  options: DownloadDumpOptions,
+): Promise<{ path: string; bytes: number; total: number | null }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const log = options.log ?? (() => undefined);
+  const sleep = options.sleep ?? defaultSleep;
+  const retries = options.retries ?? 5;
+  const maxStagnant = options.maxStagnantFailures ?? 10;
+  const progressIntervalMs = Math.max(250, options.progressIntervalMs ?? 5_000);
+  const dest = resolve(options.dest);
+
+  mkdirSync(dirname(dest), { recursive: true });
+
+  let failures = 0;
+  let stagnant = 0;
+
+  for (;;) {
+    if (options.signal?.aborted) throw new Error('Download aborted');
+
+    const offset = safeSize(dest);
+    if (offset > 0) log(`Архив: продолжаю скачивание с байта ${offset.toLocaleString()}`);
+
+    let response: Response;
+    try {
+      response = await fetchImpl(options.url, {
+        headers: offset > 0 ? { Range: `bytes=${offset}-` } : undefined,
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (options.signal?.aborted) throw new Error('Download aborted');
+      const message = networkErrorMessage(error, 'fetch failed');
+      failures += 1;
+      stagnant += 1; // nothing arrived
+      if (failures > retries || stagnant > maxStagnant) {
+        throw new Error(`Скачивание не удалось после ${failures} обрыва(ов) подряд: ${message}`);
+      }
+      log(`Соединение не установлено (попытка ${failures}${retries < Infinity ? `/${retries}` : ''}): ${message}`);
+      await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+      continue;
+    }
+
+    if (response.status === 416) {
+      // Range not satisfiable: the offset already covers the whole file.
+      const total = parseContentRangeTotal(response.headers.get('content-range'));
+      if (options.verify !== false && dest.toLowerCase().endsWith('.gz')) {
+        // The file is complete (or was completed before the state was
+        // persisted): prove it instead of trusting a stale size. A corrupted
+        // archive is deleted and re-downloaded, like after any failed check.
+        try {
+          await verifyGzipFile(dest);
+        } catch (error) {
+          rmSync(dest, { force: true });
+          const message = (error as Error)?.message || 'gzip integrity check failed';
+          failures += 1;
+          stagnant = failures;
+          if (failures > retries || stagnant > maxStagnant) {
+            throw new Error(`Архив повредился при скачивании (${message}) и повтор не помог`);
+          }
+          log(`Архив не прошёл проверку целостности (${message}) — удаляю и скачиваю заново`);
+          await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+          continue;
+        }
+      }
+      return { path: dest, bytes: offset, total: total ?? offset };
+    }
+
+    let startOffset = offset;
+    if (response.status === 206) {
+      // The server honoured the Range.
+    } else if (response.status === 200) {
+      // The server ignored Range: the partial file is stale, start over.
+      if (offset > 0) log('Сервер не поддержал Range — начинаю скачивание заново');
+      startOffset = 0;
+    } else if (response.status >= 500) {
+      failures += 1;
+      stagnant += 1; // nothing arrived
+      if (failures > retries || stagnant > maxStagnant) {
+        throw new Error(`Скачивание не удалось: HTTP ${response.status} ${response.statusText} (${options.url})`);
+      }
+      log(`HTTP ${response.status} (попытка ${failures}${retries < Infinity ? `/${retries}` : ''}) — повтор`);
+      await response.body?.cancel().catch(() => undefined);
+      await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+      continue;
+    } else {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Download failed: HTTP ${response.status} ${response.statusText} (${options.url})`);
+    }
+
+    const rangeTotal = parseContentRangeTotal(response.headers.get('content-range'));
+    const lengthHeader = Number(response.headers.get('content-length'));
+    let total = rangeTotal ?? (Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null);
+
+    if (startOffset > 0 && total != null && total < startOffset) {
+      // The upstream file shrank (today's dump is smaller): the partial is stale.
+      log('Файл на сервере изменился (стал меньше) — начинаю скачивание заново');
+      startOffset = 0;
+    }
+
+  const reportProgress = (info: DumpDownloadInfo): Promise<void> => {
+    try {
+      return Promise.resolve(options.onProgress?.(info)).catch(() => undefined);
+    } catch {
+      // A progress sink must never kill the download itself.
+      return Promise.resolve();
+    }
+  };
+
+  let received = 0;
+  let lastReport = 0;
+  const counter = new Transform({
+    transform(chunk, _encoding, done) {
+      received += chunk.length;
+      const at = Date.now();
+      if (options.onProgress && at - lastReport >= progressIntervalMs) {
+        lastReport = at;
+        void reportProgress({ received: startOffset + received, total, resuming: startOffset > 0, failures });
+      }
+      done(null, chunk);
+    },
+  });
+  const writeStream = createWriteStream(dest, { flags: startOffset > 0 ? 'a' : 'w' });
+
+  try {
+    if (!response.body) throw new Error('Dump response has no body');
+    await pipeline(Readable.fromWeb(response.body as unknown as WebReadableStream), counter, writeStream);
+    if (options.onProgress) {
+      await reportProgress({ received: startOffset + received, total, resuming: startOffset > 0, failures: 0 });
+    }
+  } catch (error) {
+      if (options.signal?.aborted) throw new Error('Download aborted');
+      const message = networkErrorMessage(error, 'connection dropped');
+      failures += 1;
+      const size = safeSize(dest);
+      // Bytes between attempts mean the line works despite the drops.
+      stagnant = size > startOffset ? 0 : stagnant + 1;
+      if (failures > retries || stagnant > maxStagnant) {
+        throw new Error(
+          `Скачивание не удалось после ${failures} обрыва(ов) подряд: ${message} ` +
+            `(на диске ${size.toLocaleString()} байт — повтор продолжит с этого места)`,
+        );
+      }
+      log(`Соединение прервано на байте ${size.toLocaleString()} (${message}) — продолжаю с этого места`);
+      await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+      continue;
+    }
+
+    failures = 0;
+    const finalSize = safeSize(dest);
+    if (total != null && finalSize !== total) {
+      // Clean EOF short of the announced total: the transfer ended early.
+      failures += 1;
+      stagnant = finalSize > startOffset ? 0 : stagnant + 1;
+      if (failures > retries || stagnant > maxStagnant) {
+        throw new Error(`Скачивание не удалось: файл оборвался на ${finalSize.toLocaleString()} из ${total.toLocaleString()} байт`);
+      }
+      log(`Файл оборвался на ${finalSize.toLocaleString()} из ${total.toLocaleString()} байт — докачиваю`);
+      await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+      continue;
+    }
+
+    if (options.verify !== false && dest.toLowerCase().endsWith('.gz')) {
+      try {
+        await verifyGzipFile(dest);
+      } catch (error) {
+        rmSync(dest, { force: true });
+        failures += 1;
+        stagnant = failures; // the file was deleted: no usable bytes remain
+        const message = (error as Error)?.message || 'gzip integrity check failed';
+        if (failures > retries || stagnant > maxStagnant) {
+          throw new Error(`Архив повредился при скачивании (${message}) и повтор не помог`);
+        }
+        log(`Архив не прошёл проверку целостности (${message}) — удаляю и скачиваю заново`);
+        await sleep(DUMP_BACKOFF_MS[Math.min(failures - 1, DUMP_BACKOFF_MS.length - 1)]);
+        continue;
+      }
+    }
+
+    log(`Архив на диске: ${finalSize.toLocaleString()} байт`);
+    return { path: dest, bytes: finalSize, total: total ?? finalSize };
+  }
 }
 export const GALAXY_TABLE = 'galaxy_systems';
 /** Bucket limit set by migration 20260924000000_galaxy_systems_finish.sql. */
@@ -690,6 +1005,12 @@ export interface GalaxyImportSnapshot {
 
 export interface GalaxyImportRunOptions {
   url?: string;
+  /**
+   * Local dump file (`.gz` or `.json`) to import from disk instead of
+   * downloading. The resume point still applies: a resumed pass re-reads the
+   * file and skips the records before it — from disk, not the network.
+   */
+  file?: string;
   writer: GalaxyRowWriter;
   /**
    * Uncompressed byte offset to continue from (0 = import everything).
@@ -749,23 +1070,38 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   const progressIntervalMs = Math.max(1000, options.progressIntervalMs ?? 10_000);
   const startedAt = now();
   const resumeFrom = Math.max(0, Math.floor(options.resumeFrom ?? 0));
+  const file = options.file ? resolve(options.file) : null;
 
-  log(
-    resumeFrom > 0
-      ? `Downloading ${url} (continuing: records before byte ${resumeFrom.toLocaleString()} of the decompressed dump are stored already)`
-      : `Downloading ${url}`,
-  );
-  const response = await fetchImpl(url, { signal: options.signal });
-  if (!response.ok) {
-    throw new Error(`Download failed: HTTP ${response.status} ${response.statusText} (${url})`);
+  let source: Readable;
+  let bytesTotal: number | null;
+  if (file) {
+    if (!existsSync(file)) throw new Error(`Dump file not found: ${file}`);
+    const stat = statSync(file);
+    if (stat.size === 0) throw new Error(`Dump file is empty: ${file}`);
+    bytesTotal = stat.size;
+    source = createReadStream(file);
+    log(
+      resumeFrom > 0
+        ? `Importing from local file ${file} (continuing: records before byte ${resumeFrom.toLocaleString()} of the decompressed dump are stored already)`
+        : `Importing from local file ${file} (${formatBytes(stat.size)})`,
+    );
+  } else {
+    log(
+      resumeFrom > 0
+        ? `Downloading ${url} (continuing: records before byte ${resumeFrom.toLocaleString()} of the decompressed dump are stored already)`
+        : `Downloading ${url}`,
+    );
+    const response = await fetchImpl(url, { signal: options.signal });
+    if (!response.ok) {
+      throw new Error(`Download failed: HTTP ${response.status} ${response.statusText} (${url})`);
+    }
+    if (!response.body) throw new Error('Dump response has no body');
+    const lengthHeader = Number(response.headers.get('content-length'));
+    bytesTotal = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null;
+    source = Readable.fromWeb(response.body as unknown as WebReadableStream);
   }
-  if (!response.body) throw new Error('Dump response has no body');
-
-  const lengthHeader = Number(response.headers.get('content-length'));
-  const bytesTotal = Number.isFinite(lengthHeader) && lengthHeader > 0 ? lengthHeader : null;
 
   const { stream: counterStream, counter } = byteCounter();
-  const source = Readable.fromWeb(response.body as unknown as WebReadableStream);
   const gunzip = createGunzip();
   const objects = new JsonArrayObjects();
   // `.pipe()` swallows upstream errors (the iterator would hang while gunzip

@@ -62,6 +62,12 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
+# Каталог предварительного скачивания дампа Spansh (~6 ГиБ). В docker-compose
+# на него повешен именованный том galaxy-dump — файл переживает пересборку
+# образа. Папка существует в образе, чтобы copy-up тома сохранил владельца
+# nextjs (иначе контейнер не смог бы писать в том).
+RUN mkdir -p /app/data/spansh && chown nextjs:nodejs /app/data/spansh
+
 USER nextjs
 EXPOSE 3000
 CMD ["node", "server.js"]

@@ -31,6 +31,12 @@ services:
       MONITOR_AGENT_TOKEN: ${MONITOR_AGENT_TOKEN:-}
     ports:
       - "127.0.0.1:3000:3000"
+    volumes:
+      # Pre-downloaded Spansh dump (~6 GiB). The web process downloads it here
+      # (resumable) and imports from disk, so a dropped connection never costs
+      # a full re-download and the archive survives image rebuilds. Override
+      # GALAXY_ARCHIVE_DIR to point the import elsewhere.
+      - galaxy-dump:/app/data/spansh
     # The private monitor network prevents the privileged agent from sharing
     # the default service network with other containers.
     networks:
@@ -138,6 +144,8 @@ services:
 
 volumes:
   jobs-state:
+  # On-disk Spansh dump archive for the in-app galaxy import.
+  galaxy-dump:
 
 networks:
   # Only web and monitor-agent join this network; it has no external route.

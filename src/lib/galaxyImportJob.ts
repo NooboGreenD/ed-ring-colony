@@ -9,6 +9,8 @@
  * download up with an HTTP `Range` request instead of starting over.
  */
 
+import { existsSync, rmSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { invalidateGalaxyStatsCache, type GalaxyStats, getGalaxyStats } from './galaxySystemsDb.ts';
@@ -17,13 +19,17 @@ import {
   createPgWriter,
   createSupabaseWriter,
   describeImportBackends,
+  downloadDumpFile,
   formatBytes,
+  galaxyArchivePath,
+  galaxyImportFile,
   galaxyImportUrl,
   runGalaxyImport,
   type GalaxyImportBackend,
   type GalaxyImportSnapshot,
   type GalaxyRowWriter,
 } from './galaxyImport.ts';
+import { FRESH_MS } from './galaxyImportSchedule.ts';
 import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
 import { galaxyDbUrl } from './pgModule.ts';
 import { createAdminClient } from './supabaseAdmin.ts';
@@ -97,6 +103,55 @@ export const EMPTY_IMPORT_STATE: GalaxyImportState = {
   attempts: 0,
 };
 
+export const ARCHIVE_STATE_KEY = 'archive';
+
+export type GalaxyArchivePhase = 'idle' | 'downloading' | 'done' | 'failed' | 'cancelled';
+
+export interface GalaxyArchiveState {
+  phase: GalaxyArchivePhase;
+  source: string | null;
+  path: string | null;
+  bytes_done: number;
+  bytes_total: number | null;
+  downloaded_at: string | null;
+  error: string | null;
+  updated_at: string | null;
+}
+
+export const EMPTY_ARCHIVE_STATE: GalaxyArchiveState = {
+  phase: 'idle',
+  source: null,
+  path: null,
+  bytes_done: 0,
+  bytes_total: null,
+  downloaded_at: null,
+  error: null,
+  updated_at: null,
+};
+
+const ARCHIVE_PHASES: GalaxyArchivePhase[] = ['idle', 'downloading', 'done', 'failed', 'cancelled'];
+
+/** Persisted JSON is untrusted input: anything missing falls back to a default. */
+export function parseArchiveState(value: unknown): GalaxyArchiveState {
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof GalaxyArchiveState, unknown>>;
+  return {
+    phase: ARCHIVE_PHASES.includes(raw.phase as GalaxyArchivePhase) ? (raw.phase as GalaxyArchivePhase) : 'idle',
+    source: str(raw.source),
+    path: str(raw.path),
+    bytes_done: num(raw.bytes_done),
+    bytes_total: nullableNum(raw.bytes_total),
+    downloaded_at: str(raw.downloaded_at),
+    error: str(raw.error),
+    updated_at: str(raw.updated_at),
+  };
+}
+
+/** 0..100 by bytes on disk; null while the total size is unknown. */
+export function archivePercent(state: GalaxyArchiveState): number | null {
+  if (!state.bytes_total || state.bytes_total <= 0) return null;
+  return Math.max(0, Math.min(100, (state.bytes_done / state.bytes_total) * 100));
+}
+
 interface LiveRun {
   controller: AbortController;
   snapshot: GalaxyImportSnapshot | null;
@@ -105,10 +160,25 @@ interface LiveRun {
   log: string[];
 }
 
-const runtime = globalThis as typeof globalThis & { edrcGalaxyImportRun?: LiveRun | null };
+interface LiveDownload {
+  controller: AbortController;
+  received: number;
+  total: number | null;
+  startedAt: number;
+  log: string[];
+}
+
+const runtime = globalThis as typeof globalThis & {
+  edrcGalaxyImportRun?: LiveRun | null;
+  edrcGalaxyDownloadRun?: LiveDownload | null;
+};
 
 function liveRun(): LiveRun | null {
   return runtime.edrcGalaxyImportRun ?? null;
+}
+
+function liveDownload(): LiveDownload | null {
+  return runtime.edrcGalaxyDownloadRun ?? null;
 }
 
 const PHASES: GalaxyImportPhase[] = ['idle', 'running', 'done', 'failed', 'cancelled'];
@@ -193,17 +263,261 @@ async function writeImportState(patch: Partial<GalaxyImportState>): Promise<Gala
   return next;
 }
 
-/** Persisted state plus the live counters of a run in this process. */
-export async function getGalaxyImportStatus(): Promise<{
+async function readArchiveState(): Promise<GalaxyArchiveState> {
+  try {
+    return parseArchiveState(await metaValue(ARCHIVE_STATE_KEY));
+  } catch (error) {
+    console.error('[galaxy-archive] state read failed:', (error as Error)?.message);
+    return { ...EMPTY_ARCHIVE_STATE };
+  }
+}
+
+async function writeArchiveState(patch: Partial<GalaxyArchiveState>): Promise<GalaxyArchiveState> {
+  const previous = await readArchiveState();
+  const next: GalaxyArchiveState = { ...previous, ...patch, updated_at: new Date().toISOString() };
+  const { error } = await admin()
+    .from('galaxy_systems_meta')
+    .upsert({ key: ARCHIVE_STATE_KEY, value: next as unknown as Record<string, unknown> }, { onConflict: 'key' });
+  if (error) throw new Error(`galaxy_systems_meta archive write failed: ${error.message}`);
+  return next;
+}
+
+/** Persisted archive state plus the live counters of a download in this process. */
+export async function getGalaxyArchiveStatus(): Promise<{
+  state: GalaxyArchiveState;
+  live: boolean;
+  /** Persisted `downloading` with no live task: the process restarted mid-download. */
+  interrupted: boolean;
+  percent: number | null;
+  log: string[];
+}> {
+  const persisted = await readArchiveState();
+  const run = liveDownload();
+  const state = run
+    ? { ...persisted, phase: 'downloading' as GalaxyArchivePhase, bytes_done: run.received, bytes_total: run.total }
+    : persisted;
+  return {
+    state,
+    live: Boolean(run),
+    interrupted: !run && persisted.phase === 'downloading',
+    percent: archivePercent(state),
+    log: run ? [...run.log] : [],
+  };
+}
+
+/**
+ * The dump archive on disk. An archive is "fresh" while its mtime is younger
+ * than `freshMs` — the same window the scheduler uses for "today's catalog".
+ * mtime (not the stored `downloaded_at`) is the source of truth so a dump that
+ * was copied to the server by hand (docker cp / rsync) is honoured too.
+ */
+export function archiveIsFresh(path: string, now = Date.now(), freshMs = FRESH_MS): boolean {
+  try {
+    const stat = statSync(path);
+    if (stat.size <= 0) return false;
+    return now - stat.mtimeMs < freshMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Start the archive download in the background. Resolves as soon as the run is
+ * registered (or refused), never when the file is complete. The download is
+ * resumable: a dropped connection keeps the bytes on disk and continues.
+ */
+export async function startGalaxyDownload(options: { url?: string } = {}): Promise<{
+  started: boolean;
+  reason?: string;
+  state: GalaxyArchiveState;
+}> {
+  if (liveDownload()) {
+    return { started: false, reason: 'Скачивание уже идёт', state: await readArchiveState() };
+  }
+  if (liveRun()) {
+    return { started: false, reason: 'Импорт уже запущен — скачивание может испортить файл, из которого он читает', state: await readArchiveState() };
+  }
+
+  const url = options.url?.trim() || galaxyImportUrl();
+  const dest = galaxyArchivePath();
+
+  const controller = new AbortController();
+  const run: LiveDownload = { controller, received: 0, total: null, startedAt: Date.now(), log: [] };
+  runtime.edrcGalaxyDownloadRun = run;
+
+  const log = (line: string) => {
+    run.log.push(line);
+    if (run.log.length > 60) run.log.splice(0, run.log.length - 60);
+    console.error(`[galaxy-archive] ${line}`);
+  };
+
+  const started = await writeArchiveState({
+    phase: 'downloading',
+    source: url,
+    path: dest,
+    error: null,
+  });
+
+  void (async () => {
+    try {
+      const result = await downloadDumpFile({
+        url,
+        dest,
+        signal: controller.signal,
+        retries: Infinity,
+        log,
+        onProgress: (info) => {
+          run.received = info.received;
+          run.total = info.total;
+          // Persisting every ~5 s is enough to resume after a restart.
+          return writeArchiveState({
+            phase: 'downloading',
+            source: url,
+            path: dest,
+            bytes_done: info.received,
+            bytes_total: info.total,
+          }).then(() => undefined);
+        },
+      });
+      const done = await writeArchiveState({
+        phase: 'done',
+        source: url,
+        path: dest,
+        bytes_done: result.bytes,
+        bytes_total: result.total,
+        downloaded_at: new Date().toISOString(),
+        error: null,
+      });
+      log(`Архив скачан: ${formatBytes(result.bytes)}`);
+      return done;
+    } catch (error) {
+      const cancelled = controller.signal.aborted;
+      const message = (error as Error)?.message || String(error);
+      log(cancelled ? `Остановлено: ${message}` : `ОШИБКА: ${message}`);
+      try {
+        return await writeArchiveState({
+          phase: cancelled ? 'cancelled' : 'failed',
+          bytes_done: run.received,
+          bytes_total: run.total,
+          error: cancelled ? null : message,
+        });
+      } catch (stateError) {
+        console.error('[galaxy-archive] could not persist failure state:', (stateError as Error)?.message);
+        return null;
+      }
+    } finally {
+      runtime.edrcGalaxyDownloadRun = null;
+    }
+  })();
+
+  return { started: true, state: started };
+}
+
+/** Stop a running archive download. Bytes already on disk stay (resume point). */
+export async function cancelGalaxyDownload(): Promise<{ cancelled: boolean; state: GalaxyArchiveState }> {
+  const run = liveDownload();
+  if (!run) return { cancelled: false, state: await readArchiveState() };
+  run.controller.abort();
+  for (let i = 0; i < 40; i++) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+    if (!liveDownload()) break;
+  }
+  return { cancelled: true, state: await readArchiveState() };
+}
+
+/**
+ * Make sure the dump archive is on disk: use it if it exists (a scheduled run
+ * additionally requires it to be fresh), otherwise download it first. A
+ * standalone download job writing the same file wins: wait for it instead of
+ * writing two streams into one file.
+ */
+async function ensureArchiveDownload(args: {
+  url: string;
+  scheduled: boolean;
+  fresh: boolean;
+  signal: AbortSignal;
+  log: (line: string) => void;
+}): Promise<string> {
+  const dest = galaxyArchivePath();
+
+  if (args.fresh) {
+    rmSync(dest, { force: true });
+  }
+
+  let waited = 0;
+  while (liveDownload() && waited < 12 * 3600_000) {
+    if (args.signal.aborted) throw new Error('Import aborted');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 5000));
+    waited += 5000;
+  }
+
+  // A file is "the archive" only when the download that produced it finished
+  // (phase done, same path). A partial file from an interrupted download is
+  // resumed by the downloader below via Range — it must not be imported as if
+  // it were complete.
+  const archState = await readArchiveState().catch(() => ({ ...EMPTY_ARCHIVE_STATE }));
+  const complete = archState.phase === 'done' && archState.path === dest;
+
+  if (!args.fresh && complete && existsSync(dest) && (!args.scheduled || archiveIsFresh(dest))) {
+    const stat = statSync(dest);
+    args.log(`Архив уже на диске: ${dest} (${formatBytes(stat.size)}) — импорт идёт с диска, без сети`);
+    return dest;
+  }
+
+  if (complete && existsSync(dest) && args.scheduled && !archiveIsFresh(dest)) {
+    // The nightly update must fetch today's dump, not re-import yesterday's.
+    args.log('Архив на диске старше суток — скачиваю свежий дамп');
+    rmSync(dest, { force: true });
+  }
+
+  args.log(`Скачиваю дамп на диск: ${args.url} → ${dest}`);
+  await writeArchiveState({ phase: 'downloading', source: args.url, path: dest, error: null }).catch((error) => {
+    args.log(`Не удалось сохранить состояние: ${(error as Error).message}`);
+  });
+
+  let lastPersist = 0;
+  const result = await downloadDumpFile({
+    url: args.url,
+    dest,
+    signal: args.signal,
+    retries: Infinity,
+    log: args.log,
+    onProgress: (info) => {
+      const at = Date.now();
+      if (at - lastPersist < 5000) return Promise.resolve();
+      lastPersist = at;
+      return writeArchiveState({ phase: 'downloading', bytes_done: info.received, bytes_total: info.total }).then(() => undefined);
+    },
+  });
+  await writeArchiveState({
+    phase: 'done',
+    source: args.url,
+    path: dest,
+    bytes_done: result.bytes,
+    bytes_total: result.total,
+    downloaded_at: new Date().toISOString(),
+    error: null,
+  }).catch((error) => {
+    args.log(`Не удалось сохранить состояние: ${(error as Error).message}`);
+  });
+  args.log(`Архив на диске: ${formatBytes(result.bytes)} — импорт идёт с диска`);
+  return dest;
+}
+
+export interface GalaxyImportStatus {
   state: GalaxyImportState;
   live: boolean;
-  /** Persisted `running` with no live task: the process restarted mid-import. */
+  /** Persisted `running` without a live task: the process restarted mid-import. */
   interrupted: boolean;
   percent: number | null;
   log: string[];
   backends: ReturnType<typeof describeImportBackends>;
   stats: GalaxyStats | null;
-}> {
+  archive: Awaited<ReturnType<typeof getGalaxyArchiveStatus>> | null;
+}
+
+/** Persisted state plus the live counters of a run in this process. */
+export async function getGalaxyImportStatus(): Promise<GalaxyImportStatus> {
   const persisted = await readImportState();
   const run = liveRun();
   const state = run?.snapshot
@@ -221,6 +535,7 @@ export async function getGalaxyImportStatus(): Promise<{
       }
     : persisted;
   const stats = await getGalaxyStats().catch(() => null);
+  const archive = await getGalaxyArchiveStatus().catch(() => null);
   return {
     state,
     live: Boolean(run),
@@ -229,13 +544,16 @@ export async function getGalaxyImportStatus(): Promise<{
     log: run ? [...run.log] : [],
     backends: describeImportBackends(),
     stats,
+    archive,
   };
 }
 
 export interface StartGalaxyImportOptions {
-  /** Dump URL (default: the nightly Spansh dump). */
+  /** Dump URL to fetch the archive from (default: the nightly Spansh dump). */
   url?: string;
-  /** Ignore a stored restart point and download from byte 0. */
+  /** Local dump file to import directly (never downloaded or replaced). */
+  file?: string;
+  /** Re-download the dump archive and start from the first record. */
   fresh?: boolean;
   /** Empty the table first (direct Postgres only). */
   truncate?: boolean;
@@ -243,7 +561,9 @@ export interface StartGalaxyImportOptions {
   skipPoints?: boolean;
   /**
    * Scheduled (not manual) run: counts a retry after a failure so the scheduler
-   * can stop hammering a broken source. A manual start resets the counter.
+   * can stop hammering a broken source. A manual start resets the counter. A
+   * scheduled run also requires the on-disk archive to be fresh (younger than
+   * FRESH_MS) or re-downloads the dump first.
    */
   scheduled?: boolean;
 }
@@ -350,6 +670,14 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     attempts: options.scheduled && previous.phase === 'failed' ? previous.attempts + 1 : 0,
   });
 
+  // A pinned local file (option or GALAXY_IMPORT_FILE) must exist before the
+  // job registers itself — a typo in the path is a config error, not a
+  // resumable failure.
+  const pinnedFile = options.file?.trim() ? resolve(options.file.trim()) : galaxyImportFile();
+  if (pinnedFile && !existsSync(pinnedFile)) {
+    throw new Error(`Dump file not found: ${pinnedFile}`);
+  }
+
   void (async () => {
     let writer: GalaxyRowWriter | null = null;
     try {
@@ -359,8 +687,21 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
           ? `Режим записи: ${backend}; продолжение — уже записанные системы (до байта ${resumeFrom.toLocaleString()} распакованного дампа) будут пропущены`
           : `Режим записи: ${backend}`,
       );
-      const result = await runGalaxyImport({
+
+      // Resolve the dump on disk. A pinned file wins; otherwise the shared
+      // archive is used (downloading it first when missing, or stale on a
+      // scheduled run). The import itself then reads the local file, so a
+      // dropped network connection can no longer kill it or force a re-download.
+      const file = pinnedFile ?? (await ensureArchiveDownload({
         url,
+        scheduled: options.scheduled === true,
+        fresh: options.fresh === true,
+        signal: controller.signal,
+        log,
+      }));
+
+      const result = await runGalaxyImport({
+        file,
         writer,
         resumeFrom,
         signal: controller.signal,

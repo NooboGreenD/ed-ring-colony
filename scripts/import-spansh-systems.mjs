@@ -20,8 +20,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { pipeline } from 'node:stream/promises';
-import { Transform } from 'node:stream';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 
@@ -40,7 +38,14 @@ import {
   streamObjects,
   toGalaxySystemRow,
 } from '../src/lib/galaxySpanshStream.ts';
-import { PG_BATCH_SIZE, SUPABASE_BATCH_SIZE, pgLiteral, writeGalaxyRowsPg, writeGalaxyRowsSupabase } from '../src/lib/galaxyImport.ts';
+import {
+  PG_BATCH_SIZE,
+  SUPABASE_BATCH_SIZE,
+  downloadDumpFile,
+  pgLiteral,
+  writeGalaxyRowsPg,
+  writeGalaxyRowsSupabase,
+} from '../src/lib/galaxyImport.ts';
 
 export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
 
@@ -63,6 +68,10 @@ const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
   --dry-run              Parse only; do not write to the database
   --selftest             Generate a synthetic dump and verify the pipeline (no DB)
   --skip-download        Reuse the previously downloaded file
+  --download-only        Download the dump to --out and stop (no DB, no import).
+                         Use this to pre-download the ~6 GiB archive to the
+                         server; a later run reuses the file (Range-resumable,
+                         retrying interrupted connections).
   --database-url <url>   Postgres connection string (else DATABASE_URL, else Supabase env)
   -v, --verbose          Also print per-10s progress lines`;
 
@@ -81,6 +90,7 @@ function parseArgs(argv) {
     dryRun: false,
     selftest: false,
     skipDownload: false,
+    downloadOnly: false,
     databaseUrl: null,
     verbose: false,
   };
@@ -98,6 +108,7 @@ function parseArgs(argv) {
       case '--dry-run': args.dryRun = true; break;
       case '--selftest': args.selftest = true; break;
       case '--skip-download': args.skipDownload = true; break;
+      case '--download-only': args.downloadOnly = true; break;
       case '--database-url': args.databaseUrl = argv[++i]; break;
       case '-v': case '--verbose': args.verbose = true; break;
       case '-h': case '--help': console.log(USAGE); process.exit(0); break;
@@ -111,35 +122,17 @@ function parseArgs(argv) {
 }
 
 // ────────────────────── download (resumable) ──────────────────────
+// Shared with the in-app import (src/lib/galaxyImport.ts): HTTP Range resume,
+// retry on interrupted connections (undici's `terminated`), gzip verification.
 
 async function download(url, dest, log) {
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  let offset = 0;
-  if (fs.existsSync(dest)) {
-    offset = fs.statSync(dest).size;
-    log(`Resuming ${dest} from byte ${offset}`);
-  }
-  const res = await fetch(url, { headers: offset > 0 ? { Range: `bytes=${offset}-` } : {} });
-  if (!res.ok && res.status !== 206) {
-    throw new Error(`Download failed: HTTP ${res.status} ${res.statusText} (${url})`);
-  }
-  if (offset > 0 && res.status === 200) offset = 0; // server ignored Range
-  let received = 0;
-  let lastReport = 0;
-  const counter = new Transform({
-    transform(chunk, _enc, done) {
-      received += chunk.length;
-      const now = Date.now();
-      if (now - lastReport > 5000) {
-        lastReport = now;
-        log(`  downloaded ${Math.round(received / 1024 / 1024)} MB…`);
-      }
-      done(null, chunk);
-    },
+  const result = await downloadDumpFile({
+    url,
+    dest,
+    log,
+    onProgress: (info) => log(`  downloaded ${Math.round(info.received / 1024 / 1024)} MB…`),
   });
-  const writeStream = fs.createWriteStream(dest, { flags: offset > 0 ? 'a' : 'w' });
-  await pipeline(res.body, counter, writeStream);
-  log(`Download complete: ${fs.statSync(dest).size.toLocaleString()} bytes`);
+  log(`Download complete: ${result.bytes.toLocaleString()} bytes`);
 }
 
 // ─────────────────────── DB writers ───────────────────────
@@ -561,6 +554,13 @@ export function runMain(argv) {
   return (async () => {
     if (args.selftest) {
       await selftest(args, log);
+      return;
+    }
+    if (args.downloadOnly) {
+      const dest = path.join(args.outDir, path.basename(new URL(args.url).pathname) || 'systems.json.gz');
+      log(`Download-only: ${args.url} → ${dest}`);
+      await download(args.url, dest, log);
+      log('Import not run (--download-only). The next run reuses this file.');
       return;
     }
     const db = await resolveDb(args, log);
