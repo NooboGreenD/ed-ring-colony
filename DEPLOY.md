@@ -207,7 +207,9 @@ sudo certbot --nginx -d ваш-домен
    Redirect URI → `https://ваш-домен/api/capi/callback`; и обязательно
    `FRONTIER_REDIRECT_URI` в `.env.production`.
 4. **Десктопный uploader / Colonial Helper**: если в нём захардкожен адрес
-   сайта — обновить и пересобрать EXE (workflow `build-exe.yml`).
+   сайта — обновить и пересобрать EXE (workflow `build-exe.yml`). Он
+   срабатывает на правки `uploader/**`; если адрес поменялся только на стороне
+   сайта, запустите workflow вручную через **Run workflow**.
 5. Push-подписки браузеров привязаны к домену — пользователи переподпишутся
    автоматически при первом заходе на новый домен (sw.js отдаётся с него же).
 
