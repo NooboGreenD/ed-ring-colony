@@ -209,7 +209,7 @@ function createFakeSupabase(initialTables = {}) {
 function fakeFetchFactory({ failTranslateFor = [] } = {}) {
   const translateCalls = [];
 
-  return async function fakeFetch(url, init) {
+  async function fakeFetch(url, init) {
     const target = String(url);
 
     if (target.includes('cms.zaonce.net')) {
@@ -218,7 +218,11 @@ function fakeFetchFactory({ failTranslateFor = [] } = {}) {
 
     if (target.includes('translate.api.cloud.yandex.net')) {
       const body = JSON.parse(init.body);
-      translateCalls.push({ lang: body.targetLanguageCode, count: body.texts.length });
+      translateCalls.push({
+        lang: body.targetLanguageCode,
+        source: body.sourceLanguageCode,
+        count: body.texts.length,
+      });
       if (failTranslateFor.includes(body.targetLanguageCode)) {
         // 403 — неретраибельная ошибка, чтобы тест не ждал бэкофф.
         return {
@@ -239,7 +243,11 @@ function fakeFetchFactory({ failTranslateFor = [] } = {}) {
     }
 
     throw new Error(`unexpected fetch: ${target}`);
-  };
+  }
+
+  // Заметки о запросах нужны тестам на язык оригинала и добор переводов.
+  fakeFetch.translateCalls = translateCalls;
+  return fakeFetch;
 }
 
 process.env.YANDEX_TRANSLATE_API_KEY = 'test-key';
@@ -412,4 +420,137 @@ test('translatePending догоняет очередь и считает ост�
   assert.equal(rows.find((row) => row.id === 2).translation_status, 'completed');
   // Завершённая статья не должна трогаться.
   assert.equal(rows.find((row) => row.id === 3).title_ru, undefined);
+});
+
+test('язык оригинала берётся из таблицы: новости переводятся с русского', async () => {
+  const supabase = createFakeSupabase({
+    news: [
+      { id: 10, title: 'Кольцо обживается', body: 'Текст большой новости.', translation_status: 'pending' },
+    ],
+  });
+  const fetchImpl = fakeFetchFactory();
+
+  const result = await translatePending({ supabase, tables: ['news'], limit: 5, fetchImpl });
+
+  assert.equal(result.translated, 1);
+  assert.ok(fetchImpl.translateCalls.length > 0, 'перевод действительно запрашивался');
+  assert.ok(
+    fetchImpl.translateCalls.every((call) => call.source === 'ru'),
+    'для news язык оригинала — русский, а не английский: ' + JSON.stringify(fetchImpl.translateCalls),
+  );
+  assert.equal(fetchImpl.translateCalls.some((call) => call.lang === 'ru'), false, 'сам себя переводить не нужно');
+
+  const row = supabase.__tables.get('news')[0];
+  assert.equal(row.title_en, '[en] Кольцо обживается');
+  assert.equal(row.title_ru, 'Кольцо обживается', 'оригинал попадает в колонку своего языка как есть');
+  assert.equal(row.translation_status, 'completed');
+});
+
+test('язык оригинала из колонки source_lang важнее умолчания таблицы', async () => {
+  const supabase = createFakeSupabase({
+    [GALNET_TABLE]: [
+      { id: 11, nid: 'pl', title: 'Status ringu', body: 'Treść', source_lang: 'en', translation_status: 'pending' },
+    ],
+  });
+  const fetchImpl = fakeFetchFactory();
+
+  await translatePending({ supabase, tables: [GALNET_TABLE], limit: 5, fetchImpl });
+  assert.ok(fetchImpl.translateCalls.every((call) => call.source === 'en'));
+
+  const other = createFakeSupabase({
+    [GALNET_TABLE]: [
+      { id: 12, nid: 'ru', title: 'Кольцо', body: 'Текст', source_lang: 'ru', translation_status: 'pending' },
+    ],
+  });
+  const otherFetch = fakeFetchFactory();
+  await translatePending({ supabase: other, tables: [GALNET_TABLE], limit: 5, fetchImpl: otherFetch });
+  assert.ok(otherFetch.translateCalls.every((call) => call.source === 'ru'));
+});
+
+test('добор перевода: заполненные языки не перезапрашиваются и не затираются', async () => {
+  const supabase = createFakeSupabase({
+    [GALNET_TABLE]: [
+      {
+        id: 13,
+        nid: 'partial',
+        title: 'Ring construction update',
+        body: 'Engineering crews report progress on the second hub.',
+        // Русский уже переведен руками — его трогать нельзя.
+        title_ru: 'Статус строительства кольца',
+        body_ru: 'Инженеры сообщают о прогрессе.',
+        translation_status: 'partial',
+      },
+    ],
+  });
+  const fetchImpl = fakeFetchFactory();
+
+  const result = await translatePending({ supabase, tables: [GALNET_TABLE], limit: 5, fetchImpl });
+
+  assert.equal(result.translated, 1);
+  assert.equal(fetchImpl.translateCalls.some((call) => call.lang === 'ru'), false, 'заполненный язык не запрашивается');
+  assert.ok(fetchImpl.translateCalls.some((call) => call.lang === 'de'));
+
+  const row = supabase.__tables.get(GALNET_TABLE)[0];
+  assert.equal(row.title_ru, 'Статус строительства кольца', 'готовый перевод не затёрт');
+  assert.equal(row.body_ru, 'Инженеры сообщают о прогрессе.');
+  assert.equal(row.title_de, '[de] Ring construction update');
+  assert.equal(row.title_en, 'Ring construction update', 'английский оригинал обязан попасть в свою колонку');
+  assert.equal(row.translation_status, 'completed');
+});
+
+test('если переводов нет вообще — строка остаётся в очереди, а не «completed»', async () => {
+  const supabase = createFakeSupabase({
+    [GALNET_TABLE]: [{ id: 14, nid: 'none', title: 'Title', body: 'Body', translation_status: 'pending' }],
+  });
+  const fetchImpl = fakeFetchFactory({ failTranslateFor: ['ru', 'de', 'it', 'ko', 'zh', 'ja'] });
+
+  const result = await translatePending({ supabase, tables: [GALNET_TABLE], limit: 5, fetchImpl });
+
+  assert.equal(result.failed, 1, 'ни один язык не переведён — это провал, а не «переведено»');
+  assert.equal(result.translated, 0);
+  assert.ok(result.errors.some((error) => error.includes('ни один язык не переведён')), JSON.stringify(result.errors));
+
+  const row = supabase.__tables.get(GALNET_TABLE)[0];
+  assert.equal(row.translation_status, 'failed', 'строка остаётся в очереди на повтор');
+  assert.equal(row.title_en, 'Title', 'оригинал всё равно обязан быть доступен читателю');
+});
+
+test('частичный перевод считается переводом, но остаётся в очереди', async () => {
+  const supabase = createFakeSupabase({
+    [GALNET_TABLE]: [{ id: 15, nid: 'half', title: 'Half', body: 'Half body', translation_status: 'pending' }],
+  });
+  const fetchImpl = fakeFetchFactory({ failTranslateFor: ['de'] });
+
+  const result = await translatePending({ supabase, tables: [GALNET_TABLE], limit: 5, fetchImpl });
+
+  assert.equal(result.translated, 1);
+  assert.equal(result.failed, 0);
+  assert.ok(result.errors.some((error) => error.includes('de')), 'непрошедший язык виден в отчёте');
+
+  const row = supabase.__tables.get(GALNET_TABLE)[0];
+  assert.equal(row.translation_status, 'partial');
+  assert.equal(row.title_ru, '[ru] Half');
+  assert.equal(row.title_de, undefined);
+});
+
+test('публичные GET-эндпоинты не перечисляют колонки переводов руками', async () => {
+  // Именно перечисление `title_ru, body_de, …` в .select() и обнуляло ленту:
+  // если миграция не применена, падает весь запрос, а не только переводы.
+  const files = [
+    '../../src/app/api/galnet/route.ts',
+    '../../src/app/api/news/route.ts',
+    '../../src/app/api/home-data/route.ts',
+  ];
+  for (const relative of files) {
+    const source = await readFile(path.join(here, relative), 'utf8');
+    const selects = [...source.matchAll(/\.select\(\s*(['"`])([^'"`]*)\1/g)].map((match) => match[2]);
+    assert.ok(selects.length > 0, relative + ' должен делать select');
+    for (const columns of selects) {
+      assert.equal(
+        /(?:^|,)\s*(?:title|body|kicker|manifest|footer_[a-z]+)_(ru|en|de|it|ko|zh|ja)\b/.test(columns),
+        false,
+        relative + ' перечисляет языковые колонки: ' + columns,
+      );
+    }
+  }
 });

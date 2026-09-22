@@ -140,6 +140,12 @@ if [ -f "$CRED" ]; then
     echo "MONITOR_AGENT_TOKEN=$MONITOR_AGENT_TOKEN" >> "$CRED"
     echo "дозаписан MONITOR_AGENT_TOKEN в $CRED"
   fi
+  # Ручное обновление проекта (Админка → Мониторинг) — свой ключ, не CRON_SECRET.
+  if [ -z "${UPDATE_AGENT_TOKEN:-}" ]; then
+    UPDATE_AGENT_TOKEN=$(openssl rand -hex 32)
+    echo "UPDATE_AGENT_TOKEN=$UPDATE_AGENT_TOKEN" >> "$CRED"
+    echo "дозаписан UPDATE_AGENT_TOKEN в $CRED"
+  fi
 else
   POSTGRES_PASSWORD=$(openssl rand -hex 24)
   JWT_SECRET=$(openssl rand -hex 32)
@@ -149,6 +155,9 @@ else
   CRON_SECRET=$(openssl rand -hex 32)
   # Не переиспользует CRON_SECRET: отдельный ключ только для web → agent.
   MONITOR_AGENT_TOKEN=$(openssl rand -hex 32)
+  # Ключ web → update-agent (ручное обновление). Тоже отдельный: компрометация
+  # одного не открывает второе.
+  UPDATE_AGENT_TOKEN=$(openssl rand -hex 32)
   cat > "$CRED" <<EOF
 # ED Ring Colony — секреты установки $(date -Iseconds). НЕ УДАЛЯТЬ.
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -159,6 +168,7 @@ DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD
 CRON_SECRET=$CRON_SECRET
 MONITOR_AGENT_TOKEN=$MONITOR_AGENT_TOKEN
+UPDATE_AGENT_TOKEN=$UPDATE_AGENT_TOKEN
 EOF
   chmod 600 "$CRED"
   echo "секреты сгенерированы → $CRED"
@@ -340,6 +350,11 @@ set_env "$SE" FRONTIER_REDIRECT_URI         "$SITE_URL/api/capi/callback"
 set_env "$SE" MONITOR_AGENT_TOKEN           "$MONITOR_AGENT_TOKEN"
 set_env "$SE" PROJECT_REPOSITORY            "NooboGreenD/ed-ring-colony"
 set_env "$SE" PROJECT_UPDATE_BRANCH         "main"
+# Ручное обновление из панели: приватный update-agent в профиле monitoring.
+set_env "$SE" UPDATE_AGENT_TOKEN            "$UPDATE_AGENT_TOKEN"
+set_env "$SE" UPDATE_AGENT_URL              "http://update-agent:8092"
+set_env "$SE" PROJECT_HOST_DIR              "$SRC_DIR"
+set_env "$SE" PROJECT_DEPLOY_MODE           "compose"
 if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
 chmod 600 "$SE"
 ln -sf .env.production "$SRC_DIR/.env"
@@ -356,7 +371,7 @@ export APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$DO_MONITOR" = 1 ]; then
   # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
   # он единственный получает docker.sock, web ходит к нему только с токеном.
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production --profile monitoring up -d --build web jobs monitor-agent )
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production --profile monitoring up -d --build web jobs monitor-agent update-agent )
 else
   ( cd "$SRC_DIR" && docker compose --env-file .env.production up -d --build )
 fi
@@ -394,8 +409,8 @@ cat <<EOF
   Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED)
   Секреты:         $CRED  (сделайте копию в надёжное место!)
   Бэкапы:          /opt/backups (ежедневно 04:00, ротация 14 дней)
-$( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent запущен, ключ в $CRED)" \
-     || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh" )
+$( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent + update-agent, ключи в $CRED)" \
+     || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh && bash $SRC_DIR/deploy/start-update-agent.sh" )
 
   Проверка:
     docker compose -f $SUPA_DIR/docker-compose.yml ps

@@ -29,6 +29,19 @@ services:
       # The agent has no published port and is queried only after admin auth.
       MONITOR_AGENT_URL: http://monitor-agent:8080
       MONITOR_AGENT_TOKEN: ${MONITOR_AGENT_TOKEN:-}
+      # Manual project update: the private update-agent (profile `monitoring`)
+      # is the only process allowed to run git and Docker. `web` forwards an
+      # admin-confirmed request to it with a separate Bearer token.
+      # A non-Docker (systemd) install uses http://127.0.0.1:8092 instead.
+      UPDATE_AGENT_URL: ${UPDATE_AGENT_URL:-http://update-agent:8092}
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:-}
+      PROJECT_REPOSITORY: ${PROJECT_REPOSITORY:-NooboGreenD/ed-ring-colony}
+      PROJECT_UPDATE_BRANCH: ${PROJECT_UPDATE_BRANCH:-main}
+      PROJECT_DEPLOY_MODE: ${PROJECT_DEPLOY_MODE:-auto}
+    # Lets a host-run updater (deploy/ed-ring-colony-update.service) be reached
+    # without publishing its port; harmless when the agent runs as a container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -126,6 +139,48 @@ services:
         max-size: "5m"
         max-file: "2"
 
+  # Privileged by design: the only container allowed to change what runs.
+  # It gets the Docker socket (read-write: it recreates services) and the repo
+  # mounted at the SAME host path, because the daemon resolves build contexts
+  # on the host. Never published on a host port; reachable only from the
+  # Compose network and only with UPDATE_AGENT_TOKEN.
+  update-agent:
+    profiles: ["monitoring"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.update-agent
+    environment:
+      UPDATE_AGENT_TOKEN: ${UPDATE_AGENT_TOKEN:-}
+      UPDATE_AGENT_PORT: 8092
+      PROJECT_DIR: ${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}
+      PROJECT_REPOSITORY: ${PROJECT_REPOSITORY:-NooboGreenD/ed-ring-colony}
+      PROJECT_UPDATE_BRANCH: ${PROJECT_UPDATE_BRANCH:-main}
+      PROJECT_DEPLOY_MODE: ${PROJECT_DEPLOY_MODE-compose}
+      UPDATE_APPLY_MIGRATIONS: ${UPDATE_APPLY_MIGRATIONS:-1}
+      UPDATE_STATE_DIR: /state
+      UPDATE_HEALTH_URL: http://web:3000/api/health
+      # pg_dump/pg_restore inside the updater talk to the self-hosted stack.
+      SUPABASE_CONTAINER: ${SUPABASE_CONTAINER:-supabase-db}
+    volumes:
+      - ${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}:${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}
+      - /var/run/docker.sock:/var/run/docker.sock
+      - update-state:/state
+    depends_on:
+      web:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
   # Опционально: EDDN-воркер (ZeroMQ-подписка на рыночные данные).
   # На Vercel он не работал в принципе — на VPS можно включить.
   # Раскомментируйте и выполните `npm i zeromq` перед сборкой,
@@ -144,6 +199,8 @@ services:
 
 volumes:
   jobs-state:
+  # Lock, progress state and the updater's own log.
+  update-state:
   # On-disk Spansh dump archive for the in-app galaxy import.
   galaxy-dump:
 

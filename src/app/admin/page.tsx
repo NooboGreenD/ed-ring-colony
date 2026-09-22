@@ -2,7 +2,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
-import { DEFAULT_FOOTER } from "@/lib/siteFooter";
+import { DEFAULT_FOOTER, buildSiteContentPayload } from "@/lib/siteFooter";
 import ForumAdmin from "@/components/Forum/ForumAdmin";
 import { MarkdownToolbar } from "@/components/Forum/MarkdownToolbar";
 import { MarkdownRenderer } from "@/lib/markdown";
@@ -112,6 +112,8 @@ export default function AdminPage() {
   const [nMsg, setNMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [translating, setTranslating] = useState(false);
+  // По умолчанию — только дозаполнение пустых полей, чтобы не затирать ручной перевод.
+  const [translateOverwrite, setTranslateOverwrite] = useState(false);
 
   const load = async () => {
     try {
@@ -184,15 +186,22 @@ export default function AdminPage() {
     load();
   }, []);
 
+  // Перевод через Yandex: сохраняется индексация полей (пустые строки не
+  // выкидываются — иначе переводы съезжали на соседние поля), язык оригинала
+  // определяется по заполненному полю, а уже заполненные переводы по умолчанию
+  // не перезаписываются: кнопка обязана дозаполнять недостающие блоки.
   const translateFields = useCallback(async (
     fields: Record<string, string>[],
     setters: ((rec: Record<string, string>) => void)[]
   ) => {
     setTranslating(true);
     try {
-      const sourceLang = 'ru';
-      const texts = fields.map((f) => f[sourceLang]).filter(Boolean);
-      if (!texts.length) { setNMsg(t('admin.translationError') + ' ' + t('admin.pasteSystemsHint')); setTranslating(false); return; }
+      const sourceLang = LANGS.find((l) => fields.some((f) => (f[l] || '').trim())) || 'ru';
+      const texts = fields.map((f) => (f[sourceLang] || '').trim());
+      if (!texts.some((text) => text)) {
+        setNMsg(t('admin.translationError') + ' ' + t('admin.pasteSystemsHint'));
+        return;
+      }
 
       const res = await fetch('/api/translate', {
         method: 'POST',
@@ -200,55 +209,90 @@ export default function AdminPage() {
         body: JSON.stringify({ texts, sourceLang }),
       });
       const data = await res.json();
-      if (!data.success) throw new Error(data.error);
+      if (!res.ok || !data.translations) throw new Error(data.error || `HTTP ${res.status}`);
 
+      const overwrite = translateOverwrite;
+      const translations = data.translations as Record<string, string[]>;
+      let filled = 0;
       setters.forEach((setter, idx) => {
-        const rec: Record<string, string> = {};
-        LANGS.forEach((l) => { rec[l] = data.translations[l]?.[idx] ?? fields[idx][l] ?? ''; });
-        setter(rec);
+        if (!texts[idx]) return;
+        const next: Record<string, string> = { ...fields[idx] };
+        LANGS.forEach((l) => {
+          if (l === sourceLang) { next[l] = texts[idx]; return; }
+          if (!overwrite && (next[l] || '').trim()) return;
+          const value = String(translations[l]?.[idx] ?? '').trim();
+          if (value) { if (value !== next[l]) filled++; next[l] = value; }
+        });
+        setter(next);
       });
-      setNMsg(t('admin.translationSuccess'));
+
+      const failed: string[] = Array.isArray(data.failedLangs) ? data.failedLangs : [];
+      const note = failed.length
+        ? `${t('admin.translationError')} ${failed.join(', ')}`
+        : `${t('admin.translationSuccess')} (${filled})`;
+      setNMsg(note);
     } catch (e: any) {
       setNMsg(t('admin.translationError') + ' ' + e.message);
     } finally {
       setTranslating(false);
     }
-  }, [t]);
+  }, [t, translateOverwrite]);
 
   if (role === null) return <main className="card"><p>{t('common.loading')}</p></main>;
   if (!['admin', 'moderator', 'support_manager'].includes(role))
     return <main className="card"><p>{t('admin.accessDenied')}</p></main>;
 
+  // Переводы лежат в колонках `<field>_<lang>`, но читатели (и старая схема БД)
+  // смотрят базовую колонку. Пишем и то, и другое: русская колонка становится
+  // базовой, поэтому правка из админки попадает на сайт в любом случае.
   const buildLangPayload = (base: string, rec: Record<string, string>) => {
     const payload: Record<string, string> = {};
-    LANGS.forEach((l) => { payload[`${base}_${l}`] = rec[l]; });
+    LANGS.forEach((l) => { payload[`${base}_${l}`] = (rec[l] ?? '').trim(); });
+    payload[base] = (rec.ru ?? '').trim();
     return payload;
   };
 
+  const saveSiteContent = async (fields: Record<string, Record<string, string>>) => {
+    const full = buildSiteContentPayload(fields);
+    const { error } = await supabase.from('site_content').upsert({ ...full, id: 1, updated_at: new Date().toISOString() });
+    if (!error) return null;
+    // Схема без колонок переводов (миграция 20260926000000 не применена):
+    // сохраняем хотя бы базовые колонки, иначе правка теряется молча.
+    const base: Record<string, string> = {};
+    for (const [name, rec] of Object.entries(fields)) base[name] = (rec.ru ?? '').trim();
+    const fallback = await supabase.from('site_content').upsert({ ...base, id: 1, updated_at: new Date().toISOString() });
+    if (!fallback.error) {
+      return 'saved-without-translations: примените supabase/migrations/20260926000000_site_content_footer_translations.sql, '
+        + 'чтобы переводы тоже сохранялись (' + error.message + ')';
+    }
+    return error.message;
+  };
+
   const saveContent = async () => {
-    const payload = {
-      id: 1,
-      ...buildLangPayload('kicker', kickerLangs),
-      ...buildLangPayload('title1', title1Langs),
-      ...buildLangPayload('title2', title2Langs),
-      ...buildLangPayload('manifest', manifestLangs),
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase.from('site_content').upsert(payload);
-    setSaved(error ? t('account.error') + ' ' + error.message : t('admin.savedAt') + ' ' + new Date().toLocaleTimeString('ru-RU'));
+    const message = await saveSiteContent({
+      kicker: kickerLangs,
+      title1: title1Langs,
+      title2: title2Langs,
+      manifest: manifestLangs,
+    });
+    setSaved(message && !message.startsWith('saved-without-translations')
+      ? t('account.error') + ' ' + message
+      : t('admin.savedAt') + ' ' + new Date().toLocaleTimeString('ru-RU') + (message ? ' · ' + message : ''));
+    // Даём главной странице увидеть свежие строки даже при живом keep-alive.
+    await load();
   };
 
   const saveFooter = async () => {
-    const payload = {
-      id: 1,
-      ...buildLangPayload('footer_copyright', footerCopyrightLangs),
-      ...buildLangPayload('footer_discord', footerDiscordLangs),
-      ...buildLangPayload('footer_edsm', footerEdsmLangs),
-      ...buildLangPayload('footer_inara', footerInaraLangs),
-      updated_at: new Date().toISOString(),
-    };
-    const { error } = await supabase.from('site_content').upsert(payload);
-    setFooterSaved(error ? t('account.error') + ' ' + error.message : t('admin.footerSavedAt') + ' ' + new Date().toLocaleTimeString('ru-RU'));
+    const message = await saveSiteContent({
+      footer_copyright: footerCopyrightLangs,
+      footer_discord: footerDiscordLangs,
+      footer_edsm: footerEdsmLangs,
+      footer_inara: footerInaraLangs,
+    });
+    setFooterSaved(message && !message.startsWith('saved-without-translations')
+      ? t('account.error') + ' ' + message
+      : t('admin.footerSavedAt') + ' ' + new Date().toLocaleTimeString('ru-RU') + (message ? ' · ' + message : ''));
+    await load();
   };
 
   const resetNewsForm = () => {
@@ -299,7 +343,10 @@ export default function AdminPage() {
       ...buildLangPayload('title', newsTitleLangs),
       ...buildLangPayload('body', newsBodyLangs),
       cover_url: cover,
-      translation_status: 'completed',
+      // «completed» только когда закрыты все языки: иначе очередь догона
+      // никогда не увидит пропуски и на сайте останутся пустые блоки перевода.
+      translation_status: LANGS.every((l) => (newsTitleLangs[l] || '').trim() && (newsBodyLangs[l] || '').trim()) ? 'completed' : 'partial',
+      translated_at: new Date().toISOString(),
     };
     const { error } = editingId
       ? await supabase.from('news').update(payload).eq('id', editingId)
@@ -515,6 +562,10 @@ export default function AdminPage() {
             >
               {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
             </button>
+<label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
+              <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
+              {t('admin.translateOverwrite')}
+            </label>
             {saved && <span style={{ color: '#2ecc71' }}>{saved}</span>}
           </div>
 
@@ -533,6 +584,10 @@ export default function AdminPage() {
             >
               {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
             </button>
+<label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
+              <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
+              {t('admin.translateOverwrite')}
+            </label>
             {footerSaved && <span style={{ color: footerSaved.startsWith(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{footerSaved}</span>}
           </div>
         </div>
@@ -581,6 +636,10 @@ export default function AdminPage() {
             >
               {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
             </button>
+<label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
+              <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
+              {t('admin.translateOverwrite')}
+            </label>
             {nMsg && <span style={{ color: nMsg.includes(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{nMsg}</span>}
           </div>
 

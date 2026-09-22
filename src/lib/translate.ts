@@ -61,6 +61,18 @@ export async function translateToAllLangs(
 }
 
 /**
+ * Язык оригинала по умолчанию. В `galnet_news` базовые колонки приходят с
+ * Galnet на английском, а в `news` редактор пишет по-русски (см. миграции:
+ * русские значения остаются в базовых полях, переводы — в `*_en` и т.д.).
+ * Раньше для обеих таблиц жёстко стоял 'en', и Yandex получал русский текст
+ * с просьбой «перевести с английского» — отсюда пустые или мусорные блоки.
+ */
+export const TABLE_SOURCE_LANG: Record<'news' | 'galnet_news', string> = {
+  news: 'ru',
+  galnet_news: 'en',
+};
+
+/**
  * Переводит статью и сохраняет переводы в указанную таблицу.
  * Поддерживаемые таблицы: `news` и `galnet_news`.
  */
@@ -70,19 +82,28 @@ export async function translateAndSaveArticle(
   title: string,
   body: string,
   supabase: any,
-  sourceLang: string = 'en'
-): Promise<void> {
+  sourceLang?: string | null
+): Promise<{ missingLangs: string[] }> {
+  const lang = (sourceLang || TABLE_SOURCE_LANG[table] || 'en').trim().toLowerCase();
   const translation = await translateArticleFieldsCore({
     title,
     body,
-    sourceLang,
+    sourceLang: lang,
     langs: SUPPORTED_TRANSLATION_LANGS,
   });
 
   const updateData = buildTranslationUpdate(translation, SUPPORTED_TRANSLATION_LANGS);
 
+  // `translation_status` уже посчитан в buildTranslationUpdate по факту
+  // полученного: 'completed', если закрыты все языки, иначе 'partial' —
+  // такая строка останется в очереди крона и её доберёт кнопка в админке.
+  const missing = SUPPORTED_TRANSLATION_LANGS.filter(
+    (code) => !(String((updateData as any)[`title_${code}`] ?? '').trim()
+      && String((updateData as any)[`body_${code}`] ?? '').trim())
+  );
+
   const { error } = await supabase.from(table).update(updateData).eq('id', articleId);
   if (error) throw error;
 
-  // Частичный успех не считаем ошибкой — статья уже читаема на части языков.
+  return { missingLangs: missing };
 }

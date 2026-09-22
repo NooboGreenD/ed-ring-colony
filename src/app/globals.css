@@ -3837,3 +3837,402 @@ html[data-hud-effect="glow"]::before {
   .ops-job-name { grid-column: 1 / -1; }
   .ops-job-fact strong { white-space: normal; }
 }
+
+/* ===== SYSTEM UPDATE STATUS (topbar) =====
+   Пока идёт ручная пересборка проекта, «System Online» вверху сайта
+   меняется на «System Update» с анимированными часиками. Стиль — тот же,
+   что у остального HUD: моноширинный шрифт, разрядка, янтарный акцент. */
+.status-update {
+  color: var(--orange);
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  animation: statusUpdateGlow 2.4s ease-in-out infinite;
+}
+
+.status-update .update-clock {
+  display: inline-flex;
+  align-items: center;
+  color: var(--orange);
+}
+
+.update-clock svg { overflow: visible; }
+
+.update-clock-ring {
+  stroke: currentColor;
+  opacity: .55;
+  transform-origin: 12px 12px;
+  animation: updateClockRing 9s linear infinite;
+}
+
+.update-clock-hand-slow {
+  transform-origin: 12px 12px;
+  animation: updateClockHand 8s linear infinite;
+}
+
+.update-clock-hand-fast {
+  transform-origin: 12px 12px;
+  animation: updateClockHand 1.6s linear infinite;
+}
+
+.update-clock-orbit {
+  transform-origin: 12px 12px;
+  animation: updateClockHand 3.2s linear infinite reverse;
+  opacity: .8;
+}
+
+.status-update-percent {
+  padding: 1px 6px;
+  border: 1px solid rgba(230, 126, 34, .45);
+  border-radius: 2px;
+  background: rgba(230, 126, 34, .12);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.status-update-elapsed {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 1px;
+}
+
+.status-update-done {
+  color: var(--green);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: lowercase;
+}
+
+/* «до перезапуска ≈ N c» — самая полезная для посетителя цифра. */
+.status-update-hint {
+  color: var(--cyan);
+  font-size: 11px;
+  letter-spacing: 1px;
+  opacity: .85;
+}
+
+/*
+ * html[data-site-updating="1"] выставляет SiteStatusBar на время пересборки:
+ * это крючок для точечных правил, самих правил пока не нужно — на время
+ * апдейта верхняя строка целиком меняется на «System Update».
+ */
+
+/* Тонкая полоса прогресса под «липкой» шапкой. */
+.update-strip {
+  position: fixed;
+  top: 51px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(230, 126, 34, .16);
+  z-index: 49;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.update-strip-fill {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--orange), var(--orange-hover) 60%, var(--cyan));
+  box-shadow: 0 0 8px rgba(230, 126, 34, .6);
+  transition: width .5s ease;
+}
+
+@keyframes updateClockHand {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes updateClockRing {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes statusUpdateGlow {
+  0%, 100% { text-shadow: 0 0 0 rgba(230, 126, 34, 0); }
+  50% { text-shadow: 0 0 10px rgba(230, 126, 34, .55); }
+}
+
+@media (max-width: 768px) {
+  /* На мобильном статус скрыт, но про пересборку посетитель должен знать. */
+  .topbar .status-update { display: flex; }
+  .status-update-elapsed,
+  .status-update-hint { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-update,
+  .update-clock-ring,
+  .update-clock-hand-slow,
+  .update-clock-hand-fast,
+  .update-clock-orbit { animation: none; }
+  .update-strip-fill { transition: none; }
+}
+
+/* ===== OPS MONITOR: DISK / CONTENT / UPDATE PANELS ===== */
+.ops-disk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ops-disk-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .16);
+}
+
+.ops-disk-fact span {
+  color: var(--muted);
+  font: 600 9px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+}
+
+.ops-disk-fact strong {
+  font: 600 16px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--text);
+  letter-spacing: .4px;
+}
+
+.ops-disk-fact small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ops-table-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ops-table-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 3fr) auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.ops-table-bar-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--text);
+}
+
+.ops-table-bar-name small {
+  color: var(--muted);
+  margin-left: 6px;
+  font-family: inherit;
+}
+
+.ops-bar {
+  position: relative;
+  height: 8px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, .25);
+  overflow: hidden;
+}
+
+.ops-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #38bdf8, var(--orange));
+}
+
+.ops-bar-fill.ops-bar-warn { background: linear-gradient(90deg, #f2b544, #fb7185); }
+
+.ops-bar-text {
+  color: var(--muted);
+  white-space: nowrap;
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.ops-update-stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.ops-update-stage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: rgba(0, 0, 0, .16);
+  color: var(--muted);
+  font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+}
+
+.ops-update-stage[data-state='done'] {
+  color: #36d885;
+  border-color: rgba(54, 216, 133, .35);
+  background: rgba(54, 216, 133, .08);
+}
+
+.ops-update-stage[data-state='active'] {
+  color: var(--orange);
+  border-color: rgba(230, 126, 34, .5);
+  background: rgba(230, 126, 34, .1);
+  animation: opsStagePulse 1.6s ease-in-out infinite;
+}
+
+@keyframes opsStagePulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(230, 126, 34, 0); }
+  50% { box-shadow: 0 0 12px rgba(230, 126, 34, .35); }
+}
+
+.ops-progress {
+  height: 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: rgba(0, 0, 0, .3);
+  overflow: hidden;
+}
+
+.ops-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--orange), var(--orange-hover) 55%, #38bdf8);
+  box-shadow: 0 0 10px rgba(230, 126, 34, .45);
+  transition: width .6s ease;
+}
+
+.ops-log {
+  max-height: 260px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, .34);
+  color: #b9c2cc;
+  font: 11px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ops-log time {
+  color: #6b7480;
+  margin-right: 8px;
+}
+
+.ops-update-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ops-update-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: .4px;
+  cursor: pointer;
+}
+
+.ops-update-actions input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+  accent-color: var(--orange);
+}
+
+.ops-button-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 14px;
+  color: #10141a;
+  border-color: var(--orange);
+  background: linear-gradient(180deg, var(--orange-hover), var(--orange));
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ops-button-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.ops-button-primary:disabled { opacity: .55; cursor: progress; }
+
+.ops-button-danger {
+  color: #fb7185;
+  border-color: rgba(251, 113, 133, .45) !important;
+  background: rgba(251, 113, 133, .08) !important;
+}
+
+.ops-migrations {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border: 1px solid rgba(242, 181, 68, .3);
+  border-radius: 3px;
+  background: rgba(242, 181, 68, .06);
+  color: #f2b544;
+  font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ops-update-stage[data-state='active'] { animation: none; }
+  .ops-progress-fill { transition: none; }
+}
+
+.ops-subhead {
+  margin: 4px 0 8px;
+  color: var(--muted);
+  font: 600 9px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+
+.ops-measured {
+  margin-top: 10px;
+  color: var(--muted);
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: .4px;
+}
+
+.ops-inline-note {
+  color: var(--muted);
+  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: .3px;
+  word-break: break-word;
+}
+
+.ops-inline-progress {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--orange);
+}
+
+.ops-log + .ops-update-actions { margin-top: 10px; }

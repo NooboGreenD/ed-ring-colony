@@ -10,21 +10,13 @@ import {
   syncGalnet,
   translatePending,
 } from '../../../../scripts/lib/galnet-sync.mjs';
-import { SUPPORTED_TRANSLATION_LANGS } from '@/lib/translate';
+import { localizedValue, missingTranslationLangs, safeContentLocale } from '@/lib/localizedContent';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 export const runtime = 'nodejs';
 // Синхронизация + перевод могут занимать больше стандартных 10 секунд.
 export const maxDuration = 60;
-
-/** Белый список локалей: значение приходит из query и подставляется в имя колонки. */
-const SAFE_LOCALES = new Set<string>(SUPPORTED_TRANSLATION_LANGS);
-
-function safeLocale(value: string | null): string {
-  const locale = (value || '').toLowerCase();
-  return SAFE_LOCALES.has(locale) ? locale : 'en';
-}
 
 function intFrom(value: unknown, fallback: number, max: number): number {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -35,60 +27,38 @@ function intFrom(value: unknown, fallback: number, max: number): number {
 /* ───────────── GET (для фронта) ───────────── */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const locale = safeLocale(searchParams.get('locale'));
+  const locale = safeContentLocale(searchParams.get('locale'));
   const limit = intFrom(searchParams.get('limit'), 100, 200);
 
   const supabase = await createClient();
 
-  const columns = [
-    'id',
-    'nid',
-    'slug',
-    'image',
-    'published_at',
-    'title',
-    'body',
-    'translated_at',
-    'translation_status',
-  ];
-  for (const lang of SUPPORTED_TRANSLATION_LANGS) {
-    columns.push(`title_${lang}`, `body_${lang}`);
-  }
-
+  // `select('*')`, а не список title_<lang>/body_<lang>: на базе без миграции
+  // переводов список колонок ронял весь запрос, и лента на сайте пустела.
   const { data: articles, error } = await supabase
     .from('galnet_news')
-    .select(columns.join(', '))
+    .select('*')
     .order('published_at', { ascending: false })
     .limit(limit);
 
   if (error) {
-    // Расширенные колонки могут отсутствовать — отдаём базовый набор.
     console.error('[galnet] select error:', error.message);
-    const { data: fallbackArticles } = await supabase
-      .from('galnet_news')
-      .select('id, nid, title, body, image, published_at')
-      .order('published_at', { ascending: false })
-      .limit(limit);
-
-    return NextResponse.json({ articles: fallbackArticles || [], degraded: true });
+    return NextResponse.json({ articles: [], degraded: true, error: error.message });
   }
 
-  const titleCol = `title_${locale}`;
-  const bodyCol = `body_${locale}`;
-
-  const normalized = (articles || []).map((a: any) => ({
-    id: a.id,
-    nid: a.nid,
-    slug: a.slug ?? null,
-    title: a[titleCol] ?? a.title ?? '',
-    body: a[bodyCol] ?? a.body ?? '',
-    image: a.image,
-    published_at: a.published_at,
-    translated: !!a.translated_at,
-    translationStatus: a.translation_status ?? null,
+  const normalized = (articles || []).map((row: Record<string, unknown>) => ({
+    id: row.id,
+    nid: typeof row.nid === 'string' ? row.nid : null,
+    slug: typeof row.slug === 'string' ? row.slug : null,
+    title: localizedValue(row, 'title', locale),
+    body: localizedValue(row, 'body', locale),
+    image: typeof row.image === 'string' ? row.image : null,
+    published_at: typeof row.published_at === 'string' ? row.published_at : null,
+    translated: typeof row.translated_at === 'string',
+    translationStatus: typeof row.translation_status === 'string' ? row.translation_status : null,
+    missingLangs: missingTranslationLangs(row, ['title', 'body']),
   }));
 
-  return NextResponse.json({ articles: normalized });
+  return NextResponse.json({ articles: normalized, locale }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 /* ───────────── POST (синхронизация + перевод) ───────────── */

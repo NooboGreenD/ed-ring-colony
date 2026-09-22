@@ -1,0 +1,43 @@
+# ED Ring Colony — приватный апдейтер проекта (хостовый systemd unit)
+#
+# Нужен, только если сайт работает БЕЗ Docker-профиля monitoring
+# (systemd-установка из DEPLOY.md §4) или если апдейтер сознательно держат
+# на хосте, а не в контейнере. Для Docker-стека апдейтер поднимается тем же
+# профилем monitoring и этим файлом не занимается.
+#
+# Установка (из корня репозитория на сервере):
+#   sudo bash deploy/start-update-agent.sh --host-unit
+#   → unit копируется, ключи дописываются, сервис включается
+#
+# Вручную:
+#   sudo cp deploy/ed-ring-colony-update.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ed-ring-colony-update
+#
+# Логи:  journalctl -u ed-ring-colony-update -f
+# Состояние и журнал апдейта: /opt/ed-ring-colony/update-state/
+
+[Unit]
+Description=ED Ring Colony (private project updater)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/ed-ring-colony/src
+EnvironmentFile=-/opt/ed-ring-colony/.env.production
+Environment=UPDATE_SCRIPT=/opt/ed-ring-colony/src/deploy/update-project.sh
+Environment=UPDATE_STATE_DIR=/opt/ed-ring-colony/update-state
+# Сайт на хосте → агент тоже на loopback; из контейнера web его видно только
+# через host.docker.internal (см. extra_hosts в docker-compose.yml).
+Environment=UPDATE_AGENT_HOST=127.0.0.1
+Environment=UPDATE_AGENT_PORT=8092
+Environment=UPDATE_HEALTH_URL=http://127.0.0.1:3000/api/health
+ExecStart=/usr/bin/node /opt/ed-ring-colony/src/scripts/update-agent.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
