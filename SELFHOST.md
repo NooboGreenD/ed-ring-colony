@@ -400,6 +400,22 @@ sudo tail -f /var/log/nginx/error.log
 
 ## 8. Обновления
 
+### Кнопкой в админке (без SSH)
+
+```bash
+# один раз на сервере — включает приватный апдейтер (см. MONITORING.md)
+cd /opt/ed-ring-colony/src && sudo bash deploy/start-update-agent.sh
+```
+
+После этого в **Админка → Мониторинг → «Обновление проекта»** появляется
+кнопка «Обновить сейчас»: она делает `git fetch` нужной ветки, `pg_dump`
+перед миграциями, применяет новые `supabase/migrations/*.sql`, пересобирает
+`web`/`jobs`/`monitor-agent` и ждёт ответа `/api/health`. Прогресс по стадиям
+виден админу в панели, а в шапке сайта всем посетителям на это время
+показывается `System Update` с процентом. Остановка обновления — там же.
+
+### Вручную
+
 ```bash
 # сайт
 cd /opt/ed-ring-colony/src && git pull && docker compose up -d --build

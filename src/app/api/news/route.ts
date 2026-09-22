@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabaseServer';
 import { createAdminClient } from '@/lib/supabaseAdmin';
 import { translateAndSaveArticle } from '@/lib/translate';
+import { localizedValue, safeContentLocale } from '@/lib/localizedContent';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -9,13 +10,16 @@ export const revalidate = 0;
 /* ───────────── GET (для фронта) ───────────── */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const locale = searchParams.get('locale') || 'ru';
+  const locale = safeContentLocale(searchParams.get('locale'));
 
   const supabase = await createClient();
 
+  // Колонки переводов перечислять руками нельзя: стоит миграции с новым
+  // языком не примениться — и весь фид падает в пустоту. `*` плюс выбор
+  // значения по факту наличия колонок (см. localizedContent).
   const { data: news, error } = await supabase
     .from('news')
-    .select('id, title, body, cover_url, published_at, title_ru, body_ru, title_en, body_en, title_de, body_de, title_it, body_it, title_ko, body_ko, title_zh, body_zh, title_ja, body_ja')
+    .select('*')
     .order('published_at', { ascending: false });
 
   if (error) {
@@ -23,13 +27,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ news: [], error: error.message });
   }
 
-  const titleCol = `title_${locale}`;
-  const bodyCol = `body_${locale}`;
-
   const normalized = (news || []).map((n: any) => ({
     id: n.id,
-    title: n[titleCol] || n.title || '',
-    body: n[bodyCol] || n.body || '',
+    title: localizedValue(n, 'title', locale),
+    body: localizedValue(n, 'body', locale),
     cover_url: n.cover_url,
     published_at: n.published_at,
   }));
@@ -126,7 +127,9 @@ export async function POST(request: Request) {
     const { data: pending } = await supabase
       .from('news')
       .select('id, title, body')
-      .eq('translation_status', 'pending')
+      // 'partial' и 'failed' тоже надо догонять, иначе одна неудачная пачка
+      // навсегда оставляет статьи без переводов.
+      .in('translation_status', ['pending', 'partial', 'failed'])
       .limit(5);
 
     for (const article of pending || []) {

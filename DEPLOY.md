@@ -99,6 +99,19 @@ curl -I http://127.0.0.1:3000   # → HTTP 200
 Приложение слушает `127.0.0.1:3000`; наружу его отдаёт nginx (см. §6).
 Обновление: `git pull && docker compose up -d --build`.
 
+То же самое можно не руками, а кнопкой в **Админка → Мониторинг → «Обновление
+проекта»** — для этого на хосте один раз включается приватный апдейтер:
+
+```bash
+sudo bash deploy/start-update-agent.sh   # = npm run update:enable
+```
+
+Он поднимает контейнер `update-agent` (профиль `monitoring`), который единственный
+получает Docker-сокет на запись; в `web` по-прежнему нет ни git, ни сокета.
+Апдейтер умеет применять новые `supabase/migrations/*.sql` с обязательным
+`pg_dump` перед ними, а прогресс виден админу в панели и всем посетителям в
+шапке (`System Update` + процент). Подробности и отключение — в `MONITORING.md`.
+
 ## 4. Вариант Б — без Docker (systemd + Node)
 
 ```bash
@@ -130,6 +143,13 @@ journalctl -u ed-ring-colony -f
 Обновление: `git pull && npm ci && npm run build &&
 ./deploy/prepare-standalone.sh /opt/ed-ring-colony/app &&
 sudo systemctl restart ed-ring-colony`.
+
+Кнопкой из админки тот же цикл (git pull → сборка → restart) делает хостовый
+апдейтер — `sudo bash
+deploy/start-update-agent.sh --host-unit` (он же выбирается автоматически, если
+в каталоге нет `docker-compose.yml`): `PROJECT_DEPLOY_MODE=auto` различает два
+режима по наличию Docker/unit. Агент слушает `127.0.0.1:8092`, доступ к нему —
+по `UPDATE_AGENT_TOKEN`.
 
 ## 5. Вариант В — хостинг без сборки на сервере (мало RAM / shared)
 
@@ -187,7 +207,9 @@ sudo certbot --nginx -d ваш-домен
    Redirect URI → `https://ваш-домен/api/capi/callback`; и обязательно
    `FRONTIER_REDIRECT_URI` в `.env.production`.
 4. **Десктопный uploader / Colonial Helper**: если в нём захардкожен адрес
-   сайта — обновить и пересобрать EXE (workflow `build-exe.yml`).
+   сайта — обновить и пересобрать EXE (workflow `build-exe.yml`). Он
+   срабатывает на правки `uploader/**`; если адрес поменялся только на стороне
+   сайта, запустите workflow вручную через **Run workflow**.
 5. Push-подписки браузеров привязаны к домену — пользователи переподпишутся
    автоматически при первом заходе на новый домен (sw.js отдаётся с него же).
 

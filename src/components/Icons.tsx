@@ -128,6 +128,9 @@ export const IconUserWorker = (p: IconProps) => wrap(<><path d="M20 21v-2a4 4 0 
 export const IconWrench = (p: IconProps) => wrap(<><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></>, p);
 export const IconChart = (p: IconProps) => wrap(<><path d="M18 20V10M12 20V4M6 20v-6"/></>, p);
 export const IconClock = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></>, p);
+/* База данных и диск — используются в Админка → Мониторинг */
+export const IconDatabase = (p: IconProps) => wrap(<><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></>, p);
+export const IconHardDrive = (p: IconProps) => wrap(<><path d="M3 13l2.4-6.2A2 2 0 017.3 5.5h9.4a2 2 0 011.9 1.3L21 13"/><path d="M3 13h18v4a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M7 17h.01M11 17h.01"/></>, p);
 export const IconSave = (p: IconProps) => wrap(<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8"/></>, p);
 export const IconStore = (p: IconProps) => wrap(<><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></>, p);
 export const IconCoins = (p: IconProps) => wrap(<><circle cx="8" cy="8" r="6"/><path d="M18 8a6 6 0 010 12"/><path d="M22 8a6 6 0 010 12"/></>, p);

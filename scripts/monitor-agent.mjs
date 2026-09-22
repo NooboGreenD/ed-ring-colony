@@ -9,7 +9,7 @@
  * variables, labels, mounts, logs or container IDs.
  */
 import { timingSafeEqual } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import { createServer, request as httpRequest } from 'node:http';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -303,6 +303,37 @@ function send(response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
+/**
+ * Filesystem facts about the volume that holds the scheduler state (and, on a
+ * self-hosted box, the same disk that stores the database). Only sizes leave
+ * the agent — never paths, mount tables or inode details.
+ */
+export function diskFromStats(stats) {
+  const blockSize = finiteNumber(stats?.bsize) ?? 4096;
+  const total = finiteNumber(stats?.blocks) * blockSize;
+  const free = finiteNumber(stats?.bavail) * blockSize;
+  if (!Number.isFinite(total) || !Number.isFinite(free) || total <= 0) return null;
+  const used = Math.max(0, total - free);
+  return {
+    totalBytes: Math.round(total),
+    usedBytes: Math.round(used),
+    availableBytes: Math.round(Math.max(0, free)),
+    usedPercent: Math.round((used / total) * 1000) / 10,
+  };
+}
+
+async function diskStatus(env = process.env) {
+  const path = env.MONITOR_DISK_PATH?.trim() || '/monitor/jobs-state';
+  try {
+    const stats = await statfs(path);
+    const disk = diskFromStats(stats);
+    if (!disk) return { available: false };
+    return { available: true, ...disk };
+  } catch {
+    return { available: false };
+  }
+}
+
 export function createMonitorServer({ env = process.env, now = () => Date.now() } = {}) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || '/', 'http://monitor-agent');
@@ -320,8 +351,12 @@ export function createMonitorServer({ env = process.env, now = () => Date.now() 
     }
 
     const checkedAt = new Date(now()).toISOString();
-    const [docker, scheduler] = await Promise.all([dockerStatus(env), schedulerStatus(env, now())]);
-    send(response, 200, { ok: true, checkedAt, docker, scheduler });
+    const [docker, scheduler, disk] = await Promise.all([
+      dockerStatus(env),
+      schedulerStatus(env, now()),
+      diskStatus(env),
+    ]);
+    send(response, 200, { ok: true, checkedAt, docker, scheduler, disk });
   });
 }
 

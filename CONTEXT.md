@@ -631,6 +631,64 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Поведение: повторы при 429/5xx, нарезка длинных текстов (< 8000 символов
   на запрос), изоляция ошибок по языкам (статус `partial` вместо потери статьи)
 
+### 8.9 Локализованный контент сайта (admin → сайт)
+- Единый слой чтения: `src/lib/localizedContent.ts` — `safeContentLocale`
+  (белый список ru, en, de, it, ko, zh, ja), `localizedValue` (колонка локали →
+  базовая колонка → пусто) и `missingTranslationLangs`. Публичные `GET`
+  (`/api/home-data`, `/api/galnet`, `/api/news`) выбирают `select('*')` и НИКОГДА
+  не перечисляют `title_ru, body_de, …` руками: непроменённая миграция иначе
+  роняет весь запрос, а обработчик молча отдаёт пустой список (именно так
+  «правки в админке не применялись» и «на главной нет Galnet»).
+- `site_content`: базовые колонки = русский, переводы = `<field>_<lang>`
+  (`kicker_*`, `title1_*`, `title2_*`, `manifest_*`, `footer_copyright_*`,
+  `footer_discord_*`, `footer_edsm_*`, `footer_inara_*` —
+  миграция `20260926000000_site_content_footer_translations.sql`).
+  Админка пишет и `<field>_<lang>`, и базовую колонку
+  (`buildSiteContentPayload` в `src/lib/siteFooter.ts`): базовую читают старые
+  пути и фоллбэки. Если колонок переводов в базе нет, upsert повторяется
+  только базовыми полями, а ответ содержит
+  `saved-without-translations: примените миграцию …` — правка не теряется.
+- Ответ `/api/home-data` отдаёт `Cache-Control: no-store, max-age=0`, поэтому
+  кровка/прокси не держат старую версию после сохранения.
+- Перевод статей: `scripts/lib/galnet-sync.mjs::translateArticleRow`. Язык
+  оригинала — из `source_lang` строки, иначе по таблице
+  (`news` → `ru`, `galnet_news` → `en`); в API он не отправляется, оригинал
+  кладётся в свою колонку как есть. Заполненные языки НЕ перезапрашиваются и
+  не затираются: повторный запуск добивает только пустые блоки (`force` /
+  «перезаписать» в админке — отдельный переключатель). `translation_status`
+  честный: `completed` только когда закрыты все поля; частичный успех —
+  `partial`, и такая строка остаётся в очереди (`RETRY_STATUSES =
+  pending,failed,partial`). Ручные действия: `POST /api/admin/content?action=sync`
+  и `?action=translate` (кнопки в Админка → Мониторинг).
+- `src/lib/translate.ts::translateAndSaveArticle` (используется `POST /api/news`)
+  обязан получать язык оригинала по таблице: новости пишутся по-русски.
+
+### 8.10 Ручное обновление развёрнутой версии
+- Привилегированный агент: `scripts/update-agent.mjs` (Node, HTTP на
+  `UPDATE_AGENT_HOST:UPDATE_AGENT_PORT`, по умолчанию 127.0.0.1:8092, Bearer
+  `UPDATE_AGENT_TOKEN`; вне loopback без токена не стартует). Контракт:
+  `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /abort`.
+- Фактическую работу делает `deploy/update-project.sh` (git fetch/merge,
+  pg_dump, новые миграции, пересборка Compose-профиля или standalone-выкладка,
+  проверка живости). Прогресс — машиночитаемой строкой
+  `::edrc::{"stage":…,"percent":…}` в stdout; формат и стадии описаны в
+  `scripts/lib/update-state.mjs` (`UPDATE_STAGES`). Всё остальное в stdout —
+  журнал, который показывается админу после сокрытия похожих на секрет значений.
+- Состояние переживает рестарт сайта: `UPDATE_STATE_DIR/update-state.json` +
+  `update.log`; «залипший» `running` по истечении `UPDATE_TIMEOUT_MINUTES`
+  помечается ошибкой, а не блокирует панель навсегда.
+- Веб-слой: `src/lib/updateAgent.ts` → `GET/POST/DELETE
+  /api/admin/monitor/update` (все три — под `requireAdmin`; `POST` требует
+  `confirm: true`) и публичный `GET /api/status` (только `publicUpdateView`:
+  стадия + процент, без путей, ревизий и журнала; серверный кэш 2 с).
+- Шапка сайта: `src/components/SiteStatusBar.tsx` — «System Online» ↔ «System
+  Update» с анимированными часиками, процентом и полосой под шапкой; видно всем
+  посетителям, в т. ч. на мобильном.
+- Включение: `deploy/start-update-agent.sh` (Docker-профиль `monitoring` с
+  сервисом `update-agent` или хостовый unit `ed-ring-colony-update.service`).
+  `deploy/start-monitoring.sh` остаётся ответственным за read-only
+  `monitor-agent`; сокет Docker на запись есть только у апдейтера.
+
 ### 8.7 Frontier Galnet
 - Источник: официальный Drupal JSON:API Frontier,
   `https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article`
@@ -796,6 +854,25 @@ const { t, locale, setLocale } = useI18n();
 ### Translation not working
 - Verify `YANDEX_TRANSLATE_API_KEY` is set
 - Check `CRON_SECRET` for cron endpoint auth
+-Очередь добивки смотрит в seen in Админка → Мониторинг («Контент и переводы») и там же добивается
+  кнопкой; `translation_status = partial` означает «переведено не всё», а не
+  «готово»
+- Язык оригинала для `news` — русский, для `galnet_news` — английский; если
+  переводы вышли мусором, проверьте `source_lang` строки, а не только ключ
+
+### Админка меняет текст, а сайт — нет
+- Применены ли миграции переводов (`supabase/migrations/`); панель показывает
+  предупреждение, а `select('*')` не даёт всему блоку упасть из-за этого
+- Открыта ли главная с `?_r`/без кэша прокси: `/api/home-data` отвечает
+  `no-store`, но статическая страница может жить в CDN-кэше
+- Проверьте, что редактор сохраняет нужную локаль: базовая колонка = `ru`
+
+### Update button says the agent is unreachable
+- `docker compose --env-file .env.production --profile monitoring ps update-agent`
+  или `systemctl status ed-ring-colony-update`
+- `UPDATE_AGENT_TOKEN` в `.env.production` должен совпадать у сайта и агента;
+  после правки — пересоздайте `web`
+- Подробности: `MONITORING.md`, раздел «Ручное обновление проекта»
 
 ---
 

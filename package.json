@@ -17,7 +17,11 @@
     "monitoring:up": "bash deploy/start-monitoring.sh",
     "monitoring:keys": "bash deploy/start-monitoring.sh --keys-only",
     "monitoring:check": "bash deploy/start-monitoring.sh --check",
-    "monitoring:stop": "bash deploy/start-monitoring.sh --stop"
+    "monitoring:stop": "bash deploy/start-monitoring.sh --stop",
+    "update:enable": "bash deploy/start-update-agent.sh",
+    "update:keys": "bash deploy/start-update-agent.sh --keys-only",
+    "update:check": "bash deploy/start-update-agent.sh --check",
+    "update:disable": "bash deploy/start-update-agent.sh --stop"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",

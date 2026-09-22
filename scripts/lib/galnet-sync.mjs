@@ -75,8 +75,43 @@ export async function writeSyncLog(supabase, entry) {
 }
 
 /**
+ * Язык оригинала по умолчанию для таблицы. Galnet приходит с Frontier на
+ * английском, новости сайта пишутся по-русски. Раньше для обеих таблиц
+ * использовался `en`: Yandex получал русский текст как «английский оригинал»,
+ * в `title_en` ложился русский, а нормальных переводов не получал никто.
+ */
+export const TABLE_SOURCE_LANG = {
+  [GALNET_TABLE]: GALNET_SOURCE_LANG,
+  [NEWS_TABLE]: 'ru',
+};
+
+/** Язык, указанный в строке (`source_lang`), важнее табличного значения. */
+export function sourceLangForRow(row, table) {
+  const declared = typeof row?.source_lang === 'string' ? row.source_lang.trim().toLowerCase() : '';
+  if (/^[a-z]{2}$/.test(declared)) return declared;
+  return TABLE_SOURCE_LANG[table] || GALNET_SOURCE_LANG;
+}
+
+function filledWith(row, lang, field) {
+  const value = row?.[`${field}_${lang}`];
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isFilled(row, lang, fields) {
+  return !!row && fields.every((field) => filledWith(row, lang, field));
+}
+
+/**
  * Переводит одну строку и сохраняет переводы.
- * @returns {Promise<{status: string, translatedLangs: string[], skippedLangs: string[], errors: string[]}>}
+ *
+ * Что исправлено по сравнению с первой версией:
+ *   • язык оригинала берётся из таблицы/строки, а не жёстко `en`;
+ *   • языки с готовым переводом не переводятся заново — дозаполняются только
+ *     недостающие колонки `title_<lang>` / `body_<lang>`;
+ *   • `translation_status` = completed только когда закрыты все языки, иначе
+ *     partial — строка остаётся в очереди догона и следующий запуск её починит.
+ *
+ * @returns {Promise<{status: string, translatedLangs: string[], skippedLangs: string[], errors: string[], missingLangs: string[]}>}
  */
 export async function translateArticleRow(params) {
   const {
@@ -85,17 +120,59 @@ export async function translateArticleRow(params) {
     id,
     title,
     body,
-    sourceLang = GALNET_SOURCE_LANG,
     langs = SUPPORTED_TRANSLATION_LANGS,
     fetchImpl,
+    existing = null,
+    fields = ['title', 'body'],
+    force = false,
   } = params;
 
   if (!hasTranslateCredentials()) {
     throw new Error('YANDEX_TRANSLATE_API_KEY is not configured');
   }
 
-  const translation = await translateArticleFields({ title, body, sourceLang, langs, fetchImpl });
-  const update = buildTranslationUpdate(translation, langs);
+  const sourceLang = params.sourceLang || sourceLangForRow(existing, table);
+  const targets = force ? langs : langs.filter((lang) => !isFilled(existing, lang, fields));
+
+  if (targets.length === 0) {
+    // Всё уже переведено — просто закрываем строку в очереди.
+    const { error } = await supabase
+      .from(table)
+      .update({ translation_status: 'completed', translated_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw new Error(error.message);
+    return { status: 'completed', translatedLangs: [], skippedLangs: [], errors: [], missingLangs: [] };
+  }
+
+  // Язык оригинала в API не отправляем: его текст кладём в колонку как есть.
+  const wanted = targets.filter((lang) => lang !== sourceLang);
+  const translation = await translateArticleFields({
+    title,
+    body,
+    sourceLang,
+    langs: wanted.length > 0 ? wanted : [sourceLang],
+    fetchImpl,
+  });
+  const update = buildTranslationUpdate(translation, wanted.length > 0 ? wanted : [sourceLang]);
+
+  // Оригинал обязан попасть в языковые колонки: иначе читатель на «родном»
+  // языке видит пустоту, когда базовая колонка не совпадает с локалью.
+  if (!isFilled(existing, sourceLang, fields)) {
+    for (const field of fields) {
+      const value = String(translation?.[field]?.[sourceLang] ?? (field === 'title' ? title : body) ?? '');
+      if (value.trim()) update[`${field}_${sourceLang}`] = value;
+    }
+  }
+
+  const missingLangs = langs.filter((lang) =>
+    fields.some((field) => {
+      const next = update[`${field}_${lang}`] || existing?.[`${field}_${lang}`];
+      return typeof next !== 'string' || !next.trim();
+    }),
+  );
+  const translatedAny = wanted.length - (translation?.skippedLangs?.length || 0) > 0;
+  update.translation_status = missingLangs.length === 0 ? 'completed' : translatedAny ? 'partial' : 'failed';
+  update.translated_at = new Date().toISOString();
 
   const { error } = await supabase.from(table).update(update).eq('id', id);
 
@@ -108,7 +185,11 @@ export async function translateArticleRow(params) {
     throw new Error(error.message);
   }
 
-  return translation;
+  return {
+    ...translation,
+    status: update.translation_status,
+    missingLangs,
+  };
 }
 
 /**
@@ -326,7 +407,7 @@ export async function syncGalnet(options) {
   if (result.newNids.length > 0) {
     const { data } = await supabase
       .from(GALNET_TABLE)
-      .select('id, nid, title, body')
+      .select('*')
       .in('nid', result.newNids);
     (data || []).forEach((row) => freshRows.push(row));
   }
@@ -335,7 +416,7 @@ export async function syncGalnet(options) {
   if (updatedIds.length > 0) {
     const { data } = await supabase
       .from(GALNET_TABLE)
-      .select('id, nid, title, body')
+      .select('*')
       .in('id', updatedIds);
     (data || []).forEach((row) => freshRows.push(row));
   }
@@ -441,7 +522,9 @@ export async function translatePending(options) {
 
     const { data: rows, error } = await supabase
       .from(table)
-      .select('id, title, body')
+      // `*`, а не «id, title, body»: дозаполнение пропусков требует текущих
+      // title_<lang>/body_<lang>, а язык оригинала читается из source_lang.
+      .select('*')
       .or(`translation_status.in.(${RETRY_STATUSES}),translated_at.is.null`)
       // Свежие статьи первыми: иначе несколько старых «вечно failed» строк
       // занимают весь лимит и новые новости никогда не доходят до перевода.
@@ -469,10 +552,21 @@ export async function translatePending(options) {
           body: row.body,
           langs,
           fetchImpl,
+          existing: row,
         });
+        // Считаем по фактическому статусу, а не по «функция не упала»:
+        // иначе отчёт обещает переведённые статьи, которых читатель не видит.
+        if (translation?.status === 'failed') {
+          result.failed++;
+          tableResult.failed++;
+          result.errors.push(
+            `${table}:${row.id}: ни один язык не переведён (${(translation.errors || []).join('; ') || 'no detail'})`
+          );
+          continue;
+        }
         result.translated++;
         tableResult.translated++;
-        log(`[${table}] translated #${row.id}`);
+        log(`[${table}] translated #${row.id} (${translation?.status || 'completed'})`);
         if (translation?.skippedLangs?.length > 0) {
           result.errors.push(
             `${table}:${row.id}: incomplete (${translation.skippedLangs.join(',')}) — ${
