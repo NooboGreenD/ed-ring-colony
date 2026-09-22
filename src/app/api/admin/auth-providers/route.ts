@@ -5,6 +5,7 @@ import { AUTH_PROVIDER_REGISTRY, GOTRUE_CALLBACK } from '@/lib/authProviders/reg
 import { enabledOAuthProviders } from '@/lib/oauthProviders';
 import { getSiteUrl, DEFAULT_SUPABASE_URL } from '@/lib/siteUrl';
 import { vkRedirectUri } from '@/lib/vkId';
+import { yandexRedirectUri } from '@/lib/yandexId';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,6 +19,7 @@ function envState() {
     gotrueAllowed: enabledOAuthProviders(),
     emailEnabled: process.env.AUTH_EMAIL_ENABLED === 'true',
     vk: { client_id: present('VK_ID_CLIENT_ID'), client_secret: present('VK_ID_CLIENT_SECRET') },
+    yandex: { client_id: present('YANDEX_ID_CLIENT_ID'), client_secret: present('YANDEX_ID_CLIENT_SECRET') },
     frontier: { client_id: present('FRONTIER_CLIENT_ID'), client_secret: present('FRONTIER_CLIENT_SECRET') },
     serviceRole: present('SUPABASE_SERVICE_ROLE_KEY'),
   };
@@ -38,6 +40,7 @@ export async function GET(req: Request) {
         gotrue: `${process.env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_SUPABASE_URL}${GOTRUE_CALLBACK}`,
         site: `${site}/api/auth/callback`,
         vk: vkRedirectUri(site),
+        yandex: yandexRedirectUri(site),
       },
     }, { headers });
   } catch (err) { return errorResponse(err); }

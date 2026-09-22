@@ -10,8 +10,9 @@ type Payload = {
   registry: AuthProviderMeta[];
   settings: Record<string, PublicSetting>;
   env: { gotrueAllowed: string[]; emailEnabled: boolean; serviceRole: boolean;
-    vk: { client_id: boolean; client_secret: boolean }; frontier: { client_id: boolean; client_secret: boolean } };
-  redirects: { gotrue: string; site: string; vk: string };
+    vk: { client_id: boolean; client_secret: boolean }; yandex: { client_id: boolean; client_secret: boolean };
+    frontier: { client_id: boolean; client_secret: boolean } };
+  redirects: { gotrue: string; site: string; vk: string; yandex: string };
 };
 type Draft = { enabled: boolean; client_id: string; client_secret: string; clear_secret: boolean; notes: string };
 
@@ -32,8 +33,9 @@ function Status({ meta, setting, env }: { meta: AuthProviderMeta; setting: Publi
     else if (allowed) { text = 'разрешён в env, скрыт админом'; color = '#e67e22'; }
     else if (setting.enabled) { text = 'включён здесь, но нет в AUTH_OAUTH_PROVIDERS'; color = '#e67e22'; }
     else text = 'выключен';
-  } else if (meta.id === 'vk') {
-    const hasId = Boolean(setting.client_id) || env.vk.client_id;
+  } else if (meta.id === 'vk' || meta.id === 'yandex') {
+    const site = meta.id === 'vk' ? env.vk : env.yandex;
+    const hasId = Boolean(setting.client_id) || site.client_id;
     if (setting.enabled && hasId && env.serviceRole) { text = 'кнопка показывается'; color = '#22c55e'; }
     else if (setting.enabled && !hasId) { text = 'включён, но нет Client ID'; color = '#e67e22'; }
     else if (setting.enabled && !env.serviceRole) { text = 'нет SUPABASE_SERVICE_ROLE_KEY'; color = '#ef4444'; }
@@ -133,6 +135,7 @@ export default function AuthProvidersTab() {
     <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 12, display: 'grid', gap: 2 }}>
       <span>Redirect для GoTrue-провайдеров: <code>{data.redirects.gotrue}</code></span>
       <span>Redirect для VK ID: <code>{data.redirects.vk}</code></span>
+      <span>Redirect для Яндекс ID: <code>{data.redirects.yandex}</code></span>
       <span>Разрешены в AUTH_OAUTH_PROVIDERS: <code>{data.env.gotrueAllowed.join(', ') || '—'}</code></span>
     </div>
     {msg && <p role="status" style={{ color: msg.startsWith('Сохранено') ? '#22c55e' : '#ef4444', fontSize: 13 }}>{msg}</p>}
@@ -161,12 +164,14 @@ export default function AuthProvidersTab() {
           {expanded && <div style={{ marginTop: 10, display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
             <label style={{ fontSize: 12, color: '#9ca3af' }}>Client ID
               <input style={inputStyle} value={d.client_id} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], client_id: e.target.value } }))}
-                placeholder={meta.id === 'vk' && data.env.vk.client_id ? 'задан в env (VK_ID_CLIENT_ID)' : ''} />
+                placeholder={meta.id === 'vk' && data.env.vk.client_id ? 'задан в env (VK_ID_CLIENT_ID)'
+                  : meta.id === 'yandex' && data.env.yandex.client_id ? 'задан в env (YANDEX_ID_CLIENT_ID)' : ''} />
             </label>
             <label style={{ fontSize: 12, color: '#9ca3af' }}>Client Secret {s.has_secret && <span style={{ color: '#22c55e' }}>(сохранён)</span>}
               <input style={inputStyle} type="password" autoComplete="new-password" value={d.client_secret}
                 onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], client_secret: e.target.value, clear_secret: false } }))}
-                placeholder={s.has_secret ? '•••••• (оставьте пустым, чтобы не менять)' : meta.id === 'vk' && data.env.vk.client_secret ? 'задан в env' : ''} />
+                placeholder={s.has_secret ? '•••••• (оставьте пустым, чтобы не менять)'
+                  : (meta.id === 'vk' && data.env.vk.client_secret) || (meta.id === 'yandex' && data.env.yandex.client_secret) ? 'задан в env' : ''} />
               {s.has_secret && <label style={{ display: 'block', marginTop: 4 }}>
                 <input type="checkbox" checked={d.clear_secret} onChange={e => setDrafts(p => ({ ...p, [meta.id]: { ...p[meta.id], clear_secret: e.target.checked } }))} /> удалить сохранённый секрет
               </label>}
@@ -178,6 +183,7 @@ export default function AuthProvidersTab() {
               <span>Переменные окружения: <code>{meta.env.join(', ')}</code></span>
               {meta.redirect === 'gotrue' && <span>Redirect URI у провайдера: <code>{data.redirects.gotrue}</code></span>}
               {meta.redirect === 'site-vk' && <span>Redirect URI у провайдера: <code>{data.redirects.vk}</code></span>}
+              {meta.redirect === 'site-yandex' && <span>Redirect URI у провайдера: <code>{data.redirects.yandex}</code></span>}
               {meta.docs && <span>Консоль разработчика: <a href={meta.docs} target="_blank" rel="noreferrer">{meta.docs}</a></span>}
               {meta.note && <span>{meta.note}</span>}
               {s.updated_at && <span>Обновлено: {new Date(s.updated_at).toLocaleString('ru-RU')}</span>}

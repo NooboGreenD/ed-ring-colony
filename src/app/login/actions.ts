@@ -70,3 +70,27 @@ export async function startVkAuthAction(mode: OAuthMode) {
     return { url: null, error: 'Не удалось начать авторизацию VK. Проверьте настройки сервера.' };
   }
 }
+
+/** Яндекс ID is not a GoTrue provider either: same self-hosted PKCE flow as VK. */
+export async function startYandexAuthAction(mode: OAuthMode) {
+  const { createYandexFlow, yandexAuthorizeUrl, YANDEX_FLOW_COOKIE, YANDEX_FLOW_TTL, yandexErrorMessage } = await import('@/lib/yandexId');
+  const { resolveYandexSettings } = await import('@/lib/authProviders/settings');
+  const config = await resolveYandexSettings();
+  if (!config.enabled || !['login', 'link'].includes(mode)) return { url: null, error: yandexErrorMessage('not_configured') };
+  try {
+    const cookieStore = await cookies();
+    cookieStore.delete(YANDEX_FLOW_COOKIE);
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (mode === 'link' && !user) return { url: null, error: yandexErrorMessage('not_authenticated') };
+    const intent = user ? 'link' : 'login';
+    const origin = getSiteUrl();
+    const { flow, cookie } = createYandexFlow(intent, user?.id ?? null);
+    cookieStore.set(YANDEX_FLOW_COOKIE, cookie, {
+      httpOnly: true, sameSite: 'lax', secure: origin.startsWith('https:'), path: '/', maxAge: YANDEX_FLOW_TTL,
+    });
+    return { url: yandexAuthorizeUrl(flow, config.clientId, origin), error: null };
+  } catch {
+    return { url: null, error: 'Не удалось начать авторизацию Яндекса. Проверьте настройки сервера.' };
+  }
+}

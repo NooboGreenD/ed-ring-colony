@@ -67,6 +67,15 @@ export async function resolveVkSettings(env: NodeJS.ProcessEnv = process.env) {
   return { enabled: vk.enabled && /^\d+$/.test(clientId), clientId, clientSecret, adminEnabled: vk.enabled };
 }
 
+/** Яндекс ID: admin toggle AND a 32-hex client id (admin panel first, env second). */
+export async function resolveYandexSettings(env: NodeJS.ProcessEnv = process.env) {
+  const settings = await getAuthProviderSettings();
+  const yandex = settings.yandex;
+  const clientId = (yandex.client_id || env.YANDEX_ID_CLIENT_ID || '').trim();
+  const clientSecret = (yandex.client_secret || env.YANDEX_ID_CLIENT_SECRET || '').trim();
+  return { enabled: yandex.enabled && /^[0-9a-f]{32}$/i.test(clientId), clientId, clientSecret, adminEnabled: yandex.enabled };
+}
+
 /** GoTrue providers shown to visitors = allowed by env ∩ enabled by admin. */
 export async function visibleGotrueProviders<T extends string>(envEnabled: readonly T[]): Promise<T[]> {
   const settings = await getAuthProviderSettings();
