@@ -13,6 +13,7 @@ import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/syste
 import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import { loadAllSystemsData } from './AllSystemsPoints';
+import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { STAR_CLASS_COLORS, STAR_CLASS_LABELS, STAR_CLASS_LIST, type AllSystemsData } from '@/lib/galaxySystems';
 
 const GalaxyScene = dynamic(
@@ -159,6 +160,7 @@ export default function GalaxyMap({
   const [allSystemsData, setAllSystemsData] = useState<AllSystemsData | null>(null);
   const [allSystemsLoading, setAllSystemsLoading] = useState(false);
   const [allSystemsError, setAllSystemsError] = useState('');
+  const [allSystemsInfo, setAllSystemsInfo] = useState('');
   const [galaxyPick, setGalaxyPick] = useState<GalaxyPick | null>(null);
   const [classMask, setClassMask] = useState(ALL_CLASS_MASK);
   const [suggestions, setSuggestions] = useState<GalaxyPick[]>([]);
@@ -171,26 +173,48 @@ export default function GalaxyMap({
   });
   const compactMap = showOnlyMainRoute;
 
-  // Ленивая загрузка облака точек: файл ~30 МБ генерируется одним запросом.
+  // Ленивая загрузка облака точек (~36 МБ). Сначала спрашиваем статус каталога:
+  // пока таблица пуста или идёт импорт, тянуть бинарник бессмысленно — вместо
+  // 404 в консоли показываем, что именно происходит и где это исправить.
   useEffect(() => {
-    if (!showAllSystems || allSystemsData || allSystemsLoading) return;
+    if (!showAllSystems || allSystemsData) return;
     let cancelled = false;
-    setAllSystemsLoading(true);
-    setAllSystemsError('');
-    loadAllSystemsData()
-      .then((data) => {
-        if (!cancelled) setAllSystemsData(data);
-      })
-      .catch((err: any) => {
+    let timer: number | undefined;
+
+    const attempt = async () => {
+      setAllSystemsLoading(true);
+      let retry = false;
+      try {
+        const status = await fetchGalaxyCatalogStatus();
+        if (cancelled) return;
+        const note = catalogNote(status);
+        setAllSystemsError(note.error);
+        setAllSystemsInfo(note.info);
+        retry = note.retry;
+        if (status.points.available) {
+          const data = await loadAllSystemsData();
+          if (!cancelled) {
+            setAllSystemsData(data);
+            setAllSystemsError('');
+            setAllSystemsInfo('');
+          }
+          return;
+        }
+      } catch (err: any) {
         if (!cancelled) setAllSystemsError(err?.message || 'Не удалось загрузить все системы');
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setAllSystemsLoading(false);
-      });
+      }
+      // Импорт идёт фоном: раз в 20 секунд проверяем, не пора ли грузить облако.
+      if (!cancelled && retry) timer = window.setTimeout(attempt, 20_000);
+    };
+
+    void attempt();
     return () => {
       cancelled = true;
+      if (timer) window.clearTimeout(timer);
     };
-  }, [showAllSystems, allSystemsData, allSystemsLoading]);
+  }, [showAllSystems, allSystemsData]);
 
   useEffect(() => {
     const query = systemSearch.trim();
@@ -629,9 +653,13 @@ export default function GalaxyMap({
               ))}
             </div>
           )}
-          {(allSystemsLoading || allSystemsError) && (
+          {(allSystemsLoading || allSystemsError || allSystemsInfo) && (
             <div style={{ fontSize: 10, color: allSystemsError ? '#f87171' : '#ffd166', paddingLeft: 22 }}>
-              {allSystemsLoading ? 'Загрузка всех систем…' : allSystemsError}
+              {allSystemsError
+                ? allSystemsError
+                : allSystemsInfo
+                  ? allSystemsInfo
+                  : 'Загрузка всех систем…'}
             </div>
           )}
           {!compactMap && (

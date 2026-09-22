@@ -4,11 +4,13 @@
  * run yet, so callers keep their previous online (Spansh/EDSM) behaviour.
  */
 
-import { supabaseAdmin } from './supabaseAdmin';
+// Explicit `.ts` extensions: the galaxy import tests execute these modules
+// directly with `node --test`, and ESM does not complete extensions itself.
+import { supabaseAdmin } from './supabaseAdmin.ts';
 import {
   normalizeSystemName,
   type StarClass,
-} from './galaxySystems';
+} from './galaxySystems.ts';
 
 export interface GalaxySystemRow {
   id: number;
@@ -47,6 +49,11 @@ export function catalogIsComplete(stats: GalaxyStats | null | undefined): boolea
   return !!stats && stats.partial !== true && stats.systems_count >= FULL_CATALOG_MIN;
 }
 
+/** Drop the cached stats — call right after an import wrote new ones. */
+export function invalidateGalaxyStatsCache(): void {
+  statsCache = null;
+}
+
 /** How many systems the import has loaded (5-minute in-memory cache). */
 export async function getGalaxyStats(): Promise<GalaxyStats | null> {
   if (statsCache && Date.now() - statsCache.at < 5 * 60_000) return statsCache.value;
@@ -82,6 +89,32 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
   }
   statsCache = { at: Date.now(), value };
   return value;
+}
+
+/**
+ * Record that a complete point cloud now lives in the `galaxy-data` bucket, so
+ * every process prefers it over a local file or a fresh table scan. Merged into
+ * the existing stats document: an import must not lose the catalog counters.
+ */
+export async function markPointsUploaded(points: { count: number; bytes: number }): Promise<void> {
+  const { data } = await supabaseAdmin
+    .from('galaxy_systems_meta')
+    .select('value')
+    .eq('key', 'stats')
+    .maybeSingle();
+  const raw = (data as { value?: unknown } | null)?.value;
+  const previous = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const value = {
+    ...previous,
+    points_uploaded: true,
+    points_count: points.count,
+    points_bytes: points.bytes,
+  };
+  const { error } = await supabaseAdmin
+    .from('galaxy_systems_meta')
+    .upsert({ key: 'stats', value }, { onConflict: 'key' });
+  if (error) throw new Error(error.message);
+  invalidateGalaxyStatsCache();
 }
 
 export async function findSystemByName(name: string): Promise<GalaxySystemRow | null> {

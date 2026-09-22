@@ -39,6 +39,8 @@ services:
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env.production and pass --env-file .env.production}
       JOBS_BASE_URL: http://web:3000
       JOBS_STATE_FILE: /data/jobs-state.json
+      # `galaxy-import` (ночной дамп Spansh → galaxy_systems) не входит в
+      # список по умолчанию: добавьте его в JOBS_ENABLED осознанно.
       JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,galnet-sync,translate}
       GALNET_FEED_LIMIT: ${GALNET_FEED_LIMIT:-30}
       GALNET_TRANSLATE_LIMIT: ${GALNET_TRANSLATE_LIMIT:-10}

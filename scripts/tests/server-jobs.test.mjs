@@ -3,15 +3,21 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { JOBS, jobConfig, scheduleSlot, callEndpoint, executeJob, runTick, loadState, saveState } from '../server-jobs.mjs';
+import { JOBS, DEFAULT_JOBS, jobConfig, scheduleSlot, callEndpoint, executeJob, runTick, loadState, saveState } from '../server-jobs.mjs';
 
 const config = (extra = {}) => jobConfig({ CRON_SECRET: 'test-secret-not-a-real-credential', ...extra });
 const json = body => new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 
 test('all six former Actions have UTC schedules, including progress', () => {
   assert.deepEqual(JOBS.map(job => job.name), [
+    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'galnet-sync', 'translate', 'galaxy-import',
+  ]);
+  // The Spansh catalog import stays opt-in: it must not run on a bare scheduler.
+  assert.deepEqual(DEFAULT_JOBS, [
     'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'galnet-sync', 'translate',
   ]);
+  assert.deepEqual(config().jobs.map(job => job.name), DEFAULT_JOBS);
+  assert.deepEqual(config({ JOBS_ENABLED: 'galaxy-import' }).jobs.map(job => job.name), ['galaxy-import']);
   for (const job of JOBS) {
     const at = Date.parse('2026-09-20T00:00:00Z') + job.offset;
     assert.equal(scheduleSlot(job, at - 1), scheduleSlot(job, at) - 1);
@@ -19,6 +25,9 @@ test('all six former Actions have UTC schedules, including progress', () => {
   }
   const galnet = JOBS.find(job => job.name === 'galnet-sync');
   assert.equal(new Date(Date.parse('2026-09-20T00:00:00Z') + galnet.offset).toISOString(), '2026-09-20T06:20:00.000Z');
+  const galaxy = JOBS.find(job => job.name === 'galaxy-import');
+  assert.equal(new Date(Date.parse('2026-09-20T00:00:00Z') + galaxy.offset).toISOString(), '2026-09-20T02:00:00.000Z');
+  assert.equal(galaxy.period, 24 * 60 * 60 * 1000);
 });
 
 test('configuration rejects unknown jobs and ambiguous URLs, allows disabling all jobs', () => {

@@ -17,7 +17,18 @@ export const JOBS = [
   { name: 'eddn-cleanup', period: 6 * HOUR, offset: 30 * MINUTE, path: '/api/cron/eddn-cleanup', timeout: 5 * MINUTE },
   { name: 'galnet-sync', period: 24 * HOUR, offset: 6 * HOUR + 20 * MINUTE, path: '/api/galnet', timeout: 15 * MINUTE },
   { name: 'translate', period: 6 * HOUR, offset: 40 * MINUTE, path: '/api/cron/translate', timeout: 15 * MINUTE },
+  // Opt-in (add `galaxy-import` to JOBS_ENABLED): nightly Spansh dump → the full
+  // `galaxy_systems` catalog + the map point cloud. The endpoint only starts the
+  // background import, hence the short timeout; the run itself takes ~30-60 min.
+  { name: 'galaxy-import', period: 24 * HOUR, offset: 2 * HOUR, path: '/api/cron/galaxy-import', timeout: 10 * MINUTE },
 ];
+
+/**
+ * Enabled unless JOBS_ENABLED says otherwise. `galaxy-import` is opt-in on
+ * purpose: it downloads a ~6 GiB dump and rewrites ~1.3M rows, so it must be a
+ * deliberate choice (or a manual `--once galaxy-import`), not a surprise.
+ */
+export const DEFAULT_JOBS = JOBS.filter(job => job.name !== 'galaxy-import').map(job => job.name);
 
 export function scheduleSlot(job, now = Date.now()) {
   return Math.floor((now - job.offset) / job.period);
@@ -34,7 +45,7 @@ export function jobConfig(env = process.env) {
   const base = new URL(env.JOBS_BASE_URL || 'http://web:3000');
   if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password ||
       base.search || base.hash || base.pathname !== '/') throw new Error('JOBS_BASE_URL must be an origin');
-  const enabled = (env.JOBS_ENABLED ?? JOBS.map(job => job.name).join(','))
+  const enabled = (env.JOBS_ENABLED ?? DEFAULT_JOBS.join(','))
     .split(',').map(name => name.trim()).filter(Boolean);
   for (const name of enabled) {
     if (!JOBS.some(job => job.name === name)) throw new Error(`Unknown job: ${name}`);
