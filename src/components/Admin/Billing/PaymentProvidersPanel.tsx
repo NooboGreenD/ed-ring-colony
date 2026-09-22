@@ -149,7 +149,7 @@ export default function PaymentProvidersPanel() {
                       <input type="checkbox" checked={p.test_mode} disabled={busy === p.id} onChange={(e) => patch(p.id, { test_mode: e.target.checked })} /> Тестовый режим (sandbox)
                     </label>
                     <div style={{ flex: 1 }} />
-                    <button type="button" disabled={busy === p.id} onClick={() => check(p.id)} style={{ fontSize: 12, display: "inline-flex", gap: 6, alignItems: "center" }}><IconRefresh size={12} /> Проверить подключение</button>
+                    <button type="button" disabled={busy === p.id} onClick={() => check(p.id)} style={{ fontSize: 12, display: "inline-flex", gap: 6, alignItems: "center" }}><IconRefresh size={12} /> {p.id === "tbank" ? "Проверить настройки" : "Проверить подключение"}</button>
                     <button type="button" className="btn-orange" disabled={!dirty || busy === p.id} onClick={() => patch(p.id, { config: draft }, "Настройки сохранены")} style={{ fontSize: 12 }}>
                       {busy === p.id ? "…" : "Сохранить ключи"}
                     </button>

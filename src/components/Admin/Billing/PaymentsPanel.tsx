@@ -8,6 +8,7 @@ import { IconRefresh, IconCoins } from "@/components/Icons";
 
 const PURPOSE: Record<string, string> = { credit_topup: "Пополнение", subscription: "Подписка", shop_purchase: "Товар" };
 const STATUS: Record<string, { label: string; color: string }> = {
+  processing: { label: "Обработка покупки", color: "#f39c12" },
   pending: { label: "ожидает", color: "#f39c12" },
   paid: { label: "оплачен", color: "#2ecc71" },
   failed: { label: "ошибка", color: "#e74c3c" },

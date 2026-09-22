@@ -970,6 +970,13 @@ class BillingRepository {
     return a.update<PaymentIntent>('payment_intents', id, { ...patch, updated_at: nowIso() });
   }
 
+  /** Do not let a late failure/cancel overwrite a claimed or fulfilled payment. */
+  async updatePendingIntent(id: string, patch: Partial<PaymentIntent>): Promise<PaymentIntent | null> {
+    const a = await this.db();
+    await a.updateWhere('payment_intents', { id, status: 'pending' }, { ...patch, updated_at: nowIso() });
+    return this.getIntent(id);
+  }
+
   async listIntents(filter?: { status?: string; userId?: string; limit?: number }): Promise<PaymentIntent[]> {
     const a = await this.db();
     const eq: Record<string, any> = {};
@@ -1002,7 +1009,7 @@ class BillingRepository {
   }
 
   /**
-   * Fulfils a paid intent exactly once: credits balance / grants subscription /
+   * Claims an intent atomically: credits balance / grants subscription /
    * delivers item and links the resulting transaction to the intent.
    */
   async fulfilIntent(intentId: string, ext: { externalId?: string | null; method?: string }): Promise<{ ok: boolean; already?: boolean; error?: string; intent?: PaymentIntent }> {
@@ -1011,11 +1018,22 @@ class BillingRepository {
     if (intent.status === 'paid') return { ok: true, already: true, intent };
     if (!intent.user_id) return { ok: false, error: 'Intent has no user' };
 
-    // Optimistic lock — move to 'processing' state via updated_at compare is not
-    // available in the simple adapter, so we set status first and re-read.
-    await this.updateIntent(intent.id, { status: 'paid', paid_at: nowIso(), external_id: ext.externalId || intent.external_id });
-    const reread = await this.getIntent(intent.id);
-    if (reread?.transaction_id) return { ok: true, already: true, intent: reread };
+    if (intent.status === 'processing') return { ok: false, error: 'Fulfilment in progress or awaiting reconciliation' };
+    if (!['credit_topup', 'subscription', 'shop_purchase'].includes(intent.purpose) ||
+        (intent.purpose !== 'credit_topup' && !intent.target_id)) return { ok: false, error: 'Invalid payment purpose/target' };
+
+    // Atomic compare-and-set across workers, not a read/write/read pseudo-lock.
+    // Never release this claim automatically after partial writes: doing so could
+    // issue the same credits/subscription twice. A crash requires reconciliation.
+    const a = await this.db();
+    const claimed = await a.updateWhere('payment_intents', { id: intent.id, status: intent.status }, {
+      status: 'processing', updated_at: nowIso(), external_id: ext.externalId || intent.external_id,
+    });
+    if (!claimed) {
+      const current = await this.getIntent(intent.id);
+      return current?.status === 'paid' ? { ok: true, already: true, intent: current }
+        : { ok: false, error: 'Fulfilment in progress or state changed; retry notification' };
+    }
 
     const method = ext.method || (intent.provider_id === 'cryptobot' ? 'crypto' : intent.provider_id === 'manual' ? 'manual' : 'card');
     const cmdr = intent.cmdr_name || '';
@@ -1045,10 +1063,10 @@ class BillingRepository {
         } else txIdOut = r.transaction!.id;
       }
     } catch (e: any) {
-      await this.updateIntent(intent.id, { status: 'failed', metadata: { ...(intent.metadata || {}), fulfilError: e?.message } });
+      await this.updateIntent(intent.id, { metadata: { ...(intent.metadata || {}), fulfilError: e?.message } });
       return { ok: false, error: e?.message || 'Fulfilment failed' };
     }
-    const done = await this.updateIntent(intent.id, { transaction_id: txIdOut });
+    const done = await this.updateIntent(intent.id, { status: 'paid', paid_at: nowIso(), transaction_id: txIdOut });
     return { ok: true, intent: done || undefined };
   }
 

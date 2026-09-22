@@ -8,6 +8,7 @@ import type { PaymentIntent } from "@/types/billing";
 
 const PURPOSE: Record<string, string> = { credit_topup: "Пополнение кредитов", subscription: "Подписка", shop_purchase: "Покупка товара" };
 const STATUS: Record<string, { label: string; color: string }> = {
+  processing: { label: "Обработка покупки", color: "#f39c12" },
   pending: { label: "Ожидает оплаты", color: "#f39c12" },
   paid: { label: "Оплачено", color: "#2ecc71" },
   failed: { label: "Ошибка оплаты", color: "#e74c3c" },
@@ -39,13 +40,13 @@ export default function PayStatusPage({ params }: { params: Promise<{ intentId: 
 
   useEffect(() => { load(); }, [load, tick]);
   useEffect(() => {
-    if (!intent || intent.status !== "pending") return;
+    if (!intent || !["pending", "processing"].includes(intent.status)) return;
     const t = setTimeout(() => setTick((x) => x + 1), 4000);
     return () => clearTimeout(t);
   }, [intent, tick]);
 
   const st = intent ? STATUS[intent.status] || { label: intent.status, color: "#9ca3af" } : null;
-  const final = intent && intent.status !== "pending";
+  const final = intent && !["pending", "processing"].includes(intent.status);
 
   return (
     <div style={{ maxWidth: 560, margin: "20px auto", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -85,6 +86,8 @@ export default function PayStatusPage({ params }: { params: Promise<{ intentId: 
                 {intent.purpose === "credit_topup" ? "Кредиты зачислены на баланс." : intent.purpose === "subscription" ? "Подписка активирована." : "Товар добавлен в инвентарь и экипирован."}
               </div>
             )}
+            {intent.status === "processing" && <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 10 }}>Не оплачивайте повторно. Если выдача задерживается, обратитесь в поддержку и укажите ID платежа.</div>}
+            {intent.purpose === "subscription" && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 10 }}>Разовая оплата периода. Продление вручную, без автоматических списаний.</div>}
             {intent.status === "failed" && intent.metadata?.error && <div style={{ fontSize: 13, color: "#e74c3c" }}>{intent.metadata?.error}</div>}
           </>
         )}

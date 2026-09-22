@@ -40,6 +40,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Платёжная система недоступна' }, { status: 400 });
     }
 
+    // Real T-Bank payments must never run on the development JSON fallback.
+    if (providerId === 'tbank' && !provider.test_mode && await billingRepo.backendKind !== 'supabase') {
+      return NextResponse.json({ error: 'Для боевых платежей Т-Банка требуется хранилище Supabase' }, { status: 503 });
+    }
+    if (providerId === 'tbank') {
+      const configCheck = await driver.check(provider);
+      if (!configCheck.ok) return NextResponse.json({ error: configCheck.message }, { status: 400 });
+    }
+
     let amountRub = 0;
     let amountCredits = 0;
     let targetId: string | null = null;
@@ -90,7 +99,7 @@ export async function POST(req: Request) {
       const updated = await billingRepo.updateIntent(intent.id, { external_id: created.externalId, payment_url: created.paymentUrl, metadata: { ...intent.metadata, providerRaw: created.raw ? { id: created.raw.id, status: created.raw.status } : undefined } });
       return NextResponse.json({ success: true, intent: updated, paymentUrl: created.paymentUrl });
     } catch (e: any) {
-      await billingRepo.updateIntent(intent.id, { status: 'failed', metadata: { ...intent.metadata, error: e?.message } });
+      await billingRepo.updatePendingIntent(intent.id, { status: 'failed', metadata: { ...intent.metadata, error: e?.message } });
       return NextResponse.json({ error: e?.message || 'Не удалось создать платёж' }, { status: 502 });
     }
   } catch (err) {

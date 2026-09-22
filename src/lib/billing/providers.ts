@@ -12,6 +12,7 @@
  * returned to the browser unmasked.
  */
 import crypto from 'crypto';
+import { tbank } from './tbank';
 import type { PaymentProvider, ProviderConfigField, PaymentIntent } from '@/types/billing';
 import { getSiteUrl } from '@/lib/siteUrl';
 
@@ -34,6 +35,8 @@ export interface WebhookResult {
   intentId?: string;
   status?: 'paid' | 'failed' | 'canceled' | 'pending';
   eventType?: string;
+  amountMinor?: number;
+  currency?: string;
   error?: string;
 }
 
@@ -404,7 +407,7 @@ const manual: ProviderDriver = {
   },
 };
 
-export const PROVIDER_DRIVERS: Record<string, ProviderDriver> = { yookassa, robokassa, stripe, cryptobot, manual };
+export const PROVIDER_DRIVERS: Record<string, ProviderDriver> = { yookassa, robokassa, stripe, cryptobot, tbank, manual };
 
 export function getDriver(id: string): ProviderDriver | null {
   return PROVIDER_DRIVERS[id] || null;
