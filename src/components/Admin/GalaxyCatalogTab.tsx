@@ -216,8 +216,16 @@ export default function GalaxyCatalogTab() {
         )}
 
         {state?.error && (
-          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
-            <IconXCircle size={14} color="#ef4444" /> <span>{state.error}</span>
+          <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+              <IconXCircle size={14} color="#ef4444" /> <span>{state.error}</span>
+            </div>
+            {/cannot affect row a second time/i.test(state.error) && (
+              <div style={{ marginTop: 6, color: '#e67e22' }}>
+                В одной пачке оказалось две системы с одним именем или id64 — Postgres так upsert не принимает.
+                Запустите импорт ещё раз: повторы теперь схлопываются, и загрузка из-за этого не обрывается.
+              </div>
+            )}
           </div>
         )}
         {state?.points_error && (
@@ -250,7 +258,9 @@ export default function GalaxyCatalogTab() {
           Скачивается ночной дамп <code>systems.json.gz</code> (~6 ГиБ) потоком, без записи на диск; RAM &lt; 1 ГБ,
           время — от 20 минут до нескольких часов в зависимости от канала. Прерванный импорт продолжается: дамп
           скачивается заново (gzip нельзя начать с середины), но уже записанные системы пропускаются, поэтому
-          повторная запись в базу не идёт. После завершения файл точек (~36 МБ) загружается в бакет
+          повторная запись в базу не идёт. Повторы одной системы в дампе (то же имя или тот же id64 в одной пачке)
+          схлопываются в одну строку — иначе Postgres обрывает upsert ошибкой «cannot affect row a second time».
+          После завершения файл точек (~36 МБ) загружается в бакет
           <code> galaxy-data</code>, и слой «Все системы» на карте начинает работать. Счётчики каталога ниже
           могут отставать на минуту — их отдаёт кэш.
         </div>
