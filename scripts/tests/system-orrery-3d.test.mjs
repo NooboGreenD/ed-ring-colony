@@ -33,8 +33,16 @@ try {
 
 const maybe = esbuild ? test : test.skip;
 
+// Временные сборки движка: репозиторий должен оставаться чистым и после
+// падения теста, поэтому папки сносим на выходе процесса.
+const tempDirs = [];
+process.on('exit', () => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 async function loadEngine() {
   const dir = mkdtempSync(join(ROOT, '.tmp-orrery3d-'));
+  tempDirs.push(dir);
   const entry = join(dir, 'entry.ts');
   const bundle = join(dir, 'engine.mjs');
   writeFileSync(entry, "export * from '@/lib/orrery3d';\nexport * from '@/lib/systemOrrery';\n");
@@ -382,69 +390,4 @@ maybe('пустая система: пакет и сцена собираютс�
   const frame = module.frameFor(payload, '', 0, { aspect: 1.6 });
   assert.ok(frame.distance > 0);
   scene.dispose();
-});
-
-maybe('сборка для Colonial Helper актуальна и содержит контракт', async () => {
-  const { readFileSync } = await import('node:fs');
-  const bundlePath = join(ROOT, 'uploader', 'assets', 'orrery-viewer.js');
-  const code = readFileSync(bundlePath, 'utf8');
-  assert.match(code, /Orrery3D/, 'IIFE-сборка объявляет Orrery3D');
-  assert.match(code, /three|WebGLRenderer/, 'рендерер three.js внутри сборки');
-  assert.ok(code.length > 200_000, 'three.js действительно включён в файл');
-  assert.ok(!/react-dom/.test(code), 'react в автономную сборку не попадает');
-});
-
-/**
- * Сквозная проверка автономного HTML: страницу собирает Python, движок —
- * вложенная сборка three.js.
- *
- * jsdom не даёт WebGL, поэтому сцена не поднимется — и это тоже часть
- * проверки: страница обязана остаться читаемой (карточки тел и построек,
- * фильтры, подсказка вместо карты), а контейнер — получить вьюер.
- */
-maybe('автономный HTML приложения: сборка поднимает карту и не теряет панели', async () => {
-  const { spawnSync } = await import('node:child_process');
-  const { JSDOM } = await import('jsdom');
-
-  const builder = `
-import json, sys
-sys.path.insert(0, 'uploader')
-import system_map as sm
-import system_view as sv
-b = sm.SystemMapBuilder()
-b.handle({"event": "FSDJump", "StarSystem": "KELT", "SystemAddress": 42})
-b.handle({"event": "Scan", "StarSystem": "KELT", "BodyName": "KELT A", "ScanType": "Detailed",
-          "StarType": "G", "Radius": 6.957e8, "EffectiveTemperature": 5778, "BodyID": 1})
-b.handle({"event": "Scan", "StarSystem": "KELT", "BodyName": "KELT A 1", "ScanType": "Detailed",
-          "PlanetClass": "Earthlike body", "Radius": 6.371e6, "DistanceFromArrivalLS": 499.0,
-          "BodyID": 2, "SemiMajorAxis": 1.496e11, "Parents": [{"Star": 1}], "Landable": True})
-b.handle({"event": "ColonisationConstructionDepot", "StarSystem": "KELT", "MarketID": 9,
-          "ConstructionName": "KELT A 1 Colony", "BodyName": "KELT A 1",
-          "ConstructionProgress": 0.42,
-          "ResourcesRequired": [{"Name": "$steel_name;", "Name_Localised": "Steel",
-                                 "RequiredAmount": 12000, "ProvidedAmount": 5000}]})
-snap = b.snapshot("KELT")
-print(sv.generate_map_html(snap, player=snap.player))
-`;
-  const result = spawnSync('python3', ['-c', builder], { cwd: ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  assert.equal(result.status, 0, `Python не собрал карту: ${result.stderr?.slice(-400)}`);
-  const html = result.stdout;
-  assert.match(html, /data-orrery-payload/, 'в HTML нет пакета данных');
-  assert.match(html, /KELT A 1 Colony/, 'в HTML нет карточки стройки');
-
-  const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true });
-  const { document } = dom.window;
-  // Ждём, пока встроенная сборка поднимет вьюер на контейнере.
-  await new Promise((resolve) => setTimeout(resolve, 400));
-  const container = document.querySelector('[data-orrery-viewer]');
-  assert.ok(container, 'нет контейнера карты');
-  assert.ok(container.__orreryViewerMounted, 'сборка не подняла карту на странице');
-  assert.ok(document.querySelector('[data-orrery-viewer] canvas, #cards .card'),
-    'страница без WebGL потеряла и карточки, и холст');
-  // Карточки, фильтр и поиск остаются на месте — деградация без WebGL.
-  assert.ok(document.getElementById('cards'), 'список тел пропал');
-  assert.ok(document.getElementById('search'), 'поиск по телам пропал');
-  assert.ok(document.getElementById('filter'), 'фильтр тел пропал');
-  assert.match(document.body.textContent, /KELT/, 'на странице нет системы');
-  dom.window.close();
 });

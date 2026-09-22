@@ -31,8 +31,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   с дугой прогресса на поверхности, фокус-зум по телам (кластер → окрестность → поверхность), LOD подписей,
   подсказки наведением, фильтры и список тел, движение по орбитам на любую дату. Общая раскладка живёт в
   `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`; пакет данных версионируется одним контрактом
-  (`ORRERY_VIEW_VERSION` ↔ `uploader/system_view.py`), а тот же движок Colonial Helper вкладывает в автономный
-  HTML (`uploader/assets/orrery-viewer.js`, сборка `npm run viewer:build`)
+  (`ORRERY_VIEW_VERSION` ↔ `uploader/system_view.py`), а Colonial Helper рисует ту же сцену прямо во вкладке
+  «Карта системы» — холстом Tk (`uploader/tk_orrery.py`), без браузера и без отдельного HTML-файла
 - **Pilot Dossier** — раздельные блоки «весь перевозимый груз» и «тоннаж на стройплощадки», а внутри —
   структура перевозок по назначению: стройплощадки и колонизационные корабли отдельно от авианосцев, миссий,
   powerplay, спасательных рейсов и продаж на рынке. Видимость блоков (баланс, ранги, груз, доставки, позиция)
@@ -214,7 +214,7 @@ ed-ring-colony/
       dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
       orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
-                            # (bundled to uploader/assets/orrery-viewer.js)
+                            # (the app mirrors the same maths in uploader/tk_orrery.py)
     types/                  # TypeScript types
   supabase/
     migrations/             # SQL migrations

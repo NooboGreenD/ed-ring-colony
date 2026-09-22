@@ -29,9 +29,8 @@ args = [
     "--add-data", f"system_map.py{os.pathsep}.",
     "--add-data", f"orrery.py{os.pathsep}.",
     "--add-data", f"system_view.py{os.pathsep}.",
-    # Движок 3D-карты: тот же three.js-рендерер, что рисует карту на сайте.
-    # Без файла карта в браузере деградирует до списка тел и построек.
-    "--add-data", f"assets{os.pathsep}assets",
+    # Сцена 3D-карты вкладки: тот же пакет данных, что у сайта, но рендерер Tk.
+    "--add-data", f"tk_orrery.py{os.pathsep}.",
     "--add-data", f"requirements.txt{os.pathsep}.",
     "--hidden-import", "hotkeys",
     "--hidden-import", "colonisation",
@@ -39,6 +38,7 @@ args = [
     "--hidden-import", "system_map",
     "--hidden-import", "orrery",
     "--hidden-import", "system_view",
+    "--hidden-import", "tk_orrery",
     "--hidden-import", "updater",
     "--hidden-import", "http_errors",
     "--hidden-import", "ttkbootstrap",

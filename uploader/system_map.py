@@ -1551,7 +1551,7 @@ def orbit_color_for(index: int) -> str:
     return ORBIT_PALETTE[index % len(ORBIT_PALETTE)]
 
 
-#: Цвет полосы обитаемой зоны (совпадает с сайтом и автономной картой).
+#: Цвет полосы обитаемой зоны (совпадает с сайтом и со сценой в окне).
 ZONE_COLOR = "#2ecc71"
 
 

@@ -3,16 +3,15 @@
  *
  * Это единственная часть карты, которая работает с DOM и WebGL. Всё
  * содержательное (раскладка, камера, сцена) живёт в соседних модулях, поэтому
- * поведение проверяется тестами без видеокарты, а один и тот же рендерер
- * подключают:
+ * поведение проверяется тестами без видеокарты, а подключает рендерер сайт —
+ * `src/components/SystemMap/SystemOrrery3D.tsx`.
  *
- * * сайт — `src/components/SystemMap/SystemOrrery3D.tsx`;
- * * Colonial Helper — автономный HTML (`uploader/system_view.py`) со сборкой
- *   `uploader/assets/orrery-viewer.js`, собранной из этого файла.
+ * Приложение Colonial Helper рисует ту же сцену своим холстом Tk
+ * (`uploader/tk_orrery.py`), поэтому WebGL и сборка движка ему не нужны.
  *
  * Наружу отдаётся маленький API (`focus`, `setZoom`, `setLayer`, `setMotion`,
- * `setFilter`, `on('select')`), чтобы React-обвязка сайта и кнопки автономной
- * страницы не лезли внутрь three.js.
+ * `setFilter`, `on('select')`), чтобы React-обвязка сайта не лезла внутрь
+ * three.js.
  */
 
 import * as THREE from 'three';
@@ -49,7 +48,7 @@ export interface OrreryViewerOptions {
   layers?: Partial<Record<LayerName, boolean>>;
   filter?: FilterMode;
   labels?: LabelsMode;
-  /** Показывать подсказки при наведении (в автономном HTML — всегда да). */
+  /** Показывать подсказки при наведении (на сайте — всегда да). */
   tooltips?: boolean;
   /** Автоматически вращать камеру, пока пользователь не тронул мышь. */
   autoRotate?: boolean;
@@ -94,7 +93,7 @@ export interface OrreryViewer {
 
 const STYLE_ID = 'orrery3d-viewer-styles';
 
-/** Стили оверлея подписей и подсказок. Их же использует автономный HTML. */
+/** Стили оверлея подписей и подсказок. */
 export function viewerStyles(): string {
   return `
 .orrery3d-root { position: relative; overflow: hidden; background: radial-gradient(120% 90% at 50% 0%, ${SCENE_COLORS.backgroundTop} 0%, ${SCENE_COLORS.background} 62%); }
@@ -127,7 +126,7 @@ export function viewerStyles(): string {
 `;
 }
 
-/** Вставить стили один раз на документ (сайт и автономный HTML). */
+/** Вставить стили один раз на документ. */
 export function injectViewerStyles(doc: Document | null = typeof document === 'undefined' ? null : document): void {
   if (!doc || doc.getElementById(STYLE_ID)) return;
   const style = doc.createElement('style');

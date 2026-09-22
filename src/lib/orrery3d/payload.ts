@@ -5,7 +5,7 @@
  * сжатый масштаб, бюджеты кластеров). Пакет добавляет к этому то, что нужно
  * интерфейсу: цвета, факты для карточек, зоны обитаемости, постройки на
  * поверхности тел и сводку. Рендерер (`scene.ts`) читает только пакет, поэтому
- * тот же JSON приходит и с сайта, и из Colonial Helper.
+ * тот же JSON собирает и Colonial Helper (`uploader/system_view.py`).
  */
 
 import {
@@ -280,7 +280,7 @@ function findParentName(layout: OrreryLayout, body: OrreryBody): string | null {
   return best?.name ?? null;
 }
 
-/** Сводка «сколько чего» для заголовка карты и автономного HTML. */
+/** Сводка «сколько чего» для заголовка карты. */
 export function describeView(payload: OrreryViewPayload): string[] {
   const parts: string[] = [];
   const { summary } = payload;

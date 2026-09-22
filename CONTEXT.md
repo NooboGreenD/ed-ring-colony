@@ -141,7 +141,7 @@ helper cannot disagree about where a body sits:
 | Side | Engine | Renderer |
 |------|--------|----------|
 | Website `/system/[name]` | `src/lib/systemOrrery.ts` | `src/components/SystemMap/SystemOrrery3D.tsx` (three.js via `src/lib/orrery3d`) |
-| Colonial Helper «Карта системы» | `uploader/orrery.py` | `uploader/system_map.py` (Tk canvas) + `uploader/system_view.py` (payload + standalone HTML with the same three.js bundle) |
+| Colonial Helper «Карта системы» | `uploader/orrery.py` | `uploader/tk_orrery.py` (Tk canvas scene) + `uploader/system_view.py` (payload: palette, facts, zones) |
 
 Invariants that must stay identical in both languages:
 
@@ -411,7 +411,8 @@ Applied via `npx supabase db push`.
 | Starfield | `components/Starfield.tsx` | Client | Canvas starfield background |
 | Leaderboard | `components/Leaderboard.tsx` | Server | Leaderboard table |
 | CmdrDossier | `components/CmdrDossier.tsx` | Server | Player profile — cargo totals, construction-site tonnage, achievements, squadron |
-| SystemPlotlyMap | `components/SystemPlotlyMap.tsx` | Client | 3D/2D orrery of one system: focus fly-to, star clusters, isolate, body card with ground structures |
+| SystemOrrery3D | `components/SystemMap/SystemOrrery3D.tsx` | Client | 3D orrery of one system: focus fly-to, clusters, layers, tooltips, orbit motion |
+| SystemBodyRail | `components/SystemMap/SystemBodyRail.tsx` | Client | Body list rail of the system map: search, filters, grouping by star |
 | AdminComments | `app/admin/components/AdminComments.tsx` | Client | Admin moderation |
 | RavenSyncTab | `components/Admin/RavenSyncTab.tsx` | Client | Raven sync UI |
 
