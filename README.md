@@ -415,9 +415,16 @@ progress bar показывает процент по байтам, файлы, 
 
 ```bash
 # При обновлении существующего сервера НЕ перезаписывайте рабочий env-файл.
+# Один скрипт: ключи мониторинга + метаданные ревизии + запуск + проверка.
+bash deploy/start-monitoring.sh
+docker compose --env-file .env.production logs --tail=100 jobs
+```
+
+Ручной эквивалент того же запуска:
+
+```bash
 docker compose --env-file .env.production --profile monitoring build web jobs monitor-agent
 docker compose --env-file .env.production --profile monitoring up -d web jobs monitor-agent
-docker compose --env-file .env.production logs --tail=100 jobs
 ```
 
 Перед первым запуском `jobs` отключите старые Actions/cron, сохранив задания
@@ -428,11 +435,12 @@ docker compose --env-file .env.production logs --tail=100 jobs
 ### Операционный мониторинг
 
 В **Админка → Мониторинг** доступны статус сайта, Supabase/БД, Docker-сервисов,
-планировщика и версия развёрнутого проекта. Для Docker и задач задайте отдельный
-`MONITOR_AGENT_TOKEN` в закрытом env-файле и включите Compose-профиль
-`monitoring` (сервис `monitor-agent`); не публикуйте его порт. Полная безопасная
-настройка и команда обновления:
-[MONITORING.md](MONITORING.md).
+планировщика и версия развёрнутого проекта. Включение — одна команда
+`bash deploy/start-monitoring.sh` (или `npm run monitoring:up`): она сама
+генерирует и вставляет отдельный `MONITOR_AGENT_TOKEN`, поднимает
+Compose-профиль `monitoring` (сервис `monitor-agent`) и проверяет связку
+web → agent; порт агента не публикуется. Полная безопасная настройка, режимы
+скрипта и команда обновления: [MONITORING.md](MONITORING.md).
 
 ## Design System
 
