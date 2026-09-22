@@ -22,21 +22,27 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
-import { StringDecoder } from 'node:string_decoder';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 
 import {
-  classifyStar,
-  normalizeSystemName,
-  distanceFromSols,
-  distanceFromSgra,
   PointsBuilder,
   parsePointsFile,
   id64FromParts,
   POINTS_STORAGE_BUCKET,
   POINTS_STORAGE_OBJECT,
 } from '../src/lib/galaxySystems.ts';
+// Parser, row mapping and the upsert SQL live in src/lib so the in-app import
+// (/api/cron/galaxy-import — the production image has no scripts/) and this CLI
+// cannot drift apart. Re-exported below for scripts/tests/spansh-systems.test.mjs.
+import {
+  JsonArrayObjects,
+  streamObjects,
+  toGalaxySystemRow,
+} from '../src/lib/galaxySpanshStream.ts';
+import { PG_BATCH_SIZE, SUPABASE_BATCH_SIZE, pgInsertSql, pgLiteral } from '../src/lib/galaxyImport.ts';
+
+export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
 
 const requireNode = createRequire(import.meta.url);
 const REPO_ROOT = path.resolve(new URL('.', import.meta.url).pathname, '..');
@@ -51,7 +57,7 @@ const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
   --out <dir>            Download directory (default data/spansh)
   --points-file <path>   Points file for the map layer (default public/data/galaxy-systems-points.bin)
   --limit <n>            Process at most n systems (testing)
-  --batch <n>            DB batch size (default: 5000 pg / 500 supabase)
+  --batch <n>            DB batch size (default: 2000 pg / 1000 supabase)
   --truncate             Clear galaxy_systems before import (pg mode only)
   --no-points            Skip generating the points file
   --dry-run              Parse only; do not write to the database
@@ -136,145 +142,7 @@ async function download(url, dest, log) {
   log(`Download complete: ${fs.statSync(dest).size.toLocaleString()} bytes`);
 }
 
-// ─────────────── streaming JSON array → raw objects ───────────────
-// The documented layout is one object per line, but this state machine also
-// copes with minified or re-wrapped dumps (string/escape/brace aware).
-// It additionally captures the exact decimal digits of `id64`, because
-// JSON.parse loses precision for unsigned 64-bit values above 2^53.
-
-class JsonArrayObjects extends Transform {
-  constructor(opts) {
-    super({ ...opts, objectMode: true });
-    this.decoder = new StringDecoder('utf8');
-    this.state = 'skip'; // skip → between → object
-    this.depth = 0;
-    this.inString = false;
-    this.escaped = false;
-    this.raw = '';
-    this.finished = false;
-  }
-
-  _transform(chunk, _enc, done) {
-    if (this.finished) return done();
-    try {
-      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      this._consume(this.decoder.write(bytes));
-      done();
-    } catch (err) {
-      done(err);
-    }
-  }
-
-  _flush(done) {
-    if (this.finished) return done();
-    try {
-      const tail = this.decoder.end();
-      if (tail) this._consume(tail);
-      done();
-    } catch (err) {
-      done(err);
-    }
-  }
-
-  _consume(text) {
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      switch (this.state) {
-        case 'skip':
-          if (ch === '[') this.state = 'between';
-          break;
-        case 'between':
-          if (ch === ']') { this.finished = true; return; }
-          if (ch === '{') { this.state = 'object'; this.depth = 1; this.inString = false; this.raw = '{'; }
-          break;
-        case 'object':
-          if (this.inString) {
-            this.raw += ch;
-            if (this.escaped) this.escaped = false;
-            else if (ch === '\\') this.escaped = true;
-            else if (ch === '"') this.inString = false;
-            break;
-          }
-          if (ch === '"') { this.inString = true; this.raw += ch; break; }
-          if (ch === '{') { this.depth++; this.raw += ch; break; }
-          if (ch === '}') {
-            this.depth--;
-            this.raw += ch;
-            if (this.depth === 0) {
-              const idMatch = /"id64"\s*:\s*(\d+)/.exec(this.raw);
-              const obj = JSON.parse(this.raw);
-              if (idMatch) obj.__id64Exact = idMatch[1];
-              this.raw = '';
-              this.state = 'between';
-              this.push(obj);
-            }
-            break;
-          }
-          this.raw += ch;
-          break;
-        default:
-          break;
-      }
-      if (this.finished) return;
-    }
-  }
-}
-
-export function streamObjects(sourceStream) {
-  return sourceStream.pipe(new JsonArrayObjects());
-}
-
-// ─────────────────────── record → row ───────────────────────
-
-export function toGalaxySystemRow(obj) {
-  const name = typeof obj?.name === 'string' ? obj.name.trim() : '';
-  if (!name) return null;
-  const coords = obj.coords;
-  if (!coords || !Number.isFinite(coords.x) || !Number.isFinite(coords.y) || !Number.isFinite(coords.z)) return null;
-  // Prefer the exact decimal digits captured by the streaming parser.
-  const id64 = obj.__id64Exact ?? (obj.id64 == null ? null : String(obj.id64));
-  if (!id64) return null; // id64 is required by the dump schema
-  const mainStar = typeof obj.mainStar === 'string' && obj.mainStar ? obj.mainStar : null;
-  const cls = classifyStar(mainStar);
-  return {
-    id64,
-    name,
-    name_lc: normalizeSystemName(name),
-    x: coords.x,
-    y: coords.y,
-    z: coords.z,
-    main_star: mainStar,
-    star_type: cls.starType,
-    star_giant_class: cls.giantClass,
-    needs_permit: typeof obj.needsPermit === 'boolean' ? obj.needsPermit : null,
-    distance_from_sols: distanceFromSols(coords.x, coords.y, coords.z),
-    distance_from_sgra: distanceFromSgra(coords.x, coords.y, coords.z),
-    updated_at: typeof obj.updateTime === 'string' ? obj.updateTime : null,
-  };
-}
-
 // ─────────────────────── DB writers ───────────────────────
-
-function pgLiteral(value) {
-  if (value === null || value === undefined) return 'NULL';
-  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
-const ROW_COLUMNS = [
-  'id64', 'name', 'name_lc', 'x', 'y', 'z', 'main_star', 'star_type',
-  'star_giant_class', 'needs_permit', 'distance_from_sols', 'distance_from_sgra', 'updated_at',
-];
-
-function pgInsertSql(rows) {
-  const values = rows.map((r) => '(' + ROW_COLUMNS.map((c) => pgLiteral(r[c])).join(',') + ')').join(',');
-  return (
-    `INSERT INTO galaxy_systems (${ROW_COLUMNS.join(',')}) VALUES ${values} ` +
-    `ON CONFLICT (name_lc) DO UPDATE SET ` +
-    ROW_COLUMNS.filter((c) => c !== 'name_lc').map((c) => `${c} = EXCLUDED.${c}`).join(', ')
-  );
-}
 
 function loadPg() {
   return requireNode('pg');
@@ -541,7 +409,7 @@ async function resolveDb(args, log) {
     }
     client.release();
     log(`DB mode: pg (${mask(databaseUrl)})`);
-    const writer = new PgWriter(pool, args.batch || 5000, args.truncate, log);
+    const writer = new PgWriter(pool, args.batch || PG_BATCH_SIZE, args.truncate, log);
     await writer.begin();
     return writer;
   }
@@ -551,7 +419,7 @@ async function resolveDb(args, log) {
     const { createClient } = await import('@supabase/supabase-js');
     const client = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
     log(`DB mode: supabase (${supabaseUrl})`);
-    const writer = new SupabaseWriter(client, args.batch || 500, log);
+    const writer = new SupabaseWriter(client, args.batch || SUPABASE_BATCH_SIZE, log);
     await writer.begin();
     return writer;
   }

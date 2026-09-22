@@ -1,19 +1,25 @@
 import { NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getGalaxyStats } from '@/lib/galaxySystemsDb';
+
+import { getGalaxyStats, markPointsUploaded, type GalaxyStats } from '@/lib/galaxySystemsDb';
 import {
   POINTS_HEADER_SIZE,
   POINTS_MAGIC,
   POINTS_STORAGE_BUCKET,
   POINTS_STORAGE_OBJECT,
-  PointsBuilder,
   parsePointsFile,
-  type StarClass,
 } from '@/lib/galaxySystems';
+import {
+  POINTS_UPLOAD_LIMIT,
+  readPointsFromPg,
+  readPointsFromSupabase,
+} from '@/lib/galaxyImport';
+import { galaxyDbUrl } from '@/lib/pgModule';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120;
+// A cold PostgREST build of ~1.3M rows can take minutes; nginx gives up at 310 s.
+export const maxDuration = 300;
 
 const STATIC_POINTS = path.join(process.cwd(), 'public', 'data', 'galaxy-systems-points.bin');
 const STATIC_META = `${STATIC_POINTS}.meta.json`;
@@ -66,71 +72,29 @@ async function tryStorage(): Promise<PointsFile | null> {
   }
 }
 
-function dbUrl(): string | null {
-  return process.env.DATABASE_URL || process.env.SUPABASE_DB_URL || null;
-}
-
-async function buildFromPg(): Promise<PointsFile | null> {
-  const url = dbUrl();
-  if (!url) return null;
-  // Streaming Query, not a buffered result: 1.3M rows must not sit in memory.
-  // pg has no bundled types here, and *.d.ts is gitignored, so the import is
-  // asserted. The specifier stays visible so the standalone tracer keeps `pg`.
-  // @ts-expect-error pg ships without type declarations in this install.
-  const loaded = await import('pg') as {
-    Client?: new (config: { connectionString: string }) => {
-      connect(): Promise<void>;
-      query(query: unknown): void;
-      end(): Promise<void>;
-    };
-    Query?: new (text: string) => {
-      on(event: 'row', listener: (row: Record<string, unknown>) => void): void;
-      on(event: 'error', listener: (err: Error) => void): void;
-      on(event: 'end', listener: () => void): void;
-    };
-    default?: {
-      Client: new (config: { connectionString: string }) => {
-        connect(): Promise<void>;
-        query(query: unknown): void;
-        end(): Promise<void>;
-      };
-      Query: new (text: string) => {
-        on(event: 'row', listener: (row: Record<string, unknown>) => void): void;
-        on(event: 'error', listener: (err: Error) => void): void;
-        on(event: 'end', listener: () => void): void;
-      };
-    };
-  };
-  const pg = loaded.Client && loaded.Query ? loaded : loaded.default;
-  const PgClient = pg?.Client;
-  const PgQuery = pg?.Query;
-  if (!PgClient || !PgQuery) throw new Error('pg module is missing Client');
-  const client = new PgClient({ connectionString: url });
-  await client.connect();
+/**
+ * Build the cloud from `galaxy_systems` when nothing prebuilt exists: direct
+ * Postgres first (fast, streaming), PostgREST second (works with nothing but the
+ * service-role key — the case the production container is usually in).
+ */
+async function buildFromDatabase(): Promise<PointsFile | null> {
+  const connectionString = galaxyDbUrl();
+  if (connectionString) {
+    try {
+      const built = await readPointsFromPg(connectionString);
+      return { buffer: built.buffer, count: built.count, etag: `edgs-pg-${built.count}` };
+    } catch (err) {
+      console.error('[galaxy/all-systems] pg build failed:', (err as Error)?.message);
+    }
+  }
   try {
-    const builder = new PointsBuilder(1_000_000);
-    await new Promise<void>((resolve, reject) => {
-      const query = new PgQuery(
-        'SELECT id64, x, y, z, star_type FROM galaxy_systems ORDER BY id',
-      );
-      query.on('row', (row) => {
-        const starType = typeof row.star_type === 'string' ? row.star_type : 'unknown';
-        builder.add({
-          x: Number(row.x),
-          y: Number(row.y),
-          z: Number(row.z),
-          id64: String(row.id64 ?? ''),
-          starType: starType as StarClass,
-        });
-      });
-      query.on('error', reject);
-      query.on('end', () => resolve());
-      client.query(query);
-    });
-    if (builder.size === 0) return null;
-    return { buffer: Buffer.from(builder.build()), count: builder.size, etag: `edgs-pg-${builder.size}` };
-  } finally {
-    await client.end().catch(() => undefined);
+    const { createAdminClient } = await import('@/lib/supabaseAdmin');
+    // One client for the whole paged read, not one per page.
+    const built = await readPointsFromSupabase(createAdminClient());
+    return { buffer: built.buffer, count: built.count, etag: `edgs-db-${built.count}` };
+  } catch (err) {
+    console.error('[galaxy/all-systems] supabase build failed:', (err as Error)?.message);
+    return null;
   }
 }
 
@@ -150,6 +114,34 @@ function remember(file: PointsFile) {
   } catch {
     // read-only image — the in-memory copy still serves this process
   }
+}
+
+/**
+ * Publish a freshly built cloud so the next cold start is a download instead of
+ * a multi-minute table scan. Only a complete catalog is published: a partial
+ * one must not be mistaken for the full cloud by other processes.
+ */
+function publish(file: PointsFile, stats: GalaxyStats | null) {
+  const complete = stats ? file.count >= Math.max(stats.systems_count, 1_000_000) : file.count >= 1_000_000;
+  if (!complete || file.buffer.length > POINTS_UPLOAD_LIMIT) return;
+  void (async () => {
+    try {
+      const { supabaseAdmin } = await import('@/lib/supabaseAdmin');
+      const { error } = await supabaseAdmin.storage
+        .from(POINTS_STORAGE_BUCKET)
+        .upload(POINTS_STORAGE_OBJECT, new Uint8Array(file.buffer), {
+          contentType: 'application/octet-stream',
+          upsert: true,
+        });
+      if (error) {
+        console.error('[galaxy/all-systems] storage publish failed:', error.message);
+        return;
+      }
+      await markPointsUploaded({ count: file.count, bytes: file.buffer.length });
+    } catch (err) {
+      console.error('[galaxy/all-systems] storage publish failed:', (err as Error)?.message);
+    }
+  })();
 }
 
 function respond(req: Request, file: { buffer: Buffer; etag: string }) {
@@ -192,25 +184,33 @@ export async function GET(req: Request) {
   if (memoryCache) return respond(req, memoryCache);
 
   if (!building) {
-    building = buildFromPg()
-      .catch((err: { message?: string }) => {
-        console.error('[galaxy/all-systems] pg build failed:', err?.message);
-        return null;
-      })
-      .finally(() => {
-        building = null;
-      });
+    building = buildFromDatabase().finally(() => {
+      building = null;
+    });
   }
   const built = await building;
   if (built) {
     remember(built);
+    publish(built, stats);
     return respond(req, built);
   }
 
+  // The route exists; the catalog simply has nothing to serve yet. 503 (not 404)
+  // keeps "no data" distinguishable from "no such endpoint" in logs and in the
+  // browser console, and tells proxies the answer may change soon.
   return NextResponse.json(
     {
-      error: 'Файл точек не найден. Импортируйте дамп (npm run spansh:import) — полный импорт загрузит облако в storage bucket galaxy-data. Сборка напрямую из БД доступна, только если у веб-процесса задан DATABASE_URL или SUPABASE_DB_URL.',
+      error: 'Каталог всех систем пуст: файл точек не найден ни локально, ни в storage, ни в galaxy_systems.',
+      hint:
+        'Запустите импорт дампа Spansh — Админка → «Каталог систем», POST /api/cron/galaxy-import ' +
+        '(секрет CRON_SECRET) или npm run spansh:import на машине с доступом к downloads.spansh.co.uk.',
+      catalog: {
+        systems_count: stats?.systems_count ?? 0,
+        imported_at: stats?.imported_at ?? null,
+        points_uploaded: stats?.points_uploaded === true,
+        direct_db: Boolean(galaxyDbUrl()),
+      },
     },
-    { status: 404 },
+    { status: 503, headers: { 'cache-control': 'no-store', 'retry-after': '300' } },
   );
 }

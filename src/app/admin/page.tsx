@@ -8,6 +8,7 @@ import { MarkdownToolbar } from "@/components/Forum/MarkdownToolbar";
 import { MarkdownRenderer } from "@/lib/markdown";
 import RavenSyncTab from "@/components/Admin/RavenSyncTab";
 import AuthProvidersTab from "@/components/Admin/AuthProvidersTab";
+import GalaxyCatalogTab from "@/components/Admin/GalaxyCatalogTab";
 import {
   IconSatellite,
   IconTrash,
@@ -70,7 +71,7 @@ function LangInputs({ label, values, onChange, textarea = false, placeholder }: 
 export default function AdminPage() {
   const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
-  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'auth'>('billing');
+  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'auth' | 'galaxy'>('billing');
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
@@ -175,7 +176,7 @@ export default function AdminPage() {
     if (typeof window !== 'undefined') {
       const searchParams = new URLSearchParams(window.location.search);
       const initialTab = searchParams.get('tab');
-      if (initialTab && ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'auth'].includes(initialTab)) {
+      if (initialTab && ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'auth', 'galaxy'].includes(initialTab)) {
         setTab(initialTab as any);
       }
     }
@@ -492,6 +493,7 @@ export default function AdminPage() {
         <button className={tab === 'comments' ? 'tab tab-active' : 'tab'} onClick={() => setTab('comments')}>{t('admin.comments')}</button>
         <button className={tab === 'support' ? 'tab tab-active' : 'tab'} onClick={() => setTab('support')}><IconHeadphones size={14} /> {t('admin.support') || 'Техподдержка'}</button>
         <button className={tab === 'billing' ? 'tab tab-active' : 'tab'} onClick={() => setTab('billing')}><IconCoins size={12} color="#e67e22" /> {t('admin.billing') || 'Биллинг и статистика'}</button>
+        {role === 'admin' && <button className={tab === 'galaxy' ? 'tab tab-active' : 'tab'} onClick={() => setTab('galaxy')} title="Полный каталог систем Spansh: импорт, облако точек для карты"><IconGlobe size={12} color="#e67e22" /> Каталог систем</button>}
         {role === 'admin' && <button className={tab === 'auth' ? 'tab tab-active' : 'tab'} onClick={() => setTab('auth')}><IconLock size={12} color="#e67e22" /> Авторизация</button>}
       </div>
 
@@ -740,6 +742,7 @@ export default function AdminPage() {
         </div>
       )}
       {tab === 'billing' && <BillingDashboard currentUser={me} />}
+      {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
     </main>
   );

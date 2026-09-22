@@ -450,12 +450,20 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 ### 8.4 Spansh
 - Route planning API client: `src/lib/spanshClient.ts`
 - Used for: Neutron highway routes
-- Full catalog: `galaxy_systems` (import `scripts/import-spansh-systems.mjs`,
-  see SPANSH-IMPORT.md). Atlas star candidates and the route finder prefer
-  this table. `/system/[name]` falls back to the catalog when there is no
-  construction row. The map layer «Все системы» reads `edgs-v1` from
-  `public/data` or storage bucket `galaxy-data`; it does not raycast 1.3M
-  points. Migration `20260924000000_galaxy_systems_finish.sql`.
+- Full catalog: `galaxy_systems`. Two importers share one parser and one SQL
+  (`src/lib/galaxySpanshStream.ts`, `src/lib/galaxyImport.ts`): the in-app job
+  (`src/lib/galaxyImportJob.ts` → `/api/admin/galaxy`, `/api/cron/galaxy-import`,
+  admin tab «Каталог систем») and the CLI `scripts/import-spansh-systems.mjs`.
+  The in-app one exists because the standalone image has no `scripts/`; it
+  streams the dump, writes in batches (pg or PostgREST), persists a resume
+  point in `galaxy_systems_meta` (key `import`) and uploads the point cloud to
+  storage. See SPANSH-IMPORT.md. Atlas star candidates and the route finder
+  prefer this table. `/system/[name]` falls back to the catalog when there is
+  no construction row. The map layer «Все системы» reads `edgs-v1` from
+  `public/data`, storage bucket `galaxy-data`, Postgres or paged PostgREST, and
+  asks `/api/galaxy/stats` first so an empty catalog is a message, not a 404;
+  it does not raycast 1.3M points. Migration
+  `20260924000000_galaxy_systems_finish.sql`.
 
 ### 8.5 Raven Colonial
 - Sync API: `/api/ravencolonial/sync`

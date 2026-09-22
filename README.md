@@ -256,11 +256,13 @@ ed-ring-colony/
 - `GET /api/galnet/[nid]` — Одна статья (по `nid`, `guid` или `slug`)
 
 ### Galaxy Systems (Spansh) Endpoints
-- `GET /api/galaxy/stats` — Статус загрузки полной таблицы систем
+- `GET /api/galaxy/stats` — Статус каталога и состояние импорта (прогресс, ошибка)
 - `GET /api/galaxy/systems/search?q=…` — Поиск по всем системам галактики
 - `GET /api/galaxy/systems/by-name?name=…` — Система по имени
 - `GET /api/galaxy/systems/:id64` — Система по Spansh ID64
-- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты
+- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты (503 + подсказка, пока каталог пуст)
+- `GET|POST /api/admin/galaxy` — Импорт каталога из админки (роль `admin`)
+- `GET|POST /api/cron/galaxy-import` — Импорт каталога по `CRON_SECRET`
 
 ### Other Endpoints
 - `GET /api/leaderboard` — Player stats
@@ -283,12 +285,19 @@ ed-ring-colony/
 слой «Все системы ⚗» на 3D-карте (фильтр классов, карточка по клику).
 Страница системы открывается и для систем без стройки, если они есть в каталоге.
 
+Импорт запускается **из самого приложения** — production-образ не содержит
+`scripts/`: Админка → вкладка «Каталог систем» (`/admin?tab=galaxy`),
+`POST /api/admin/galaxy` (сессия админа) или `POST /api/cron/galaxy-import`
+(`CRON_SECRET`). Запрос только стартует фоновую загрузку и сразу отвечает;
+прогресс виден в `GET /api/galaxy/stats`, прерванный импорт продолжается.
+
 ```bash
-npm run spansh:import     # скачать systems.json.gz и загрузить в БД
+npm run spansh:import     # CLI-вариант: скачать systems.json.gz и загрузить в БД
 npm run spansh:selftest   # офлайн-проверка конвейера (без БД и сети)
 ```
 
-Подробности: [SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
+Подробности и диагностика (почему карта не показывает все системы):
+[SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
 
 ## Galnet Sync
 
