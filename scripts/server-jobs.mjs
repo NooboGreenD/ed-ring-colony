@@ -7,28 +7,12 @@ import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { DEFAULT_JOBS, HOUR, JOBS, MINUTE } from './job-schedule.mjs';
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-export const JOBS = [
-  { name: 'capi-sync', period: 5 * MINUTE, offset: 0, path: '/api/cron/capi-sync', timeout: 15 * MINUTE },
-  { name: 'update-progress', period: 30 * MINUTE, offset: 0, path: '/api/cron/update-progress', timeout: 20 * MINUTE },
-  { name: 'cg-check', period: 6 * HOUR, offset: 0, path: '/api/cron/cg-check', timeout: 5 * MINUTE },
-  { name: 'eddn-cleanup', period: 6 * HOUR, offset: 30 * MINUTE, path: '/api/cron/eddn-cleanup', timeout: 5 * MINUTE },
-  { name: 'galnet-sync', period: 24 * HOUR, offset: 6 * HOUR + 20 * MINUTE, path: '/api/galnet', timeout: 15 * MINUTE },
-  { name: 'translate', period: 6 * HOUR, offset: 40 * MINUTE, path: '/api/cron/translate', timeout: 15 * MINUTE },
-  // Opt-in (add `galaxy-import` to JOBS_ENABLED): nightly Spansh dump → the full
-  // `galaxy_systems` catalog + the map point cloud. The endpoint only starts the
-  // background import, hence the short timeout; the run itself takes ~30-60 min.
-  { name: 'galaxy-import', period: 24 * HOUR, offset: 2 * HOUR, path: '/api/cron/galaxy-import', timeout: 10 * MINUTE },
-];
-
-/**
- * Enabled unless JOBS_ENABLED says otherwise. `galaxy-import` is opt-in on
- * purpose: it downloads a ~6 GiB dump and rewrites ~1.3M rows, so it must be a
- * deliberate choice (or a manual `--once galaxy-import`), not a surprise.
- */
-export const DEFAULT_JOBS = JOBS.filter(job => job.name !== 'galaxy-import').map(job => job.name);
+// Kept as exports for the scheduler's CLI/unit-test API. The monitoring agent
+// imports the same definitions, so a schedule edit cannot make its freshness
+// indicator drift from the actual runner.
+export { DEFAULT_JOBS, HOUR, JOBS, MINUTE };
 
 export function scheduleSlot(job, now = Date.now()) {
   return Math.floor((now - job.offset) / job.period);

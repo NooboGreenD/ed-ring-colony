@@ -26,6 +26,12 @@ ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_SITE_URL
 ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
+# Deployment metadata is deliberately server-only. Pass it from the release
+# command; it powers the protected operations dashboard and never reaches the
+# browser bundle.
+ARG APP_GIT_SHA=unknown
+ARG APP_GIT_REF=unknown
+ARG APP_BUILD_TIME=unknown
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
@@ -38,10 +44,16 @@ RUN npm test && npm run build
 # ── 3. Рантайм ───────────────────────────────────────────────────────
 FROM node:22-alpine AS runner
 WORKDIR /app
+ARG APP_GIT_SHA=unknown
+ARG APP_GIT_REF=unknown
+ARG APP_BUILD_TIME=unknown
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    APP_GIT_SHA=$APP_GIT_SHA \
+    APP_GIT_REF=$APP_GIT_REF \
+    APP_BUILD_TIME=$APP_BUILD_TIME
 
 RUN addgroup -S nodejs -g 1001 && adduser -S nextjs -u 1001
 
