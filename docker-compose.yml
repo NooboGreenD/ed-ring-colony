@@ -161,10 +161,18 @@ services:
       UPDATE_HEALTH_URL: http://web:3000/api/health
       # pg_dump/pg_restore inside the updater talk to the self-hosted stack.
       SUPABASE_CONTAINER: ${SUPABASE_CONTAINER:-supabase-db}
+      # Manual weekly database backup (Админка → Бэкапы): where the dumps go
+      # and how many of them to keep. Four weekly copies ≈ one month.
+      UPDATE_BACKUP_DIR: ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}
+      UPDATE_BACKUP_KEEP: ${UPDATE_BACKUP_KEEP:-4}
+      BACKUP_TIMEOUT_MINUTES: ${BACKUP_TIMEOUT_MINUTES:-120}
     volumes:
       - ${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}:${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}
       - /var/run/docker.sock:/var/run/docker.sock
       - update-state:/state
+      # The rootfs is read-only, so the dump needs an explicit writable path
+      # on the host; the same path is where the operator finds the copies.
+      - ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}:${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}
     depends_on:
       web:
         condition: service_healthy

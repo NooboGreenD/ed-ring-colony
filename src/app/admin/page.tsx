@@ -9,6 +9,7 @@ import { MarkdownRenderer } from "@/lib/markdown";
 import RavenSyncTab from "@/components/Admin/RavenSyncTab";
 import AuthProvidersTab from "@/components/Admin/AuthProvidersTab";
 import GalaxyCatalogTab from "@/components/Admin/GalaxyCatalogTab";
+import BackupTab from "@/components/Admin/BackupTab";
 import {
   IconSatellite,
   IconTrash,
@@ -24,7 +25,7 @@ import AdminComments from "./components/AdminComments";
 import SupportAdmin from "@/components/Support/SupportAdmin";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
-import { IconCoins, IconLock } from "@/components/Icons";
+import { IconCoins, IconDatabase, IconLock } from "@/components/Icons";
 
 const LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 const LOCALE_FLAGS: Record<string, string> = { ru: '🇷🇺', en: '🇬🇧', de: '🇩🇪', it: '🇮🇹', ko: '🇰🇷', zh: '🇨🇳', ja: '🇯🇵' };
@@ -72,7 +73,7 @@ function LangInputs({ label, values, onChange, textarea = false, placeholder }: 
 export default function AdminPage() {
   const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
-  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'monitor' | 'auth' | 'galaxy'>('billing');
+  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'monitor' | 'auth' | 'galaxy' | 'backup'>('billing');
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
@@ -179,7 +180,7 @@ export default function AdminPage() {
     if (typeof window !== 'undefined') {
       const searchParams = new URLSearchParams(window.location.search);
       const initialTab = searchParams.get('tab');
-      if (initialTab && ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy'].includes(initialTab)) {
+      if (initialTab && ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'backup'].includes(initialTab)) {
         setTab(initialTab as any);
       }
     }
@@ -543,6 +544,7 @@ export default function AdminPage() {
         <button className={tab === 'billing' ? 'tab tab-active' : 'tab'} onClick={() => setTab('billing')}><IconCoins size={12} color="#e67e22" /> {t('admin.billing') || 'Биллинг и статистика'}</button>
         {role === 'admin' && <button className={tab === 'monitor' ? 'tab tab-active' : 'tab'} onClick={() => setTab('monitor')}><IconSatellite size={12} color="#38bdf8" /> Мониторинг</button>}
         {role === 'admin' && <button className={tab === 'galaxy' ? 'tab tab-active' : 'tab'} onClick={() => setTab('galaxy')} title="Полный каталог систем Spansh: импорт, облако точек для карты"><IconGlobe size={12} color="#e67e22" /> Каталог систем</button>}
+        {role === 'admin' && <button className={tab === 'backup' ? 'tab tab-active' : 'tab'} onClick={() => setTab('backup')} title="Резервная копия базы: раз в неделю, вручную"><IconDatabase size={12} color="#e67e22" /> Бэкапы</button>}
         {role === 'admin' && <button className={tab === 'auth' ? 'tab tab-active' : 'tab'} onClick={() => setTab('auth')}><IconLock size={12} color="#e67e22" /> Авторизация</button>}
       </div>
 
@@ -805,6 +807,7 @@ export default function AdminPage() {
       {tab === 'billing' && <BillingDashboard currentUser={me} />}
       {tab === 'monitor' && role === 'admin' && <ServerMonitorTab />}
       {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
+      {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
     </main>
   );

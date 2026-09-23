@@ -358,17 +358,35 @@ sudo ufw delete allow 8000/tcp
 
 ## 6. Резервное копирование (теперь база ваша — бэкапы тоже ваши!)
 
-```bash
-# ежедневный дамп БД (добавьте в crontab: 0 4 * * *)
-docker exec supabase-db pg_dump -U postgres -d postgres -Fc \
-  > /opt/backups/edrc-$(date +%F).dump
+Бэкап делается **вручную из Админка → Бэкапы**, примерно раз в неделю.
+В cron его ставить не нужно: на время дампа сайт показывает заглушку
+«Ведутся технические работы», поэтому момент выбирает админ, а не расписание.
+Панель сама подсвечивает «пора», если с последней копии прошла неделя.
 
-# файлы Storage (аватары, вложения)
-tar czf /opt/backups/storage-$(date +%F).tgz /opt/supabase/volumes/storage
+Что нужно на сервере:
+
+1. запущенный update-agent — `sudo bash deploy/start-update-agent.sh`;
+2. каталог для копий — `UPDATE_BACKUP_DIR` (по умолчанию
+   `/opt/ed-ring-colony/backups`), хранятся `UPDATE_BACKUP_KEEP` (4) свежих;
+3. в обычной копии намеренно нет каталога систем `public.galaxy_systems`
+   (десятки гигабайт, восстанавливается импортом дампа Spansh) — для копии
+   со всем содержимым в панели есть «Полный дамп».
+
+Подробности — раздел «Резервная копия базы» в [MONITORING.md](MONITORING.md).
+
+Держите копии и вне сервера (rclone в любое S3/облако):
+
+```bash
+# раз в неделю после копии в панели (или свой cron на копирование ФАЙЛОВ)
+rclone copy /opt/ed-ring-colony/backups remote:edrc-backups
 ```
 
-Держите копии и вне сервера (rclone в любое S3/облако). Восстановление:
-`pg_restore -d postgres --clean --if-exists <файл>` внутри контейнера db.
+Восстановление:
+
+```bash
+docker exec -i supabase-db pg_restore -U postgres -d postgres --clean --if-exists \
+  < /opt/ed-ring-colony/backups/edrc-db-20260927T030000Z.dump
+```
 
 ## 7. Проверка
 
@@ -440,5 +458,5 @@ cd /opt/supabase && docker compose pull && docker compose up -d
 | 3 | .env.production → docker compose up -d --build | сайт на :3000 |
 | 4 | nginx-selfhost.conf (+certbot при домене) | вход с :80/:443 |
 | 5 | Docker-сервис jobs (без дублирующего cron) | фоновые задачи |
-| 6 | pg_dump + tar по крону | бэкапы |
+| 6 | бэкап раз в неделю из Админка → Бэкапы (без cron) | копии базы |
 | 7 | чек-лист | всё работает |

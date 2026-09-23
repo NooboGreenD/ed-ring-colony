@@ -673,10 +673,16 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Привилегированный агент: `scripts/update-agent.mjs` (Node, HTTP на
   `UPDATE_AGENT_HOST:UPDATE_AGENT_PORT`, по умолчанию 127.0.0.1:8092, Bearer
   `UPDATE_AGENT_TOKEN`; вне loopback без токена не стартует). Контракт:
-  `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /abort`.
+  `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /backup`,
+  `POST /abort`. Обновление и резервная копия делят один процессный слот:
+  состояние различается полем `kind` (`update` | `backup`).
 - Фактическую работу делает `deploy/update-project.sh` (git fetch/merge,
   pg_dump, новые миграции, пересборка Compose-профиля или standalone-выкладка,
-  проверка живости). Прогресс — машиночитаемой строкой
+  проверка живости). Ручную копию базы делает `deploy/db-backup.sh`
+  (`pg_dump -Fc` без `public.galaxy_systems`, проверка `pg_restore --list`,
+  ротация `UPDATE_BACKUP_KEEP`); на время дампа сайт закрыт заглушкой
+  «Ведутся технические работы» — признак лежит в `public.app_flags`,
+  читает его прокси (`src/proxy.ts`), страница — `src/app/maintenance`. Прогресс — машиночитаемой строкой
   `::edrc::{"stage":…,"percent":…}` в stdout; формат и стадии описаны в
   `scripts/lib/update-state.mjs` (`UPDATE_STAGES`). Всё остальное в stdout —
   журнал, который показывается админу после сокрытия похожих на секрет значений.

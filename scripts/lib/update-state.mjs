@@ -28,6 +28,19 @@ export const UPDATE_STAGES = [
   { id: 'done', label: 'Готово', percent: 100 },
 ];
 
+/**
+ * Этапы ручной резервной копии (Админка → Бэкапы). Идентификаторы намеренно
+ * взяты из UPDATE_STAGES: `applyProgressEvent` двигает процент только по
+ * известным стадиям, а заводить второй словарь состояний — значит получить две
+ * правды о том, что значит «45%».
+ */
+export const BACKUP_STAGES = [
+  { id: 'prepare', label: 'Проверка доступа к базе и места на диске', percent: 5 },
+  { id: 'backup', label: 'pg_dump базы данных', percent: 45 },
+  { id: 'verify', label: 'Проверка архива (pg_restore --list)', percent: 95 },
+  { id: 'done', label: 'Готово', percent: 100 },
+];
+
 const STAGE_BY_ID = new Map(UPDATE_STAGES.map((stage) => [stage.id, stage]));
 
 export const UPDATE_LOG_LIMIT = 160;
@@ -128,6 +141,9 @@ export function sanitizeUpdateState(input) {
 
   return {
     state,
+    // Одна машина состояний обслуживает и обновление, и резервную копию:
+    // панель по этому полю выбирает словарь этапов и тексты кнопок.
+    kind: raw.kind === 'backup' ? 'backup' : 'update',
     active: state === 'running' || state === 'queued',
     stage,
     stageLabel: stageLabel(stage),
@@ -142,6 +158,12 @@ export function sanitizeUpdateState(input) {
     fromSha: shaOrNull(raw.fromSha),
     toSha: shaOrNull(raw.toSha),
     migrationsApplied: clampNumber(raw.migrationsApplied, 0, 10_000, 0),
+    // Только имя файла без каталога: путь на хосте посетителю не нужен,
+    // а админу достаточно имени, чтобы найти копию в UPDATE_BACKUP_DIR.
+    backupFile: typeof raw.backupFile === 'string' && /^[A-Za-z0-9._-]{1,120}$/.test(raw.backupFile.split('/').pop() || '')
+      ? String(raw.backupFile.split('/').pop())
+      : null,
+    backupBytes: clampNumber(raw.backupBytes, 0, Number.MAX_SAFE_INTEGER, null),
     error: state === 'failed' || state === 'aborted' ? shortText(raw.error, 200) : null,
     log,
   };
@@ -156,6 +178,8 @@ export function publicUpdateView(update) {
   const active = state.active;
   return {
     active,
+    // Витрине достаточно знать, что идёт обслуживание: детали — только админу.
+    kind: active ? state.kind : null,
     state: active || state.state === 'failed' ? state.state : 'idle',
     stage: active ? state.stage : null,
     stageLabel: active ? state.stageLabel || state.message : null,
@@ -187,6 +211,10 @@ export function applyProgressEvent(state, event, nowIso) {
   if (typeof event?.fromSha === 'string') base.fromSha = event.fromSha;
   if (typeof event?.toSha === 'string') base.toSha = event.toSha;
   if (event?.migrationsApplied != null) base.migrationsApplied = event.migrationsApplied;
+  // Резервная копия сообщает, что именно легло на диск: по этим полям панель
+  // записывает отметку о последней копии (иначе пришлось бы разбирать журнал).
+  if (typeof event?.backupFile === 'string') base.backupFile = event.backupFile;
+  if (event?.backupBytes != null) base.backupBytes = event.backupBytes;
   base.state = 'running';
   base.updatedAt = nowIso;
   return base;
@@ -195,6 +223,7 @@ export function applyProgressEvent(state, event, nowIso) {
 export function emptyUpdateState(nowIso = new Date().toISOString()) {
   return {
     state: 'idle',
+    kind: 'update',
     active: false,
     stage: null,
     stageLabel: null,
@@ -209,6 +238,8 @@ export function emptyUpdateState(nowIso = new Date().toISOString()) {
     fromSha: null,
     toSha: null,
     migrationsApplied: 0,
+    backupFile: null,
+    backupBytes: null,
     error: null,
     log: [],
   };
