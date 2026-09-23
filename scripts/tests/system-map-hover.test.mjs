@@ -1,445 +1,177 @@
 /**
- * Регрессия 3D-карты системы: наведение не должно перерисовывать фигуру.
+ * Тесты подсказок, карточки фокуса и списка построек 3D-карты системы.
  *
- * Что было сломано:
+ * Проверяем три слоя:
  *
- * 1. `hoveredBody` лежал в зависимостях эффекта, который зовёт `Plotly.react`.
- *    Каждое наведение пересобирало всю фигуру вместе с `scene.camera`, и камера
- *    пользователя молча улетала в стандартный «обзор».
- * 2. Трэк звёзд, в отличие от планет и построек, не проверял, что точки вообще
- *    есть. Пустой маркерный трэк Plotly отдаёт в WebGL с нулевыми буферами —
- *    отсюда `uniform3fv: cannot be converted to a sequence`.
- *
- * Тест рендерит НАСТОЯЩИЙ компонент в jsdom против подставного Plotly и смотрит,
- * какие вызовы тот получил. Без jsdom/esbuild тест честно пропускается, а не
- * падает — `npm test` обязан работать и на голой checkout.
+ * 1. Подсказка при наведении (`bodyTooltipHtml`) — факты тела, метки посадки,
+ *    био, колец и первооткрывателей, прогресс построек на этом теле.
+ * 2. Подсказка постройки (`structureTooltipHtml`) — готовность, тоннаж и
+ *    остатки по товарам.
+ * 3. Панель интерфейса: карточка выбранного тела, чипы и полосы прогресса,
+ *    подсказка «сейчас под курсором» и предупреждение без WebGL.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { loadEngineModules, renderOrreryMap, solBodies, solStructures } from './orrery-harness.mjs';
 
 let esbuild = null;
-let jsdomMod = null;
+let jsdomAvailable = false;
 try {
   esbuild = await import('esbuild');
-  jsdomMod = await import('jsdom');
+  await import('jsdom');
+  jsdomAvailable = true;
 } catch {
   // devDependencies не установлены — пропускаем, но говорим об этом.
 }
 
-const skip = !esbuild || !jsdomMod;
-const maybe = skip ? test.skip : test;
+const maybe = esbuild ? test : test.skip;
+const maybeUi = esbuild && jsdomAvailable ? test : test.skip;
 
-/** Собрать компонент в бандл и отрендерить его в jsdom с подставным Plotly. */
-async function renderMap(bodies) {
-  // Бандл обязан лежать внутри репозитория: react помечен external, и Node
-  // ищет его в `node_modules` вверх от файла. В /tmp такой папки нет.
-  const dir = mkdtempSync(join(ROOT, '.tmp-edmap-'));
-  const entry = join(dir, 'entry.tsx');
-  const bundle = join(dir, 'bundle.mjs');
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(
-    entry,
-    "export { default as SystemPlotlyMap } from '@/components/SystemPlotlyMap';\n",
-  );
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
-    external: ['react', 'react-dom', 'react-dom/client'],
-    alias: { '@': join(ROOT, 'src') },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
-  });
+const enginePromise = esbuild ? loadEngineModules() : null;
 
-  const { JSDOM } = jsdomMod;
-  const React = (await import('react')).default;
-  const { createRoot } = await import('react-dom/client');
-  const { act } = await import('react');
-
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    pretendToBeVisual: true,
-    url: 'http://localhost/',
-  });
-  const prev = {
-    window: global.window, document: global.document, HTMLElement: global.HTMLElement,
-    Element: global.Element, Node: global.Node, IS_REACT_ACT_ENVIRONMENT: global.IS_REACT_ACT_ENVIRONMENT,
-  };
-  global.window = dom.window;
-  global.document = dom.window.document;
-  global.HTMLElement = dom.window.HTMLElement;
-  global.Element = dom.window.Element;
-  global.Node = dom.window.Node;
-  global.IS_REACT_ACT_ENVIRONMENT = true;
-  global.getComputedStyle = dom.window.getComputedStyle;
-  Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true });
-  const raf = (cb) => setTimeout(() => cb(Date.now()), 0);
-  global.requestAnimationFrame = raf;
-  global.cancelAnimationFrame = (id) => clearTimeout(id);
-  dom.window.requestAnimationFrame = raf;
-
-  const calls = { react: [], restyle: [] };
-  const handlers = {};
-  let gd = null;
-  dom.window.Plotly = {
-    react(node, traces, layout) {
-      calls.react.push({ traces, layout });
-      gd = node;
-      node._fullLayout = { scene: { camera: JSON.parse(JSON.stringify(layout.scene.camera)) } };
-      node.on = (name, fn) => { handlers[name] = fn; };
-      return Promise.resolve();
-    },
-    restyle(_node, update, curves) { calls.restyle.push({ update, curves }); return Promise.resolve(); },
-    purge() { return Promise.resolve(); },
-  };
-
-  const { SystemPlotlyMap } = await import(bundle);
-  const root = createRoot(dom.window.document.getElementById('root'));
-  await act(async () => {
-    root.render(React.createElement(SystemPlotlyMap, { systemName: 'Sol', initialBodies: bodies }));
-  });
-  await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-
-  return {
-    calls,
-    handlers,
-    act,
-    /** Клик по элементу внутри React-окружения. */
-    async click(element) {
-      await act(async () => {
-        element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-      });
-    },
-    /** Камера, которую Plotly сейчас считает текущей. */
-    setLiveCamera(eye) { gd._fullLayout.scene.camera.eye = eye; },
-    async fire(name, event) {
-      await act(async () => {
-        handlers[name]?.(event);
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    },
-    async cleanup() {
-      await act(async () => root.unmount());
-      dom.window.close();
-      for (const [key, value] of Object.entries(prev)) global[key] = value;
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
+function buildPayload(engine, bodies = solBodies(), structures = solStructures()) {
+  const layout = engine.buildOrreryLayout(bodies, 'Sol');
+  return engine.buildOrreryView(layout, engine.toStructures(structures), { systemName: 'Sol' });
 }
 
-const SOL = [
-  {
-    body_id: 1, body_name: 'Sol', body_type: 'Star', radius_m: 6.957e8, surface_temp_k: 5778,
-    raw_data: { type: 'Star', starType: 'G', surfaceTemperature: 5778, radius: 695700 },
-  },
-  {
-    body_id: 3, body_name: 'Earth', body_type: 'Planet', radius_m: 6.371e6,
-    raw_data: {
-      type: 'Planet', planetClass: 'High metal content body', semiMajorAxis: 1.0,
-      orbitalEccentricity: 0.0167, orbitalInclination: 0, argOfPeriapsis: 102.9,
-      orbitalPeriod: 365.256, MeanAnomaly: 358.6,
-    },
-  },
-  {
-    body_id: 5, body_name: 'Mercury', body_type: 'Planet', radius_m: 2.44e6,
-    raw_data: {
-      type: 'Planet', semiMajorAxis: 0.387, orbitalEccentricity: 0.2056,
-      orbitalInclination: 7.0, argOfPeriapsis: 29.1, orbitalPeriod: 87.97,
-    },
-  },
-];
-
-maybe('карта рисуется и не отдаёт в WebGL пустых маркерных трэков', async () => {
-  const map = await renderMap(SOL);
+maybe('подсказка тела: факты, метки и прогресс построек', async () => {
+  const engine = await enginePromise;
   try {
-    assert.ok(map.calls.react.length >= 1, 'Plotly.react не вызван — карта не нарисовалась');
-    const traces = map.calls.react[0].traces;
-    const empty = traces.filter(
-      (t) => String(t.mode || '').includes('markers') && (!t.x || t.x.length === 0),
-    );
-    assert.deepEqual(
-      empty.map((t) => t.name), [],
-      'пустой маркерный трэк уедет в WebGL нулевыми буферами (uniform3fv)',
-    );
-    assert.ok(traces.some((t) => String(t.name).startsWith('★')), 'нет трэка звёзд');
+    const payload = buildPayload(engine);
+    const body = payload.bodies.find((item) => item.name === 'Sol 3');
+    assert.ok(body, 'в пакете нет землеподобной планеты');
+    const html = engine.bodyTooltipHtml(body, payload.structures.filter((item) => item.body === body.name));
+
+    assert.match(html, /Sol 3/, 'в подсказке нет имени тела');
+    assert.match(html, /Earthlike/, 'в подсказке нет класса планеты');
+    assert.match(html, /св\. с/, 'в подсказке нет дистанции');
+    assert.match(html, /посадка/, 'пропала метка посадки');
+    assert.match(html, /сигналов: 2/, 'пропало число биосигналов');
+    assert.match(html, /обитаемой зоне/, 'не показано попадание в обитаемую зону');
+    assert.match(html, /Заря/, 'в подсказке нет стройки на теле');
+    assert.match(html, /29%/, 'в подсказке нет процента готовности');
+    assert.match(html, /осталось/, 'в подсказке нет остатка груза');
+
+    const star = payload.bodies.find((item) => item.kind === 'star');
+    const starHtml = engine.bodyTooltipHtml(star, []);
+    assert.match(starHtml, /звезда/, 'для звезды не подписан тип');
+    assert.doesNotMatch(starHtml, /Полуось/, 'у звезды показана полуось орбиты');
   } finally {
-    await map.cleanup();
+    await engine.cleanup();
   }
 });
 
-maybe('наведение подсвечивает маркер через restyle, а не перерисовкой фигуры', async () => {
-  const map = await renderMap(SOL);
+maybe('подсказка тела: луна показывает планету-родителя', async () => {
+  const engine = await enginePromise;
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    assert.ok(planets >= 0, 'нет трэка планет');
-    const baseSizes = map.calls.react[0].traces[planets].marker.size.slice();
-
-    const before = map.calls.react.length;
-    map.calls.restyle.length = 0;
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
-    });
-
-    // Главное: фигуру не пересобираем — иначе камера пользователя сбросится.
-    assert.equal(map.calls.react.length, before,
-      'наведение перерисовало фигуру — камера уйдёт в стандартный обзор');
-    assert.ok(map.calls.restyle.length >= 1, 'подсветка наведением не сработала');
-
-    const sizes = map.calls.restyle[0].update['marker.size'][0];
-    assert.equal(sizes.length, baseSizes.length, 'размеров стало не столько же, сколько точек');
-    assert.ok(sizes[0] > baseSizes[0], 'наведённый маркер не увеличен');
-    assert.deepEqual(map.calls.restyle[0].curves, [planets], 'restyle ушёл не в тот трэк');
+    const payload = buildPayload(engine);
+    const moon = payload.bodies.find((item) => item.kind === 'moon');
+    assert.ok(moon, 'в пакете нет луны');
+    assert.match(engine.bodyTooltipHtml(moon, []), /луна/, 'луна не подписана');
+    assert.equal(moon.parent, 'Sol 3', 'луна потеряла родителя');
   } finally {
-    await map.cleanup();
+    await engine.cleanup();
   }
 });
 
-maybe('снятие наведения возвращает исходные размеры', async () => {
-  const map = await renderMap(SOL);
+maybe('подсказка постройки: готовность, тоннаж и остатки по товарам', async () => {
+  const engine = await enginePromise;
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    const baseSizes = map.calls.react[0].traces[planets].marker.size.slice();
-
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
-    });
-    map.calls.restyle.length = 0;
-    await map.fire('plotly_unhover', {});
-
-    const restored = map.calls.restyle
-      .filter((c) => c.curves.includes(planets))
-      .map((c) => c.update['marker.size'][0])
-      .pop();
-    assert.ok(restored, 'unhover не вернул размеры трэку планет');
-    assert.deepEqual(restored, baseSizes, 'размеры после unhover не совпали с исходными');
+    const payload = buildPayload(engine);
+    const site = payload.structures.find((item) => item.name.includes('Заря'));
+    assert.ok(site, 'в пакете нет стройки');
+    const html = engine.structureTooltipHtml(site);
+    assert.match(html, /Заря/);
+    assert.match(html, /29%/);
+    assert.match(html, /Доставлено/);
+    assert.match(html, /Осталось/);
+    assert.match(html, /Сталь/, 'не показаны остатки по товарам');
   } finally {
-    await map.cleanup();
+    await engine.cleanup();
   }
 });
 
-maybe('повторное наведение на ту же точку не дёргает restyle', async () => {
-  // `plotly_hover` приходит на каждое движение мыши, в том числе когда курсор
-  // стоит на месте. Без защиты «та же точка?» карта получала десятки restyle в
-  // секунду и висла — это и было «зависание после фокуса/наведения».
-  const map = await renderMap(SOL);
+maybeUi('наведение: подсказка «сейчас под курсором» без выбранного тела', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    const event = { points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }] };
-
-    await map.fire('plotly_hover', event);
-    const afterFirst = map.calls.restyle.length;
-    assert.equal(afterFirst, 1, 'первое наведение должно подсветить маркер одним restyle');
-
-    // Курсор «дрожит» на той же точке 40 раз.
-    for (let i = 0; i < 40; i += 1) await map.fire('plotly_hover', event);
-    assert.equal(map.calls.restyle.length, afterFirst,
-      'наведение на ту же точку снова вызвало restyle — карта будет виснуть');
+    assert.match(view.text(), /Выберите тело на карте или в списке/, 'нет подсказки о выборе тела');
+    view.emitHover({ kind: 'body', name: 'Sol 3', body: 'Sol 3' });
+    await view.flush(10);
+    assert.match(view.text(), /Сейчас под курсором: 3/, 'наведение не отразилось в панели');
+    view.emitHover({ kind: 'structure', id: 'build-1', body: 'Sol 3' });
+    await view.flush(10);
+    assert.match(view.text(), /Сейчас под курсором: 3/, 'наведение на постройку не отразилось');
+    view.emitHover(null);
+    await view.flush(10);
+    assert.doesNotMatch(view.text(), /Сейчас под курсором/, 'подсказка не убралась');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('переход на другую точку гасит прежнюю подсветку ровно одним restyle', async () => {
-  const map = await renderMap(SOL);
+maybeUi('карточка фокуса: факты, чипы и прогресс стройки', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures(), focusTarget: 'Sol 3' });
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
-    });
-    map.calls.restyle.length = 0;
-
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 1, customdata: 'Mercury' }],
-    });
-    // Два: снять старую + поставить новую. Больше — значит трогаем лишние трэки.
-    assert.ok(map.calls.restyle.length <= 2,
-      `переход между точками сделал ${map.calls.restyle.length} restyle вместо ≤2`);
-    const sizes = map.calls.restyle[map.calls.restyle.length - 1].update['marker.size'][0];
-    assert.ok(sizes[1] > sizes[0], 'новой точке не досталась подсветка');
+    const text = view.text();
+    assert.match(text, /Sol 3/, 'в карточке нет имени тела');
+    assert.match(text, /Класс/, 'в карточке нет класса');
+    assert.match(text, /Землеподобн|Earthlike/, 'класс планеты не показан');
+    assert.match(text, /От входа/, 'нет дистанции от точки входа');
+    assert.match(text, /Обитаемая зона/, 'нет отметки обитаемой зоны');
+    assert.match(text, /посадка/, 'нет чипа посадки');
+    assert.match(text, /сигналов: 2/, 'нет чипа био');
+    assert.match(text, /Тестировщик/, 'нет первооткрывателя');
+    assert.match(text, /Заря/, 'нет стройки на теле');
+    assert.match(text, /29%/, 'нет процента готовности');
+    assert.match(text, /осталось/, 'нет остатка груза');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('unhover гасит только затронутый трэк, а не всю фигуру', async () => {
-  // Прежняя реализация шла по всем трэкам и на каждое снятие наведения делала
-  // по одному restyle на трэк — при десятке трэков это десятки перерисовок.
-  const map = await renderMap(SOL);
+maybeUi('клик по телу ставит фокус, клик по пустоте — снимает', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
-    });
-    map.calls.restyle.length = 0;
+    view.emitSelect({ kind: 'body', name: 'Sol 5', body: 'Sol 5' });
+    await view.flush(10);
+    assert.ok(view.viewerCall('focus').length >= 1 || /Газовый|Gas giant|Sol 5/.test(view.text()),
+      'клик по телу не выбрал его');
+    assert.match(view.text(), /кольца: 1|💍 колец: 1/, 'не показаны кольца газового гиганта');
 
-    await map.fire('plotly_unhover', {});
-    assert.equal(map.calls.restyle.length, 1,
-      `unhover сделал ${map.calls.restyle.length} restyle вместо одного`);
-    assert.deepEqual(map.calls.restyle[0].curves, [planets],
-      'unhover тронул не тот трэк');
+    view.emitSelect(null);
+    await view.flush(10);
+    assert.match(view.text(), /Выберите тело на карте или в списке/, 'фокус не снялся');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('повторный unhover ничего не перерисовывает', async () => {
-  const map = await renderMap(SOL);
+maybeUi('список тел: стройки, посадка и био видны в строках', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }],
-    });
-    await map.fire('plotly_unhover', {});
-    map.calls.restyle.length = 0;
-    await map.fire('plotly_unhover', {});
-    await map.fire('plotly_unhover', {});
-    assert.equal(map.calls.restyle.length, 0,
-      'unhover без активной подсветки всё равно дёргает restyle');
+    const text = view.text();
+    assert.match(text, /Заря/, 'в списке нет стройки');
+    assert.match(text, /🏗/, 'в списке нет отметки процента стройки');
+    assert.match(text, /обитаемая зона/, 'в списке не отмечена обитаемая зона');
+    assert.match(text, /посадка/, 'в списке не отмечена посадка');
+    assert.match(text, /осталось/, 'в списке нет остатка груза по стройке');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('прицел рисуется поверх карты и переключается', async () => {
-  const map = await renderMap(SOL);
+maybeUi('легенда и подсказка по управлению объясняют карту', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    const doc = global.document;
-    // По умолчанию — «полный» прицел: и кольца, и координатные линии.
-    assert.ok(doc.querySelector('.ed-reticle'), 'нет колец прицела');
-    assert.ok(doc.querySelector('.ed-reticle-lines'), 'нет координатных линий в режиме «полный»');
-    for (const cls of ['.ed-ret-ring1', '.ed-ret-ring2', '.ed-ret-tick-h', '.ed-ret-tick-v', '.ed-ret-dot']) {
-      assert.ok(doc.querySelector(cls), `нет элемента ${cls}`);
-    }
-
-    // Прицел не должен перехватывать мышь у Plotly.
-    const reticle = doc.querySelector('.ed-reticle');
-    assert.equal(reticle.style.pointerEvents || getComputedStyle(reticle).pointerEvents, 'none',
-      'прицел перехватывает события мыши — карта перестанет крутиться');
-
-    const chip = [...doc.querySelectorAll('.ed-map-chip')]
-      .find((b) => /прицел|курсор/.test(b.textContent || ''));
-    assert.ok(chip, 'нет переключателя прицела');
-
-    // полный → только кольца: линии исчезают, кольца остаются
-    await map.click(chip);
-    assert.ok(doc.querySelector('.ed-reticle'), 'кольца пропали в режиме «только кольца»');
-    assert.equal(doc.querySelector('.ed-reticle-lines'), null,
-      'координатные линии не выключились');
-
-    // только кольца → выкл: не остаётся ничего
-    await map.click(chip);
-    assert.equal(doc.querySelector('.ed-reticle'), null, 'прицел не выключился');
+    const text = view.text();
+    assert.match(text, /звезда/, 'в легенде нет звезды');
+    assert.match(text, /стройка в работе/, 'в легенде нет активной стройки');
+    assert.match(text, /обитаемая зона/, 'в легенде нет обитаемой зоны');
+    assert.match(text, /колесо — зум/, 'нет подсказки по управлению мышью');
+    assert.match(text, /клик по телу — фокус/, 'нет подсказки по выбору тела');
   } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('в полноэкранном режиме карта растягивается на остаток окна', async () => {
-  const map = await renderMap(SOL);
-  try {
-    const doc = global.document;
-    const before = doc.getElementById('root').firstElementChild;
-    assert.equal(before.style.position, 'relative', 'до полноэкрана карта не fixed');
-    assert.equal(before.style.display, 'block', 'вне полноэкрана колонка не нужна');
-
-    const chip = [...doc.querySelectorAll('.ed-map-chip')]
-      .find((b) => /во весь экран|свернуть/.test(b.textContent || ''));
-    assert.ok(chip, 'нет кнопки полноэкранного режима');
-    await map.click(chip);
-
-    const shell = doc.getElementById('root').firstElementChild;
-    assert.equal(shell.style.position, 'fixed', 'полноэкран не включился');
-    assert.equal(shell.style.height, '100vh');
-    // Колонка + flex у области карты: высота больше не зашита магией
-    // `calc(100vh - 190px)`, из-за которой снизу оставалась пустая полоса.
-    assert.equal(shell.style.display, 'flex');
-    assert.equal(shell.style.flexDirection, 'column');
-    // Фокусируем тело, чтобы отрендерилась боковая панель FocusPanel.
-    // Без этого проверка на магический calc проходила ВХОЛУСТУЮ: панель
-    // возвращает null, когда тело не выбрано, и строки просто не было в DOM.
-    const select = doc.querySelector('select');
-    assert.ok(select, 'нет селектора тела');
-    const option = [...select.querySelectorAll('option')]
-      .find((o) => o.value && o.value !== '');
-    assert.ok(option, 'в селекторе нет ни одного тела');
-    await map.act(async () => {
-      select.value = option.value;
-      select.dispatchEvent(new global.window.Event('change', { bubbles: true }));
-    });
-
-    const html = shell.innerHTML;
-    assert.ok(/Класс|Дистанция/.test(html),
-      'боковая панель не отрендерилась — проверка на calc бессмысленна');
-    assert.equal(html.includes('calc(100vh - 190px)'), false,
-      'высота всё ещё зашита магическим calc(100vh - 190px)');
-    const flexed = [...shell.querySelectorAll('div')]
-      .some((d) => d.style.flex === '1 1 auto' && d.style.minHeight === '0px');
-    assert.ok(flexed, 'область карты не растягивается на остаток высоты окна');
-  } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('после перерисовки фигуры та же точка снова подсвечивается', async () => {
-  // `Plotly.react` пересоздаёт трэки, и маркеры возвращаются к базовым
-  // размерам. Если `highlightRef` при этом не сбросить, он продолжит
-  // утверждать, что точка уже подсвечена, — и повторное наведение на неё
-  // уйдёт в ранний return без подсветки.
-  const map = await renderMap(SOL);
-  try {
-    const doc = global.document;
-    const planets = map.calls.react[0].traces.findIndex((t) => t.name === 'Планеты');
-    const event = { points: [{ curveNumber: planets, pointNumber: 0, customdata: 'Earth' }] };
-
-    await map.fire('plotly_hover', event);
-    assert.equal(map.calls.restyle.length, 1, 'первое наведение не подсветило маркер');
-
-    // Перерисовка фигуры: переключаем фильтр лун — это новый `Plotly.react`.
-    const reactBefore = map.calls.react.length;
-    const moonsChip = [...doc.querySelectorAll('.ed-map-chip')]
-      .find((b) => /луны/.test(b.textContent || ''));
-    assert.ok(moonsChip, 'нет переключателя лун');
-    await map.click(moonsChip);
-    assert.ok(map.calls.react.length > reactBefore, 'фигура не перерисовалась');
-
-    // Наводим на ту же точку заново — подсветка обязана сработать.
-    map.calls.restyle.length = 0;
-    await map.fire('plotly_hover', event);
-    assert.equal(map.calls.restyle.length, 1,
-      'после перерисовки наведение на ту же точку не подсвечивает маркер');
-  } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('камера пользователя переживает перерисовку, не связанную со сменой вида', async () => {
-  const map = await renderMap(SOL);
-  try {
-    const userEye = { x: 0.11, y: -2.4, z: 1.7 };
-    map.setLiveCamera(userEye);
-
-    // Перерисовка по причине, не входящей в сигнатуру вида: наведение раньше
-    // было именно таким поводом. Берём любой повторный прогон эффекта через
-    // смену подписей — она виду не принадлежит.
-    const before = map.calls.react.length;
-    await map.fire('plotly_hover', {
-      points: [{ curveNumber: 0, pointNumber: 0, customdata: 'Sol' }],
-    });
-    await map.fire('plotly_unhover', {});
-
-    if (map.calls.react.length > before) {
-      const camera = map.calls.react[map.calls.react.length - 1].layout.scene.camera;
-      assert.deepEqual(camera.eye, userEye, 'перерисовка сбросила камеру пользователя');
-    }
-  } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });

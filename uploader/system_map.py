@@ -1530,10 +1530,48 @@ class PlacedItem:
     landable: bool = False
     bio_signals: int = 0
     first_discovered_by: str = ""
+    orbit_color: str = ""           # цвет кольца: у планет — по своей звезде
+    zone_inner: float = 0.0         # внутренняя граница обитаемой зоны, px
+    zone_outer: float = 0.0         # внешняя граница обитаемой зоны, px
+    zone_ls: Tuple[float, float] = (0.0, 0.0)   # те же границы в световых секундах
 
     @property
     def bar_width(self) -> int:
         return 46
+
+
+#: Цвета орбит по номеру звезды: в двойной системе сразу видно, чьи это тела.
+ORBIT_PALETTE = ("#4a7fb5", "#b58a4a", "#5fa87a", "#a86fa8", "#b55a5a", "#5aa8b5")
+
+
+def orbit_color_for(index: int) -> str:
+    """Цвет орбиты кластера: у каждой звезды свой оттенок."""
+    if index <= 0:
+        return ORBIT_PALETTE[0]
+    return ORBIT_PALETTE[index % len(ORBIT_PALETTE)]
+
+
+#: Цвет полосы обитаемой зоны (совпадает с сайтом и со сценой в окне).
+ZONE_COLOR = "#2ecc71"
+
+
+def habitable_zone_ls(body: Any) -> Tuple[float, float]:
+    """Обитаемая зона звезды в световых секундах.
+
+    Формула та же, что в `orrery.habitable_zone_ls` (0.75–1.77 а.е. × √L):
+    сводка, холст приложения и 3D-карта обязаны показывать одну зону.
+    """
+    if body is None or getattr(body, "kind", "") != KIND_STAR:
+        return (0.0, 0.0)
+    radius_m = _as_float(getattr(body, "radius_m", 0.0), 0.0)
+    temp_k = _as_float(getattr(body, "surface_temp_k", 0.0), 0.0)
+    radius_sol = radius_m / 6.957e8 if radius_m > 0 else 1.0
+    temp_sol = temp_k / 5778.0 if temp_k > 0 else 1.0
+    luminosity = max(1e-4, radius_sol * radius_sol * temp_sol ** 4)
+    sqrt_l = math.sqrt(luminosity)
+    inner = 0.75 * sqrt_l * 499.00478
+    outer = max(inner + 5.0, 1.77 * sqrt_l * 499.00478)
+    return (inner, outer)
 
 
 #: Цвета тел по классу (те же, что использует оверлей EXOBIO/CARRIER).
@@ -1679,7 +1717,12 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
             return 1e-4
         return max(0.0, body.distance_ls)
 
-    distances = sorted({orbit_of(body) for body in planets} | {orbit_of(body) for body in second_stars})
+    # Границы обитаемых зон входят в шкалу колец: иначе полоса зоны сжалась бы
+    # в пару пикселей (кольца логарифмические) и её не было бы видно.
+    zone_bounds = [bound for body in stars for bound in habitable_zone_ls(body) if bound > 0]
+    distances = sorted({orbit_of(body) for body in planets}
+                       | {orbit_of(body) for body in second_stars}
+                       | set(zone_bounds))
     if distances:
         low = math.log10(max(0.05, distances[0]))
         high = math.log10(max(0.05, distances[-1]))
@@ -1750,11 +1793,14 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
         depth = zr * cos_p + yw * sin_p
         radius = max(4.5, min(15.0, 4.5 + math.log10(max(1.0, body.radius_m) / 1.0e6) * 2.0))
 
+        star_index = next((position for position, star_body in enumerate(stars)
+                           if star_body.name == (body.parent_name or "")), 0)
         items.append(PlacedItem(
             kind="body", x=sx, y=sy, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=body_color(body),
             orbit_radius=orbit_r, orbit_cx=center_x, orbit_cy=center_y,
             orbit_a=orbit_r, orbit_b=orbit_r * sin_p,
+            orbit_color=orbit_color_for(star_index),
             plane_x=px, plane_y=py, depth=depth,
             distance_ls=body.distance_ls, landable=body.landable,
             bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
@@ -1805,6 +1851,23 @@ def _layout_3d(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0
                 ref=body, selected=(selected == body.name),
             ))
             positions[body.name] = (sx, sy, depth)
+
+    # Обитаемые зоны: в 3D кольцо проецируется в эллипс, как и орбиты.
+    for body in stars:
+        zone_ls = habitable_zone_ls(body)
+        if zone_ls[0] <= 0:
+            continue
+        anchor = positions.get(body.name, (center_x, center_y, 0.0))
+        inner_px = ring_radius(zone_ls[0])
+        outer_px = max(inner_px + 6.0, ring_radius(zone_ls[1]))
+        items.append(PlacedItem(
+            kind="zone", x=anchor[0], y=anchor[1], radius=0.0,
+            label="", caption="", color=ZONE_COLOR,
+            orbit_cx=anchor[0], orbit_cy=anchor[1],
+            zone_inner=inner_px, zone_outer=outer_px, zone_ls=zone_ls,
+            plane_x=anchor[0], plane_y=anchor[1], depth=-1.0,
+            ref=body,
+        ))
 
     # Станции и стройплощадки
     floating_index = 0
@@ -1969,8 +2032,10 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
     # Шкала колец строится по полуосям ВОКРУГ РОДИТЕЛЯ: у планет и вторых звёзд
     # это орбита вокруг главной звезды, поэтому широкая двойная система не
     # сжимает кольца планет в точку.
+    zone_bounds = [bound for body in stars for bound in habitable_zone_ls(body) if bound > 0]
     distances = sorted({orbit_of(body) for body in planets}
-                       | {orbit_of(body) for body in second_stars})
+                       | {orbit_of(body) for body in second_stars}
+                       | set(zone_bounds))
     if distances:
         low = math.log10(max(0.05, distances[0]))
         high = math.log10(max(0.05, distances[-1]))
@@ -2012,6 +2077,7 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             kind="star", x=x, y=y, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=BODY_COLORS["star"],
             orbit_radius=orbit, orbit_cx=center_x, orbit_cy=center_y,
+            orbit_color=orbit_color_for(index + 1),
             ref=body, selected=(selected == body.name),
         ))
         positions[body.name] = (x, y)
@@ -2026,10 +2092,13 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
         x = anchor[0] + orbit * math.cos(angle)
         y = anchor[1] + orbit * math.sin(angle)
         radius = max(4.0, min(14.0, 4.0 + math.log10(max(1.0, body.radius_m) / 1.0e6) * 2.0))
+        star_index = next((position for position, star_body in enumerate(stars)
+                           if star_body.name == (body.parent_name or "")), 0)
         items.append(PlacedItem(
             kind="body", x=x, y=y, radius=radius, label=body.name,
             caption=body.body_class or body.star_type, color=body_color(body),
             orbit_radius=orbit, orbit_cx=anchor[0], orbit_cy=anchor[1],
+            orbit_color=orbit_color_for(star_index),
             distance_ls=body.distance_ls, landable=body.landable,
             bio_signals=body.bio_signals, first_discovered_by=body.first_discovered_by,
             ref=body, selected=(selected == body.name),
@@ -2073,6 +2142,22 @@ def layout(snapshot: MapSnapshot, width: int, height: int, zoom: float = 1.0,
             ))
             positions[body.name] = (x, y)
             body_radius[body.name] = 3.5
+
+    # Обитаемые зоны звёзд: «где искать землеподобные планеты» — по ним видно,
+    # какая планета попала в зону, а какая мимо (та же полоса, что на сайте).
+    for body in stars:
+        zone_ls = habitable_zone_ls(body)
+        if zone_ls[0] <= 0:
+            continue
+        zx, zy = star_positions.get(body.name, (center_x, center_y))
+        inner_px = ring_radius(zone_ls[0])
+        outer_px = max(inner_px + 6.0, ring_radius(zone_ls[1]))
+        items.append(PlacedItem(
+            kind="zone", x=zx, y=zy, radius=0.0, label="", caption="",
+            color=ZONE_COLOR, orbit_cx=zx, orbit_cy=zy,
+            zone_inner=inner_px, zone_outer=outer_px, zone_ls=zone_ls,
+            ref=body,
+        ))
 
     # Станции и стройплощадки.
     #

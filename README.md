@@ -24,13 +24,15 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 ## Features
 
 - **Galaxy Map** — Interactive 3D visualization of the colonization ring (Three.js + React Three Fiber)
-- **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemPlotlyMap.tsx`): орбиты строятся
-  по настоящим элементам из журнала/EDSM — уравнение Кеплера, эллипс со звездой в фокусе, наклонение и аргумент
-  перицентра, положение тела по средней аномалии; цвет звезды считается по её температуре, размер — по
-  настоящему радиусу. Плюс планета-сфера с постройками на поверхности, фокус-зум по телам (кластер →
-  окрестность → поверхность), LOD подписей для систем с десятками звёзд, карточка фокуса с фактами тела и
-  списком станций/строек. Общая раскладка живёт в `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`,
-  чтобы сайт и десктоп рисовали одинаково
+- **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemMap/SystemOrrery3D.tsx`): орбиты
+  строятся по настоящим элементам из журнала/EDSM — уравнение Кеплера, эллипс со звездой в фокусе, наклонение
+  и аргумент перицентра, положение тела по средней аномалии; цвет звезды считается по её температуре, размер —
+  по настоящему радиусу. Движок three.js (`lib/orrery3d/`): сферы тел, кольца, полоса обитаемой зоны, постройки
+  с дугой прогресса на поверхности, фокус-зум по телам (кластер → окрестность → поверхность), LOD подписей,
+  подсказки наведением, фильтры и список тел, движение по орбитам на любую дату. Общая раскладка живёт в
+  `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`; пакет данных версионируется одним контрактом
+  (`ORRERY_VIEW_VERSION` ↔ `uploader/system_view.py`), а Colonial Helper рисует ту же сцену прямо во вкладке
+  «Карта системы» — холстом Tk (`uploader/tk_orrery.py`), без браузера и без отдельного HTML-файла
 - **Pilot Dossier** — раздельные блоки «весь перевозимый груз» и «тоннаж на стройплощадки», а внутри —
   структура перевозок по назначению: стройплощадки и колонизационные корабли отдельно от авианосцев, миссий,
   powerplay, спасательных рейсов и продаж на рынке. Видимость блоков (баланс, ранги, груз, доставки, позиция)
@@ -189,7 +191,7 @@ ed-ring-colony/
       Sidebar.tsx           # Navigation
       Starfield.tsx         # Canvas starfield
       GalaxyMap/            # 3D map components
-      SystemPlotlyMap.tsx   # 3D system orrery for /system/[name]
+      SystemMap/            # System orrery: SystemOrrery3D + body rail (/system/[name])
       Forum/                # Forum components
       Wiki/                 # Wiki components
       Atlas/                # Atlas components
@@ -211,6 +213,8 @@ ed-ring-colony/
       journalTelemetry.ts   # Journal telemetry: depot snapshots, body scans, pilot stats
       dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
+      orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
+                            # (the app mirrors the same maths in uploader/tk_orrery.py)
     types/                  # TypeScript types
   supabase/
     migrations/             # SQL migrations

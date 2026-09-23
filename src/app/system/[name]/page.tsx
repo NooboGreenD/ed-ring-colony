@@ -1,9 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import dynamic from 'next/dynamic';
 import {
   IconXCircle,
   IconGlobe,
@@ -16,12 +15,9 @@ import {
   IconCheck,
 } from '@/components/Icons';
 
-import { buildOrreryLayout, summarizeLayout, toStructures } from '@/lib/systemOrrery';
+import { buildOrreryLayout, habitableZoneLs, toStructures } from '@/lib/systemOrrery';
+import SystemOrrery3D from '@/components/SystemMap/SystemOrrery3D';
 import { STAR_CLASS_LABELS, type StarClass } from '@/lib/galaxySystems';
-
-const SystemPlotlyMap = dynamic(() => import('@/components/SystemPlotlyMap'), {
-  ssr: false,
-});
 
 interface ResourceData {
   name: string;
@@ -147,16 +143,32 @@ export default function SystemPage() {
     () => buildOrreryLayout(bodies.length ? bodies : system?.bodies ?? NO_ROWS, systemName, {}),
     [bodies, system, systemName],
   );
-  const orrerySummary = useMemo(() => summarizeLayout(orreryLayout, orreryStructures), [orreryLayout, orreryStructures]);
-  const structureByBody = useMemo(() => {
-    const map: Record<string, typeof orreryStructures> = {};
-    for (const structure of orreryStructures) {
-      const key = orreryLayout.bodies.find((body) => body.name.toLowerCase() === (structure.bodyName || '').toLowerCase())?.name ?? structure.bodyName;
-      if (!key) continue;
-      (map[key] ??= []).push(structure);
-    }
-    return map;
-  }, [orreryStructures, orreryLayout]);
+  // Фокус карты синхронизирован со ссылкой: `?body=…` можно отправить коллеге,
+  // и он откроет ту же систему с тем же выделенным телом.
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('body');
+    if (requested) setMapFocus(requested);
+  }, [systemName]);
+
+  // Факты о звёздах системы: класс, температура, обитаемая зона. Раньше это
+  // приходилось смотреть в сторонних сервисах, а карта показывала только тела.
+  const starFacts = useMemo(() => orreryLayout.stars.map((star) => ({
+    name: star.name,
+    short: star.name.replace(`${systemName} `, ''),
+    cls: star.subType,
+    tempK: star.tempK,
+    radiusM: star.radiusM,
+    distanceLs: star.distanceLs,
+    zone: habitableZoneLs(star),
+  })), [orreryLayout.stars, systemName]);
+
+  const changeMapFocus = useCallback((target: string) => {
+    setMapFocus(target);
+    const url = new URL(window.location.href);
+    if (target) url.searchParams.set('body', target);
+    else url.searchParams.delete('body');
+    window.history.replaceState(null, '', url.toString());
+  }, []);
 
   if (loading) {
     return (
@@ -209,7 +221,15 @@ export default function SystemPage() {
           <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(255,209,102,0.12)', border: '1px solid rgba(255,209,102,0.35)', color: '#ffd166', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>Spansh <IconExternalLink size={10} /></a>
         </div>
         {bodies.length > 0 && (
-          <SystemPlotlyMap systemName={galaxy.name} projects={[]} initialBodies={bodies} focusTarget={mapFocus} onFocusChange={setMapFocus} />
+          <SystemOrrery3D
+            systemName={galaxy.name}
+            bodies={bodies}
+            layout={orreryLayout}
+            structures={[]}
+            focusTarget={mapFocus}
+            onFocusChange={changeMapFocus}
+            height={520}
+          />
         )}
         {orreryLayout.bodies.length > 0 && (
           <p style={{ color: '#9ca3af', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
@@ -351,13 +371,61 @@ export default function SystemPage() {
         </div>
       </div>
 
-      {/* Интерактивная 3D-карта системы Plotly */}
-      <SystemPlotlyMap
+      {/* Сводка по звёздам и обитаемым зонам: цифры, которые нужны при выборе
+          площадки, — без похода в EDSM и Spansh. */}
+      {(starFacts.length > 0 || galaxy) && (
+        <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 4, padding: 20, marginBottom: 24 }}>
+          <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconGlobe size={18} /> Система и обитаемые зоны</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            {starFacts.map((star) => (
+              <div key={star.name} style={{ background: '#1c1f22', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ color: '#ffd166', fontWeight: 700, fontSize: 14 }}>★ {star.short}</span>
+                  <span style={{ color: '#9ca3af', fontSize: 11 }}>{star.cls || 'класс неизвестен'}</span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: '#cbd5e1' }}>
+                  {star.tempK > 0 && <span>{Math.round(star.tempK).toLocaleString('ru-RU')} K</span>}
+                  {star.radiusM > 0 && <span>{Math.round(star.radiusM / 1000).toLocaleString('ru-RU')} км</span>}
+                  {star.distanceLs > 0 && <span>{Math.round(star.distanceLs).toLocaleString('ru-RU')} св. с от входа</span>}
+                </div>
+                {star.zone[0] > 0 && (
+                  <div style={{ fontSize: 11, color: '#22c55e', marginTop: 6, lineHeight: 1.5 }}>
+                    Обитаемая зона: {Math.round(star.zone[0]).toLocaleString('ru-RU')}–{Math.round(star.zone[1]).toLocaleString('ru-RU')} св. с
+                    <br />
+                    <span style={{ color: '#8b95a3' }}>
+                      ({(star.zone[0] / 499.00478).toFixed(2)}–{(star.zone[1] / 499.00478).toFixed(2)} а.е.) — здесь стоит искать землеподобные планеты
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+            {galaxy && (
+              <div style={{ background: '#1c1f22', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px' }}>
+                <div style={{ color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>В галактике</div>
+                <div style={{ color: '#eeeeee', fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }}>
+                  {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: '#cbd5e1' }}>
+                  {galaxy.distance_from_sols != null && <span>до Sol: {Number(galaxy.distance_from_sols).toFixed(1)} св. лет</span>}
+                  {galaxy.distance_from_sgra != null && <span>до Sgr A*: {Number(galaxy.distance_from_sgra).toFixed(1)} св. лет</span>}
+                </div>
+                {galaxy.needs_permit && <div style={{ color: '#f87171', fontSize: 11.5, marginTop: 4 }}>нужен permit</div>}
+                {galaxy.main_star && <div style={{ color: '#8b95a3', fontSize: 11, marginTop: 4 }}>каталог: {galaxy.main_star}</div>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 3D-карта системы: three.js, тот же движок, что и в Colonial Helper */}
+      <SystemOrrery3D
         systemName={systemName}
-        projects={system.projects}
-        initialBodies={bodies}
+        bodies={bodies}
+        layout={orreryLayout}
+        structures={orreryStructures}
         focusTarget={mapFocus}
-        onFocusChange={setMapFocus}
+        onFocusChange={changeMapFocus}
+        height={640}
       />
 
       {/* Проекты / Постройки */}
@@ -498,75 +566,8 @@ export default function SystemPage() {
         </div>
       )}
 
-      {/* Тела системы карточками — тот же оверей-движок, что и у 3D-карты */}
-      {orreryLayout.bodies.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-            <h2 style={{ fontSize: 18, color: '#eeeeee', margin: 0 }}>
-              <IconGlobe size={16} color="#9ca3af" /> Тела системы ({orreryLayout.bodies.length})
-            </h2>
-            <span style={{ fontSize: 11, color: '#6b7280' }}>
-              ★ {orrerySummary.stars} · планет {orrerySummary.planets} · лун {orrerySummary.moons} · с посадкой {orrerySummary.landable}
-            </span>
-          </div>
-          {orreryLayout.clusters.map((cluster) => (
-            <div key={cluster.starName || 'system'} style={{ marginBottom: 14 }}>
-              {orreryLayout.clusters.length > 1 && (
-                <button
-                  onClick={() => setMapFocus(cluster.starName)}
-                  style={{ background: 'transparent', border: 'none', color: '#e67e22', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '2px 0', marginBottom: 6 }}
-                >
-                  ★ {cluster.starName.replace(`${systemName} `, '')} · тел {cluster.bodies.length} → фокус на карте
-                </button>
-              )}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 8 }}>
-                {cluster.bodies.map((body) => {
-                  const bodyStructures = structureByBody[body.name] ?? [];
-                  return (
-                    <button
-                      key={body.name}
-                      onClick={() => setMapFocus(body.name)}
-                      title="Показать тело на 3D-карте"
-                      style={{ textAlign: 'left', background: '#25282b', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px', cursor: 'pointer', color: '#eeeeee' }}
-                    >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>{body.name.replace(`${systemName} `, '')}</span>
-                        <span style={{ fontSize: 10, color: '#9ca3af' }}>{body.kind === 'moon' ? 'луна' : 'планета'}</span>
-                      </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
-                        {body.subType || 'тело'}
-                        {body.distanceLs > 0 ? ` · ${Math.round(body.distanceLs)} св. с` : ''}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#9ca3af' }}>
-                        {body.radiusM > 0 ? `${Math.round(body.radiusM / 1000).toLocaleString('ru-RU')} км` : ''}
-                        {body.gravity > 0 ? ` · ${(body.gravity / 9.80665).toFixed(2)} g` : ''}
-                        {body.tempK > 0 ? ` · ${Math.round(body.tempK)} K` : ''}
-                      </div>
-                      {(body.landable || body.bioSignals > 0 || body.rings.length > 0 || bodyStructures.length > 0) && (
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 5, fontSize: 10 }}>
-                          {body.landable && <span style={{ color: '#00f3ff', background: 'rgba(0,243,255,0.1)', padding: '1px 6px', borderRadius: 4 }}>🛬 посадка</span>}
-                          {body.bioSignals > 0 && <span style={{ color: '#22c55e', background: 'rgba(34,197,94,0.12)', padding: '1px 6px', borderRadius: 4 }}>🌿 {body.bioSignals}</span>}
-                          {body.rings.length > 0 && <span style={{ color: '#9fd8ef', background: 'rgba(159,216,239,0.12)', padding: '1px 6px', borderRadius: 4 }}>💍 {body.rings.length}</span>}
-                          {bodyStructures.length > 0 && <span style={{ color: '#ff9f43', background: 'rgba(230,126,34,0.14)', padding: '1px 6px', borderRadius: 4 }}>🏗 {bodyStructures.length}</span>}
-                        </div>
-                      )}
-                      {bodyStructures.length > 0 && (
-                        <div style={{ marginTop: 6, fontSize: 11, color: '#c9d1d9', display: 'grid', gap: 2 }}>
-                          {bodyStructures.map((structure) => (
-                            <div key={structure.id}>
-                              🏗 {structure.name} · <span style={{ color: structure.complete ? '#22c55e' : '#e67e22' }}>{structure.complete ? 'готово' : `${structure.progress.toFixed(0)}%`}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Тела системы перечислены в списке справа от карты: там же поиск,
+          фильтры и прогресс строек, чего сетка плиток не давала. */}
     </main>
   );
 }

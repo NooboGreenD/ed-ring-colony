@@ -143,7 +143,7 @@ class MapTabBuildTests(MapTabTestBase):
     def test_tab_widgets_created(self):
         for attribute in ("tab_map", "map_canvas", "map_tree", "map_status", "map_hint",
                           "map_zoom_label", "map_system_label", "map_moons_var",
-                          "map_labels_var"):
+                          "map_labels_var", "map_only_sites_var", "map_view_mode"):
             self.assertTrue(hasattr(self.app, attribute), f"нет {attribute}")
         self.assertIsNotNone(self.app.system_map)
 
@@ -312,6 +312,57 @@ class MapDrawingTests(MapTabTestBase):
         self.app.map_canvas.reset_mock()
         self.app._map_redraw_now()
         self.assertNotIn(f"{SYSTEM} A 2 a", self.canvas_texts())
+
+    def test_habitable_zone_band_is_drawn(self):
+        """Полоса обитаемой зоны: видно, какие тела в неё попали, а какие нет."""
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        zone = next((item for item in self.app._map_items if item.kind == "zone"), None)
+        self.assertIsNotNone(zone, "зона обитаемости не построена")
+        self.assertLess(zone.zone_inner, zone.zone_outer)
+        texts = self.canvas_texts()
+        self.assertTrue(any(text.startswith("обитаемая зона") for text in texts),
+                        f"подпись зоны не нарисована: {texts}")
+        # Полоса — это заливка (stipple) плюс две границы-окружности.
+        outlines = [call for call in self.app.map_canvas.create_oval.call_args_list
+                    if call.kwargs.get("fill") == "#2ecc71"]
+        self.assertTrue(outlines, "заливка зоны не нарисована")
+
+    def test_site_progress_arc_shows_delivered_percent(self):
+        """Дуга вокруг ромба стройки — тот же процент, что в полосе прогресса."""
+        self.prepare()
+        arcs = [call for call in self.app.map_canvas.create_arc.call_args_list
+                if call.kwargs.get("style") == "arc"]
+        self.assertGreaterEqual(len(arcs), 2, "нет дуги прогресса у стройки")
+        extents = [call.kwargs.get("extent") for call in arcs]
+        self.assertTrue(any(abs(extent + 72.0) < 0.01 for extent in extents if extent),
+                        f"дуга не соответствует 20%: {extents}")
+
+    def test_only_sites_filter_hides_bodies_without_builds(self):
+        """Фильтр «только стройки» прячет тела без площадок: их ищут глазами."""
+        self.prepare()
+        self.app._handle_tracked_event(
+            {"event": "Scan", "BodyName": f"{SYSTEM} A 4", "BodyID": 7, "StarSystem": SYSTEM,
+             "Parents": [{"Star": 1}], "PlanetClass": "Icy body",
+             "DistanceFromArrivalLS": 2400.0}, live=True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        self.assertIn(f"{SYSTEM} A 4", self.canvas_texts())
+
+        self.app.map_only_sites_var.set(True)
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        texts = self.canvas_texts()
+        self.assertNotIn(f"{SYSTEM} A 4", texts, "тело без строек осталось на карте")
+        self.assertIn(BODY_1, texts, "тело со стройкой пропало вместе с фильтром")
+        self.assertIn("Вы здесь", texts, "отметка пилота пропала под фильтром")
+
+        # Фильтр запоминается между запусками приложения.
+        self.app._map_remember_view()
+        self.assertTrue(self.app.config.get("map_only_sites"))
 
     def test_zoom_buttons(self):
         self.prepare()
@@ -1423,3 +1474,225 @@ class ProjectCompleteConfirmTests(MapTabTestBase):
                 mock.patch.object(self.app, "log"):
             self.app._load_primary_project("b-done")
         self.app.raven_api.mark_complete.assert_called_once_with("b-done")
+
+
+class MapScene3DTests(MapTabTestBase):
+    """Радио «3D»: сцена сайта рисуется холстом вкладки — без браузера и HTML.
+
+    Автономной страницы у приложения больше нет, поэтому проверяем именно то,
+    что видит пилот: карта появляется во вкладке (кнопка «3D-карта ⛶», Ctrl+P,
+    F4), камера и уровни слушаются, движение тел идёт по орбитам, а возврат
+    «К сканам» ставит тела на места.
+    """
+
+    def prepare(self):
+        self.app._handle_tracked_event(location_event(), live=True)
+        for event in scan_events():
+            self.app._handle_tracked_event(event, live=True)
+        self.app._handle_tracked_event(depot_event(), live=True)
+        self.app._map_redraw_now()
+
+    def to_3d(self):
+        self.prepare()
+        self.app.map_view_mode.set("3d")
+        self.app._on_map_mode_change()
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        return self.app._map3d_view
+
+    def test_scene_draws_on_the_tab_canvas(self):
+        view = self.to_3d()
+        self.assertIsNotNone(view, "сцена 3D не создана")
+        self.assertTrue(self.app._map_items, "на сцене нет объектов")
+        self.assertGreaterEqual(self.app.map_canvas.create_oval.call_count, 1,
+                                "сцена нарисовала только подписи")
+        self.assertIn("A 1", self.canvas_texts(), "на сцене нет подписи тела")
+        self.assertIn("HIP 22460", self.canvas_texts(), "на сцене нет подписи звезды")
+
+    def test_controls_are_in_the_tab(self):
+        for name in ("map_view3d", "map_level_combo", "map_level_var", "map_zones_var",
+                     "map_motion_button", "map_motion_speed_var"):
+            self.assertTrue(hasattr(self.app, name), f"нет органа управления {name}")
+        self.assertFalse(hasattr(self.app, "_on_map_export_3d"),
+                         "экспорт автономного HTML вернулся во вкладку")
+
+    def test_open_button_shows_the_scene_in_the_app(self):
+        self.prepare()
+        with mock.patch("webbrowser.open") as mock_browser:
+            self.app._on_map_open_3d()
+        mock_browser.assert_not_called()
+        self.assertEqual(self.app.map_view_mode.get(), "3d")
+        self.assertEqual(self.app.config["map_view_mode"], "3d")
+        self.app.notebook.select.assert_called_with(self.app.tab_map)
+
+    def test_open_with_focus_keeps_the_object_selected(self):
+        self.prepare()
+        self.app._on_map_open_3d(BODY_1)
+        self.assertEqual(self.app._map_selected, BODY_1)
+        self.assertEqual(self.app._map3d_view.focus, BODY_1,
+                         "сцена не переехала к выбранному телу")
+
+    def test_hotkeys_open_the_same_scene(self):
+        self.prepare()
+        for keysym in ("<Control-p>", "<Control-P>", "<F4>"):
+            bound = [call.args[1] for call in self.app.map_canvas.bind.call_args_list
+                     if call.args and call.args[0] == keysym]
+            self.assertTrue(bound, f"{keysym} не привязан к карте")
+        keys = [call.args[1].__name__ for call in self.app.map_canvas.bind.call_args_list
+                if call.args and call.args[0] == "<KeyPress>"]
+        self.assertIn("_on_map_key", keys, "клавиши сцены не привязаны")
+
+    def test_payload_is_rebuilt_only_when_the_data_changes(self):
+        self.to_3d()
+        import system_view
+        with mock.patch.object(system_view, "build_view_payload",
+                               wraps=system_view.build_view_payload) as spy:
+            self.app._map_redraw_now()
+            self.app._on_map_view_preset()        # смена камеры
+            self.app._on_map_level_change()       # смена уровня
+        self.assertEqual(spy.call_count, 0, "пакет пересобирается на каждый кадр")
+        self.app._handle_tracked_event(depot_event(required=9000, provided=100), live=True)
+        with mock.patch.object(system_view, "build_view_payload",
+                               wraps=system_view.build_view_payload) as spy:
+            self.app._map_redraw_now()
+        self.assertEqual(spy.call_count, 1, "данные изменились — пакет надо пересобрать")
+
+    def test_view_presets_change_the_camera(self):
+        view = self.to_3d()
+        for name, (yaw, pitch) in (("top", (-90.0, 88.0)), ("side", (0.0, 6.0)),
+                                   ("iso", (-33.0, 40.0))):
+            self.app.map_view3d.set(name)
+            self.app._on_map_view_preset()
+            self.assertEqual(view.view, name)
+            self.assertAlmostEqual(view.yaw_deg, yaw, delta=0.01)
+            self.assertAlmostEqual(view.pitch_deg, pitch, delta=0.01)
+
+    def test_level_combo_changes_the_zoom(self):
+        view = self.to_3d()
+        for label, level in (("Кластер", 1), ("Окрестность", 2), ("Поверхность", 3)):
+            self.app.map_level_var.set(label)
+            self.app._on_map_level_change()
+            self.assertEqual(view.zoom, level)
+        self.assertEqual(self.app.config["map_level"], 3, "уровень не запоминается")
+
+    def test_motion_toggle_starts_and_stops_the_bodies(self):
+        view = self.to_3d()
+        self.app._on_map_motion_toggle()
+        self.assertTrue(view.motion)
+        self.assertIsNotNone(self.app._map3d_job, "таймер движения не заведён")
+        self.assertEqual(self.app.map_motion_button.config.call_args.kwargs["text"],
+                         "⏸ Пауза")
+        self.app._on_map_motion_toggle()
+        self.assertFalse(view.motion)
+        self.assertIsNone(self.app._map3d_job)
+        self.assertEqual(view.motion_offset_days, 0.0, "пауза не вернула тела на места")
+
+    def test_motion_speed_comes_from_the_picker(self):
+        view = self.to_3d()
+        self.app.map_motion_speed_var.set("×64")
+        self.app._on_map_motion_speed()
+        self.assertEqual(view.motion_speed, 64.0)
+        self.assertEqual(self.app.config["map_motion_speed"], 4)
+
+    def test_motion_tick_advances_time_and_pauses_off_tab(self):
+        view = self.to_3d()
+        view.motion = True
+        self.app.notebook.select.return_value = "tab-other"
+        self.app._map_motion_tick()
+        self.assertIsNone(self.app._map3d_job, "тикает в скрытой вкладке")
+        self.assertEqual(view.motion_offset_days, 0.0)
+        self.app.notebook.select.return_value = str(self.app.tab_map)
+        self.app._map_motion_tick()
+        self.assertGreater(view.motion_offset_days, 0.0, "время движения не идёт")
+        self.assertIsNotNone(self.app._map3d_job)
+
+    def test_reset_time_returns_bodies_to_the_scans(self):
+        view = self.to_3d()
+        view.motion = True
+        view.tick(3.0)
+        self.assertGreater(view.motion_offset_days, 0.0)
+        self.app._on_map_reset_time()
+        self.assertEqual(view.motion_offset_days, 0.0)
+
+    def test_scheme_mode_still_draws_the_flat_map(self):
+        self.prepare()
+        self.app.map_view_mode.set("2d")
+        self.app._on_map_mode_change()
+        self.app.map_canvas.reset_mock()
+        self.app._map_redraw_now()
+        self.assertGreaterEqual(self.app.map_canvas.create_oval.call_count, 1)
+        self.assertIn(BODY_1, self.canvas_texts())
+
+    def test_switch_to_the_scheme_stops_the_animation(self):
+        view = self.to_3d()
+        self.app._on_map_motion_toggle()
+        self.app.map_view_mode.set("2d")
+        self.app._on_map_mode_change()
+        self.assertFalse(view.motion, "схема продолжает анимировать тела")
+        self.assertIsNone(self.app._map3d_job)
+
+    def test_mouse_rotates_pans_and_zooms(self):
+        view = self.to_3d()
+        start_yaw = view.yaw_deg
+        self.app._on_map_press(mock.Mock(x=100, y=100))
+        self.app._on_map_drag(mock.Mock(x=160, y=140))
+        self.assertNotEqual(view.yaw_deg, start_yaw, "мышь не поворачивает камеру")
+        self.assertEqual(view.view, "free")
+        self.app._on_map_press_3(mock.Mock(x=100, y=100))
+        self.app._on_map_drag(mock.Mock(x=140, y=100))
+        self.assertNotEqual(view.pan_offset, (0.0, 0.0, 0.0),
+                            "правая кнопка не двигает карту")
+        before = view.zoom_scale
+        self.app._on_map_wheel(mock.Mock(delta=120))
+        self.assertGreater(view.zoom_scale, before, "колесо не приближает сцену")
+
+    def test_click_selects_and_escape_returns_the_overview(self):
+        view = self.to_3d()
+        # Стройка лежит поверх тела и перекрывает его маркер: кликаем по ней,
+        # у неё приоритет выбора (так же ведёт себя и человек на карте).
+        site = next(item for item in self.app._map_items if item.kind == "station")
+        self.app._on_map_click(mock.Mock(x=site.x, y=site.y))
+        self.assertEqual(self.app._map_selected, site.key)
+        self.app._on_map_double_click(mock.Mock(x=site.x, y=site.y))
+        self.assertEqual(view.focus, BODY_1, "камера не поехала к телу стройки")
+        self.app._on_map_escape()
+        self.assertEqual(self.app._map_center, "")
+        self.assertEqual(view.focus, "", "Esc не вернул обзор всей системы")
+        self.assertEqual(view.view, "iso")
+
+    def test_hover_card_follows_the_cursor(self):
+        view = self.to_3d()
+        marker = next(item for item in self.app._map_items if item.kind == "station")
+        picked = view.marker_at(marker.x, marker.y)
+        self.app._on_map_hover(mock.Mock(x=marker.x, y=marker.y))
+        self.assertEqual(self.app._map_hover_key, picked.key)
+        self.assertEqual(view.hover_key, picked.key, "сцена не запомнила наведение")
+        self.assertIn("Завезено: 20%", view.hint_text(picked),
+                      "в подсказке нет прогресса стройки")
+        self.app._on_map_hover(mock.Mock(x=2.0, y=2.0))
+        self.assertEqual(self.app._map_hover_key, "")
+        self.assertEqual(view.hover_key, "")
+
+    def test_scene_settings_survive_a_restart(self):
+        view = self.to_3d()
+        self.app.map_view3d.set("top")
+        self.app._on_map_view_preset()
+        self.app.map_level_var.set("Окрестность")
+        self.app._on_map_level_change()
+        self.app._on_map_motion_speed()
+        self.app._map_remember_view()
+        self.assertEqual(self.app.config["map_view3d"], "top")
+        self.assertEqual(self.app.config["map_level"], 2)
+        self.assertEqual(self.app.config["map_zones"], True)
+
+    def test_broken_payload_does_not_break_the_tab(self):
+        """Сбой данных рисует подсказку, а не роняет окно: Tk не любит исключений."""
+        self.to_3d()
+        self.app._map3d_key = None
+        import system_view
+        with mock.patch.object(self.app, "_map_set_hint") as hint, \
+                mock.patch.object(system_view, "build_view_payload",
+                                  side_effect=RuntimeError("нет данных")):
+            self.app._map_redraw_now()          # без исключения наружу
+        self.assertTrue(hint.called, "о сбое данных никто не сказал")
+        self.assertIn("3D-карта недоступна", str(hint.call_args.args[0]))

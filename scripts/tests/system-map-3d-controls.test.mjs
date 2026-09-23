@@ -1,282 +1,177 @@
 /**
- * Тесты интерактивных 3D-контролов карты системы:
- * 1. Режимы мыши dragmode: orbit, pan, turntable.
- * 2. Тумблер зума колесом мыши во встроенном режиме.
- * 3. Наэкранный HUD-компас навигации (D-Pad, поворот, наклон, зум +/-).
- * 4. Сохранение фокуса и позиции камеры при переключении режимов.
- * 5. Тактильный курсор и слежение прицела без дерганий.
+ * Тесты панели управления 3D-картой системы.
+ *
+ * Раньше эти проверки дёргали Plotly-сцену; теперь карта рисуется движком
+ * three.js (`@/lib/orrery3d`), и панель обязана звать именно его методы:
+ * уровни приближения, вид камеры, слои, фильтры, подписи, масштаб, движение
+ * по орбитам и возврат к дате сканов. Подставной вьюер (см.
+ * `orrery-harness.mjs`) записывает вызовы — по ним и проверяем.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { renderOrreryMap, solBodies, solStructures } from './orrery-harness.mjs';
 
 let esbuild = null;
-let jsdomMod = null;
 try {
   esbuild = await import('esbuild');
-  jsdomMod = await import('jsdom');
 } catch {
-  // devDependencies не установлены
+  // devDependencies не установлены — пропускаем, но говорим об этом.
 }
 
-const skip = !esbuild || !jsdomMod;
-const maybe = skip ? test.skip : test;
+const maybe = esbuild ? test : test.skip;
 
-async function buildBundle() {
-  const dir = mkdtempSync(join(ROOT, '.tmp-3dmap-'));
-  const entry = join(dir, 'entry.tsx');
-  const bundle = join(dir, 'bundle.mjs');
-  writeFileSync(entry, "export { default as SystemPlotlyMap } from '@/components/SystemPlotlyMap';\n");
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
-    external: ['react', 'react-dom', 'react-dom/client'],
-    alias: { '@': join(ROOT, 'src') },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
-  });
-  return { dir, bundle };
+async function boot(extra = {}) {
+  return renderOrreryMap({ bodies: solBodies(), projects: solStructures(), ...extra });
 }
 
-const BODIES = [
-  {
-    body_id: 1,
-    body_name: 'Sol',
-    body_type: 'Star',
-    radius_m: 6.957e8,
-    surface_temp_k: 5778,
-    distance_to_arrival_ls: 0,
-    semi_major_axis_ls: 0,
-  },
-  {
-    body_id: 2,
-    body_name: 'Earth',
-    body_type: 'Planet',
-    radius_m: 6.371e6,
-    distance_to_arrival_ls: 8.3,
-    semi_major_axis_ls: 8.3,
-    orbital_period_days: 365.25,
-    eccentricity: 0.0167,
-    orbital_inclination_deg: 0,
-    periapsis_deg: 102,
-    mean_anomaly_deg: 100,
-  },
-];
-
-async function renderMap() {
-  const { dir, bundle } = await buildBundle();
-  const { JSDOM } = jsdomMod;
-  const React = (await import('react')).default;
-  const { createRoot } = await import('react-dom/client');
-  const { act } = await import('react');
-
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    pretendToBeVisual: true,
-    url: 'http://localhost/',
-  });
-  const prev = {
-    window: global.window,
-    document: global.document,
-    HTMLElement: global.HTMLElement,
-    Element: global.Element,
-    Node: global.Node,
-    IS_REACT_ACT_ENVIRONMENT: global.IS_REACT_ACT_ENVIRONMENT,
-  };
-  global.window = dom.window;
-  global.document = dom.window.document;
-  global.HTMLElement = dom.window.HTMLElement;
-  global.Element = dom.window.Element;
-  global.Node = dom.window.Node;
-  global.IS_REACT_ACT_ENVIRONMENT = true;
-  global.getComputedStyle = dom.window.getComputedStyle;
-  Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true });
-  const raf = (cb) => setTimeout(() => cb(Date.now()), 0);
-  global.requestAnimationFrame = raf;
-  global.cancelAnimationFrame = (id) => clearTimeout(id);
-  dom.window.requestAnimationFrame = raf;
-
-  const calls = { react: [], relayout: [] };
-  const handlers = {};
-  let gd = null;
-  dom.window.Plotly = {
-    react(node, traces, layout, config) {
-      calls.react.push({ traces, layout, config });
-      gd = node;
-      node._fullLayout = {
-        scene: {
-          camera: JSON.parse(JSON.stringify(layout.scene.camera)),
-          dragmode: layout.dragmode || 'orbit',
-          xaxis: { range: [-100, 100] },
-          yaxis: { range: [-100, 100] },
-          zaxis: { range: [-100, 100] },
-        },
-      };
-      node.on = (name, fn) => {
-        handlers[name] = fn;
-      };
-      return Promise.resolve();
-    },
-    restyle() {
-      return Promise.resolve();
-    },
-    relayout(_node, update) {
-      calls.relayout.push(update);
-      if (update['scene.camera.eye'] && gd?._fullLayout?.scene?.camera) {
-        gd._fullLayout.scene.camera.eye = update['scene.camera.eye'];
-      }
-      return Promise.resolve();
-    },
-    purge() {
-      return Promise.resolve();
-    },
-  };
-
-  const focusChanges = [];
-  const { SystemPlotlyMap } = await import(bundle);
-  const root = createRoot(dom.window.document.getElementById('root'));
-  await act(async () => {
-    root.render(
-      React.createElement(SystemPlotlyMap, {
-        systemName: 'Sol',
-        initialBodies: BODIES,
-        onFocusChange: (name) => focusChanges.push(name),
-      })
-    );
-  });
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 30));
-  });
-
-  return {
-    calls,
-    handlers,
-    focusChanges,
-    act,
-    dom,
-    lastLayout: () => calls.react[calls.react.length - 1]?.layout,
-    lastConfig: () => calls.react[calls.react.length - 1]?.config,
-    async click(element) {
-      await act(async () => {
-        element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 20));
-      });
-    },
-    async pointerDown(element) {
-      await act(async () => {
-        const ev = new dom.window.Event('pointerdown', { bubbles: true });
-        element.dispatchEvent(ev);
-        await new Promise((r) => setTimeout(r, 10));
-      });
-    },
-    async cleanup() {
-      await act(async () => root.unmount());
-      dom.window.close();
-      for (const [k, v] of Object.entries(prev)) global[k] = v;
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-maybe('по умолчанию dragmode установлен в orbit для свободного 3D-вращения', async () => {
-  const map = await renderMap();
+maybe('уровни приближения: без выбранного тела доступен только обзор системы', async () => {
+  const view = await boot();
   try {
-    const layout = map.lastLayout();
-    assert.equal(layout.dragmode, 'orbit', 'layout.dragmode не равен orbit');
-    assert.equal(layout.scene.dragmode, 'orbit', 'layout.scene.dragmode не равен orbit');
+    const level0 = view.buttonByTitle(/Вся система целиком/);
+    const level1 = view.buttonByTitle(/Тела выбранной звезды/);
+    const level2 = view.buttonByTitle(/Тело и его соседи/);
+    const level3 = view.buttonByTitle(/Постройки на поверхности тела/);
+    for (const [name, level] of [['кластер', level1], ['окрестность', level2], ['поверхность', level3]]) {
+      assert.ok(level, `нет кнопки уровня «${name}»`);
+      assert.equal(level.disabled, true, `уровень «${name}» доступен без выбранного тела`);
+      assert.equal(level.getAttribute('aria-disabled'), null);
+    }
+    assert.equal(level0.disabled, false, 'обзор системы должен работать всегда');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('кнопки переключения режимов мыши переключают dragmode на pan и turntable', async () => {
-  const map = await renderMap();
+maybe('уровни приближения: с выбранным телом кнопки зовут setZoom', async () => {
+  const view = await boot({ focusTarget: 'Sol 3' });
   try {
-    const buttons = [...map.dom.window.document.querySelectorAll('.ed-map-chip')];
-    const panBtn = buttons.find((b) => b.textContent.includes('панорама'));
-    assert.ok(panBtn, 'не найдена кнопка панорамы');
-
-    await map.click(panBtn);
-    let lastRelayout = map.calls.relayout[map.calls.relayout.length - 1];
-    assert.equal(lastRelayout?.dragmode, 'pan', 'relayout не передал dragmode: pan');
-
-    const turntableBtn = buttons.find((b) => b.textContent.includes('карусель'));
-    assert.ok(turntableBtn, 'не найдена кнопка карусели');
-
-    await map.click(turntableBtn);
-    lastRelayout = map.calls.relayout[map.calls.relayout.length - 1];
-    assert.equal(lastRelayout?.dragmode, 'turntable', 'relayout не передал dragmode: turntable');
+    const level2 = view.buttonByTitle(/Тело и его соседи/);
+    assert.equal(level2.disabled, false, 'уровень не разблокировался при выбранном теле');
+    await view.click(level2);
+    assert.deepEqual(view.viewerCall('setZoom').slice(-1), [['setZoom', 2]]);
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('тумблер зума колесом включает scrollZoom без перехода в полноэкранный режим', async () => {
-  const map = await renderMap();
+maybe('вид камеры: кнопки «сверху» и «сбоку» переключают проекцию', async () => {
+  const view = await boot();
   try {
-    assert.equal(map.lastConfig().scrollZoom, false, 'изначально колесо не должно перехватывать зум');
-
-    const wheelChip = [...map.dom.window.document.querySelectorAll('.ed-map-chip')]
-      .find((b) => b.textContent.includes('колесо'));
-    assert.ok(wheelChip, 'не найден чип тумблера колеса');
-
-    await map.click(wheelChip);
-    assert.equal(map.lastConfig().scrollZoom, true, 'после клика scrollZoom не включился');
-
-    await map.click(wheelChip);
-    assert.equal(map.lastConfig().scrollZoom, false, 'повторный клик не выключил scrollZoom');
+    await view.click(view.buttonByTitle(/Вид на плоскость системы/));
+    await view.click(view.buttonByTitle(/Вид вдоль плоскости системы/));
+    await view.click(view.buttonByTitle(/Изометрия/));
+    const views = view.viewerCall('setView').map(([, preset]) => preset);
+    assert.deepEqual(views, ['top', 'side', 'iso'], `переключения вида: ${JSON.stringify(views)}`);
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('HUD 3D NAV compass pad отображается и позволяет поворачивать и зумировать камеру', async () => {
-  const map = await renderMap();
+maybe('«вся система» возвращает камеру и снимает фокус', async () => {
+  const changes = [];
+  const view = await boot({ focusTarget: 'Sol 3', onFocusChange: (name) => changes.push(name) });
   try {
-    const hud = map.dom.window.document.querySelector('.ed-3d-compass-hud');
-    assert.ok(hud, 'не найден контейнер .ed-3d-compass-hud');
-
-    const buttons = [...hud.querySelectorAll('button')];
-    const upBtn = buttons.find((b) => b.title?.includes('Tilt Up'));
-    assert.ok(upBtn, 'не найдена кнопка наклона вверх ▲');
-
-    const beforeRelayouts = map.calls.relayout.length;
-    await map.click(upBtn);
-    assert.ok(map.calls.relayout.length > beforeRelayouts, 'клик по ▲ не вызвал relayout камеры');
-    const update = map.calls.relayout[map.calls.relayout.length - 1];
-    assert.ok(update['scene.camera.eye'], 'relayout не содержит scene.camera.eye');
-
-    const zoomInBtn = buttons.find((b) => b.textContent === '+');
-    assert.ok(zoomInBtn, 'не найдена кнопка приближения +');
-    await map.click(zoomInBtn);
-    const zoomUpdate = map.calls.relayout[map.calls.relayout.length - 1];
-    assert.ok(zoomUpdate['scene.xaxis.range'], 'клик по + не пересчитал диапазон осей xaxis');
+    await view.click(view.buttonByTitle(/Показать всю систему/));
+    assert.ok(view.viewerCall('fit').length >= 1, 'fit() не вызван');
+    assert.deepEqual(changes.slice(-1), [''], 'фокус не снят в адресе страницы');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('зажатие мыши меняет стиль курсора на grabbing', async () => {
-  const map = await renderMap();
+maybe('слои сцены: панель открывается и гасит слой', async () => {
+  const view = await boot();
   try {
-    const host = map.dom.window.document.querySelector('[data-ed-map-host]');
-    assert.ok(host, 'хост карты не найден');
+    const layersButton = view.buttonByTitle('Слои сцены');
+    assert.ok(layersButton, 'нет кнопки слоёв');
+    await view.click(layersButton);
+    const orbits = view.buttonByTitle(/Орбиты планет и звёзд/);
+    assert.ok(orbits, 'в панели слоёв нет переключателя орбит');
+    await view.click(orbits);
+    assert.deepEqual(view.viewerCall('setLayer').slice(-1), [['setLayer', 'orbits', false]],
+      `слой не переключился: ${JSON.stringify(view.viewerCall('setLayer'))}`);
 
-    // До нажатия
-    assert.equal(host.style.cursor, 'crosshair');
-
-    // Нажатие указателя
-    await map.pointerDown(host);
-    assert.equal(host.style.cursor, 'grabbing', 'при зажатой мыши курсор должен быть grabbing');
+    const moons = view.buttonByTitle(/Сами луны/);
+    await view.click(moons);
+    assert.deepEqual(view.viewerCall('setLayer').slice(-1), [['setLayer', 'moons', false]]);
   } finally {
-    await map.cleanup();
+    await view.cleanup();
+  }
+});
+
+maybe('фильтры, подписи и масштаб уезжают во вьюер', async () => {
+  const view = await boot();
+  try {
+    const filterSelect = view.select('Показать только нужные тела — остальные притухают');
+    assert.ok(filterSelect, 'нет выбора фильтра');
+    await view.setSelect(filterSelect, 'landable');
+    assert.deepEqual(view.viewerCall('setFilter').slice(-1), [['setFilter', 'landable']]);
+
+    const labelsSelect = view.select('Подписи тел на карте');
+    assert.ok(labelsSelect, 'нет выбора подписей');
+    await view.setSelect(labelsSelect, 'none');
+    assert.deepEqual(view.viewerCall('setLabels').slice(-1), [['setLabels', 'none']]);
+
+    const scaleSelect = view.select('Сжатый масштаб делает систему обозримой, линейный сохраняет пропорции');
+    assert.ok(scaleSelect, 'нет выбора масштаба');
+    const before = view.viewerCall('setPayload').length;
+    await view.setSelect(scaleSelect, 'linear');
+    const payloads = view.viewerCall('setPayload');
+    assert.ok(payloads.length > before, 'смена масштаба не пересобрала пакет данных');
+    assert.equal(payloads[payloads.length - 1][1].scaleMode, 'linear');
+    assert.ok(payloads[payloads.length - 1][1].bodies.length >= 4, 'пакет потерял тела при смене масштаба');
+  } finally {
+    await view.cleanup();
+  }
+});
+
+maybe('движение по орбитам: старт, скорость и возврат к дате сканов', async () => {
+  const view = await boot();
+  try {
+    await view.click(view.buttonByTitle(/Движение тел по орбитам/));
+    assert.deepEqual(view.viewerCall('setMotion').slice(-1), [['setMotion', true, undefined]]);
+
+    const speed = view.select('Сколько суток проходит за секунду');
+    assert.ok(speed, 'нет выбора скорости движения');
+    await view.setSelect(speed, '16');
+    assert.deepEqual(view.viewerCall('setMotion').slice(-1), [['setMotion', true, 16]]);
+
+    await view.click(view.buttonByTitle('Вернуться к дате сканов'));
+    assert.ok(view.viewerCall('resetTime').length >= 1, 'resetTime() не вызван');
+  } finally {
+    await view.cleanup();
+  }
+});
+
+maybe('список тел сворачивается и разворачивается кнопкой «список»', async () => {
+  const view = await boot();
+  try {
+    const search = () => view.document.querySelector('input[aria-label="Поиск тела"]');
+    assert.ok(search(), 'список не показан сразу');
+    await view.click(view.buttonByTitle('Список тел и построек'));
+    assert.equal(search(), null, 'список не свернулся');
+    await view.click(view.buttonByTitle('Список тел и построек'));
+    assert.ok(search(), 'список не вернулся');
+  } finally {
+    await view.cleanup();
+  }
+});
+
+maybe('без WebGL панель остаётся рабочей и предупреждает пользователя', async () => {
+  const view = await boot({ sceneAvailable: false });
+  try {
+    assert.ok(/не дал доступ к WebGL/i.test(view.text()),
+      'нет предупреждения о недоступном WebGL');
+    assert.ok(view.buttonByTitle('Слои сцены'), 'панель пропала без WebGL');
+    assert.ok(view.document.querySelector('input[aria-label="Поиск тела"]'),
+      'список тел исчез без WebGL');
+    const filterSelect = view.select('Показать только нужные тела — остальные притухают');
+    await view.setSelect(filterSelect, 'sites');
+    assert.deepEqual(view.viewerCall('setFilter').slice(-1), [['setFilter', 'sites']],
+      'без WebGL фильтры перестали работать');
+  } finally {
+    await view.cleanup();
   }
 });

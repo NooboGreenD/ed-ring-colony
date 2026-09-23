@@ -1,356 +1,167 @@
 /**
- * Навигация 3D-карты системы: клик по телу, переход стрелками, сброс.
+ * Тесты навигации по 3D-карте системы: список тел, кластеры, поиск, фильтры
+ * и переходы «выбрал тело — увидел его в адресе страницы».
  *
- * Тест рендерит НАСТОЯЩИЙ компонент в jsdom против подставного Plotly и
- * проверяет, что пользовательские действия доходят до состояния фокуса, а
- * камера не сбрасывается там, где пользователь её не трогал.
- *
- * Без jsdom/esbuild тест честно пропускается, а не падает.
+ * Карта живёт в состоянии страницы (`?body=…`): клик по телу сообщает наружу
+ * новое имя, а ссылка на систему с телом в адресе открывает карту уже
+ * сфокусированной. Это и проверяем — вместе с тем, что список тел честно
+ * фильтруется и сортируется.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { renderOrreryMap, binaryBodies, solBodies, solStructures } from './orrery-harness.mjs';
 
 let esbuild = null;
-let jsdomMod = null;
+let jsdomAvailable = false;
 try {
   esbuild = await import('esbuild');
-  jsdomMod = await import('jsdom');
+  await import('jsdom');
+  jsdomAvailable = true;
 } catch {
-  // devDependencies не установлены — пропускаем.
+  // devDependencies не установлены — пропускаем, но говорим об этом.
 }
 
-const skip = !esbuild || !jsdomMod;
-const maybe = skip ? test.skip : test;
+const maybe = esbuild && jsdomAvailable ? test : test.skip;
 
-async function buildBundle() {
-  const dir = mkdtempSync(join(ROOT, '.tmp-navmap-'));
-  const entry = join(dir, 'entry.tsx');
-  const bundle = join(dir, 'bundle.mjs');
-  writeFileSync(entry, "export { default as SystemPlotlyMap } from '@/components/SystemPlotlyMap';\n");
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
-    external: ['react', 'react-dom', 'react-dom/client'],
-    alias: { '@': join(ROOT, 'src') },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
-  });
-  return { dir, bundle };
+/** Строки тел в списке: кнопки «Показать <тело> на карте». */
+function rows(view) {
+  return Array.from(view.document.querySelectorAll('button'))
+    .filter((item) => /^Показать .+ на карте$/.test(item.getAttribute('title') || ''));
 }
 
-/** Два тела на разных расстояниях — чтобы фокус имел куда перемещаться. */
-const BODIES = [
-  { body_id: 1, body_name: 'Sol', body_type: 'Star', radius_m: 6.957e8, surface_temp_k: 5778,
-    distance_to_arrival_ls: 0, semi_major_axis_ls: 0 },
-  { body_id: 2, body_name: 'Earth', body_type: 'Planet', radius_m: 6.371e6,
-    distance_to_arrival_ls: 8.3, semi_major_axis_ls: 8.3, orbital_period_days: 365.25,
-    eccentricity: 0.0167, orbital_inclination_deg: 0, periapsis_deg: 102, mean_anomaly_deg: 100 },
-  { body_id: 3, body_name: 'Mars', body_type: 'Planet', radius_m: 3.389e6,
-    distance_to_arrival_ls: 12.5, semi_major_axis_ls: 12.5, orbital_period_days: 687,
-    eccentricity: 0.0934, orbital_inclination_deg: 1.85, periapsis_deg: 286, mean_anomaly_deg: 19 },
-];
-
-async function renderMap() {
-  const { dir, bundle } = await buildBundle();
-  const { JSDOM } = jsdomMod;
-  const React = (await import('react')).default;
-  const { createRoot } = await import('react-dom/client');
-  const { act } = await import('react');
-
-  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
-    pretendToBeVisual: true,
-    url: 'http://localhost/',
+maybe('клик по телу в списке фокусирует карту и сообщает имя наружу', async () => {
+  const changes = [];
+  const view = await renderOrreryMap({
+    bodies: solBodies(), projects: solStructures(), onFocusChange: (name) => changes.push(name),
   });
-  const prev = {
-    window: global.window, document: global.document, HTMLElement: global.HTMLElement,
-    Element: global.Element, Node: global.Node, IS_REACT_ACT_ENVIRONMENT: global.IS_REACT_ACT_ENVIRONMENT,
-  };
-  global.window = dom.window;
-  global.document = dom.window.document;
-  global.HTMLElement = dom.window.HTMLElement;
-  global.Element = dom.window.Element;
-  global.Node = dom.window.Node;
-  global.IS_REACT_ACT_ENVIRONMENT = true;
-  global.getComputedStyle = dom.window.getComputedStyle;
-  Object.defineProperty(global, 'navigator', { value: dom.window.navigator, configurable: true });
-  const raf = (cb) => setTimeout(() => cb(Date.now()), 0);
-  global.requestAnimationFrame = raf;
-  global.cancelAnimationFrame = (id) => clearTimeout(id);
-  dom.window.requestAnimationFrame = raf;
-
-  const calls = { react: [], relayout: [] };
-  const handlers = {};
-  let gd = null;
-  dom.window.Plotly = {
-    react(node, traces, layout, config) {
-      calls.react.push({ traces, layout, config });
-      gd = node;
-      node._fullLayout = { scene: { camera: JSON.parse(JSON.stringify(layout.scene.camera)) } };
-      node.on = (name, fn) => { handlers[name] = fn; };
-      return Promise.resolve();
-    },
-    restyle() { return Promise.resolve(); },
-    relayout(_node, update) { calls.relayout.push(update); return Promise.resolve(); },
-    purge() { return Promise.resolve(); },
-  };
-
-  const focusChanges = [];
-  const { SystemPlotlyMap } = await import(bundle);
-  const root = createRoot(dom.window.document.getElementById('root'));
-  await act(async () => {
-    root.render(React.createElement(SystemPlotlyMap, {
-      systemName: 'Sol',
-      initialBodies: BODIES,
-      onFocusChange: (name) => focusChanges.push(name),
-    }));
-  });
-  await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
-
-  return {
-    calls,
-    handlers,
-    focusChanges,
-    act,
-    dom,
-    /** Камера последней отрисовки. */
-    lastCamera: () => calls.react[calls.react.length - 1]?.layout?.scene?.camera,
-    /** Config последней отрисовки (scrollZoom и прочее). */
-    lastConfig: () => calls.react[calls.react.length - 1]?.config,
-    /** Камера, которую Plotly считает текущей (её правит пользователь). */
-    setLiveCamera(eye) { gd._fullLayout.scene.camera.eye = eye; },
-    liveEye() { return gd._fullLayout.scene.camera.eye; },
-    /** Вызвать обработчик Plotly-события. */
-    async fire(name, event) {
-      await act(async () => {
-        handlers[name]?.(event);
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    },
-    /** Div, в котором живёт Plotly (на нём висит onPointerDown). */
-    mapHost() {
-      return dom.window.document.querySelector('[data-ed-map-host]');
-    },
-    /** Нажатие указателя с координатами — так начинается вращение камеры. */
-    async pointerDown(element, clientX, clientY) {
-      await act(async () => {
-        const event = new dom.window.Event('pointerdown', { bubbles: true });
-        event.clientX = clientX;
-        event.clientY = clientY;
-        element.dispatchEvent(event);
-      });
-    },
-    /** Клик по элементу внутри React-окружения. */
-    async click(element) {
-      await act(async () => {
-        element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    },
-    /** Нажать клавишу в окне. */
-    /**
-     * Нажать клавишу. По умолчанию событие уходит в `window` — так клавиатура
-     * работает, когда фокус не в поле. `element` позволяет проверить реальный
-     * случай ввода: тогда `event.target` — само поле, и событие всплывает.
-     */
-    async key(key, element) {
-      await act(async () => {
-        const target = element ?? dom.window;
-        target.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true }));
-        await new Promise((r) => setTimeout(r, 15));
-      });
-    },
-    async cleanup() {
-      await act(async () => root.unmount());
-      dom.window.close();
-      for (const [k, v] of Object.entries(prev)) global[k] = v;
-      rmSync(dir, { recursive: true, force: true });
-    },
-  };
-}
-
-maybe('карта рисуется по готовым данным', async () => {
-  const map = await renderMap();
   try {
-    assert.ok(map.calls.react.length > 0, 'Plotly.react не вызван');
-    const config = map.lastConfig();
-    assert.ok(config, 'config не доходит до Plotly.react — тесты scrollZoom ничего не проверяют');
+    const target = rows(view).find((item) => /Sol 3(?! a)/.test(item.getAttribute('title') || ''));
+    assert.ok(target, 'в списке нет землеподобной планеты');
+    await view.click(target);
+    assert.ok(view.viewerCall('focus').some(([, name]) => name === 'Sol 3'),
+      `focus('Sol 3') не вызван: ${JSON.stringify(view.viewerCall('focus'))}`);
+    assert.deepEqual(changes.slice(-1), ['Sol 3'], 'страница не узнала о выбранном теле');
+    // Карточка фокуса обновилась на выбранное тело.
+    assert.match(view.text(), /От входа/, 'карточка тела не открылась');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('клик по телу фокусирует его', async () => {
-  const map = await renderMap();
+maybe('кластер двойной звезды фокусируется по заголовку группы', async () => {
+  const view = await renderOrreryMap({ bodies: binaryBodies() });
   try {
-    await map.fire('plotly_click', {
-      points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }],
-    });
-    assert.deepEqual(map.focusChanges, ['Earth'], 'клик не довёл фокус до родителя');
+    const cluster = view.buttonByTitle('Показать кластер этой звезды');
+    assert.ok(cluster, 'нет заголовка кластера в списке');
+    assert.match(cluster.textContent || '', /★ Alpha/, 'кластер не подписан своей звездой');
+    await view.click(cluster);
+    assert.ok(view.viewerCall('focus').some(([, name]) => name === 'Alpha'),
+      `фокус на звезду кластера не поставлен: ${JSON.stringify(view.viewerCall('focus'))}`);
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('стрелки переключают тела', async () => {
-  const map = await renderMap();
+maybe('поиск по списку оставляет только совпавшие тела', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    await map.key('ArrowRight');
-    assert.equal(map.focusChanges.length > 0, true, 'стрелка вправо не сменила цель');
-    const first = map.focusChanges[0];
-    await map.key('ArrowRight');
-    assert.notEqual(map.focusChanges[map.focusChanges.length - 1], first, 'вторая стрелка не переключила тело');
+    assert.equal(rows(view).length, 5, `в списке не 5 тел: ${rows(view).length}`);
+    const search = view.document.querySelector('input[aria-label="Поиск тела"]');
+    await view.typeInto(search, '3 a');
+    const found = rows(view);
+    assert.equal(found.length, 1, `поиск вернул ${found.length} строк`);
+    assert.match(found[0].getAttribute('title') || '', /Sol 3 a/);
+
+    await view.typeInto(search, 'ничего-не-нашли');
+    assert.equal(rows(view).length, 0);
+    assert.match(view.text(), /Ничего не найдено/, 'нет сообщения о пустом результате');
+
+    await view.typeInto(search, '');
+    assert.equal(rows(view).length, 5, 'сброс поиска не вернул список');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('Escape снимает фокус', async () => {
-  const map = await renderMap();
+maybe('чип фильтра в списке управляет картой и составом списка', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    await map.key('ArrowRight');
-    await map.key('Escape');
-    assert.equal(map.focusChanges[map.focusChanges.length - 1], '', 'Escape не сбросил фокус');
+    await view.click(view.button('стройки'));
+    assert.deepEqual(view.viewerCall('setFilter').slice(-1), [['setFilter', 'sites']],
+      'фильтр не уехал во вьюер');
+    const titles = rows(view).map((item) => item.getAttribute('title'));
+    assert.deepEqual(titles, ['Показать Sol 3 на карте', 'Показать Sol 5 на карте'],
+      `список не отфильтровался: ${JSON.stringify(titles)}`);
+
+    await view.click(view.button('посадка'));
+    // Порядок строк — по дистанции орбиты: луна (4 св. с вокруг планеты)
+    // идёт впереди самой планеты.
+    assert.deepEqual(rows(view).map((item) => item.getAttribute('title')),
+      ['Показать Sol 3 a на карте', 'Показать Sol 3 на карте'], 'фильтр посадки работает неверно');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('клик по линии орбиты не меняет фокус', async () => {
-  // Реальная форма события: у линейных трэков (орбиты, кольца, HZ) стоит
-  // `hoverinfo: 'skip'` и нет `customdata` вовсе. Клик по такой линии не должен
-  // уводить фокус — иначе карта «прыгает» при попытке повороить сцену.
-  const map = await renderMap();
+maybe('сортировка списка: по имени и по стройкам', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    await map.fire('plotly_click', {
-      points: [{ curveNumber: 4, pointNumber: 0, customdata: undefined, data: {} }],
-    });
-    assert.deepEqual(map.focusChanges, [], `клик по орбите сменил фокус: ${JSON.stringify(map.focusChanges)}`);
+    const sort = view.document.querySelector('select[aria-label="Сортировка тел"]');
+    assert.ok(sort, 'нет выбора сортировки');
+    await view.setSelect(sort, 'name');
+    assert.equal(rows(view)[0].getAttribute('title'), 'Показать Sol 1 на карте',
+      'сортировка по имени не применилась');
+    await view.setSelect(sort, 'progress');
+    // Сортировка «по стройкам» — по сумме готовности: готовая станция у Sol 5
+    // (100%) выше незавершённой стройки у Sol 3 (29%).
+    assert.equal(rows(view)[0].getAttribute('title'), 'Показать Sol 5 на карте',
+      'сортировка по стройкам не подняла тело с готовой постройкой');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('стрелки не перехватываются, когда пользователь печатает', async () => {
-  // Обработчик висит на `window` без проверки активного элемента: стрелка в
-  // поле поиска листала тела системы вместо перемещения курсора в тексте.
-  const map = await renderMap();
+maybe('ссылка с телом в адресе открывает карту сфокусированной', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures(), focusTarget: 'Sol 3' });
   try {
-    const input = map.dom.window.document.createElement('input');
-    map.dom.window.document.body.appendChild(input);
-    input.focus();
-    assert.equal(map.dom.window.document.activeElement, input, 'поле не получило фокус — тест ничего не проверяет');
-    await map.key('ArrowRight', input);
-    assert.deepEqual(map.focusChanges, [], 'стрелка в поле ввода сменила цель карты');
-    // Контроль: вне поля та же стрелка обязана работать.
-    await map.key('ArrowRight');
-    assert.equal(map.focusChanges.length > 0, true, 'стрелка перестала работать и вне полей ввода');
+    // Тело из адреса сцена получает сразу при создании — без прыжка камеры.
+    assert.equal(view.stub.options?.focus, 'Sol 3', 'вьюер создан без стартового фокуса');
+    assert.equal(view.stub.options?.zoom, 2, 'стартовый уровень приближения не «окрестность»');
+    assert.match(view.text(), /От входа/, 'карточка стартового тела не показана');
   } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
 
-maybe('клавиша 0 возвращает стандартный вид, сохраняя фокус', async () => {
-  // Камера принадлежит пользователю и живёт между перерисовками. До появления
-  // явного сброса вернуть стандартный вид можно было только сняв фокус с тела.
-  const map = await renderMap();
+maybe('смена системы пересоздаёт сцену и убирает старую', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures() });
   try {
-    await map.key('ArrowRight');
-    const focused = map.focusChanges[map.focusChanges.length - 1];
-    assert.ok(focused, 'фокус не выставился — тест не проверяет сохранение цели');
-
-    map.setLiveCamera({ x: 0.4, y: -1.9, z: 0.8 });
-    await map.key('0');
-
-    const camera = map.lastCamera();
-    assert.ok(camera, 'после сброса не было перерисовки');
-    assert.notDeepEqual(camera.eye, { x: 0.4, y: -1.9, z: 0.8 }, 'камера не сброшена');
-    assert.equal(
-      map.focusChanges[map.focusChanges.length - 1], focused,
-      'сброс камеры снял фокус с тела',
-    );
-  } finally {
-    await map.cleanup();
+    assert.equal(view.stub.installed, 1, 'вьюер поднялся не один раз');
+    await view.cleanup();
+    const second = await renderOrreryMap({ bodies: binaryBodies(), systemName: 'Alpha' });
+    try {
+      assert.equal(second.stub.installed, 1, 'сцена поднялась повторно на ту же систему');
+      assert.match(second.text(), /Alpha/, 'новая система не показана');
+    } finally {
+      await second.cleanup();
+    }
+  } catch (error) {
+    throw error;
   }
 });
 
-maybe('вращение камеры не меняет фокус', async () => {
-  // `plotly_click` приходит и когда пользователь вращал сцену и отпустил кнопку
-  // над телом. Без порога перемещения такое «вращение» неожиданно меняло фокус —
-  // карта прыгала в момент, когда её просто поворачивали.
-  const map = await renderMap();
+maybe('фокус снимается кнопкой в карточке тела', async () => {
+  const view = await renderOrreryMap({ bodies: solBodies(), projects: solStructures(), focusTarget: 'Sol 3' });
   try {
-    const host = map.mapHost();
-    assert.ok(host, 'хост карты не найден — тест ничего не проверяет');
-    await map.pointerDown(host, 100, 100);
-    await map.fire('plotly_click', {
-      event: { clientX: 240, clientY: 190 },
-      points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }],
-    });
-    assert.deepEqual(map.focusChanges, [], 'поворот камеры сменил фокус');
-
-    // Контроль: клик без движения обязан фокусировать тело.
-    await map.pointerDown(host, 100, 100);
-    await map.fire('plotly_click', {
-      event: { clientX: 102, clientY: 101 },
-      points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }],
-    });
-    assert.deepEqual(map.focusChanges, ['Earth'], 'обычный клик перестал фокусировать тело');
+    await view.flush(10);
+    const clear = view.buttonByTitle('Снять фокус');
+    assert.ok(clear, 'в карточке нет кнопки снятия фокуса');
+    await view.click(clear);
+    assert.ok(view.viewerCall('fit').length >= 1, 'снятие фокуса не вернуло обзор системы');
+    assert.match(view.text(), /Выберите тело на карте или в списке/, 'подсказка о выборе тела не вернулась');
   } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('колесо не перехвачено, пока карта встроена в страницу', async () => {
-  // Карта занимает 470 px, а сразу под ней на странице системы идёт блок
-  // «Постройки». При `scrollZoom: true` колесо над картой зумило сцену вместо
-  // прокрутки страницы — пользователь не мог пролистнуть дальше карты.
-  const map = await renderMap();
-  try {
-    assert.equal(map.lastConfig().scrollZoom, false, 'встроенная карта перехватывает колесо');
-  } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('в полном экране колесо снова зумит карту', async () => {
-  // В полном экране карта занимает всё окно, прокручивать страницу нечего —
-  // там зум колесом уместен и полезен.
-  const map = await renderMap();
-  try {
-    const button = [...map.dom.window.document.querySelectorAll('button')]
-      .find((node) => node.textContent.includes('во весь экран'));
-    assert.ok(button, 'кнопка полного экрана не найдена — тест ничего не проверяет');
-    await map.click(button);
-    assert.equal(map.lastConfig().scrollZoom, true, 'в полном экране зум колесом пропал');
-  } finally {
-    await map.cleanup();
-  }
-});
-
-maybe('наведение не перерисовывает фигуру и не трогает камеру', async () => {
-  const map = await renderMap();
-  try {
-    const eye = { x: 0.4, y: -1.9, z: 0.8 };
-    map.setLiveCamera(eye);
-    // Инвариант: наведение работает через `restyle`, поэтому `Plotly.react`
-    // вызываться не должен вовсе. Именно перерисовка сбрасывала камеру.
-    const before = map.calls.react.length;
-    await map.fire('plotly_hover', { points: [{ curveNumber: 1, pointNumber: 0, customdata: 'Earth' }] });
-    assert.equal(map.calls.react.length, before, 'наведение перерисовало фигуру');
-    // Камеру трогать нечем: раз `Plotly.react` не вызывался, layout.scene.camera
-    // не переписывался вовсе. Живая камера Plotly осталась нетронутой.
-    assert.equal(map.liveEye(), eye, 'живая камера изменена наведением');
-  } finally {
-    await map.cleanup();
+    await view.cleanup();
   }
 });
