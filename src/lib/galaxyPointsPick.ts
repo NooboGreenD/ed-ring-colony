@@ -1,7 +1,7 @@
 /**
  * Screen-aware picking for the experimental "all systems" point cloud.
  *
- * Three.js raycasting a Points object walks every vertex. At ~1.3M systems
+ * Three.js raycasting a Points object walks every vertex. At ~10⁶ points
  * that freezes the tab on hover, so the layer disables built-in raycast and
  * uses this grid instead: only cells the click-ray actually crosses are
  * tested, and the winner is the point closest to the cursor in pixels.

@@ -242,7 +242,7 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
-| `galaxy_systems` | Full Spansh catalog (~1.3M): coords, main star class, permit. Public read. |
+| `galaxy_systems` | Full Spansh catalog (~2×10⁸ rows, GiST `cube` index): coords, main star class, permit. Public read. |
 
 ### 4.2 Key Relationships
 ```
@@ -475,7 +475,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `/system/[name]` falls back to the catalog when there is no construction row.
   The map layer «Все системы» reads `edgs-v1` from `public/data`, storage bucket
   `galaxy-data`, Postgres or paged PostgREST, and asks `/api/galaxy/stats` first
-  so an empty catalog is a message, not a 404; it does not raycast 1.3M points.
+  so an empty catalog is a message, not a 404; it does not raycast the cloud.
   Migration `20260924000000_galaxy_systems_finish.sql`.
 
 ### 8.5 Raven Colonial

@@ -38,6 +38,10 @@ export interface GalaxyStats {
   points_uploaded?: boolean;
   points_bytes?: number | null;
   points_count?: number | null;
+  /** Source rows per point in the cloud (1 = the cloud holds every system). */
+  points_stride?: number | null;
+  /** True when the cloud is a sample, not the whole catalog. */
+  points_sampled?: boolean;
   /** True when the last import used --limit and must not replace live EDSM scans. */
   partial?: boolean;
 }
@@ -71,6 +75,8 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
       points_uploaded?: boolean;
       points_bytes?: number;
       points_count?: number;
+      points_stride?: number;
+      points_sampled?: boolean;
       partial?: boolean;
     } | null;
     if (v && typeof v.systems_count === 'number') {
@@ -81,6 +87,8 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
         points_uploaded: v.points_uploaded === true,
         points_bytes: typeof v.points_bytes === 'number' ? v.points_bytes : null,
         points_count: typeof v.points_count === 'number' ? v.points_count : null,
+        points_stride: typeof v.points_stride === 'number' ? v.points_stride : null,
+        points_sampled: v.points_sampled === true,
         partial: v.partial === true,
       };
     }

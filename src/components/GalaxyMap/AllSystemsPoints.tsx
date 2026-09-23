@@ -21,7 +21,8 @@ import {
 /**
  * Experimental "all systems" layer.
  *
- * One Points object (~1.3M). Built-in raycasting walks every vertex and
+ * One Points object (a uniform sample of the catalog, GALAXY_POINTS_MAX).
+ * Built-in raycasting walks every vertex and
  * freezes the tab, so it is disabled. Clicks are resolved by MapClickLayer
  * against a spatial grid, in screen pixels, and only when the pointer
  * barely moved (an orbit drag must not select a star).

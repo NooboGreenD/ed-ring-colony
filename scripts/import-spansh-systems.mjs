@@ -27,6 +27,7 @@ import {
   PointsBuilder,
   parsePointsFile,
   id64FromParts,
+  galaxyPointsMax,
   POINTS_STORAGE_BUCKET,
   POINTS_STORAGE_OBJECT,
 } from '../src/lib/galaxySystems.ts';
@@ -208,6 +209,11 @@ class PgWriter {
     return Number(res.rows[0].n);
   }
 
+  async analyze() {
+    const { error } = await this.query('ANALYZE galaxy_systems');
+    if (error) this.log(`WARNING: ANALYZE failed: ${error.message}`);
+  }
+
   async writeMeta(value) {
     const json = JSON.stringify(value);
     // Merge so a partial import does not wipe points_uploaded from a full run.
@@ -295,7 +301,10 @@ async function runImport(args, db, log) {
   }
   if (!fs.existsSync(source)) throw new Error(`Dump file not found: ${source}`);
 
-  const pointsBuilder = args.noPoints ? null : new PointsBuilder(1_000_000);
+  // The catalog is ~2×10⁸ systems: an unsampled cloud would need gigabytes of
+  // RAM here and would not fit the 50 MB storage bucket, so the builder samples.
+  const maxPoints = galaxyPointsMax();
+  const pointsBuilder = args.noPoints ? null : new PointsBuilder(1_000_000, maxPoints);
   let processed = 0;
   let invalid = 0;
   let lastLog = 0;
@@ -331,10 +340,15 @@ async function runImport(args, db, log) {
       imported_at: new Date().toISOString(),
       source: args.file ? path.basename(args.file) : args.url,
       bytes: bytes.length,
+      stride: pointsBuilder.sampleStride,
+      sampled: pointsBuilder.sampled,
     };
     fs.writeFileSync(args.pointsFile + '.meta.json', JSON.stringify(meta, null, 2));
     pointsInfo = meta;
-    log(`Points file: ${args.pointsFile} (${meta.count.toLocaleString()} systems, ${(meta.bytes / 1024 / 1024).toFixed(1)} MB)`);
+    log(
+      `Points file: ${args.pointsFile} (${meta.count.toLocaleString()} points, ${(meta.bytes / 1024 / 1024).toFixed(1)} MB)` +
+      (meta.sampled ? `, uniform sample: every ${meta.stride}th system` : ''),
+    );
     if (args.limit > 0) {
       log('Partial import: not uploading the points file (it would replace the full cloud)');
     } else if (!args.dryRun) {
@@ -345,6 +359,10 @@ async function runImport(args, db, log) {
   if (db) {
     log(`Inserted/updated ${db.written.toLocaleString()} rows`);
     if (!args.dryRun) {
+      if (db.analyze) {
+        // Planner estimates after 10⁸ upserts are otherwise those of an empty table.
+        await db.analyze();
+      }
       let systemsCount = db.written;
       try {
         systemsCount = await db.countRows();

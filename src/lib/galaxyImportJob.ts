@@ -62,7 +62,7 @@ export interface GalaxyImportState {
   /**
    * Restart point in UNCOMPRESSED dump bytes. A resumed pass re-downloads the
    * gzip (a partial deflate stream cannot be decoded) but skips every record
-   * before this offset, so the ~1.3M upserts are not repeated.
+   * before this offset, so the hundreds of millions of upserts are not repeated.
    */
   resume_offset: number;
   processed: number;
@@ -73,6 +73,8 @@ export interface GalaxyImportState {
   systems_count: number;
   points_count: number | null;
   points_bytes: number | null;
+  /** Source rows per point in the uploaded cloud (null/1 = complete cloud). */
+  points_stride: number | null;
   points_uploaded: boolean;
   points_error: string | null;
   error: string | null;
@@ -97,6 +99,7 @@ export const EMPTY_IMPORT_STATE: GalaxyImportState = {
   systems_count: 0,
   points_count: null,
   points_bytes: null,
+  points_stride: null,
   points_uploaded: false,
   points_error: null,
   error: null,
@@ -220,6 +223,7 @@ export function parseImportState(value: unknown): GalaxyImportState {
     systems_count: num(raw.systems_count),
     points_count: nullableNum(raw.points_count),
     points_bytes: nullableNum(raw.points_bytes),
+    points_stride: nullableNum(raw.points_stride),
     points_uploaded: raw.points_uploaded === true,
     points_error: str(raw.points_error),
     error: str(raw.error),
@@ -882,6 +886,11 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         pointsError = upload.error;
       }
 
+      if (writer.analyze) {
+        // 10⁸ upserts leave the planner with empty-table estimates.
+        await writer.analyze().catch((error) => log(`WARNING: ANALYZE не выполнен: ${(error as Error).message}`));
+      }
+
       await writeCatalogStats({
         systems_count: result.systemsCount,
         valid_records: result.processed,
@@ -889,7 +898,13 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         source: url,
         backend,
         points: result.points
-          ? { count: result.points.count, bytes: result.points.buffer.length, uploaded: pointsUploaded }
+          ? {
+              count: result.points.count,
+              bytes: result.points.buffer.length,
+              uploaded: pointsUploaded,
+              rows: result.points.rows,
+              stride: result.points.stride,
+            }
           : null,
       });
 
@@ -906,6 +921,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         systems_count: result.systemsCount,
         points_count: result.points?.count ?? null,
         points_bytes: result.points ? result.points.buffer.length : null,
+        points_stride: result.points?.stride ?? null,
         points_uploaded: pointsUploaded,
         points_error: pointsError,
         error: null,
@@ -969,7 +985,7 @@ async function writeCatalogStats(input: {
   invalid_records: number;
   source: string;
   backend: GalaxyImportBackend;
-  points: { count: number; bytes: number; uploaded: boolean } | null;
+  points: { count: number; bytes: number; uploaded: boolean; rows: number; stride: number } | null;
 }): Promise<void> {
   const previous = (await metaValue('stats').catch(() => null)) ?? {};
   const value: Record<string, unknown> = {
@@ -987,6 +1003,11 @@ async function writeCatalogStats(input: {
     value.points_uploaded = true;
     value.points_count = input.points.count;
     value.points_bytes = input.points.bytes;
+    // The cloud is a uniform sample of the catalog (~2×10⁸ systems do not fit
+    // the 50 MB bucket): say so, so the map layer is not read as complete.
+    value.points_rows = input.points.rows;
+    value.points_stride = input.points.stride;
+    value.points_sampled = input.points.stride > 1;
   }
   const { error } = await admin()
     .from('galaxy_systems_meta')
