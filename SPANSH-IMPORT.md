@@ -130,6 +130,69 @@ docker run --rm --env-file .env.production \
   секунд, поэтому пачки маленькие, а не уложившиеся в `statement_timeout`
   автоматически делятся пополам и повторяются).
 
+Быстрая проверка подключения (без скачивания дампа и без записи):
+
+- в браузере: **Админка → «Каталог систем» → «Проверить подключение к БД»**
+  (то же самое — `POST /api/admin/galaxy` с `{"action":"check-db"}`). Проверка
+  выполняется внутри веб-процесса, то есть ровно там, где падает импорт;
+- в клоне репозитория (на сервере или локально):
+
+```bash
+npm run spansh:import -- --check-db
+```
+
+В production-образе нет папки `scripts/`, поэтому `docker compose exec web node
+scripts/…` не сработает — используйте кнопку в админке. Проверка на хосте тоже
+полезна, но помните: DNS хоста и DNS контейнера — разные вещи.
+
+### `getaddrinfo EAI_AGAIN db` — хост из `DATABASE_URL` не виден
+
+`db` — это имя сервиса внутри compose-сети self-hosted Supabase (контейнер
+`supabase-db`, сеть обычно `supabase_default`). Контейнер `web` живёт в своей
+сети `ed-ring-colony_default`, поэтому имя не резолвится, и подключение к
+Postgres падает ещё до первого запроса:
+
+```text
+Postgres недоступен: getaddrinfo EAI_AGAIN db. Хост «db» из DATABASE_URL/SUPABASE_DB_URL не резолвится.
+```
+
+Что делает импорт сейчас: несколько раз повторяет подключение с паузами 2/5/10 с
+(Docker-овский DNS отвечает `EAI_AGAIN` и на ещё не прогретый резолвер), а если
+хост действительно не виден — пишет в лог причину и продолжает через PostgREST,
+то есть каталог всё равно импортируется, просто медленнее. В логе вкладки это
+выглядит так:
+
+```text
+WARNING: прямой Postgres недоступен — Postgres недоступен: getaddrinfo EAI_AGAIN db. Хост «db» …
+WARNING: переключаюсь на PostgREST (NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY): импорт пойдёт медленнее
+Режим записи: supabase
+```
+
+Чтобы вернуть быстрый прямой режим, подключите `web` к сети Supabase
+(`docker-compose.yml`):
+
+```yaml
+services:
+  web:
+    networks:
+      - default
+      - monitor
+      - supabase          # ← добавить
+
+networks:
+  monitor:
+    internal: true
+  supabase:               # ← добавить
+    external: true
+    name: supabase_default   # docker network ls — точное имя вашей сети
+```
+
+После `docker compose up -d` имя `db` (или `supabase-db`) станет доступно из
+`web`, и `DATABASE_URL=postgresql://postgres:ПАРОЛЬ@db:5432/postgres` заработает.
+Альтернативы без общей сети: опубликовать порт Postgres на хосте и указать
+`host.docker.internal:5432` (alias уже прописан в `extra_hosts`), либо внешний
+адрес БД. Проверка — тот же `--check-db`.
+
 Полезные флаги:
 
 ```bash
@@ -143,6 +206,8 @@ node scripts/import-spansh-systems.mjs --help
   --download-only      только скачать архив в --out (без БД и импорта):
                        так можно заранее принести ~6 ГиБ на сервер, а импорт
                        выполнить потом, когда линия свободнее
+  --check-db           только проверить подключение к БД и объяснить, почему
+                       прямое не работает (без скачивания и записи)
   -v                   прогресс каждые 10 секунд
 ```
 
@@ -210,7 +275,9 @@ npm run test                     # все тесты, включая scripts/tes
   `archive_dir`. `POST`: `{"action":"start", "fresh?", "truncate?",
   "skip_points?", "url?"}`, `{"action":"cancel"}`,
   `{"action":"download", "url?"}` — скачать архив на диск (с возобновлением,
-  без запуска импорта), `{"action":"cancel-download"}`;
+  без запуска импорта), `{"action":"cancel-download"}`,
+  `{"action":"check-db"}` — одна попытка подключения к Postgres из
+  веб-процесса и внятный диагноз (`check.direct.message`, `check.backend`);
 - `GET|POST /api/cron/galaxy-import` — то же для планировщика
   (`Authorization: Bearer <CRON_SECRET>`): запускает/продолжает импорт и
   отвечает сразу, а при свежем каталоге возвращает `skipped`.
@@ -270,6 +337,12 @@ GET https://edringcolony.ru/api/galaxy/all-systems 404 (Not Found)
 2. Применены ли миграции `20260921120000_galaxy_systems.sql` и
    `20260924000000_galaxy_systems_finish.sql` (таблица, функции, bucket
    `galaxy-data`)? Без bucket файл точек некуда положить.
+   - `Postgres недоступен: getaddrinfo EAI_AGAIN db` (или `ENOTFOUND db`) —
+     хост из `DATABASE_URL`/`SUPABASE_DB_URL` не виден из контейнера `web`:
+     обычно это имя сервиса чужой compose-сети (см. «getaddrinfo EAI_AGAIN db»
+     выше). Импорт повторяет подключение, затем уходит на PostgREST и доводит
+     каталог до конца; чтобы вернуть быстрый режим, подключите `web` к сети
+     Supabase и проверьте результат через `--check-db`;
 3. Есть ли у web-контейнера один из режимов БД: `DATABASE_URL`/`SUPABASE_DB_URL`
    (быстрый) либо `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`?
    Без них импорт не запустится и скажет об этом прямо в ответе.

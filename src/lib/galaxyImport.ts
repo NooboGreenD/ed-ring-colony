@@ -36,7 +36,13 @@ import {
   type GalaxySystemRecord,
   type SpanshSystemObject,
 } from './galaxySpanshStream.ts';
-import { galaxyDbUrl, loadPg, type PgClientLike, type PgModule } from './pgModule.ts';
+import {
+  connectPgClient,
+  galaxyDbUrl,
+  loadPg,
+  type PgClientLike,
+  type PgModule,
+} from './pgModule.ts';
 
 export const SPANSH_DUMP_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
 
@@ -784,22 +790,39 @@ function starTypeOf(value: unknown): StarClass {
 /**
  * Direct Postgres writer: the fast path when the web process knows
  * `DATABASE_URL`/`SUPABASE_DB_URL` (self-hosted Supabase on the same machine).
+ *
+ * The connection itself goes through `connectPgClient`: a Docker DNS hiccup
+ * (`getaddrinfo EAI_AGAIN …`) or a database still starting up is retried, and a
+ * permanent failure surfaces as an actionable sentence instead of a bare errno.
  */
 export async function createPgWriter(
   connectionString: string,
-  options: { pg?: PgModule; batchSize?: number; truncate?: boolean } = {},
+  options: {
+    pg?: PgModule;
+    batchSize?: number;
+    truncate?: boolean;
+    /** Connection attempts (default: see `PG_CONNECT_BACKOFF_MS`). */
+    attempts?: number;
+    /** Injectable sleep for tests. */
+    sleep?: (ms: number) => Promise<void>;
+    /** Where retry lines go (the import log). */
+    log?: (line: string) => void;
+  } = {},
 ): Promise<GalaxyRowWriter> {
   const pg = options.pg ?? (await loadPg());
   const batchSize = Math.max(1, options.batchSize ?? PG_BATCH_SIZE);
   // Big batches must not die on a server-wide statement_timeout, but a dead
   // database must fail in seconds instead of on the OS TCP timeout.
-  const client: PgClientLike = new pg.Client({
+  const client: PgClientLike = await connectPgClient({
     connectionString,
-    statement_timeout: 0,
-    query_timeout: 0,
+    pg,
+    statementTimeoutMs: 0,
+    queryTimeoutMs: 0,
     connectionTimeoutMillis: 15_000,
+    attempts: options.attempts,
+    sleep: options.sleep,
+    log: options.log,
   });
-  await client.connect();
   let rows: GalaxySystemRecord[] = [];
   let written = 0;
 

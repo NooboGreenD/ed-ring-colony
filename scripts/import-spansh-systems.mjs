@@ -46,6 +46,14 @@ import {
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../src/lib/galaxyImport.ts';
+// Connection diagnostics shared with the in-app import: retries for transient
+// DNS/refused failures and an actionable message for a permanent one.
+import {
+  connectWithRetries,
+  describePgConnectionError,
+  galaxyDbUrl,
+  isPgConnectionError,
+} from '../src/lib/pgModule.ts';
 
 export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
 
@@ -72,7 +80,9 @@ const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
                          Use this to pre-download the ~6 GiB archive to the
                          server; a later run reuses the file (Range-resumable,
                          retrying interrupted connections).
-  --database-url <url>   Postgres connection string (else DATABASE_URL, else Supabase env)
+  --database-url <url>   Postgres connection string (else DATABASE_URL/SUPABASE_DB_URL, else Supabase env)
+  --check-db             Only test the database connection(s) and report why
+                         a direct one fails (no download, no writes)
   -v, --verbose          Also print per-10s progress lines`;
 
 // ────────────────────────── CLI ──────────────────────────
@@ -91,6 +101,7 @@ function parseArgs(argv) {
     selftest: false,
     skipDownload: false,
     downloadOnly: false,
+    checkDb: false,
     databaseUrl: null,
     verbose: false,
   };
@@ -109,6 +120,7 @@ function parseArgs(argv) {
       case '--selftest': args.selftest = true; break;
       case '--skip-download': args.skipDownload = true; break;
       case '--download-only': args.downloadOnly = true; break;
+      case '--check-db': args.checkDb = true; break;
       case '--database-url': args.databaseUrl = argv[++i]; break;
       case '-v': case '--verbose': args.verbose = true; break;
       case '-h': case '--help': console.log(USAGE); process.exit(0); break;
@@ -387,40 +399,122 @@ async function uploadPoints(filePath, log) {
   return true;
 }
 
-async function resolveDb(args, log) {
-  if (args.dryRun) { log('Dry run: skipping database'); return null; }
-  const mask = (url) => url.replace(/:([^:@/]+)@/, ':***@');
-  const databaseUrl = args.databaseUrl || process.env.DATABASE_URL;
-  if (databaseUrl) {
-    const pg = loadPg();
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 });
-    let client;
-    try {
-      client = await pool.connect();
-    } catch (error) {
-      await pool.end();
-      throw new Error(`Cannot connect to Postgres (${mask(databaseUrl)}): ${error.message}`);
-    }
-    client.release();
-    log(`DB mode: pg (${mask(databaseUrl)})`);
-    const writer = new PgWriter(pool, args.batch || PG_BATCH_SIZE, args.truncate, log);
-    await writer.begin();
-    return writer;
-  }
+const maskUrl = (url) => url.replace(/:([^:@/]+)@/, ':***@');
+
+/**
+ * One pooled connection to Postgres, retried while the failure is transient.
+ * Shared with the in-app import: `connectWithRetries` turns `getaddrinfo
+ * EAI_AGAIN db` into either a successful second attempt or an actionable
+ * sentence naming the host that cannot be resolved.
+ */
+async function openPgPool(databaseUrl, log) {
+  const pg = loadPg();
+  return connectWithRetries({
+    connectionString: databaseUrl,
+    log,
+    connect: async () => {
+      const pool = new pg.Pool({ connectionString: databaseUrl, max: 1 });
+      let client;
+      try {
+        client = await pool.connect();
+      } catch (error) {
+        await pool.end().catch(() => undefined);
+        throw error;
+      }
+      client.release();
+      return pool;
+    },
+  });
+}
+
+function pgFailureMessage(error, databaseUrl) {
+  if (isPgConnectionError(error)) return error.failure.message;
+  return describePgConnectionError(error, databaseUrl).message;
+}
+
+/** PostgREST credentials, when both halves are present. */
+function supabaseEnv() {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (supabaseUrl && serviceKey) {
-    const { createClient } = await import('@supabase/supabase-js');
-    const client = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
-    log(`DB mode: supabase (${supabaseUrl})`);
-    const writer = new SupabaseWriter(client, args.batch || SUPABASE_BATCH_SIZE, log);
-    await writer.begin();
-    return writer;
+  return supabaseUrl && serviceKey ? { supabaseUrl, serviceKey } : null;
+}
+
+async function supabaseWriterFromEnv(log, batchSize = SUPABASE_BATCH_SIZE) {
+  const env = supabaseEnv();
+  if (!env) return null;
+  const { supabaseUrl, serviceKey } = env;
+  const { createClient } = await import('@supabase/supabase-js');
+  const client = createClient(supabaseUrl, serviceKey, { auth: { autoRefreshToken: false, persistSession: false } });
+  log(`DB mode: supabase (${supabaseUrl})`);
+  const writer = new SupabaseWriter(client, batchSize, log);
+  await writer.begin();
+  return writer;
+}
+
+async function resolveDb(args, log) {
+  if (args.dryRun) { log('Dry run: skipping database'); return null; }
+  // Same precedence as the in-app import (`galaxyDbUrl`): DATABASE_URL, then
+  // SUPABASE_DB_URL, then PostgREST.
+  const databaseUrl = args.databaseUrl || galaxyDbUrl();
+  if (databaseUrl) {
+    try {
+      const pool = await openPgPool(databaseUrl, log);
+      log(`DB mode: pg (${maskUrl(databaseUrl)})`);
+      const writer = new PgWriter(pool, args.batch || PG_BATCH_SIZE, args.truncate, log);
+      await writer.begin();
+      return writer;
+    } catch (error) {
+      const message = pgFailureMessage(error, databaseUrl);
+      if (!supabaseEnv()) throw new Error(message);
+      log(`WARNING: direct Postgres unavailable — ${message}`);
+      log('WARNING: continuing over PostgREST (slower). Fix DATABASE_URL to get the fast path back.');
+      const fallback = await supabaseWriterFromEnv(log, args.batch || SUPABASE_BATCH_SIZE);
+      if (!fallback) throw new Error(message);
+      return fallback;
+    }
   }
+  const writer = await supabaseWriterFromEnv(log, args.batch || SUPABASE_BATCH_SIZE);
+  if (writer) return writer;
   throw new Error(
     'No database configured. Set DATABASE_URL (preferred, fast direct inserts) ' +
     'or NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, or use --dry-run.'
   );
+}
+
+/**
+ * `--check-db`: report which mode this machine would import in and why the
+ * direct connection fails, without downloading or writing anything. This is the
+ * first thing to run when the import reports a connection error.
+ */
+async function checkDb(args) {
+  const say = (line) => console.error(`[spansh-import] ${line}`);
+  const databaseUrl = args.databaseUrl || galaxyDbUrl();
+  const supabase = supabaseEnv();
+  let ok = true;
+
+  if (!databaseUrl) {
+    say('direct Postgres: not configured (DATABASE_URL/SUPABASE_DB_URL are empty)');
+  } else {
+    say(`direct Postgres: ${maskUrl(databaseUrl)}`);
+    try {
+      const pool = await openPgPool(databaseUrl, (line) => say(`  ${line}`));
+      const res = await pool.query('SELECT current_database() AS db, version() AS version');
+      const row = res.rows[0] || {};
+      say(`direct Postgres: OK — database ${row.db ?? '?'}, ${String(row.version ?? '').split(',')[0]}`);
+      await pool.end();
+    } catch (error) {
+      ok = false;
+      say(`direct Postgres: FAILED — ${pgFailureMessage(error, databaseUrl)}`);
+    }
+  }
+
+  if (supabase) {
+    say(`PostgREST fallback: configured (${supabase.supabaseUrl}) — the import can run without a direct connection`);
+  } else {
+    say('PostgREST fallback: not configured (need NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY)');
+    if (!databaseUrl || !ok) say('No usable database mode: the import cannot start.');
+  }
+  if (!ok) process.exitCode = 1;
 }
 
 // ─────────────────────── selftest ───────────────────────
@@ -554,6 +648,10 @@ export function runMain(argv) {
   return (async () => {
     if (args.selftest) {
       await selftest(args, log);
+      return;
+    }
+    if (args.checkDb) {
+      await checkDb(args);
       return;
     }
     if (args.downloadOnly) {
