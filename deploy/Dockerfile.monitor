@@ -5,6 +5,10 @@ FROM node:22-alpine
 WORKDIR /app
 COPY scripts/monitor-agent.mjs scripts/job-schedule.mjs ./scripts/
 
+# `pg` — только для опционального замера размера БД по MONITOR_DB_URL
+# (прямой read-only запрос pg_database_size; без URL замер не выполняется).
+RUN npm init -y >/dev/null && npm i --no-audit --no-fund pg@8
+
 ENV NODE_ENV=production \
     MONITOR_AGENT_PORT=8080
 

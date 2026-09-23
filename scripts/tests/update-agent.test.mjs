@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  ENV_STAGES,
   UPDATE_PROTOCOL,
   UPDATE_STAGES,
   applyProgressEvent,
@@ -360,13 +361,41 @@ test('deploy/update-project.sh: синтаксис и полный набор с
 test('deploy scripts: синтаксис всех скриптов обновления и мониторинга', { skip: needsBash }, () => {
   for (const file of [
     'deploy/update-project.sh',
+    'deploy/apply-env.sh',
+    'deploy/db-backup.sh',
     'deploy/start-update-agent.sh',
     'deploy/start-monitoring.sh',
+    'deploy/monitoring-setup.sh',
     'deploy/prepare-standalone.sh',
   ]) {
     const check = spawnSync('bash', ['-n', join(ROOT, file)], { encoding: 'utf8' });
     assert.equal(check.status, 0, file + ': ' + check.stderr);
   }
+});
+
+test('apply-env.sh: стадии ENV_STAGES, режим определяется сам, секреты не светятся', { skip: needsBash }, () => {
+  const source = readFileSync(join(ROOT, 'deploy', 'apply-env.sh'), 'utf8');
+  assert.match(source, /set -euo pipefail/);
+  // Панель рисует чек-лист по этим стадиям — скрипт обязан их сообщать
+  // (финальная «done» — тем же raw-printf, как в update-project.sh).
+  for (const stage of ENV_STAGES) {
+    const pattern = stage.id === 'done' ? /"stage":"done"/ : new RegExp('report ' + stage.id + ' ');
+    assert.match(source, pattern, 'сообщает о стадии ' + stage.id);
+  }
+  assert.match(source, /docker-compose\.yml/, 'режим compose определяется по compose-файлу');
+  assert.match(source, /systemctl restart/, 'systemd-режим тоже поддерживается');
+  assert.match(source, /force-recreate/, 'ключи применяются пересозданием сервисов, не пересборкой');
+});
+
+test('обрамление: update-agent получил apply-env.sh, monitor-agent — pg, compose — MONITOR_DB_URL', () => {
+  const updateDockerfile = readFileSync(join(ROOT, 'deploy', 'Dockerfile.update-agent'), 'utf8');
+  assert.match(updateDockerfile, /COPY deploy\/apply-env\.sh/, 'скрипт применения ключей внутри образа апдейтера');
+  const monitorDockerfile = readFileSync(join(ROOT, 'deploy', 'Dockerfile.monitor'), 'utf8');
+  assert.match(monitorDockerfile, /npm i .*pg/, 'monitor-agent умеет мерить размер БД');
+  const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+  assert.match(compose, /MONITOR_DB_URL/, 'compose передаёт агенту URL базы');
+  const startMonitoring = readFileSync(join(ROOT, 'deploy', 'start-monitoring.sh'), 'utf8');
+  assert.match(startMonitoring, /MONITOR_DB_URL/, 'скрипт запуска зеркалирует URL из DATABASE_URL/SUPABASE_DB_URL');
 });
 
 test('start-update-agent.sh: идемпотентная запись ключей и ничего лишнего в выводе', { skip: needsBash }, () => {
@@ -454,6 +483,45 @@ test('доступ: админские эндпоинты проверки и з
   assert.match(updateRoute, /confirm !== true/, 'запуск обновления — только с явным подтверждением');
 });
 
+test('контракт клиента: «Обновить сейчас» ходит в агента по POST /update, а не /start', () => {
+  // История дефекта: клиент шёл в POST /start, такого пути в роутере
+  // агента нет, и кнопка в панели отвечала «ошибка 404». Контракт агента —
+  // POST /update (шапка scripts/update-agent.mjs и тесты выше зафиксированы).
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  const updateRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'monitor', 'update', 'route.ts'), 'utf8');
+  assert.match(updateRoute, /callUpdateAgent\(\s*'start'/, 'кнопка запуска идёт через тот же клиент');
+
+  const mapping = /start:\s*'([^']+)'/m.exec(client);
+  assert.ok(mapping, 'клиент обязан маппить действие на путь агента');
+  assert.equal(mapping[1], 'update', 'запуск обновления = POST /update; /start агент отвечает 404');
+});
+
+test('контракт агента: POST /start — 404, а путь клиента запускает обновление', { skip: needsBash }, async (t) => {
+  // Живая проверка обеих сторон: если кто-то снова «исправит» одну сторону
+  // вразрез с другой, тест упадёт раньше прод-инцидента.
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  const path = /start:\s*'([^']+)'/m.exec(client)?.[1];
+  assert.ok(path, 'путь клиента не найден — сначала прогоните тест контракта клиента');
+
+  const config = testConfig();
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  assert.equal((await fetch(origin + '/start', { method: 'POST', headers: auth, body: '{}' })).status, 404,
+    'агент не знает /start — с таким путём кнопка отдаст посетителю 404');
+  const started = await fetch(origin + '/' + path, { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(started.status, 202, `POST /${path} (путь клиента) должен запускать обновление`);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+});
+
 test('compose: веб-контейнер не получает ни git, ни Docker-сокет', () => {
   const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
   const block = (name) => {
@@ -478,4 +546,123 @@ test('compose: веб-контейнер не получает ни git, ни Do
   assert.match(updater, /UPDATE_AGENT_TOKEN/);
   assert.match(updater, /\/var\/run\/docker\.sock:\/var\/run\/docker\.sock/);
   assert.equal(/ports:/.test(updater), false, 'у апдейтера не должно быть проброшенного порта');
+});
+
+test('env keys: masking, create/update, delete, validation, permissions 600', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-update-env-'));
+  const envFile = join(dir, '.env.production');
+  writeFileSync(envFile, [
+    '# production keys',
+    'CRON_SECRET=existing-secret-123',
+    'YANDEX_TRANSLATE_API_KEY=old-key-value-abc',
+  ].join('\n'));
+  const config = testConfig({
+    PROJECT_DIR: dir,
+    UPDATE_STATE_DIR: join(dir, 'state'),
+    ENV_FILE: envFile,
+    APPLY_ENV_SCRIPT: join(dir, 'deploy', 'apply-env.sh'),
+  });
+  const server = createUpdateServer({ config, manager: createUpdateManager(config) });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  assert.equal((await fetch(origin + '/env')).status, 401, 'no token, no keys');
+
+  const listed = await (await fetch(origin + '/env', { headers: auth })).json();
+  assert.equal(listed.ok, true);
+  assert.equal(listed.configured, true);
+  assert.deepEqual(listed.keys.map((k) => k.name).sort(), ['CRON_SECRET', 'YANDEX_TRANSLATE_API_KEY']);
+  assert.equal(JSON.stringify(listed).includes('existing-secret-123'), false, 'raw values do not leak');
+  assert.equal(JSON.stringify(listed).includes('old-key-value-abc'), false, 'raw values do not leak');
+
+  const added = await fetch(origin + '/env', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'NEW_KEY', value: 'brand-new-value-xyz' }) });
+  assert.equal(added.status, 201);
+  const addedBody = await added.json();
+  assert.equal(addedBody.created, true);
+  assert.equal(JSON.stringify(addedBody).includes('brand-new-value-xyz'), false, 'response has only the mask');
+
+  const updated = await fetch(origin + '/env', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'YANDEX_TRANSLATE_API_KEY', value: 'new-key-456' }) });
+  assert.equal(updated.status, 200);
+
+  const disk = readFileSync(envFile, 'utf8');
+  assert.match(disk, /^YANDEX_TRANSLATE_API_KEY=new-key-456$/m);
+  assert.match(disk, /^NEW_KEY=brand-new-value-xyz$/m);
+  assert.match(disk, /^CRON_SECRET=existing-secret-123$/m, 'other keys are not touched');
+  assert.equal((disk.match(/^YANDEX_TRANSLATE_API_KEY=/gm) || []).length, 1, 'no duplicate keys after update');
+  assert.equal(statSync(envFile).mode & 0o077, 0, 'env file keeps 600 permissions');
+
+  const badName = await fetch(origin + '/env', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'bad-key', value: 'x' }) });
+  assert.equal(badName.status, 400, 'lowercase names are not allowed');
+  const badValue = await fetch(origin + '/env', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'BAD_VALUE', value: 'line1\nline2' }) });
+  assert.equal(badValue.status, 400, 'multi-line values are not allowed');
+
+  const removed = await fetch(origin + '/env?key=NEW_KEY', { method: 'DELETE', headers: auth });
+  assert.equal(removed.status, 200);
+  assert.equal(readFileSync(envFile, 'utf8').includes('NEW_KEY'), false);
+  assert.equal((await fetch(origin + '/env?key=NEW_KEY', { method: 'DELETE', headers: auth })).status, 404, 'double delete — 404');
+});
+
+test('env apply: job runs deploy/apply-env.sh in the same slot (kind=env)', { skip: needsBash }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-update-envapply-'));
+  const scriptPath = join(dir, 'deploy', 'apply-env.sh');
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  const proto = (obj) => UPDATE_PROTOCOL + JSON.stringify(obj);
+  writeFileSync(scriptPath, [
+    '#!/usr/bin/env bash',
+    `echo '${proto({ stage: 'env_prepare', percent: 10 })}'`,
+    'sleep 0.2',
+    `echo '${proto({ stage: 'env_switch', percent: 40, message: 'recreating services' })}'`,
+    `echo '${proto({ stage: 'done', percent: 100 })}'`,
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const config = testConfig({
+    PROJECT_DIR: dir,
+    UPDATE_STATE_DIR: join(dir, 'state'),
+    ENV_FILE: join(dir, '.env.production'),
+    APPLY_ENV_SCRIPT: scriptPath,
+  });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => { manager.stop(); await new Promise((resolve) => server.close(resolve)); });
+
+  const started = await fetch(origin + '/env/apply', { method: 'POST', headers: auth, body: JSON.stringify({ scope: 'web' }) });
+  assert.equal(started.status, 202);
+  const body = await started.json();
+  assert.equal(body.update.kind, 'env', 'the panel needs to know that keys are being applied, not an update');
+  assert.equal(body.update.mode, 'web');
+
+  const busy = await fetch(origin + '/env/apply', { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(busy.status, 409, 'the update slot is occupied — nothing else can be done in parallel');
+
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+  const done = manager.status();
+  assert.equal(done.state, 'succeeded');
+  assert.equal(done.kind, 'env');
+  assert.equal(done.percent, 100);
+  assert.equal(done.stage, 'done');
+  assert.match(done.message, /recreating/, 'stages from the script make it into the protocol');
+});
+
+test('web routes: /api/admin/env requires requireAdmin, client goes through the agent', () => {
+  const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'route.ts'), 'utf8');
+  const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'apply', 'route.ts'), 'utf8');
+  const tab = readFileSync(join(ROOT, 'src', 'components', 'Admin', 'ServerMonitorTab.tsx'), 'utf8');
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+
+  for (const method of ['GET', 'POST', 'DELETE']) {
+    const start = route.indexOf('export async function ' + method);
+    assert.ok(start >= 0, 'route ' + method + ' exists');
+    assert.match(route.slice(start, start + 400), /requireAdmin\(/, method + ' requires admin rights');
+  }
+  assert.match(applyRoute, /requireAdmin\(/, 'applying keys also requires admin rights');
+  assert.match(client, /'GET', '\/env'/, 'client reads keys from the agent');
+  assert.match(client, /'POST', '\/env\/apply'/, 'application goes through the agent, not from the web container');
+  assert.match(tab, /\/api\/admin\/env/, 'panel goes through the admin route');
+  assert.match(tab, /ENV_STAGES/, 'application of keys displays its own stage dictionary');
 });

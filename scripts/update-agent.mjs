@@ -14,10 +14,19 @@
  *   POST /update         → start an update                     (token)
  *   POST /backup         → start a manual database backup      (token)
  *   POST /abort          → SIGTERM the running job             (token)
+ *   GET  /env            → masked env-file keys                (token)
+ *   POST /env            → set/add one env key { key, value }  (token)
+ *   DELETE /env?key=NAME → remove one env key                  (token)
+ *   POST /env/apply      → recreate services so new keys apply (token)
  *
- * Both jobs share ONE state machine and one process slot: a database dump and
- * a stack rebuild must never overlap, and the admin panel sees which of the
- * two is running through the `kind` field.
+ * All jobs (update, backup, env apply) share ONE state machine and one
+ * process slot: a database dump, a stack rebuild and an env change must never
+ * overlap, and the admin panel sees which of the three is running through the
+ * `kind` field.
+ *
+ * Env-file keys are read back MASKED (length + last 4 chars only): the raw
+ * value never travels to the browser, so editing an existing key means
+ * replacing it, not reading it first.
  *
  * Configuration (environment):
  *   UPDATE_AGENT_TOKEN   Bearer token; mandatory when the port is reachable
@@ -34,13 +43,16 @@
  *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
  *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
  *   BACKUP_TIMEOUT_MINUTES  default 120 (a full dump of a 10^8-row catalog is slow)
+ *   ENV_FILE             the env file the panel edits (default <PROJECT_DIR>/.env.production)
+ *   APPLY_ENV_SCRIPT     default <PROJECT_DIR>/deploy/apply-env.sh
+ *   ENV_TIMEOUT_MINUTES  default 5 (a service recreate must be short)
  *
  * The agent is deliberately stateful-but-small: progress survives an agent
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
  */
 import { timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -83,6 +95,9 @@ export function updateAgentConfig(env = process.env) {
     // на диске. Больше — только явным желанием оператора.
     backupKeep: Math.min(24, Math.max(1, Number(env.UPDATE_BACKUP_KEEP) || 4)),
     backupTimeoutMs: Math.max(60_000, (Number(env.BACKUP_TIMEOUT_MINUTES) || 120) * 60_000),
+    envFile: resolve((env.ENV_FILE || join(projectDir, '.env.production')).trim()),
+    applyEnvScript: (env.APPLY_ENV_SCRIPT || join(projectDir, 'deploy', 'apply-env.sh')).trim(),
+    envTimeoutMs: Math.max(60_000, (Number(env.ENV_TIMEOUT_MINUTES) || 5) * 60_000),
     branch: (env.PROJECT_UPDATE_BRANCH || 'main').trim(),
     repository: (env.PROJECT_REPOSITORY || 'NooboGreenD/ed-ring-colony').trim(),
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
@@ -164,7 +179,9 @@ export function createUpdateManager(config) {
       // A crashed host (state left as "running") must not block the panel
       // forever: after the timeout the state is reported as failed.
       if (state.state === 'running' && state.startedAt && !child) {
-        const limit = state.kind === 'backup' ? config.backupTimeoutMs : config.timeoutMs;
+        const limit = state.kind === 'backup' ? config.backupTimeoutMs
+          : state.kind === 'env' ? config.envTimeoutMs
+          : config.timeoutMs;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
             state: 'failed',
@@ -172,36 +189,43 @@ export function createUpdateManager(config) {
             message: null,
             error: state.kind === 'backup'
               ? 'агент перезагружался во время резервного копирования'
-              : 'агент перезагружался во время обновления',
+              : state.kind === 'env'
+                ? 'агент перезагружался во время применения ключей'
+                : 'агент перезагружался во время обновления',
           });
         }
       }
       return sanitizeUpdateState(state);
     },
-    start({ applyMigrations, kind = 'update', full = false } = {}) {
+    start({ applyMigrations, kind = 'update', full = false, scope = 'web' } = {}) {
       if (state.state === 'running' || state.state === 'queued') return { started: false, reason: 'already-running' };
       const backup = kind === 'backup';
+      const envApply = kind === 'env';
+      const script = envApply ? config.applyEnvScript : backup ? config.backupScript : config.script;
+      const jobLabel = envApply ? 'применение ключей' : backup ? 'резервное копирование' : 'обновление';
       const nowIso = new Date().toISOString();
       Object.assign(state, emptyUpdateState(nowIso), {
         state: 'running',
-        kind: backup ? 'backup' : 'update',
-        stage: 'prepare',
-        percent: 0,
-        message: backup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
-        mode: backup ? (full ? 'full' : 'fast') : config.deployMode,
-        branch: backup ? null : config.branch,
+        kind,
+        stage: envApply ? 'env_prepare' : 'prepare',
+        percent: envApply ? 10 : 0,
+        message: envApply ? 'запускаю deploy/apply-env.sh' : backup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
+        mode: envApply ? scope : backup ? (full ? 'full' : 'fast') : config.deployMode,
+        branch: backup || envApply ? null : config.branch,
         startedAt: nowIso,
         log: [],
       });
       touch();
       persist();
-      appendLog(backup
-        ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
-        : `update requested; project=${config.repository} branch=${config.branch} mode=${config.deployMode}`);
+      appendLog(envApply
+        ? `env apply requested; scope=${scope} file=[файл окружения]`
+        : backup
+          ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
+          : `update requested; project=${config.repository} branch=${config.branch} mode=${config.deployMode}`);
 
       let spawned;
       try {
-        spawned = spawn('bash', [backup ? config.backupScript : config.script], {
+        spawned = spawn('bash', [script], {
           cwd: config.projectDir,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -209,28 +233,34 @@ export function createUpdateManager(config) {
             ...process.env,
             PROJECT_DIR: config.projectDir,
             UPDATE_STATE_DIR: config.stateDir,
-            ...(backup
+            ...(envApply
               ? {
-                  // По умолчанию каталог систем в дамп не попадает: он
-                  // восстанавливается импортом дампа Spansh, а весит десятки
-                  // гигабайт — окно технических работ должно быть коротким.
-                  BACKUP_FULL: full ? '1' : '0',
-                  UPDATE_BACKUP_DIR: config.backupDir,
-                  UPDATE_BACKUP_KEEP: String(config.backupKeep),
-                }
-              : {
-                  PROJECT_UPDATE_BRANCH: config.branch,
-                  PROJECT_REPOSITORY: config.repository,
-                  PROJECT_DEPLOY_MODE: config.deployMode,
-                  UPDATE_APPLY_MIGRATIONS: applyMigrations === false ? '0' : '1',
+                  ENV_FILE: config.envFile,
+                  APPLY_ENV_SCOPE: scope,
                   UPDATE_HEALTH_URL: config.healthUrl,
-                }),
+                }
+              : backup
+                ? {
+                    // По умолчанию каталог систем в дамп не попадает: он
+                    // восстанавливается импортом дампа Spansh, а весит десятки
+                    // гигабайт — окно технических работ должно быть коротким.
+                    BACKUP_FULL: full ? '1' : '0',
+                    UPDATE_BACKUP_DIR: config.backupDir,
+                    UPDATE_BACKUP_KEEP: String(config.backupKeep),
+                  }
+                : {
+                    PROJECT_UPDATE_BRANCH: config.branch,
+                    PROJECT_REPOSITORY: config.repository,
+                    PROJECT_DEPLOY_MODE: config.deployMode,
+                    UPDATE_APPLY_MIGRATIONS: applyMigrations === false ? '0' : '1',
+                    UPDATE_HEALTH_URL: config.healthUrl,
+                  }),
           },
         });
       } catch (error) {
         finish({
           state: 'failed',
-          error: `не удалось запустить ${backup ? 'резервное копирование' : 'updater'}: ${error?.message || error}`,
+          error: `не удалось запустить ${jobLabel}: ${error?.message || error}`,
           percent: 0,
         });
         return { started: false, reason: 'spawn-failed' };
@@ -247,8 +277,7 @@ export function createUpdateManager(config) {
       });
       spawned.stderr?.on('data', (data) => appendLog(`! ${data}`));
 
-      const timeoutMs = backup ? config.backupTimeoutMs : config.timeoutMs;
-      const jobLabel = backup ? 'резервное копирование' : 'обновление';
+      const timeoutMs = envApply ? config.envTimeoutMs : backup ? config.backupTimeoutMs : config.timeoutMs;
       timer = setTimeout(() => {
         appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
         abort();
@@ -279,7 +308,9 @@ export function createUpdateManager(config) {
       if (state.state !== 'running') return false;
       finish({
         state: 'aborted',
-        error: state.kind === 'backup' ? 'резервное копирование остановлено оператором' : 'обновление остановлено оператором',
+        error: state.kind === 'backup' ? 'резервное копирование остановлено оператором'
+          : state.kind === 'env' ? 'применение ключей остановлено оператором'
+          : 'обновление остановлено оператором',
       });
       abort();
       return true;
@@ -303,6 +334,85 @@ export function tokenMatches(authorization, token) {
   const expected = Buffer.from(token);
   const actual = Buffer.from(supplied);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+// ── Управление ключами .env.production из панели (Админка → Мониторинг) ────
+// Агент — единственный процесс, которому разрешено трогать файл окружения на
+// хосте. Снаружи уходит только маска (длина + хвост): сырое значение никогда
+// не доезжает до браузера, поэтому «изменить ключ» = заменить его целиком.
+
+const ENV_KEY_RE = /^[A-Z][A-Z0-9_]{0,127}$/;
+const ENV_MAX_VALUE_BYTES = 8 * 1024;
+
+export function maskEnvValue(value) {
+  const text = String(value ?? '');
+  if (!text) return '·пусто·';
+  const tail = text.length <= 8 ? '' : text.slice(-4);
+  return `••••${tail} (${text.length})`;
+}
+
+/** name → value, последнее вхождение побеждает (семантика env-файла). */
+export function parseEnvContent(content) {
+  const keys = new Map();
+  for (const line of String(content ?? '').split('\n')) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);
+    if (match) keys.set(match[1], match[2]);
+  }
+  return keys;
+}
+
+export function readEnvFileState(file) {
+  try {
+    const keys = [...parseEnvContent(readFileSync(file, 'utf8')).entries()]
+      .map(([name, value]) => ({ name, masked: maskEnvValue(value), length: String(value).length }));
+    keys.sort((a, b) => a.name.localeCompare(b.name));
+    return { exists: true, keys };
+  } catch {
+    return { exists: false, keys: [] };
+  }
+}
+
+/** Записать/обновить один ключ. Возвращает true, если ключа раньше не было. */
+export function writeEnvKey(file, key, value) {
+  let content = '';
+  let existed = true;
+  try {
+    content = readFileSync(file, 'utf8');
+  } catch {
+    existed = false;
+  }
+  const lines = content.split('\n');
+  const matches = [];
+  lines.forEach((line, index) => {
+    if (line.startsWith(key + '=')) matches.push(index);
+  });
+  existed = matches.length > 0;
+  if (existed) {
+    // Обновляем последнее вхождение, дубликаты убираем.
+    for (const index of matches.slice(0, -1)) lines[index] = null;
+    lines[matches[matches.length - 1]] = `${key}=${value}`;
+  } else {
+    if (lines.length > 0 && lines[lines.length - 1] !== '') lines.push('');
+    lines.push(`${key}=${value}`);
+  }
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, lines.filter((line) => line !== null).join('\n'));
+  renameSync(tmp, file);
+  try { chmodSync(file, 0o600); } catch { /* владельца файла может не иметься */ }
+  return !existed;
+}
+
+/** Удалить все вхождения ключа. Возвращает true, если что-то удалено. */
+export function deleteEnvKey(file, key) {
+  const content = readFileSync(file, 'utf8');
+  const lines = content.split('\n');
+  const kept = lines.filter((line) => !line.startsWith(key + '='));
+  if (kept.length === lines.length) return false;
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, kept.join('\n'));
+  renameSync(tmp, file);
+  return true;
 }
 
 function send(response, status, payload) {
@@ -382,6 +492,56 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
       if (request.method === 'POST' && url.pathname === '/abort') {
         const stopped = manager.stop();
         send(response, stopped ? 202 : 409, { ok: stopped, update: manager.status() });
+        return;
+      }
+      if (request.method === 'GET' && url.pathname === '/env') {
+        const fileState = readEnvFileState(config.envFile);
+        // Имя файла не раскрывается: админ и так знает, где .env.production.
+        send(response, 200, { ok: true, configured: fileState.exists, keys: fileState.keys });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/env') {
+        const body = await readJsonBody(request);
+        const key = typeof body?.key === 'string' ? body.key.trim() : '';
+        const value = typeof body?.value === 'string' ? body.value : null;
+        if (!ENV_KEY_RE.test(key)) {
+          send(response, 400, { ok: false, error: 'Имя ключа: заглавные A–Z, цифры и _ (1–128 символов)' });
+          return;
+        }
+        if (value == null || /[\r\n]/.test(value) || Buffer.byteLength(value, 'utf8') > ENV_MAX_VALUE_BYTES) {
+          send(response, 400, { ok: false, error: 'Значение: одна строка до 8 КБ без перевода строки' });
+          return;
+        }
+        const created = writeEnvKey(config.envFile, key, value);
+        send(response, created ? 201 : 200, { ok: true, key, created, masked: maskEnvValue(value), length: value.length });
+        return;
+      }
+      if (request.method === 'DELETE' && url.pathname === '/env') {
+        const key = url.searchParams.get('key') || '';
+        if (!ENV_KEY_RE.test(key)) {
+          send(response, 400, { ok: false, error: 'Имя ключа: заглавные A–Z, цифры и _ (1–128 символов)' });
+          return;
+        }
+        let removed = false;
+        try { removed = deleteEnvKey(config.envFile, key); } catch { removed = false; }
+        if (!removed) {
+          send(response, 404, { ok: false, error: 'Ключ не найден в файле окружения' });
+          return;
+        }
+        send(response, 200, { ok: true, key, removed: true });
+        return;
+      }
+      // Применить изменения: пересоздать сервисы, чтобы они подняли новые
+      // ключи из env-файла. Тот же процессный слот, что и update/backup.
+      if (request.method === 'POST' && url.pathname === '/env/apply') {
+        const body = await readJsonBody(request);
+        const scope = body?.scope === 'all' ? 'all' : 'web';
+        const result = manager.start({ kind: 'env', scope });
+        if (!result.started) {
+          send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
+          return;
+        }
+        send(response, 202, { ok: true, startedAt: manager.state.startedAt, update: manager.status() });
         return;
       }
     } catch {

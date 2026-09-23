@@ -125,6 +125,18 @@ function project(value: UpdateAgentStatus, wantFull: boolean): UpdateAgentStatus
  */
 export type UpdateAction = 'start' | 'abort' | 'backup';
 
+/**
+ * Mapping to the agent's HTTP contract (see the endpoint list at the top of
+ * `scripts/update-agent.mjs`): starting an update is `POST /update`. A naive
+ * `POST /start` falls through the agent's router and answers 404 — the admin
+ * button reported «ошибка 404» for exactly this reason.
+ */
+const AGENT_PATHS: Record<UpdateAction, string> = {
+  start: 'update',
+  abort: 'abort',
+  backup: 'backup',
+};
+
 /** Forwards an admin-confirmed action to the updater. Returns the raw agent answer. */
 export async function callUpdateAgent(action: UpdateAction, body?: Record<string, unknown>) {
   const config = configuredUpdateAgent();
@@ -133,7 +145,7 @@ export async function callUpdateAgent(action: UpdateAction, body?: Record<string
   }
 
   try {
-    const response = await fetch(new URL(`/${action}`, config.url), {
+    const response = await fetch(new URL(`/${AGENT_PATHS[action]}`, config.url), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.token}`,
@@ -163,4 +175,95 @@ export async function callUpdateAgent(action: UpdateAction, body?: Record<string
     invalidateUpdateAgentCache();
     return { ok: false as const, status: 502, error: 'Update-агент недоступен: обновление не запущено' };
   }
+}
+
+// ── Управление ключами .env.production (Админка → Мониторинг → API-ключи) ────
+//
+// Веб-контейнер не имеет ни git, ни Docker, ни доступа к файлам хоста, поэтому
+// и ключи редактируются через тот же узкий, защищённый токеном хоппинг в
+// update-agent — единственный процесс, которому разрешено трогать файл
+// окружения. Снаружи уходит только маска: сырое значение ключа никогда не
+// доезжает до браузера, «изменить» = заменить целиком.
+
+export interface EnvKeyEntry {
+  name: string;
+  masked: string;
+  length: number;
+}
+
+interface AgentResult<T> {
+  ok: boolean;
+  status: number;
+  error?: string;
+  payload: T | null;
+}
+
+async function agentRequest<T extends Record<string, unknown>>(
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  body?: Record<string, unknown>,
+): Promise<AgentResult<T>> {
+  const config = configuredUpdateAgent();
+  if (!config.configured || !config.url || !config.token) {
+    return { ok: false, status: 503, error: config.reason || 'Update-агент не настроен', payload: null };
+  }
+
+  try {
+    const response = await fetch(new URL(path, config.url), {
+      method,
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        Accept: 'application/json',
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      cache: 'no-store',
+      redirect: 'error',
+      signal: AbortSignal.timeout(8_000),
+    });
+    const payload: unknown = await response.json().catch(() => null);
+    invalidateUpdateAgentCache();
+    const record = (payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {}) as T;
+    if (!response.ok) {
+      const reason = typeof (record as { error?: unknown }).error === 'string'
+        ? (record as unknown as { error: string }).error
+        : `Update-агент ответил ${response.status}`;
+      return { ok: false, status: response.status, error: reason, payload: record };
+    }
+    return { ok: true, status: response.status, payload: record };
+  } catch {
+    invalidateUpdateAgentCache();
+    return { ok: false, status: 502, error: 'Update-агент недоступен', payload: null };
+  }
+}
+
+/** Список ключей файла окружения — в маске (длина + хвост), без сырых значений. */
+export function listEnvKeys() {
+  return agentRequest<{ configured?: boolean; keys?: EnvKeyEntry[] }>('GET', '/env');
+}
+
+/** Записать/обновить один ключ. Возврат: 201 — создан, 200 — обновлён. */
+export function saveEnvKey(key: string, value: string) {
+  return agentRequest<{ key?: string; created?: boolean; masked?: string; length?: number }>('POST', '/env', { key, value });
+}
+
+export function deleteEnvKey(key: string) {
+  return agentRequest<{ key?: string; removed?: boolean }>('DELETE', `/env?key=${encodeURIComponent(key)}`);
+}
+
+/**
+ * Применить изменения: пересоздать сервисы, чтобы они подняли новые ключи.
+ * Задача идёт в тот же процессный слот, что и update/backup, и видна в панели
+ * как job с `kind: 'env'` (стадии ENV_STAGES).
+ */
+export async function applyEnvKeys(scope: 'web' | 'all' = 'web') {
+  const result = await agentRequest<{ update?: unknown }>('POST', '/env/apply', { scope });
+  return {
+    ok: result.ok,
+    status: result.status,
+    error: result.error,
+    update: result.payload && result.payload.update != null
+      ? sanitizeUpdateState(result.payload.update)
+      : null,
+  };
 }

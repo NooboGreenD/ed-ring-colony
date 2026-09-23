@@ -107,3 +107,37 @@ test('Docker inspect data is reduced to operational facts without configuration 
   assert.equal(output.includes('private/path'), false);
   assert.equal(output.includes('sensitive-container'), false);
 });
+
+test('db probe: без MONITOR_DB_URL блок неактивен, недостижимая БД ничего не сливает', async (t) => {
+  const token = 'test-monitor-token-not-a-real-secret';
+  const baseEnv = {
+    MONITOR_AGENT_TOKEN: token,
+    MONITOR_JOBS_ENABLED: '',
+    MONITOR_JOBS_STATE_FILE: '/not-present/jobs-state.json',
+    DOCKER_SOCKET_PATH: '/not-present/docker.sock',
+  };
+  const listenServer = (env) => {
+    const server = createMonitorServer({ env, now: () => Date.parse('2026-09-23T12:00:00.000Z') });
+    return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+  };
+
+  const silent = await listenServer(baseEnv);
+  await t.test('без URL проба не запускается', async () => {
+    const payload = await (await fetch(`http://127.0.0.1:${silent.address().port}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).json();
+    assert.deepEqual(payload.db, { available: false }, 'белый блок — просто «не настроено»');
+  });
+  await new Promise((resolve) => silent.close(resolve));
+
+  const refused = await listenServer({ ...baseEnv, MONITOR_DB_URL: 'postgresql://app:secret-db-password@127.0.0.1:1/postgres' });
+  await t.test('недостижимый Postgres — предупреждение с хостом, но без пароля', async () => {
+    const payload = await (await fetch(`http://127.0.0.1:${refused.address().port}/status`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).json();
+    assert.equal(payload.db.available, false, 'сбой пробы не роняет статус агента');
+    assert.match(payload.db.note, /127\.0\.0\.1/, 'хост остаётся как подсказка');
+    assert.equal(JSON.stringify(payload).includes('secret-db-password'), false, 'пароль не уходит наружу');
+  });
+  await new Promise((resolve) => refused.close(resolve));
+});

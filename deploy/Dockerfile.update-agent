@@ -28,7 +28,8 @@ WORKDIR /app
 COPY scripts/update-agent.mjs ./scripts/
 COPY scripts/lib/update-state.mjs ./scripts/lib/
 COPY deploy/update-project.sh ./deploy/
-RUN chmod +x /app/deploy/update-project.sh
+COPY deploy/apply-env.sh ./deploy/
+RUN chmod +x /app/deploy/update-project.sh /app/deploy/apply-env.sh
 
 # UPDATE_SCRIPT по умолчанию = $PROJECT_DIR/deploy/update-project.sh, то есть
 # скрипт из обновляемого репозитория (его правки вступают сразу). Копия в
