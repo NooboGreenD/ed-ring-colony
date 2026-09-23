@@ -39,6 +39,13 @@ import {
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
 const TOKEN = 'update-agent-test-token-not-a-real-secret';
 
+// Скрипты обновления рассчитаны на реальный сервер (Ubuntu/Debian всегда с
+// bash), но `npm test` выполняется ещё и внутри node:22-alpine на шаге
+// Docker build, где bash нет. Там shell-тесты пропускаются, а не валят сборку.
+const needsBash = spawnSync('bash', ['--version'], { encoding: 'utf8' }).status === 0
+  ? false
+  : 'bash is not available in this image';
+
 function testConfig(overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'edrc-update-'));
   return updateAgentConfig({
@@ -206,7 +213,7 @@ test('http contract: здоровье открыто, остальное — п�
   assert.equal((await fetch(origin + '/update', { method: 'POST' })).status, 401, 'запуск без токена невозможен');
 });
 
-test('http contract: прогресс обновления доживает до панели и не пачкается секретами', async (t) => {
+test('http contract: прогресс обновления доживает до панели и не пачкается секретами', { skip: needsBash }, async (t) => {
   const config = testConfig();
   const toSha = 'b'.repeat(40);
   writeFileSync(config.script, [
@@ -274,7 +281,7 @@ test('http contract: прогресс обновления доживает до
   assert.match(logFile, /docker compose build/);
 });
 
-test('abort: остановка по-человечески помечает состояние и не оставляет running', async (t) => {
+test('abort: остановка по-человечески помечает состояние и не оставляет running', { skip: needsBash }, async (t) => {
   const config = testConfig();
   writeFileSync(config.script, ['#!/usr/bin/env bash', 'printf ' + JSON.stringify(UPDATE_PROTOCOL + '{"stage":"build","percent":55}') + '; echo', 'sleep 30', ''].join('\n'), { mode: 0o755 });
   const manager = createUpdateManager(config);
@@ -321,7 +328,7 @@ test('crashed updater does not stick the panel in running state', () => {
 
 /* ── 3. shell-скрипт обновления ──────────────────────────────────── */
 
-test('deploy/update-project.sh: синтаксис и полный набор стадий', () => {
+test('deploy/update-project.sh: синтаксис и полный набор стадий', { skip: needsBash }, () => {
   const file = join(ROOT, 'deploy', 'update-project.sh');
   const check = spawnSync('bash', ['-n', file], { encoding: 'utf8' });
   assert.equal(check.status, 0, 'bash -n: ' + check.stderr);
@@ -346,7 +353,7 @@ test('deploy/update-project.sh: синтаксис и полный набор с
   assert.match(source, /detect_mode/, 'режим (compose или systemd) определяется сам');
 });
 
-test('deploy scripts: синтаксис всех скриптов обновления и мониторинга', () => {
+test('deploy scripts: синтаксис всех скриптов обновления и мониторинга', { skip: needsBash }, () => {
   for (const file of [
     'deploy/update-project.sh',
     'deploy/start-update-agent.sh',
@@ -358,7 +365,7 @@ test('deploy scripts: синтаксис всех скриптов обновл�
   }
 });
 
-test('start-update-agent.sh: идемпотентная запись ключей и ничего лишнего в выводе', () => {
+test('start-update-agent.sh: идемпотентная запись ключей и ничего лишнего в выводе', { skip: needsBash }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'edrc-update-keys-'));
   const envFile = join(dir, '.env.production');
   writeFileSync(envFile, 'SUPABASE_SERVICE_ROLE_KEY=service-key-must-stay\n');
