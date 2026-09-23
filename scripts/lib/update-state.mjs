@@ -41,7 +41,23 @@ export const BACKUP_STAGES = [
   { id: 'done', label: 'Готово', percent: 100 },
 ];
 
-const STAGE_BY_ID = new Map(UPDATE_STAGES.map((stage) => [stage.id, stage]));
+/**
+ * Этапы применения ключей окружения (Админка → Мониторинг → API-ключи).
+ * Идентификаторы уникальные (prefixed), чтобы не конфликтовать с UPDATE_STAGES
+ * в общем словаре STAGE_BY_ID: тот же менеджер состояния, тот же лог-канал.
+ * Проценты обязаны совпадать с report-строками deploy/apply-env.sh.
+ */
+export const ENV_STAGES = [
+  { id: 'env_prepare', label: 'Определение режима (Docker / systemd)', percent: 10 },
+  { id: 'env_switch', label: 'Пересоздание сервисов с новыми ключами', percent: 40 },
+  { id: 'env_verify', label: 'Проверка доступности сайта', percent: 90 },
+  { id: 'done', label: 'Готово', percent: 100 },
+];
+
+const STAGE_BY_ID = new Map([
+  ...UPDATE_STAGES.map((stage) => [stage.id, stage]),
+  ...ENV_STAGES.map((stage) => [stage.id, stage]),
+]);
 
 export const UPDATE_LOG_LIMIT = 160;
 export const UPDATE_LOG_LINE_LIMIT = 280;
@@ -141,9 +157,10 @@ export function sanitizeUpdateState(input) {
 
   return {
     state,
-    // Одна машина состояний обслуживает и обновление, и резервную копию:
-    // панель по этому полю выбирает словарь этапов и тексты кнопок.
-    kind: raw.kind === 'backup' ? 'backup' : 'update',
+    // Одна машина состояний обслуживает обновление, резервную копию и
+    // применение ключей: панель по этому полю выбирает словарь этапов и
+    // тексты кнопок.
+    kind: raw.kind === 'backup' ? 'backup' : raw.kind === 'env' ? 'env' : 'update',
     active: state === 'running' || state === 'queued',
     stage,
     stageLabel: stageLabel(stage),

@@ -134,6 +134,9 @@ export const IconHardDrive = (p: IconProps) => wrap(<><path d="M3 13l2.4-6.2A2 2
 export const IconSave = (p: IconProps) => wrap(<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8"/></>, p);
 export const IconStore = (p: IconProps) => wrap(<><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></>, p);
 export const IconCoins = (p: IconProps) => wrap(<><circle cx="8" cy="8" r="6"/><path d="M18 8a6 6 0 010 12"/><path d="M22 8a6 6 0 010 12"/></>, p);
+/* API-ключи — используются в Админка → Мониторинг → «API-ключи сайта» */
+export const IconPlus = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></>, p);
+export const IconKey = (p: IconProps) => wrap(<><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M15 7l3 3M18 4l2 2"/></>, p);
 export const IconCreditCard = (p: IconProps) => wrap(<><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></>, p);
 export const IconLink = (p: IconProps) => wrap(<><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></>, p);
 export const IconQuote = (p: IconProps) => wrap(<><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/></>, p);

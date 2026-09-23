@@ -334,6 +334,103 @@ async function diskStatus(env = process.env) {
   }
 }
 
+// Размер БД со стороны агента: web-контейнер часто не видит Postgres напрямую
+// (Supabase живёт в своей Docker-сети), а агент на той же машине/сети может.
+// Запрос read-only, без строк; в ответе — только размеры и имя БД.
+const DB_SCHEMA_TOTAL_SQL = `
+  SELECT COALESCE(SUM(pg_total_relation_size(c.oid)), 0) AS schema_bytes,
+         COALESCE(SUM(pg_table_size(c.oid)), 0) AS table_bytes,
+         COALESCE(SUM(pg_indexes_size(c.oid)), 0) AS index_bytes,
+         COALESCE(SUM(GREATEST(pg_total_relation_size(c.oid) - pg_table_size(c.oid) - pg_indexes_size(c.oid), 0)), 0) AS toast_bytes
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'm', 'p')`;
+const DB_TOP_RELATIONS_SQL = `
+  SELECT c.relname AS name,
+         c.relkind AS kind,
+         pg_total_relation_size(c.oid) AS total_bytes,
+         pg_table_size(c.oid) AS table_bytes,
+         pg_indexes_size(c.oid) AS index_bytes,
+         COALESCE(s.n_live_tup, -1) AS live_rows
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+   WHERE n.nspname = 'public' AND c.relkind IN ('r', 'm', 'p')
+   ORDER BY pg_total_relation_size(c.oid) DESC
+   LIMIT 12`;
+
+function sanitizeAgentTable(value) {
+  if (!value || typeof value !== 'object' || typeof value.name !== 'string') return null;
+  const name = value.name.replace(/[^A-Za-z0-9_.$-]/g, '').slice(0, 80);
+  if (!name) return null;
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v
+    : (Number.parseInt(String(v ?? ''), 10) >= 0 ? Number.parseInt(String(v), 10) : null));
+  const rows = num(value.live_rows);
+  return {
+    name,
+    kind: value.kind === 'm' ? 'materialized view' : value.kind === 'p' ? 'partitioned table' : 'table',
+    totalBytes: num(value.total_bytes) ?? 0,
+    tableBytes: num(value.table_bytes) ?? 0,
+    indexBytes: num(value.index_bytes) ?? 0,
+    liveRows: rows == null || rows < 0 ? null : rows,
+  };
+}
+
+/** Opt-in по MONITOR_DB_URL; без него блок «Размер БД» просто не активен. */
+export async function dbStatus(env = process.env) {
+  const url = (env.MONITOR_DB_URL || '').trim();
+  if (!url || !/^postgres(ql)?:\/\//.test(url)) return { available: false };
+  let pg;
+  try {
+    pg = (await import('pg')).default;
+  } catch {
+    return { available: false };
+  }
+  let client = null;
+  try {
+    client = new pg.Client({
+      connectionString: url,
+      statement_timeout: 4_000,
+      query_timeout: 4_000,
+      connectionTimeoutMillis: 2_500,
+    });
+    await client.connect();
+    const [sizeResult, totalsResult, topResult] = await Promise.all([
+      client.query('SELECT current_database() AS name, pg_database_size(current_database()) AS bytes'),
+      client.query(DB_SCHEMA_TOTAL_SQL),
+      client.query(DB_TOP_RELATIONS_SQL),
+    ]);
+    const sizeRow = sizeResult.rows?.[0] ?? {};
+    const totals = totalsResult.rows?.[0] ?? {};
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v
+      : (Number.parseInt(String(v ?? ''), 10) >= 0 ? Number.parseInt(String(v), 10) : null));
+    return {
+      available: true,
+      databaseName: typeof sizeRow.name === 'string' ? sizeRow.name.slice(0, 63) : null,
+      databaseBytes: num(sizeRow.bytes),
+      schemaBytes: num(totals.schema_bytes),
+      tableBytes: num(totals.table_bytes),
+      indexBytes: num(totals.index_bytes),
+      toastBytes: num(totals.toast_bytes),
+      largest: (topResult.rows || []).map(sanitizeAgentTable).filter(Boolean),
+      measuredAt: new Date().toISOString(),
+      note: null,
+    };
+  } catch {
+    // Ни хост-детей, ни пароля из URL наружу: только сам хост для подсказки.
+    let host = null;
+    try { host = new URL(url).hostname || null; } catch { /* opaque URL */ }
+    return {
+      available: false,
+      note: host
+        ? `Postgres не ответил (${host}) — проверьте MONITOR_DB_URL и права роли`
+        : 'Postgres не ответил — проверьте MONITOR_DB_URL',
+    };
+  } finally {
+    try { await client?.end(); } catch { /* probe is best-effort */ }
+  }
+}
+
 export function createMonitorServer({ env = process.env, now = () => Date.now() } = {}) {
   return createServer(async (request, response) => {
     const url = new URL(request.url || '/', 'http://monitor-agent');
@@ -351,12 +448,13 @@ export function createMonitorServer({ env = process.env, now = () => Date.now() 
     }
 
     const checkedAt = new Date(now()).toISOString();
-    const [docker, scheduler, disk] = await Promise.all([
+    const [docker, scheduler, disk, db] = await Promise.all([
       dockerStatus(env),
       schedulerStatus(env, now()),
       diskStatus(env),
+      dbStatus(env),
     ]);
-    send(response, 200, { ok: true, checkedAt, docker, scheduler, disk });
+    send(response, 200, { ok: true, checkedAt, docker, scheduler, disk, db });
   });
 }
 

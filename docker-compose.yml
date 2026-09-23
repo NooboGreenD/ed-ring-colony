@@ -119,6 +119,10 @@ services:
       # an explicitly empty value means no scheduler tasks are enabled.
       MONITOR_JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,galnet-sync,translate}
       MONITOR_JOBS_STATE_FILE: /monitor/jobs-state/jobs-state.json
+      # Опциональный прямой read-only замер размера БД (pg_database_size).
+      # Зеркалируется из DATABASE_URL/SUPABASE_DB_URL скриптом start-monitoring.sh:
+      # web-контейнер не всегда видит Postgres напрямую, а агент — да.
+      MONITOR_DB_URL: ${MONITOR_DB_URL:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - jobs-state:/monitor/jobs-state:ro

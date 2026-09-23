@@ -9,12 +9,14 @@ import {
   IconClock,
   IconDatabase,
   IconHardDrive,
+  IconKey,
   IconPackage,
+  IconPlus,
   IconRefresh,
   IconSync,
   IconXCircle,
 } from '@/components/Icons';
-import { UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
+import { BACKUP_STAGES, ENV_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
 import { authFetch } from '@/lib/supabaseClient';
 import type {
   MonitorContainer,
@@ -33,6 +35,9 @@ type MonitorResponse = { success: true; monitor: ServerMonitorSnapshot } | { err
 interface UpdateState {
   state: string;
   active: boolean;
+  // update — пересборка, backup — дамп БД, env — применение ключей окружения.
+  // Тот же процессный слот и журнал; по kind выбирается словарь стадий.
+  kind?: string;
   stage: string | null;
   stageLabel: string | null;
   percent: number;
@@ -51,7 +56,7 @@ interface UpdateState {
 }
 
 // Ответ может прийти и успешным, и с ошибкой, и с 409 «уже идёт обновление» —
-// все поля держаем опциональными, чтобы не гадать над вариантами union.
+// все поля держим опциональными, чтобы не гадать над вариантами union.
 type UpdateResponse = {
   success?: boolean;
   configured?: boolean;
@@ -60,6 +65,72 @@ type UpdateResponse = {
   error?: string;
   update?: UpdateState | null;
 };
+
+// Ключи окружения из /api/admin/env: маска (длина + хвост), сырого значения
+// нет — его не существует в браузере по построению.
+interface EnvKeyRow {
+  name: string;
+  masked: string;
+  length: number;
+}
+
+interface EnvKeysResponse {
+  success?: boolean;
+  configured?: boolean;
+  keys?: EnvKeyRow[];
+  error?: string;
+}
+
+// Известные ключи .env.production — подсказка для «Добавить ключ».
+// Значения не привязаны: это только словарь имён с пояснением.
+const KNOWN_ENV_KEYS: Array<{ name: string; hint: string }> = [
+  { name: 'NEXT_PUBLIC_SUPABASE_URL', hint: 'Адрес Supabase (REST)' },
+  { name: 'NEXT_PUBLIC_SUPABASE_ANON_KEY', hint: 'Публичный ключ Supabase (anon)' },
+  { name: 'SUPABASE_SERVICE_ROLE_KEY', hint: 'Ключ Supabase service_role' },
+  { name: 'SUPABASE_PROJECT_REF', hint: 'Референс проекта Supabase' },
+  { name: 'SUPABASE_ACCESS_TOKEN', hint: 'Токен Supabase CLI' },
+  { name: 'SUPABASE_DB_PASSWORD', hint: 'Пароль Postgres (Supabase)' },
+  { name: 'SUPABASE_DB_URL', hint: 'Прямой Postgres (альтернатива DATABASE_URL)' },
+  { name: 'DATABASE_URL', hint: 'Прямой Postgres: импорт Spansh, размер БД' },
+  { name: 'MONITOR_DB_URL', hint: 'Postgres для замера размера БД со стороны monitor-agent' },
+  { name: 'NEXT_PUBLIC_SITE_URL', hint: 'Публичный адрес сайта (https)' },
+  { name: 'NEXT_PUBLIC_VAPID_PUBLIC_KEY', hint: 'VAPID публичный ключ (push)' },
+  { name: 'VAPID_PRIVATE_KEY', hint: 'VAPID приватный ключ (push)' },
+  { name: 'VAPID_SUBJECT', hint: 'Контакт VAPID (mailto:)' },
+  { name: 'CRON_SECRET', hint: 'Секрет планировщика jobs' },
+  { name: 'JOBS_ENABLED', hint: 'Список задач планировщика' },
+  { name: 'JOBS_TRANSLATE_PASSES', hint: 'Проходов перевода за синхронизацию' },
+  { name: 'MONITOR_AGENT_TOKEN', hint: 'Токен web → monitor-agent' },
+  { name: 'UPDATE_AGENT_TOKEN', hint: 'Токен web → update-agent' },
+  { name: 'UPDATE_AGENT_URL', hint: 'Адрес update-agent' },
+  { name: 'PROJECT_REPOSITORY', hint: 'Репозиторий GitHub (owner/repo)' },
+  { name: 'PROJECT_UPDATE_BRANCH', hint: 'Ветка для обновлений' },
+  { name: 'PROJECT_DEPLOY_MODE', hint: 'auto | compose | systemd' },
+  { name: 'PROJECT_HOST_DIR', hint: 'Путь к клону на хосте (Docker)' },
+  { name: 'UPDATE_BACKUP_DIR', hint: 'Каталог дампов БД' },
+  { name: 'UPDATE_BACKUP_KEEP', hint: 'Сколько копий держать' },
+  { name: 'AUTH_OAUTH_PROVIDERS', hint: 'Провайдеры входа (discord, vk, yandex…)' },
+  { name: 'AUTH_EMAIL_ENABLED', hint: 'Вход по почте (true/false)' },
+  { name: 'YANDEX_TRANSLATE_API_KEY', hint: 'Ключ Yandex Translate API' },
+  { name: 'YANDEX_TRANSLATE_IAM_TOKEN', hint: 'IAM-токен Yandex (альтернатива ключу)' },
+  { name: 'YANDEX_TRANSLATE_FOLDER_ID', hint: 'Каталог Yandex Cloud' },
+  { name: 'FRONTIER_REDIRECT_URI', hint: 'Колбэк Frontier CAPI' },
+  { name: 'FRONTIER_CLIENT_ID', hint: 'Client ID Frontier CAPI' },
+  { name: 'FRONTIER_CLIENT_SECRET', hint: 'Секрет Frontier CAPI (опционально)' },
+  { name: 'INARA_API_KEY', hint: 'Ключ Inara API' },
+  { name: 'DISCORD_WEBHOOK_URL', hint: 'Discord-вебхук уведомлений' },
+  { name: 'RAVEN_API_BASE', hint: 'Адрес Raven Colonial API' },
+  { name: 'EDDN_INGEST_SECRET', hint: 'Секрет EDDN-воркера' },
+  { name: 'EDDN_INGEST_URL', hint: 'Адрес приёма EDDN' },
+  { name: 'GALNET_FEED_LIMIT', hint: 'Galnet: статей за запуск' },
+  { name: 'GALNET_TRANSLATE_LIMIT', hint: 'Переводов статей за проход' },
+  { name: 'BILLING_STORAGE', hint: 'Хранилище биллинга (supabase/file)' },
+  { name: 'VK_ID_CLIENT_ID', hint: 'VK ID: client ID' },
+  { name: 'VK_ID_CLIENT_SECRET', hint: 'VK ID: секрет' },
+  { name: 'YANDEX_ID_CLIENT_ID', hint: 'Яндекс ID: ClientID' },
+  { name: 'YANDEX_ID_CLIENT_SECRET', hint: 'Яндекс ID: client secret' },
+];
+
 
 const LEVEL_META: Record<MonitorLevel, { label: string; className: string }> = {
   healthy: { label: 'В норме', className: 'healthy' },
@@ -75,6 +146,25 @@ const UPDATE_STATE_META: Record<string, { label: string; level: MonitorLevel }> 
   failed: { label: 'Обновление завершилось с ошибкой', level: 'critical' },
   aborted: { label: 'Обновление остановлено', level: 'warning' },
 };
+
+const ENV_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
+  idle: { label: 'Ключи не применяются', level: 'unknown' },
+  running: { label: 'Идёт применение ключей', level: 'warning' },
+  succeeded: { label: 'Ключи применены', level: 'healthy' },
+  failed: { label: 'Применение ключей завершилось с ошибкой', level: 'critical' },
+  aborted: { label: 'Применение ключей остановлено', level: 'warning' },
+};
+
+function stateMetaFor(update: UpdateState | null): { label: string; level: MonitorLevel } {
+  const table = update?.kind === 'env' ? ENV_STATE_META : UPDATE_STATE_META;
+  return table[update?.state || 'idle'] ?? { label: '—', level: 'unknown' };
+}
+
+function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; percent: number }> {
+  if (update?.kind === 'env') return ENV_STAGES;
+  if (update?.kind === 'backup') return BACKUP_STAGES;
+  return UPDATE_STAGES;
+}
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return '—';
@@ -170,13 +260,13 @@ function diskLevel(disk: MonitorDisk): MonitorLevel {
 function updateLevel(update: UpdateState | null, connected: boolean): MonitorLevel {
   if (!connected) return 'unknown';
   if (!update) return 'unknown';
-  return UPDATE_STATE_META[update.state]?.level ?? 'unknown';
+  return stateMetaFor(update).level;
 }
 
 function stageState(index: number, update: UpdateState | null): 'done' | 'active' | 'todo' {
-  if (!update || !update.stage) return index === -1 ? 'todo' : 'todo';
-  const activeIndex = UPDATE_STAGES.findIndex((stage) => stage.id === update.stage);
+  if (!update || !update.stage) return 'todo';
   if (update.state === 'succeeded') return 'done';
+  const activeIndex = stagesForKind(update).findIndex((stage) => stage.id === update.stage);
   if (activeIndex < 0) return 'todo';
   if (index < activeIndex) return 'done';
   if (index === activeIndex) return 'active';
@@ -299,6 +389,14 @@ export default function ServerMonitorTab() {
   const [updateMessage, setUpdateMessage] = useState('');
   const [contentBusy, setContentBusy] = useState('');
   const [contentMessage, setContentMessage] = useState('');
+  const [envKeys, setEnvKeys] = useState<EnvKeyRow[] | null>(null);
+  const [envConfigured, setEnvConfigured] = useState(false);
+  const [envBusy, setEnvBusy] = useState('');
+  const [envMessage, setEnvMessage] = useState('');
+  const [editingKey, setEditingKey] = useState<{ name: string; value: string } | null>(null);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
+  const [applyAll, setApplyAll] = useState(false);
   const inFlight = useRef(false);
   const logRef = useRef<HTMLPreElement | null>(null);
 
@@ -424,6 +522,134 @@ export default function ServerMonitorTab() {
       setContentBusy('');
     }
   }, [load]);
+
+  // ── API-ключи (.env.production) ────────────────────────────────────
+  // Список и правки идут через /api/admin/env → update-agent; браузер видит
+  // только маски. «Применить» запускает job вида kind='env' в общем слоте
+  // обновления, поэтому его прогресс и журнал рендерятся тем же блоком.
+  const loadEnvKeys = useCallback(async () => {
+    if (!updateConfigured) return;
+    try {
+      const response = await authFetch('/api/admin/env', { cache: 'no-store' });
+      const data = await response.json().catch(() => ({})) as EnvKeysResponse;
+      if (!response.ok) {
+        setEnvKeys(null);
+        return;
+      }
+      setEnvConfigured(data.configured === true);
+      setEnvKeys(Array.isArray(data.keys) ? data.keys : []);
+    } catch {
+      setEnvKeys(null);
+    }
+  }, [updateConfigured]);
+
+  useEffect(() => {
+    void loadEnvKeys();
+  }, [loadEnvKeys]);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = window.setInterval(() => void loadEnvKeys(), REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, loadEnvKeys]);
+
+  // Когда применение ключей завершилось, список пересобираем сразу.
+  const envJobFinished = update?.kind === 'env' && update.active === false && update.state !== 'idle';
+  useEffect(() => {
+    if (envJobFinished) void loadEnvKeys();
+  }, [envJobFinished, loadEnvKeys]);
+
+  const saveEnvKeyEdit = useCallback(async () => {
+    if (!editingKey) return;
+    setEnvBusy('save');
+    setEnvMessage('');
+    try {
+      const response = await authFetch('/api/admin/env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: editingKey.name, value: editingKey.value }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setEnvMessage(`Ключ ${editingKey.name} сохранён. Не забудьте «Применить».`);
+      setEditingKey(null);
+      void loadEnvKeys();
+    } catch (cause) {
+      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось сохранить ключ');
+    } finally {
+      setEnvBusy('');
+    }
+  }, [editingKey, loadEnvKeys]);
+
+  const addEnvKey = useCallback(async () => {
+    const key = newKeyName.trim();
+    if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) {
+      setEnvMessage('Имя ключа: заглавные A–Z, цифры и _ (1–128 символов)');
+      return;
+    }
+    if (!newKeyValue) {
+      setEnvMessage('Введите значение ключа');
+      return;
+    }
+    setEnvBusy('add');
+    setEnvMessage('');
+    try {
+      const response = await authFetch('/api/admin/env', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value: newKeyValue }),
+      });
+      const data = await response.json().catch(() => ({})) as { error?: string; created?: boolean };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setEnvMessage(`Ключ ${key} ${data.created ? 'добавлен' : 'обновлён'}. Не забудьте «Применить».`);
+      setNewKeyName('');
+      setNewKeyValue('');
+      void loadEnvKeys();
+    } catch (cause) {
+      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось добавить ключ');
+    } finally {
+      setEnvBusy('');
+    }
+  }, [newKeyName, newKeyValue, loadEnvKeys]);
+
+  const removeEnvKey = useCallback(async (name: string) => {
+    if (!window.confirm(`Удалить ключ ${name} из файла окружения? Действие вступит в силу после «Применить».`)) return;
+    setEnvBusy('delete');
+    setEnvMessage('');
+    try {
+      const response = await authFetch(`/api/admin/env?key=${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setEnvMessage(`Ключ ${name} удалён. Не забудьте «Применить».`);
+      void loadEnvKeys();
+    } catch (cause) {
+      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось удалить ключ');
+    } finally {
+      setEnvBusy('');
+    }
+  }, [loadEnvKeys]);
+
+  const applyEnvKeys = useCallback(async () => {
+    const target = applyAll ? 'web, jobs и monitor-agent' : 'web';
+    if (!window.confirm(`Пересоздать ${target}, чтобы новые ключи вступили в силу?\nСайт будет недоступен несколько секунд.`)) return;
+    setEnvBusy('apply');
+    setEnvMessage('');
+    try {
+      const response = await authFetch('/api/admin/env/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: applyAll ? 'all' : 'web' }),
+      });
+      const data = await response.json().catch(() => ({})) as UpdateResponse;
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (data.update) setUpdate(data.update);
+      setEnvMessage('Применение запущено — прогресс в блоке «Обновление проекта».');
+    } catch (cause) {
+      setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось применить изменения');
+    } finally {
+      setEnvBusy('');
+    }
+  }, [applyAll]);
 
   const dashboard = snapshot && (
     <>
@@ -649,8 +875,8 @@ export default function ServerMonitorTab() {
               <p>Ручная пересборка: git pull → миграции → сборка → перезапуск сервисов → проверка живости.</p>
             </div>
             <StatusPill
-              level={updateConnected ? (update ? UPDATE_STATE_META[update.state]?.level ?? 'unknown' : 'unknown') : updateConfigured ? 'critical' : 'unknown'}
-              label={updateConnected ? UPDATE_STATE_META[update?.state || 'idle']?.label : updateConfigured ? 'Update-агент не отвечает' : 'Агент не настроен'}
+              level={updateConnected ? (update ? stateMetaFor(update).level : 'unknown') : updateConfigured ? 'critical' : 'unknown'}
+              label={updateConnected ? stateMetaFor(update).label : updateConfigured ? 'Update-агент не отвечает' : 'Агент не настроен'}
             />
           </div>
 
@@ -674,7 +900,7 @@ export default function ServerMonitorTab() {
                 <div className="ops-progress-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(update.percent || 0)))}%` }} />
               </div>
               <ul className="ops-update-stages">
-                {UPDATE_STAGES.map((stage, index) => (
+                {stagesForKind(update).map((stage, index) => (
                   <li className="ops-update-stage" key={stage.id} data-state={stageState(index, update)}>
                     {stageState(index, update) === 'done' ? <IconCheckCircle size={11} /> : <IconClock size={11} />}
                     {stage.label}
@@ -685,9 +911,15 @@ export default function ServerMonitorTab() {
                 <div><dt>Стадия</dt><dd>{update.stageLabel || update.stage || '—'}</dd></div>
                 <div><dt>Начало</dt><dd>{formatDate(update.startedAt)}</dd></div>
                 <div><dt>Обновлено</dt><dd>{formatDate(update.updatedAt)}</dd></div>
-                <div><dt>Режим</dt><dd>{update.mode || '—'}</dd></div>
-                <div><dt>Ревизия</dt><dd>{update.fromSha ? `${update.fromSha.slice(0, 12)} → ${(update.toSha || '').slice(0, 12)}` : '—'}</dd></div>
-                <div><dt>Миграций применено</dt><dd>{update.migrationsApplied ?? 0}</dd></div>
+                {update.kind === 'env' ? (
+                  <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
+                ) : (
+                  <>
+                    <div><dt>Режим</dt><dd>{update.mode || '—'}</dd></div>
+                    <div><dt>Ревизия</dt><dd>{update.fromSha ? `${update.fromSha.slice(0, 12)} → ${(update.toSha || '').slice(0, 12)}` : '—'}</dd></div>
+                    <div><dt>Миграций применено</dt><dd>{update.migrationsApplied ?? 0}</dd></div>
+                  </>
+                )}
               </dl>
               {update.message && <div className="ops-inline-note ops-inline-progress">{update.message}</div>}
               {update.error && (
@@ -741,6 +973,150 @@ export default function ServerMonitorTab() {
           </div>
         </section>
       </div>
+
+      <section className="ops-panel">
+        <div className="ops-panel-head">
+          <div>
+            <h3><IconKey size={15} /> API-ключи сайта</h3>
+            <p>
+              Ключи окружения (.env.production на сервере): редактирование и добавление прямо с сайта,
+              без SSH. Значения выводятся в маске — сырой ключ в браузер не передаётся, «Изменить»
+              заменяет значение целиком. После правки нажмите «Применить»: сервисы пересоздаются без
+              пересборки. Ключи <code>NEXT_PUBLIC_*</code> вшиваются в бандл при сборке — они требуют
+              «Обновить сейчас».
+            </p>
+          </div>
+          <StatusPill
+            level={!updateConfigured ? 'unknown' : envKeys == null ? 'unknown' : envConfigured ? 'healthy' : 'critical'}
+            label={!updateConfigured ? 'Агент не настроен' : envKeys == null ? 'Нет данных' : envConfigured ? `Ключей: ${envKeys.length}` : 'Файл окружения не найден'}
+          />
+        </div>
+
+        {!updateConfigured && (
+          <div className="ops-notice ops-notice-info">
+            <IconAlert size={16} /> Управление ключами появляется после запуска приватного update-agent
+            (<code>bash deploy/start-update-agent.sh</code>) — он единственный имеет доступ к файлу окружения на хосте.
+          </div>
+        )}
+        {updateConfigured && envKeys == null && (
+          <div className="ops-notice ops-notice-info"><IconAlert size={16} /> Update-агент не ответил: проверьте UPDATE_AGENT_URL/TOKEN в .env.production.</div>
+        )}
+        {updateConfigured && envKeys != null && !envConfigured && (
+          <div className="ops-notice ops-notice-critical">
+            <IconXCircle size={16} /> Файл окружения не найден на хосте — добавьте ключи ниже, файл будет создан.
+          </div>
+        )}
+
+        {updateConfigured && envKeys != null && envConfigured && (
+          <>
+            {envKeys.length === 0 ? (
+              <div className="ops-empty">В файле окружения пока нет ключей.</div>
+            ) : (
+              <div className="ops-env-list">
+                {envKeys.map((key) => (
+                  <div className="ops-env-row" key={key.name}>
+                    <code className="ops-env-name">{key.name}</code>
+                    <span className="ops-env-masked" title="Сырое значение не передаётся в браузер">{key.masked}</span>
+                    <div className="ops-env-actions">
+                      {editingKey?.name === key.name ? (
+                        <>
+                          <input
+                            type="password"
+                            className="ops-env-input"
+                            value={editingKey.value}
+                            placeholder="новое значение"
+                            onChange={(event) => setEditingKey({ ...editingKey, value: event.target.value })}
+                          />
+                          <button type="button" disabled={envBusy !== '' || !editingKey.value} onClick={() => void saveEnvKeyEdit()}>
+                            {envBusy === 'save' ? 'Сохраняю…' : 'Сохранить'}
+                          </button>
+                          <button type="button" disabled={envBusy !== ''} onClick={() => setEditingKey(null)}>Отмена</button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" disabled={envBusy !== ''} onClick={() => setEditingKey({ name: key.name, value: '' })}>
+                            Изменить
+                          </button>
+                          <button type="button" disabled={envBusy !== ''} onClick={() => void removeEnvKey(key.name)}>
+                            {envBusy === 'delete' ? 'Удаляю…' : 'Удалить'}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="ops-env-add">
+              <div className="ops-env-add-title">Добавить / переопределить ключ</div>
+              <div className="ops-env-add-row">
+                <select
+                  className="ops-env-input"
+                  value={newKeyName}
+                  onChange={(event) => setNewKeyName(event.target.value)}
+                >
+                  <option value="">— выбрать ключ —</option>
+                  {KNOWN_ENV_KEYS
+                    .filter((known) => !envKeys.some((key) => key.name === known.name))
+                    .map((known) => (
+                      <option key={known.name} value={known.name} title={known.hint}>
+                        {known.name} — {known.hint}
+                      </option>
+                    ))}
+                </select>
+                <input
+                  className="ops-env-input"
+                  value={newKeyName}
+                  placeholder="ИЛИ своё имя: MY_API_KEY"
+                  onChange={(event) => setNewKeyName(event.target.value.toUpperCase())}
+                />
+                <input
+                  type="password"
+                  className="ops-env-input"
+                  value={newKeyValue}
+                  placeholder="значение ключа"
+                  onChange={(event) => setNewKeyValue(event.target.value)}
+                />
+                <button type="button" className="ops-refresh-button" disabled={envBusy !== ''} onClick={() => void addEnvKey()}>
+                  <IconPlus size={14} /> {envBusy === 'add' ? 'Добавляю…' : 'Добавить ключ'}
+                </button>
+              </div>
+            </div>
+
+            {(update?.kind === 'env' && update.active === true) && (
+              <div className="ops-env-applying">
+                <div className="ops-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(update.percent || 0)}>
+                  <div className="ops-progress-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(update.percent || 0)))}%` }} />
+                </div>
+                <div className="ops-inline-note">
+                  {update.stageLabel || 'Применение ключей…'} — {Math.round(update.percent || 0)}%
+                  {update.error ? ` · ${update.error}` : ''}
+                </div>
+              </div>
+            )}
+
+            <div className="ops-update-actions">
+              <button
+                type="button"
+                className="ops-button-primary"
+                disabled={envBusy !== '' || update?.active === true}
+                onClick={() => void applyEnvKeys()}
+              >
+                <IconRefresh size={14} />
+                {envBusy === 'apply' || (update?.kind === 'env' && update.active === true)
+                  ? 'Применяю…'
+                  : 'Применить (пересоздать web)'}
+              </button>
+              <label>
+                <input type="checkbox" checked={applyAll} onChange={(event) => setApplyAll(event.target.checked)} />
+                web + jobs + monitor-agent
+              </label>
+              {envMessage && <span className="ops-inline-note">{envMessage}</span>}
+            </div>
+          </>
+        )}
+      </section>
 
       <section className="ops-panel ops-technical-panel">
         <h3>Технические сведения</h3>

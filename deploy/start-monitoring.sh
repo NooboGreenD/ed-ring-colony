@@ -113,6 +113,23 @@ ensure_keys() {
   ensure_secret  "$ENV_FILE" CRON_SECRET
   ensure_default "$ENV_FILE" PROJECT_REPOSITORY    "NooboGreenD/ed-ring-colony"
   ensure_default "$ENV_FILE" PROJECT_UPDATE_BRANCH "main"
+  # Размер БД на панели: web-контейнер часто не видит Postgres напрямую
+  # (Supabase живёт в своей сети), поэтому monitor-agent меряет сам.
+  # Значение не секрет сверх DATABASE_URL — просто зеркалируем без вывода.
+  if [ -z "$(env_value "$ENV_FILE" MONITOR_DB_URL)" ]; then
+    local db_src
+    db_src="$(env_value "$ENV_FILE" DATABASE_URL)"
+    [ -n "$db_src" ] || db_src="$(env_value "$ENV_FILE" SUPABASE_DB_URL)"
+    if [ -n "$db_src" ]; then
+      set_env "$ENV_FILE" MONITOR_DB_URL "$db_src"
+      say "  ✓ MONITOR_DB_URL — зеркалирован из DATABASE_URL/SUPABASE_DB_URL"
+    else
+      say "  ! MONITOR_DB_URL пуст: задайте DATABASE_URL или SUPABASE_DB_URL,"
+      say "    иначе блок «Диск и размер базы данных» не посчитает размер БД"
+    fi
+  else
+    say "  ✓ MONITOR_DB_URL — уже задан, оставляю"
+  fi
   chmod 600 "$ENV_FILE"
   # Проверка БД на панели зависит от Supabase-ключей сайта; не генерируем их,
   # но предупреждаем, чтобы «Нет данных» в блоке БД не было сюрпризом.

@@ -216,6 +216,54 @@ function sanitizeTable(value: unknown): MonitorDatabaseTable | null {
   };
 }
 
+/** Строки «largest» уже нормализованы агентом (camelCase) — проверяем, но не пересчитываем. */
+function sanitizeAgentDbTable(value: unknown): MonitorDatabaseTable | null {
+  if (!isRecord(value) || typeof value.name !== 'string') return null;
+  const name = value.name.replace(/[^A-Za-z0-9_.$-]/g, '').slice(0, 80);
+  if (!name) return null;
+  return {
+    name,
+    kind: value.kind === 'materialized view' ? 'materialized view'
+      : value.kind === 'partitioned table' ? 'partitioned table' : 'table',
+    totalBytes: nonNegativeNumber(value.totalBytes) ?? 0,
+    tableBytes: nonNegativeNumber(value.tableBytes) ?? 0,
+    indexBytes: nonNegativeNumber(value.indexBytes) ?? 0,
+    liveRows: nonNegativeNumber(value.liveRows),
+  };
+}
+
+/**
+ * Блок «db» из /status монитора. web-контейнер может не иметь DATABASE_URL
+ * (Supabase живёт на хосте), тогда единственный, кто видит размер БД, —
+ * monitor-agent: его замеры используются как запасной источник.
+ */
+function sanitizeAgentDb(value: unknown): MonitorDatabaseSize | null {
+  if (!isRecord(value)) return null;
+  const note = typeof value.note === 'string' ? value.note.slice(0, 300) : null;
+  if (value.available !== true) return note ? { ...emptyDatabaseSize(null), note } : null;
+  return {
+    available: true,
+    databaseName: typeof value.databaseName === 'string' ? value.databaseName.slice(0, 63) : null,
+    databaseBytes: nonNegativeNumber(value.databaseBytes),
+    schemaBytes: nonNegativeNumber(value.schemaBytes),
+    tableBytes: nonNegativeNumber(value.tableBytes),
+    indexBytes: nonNegativeNumber(value.indexBytes),
+    toastBytes: nonNegativeNumber(value.toastBytes),
+    largest: Array.isArray(value.largest)
+      ? value.largest.map(sanitizeAgentDbTable).filter((row): row is MonitorDatabaseTable => row !== null)
+      : [],
+    measuredAt: typeof value.measuredAt === 'string' ? value.measuredAt : null,
+    note: null,
+  };
+}
+
+/** Прямая проба web-контейнера впереди; замеры monitor-agent — запасной вариант. */
+function mergeDatabaseSize(size: MonitorDatabaseSize, agentDb: MonitorDatabaseSize | null): MonitorDatabaseSize {
+  if (size.available) return size;
+  if (agentDb?.available) return agentDb;
+  return agentDb?.note ? { ...size, note: agentDb.note } : size;
+}
+
 /**
  * How much disk the database occupies. Uses the same direct Postgres path as
  * the Spansh import (`DATABASE_URL` / `SUPABASE_DB_URL`); when neither is set
@@ -344,10 +392,11 @@ async function probeMonitorAgent(): Promise<{
   docker: MonitorDocker;
   scheduler: MonitorScheduler;
   disk: MonitorDisk;
+  db: MonitorDatabaseSize | null;
 }> {
   const config = configuredMonitorAgent();
   if (!config.configured || !config.url || !config.token) {
-    return { agent: { configured: false, connected: false }, docker: emptyDocker(false), scheduler: emptyScheduler(), disk: emptyDisk() };
+    return { agent: { configured: false, connected: false }, docker: emptyDocker(false), scheduler: emptyScheduler(), disk: emptyDisk(), db: null };
   }
 
   try {
@@ -389,6 +438,7 @@ async function probeMonitorAgent(): Promise<{
         jobs,
       },
       disk: sanitizeDisk(payload.disk),
+      db: sanitizeAgentDb(payload.db),
     };
   } catch {
     // An agent failure must not hide the app/database/project checks.
@@ -397,6 +447,7 @@ async function probeMonitorAgent(): Promise<{
       docker: emptyDocker(true),
       scheduler: emptyScheduler(),
       disk: emptyDisk(),
+      db: null,
     };
   }
 }
@@ -609,7 +660,9 @@ export async function getServerMonitorSnapshot(): Promise<ServerMonitorSnapshot>
     probeContentPipeline(),
     projectStatus(),
   ]);
-  const database = { ...databaseCheck, size };
+  // Если web-контейнер не видит Postgres напрямую (нет DATABASE_URL), а
+  // monitor-agent его видит — показываем замеры агента, а не «не настроено».
+  const database = { ...databaseCheck, size: mergeDatabaseSize(size, agentResult.db) };
   const application = {
     status: 'healthy' as const,
     uptimeSeconds: Math.floor(process.uptime()),
