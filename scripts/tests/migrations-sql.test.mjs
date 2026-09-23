@@ -36,6 +36,34 @@ test('SQL-файлы supabase/ находятся', () => {
   assert.ok(FILES.some((f) => f.endsWith('20260925000000_galaxy_systems_scale.sql')));
 });
 
+test('миграция переводов Galnet покрывает все языки translate.mjs для galnet_news и news', () => {
+  const migration = readFileSync(
+    join(ROOT, 'supabase', 'migrations', '20260915000000_galnet_translations.sql'),
+    'utf8',
+  );
+  // Список языков — тот же, что используют sync/перевод и сайт.
+  const langs = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
+  const missing = [];
+  for (const table of ['galnet_news', 'news']) {
+    for (const lang of langs) {
+      for (const field of ['title', 'body']) {
+        const column = `ADD COLUMN IF NOT EXISTS ${field}_${lang} TEXT`;
+        // Колонки galnet_news добавляются на верхнем уровне, news — внутри DO $$.
+        if (!migration.includes(column)) missing.push(`${table}.${field}_${lang}`);
+      }
+    }
+    for (const extra of ['translation_status', 'translated_at']) {
+      // У galnet_news есть и source_lang; для news достаточно статуса и даты.
+      if (!migration.includes(`ADD COLUMN IF NOT EXISTS ${extra}`)) missing.push(`${table}.${extra}`);
+    }
+  }
+  assert.deepEqual(missing, [], 'колонки без которых перевод Galnet не работает');
+  // Служебные поля таблицы лога, которые пишет синк.
+  for (const column of ['duration_ms', 'translated_count', 'updated_count']) {
+    assert.match(migration, new RegExp(`ADD COLUMN IF NOT EXISTS ${column}`), `galnet_sync_log.${column}`);
+  }
+});
+
 test('каждый SQL-файл разбирается парсером PostgreSQL', async () => {
   const failures = [];
   for (const file of FILES) {

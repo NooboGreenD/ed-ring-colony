@@ -110,6 +110,10 @@ export interface MonitorJob {
   nextRunAt: string | null;
   ageSeconds: number | null;
   everySeconds: number | null;
+  /** Present while the job is failing: the runner's own short error line. */
+  lastError?: string | null;
+  lastFailureAt?: string | null;
+  failures?: number | null;
 }
 
 export interface MonitorScheduler {

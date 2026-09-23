@@ -3751,6 +3751,22 @@ html[data-hud-effect="glow"]::before {
   font-weight: 500;
 }
 
+/* Строка «Последняя ошибка» падающей задачи занимает всю ширину карточки. */
+.ops-job-error {
+  grid-column: 1 / -1;
+  padding: 6px 8px;
+  border: 1px solid rgba(251, 146, 60, .35);
+  border-radius: 6px;
+  background: rgba(251, 146, 60, .08);
+}
+
+.ops-job-error strong {
+  overflow: hidden;
+  color: #fdba74;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .ops-project-panel { margin-bottom: 16px; }
 
 .ops-project-grid {

@@ -187,6 +187,27 @@ if [ "$STASHED" = "1" ]; then
 fi
 say "исходники: ${CURRENT_SHA:0:12} → ${NEW_SHA:0:12}"
 
+# ── 4c. Compose-файлы стека: та же сеть Supabase, что у start-monitoring.sh ──
+# Без одинаковых -f у всех скриптов очередное up пересоздало бы web/monitor-agent
+# без сети Supabase, и «getaddrinfo EAI_AGAIN db» вернулся бы после обновления.
+# Частичное дерево без deploy/compose-lib.sh (например, минимальный тестовый
+# клон) не должно ломать обновление — тогда просто без доп. файлов.
+EDRC_EXTRA_COMPOSE_FILES=""
+if [ "$MODE" = "compose" ] && [ -f "$PROJECT_DIR/deploy/compose-lib.sh" ]; then
+  # shellcheck source=compose-lib.sh
+  source "$PROJECT_DIR/deploy/compose-lib.sh"
+  EDRC_EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$PROJECT_DIR" "$ENV_FILE")"
+  [ -n "$EDRC_EXTRA_COMPOSE_FILES" ] && say "сеть Supabase: подключаю web/monitor-agent ($(edrc_detect_supabase_network "$ENV_FILE"))"
+fi
+# Persist метаданных ревизии не должен зависеть от наличия compose-lib.sh.
+if ! declare -F edrc_persist_env >/dev/null 2>&1; then
+  edrc_persist_env() {
+    local f="$1" k="$2" v="$3"
+    [ -f "$f" ] || return 0
+    if grep -qE "^${k}=" "$f"; then sed -i "s|^${k}=.*|${k}=${v}|" "$f"; else printf '%s=%s\n' "$k" "$v" >> "$f"; fi
+  }
+fi
+
 # ── 4a. резервная копия и миграции (уже после обновлённых исходников,
 #      чтобы свежие файлы supabase/migrations/*.sql существовали на диске) ──
 DUMP=""
@@ -247,18 +268,30 @@ fi
 
 
 # ── 5. сборка и переключение ─────────────────────────────────────────
+# Метаданные ревизии нужны ОБЕИМ режимам: их читает docker-compose.yml
+# (build args web) и окружение systemd-сборки. Значения также пишутся в
+# env-файл: тогда «ручная» пересборка без этого скрипта тоже передаст
+# APP_GIT_SHA/APP_GIT_REF/APP_BUILD_TIME в образ, и блок «Версия проекта»
+# панели сможет выполнить очную сверку.
+export APP_GIT_SHA="$NEW_SHA"
+export APP_GIT_REF="$BRANCH"
+export APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -f "$ENV_FILE" ]; then
+  edrc_persist_env "$ENV_FILE" APP_GIT_SHA    "$APP_GIT_SHA"
+  edrc_persist_env "$ENV_FILE" APP_GIT_REF    "$APP_GIT_REF"
+  edrc_persist_env "$ENV_FILE" APP_BUILD_TIME "$APP_BUILD_TIME"
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
+fi
+
 if [ "$MODE" = "compose" ]; then
   # docker compose читает build-args из .env — держим symlink актуальным.
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
-  export APP_GIT_SHA="$NEW_SHA"
-  export APP_GIT_REF="$BRANCH"
-  export APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   report build 70 "Пересобираю docker-образы — это самая долгая часть"
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" --profile monitoring up -d --build $COMPOSE_SERVICES
+    compose --env-file "$ENV_FILE" --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --build $COMPOSE_SERVICES
   else
     say "⚠ $ENV_FILE не найден — пересобираю без --env-file"
-    compose --profile monitoring up -d --build $COMPOSE_SERVICES
+    compose --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --build $COMPOSE_SERVICES
   fi
   report switch 85 "Убираю висячие образы, чтобы не съедать диск"
   docker image prune -f >/dev/null 2>&1 || true

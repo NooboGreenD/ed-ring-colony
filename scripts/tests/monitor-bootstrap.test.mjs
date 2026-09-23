@@ -42,10 +42,44 @@ function envValue(file, key) {
 }
 
 test('monitoring bootstrap and installer scripts are syntactically valid bash', { skip: needsBash }, () => {
-  for (const script of [startScript, installScript]) {
+  const scripts = [
+    startScript,
+    installScript,
+    join(repoRoot, 'deploy', 'compose-lib.sh'),
+    join(repoRoot, 'deploy', 'update-project.sh'),
+    join(repoRoot, 'deploy', 'apply-env.sh'),
+  ];
+  for (const script of scripts) {
     const result = spawnSync('bash', ['-n', script], { encoding: 'utf8' });
     assert.equal(result.status, 0, `bash -n ${script}: ${result.stderr}`);
   }
+});
+
+test('supabase network attach: override file and all compose entrypoints stay in sync', () => {
+  const libPath = join(repoRoot, 'deploy', 'compose-lib.sh');
+  const overridePath = join(repoRoot, 'deploy', 'compose.supabase-net.yml');
+  const lib = readFileSync(libPath, 'utf8');
+  const override = readFileSync(overridePath, 'utf8');
+
+  // Переопределение подключает ровно те сервисы, которым нужен хост `db`.
+  assert.match(override, /external: true/, 'сеть Supabase — внешняя, compose её не создаёт');
+  assert.match(override, /name: \$\{SUPABASE_NETWORK:-supabase_default\}/);
+  assert.match(override, /web:/);
+  assert.match(override, /monitor-agent:/);
+  assert.doesNotMatch(override, /jobs:/, 'планировщику Postgres напрямую не нужен');
+  assert.doesNotMatch(override, /update-agent:/, 'привилегированный апдейтер в сеть БД не подключается');
+
+  // Все, кто делает `docker compose up` для этого стека, обязаны использовать
+  // один и тот же список -f, иначе очередное up молча уберёт сеть Supabase.
+  for (const script of [startScript, join(repoRoot, 'deploy', 'update-project.sh'), join(repoRoot, 'deploy', 'apply-env.sh')]) {
+    const text = readFileSync(script, 'utf8');
+    assert.match(text, /compose-lib\.sh|edrc_extra_compose_files/, `${script} использует общий хелпер`);
+  }
+  for (const fn of ['edrc_detect_supabase_network', 'edrc_extra_compose_files', 'edrc_persist_env']) {
+    assert.match(lib, new RegExp(`^${fn}\\(\\)`, 'm'), `${fn} определён в compose-lib.sh`);
+  }
+  // Скрипты работают с `set -u`: первое чтение переменной — только с дефолтом.
+  assert.match(lib, /\[ -n "\$\{SUPABASE_NETWORK:-\}" \]/, 'первое чтение переменной защищено :-');
 });
 
 test('--keys-only inserts fresh distinct secrets and monitoring defaults without docker', { skip: needsBash }, () => {

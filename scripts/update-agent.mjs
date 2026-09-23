@@ -208,7 +208,11 @@ export function createUpdateManager(config) {
         state: 'running',
         kind,
         stage: envApply ? 'env_prepare' : 'prepare',
-        percent: envApply ? 10 : 0,
+        // Опорный процент той же стадии из UPDATE_STAGES: панель не должна
+        // видеть «stage=prepare, percent=0» до первой прогресс-строки скрипта
+        // ( гонка «POST → GET» раньше времени роняла проверку «процент не
+        // отстаёт от стадии»).
+        percent: envApply ? 10 : 5,
         message: envApply ? 'запускаю deploy/apply-env.sh' : backup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
         mode: envApply ? scope : backup ? (full ? 'full' : 'fast') : config.deployMode,
         branch: backup || envApply ? null : config.branch,

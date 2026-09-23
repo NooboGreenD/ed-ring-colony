@@ -749,7 +749,7 @@ export default function ServerMonitorTab() {
           <div className="ops-panel-head">
             <div>
               <h3>Фоновые задачи</h3>
-              <p>Последний успешный запуск из защищённого state-файла планировщика.</p>
+              <p>Последний запуск из защищённого state-файла планировщика: успехи и последняя ошибка, если задача падает.</p>
             </div>
             <StatusPill
               level={!snapshot.scheduler.available ? 'unknown' : snapshot.scheduler.jobs.some((job) => job.status === 'warning') ? 'warning' : snapshot.scheduler.jobs.every((job) => job.status === 'healthy') && snapshot.scheduler.jobs.length ? 'healthy' : 'unknown'}
@@ -764,14 +764,29 @@ export default function ServerMonitorTab() {
             <div className="ops-empty">В <code>JOBS_ENABLED</code> нет включённых задач.</div>
           ) : (
             <div className="ops-jobs-list">
-              {snapshot.scheduler.jobs.map((job) => (
-                <article className="ops-job-row" key={job.name}>
-                  <div className="ops-job-name"><StatusPill level={jobLevel(job)} /> <code>{job.name}</code></div>
-                  <div className="ops-job-fact"><span>Последний успех</span><strong>{formatDate(job.lastSuccessAt)}</strong></div>
-                  <div className="ops-job-fact"><span>Давность</span><strong>{formatDuration(job.ageSeconds)}</strong></div>
-                  <div className="ops-job-fact"><span>Следующий слот</span><strong>{formatDate(job.nextRunAt)}</strong></div>
-                </article>
-              ))}
+              {snapshot.scheduler.jobs.map((job) => {
+                const failing = !!job.lastError && !!job.lastFailureAt;
+                return (
+                  <article className="ops-job-row" key={job.name}>
+                    <div className="ops-job-name"><StatusPill level={jobLevel(job)} /> <code>{job.name}</code></div>
+                    {failing && (
+                      <div className="ops-job-fact ops-job-error" title={job.lastError ?? undefined}>
+                        <span>Последняя ошибка</span>
+                        <strong>{job.lastError}</strong>
+                      </div>
+                    )}
+                    {failing && (
+                      <div className="ops-job-fact">
+                        <span>Сбой</span>
+                        <strong>{formatDate(job.lastFailureAt ?? null)}{job.failures ? ` · подряд: ${job.failures}` : ''}</strong>
+                      </div>
+                    )}
+                    <div className="ops-job-fact"><span>Последний успех</span><strong>{formatDate(job.lastSuccessAt)}</strong></div>
+                    <div className="ops-job-fact"><span>Давность</span><strong>{formatDuration(job.ageSeconds)}</strong></div>
+                    <div className="ops-job-fact"><span>Следующий слот</span><strong>{formatDate(job.nextRunAt)}</strong></div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
