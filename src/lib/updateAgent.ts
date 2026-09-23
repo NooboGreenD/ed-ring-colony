@@ -125,6 +125,18 @@ function project(value: UpdateAgentStatus, wantFull: boolean): UpdateAgentStatus
  */
 export type UpdateAction = 'start' | 'abort' | 'backup';
 
+/**
+ * Mapping to the agent's HTTP contract (see the endpoint list at the top of
+ * `scripts/update-agent.mjs`): starting an update is `POST /update`. A naive
+ * `POST /start` falls through the agent's router and answers 404 — the admin
+ * button reported «ошибка 404» for exactly this reason.
+ */
+const AGENT_PATHS: Record<UpdateAction, string> = {
+  start: 'update',
+  abort: 'abort',
+  backup: 'backup',
+};
+
 /** Forwards an admin-confirmed action to the updater. Returns the raw agent answer. */
 export async function callUpdateAgent(action: UpdateAction, body?: Record<string, unknown>) {
   const config = configuredUpdateAgent();
@@ -133,7 +145,7 @@ export async function callUpdateAgent(action: UpdateAction, body?: Record<string
   }
 
   try {
-    const response = await fetch(new URL(`/${action}`, config.url), {
+    const response = await fetch(new URL(`/${AGENT_PATHS[action]}`, config.url), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.token}`,

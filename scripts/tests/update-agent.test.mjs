@@ -454,6 +454,45 @@ test('доступ: админские эндпоинты проверки и з
   assert.match(updateRoute, /confirm !== true/, 'запуск обновления — только с явным подтверждением');
 });
 
+test('контракт клиента: «Обновить сейчас» ходит в агента по POST /update, а не /start', () => {
+  // История дефекта: клиент шёл в POST /start, такого пути в роутере
+  // агента нет, и кнопка в панели отвечала «ошибка 404». Контракт агента —
+  // POST /update (шапка scripts/update-agent.mjs и тесты выше зафиксированы).
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  const updateRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'monitor', 'update', 'route.ts'), 'utf8');
+  assert.match(updateRoute, /callUpdateAgent\(\s*'start'/, 'кнопка запуска идёт через тот же клиент');
+
+  const mapping = /start:\s*'([^']+)'/m.exec(client);
+  assert.ok(mapping, 'клиент обязан маппить действие на путь агента');
+  assert.equal(mapping[1], 'update', 'запуск обновления = POST /update; /start агент отвечает 404');
+});
+
+test('контракт агента: POST /start — 404, а путь клиента запускает обновление', { skip: needsBash }, async (t) => {
+  // Живая проверка обеих сторон: если кто-то снова «исправит» одну сторону
+  // вразрез с другой, тест упадёт раньше прод-инцидента.
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  const path = /start:\s*'([^']+)'/m.exec(client)?.[1];
+  assert.ok(path, 'путь клиента не найден — сначала прогоните тест контракта клиента');
+
+  const config = testConfig();
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  assert.equal((await fetch(origin + '/start', { method: 'POST', headers: auth, body: '{}' })).status, 404,
+    'агент не знает /start — с таким путём кнопка отдаст посетителю 404');
+  const started = await fetch(origin + '/' + path, { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(started.status, 202, `POST /${path} (путь клиента) должен запускать обновление`);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+});
+
 test('compose: веб-контейнер не получает ни git, ни Docker-сокет', () => {
   const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
   const block = (name) => {
