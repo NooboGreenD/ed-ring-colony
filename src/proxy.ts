@@ -1,7 +1,34 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
+import { readMaintenanceCached } from '@/lib/maintenanceEdge';
+import { isMaintenanceExemptPath } from '@/lib/maintenanceFlag';
+
+/** Сколько просить браузер подождать перед повторной попыткой (секунды). */
+const MAINTENANCE_RETRY_AFTER = '120';
+
 export async function proxy(request: NextRequest) {
+  const path = request.nextUrl.pathname;
+
+  // ── Технические работы ──────────────────────────────────────────────
+  // Пока идёт резервное копирование базы, посетители видят заглушку вместо
+  // сайта. Админка, API и вход остаются доступными: иначе не увидеть прогресс
+  // и не отменить дамп. Признак читается из public.app_flags с кэшем на
+  // несколько секунд (см. src/lib/maintenanceEdge.ts).
+  if (!isMaintenanceExemptPath(path)) {
+    const maintenance = await readMaintenanceCached();
+    if (maintenance?.active) {
+      const stub = NextResponse.rewrite(new URL('/maintenance', request.url), {
+        status: 503,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Retry-After': MAINTENANCE_RETRY_AFTER,
+        },
+      });
+      return stub;
+    }
+  }
+
   let response = NextResponse.next({ request });
   const pendingCookies = new Map<string, { name: string; value: string; options?: CookieOptions }>();
   const authHeaders: Record<string, string> = {
@@ -10,7 +37,6 @@ export async function proxy(request: NextRequest) {
   };
   // Integration requests do not use a browser session. Preserve refreshes
   // on other API routes: their read-only cookie clients rely on middleware.
-  const path = request.nextUrl.pathname;
   if (path.startsWith('/api/auth/email/') || path.startsWith('/auth/') ||
       path === '/api/health' || path === '/api/auth/register' || path === '/api/auth/password' ||
       path.startsWith('/api/cron/') || path === '/api/auth/vk/callback' || path === '/api/auth/yandex/callback' ||

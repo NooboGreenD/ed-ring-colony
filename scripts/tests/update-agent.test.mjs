@@ -125,8 +125,12 @@ test('public view: посетитель видит стадию и процен�
     error: 'не должно попасть наружу',
   });
   assert.deepEqual(Object.keys(view).sort(), [
-    'active', 'percent', 'stage', 'stageLabel', 'startedAt', 'state', 'updatedAt',
+    'active', 'kind', 'percent', 'stage', 'stageLabel', 'startedAt', 'state', 'updatedAt',
   ]);
+  // kind — единственное новое поле для витрины: по нему заглушка понимает,
+  // что идёт именно копия базы. Ничего серверного в нём нет.
+  assert.equal(view.kind, 'update');
+  assert.equal(publicUpdateView({ state: 'running', kind: 'backup', stage: 'backup' }).kind, 'backup');
   assert.equal(view.active, true);
   assert.equal(view.percent, 70);
   assert.equal(view.stageLabel, 'Сборка новой версии');

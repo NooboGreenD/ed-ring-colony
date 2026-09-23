@@ -27,6 +27,7 @@ import {
   PointsBuilder,
   POINTS_STORAGE_BUCKET,
   POINTS_STORAGE_OBJECT,
+  galaxyPointsMax,
   type GalaxySystemPoint,
   type StarClass,
 } from './galaxySystems.ts';
@@ -36,7 +37,13 @@ import {
   type GalaxySystemRecord,
   type SpanshSystemObject,
 } from './galaxySpanshStream.ts';
-import { galaxyDbUrl, loadPg, type PgClientLike, type PgModule } from './pgModule.ts';
+import {
+  connectPgClient,
+  galaxyDbUrl,
+  loadPg,
+  type PgClientLike,
+  type PgModule,
+} from './pgModule.ts';
 
 export const SPANSH_DUMP_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
 
@@ -378,7 +385,13 @@ export const PG_BATCH_SIZE = 2000;
  * never correctness.
  */
 export const SUPABASE_BATCH_SIZE = 200;
-/** Expected catalog size: the builder is allocated once, without regrowth. */
+/**
+ * Initial builder allocation for an UNSAMPLED cloud.
+ *
+ * The real catalog is ~2×10⁸ systems (Spansh `systems.json.gz`, 5.9 GiB), so an
+ * unsampled cloud is never allocated: `galaxyPointsMax()` caps it and the
+ * builder samples. This value only sizes the first allocation.
+ */
 export const POINTS_CAPACITY = 1_400_000;
 export type GalaxyImportBackend = 'pg' | 'supabase';
 
@@ -394,6 +407,8 @@ export interface GalaxyRowWriter {
   countRows(): Promise<number>;
   /** Read the whole table back as map points, `ORDER BY id`. */
   readPoints(onPoint: (point: GalaxySystemPoint) => void): Promise<number>;
+  /** Refresh planner statistics after a bulk load (direct Postgres only). */
+  analyze?(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -784,22 +799,43 @@ function starTypeOf(value: unknown): StarClass {
 /**
  * Direct Postgres writer: the fast path when the web process knows
  * `DATABASE_URL`/`SUPABASE_DB_URL` (self-hosted Supabase on the same machine).
+ *
+ * The connection itself goes through `connectPgClient`: a Docker DNS hiccup
+ * (`getaddrinfo EAI_AGAIN …`) or a database still starting up is retried, and a
+ * permanent failure surfaces as an actionable sentence instead of a bare errno.
  */
 export async function createPgWriter(
   connectionString: string,
-  options: { pg?: PgModule; batchSize?: number; truncate?: boolean } = {},
+  options: {
+    pg?: PgModule;
+    batchSize?: number;
+    truncate?: boolean;
+    /** Connection attempts (default: see `PG_CONNECT_BACKOFF_MS`). */
+    attempts?: number;
+    /** Injectable sleep for tests. */
+    sleep?: (ms: number) => Promise<void>;
+    /** Where retry lines go (the import log). */
+    log?: (line: string) => void;
+  } = {},
 ): Promise<GalaxyRowWriter> {
   const pg = options.pg ?? (await loadPg());
   const batchSize = Math.max(1, options.batchSize ?? PG_BATCH_SIZE);
   // Big batches must not die on a server-wide statement_timeout, but a dead
   // database must fail in seconds instead of on the OS TCP timeout.
-  const client: PgClientLike = new pg.Client({
+  const client: PgClientLike = await connectPgClient({
     connectionString,
-    statement_timeout: 0,
-    query_timeout: 0,
+    pg,
+    statementTimeoutMs: 0,
+    queryTimeoutMs: 0,
     connectionTimeoutMillis: 15_000,
+    attempts: options.attempts,
+    sleep: options.sleep,
+    log: options.log,
   });
-  await client.connect();
+  // A bulk import must not fsync WAL on every commit: the job is resumable and
+  // idempotent, so losing the last few commits to a crash costs nothing, while
+  // synchronous_commit costs a disk flush per batch (~2× the whole import).
+  await client.query('SET synchronous_commit = OFF').catch(() => undefined);
   let rows: GalaxySystemRecord[] = [];
   let written = 0;
 
@@ -813,7 +849,7 @@ export async function createPgWriter(
       query.on('row', onRow);
       query.on('error', reject);
       query.on('end', () => resolve());
-      // A streaming query keeps 1.3M rows out of memory.
+      // A streaming query keeps 10⁸ rows out of memory.
       void client.query(query as never);
     });
 
@@ -853,6 +889,11 @@ export async function createPgWriter(
         });
       });
       return count;
+    },
+    async analyze() {
+      // After 10⁸ upserts the planner's row estimates are stale: without this
+      // the atlas cube/KNN queries keep choosing the plan of an empty table.
+      await client.query(`ANALYZE ${GALAXY_TABLE}`);
     },
     async close() {
       rows = [];
@@ -941,14 +982,24 @@ export function createSupabaseWriter(
   };
 }
 
+export interface PointCloud {
+  buffer: Buffer;
+  /** Points in the file. */
+  count: number;
+  /** Table rows the cloud was built from. */
+  rows: number;
+  /** Source rows per stored point (1 = the cloud is complete). */
+  stride: number;
+}
+
 /** Point cloud straight from Postgres (used when no file/storage object exists). */
 export async function readPointsFromPg(
   connectionString: string,
-  options: { pg?: PgModule } = {},
-): Promise<{ buffer: Buffer; count: number }> {
+  options: { pg?: PgModule; maxPoints?: number } = {},
+): Promise<PointCloud> {
   const writer = await createPgWriter(connectionString, { pg: options.pg });
   try {
-    return await collectPoints(writer);
+    return await collectPoints(writer, options.maxPoints ?? galaxyPointsMax());
   } finally {
     await writer.close();
   }
@@ -957,7 +1008,8 @@ export async function readPointsFromPg(
 /** Point cloud over PostgREST, keyset-paged and verified against COUNT(*). */
 export async function readPointsFromSupabase(
   client: SupabaseClient,
-): Promise<{ buffer: Buffer; count: number }> {
+  options: { maxPoints?: number } = {},
+): Promise<PointCloud> {
   const writer = createSupabaseWriter(client);
   const { count: total, error } = await client
     .from(GALAXY_TABLE)
@@ -965,20 +1017,21 @@ export async function readPointsFromSupabase(
   if (error) throw new Error(`count failed: ${error.message}`);
   const expected = Number(total ?? 0);
   if (expected === 0) throw new Error(`${GALAXY_TABLE} is empty`);
-  const cloud = await collectPoints(writer);
+  const cloud = await collectPoints(writer, options.maxPoints ?? galaxyPointsMax());
   // The old chunked builder was silently truncated by the API row cap. Refuse
   // to serve a partial cloud instead: the map would look complete but lie.
-  if (cloud.count < expected) {
-    throw new Error(`point cloud is truncated: ${cloud.count} of ${expected} rows`);
+  // Sampling is fine — every row was still read, only some were kept.
+  if (cloud.rows < expected) {
+    throw new Error(`point cloud is truncated: ${cloud.rows} of ${expected} rows`);
   }
   return cloud;
 }
 
-async function collectPoints(writer: GalaxyRowWriter): Promise<{ buffer: Buffer; count: number }> {
-  const builder = new PointsBuilder(POINTS_CAPACITY);
-  await writer.readPoints((point) => builder.add(point));
+async function collectPoints(writer: GalaxyRowWriter, maxPoints: number): Promise<PointCloud> {
+  const builder = new PointsBuilder(POINTS_CAPACITY, maxPoints);
+  const rows = await writer.readPoints((point) => builder.add(point));
   if (builder.size === 0) throw new Error('no rows to build the point cloud from');
-  return { buffer: Buffer.from(builder.build()), count: builder.size };
+  return { buffer: Buffer.from(builder.build()), count: builder.size, rows, stride: builder.sampleStride };
 }
 
 // ────────────────────────── the pipeline ──────────────────────────
@@ -1019,7 +1072,7 @@ export interface GalaxyImportRunOptions {
    * beginning mid-deflate, which cannot be decoded. A resumed pass therefore
    * re-downloads and re-decompresses the dump but SKIPS every record ending
    * before this offset — those rows are stored already, and the expensive part
-   * (~1.3M upserts) is not repeated.
+   * (hundreds of millions of upserts) is not repeated.
    */
   resumeFrom?: number;
   fetchImpl?: typeof fetch;
@@ -1030,6 +1083,8 @@ export interface GalaxyImportRunOptions {
   progressIntervalMs?: number;
   /** Build the map point cloud while streaming (default true). */
   buildPoints?: boolean;
+  /** Cloud size cap (default `galaxyPointsMax()`; 0 = one point per system). */
+  maxPoints?: number;
 }
 
 export interface GalaxyImportRunResult {
@@ -1043,7 +1098,15 @@ export interface GalaxyImportRunResult {
   bytesTotal: number | null;
   resumedFrom: number;
   durationMs: number;
-  points: { buffer: Buffer; count: number; rebuiltFromTable: boolean } | null;
+  points: {
+    buffer: Buffer;
+    count: number;
+    /** Table rows the cloud was built from. */
+    rows: number;
+    /** Source rows per stored point (1 = complete cloud). */
+    stride: number;
+    rebuiltFromTable: boolean;
+  } | null;
 }
 
 /** Counts compressed bytes as they are fed to the gunzip stream. */
@@ -1120,7 +1183,13 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   options.signal?.addEventListener('abort', onAbort, { once: true });
   source.pipe(counterStream).pipe(gunzip).pipe(objects);
 
-  let streamed = options.buildPoints === false ? null : new PointsBuilder(POINTS_CAPACITY);
+  // The cloud streams alongside the import and is sampled on the fly, so a
+  // 2×10⁸-row catalog never allocates more than `maxPoints` points.
+  const maxPoints = Math.max(0, options.maxPoints ?? galaxyPointsMax());
+  let streamed = options.buildPoints === false ? null : new PointsBuilder(POINTS_CAPACITY, maxPoints);
+  // Rows the streamed cloud saw: with sampling this is not `streamed.size`, and
+  // it is what tells a full clean pass from a resumed or duplicate-collapsing one.
+  let pointsSeen = 0;
   const writer = options.writer;
   let processed = 0;
   let invalid = 0;
@@ -1158,7 +1227,10 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
       }
       processed++;
       await writer.add(row);
-      if (streamed) streamed.add({ x: row.x, y: row.y, z: row.z, id64: row.id64, starType: row.star_type });
+      if (streamed) {
+        streamed.add({ x: row.x, y: row.y, z: row.z, id64: row.id64, starType: row.star_type });
+        pointsSeen++;
+      }
       if (writer.written > lastWrittenSeen) {
         lastWrittenSeen = writer.written;
         resumeOffset = object.__streamOffset ?? resumeOffset;
@@ -1184,22 +1256,44 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   const systemsCount = await writer.countRows();
 
   let points: GalaxyImportRunResult['points'] = null;
-  if (streamed) {
-    if (resumeFrom > 0 || streamed.size !== systemsCount) {
+  if (options.buildPoints !== false) {
+    if (streamed && resumeFrom === 0 && pointsSeen === systemsCount) {
+      points = {
+        buffer: Buffer.from(streamed.build()),
+        count: streamed.size,
+        rows: pointsSeen,
+        stride: streamed.sampleStride,
+        rebuiltFromTable: false,
+      };
+    } else {
       // A resumed pass only saw the tail of the dump, and a pass that collapsed
-      // duplicate names streamed more points than rows. Either way the streamed
-      // cloud is not the catalog: rebuild it from the table instead.
-      log('Rebuilding the point cloud from the table (resumed, duplicate or incomplete pass)');
-      // Release the partial cloud before allocating the full one (~24 MB each).
-      streamed = null;
-      const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024));
+      // duplicate names streamed more points than the table holds. Either way
+      // the streamed sample is not the catalog: rebuild it from the table.
+      if (streamed) {
+        log('Rebuilding the point cloud from the table (resumed, duplicate or incomplete pass)');
+        // Release the partial cloud before allocating the full one.
+        streamed = null;
+      } else {
+        log(
+          `Облако точек строится из таблицы: каталог ${systemsCount.toLocaleString()} систем, ` +
+          `в облако идёт равномерная выборка (лимит ${maxPoints.toLocaleString()} точек)`,
+        );
+      }
+      const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024), maxPoints);
       const read = await writer.readPoints((point) => rebuilt.add(point));
       if (read !== systemsCount) {
         throw new Error(`point cloud is truncated: ${read} of ${systemsCount} rows`);
       }
-      points = { buffer: Buffer.from(rebuilt.build()), count: rebuilt.size, rebuiltFromTable: true };
-    } else {
-      points = { buffer: Buffer.from(streamed.build()), count: streamed.size, rebuiltFromTable: false };
+      if (rebuilt.sampled) {
+        log(`Облако точек: ${rebuilt.size.toLocaleString()} точек, каждая ${rebuilt.sampleStride}-я система`);
+      }
+      points = {
+        buffer: Buffer.from(rebuilt.build()),
+        count: rebuilt.size,
+        rows: read,
+        stride: rebuilt.sampleStride,
+        rebuiltFromTable: true,
+      };
     }
   }
 

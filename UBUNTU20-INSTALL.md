@@ -405,19 +405,28 @@ sudo ufw delete allow 8000/tcp
 
 ## Часть 6. Крон-задачи и бэкапы
 
+Фоновые задачи сайта выполняет Docker-сервис `jobs`; не дублируйте их в cron
+(см. [POST-MIGRATION.md](POST-MIGRATION.md)).
+
+**Бэкапов в cron больше нет.** Резервная копия базы делается вручную из
+**Админка → Бэкапы** примерно раз в неделю: на время дампа сайт закрыт
+заглушкой «Ведутся технические работы», поэтому момент выбирает админ.
+
 ```bash
-mkdir -p /opt/backups
-crontab -e
+# нужен только каталог для копий и запущенный update-agent
+sudo mkdir -p /opt/ed-ring-colony/backups
+sudo bash /opt/ed-ring-colony/src/deploy/start-update-agent.sh
 ```
 
-Фоновые задачи сайта выполняет Docker-сервис `jobs`; не дублируйте их в cron
-(см. [POST-MIGRATION.md](POST-MIGRATION.md)). В cron остаются только бэкапы:
+Кнопка в панели вызывает `deploy/db-backup.sh`: `pg_dump -Fc` без каталога
+систем (он восстанавливается импортом дампа Spansh), проверка архива через
+`pg_restore --list`, хранение 4 свежих копий. Через неделю панель напомнит
+плашкой «пора». Если от прежней установки остался `/etc/cron.d/ed-ring-colony`
+или строки в `crontab` — удалите их, иначе база будет дампиться по ночам:
 
-```cron
-# ── бэкапы (база теперь ваша — бэкапы тоже ваши) ──
-0 4 * * *  docker exec supabase-db pg_dump -U postgres -d postgres -Fc > /opt/backups/edrc-$(date +\%F).dump
-30 4 * * * tar czf /opt/backups/storage-$(date +\%F).tgz /opt/supabase/volumes/storage 2>/dev/null
-0 5 * * *  find /opt/backups -mtime +14 -delete
+```bash
+sudo rm -f /etc/cron.d/ed-ring-colony
+crontab -l | grep -v 'pg_dump\|storage-' | crontab -
 ```
 
 Обязательно храните копию бэкапов вне сервера (rclone/scp на другую машину).
@@ -495,5 +504,5 @@ docker compose up -d` (перед этим — бэкап!).
 | 4 | Supabase: стек в `/opt/supabase`, `generate-keys.sh`, `.env`, `up -d`, залить `full_schema.sql` |
 | 5 | Сайт: `.env.production` (ключи из генератора, URL с ВАШ_IP), `docker compose up -d --build` |
 | 6 | nginx из `deploy/selfhost/nginx-selfhost.conf` (+snap-certbot при домене) |
-| 7 | jobs: фоновые задачи; crontab: ежедневные pg_dump-бэкапы |
+| 7 | jobs: фоновые задачи; бэкапы — вручную из Админка → Бэкапы (cron не нужен) |
 | 8 | Чек-лист проверки из Части 7 |

@@ -15,7 +15,7 @@ import type {
   MonitorTranslationQueue,
   ServerMonitorSnapshot,
 } from '@/types/monitor';
-import { galaxyDbUrl, loadPg, type PgClientLike } from './pgModule';
+import { describePgConnectionError, galaxyDbUrl, loadPg, type PgClientLike } from './pgModule';
 import { hasTranslateCredentials } from './translate';
 import { getUpdateAgentStatus } from './updateAgent';
 
@@ -259,9 +259,13 @@ async function probeDatabaseSize(): Promise<MonitorDatabaseSize> {
       measuredAt: new Date().toISOString(),
       note: null,
     };
-  } catch {
-    // The size probe is optional: it must never change the health verdict.
-    return emptyDatabaseSize('Прямой запрос к Postgres не прошёл — проверьте DATABASE_URL и права роли');
+  } catch (error) {
+    // The size probe is optional: it must never change the health verdict, but
+    // the panel can still say why the direct connection did not work.
+    const reason = describePgConnectionError(error, url).detail;
+    return emptyDatabaseSize(
+      `Прямой запрос к Postgres не прошёл (${reason}) — проверьте DATABASE_URL и права роли`,
+    );
   } finally {
     try { await client?.end(); } catch { /* the probe is best-effort */ }
   }

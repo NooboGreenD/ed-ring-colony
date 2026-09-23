@@ -12,7 +12,12 @@
  *   GET  /health         → { ok, active }                     (no token)
  *   GET  /status[?full=1]→ sanitised progress state           (token)
  *   POST /update         → start an update                     (token)
- *   POST /abort          → SIGTERM the running update          (token)
+ *   POST /backup         → start a manual database backup      (token)
+ *   POST /abort          → SIGTERM the running job             (token)
+ *
+ * Both jobs share ONE state machine and one process slot: a database dump and
+ * a stack rebuild must never overlap, and the admin panel sees which of the
+ * two is running through the `kind` field.
  *
  * Configuration (environment):
  *   UPDATE_AGENT_TOKEN   Bearer token; mandatory when the port is reachable
@@ -25,6 +30,10 @@
  *   UPDATE_STATE_DIR     lock + state file (default <PROJECT_DIR>/../update-state)
  *   UPDATE_APPLY_MIGRATIONS  "1" (default) or "0"
  *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES
+ *   BACKUP_SCRIPT        default <PROJECT_DIR>/deploy/db-backup.sh
+ *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
+ *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
+ *   BACKUP_TIMEOUT_MINUTES  default 120 (a full dump of a 10^8-row catalog is slow)
  *
  * The agent is deliberately stateful-but-small: progress survives an agent
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
@@ -68,6 +77,12 @@ export function updateAgentConfig(env = process.env) {
     stateFile: join(stateDir, 'update-state.json'),
     logFile: join(stateDir, 'update.log'),
     script: (env.UPDATE_SCRIPT || join(projectDir, 'deploy', 'update-project.sh')).trim(),
+    backupScript: (env.BACKUP_SCRIPT || join(projectDir, 'deploy', 'db-backup.sh')).trim(),
+    backupDir: (env.UPDATE_BACKUP_DIR || '/opt/ed-ring-colony/backups').trim(),
+    // Недельный ритм: четыре копии — это месяц истории и предсказуемое место
+    // на диске. Больше — только явным желанием оператора.
+    backupKeep: Math.min(24, Math.max(1, Number(env.UPDATE_BACKUP_KEEP) || 4)),
+    backupTimeoutMs: Math.max(60_000, (Number(env.BACKUP_TIMEOUT_MINUTES) || 120) * 60_000),
     branch: (env.PROJECT_UPDATE_BRANCH || 'main').trim(),
     repository: (env.PROJECT_REPOSITORY || 'NooboGreenD/ed-ring-colony').trim(),
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
@@ -149,48 +164,75 @@ export function createUpdateManager(config) {
       // A crashed host (state left as "running") must not block the panel
       // forever: after the timeout the state is reported as failed.
       if (state.state === 'running' && state.startedAt && !child) {
-        if (Date.now() - Date.parse(state.startedAt) > config.timeoutMs) {
-          finish({ state: 'failed', percent: state.percent, message: null, error: 'агент перезагружался во время обновления' });
+        const limit = state.kind === 'backup' ? config.backupTimeoutMs : config.timeoutMs;
+        if (Date.now() - Date.parse(state.startedAt) > limit) {
+          finish({
+            state: 'failed',
+            percent: state.percent,
+            message: null,
+            error: state.kind === 'backup'
+              ? 'агент перезагружался во время резервного копирования'
+              : 'агент перезагружался во время обновления',
+          });
         }
       }
       return sanitizeUpdateState(state);
     },
-    start({ applyMigrations } = {}) {
+    start({ applyMigrations, kind = 'update', full = false } = {}) {
       if (state.state === 'running' || state.state === 'queued') return { started: false, reason: 'already-running' };
+      const backup = kind === 'backup';
       const nowIso = new Date().toISOString();
       Object.assign(state, emptyUpdateState(nowIso), {
         state: 'running',
+        kind: backup ? 'backup' : 'update',
         stage: 'prepare',
         percent: 0,
-        message: 'запускаю deploy/update-project.sh',
-        mode: config.deployMode,
-        branch: config.branch,
+        message: backup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
+        mode: backup ? (full ? 'full' : 'fast') : config.deployMode,
+        branch: backup ? null : config.branch,
         startedAt: nowIso,
         log: [],
       });
       touch();
       persist();
-      appendLog(`update requested; project=${config.repository} branch=${config.branch} mode=${config.deployMode}`);
+      appendLog(backup
+        ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
+        : `update requested; project=${config.repository} branch=${config.branch} mode=${config.deployMode}`);
 
       let spawned;
       try {
-        spawned = spawn('bash', [config.script], {
+        spawned = spawn('bash', [backup ? config.backupScript : config.script], {
           cwd: config.projectDir,
           detached: true,
           stdio: ['ignore', 'pipe', 'pipe'],
           env: {
             ...process.env,
             PROJECT_DIR: config.projectDir,
-            PROJECT_UPDATE_BRANCH: config.branch,
-            PROJECT_REPOSITORY: config.repository,
-            PROJECT_DEPLOY_MODE: config.deployMode,
             UPDATE_STATE_DIR: config.stateDir,
-            UPDATE_APPLY_MIGRATIONS: applyMigrations === false ? '0' : '1',
-            UPDATE_HEALTH_URL: config.healthUrl,
+            ...(backup
+              ? {
+                  // По умолчанию каталог систем в дамп не попадает: он
+                  // восстанавливается импортом дампа Spansh, а весит десятки
+                  // гигабайт — окно технических работ должно быть коротким.
+                  BACKUP_FULL: full ? '1' : '0',
+                  UPDATE_BACKUP_DIR: config.backupDir,
+                  UPDATE_BACKUP_KEEP: String(config.backupKeep),
+                }
+              : {
+                  PROJECT_UPDATE_BRANCH: config.branch,
+                  PROJECT_REPOSITORY: config.repository,
+                  PROJECT_DEPLOY_MODE: config.deployMode,
+                  UPDATE_APPLY_MIGRATIONS: applyMigrations === false ? '0' : '1',
+                  UPDATE_HEALTH_URL: config.healthUrl,
+                }),
           },
         });
       } catch (error) {
-        finish({ state: 'failed', error: `не удалось запустить updater: ${error?.message || error}`, percent: 0 });
+        finish({
+          state: 'failed',
+          error: `не удалось запустить ${backup ? 'резервное копирование' : 'updater'}: ${error?.message || error}`,
+          percent: 0,
+        });
         return { started: false, reason: 'spawn-failed' };
       }
       child = spawned;
@@ -205,11 +247,13 @@ export function createUpdateManager(config) {
       });
       spawned.stderr?.on('data', (data) => appendLog(`! ${data}`));
 
+      const timeoutMs = backup ? config.backupTimeoutMs : config.timeoutMs;
+      const jobLabel = backup ? 'резервное копирование' : 'обновление';
       timer = setTimeout(() => {
-        appendLog('timeout — принудительно останавливаю обновление');
+        appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
         abort();
-        finish({ state: 'aborted', error: `обновление длилось дольше ${Math.round(config.timeoutMs / 60000)} мин и остановлено` });
-      }, config.timeoutMs);
+        finish({ state: 'aborted', error: `${jobLabel} длилось дольше ${Math.round(timeoutMs / 60000)} мин и остановлено` });
+      }, timeoutMs);
 
       spawned.on('error', (error) => {
         if (timer) clearTimeout(timer);
@@ -222,18 +266,21 @@ export function createUpdateManager(config) {
         child = null;
         const aborted = state.state === 'aborted' || code === null;
         if (aborted) {
-          finish({ state: 'aborted', exitCode: code, error: state.error || 'обновление остановлено' });
+          finish({ state: 'aborted', exitCode: code, error: state.error || `${jobLabel} остановлено` });
         } else if (code === 0) {
           finish({ state: 'succeeded', percent: 100, stage: 'done', exitCode: 0, error: null });
         } else {
-          finish({ state: 'failed', exitCode: code, error: state.message || `updater завершился с кодом ${code}` });
+          finish({ state: 'failed', exitCode: code, error: state.message || `${backup ? 'db-backup.sh' : 'updater'} завершился с кодом ${code}` });
         }
       });
       return { started: true };
     },
     stop() {
       if (state.state !== 'running') return false;
-      finish({ state: 'aborted', error: 'обновление остановлено оператором' });
+      finish({
+        state: 'aborted',
+        error: state.kind === 'backup' ? 'резервное копирование остановлено оператором' : 'обновление остановлено оператором',
+      });
       abort();
       return true;
     },
@@ -313,6 +360,18 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
           ? config.applyMigrations
           : Boolean(body.applyMigrations);
         const result = manager.start({ applyMigrations });
+        if (!result.started) {
+          send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
+          return;
+        }
+        send(response, 202, { ok: true, startedAt: manager.state.startedAt, update: manager.status() });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/backup') {
+        const body = await readJsonBody(request);
+        // `full` включает в дамп каталог систем (десятки гигабайт): только по
+        // явному запросу админа, по умолчанию копия делается без него.
+        const result = manager.start({ kind: 'backup', full: body?.full === true });
         if (!result.started) {
           send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
           return;

@@ -119,7 +119,11 @@ function project(value: UpdateAgentStatus, wantFull: boolean): UpdateAgentStatus
   return { ...value, update: value.update ? { ...value.update, log: [] } : null };
 }
 
-export type UpdateAction = 'start' | 'abort';
+/**
+ * Действия агента. `backup` идёт в тот же процессный слот, что и `start`:
+ * дамп базы и пересборка стека не должны выполняться одновременно.
+ */
+export type UpdateAction = 'start' | 'abort' | 'backup';
 
 /** Forwards an admin-confirmed action to the updater. Returns the raw agent answer. */
 export async function callUpdateAgent(action: UpdateAction, body?: Record<string, unknown>) {
@@ -146,7 +150,7 @@ export async function callUpdateAgent(action: UpdateAction, body?: Record<string
     const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
     if (!response.ok) {
       const reason = response.status === 409
-        ? 'Обновление уже выполняется — дождитесь его окончания'
+        ? 'Агент уже занят (обновление или резервная копия) — дождитесь окончания'
         : `Update-агент ответил ${response.status}`;
       return { ok: false as const, status: response.status, error: reason, update: sanitizeUpdateState(record.update ?? null) };
     }

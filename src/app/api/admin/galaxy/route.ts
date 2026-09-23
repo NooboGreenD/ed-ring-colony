@@ -5,6 +5,7 @@ import { galaxyArchiveDir, galaxyImportUrl } from '@/lib/galaxyImport';
 import {
   cancelGalaxyDownload,
   cancelGalaxyImport,
+  checkGalaxyDbConnection,
   getGalaxyImportStatus,
   startGalaxyDownload,
   startGalaxyImport,
@@ -25,7 +26,9 @@ const headers = { 'Cache-Control': 'no-store' };
  *  - `cancel`         — остановить импорт;
  *  - `download`       — скачать архив дампа на диск (с возобновлением по
  *                       Range), без запуска импорта;
- *  - `cancel-download`— остановить скачивание архива.
+ *  - `cancel-download`— остановить скачивание архива;
+ *  - `check-db`       — проверить прямое подключение к Postgres и объяснить
+ *                       ошибку (например, «getaddrinfo EAI_AGAIN db»).
  */
 export async function GET(req: Request) {
   try {
@@ -89,6 +92,11 @@ export async function POST(req: Request) {
       );
     }
 
+    if (action === 'check-db') {
+      const check = await checkGalaxyDbConnection();
+      return NextResponse.json({ success: true, check }, { headers });
+    }
+
     if (action === 'download') {
       const result = await startGalaxyDownload({ url: requestedUrl });
       return NextResponse.json(
@@ -99,7 +107,7 @@ export async function POST(req: Request) {
 
     if (action !== 'start') {
       return NextResponse.json(
-        { error: 'Ожидается action: "start", "cancel", "download" или "cancel-download"' },
+        { error: 'Ожидается action: "start", "cancel", "download", "cancel-download" или "check-db"' },
         { status: 400, headers },
       );
     }

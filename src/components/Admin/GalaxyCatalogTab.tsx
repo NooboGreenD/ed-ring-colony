@@ -9,7 +9,7 @@ import type { GalaxyCatalogImport } from '@/lib/galaxyCatalogStatus';
 /**
  * Админка → «Каталог систем».
  *
- * Полный каталог Spansh (~1.3M систем, дамп ~6 ГиБ) живет в таблице
+ * Полный каталог Spansh (~2×10⁸ систем, дамп 5.9 ГиБ) живет в таблице
  * `galaxy_systems`; без него слой «Все системы» на карте и поиск по каталогу
  * не работают. Production-образ Next.js не содержит `scripts/`, поэтому импорт
  * запускается здесь — фоном в веб-процессе, с возобновлением после перезапуска.
@@ -43,6 +43,13 @@ interface ArchiveStatus {
   interrupted: boolean;
   percent: number | null;
   log: string[];
+}
+
+/** `check-db` as the admin API returns it. */
+interface DbCheck {
+  direct: { configured: boolean; host: string | null; ok: boolean; message: string; database: string | null };
+  postgrest: { configured: boolean };
+  backend: 'pg' | 'supabase' | null;
 }
 
 interface Status {
@@ -104,6 +111,7 @@ export default function GalaxyCatalogTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
+  const [dbCheck, setDbCheck] = useState<DbCheck | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -150,6 +158,32 @@ export default function GalaxyCatalogTab() {
       else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
       else setMessage('Импорт запущен в фоне. Страницу можно закрыть — процесс продолжится.');
       await load();
+    } catch (error) {
+      setMessage((error as Error).message);
+      setIsError(true);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Проверка подключения выполняется в веб-процессе (в production-образе нет
+   * `scripts/`, а DNS контейнера и хоста — разные вещи), поэтому это единственный
+   * способ честно ответить на «getaddrinfo EAI_AGAIN db».
+   */
+  const checkDb = async () => {
+    setBusy('check-db');
+    setMessage('');
+    setIsError(false);
+    try {
+      const response = await authFetch('/api/admin/galaxy', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'check-db' }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || `HTTP ${response.status}`);
+      setDbCheck(payload?.check ?? null);
     } catch (error) {
       setMessage((error as Error).message);
       setIsError(true);
@@ -366,6 +400,34 @@ export default function GalaxyCatalogTab() {
           <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 8 }}>
             Импорт не запустится: веб-процессу нужен <code>DATABASE_URL</code>/<code>SUPABASE_DB_URL</code> (быстрый
             прямой Postgres) либо <code>NEXT_PUBLIC_SUPABASE_URL</code> + <code>SUPABASE_SERVICE_ROLE_KEY</code>.
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null}
+            onClick={() => void checkDb()}
+            title="Один запрос к Postgres из веб-процесса: показывает, виден ли хост из DATABASE_URL"
+          >
+            Проверить подключение к БД
+          </button>
+          {dbCheck && (
+            <span style={{ fontSize: 12, color: dbCheck.direct.ok || !dbCheck.direct.configured ? '#22c55e' : '#ef4444' }}>
+              {dbCheck.direct.configured
+                ? dbCheck.direct.ok
+                  ? `прямой Postgres (${dbCheck.direct.host ?? '?'}) — ${dbCheck.direct.message}`
+                  : `прямой Postgres (${dbCheck.direct.host ?? '?'}) недоступен`
+                : 'прямой Postgres не настроен'}
+              {` · PostgREST: ${dbCheck.postgrest.configured ? 'настроен' : 'не настроен'}`}
+            </span>
+          )}
+        </div>
+
+        {dbCheck && !dbCheck.direct.ok && (
+          <div style={{ fontSize: 12, color: '#ef4444', lineHeight: 1.6, marginBottom: 10, wordBreak: 'break-word' }}>
+            {dbCheck.direct.message}
           </div>
         )}
 

@@ -242,7 +242,7 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
-| `galaxy_systems` | Full Spansh catalog (~1.3M): coords, main star class, permit. Public read. |
+| `galaxy_systems` | Full Spansh catalog (~2×10⁸ rows, GiST `cube` index): coords, main star class, permit. Public read. |
 
 ### 4.2 Key Relationships
 ```
@@ -475,7 +475,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `/system/[name]` falls back to the catalog when there is no construction row.
   The map layer «Все системы» reads `edgs-v1` from `public/data`, storage bucket
   `galaxy-data`, Postgres or paged PostgREST, and asks `/api/galaxy/stats` first
-  so an empty catalog is a message, not a 404; it does not raycast 1.3M points.
+  so an empty catalog is a message, not a 404; it does not raycast the cloud.
   Migration `20260924000000_galaxy_systems_finish.sql`.
 
 ### 8.5 Raven Colonial
@@ -673,10 +673,16 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Привилегированный агент: `scripts/update-agent.mjs` (Node, HTTP на
   `UPDATE_AGENT_HOST:UPDATE_AGENT_PORT`, по умолчанию 127.0.0.1:8092, Bearer
   `UPDATE_AGENT_TOKEN`; вне loopback без токена не стартует). Контракт:
-  `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /abort`.
+  `GET /health`, `GET /status[?full=1]`, `POST /update`, `POST /backup`,
+  `POST /abort`. Обновление и резервная копия делят один процессный слот:
+  состояние различается полем `kind` (`update` | `backup`).
 - Фактическую работу делает `deploy/update-project.sh` (git fetch/merge,
   pg_dump, новые миграции, пересборка Compose-профиля или standalone-выкладка,
-  проверка живости). Прогресс — машиночитаемой строкой
+  проверка живости). Ручную копию базы делает `deploy/db-backup.sh`
+  (`pg_dump -Fc` без `public.galaxy_systems`, проверка `pg_restore --list`,
+  ротация `UPDATE_BACKUP_KEEP`); на время дампа сайт закрыт заглушкой
+  «Ведутся технические работы» — признак лежит в `public.app_flags`,
+  читает его прокси (`src/proxy.ts`), страница — `src/app/maintenance`. Прогресс — машиночитаемой строкой
   `::edrc::{"stage":…,"percent":…}` в stdout; формат и стадии описаны в
   `scripts/lib/update-state.mjs` (`UPDATE_STAGES`). Всё остальное в stdout —
   журнал, который показывается админу после сокрытия похожих на секрет значений.

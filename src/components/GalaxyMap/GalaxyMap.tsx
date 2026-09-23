@@ -633,7 +633,7 @@ export default function GalaxyMap({
             <input type="checkbox" checked={showKnownSystems} onChange={(event) => setShowKnownSystems(event.target.checked)} />
             Маршрут и хабы ({routeMarkerSystems.length + uniqueHubs.length})
           </label>
-          <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Экспериментально: все известные системы галактики (Spansh, ~1.3M точек). Первый включение скачивает ~30 МБ.">
+          <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Экспериментально: известные системы галактики (Spansh). Каталог — ~2×10⁸ систем, в слое показана равномерная выборка; первое включение скачивает ~35 МБ.">
             <input type="checkbox" checked={showAllSystems} onChange={(event) => setShowAllSystems(event.target.checked)} />
             Все системы{allSystemsData ? ` (${(allSystemsData.count / 1000).toFixed(0)}k)` : ''} ⚗
           </label>

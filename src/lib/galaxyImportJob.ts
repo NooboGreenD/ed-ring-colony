@@ -31,7 +31,7 @@ import {
 } from './galaxyImport.ts';
 import { FRESH_MS } from './galaxyImportSchedule.ts';
 import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
-import { galaxyDbUrl } from './pgModule.ts';
+import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
 import { createAdminClient } from './supabaseAdmin.ts';
 
 /**
@@ -62,7 +62,7 @@ export interface GalaxyImportState {
   /**
    * Restart point in UNCOMPRESSED dump bytes. A resumed pass re-downloads the
    * gzip (a partial deflate stream cannot be decoded) but skips every record
-   * before this offset, so the ~1.3M upserts are not repeated.
+   * before this offset, so the hundreds of millions of upserts are not repeated.
    */
   resume_offset: number;
   processed: number;
@@ -73,6 +73,8 @@ export interface GalaxyImportState {
   systems_count: number;
   points_count: number | null;
   points_bytes: number | null;
+  /** Source rows per point in the uploaded cloud (null/1 = complete cloud). */
+  points_stride: number | null;
   points_uploaded: boolean;
   points_error: string | null;
   error: string | null;
@@ -97,6 +99,7 @@ export const EMPTY_IMPORT_STATE: GalaxyImportState = {
   systems_count: 0,
   points_count: null,
   points_bytes: null,
+  points_stride: null,
   points_uploaded: false,
   points_error: null,
   error: null,
@@ -220,6 +223,7 @@ export function parseImportState(value: unknown): GalaxyImportState {
     systems_count: num(raw.systems_count),
     points_count: nullableNum(raw.points_count),
     points_bytes: nullableNum(raw.points_bytes),
+    points_stride: nullableNum(raw.points_stride),
     points_uploaded: raw.points_uploaded === true,
     points_error: str(raw.points_error),
     error: str(raw.error),
@@ -586,18 +590,152 @@ function pickBackend(): { backend: GalaxyImportBackend; connectionString: string
   );
 }
 
-async function createWriter(
-  backend: GalaxyImportBackend,
-  connectionString: string | null,
-  truncate: boolean,
-): Promise<GalaxyRowWriter> {
-  if (backend === 'pg' && connectionString) {
-    return createPgWriter(connectionString, { truncate });
+export interface CreateWriterOptions {
+  backend: GalaxyImportBackend;
+  connectionString: string | null;
+  truncate: boolean;
+  /**
+   * PostgREST credentials exist, so an unreachable direct connection can be
+   * worked around instead of failing the import.
+   */
+  supabaseFallback: boolean;
+  log?: (line: string) => void;
+  /**
+   * Connection attempts for the default direct-Postgres factory (tests pass 1
+   * so an unreachable host does not cost the whole backoff schedule).
+   */
+  pgAttempts?: number;
+  /** Injectable factories — the tests drive this without a database. */
+  createPg?: (connectionString: string, options: { truncate: boolean; log: (line: string) => void }) => Promise<GalaxyRowWriter>;
+  createSupabase?: () => Promise<GalaxyRowWriter>;
+}
+
+/**
+ * Open the writer for the chosen backend, degrading to PostgREST when the
+ * direct Postgres connection cannot be established at all.
+ *
+ * A `DATABASE_URL` pointing at a host this process cannot see (the classic
+ * `getaddrinfo EAI_AGAIN db` — the `db` service of another Compose network) used
+ * to fail the whole import even though the PostgREST path was configured and
+ * working. The direct connection stays the preferred one; when it is dead the
+ * import continues over PostgREST and says so in the log.
+ */
+export async function createWriterWithFallback(
+  options: CreateWriterOptions,
+): Promise<{ writer: GalaxyRowWriter; backend: GalaxyImportBackend }> {
+  const log = options.log ?? (() => undefined);
+  const createPg =
+    options.createPg ??
+    ((connectionString, opts) =>
+      createPgWriter(connectionString, { truncate: opts.truncate, log: opts.log, attempts: options.pgAttempts }));
+  const createSupabase = options.createSupabase ?? (async () => createSupabaseWriter(admin()));
+
+  if (options.backend !== 'pg' || !options.connectionString) {
+    if (options.truncate) {
+      throw new Error('--truncate доступен только при прямом подключении к Postgres (DATABASE_URL/SUPABASE_DB_URL)');
+    }
+    return { writer: await createSupabase(), backend: 'supabase' };
   }
-  if (truncate) {
-    throw new Error('--truncate доступен только при прямом подключении к Postgres (DATABASE_URL/SUPABASE_DB_URL)');
+
+  try {
+    return { writer: await createPg(options.connectionString, { truncate: options.truncate, log }), backend: 'pg' };
+  } catch (error) {
+    const detail = isPgConnectionError(error)
+      ? error.failure.message
+      : (error as Error)?.message || String(error);
+    if (!options.supabaseFallback) throw new Error(detail);
+    log(`WARNING: прямой Postgres недоступен — ${detail}`);
+    log('WARNING: переключаюсь на PostgREST (NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY): импорт пойдёт медленнее');
+    if (options.truncate) {
+      log('WARNING: очистка таблицы пропущена — TRUNCATE доступен только при прямом подключении к Postgres');
+    }
+    return { writer: await createSupabase(), backend: 'supabase' };
   }
-  return createSupabaseWriter(admin());
+}
+
+export interface GalaxyDbCheck {
+  direct: {
+    /** `DATABASE_URL`/`SUPABASE_DB_URL` is set at all. */
+    configured: boolean;
+    /** Host from the connection string — the thing that usually cannot be resolved. */
+    host: string | null;
+    ok: boolean;
+    /** Diagnosis for the operator (why it failed), or what succeeded. */
+    message: string;
+    database: string | null;
+  };
+  postgrest: { configured: boolean };
+  /** The backend the import would pick right now. */
+  backend: GalaxyImportBackend | null;
+}
+
+/**
+ * One-shot connection report, run inside the web process.
+ *
+ * The production image contains no `scripts/`, so `--check-db` on the CLI is not
+ * available there — and a check from the host would not see what the container
+ * sees. This is the accurate answer to «getaddrinfo EAI_AGAIN db»: one attempt,
+ * a short timeout, no retries, and the same diagnosis the import itself uses.
+ */
+export async function checkGalaxyDbConnection(
+  options: { env?: NodeJS.ProcessEnv; connectionTimeoutMillis?: number } = {},
+): Promise<GalaxyDbCheck> {
+  const env = options.env ?? process.env;
+  const backends = describeImportBackends(env);
+  const connectionString = galaxyDbUrl(env);
+  const postgrest = { configured: backends.supabase };
+
+  if (!connectionString) {
+    return {
+      direct: {
+        configured: false,
+        host: null,
+        ok: false,
+        message: 'DATABASE_URL/SUPABASE_DB_URL не заданы — импорт пойдёт через PostgREST',
+        database: null,
+      },
+      postgrest,
+      backend: backends.backend,
+    };
+  }
+
+  const host = pgConnectionTarget(connectionString)?.host ?? null;
+  try {
+    const client = await connectPgClient({
+      connectionString,
+      attempts: 1,
+      connectionTimeoutMillis: options.connectionTimeoutMillis ?? 5_000,
+    });
+    try {
+      const result = await client.query('SELECT current_database() AS db');
+      const database = typeof result.rows[0]?.db === 'string' ? (result.rows[0].db as string) : null;
+      return {
+        direct: {
+          configured: true,
+          host,
+          ok: true,
+          message: `подключение работает${database ? `, база «${database}»` : ''}`,
+          database,
+        },
+        postgrest,
+        backend: backends.backend,
+      };
+    } finally {
+      await client.end().catch(() => undefined);
+    }
+  } catch (error) {
+    return {
+      direct: {
+        configured: true,
+        host,
+        ok: false,
+        message: isPgConnectionError(error) ? error.failure.message : (error as Error)?.message || String(error),
+        database: null,
+      },
+      postgrest,
+      backend: backends.backend,
+    };
+  }
 }
 
 async function uploadPoints(buffer: Buffer, log: (line: string) => void): Promise<{ uploaded: boolean; error: string | null }> {
@@ -635,7 +773,11 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     return { started: false, reason: 'Импорт уже запущен', state: await readImportState() };
   }
   const url = options.url?.trim() || galaxyImportUrl();
-  const { backend, connectionString } = pickBackend();
+  const chosen = pickBackend();
+  const connectionString = chosen.connectionString;
+  // The preferred backend; `createWriterWithFallback` may downgrade it to
+  // PostgREST when the direct connection turns out to be unreachable.
+  let backend = chosen.backend;
   const previous = await readImportState();
   const resumable =
     !options.fresh &&
@@ -681,7 +823,21 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
   void (async () => {
     let writer: GalaxyRowWriter | null = null;
     try {
-      writer = await createWriter(backend, connectionString, options.truncate === true);
+      const opened = await createWriterWithFallback({
+        backend,
+        connectionString,
+        truncate: options.truncate === true,
+        supabaseFallback: describeImportBackends().supabase,
+        log,
+      });
+      writer = opened.writer;
+      if (opened.backend !== backend) {
+        // Keep the reported backend honest: the admin tab, `/api/galaxy/stats`
+        // and the `imported_by` note all read it.
+        backend = opened.backend;
+        run.backend = opened.backend;
+        await writeImportState({ backend }).catch(() => undefined);
+      }
       log(
         resumeFrom > 0
           ? `Режим записи: ${backend}; продолжение — уже записанные системы (до байта ${resumeFrom.toLocaleString()} распакованного дампа) будут пропущены`
@@ -730,6 +886,11 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         pointsError = upload.error;
       }
 
+      if (writer.analyze) {
+        // 10⁸ upserts leave the planner with empty-table estimates.
+        await writer.analyze().catch((error) => log(`WARNING: ANALYZE не выполнен: ${(error as Error).message}`));
+      }
+
       await writeCatalogStats({
         systems_count: result.systemsCount,
         valid_records: result.processed,
@@ -737,7 +898,13 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         source: url,
         backend,
         points: result.points
-          ? { count: result.points.count, bytes: result.points.buffer.length, uploaded: pointsUploaded }
+          ? {
+              count: result.points.count,
+              bytes: result.points.buffer.length,
+              uploaded: pointsUploaded,
+              rows: result.points.rows,
+              stride: result.points.stride,
+            }
           : null,
       });
 
@@ -754,6 +921,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         systems_count: result.systemsCount,
         points_count: result.points?.count ?? null,
         points_bytes: result.points ? result.points.buffer.length : null,
+        points_stride: result.points?.stride ?? null,
         points_uploaded: pointsUploaded,
         points_error: pointsError,
         error: null,
@@ -817,7 +985,7 @@ async function writeCatalogStats(input: {
   invalid_records: number;
   source: string;
   backend: GalaxyImportBackend;
-  points: { count: number; bytes: number; uploaded: boolean } | null;
+  points: { count: number; bytes: number; uploaded: boolean; rows: number; stride: number } | null;
 }): Promise<void> {
   const previous = (await metaValue('stats').catch(() => null)) ?? {};
   const value: Record<string, unknown> = {
@@ -835,6 +1003,11 @@ async function writeCatalogStats(input: {
     value.points_uploaded = true;
     value.points_count = input.points.count;
     value.points_bytes = input.points.bytes;
+    // The cloud is a uniform sample of the catalog (~2×10⁸ systems do not fit
+    // the 50 MB bucket): say so, so the map layer is not read as complete.
+    value.points_rows = input.points.rows;
+    value.points_stride = input.points.stride;
+    value.points_sampled = input.points.stride > 1;
   }
   const { error } = await admin()
     .from('galaxy_systems_meta')

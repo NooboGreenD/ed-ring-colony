@@ -52,6 +52,7 @@
     "autoprefixer": "^10.5.4",
     "esbuild": "^0.28.2",
     "jsdom": "^28.1.0",
+    "libpg-query": "^18.1.5",
     "postcss": "^8.5.26",
     "sharp": "0.35.4",
     "tailwindcss": "^4.3.3",

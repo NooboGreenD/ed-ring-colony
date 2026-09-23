@@ -183,6 +183,35 @@ export const POINTS_STORAGE_OBJECT = 'galaxy-systems-points.bin';
 /** Bytes per point: 3*float32 + 1*uint8 + 2*uint32 = 29. */
 export const POINTS_BYTES_PER_POINT = 29;
 
+/**
+ * Upper bound for the map point cloud.
+ *
+ * The catalog is not 1.3M systems — Spansh's `systems.json.gz` (5.9 GiB) holds
+ * the whole explored galaxy, ~2×10⁸ systems (EDAstro counts 203.6M). One point
+ * per system would be ~5.5 GiB in this format: it would not fit the 50 MB
+ * `galaxy-data` bucket, and three.js could not raycast it anyway. The cloud is
+ * therefore a uniform sample: {@link PointsBuilder} keeps every `stride`-th
+ * system and the sample size is reported in `galaxy_systems_meta`.
+ *
+ * 1.2M points ≈ 35 MB — inside the bucket limit and renderable.
+ */
+export const POINTS_MAX_DEFAULT = 1_200_000;
+
+/** `GALAXY_POINTS_MAX` overrides the cloud size; `0` disables sampling. */
+export function galaxyPointsMax(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.GALAXY_POINTS_MAX?.trim();
+  if (!raw) return POINTS_MAX_DEFAULT;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : POINTS_MAX_DEFAULT;
+}
+
+/** Stride that keeps at most `max` points out of `total` rows (1 = keep all). */
+export function pointSampleStride(total: number, max: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 1;
+  if (!(max > 0) || total <= max) return 1;
+  return Math.ceil(total / max);
+}
+
 export interface AllSystemsData {
   count: number;
   /** count * 3 float32, elite coords, point order = ORDER BY id. */
@@ -204,23 +233,64 @@ export interface GalaxySystemPoint {
   starType: StarClass;
 }
 
-/** Incremental builder: feed rows in `ORDER BY id` without holding them all. Grows on demand. */
+/**
+ * Incremental builder: feed rows in `ORDER BY id` without holding them all.
+ * Grows on demand.
+ *
+ * `maxPoints > 0` bounds memory for a full-galaxy catalog: when the buffer is
+ * full the builder drops every second stored point and doubles `sampleStride`,
+ * so the result is a uniform sample of everything seen — not the first N
+ * systems, which the dump order would cluster in one part of the galaxy.
+ */
 export class PointsBuilder {
   private positions: Float32Array;
   private starTypes: Uint8Array;
   private id64Hi: Uint32Array;
   private id64Lo: Uint32Array;
   private count = 0;
+  private stride = 1;
 
-  constructor(initialCapacity = 1_000_000) {
-    this.positions = new Float32Array(initialCapacity * 3);
-    this.starTypes = new Uint8Array(initialCapacity);
-    this.id64Hi = new Uint32Array(initialCapacity);
-    this.id64Lo = new Uint32Array(initialCapacity);
+  /** Point cap; 0 keeps one point per system. Not a parameter property: Node's
+   *  type stripping (how the tests and the CLI load these modules) rejects them. */
+  private readonly maxPoints: number;
+
+  constructor(initialCapacity = 1_000_000, maxPoints = 0) {
+    this.maxPoints = maxPoints;
+    const capacity = maxPoints > 0 ? Math.min(initialCapacity, maxPoints) : initialCapacity;
+    this.positions = new Float32Array(Math.max(1, capacity) * 3);
+    this.starTypes = new Uint8Array(Math.max(1, capacity));
+    this.id64Hi = new Uint32Array(Math.max(1, capacity));
+    this.id64Lo = new Uint32Array(Math.max(1, capacity));
   }
 
   get size(): number {
     return this.count;
+  }
+
+  /** How many source rows each stored point represents (1 = no sampling). */
+  get sampleStride(): number {
+    return this.stride;
+  }
+
+  get sampled(): boolean {
+    return this.stride > 1;
+  }
+
+  /** Drop every second stored point; amortised O(n) over the whole stream. */
+  private compact(): void {
+    const keep = Math.ceil(this.count / 2);
+    for (let i = 0; i < keep; i++) {
+      const from = i * 2;
+      if (from === i) continue;
+      this.positions[i * 3] = this.positions[from * 3];
+      this.positions[i * 3 + 1] = this.positions[from * 3 + 1];
+      this.positions[i * 3 + 2] = this.positions[from * 3 + 2];
+      this.starTypes[i] = this.starTypes[from];
+      this.id64Hi[i] = this.id64Hi[from];
+      this.id64Lo[i] = this.id64Lo[from];
+    }
+    this.count = keep;
+    this.stride *= 2;
   }
 
   private grow(): void {
@@ -240,7 +310,8 @@ export class PointsBuilder {
   }
 
   add(row: GalaxySystemPoint): void {
-    if (this.count >= this.positions.length / 3) this.grow();
+    if (this.maxPoints > 0 && this.count >= this.maxPoints) this.compact();
+    else if (this.count >= this.positions.length / 3) this.grow();
     const i = this.count++;
     this.positions[i * 3] = row.x;
     this.positions[i * 3 + 1] = row.y;

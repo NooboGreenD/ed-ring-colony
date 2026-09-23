@@ -16,14 +16,14 @@
 #                      supabase.ДОМЕН, HTTPS через certbot
 #   --email EMAIL      email для Let's Encrypt (обязателен с --domain)
 #   --no-certbot       в режиме --domain пропустить выпуск сертификата
-#   --no-cron          не настраивать крон-задачи и бэкапы
+#   --no-cron          не создавать каталог для резервных копий
 #   --no-monitor       не запускать monitor-agent (Админка → Мониторинг
 #                      останется без Docker/задач; включается позже скриптом
 #                      deploy/start-monitoring.sh)
 #   --no-ufw           не трогать файрвол
 #
 # Что делает: пакеты → ufw → swap → Docker → Supabase-стек → секреты →
-# схема БД → сайт → nginx → (certbot) → cron+бэкапы → сводка.
+# схема БД → сайт → nginx → (certbot) → каталог копий → сводка.
 # Скрипт идемпотентен: перезапуск продолжает с недоделанного.
 # Все пароли/ключи сохраняются в /opt/ed-ring-colony/credentials.txt (0600).
 # ═════════════════════════════════════════════════════════════════════
@@ -384,20 +384,20 @@ for i in $(seq 1 36); do
 done
 
 # ═════════════════════════════════════════════════════════════════════
-step "9/10 Крон-задачи и бэкапы"
+step "9/10 Каталог для резервных копий"
 # ═════════════════════════════════════════════════════════════════════
+# Бэкапы намеренно НЕ ставятся в cron: копия базы делается раз в неделю
+# вручную из Админка → Бэкапы, а на время дампа сайт показывает заглушку
+# «Ведутся технические работы». Расписание в cron означало бы закрытый сайт
+# в произвольный момент (см. MONITORING.md).
 if [ "$DO_CRON" = 1 ]; then
-  mkdir -p /opt/backups
-  cat > /etc/cron.d/ed-ring-colony <<EOF
-SHELL=/bin/bash
-# Фоновые задачи выполняет compose-сервис jobs. Здесь только бэкапы.
-# бэкапы
-0 4 * * *  root docker exec supabase-db pg_dump -U postgres -d postgres -Fc > /opt/backups/edrc-\$(date +\%F).dump
-30 4 * * * root tar czf /opt/backups/storage-\$(date +\%F).tgz $SUPA_DIR/volumes/storage 2>/dev/null
-0 5 * * *  root find /opt/backups -mtime +14 -delete
-EOF
-  chmod 644 /etc/cron.d/ed-ring-colony
-  echo "бэкапы настроены (/etc/cron.d/ed-ring-colony); фоновые задачи — docker compose --env-file .env.production logs jobs"
+  # Каталог, куда update-agent (deploy/db-backup.sh) складывает копии.
+  mkdir -p "${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}"
+  # Старый файл с ночными заданиями больше не нужен — убираем, чтобы он не
+  # продолжал дампить базу по своему расписанию.
+  rm -f /etc/cron.d/ed-ring-colony
+  echo "каталог копий: ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}; запуск — Админка → Бэкапы (раз в неделю, вручную)"
+  echo "фоновые задачи — docker compose --env-file .env.production logs jobs"
 fi
 
 # ═════════════════════════════════════════════════════════════════════
@@ -408,7 +408,7 @@ cat <<EOF
   Сайт:            $SITE_URL
   Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED)
   Секреты:         $CRED  (сделайте копию в надёжное место!)
-  Бэкапы:          /opt/backups (ежедневно 04:00, ротация 14 дней)
+  Бэкапы:          Админка → Бэкапы, раз в неделю вручную (копии в ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}, хранятся 4)
 $( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent + update-agent, ключи в $CRED)" \
      || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh && bash $SRC_DIR/deploy/start-update-agent.sh" )
 

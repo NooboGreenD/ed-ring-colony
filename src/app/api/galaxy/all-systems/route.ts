@@ -18,7 +18,7 @@ import {
 import { galaxyDbUrl } from '@/lib/pgModule';
 
 export const dynamic = 'force-dynamic';
-// A cold PostgREST build of ~1.3M rows can take minutes; nginx gives up at 310 s.
+// A cold PostgREST build over 10⁸ rows can take minutes; nginx gives up at 310 s.
 export const maxDuration = 300;
 
 const STATIC_POINTS = path.join(process.cwd(), 'public', 'data', 'galaxy-systems-points.bin');

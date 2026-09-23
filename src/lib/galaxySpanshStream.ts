@@ -3,7 +3,7 @@
  *
  * The dump is a single JSON array of `BriefDumpSystem` objects
  * ({ id64, name, mainStar, coords{x,y,z}, needsPermit, updateTime }), one
- * record per line, ~6 GiB compressed / ~1.3M records. It is never buffered
+ * record per line, ~6 GiB compressed / ~2×10⁸ records. It is never buffered
  * whole: a byte-level state machine emits one object at a time.
  *
  * Shared by:
