@@ -66,9 +66,11 @@ sudo bash deploy/monitoring-setup.sh \
   service-role; ответ и строки БД не сохраняются и не выводятся.
 - **Docker** — `web`, `jobs`, `monitor-agent`: состояние, healthcheck,
   время старта, число рестартов, память и CPU.
-- **Фоновые задачи** — время последнего успешного запуска и следующий слот из
-  состояния `jobs-state.json`. Важно: это именно успех; причина сбоя остаётся
-  только в закрытых логах `jobs`.
+- **Фоновые задачи** — время последнего успешного запуска, следующий слот и,
+  если задача падает, её последняя ошибка из состояния `jobs-state.json`
+  (`lastError` / `lastFailureAt` / `failures`, пишет `server-jobs.mjs`).
+  «Окно не меняется» больше не загадка: у падающей задачи видна причина и
+  время сбоя, статус — «Требует внимания».
 - **Версия** — хеш развёрнутой сборки и хеш `main` на GitHub. Запрос к GitHub
   кэшируется на пять минут. Значение «ревизии отличаются» — повод проверить
   изменения перед штатным обновлением, а не команда обновиться вслепую.
@@ -108,10 +110,22 @@ bash deploy/start-monitoring.sh      # то же самое: npm run monitoring:
 
 - создаёт `.env.production` из `.env.example`, если файла ещё нет;
 - генерирует и вставляет недостающие ключи `MONITOR_AGENT_TOKEN` и
-  `CRON_SECRET` (существующие значения не трогает, поэтому повторный запуск
+  `CRON_SECRET` (существующие значения не трогают, поэтому повторный запуск
   безопасен), дописывает `PROJECT_REPOSITORY` / `PROJECT_UPDATE_BRANCH`;
+- находит стек self-hosted Supabase (контейнер `supabase-db`) и:
+  - записывает имя его docker-сети в `SUPABASE_NETWORK` и подключает
+    `web` + `monitor-agent` к ней (`deploy/compose.supabase-net.yml`) — после
+    этого ссылка `postgresql://postgres:ПАРОЛЬ@db:5432/postgres` в
+    `SUPABASE_DB_URL`/`MONITOR_DB_URL` работает из контейнеров, и ошибки
+    «getaddrinfo EAI_AGAIN db» больше нет;
+  - при пустом `SUPABASE_DB_URL` собирает его сам из `POSTGRES_PASSWORD`
+    стека Supabase (значение не выводится);
+  - в конце проверяет, что хост `db` резолвится из `web` и `monitor-agent`;
 - передаёт в сборку метаданные ревизии `APP_GIT_SHA`, `APP_GIT_REF`,
-  `APP_BUILD_TIME` (вне Git-клона — безопасное значение `unknown`);
+  `APP_BUILD_TIME` (вне Git-клона — безопасное значение `unknown`) и
+  записывает их в `.env.production`: ручная пересборка `docker compose up
+  -d --build` тоже подхватит их из `${APP_GIT_SHA:-unknown}` — блок
+  «Версия проекта» сможет выполнить очную сверку;
 - поднимает `web`, `jobs` и `monitor-agent` с профилем `monitoring`;
 - проверяет `/health` и аутентифицированный `/status` изнутри контейнера
   `web`, не раскрывая токен ни в выводе, ни в списке процессов.

@@ -1,0 +1,37 @@
+# ─────────────────────────────────────────────────────────────────────
+# ED Ring Colony — переопределение: доступ к self-hosted Supabase.
+#
+# Подключает `web` и `monitor-agent` к docker-сети стека Supabase, чтобы
+# имя `db` из SUPABASE_DB_URL / DATABASE_URL / MONITOR_DB_URL резолвилось:
+# без общей сети соединение падает ещё до первого запроса с
+# «getaddrinfo EAI_AGAIN db» (у web и Supabase разные Compose-проекты,
+# и имя сервиса чужой сети не видно).
+#
+# Файл подключается ТОЛЬКО когда сеть Supabase реально существует —
+# его добавляет в `docker compose -f …` общий хелпер deploy/compose-lib.sh
+# (используют start-monitoring.sh, update-project.sh, apply-env.sh,
+# install.sh). Вручную:
+#
+#   docker compose --env-file .env.production --profile monitoring \
+#     -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d
+#
+# Имя сети берётся из SUPABASE_NETWORK (default supabase_default; точное
+# имя показывает `docker network ls`). В env-файл его записывает
+# start-monitoring.sh, определив по контейнеру supabase-db.
+# ─────────────────────────────────────────────────────────────────────
+services:
+  web:
+    networks:
+      - default
+      - monitor
+      - supabase
+
+  monitor-agent:
+    networks:
+      - monitor
+      - supabase
+
+networks:
+  supabase:
+    external: true
+    name: ${SUPABASE_NETWORK:-supabase_default}

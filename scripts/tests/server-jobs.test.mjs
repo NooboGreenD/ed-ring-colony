@@ -66,6 +66,21 @@ test('non-JSON, HTTP errors and HTTP-200 business errors all fail', async () => 
   assert.equal(called, false);
 });
 
+test('Galnet jobs are queue-based: partial per-article failures do not fail the slot', async () => {
+  // Недопереведённая статья — это «догонит следующий слот», а не провал задачи:
+  // иначе один сбойный перевод замораживал state-файл и всё окно «Фоновые задачи».
+  await assert.doesNotReject(() => callEndpoint(config(), JOBS.find(job => job.name === 'translate'),
+    async () => json({ ok: true, processed: 10, translated: 7, failed: 3, remaining: 12 })));
+  await assert.doesNotReject(() => callEndpoint(config(), JOBS.find(job => job.name === 'galnet-sync'),
+    async () => json({ ok: true, success: false, fetched: 30, inserted: 5, translated: 0,
+      errors: ['translate:nid: Yandex quota exceeded'] })));
+  // Структурные ошибки остаются провалом.
+  await assert.rejects(() => callEndpoint(config(), JOBS.find(job => job.name === 'translate'),
+    async () => json({ ok: false, errors: ['galnet_news: query failed'] })));
+  await assert.rejects(() => callEndpoint(config(), JOBS.find(job => job.name === 'galnet-sync'),
+    async () => json({ ok: false, error: 'Galnet HTTP 503' })));
+});
+
 test('Galnet sync drains translations even when the feed is unchanged; limits passes', async () => {
   const paths = [];
   const c = config({ JOBS_TRANSLATE_PASSES: '3' });
@@ -138,16 +153,41 @@ test('failures retry within the same slot with backoff and do not block other jo
       return { ok: true };
     } };
   await runTick(options);
-  assert.equal(state.jobs['galnet-sync'], undefined);
+  // Сбой больше не невидимка: в state попадает причина, но БЕЗ slot/lastSuccess —
+  // слот не закрывается, повтор в этом же слоте остаётся возможным.
+  assert.equal(state.jobs['galnet-sync'].slot, undefined);
+  assert.equal(state.jobs['galnet-sync'].lastSuccess, undefined);
+  assert.equal(state.jobs['galnet-sync'].lastError, 'HTTP 503');
+  assert.equal(state.jobs['galnet-sync'].failures, 1);
+  assert.ok(state.jobs['galnet-sync'].lastFailureAt);
   assert.ok(state.jobs.translate);
   clock += 30_000;
   await runTick(options);
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 1, 'backoff holds the retry inside the same slot');
   clock += 30_000;
   await runTick(options);
   assert.equal(attempts, 2);
-  assert.ok(state.jobs['galnet-sync']);
+  assert.ok(state.jobs['galnet-sync'].slot, 'success closes the slot');
+  assert.equal(state.jobs['galnet-sync'].lastError, undefined, 'success clears the failure line');
+  assert.equal(state.jobs['galnet-sync'].lastFailureAt, undefined);
+  assert.equal(state.jobs['galnet-sync'].failures, undefined);
   assert.equal(retries['galnet-sync'], undefined);
+});
+
+test('repeated failures accumulate the counter and keep the previous success fields', async () => {
+  const c = config({ JOBS_ENABLED: 'translate' });
+  const state = { version: 1, jobs: {} };
+  const retries = {};
+  let clock = Date.parse('2026-09-20T12:00:00Z');
+  const options = { config: c, state, retries, log: () => {}, now: () => clock, persist: async () => {},
+    run: async () => { throw new Error('queue query failed'); } };
+  await runTick(options);
+  const firstFailureAt = state.jobs.translate.lastFailureAt;
+  clock += 10 * 60_000;
+  await runTick(options);
+  assert.equal(state.jobs.translate.failures, 2);
+  assert.equal(state.jobs.translate.lastError, 'queue query failed');
+  assert.notEqual(state.jobs.translate.lastFailureAt, firstFailureAt);
 });
 
 test('failure to persist state is fatal, not a successful but unrecorded run', async () => {

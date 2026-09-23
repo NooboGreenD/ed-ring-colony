@@ -84,14 +84,22 @@ if [ "$COMPOSE_OK" = 1 ]; then
   # Из каталога репозитория — то же имя Compose-проекта, которым работают
   # update-project.sh и start-monitoring.sh (имя берётся из имени каталога).
   cd "$PROJECT_DIR"
+  # Та же логика -f, что у остальных скриптов стека: без неё force-recreate
+  # молча убрал бы у web/monitor-agent сеть Supabase (EAI_AGAIN вернулся бы).
+  EDRC_EXTRA_COMPOSE_FILES=""
+  if [ -f "$PROJECT_DIR/deploy/compose-lib.sh" ]; then
+    # shellcheck source=compose-lib.sh
+    source "$PROJECT_DIR/deploy/compose-lib.sh"
+    EDRC_EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$PROJECT_DIR" "$ENV_FILE")"
+  fi
   SERVICES="web"
   if [ "$SCOPE" = "all" ]; then SERVICES="web jobs monitor-agent"; fi
   report env_switch 40 "Пересоздаю: $SERVICES (без пересборки образов)"
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    compose --env-file "$ENV_FILE" --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
   else
     say "⚠ $ENV_FILE не найден — пересоздаю без --env-file"
-    compose --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    compose --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
   fi
   report env_verify 90 "Жду, пока сайт ответит"
   wait_health

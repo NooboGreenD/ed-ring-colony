@@ -53,8 +53,11 @@ function nextRunAt(job, now) {
 
 /**
  * Turn the scheduler's persisted success-only state into a safe status list.
- * The runner intentionally does not persist API response bodies or failures;
- * a missing/old success is therefore a warning, not a fabricated error cause.
+ * The runner intentionally does not persist API response bodies; failures are
+ * stored as a short `lastError` line plus `lastFailureAt`, so the panel can
+ * answer «почему окно не меняется» instead of silently repeating old success
+ * timestamps. A missing/old success is therefore a warning, not a fabricated
+ * error cause.
  */
 export function schedulerSnapshot(state, configuredNames, now = Date.now()) {
   const savedJobs = state && typeof state === 'object' && !Array.isArray(state)
@@ -66,12 +69,17 @@ export function schedulerSnapshot(state, configuredNames, now = Date.now()) {
     const job = JOBS.find((item) => item.name === name);
     const saved = savedJobs[name] && typeof savedJobs[name] === 'object' ? savedJobs[name] : null;
     const lastSuccessAt = safeIso(saved?.lastSuccess);
+    const lastFailureAt = safeIso(saved?.lastFailureAt);
+    const lastError = sanitizeJobError(saved?.lastError);
 
     if (!job) {
       return {
         name,
         status: 'unknown',
         lastSuccessAt: null,
+        lastError: null,
+        lastFailureAt: null,
+        failures: 0,
         nextRunAt: null,
         ageSeconds: null,
         everySeconds: null,
@@ -81,16 +89,35 @@ export function schedulerSnapshot(state, configuredNames, now = Date.now()) {
     const ageMs = lastSuccessAt ? Math.max(0, now - Date.parse(lastSuccessAt)) : null;
     // Allow the current calendar slot plus a little startup/network tolerance.
     const staleAfterMs = Math.max(job.period + FIVE_MINUTES, Math.round(job.period * 1.5));
-    const status = !lastSuccessAt ? 'unknown' : ageMs > staleAfterMs ? 'warning' : 'healthy';
+    const failures = positiveInteger(saved?.failures, 0) ?? 0;
+    // A failure newer than the last success means the job is failing right
+    // now: the operator should see it even while the old success is «fresh».
+    const failingRecently = !!lastFailureAt
+      && (!lastSuccessAt || Date.parse(lastFailureAt) >= Date.parse(lastSuccessAt));
+    const status = !lastSuccessAt ? 'unknown' : ageMs > staleAfterMs || failingRecently ? 'warning' : 'healthy';
     return {
       name,
       status,
       lastSuccessAt,
+      lastError: failingRecently ? lastError : null,
+      lastFailureAt: failingRecently ? lastFailureAt : null,
+      failures: failingRecently ? failures : 0,
       nextRunAt: nextRunAt(job, now),
       ageSeconds: ageMs == null ? null : Math.round(ageMs / 1000),
       everySeconds: Math.round(job.period / 1000),
     };
   });
+}
+
+/**
+ * Error text comes from the runner's own messages and web status codes, but it
+ * is still untrusted input for this endpoint: keep it short and printable.
+ */
+export function sanitizeJobError(value, limit = 200) {
+  if (typeof value !== 'string') return null;
+  const text = value.replace(/[^\x20-\x7E\u00A0-\uFFFF]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 }
 
 async function schedulerStatus(env = process.env, now = Date.now()) {
@@ -416,19 +443,52 @@ export async function dbStatus(env = process.env) {
       measuredAt: new Date().toISOString(),
       note: null,
     };
-  } catch {
-    // Ни хост-детей, ни пароля из URL наружу: только сам хост для подсказки.
+  } catch (error) {
+    // Ни хост-детей, ни пароля из URL наружу: только сам хост и класс ошибки.
     let host = null;
     try { host = new URL(url).hostname || null; } catch { /* opaque URL */ }
     return {
       available: false,
-      note: host
-        ? `Postgres не ответил (${host}) — проверьте MONITOR_DB_URL и права роли`
-        : 'Postgres не ответил — проверьте MONITOR_DB_URL',
+      note: dbFailureNote(error, host),
     };
   } finally {
     try { await client?.end(); } catch { /* probe is best-effort */ }
   }
+}
+
+/**
+ * Одна фраза «почему не вышло» вместо молчаливого «не ответил». Класс ошибки
+ * подсказывает конкретное действие: DNS (EAI_AGAIN/ENOTFOUND) — контейнер не
+ * в той docker-сети, ECONNREFUSED — сервис/порт, auth — права роли.
+ */
+export function dbFailureNote(error, host) {
+  const code = String(error?.code || (error?.cause && error.cause.code) || '');
+  const detail = String(error?.message || (error?.cause && error.cause.message) || error || 'unknown error');
+  const at = host ? `(${host})` : '';
+
+  if (code === 'EAI_AGAIN' || code === 'ENOTFOUND' || code === 'EAI_NONAME' || /getaddrinfo/i.test(detail)) {
+    return (
+      `Postgres не ответил ${at}: имя хоста не резолвится из контейнера агента (${code || 'getaddrinfo'}). ` +
+      'Такое имя живёт только внутри docker-сети Supabase. Запустите bash deploy/start-monitoring.sh — ' +
+      'он подключит monitor-agent к сети Supabase (SUPABASE_NETWORK), либо укажите в MONITOR_DB_URL адрес, видимый агенту.'
+    );
+  }
+  if (code === 'ECONNREFUSED' || /connection refused|server closed the connection unexpectedly/i.test(detail)) {
+    return (
+      `Postgres не ответил ${at}: соединение отклонено (ECONNREFUSED). ` +
+      'Контейнер БД не запущен, порт не опубликован или подключение идёт не в ту docker-сеть.'
+    );
+  }
+  if (code === 'ETIMEDOUT' || /timeout/i.test(detail)) {
+    return `Postgres не ответил ${at}: таймаут — проверьте firewall и адрес в MONITOR_DB_URL.`;
+  }
+  if (/password authentication failed|no pg_hba\.conf entry|role .* does not exist|does not have the privilege/i.test(detail)) {
+    return (
+      `Postgres отклонил подключение ${at}: проверьте пользователя/пароль и права роли в MONITOR_DB_URL ` +
+      '(нужен доступ на чтение системных каталогов pg_database_size).'
+    );
+  }
+  return `Postgres не ответил ${at} — проверьте MONITOR_DB_URL и права роли`;
 }
 
 export function createMonitorServer({ env = process.env, now = () => Date.now() } = {}) {

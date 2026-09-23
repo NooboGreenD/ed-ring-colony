@@ -360,6 +360,11 @@ function sanitizeJob(value: unknown): MonitorJob | null {
     nextRunAt: validIso(value.nextRunAt),
     ageSeconds: positiveNumber(value.ageSeconds),
     everySeconds: positiveNumber(value.everySeconds),
+    // Failure facts come from the runner's own state file; the agent already
+    // bounds the text — here we only re-validate shape and length.
+    lastError: safeText(value.lastError, 240),
+    lastFailureAt: validIso(value.lastFailureAt),
+    failures: positiveNumber(value.failures),
   };
 }
 

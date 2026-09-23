@@ -171,8 +171,21 @@ WARNING: переключаюсь на PostgREST (NEXT_PUBLIC_SUPABASE_URL + SUP
 Режим записи: supabase
 ```
 
-Чтобы вернуть быстрый прямой режим, подключите `web` к сети Supabase
-(`docker-compose.yml`):
+Чтобы вернуть быстрый прямой режим, подключите `web` к сети Supabase.
+Теперь это делает сам `deploy/start-monitoring.sh`: он находит контейнер
+`supabase-db`, записывает имя сети в `SUPABASE_NETWORK` и поднимает стек
+с дополнительным файлом `deploy/compose.supabase-net.yml` (тот же `-f`
+используют `update-project.sh` и `apply-env.sh`, поэтому сеть не отваливается
+после обновлений и «Применить» в панели). Ручной способ — тот же файл:
+
+```bash
+docker network ls                       # точное имя сети стека Supabase
+echo 'SUPABASE_NETWORK=supabase_default' >> .env.production
+docker compose --env-file .env.production --profile monitoring \
+  -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d
+```
+
+Либо в `docker-compose.yml`:
 
 ```yaml
 services:
@@ -181,6 +194,10 @@ services:
       - default
       - monitor
       - supabase          # ← добавить
+  monitor-agent:
+    networks:
+      - monitor
+      - supabase          # ← добавить, иначе замер размера БД не увидит «db»
 
 networks:
   monitor:
@@ -192,6 +209,8 @@ networks:
 
 После `docker compose up -d` имя `db` (или `supabase-db`) станет доступно из
 `web`, и `DATABASE_URL=postgresql://postgres:ПАРОЛЬ@db:5432/postgres` заработает.
+`start-monitoring.sh` при пустом `SUPABASE_DB_URL` собирает эту ссылку сам из
+`POSTGRES_PASSWORD` стека Supabase и зеркалирует её в `MONITOR_DB_URL`.
 Альтернативы без общей сети: опубликовать порт Postgres на хосте и указать
 `host.docker.internal:5432` (alias уже прописан в `extra_hosts`), либо внешний
 адрес БД. Проверка — тот же `--check-db`.
