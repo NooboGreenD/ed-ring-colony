@@ -148,9 +148,11 @@ scripts/…` не сработает — используйте кнопку в 
 ### `getaddrinfo EAI_AGAIN db` — хост из `DATABASE_URL` не виден
 
 `db` — это имя сервиса внутри compose-сети self-hosted Supabase (контейнер
-`supabase-db`, сеть обычно `supabase_default`). Контейнер `web` живёт в своей
-сети `ed-ring-colony_default`, поэтому имя не резолвится, и подключение к
-Postgres падает ещё до первого запроса:
+`supabase-db`; сеть называется по каталогу стека, для `/opt/supabase` это
+`supabase_default`). Контейнер `web` живёт в своей сети Compose — её имя тоже
+образуется от каталога проекта: для `/opt/ed-ring-colony/src` это `src_default`.
+Точные имена показывает `docker network ls`. Сети разные, поэтому имя не
+резолвится, и подключение к Postgres падает ещё до первого запроса:
 
 ```text
 Postgres недоступен: getaddrinfo EAI_AGAIN db. Хост «db» из DATABASE_URL/SUPABASE_DB_URL не резолвится.
@@ -182,9 +184,9 @@ services:
 networks:
   monitor:
     internal: true
-  supabase:               # ← добавить
+  supabase:                  # ← добавить
     external: true
-    name: supabase_default   # docker network ls — точное имя вашей сети
+    name: supabase_default   # docker network ls — точное имя сети стека Supabase
 ```
 
 После `docker compose up -d` имя `db` (или `supabase-db`) станет доступно из
