@@ -27,6 +27,7 @@ import {
   pgDeleteConflictsSql,
   pgInsertSql,
   pgLiteral,
+  postgrestWriteWarning,
   readPointsFromSupabase,
   runGalaxyImport,
   verifyGzipFile,
@@ -41,8 +42,7 @@ import {
   importPercent,
   parseArchiveState,
   parseImportState,
-} from '../../src/lib/galaxyImportJob.ts';
-import {
+} from '../../src/lib/galaxyImportJob.ts';import {
   FRESH_MS,
   MAX_ATTEMPTS,
   decideScheduledImport,
@@ -1829,4 +1829,43 @@ test('two-phase flow: a dropped download is resumed, then the import runs from d
     await stopServer({ server });
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ─────────── предупреждение о PostgREST до старта импорта ───────────
+//
+// Продовый случай: дамп 5.9 ГиБ импортировался через PostgREST (в веб-процессе
+// не было DATABASE_URL/SUPABASE_DB_URL) и умер на 2.7% (~5.7M строк) с
+// «supabase upsert failed: canceling statement due to statement timeout
+// (имя / id64)» — база перестала принимать даже по одной строке. Раньше импорт
+// называл PostgREST просто «медленнее» и уходил в сутки работы; теперь он
+// говорит, чем это кончается, и как переключиться на прямой Postgres.
+
+test('postgrestWriteWarning объясняет цену PostgREST и как её избежать', () => {
+  const lines = postgrestWriteWarning('unconfigured', null);
+  assert.ok(lines.length >= 2, 'предупреждение не пустое');
+  assert.ok(
+    lines.every((line) => line.startsWith('WARNING:')),
+    'строки помечены как предупреждение',
+  );
+  const text = lines.join('\n');
+  assert.match(text, /SUPABASE_DB_URL/, 'названа переменная, которую надо задать');
+  assert.match(text, /200 строк/, 'назван размер пачки PostgREST');
+  assert.match(text, /statement_timeout|statement timeout/, 'названа ошибка, на которой это падает');
+  assert.match(text, /db:5432\/postgres/, 'пример ссылки присутствует');
+});
+
+test('postgrestWriteWarning молчит, когда прямой Postgres настроен', () => {
+  assert.deepEqual(
+    postgrestWriteWarning('unconfigured', 'postgresql://postgres:secret@db:5432/postgres'),
+    [],
+    'настроенный прямой URL не требует предупреждения',
+  );
+});
+
+test('postgrestWriteWarning называет хост, когда ссылка задана но недоступна', () => {
+  const lines = postgrestWriteWarning('unreachable', 'postgresql://postgres:secret@db:5432/postgres');
+  const text = lines.join('\n');
+  assert.match(text, /хост «db» недоступен/, 'в тексте есть хост из ссылки');
+  assert.ok(!text.includes('secret'), 'пароль из ссылки не утекает в лог');
+  assert.match(text, /SUPABASE_DB_URL/, 'подсказка о прямом Postgres на месте');
 });

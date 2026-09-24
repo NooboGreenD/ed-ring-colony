@@ -45,6 +45,7 @@ import {
   deferredRowsFailure,
   downloadDumpFile,
   pgLiteral,
+  postgrestWriteWarning,
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../src/lib/galaxyImport.ts';
@@ -534,14 +535,22 @@ async function resolveDb(args, log) {
       const message = pgFailureMessage(error, databaseUrl);
       if (!supabaseEnv()) throw new Error(message);
       log(`WARNING: direct Postgres unavailable — ${message}`);
-      log('WARNING: continuing over PostgREST (slower). Fix DATABASE_URL to get the fast path back.');
+      // Same warning the in-app import logs: PostgREST is not a slower mode for
+      // a 6 GiB dump, it is the failure the admin panel reported (statement
+      // timeout on a single row at a few percent in).
+      for (const line of postgrestWriteWarning('unreachable', databaseUrl)) log(line);
       const fallback = await supabaseWriterFromEnv(log, args.batch || SUPABASE_BATCH_SIZE);
       if (!fallback) throw new Error(message);
       return fallback;
     }
   }
   const writer = await supabaseWriterFromEnv(log, args.batch || SUPABASE_BATCH_SIZE);
-  if (writer) return writer;
+  if (writer) {
+    // `resolveDb` only reaches here without a direct URL, so there is nothing
+    // to pass: the warning says the URL is missing and how to set it.
+    for (const line of postgrestWriteWarning('unconfigured', null)) log(line);
+    return writer;
+  }
   throw new Error(
     'No database configured. Set DATABASE_URL (preferred, fast direct inserts) ' +
     'or NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, or use --dry-run.'

@@ -24,6 +24,7 @@ import {
   galaxyArchivePath,
   galaxyImportFile,
   galaxyImportUrl,
+  postgrestWriteWarning,
   runGalaxyImport,
   type GalaxyImportBackend,
   type GalaxyImportSnapshot,
@@ -645,7 +646,10 @@ export async function createWriterWithFallback(
       : (error as Error)?.message || String(error);
     if (!options.supabaseFallback) throw new Error(detail);
     log(`WARNING: прямой Postgres недоступен — ${detail}`);
-    log('WARNING: переключаюсь на PostgREST (NEXT_PUBLIC_SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY): импорт пойдёт медленнее');
+    // PostgREST is not "slower" for a 6 GiB dump, it is the failure the admin
+    // panel reported (2.7%, statement timeout on a single row). Say what it
+    // costs and how to leave the path, before hours go into it.
+    for (const line of postgrestWriteWarning('unreachable', options.connectionString)) log(line);
     if (options.truncate) {
       log('WARNING: очистка таблицы пропущена — TRUNCATE доступен только при прямом подключении к Postgres');
     }
@@ -823,6 +827,12 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
   void (async () => {
     let writer: GalaxyRowWriter | null = null;
     try {
+      // PostgREST is the only writer this process can build: warn about the
+      // cost now, while the operator can still change the configuration. The
+      // `unreachable` variant is logged by `createWriterWithFallback` itself.
+      if (backend === 'supabase') {
+        for (const line of postgrestWriteWarning('unconfigured', connectionString)) log(line);
+      }
       const opened = await createWriterWithFallback({
         backend,
         connectionString,

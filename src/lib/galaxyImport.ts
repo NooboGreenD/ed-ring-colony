@@ -41,6 +41,7 @@ import {
   connectPgClient,
   galaxyDbUrl,
   loadPg,
+  pgConnectionTarget,
   type PgClientLike,
   type PgModule,
 } from './pgModule.ts';
@@ -1594,6 +1595,53 @@ export function describeImportBackends(env: NodeJS.ProcessEnv = process.env): {
   // would promise a backend that throws on first use.
   const supabase = Boolean(env.NEXT_PUBLIC_SUPABASE_URL?.trim() && env.SUPABASE_SERVICE_ROLE_KEY?.trim());
   return { backend: dbUrl ? 'pg' : supabase ? 'supabase' : null, dbUrl, supabase };
+}
+
+/** Why the import ended up on the PostgREST path. */
+export type PostgrestFallbackReason =
+  /** `DATABASE_URL`/`SUPABASE_DB_URL` are not set at all. */
+  | 'unconfigured'
+  /** They are set, but this process cannot reach that host. */
+  | 'unreachable';
+
+/**
+ * What the PostgREST write path costs, said out loud BEFORE the run starts.
+ *
+ * The production failure this exists for: a 5.9 GiB dump imported through
+ * PostgREST died at 2.7% (~5.7M rows written) with
+ * «supabase upsert failed: canceling statement due to statement timeout
+ * (name / id64)» — the database had stopped accepting even single-row upserts,
+ * the writer burned its 32-deferral budget and the pass failed. Nothing in the
+ * app can make PostgREST fast: 200-row batches over HTTP against a table with
+ * two unique indexes is days of work on a small server, and it ends exactly
+ * like this. The only fix is a direct Postgres URL, so the import says so up
+ * front instead of letting an operator discover it after a day of crawling.
+ */
+export function postgrestWriteWarning(
+  reason: PostgrestFallbackReason,
+  /**
+   * The direct URL this import was configured with (`null` when none is set).
+   * Passed explicitly rather than read from `process.env`: the caller already
+   * knows which string it tried, and a warning that names a host from some
+   * other environment is worse than no warning.
+   */
+  connectionString: string | null = galaxyDbUrl(),
+): string[] {
+  const url = connectionString?.trim() || null;
+  // A configured direct URL is the preferred path: nothing to warn about. The
+  // `unreachable` reason is only used after a connection attempt actually
+  // failed, so it always has something to say.
+  if (reason === 'unconfigured' && url) return [];
+  const host = url ? pgConnectionTarget(url)?.host ?? null : null;
+  const head =
+    reason === 'unreachable' && host
+      ? `WARNING: прямой Postgres задан, но хост «${host}» недоступен из веб-процесса — запись пойдёт через PostgREST`
+      : 'WARNING: прямой Postgres не настроен (DATABASE_URL/SUPABASE_DB_URL пусты) — запись пойдёт через PostgREST пачками по 200 строк';
+  return [
+    head,
+    'WARNING: полный дамп (~2×10⁸ систем) через PostgREST идёт сутки и рано или поздно рвётся на statement_timeout даже на одной строке — именно на этом падал импорт в админке',
+    'WARNING: задайте веб-процессу SUPABASE_DB_URL=postgresql://postgres:ПАРОЛЬ@db:5432/postgres и подключите web к docker-сети стека Supabase (деплой делает это сам: deploy/start-monitoring.sh); проверить — кнопка «Проверить подключение к БД»',
+  ];
 }
 
 export { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT };

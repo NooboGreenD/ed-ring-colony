@@ -197,6 +197,18 @@ export default function GalaxyCatalogTab() {
   const percent = status?.percent ?? null;
   const canResume = !!state && state.resume_offset > 0 && !running;
   const backendMissing = !!status && status.backends.backend === null;
+  // PostgREST-only write path. This is not a "slower" mode for a 6 GiB dump:
+  // 200-row batches over HTTP end in «supabase upsert failed: … statement
+  // timeout» a few percent in, which is exactly how the import died here
+  // (2.7%, ~5.7M rows written). The panel says so before the operator spends a
+  // day on it, and the hint survives a page reload because it comes from the
+  // process environment, not from the ephemeral log tail.
+  const postgrestOnly = !!status && status.backends.backend === 'supabase';
+  const tableCount = status?.stats?.systems_count ?? 0;
+  // The catalog counters are written by a successful run only, so a failed or
+  // interrupted pass leaves «0» next to a table that already holds millions of
+  // rows. Show what the last pass actually wrote.
+  const partialRows = tableCount === 0 ? (state?.written ?? 0) : 0;
 
   return (
     <div>
@@ -208,11 +220,70 @@ export default function GalaxyCatalogTab() {
         </button>
       </div>
 
+      {postgrestOnly && (
+        <div
+          style={{
+            background: '#2a1f10',
+            border: '1px solid #8a5a12',
+            borderRadius: 4,
+            padding: '12px 14px',
+            marginBottom: 12,
+            fontSize: 12,
+            color: '#f5c169',
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4, color: '#ffd166' }}>
+            Запись идёт через PostgREST — полный каталог так не импортируется
+          </div>
+          PostgREST пишет пачками по 200 строк, и на полном дампе (~2×10⁸ систем) база рано или поздно
+          начинает отвечать «canceling statement due to statement timeout» даже на одну строку — импорт
+          падает на несколько процентов (в этой панели это выглядело как «supabase upsert failed: …
+          statement timeout (имя / id64)» на 2.7%). Через PostgREST дамп идёт сутки; кнопка «Продолжить»
+          повторит то же самое.
+          <div style={{ marginTop: 6 }}>
+            <strong style={{ color: '#e5e7eb' }}>Решение:</strong> задайте веб-процессу прямую ссылку на
+            Postgres и подключите <code>web</code> к docker-сети стека Supabase:
+          </div>
+          <pre
+            style={{
+              margin: '6px 0 0',
+              background: '#0f1113',
+              border: '1px solid #3a2f16',
+              borderRadius: 4,
+              padding: 8,
+              fontSize: 11,
+              color: '#e5e7eb',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+{`# .env.production (пароль — POSTGRES_PASSWORD из стека Supabase)
+SUPABASE_DB_URL=postgresql://postgres:ПАРОЛЬ@db:5432/postgres
+SUPABASE_NETWORK=supabase_default   # точное имя: docker network ls
+
+docker compose --env-file .env.production --profile monitoring \\
+  -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d`}
+          </pre>
+          <div style={{ marginTop: 6 }}>
+            Оба значения и сеть проставляет сам <code>deploy/start-monitoring.sh</code> (<code>npm run
+            monitoring:up</code>). После перезапуска нажмите «Проверить подключение к БД» — должно быть
+            «прямой Postgres (db) — подключение работает» и «Режим записи: pg». Уже записанные строки не
+            потеряются: «Продолжить импорт» продолжит с сохранённой точки, архив перескачиваться не будет.
+          </div>
+        </div>
+      )}
+
       <div style={cardStyle}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
           <div>
             <div style={labelStyle}>Систем в таблице</div>
-            <div style={{ fontSize: 16, color: '#e5e7eb' }}>{formatCount(status?.stats?.systems_count)}</div>
+            <div style={{ fontSize: 16, color: '#e5e7eb' }}>{formatCount(tableCount)}</div>
+            {partialRows > 0 && (
+              <div style={{ fontSize: 11, color: '#e67e22', marginTop: 2 }}>
+                счётчик обновляется после успешного импорта; в таблице уже {formatCount(partialRows)} строк
+                из незавершённого прохода
+              </div>
+            )}
           </div>
           <div>
             <div style={labelStyle}>Импортировано</div>
@@ -373,10 +444,10 @@ export default function GalaxyCatalogTab() {
               <div style={{ marginTop: 6, color: '#e67e22' }}>
                 База не успела записать пачку за отведённое время (statement timeout): PostgREST даёт каждому
                 запросу лишь несколько секунд. Медленные пачки делятся пополам и повторяются, а строки, которые
-                база не берёт даже по одной, откладываются и дописываются в конце прохода — просто продолжите
-                импорт с сохранённой точки. Если ошибка повторяется регулярно, задайте
-                веб-процессу <code>SUPABASE_DB_URL</code> для быстрого прямого Postgres или запускайте импорт,
-                когда база менее загружена.
+                база не берёт даже по одной, откладываются и дописываются в конце прохода. Один раз можно
+                просто продолжить импорт с сохранённой точки; если ошибка повторяется регулярно — это потолок
+                PostgREST, а не случайность: подключите веб-процессу прямой Postgres (<code>SUPABASE_DB_URL</code>,
+                см. предупреждение выше) или запускайте импорт, когда база менее загружена.
               </div>
             )}
           </div>
