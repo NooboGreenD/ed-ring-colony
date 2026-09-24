@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -383,8 +383,58 @@ test('apply-env.sh: стадии ENV_STAGES, режим определяется
     assert.match(source, pattern, 'сообщает о стадии ' + stage.id);
   }
   assert.match(source, /docker-compose\.yml/, 'режим compose определяется по compose-файлу');
+  assert.match(source, /-f docker-compose\.yml/, 'пересоздание сервисов явно включает базовый docker-compose.yml');
   assert.match(source, /systemctl restart/, 'systemd-режим тоже поддерживается');
   assert.match(source, /force-recreate/, 'ключи применяются пересозданием сервисов, не пересборкой');
+});
+
+test('apply-env.sh: живое пересоздание сервисов передаёт базовый compose-файл и сеть Supabase без падения', { skip: needsBash }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-apply-env-'));
+  const deployDir = join(dir, 'deploy');
+  const binDir = join(dir, 'bin');
+  mkdirSync(deployDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+
+  copyFileSync(join(ROOT, 'deploy', 'apply-env.sh'), join(deployDir, 'apply-env.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(deployDir, 'compose-lib.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'compose.supabase-net.yml'), join(deployDir, 'compose.supabase-net.yml'));
+  writeFileSync(join(dir, 'docker-compose.yml'), 'services:\n  web:\n    image: test\n');
+  const envFile = join(dir, '.env.production');
+  writeFileSync(envFile, 'SUPABASE_NETWORK=test-supa-net\n');
+
+  const logFile = join(dir, 'docker.log');
+  writeFileSync(join(binDir, 'docker'), [
+    '#!/usr/bin/env bash',
+    'if [ "$1" = "compose" ]; then',
+    '  shift',
+    `  echo "[docker-compose] $*" >> "${logFile}"`,
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "info" ]; then exit 0; fi',
+    'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then exit 0; fi',
+    'exit 0',
+  ].join('\n'), { mode: 0o755 });
+
+  writeFileSync(join(binDir, 'curl'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+
+  const run = spawnSync('bash', [join(deployDir, 'apply-env.sh')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      PROJECT_DIR: dir,
+      ENV_FILE: envFile,
+      PROJECT_DEPLOY_MODE: 'compose',
+    },
+  });
+
+  assert.equal(run.status, 0, `apply-env.sh failed: ${run.stdout}\n${run.stderr}`);
+  assert.match(run.stdout, /"stage":"done","percent":100/);
+  assert.match(run.stdout, /ПРИМЕНЕНИЕ КЛЮЧЕЙ ЗАВЕРШЕНО/);
+
+  const log = readFileSync(logFile, 'utf8');
+  assert.match(log, /-f docker-compose\.yml -f deploy\/compose\.supabase-net\.yml/, 'оба файла переданы в правильном порядке');
+  assert.match(log, /up -d --force-recreate web/);
 });
 
 test('обрамление: update-agent получил apply-env.sh, monitor-agent — pg, compose — MONITOR_DB_URL', () => {

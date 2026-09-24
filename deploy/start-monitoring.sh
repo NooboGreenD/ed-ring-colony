@@ -52,7 +52,7 @@ while [ $# -gt 0 ]; do
     --stop)      MODE="stop"; shift;;
     --no-build)  DO_BUILD=0; shift;;
     --env-file)  ENV_FILE="${2:?}"; shift 2;;
-    -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -34; exit 0;;
+    -h|--help)   head -34 "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "Неизвестный флаг: $1 (см. --help)" >&2; exit 1;;
   esac
 done
@@ -176,7 +176,11 @@ require_docker() {
   docker compose version >/dev/null 2>&1 || die "нужен Docker Compose v2 (docker compose version)"
   docker info >/dev/null 2>&1 || die "нет доступа к Docker daemon (нужен root/sudo или группа docker)"
   cd "$REPO_ROOT"
-  COMPOSE=(docker compose --env-file "$ENV_FILE" --profile monitoring)
+  local extra=""
+  if declare -F edrc_extra_compose_files >/dev/null 2>&1; then
+    extra="$(edrc_extra_compose_files "$REPO_ROOT" "$ENV_FILE")"
+  fi
+  COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml $extra --profile monitoring)
 }
 
 # Метаданные ревизии не секреты: попадут только в runtime-образ web и видны

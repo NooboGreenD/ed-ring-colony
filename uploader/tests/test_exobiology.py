@@ -509,3 +509,88 @@ class EventDedupTests(unittest.TestCase):
         tracker.handle({"event": "FSDJump", "StarSystem": "Alpha Centauri"})
         self.assertEqual(tracker.system_body_count(), 0,
                          "считаем только тела текущей системы")
+
+
+class ExobiologyEnhancementsTests(unittest.TestCase):
+    """Тесты улучшений экзобиологии: посадка, точные цены видов и бонус первопроходца."""
+
+    def test_non_landable_body_disables_prediction(self):
+        # Водный мир / Землеподобная — посадка невозможна в Odyssey
+        water = {"planet_class": "Water world", "atmosphere": "thick water atmosphere"}
+        self.assertEqual(predict_genera(water), [])
+        self.assertEqual(prediction_rows(water), [])
+
+        elw = {"planet_class": "Earthlike body", "atmosphere": "suitable for water-based life"}
+        self.assertEqual(predict_genera(elw), [])
+        self.assertEqual(prediction_rows(elw), [])
+
+        # Каменистое тело с явным флагом landable: False
+        unlandable_rock = {"planet_class": "Rocky body", "landable": False,
+                           "atmosphere": "thin carbon dioxide atmosphere"}
+        self.assertEqual(predict_genera(unlandable_rock), [])
+        self.assertEqual(prediction_rows(unlandable_rock), [])
+
+    def test_species_payout_values_update14(self):
+        # Проверяем точные базовые выплаты Vista Genomics Update 14
+        self.assertEqual(estimate_value("Stratum Tectonicas"), 19_010_800)
+        self.assertEqual(estimate_value("Fonticulua Fluctus"), 20_000_000)
+        self.assertEqual(estimate_value("Cactoida Vermis"), 16_202_800)
+        self.assertEqual(estimate_value("Bacterium Informem"), 8_418_000)
+        self.assertEqual(estimate_value("Bacterium Aurasus"), 1_000_000)
+        self.assertEqual(estimate_value("Tussock Stigmasis"), 19_010_800)
+        self.assertEqual(estimate_value("Tussock Pennatis"), 1_000_000)
+        self.assertEqual(estimate_value("Recepta Deltahedronix"), 16_202_800)
+
+    def test_first_footfall_bonus_multiplies_by_5(self):
+        # Без бонуса
+        base_stratum = estimate_value("Stratum Tectonicas")
+        self.assertEqual(base_stratum, 19_010_800)
+        # С бонусом первопроходца (5x)
+        self.assertEqual(estimate_value("Stratum Tectonicas", first_discovery=True),
+                         base_stratum * 5)
+        self.assertEqual(estimate_value("Stratum Tectonicas", first_discovery=True),
+                         95_054_000)
+
+    def test_first_footfall_tracking_and_prediction_bonus(self):
+        tracker = ExobiologyTracker()
+        # Новое не открытое ранее тело (WasDiscovered: False) -> гарантированно нет первопроходца
+        event = scan_event(
+            BodyName="HIP 12345 1",
+            PlanetClass="Rocky body",
+            Landable=True,
+            WasDiscovered=False,
+            Atmosphere="thin carbon dioxide atmosphere",
+            SurfaceGravity=9.8,
+            SurfaceTemperature=188.0,
+        )
+        tracker.handle(event)
+        state = tracker.current_body_state()
+        self.assertIsNotNone(state)
+        self.assertTrue(state["no_first_footfall"])
+        self.assertEqual(state["first_footfall_bonus"], 5.0)
+
+        # Проверяем, что в предсказаниях родов стоимость рассчитана с бонусом 5х
+        predictions = state["predictions"]
+        self.assertGreater(len(predictions), 0)
+        for pred in predictions:
+            self.assertTrue(pred["first_footfall_bonus"])
+            # Цена с бонусом 5х должна быть как минимум в 5 раз выше минимального значения
+            self.assertGreater(pred["value_cr"], 5_000_000)
+
+    def test_known_footfall_by_other_pilot_disables_bonus(self):
+        tracker = ExobiologyTracker()
+        event = scan_event(
+            BodyName="HIP 12345 2",
+            PlanetClass="Rocky body",
+            Landable=True,
+            WasDiscovered=True,
+            first_footfall_by="Cmdr Explorer",
+            Atmosphere="thin carbon dioxide atmosphere",
+        )
+        tracker.handle(event)
+        state = tracker.current_body_state()
+        self.assertIsNotNone(state)
+        self.assertFalse(state["no_first_footfall"])
+        self.assertEqual(state["first_footfall_by"], "Cmdr Explorer")
+        for pred in state["predictions"]:
+            self.assertFalse(pred["first_footfall_bonus"])

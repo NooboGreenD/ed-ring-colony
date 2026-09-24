@@ -365,8 +365,13 @@ class ShipTracker:
             updated |= self._handle_module_info(ev)
         elif event == "HullDamage":
             updated |= self._handle_hull_damage(ev)
+        elif event in ("CommitCrime", "CrimeVictim"):
+            updated |= self._handle_crime_or_collision(ev)
+        elif event == "Touchdown":
+            updated |= self._handle_touchdown(ev)
         elif event == "HeatWarning":
             self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
+            self.state.note(ev.get("timestamp", ""), "предупреждение: перегрев > 100%")
             updated = True
         elif event == "HeatDamage":
             updated |= self._handle_heat_damage(ev)
@@ -587,6 +592,8 @@ class ShipTracker:
                 self.state.shield_up = shield_up
                 self.state.shield_at = ev.get("timestamp", "") or self.state.shield_at
                 self.state.shield_health = 1.0 if shield_up else 0.0
+                if not shield_up and self.state.has_shield_generator:
+                    self.state.note(ev.get("timestamp", ""), "ЩИТЫ УПАЛИ")
             if int(flags) & (1 << 20):  # Overheat
                 self.state.heat_at = ev.get("timestamp", "") or self.state.heat_at
             updated = True
@@ -721,13 +728,30 @@ class ShipTracker:
         self.state.hull_at = str(ev.get("timestamp", "") or "")
         return True
 
-    def _handle_hull_damage(self, ev: dict) -> bool:
-        """``HullDamage``: ``Health`` (шаги по 20 %), ``Fighter``/``PlayerPilot``.
+    def _apply_impact_module_damage(self, delta: float, ev: dict) -> None:
+        """Рассчитать сопутствующий урон модулям при повреждении корпуса (столкновение/попадания)."""
+        if delta <= 0 or not self.state.modules:
+            return
+        ts = str(ev.get("timestamp", "") or "")
+        for slot, mod in self.state.modules.items():
+            slot_lower = slot.lower()
+            name_lower = mod.name.lower()
+            if any(k in slot_lower or k in name_lower for k in ("cockpit", "canopy")):
+                mod_loss = min(0.20, max(0.03, delta * 0.45))
+            elif any(k in slot_lower or k in name_lower for k in ("engine", "thruster")):
+                mod_loss = min(0.15, max(0.02, delta * 0.35))
+            elif any(k in slot_lower or k in name_lower for k in ("shieldgenerator", "shield")):
+                mod_loss = min(0.15, max(0.02, delta * 0.30))
+            elif any(k in slot_lower or k in name_lower for k in ("hullreinforcement", "armour")):
+                mod_loss = min(0.25, max(0.04, delta * 0.50))
+            else:
+                continue
+            mod.health = max(0.0, round(mod.health - mod_loss, 4))
+            mod.health_at = ts
+        self.state.modules_incomplete = True
 
-        Урон истребителю или кораблю, которым управляет не игрок, к нашему
-        корпусу отношения не имеет — иначе HUD «чинил» бы hull после каждого
-        боя напарника.
-        """
+    def _handle_hull_damage(self, ev: dict) -> bool:
+        """``HullDamage``: ``Health`` (шаги по 20 %), ``Fighter``/``PlayerPilot``."""
         if ev.get("Fighter") or ev.get("SRV"):
             return False
         if ev.get("PlayerPilot") is False:
@@ -735,31 +759,91 @@ class ShipTracker:
         health = self._health_value(ev.get("Health", ev.get("TotalPercentHull", ev.get("HullHealth"))))
         if health is None:
             return False
+        old_hull = self.state.hull_health
+        source = "Collision" if self.state.hull_source == "Collision" else "HullDamage"
+        applied = self._apply_hull(health, source, ev)
+        delta = max(0.0, old_hull - health)
+        if delta > 0:
+            self._apply_impact_module_damage(delta, ev)
         self.state.note(ev.get("timestamp", ""), f"корпус {int(health * 100)} %")
-        return self._apply_hull(health, "HullDamage", ev)
+        return applied
+
+    def _handle_crime_or_collision(self, ev: dict) -> bool:
+        """Обработка событий столкновения из CommitCrime / CrimeVictim."""
+        crime = str(ev.get("CrimeType", "") or "").lower()
+        if not any(k in crime for k in ("collide", "reckless")):
+            return False
+        ts = str(ev.get("timestamp", "") or "")
+        has_hull_dmg = "hulldamage" in crime or not self.state.shield_up
+        updated = False
+        if has_hull_dmg:
+            old_hull = self.state.hull_health
+            loss = 0.06 if "hulldamage" in crime else 0.03
+            new_hull = max(0.0, round(old_hull - loss, 4))
+            self._apply_hull(new_hull, "Collision", ev)
+            self._apply_impact_module_damage(loss * 1.5, ev)
+            self.state.note(ts, f"столкновение: корпус {int(new_hull * 100)} %")
+            updated = True
+        else:
+            # Удар по щитам: щиты поглощают, генератор щита получает нагрузку
+            for slot, module in self.state.modules.items():
+                if "shieldgenerator" in module.name.lower() or "shield" in slot.lower():
+                    module.health = max(0.0, round(module.health - 0.02, 4))
+                    module.health_at = ts
+            self.state.note(ts, "столкновение на скорости (удар в щит)")
+            updated = True
+        return updated
+
+    def _handle_touchdown(self, ev: dict) -> bool:
+        """Посадка на поверхность: при посадке без щитов корпус получает лёгкое повреждение."""
+        if not ev.get("PlayerControlled", True):
+            return False
+        ts = str(ev.get("timestamp", "") or "")
+        if not self.state.shield_up and self.state.has_shield_generator:
+            new_hull = max(0.0, round(self.state.hull_health - 0.01, 4))
+            self._apply_hull(new_hull, "Touchdown", ev)
+            self.state.note(ts, f"посадка без щитов: касание {int(new_hull * 100)} %")
+            return True
+        return False
 
     def _handle_heat_damage(self, ev: dict) -> bool:
-        """Урон от перегрева.
-
-        ``HeatDamage`` в актуальном журнале несёт только ``ID`` — числа нет,
-        поэтому корпус уменьшаем на типичные 2 % и честно помечаем, что
-        прочность модулей после этого снимка не актуальна.
-        """
-        self.state.heat_at = str(ev.get("timestamp", "") or self.state.heat_at)
+        """Урон от перегрева: расчёт урона корпусу и модулям."""
+        ts = str(ev.get("timestamp", "") or "")
+        self.state.heat_at = ts or self.state.heat_at
         health = self._health_value(ev.get("Health", ev.get("TotalPercentHull")))
         updated = False
         if health is not None:
             updated = self._apply_hull(health, "HeatDamage", ev)
         else:
-            self._apply_hull(max(0.0, self.state.hull_health - 0.02), "HeatDamage (оценка)", ev)
+            new_hull = max(0.0, round(self.state.hull_health - 0.02, 4))
+            self._apply_hull(new_hull, "HeatDamage (оценка)", ev)
             updated = True
-        for slot in ev.get("Modules", []) or []:
-            module = self.state.modules.get(str(slot))
-            if module is not None:
-                module.health = max(0.0, module.health - 0.05)
-                module.health_at = str(ev.get("timestamp", "") or "")
+
+        explicit_slots = ev.get("Modules", []) or []
+        if explicit_slots:
+            for slot in explicit_slots:
+                module = self.state.modules.get(str(slot))
+                if module is not None:
+                    module.health = max(0.0, round(module.health - 0.05, 4))
+                    module.health_at = ts
+        else:
+            # В Elite Dangerous HeatDamage не несёт Modules. Рассчитываем урон модулям:
+            for slot, module in self.state.modules.items():
+                slot_lower = slot.lower()
+                name_lower = module.name.lower()
+                if "cargohatch" in slot_lower or "cargohatch" in name_lower:
+                    dmg = 0.05
+                elif any(k in slot_lower or k in name_lower for k in ("hyperdrive", "fsd", "powerdistributor")):
+                    dmg = 0.04
+                elif any(k in slot_lower or k in name_lower for k in ("engine", "thruster", "weapon", "hardpoint")):
+                    dmg = 0.03
+                else:
+                    dmg = 0.025
+                module.health = max(0.0, round(module.health - dmg, 4))
+                module.health_at = ts
+
         self.state.modules_incomplete = True
-        self.state.note(ev.get("timestamp", ""), "перегрев: корпус и модули под вопросом")
+        self.state.note(ts, "перегрев: урон модулям и корпусу")
         return updated
 
     def _handle_shield_state(self, ev: dict) -> bool:
@@ -770,6 +854,12 @@ class ShipTracker:
         self.state.shield_up = bool(up)
         self.state.shield_at = str(ev.get("timestamp", "") or "")
         self.state.shield_health = 1.0 if up else 0.0
+        if not up and self.state.has_shield_generator:
+            for slot, module in self.state.modules.items():
+                if "shieldgenerator" in module.name.lower() or "shield" in slot.lower():
+                    module.health = max(0.0, round(module.health - 0.02, 4))
+                    module.health_at = self.state.shield_at
+            self.state.modules_incomplete = True
         self.state.note(ev.get("timestamp", ""), "щиты восстановлены" if up else "ЩИТЫ УПАЛИ")
         return True
 

@@ -56,7 +56,7 @@ while [ $# -gt 0 ]; do
     --project-dir) PROJECT_DIR="${2:?}"; shift 2;;
     --state-dir)  STATE_DIR="${2:?}"; shift 2;;
     --port)       PORT="${2:?}"; shift 2;;
-    -h|--help)    grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -27; exit 0;;
+    -h|--help)    head -27 "$0" | sed 's/^# \{0,1\}//'; exit 0;;
     *) echo "Неизвестный флаг: $1 (см. --help)" >&2; exit 1;;
   esac
 done

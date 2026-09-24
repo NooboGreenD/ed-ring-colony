@@ -386,5 +386,55 @@ class HelpersTests(unittest.TestCase):
         self.assertEqual(tracker.state.incidents[-1]["text"], f"событие {st.INCIDENTS_HISTORY + 7}")
 
 
+class CollisionAndDamageTrackingTests(unittest.TestCase):
+    """Тестирование отслеживания столкновений, урона модулям и перегрева."""
+
+    def test_collision_hull_and_module_damage(self):
+        tracker = tracker_with()
+        tracker.parse_event({"event": "CommitCrime", "CrimeType": "collidedAtSpeedInNoFireZone_HullDamage",
+                             "timestamp": "2026-09-24T12:00:00Z"})
+        self.assertLess(tracker.state.hull_health, 1.0)
+        self.assertEqual(tracker.state.hull_source, "Collision")
+        self.assertGreater(len(tracker.state.damaged_modules), 0)
+        engines = tracker.state.modules["MainEngines"]
+        self.assertLess(engines.health, 1.0)
+        incidents = [inc["text"] for inc in tracker.state.incidents]
+        self.assertTrue(any("столкновение" in inc for inc in incidents))
+
+    def test_collision_shielded_impact(self):
+        tracker = tracker_with()
+        tracker.state.shield_up = True
+        tracker.parse_event({"event": "CrimeVictim", "CrimeType": "collidedAtSpeedInNoFireZone",
+                             "timestamp": "2026-09-24T12:01:00Z"})
+        self.assertEqual(tracker.state.hull_health, 1.0)
+        shield_gen = tracker.state.modules["Slot03_Size3"]
+        self.assertLess(shield_gen.health, 1.0)
+        incidents = [inc["text"] for inc in tracker.state.incidents]
+        self.assertTrue(any("столкновение" in inc for inc in incidents))
+
+    def test_overheating_damages_all_modules(self):
+        tracker = tracker_with()
+        tracker.parse_event({"event": "HeatDamage", "timestamp": "2026-09-24T12:02:00Z"})
+        self.assertLessEqual(tracker.state.hull_percent, 98)
+        self.assertEqual(tracker.state.hull_source, "HeatDamage (оценка)")
+        self.assertTrue(tracker.state.modules_incomplete)
+        # Модули должны были получить урон от перегрева
+        for slot in ("FrameShiftDrive", "MainEngines", "PowerPlant"):
+            mod = tracker.state.modules[slot]
+            self.assertLess(mod.health, 1.0, f"Module {slot} was not damaged by heat")
+        incidents = [inc["text"] for inc in tracker.state.incidents]
+        self.assertTrue(any("перегрев" in inc for inc in incidents))
+
+    def test_touchdown_unshielded_causes_hull_damage(self):
+        tracker = tracker_with()
+        tracker.state.shield_up = False
+        tracker.parse_event({"event": "Touchdown", "PlayerControlled": True,
+                             "timestamp": "2026-09-24T12:03:00Z"})
+        self.assertLess(tracker.state.hull_health, 1.0)
+        self.assertEqual(tracker.state.hull_source, "Touchdown")
+        incidents = [inc["text"] for inc in tracker.state.incidents]
+        self.assertTrue(any("посадка без щитов" in inc for inc in incidents))
+
+
 if __name__ == "__main__":
     unittest.main()

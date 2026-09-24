@@ -1000,5 +1000,57 @@ class ExobioVisualDesignTests(_OverlayTestCase):
         self.assertIn("thin sulfur dioxide atmosphere", compact_params)
 
 
+class ExobioOverlayFootfallAndLandableTests(_OverlayTestCase):
+    """Тесты отображения бонуса первопроходца (5х) и отключения прогноза без посадки."""
+
+    def test_unlandable_planet_disables_prediction_display(self):
+        self.overlay.update_exobiology(state(landable=False, predictions=[]))
+        text = _text(self.overlay.predict_label)
+        self.assertIn("посадка невозможна", text)
+        self.assertIn("био-прогноз отключен", text)
+        self.assertIn("НЕ СЕСТЬ", _text(self.overlay.chip_land))
+
+    def test_no_first_footfall_displays_5x_bonus_in_ui(self):
+        self.overlay.update_exobiology(state(
+            no_first_footfall=True,
+            predictions=[
+                {"genus": "Stratum", "percent": 100, "value_cr": 95_054_000, "notes": []}
+            ],
+            organics=[
+                {"species": "Stratum Tectonicas", "samples": 3, "complete": True,
+                 "value_cr": 95_054_000, "stage": "Sample"}
+            ],
+            value_cr=95_054_000,
+        ))
+        # Проверяем чип первопроходца в бейджах
+        self.assertIn("БОНУС ×5", _text(self.overlay.chip_footfall))
+
+        # Проверяем заголовки и таблицы
+        samples_hdr = _text(self.overlay.samples_header)
+        self.assertIn("бонус ×5", samples_hdr)
+        self.assertIn("95.1 млн", samples_hdr)
+
+        predict_hdr = _text(self.overlay.predict_header)
+        self.assertIn("бонус ×5", predict_hdr)
+
+        predict_txt = _text(self.overlay.predict_label)
+        self.assertIn("≈кр (×5)", predict_txt)
+        self.assertIn("95.1 млн", predict_txt)
+
+    def test_known_footfall_by_other_pilot_shows_standard_mode(self):
+        self.overlay.update_exobiology(state(
+            no_first_footfall=False,
+            first_footfall_by="Cmdr OtherPilot",
+            predictions=[
+                {"genus": "Stratum", "percent": 100, "value_cr": 19_010_800, "notes": []}
+            ],
+            value_cr=19_010_800,
+        ))
+        self.assertIn("ЕСТЬ", _text(self.overlay.chip_footfall))
+        self.assertNotIn("БОНУС ×5", _text(self.overlay.chip_footfall))
+        self.assertNotIn("бонус ×5", _text(self.overlay.samples_header))
+        self.assertNotIn("бонус ×5", _text(self.overlay.predict_header))
+
+
 if __name__ == "__main__":
     unittest.main()

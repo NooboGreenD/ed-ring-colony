@@ -45,6 +45,8 @@ HULL_SOURCES = {
     "Synthesis": "синтез", "HeatDamage": "перегрев", "ModulesInfo": "файл",
     "Status": "Status", "AfmuRepairs": "AFMU", "Repair": "ремонт",
     "RepairAll": "ремонт", "Resurrect": "воскрешение",
+    "Collision": "столкновение", "Touchdown": "посадка",
+    "HeatDamage (оценка)": "перегрев", "Damage": "урон",
 }
 
 #: Сколько символов влезает в строку при блоке 360 px и шрифте 10 pt.

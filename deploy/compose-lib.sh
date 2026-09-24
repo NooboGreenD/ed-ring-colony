@@ -58,11 +58,17 @@ edrc_detect_supabase_network() {
 edrc_extra_compose_files() {
   local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
   local env_file="${2:-$repo_root/.env.production}"
+  repo_root="${repo_root%/}"
   local network override
   override="$repo_root/deploy/compose.supabase-net.yml"
   [ -f "$override" ] || return 0
   network="$(edrc_detect_supabase_network "$env_file")"
   [ -n "$network" ] || return 0
+  # Если docker доступен — проверяем, существует ли сеть в Docker,
+  # чтобы несуществующая external-сеть не приводила к падению compose up
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker network inspect "$network" >/dev/null 2>&1 || return 0
+  fi
   # Сеть видна — безопасно подключаться к ней как к external.
   printf -- '-f %s' "${override#$repo_root/}"
 }
