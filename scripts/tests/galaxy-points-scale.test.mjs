@@ -142,10 +142,12 @@ function memoryWriter() {
     get written() {
       return written;
     },
+    deferred: 0,
     async add(row) {
       batch.push(row);
     },
     flush,
+    async retryDeferred() {},
     async countRows() {
       await flush();
       return rows.size;

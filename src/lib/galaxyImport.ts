@@ -401,8 +401,20 @@ export interface GalaxyRowWriter {
   readonly backend: GalaxyImportBackend;
   /** Rows handed to the database so far (flushed batches only). */
   readonly written: number;
+  /**
+   * Rows the database refused even alone (`statement_timeout` after retries).
+   * They are held aside instead of failing their neighbours — one stubborn row
+   * used to kill the whole catalog import. See `retryDeferred`.
+   */
+  readonly deferred: number;
   add(row: GalaxySystemRecord): Promise<void>;
   flush(): Promise<number>;
+  /**
+   * One last chance for `deferred` rows now that the pass is over and nothing
+   * else hammers the database. Throws the stored failure («supabase upsert
+   * failed: …») if any of them remains unwritten.
+   */
+  retryDeferred(): Promise<void>;
   /** Authoritative row count of `galaxy_systems`. */
   countRows(): Promise<number>;
   /** Read the whole table back as map points, `ORDER BY id`. */
@@ -573,24 +585,32 @@ async function rollbackQuietly(query: (sql: string) => Promise<unknown>): Promis
  * a row already stored under the other key is reconciled in a transaction.
  * A cardinality error that somehow survives the collapse — or a statement the
  * server cancelled on `statement_timeout` — is retried on halves, down to a
- * single row, instead of aborting the whole catalog download.
+ * single row, instead of aborting the whole catalog download. A lone row the
+ * server still cancels is deferred (with `options.deferredState`), not fatal.
+ *
+ * Returns the rows written now (deferred rows are not counted).
  */
 export async function writeGalaxyRowsPg(
   query: (sql: string) => Promise<unknown>,
   rows: GalaxySystemRecord[],
+  options: GalaxyWriteOptions = {},
 ): Promise<number> {
   const batch = collapseGalaxyBatch(rows);
   if (batch.length === 0) return 0;
-  await insertPgChunk(query, batch);
-  return batch.length;
+  const deferredBefore = options.deferredState?.deferred.length ?? 0;
+  await insertPgChunk(query, batch, options, 0);
+  return batch.length - ((options.deferredState?.deferred.length ?? 0) - deferredBefore);
 }
 
 async function insertPgChunk(
   query: (sql: string) => Promise<unknown>,
   rows: GalaxySystemRecord[],
+  options: GalaxyWriteOptions,
+  attempt: number,
 ): Promise<void> {
   try {
     await query(pgInsertSql(rows));
+    noteWriteSuccess(options.deferredState);
     return;
   } catch (error) {
     // The direct writer sets `statement_timeout: 0`, but a server-side setting
@@ -601,22 +621,72 @@ async function insertPgChunk(
       (isGalaxyCardinalityViolation(error) || isGalaxyStatementTimeout(error))
     ) {
       const middle = Math.floor(rows.length / 2);
-      await insertPgChunk(query, rows.slice(0, middle));
-      await insertPgChunk(query, rows.slice(middle));
+      await insertPgChunk(query, rows.slice(0, middle), options, 0);
+      await insertPgChunk(query, rows.slice(middle), options, 0);
       return;
     }
-    if (!isGalaxyUniqueViolation(error)) throw error;
-  }
+    if (!isGalaxyUniqueViolation(error)) {
+      if (rows.length === 1 && isGalaxyStatementTimeout(error) && (await retryOrDeferSingle(query, rows, options, attempt, error))) {
+        return;
+      }
+      throw error;
+    }
 
-  await query('BEGIN');
-  try {
-    await query(pgDeleteConflictsSql(rows));
-    await query(pgInsertSql(rows));
-    await query('COMMIT');
-  } catch (error) {
-    await rollbackQuietly(query);
-    throw error;
+    // Unique violation against rows already stored under the other key:
+    // reconcile them in one transaction (rolled back on failure).
+    try {
+      await query('BEGIN');
+      await query(pgDeleteConflictsSql(rows));
+      await query(pgInsertSql(rows));
+      await query('COMMIT');
+      noteWriteSuccess(options.deferredState);
+      return;
+    } catch (transactionError) {
+      await rollbackQuietly(query);
+      if (
+        rows.length > 1 &&
+        (isGalaxyCardinalityViolation(transactionError) || isGalaxyStatementTimeout(transactionError))
+      ) {
+        const middle = Math.floor(rows.length / 2);
+        await insertPgChunk(query, rows.slice(0, middle), options, 0);
+        await insertPgChunk(query, rows.slice(middle), options, 0);
+        return;
+      }
+      if (rows.length === 1 && isGalaxyStatementTimeout(transactionError) && (await retryOrDeferSingle(query, rows, options, attempt, transactionError))) {
+        return;
+      }
+      throw transactionError;
+    }
   }
+}
+
+/**
+ * The last-resort ladder for a single row cancelled by `statement_timeout`:
+ * retry with backoff, then defer it (when the writer tracks deferred rows).
+ * Returns false when the caller must rethrow instead.
+ */
+async function retryOrDeferSingle(
+  query: (sql: string) => Promise<unknown>,
+  rows: GalaxySystemRecord[],
+  options: GalaxyWriteOptions,
+  attempt: number,
+  error: unknown,
+): Promise<boolean> {
+  const retries = Math.max(0, Math.floor(options.timeoutRetries ?? SUPABASE_TIMEOUT_RETRIES));
+  if (attempt < retries) {
+    const backoff = SUPABASE_TIMEOUT_BACKOFF_MS[Math.min(attempt, SUPABASE_TIMEOUT_BACKOFF_MS.length - 1)];
+    console.error(
+      `[galaxy-import] statement timeout on 1 row(s), retry ${attempt + 1}/${retries} after ${backoff} ms`,
+    );
+    await (options.sleep ?? defaultSleep)(backoff);
+    await insertPgChunk(query, rows, options, attempt + 1);
+    return true;
+  }
+  if (canDefer(options.deferredState)) {
+    deferRow(options.deferredState, rows[0], asWriteError(error));
+    return true;
+  }
+  return false;
 }
 
 interface ConflictRow {
@@ -660,24 +730,126 @@ function upsertFailure(error: GalaxyWriteError, row?: GalaxySystemRecord): Error
   return new Error(`supabase upsert failed: ${error.message}${where}`);
 }
 
-export interface GalaxySupabaseWriteOptions {
+/** The database failure as a throwable Error, with SQLSTATE kept on `.code`. */
+function statementFailure(error: GalaxyWriteError): Error & { code?: string } {
+  const failure = new Error(error.message) as Error & { code?: string };
+  if (error.code) failure.code = error.code;
+  return failure;
+}
+
+function asWriteError(error: unknown): GalaxyWriteError {
+  const failure = asDbError(error);
+  return { message: failure.message ?? String(error), code: failure.code };
+}
+
+/** The error of a deferred row, kept so the rethrow can name the row precisely. */
+export interface GalaxyDeferredWrite {
+  row: GalaxySystemRecord;
+  error: GalaxyWriteError;
+}
+
+/**
+ * Deferred-row bookkeeping shared by one writer instance. The delivery import
+ * (`deliveryImport.ts`) established the rule: a row the database refuses even
+ * alone goes to `deferred` instead of failing its neighbours — losing writable
+ * data over one stuck row is what killed the catalog import.
+ */
+export interface GalaxyDeferredState {
+  /** Rows the database refused even alone (`statement_timeout` after retries). */
+  deferred: GalaxyDeferredWrite[];
+  /** Deferrals since the last accepted write — a dead database must fail, not crawl. */
+  consecutiveDeferrals: number;
+}
+
+export interface GalaxyWriteOptions {
   /**
    * How many times a single-row batch cancelled by `statement_timeout` is
-   * retried with backoff before the import fails (default 3). Multi-row
+   * retried with backoff before it is deferred (default 3). Multi-row
    * batches are halved instead, so this only bounds the last-resort loop.
    */
   timeoutRetries?: number;
   /** Injectable sleep for the retry backoff (tests pass a no-op). */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * When set, a row that still times out alone is pushed here instead of
+   * failing the batch; the writer retries the list at end of pass. Without it
+   * the write throws (the CLI's historical, fail-loud behaviour).
+   */
+  deferredState?: GalaxyDeferredState;
 }
+
+/** Historical name; the options apply to the direct-Postgres path too. */
+export type GalaxySupabaseWriteOptions = GalaxyWriteOptions;
 
 /** Single-row statement-timeout retries after the first failure. */
 export const SUPABASE_TIMEOUT_RETRIES = 3;
 /** Backoff between those retries; a loaded database needs seconds, not ms. */
 const SUPABASE_TIMEOUT_BACKOFF_MS = [1000, 2000, 4000];
+/**
+ * Stop deferring beyond this many rows and fail the import: the database is
+ * not merely slow, and the deferred list is held in memory until end of pass.
+ */
+export const GALAXY_MAX_DEFERRED_ROWS = 1000;
+/**
+ * This many deferrals in a row without one accepted write means the database
+ * is dead — fail with the saved restart point instead of crawling through the
+ * whole dump while every statement times out.
+ */
+export const GALAXY_MAX_CONSECUTIVE_DEFERRED = 32;
 
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function canDefer(state: GalaxyDeferredState | undefined): state is GalaxyDeferredState {
+  return Boolean(
+    state &&
+      state.deferred.length < GALAXY_MAX_DEFERRED_ROWS &&
+      state.consecutiveDeferrals < GALAXY_MAX_CONSECUTIVE_DEFERRED,
+  );
+}
+
+function deferRow(state: GalaxyDeferredState, row: GalaxySystemRecord, error: GalaxyWriteError): void {
+  state.deferred.push({ row, error });
+  state.consecutiveDeferrals += 1;
+  console.warn(
+    `[galaxy-import] statement timeout; row deferred (${row.name_lc} / ${row.id64}), ${state.deferred.length} deferred total`,
+  );
+}
+
+function noteWriteSuccess(state: GalaxyDeferredState | undefined): void {
+  if (state) state.consecutiveDeferrals = 0;
+}
+
+/** The error `retryDeferred` throws while rows remain: the documented «supabase upsert failed: …» text. */
+export function deferredRowsFailure(deferred: GalaxyDeferredWrite[]): Error {
+  const first = deferred[0];
+  return upsertFailure(first.error, first.row);
+}
+
+/**
+ * Run one database statement, retrying `statement_timeout` (SQLSTATE 57014)
+ * with backoff. Used for the multi-statement conflict reconcile: a timeout in
+ * the middle of it used to abort the whole import with no retry at all.
+ */
+async function withStatementTimeoutRetries<T>(
+  what: string,
+  options: GalaxyWriteOptions,
+  run: () => Promise<T>,
+): Promise<T> {
+  const retries = Math.max(0, Math.floor(options.timeoutRetries ?? SUPABASE_TIMEOUT_RETRIES));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (!isGalaxyStatementTimeout(error) || attempt >= retries) throw error;
+      const backoff = SUPABASE_TIMEOUT_BACKOFF_MS[Math.min(attempt, SUPABASE_TIMEOUT_BACKOFF_MS.length - 1)];
+      console.error(
+        `[galaxy-import] statement timeout on ${what}, retry ${attempt + 1}/${retries} after ${backoff} ms`,
+      );
+      await (options.sleep ?? defaultSleep)(backoff);
+    }
+  }
+}
 
 /**
  * Write one batch through PostgREST — the path the admin tab uses when the
@@ -690,31 +862,39 @@ const defaultSleep = (ms: number): Promise<void> =>
  *
  * A batch cancelled by `statement_timeout` (SQLSTATE 57014 — Supabase gives
  * every PostgREST statement only a few seconds) is halved and retried like a
- * rejected one; a lone row that still does not fit is retried with backoff.
- * Without this the admin-panel import died on the first slow upsert with
- * «supabase upsert failed: canceling statement due to statement timeout».
+ * rejected one; a lone row that still does not fit is retried with backoff and
+ * then deferred (with `options.deferredState`) instead of failing the whole
+ * import. Without this the admin-panel import died on the first slow upsert
+ * with «supabase upsert failed: canceling statement due to statement timeout».
+ *
+ * Returns the number of rows written now (deferred rows are not counted — the
+ * writer adds them after `retryDeferred`).
  */
 export async function writeGalaxyRowsSupabase(
   client: GalaxyWriteClient,
   rows: GalaxySystemRecord[],
-  options: GalaxySupabaseWriteOptions = {},
+  options: GalaxyWriteOptions = {},
 ): Promise<number> {
   const batch = collapseGalaxyBatch(rows);
   if (batch.length === 0) return 0;
+  const deferredBefore = options.deferredState?.deferred.length ?? 0;
   await upsertSupabaseChunk(client, batch, options, 0);
-  return batch.length;
+  return batch.length - ((options.deferredState?.deferred.length ?? 0) - deferredBefore);
 }
 
 async function upsertSupabaseChunk(
   client: GalaxyWriteClient,
   rows: GalaxySystemRecord[],
-  options: GalaxySupabaseWriteOptions,
+  options: GalaxyWriteOptions,
   attempt: number,
 ): Promise<void> {
   const { error } = await client
     .from(GALAXY_TABLE)
     .upsert(rows as unknown as Record<string, unknown>[], { onConflict: 'name_lc' });
-  if (!error) return;
+  if (!error) {
+    noteWriteSuccess(options.deferredState);
+    return;
+  }
   if (
     rows.length > 1 &&
     (isGalaxyCardinalityViolation(error) || isGalaxyUniqueViolation(error) || isGalaxyStatementTimeout(error))
@@ -725,8 +905,22 @@ async function upsertSupabaseChunk(
     return;
   }
   if (rows.length === 1 && isGalaxyUniqueViolation(error)) {
-    await reconcileGalaxyRow(client, rows[0]);
-    return;
+    // The reconcile runs several statements. A `statement_timeout` anywhere in
+    // it used to kill the whole import with zero retries — the bug the admin
+    // tab reported as «supabase upsert failed: canceling statement due to
+    // statement timeout (name / id64)» on a lone row. Retry it like the
+    // upsert, then defer the row instead of failing its neighbours.
+    try {
+      await withStatementTimeoutRetries('conflict reconcile', options, () => reconcileGalaxyRow(client, rows[0]));
+      noteWriteSuccess(options.deferredState);
+      return;
+    } catch (reconcileError) {
+      if (isGalaxyStatementTimeout(reconcileError) && canDefer(options.deferredState)) {
+        deferRow(options.deferredState, rows[0], asWriteError(reconcileError));
+        return;
+      }
+      throw upsertFailure(asWriteError(reconcileError), rows[0]);
+    }
   }
   if (isGalaxyStatementTimeout(error)) {
     const retries = Math.max(0, Math.floor(options.timeoutRetries ?? SUPABASE_TIMEOUT_RETRIES));
@@ -739,6 +933,13 @@ async function upsertSupabaseChunk(
       await upsertSupabaseChunk(client, rows, options, attempt + 1);
       return;
     }
+    if (rows.length === 1 && canDefer(options.deferredState)) {
+      // The delivery-import rule: a row the database refuses even alone is
+      // deferred, not fatal — `retryDeferred` gives it one more chance at end
+      // of pass, and the import keeps the restart point before it.
+      deferRow(options.deferredState, rows[0], error);
+      return;
+    }
   }
   throw upsertFailure(error, rows.length === 1 ? rows[0] : undefined);
 }
@@ -749,13 +950,16 @@ async function upsertSupabaseChunk(
  * system) after moving a stale name occupant out of the way. The name occupant
  * is restored if that update fails, so a resumed import — which will not
  * rewrite records it already skipped — does not lose the only copy.
+ *
+ * Throws the raw database failure (with SQLSTATE on `.code`); the caller wraps
+ * it with row context and decides between retry, defer and fail.
  */
 async function reconcileGalaxyRow(client: GalaxyWriteClient, row: GalaxySystemRecord): Promise<void> {
   const table = () => client.from(GALAXY_TABLE);
   const byId = await table().select('id,id64,name,name_lc').eq('id64', row.id64).maybeSingle();
-  if (byId.error) throw upsertFailure(byId.error, row);
+  if (byId.error) throw statementFailure(byId.error);
   const byName = await table().select('id,id64,name,name_lc').eq('name_lc', row.name_lc).maybeSingle();
-  if (byName.error) throw upsertFailure(byName.error, row);
+  if (byName.error) throw statementFailure(byName.error);
 
   const idRow = byId.data;
   const nameRow = byName.data;
@@ -764,16 +968,16 @@ async function reconcileGalaxyRow(client: GalaxyWriteClient, row: GalaxySystemRe
   if (nameIsOther && nameRow) {
     const tombstone = `__edrc_replaced_${nameRow.id}__`;
     const renamed = await table().update({ name: tombstone, name_lc: tombstone }).eq('id', nameRow.id);
-    if (renamed.error) throw upsertFailure(renamed.error, row);
+    if (renamed.error) throw statementFailure(renamed.error);
   }
 
   try {
     if (idRow) {
       const updated = await table().update(row).eq('id', idRow.id);
-      if (updated.error) throw upsertFailure(updated.error, row);
+      if (updated.error) throw statementFailure(updated.error);
     } else {
       const inserted = await table().upsert([row], { onConflict: 'name_lc' });
-      if (inserted.error) throw upsertFailure(inserted.error, row);
+      if (inserted.error) throw statementFailure(inserted.error);
     }
   } catch (error) {
     if (nameIsOther && nameRow) {
@@ -812,11 +1016,9 @@ export async function createPgWriter(
     truncate?: boolean;
     /** Connection attempts (default: see `PG_CONNECT_BACKOFF_MS`). */
     attempts?: number;
-    /** Injectable sleep for tests. */
-    sleep?: (ms: number) => Promise<void>;
     /** Where retry lines go (the import log). */
     log?: (line: string) => void;
-  } = {},
+  } & GalaxyWriteOptions = {},
 ): Promise<GalaxyRowWriter> {
   const pg = options.pg ?? (await loadPg());
   const batchSize = Math.max(1, options.batchSize ?? PG_BATCH_SIZE);
@@ -838,6 +1040,12 @@ export async function createPgWriter(
   await client.query('SET synchronous_commit = OFF').catch(() => undefined);
   let rows: GalaxySystemRecord[] = [];
   let written = 0;
+  const deferredState: GalaxyDeferredState = options.deferredState ?? { deferred: [], consecutiveDeferrals: 0 };
+  const writeOptions: GalaxyWriteOptions = {
+    timeoutRetries: options.timeoutRetries,
+    sleep: options.sleep,
+    deferredState,
+  };
 
   if (options.truncate) {
     await client.query(`TRUNCATE ${GALAXY_TABLE} RESTART IDENTITY`);
@@ -857,7 +1065,7 @@ export async function createPgWriter(
     if (rows.length === 0) return 0;
     const batch = rows;
     rows = [];
-    const count = await writeGalaxyRowsPg((sql) => client.query(sql), batch);
+    const count = await writeGalaxyRowsPg((sql) => client.query(sql), batch, writeOptions);
     written += count;
     return count;
   };
@@ -867,11 +1075,27 @@ export async function createPgWriter(
     get written() {
       return written;
     },
+    get deferred() {
+      return deferredState.deferred.length;
+    },
     async add(row) {
       rows.push(row);
       if (rows.length >= batchSize) await flush();
     },
     flush,
+    async retryDeferred() {
+      const pending = deferredState.deferred;
+      if (pending.length === 0) return;
+      deferredState.deferred = [];
+      deferredState.consecutiveDeferrals = 0;
+      const count = await writeGalaxyRowsPg(
+        (sql) => client.query(sql),
+        pending.map((entry) => entry.row),
+        writeOptions,
+      );
+      written += count;
+      if (deferredState.deferred.length > 0) throw deferredRowsFailure(deferredState.deferred);
+    },
     async countRows() {
       const result = await client.query(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`);
       return Number(result.rows[0]?.n ?? 0);
@@ -905,10 +1129,15 @@ export async function createPgWriter(
 /** PostgREST writer: works with nothing but the service-role key. */
 export function createSupabaseWriter(
   client: SupabaseClient,
-  options: { batchSize?: number } & GalaxySupabaseWriteOptions = {},
+  options: { batchSize?: number } & GalaxyWriteOptions = {},
 ): GalaxyRowWriter {
   const batchSize = Math.max(1, options.batchSize ?? SUPABASE_BATCH_SIZE);
-  const writeOptions: GalaxySupabaseWriteOptions = { timeoutRetries: options.timeoutRetries, sleep: options.sleep };
+  const deferredState: GalaxyDeferredState = options.deferredState ?? { deferred: [], consecutiveDeferrals: 0 };
+  const writeOptions: GalaxyWriteOptions = {
+    timeoutRetries: options.timeoutRetries,
+    sleep: options.sleep,
+    deferredState,
+  };
   let rows: GalaxySystemRecord[] = [];
   let written = 0;
 
@@ -931,11 +1160,27 @@ export function createSupabaseWriter(
     get written() {
       return written;
     },
+    get deferred() {
+      return deferredState.deferred.length;
+    },
     async add(row) {
       rows.push(row);
       if (rows.length >= batchSize) await flush();
     },
     flush,
+    async retryDeferred() {
+      const pending = deferredState.deferred;
+      if (pending.length === 0) return;
+      deferredState.deferred = [];
+      deferredState.consecutiveDeferrals = 0;
+      const count = await writeGalaxyRowsSupabase(
+        client as unknown as GalaxyWriteClient,
+        pending.map((entry) => entry.row),
+        writeOptions,
+      );
+      written += count;
+      if (deferredState.deferred.length > 0) throw deferredRowsFailure(deferredState.deferred);
+    },
     async countRows() {
       const { count, error } = await client
         .from(GALAXY_TABLE)
@@ -1043,7 +1288,9 @@ export interface GalaxyImportSnapshot {
   bytesTotal: number | null;
   /**
    * Restart point in UNCOMPRESSED bytes: records that ended before it are
-   * already in the table and are skipped by the next pass.
+   * already in the table and are skipped by the next pass. It only ever
+   * advances past FLUSHED, fully written chunks — while rows are deferred
+   * (`writer.deferred > 0`) it holds still, so a resumed pass rewrites them.
    */
   resumeOffset: number;
   processed: number;
@@ -1233,7 +1480,10 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
       }
       if (writer.written > lastWrittenSeen) {
         lastWrittenSeen = writer.written;
-        resumeOffset = object.__streamOffset ?? resumeOffset;
+        // A deferred row is NOT in the table: the restart point must never
+        // pass it, or a resumed pass would skip it as already stored. While
+        // any row waits for `retryDeferred`, the restart point holds still.
+        if (writer.deferred === 0) resumeOffset = object.__streamOffset ?? resumeOffset;
       }
       const at = now();
       if (at - lastProgressAt >= progressIntervalMs) {
@@ -1253,6 +1503,11 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   }
 
   await writer.flush();
+  // Rows the database refused even alone get one last sweep now that the
+  // stream is idle and nothing else hammers the database. If any of them still
+  // does not fit, this throws the documented «supabase upsert failed: …» with
+  // the saved restart point before the row intact.
+  await writer.retryDeferred();
   const systemsCount = await writer.countRows();
 
   let points: GalaxyImportRunResult['points'] = null;
