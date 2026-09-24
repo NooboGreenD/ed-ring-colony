@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# ED Ring Colony — общий хелпер Compose-запусков (подключение к Supabase).
+# ED Ring Colony — общий хелпер Compose-запусков (override-файлы деплоя).
 #
-# Источник: start-monitoring.sh, update-project.sh, apply-env.sh,
-# selfhost/install.sh. Все они запускают `docker compose up -d` для ОДНОГО
-# и того же стека, поэтому список `-f`-файлов должен быть одинаковым у
-# всех: иначе очередное «up» молча пересоздало бы сервисы без сети
-# Supabase, и «getaddrinfo EAI_AGAIN db» вернулся бы.
+# Источник: start-docker.sh, start-monitoring.sh, update-project.sh,
+# apply-env.sh, selfhost/install.sh. Все они запускают `docker compose up -d`
+# для ОДНОГО стека, поэтому список `-f`-файлов должен быть одинаковым у всех:
+# иначе очередное «up» молча уберёт сеть Supabase или дополнительную публикацию
+# сайта для Synology Reverse Proxy.
 #
 # Использование:
 #   source "$(dirname "${BASH_SOURCE[0]}")/compose-lib.sh"
@@ -52,25 +52,43 @@ edrc_detect_supabase_network() {
   return 0
 }
 
-# edrc_extra_compose_files [repo_root] [env_file] — доп. `-f`-аргументы или пусто.
-# Возвращает строку вида "-f deploy/compose.supabase-net.yml" (без перевода
-# строки в конце), готовую к подстановке без кавычек.
+# edrc_extra_compose_files [repo_root] [env_file] — все дополнительные
+# `-f`-аргументы или пусто. Может вернуть несколько пар, например:
+#   -f deploy/compose.supabase-net.yml -f deploy/compose.synology.yml
+# Потребители намеренно разворачивают результат как слова.
 edrc_extra_compose_files() {
   local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
   local env_file="${2:-$repo_root/.env.production}"
   repo_root="${repo_root%/}"
-  local network override
-  override="$repo_root/deploy/compose.supabase-net.yml"
-  [ -f "$override" ] || return 0
-  network="$(edrc_detect_supabase_network "$env_file")"
-  [ -n "$network" ] || return 0
-  # Если docker доступен — проверяем, существует ли сеть в Docker,
-  # чтобы несуществующая external-сеть не приводила к падению compose up
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    docker network inspect "$network" >/dev/null 2>&1 || return 0
+  local network supabase_override synology_override synology_bind files=""
+
+  # Self-hosted Supabase: добавляем общую external-сеть только когда она
+  # существует. Неверное имя сети не должно ломать запуск всего сайта.
+  supabase_override="$repo_root/deploy/compose.supabase-net.yml"
+  if [ -f "$supabase_override" ]; then
+    network="$(edrc_detect_supabase_network "$env_file")"
+    if [ -n "$network" ]; then
+      if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1 \
+         || docker network inspect "$network" >/dev/null 2>&1; then
+        files="-f ${supabase_override#$repo_root/}"
+      fi
+    fi
   fi
-  # Сеть видна — безопасно подключаться к ней как к external.
-  printf -- '-f %s' "${override#$repo_root/}"
+
+  # Synology: значение — только LAN_IP:HOST_PORT, например
+  # 192.168.8.177:9000. Сам override дописывает внутренний :3000. В отличие
+  # от PORT_BIND базовый 127.0.0.1:3000 сохраняется: локальные проверки и
+  # nginx на VM не ломаются, а Synology получает стабильный отдельный порт.
+  synology_bind="${SYNOLOGY_SITE_BIND:-}"
+  if [ -z "$synology_bind" ] && [ -f "$env_file" ]; then
+    synology_bind="$(grep -E '^SYNOLOGY_SITE_BIND=' "$env_file" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  fi
+  synology_override="$repo_root/deploy/compose.synology.yml"
+  if [ -n "$synology_bind" ] && [ -f "$synology_override" ]; then
+    files="${files:+$files }-f ${synology_override#$repo_root/}"
+  fi
+
+  printf '%s' "$files"
 }
 
 # edrc_persist_env FILE KEY VALUE — записать значение в env-файл (sed-аналог

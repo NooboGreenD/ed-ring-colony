@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────────────
+# ED Ring Colony — дополнительная публикация сайта для Synology Reverse Proxy.
+#
+# Базовый compose оставляет служебный loopback-порт 127.0.0.1:3000, чтобы
+# локальные health-check и nginx на VM продолжали работать. Этот override
+# ДОБАВЛЯЕТ отдельный LAN-порт, на который Synology ходит обычным HTTP:
+#
+#   edringcolony.ru          → Synology HTTPS :443 → VM HTTP :9000 → web :3000
+#   supabase.edringcolony.ru → Synology HTTPS :443 → VM HTTP :9100 → Supabase
+#
+# Подключать файл вручную не нужно. deploy/compose-lib.sh добавляет его ко всем
+# штатным compose-командам, когда в .env.production задано, например:
+#
+#   SYNOLOGY_SITE_BIND=192.168.8.177:9000
+#
+# Важно: PORT внутри контейнера остаётся 3000. Порт 9000 должен быть свободен
+# на VM; deploy/configure-synology-ports.sh убирает старые `listen 9000 ssl`
+# из nginx с резервной копией и выполняет проверяемое переключение.
+# ─────────────────────────────────────────────────────────────────────
+services:
+  web:
+    ports:
+      - "${SYNOLOGY_SITE_BIND:?Set SYNOLOGY_SITE_BIND to LAN_IP:PORT, for example 192.168.8.177:9000}:3000"

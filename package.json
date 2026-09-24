@@ -22,6 +22,7 @@
     "docker:restart": "bash deploy/start-docker.sh --restart",
     "docker:status": "bash deploy/start-docker.sh --status",
     "docker:stop": "bash deploy/start-docker.sh --stop",
+    "docker:synology": "bash deploy/configure-synology-ports.sh",
     "update:enable": "bash deploy/start-update-agent.sh",
     "update:keys": "bash deploy/start-update-agent.sh --keys-only",
     "update:check": "bash deploy/start-update-agent.sh --check",
