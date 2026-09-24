@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   createMonitorServer,
+  dbFailureNote,
   enabledJobNames,
   monitorTokenMatches,
   publicContainerStatus,
+  sanitizeJobError,
   schedulerSnapshot,
 } from '../monitor-agent.mjs';
 
@@ -25,12 +27,55 @@ test('scheduler status reports only timing facts and marks a stale success as a 
   assert.equal(fresh.status, 'healthy');
   assert.equal(fresh.lastSuccessAt, '2026-09-22T11:58:00.000Z');
   assert.equal(fresh.everySeconds, 300);
+  assert.equal(fresh.lastError, null, 'успешной задачи строки ошибки нет');
   assert.equal(JSON.stringify(fresh).includes('must not escape'), false);
 
   const stale = schedulerSnapshot({ version: 1, jobs: {
     'capi-sync': { lastSuccess: '2026-09-22T11:40:00.000Z' },
   } }, ['capi-sync'], now)[0];
   assert.equal(stale.status, 'warning');
+});
+
+test('scheduler status surfaces the last failure of a stuck job without leaking junk', () => {
+  const now = Date.parse('2026-09-22T12:00:00.000Z');
+  const failing = schedulerSnapshot({ version: 1, jobs: {
+    // Свежий успех, но сбой НОВЕЕ: задача падает прямо сейчас — это warning
+    // даже при «свежем» lastSuccess, иначе окно выглядело бы замороженным без причины.
+    'translate': {
+      slot: 9, lastSuccess: '2026-09-22T05:40:00.000Z',
+      lastError: 'Could not find the \'translation_status\' column of \'galnet_news\'',
+      lastFailureAt: '2026-09-22T11:59:00.000Z',
+      failures: 4,
+    },
+    // Старый сбой после более свежего успеха — не аварийный и не показывается.
+    'galnet-sync': {
+      slot: 1, lastSuccess: '2026-09-22T06:20:00.000Z',
+      lastError: 'Galnet HTTP 503',
+      lastFailureAt: '2026-09-21T06:20:00.000Z',
+      failures: 2,
+    },
+  } }, ['translate', 'galnet-sync'], now);
+
+  const translate = failing[0];
+  assert.equal(translate.status, 'warning');
+  assert.match(translate.lastError, /translation_status/);
+  assert.equal(translate.lastFailureAt, '2026-09-22T11:59:00.000Z');
+  assert.equal(translate.failures, 4);
+
+  const galnet = failing[1];
+  assert.equal(galnet.status, 'healthy', 'старый сбой после свежего успеха не тревожит');
+  assert.equal(galnet.lastError, null);
+  assert.equal(galnet.failures, 0);
+});
+
+test('scheduler error text is flattened to one printable line with a bound', () => {
+  assert.equal(sanitizeJobError('  line1\nline2\t tab  '), 'line1 line2 tab');
+  assert.equal(sanitizeJobError(null), null);
+  assert.equal(sanitizeJobError(42), null);
+  const long = sanitizeJobError('x'.repeat(500));
+  assert.ok(long.length <= 200);
+  // Управляющие символы и переводы строк не переживают очистку.
+  assert.equal(sanitizeJobError('bad\u0007bell\u2028sep'), 'bad bell sep');
 });
 
 test('agent token comparison requires a Bearer token and does not accept lookalikes', () => {
@@ -140,4 +185,25 @@ test('db probe: без MONITOR_DB_URL блок неактивен, недост�
     assert.equal(JSON.stringify(payload).includes('secret-db-password'), false, 'пароль не уходит наружу');
   });
   await new Promise((resolve) => refused.close(resolve));
+});
+
+test('db failure note names the fix per failure class instead of a generic «не ответил»', () => {
+  const dns = dbFailureNote({ code: 'EAI_AGAIN', message: 'getaddrinfo EAI_AGAIN db' }, 'db');
+  assert.match(dns, /db/);
+  assert.match(dns, /EAI_AGAIN/);
+  assert.match(dns, /start-monitoring\.sh/, 'подсказка ведёт к подключению агента к сети Supabase');
+  assert.doesNotMatch(dns, /postgres:\/\/|password/i);
+
+  const refused = dbFailureNote({ code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:1' }, '127.0.0.1');
+  assert.match(refused, /ECONNREFUSED/);
+  assert.match(refused, /127\.0\.0\.1/);
+
+  const auth = dbFailureNote(
+    { message: 'password authentication failed for user "postgres"' },
+    'db.example.com',
+  );
+  assert.match(auth, /пароль|пользователя|права роли/i);
+
+  const unknown = dbFailureNote(new Error('boom'), null);
+  assert.match(unknown, /MONITOR_DB_URL/);
 });

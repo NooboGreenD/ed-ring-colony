@@ -354,7 +354,9 @@ export async function syncGalnet(options) {
       error = retry.error;
       if (!error) {
         result.errors.push(
-          'translation columns missing in galnet_news — inserted without translations, apply migration 20260915000000_galnet_translations.sql'
+          'translation columns missing in galnet_news — inserted without translations; ' +
+          'apply supabase/migrations/20260915000000_galnet_translations.sql ' +
+          '(node --env-file=.env.production scripts/apply-galnet-migration.mjs)'
         );
       }
     }
@@ -532,7 +534,16 @@ export async function translatePending(options) {
       .limit(limit);
 
     if (error) {
-      result.errors.push(`${table}: query failed — ${error.message}`);
+      if (isUnknownColumnError(error)) {
+        // Самая частая причина «перевод не работает»: колонки не применены.
+        // Называем лечение прямо в ошибке, а не заставляем читать schema cache.
+        result.errors.push(
+          `${table}: нет колонок переводов — примените supabase/migrations/20260915000000_galnet_translations.sql ` +
+          `(разово: node --env-file=.env.production scripts/apply-galnet-migration.mjs); ${error.message}`
+        );
+      } else {
+        result.errors.push(`${table}: query failed — ${error.message}`);
+      }
       result.ok = false;
       result.byTable[table] = tableResult;
       continue;

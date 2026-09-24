@@ -356,24 +356,46 @@ set_env "$SE" UPDATE_AGENT_URL              "http://update-agent:8092"
 set_env "$SE" PROJECT_HOST_DIR              "$SRC_DIR"
 set_env "$SE" PROJECT_DEPLOY_MODE           "compose"
 if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
+# Прямой Postgres для быстрого импорта каталога Spansh и замера размера БД:
+# web и monitor-agent ниже подключаются к сети стека Supabase (compose-lib.sh),
+# поэтому имя сервиса `db` из них резолвится. Значение не печатаем (пароль).
+if [ -n "${POSTGRES_PASSWORD:-}" ]; then
+  set_env "$SE" SUPABASE_DB_URL "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres"
+  set_env "$SE" MONITOR_DB_URL  "postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/postgres"
+else
+  echo "⚠ POSTGRES_PASSWORD не найден в $CRED — заполните SUPABASE_DB_URL/MONITOR_DB_URL вручную:"
+  echo "  postgresql://postgres:ПАРОЛЬ@db:5432/postgres (пароль — POSTGRES_PASSWORD в $SUPA_DIR/.env)"
+fi
+set_env "$SE" SUPABASE_NETWORK "supabase_default"
 chmod 600 "$SE"
 ln -sf .env.production "$SRC_DIR/.env"
 
 # Метаданные ревизии для блока «Версия проекта» (не секреты). Если исходники
 # скопированы без .git, сайт соберётся со значением unknown — это безопасно.
+# Значения пишутся и в env-файл: ручная пересборка их подхватит через
+# ${APP_GIT_SHA:-unknown} из docker-compose.yml.
 if [ -d "$SRC_DIR/.git" ]; then
   export APP_GIT_SHA="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
   APP_GIT_REF_VAL="$(git -C "$SRC_DIR" branch --show-current 2>/dev/null || true)"
   export APP_GIT_REF="${APP_GIT_REF_VAL:-unknown}"
 fi
 export APP_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set_env "$SE" APP_GIT_SHA    "$APP_GIT_SHA"
+set_env "$SE" APP_GIT_REF    "$APP_GIT_REF"
+set_env "$SE" APP_BUILD_TIME "$APP_BUILD_TIME"
+
+# Единый список -f с сетью Supabase (как у start-monitoring.sh / update-project.sh),
+# чтобы «getaddrinfo EAI_AGAIN db» не появился сразу после установки.
+# shellcheck source=../compose-lib.sh
+source "$SRC_DIR/deploy/compose-lib.sh"
+EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$SRC_DIR" "$SE")"
 
 if [ "$DO_MONITOR" = 1 ]; then
   # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
   # он единственный получает docker.sock, web ходит к нему только с токеном.
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production --profile monitoring up -d --build web jobs monitor-agent update-agent )
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES --profile monitoring up -d --build web jobs monitor-agent update-agent )
 else
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production up -d --build )
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES up -d --build )
 fi
 
 echo -n "жду ответа сайта"

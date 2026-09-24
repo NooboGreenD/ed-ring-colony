@@ -142,6 +142,10 @@ The full-galaxy catalog is the exception: apply
 `supabase/migrations/20260924000000_galaxy_systems_finish.sql` before the
 map point cloud and nearest-star search can use the database. See
 [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
+Если Galnet-новости не переводятся, а в очереди висят `pending`-статьи — на
+базе не применены колонки переводов; разово прогоните
+`node --env-file=.env.production scripts/apply-galnet-migration.mjs`
+(идемпотентно). Подробности: [GALNET-TRANSLATIONS-FIX.md](GALNET-TRANSLATIONS-FIX.md).
 The CLI linking example below is for a **hosted Supabase project**; a self-hosted
 DB uses a direct connection (`--db-url`) or reviewed SQL via local `psql`.
 

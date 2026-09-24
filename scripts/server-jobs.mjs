@@ -72,8 +72,17 @@ export async function callEndpoint(config, job, fetchImpl = fetch, signal) {
   let result;
   try { result = await response.json(); } catch { throw new Error('Non-JSON response'); }
   if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid job response');
-  if (result.ok === false || result.success === false || result.error || result.failed > 0) {
+  // Galnet endpoints are queue-based: `failed > 0` (or a partial error list)
+  // means "some articles will be retried on the next slot", not "the job did
+  // nothing". Failing the whole slot for that used to freeze the scheduler
+  // window on one flaky translation while the feed itself synced fine.
+  // Structural failures (ok/success === false, error field) still fail the job.
+  const queueBased = job.name === 'galnet-sync' || job.name === 'translate';
+  if (result.ok === false || result.error) {
     // Do not dump response bodies: they may contain upstream credentials or PII.
+    throw new Error('Job reported failure; check web logs');
+  }
+  if (!queueBased && (result.success === false || result.failed > 0)) {
     throw new Error('Job reported failure; check web logs');
   }
   if (job.name === 'galnet-sync' && result.fetched === 0) {
@@ -127,6 +136,12 @@ export async function saveState(file, state) {
 /** A sequential tick means tasks never overlap or create an unbounded backlog.
  * Persist successful slots; retry failures with backoff, even in the same slot.
  * After downtime catch up once, not once for every missed interval.
+ *
+ * Failures are recorded in the state file (lastError/lastFailureAt/failures)
+ * without touching `slot`, so the monitoring panel can show WHY nothing has
+ * changed for a while instead of silently repeating the old success time.
+ * The success slot is still persisted only on success: a recorded failure must
+ * never suppress the retry in the same calendar slot (the backoff handles that).
  */
 export async function runTick({ config, state, retries, run = executeJob, persist = saveState,
   log = console.log, now = Date.now, signal }) {
@@ -142,15 +157,23 @@ export async function runTick({ config, state, retries, run = executeJob, persis
     try {
       result = await run(config, job, undefined, signal);
     } catch (error) {
-      const failures = (retries[job.name]?.failures ?? 0) + 1;
+      const failures = ((previous && Number.isInteger(previous.failures) ? previous.failures : 0) || 0) + 1;
       const delay = Math.min(5 * MINUTE, MINUTE * 2 ** Math.min(failures - 1, 3));
       retries[job.name] = { failures, nextAt: now() + delay };
-      log(JSON.stringify({ job: job.name, event: 'failed', error: error.message, retryInSeconds: delay / 1000 }));
+      // Bound the stored message: the state file is read by the monitor agent,
+      // which forwards a sanitised copy to the panel.
+      const message = String(error?.message || error || 'unknown error').slice(0, 300);
+      // Keep lastSuccess/slot as they are — only the failure facts are added.
+      state.jobs[job.name] = { ...(previous || {}), lastError: message, lastFailureAt: new Date(now()).toISOString(), failures };
+      await persist(config.stateFile, state);
+      log(JSON.stringify({ job: job.name, event: 'failed', error: message, retryInSeconds: delay / 1000 }));
       continue;
     }
     // Persist outside the job catch. A broken state volume is fatal, not a
     // reason to rerun a successful job and spend translation quota again.
-    state.jobs[job.name] = { slot, lastSuccess: new Date(now()).toISOString() };
+    // A success clears the previous failure line: the panel goes back to green.
+    const { lastError: _ignored, lastFailureAt: _dropped, failures: _reset, ...successFields } = previous || {};
+    state.jobs[job.name] = { ...successFields, slot, lastSuccess: new Date(now()).toISOString() };
     await persist(config.stateFile, state);
     delete retries[job.name];
     log(JSON.stringify({ job: job.name, event: result?.skipped ? 'skipped' : 'success',
