@@ -2,8 +2,8 @@
   "name": "ed-ring-colony",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
-    "build": "next build --webpack",
+    "dev": "next dev",
+    "build": "next build",
     "start": "next start",
     "clean": "rm -rf .next dist",
     "test": "node --test scripts/tests/*.test.mjs",
