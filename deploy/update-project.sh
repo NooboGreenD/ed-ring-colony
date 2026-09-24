@@ -288,10 +288,10 @@ if [ "$MODE" = "compose" ]; then
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
   report build 70 "Пересобираю docker-образы — это самая долгая часть"
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --build $COMPOSE_SERVICES
+    compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
   else
     say "⚠ $ENV_FILE не найден — пересобираю без --env-file"
-    compose --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --build $COMPOSE_SERVICES
+    compose -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
   fi
   report switch 85 "Убираю висячие образы, чтобы не съедать диск"
   docker image prune -f >/dev/null 2>&1 || true

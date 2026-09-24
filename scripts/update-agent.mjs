@@ -242,6 +242,7 @@ export function createUpdateManager(config) {
                   ENV_FILE: config.envFile,
                   APPLY_ENV_SCOPE: scope,
                   UPDATE_HEALTH_URL: config.healthUrl,
+                  PROJECT_DEPLOY_MODE: config.deployMode,
                 }
               : backup
                 ? {

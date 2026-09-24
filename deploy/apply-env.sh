@@ -48,14 +48,32 @@ compose() {
 
 # ── 1. режим: Docker-стек или systemd-сайт ───────────────────────────
 report env_prepare 10 "Определяю режим применения"
+DEPLOY_MODE="${PROJECT_DEPLOY_MODE:-auto}"
+if [ -z "$DEPLOY_MODE" ] || [ "$DEPLOY_MODE" = "auto" ]; then
+  if [ -f "$ENV_FILE" ]; then
+    from_file="$(grep -E '^PROJECT_DEPLOY_MODE=' "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+    if [ -n "$from_file" ]; then DEPLOY_MODE="$from_file"; fi
+  fi
+fi
+
 COMPOSE_OK=0
-if command -v docker >/dev/null 2>&1 && [ -f "$PROJECT_DIR/docker-compose.yml" ] && docker info >/dev/null 2>&1; then
+if [ "$DEPLOY_MODE" = "compose" ]; then
+  COMPOSE_OK=1
+elif [ "$DEPLOY_MODE" = "systemd" ]; then
+  COMPOSE_OK=0
+elif command -v docker >/dev/null 2>&1 && [ -f "$PROJECT_DIR/docker-compose.yml" ] && docker info >/dev/null 2>&1; then
+  COMPOSE_OK=1
+elif command -v docker >/dev/null 2>&1 && [ -f "$PROJECT_DIR/docker-compose.yml" ] && ! command -v systemctl >/dev/null 2>&1; then
   COMPOSE_OK=1
 fi
 if [ "$COMPOSE_OK" = 0 ] && command -v systemctl >/dev/null 2>&1 && systemctl cat "$SYSTEMD_SERVICE.service" >/dev/null 2>&1; then
   :
 elif [ "$COMPOSE_OK" = 0 ]; then
-  die "не определил режим: нет ни Docker-стека с docker-compose.yml, ни systemd-unit $SYSTEMD_SERVICE"
+  if [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+    COMPOSE_OK=1
+  else
+    die "не определил режим: нет ни Docker-стека с docker-compose.yml, ни systemd-unit $SYSTEMD_SERVICE"
+  fi
 fi
 say "режим применения: $([ "$COMPOSE_OK" = 1 ] && echo compose || echo systemd)"
 
@@ -86,6 +104,8 @@ if [ "$COMPOSE_OK" = 1 ]; then
   cd "$PROJECT_DIR"
   # Та же логика -f, что у остальных скриптов стека: без неё force-recreate
   # молча убрал бы у web/monitor-agent сеть Supabase (EAI_AGAIN вернулся бы).
+  # При этом ВСЕГДА передаём базовый -f docker-compose.yml, чтобы Compose
+  # не счёл deploy/compose.supabase-net.yml единственным файлом конфигурации.
   EDRC_EXTRA_COMPOSE_FILES=""
   if [ -f "$PROJECT_DIR/deploy/compose-lib.sh" ]; then
     # shellcheck source=compose-lib.sh
@@ -96,16 +116,20 @@ if [ "$COMPOSE_OK" = 1 ]; then
   if [ "$SCOPE" = "all" ]; then SERVICES="web jobs monitor-agent"; fi
   report env_switch 40 "Пересоздаю: $SERVICES (без пересборки образов)"
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
   else
     say "⚠ $ENV_FILE не найден — пересоздаю без --env-file"
-    compose --profile monitoring $EDRC_EXTRA_COMPOSE_FILES up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    compose -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
   fi
   report env_verify 90 "Жду, пока сайт ответит"
   wait_health
 else
   report env_switch 40 "Перезапускаю $SYSTEMD_SERVICE"
-  systemctl restart "$SYSTEMD_SERVICE"
+  if command -v sudo >/dev/null 2>&1 && [ "$(id -u)" != 0 ]; then
+    sudo systemctl restart "$SYSTEMD_SERVICE"
+  else
+    systemctl restart "$SYSTEMD_SERVICE"
+  fi
   report env_verify 90 "Жду, пока сайт ответит"
   wait_health
 fi
