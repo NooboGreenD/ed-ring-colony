@@ -115,6 +115,21 @@ bash deploy/start-docker.sh --logs      # логи web и jobs
 задайте `PORT_BIND` в `.env.production` (например `PORT_BIND=3000:3000` или
 `PORT_BIND=0.0.0.0:3000:3000`). По умолчанию: `127.0.0.1:3000:3000`.
 
+**Synology Reverse Proxy — сайт на `:9000`, Supabase на `:9100`:**
+не меняйте внутренний `PORT=3000` и не редактируйте Compose вручную. Готовый
+скрипт освобождает старый TLS-listener nginx `:9000`, добавляет отдельную
+Docker-публикацию `LAN_IP:9000 → web:3000`, сохраняет localhost-healthcheck и
+при ошибке выполняет откат:
+
+```bash
+bash deploy/configure-synology-ports.sh
+```
+
+После этого назначения Synology: `HTTP 192.168.8.177:9000` для
+`edringcolony.ru` и `HTTP 192.168.8.177:9100` для
+`supabase.edringcolony.ru`. Полная схема, WebSocket и правила безопасных
+обновлений описаны в [SYNOLOGY.md](SYNOLOGY.md).
+
 **Автозапуск через systemd (для Docker Compose):**
 Чтобы Docker-стек автоматически поднимался после перезагрузки сервера со всеми
 параметрами и портами:

@@ -142,6 +142,9 @@ The full-galaxy catalog is the exception: apply
 `supabase/migrations/20260924000000_galaxy_systems_finish.sql` before the
 map point cloud and nearest-star search can use the database. See
 [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
+Для production через Synology Reverse Proxy (`сайт :9000`, `Supabase :9100`)
+используйте одну безопасную команду и зафиксированную схему из
+[SYNOLOGY.md](SYNOLOGY.md); не меняйте внутренний `PORT=3000`.
 Если Galnet-новости не переводятся, а в очереди висят `pending`-статьи — на
 базе не применены колонки переводов; разово прогоните
 `node --env-file=.env.production scripts/apply-galnet-migration.mjs`
