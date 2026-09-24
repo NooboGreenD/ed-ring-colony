@@ -166,6 +166,7 @@ compose_base config --quiet \
 
 # ── 4. снимок текущего образа web для отката ────────────────────────
 CID="$(docker ps -aq --filter publish=3000 2>/dev/null | head -n1 || true)"
+[ -n "$CID" ] || CID="$(docker ps -aq --filter label=com.docker.compose.service=web 2>/dev/null | head -n1 || true)"
 if [ -n "$CID" ]; then
   IMG_ID="$(docker inspect --format '{{.Image}}' "$CID" 2>/dev/null || true)"
   if [ -n "$IMG_ID" ] && docker image inspect "$IMG_ID" >/dev/null 2>&1; then

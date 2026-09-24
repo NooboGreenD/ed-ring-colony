@@ -471,6 +471,8 @@ def apply(args, source, root):
     site_new = copy.deepcopy(site_old)
     web_new = site_new['services']['web']
     web_new.update({key: template['services']['web'][key] for key in ('build', 'environment', 'healthcheck')})
+    if not web_new.get('ports') and template['services']['web'].get('ports'):
+        web_new['ports'] = copy.deepcopy(template['services']['web']['ports'])
     web_new.pop('env_file', None)
     web_new['image'] = 'edrc-web:' + stamp.lower()
     web_new['healthcheck']['test'] = ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/api/health']
