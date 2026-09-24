@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   PG_CONNECT_BACKOFF_MS,
@@ -419,4 +420,54 @@ test('нерезолвящийся хост даёт тот же диагноз,
   assert.equal(check.direct.ok, false);
   assert.equal(check.direct.host, 'db');
   assert.match(check.direct.message, /db/);
+});
+
+// ─────────── цена PostgREST говорится до начала импорта ───────────
+//
+// Продовый случай: в веб-процессе не было DATABASE_URL/SUPABASE_DB_URL, дамп
+// 5.9 ГиБ импортировался через PostgREST и умер на 2.7% (~5.7M строк) с
+// «supabase upsert failed: … statement timeout (имя / id64)» — база перестала
+// принимать даже одну строку. Импорт называл PostgREST «медленнее» и уходил в
+// сутки работы; теперь он сразу пишет, чем это кончается, и как переключиться.
+
+test('падение на PostgREST объясняет цену режима и команду исправления', async () => {
+  const lines = [];
+  const log = (line) => lines.push(line);
+  const pg = () => Promise.reject(dnsError());
+
+  const { backend } = await createWriterWithFallback({
+    backend: 'pg',
+    connectionString: DB_URL,
+    supabaseFallback: true,
+    truncate: false,
+    pgAttempts: 1,
+    log,
+    createPg: pg,
+    createSupabase: async () => fakeWriter('supabase'),
+  });
+
+  assert.equal(backend, 'supabase', 'импорт ушёл на PostgREST');
+  const text = lines.join('\n');
+  assert.match(text, /прямой Postgres недоступен/, 'причина падения названа');
+  assert.match(text, /хост «db» недоступен/, 'назван недоступный хост из строки подключения');
+  assert.match(text, /SUPABASE_DB_URL/, 'сказано, какую переменную задать');
+  assert.match(text, /statement timeout|statement_timeout/, 'названа ошибка, на которой это падает');
+  assert.match(text, /db:5432\/postgres/, 'пример рабочей ссылки на месте');
+  assert.ok(!text.includes('s3cr3t'), 'пароль не утекает в лог');
+});
+
+test('админка предупреждает о PostgREST постоянным блоком, а не только в логе', () => {
+  // Лог импорта живёт 60 строк и уезжает при перезапуске процесса, поэтому
+  // предупреждение должно быть в самой панели — проверяем по исходнику.
+  const source = readFileSync(
+    new URL('../../src/components/Admin/GalaxyCatalogTab.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(source, /backends\.backend === 'supabase'/, 'предупреждение завязано на режим записи');
+  assert.match(source, /SUPABASE_DB_URL=postgresql:\/\/postgres:ПАРОЛЬ@db:5432\/postgres/, 'в панели есть готовая строка для .env.production');
+  assert.match(source, /compose\.supabase-net\.yml/, 'в панели назван файл подключения к сети Supabase');
+  assert.match(source, /deploy\/start-monitoring\.sh/, 'в панели назван скрипт, который делает это сам');
+  // Счётчик каталога пишется только успешным проходом: незавершённый не должен
+  // выглядеть как пустая таблица.
+  assert.match(source, /partialRows/, 'рядом с нулём показано, сколько строк уже записано');
 });
