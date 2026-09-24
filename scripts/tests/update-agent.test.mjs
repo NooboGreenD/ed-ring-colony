@@ -369,6 +369,7 @@ test('deploy scripts: синтаксис всех скриптов обновл�
     'deploy/start-monitoring.sh',
     'deploy/monitoring-setup.sh',
     'deploy/prepare-standalone.sh',
+    'deploy/rebuild-now.sh',
   ]) {
     const check = spawnSync('bash', ['-n', join(ROOT, file)], { encoding: 'utf8' });
     assert.equal(check.status, 0, file + ': ' + check.stderr);
