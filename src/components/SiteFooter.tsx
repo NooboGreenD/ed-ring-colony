@@ -21,10 +21,9 @@ export default function SiteFooter({ copyright, discord, edsm, inara }: SiteFoot
             ))}
           </nav>
         )}
-        <nav className="site-footer-links" aria-label="Поддержка">
-          <Link href="/support" style={{ color: "var(--orange)", fontSize: 12, letterSpacing: "2px", textTransform: "uppercase" }}>
-            Техподдержка
-          </Link>
+        <nav className="site-footer-links" aria-label="Правовая информация и поддержка">
+          <Link href="/offer">Публичная оферта</Link>
+          <Link href="/support">Техподдержка</Link>
         </nav>
       </div>
     </footer>
