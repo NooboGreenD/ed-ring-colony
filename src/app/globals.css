@@ -761,6 +761,129 @@
   }
 
   .site-footer-links a:hover { color: var(--text); }
+
+  /* ===== LEGAL DOCUMENTS ===== */
+  .legal-page {
+    width: min(100%, 980px);
+    margin: 0 auto;
+    padding: 20px 4px 48px;
+    color: var(--text);
+  }
+
+  .legal-page-back {
+    display: inline-block;
+    margin-bottom: 24px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .legal-page-back:hover { color: var(--orange); }
+
+  .legal-page-header {
+    padding: 28px 30px;
+    margin-bottom: 18px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--orange);
+    background: var(--panel);
+  }
+
+  .legal-page-header h1 {
+    margin: 6px 0 8px;
+    color: var(--orange);
+    font-size: clamp(22px, 4vw, 32px);
+  }
+
+  .legal-page-header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 16px;
+  }
+
+  .legal-section {
+    padding: 26px 30px;
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    background: rgba(42, 45, 48, 0.72);
+  }
+
+  .legal-section h2 {
+    margin: 0 0 18px;
+    color: var(--orange);
+    font-size: 18px;
+    line-height: 1.4;
+  }
+
+  .legal-section h3 {
+    margin: 22px 0 10px;
+    color: var(--text);
+    font-size: 14px;
+    letter-spacing: 1px;
+  }
+
+  .legal-section p {
+    margin: 0 0 14px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.75;
+  }
+
+  .legal-section p:last-child { margin-bottom: 0; }
+
+  .legal-section strong { color: var(--text); }
+
+  .legal-section ul {
+    margin: 0 0 14px;
+    padding-left: 24px;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.75;
+  }
+
+  .legal-section li { padding-left: 5px; margin-bottom: 6px; }
+
+  .legal-definitions,
+  .legal-requisites dl {
+    margin: 0;
+  }
+
+  .legal-definitions > div,
+  .legal-requisites dl > div {
+    display: grid;
+    grid-template-columns: minmax(190px, 0.32fr) 1fr;
+    gap: 10px 20px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .legal-definitions > div:first-child,
+  .legal-requisites dl > div:first-child { border-top: 0; }
+
+  .legal-definitions dt,
+  .legal-requisites dt {
+    color: var(--orange);
+    font-weight: 600;
+  }
+
+  .legal-definitions dd,
+  .legal-requisites dd {
+    margin: 0;
+    color: var(--text);
+    line-height: 1.7;
+  }
+
+  .legal-requisites a { overflow-wrap: anywhere; }
+
+  @media (max-width: 680px) {
+    .legal-page { padding: 14px 0 32px; }
+    .legal-page-header,
+    .legal-section { padding: 20px 16px; }
+    .legal-page-header h1 { font-size: 22px; }
+    .legal-section h2 { font-size: 16px; }
+    .legal-section p,
+    .legal-section ul { font-size: 13px; }
+    .legal-definitions > div,
+    .legal-requisites dl > div { grid-template-columns: 1fr; gap: 5px; }
+  }
 }
 
 @layer components {
