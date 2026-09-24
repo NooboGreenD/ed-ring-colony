@@ -99,6 +99,32 @@ curl -I http://127.0.0.1:3000   # → HTTP 200
 Приложение слушает `127.0.0.1:3000`; наружу его отдаёт nginx (см. §6).
 Обновление: `git pull && docker compose up -d --build`.
 
+**Штатный запуск, перезапуск и восстановление портов:**
+В репозитории есть готовый управляющий скрипт `deploy/start-docker.sh`, который
+автоматически подключает внешнюю сеть Supabase (защита от `EAI_AGAIN db`),
+передаёт метаданные ревизии и следит за пробросом портов:
+
+```bash
+bash deploy/start-docker.sh             # запуск / поднятие стека (= npm run docker:start)
+bash deploy/start-docker.sh --restart   # быстро вернуть порты / пересоздать без пересборки
+bash deploy/start-docker.sh --status    # посмотреть статус и опубликованные порты
+bash deploy/start-docker.sh --logs      # логи web и jobs
+```
+
+Если нужно настроить внешний порт или адрес привязки (например, без nginx),
+задайте `PORT_BIND` в `.env.production` (например `PORT_BIND=3000:3000` или
+`PORT_BIND=0.0.0.0:3000:3000`). По умолчанию: `127.0.0.1:3000:3000`.
+
+**Автозапуск через systemd (для Docker Compose):**
+Чтобы Docker-стек автоматически поднимался после перезагрузки сервера со всеми
+параметрами и портами:
+
+```bash
+sudo cp deploy/ed-ring-colony-docker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ed-ring-colony-docker
+```
+
 Если сайт вдруг отдаёт 502 и нужна **ручная полная пересборка** из
 актуального `main` (без кэша, с метаданными ревизии и возможностью отката) —
 `bash deploy/rebuild-now.sh` (флаги `NO_PULL=1` / `SKIP_TESTS=1`,

@@ -1,0 +1,38 @@
+# ED Ring Colony — systemd unit для Docker Compose стека
+#
+# Гарантирует автозапуск сайта и фоновых задач после перезагрузки сервера
+# и сохранение всех параметров запуска (порты, сеть Supabase, env-файл).
+#
+# Установка (из корня репозитория на сервере под root/sudo):
+#   sudo cp deploy/ed-ring-colony-docker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ed-ring-colony-docker
+#
+# Управление:
+#   sudo systemctl status ed-ring-colony-docker
+#   sudo systemctl restart ed-ring-colony-docker
+#   sudo systemctl stop ed-ring-colony-docker
+#
+# Логи:
+#   journalctl -u ed-ring-colony-docker -f
+#   или: bash /opt/ed-ring-colony/src/deploy/start-docker.sh --logs
+
+[Unit]
+Description=ED Ring Colony (Docker Compose stack)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ed-ring-colony/src
+ExecStart=/bin/bash /opt/ed-ring-colony/src/deploy/start-docker.sh
+ExecStop=/bin/bash /opt/ed-ring-colony/src/deploy/start-docker.sh --stop
+ExecReload=/bin/bash /opt/ed-ring-colony/src/deploy/start-docker.sh --restart
+TimeoutStartSec=300
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
