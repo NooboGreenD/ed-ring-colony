@@ -286,7 +286,11 @@ fi
 if [ "$MODE" = "compose" ]; then
   # docker compose читает build-args из .env — держим symlink актуальным.
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
-  report build 70 "Пересобираю docker-образы — это самая долгая часть"
+  # На малом VPS эта стадия — 30–60 минут (npm ci при смене lock-файла,
+  # тесты, next build): это норма, а не зависание. Таймаут апдейтера по
+  # умолчанию 90 минут (UPDATE_TIMEOUT_MINUTES); RUN_TESTS=0 в
+  # .env.production — быстрый режим без тестов.
+  report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
   if [ -f "$ENV_FILE" ]; then
     compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
   else

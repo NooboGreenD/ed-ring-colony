@@ -38,7 +38,8 @@
  *   UPDATE_SCRIPT        default <PROJECT_DIR>/deploy/update-project.sh
  *   UPDATE_STATE_DIR     lock + state file (default <PROJECT_DIR>/../update-state)
  *   UPDATE_APPLY_MIGRATIONS  "1" (default) or "0"
- *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES
+ *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES (default 90: a cold image
+ *        rebuild on a small VPS can legitimately take a long time)
  *   BACKUP_SCRIPT        default <PROJECT_DIR>/deploy/db-backup.sh
  *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
  *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
@@ -103,7 +104,11 @@ export function updateAgentConfig(env = process.env) {
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
     applyMigrations: (env.UPDATE_APPLY_MIGRATIONS ?? '1').toString().trim() !== '0',
     healthUrl: (env.UPDATE_HEALTH_URL || 'http://127.0.0.1:3000/api/health').trim(),
-    timeoutMs: Math.max(60_000, (Number(env.UPDATE_TIMEOUT_MINUTES) || 45) * 60_000),
+    // 45 мин не хватало: холодная сборка образа на малом VPS (npm ci при
+    // смене lock-файла + тесты + next build) упирается в потолок, и апдейт
+    // убивался посреди docker build. Запас 90 мин; точное значение — в
+    // .env.production через UPDATE_TIMEOUT_MINUTES.
+    timeoutMs: Math.max(60_000, (Number(env.UPDATE_TIMEOUT_MINUTES) || 90) * 60_000),
   };
 }
 

@@ -16,6 +16,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 # ── 2. Сборка ────────────────────────────────────────────────────────
+# Next 16 по умолчанию собирает Turbopack'ом — на этом проекте он быстрее
+# webpack-сборки вдвое и меньше ест RAM, что критично для малого VPS
+# (2 vCPU / 4 ГБ). Если когда-нибудь понадобится старый бандлер — верните
+# флаги `--webpack` в package.json.
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
@@ -39,7 +43,14 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_TELEMETRY_DISABLED=1
 
 # Former site CI checks now run during the server-side image build.
-RUN npm test && npm run build
+# Аргумент RUN_TESTS=0 (через --build-arg / .env: RUN_TESTS=0) пропускает
+# тесты в экстренном случае — например, когда сборка уже упирается в
+# таймаут апдейтера. По умолчанию проверки обязательны.
+ARG RUN_TESTS=1
+RUN if [ "$RUN_TESTS" = "1" ]; then npm test; else echo "RUN_TESTS=0 — тесты пропущены"; fi
+# Отдельный слой: повторная сборка после падения самих тестов не пересчитывает
+# тестовый слой, а падение сборки видно отдельно от падения проверок.
+RUN npm run build
 
 # ── 3. Рантайм ───────────────────────────────────────────────────────
 FROM node:22-alpine AS runner

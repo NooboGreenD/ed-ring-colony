@@ -313,7 +313,9 @@ test('abort: остановка по-человечески помечает с�
 });
 
 test('crashed updater does not stick the panel in running state', () => {
-  const config = testConfig();
+  // Таймаут задан явно: тест проверяет саму логику «running без процесса
+  // старше лимита → failed» и не зависит от дефолта UPDATE_TIMEOUT_MINUTES.
+  const config = testConfig({ UPDATE_TIMEOUT_MINUTES: '45' });
   mkdirSync(config.stateDir, { recursive: true });
   writeFileSync(config.stateFile, JSON.stringify({
     version: 1,
