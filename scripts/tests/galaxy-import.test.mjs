@@ -13,6 +13,7 @@ import {
   toGalaxySystemRow,
 } from '../../src/lib/galaxySpanshStream.ts';
 import {
+  GALAXY_MAX_CONSECUTIVE_DEFERRED,
   SUPABASE_BATCH_SIZE,
   collapseGalaxyBatch,
   createSupabaseWriter,
@@ -150,11 +151,13 @@ function memoryWriter(table, batchSize = 100) {
     get written() {
       return written;
     },
+    deferred: 0,
     async add(row) {
       batch.push(row);
       if (batch.length >= batchSize) await flush();
     },
     flush,
+    async retryDeferred() {},
     async countRows() {
       await flush();
       return table.count();
@@ -707,6 +710,308 @@ test('supabase writer retries a lone timed-out row with backoff, then fails loud
     /supabase upsert failed: canceling statement due to statement timeout/,
   );
   assert.equal(attempts, 3, 'one try plus the configured retries');
+});
+
+test('supabase writer defers a lone timed-out row instead of failing its neighbours', async () => {
+  const table = fakeTable();
+  const rows = rowsOf(makeRecords(4));
+  const badName = rows[1].name_lc;
+  let acceptBad = false;
+  let attemptsOnBad = 0;
+  const client = {
+    from() {
+      return {
+        async upsert(batch) {
+          if (!acceptBad && batch.some((row) => row.name_lc === badName)) {
+            attemptsOnBad += 1;
+            return { error: { code: '57014', message: 'canceling statement due to statement timeout' }, data: null };
+          }
+          table.upsert(batch);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  const writer = createSupabaseWriter(client, { batchSize: 1, sleep: async () => {} });
+  for (const row of rows) await writer.add(row);
+  assert.equal(writer.written, 3, 'the neighbours of a deferred row are written anyway');
+  assert.equal(writer.deferred, 1);
+  assert.equal(table.count(), 3);
+  assert.equal(attemptsOnBad, 4, 'one try plus three backoff retries before the row is deferred');
+
+  // The database recovers: the end-of-pass sweep writes the held row.
+  acceptBad = true;
+  await writer.retryDeferred();
+  assert.equal(writer.written, 4);
+  assert.equal(writer.deferred, 0);
+  assert.equal(table.count(), 4);
+});
+
+test('retryDeferred fails loudly while a row remains unwritten', async () => {
+  const table = fakeTable();
+  const rows = rowsOf(makeRecords(2));
+  const badName = rows[1].name_lc;
+  const client = {
+    from() {
+      return {
+        async upsert(batch) {
+          if (batch.some((row) => row.name_lc === badName)) {
+            return { error: { message: 'canceling statement due to statement timeout' }, data: null };
+          }
+          table.upsert(batch);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  const writer = createSupabaseWriter(client, { batchSize: 1, sleep: async () => {} });
+  await writer.add(rows[0]);
+  await writer.add(rows[1]);
+  assert.equal(writer.written, 1);
+  assert.equal(writer.deferred, 1);
+
+  await assert.rejects(
+    () => writer.retryDeferred(),
+    (error) => {
+      assert.match(error.message, /^supabase upsert failed: canceling statement due to statement timeout/);
+      assert.ok(
+        error.message.includes(`(${rows[1].name_lc} / ${rows[1].id64})`),
+        `the failure names the stuck row: ${error.message}`,
+      );
+      return true;
+    },
+  );
+  assert.equal(writer.deferred, 1, 'the stuck row stays deferred');
+  assert.equal(writer.written, 1, 'the written neighbour is not lost');
+});
+
+/** In-memory `galaxy_systems` plus an id64-conflict upsert, like the reconcile fixture below. */
+function reconcileClient(stored, state) {
+  return {
+    from() {
+      return {
+        async upsert(rows) {
+          for (const row of rows) {
+            for (const existing of stored.values()) {
+              if (existing.id64 === row.id64 && existing.name_lc !== row.name_lc) {
+                return {
+                  error: {
+                    code: '23505',
+                    message: 'duplicate key value violates unique constraint "uq_galaxy_systems_id64"',
+                  },
+                  data: null,
+                };
+              }
+            }
+          }
+          for (const row of rows) stored.set(stored.size + 1, { id: stored.size + 1, ...row });
+          return { error: null, data: null };
+        },
+        select() {
+          return {
+            eq(column, value) {
+              return {
+                async maybeSingle() {
+                  const found = [...stored.values()].find((row) => row[column] === value) ?? null;
+                  return { data: found, error: null };
+                },
+              };
+            },
+          };
+        },
+        update(patch) {
+          return {
+            async eq(column, value) {
+              if (state.updateFailures > 0) {
+                state.updateFailures -= 1;
+                return { error: { code: '57014', message: 'canceling statement due to statement timeout' }, data: null };
+              }
+              const found = [...stored.values()].find((row) => row[column] === value);
+              if (!found) return { error: { message: 'missing row' }, data: null };
+              Object.assign(found, patch);
+              return { error: null, data: null };
+            },
+          };
+        },
+        delete() {
+          return {
+            async eq(column, value) {
+              for (const [id, row] of stored) {
+                if (row[column] === value) stored.delete(id);
+              }
+              return { error: null, data: null };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+function reconcileFixture() {
+  const stored = new Map();
+  stored.set(1, {
+    id: 1,
+    id64: '1',
+    name: 'Old Name',
+    name_lc: 'old name',
+    x: 0,
+    y: 0,
+    z: 0,
+    main_star: null,
+    star_type: 'g',
+    star_giant_class: 'dwarf',
+    needs_permit: null,
+    distance_from_sols: 0,
+    distance_from_sgra: 1,
+    updated_at: '2020-01-01T00:00:00Z',
+  });
+  const row = rowsOf(makeRecords(1))[0];
+  row.id64 = '1';
+  row.name = 'New Name';
+  row.name_lc = 'new name';
+  return { stored, row };
+}
+
+test('conflict reconcile retries a statement timeout instead of failing the import', async () => {
+  const { stored, row } = reconcileFixture();
+  const state = { updateFailures: 1 };
+  const sleeps = [];
+  const writer = createSupabaseWriter(reconcileClient(stored, state), {
+    batchSize: 1,
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  await writer.add(row);
+  assert.equal(writer.deferred, 0, 'the retry lands and nothing is deferred');
+  assert.deepEqual(sleeps, [1000], 'the whole reconcile is retried once with backoff');
+  assert.equal(stored.size, 1);
+  const kept = [...stored.values()][0];
+  assert.equal(kept.name_lc, 'new name');
+  assert.equal(kept.name, 'New Name');
+});
+
+test('a reconcile that keeps timing out is deferred like a lone timed-out row', async () => {
+  const { stored, row } = reconcileFixture();
+  const state = { updateFailures: Infinity };
+  const sleeps = [];
+  const writer = createSupabaseWriter(reconcileClient(stored, state), {
+    batchSize: 1,
+    timeoutRetries: 1,
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  await writer.add(row);
+  assert.equal(writer.deferred, 1, 'the row is held aside, not fatal');
+  assert.equal(writer.written, 0);
+  assert.deepEqual(sleeps, [1000], 'one retry before deferring');
+
+  state.updateFailures = 0;
+  await writer.retryDeferred();
+  assert.equal(writer.deferred, 0);
+  assert.equal(writer.written, 1);
+  assert.equal([...stored.values()][0].name_lc, 'new name');
+});
+
+test('writeGalaxyRowsPg defers a lone row the server keeps cancelling', async () => {
+  const rows = rowsOf(makeRecords(2));
+  const state = { deferred: [], consecutiveDeferrals: 0 };
+  const written = await writeGalaxyRowsPg(
+    async (sql) => {
+      if (sql.startsWith('INSERT') && sql.includes(rows[1].id64)) {
+        const error = new Error('canceling statement due to statement timeout');
+        error.code = '57014';
+        throw error;
+      }
+    },
+    rows,
+    { deferredState: state, sleep: async () => {} },
+  );
+  assert.equal(written, 1, 'the accepted neighbour is counted as written');
+  assert.equal(state.deferred.length, 1);
+  assert.equal(state.deferred[0].row.id64, rows[1].id64);
+});
+
+test('a database that accepts nothing fails fast instead of deferring the whole dump', async () => {
+  const rows = rowsOf(makeRecords(40));
+  const client = {
+    from() {
+      return {
+        async upsert() {
+          return { error: { code: '57014', message: 'canceling statement due to statement timeout' }, data: null };
+        },
+      };
+    },
+  };
+  const writer = createSupabaseWriter(client, { batchSize: 1, timeoutRetries: 0, sleep: async () => {} });
+  let failed = null;
+  for (const row of rows) {
+    try {
+      await writer.add(row);
+    } catch (error) {
+      failed = error;
+      break;
+    }
+  }
+  assert.ok(failed, 'the run fails instead of crawling through the dump');
+  assert.match(failed.message, /canceling statement due to statement timeout/);
+  assert.equal(writer.deferred, GALAXY_MAX_CONSECUTIVE_DEFERRED, 'exactly the consecutive-deferral budget is kept');
+});
+
+test('runGalaxyImport holds the restart point before deferred rows and surfaces the timeout', async () => {
+  const records = makeRecords(2500);
+  const rows = rowsOf(records);
+  const badName = rows[1249].name_lc;
+  const table = fakeTable();
+  let acceptBad = false;
+  const client = {
+    from() {
+      return {
+        async upsert(batch) {
+          if (!acceptBad && batch.some((row) => row.name_lc === badName)) {
+            return { error: { code: '57014', message: 'canceling statement due to statement timeout' }, data: null };
+          }
+          table.upsert(batch);
+          return { error: null, data: null };
+        },
+      };
+    },
+  };
+  const writer = createSupabaseWriter(client, { batchSize: 250, sleep: async () => {} });
+  const snapshots = [];
+  let clock = Date.parse('2026-09-22T00:00:00Z');
+  const run = runGalaxyImport({
+    writer,
+    fetchImpl: async () => dumpResponse(gzDump(records)),
+    now: () => (clock += 50),
+    progressIntervalMs: 1,
+    buildPoints: false,
+    onProgress: (snapshot) => {
+      snapshots.push(snapshot);
+    },
+  });
+
+  await assert.rejects(
+    () => run,
+    (error) => {
+      assert.match(error.message, /^supabase upsert failed: canceling statement due to statement timeout/);
+      assert.ok(
+        error.message.includes(`(${rows[1249].name_lc} / ${rows[1249].id64})`),
+        `the failure names the stuck row: ${error.message}`,
+      );
+      return true;
+    },
+  );
+  assert.equal(writer.written, 2499, 'every neighbour of the stuck row is written');
+  assert.equal(writer.deferred, 1);
+
+  const clean = Math.max(...snapshots.filter((s) => s.processed < 1250).map((s) => s.resumeOffset));
+  const frozen = Math.max(...snapshots.filter((s) => s.processed >= 1250).map((s) => s.resumeOffset));
+  assert.ok(clean > 0, 'the restart point actually advanced on clean flushes');
+  assert.ok(frozen <= clean, 'the restart point never passes a deferred row');
+
+  acceptBad = true;
+  await writer.retryDeferred();
+  assert.equal(writer.written, 2500);
+  assert.equal(table.count(), 2500);
 });
 
 test('writeGalaxyRowsPg halves a batch cancelled by statement_timeout', async () => {

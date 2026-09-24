@@ -42,6 +42,7 @@ import {
 import {
   PG_BATCH_SIZE,
   SUPABASE_BATCH_SIZE,
+  deferredRowsFailure,
   downloadDumpFile,
   pgLiteral,
   writeGalaxyRowsPg,
@@ -162,6 +163,11 @@ class PgWriter {
     this.rows = [];
     this.written = 0;
     this.truncate = truncate;
+    this.deferredState = { deferred: [], consecutiveDeferrals: 0 };
+  }
+
+  get deferred() {
+    return this.deferredState.deferred.length;
   }
 
   async begin() {
@@ -183,12 +189,31 @@ class PgWriter {
     // One connection for the whole batch: a conflict retry runs BEGIN/DELETE/INSERT/COMMIT.
     const client = await this.pool.connect();
     try {
-      const n = await writeGalaxyRowsPg((sql) => client.query(sql), batch);
+      const n = await writeGalaxyRowsPg((sql) => client.query(sql), batch, { deferredState: this.deferredState });
       this.written += n;
       return n;
     } finally {
       client.release();
     }
+  }
+
+  async retryDeferred() {
+    const pending = this.deferredState.deferred;
+    if (pending.length === 0) return;
+    this.deferredState.deferred = [];
+    this.deferredState.consecutiveDeferrals = 0;
+    const client = await this.pool.connect();
+    try {
+      const n = await writeGalaxyRowsPg(
+        (sql) => client.query(sql),
+        pending.map((entry) => entry.row),
+        { deferredState: this.deferredState },
+      );
+      this.written += n;
+    } finally {
+      client.release();
+    }
+    if (this.deferredState.deferred.length > 0) throw deferredRowsFailure(this.deferredState.deferred);
   }
 
   async query(sql) {
@@ -237,6 +262,11 @@ class SupabaseWriter {
     this.log = log;
     this.rows = [];
     this.written = 0;
+    this.deferredState = { deferred: [], consecutiveDeferrals: 0 };
+  }
+
+  get deferred() {
+    return this.deferredState.deferred.length;
   }
 
   async begin() {
@@ -252,9 +282,23 @@ class SupabaseWriter {
     if (this.rows.length === 0) return 0;
     const batch = this.rows;
     this.rows = [];
-    const n = await writeGalaxyRowsSupabase(this.supabase, batch);
+    const n = await writeGalaxyRowsSupabase(this.supabase, batch, { deferredState: this.deferredState });
     this.written += n;
     return n;
+  }
+
+  async retryDeferred() {
+    const pending = this.deferredState.deferred;
+    if (pending.length === 0) return;
+    this.deferredState.deferred = [];
+    this.deferredState.consecutiveDeferrals = 0;
+    const n = await writeGalaxyRowsSupabase(
+      this.supabase,
+      pending.map((entry) => entry.row),
+      { deferredState: this.deferredState },
+    );
+    this.written += n;
+    if (this.deferredState.deferred.length > 0) throw deferredRowsFailure(this.deferredState.deferred);
   }
 
   async countRows() {
@@ -325,7 +369,12 @@ async function runImport(args, db, log) {
     }
   }
 
-  if (db) await db.flush();
+  if (db) {
+    await db.flush();
+    // Rows the database refused even alone (`statement_timeout`) get one last
+    // sweep now that nothing else hammers it. Throws if any remains unwritten.
+    await db.retryDeferred();
+  }
 
   let pointsInfo = null;
   let pointsUploaded = false;
