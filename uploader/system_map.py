@@ -477,6 +477,10 @@ class SystemMapBuilder:
         self._bodies.setdefault(system, {})
         self._stations.setdefault(system, {})
 
+    def find_body(self, system: str, name: str) -> Optional[MapBody]:
+        """Найти тело в системе без автоматического создания нового объекта."""
+        return self._bodies.get(system, {}).get(name)
+
     def _body(self, system: str, name: str) -> MapBody:
         self._touch_system(system)
         bodies = self._bodies[system]

@@ -44,18 +44,29 @@ BIO_SIGNAL_TOKENS = (
     "биологическ",
 )
 
-# Тела, на которые можно сесть.
+# Тела, на которые можно сесть (Odyssey: посадка возможна только на безатмосферные тела
+# или тела с разреженной атмосферой следующих классов). На водные, аммиачные и землеподобные
+# планеты, а также газовые гиганты посадка невозможна.
 LANDABLE_PLANET_CLASSES = {
     "Metal rich body",
     "High metal content body",
     "Rocky body",
     "Rocky ice body",
     "Icy body",
-    "Earthlike body",
-    "Ammonia world",
-    "Water world",
-    "Water giant",
 }
+
+
+def is_landable(body: dict) -> bool:
+    """Определяет, возможна ли посадка на тело (Odyssey exobiology)."""
+    if not isinstance(body, dict) or not body:
+        return False
+    if "landable" in body:
+        return bool(body.get("landable"))
+    pclass = body.get("planet_class")
+    if pclass:
+        return pclass in LANDABLE_PLANET_CLASSES
+    return True
+
 
 # Стадии взятия образца в журнале (ScanOrganic.ScanType).
 SAMPLE_STAGES = ("Log", "Analyse", "Sample")
@@ -68,47 +79,184 @@ SAMPLES_FOR_FULL_CREDIT = 3
 # до неё как подсказку, а не как гарантию: считать можно и раньше.
 SAMPLE_COOLDOWN_SECONDS = 30.0
 
-# Множители выплаты за биологические образцы (известные правила игры):
-# ×2 — если система/тело открыты впервые, ×3.60246 — если тело картографировано.
-FIRST_DISCOVERY_BONUS = 2.0
-MAPPED_BONUS = 3.60246
+# Множители выплаты за биологические образцы (актуальные правила Odyssey с Update 14):
+# ×5 — бонус первопроходца (First Footfall / First Logged).
+# Бонус карты поверхности (DSS) в Vista Genomics не начисляется (множитель 1.0).
+FIRST_DISCOVERY_BONUS = 5.0
+MAPPED_BONUS = 1.0
 
-# Грубая оценка стоимости полного комплекта (3 образца) по роду, кр.
-# Это **порядок величины**, а не прайс: реальная цена зависит от варианта
-# (какой именно Tussock или Osseus), которого журнал до сдачи образца не
-# сообщает. Таблица своя, округлённая; уточняется в одном месте.
-#: Оценка полного комплекта образцов рода (3 образца), кр — **без** бонуса
-#: карты и первоткрытия (их добавляет `estimate_value`).
-#:
-#: Раньше таблица была «на глаз», из-за чего роды вроде Shards/Tubers вообще не
-#: имели цены (их названия в журнале другие — см. `GENUS_ALIASES`), а порядок
-#: величин расходился с игрой в разы. Числа приведены к базе из публичных
-#: таблиц выплат за биологические образцы (Elite Dangerous Wiki,
-#: «Potential Samples by Planetary Type»: стоимость полного комплекта на
-#: картированном теле делится на бонус карты 3.60246). Это по-прежнему порядок
-#: величины: точная цена зависит от вида и варианта.
+# Оценка стоимости полного комплекта (3 образца) по роду, кр (Odyssey Update 14+).
+# Базовые выплаты без учета бонуса первопроходца (бонус ×5 добавляется при no_first_footfall).
 GENUS_VALUE_CR: Dict[str, int] = {
-    "Bacterium": 360_000,
-    "Aleoida": 1_700_000,
-    "Amphora Plant": 1_000_000,
-    "Anemone": 660_000,
-    "Bark Mounds": 400_000,
-    "Brain Trees": 440_000,
-    "Cactoida": 690_000,
-    "Clypeus": 2_800_000,
-    "Conchas": 1_250_000,
-    "Crystalline Shards": 1_000_000,
-    "Electricae": 830_000,
-    "Fonticulua": 690_000,
-    "Frutexa": 1_500_000,
-    "Fumerola": 1_400_000,
-    "Fungoida": 700_000,
-    "Osseus": 670_000,
-    "Recepta": 560_000,
-    "Sinuous Tubers": 550_000,
-    "Stratum": 830_000,
-    "Tubus": 1_700_000,
-    "Tussock": 390_000,
+    "Aleoida": 6_650_000,
+    "Amphora Plant": 3_626_400,
+    "Anemone": 1_740_000,
+    "Bacterium": 3_200_000,
+    "Bark Mounds": 1_471_900,
+    "Brain Trees": 2_820_000,
+    "Cactoida": 5_700_000,
+    "Clypeus": 12_160_000,
+    "Conchas": 8_420_000,
+    "Crystalline Shards": 3_626_400,
+    "Electricae": 6_284_600,
+    "Fonticulua": 8_440_000,
+    "Frutexa": 4_400_000,
+    "Fumerola": 9_070_000,
+    "Fungoida": 2_850_000,
+    "Osseus": 5_620_000,
+    "Recepta": 14_480_000,
+    "Sinuous Tubers": 1_750_000,
+    "Stratum": 5_800_000,
+    "Tubus": 6_060_000,
+    "Tussock": 5_200_000,
+}
+
+# Базовые выплаты Vista Genomics по конкретным видам (Odyssey Update 14+).
+SPECIES_VALUE_CR: Dict[str, int] = {
+    # Aleoida
+    "Aleoida Arcus": 7_252_500,
+    "Aleoida Coronamus": 6_284_600,
+    "Aleoida Gravis": 12_934_900,
+    "Aleoida Laminiae": 3_385_200,
+    "Aleoida Spica": 3_385_200,
+    # Amphora Plant
+    "Amphora Plant": 3_626_400,
+    # Anemone
+    "Anemone Croceum": 3_399_800,
+    "Anemone Blatteum": 1_499_900,
+    "Anemone Luteolum": 1_499_900,
+    "Anemone Prasinum": 1_499_900,
+    "Anemone Puniceum": 1_499_900,
+    "Anemone Roseum": 1_499_900,
+    "Anemone Rubeum": 1_499_900,
+    "Anemone Imperator": 1_499_900,
+    # Bacterium
+    "Bacterium Acies": 1_000_000,
+    "Bacterium Aurasus": 1_000_000,
+    "Bacterium Vesicula": 1_000_000,
+    "Bacterium Bullaris": 1_152_500,
+    "Bacterium Alcyoneum": 1_658_500,
+    "Bacterium Cerbrus": 1_689_800,
+    "Bacterium Tela": 1_949_000,
+    "Bacterium Verrata": 3_897_000,
+    "Bacterium Omentum": 4_638_900,
+    "Bacterium Volu": 7_774_700,
+    "Bacterium Informem": 8_418_000,
+    "Bacterium Scopulum": 8_633_800,
+    "Bacterium Nebulus": 9_116_600,
+    # Bark Mounds
+    "Bark Mounds": 1_471_900,
+    # Brain Trees
+    "Brain Trees Roseum": 1_593_700,
+    "Brain Trees Viride": 1_593_700,
+    "Brain Trees Lividum": 1_593_700,
+    "Brain Trees Aureum": 3_565_100,
+    "Brain Trees Gypseeum": 3_565_100,
+    "Brain Trees Lindigoticum": 3_565_100,
+    "Brain Trees Ostrinum": 3_565_100,
+    "Brain Trees Puniceum": 3_565_100,
+    "Brain Tree Roseum": 1_593_700,
+    "Brain Tree Viride": 1_593_700,
+    "Brain Tree Lividum": 1_593_700,
+    "Brain Tree Aureum": 3_565_100,
+    "Brain Tree Gypseeum": 3_565_100,
+    "Brain Tree Lindigoticum": 3_565_100,
+    "Brain Tree Ostrinum": 3_565_100,
+    "Brain Tree Puniceum": 3_565_100,
+    # Cactoida
+    "Cactoida Lapis": 2_483_600,
+    "Cactoida Peperatis": 2_483_600,
+    "Cactoida Cortexum": 3_667_600,
+    "Cactoida Pullulanta": 3_667_600,
+    "Cactoida Vermis": 16_202_800,
+    # Clypeus
+    "Clypeus Lacrimam": 8_418_000,
+    "Clypeus Margaritus": 11_873_200,
+    "Clypeus Speculumi": 16_202_800,
+    # Concha
+    "Conchas Labiata": 2_352_400,
+    "Conchas Renibus": 4_572_400,
+    "Conchas Aureolas": 7_774_700,
+    "Conchas Biconcavis": 19_010_800,
+    "Concha Labiata": 2_352_400,
+    "Concha Renibus": 4_572_400,
+    "Concha Aureolas": 7_774_700,
+    "Concha Biconcavis": 19_010_800,
+    # Crystalline Shards
+    "Crystalline Shards": 3_626_400,
+    # Electricae
+    "Electricae Pluma": 6_284_600,
+    "Electricae Radialem": 6_284_600,
+    # Fonticulua
+    "Fonticulua Campestris": 1_000_000,
+    "Fonticulua Digitos": 1_804_100,
+    "Fonticulua Lapida": 3_111_000,
+    "Fonticulua Upupam": 5_727_600,
+    "Fonticulua Fluctus": 20_000_000,
+    "Fonticulua Segmentatus": 19_010_800,
+    # Frutexa
+    "Frutexa Metallicum": 1_632_500,
+    "Frutexa Fera": 1_632_500,
+    "Frutexa Collum": 1_639_800,
+    "Frutexa Flabellum": 1_808_900,
+    "Frutexa Sponsae": 5_988_000,
+    "Frutexa Acus": 7_774_700,
+    "Frutexa Flammasis": 10_326_000,
+    # Fumerola
+    "Fumerola Aquatis": 6_284_600,
+    "Fumerola Carbosis": 6_284_600,
+    "Fumerola Nitris": 7_500_900,
+    "Fumerola Extremus": 16_202_800,
+    # Fungoida
+    "Fungoida Setisis": 1_670_100,
+    "Fungoida Stabitis": 2_680_300,
+    "Fungoida Gelata": 3_330_300,
+    "Fungoida Bullarum": 3_703_200,
+    # Osseus
+    "Osseus Cornibus": 1_483_000,
+    "Osseus Spiralis": 2_404_700,
+    "Osseus Pumice": 3_156_300,
+    "Osseus Fractus": 4_027_800,
+    "Osseus Pellebantus": 9_739_000,
+    "Osseus Discus": 12_934_900,
+    # Recepta
+    "Recepta Umbrux": 12_934_900,
+    "Recepta Conditivus": 14_313_700,
+    "Recepta Deltahedronix": 16_202_800,
+    # Sinuous Tubers
+    "Sinuous Tubers Albidum": 3_425_600,
+    "Sinuous Tubers": 1_514_500,
+    # Stratum
+    "Stratum Limaxus": 1_362_000,
+    "Stratum Paleas": 1_362_000,
+    "Stratum Araneamus": 2_448_900,
+    "Stratum Excutitus": 2_448_900,
+    "Stratum Frigus": 2_637_500,
+    "Stratum Laminamus": 2_788_300,
+    "Stratum Cucumisis": 16_202_800,
+    "Stratum Tectonicas": 19_010_800,
+    # Tubus
+    "Tubus Conifer": 2_415_500,
+    "Tubus Rosarium": 2_637_500,
+    "Tubus Sororibus": 5_727_600,
+    "Tubus Compagibus": 7_774_700,
+    "Tubus Cavas": 11_873_200,
+    # Tussock
+    "Tussock Pennatis": 1_000_000,
+    "Tussock Propagito": 1_000_000,
+    "Tussock Catena": 1_766_600,
+    "Tussock Cultro": 1_766_600,
+    "Tussock Divisa": 1_766_600,
+    "Tussock Ignis": 1_849_000,
+    "Tussock Albata": 3_252_500,
+    "Tussock Ventusa": 3_277_700,
+    "Tussock Caputus": 3_472_400,
+    "Tussock Serrati": 4_447_100,
+    "Tussock Pennata": 5_853_800,
+    "Tussock Capillum": 7_025_800,
+    "Tussock Triticum": 7_774_700,
+    "Tussock Virgam": 14_313_700,
+    "Tussock Stigmasis": 19_010_800,
 }
 
 #: Старые/разговорные названия родов → имена, которые даёт журнал
@@ -232,6 +380,16 @@ def body_props(event: dict, system: str = "") -> Optional[dict]:
     if "Landable" in event:
         landable = landable and bool(event.get("Landable"))
 
+    was_discovered = event.get("WasDiscovered")
+    no_first_footfall = False
+    if was_discovered is False:
+        no_first_footfall = True
+    if event.get("no_first_footfall") is not None:
+        no_first_footfall = bool(event.get("no_first_footfall"))
+    first_footfall_by = str(event.get("first_footfall_by") or event.get("FirstFootfallBy") or "").strip()
+    if first_footfall_by and first_footfall_by not in ("Вы", "You"):
+        no_first_footfall = False
+
     return {
         "system": system or str(event.get("StarSystem") or "").strip(),
         "name": name,
@@ -251,21 +409,53 @@ def body_props(event: dict, system: str = "") -> Optional[dict]:
         "mapped": False,
         "bio_signals": 0,
         "confirmed_genera": [],
+        "was_discovered": was_discovered,
+        "no_first_footfall": no_first_footfall,
+        "first_footfall_by": first_footfall_by,
     }
 
 
-def estimate_value(genus: str, mapped: bool = False,
+def estimate_value(name: object, mapped: bool = False,
                    first_discovery: bool = False) -> int:
-    """Грубая оценка выплаты за полный комплект образцов рода, кр.
+    """Оценка стоимости полного комплекта образцов (3 штуки), кр.
 
-    Формула: базовая цена рода × 2 (первооткрытие) × 3.60246 (карта тела).
-    Если род неизвестен таблице — 0, и оверлей цену не показывает вовсе:
-    выдуманное число вреднее пустого места.
+    `name` может быть названием конкретного вида («Stratum Tectonicas») или рода («Stratum»).
+    `first_discovery=True` применяет бонус первопроходца (×5).
     """
-    key = genus if genus in GENUS_VALUE_CR else normalize_genus(genus)
-    base = GENUS_VALUE_CR.get(key, 0)
+    if not name:
+        return 0
+    text = str(name).strip()
+    base = 0
+
+    # 1. Прямое или case-insensitive совпадение с видом
+    if text in SPECIES_VALUE_CR:
+        base = SPECIES_VALUE_CR[text]
+    else:
+        text_lower = text.lower()
+        for sp_name, val in SPECIES_VALUE_CR.items():
+            if sp_name.lower() == text_lower:
+                base = val
+                break
+
+    # 2. Если вид не найден, проверяем по роду (с учетом алиасов)
+    if not base:
+        norm = normalize_genus(text)
+        if norm in SPECIES_VALUE_CR:
+            base = SPECIES_VALUE_CR[norm]
+        elif norm in GENUS_VALUE_CR:
+            base = GENUS_VALUE_CR[norm]
+        elif text in GENUS_VALUE_CR:
+            base = GENUS_VALUE_CR[text]
+        else:
+            first_word = text.split()[0] if " " in text else ""
+            if first_word:
+                norm_first = normalize_genus(first_word)
+                if norm_first in GENUS_VALUE_CR:
+                    base = GENUS_VALUE_CR[norm_first]
+
     if not base:
         return 0
+
     value = float(base)
     if first_discovery:
         value *= FIRST_DISCOVERY_BONUS
@@ -524,58 +714,6 @@ def filter_predictions(rows, allowed) -> List[Dict[str, Any]]:
     if not wanted:
         return list(rows or [])
     return [row for row in (rows or []) if str(row.get("genus") or "") in wanted]
-
-
-def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """То же, что `predict_genera`, но с процентом совпадения правил.
-
-    Оценка в `predict_genera` абсолютная (сколько правил совпало), поэтому
-    «6» у Osseus и «3» у Bacterium не сравнимы напрямую: у Osseus обязательна
-    геология и максимум выше. Процент считается от максимума, достижимого
-    именно для этого рода при данных тела, — его и показываем игроку.
-    """
-    rows: List[Dict[str, Any]] = []
-    confirmed = set(body.get("confirmed_genera") or [])
-    for genus, score, notes in predict_genera(body):
-        rule = GENUS_RULES.get(genus, {})
-        max_score = WEIGHT_ATMOSPHERE if rule.get("atmos") else 0.0
-        if rule.get("geology"):
-            max_score += WEIGHT_GEOLOGY
-        if rule.get("temp"):
-            max_score += WEIGHT_TEMP
-        if rule.get("gravity"):
-            max_score += WEIGHT_GRAVITY
-        if rule.get("materials"):
-            max_score += WEIGHT_MATERIAL
-        percent = int(round(100 * score / max_score)) if max_score else 0
-        current_notes = list(notes or [])
-        if genus in confirmed:
-            percent = 100
-            current_notes.append("подтверждено DSS")
-        rows.append({
-            "genus": genus,
-            "score": score,
-            "percent": max(0, min(100, percent)),
-            "notes": current_notes,
-            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
-            "confirmed": genus in confirmed,
-        })
-
-    # Роды, подтверждённые DSS сканированием, но не попавшие в предсказания из-за грубости модели:
-    seen = {r["genus"] for r in rows}
-    for genus in confirmed:
-        if genus not in seen and genus in GENUS_VALUE_CR:
-            rows.append({
-                "genus": genus,
-                "score": 5.0,
-                "percent": 100,
-                "notes": ["подтверждено DSS"],
-                "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
-                "confirmed": True,
-            })
-
-    rows.sort(key=lambda r: (not r.get("confirmed"), -r["percent"], -r["value_cr"], r["genus"]))
-    return rows[:limit] if limit else rows
 
 
 # ============================================================
@@ -1103,8 +1241,9 @@ def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, f
 
     Возвращает `(род, оценка, пояснения)`; оценка абсолютная — сумма весов
     совпавших правил. Роды, противоречащие данным тела, не возвращаются вовсе.
+    На телах без посадки био-прогноз отключен.
     """
-    if not body:
+    if not body or not is_landable(body):
         return []
     results: List[Tuple[str, float, List[str]]] = []
     for genus in GENUS_RULES:
@@ -1119,13 +1258,26 @@ def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, f
     return results[:limit] if limit else results
 
 
-def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+def prediction_rows(body: dict, limit: Optional[int] = None,
+                    first_discovery: Optional[bool] = None) -> List[Dict[str, Any]]:
     """То же, что `predict_genera`, но с процентом, видом и оценкой выплаты.
 
     Процент считается от максимума, достижимого именно для этого рода при
     данных конкретного тела, — «6» у Osseus и «3» у Bacterium иначе не
     сравнимы. Всё, что ниже `MIN_PREDICTION_PERCENT`, игроку не показывается.
+    На телах без посадки био-прогноз отключен.
     """
+    if not body or not is_landable(body):
+        return []
+
+    if first_discovery is None:
+        first_discovery = bool(body.get("no_first_footfall"))
+        if not first_discovery and body.get("was_discovered") is False:
+            first_discovery = True
+        ff_by = str(body.get("first_footfall_by") or "").strip()
+        if ff_by and ff_by not in ("Вы", "You"):
+            first_discovery = False
+
     rows: List[Dict[str, Any]] = []
     confirmed = {normalize_genus(item) for item in (body.get("confirmed_genera") or [])}
     for genus in GENUS_RULES:
@@ -1140,28 +1292,52 @@ def prediction_rows(body: dict, limit: Optional[int] = None) -> List[Dict[str, A
         percent = max(0, min(100, percent))
         if percent < MIN_PREDICTION_PERCENT and genus not in confirmed:
             continue
+        cand_species = list(species or [])
+        row_val = 0
+        if cand_species:
+            vals = [estimate_value(s, mapped=bool(body.get("mapped")),
+                                   first_discovery=first_discovery)
+                    for s in cand_species if estimate_value(s)]
+            if vals:
+                row_val = max(vals)
+        if not row_val:
+            row_val = estimate_value(genus, mapped=bool(body.get("mapped")),
+                                     first_discovery=first_discovery)
         rows.append({
             "genus": genus,
             "score": score,
             "percent": percent,
             "notes": notes,
-            "species": list(species or []),
-            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+            "species": cand_species,
+            "value_cr": row_val,
             "confirmed": genus in confirmed,
+            "first_footfall_bonus": bool(first_discovery),
         })
 
     seen = {row["genus"] for row in rows}
     for genus in confirmed:
         if genus in seen or genus not in GENUS_RULES:
             continue
+        cand_species = species_candidates(body, genus)
+        row_val = 0
+        if cand_species:
+            vals = [estimate_value(s, mapped=bool(body.get("mapped")),
+                                   first_discovery=first_discovery)
+                    for s in cand_species if estimate_value(s)]
+            if vals:
+                row_val = max(vals)
+        if not row_val:
+            row_val = estimate_value(genus, mapped=bool(body.get("mapped")),
+                                     first_discovery=first_discovery)
         rows.append({
             "genus": genus,
             "score": WEIGHT_ATMOSPHERE + WEIGHT_GAS,
             "percent": 100,
             "notes": ["подтверждено DSS"],
-            "species": species_candidates(body, genus),
-            "value_cr": estimate_value(genus, mapped=bool(body.get("mapped"))),
+            "species": cand_species,
+            "value_cr": row_val,
             "confirmed": True,
+            "first_footfall_bonus": bool(first_discovery),
         })
 
     rows.sort(key=lambda row: (not row["confirmed"], -row["percent"], -row["value_cr"], row["genus"]))
@@ -1269,17 +1445,23 @@ class ExobiologyTracker:
         try:
             name = event.get("event")
             if name in ("Location", "FSDJump", "Docked", "CarrierJump", "ApproachBody",
-                        "LeaveBody", "Touchdown", "Liftoff", "SupercruiseExit"):
+                        "LeaveBody", "Touchdown", "Liftoff", "SupercruiseExit", "Disembark"):
                 system = str(event.get("StarSystem") or event.get("SystemName") or "").strip()
                 if system:
                     if system != self.current_system:
                         self.current_system = system
                         self.current_body = ""
 
-                if name in ("ApproachBody", "Touchdown"):
+                if name in ("ApproachBody", "Touchdown", "Disembark"):
                     body = str(event.get("Body") or event.get("BodyName") or "").strip()
                     if body:
                         self.current_body = body
+                    if event.get("FirstFootfall") is True and (body or self.current_body):
+                        target_b = body or self.current_body
+                        b_key = self._key(self.current_system, target_b)
+                        if b_key in self.bodies:
+                            self.bodies[b_key]["no_first_footfall"] = True
+                            self.bodies[b_key]["first_footfall_by"] = "Вы"
                 elif name == "LeaveBody":
                     self.current_body = ""
                 elif name in ("Location", "SupercruiseExit"):
@@ -1300,13 +1482,17 @@ class ExobiologyTracker:
                     return
                 key = self._key(props["system"], props["name"])
                 existing = self.bodies.get(key, {})
-                # Уже известные факты (карта поверхности, число биосигналов, подтверждённые роды)
+                # Уже известные факты (карта поверхности, число биосигналов, подтверждённые роды, первопроходец)
                 # не должны теряться при повторном скане тела.
                 props["mapped"] = bool(existing.get("mapped", False)) or bool(props.get("mapped", False))
                 props["bio_signals"] = max(int(existing.get("bio_signals") or 0), int(props.get("bio_signals") or 0))
                 if existing.get("confirmed_genera"):
                     props["confirmed_genera"] = sorted(set(
                         existing.get("confirmed_genera", []) + props.get("confirmed_genera", [])))
+                if "no_first_footfall" in existing and "no_first_footfall" not in props:
+                    props["no_first_footfall"] = existing["no_first_footfall"]
+                if existing.get("first_footfall_by") and not props.get("first_footfall_by"):
+                    props["first_footfall_by"] = existing["first_footfall_by"]
                 self.bodies[key] = props
                 self.current_body = props["name"]
                 self._trim()
@@ -1441,6 +1627,21 @@ class ExobiologyTracker:
             return
 
     # -- выдача ------------------------------------------------------------
+    def set_body_footfall(self, system: str, body_name: str,
+                          no_first_footfall: bool = True,
+                          first_footfall_by: str = "") -> None:
+        """Обновить статус первопроходца для тела."""
+        if not system or not body_name:
+            return
+        key = self._key(system, body_name)
+        body = self.bodies.get(key)
+        if body is not None:
+            body["no_first_footfall"] = bool(no_first_footfall)
+            if first_footfall_by:
+                body["first_footfall_by"] = str(first_footfall_by).strip()
+            elif no_first_footfall:
+                body["first_footfall_by"] = ""
+
     def current_body_state(self, now: Optional[float] = None) -> Optional[dict]:
         """Состояние текущего тела (с предсказанием и прогрессом образцов)."""
         key = self._key(self.current_system, self.current_body)
@@ -1452,7 +1653,15 @@ class ExobiologyTracker:
             return None
         now = time.time() if now is None else float(now)
         mapped = bool(body.get("mapped"))
+        landable = is_landable(body)
         organics = self.organics.get(key, {})
+
+        no_first_footfall = bool(body.get("no_first_footfall"))
+        if not no_first_footfall and body.get("was_discovered") is False:
+            no_first_footfall = True
+        first_footfall_by = str(body.get("first_footfall_by") or "").strip()
+        if first_footfall_by and first_footfall_by not in ("Вы", "You"):
+            no_first_footfall = False
 
         rows = []
         total_value = 0
@@ -1463,7 +1672,9 @@ class ExobiologyTracker:
             wait = 0.0
             if last_ts and not complete:
                 wait = max(0.0, SAMPLE_COOLDOWN_SECONDS - (now - last_ts))
-            value = estimate_value(self._genus_of(species), mapped=mapped)
+            value = estimate_value(species, mapped=mapped, first_discovery=no_first_footfall)
+            if not value:
+                value = estimate_value(self._genus_of(species), mapped=mapped, first_discovery=no_first_footfall)
             total_value += value
             rows.append({
                 "species": species,
@@ -1476,11 +1687,13 @@ class ExobiologyTracker:
                 "seen_before": int(self.seen_species.get(species, 0) or 0) > samples,
             })
 
+        predictions = prediction_rows(body, first_discovery=no_first_footfall) if landable else []
+
         return {
             "system": body.get("system", ""),
             "body": body.get("name", ""),
             "planet_class": body.get("planet_class", ""),
-            "landable": bool(body.get("landable")),
+            "landable": landable,
             "atmosphere": body.get("atmosphere") or body.get("atmosphere_type") or "нет",
             "atmosphere_category": atmosphere_category(body),
             "temperature": body.get("surface_temperature", 0.0),
@@ -1490,8 +1703,11 @@ class ExobiologyTracker:
             "mapped": mapped,
             "bio_signals": int(body.get("bio_signals") or 0),
             "confirmed_genera": list(body.get("confirmed_genera") or []),
+            "no_first_footfall": no_first_footfall,
+            "first_footfall_by": first_footfall_by,
+            "first_footfall_bonus": 5.0 if no_first_footfall else 1.0,
             # Предсказания с процентом совпадения правил и оценкой в кр.
-            "predictions": prediction_rows(body),
+            "predictions": predictions,
             "organics": rows,
             "value_cr": total_value,
             "samples_done": sum(row["samples"] for row in rows),

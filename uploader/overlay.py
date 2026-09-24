@@ -2021,6 +2021,10 @@ class ExobiologyOverlay(OverlayWindow):
                                  fg=COLOR_CYAN, bg="#0e2a47", padx=5, pady=1, relief=tk.SOLID, bd=1)
         self.chip_dss.pack(side=tk.LEFT, padx=(0, 4))
 
+        self.chip_footfall = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs, "bold"),
+                                      fg=COLOR_YELLOW, bg="#382e14", padx=5, pady=1, relief=tk.SOLID, bd=1)
+        self.chip_footfall.pack(side=tk.LEFT, padx=(0, 4))
+
         self.chip_grav = tk.Label(self.telemetry_frame, text="", font=(ff, badge_fs),
                                   fg=COLOR_TEXT, bg="#21262d", padx=4, pady=1)
         self.chip_grav.pack(side=tk.LEFT, padx=(0, 4))
@@ -2061,8 +2065,9 @@ class ExobiologyOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=(3, 2))
 
-        tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
-                 fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
+        self.predict_header = tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
+                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.predict_header.pack(fill=tk.X)
         self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
                                       justify=tk.LEFT, wraplength=wrap)
@@ -2239,7 +2244,9 @@ class ExobiologyOverlay(OverlayWindow):
                 pass
 
     def _show_telemetry_chips(self, signals: int, landable: bool, mapped: bool,
-                              gravity: float, temp: float, atmo: str):
+                              gravity: float, temp: float, atmo: str,
+                              no_first_footfall: Optional[bool] = None,
+                              first_footfall_by: str = ""):
         if not self._telemetry_shown:
             self._telemetry_shown = True
             try:
@@ -2272,6 +2279,21 @@ class ExobiologyOverlay(OverlayWindow):
         else:
             self.chip_dss.config(text="📡 DSS ✗", fg=COLOR_TEXT_MUTED, bg="#1c2128")
 
+        # Footfall chip (бонус первопроходца 5х)
+        if no_first_footfall:
+            self.chip_footfall.config(text="👣 БОНУС ×5", fg=COLOR_YELLOW, bg="#3d3008")
+            if not self.chip_footfall.winfo_ismapped():
+                self.chip_footfall.pack(side=tk.LEFT, padx=(0, 4), after=self.chip_dss)
+        elif first_footfall_by and first_footfall_by not in ("Вы", "You"):
+            self.chip_footfall.config(text="👣 ЕСТЬ", fg=COLOR_TEXT_MUTED, bg="#1c2128")
+            if not self.chip_footfall.winfo_ismapped():
+                self.chip_footfall.pack(side=tk.LEFT, padx=(0, 4), after=self.chip_dss)
+        else:
+            try:
+                self.chip_footfall.pack_forget()
+            except Exception:
+                pass
+
         # Gravity chip
         self.chip_grav.config(text=f"⚖ {gravity / 10.0:.2f}g", fg=COLOR_TEXT, bg="#21262d")
 
@@ -2288,6 +2310,8 @@ class ExobiologyOverlay(OverlayWindow):
             self.organics_label.config(text="—")
             self.next_action_label.config(text="")
             self._set_action_visible(False)
+            if hasattr(self, "predict_header"):
+                self.predict_header.config(text="Вероятные роды:")
             self.predict_label.config(text="нет данных")
             self.bodies_header.config(text="Тела системы:")
             self.bodies_label.config(text="—")
@@ -2331,6 +2355,8 @@ class ExobiologyOverlay(OverlayWindow):
 
             self.samples_header.config(text="Образцы:")
             self.organics_label.config(text="—")
+            if hasattr(self, "predict_header"):
+                self.predict_header.config(text="Вероятные роды:")
             self.predict_label.config(text="нет данных")
             self._hide_telemetry_chips()
             self._render_bodies(state)
@@ -2352,12 +2378,16 @@ class ExobiologyOverlay(OverlayWindow):
         temp = float(state.get("temperature") or 0)
         atmo = str(state.get("atmosphere") or "нет атмосферы")
         volc = str(state.get("volcanism") or "")
+        no_first_footfall = bool(state.get("no_first_footfall"))
+        first_footfall_by = str(state.get("first_footfall_by") or "")
 
         compact = bool(self.settings.get("exobio_compact", True))
         if compact:
             # Обновляем визуальные беджи телеметрии (Design elements)
             self._show_telemetry_chips(signals=signals, landable=landable, mapped=mapped,
-                                       gravity=gravity, temp=temp, atmo=atmo)
+                                       gravity=gravity, temp=temp, atmo=atmo,
+                                       no_first_footfall=no_first_footfall,
+                                       first_footfall_by=first_footfall_by)
 
             # Компактная подпись параметров: атмосфера и вулканизм в 1 строку
             volc_text = f"  ·  🌋 {volc}" if volc and volc.lower() != "нет" else ""
@@ -2396,7 +2426,9 @@ class ExobiologyOverlay(OverlayWindow):
         total_value = int(state.get("value_cr") or 0)
         if not total_value:
             total_value = sum(int(row.get("value_cr") or 0) for row in organics)
-        header = "Образцы:" + (f"  ≈ {format_credits(total_value)} кр" if total_value else "")
+        no_footfall = bool(state.get("no_first_footfall"))
+        bonus_tag = " (бонус ×5)" if no_footfall else ""
+        header = f"Образцы{bonus_tag}:" + (f"  ≈ {format_credits(total_value)} кр" if total_value else "")
         self.samples_header.config(text=header)
 
         if not organics:
@@ -2412,7 +2444,6 @@ class ExobiologyOverlay(OverlayWindow):
             complete = bool(row.get("complete"))
             marks = "●" * min(samples, 3) + "○" * max(0, 3 - min(samples, 3))
             value = int(row.get("value_cr") or 0)
-            price = f"  ≈ {format_credits(value)}" if value else ""
             name = str(row.get("species") or "?")
             if row.get("seen_before"):
                 name += " (уже встречалось)"
@@ -2426,8 +2457,9 @@ class ExobiologyOverlay(OverlayWindow):
                           else f"готов к образцу ({stage or 'Sample'}) — смените точку")
             lines.append((name, f"{marks} {samples}/3", format_credits(value) if value else "—", status))
         if self._table_mode and lines:
+            col_price = "≈кр (×5)" if no_footfall else "≈кр"
             self.organics_label.config(text=format_table(
-                ("вид", "образцы", "≈кр", "статус"),
+                ("вид", "образцы", col_price, "статус"),
                 [line[:3] + (line[3],) for line in lines],
                 aligns=("left", "left", "right", "left"),
                 max_width=self._table_width(),
@@ -2465,12 +2497,23 @@ class ExobiologyOverlay(OverlayWindow):
         return "→ все комплекты собраны — можно лететь дальше"
 
     def _render_predictions(self, state: dict, mapped: bool):
+        if not state.get("landable", True):
+            if hasattr(self, "predict_header"):
+                self.predict_header.config(text="Вероятные роды:")
+            self.predict_label.config(text="посадка невозможна — био-прогноз отключен")
+            return
+
         predictions = state.get("predictions") or []
         # Фильтр по родам задаётся на вкладке «Экзобиология».
         allowed = state.get("genera_filter") or []
         if allowed:
             predictions = [row for row in predictions
                            if str(row.get("genus") or "") in {str(g) for g in allowed}]
+
+        no_footfall = bool(state.get("no_first_footfall"))
+        if hasattr(self, "predict_header"):
+            self.predict_header.config(text=f"Вероятные роды{' (бонус ×5)' if no_footfall else ''}:")
+
         if not predictions:
             self.predict_label.config(
                 text="роды отфильтрованы (вкладка «Экзобиология»)" if allowed
@@ -2480,7 +2523,7 @@ class ExobiologyOverlay(OverlayWindow):
         for row in predictions[:self.MAX_PREDICTIONS]:
             genus = str(row.get("genus") or "?")
             percent = row.get("percent")
-            value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped)
+            value = int(row.get("value_cr") or 0) or estimate_value(genus, mapped=mapped, first_discovery=no_footfall)
             species = [str(item) for item in (row.get("species") or []) if item]
             short_species = ", ".join(_species_tail(name) for name in species[:2]) or ""
             if len(species) > 2:
@@ -2498,11 +2541,12 @@ class ExobiologyOverlay(OverlayWindow):
         extra = len(predictions) - self.MAX_PREDICTIONS
 
         if self._table_mode:
+            col_val = "≈кр (×5)" if no_footfall else "≈кр"
             rows = [(item["genus"], item["percent"], item["bar"] or "·",
                      item["value"] or "—",
                      " · ".join(part for part in (item["species"], item["notes"]) if part) or "—")
                     for item in entries]
-            text = format_table(("род", "%", "вероятность", "≈кр", "виды и причина"), rows,
+            text = format_table(("род", "%", "вероятность", col_val, "виды и причина"), rows,
                                 aligns=("left", "right", "left", "right", "left"),
                                 max_width=self._table_width())
             if extra > 0:
@@ -2514,7 +2558,8 @@ class ExobiologyOverlay(OverlayWindow):
         for item in entries:
             head = f"{item['genus']}  {item['percent']}" + (f"  {item['bar']}" if item["bar"] else "")
             if item["value"]:
-                head += f"  ≈ {item['value']}"
+                bonus_tag = " (бонус ×5)" if no_footfall else ""
+                head += f"  ≈ {item['value']}{bonus_tag}"
             details = " · ".join(part for part in (
                 (f"виды: {item['species']}" if item["species"] else ""), item["notes"]) if part)
             lines.append(head + (f"\n   {details}" if details else ""))

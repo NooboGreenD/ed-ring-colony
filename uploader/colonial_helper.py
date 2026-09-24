@@ -6945,6 +6945,22 @@ class ColonialHelperApp:
         if tracker.current_system:
             self._ensure_system_exobio(tracker.current_system)
 
+        # Синхронизируем первопроходца из карты системы, если есть данные
+        if tracker.current_system and tracker.current_body and hasattr(self, "system_map"):
+            sm_body = self.system_map.find_body(tracker.current_system, tracker.current_body)
+            if sm_body is not None:
+                if sm_body.first_footfall_by:
+                    is_me = (sm_body.first_footfall_by in ("Вы", "You"))
+                    tracker.set_body_footfall(tracker.current_system, tracker.current_body,
+                                              no_first_footfall=is_me,
+                                              first_footfall_by=sm_body.first_footfall_by)
+                elif sm_body.from_external and not sm_body.first_footfall_by:
+                    tracker.set_body_footfall(tracker.current_system, tracker.current_body,
+                                              no_first_footfall=True, first_footfall_by="")
+                elif sm_body.first_discovered_by in ("Вы", "You"):
+                    tracker.set_body_footfall(tracker.current_system, tracker.current_body,
+                                              no_first_footfall=True, first_footfall_by="")
+
         state = tracker.current_body_state()
         try:
             bodies = tracker.system_bodies(limit=10)
@@ -8932,7 +8948,8 @@ class ColonialHelperApp:
         if live and ev_name in (
             "HullDamage", "HeatDamage", "HeatWarning", "ShieldState", "JetConeDamage",
             "CockpitBreached", "AfmuRepairs", "Repair", "RepairAll", "RepairDrone",
-            "RebootRepair", "Synthesis", "SystemsShutdown",
+            "RebootRepair", "Synthesis", "SystemsShutdown", "CommitCrime", "CrimeVictim",
+            "Touchdown",
         ):
             st = self.ship.state
             damaged = [f"{m.slot}={m.health:.0%}" for m in st.damaged_modules]
