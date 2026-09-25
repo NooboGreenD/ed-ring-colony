@@ -155,14 +155,31 @@ const ENV_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
   aborted: { label: 'Применение ключей остановлено', level: 'warning' },
 };
 
+// Отдельный режим кнопки «Применить только миграции» (mode='migrations'):
+// база трогается, контейнеры — нет, поэтому и подписи свои.
+const MIGRATIONS_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
+  idle: { label: 'Миграции не выполняются', level: 'unknown' },
+  running: { label: 'Применяю миграции', level: 'warning' },
+  succeeded: { label: 'Миграции применены', level: 'healthy' },
+  failed: { label: 'Миграции завершились с ошибкой', level: 'critical' },
+  aborted: { label: 'Применение миграций остановлено', level: 'warning' },
+};
+
 function stateMetaFor(update: UpdateState | null): { label: string; level: MonitorLevel } {
-  const table = update?.kind === 'env' ? ENV_STATE_META : UPDATE_STATE_META;
+  if (update?.kind === 'env') return ENV_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
+  if (update?.mode === 'migrations') return MIGRATIONS_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
+  const table = UPDATE_STATE_META;
   return table[update?.state || 'idle'] ?? { label: '—', level: 'unknown' };
 }
+
+// Стадии режима «только миграции»: сборка, переключение и проверка живости
+// в этом прогоне не происходят — чек-лист их не показывает.
+const MIGRATIONS_ONLY_STAGE_IDS = new Set(['prepare', 'fetch', 'compare', 'backup', 'migrate', 'done']);
 
 function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; percent: number }> {
   if (update?.kind === 'env') return ENV_STAGES;
   if (update?.kind === 'backup') return BACKUP_STAGES;
+  if (update?.mode === 'migrations') return UPDATE_STAGES.filter((stage) => MIGRATIONS_ONLY_STAGE_IDS.has(stage.id));
   return UPDATE_STAGES;
 }
 
@@ -384,7 +401,11 @@ export default function ServerMonitorTab() {
   const [updateConnected, setUpdateConnected] = useState(false);
   const [updateConfigured, setUpdateConfigured] = useState(false);
   const [updateReason, setUpdateReason] = useState<string | null>(null);
+  // Флажки «Обновление проекта»: что именно входит в прогон — тесты, бэкап
+  // БД и накат миграций. Передаются в агент вместе с confirm при запуске.
   const [applyMigrations, setApplyMigrations] = useState(true);
+  const [runTests, setRunTests] = useState(true);
+  const [backupBefore, setBackupBefore] = useState(true);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateMessage, setUpdateMessage] = useState('');
   const [contentBusy, setContentBusy] = useState('');
@@ -461,10 +482,14 @@ export default function ServerMonitorTab() {
 
   const startUpdate = useCallback(async () => {
     const ahead = snapshot?.project.aheadBy;
-    const migrationNote = snapshot?.project.pendingMigrations.length
-      ? ` Будет применено миграций: ${snapshot.project.pendingMigrations.length}.`
-      : '';
-    const confirmText = `Пересобрать проект${ahead ? ` (свежих коммитов: ${ahead})` : ''} и перезапустить сервисы?${migrationNote} Сайт на время сборки может быть недоступен.`;
+    const pending = snapshot?.project.pendingMigrations.length ?? 0;
+    const migrationNote = pending ? ` Будет применено миграций: ${pending}.` : '';
+    const options = [
+      runTests ? 'тесты: прогнать' : 'тесты: пропустить',
+      backupBefore ? 'бэкап БД: сделать' : 'бэкап БД: не делать',
+      applyMigrations ? 'миграции: применить' : 'миграции: не применять',
+    ].join(' · ');
+    const confirmText = `Пересобрать проект${ahead ? ` (свежих коммитов: ${ahead})` : ''} и перезапустить сервисы?${migrationNote}\nОпции: ${options}.\nСайт на время сборки может быть недоступен.`;
     if (!window.confirm(confirmText)) return;
     setUpdateBusy(true);
     setUpdateMessage('');
@@ -472,7 +497,7 @@ export default function ServerMonitorTab() {
       const response = await authFetch('/api/admin/monitor/update', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: true, applyMigrations }),
+        body: JSON.stringify({ confirm: true, applyMigrations, backup: backupBefore, runTests }),
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
@@ -483,7 +508,35 @@ export default function ServerMonitorTab() {
     } finally {
       setUpdateBusy(false);
     }
-  }, [applyMigrations, snapshot]);
+  }, [applyMigrations, backupBefore, runTests, snapshot]);
+
+  // «Применить только миграции»: синхронизация исходников + накат миграций
+  // (с бэкапом, если отмечен флажок), без сборки и переключения контейнеров.
+  const startMigrationsOnly = useCallback(async () => {
+    const pending = snapshot?.project.pendingMigrations.length ?? 0;
+    const options = backupBefore ? 'бэкап БД: сделать' : 'бэкап БД: не делать';
+    const confirmText = `Применить только миграции${pending ? ` (${pending})` : ''} без пересборки?\n`
+      + `Исходники сначала синхронизируются с веткой ${snapshot?.project.upstreamBranch ?? 'main'}, потом миграции применяются к базе.\n`
+      + `Опции: ${options}. Контейнеры не перезапускаются — код сайта не меняется.`;
+    if (!window.confirm(confirmText)) return;
+    setUpdateBusy(true);
+    setUpdateMessage('');
+    try {
+      const response = await authFetch('/api/admin/monitor/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true, migrationsOnly: true, backup: backupBefore }),
+      });
+      const data = await response.json().catch(() => ({})) as UpdateResponse;
+      if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
+      if ('update' in data && data.update) setUpdate(data.update);
+      setUpdateMessage('Миграции запущены — прогресс ниже.');
+    } catch (cause) {
+      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось запустить миграции');
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [backupBefore, snapshot]);
 
   const abortUpdate = useCallback(async () => {
     if (!window.confirm('Остановить обновление? Сборка будет прервана, развёрнутая версия останется прежней.')) return;
@@ -887,7 +940,7 @@ export default function ServerMonitorTab() {
           <div className="ops-panel-head">
             <div>
               <h3>Обновление проекта</h3>
-              <p>Ручная пересборка: git pull → миграции → сборка → перезапуск сервисов → проверка живости.</p>
+              <p>Ручная пересборка: git pull → бэкап БД → миграции → сборка → перезапуск сервисов → проверка живости. Флажки ниже выбирают, что войдёт в прогон; кнопка «Применить только миграции» обновляет базу без сборки.</p>
             </div>
             <StatusPill
               level={updateConnected ? (update ? stateMetaFor(update).level : 'unknown') : updateConfigured ? 'critical' : 'unknown'}
@@ -930,7 +983,7 @@ export default function ServerMonitorTab() {
                   <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
                 ) : (
                   <>
-                    <div><dt>Режим</dt><dd>{update.mode || '—'}</dd></div>
+                    <div><dt>Режим</dt><dd>{update.mode === 'migrations' ? 'только миграции (без сборки)' : update.mode || '—'}</dd></div>
                     <div><dt>Ревизия</dt><dd>{update.fromSha ? `${update.fromSha.slice(0, 12)} → ${(update.toSha || '').slice(0, 12)}` : '—'}</dd></div>
                     <div><dt>Миграций применено</dt><dd>{update.migrationsApplied ?? 0}</dd></div>
                   </>
@@ -963,6 +1016,21 @@ export default function ServerMonitorTab() {
           )}
 
           <div className="ops-update-actions">
+            <label title="npm test во время сборки (RUN_TESTS в образе / npm test в systemd-режиме). Без тестов сборка быстрее.">
+              <input type="checkbox" checked={runTests} onChange={(event) => setRunTests(event.target.checked)} />
+              с тестами
+            </label>
+            <label title="pg_dump базы данных перед обновлением (каталог UPDATE_BACKUP_DIR).">
+              <input type="checkbox" checked={backupBefore} onChange={(event) => setBackupBefore(event.target.checked)} />
+              с бэкапом БД
+            </label>
+            <label title="Применить неприменённые supabase/migrations/*.sql перед пересборкой.">
+              <input type="checkbox" checked={applyMigrations} onChange={(event) => setApplyMigrations(event.target.checked)} />
+              с миграциями
+            </label>
+          </div>
+
+          <div className="ops-update-actions">
             <button
               type="button"
               className="ops-button-primary"
@@ -972,15 +1040,20 @@ export default function ServerMonitorTab() {
               <IconRefresh size={14} />
               {updateBusy ? 'Запускаю…' : update?.active ? 'Идёт обновление…' : 'Обновить сейчас'}
             </button>
+            <button
+              type="button"
+              className="ops-refresh-button"
+              title="Синхронизировать исходники и применить неприменённые миграции — без сборки и перезапуска контейнеров"
+              disabled={!updateConnected || updateBusy || update?.active === true}
+              onClick={() => void startMigrationsOnly()}
+            >
+              <IconDatabase size={14} /> Применить только миграции
+            </button>
             {update?.active === true && (
               <button type="button" className="ops-refresh-button ops-button-danger" disabled={updateBusy} onClick={() => void abortUpdate()}>
                 <IconXCircle size={14} /> Остановить
               </button>
             )}
-            <label>
-              <input type="checkbox" checked={applyMigrations} onChange={(event) => setApplyMigrations(event.target.checked)} />
-              применить недостающие миграции
-            </label>
             {snapshot.project.updateStatus === 'current' && (
               <span className="ops-inline-note">
                 Отставания от {snapshot.project.upstreamBranch} нет — кнопка всё равно применит недостающие миграции

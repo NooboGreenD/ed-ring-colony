@@ -208,7 +208,68 @@ test('повторный запуск: пересборка без перемо�
     const calls = readFileSync(ctx.log, 'utf8');
     assert.match(calls, /up -d --build web jobs monitor-agent/, 'повторный прогон всё равно пересобирает');
     assert.equal(calls.includes('psql'), false, 'отмеченная миграция не накатывается второй раз');
-    assert.equal(calls.includes('pg_dump'), false, 'без неприменённых миграций дамп не нужен');
+    // Дамп больше не привязан к наличию миграций: его решает флажок
+    // «с бэкапом БД» (UPDATE_BACKUP_BEFORE), включённый по умолчанию.
+    assert.match(calls, /pg_dump/, 'бэкап по умолчанию включён, даже когда миграций нет');
+
+    // Флажок «без бэкапа»: UPDATE_BACKUP_BEFORE=0 — дампа в прогоне нет.
+    writeFileSync(ctx.log, '');
+    const noBackup = ctx.run({ UPDATE_BACKUP_BEFORE: '0' });
+    assert.equal(noBackup.status, 0, noBackup.stdout + noBackup.stderr);
+    assert.equal(readFileSync(ctx.log, 'utf8').includes('pg_dump'), false, 'UPDATE_BACKUP_BEFORE=0 — без дампа');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('флажок тестов: RUN_TESTS попадает в сборку, по умолчанию тесты включены', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+
+    const withTests = ctx.run();
+    assert.equal(withTests.status, 0, withTests.stdout + withTests.stderr);
+    assert.match(withTests.stdout, /тесты в сборке образа: RUN_TESTS=1/, 'по умолчанию тесты идут');
+
+    const withoutTests = ctx.run({ UPDATE_RUN_TESTS: '0' });
+    assert.equal(withoutTests.status, 0, withoutTests.stdout + withoutTests.stderr);
+    assert.match(withoutTests.stdout, /тесты в сборке образа: RUN_TESTS=0/, 'флажок «без тестов» дошёл до сборки');
+    assert.match(readFileSync(ctx.log, 'utf8'), /up -d --build web jobs monitor-agent/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('режим «только миграции»: накатывает базу и завершается до сборки', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'supabase/migrations/20261001000000_only.sql': '-- only\n' });
+
+    const run = ctx.run({ UPDATE_MIGRATIONS_ONLY: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+
+    const list = events(run.stdout);
+    const stages = list.map((event) => event.stage).filter(Boolean);
+    for (const stage of ['prepare', 'fetch', 'compare', 'backup', 'migrate', 'done']) {
+      assert.ok(stages.includes(stage), 'стадия ' + stage + ' должна быть в потоке: ' + stages.join('>'));
+    }
+    assert.equal(stages.includes('build'), false, 'сборка в режиме «только миграции» не запускается');
+    assert.equal(stages.includes('switch'), false, 'контейнеры не переключаются');
+    assert.equal(stages.includes('verify'), false, 'живой сайт не перезапускался — health не опрашивается');
+
+    const done = list[list.length - 1];
+    assert.equal(done.stage, 'done');
+    assert.equal(done.percent, 100);
+    assert.equal(done.mode, 'migrations', 'панель по mode=migrations показывает свой чек-лист');
+    assert.equal(done.migrationsApplied, 1);
+
+    // База накатана (psql был), пересборки не было.
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.match(calls, /psql -U postgres -d postgres/);
+    assert.match(calls, /pg_dump/, 'бэкап перед миграциями остаётся под флажком');
+    assert.equal(calls.includes('up -d --build'), false, 'compose up не вызывается');
+    assert.match(run.stdout, /МИГРАЦИИ ПРИМЕНЕНЫ \(без пересборки\)/);
+    assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20261001000000_only\.sql/);
   } finally {
     ctx.cleanup();
   }
