@@ -1,8 +1,9 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-21.
+> Last updated: 2026-09-25.
 > Uploader release: 2.10.25.
+> Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://edringcolony.ru
 
@@ -61,7 +62,8 @@ production TLS configs require a reviewed merge, not rerunning install.sh.
 - **Direct Chat** — Peer-to-peer messaging between players
 - **Friends** — Friend list with online status
 - **Comments** — Comment system on profiles and content
-- **Admin Panel** — Raven Colonial sync, content management, moderation
+- **Admin Panel** — Raven Colonial sync, content management, moderation + **Mobile Admin `/m-admin`** (PWA, 9 tabs, HUD, bottom nav, auto-refresh 20s)
+- **Android App** — Native Kotlin + Compose monitor in `android-app/` — repeats all admin points, Bearer JWT, EncryptedSharedPreferences, Retrofit, APK via Gradle
 - **i18n** — 100+ languages with Yandex Translate integration
 
 ---
@@ -71,19 +73,21 @@ production TLS configs require a reviewed merge, not rerunning install.sh.
 | Layer | Technology | Version | Notes |
 |-------|-----------|---------|-------|
 | Framework | Next.js / React | 16.3.5 / 19.2.8 | App Router; async cookies/params, proxy.ts |
-| Language | TypeScript | 5.x | Strict mode |
-| Styling | Tailwind CSS | 4.3.3 | + custom CSS in globals.css, forum-extra.css |
-| UI Library | None | — | Custom components only |
-| Icons | Custom SVG | — | src/components/Icons.tsx |
+| Mobile Web | Next.js `/m-admin` | — | PWA, HUD, bottom nav 9 tabs, auto-refresh 20s, uses /api/mobile/admin-summary |
+| Android | Kotlin + Compose | 1.9.22 / BOM 2024.02 | Native app android-app/: Material3 HUD theme, Navigation Compose, Retrofit2, EncryptedSharedPreferences, Min SDK 26 |
+| Language | TypeScript + Kotlin | 5.x / 1.9 | Strict mode |
+| Styling | Tailwind CSS + Compose | 4.3.3 / Material3 | + custom CSS in globals.css, forum-extra.css + Compose Color.kt from DESIGN.md |
+| UI Library | None (web) / Compose (mobile) | — | Custom components only, no external icon lib |
+| Icons | Custom SVG + HUD text | — | src/components/Icons.tsx + android HUD icons ◧◍₿⬡☰👤🎧💾🔒 |
 | 3D | Three.js / R3F / Drei | 0.185.1 / 9.7.0 / 10.7.8 | WebGL2 browser smoke tested |
 | Database | Supabase | latest | PostgreSQL + Realtime |
-| Auth | Supabase Auth | latest | Email + Discord OAuth |
-| ORM | None | — | Direct Supabase queries |
-| State | React hooks | — | No Redux, no Zustand |
-| Push | web-push | 3.6.7 | Server-side push notifications |
+| Auth | Supabase Auth + JWT | latest | Email + Discord + VK ID + Yandex ID + Bearer JWT for Android (TokenManager) |
+| ORM | None | — | Direct Supabase queries + Retrofit for mobile |
+| State | React hooks + Compose state | — | No Redux, no Zustand, LaunchedEffect for 20s polling |
+| Push | web-push + FCM (planned) | 3.6.7 | Server-side push + future Android push via /api/status |
 | Markdown | react-markdown | 10.1.0 | + remark-gfm + rehype-sanitize |
 | Validation | zod | 4.4.3 | Schema validation |
-| Cache | lru-cache | 11.5.2 | In-memory caching |
+| Cache | lru-cache + Room (planned) | 11.5.2 | In-memory caching + offline cache planned |
 | i18n | Custom context | — | lib/i18n/ |
 | Translate | Yandex API | v2 | Cron-driven auto-translation |
 
@@ -96,14 +100,33 @@ production TLS configs require a reviewed merge, not rerunning install.sh.
 src/app/
   layout.tsx              # Root: topbar + sidebar + footer
   page.tsx                # Homepage (Client Component)
+  m-admin/                # Mobile admin PWA — HUD, bottom nav, 9 tabs, /m-admin
+    page.tsx              # Fully adapted mobile dashboard (React, ED style, auto-refresh 20s)
+    layout.tsx            # PWA manifest + viewport themeColor #1e2022
   
   [route]/
     page.tsx              # Route pages
     layout.tsx            # Optional nested layouts
     
   api/
+    mobile/
+      admin-summary/route.ts # Aggregator for Android + /m-admin (all admin points)
+      auth/route.ts          # Mobile auth (login + role check)
+    admin/
+      monitor/route.ts       # Server monitor snapshot
+      billing/stats/route.ts # Billing stats
     [endpoint]/
       route.ts            # API routes (Route Handlers)
+
+android-app/              # Native Android monitor app
+  app/src/main/
+    java/com/edringcolony/monitor/
+      MainActivity.kt     # Scaffold + TopBar + BottomNav + Auth + 20s polling
+      data/               # model (Gson), network (Retrofit), local (EncryptedSharedPrefs)
+      ui/theme/           # Color.kt from DESIGN.md, Type.kt, Theme.kt
+      ui/components/      # StatusPill, StatCard, LoadingView
+      ui/screens/         # 9 screens + Login + WebView fallback
+      ui/navigation/      # BottomNav (9 items), NavGraph
 ```
 
 ### 3.2 Data Flow
@@ -338,9 +361,20 @@ Applied via `npx supabase db push`.
 | `/api/wiki/favorites` | GET | Auth | List favorites |
 | `/api/wiki/favorites/[id]` | DELETE | Auth | Remove favorite |
 
-### 5.5 Other API
+### 5.5 Mobile Admin API (new — for Android + /m-admin)
 | Route | Method | Auth | Description |
 |-------|--------|------|-------------|
+| `/api/mobile/admin-summary` | GET | Admin | **Aggregator**: overview counts (profiles/hubs/route/news/forum/comments/tickets/galaxy), full monitor snapshot (app/db/disk/docker/scheduler/content/project), billing stats (revenue/transactions/subs/telemetry/topProducts), lists (hubs/route/news/backup), content, flags, health. Query `?period=30d`. No-store. Used by Android + /m-admin to show all admin points in 1 request. |
+| `/api/mobile/auth` | GET | Bearer JWT | Check session + role for mobile app — returns user {id,email,cmdr_name,role} or 401/403 |
+| `/api/mobile/auth` | POST | None (email/pass) | Login via Supabase `signInWithPassword` → {access_token, refresh_token, user} — admin role required, Bearer for subsequent calls |
+
+### 5.6 Other API
+| Route | Method | Auth | Description |
+|-------|--------|------|-------------|
+| `/api/admin/monitor` | GET | Admin | Protected admin-only server, DB, Docker, scheduler and deployment snapshot (used by ServerMonitorTab + fallback for mobile) |
+| `/api/admin/monitor/update` | GET/POST/DELETE | Admin | Manual update status + trigger + abort — public `/api/status` for topbar System Update (stage+percent only) |
+| `/api/admin/billing/stats` | GET | Staff | Billing telemetry + live counters (pilots, systems, tonnage) — period 7d/30d/90d/1y/all |
+| `/api/status` | GET | None | Public liveness: ok, system online/update, update {active,percent,stage} — polled by SiteStatusBar + future Android FCM |
 | `/api/leaderboard` | GET | None | Player stats |
 | `/api/atlas/search` | GET | None | System search |
 | `/api/atlas/route-finder` | GET | Auth | Route planning |
@@ -370,6 +404,7 @@ Applied via `npx supabase db push`.
 | `/api/friends` | GET | Auth | List friends |
 | `/api/friends` | POST | Auth | Add friend |
 | `/api/home-data` | GET | None | Homepage data |
+| `/api/m-admin` | — | — | Not an API — page `/m-admin` is PWA mobile admin (React) that consumes `/api/mobile/admin-summary` |
 
 ---
 
@@ -379,12 +414,15 @@ Applied via `npx supabase db push`.
 | Component | File | Type | Description |
 |-----------|------|------|-------------|
 | RootLayout | `app/layout.tsx` | Server | Topbar, sidebar, footer wrapper |
-| Sidebar | `components/Sidebar.tsx` | Client | Navigation sidebar |
-| Topbar | `app/layout.tsx` | Server | Brand, status, clock, notifications, user menu |
+| Sidebar | `components/Sidebar.tsx` | Client | Navigation sidebar (200px desktop, hidden on mobile) |
+| Topbar | `app/layout.tsx` | Server | Brand, status (System Online/Update), clock, notifications, user menu |
 | Footer | `components/Footer.tsx` | Server | Site footer |
 | UserMenu | `components/UserMenu.tsx` | Client | Auth dropdown |
 | NotificationBell | `components/NotificationBell.tsx` | Client | Notification dropdown + real-time |
 | LanguageSwitcher | `components/LanguageSwitcher.tsx` | Client | Locale selector |
+| MobileAdminLayout | `app/m-admin/layout.tsx` | Server | PWA metadata + viewport themeColor #1e2022 + manifest-mobile.json |
+| MobileAdminPage | `app/m-admin/page.tsx` | Client | **Mobile admin PWA**: 9 tabs (dashboard/monitor/billing/systems/content/users/support/backup/auth), HUD cards, StatusPill, StatCard, bottom nav 64px, auto-refresh 20s, uses authFetch + supabase |
+| Android MainActivity | `android-app/.../MainActivity.kt` | Android | Scaffold + TopBar + BottomNav (9 HUD icons) + Auth (TokenManager) + 20s polling + NavHost |
 
 ### 6.2 Feature Components
 | Component | File | Type | Description |

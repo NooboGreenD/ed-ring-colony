@@ -1,11 +1,19 @@
 # Мобильная админ-панель и Android-приложение
 
+> **Last updated: 2026-09-25**
+> **Applies to:** `/admin`, `/m-admin`, `android-app/`, `/api/mobile/*`, `/api/admin/monitor`, `/api/status`
+> **Design:** DESIGN.md (9 sacred colors, HUD, flat brutal) + android-app/.../Color.kt
+> **Related:** MONITORING.md, DEPLOY.md, README.md, CONTEXT.md
+
 В проект добавлены два взаимосвязанных продукта для мониторинга сайта с мобильных устройств:
 
-1. **Веб-версия мобильной админки** `/m-admin` — PWA-ready, полностью адаптирована под телефон, в стиле сайта (HUD).
-2. **Нативное Android-приложение** `android-app/` — Kotlin + Jetpack Compose, повторяет все пункты админ-панели.
+1. **Веб-версия мобильной админки** `/m-admin` — PWA-ready, полностью адаптирована под телефон, в стиле сайта (HUD), 9 вкладок по всем пунктам админки.
+2. **Нативное Android-приложение** `android-app/` — Kotlin + Jetpack Compose, повторяет все пункты админ-панели, Bearer JWT, EncryptedSharedPreferences, Retrofit, APK via Gradle.
+3. **Агрегатор** `/api/mobile/admin-summary` — один запрос = вся информация по пунктам админки (overview, monitor, billing, lists, health).
 
-Оба используют единый бэкенд-агрегатор `/api/mobile/admin-summary`.
+Все три интерфейса (десктоп /m-admin, Android, /admin?tab=monitor) используют единый `getServerMonitorSnapshot()` и один агрегатор.
+
+Стиль сохранён: DESIGN.md палитра, monospace labels uppercase, flat без теней, radius 2/4px, bottom nav HUD.
 
 ---
 

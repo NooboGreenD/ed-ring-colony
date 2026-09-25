@@ -1,8 +1,9 @@
 # ED Ring Colony — Design System & Style Guide
 
 > **Official version for developers and AI tools.**
-> Last updated: 2026-09-04.
-> Applies to all pages: `/`, `/map`, `/squadrons`, `/projects`, `/forum`, `/news`, `/leaderboard`, `/systems`, `/cmdr/[name]`, `/atlas`, `/login`, `/register`, `/account`, `/admin`, `/wiki`, `/galnet`.
+> Last updated: 2026-09-25.
+> Applies to all pages: `/`, `/map`, `/squadrons`, `/projects`, `/forum`, `/news`, `/leaderboard`, `/systems`, `/cmdr/[name]`, `/atlas`, `/login`, `/register`, `/account`, `/admin`, `/m-admin`, `/wiki`, `/galnet`, **and Android app `android-app/`**.
+> Mobile admin: `/m-admin` + Android native (Kotlin Compose) — same 9 colors, HUD, flat brutal.
 
 ---
 
@@ -372,9 +373,19 @@ src/
     forum-extra.css      # Forum-specific styles
     layout.tsx           # Root layout with topbar, sidebar, footer
     page.tsx             # Homepage
+    m-admin/
+      page.tsx           # Mobile admin PWA — 9 tabs, HUD, bottom nav, auto-refresh 20s, /m-admin
+      layout.tsx         # PWA manifest + viewport themeColor #1e2022
     [route]/
       page.tsx           # Route pages
       layout.tsx         # Optional route layouts
+    api/
+      mobile/
+        admin-summary/route.ts # Aggregator for Android + /m-admin (all admin points)
+        auth/route.ts          # Mobile auth (login + role check)
+      admin/
+        monitor/route.ts       # Server monitor snapshot
+        billing/stats/route.ts # Billing stats
   components/
     Icons.tsx            # ALL icons — no external icon libraries
     SquadronChat.tsx     # Chat component
@@ -388,7 +399,7 @@ src/
     Wiki/                # Wiki components
     Atlas/               # Atlas components
     Projects/            # Project components
-    Admin/               # Admin components
+    Admin/               # Admin components (ServerMonitorTab, BillingDashboard, etc)
     Comments/            # Comment components
     ui/                  # UI primitives (ErrorBoundary, Toaster)
   types/
@@ -398,11 +409,15 @@ src/
     project.ts           # Project types
     atlas.ts             # Atlas types
     friend.ts            # Friend types
+    monitor.ts           # ServerMonitorSnapshot types (app, db, disk, docker, scheduler, project)
+    billing.ts           # Billing stats types
     ...
   lib/
     supabaseClient.ts    # Browser Supabase client
     supabaseServer.ts    # Server Supabase client
     supabaseAdmin.ts     # Service role client
+    serverMonitor.ts     # Monitor snapshot logic (app, db, docker, jobs, disk, content, project)
+    billing/             # Billing logic + auth (requireAdmin)
     i18n/                # i18n context & translations
     translate.ts         # Yandex Translate API
     ravenColonial.ts     # Raven Colonial API
@@ -413,9 +428,23 @@ src/
     journalParser.ts     # ED journal parser
     markdown.tsx         # Markdown renderer
     zodSchemas.ts        # Validation schemas
+android-app/             # Native Android monitor app (Kotlin + Compose)
+  app/src/main/
+    java/com/edringcolony/monitor/
+      MainActivity.kt    # Scaffold + TopBar + BottomNav + Auth + 20s polling
+      data/model/        # AdminSummary.kt (Gson models for all admin points)
+      data/network/      # ApiService.kt, AuthInterceptor.kt, RetrofitClient.kt
+      data/local/        # TokenManager.kt (EncryptedSharedPreferences)
+      ui/theme/          # Color.kt (DESIGN.md palette), Type.kt, Theme.kt
+      ui/components/     # StatusPill.kt, StatCard.kt, LoadingView.kt
+      ui/screens/        # 9 screens + Login + WebView fallback
+      ui/navigation/     # BottomNav.kt (9 items), NavGraph.kt
+    res/values/          # strings.xml, colors.xml (#1e2022 etc), themes.xml
+    res/drawable/        # ic_launcher_background/foreground.xml (HUD E logo)
 supabase/
   migrations/            # SQL migrations
 public/
+  manifest-mobile.json   # PWA manifest for /m-admin
   favicon.ico
   ...
 ```
@@ -489,4 +518,43 @@ public/
 
 ---
 
-*End of Design System. For questions — refer to `src/app/globals.css` as the single source of truth.*
+## 14. Mobile Admin (`/m-admin`) & Android App (`android-app/`)
+
+### Philosophy — same HUD, adapted
+- **Same 9 colors** — `Color.kt` in Android mirrors `globals.css`
+- **No shadows, no rounded >4px** — `RoundedCornerShape(2.dp)` / `4.dp` for cards only
+- **Monospace for data** — `FontFamily.Monospace`, `letterSpacing 2.sp`, `uppercase`
+- **Flat brutal functional** — border 1px solid Line, background Panel/CardBg
+
+### Mobile Web `/m-admin`
+- **Topbar**: 56px, #1a1c1e, brand E orange 28px + cmd_name + overall pill + refresh ↻
+- **Cards**: `HudCard` — Panel bg, Line border, 4px radius, 16px padding, 12px gap
+- **Stat**: CardBg bg, Line border, 2px radius, label 10px muted monospace uppercase + value 20px bold orange/cyan/green
+- **StatusPill**: pill 99px radius, dot 6px + glow, border 1px 40% alpha, bg 12% alpha, text 10px bold monospace uppercase — levels: healthy (green #2ecc71), warning (#f2b544), critical (red #e74c3c), unknown (muted)
+- **Bottom Nav**: 64px, #1a1c1e, Line top border, 9 items scrollable, HUD text icons ◧◍₿⬡☰👤🎧💾🔒 + 4-char label 7-9px monospace, selected = orange text + rgba(230,126,34,0.12) bg + orange 40% border, unselected = muted
+- **Progress**: thin bar 3-6px, Line bg, fill orange or cyan→orange gradient
+- **Auto-refresh**: 20s polling like desktop monitor, manual refresh button in topbar
+- **PWA**: `manifest-mobile.json`, themeColor #1e2022, display standalone, start_url /m-admin
+
+### Android Compose
+- **Theme**: `EDRingColonyTheme` — darkColorScheme primary Orange, background Bg, surface Panel, outline Line
+- **Typography**: same hierarchy as web — displayLarge 28sp extraBold monospace, headlineMedium 16sp bold monospace, titleLarge 13sp semiBold orange, bodyLarge 14sp default, labelSmall 10sp semiBold muted monospace uppercase, labelLarge 12sp orange monospace uppercase
+- **Components**: `StatCard`, `HudCard`, `StatusPill`, `LevelBadge`, `LoadingView` (36dp CircularProgressIndicator orange + uppercase muted text), `ErrorView`
+- **Screens**: LazyColumn with 12dp padding, 12dp vertical spacing, 80dp bottom spacer for nav
+  - Dashboard: health pills row + stats grid 2 cols (profiles/hubs/route/news/tickets/galaxy) + App/DB/Disk/Version cards
+  - Monitor: Docker containers with left border 3dp green/red, jobs with warning pills + error on WarningBg, content pipeline, top tables with progress bars
+  - Billing: revenue grid, telemetry grid, top products list
+  - Systems: hubs with status pill, route with thin progress, galaxy total
+  - Content/Users/Support/Backup/Auth: counters + links to full admin
+- **Login**: dark Bg, Panel card with Line border, E logo orange 32dp, email/password/baseUrl OutlinedTextField with orange/cyan focused border, error on red 10% bg, button Panel bg + orange border 1dp + monospace uppercase
+- **Auth**: TokenManager with EncryptedSharedPreferences (excluded from backup via backup_rules.xml + data_extraction_rules.xml), Bearer JWT, usesCleartextTraffic false, baseUrl configurable
+
+### Adding Mobile
+- Never change palette — 9 colors sacred for both web and Android
+- Always use monospace for stats/labels, uppercase + letter-spacing 2px
+- Test 768px breakpoint for web, test Pixel 7 emulator for Android
+- API: `/api/mobile/admin-summary` aggregates all admin points — mobile should prefer it over multiple calls
+
+---
+
+*End of Design System. For questions — refer to `src/app/globals.css` as the single source of truth and `android-app/.../Color.kt` for Android.*

@@ -1,17 +1,14 @@
-# Мониторинг сервера
+# Мониторинг сервера — веб, мобильная админка и Android-приложение
 
-В проект добавлена закрытая панель **Админка → Мониторинг**. Она отвечает на
-вопросы «жив ли сайт», «доступна ли БД», «сколько база весит на диске»,
-«выполняются ли фоновые задачи», «запущены ли контейнеры», «сколько статей
-ждут перевода» и «отличается ли развёрнутая версия от `main`». Отсюда же
-админ вручную запускает обновление проекта, не дожидаясь плановой пересборки,
-а прогресс этой пересборки виден всем посетителям в шапке сайта.
+В проект добавлены три взаимосвязанных интерфейса мониторинга:
 
-Панель доступна только роли `admin`. API `/api/admin/monitor` также требует
-реальную сессию администратора в production; на нём нет Docker-сокета,
-секретов, логов, переменных окружения или данных пользователей. Docker-agent
-находится в opt-in Compose-профиле `monitoring`, чтобы привилегированный
-Docker-сокет не монтировался на сервере, где эта часть панели не нужна.
+1. **Админка → Мониторинг** (`/admin?tab=monitor`) — десктопная панель, отвечает на вопросы «жив ли сайт», «доступна ли БД», «сколько база весит», «выполняются ли фоновые задачи», «запущены ли контейнеры», «сколько статей ждут перевода», «отличается ли версия от `main`». Отсюда же — ручное обновление проекта с прогрессом в шапке сайта для всех посетителей.
+2. **Мобильная админка `/m-admin`** — PWA-ready, полностью адаптированная под телефон, 9 вкладок по всем пунктам админки (Обзор, Монитор, Биллинг, Системы, Контент, Юзеры, Поддержка, Бэкапы, Auth), bottom nav в стиле HUD, автообновление 20с, использует агрегатор `/api/mobile/admin-summary`.
+3. **Android-приложение `android-app/`** — нативное Kotlin + Compose, повторяет все пункты админки, Bearer JWT, EncryptedSharedPreferences, Retrofit, 9 экранов, APK через Gradle. Документация: `MOBILE-ADMIN.md`.
+
+Все три используют единый бэкенд `getServerMonitorSnapshot()` (`src/lib/serverMonitor.ts`) и агрегатор `/api/mobile/admin-summary`.
+
+Панель `/admin?tab=monitor` и API `/api/admin/monitor` доступны только роли `admin`. Мобильные API `/api/mobile/*` — роли `admin`, `moderator`, `support_manager`. На них нет Docker-сокета, секретов, логов, переменных окружения или данных пользователей. Docker-agent в opt-in Compose-профиле `monitoring`.
 
 ## Одна команда (Ubuntu 20.04 Desktop)
 
@@ -59,42 +56,31 @@ sudo bash deploy/monitoring-setup.sh \
   --no-pull             # не делать git fetch/pull
 ```
 
-## Что показывает панель
+## Что показывает панель (десктоп + мобильная + Android — одинаковые данные)
 
-- **Приложение** — ответ текущего Next.js-процесса, его uptime, Node и память.
-- **База данных** — короткий запрос к `profiles` через Supabase REST под
-  service-role; ответ и строки БД не сохраняются и не выводятся.
-- **Docker** — `web`, `jobs`, `monitor-agent`: состояние, healthcheck,
-  время старта, число рестартов, память и CPU.
-- **Фоновые задачи** — время последнего успешного запуска, следующий слот и,
-  если задача падает, её последняя ошибка из состояния `jobs-state.json`
-  (`lastError` / `lastFailureAt` / `failures`, пишет `server-jobs.mjs`).
-  «Окно не меняется» больше не загадка: у падающей задачи видна причина и
-  время сбоя, статус — «Требует внимания».
-- **Версия** — хеш развёрнутой сборки и хеш `main` на GitHub. Запрос к GitHub
-  кэшируется на пять минут. Значение «ревизии отличаются» — повод проверить
-  изменения перед штатным обновлением, а не команда обновиться вслепую.
-- **Место на диске** — реальный вес базы на диске: `pg_database_size`, внутри
-  него — данные, индексы и TOAST по `pg_total_relation_size`/`pg_indexes_size`
-  для двенадцати самых больших таблиц, плюс свободное место на разделе сервера
-  (его отдаёт `monitor-agent`, `statfs`), строка `Замерено:` и предупреждение,
-  когда свободо меньше 5GiB. SQL-запросы идут под `statement_timeout=8s` и
-  ничего не пишут; при отсутствии `DATABASE_URL`/`SUPABASE_DB_URL` панель
-  честно говорит «прямой доступ к базе не настроен» вместо пустых цифр. Если
-  же `web` контейнер Postgres не видит, а `monitor-agent` его видит
-  (`MONITOR_DB_URL`), панель показывает замеры агента — это штатный путь для
-  серверов, где Supabase живёт отдельно на хосте.
-- **Контент и переводы** — последняя синхронизация Galnet (`galnet_sync_log`),
-  сколько статей ждут перевода в `galnet_news` и `news`, задан ли
-  `YANDEX_TRANSLATE_API_KEY`, и две кнопки: «Синхронизировать Galnet сейчас» и
-  «Добить переводы». Раньше эти действия были только у крона, поэтому пустой
-  блок Galnet на главной требовал заходить на сервер.
-- **Обновление проекта** — текущая ревизия, ревизия в ветке, число новых
-  коммитов и неприменённых миграций, прогресс ручного обновления по стадиям,
-  хвост журнала и кнопки «Обновить сейчас» / «Остановить».
-- **API-ключи сайта** — содержимое `.env.production` в маскировке: просмотр,
-  правка, добавление и удаление ключей из браузера + кнопка «Применить»,
-  которая пересоздаёт сервисы, чтобы новые значения вступили в силу.
+Все три интерфейса показывают один и тот же снапшот `ServerMonitorSnapshot`, только в разной вёрстке:
+
+- **Приложение** — ответ текущего Next.js-процесса, его uptime, Node и память. В `/m-admin` и Android — карточка «Приложение» с UPTIME/NODE/RSS/HEAP monospace.
+- **База данных** — короткий запрос к `profiles` через Supabase REST под service-role; ответ и строки БД не сохраняются. + размер БД (`pg_database_size`) и топ таблиц. В мобильной версии — карточка «База данных» с SIZE/LATENCY/LARGEST + pill статуса.
+- **Docker** — `web`, `jobs`, `monitor-agent`: состояние, healthcheck, время старта, число рестартов, память и CPU. В `/m-admin` и Android — список контейнеров с цветным левым бордером (зелёный=running healthy, красный=stopped/unhealthy) + pill.
+- **Фоновые задачи** — время последнего успешного запуска, следующий слот и, если задача падает, её последняя ошибка из `jobs-state.json` (`lastError`/`lastFailureAt`/`failures`). В мобильной — карточка «Фоновые задачи» с jobs, last/next monospace + ошибка на жёлтом фоне WarningBg.
+- **Версия** — хеш развёрнутой сборки и хеш `main` на GitHub, кэш 5 минут. В мобильной — CURRENT (оранжевый) / UPSTREAM (cyan) / AHEAD / MIGRATIONS, список миграций на красном фоне если есть.
+- **Место на диске** — реальный вес БД (`pg_database_size`), данные/индексы/TOAST по 12 таблицам, свободное место (statfs от monitor-agent), `Замерено:` и предупреждение <5GiB. В мобильной — USED/FREE + thin progress bar 6px, Line bg, fill orange/red если >90%.
+- **Контент и переводы** — последняя синхронизация Galnet (`galnet_sync_log`), сколько статей ждут перевода, `YANDEX_TRANSLATE_API_KEY` configured, кнопки «Синхронизировать Galnet сейчас» / «Добить переводы». В мобильной — TRANSLATE configured + PENDING total + lastSync + queue.
+- **Обновление проекта** — текущая/ upstream ревизия, aheadBy, pendingMigrations, прогресс ручного обновления по стадиям, лог, кнопки «Обновить сейчас»/«Остановить». В мобильной — карточка «Обновление проекта» + updater connected/active.
+- **API-ключи сайта** — `.env.production` в маскировке + «Применить (пересоздать web)». В мобильной пока только просмотр через app_flags, действия — в десктопной.
+- **Дополнительно для мобильной агрегатор** (`/api/mobile/admin-summary`):
+  - Overview counts: profiles, hubs, routeSystems, news, forumThreads/Posts, comments, ticketsOpen/Total, apiTokens, galaxySystems, galnetPending
+  - Billing: revenue total/avgCheck/arpu, transactions total, subs active/churn, telemetry (pilots/systems/facilities/tonnage/tickets/tokens), topProducts
+  - Lists: hubs (100), routeSystems (30), recentNews (10), backupLog (5)
+  - Content: site_content row, app_flags
+  - Health: overall/app/database/docker/disk/project — для pills в topbar
+
+### Мобильная специфика
+
+- **Веб `/m-admin`**: React Client Component, `authFetch` + `supabase.auth.getUser()` для роли, `useState` + `useCallback` load + `setInterval 20s` auto-refresh, bottom nav 9 вкладок (HUD icons ◧◍₿⬡☰👤🎧💾🔒), HudCard/StatCard/StatusPill компоненты, PWA manifest-mobile.json.
+- **Android**: Kotlin Compose, `TokenManager` EncryptedSharedPreferences, `RetrofitClient` + `AuthInterceptor` Bearer, `MonitorRepository.getSummary(period)`, `MainActivity` Scaffold TopBar (56dp) + BottomBar (64dp) + `NavHost` 9 screens + `LaunchedEffect delay 20s` polling, `LoadingView`/`ErrorView`.
+- **Безопасность**: токены excluded from backup (backup_rules.xml), `usesCleartextTraffic=false`, API требует admin роль, никаких секретов в APK.
 
 ## Включение на Docker Compose сервере
 
@@ -446,3 +432,52 @@ MONITOR_COMPOSE_PROJECT=your-project-name
 Затем пересоздайте `monitor-agent`. Для запуска без Docker (systemd) панель
 всё равно покажет приложение, БД и версию, но Docker и state-файл планировщика
 намеренно останутся недоступны.
+
+## Мобильный мониторинг — /m-admin и Android-приложение
+
+### Веб-версия /m-admin
+
+```bash
+# Локально
+npm run dev
+# открыть http://localhost:3000/m-admin — в preview доступен как CMDR Admin (Preview)
+
+# Прод
+https://edringcolony.ru/m-admin
+```
+
+- Требует роль `admin`/`moderator`/`support_manager` (проверка через `supabase.auth.getUser()` + `profiles.role`)
+- Использует `GET /api/mobile/admin-summary?period=30d` — один запрос вместо 5-6
+- Автообновление каждые 20с + кнопка ↻ в topbar
+- PWA: `public/manifest-mobile.json` — установка на домашний экран Chrome → "Установить приложение"
+- Ссылка из десктопной админки: `/admin` → баннер 📱 Мобильная админка / Android → `/m-admin`
+
+### Android-приложение android-app/
+
+```bash
+cd android-app
+./gradlew assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
+# Установка: adb install app/build/outputs/apk/debug/app-debug.apk
+
+# Для локальной разработки с npm run dev:
+# В эмуляторе: baseUrl = http://10.0.2.2:3000
+# На устройстве в той же Wi-Fi: http://192.168.x.x:3000
+```
+
+- **Логин**: `LoginScreen` → `POST /api/mobile/auth` с email/password → access_token → EncryptedSharedPreferences
+- **Токены**: хранятся в `secure_prefs` (EncryptedSharedPreferences), исключены из backup (backup_rules.xml + data_extraction_rules.xml), `usesCleartextTraffic=false`
+- **Сеть**: Retrofit + OkHttp + Gson, `AuthInterceptor` добавляет Bearer, logging interceptor BODY
+- **UI**: `MainActivity` Scaffold TopBar 56dp + BottomBar 64dp + NavHost 9 screens + `LaunchedEffect delay 20s` polling
+- **Экраны**: Dashboard (health pills + stats grid), Monitor (Docker + jobs + content + топ таблиц), Billing (revenue + telemetry + топ товары), Systems (хабы + маршрут), Content, Users, Support, Backup, Auth — все в стиле DESIGN.md
+- **Безопасность**: API требует admin роль, никаких секретов в APK, только anon key как в веб-клиенте
+
+### Будущее
+
+- Кнопки действий из мобильного: "Обновить сейчас" (`POST /api/admin/monitor/update`), "Синхронизировать Galnet" (`POST /api/admin/content?action=sync`), "Добить переводы"
+- Push через FCM при critical (опрос `/api/status` — public, только stage+percent)
+- Виджет на рабочий стол с overall статусом
+- Графики MPAndroidChart для выручки и размера БД
+- Room offline cache + biometric login
+
+Подробности: `MOBILE-ADMIN.md` и `android-app/README.md`.
