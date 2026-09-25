@@ -612,6 +612,15 @@ async function projectStatus(): Promise<MonitorProject> {
   const sameRevision = !!currentSha && !!upstream.sha && upstream.sha.startsWith(currentSha);
   const updater = await getUpdateAgentStatus();
 
+  // Неприменённые миграции: земля истины — update-agent (сверка с
+  // migrations.mark на хосте показывает и «забытые» после сбоя файлы). Сверка
+  // GitHub видит только то, что ново между ревизиями, и остаётся запасным
+  // источником, когда агент недоступен. Имена — без каталога: путь на хосте
+  // браузеру не нужен.
+  const pendingMigrations = (updater.connected ? updater.pendingMigrations : upstream.newMigrations)
+    .map((name) => name.split('/').pop() || name)
+    .filter((name) => MIGRATION_FILE.test(`supabase/migrations/${name}`));
+
   return {
     currentSha,
     currentRef: currentRef === 'unknown' ? null : currentRef,
@@ -620,7 +629,7 @@ async function projectStatus(): Promise<MonitorProject> {
     upstreamSha: upstream.sha,
     upstreamCheckedAt: upstream.checkedAt,
     aheadBy: !currentSha || upstream.sha == null ? upstream.aheadBy : sameRevision ? 0 : upstream.aheadBy,
-    pendingMigrations: upstream.newMigrations,
+    pendingMigrations,
     updateStatus: !currentSha || !upstream.sha ? 'unknown' : sameRevision ? 'current' : 'different',
     updater: {
       configured: updater.configured,

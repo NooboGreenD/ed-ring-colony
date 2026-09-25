@@ -688,8 +688,10 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `POST /abort`. Обновление и резервная копия делят один процессный слот:
   состояние различается полем `kind` (`update` | `backup`).
 - Фактическую работу делает `deploy/update-project.sh` (git fetch/merge,
-  pg_dump, новые миграции, пересборка Compose-профиля или standalone-выкладка,
-  проверка живости). Ручную копию базы делает `deploy/db-backup.sh`
+  pg_dump, недостающие миграции по `migrations.mark`, пересборка
+  Compose-профиля или standalone-выкладка, проверка живости). Отставание 0 от
+  ветки не отменяет прогон: кнопка всегда донашивает миграции и пересобирает.
+  Ручную копию базы делает `deploy/db-backup.sh`
   (`pg_dump -Fc` без `public.galaxy_systems`, проверка `pg_restore --list`,
   ротация `UPDATE_BACKUP_KEEP`); на время дампа сайт закрыт заглушкой
   «Ведутся технические работы» — признак лежит в `public.app_flags`,

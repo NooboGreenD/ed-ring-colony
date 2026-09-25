@@ -53,7 +53,7 @@
  */
 import { timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -382,6 +382,34 @@ export function readEnvFileState(file) {
   }
 }
 
+/**
+ * Неприменённые миграции: имена файлов supabase/migrations/*.sql, которых нет
+ * в $UPDATE_STATE_DIR/migrations.mark (отметки ставит deploy/update-project.sh
+ * после успешного наката). Тот же критерий, что у скрипта обновления, — панель
+ * показывает ровно то, что будет применено кнопкой. Возвращает имена файлов
+ * (без каталога); любой сбой чтения — просто пустой список, не ошибка.
+ */
+export function listPendingMigrations(config) {
+  try {
+    let marked = new Set();
+    try {
+      marked = new Set(
+        readFileSync(join(config.stateDir, 'migrations.mark'), 'utf8')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+      );
+    } catch {
+      // Отметок ещё нет — всё дерево считается неприменённым (как в скрипте).
+    }
+    return readdirSync(join(config.projectDir, 'supabase', 'migrations'))
+      .filter((name) => name.endsWith('.sql') && !marked.has(name))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Записать/обновить один ключ. Возвращает true, если ключа раньше не было. */
 export function writeEnvKey(file, key, value) {
   let content = '';
@@ -471,7 +499,12 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
       if (request.method === 'GET' && url.pathname === '/status') {
         const full = url.searchParams.get('full') === '1';
         const state = manager.status();
-        send(response, 200, { ok: true, update: full ? state : { ...state, log: [] }, public: publicUpdateView(state) });
+        send(response, 200, {
+          ok: true,
+          update: full ? state : { ...state, log: [] },
+          public: publicUpdateView(state),
+          pendingMigrations: listPendingMigrations(config),
+        });
         return;
       }
       if (request.method === 'POST' && url.pathname === '/update') {

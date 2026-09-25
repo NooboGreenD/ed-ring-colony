@@ -241,6 +241,14 @@ test('http contract: прогресс обновления доживает до
   const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
   t.after(() => new Promise((done) => server.close(done)));
 
+  // Неприменённые миграции: две в дереве, одна отмечена как применённая —
+  // в статусе обязана остаться ровно вторая.
+  mkdirSync(join(config.projectDir, 'supabase', 'migrations'), { recursive: true });
+  writeFileSync(join(config.projectDir, 'supabase', 'migrations', '20260101000000_a.sql'), '-- a');
+  writeFileSync(join(config.projectDir, 'supabase', 'migrations', '20260102000000_b.sql'), '-- b');
+  mkdirSync(config.stateDir, { recursive: true });
+  writeFileSync(join(config.stateDir, 'migrations.mark'), '20260101000000_a.sql\n');
+
   const start = await fetch(origin + '/update', { method: 'POST', headers: auth, body: JSON.stringify({ applyMigrations: true }) });
   assert.equal(start.status, 202);
   assert.equal((await start.json()).ok, true);
@@ -252,6 +260,7 @@ test('http contract: прогресс обновления доживает до
   const full = await fetch(origin + '/status?full=1', { headers: auth });
   const payload = await full.json();
   assert.equal(payload.ok, true);
+  assert.deepEqual(payload.pendingMigrations, ['20260102000000_b.sql'], 'в статусе — только неотмеченная миграция');
   assert.equal(payload.update.active, true);
   // Гонка по своей природе: пока идёт HTTP-запрос, скрипт-заглушка успевает
   // уйти на следующую стадию. Проверяем не конкретное имя, а что стадия —

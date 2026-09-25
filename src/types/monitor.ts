@@ -136,7 +136,11 @@ export interface MonitorProject {
   upstreamCheckedAt: string | null;
   /** Commits on the upstream branch that the deployed build does not have. */
   aheadBy: number | null;
-  /** New `supabase/migrations/*.sql` files between the two revisions. */
+  /**
+   * Неприменённые `supabase/migrations/*.sql` (имена файлов без каталога):
+   * сверка update-agent с migrations.mark на хосте; без агента — файлы, новые
+   * между ревизиями по сверке с GitHub.
+   */
   pendingMigrations: string[];
   updateStatus: 'current' | 'different' | 'unknown';
   /** Whether a manual (button-driven) update can be started at all. */

@@ -22,7 +22,9 @@
 #   PROJECT_UPDATE_BRANCH    ветка-источник (default: main)
 #   PROJECT_REPOSITORY       owner/repo — только для сообщений
 #   PROJECT_DEPLOY_MODE      auto|compose|systemd
-#   UPDATE_APPLY_MIGRATIONS  1 — применять новые supabase/migrations/*.sql
+#   UPDATE_APPLY_MIGRATIONS  1 — применять недостающие supabase/migrations/*.sql
+#                        (все неотмеченные в migrations.mark: и новые между
+#                        ревизиями, и уцелевшие после сбоев прошлых прогонов)
 #   UPDATE_BACKUP_DIR        каталог для pg_dump перед миграциями
 #   UPDATE_HEALTH_URL        что опрашивать после переключения
 #   SYSTEMD_SERVICE / APP_DIR unit и standalone-выкладка для systemd-режима
@@ -97,14 +99,19 @@ printf '::edrc::{"stage":"compare","percent":25,"branch":"%s","fromSha":"%s","to
   "$(json_safe "$BRANCH")" "$CURRENT_SHA" "$TARGET_SHA" \
   "$(json_safe "ревизия ${CURRENT_SHA:0:12}; доступно обновлений: $BEHIND")"
 
-if [ "$BEHIND" = "0" ]; then
-  printf '::edrc::{"stage":"done","percent":100,"migrationsApplied":0,"message":"%s"}\n' \
-    "$(json_safe "уже актуально: развёрнута последняя ревизия ${TARGET_SHA:0:12}")"
-  say "Обновлять нечего — $BRANCH и развёрнутая сборка совпадают."
-  exit 0
-fi
+# Локальные коммиты сверх ветки — остановка в ЛЮБОМ случае, даже при нулевом
+# отставании: кнопка пересобирает ровно то, что лежит в ветке, а незапушенные
+# правки нельзя ни перемотать, ни молча разлить в прод.
 if [ "$AHEAD" != "0" ]; then
   die "локальная ветка содержит $AHEAD собственных коммитов — перемотка невозможна, разлейте ветку вручную"
+fi
+# Отставание 0 — НЕ повод выходить. Клон бывает уже обновлён (правка руками,
+# прошлый прогон упал ПОСЛЕ перемотки на сборке/таймауте), а развёрнутый образ
+# и база отстают. «Обновить сейчас» обязан донашивать миграции и пересобирать
+# в любом случае — иначе кнопка навсегда отвечает «уже актуально», не чиня
+# ни сборку, ни миграции.
+if [ "$BEHIND" = "0" ]; then
+  say "git уже на последней ревизии ${TARGET_SHA:0:12} — выполняю недостающие миграции и пересборку"
 fi
 
 # ── 2. режим сборки ──────────────────────────────────────────────────
@@ -148,11 +155,6 @@ run_sql() { # SQL на stdin
     return 1
   fi
 }
-if [ -n "$DB_PSQL" ] && ! printf 'SELECT 1' | run_sql >/dev/null 2>&1; then
-  say "⚠ прямой доступ к Postgres не отвечает — миграции будут пропущены"
-  DB_PSQL=""
-fi
-
 MARK_FILE="$STATE_DIR/migrations.mark"
 is_marked() { [ -f "$MARK_FILE" ] && grep -qxF "$1" "$MARK_FILE"; }
 mark_done() { printf '%s\n' "$1" >> "$MARK_FILE"; }
@@ -165,27 +167,31 @@ fi
 
 # ── 4. обновление исходников ─────────────────────────────────────────
 report compare 35 "Обновляю исходники до $BRANCH"
-# Спрятать правки нужно ровно здесь, а не в начале: до «обновлять нечего» и
-# всех проверок мы рабочим деревом не распоряжаемся — иначе ранний выход
-# оставил бы изменения админа висять в stash.
-STASHED=0
-if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
-  say "⚠ в рабочем дереве есть незакоммиченные изменения — прячу их в stash и верну после обновления"
-  report compare 37 "Сохраняю локальные изменения (git stash)"
-  git stash push -u -m "edrc-update-$(date -u +%Y%m%dT%H%M%SZ)" >/dev/null 2>&1 \
-    || die "git stash не удался — разберите изменения вручную"
-  STASHED=1
+NEW_SHA="$CURRENT_SHA"
+if [ "$BEHIND" != "0" ]; then
+  # Спрятать правки нужно ровно здесь, а не в начале: до проверок мы рабочим
+  # деревом не распоряжаемся, и при сбое stash не должен оставаться занятым.
+  STASHED=0
+  if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+    say "⚠ в рабочем дереве есть незакоммиченные изменения — прячу их в stash и верну после обновления"
+    report compare 37 "Сохраняю локальные изменения (git stash)"
+    git stash push -u -m "edrc-update-$(date -u +%Y%m%dT%H%M%SZ)" >/dev/null 2>&1 \
+      || die "git stash не удался — разберите изменения вручную"
+    STASHED=1
+  fi
+  git merge --ff-only "$REMOTE_NAME/$BRANCH" >/dev/null 2>&1 \
+    || die "git merge --ff-only не удался — изменения спрятаны в stash, верните их: git stash pop"
+  NEW_SHA="$(git rev-parse HEAD)"
+  if [ "$STASHED" = "1" ]; then
+    # Возвращаем сразу после перемотки: сборка и миграции должны видеть те же
+    # файлы, что админ видел до обновления.
+    git stash pop --index >/dev/null 2>&1 \
+      || say "⚠ git stash pop требует ручного разбора — ваши изменения остались в stash (git stash list)"
+  fi
+  say "исходники: ${CURRENT_SHA:0:12} → ${NEW_SHA:0:12}"
+else
+  say "исходники: ${CURRENT_SHA:0:12} — перемотка не требуется (отставания от $BRANCH нет)"
 fi
-git merge --ff-only "$REMOTE_NAME/$BRANCH" >/dev/null 2>&1 \
-  || die "git merge --ff-only не удался — изменения спрятаны в stash, верните их: git stash pop"
-NEW_SHA="$(git rev-parse HEAD)"
-if [ "$STASHED" = "1" ]; then
-  # Возвращаем сразу после перемотки: сборка и миграции должны видеть те же
-  # файлы, что админ видел до обновления.
-  git stash pop --index >/dev/null 2>&1 \
-    || say "⚠ git stash pop требует ручного разбора — ваши изменения остались в stash (git stash list)"
-fi
-say "исходники: ${CURRENT_SHA:0:12} → ${NEW_SHA:0:12}"
 
 # ── 4c. Compose-файлы стека: та же сеть Supabase, что у start-monitoring.sh ──
 # Без одинаковых -f у всех скриптов очередное up пересоздало бы web/monitor-agent
@@ -208,10 +214,36 @@ if ! declare -F edrc_persist_env >/dev/null 2>&1; then
   }
 fi
 
-# ── 4a. резервная копия и миграции (уже после обновлённых исходников,
-#      чтобы свежие файлы supabase/migrations/*.sql существовали на диске) ──
+# ── 4a. недостающие миграции и резервная копия ──────────────────────
+# Список считается ПОСЛЕ перемотки по реальному дереву: применяем всё, чего
+# нет в migrations.mark. Сюда попадают и новые файлы между ревизиями, и те,
+# что остались неприменёнными после сбоя либо пропуска прошлых прогонов
+# (раньше такие файлы не перепроверялись никогда — см. GALNET-TRANSLATIONS-FIX.md).
+PENDING_MIGRATIONS=""
+if [ -d supabase/migrations ]; then
+  for f in supabase/migrations/*.sql; do
+    [ -f "$f" ] || continue
+    is_marked "$(basename "$f")" && continue
+    PENDING_MIGRATIONS="$PENDING_MIGRATIONS $f"
+  done
+fi
+PENDING_MIGRATIONS="${PENDING_MIGRATIONS# }"
+# Проба базы — только когда есть что накатывать: пустой прогон не трогает
+# Postgres вообще (и не пугает «не отвечает», когда миграции выключены).
+if [ "$APPLY_MIGRATIONS" = "1" ] && [ -n "$PENDING_MIGRATIONS" ] && [ -n "$DB_PSQL" ] \
+  && ! printf 'SELECT 1' | run_sql >/dev/null 2>&1; then
+  say "⚠ прямой доступ к Postgres не отвечает — миграции будут пропущены"
+  DB_PSQL=""
+fi
+if [ -n "$PENDING_MIGRATIONS" ]; then
+  say "неприменённые миграции:"
+  for f in $PENDING_MIGRATIONS; do say "  • $(basename "$f")"; done
+else
+  say "неприменённых миграций нет"
+fi
+
 DUMP=""
-if [ "$APPLY_MIGRATIONS" = "1" ] && [ -n "$DB_PSQL" ]; then
+if [ "$APPLY_MIGRATIONS" = "1" ] && [ -n "$DB_PSQL" ] && [ -n "$PENDING_MIGRATIONS" ]; then
   report backup 45 "Резервная копия базы перед миграциями"
   # Каталог может оказаться недоступен (апдейтер в контейнере с read-only
   # rootfs) — тогда пишем в каталог состояния, а не бросаем обновление.
@@ -241,22 +273,33 @@ fi
 
 # ── 4b. применяю миграции ────────────────────────────────────────────
 MIGRATIONS_APPLIED=0
-if [ -n "$NEW_MIGRATIONS" ]; then
+if [ -n "$PENDING_MIGRATIONS" ]; then
   if [ "$APPLY_MIGRATIONS" != "1" ]; then
     say "⚠ UPDATE_APPLY_MIGRATIONS=0 — миграции НЕ применены; примените их вручную до перезапуска"
   elif [ -z "$DB_PSQL" ]; then
     say "⚠ нет прямого доступа к Postgres (ни контейнера supabase-db, ни DATABASE_URL + psql)"
     say "  примените миграции вручную: docker exec -i supabase-db psql -U postgres -d postgres < ФАЙЛ"
   else
-    report migrate 55 "Применяю миграции базы данных"
-    for f in $NEW_MIGRATIONS; do
+    report migrate 55 "Применяю недостающие миграции базы данных"
+    for f in $PENDING_MIGRATIONS; do
       base="$(basename "$f")"
-      if is_marked "$base"; then say "  • $base — уже применялась, пропуск"; continue; fi
       if [ ! -f "$f" ]; then say "  ⚠ $base нет в дереве — пропуск"; continue; fi
-      say "  ▶ применяю $base"
+      if printf '%s\n' "$NEW_MIGRATIONS" | grep -qxF "$f"; then
+        say "  ▶ применяю $base (новая между ревизиями)"
+      else
+        say "  ▶ применяю $base (не была применена раньше)"
+      fi
       if psql_out="$(run_sql < "$f" 2>&1)"; then
         mark_done "$base"
         MIGRATIONS_APPLIED=$((MIGRATIONS_APPLIED + 1))
+      elif printf '%s' "$psql_out" | grep -qiE 'already exists|уже существует'; then
+        # База, залитая снимком supabase/full_schema.sql или чинённая руками,
+        # уже содержит объекты миграции: повторный накат получает «already
+        # exists» на первом же таком объекте. Это НЕ ошибка — отмечаем файл
+        # применённым и идём дальше. Любой другой сбой по-прежнему валит
+        # обновление ДО переключения кода.
+        say "  ⚠ $base — объекты уже существуют (миграция применялась ранее) — отмечаю как применённую"
+        mark_done "$base"
       else
         printf '%s\n' "$psql_out" | tail -n 20 >&2
         die "миграция $base завершилась с ошибкой — код сайта ещё не переключался"
