@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#1e2022</color>
+    <color name="panel">#2a2d30</color>
+    <color name="panel_hover">#323538</color>
+    <color name="line">#3a3d40</color>
+    <color name="text">#eeeeee</color>
+    <color name="muted">#9ca3af</color>
+    <color name="orange">#e67e22</color>
+    <color name="orange_hover">#f39c12</color>
+    <color name="cyan">#3498db</color>
+    <color name="green">#2ecc71</color>
+    <color name="red">#e74c3c</color>
+    <color name="black">#000000</color>
+</resources>

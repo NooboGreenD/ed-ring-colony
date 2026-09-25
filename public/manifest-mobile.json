@@ -1,0 +1,18 @@
+{
+  "name": "EDRC Admin — Mobile Monitor",
+  "short_name": "EDRC Admin",
+  "description": "Мобильная админ-панель для мониторинга ED Ring Colony",
+  "start_url": "/m-admin",
+  "display": "standalone",
+  "background_color": "#1e2022",
+  "theme_color": "#1e2022",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

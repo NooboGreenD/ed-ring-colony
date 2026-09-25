@@ -277,7 +277,62 @@ npx esbuild scripts/eddn-worker.ts --bundle --platform=node \
 Если Supabase-проект остаётся прежним (меняется только хостинг сайта) —
 с базой ничего делать не нужно.
 
-## 10. Чек-лист переезда
+## 10. Мобильная админка и Android-приложение
+
+### Веб-версия /m-admin (уже в составе сайта, деплоится вместе с web)
+
+Никаких дополнительных шагов не требует — страница `/m-admin` уже в Next.js сборке. После деплоя сайта она доступна по:
+
+```
+https://ваш-домен/m-admin
+```
+
+- Требует роль `admin`/`moderator`/`support_manager`
+- Использует агрегатор `GET /api/mobile/admin-summary` (admin only, no-store)
+- PWA манифест `public/manifest-mobile.json` — пользователи могут установить как приложение на телефон (Chrome → Установить)
+- В `/admin` есть ссылка 📱 Мобильная админка / Android
+
+Для проверки после деплоя:
+
+```bash
+curl -H "Authorization: Bearer <admin-jwt>" https://ваш-домен/api/mobile/admin-summary?period=30d | jq '.health'
+```
+
+### Android-приложение android-app/ (отдельный артефакт)
+
+Не деплоится на сервер — собирается как APK и раздаётся отдельно:
+
+```bash
+cd android-app
+./gradlew assembleDebug   # debug APK
+./gradlew assembleRelease # release (нужен keystore в app/build.gradle.kts)
+```
+
+- **Base URL**: по умолчанию `https://edringcolony.ru` (в `gradle.properties` `api.base.url` и в `TokenManager.kt` fallback). Для эмулятора с локальным `npm run dev` — `http://10.0.2.2:3000`, для устройства в той же Wi-Fi — `http://192.168.x.x:3000` (указывается на экране логина).
+- **Логин**: email/password администратора сайта → `POST /api/mobile/auth` → Bearer JWT в EncryptedSharedPreferences
+- **Безопасность**: токены в `secure_prefs` (excluded from backup), `usesCleartextTraffic=false`, никаких секретов в APK
+- **Распространение**: загрузите APK в релизы GitHub, в Telegram-канал, или в Google Play (требует signing + Play Console). В `README.md` и `MOBILE-ADMIN.md` уже есть инструкция.
+
+### CI/CD для Android (опционально)
+
+Добавьте в `.github/workflows/`:
+
+```yaml
+name: Build Android APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { java-version: '17', distribution: 'temurin' }
+      - run: cd android-app && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with: { name: apk, path: android-app/app/build/outputs/apk/debug/*.apk }
+```
+
+## 11. Чек-лист переезда
 
 - [ ] Секреты выгружены из Vercel (`vercel env pull`) → `.env.production`
 - [ ] `NEXT_PUBLIC_SITE_URL` = новый домен
@@ -286,13 +341,14 @@ npx esbuild scripts/eddn-worker.ts --bundle --platform=node \
 - [ ] nginx + certbot, сайт открывается по HTTPS
 - [ ] Supabase Redirect URLs обновлены; вход по email и Discord работает
 - [ ] jobs включён, старые Actions/cron отключены без удаления backup-задач
-- [ ] Проверены: логин, форум, вики, атлас, карта, push-уведомления, CAPI
+- [ ] Проверены: логин, форум, вики, атлас, карта, push-уведомления, CAPI, **/m-admin** (мобильная админка), `/api/mobile/admin-summary`
+- [ ] Android APK собран (`android-app/`) и протестирован на эмуляторе/устройстве
 - [ ] DNS переключён на VPS; старый деплой Vercel можно перевести в
       режим редиректа или отключить (Project → Settings → Domains)
 - [ ] (опц.) EDDN-воркер запущен
 - [ ] Vercel git deployment отключён
 
-## 11. Откат
+## 12. Откат
 
 После переноса БД нельзя считать старый Vercel-деплой актуальным резервом.
 Откат делается к сохранённому образу сайта и конфигурациям на своём сервере:

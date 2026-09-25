@@ -55,6 +55,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Friends** — Friend list with online status
 - **Comments** — Comment system on profiles and content
 - **Admin Panel** — Raven Colonial sync, site content management, moderation
+- **Mobile Admin** — `/m-admin` PWA-ready HUD dashboard with 9 tabs (Overview, Monitor, Billing, Systems, Content, Users, Support, Backup, Auth), auto-refresh 20s, bottom nav, fully adapted for phones
+- **Android App** — Native Kotlin + Jetpack Compose monitor app in `android-app/` — repeats all admin panel points, EncryptedSharedPreferences, Retrofit, offline-ready scaffolding, APK build via Gradle
 - **i18n** — Multi-language support (RU, EN, DE, IT, KO, ZH, JA, FR, ES, PT, PL, UK, NL, TR, AR, HE, HI, TH, VI, ID, CS, RO, HU, BG, SK, SL, HR, SR, LT, LV, ET, DA, SV, NO, FI, EL, GA, WA, CY, MT, IS, FO, AF, MS, SW, ZU, XH, SO, AM, OM, TI, HA, IG, YO, SN, RW, MG, ML, TA, TE, KA, MR, GU, PA, UR, FA, PS, KU, SD, NE, BO, DZ, LO, MY, KM, TG, UZ, KK, TG, KY, MN, MK, AL, SQ, MO, BE, UK, BA, TT, CV, CRH, KRC, ADY, KBD, CE, AV, LBE, LEZ, TAB, AB, KI, LAG, MG, MFE, SG, BI, TO, FJ, HO, MI, RAP, RAR, TVL, KI, PW, MH, FM, NA, NR, TO, TK, SM, AS, TV, NG, CK, PN, WF, NU, TK, KI, WS, TO, FJ, VU, SB, PG, TL, ID, MY, PH, VN, LA, KH, MM, BD, NP, BT, LK, MV, AF, PK, IN, LK, MV, BD, NP, BT, MM, LA, KH, VN, PH, MY, ID, TL, PG, SB, VU, FJ, WS, TO, TK, KI, NU, PN, CK, NG, TV, AS, SM, TK, TO, NR, NA, FM, MH, PW, KI, TVL, RAR, RAP, MI, HO, FJ, TO, BI, SG, MFE, MG, LAG, KI, AB, TAB, LEZ, LBE, AV, CE, KBD, ADY, KRC, CRH, CV, TT, BA, UK, BE, MO, SQ, AL, MK, MN, KY, TG, KK, UZ, TG, KM, MY, LO, DZ, BO, NE, SD, PS, FA, UR, PA, GU, MR, KA, TE, TA, ML, MG, RW, SN, YO, IG, HA, TI, OM, AM, SO, XH, ZU, SW, MS, AF, FO, IS, MT, CY, WA, GA, EL, FI, NO, SV, DA, ET, LV, LT, HR, SR, SL, SK, BG, HU, RO, CS, ID, VI, TH, HI, HE, AR, TR, NL, PL, PT, ES, FR, IT, DE, EN, RU)
 - **Yandex Translate** — Automatic content translation via cron jobs
 
@@ -67,16 +69,17 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 ## Tech Stack
 
 - **Framework**: Next.js 16.3.5 / React 19.2.8 (App Router)
-- **Language**: TypeScript 5 (strict mode)
-- **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`)
+- **Language**: TypeScript 5 (strict mode) + Kotlin 1.9 (Android)
+- **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`) + Jetpack Compose Material3 (Android HUD theme)
 - **Database**: Supabase (PostgreSQL + Realtime)
-- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub) + VK ID и Яндекс ID (собственные OAuth/PKCE-потоки сайта, выключены по умолчанию — см. VK-ID-SETUP.md и YANDEX-ID-SETUP.md); управление кнопками входа — админка, вкладка «Авторизация»
+- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub) + VK ID и Яндекс ID (собственные OAuth/PKCE-потоки сайта, выключены по умолчанию — см. VK-ID-SETUP.md и YANDEX-ID-SETUP.md); управление кнопками входа — админка, вкладка «Авторизация» + Bearer JWT для Android
 - **3D**: Three.js 0.185.1 + React Three Fiber 9.7.0 + Drei 10.7.8
 - **Push**: web-push 3.6.7
 - **Markdown**: react-markdown 10.1.0 + remark-gfm + rehype-sanitize
 - **Validation**: zod 4.4.3
 - **Cache**: lru-cache 11.5.2
 - **i18n**: Custom React context (`lib/i18n/`)
+- **Mobile**: PWA `/m-admin` (React, HUD, bottom nav) + Native Android `android-app/` (Kotlin, Compose, Retrofit, EncryptedSharedPreferences, Navigation Compose)
 
 ## Quick Start
 
@@ -185,8 +188,16 @@ ed-ring-colony/
     app/                    # Next.js App Router pages
       layout.tsx            # Root layout (topbar + sidebar + footer)
       page.tsx              # Homepage
-      [route]/              # Route pages
+      m-admin/              # Mobile admin PWA (HUD, bottom nav, 9 tabs, /m-admin)
+        page.tsx            # Fully adapted mobile dashboard (React, ED style)
+        layout.tsx          # PWA manifest + viewport
+      [route]/              # Route pages (map, squadrons, projects, forum, wiki, etc)
       api/                  # API routes
+        mobile/
+          admin-summary/    # Aggregator for Android + /m-admin (all admin points)
+          auth/             # Mobile auth (login + role check)
+        admin/monitor/      # Server monitor snapshot (admin only)
+        admin/billing/      # Billing stats
     components/             # React components
       Icons.tsx             # Custom SVG icons
       SquadronChat.tsx      # Squadron chat
@@ -200,12 +211,14 @@ ed-ring-colony/
       Wiki/                 # Wiki components
       Atlas/                # Atlas components
       Projects/             # Project components
-      Admin/                # Admin components
+      Admin/                # Admin components (ServerMonitorTab, BillingDashboard, etc)
       Comments/             # Comment components
     lib/                    # Utilities
       supabaseClient.ts     # Browser Supabase client
       supabaseServer.ts     # Server Supabase client
       supabaseAdmin.ts      # Service role client
+      serverMonitor.ts      # Monitor snapshot logic (app, db, docker, jobs, disk, content, project)
+      billing/              # Billing logic + auth
       i18n/                 # i18n context & translations
       translate.ts          # Yandex Translate API
       ravenColonial.ts      # Raven Colonial API
@@ -218,14 +231,30 @@ ed-ring-colony/
       dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
       orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
-                            # (the app mirrors the same maths in uploader/tk_orrery.py)
-    types/                  # TypeScript types
+    types/
+      monitor.ts            # ServerMonitorSnapshot types
+      billing.ts            # Billing types
+  android-app/              # Native Android monitor app (Kotlin + Compose)
+    app/src/main/
+      java/com/edringcolony/monitor/
+        MainActivity.kt     # Scaffold + TopBar + BottomNav + Auth + auto-refresh 20s
+        data/model/         # AdminSummary, Monitor, Billing models (Gson)
+        data/network/       # ApiService, AuthInterceptor, RetrofitClient
+        data/local/         # TokenManager (EncryptedSharedPreferences)
+        ui/theme/           # Color.kt, Type.kt, Theme.kt (DESIGN.md palette)
+        ui/components/      # StatusPill, StatCard, LoadingView
+        ui/screens/         # 9 screens: Login, Dashboard, Monitor, Billing, Systems, Content, Users, Support, Backup, Auth + WebView fallback
+        ui/navigation/      # BottomNav, NavGraph
+      res/values/           # strings, colors (#1e2022 etc), themes
   supabase/
     migrations/             # SQL migrations
-  public/                   # Static assets
+  public/
+    manifest-mobile.json    # PWA manifest for /m-admin
   scripts/                  # Utility scripts
-  DESIGN.md                 # Design system documentation
-  CONTEXT.md                # Architecture documentation
+  DESIGN.md                 # Design system documentation (incl. mobile)
+  CONTEXT.md                # Architecture documentation (incl. mobile)
+  MONITORING.md             # Monitoring docs (incl. mobile)
+  MOBILE-ADMIN.md           # Mobile admin + Android app docs
 ```
 
 ## API Routes
@@ -278,8 +307,15 @@ ed-ring-colony/
 - `GET|POST /api/admin/galaxy` — Импорт каталога из админки (роль `admin`)
 - `GET|POST /api/cron/galaxy-import` — Импорт каталога по `CRON_SECRET`
 
+### Mobile Admin Endpoints (new)
+- `GET /api/mobile/admin-summary?period=30d` — **aggregator for Android + /m-admin**: overview counts, full monitor snapshot, billing stats, lists (hubs, route, news, backup), content, flags, health — admin role required, no-store
+- `GET /api/mobile/auth` — check session + role for mobile app
+- `POST /api/mobile/auth` — login via email/password → access_token + refresh_token + user (admin only)
+
 ### Other Endpoints
 - `GET /api/admin/monitor` — protected admin-only server, DB, Docker, scheduler and deployment snapshot
+- `GET /api/admin/monitor/update` — manual update status (admin) + public `/api/status` for topbar `System Update`
+- `GET /api/admin/billing/stats?period=30d` — billing telemetry + live counters (pilots, systems, tonnage)
 - `GET /api/leaderboard` — Player stats
 - `GET /api/atlas/search` — System search
 - `GET /api/news` — Site news
@@ -470,6 +506,13 @@ web → agent; порт агента не публикуется. Полная �
 часиками и процентом вместо `System Online`: посетитель видит, что идёт плановое
 обновление, а не падение сервиса. Данные для этого даёт публичный
 `GET /api/status` — только стадия и процент, без путей, ревизий и журнала.
+
+### Мобильный мониторинг (новое)
+
+- **Веб-версия `/m-admin`** — PWA-ready мобильная админка, полностью адаптированная под телефон, в стиле HUD сайта. 9 вкладок по всем пунктам админки: Обзор, Монитор, Биллинг, Системы, Контент, Юзеры, Поддержка, Бэкапы, Auth. Автообновление каждые 20с, bottom nav, карточки вместо таблиц. Открывается по `/m-admin`, требует роль admin. В `/admin` есть ссылка 📱 Мобильная админка.
+- **Android-приложение `android-app/`** — нативное Kotlin + Jetpack Compose, повторяет все пункты админки. Логин по email/password через `POST /api/mobile/auth` → Bearer JWT, токен в EncryptedSharedPreferences, агрегатор `GET /api/mobile/admin-summary?period=30d`. Сборка: `cd android-app && ./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`. Документация: `MOBILE-ADMIN.md`, `android-app/README.md`, `QUICKSTART.md`.
+
+Подробности: [MOBILE-ADMIN.md](MOBILE-ADMIN.md) и [MONITORING.md](MONITORING.md).
 
 ## Design System
 

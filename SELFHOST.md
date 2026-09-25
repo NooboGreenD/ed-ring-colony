@@ -27,9 +27,9 @@ Next.js-сайт, Postgres, авторизация, realtime и хранилищ
 > запуска — раздел «Быстрый путь» в `UBUNTU20-INSTALL.md`. Ручные шаги
 > ниже — для понимания происходящего и нестандартных случаев.
 > Установщик сразу запускает и мониторинг (`monitor-agent`, вкладка
-> **Админка → Мониторинг**; ключ попадает в `credentials.txt`). Пропустить —
+> **Админка → Мониторинг** + мобильная `/m-admin` + Android-приложение `android-app/`; ключ попадает в `credentials.txt`). Пропустить —
 > флаг `--no-monitor`, включить/перезапустить позже —
-> `bash deploy/start-monitoring.sh` (см. `MONITORING.md`).
+> `bash deploy/start-monitoring.sh` (см. `MONITORING.md` и `MOBILE-ADMIN.md`).
 
 ---
 

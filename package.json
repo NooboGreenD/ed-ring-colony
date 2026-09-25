@@ -21,7 +21,11 @@
     "update:enable": "bash deploy/start-update-agent.sh",
     "update:keys": "bash deploy/start-update-agent.sh --keys-only",
     "update:check": "bash deploy/start-update-agent.sh --check",
-    "update:disable": "bash deploy/start-update-agent.sh --stop"
+    "update:disable": "bash deploy/start-update-agent.sh --stop",
+    "mobile:dev": "next dev --port 3000",
+    "mobile:build": "next build",
+    "android:assemble": "cd android-app && ./gradlew assembleDebug",
+    "android:clean": "cd android-app && ./gradlew clean"
   },
   "dependencies": {
     "@react-three/drei": "10.7.8",

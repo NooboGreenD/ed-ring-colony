@@ -1,0 +1,21 @@
+<resources>
+    <string name="app_name">EDRC Monitor</string>
+    <string name="brand">ED RING COLONY</string>
+    <string name="subtitle">MOBILE ADMIN</string>
+    <string name="login">Войти</string>
+    <string name="logout">Выйти</string>
+    <string name="email">Email</string>
+    <string name="password">Пароль</string>
+    <string name="refresh">Обновить</string>
+    <string name="loading">Загрузка телеметрии…</string>
+    <string name="error_auth">Требуется авторизация администратора</string>
+    <string name="tab_dashboard">Обзор</string>
+    <string name="tab_monitor">Монитор</string>
+    <string name="tab_billing">Биллинг</string>
+    <string name="tab_systems">Системы</string>
+    <string name="tab_content">Контент</string>
+    <string name="tab_users">Юзеры</string>
+    <string name="tab_support">Поддержка</string>
+    <string name="tab_backup">Бэкапы</string>
+    <string name="tab_auth">Auth</string>
+</resources>
