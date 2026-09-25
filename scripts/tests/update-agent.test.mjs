@@ -190,6 +190,19 @@ test('config: агент, доступный не только с loopback, об
   assert.equal(script.script, join('/srv/app', 'deploy', 'update-project.sh'));
   assert.equal(script.applyMigrations, true, 'миграции по умолчанию применяются');
   assert.equal(updateAgentConfig({ UPDATE_APPLY_MIGRATIONS: '0' }).applyMigrations, false);
+
+  // Лимита сборки по умолчанию НЕТ: «45 минут билда» отменены, холодная
+  // сборка укладывается столько, сколько нужно. Ограничение — только
+  // явное, положительным числом минут.
+  const defaultConfig = updateAgentConfig({});
+  assert.equal(defaultConfig.timeoutMs, null, 'по умолчанию обновление не ограничено по времени');
+  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: '0' }).timeoutMs, null, '0/off — лимита нет');
+  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: 'unlimited' }).timeoutMs, null);
+  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: 'мусор' }).timeoutMs, null, 'мусор не включает лимит обратно');
+  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: '45' }).timeoutMs, 45 * 60_000, 'явное число минут — действующий лимит');
+  // Лимиты резервной копии и применения ключей остаются прежними.
+  assert.equal(defaultConfig.backupTimeoutMs, 120 * 60_000);
+  assert.equal(defaultConfig.envTimeoutMs, 5 * 60_000);
 });
 
 test('http contract: здоровье открыто, остальное — под токеном', async (t) => {
@@ -321,6 +334,48 @@ test('abort: остановка по-человечески помечает с�
   assert.equal((await fetch('http://127.0.0.1:' + port + '/abort', { method: 'POST', headers: auth })).status, 409);
 });
 
+test('http contract: флажки панели (тесты/бэкап/миграции) доходят до скрипта, «только миграции» → mode', { skip: needsBash }, async (t) => {
+  const config = testConfig();
+  // Скрипт-заглушка печатает пришедшие флаги — проверяем не парсер, а всю
+  // цепочку POST /update → manager.start → окружение процесса.
+  writeFileSync(config.script, [
+    '#!/usr/bin/env bash',
+    'echo "flags: tests=$UPDATE_RUN_TESTS backup=$UPDATE_BACKUP_BEFORE only=$UPDATE_MIGRATIONS_ONLY migrations=$UPDATE_APPLY_MIGRATIONS"',
+    'printf ' + JSON.stringify(UPDATE_PROTOCOL + '{"stage":"done","percent":100}') + '; echo',
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  // Без тела — все варианты включены (безопасный дефолт).
+  const defaults = await fetch(origin + '/update', { method: 'POST', headers: auth, body: '{}' });
+  assert.equal(defaults.status, 202);
+  const defaultsPayload = await defaults.json();
+  assert.equal(defaultsPayload.update.mode, config.deployMode, 'mode без «только миграции» — обычный deployMode');
+  await waitFor(() => !manager.isBusy());
+  assert.match(manager.status().log.map((line) => line.line).join('\n'), /flags: tests=1 backup=1 only=0 migrations=1/);
+
+  // Явные флажки панели + режим «только миграции».
+  const only = await fetch(origin + '/update', {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({ runTests: false, backup: false, migrationsOnly: true }),
+  });
+  assert.equal(only.status, 202);
+  assert.equal((await only.json()).update.mode, 'migrations', 'панель сразу видит режим «только миграции»');
+  await waitFor(() => !manager.isBusy());
+  assert.match(manager.status().log.map((line) => line.line).join('\n'), /flags: tests=0 backup=0 only=1 migrations=1/,
+    'migrationsOnly принудительно включает миграции и не даёт выключить их запросом');
+});
+
 test('crashed updater does not stick the panel in running state', () => {
   // Таймаут задан явно: тест проверяет саму логику «running без процесса
   // старше лимита → failed» и не зависит от дефолта UPDATE_TIMEOUT_MINUTES.
@@ -340,6 +395,35 @@ test('crashed updater does not stick the panel in running state', () => {
   assert.match(status.error, /перезагружался/);
   assert.equal(manager.isBusy(), false, 'кнопка снова активна');
   assert.equal(existsSync(config.stateFile), true);
+});
+
+test('без лимита времени: свежий сбойный running не трогается, «вечный» — снимается', () => {
+  // Дефолт UPDATE_TIMEOUT_MINUTES снят («45 минут билда» отменены): один час
+  // без процесса — это ещё может быть легитимная (после рестарта агента)
+  // история, а многочасовой running без процесса обязан разблокировать панель.
+  const writeStale = (minutesAgo) => {
+    const config = testConfig();
+    mkdirSync(config.stateDir, { recursive: true });
+    writeFileSync(config.stateFile, JSON.stringify({
+      version: 1,
+      state: 'running',
+      stage: 'build',
+      percent: 60,
+      startedAt: new Date(Date.now() - minutesAgo * 60 * 60 * 1000).toISOString(),
+      log: [],
+    }));
+    return config;
+  };
+
+  const fresh = createUpdateManager(writeStale(1));
+  assert.equal(fresh.status().state, 'running', 'час без процесса при снятом лимите — не ошибка');
+  assert.equal(fresh.isBusy(), true, 'но такое состояние переживает только до 6 часов');
+
+  const ancient = createUpdateManager(writeStale(7));
+  const status = ancient.status();
+  assert.equal(status.state, 'failed', '7-часовой running без процесса снимается общим порогом');
+  assert.match(status.error, /перезагружался/);
+  assert.equal(ancient.isBusy(), false, 'кнопка снова активна');
 });
 
 /* ── 3. shell-скрипт обновления ──────────────────────────────────── */
@@ -362,6 +446,9 @@ test('deploy/update-project.sh: синтаксис и полный набор с
   assert.match(source, /git stash push/);
   assert.match(source, /git merge --ff-only/);
   assert.match(source, /UPDATE_APPLY_MIGRATIONS/);
+  assert.match(source, /UPDATE_BACKUP_BEFORE/, 'бэкап БД переключается флажком из панели');
+  assert.match(source, /UPDATE_RUN_TESTS/, 'тесты в сборке переключаются флажком из панели');
+  assert.match(source, /UPDATE_MIGRATIONS_ONLY/, 'режим «только миграции» без пересборки');
   assert.match(source, /migrations\.mark/, 'применённые миграции запоминаются, а не применяются по кругу');
   assert.match(source, /pg_dump/, 'перед миграциями обязана быть резервная копия');
   assert.match(source, /--diff-filter=A .* -- supabase\/migrations/);
@@ -528,6 +615,11 @@ test('панель мониторинга: диск, контент и обно�
   assert.match(tab, /\/api\/admin\/monitor\/update/);
   assert.match(tab, /UPDATE_STAGES/);
   assert.match(tab, /applyMigrations/);
+  // Флажки вариантов обновления и кнопка «только миграции» — контракт панели.
+  assert.match(tab, /runTests/, 'флажок «с тестами»');
+  assert.match(tab, /backupBefore/, 'флажок «с бэкапом БД»');
+  assert.match(tab, /migrationsOnly: true/, 'кнопка «применить только миграции»');
+  assert.match(tab, /startMigrationsOnly/);
   assert.match(tab, /\/api\/admin\/content\?action=/, 'синхронизация Galnet и добивка переводов — кнопками');
   assert.match(tab, /runContent\('sync'\)/, 'кнопка «Синхронизировать Galnet сейчас»');
   assert.match(tab, /runContent\('translate'\)/, 'кнопка «Перевести недостающее»');

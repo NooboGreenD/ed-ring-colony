@@ -44,14 +44,28 @@ export async function POST(request: Request) {
     const auth = await requireAdmin(request);
     if ('response' in auth) return auth.response;
 
-    const body = await request.json().catch(() => null) as { applyMigrations?: unknown; confirm?: unknown } | null;
+    const body = await request.json().catch(() => null) as {
+      applyMigrations?: unknown;
+      backup?: unknown;
+      runTests?: unknown;
+      migrationsOnly?: unknown;
+      confirm?: unknown;
+    } | null;
     // A rebuild of production must be an explicit action, never a stray POST.
     if (body?.confirm !== true) {
       return NextResponse.json({ error: 'Нужно подтверждение: confirm=true' }, { status: 400, ...NO_STORE });
     }
-    const applyMigrations = body?.applyMigrations === undefined ? true : body.applyMigrations === true;
+    // Флажки приходят из панели мониторинга: с тестами / с бэкапом БД /
+    // с миграциями, плюс отдельный режим «применить только миграции»
+    // (без сборки и переключения контейнеров). Любой флаг — строго boolean:
+    // undefined означает «по умолчанию включено».
+    const flag = (value: unknown, fallback = true) => (value === undefined ? fallback : value === true);
+    const migrationsOnly = body?.migrationsOnly === true;
+    const applyMigrations = migrationsOnly ? true : flag(body?.applyMigrations);
+    const backup = flag(body?.backup);
+    const runTests = flag(body?.runTests);
 
-    const result = await callUpdateAgent('start', { applyMigrations });
+    const result = await callUpdateAgent('start', { applyMigrations, backup, runTests, migrationsOnly });
     if (!result.ok) {
       return NextResponse.json(
         { success: false, error: result.error, update: 'update' in result ? result.update : null },

@@ -25,6 +25,14 @@
 #   UPDATE_APPLY_MIGRATIONS  1 — применять недостающие supabase/migrations/*.sql
 #                        (все неотмеченные в migrations.mark: и новые между
 #                        ревизиями, и уцелевшие после сбоев прошлых прогонов)
+#   UPDATE_BACKUP_BEFORE     1 (default) — pg_dump БД перед обновлением;
+#                        0 — без резервной копии (флажок «с бэкапом БД»)
+#   UPDATE_RUN_TESTS         1 (default) — гонять тесты при сборке (compose:
+#                        RUN_TESTS в build-args, systemd: npm test перед
+#                        сборкой); 0 — быстрый прогон без тестов
+#   UPDATE_MIGRATIONS_ONLY   1 — кнопка «применить только миграции»:
+#                        синхронизация исходников + миграции, БЕЗ сборки,
+#                        переключения и проверки health (контейнеры не трогаем)
 #   UPDATE_BACKUP_DIR        каталог для pg_dump перед миграциями
 #   UPDATE_HEALTH_URL        что опрашивать после переключения
 #   SYSTEMD_SERVICE / APP_DIR unit и standalone-выкладка для systemd-режима
@@ -37,6 +45,11 @@ BRANCH="${PROJECT_UPDATE_BRANCH:-main}"
 REPOSITORY="${PROJECT_REPOSITORY:-NooboGreenD/ed-ring-colony}"
 MODE="${PROJECT_DEPLOY_MODE:-auto}"
 APPLY_MIGRATIONS="${UPDATE_APPLY_MIGRATIONS:-1}"
+# Флажки приходят из панели (Админка → Мониторинг → «Обновление проекта»):
+# бэкап БД, тесты и режим «только миграции» переключаются на каждый запуск.
+BACKUP_BEFORE="${UPDATE_BACKUP_BEFORE:-1}"
+RUN_TESTS="${UPDATE_RUN_TESTS:-1}"
+MIGRATIONS_ONLY="${UPDATE_MIGRATIONS_ONLY:-0}"
 STATE_DIR="${UPDATE_STATE_DIR:-$PROJECT_DIR/../update-state}"
 BACKUP_DIR="${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}"
 HEALTH_URL="${UPDATE_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
@@ -243,8 +256,10 @@ else
 fi
 
 DUMP=""
-if [ "$APPLY_MIGRATIONS" = "1" ] && [ -n "$DB_PSQL" ] && [ -n "$PENDING_MIGRATIONS" ]; then
-  report backup 45 "Резервная копия базы перед миграциями"
+# Дамп делается по флажку «с бэкапом БД» (UPDATE_BACKUP_BEFORE), а не только
+# перед миграциями: админ выбирает, нужна ли копия именно в этом прогоне.
+if [ "$BACKUP_BEFORE" = "1" ] && [ -n "$DB_PSQL" ]; then
+  report backup 45 "Резервная копия базы данных"
   # Каталог может оказаться недоступен (апдейтер в контейнере с read-only
   # rootfs) — тогда пишем в каталог состояния, а не бросаем обновление.
   if ! mkdir -p "$BACKUP_DIR" 2>/dev/null || [ ! -w "$BACKUP_DIR" ]; then
@@ -309,6 +324,19 @@ if [ -n "$PENDING_MIGRATIONS" ]; then
   fi
 fi
 
+# ── 4d. режим «только миграции»: база трогается, сборка — нет ───────
+# Кнопка «Применить только миграции» в панели: исходники синхронизированы,
+# миграции накатаны — дальше пересборка НЕ идёт (контейнеры не перезапускаются,
+# health не опрашивается: живой сайт мы не меняли). Финальный «done» сообщает
+# mode=migrations — панель по нему показывает свои стадии и подписи.
+if [ "$MIGRATIONS_ONLY" = "1" ]; then
+  printf '::edrc::{"stage":"done","percent":100,"mode":"migrations","branch":"%s","fromSha":"%s","toSha":"%s","migrationsApplied":%s,"message":"%s"}\n' \
+    "$(json_safe "$BRANCH")" "$CURRENT_SHA" "$NEW_SHA" "$MIGRATIONS_APPLIED" \
+    "$(json_safe "миграции применены: $MIGRATIONS_APPLIED; сборка и переключение не выполнялись")"
+  say "МИГРАЦИИ ПРИМЕНЕНЫ (без пересборки)"
+  exit 0
+fi
+
 
 # ── 5. сборка и переключение ─────────────────────────────────────────
 # Метаданные ревизии нужны ОБЕИМ режимам: их читает docker-compose.yml
@@ -330,9 +358,13 @@ if [ "$MODE" = "compose" ]; then
   # docker compose читает build-args из .env — держим symlink актуальным.
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
   # На малом VPS эта стадия — 30–60 минут (npm ci при смене lock-файла,
-  # тесты, next build): это норма, а не зависание. Таймаут апдейтера по
-  # умолчанию 90 минут (UPDATE_TIMEOUT_MINUTES); RUN_TESTS=0 в
-  # .env.production — быстрый режим без тестов.
+  # тесты, next build): это норма, а не зависание. Таймаута на сборку по
+  # умолчанию нет (см. UPDATE_TIMEOUT_MINUTES в update-agent); флажок
+  # «с тестами» из панели задаёт RUN_TESTS для build-args — переменная
+  # окружения перекрывает значение из --env-file (приоритет окружения над
+  # env-файлом закреплён документацией Compose).
+  export RUN_TESTS
+  say "тесты в сборке образа: RUN_TESTS=$RUN_TESTS"
   report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
   if [ -f "$ENV_FILE" ]; then
     compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
@@ -349,6 +381,14 @@ if [ "$MODE" = "compose" ]; then
 else
   report build 62 "npm ci"
   npm ci --no-audit --no-fund
+  # Флажок «с тестами» и в systemd-режиме: тесты идут после npm ci и до
+  # сборки — упавший тест останавливает обновление ДО перезапуска сервиса.
+  if [ "$RUN_TESTS" = "1" ]; then
+    report build 68 "Тесты (npm test)"
+    npm test
+  else
+    say "тесты пропущены (UPDATE_RUN_TESTS=0)"
+  fi
   report build 75 "npm run build"
   npm run build
   report switch 85 "Выкладываю standalone и перезапускаю $SYSTEMD_SERVICE"

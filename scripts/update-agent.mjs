@@ -11,7 +11,9 @@
  * Endpoints:
  *   GET  /health         → { ok, active }                     (no token)
  *   GET  /status[?full=1]→ sanitised progress state           (token)
- *   POST /update         → start an update                     (token)
+ *   POST /update         → start an update
+ *                         body: { applyMigrations?, backup?, runTests?,
+ *                                 migrationsOnly? }           (token)
  *   POST /backup         → start a manual database backup      (token)
  *   POST /abort          → SIGTERM the running job             (token)
  *   GET  /env            → masked env-file keys                (token)
@@ -38,8 +40,12 @@
  *   UPDATE_SCRIPT        default <PROJECT_DIR>/deploy/update-project.sh
  *   UPDATE_STATE_DIR     lock + state file (default <PROJECT_DIR>/../update-state)
  *   UPDATE_APPLY_MIGRATIONS  "1" (default) or "0"
- *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES (default 90: a cold image
- *        rebuild on a small VPS can legitimately take a long time)
+ *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES — лимит длительного обновления;
+ *        по умолчанию БЕЗ ограничения (сборка не убивается по времени):
+ *        0/off/unlimited или вовсе не задан — лимита нет; положительное
+ *        число — вернуть ограничение в минутах. Сломавшийся «running» без
+ *        процесса (рестарт хоста) разблокируется сам через 6 часов либо
+ *        кнопкой «Остановить».
  *   BACKUP_SCRIPT        default <PROJECT_DIR>/deploy/db-backup.sh
  *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
  *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
@@ -70,6 +76,27 @@ import {
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * «Залипший» running БЕЗ процесса (агент/хост перезагрузились посреди
+ * сборки) должен разблокировать панель сам, даже когда лимит сборки снят:
+ * 6 часов — с запасом больше любой реальной холодной сборки.
+ */
+const STALE_RUNNING_LIMIT_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Лимит обновления в минутах → миллисекунды. Пусто / 0 / off / unlimited →
+ * null — лимита нет, скрипт сборки не останавливается по времени («45 минут
+ * билда» отменены); положительное число → действующее ограничение.
+ */
+export function parseUpdateTimeoutMs(raw) {
+  const text = String(raw ?? '').trim().toLowerCase();
+  if (!text) return null;
+  if (text === '0' || text === '-1' || text === 'off' || text === 'none' || text === 'unlimited' || text === 'false') return null;
+  const minutes = Number(text);
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  return Math.max(60_000, Math.round(minutes) * 60_000);
+}
 
 export function updateAgentConfig(env = process.env) {
   const host = (env.UPDATE_AGENT_HOST || '127.0.0.1').trim();
@@ -104,11 +131,11 @@ export function updateAgentConfig(env = process.env) {
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
     applyMigrations: (env.UPDATE_APPLY_MIGRATIONS ?? '1').toString().trim() !== '0',
     healthUrl: (env.UPDATE_HEALTH_URL || 'http://127.0.0.1:3000/api/health').trim(),
-    // 45 мин не хватало: холодная сборка образа на малом VPS (npm ci при
-    // смене lock-файла + тесты + next build) упирается в потолок, и апдейт
-    // убивался посреди docker build. Запас 90 мин; точное значение — в
-    // .env.production через UPDATE_TIMEOUT_MINUTES.
-    timeoutMs: Math.max(60_000, (Number(env.UPDATE_TIMEOUT_MINUTES) || 90) * 60_000),
+    // Лимита сборки по умолчанию НЕТ: холодная сборка на малом VPS занимает
+    // десятки минут и не должна убиваться по времени. Ограничение — только
+    // явное: UPDATE_TIMEOUT_MINUTES=<число> в .env.production (старое
+    // «45» там стоит — удалите строку или поставьте 0).
+    timeoutMs: parseUpdateTimeoutMs(env.UPDATE_TIMEOUT_MINUTES),
   };
 }
 
@@ -182,11 +209,13 @@ export function createUpdateManager(config) {
     isBusy: () => state.state === 'running' || state.state === 'queued',
     status() {
       // A crashed host (state left as "running") must not block the panel
-      // forever: after the timeout the state is reported as failed.
+      // forever: after the limit the state is reported as failed. The build
+      // itself may have NO limit (timeoutMs = null) — then the generic
+      // 6-hour stale threshold applies; «abort» frees the panel earlier.
       if (state.state === 'running' && state.startedAt && !child) {
         const limit = state.kind === 'backup' ? config.backupTimeoutMs
           : state.kind === 'env' ? config.envTimeoutMs
-          : config.timeoutMs;
+          : config.timeoutMs ?? STALE_RUNNING_LIMIT_MS;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
             state: 'failed',
@@ -202,12 +231,16 @@ export function createUpdateManager(config) {
       }
       return sanitizeUpdateState(state);
     },
-    start({ applyMigrations, kind = 'update', full = false, scope = 'web' } = {}) {
+    start({ applyMigrations, backup = true, runTests = true, migrationsOnly = false, kind = 'update', full = false, scope = 'web' } = {}) {
       if (state.state === 'running' || state.state === 'queued') return { started: false, reason: 'already-running' };
-      const backup = kind === 'backup';
+      const isBackup = kind === 'backup';
       const envApply = kind === 'env';
-      const script = envApply ? config.applyEnvScript : backup ? config.backupScript : config.script;
-      const jobLabel = envApply ? 'применение ключей' : backup ? 'резервное копирование' : 'обновление';
+      const script = envApply ? config.applyEnvScript : isBackup ? config.backupScript : config.script;
+      const jobLabel = envApply ? 'применение ключей' : isBackup ? 'резервное копирование' : 'обновление';
+      // «Только миграции» — тот же kind=update, но отдельный режим: панель по
+      // mode=migrations рисует свои стадии и подписи, а скрипт завершается до сборки.
+      const updateMode = migrationsOnly ? 'migrations' : config.deployMode;
+      const flag = (value) => (value === false ? '0' : '1');
       const nowIso = new Date().toISOString();
       Object.assign(state, emptyUpdateState(nowIso), {
         state: 'running',
@@ -218,9 +251,9 @@ export function createUpdateManager(config) {
         // ( гонка «POST → GET» раньше времени роняла проверку «процент не
         // отстаёт от стадии»).
         percent: envApply ? 10 : 5,
-        message: envApply ? 'запускаю deploy/apply-env.sh' : backup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
-        mode: envApply ? scope : backup ? (full ? 'full' : 'fast') : config.deployMode,
-        branch: backup || envApply ? null : config.branch,
+        message: envApply ? 'запускаю deploy/apply-env.sh' : isBackup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
+        mode: envApply ? scope : isBackup ? (full ? 'full' : 'fast') : updateMode,
+        branch: isBackup || envApply ? null : config.branch,
         startedAt: nowIso,
         log: [],
       });
@@ -228,9 +261,9 @@ export function createUpdateManager(config) {
       persist();
       appendLog(envApply
         ? `env apply requested; scope=${scope} file=[файл окружения]`
-        : backup
+        : isBackup
           ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
-          : `update requested; project=${config.repository} branch=${config.branch} mode=${config.deployMode}`);
+          : `update requested; project=${config.repository} branch=${config.branch} mode=${updateMode} tests=${flag(runTests)} backup=${flag(backup)} migrations=${flag(applyMigrations)} only=${migrationsOnly ? '1' : '0'}`);
 
       let spawned;
       try {
@@ -249,7 +282,7 @@ export function createUpdateManager(config) {
                   UPDATE_HEALTH_URL: config.healthUrl,
                   PROJECT_DEPLOY_MODE: config.deployMode,
                 }
-              : backup
+              : isBackup
                 ? {
                     // По умолчанию каталог систем в дамп не попадает: он
                     // восстанавливается импортом дампа Spansh, а весит десятки
@@ -262,7 +295,12 @@ export function createUpdateManager(config) {
                     PROJECT_UPDATE_BRANCH: config.branch,
                     PROJECT_REPOSITORY: config.repository,
                     PROJECT_DEPLOY_MODE: config.deployMode,
-                    UPDATE_APPLY_MIGRATIONS: applyMigrations === false ? '0' : '1',
+                    // Флажки приходят из панели на каждый запуск: бэкап БД,
+                    // тесты в сборке и режим «только миграции».
+                    UPDATE_APPLY_MIGRATIONS: flag(applyMigrations),
+                    UPDATE_BACKUP_BEFORE: flag(backup),
+                    UPDATE_RUN_TESTS: flag(runTests),
+                    UPDATE_MIGRATIONS_ONLY: migrationsOnly ? '1' : '0',
                     UPDATE_HEALTH_URL: config.healthUrl,
                   }),
           },
@@ -287,12 +325,17 @@ export function createUpdateManager(config) {
       });
       spawned.stderr?.on('data', (data) => appendLog(`! ${data}`));
 
-      const timeoutMs = envApply ? config.envTimeoutMs : backup ? config.backupTimeoutMs : config.timeoutMs;
-      timer = setTimeout(() => {
-        appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
-        abort();
-        finish({ state: 'aborted', error: `${jobLabel} длилось дольше ${Math.round(timeoutMs / 60000)} мин и остановлено` });
-      }, timeoutMs);
+      // Лимит времени: у сборки по умолчанию его НЕТ (config.timeoutMs =
+      // null) — длинный билд не убивается по часам; у бэкапа и применения
+      // ключей лимиты остаются, они никогда не бывают долгими.
+      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : config.timeoutMs;
+      if (timeoutMs) {
+        timer = setTimeout(() => {
+          appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
+          abort();
+          finish({ state: 'aborted', error: `${jobLabel} длилось дольше ${Math.round(timeoutMs / 60000)} мин и остановлено` });
+        }, timeoutMs);
+      }
 
       spawned.on('error', (error) => {
         if (timer) clearTimeout(timer);
@@ -309,7 +352,7 @@ export function createUpdateManager(config) {
         } else if (code === 0) {
           finish({ state: 'succeeded', percent: 100, stage: 'done', exitCode: 0, error: null });
         } else {
-          finish({ state: 'failed', exitCode: code, error: state.message || `${backup ? 'db-backup.sh' : 'updater'} завершился с кодом ${code}` });
+          finish({ state: 'failed', exitCode: code, error: state.message || `${isBackup ? 'db-backup.sh' : 'updater'} завершился с кодом ${code}` });
         }
       });
       return { started: true };
@@ -509,10 +552,18 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
       }
       if (request.method === 'POST' && url.pathname === '/update') {
         const body = await readJsonBody(request);
-        const applyMigrations = body?.applyMigrations === undefined
-          ? config.applyMigrations
-          : Boolean(body.applyMigrations);
-        const result = manager.start({ applyMigrations });
+        // Флажки панели: бэкап БД, тесты, режим «только миграции». Режим
+        // «только миграции» по определению применяет миграции — флаг не
+        // может быть там выключен даже кривым запросом.
+        const migrationsOnly = body?.migrationsOnly === true;
+        const applyMigrations = migrationsOnly
+          ? true
+          : body?.applyMigrations === undefined
+            ? config.applyMigrations
+            : Boolean(body.applyMigrations);
+        const backup = body?.backup === undefined ? true : Boolean(body.backup);
+        const runTests = body?.runTests === undefined ? true : Boolean(body.runTests);
+        const result = manager.start({ applyMigrations, backup, runTests, migrationsOnly });
         if (!result.started) {
           send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
           return;
