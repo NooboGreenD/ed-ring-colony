@@ -20,9 +20,9 @@ RUN npm ci --no-audit --no-fund
 # webpack-сборки вдвое и меньше ест RAM, что критично для малого VPS
 # (2 vCPU / 4 ГБ). Если когда-нибудь понадобится старый бандлер — верните
 # флаги `--webpack` в package.json.
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+# Наследуем слой с зависимостями вместо отдельного копирования node_modules:
+# на HDD под нагрузкой это копирование может занять часы ещё до next build.
+FROM deps AS builder
 COPY . .
 
 # Публичные переменные (безопасно вшивать в бандл)
