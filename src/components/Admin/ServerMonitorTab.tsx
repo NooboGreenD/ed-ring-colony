@@ -957,7 +957,7 @@ export default function ServerMonitorTab() {
 
           {snapshot.project.pendingMigrations.length > 0 && (
             <div className="ops-migrations">
-              <span>Новые миграции между ревизиями (будут применены автоматически, если включено ниже):</span>
+              <span>Неприменённые миграции (будут применены автоматически, если включено ниже):</span>
               {snapshot.project.pendingMigrations.map((name) => <code key={name}>{name}</code>)}
             </div>
           )}
@@ -966,7 +966,7 @@ export default function ServerMonitorTab() {
             <button
               type="button"
               className="ops-button-primary"
-              disabled={!updateConnected || updateBusy || update?.active === true || snapshot.project.updateStatus === 'current'}
+              disabled={!updateConnected || updateBusy || update?.active === true}
               onClick={() => void startUpdate()}
             >
               <IconRefresh size={14} />
@@ -979,10 +979,13 @@ export default function ServerMonitorTab() {
             )}
             <label>
               <input type="checkbox" checked={applyMigrations} onChange={(event) => setApplyMigrations(event.target.checked)} />
-              применить новые миграции
+              применить недостающие миграции
             </label>
             {snapshot.project.updateStatus === 'current' && (
-              <span className="ops-inline-note">Отставания от {snapshot.project.upstreamBranch} нет — обновлять нечего.</span>
+              <span className="ops-inline-note">
+                Отставания от {snapshot.project.upstreamBranch} нет — кнопка всё равно применит недостающие миграции
+                и пересоберёт проект (так чинятся сорвавшиеся сборки и пропущенные миграции).
+              </span>
             )}
             {updateMessage && <span className="ops-inline-note">{updateMessage}</span>}
           </div>

@@ -20,8 +20,16 @@ export interface UpdateAgentStatus {
   update: ReturnType<typeof sanitizeUpdateState> | null;
   /** What /api/status may reveal to any visitor. */
   public: ReturnType<typeof publicUpdateView>;
+  /**
+   * Имена файлов supabase/migrations/*.sql, которых агент не видит
+   * применёнными (сверка с migrations.mark на хосте). Ровно то, что кнопка
+   * донашивает при следующем обновлении.
+   */
+  pendingMigrations: string[];
   reason: string | null;
 }
+
+const MIGRATION_NAME = /^[A-Za-z0-9._-]{1,80}\.sql$/;
 
 const STATUS_TIMEOUT_MS = 2_500;
 /** Two seconds is short enough for a live progress bar, long enough to absorb a page flood. */
@@ -56,7 +64,7 @@ const idleState = () => sanitizeUpdateState(emptyUpdateState());
 
 function offline(configured: boolean, reason: string | null): UpdateAgentStatus {
   const update = idleState();
-  return { configured, connected: false, update, public: publicUpdateView(update), reason };
+  return { configured, connected: false, update, public: publicUpdateView(update), pendingMigrations: [], reason };
 }
 
 interface CachedStatus {
@@ -96,11 +104,17 @@ export async function getUpdateAgentStatus(options: { full?: boolean; cacheMs?: 
     const payload: unknown = await response.json();
     const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
     const update = sanitizeUpdateState(record.update ?? null);
+    const pendingMigrations = Array.isArray(record.pendingMigrations)
+      ? (record.pendingMigrations as unknown[])
+          .filter((name): name is string => typeof name === 'string' && MIGRATION_NAME.test(name))
+          .sort()
+      : [];
     const value: UpdateAgentStatus = {
       configured: true,
       connected: true,
       update,
       public: publicUpdateView(update),
+      pendingMigrations,
       reason: null,
     };
     cache = { expiresAt: now + cacheMs, value };

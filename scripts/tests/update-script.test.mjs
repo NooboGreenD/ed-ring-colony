@@ -11,8 +11,12 @@ import { fileURLToPath } from 'node:url';
  *
  * Скрипт меняет прод, поэтому сценарии проверяются целиком, а не «по строкам»:
  * Docker и сеть подменяются заглушками в PATH, а всё остальное — настоящий git.
- * Запускается два обновления подряд: первое должно перемотать ветку и применить
- * новые миграции, второе — честно сказать «обновлять нечего».
+ *
+ * Контракт кнопки «Обновить сейчас»: прогон ВСЕГДА донашивает недостающие
+ * миграции (неотмеченные в migrations.mark) и пересобирает стек, даже когда
+ * git уже на последней ревизии. Раньше такой прогон отвечал «обновлять
+ * нечего» и не трогал ни базу, ни сборку — сорвавшиеся сборки и пропущенные
+ * миграции не могли поправиться кнопкой никогда.
  */
 
 const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '../..');
@@ -39,18 +43,23 @@ function setup() {
   mkdirSync(state, { recursive: true });
   mkdirSync(src, { recursive: true });
   writeFileSync(log, '');
+  // Клон уже работает на базе с базовой схемой: её миграция применена и
+  // отмечена — как на сервере, где механизм отметок migrations.mark живёт.
+  writeFileSync(join(state, 'migrations.mark'), '20260101000000_base.sql\n');
 
   // «Докер»: пишет вызовы в лог, на `docker ps` отвечает именем базы, а
   // проверка живости (curl) всегда успешна. Если существует файл fail-on,
   // psql падает на миграции, текст которой там помянут — так проверяется
-  // реакция скрипта на сорвавшуюся миграцию.
+  // реакция скрипта на сорвавшуюся миграцию. Текст ошибки задаётся через
+  // STUB_FAIL_MSG (по умолчанию — синтаксическая ошибка, которую скрипт
+  // обязан прервать; «already exists» — напротив, помечается применённой).
   stub(bin, 'docker', [
     'echo "[docker] $*" >> "$STUB_LOG"',
     'case "$*" in',
     '  *psql*)',
     '    input=$(cat)',
     '    if [ -f "$STUB_FAIL_ON" ] && printf "%s" "$input" | grep -qf "$STUB_FAIL_ON"; then',
-    '      echo "ERROR: relation already exists" >&2; exit 3',
+    '      echo "${STUB_FAIL_MSG:-ERROR: syntax error at or near}" >&2; exit 3',
     '    fi',
     '    exit 0;;',
     '  ps) printf "supabase-db\\n" ;;',
@@ -99,10 +108,10 @@ function setup() {
   git(other, 'config', 'user.email', 't@t');
   git(other, 'config', 'user.name', 't');
 
-  const run = () => spawnSync('bash', [SCRIPT], {
+  const run = (extraEnv = {}) => spawnSync('bash', [SCRIPT], {
     encoding: 'utf8',
     cwd: src,
-    env: { ...env, STUB_FAIL_ON: join(work, 'fail-on') },
+    env: { ...env, STUB_FAIL_ON: join(work, 'fail-on'), ...extraEnv },
   });
   const release = (files) => {
     for (const [name, content] of Object.entries(files)) {
@@ -158,7 +167,7 @@ test('первое обновление: перемотка, применени�
     assert.ok(run.stdout.includes('применяю 20260925000000_new_one.sql'));
 
     const applied = readFileSync(join(ctx.state, 'migrations.mark'), 'utf8').trim().split('\n');
-    assert.deepEqual(applied, ['20260925000000_new_one.sql', '20260926000000_new_two.sql']);
+    assert.deepEqual(applied, ['20260101000000_base.sql', '20260925000000_new_one.sql', '20260926000000_new_two.sql']);
 
     // Реальные вызовы: бэкап, psql, пересборка, prune.
     const calls = readFileSync(ctx.log, 'utf8');
@@ -179,7 +188,7 @@ test('первое обновление: перемотка, применени�
   }
 });
 
-test('повторный запуск: «обновлять нечего», миграции не применяются второй раз', { skip }, () => {
+test('повторный запуск: пересборка без перемотки, миграции второй раз не накатываются', { skip }, () => {
   const ctx = setup();
   try {
     ctx.release({ 'supabase/migrations/20260927000000_third.sql': '-- third\n' });
@@ -188,9 +197,66 @@ test('повторный запуск: «обновлять нечего», ми
     writeFileSync(ctx.log, '');
     const second = ctx.run();
     assert.equal(second.status, 0, second.stdout + second.stderr);
-    assert.match(second.stdout, /Обновлять нечего/);
-    assert.match(second.stdout, /"stage":"done","percent":100,"migrationsApplied":0/);
-    assert.equal(readFileSync(ctx.log, 'utf8').includes('psql'), false, 'пустой прогон не трогает базу');
+    // Отсутствие отставания — не повод отвечать «обновлять нечего»: кнопка
+    // обязана пересобрать стек (так чинится сорвавшийся прошлый билд).
+    assert.match(second.stdout, /перемотка не требуется/);
+    const done = events(second.stdout).pop();
+    assert.equal(done.stage, 'done');
+    assert.equal(done.percent, 100);
+    assert.equal(done.migrationsApplied, 0, 'всё уже отмечено — накатывать нечего');
+    assert.equal(done.fromSha, done.toSha, 'ревизия не менялась');
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.match(calls, /up -d --build web jobs monitor-agent/, 'повторный прогон всё равно пересобирает');
+    assert.equal(calls.includes('psql'), false, 'отмеченная миграция не накатывается второй раз');
+    assert.equal(calls.includes('pg_dump'), false, 'без неприменённых миграций дамп не нужен');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('пропущенная миграция донашивается следующим прогоном без новых коммитов', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'supabase/migrations/20260930000000_third.sql': '-- third\n' });
+    // Первый прогон пропустил миграции (админ выключил флажок / база была
+    // недоступна) — исходники при этом уже перемотаны.
+    const skipped = ctx.run({ UPDATE_APPLY_MIGRATIONS: '0' });
+    assert.equal(skipped.status, 0, skipped.stdout + skipped.stderr);
+    assert.match(skipped.stdout, /НЕ применены/);
+    assert.equal(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8').includes('third'), false);
+
+    writeFileSync(ctx.log, '');
+    // Второй прогон: отставания от ветки нет, но миграция осталась
+    // неприменённой — именно этот случай кнопка раньше объявляла «актуально».
+    const second = ctx.run();
+    assert.equal(second.status, 0, second.stdout + second.stderr);
+    assert.match(second.stdout, /перемотка не требуется/);
+    assert.ok(second.stdout.includes('применяю 20260930000000_third.sql'), 'неприменённая миграция обязана доехать: ' + second.stdout);
+    assert.ok(second.stdout.includes('не была применена раньше'));
+    const done = events(second.stdout).pop();
+    assert.equal(done.stage, 'done');
+    assert.equal(done.migrationsApplied, 1);
+    assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20260930000000_third\.sql/);
+    assert.match(readFileSync(ctx.log, 'utf8'), /psql -U postgres -d postgres/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('миграция с «already exists» помечается применённой и не блокирует обновление', { skip }, () => {
+  const ctx = setup();
+  try {
+    // База, залитая снимком full_schema.sql, уже содержит объекты старых
+    // миграций: повторный накат получает «already exists» — это не ошибка.
+    ctx.release({ 'supabase/migrations/20260930000001_legacy.sql': '-- legacy\nCREATE TABLE legacy (id int);\n' });
+    writeFileSync(ctx.failOn, 'legacy');
+    const run = ctx.run({ STUB_FAIL_MSG: 'ERROR: relation "legacy" already exists' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /применялась ранее/);
+    const done = events(run.stdout).pop();
+    assert.equal(done.stage, 'done');
+    assert.equal(done.migrationsApplied, 0, 'уже существующая миграция не считается свеженакатанной');
+    assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20260930000001_legacy\.sql/);
   } finally {
     ctx.cleanup();
   }
