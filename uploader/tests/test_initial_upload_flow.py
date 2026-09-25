@@ -10,6 +10,7 @@ ttkbootstrap подменяются заглушками, приложение �
 дёргает EDSM/Inara/Raven, повторный импорт тех же файлов ничего не делает.
 """
 
+import json
 import sys
 import time
 import types
@@ -308,6 +309,70 @@ class UploadFlowTests(unittest.TestCase):
         self.assertTrue(rows, "накопленные доставки должны отправиться одним пакетом")
         self.assertFalse(app._defer_uploads)
         self.assertEqual(app._backfill_deliveries, [])
+
+    def test_live_ticks_do_not_resend_unchanged_depot_state(self):
+        """Живой тик не отправляет то же состояние стройки второй раз.
+
+        Журнал пишет `ColonisationConstructionDepot` каждые несколько секунд,
+        пока игрок стоит у площадки, а состояние меняется редко. Коллектор
+        отсева создавался заново на каждый тик (и на каждый файл), поэтому его
+        набор подписей терялся: на сайт уходила примерно одна строка на тик —
+        тысячи строк об одном состоянии вместо одного изменения.
+        """
+        app = self._build_app()
+        self._reset_import_state(app)
+        app._watcher_cmdr_name = "Test CMDR"
+
+        path = self.journal_dir / "Journal.2026-09-14T100000.01.log"
+        location = json.dumps({
+            "timestamp": "2026-09-14T10:00:00Z",
+            "event": "Location",
+            "StarSystem": "Delta Velorum",
+            "SystemAddress": 6474796828161,
+        }, ensure_ascii=False)
+
+        def depot(second):
+            return json.dumps({
+                "timestamp": "2026-09-14T10:00:%02dZ" % second,
+                "event": "ColonisationConstructionDepot",
+                "MarketID": 3951663874,
+                "ConstructionID": 7,
+                "ConstructionName": "Ditceford Hub",
+                "ConstructionProgress": 0.5,
+                "ResourcesRequired": [
+                    {"Name": "$steel_name;", "RequiredAmount": 5000, "ProvidedAmount": 1200},
+                ],
+            }, ensure_ascii=False)
+
+        # Первый тик: площадка, состояние которой не меняется.
+        path.write_text("\n".join([location] + [depot(s) for s in range(0, 10, 5)]) + "\n", encoding="utf-8")
+        first_size = path.stat().st_size
+        self.assertEqual(app._process_journal_changes(path, 0, first_size, live=True), first_size)
+
+        # Второй тик: журнал дописал ещё три события с тем же состоянием.
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(depot(s) for s in (15, 20, 25)) + "\n")
+        second_size = path.stat().st_size
+        self.assertEqual(
+            app._process_journal_changes(path, first_size, second_size, live=True),
+            second_size - first_size,
+        )
+
+        rows = [row for chunk in self.uploads["construction"] for row in chunk]
+        self.assertEqual(
+            len(rows), 1,
+            "неизменившееся состояние стройки ушло на сайт повторно: %d строк" % len(rows),
+        )
+
+        # Настоящее изменение состояния обязано уйти на сайт.
+        with open(path, "a", encoding="utf-8") as fh:
+            changed = json.loads(depot(30))
+            changed["ConstructionProgress"] = 0.62
+            fh.write(json.dumps(changed, ensure_ascii=False) + "\n")
+        third_size = path.stat().st_size
+        app._process_journal_changes(path, second_size, third_size, live=True)
+        rows = [row for chunk in self.uploads["construction"] for row in chunk]
+        self.assertEqual(len(rows), 2, "изменившееся состояние отброшено как повтор")
 
     def test_live_tick_sends_events_to_third_party(self):
         """Обычный тик watcher'а (live=True) по-прежнему кормит внешние API."""

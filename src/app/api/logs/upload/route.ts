@@ -130,6 +130,7 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ...outcome,
       constructionInserted: telemetry?.constructionInserted ?? 0,
+      constructionDuplicates: telemetry?.constructionDuplicates ?? 0,
       snapshotInserted: telemetry?.snapshotInserted ?? 0,
       pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
       systemScansInserted: telemetry?.systemScansInserted ?? 0,

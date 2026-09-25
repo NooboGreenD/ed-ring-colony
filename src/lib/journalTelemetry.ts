@@ -12,6 +12,12 @@
  * чтобы серверная часть обрабатывала оба источника одним кодом.
  */
 
+import {
+  persistColonisationEvents,
+  telemetryConstructionRow,
+  type ColonisationEventRow,
+} from './colonisationEvents.ts';
+
 export interface ConstructionResourceRow {
   Name?: string;
   Name_Localised?: string;
@@ -159,6 +165,10 @@ function constructionSignature(event: ConstructionSnapshotEvent): string {
 export class TelemetryCollector {
   private readonly state: TelemetryState;
   private readonly constructionEvents: ConstructionSnapshotEvent[] = [];
+  /** Счётчики на момент прошлого `drain()`: в цикле по файлам нужен шаг, а не сумма. */
+  private drainedStats: JournalTelemetryStats = {
+    eventsParsed: 0, constructionSnapshots: 0, constructionDuplicates: 0, scans: 0, bioSignals: 0,
+  };
 
   constructor(state: TelemetryState = createTelemetryState()) {
     this.state = state;
@@ -371,6 +381,37 @@ export class TelemetryCollector {
       stats: this.state.stats,
     };
   }
+
+  /**
+   * Срез, накопленный с предыдущего вызова (для разбора журналов по файлам).
+   *
+   * Браузерный загрузчик читает файлы по одному и складывает результат в
+   * общий список. `finish()` отдаёт состояние целиком, поэтому вызов его в
+   * цикле повторял уже собранные snapshots: на 800 файлах истории в запросы к
+   * сайту уезжали десятки тысяч одинаковых строк (а счётчики складывались
+   * столько же раз). `drain()` отдаёт только новые snapshots и разницу
+   * счётчиков; сканы и статистика пилота — накопительно, их вызывающий код
+   * сводит в Map/объект, и повтор там просто перезаписывает значение.
+   */
+  drain(): JournalTelemetry {
+    const stats = this.state.stats;
+    const delta: JournalTelemetryStats = {
+      eventsParsed: stats.eventsParsed - this.drainedStats.eventsParsed,
+      constructionSnapshots: stats.constructionSnapshots - this.drainedStats.constructionSnapshots,
+      constructionDuplicates: stats.constructionDuplicates - this.drainedStats.constructionDuplicates,
+      scans: stats.scans - this.drainedStats.scans,
+      bioSignals: stats.bioSignals - this.drainedStats.bioSignals,
+    };
+    this.drainedStats = { ...stats };
+    return {
+      cmdrName: this.state.cmdrName,
+      currentSystem: this.state.currentSystem,
+      constructionEvents: this.constructionEvents.splice(0, this.constructionEvents.length),
+      scans: Array.from(this.state.scanByKey.values()),
+      pilotStats: this.state.pilotStats,
+      stats: delta,
+    };
+  }
 }
 
 /** Журнал отдаёт Volcanism как объект {Type, ...} — в БД храним имя типа. */
@@ -459,6 +500,8 @@ export interface JournalTelemetryPayload {
 
 export interface JournalTelemetryOutcome {
   constructionInserted: number;
+  /** Сколько присланных состояний стройки уже было в базе (повторы клиентов). */
+  constructionDuplicates: number;
   snapshotInserted: number;
   /** Сколько снимков не записано, потому что они уже есть в базе. */
   snapshotDuplicates: number;
@@ -496,7 +539,7 @@ function isStatementTimeout(error: { code?: string; message?: string }): boolean
  */
 async function upsertWithinStatementTimeout(
   svc: DbClient,
-  table: 'system_scans' | 'colonisation_events',
+  table: 'system_scans',
   rows: Array<Record<string, unknown>>,
   onConflict: string,
   ignoreDuplicates: boolean,
@@ -525,15 +568,6 @@ function batches<T>(rows: T[], size: number): T[][] {
   return result;
 }
 
-function progressPercent(event: Record<string, unknown>): number | null {
-  const complete = event.ConstructionComplete === true || event.construction_complete === true;
-  if (complete) return 100;
-  const raw = Number(event.construction_progress ?? event.ConstructionProgress ?? event.Progress);
-  if (!Number.isFinite(raw) || raw < 0) return null;
-  // Журнал пишет 0.2224, старые интеграции — уже 22.24.
-  return Math.min(100, raw <= 1 ? raw * 100 : raw);
-}
-
 /**
  * Сохранить «остальное» из журнала: snapshots строек, сканы тел и сводную
  * статистику пилота.
@@ -553,6 +587,7 @@ export async function persistJournalTelemetry(
   const warnings: string[] = [];
   const outcome: JournalTelemetryOutcome = {
     constructionInserted: 0,
+    constructionDuplicates: 0,
     snapshotInserted: 0,
     snapshotDuplicates: 0,
     systemScansInserted: 0,
@@ -565,41 +600,31 @@ export async function persistJournalTelemetry(
 
   if (events.length > 0) {
     const rows = events
-      .map((event) => {
-        const timestamp = typeof event.timestamp === 'string' && event.timestamp ? event.timestamp : new Date().toISOString();
-        const systemName = String(event.system_name ?? event.systemName ?? '').trim().slice(0, 250);
-        if (!systemName) return null;
-        return {
-          user_id: userId,
-          event_timestamp: timestamp,
-          system_name: systemName,
-          market_id: event.market_id == null ? null : String(event.market_id),
-          construction_name: event.construction_name == null ? null : String(event.construction_name).slice(0, 500),
-          construction_id: event.construction_id == null ? null : String(event.construction_id),
-          construction_progress: progressPercent(event),
-          resources_total: Array.isArray(event.resources_total) ? event.resources_total : [],
-          raw_event: event.raw_event && typeof event.raw_event === 'object' ? event.raw_event : event,
-        };
-      })
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-
-    for (const batch of batches(rows, CONSTRUCTION_BATCH)) {
-      try {
-        const { error } = await svc.from('colonisation_events').upsert(batch, {
-          onConflict: 'user_id,event_timestamp,system_name,construction_id',
-          ignoreDuplicates: true,
-        });
-        if (error) throw new Error(error.message);
-        outcome.constructionInserted += batch.length;
-      } catch (error) {
-        warnings.push(`construction events: ${(error as Error).message}`);
-      }
+      .map((event) => telemetryConstructionRow(userId, event))
+      .filter((row): row is ColonisationEventRow => row !== null);
+    if (rows.length < events.length) {
+      // Событие без системы или метки времени записать нельзя: раньше такая
+      // строка уходила в базу с пустым именем системы (в CAPI-окне система
+      // неизвестна) либо с текущим временем вместо журнального, и каждый
+      // повтор загрузки добавлял новую «запись» об одном и том же событии.
+      warnings.push(`construction events: ${events.length - rows.length} без системы/метки времени пропущено`);
     }
+
+    const write = await persistColonisationEvents(svc, rows);
+    outcome.constructionInserted += write.inserted;
+    outcome.constructionDuplicates += write.duplicates;
+    warnings.push(...write.warnings);
+
+    // Снимок прогресса строится только по реально записанным состояниям:
+    // журнал пишет `ColonisationConstructionDepot` каждые несколько секунд,
+    // и повтор уже сохранённого состояния не должен добавлять строку ещё и в
+    // `construction_depot_snapshots`.
+    const stored = rows.filter((row) => write.insertedHashes.has(row.source_hash));
 
     // Отдельный снимок состояния стройки — источник прогресса для карты и
     // страницы системы. Держим по одному на конструкцию в этом запросе.
-    const latest = new Map<string, (typeof rows)[number]>();
-    for (const row of rows) {
+    const latest = new Map<string, ColonisationEventRow>();
+    for (const row of stored) {
       const key = `${row.system_name.toLowerCase()}\u0000${row.construction_id ?? row.construction_name ?? ''}`;
       const previous = latest.get(key);
       if (!previous || Date.parse(String(row.event_timestamp)) > Date.parse(String(previous.event_timestamp))) {

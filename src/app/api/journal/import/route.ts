@@ -1,6 +1,13 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient, authFromRequest } from '@/lib/supabaseServer';
 import type { ParsedColonisationDepot, ParsedColonisationContribution } from '@/lib/journalParser';
+import {
+  contributionEventRow,
+  depotEventRow,
+  latestDepotEvents,
+  persistColonisationEvents,
+  type ColonisationEventRow,
+} from '@/lib/colonisationEvents';
 
 const JOURNAL_DATABASE_BATCH_SIZE = 100;
 const MAX_EVENTS_PER_REQUEST = 500;
@@ -38,25 +45,6 @@ function boundedNumber(value: unknown, fallback: number): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 1_000_000
     ? parsed
     : fallback;
-}
-
-async function insertColonisationEvents(
-  svc: ReturnType<typeof createServiceClient>,
-  rows: Record<string, unknown>[],
-): Promise<number> {
-  let inserted = 0;
-  for (const batch of batches(rows)) {
-    const { data, error } = await svc
-      .from('colonisation_events')
-      .upsert(batch, {
-        onConflict: 'user_id,event_timestamp,system_name,construction_id',
-        ignoreDuplicates: true,
-      })
-      .select('id');
-    if (error) throw new Error(error.message);
-    inserted += data?.length ?? 0;
-  }
-  return inserted;
 }
 
 async function insertSnapshots(
@@ -140,31 +128,30 @@ export async function POST(req: Request) {
       importId = importRecord.id;
     }
 
-    const depotRows = depotEvents.map((ev) => ({
-      user_id: user.id,
-      journal_import_id: importId,
-      event_timestamp: ev.timestamp,
-      system_name: ev.systemName,
-      market_id: ev.marketId,
-      construction_name: ev.constructionName,
-      construction_id: ev.constructionId,
-      construction_progress: ev.constructionProgress,
-      resources_total: ev.resourcesRequired,
-      raw_event: ev as unknown as Record<string, unknown>,
-    }));
-    const insertedDepots = await insertColonisationEvents(svc, depotRows);
+    // Строки строятся общим модулем: тот же `source_hash`, что у браузерного
+    // телеметрийного загрузчика и Colonial Helper'а. Без него повторный импорт
+    // того же файла добавлял дубли (`ColonisationContribution` пишется с пустым
+    // `construction_id`, а уникальный ключ схемы в PostgreSQL NULL'ы не
+    // сравнивает — ограничение такие строки не останавливало).
+    const depotRows: ColonisationEventRow[] = [];
+    const depotSources: ParsedColonisationDepot[] = [];
+    for (const ev of depotEvents) {
+      const row = depotEventRow(user.id, ev, importId);
+      if (!row) continue;
+      depotRows.push(row);
+      depotSources.push(ev);
+    }
+    const depotWrite = await persistColonisationEvents(svc, depotRows);
+    const insertedDepots = depotWrite.inserted;
 
+    // Снимок прогресса — только по реально записанным состояниям: повторная
+    // отправка того же состояния не должна добавлять строку в историю графиков.
     // Keep one snapshot per construction in this request. The browser now
     // sends bounded requests, so a large log no longer forms one huge INSERT.
-    const latestByConstruction = new Map<string, ParsedColonisationDepot>();
-    for (const ev of depotEvents) {
-      const key = `${ev.systemName}:${ev.constructionId ?? ''}`;
-      const existing = latestByConstruction.get(key);
-      if (!existing || new Date(ev.timestamp) > new Date(existing.timestamp)) {
-        latestByConstruction.set(key, ev);
-      }
-    }
-    const snapshots = Array.from(latestByConstruction.values()).map((ev) => ({
+    const storedEvents = depotSources.filter(
+      (_ev, index) => depotWrite.insertedHashes.has(depotRows[index].source_hash),
+    );
+    const snapshots = latestDepotEvents(storedEvents).map((ev) => ({
       system_name: ev.systemName,
       construction_id: ev.constructionId,
       construction_name: ev.constructionName,
@@ -175,25 +162,11 @@ export async function POST(req: Request) {
     }));
     const snapshotCount = await insertSnapshots(svc, snapshots);
 
-    const contributionRows = contributionEvents.map((ev) => ({
-      user_id: user.id,
-      journal_import_id: importId,
-      event_timestamp: ev.timestamp,
-      system_name: ev.systemName,
-      market_id: ev.marketId,
-      construction_name: null,
-      construction_id: null,
-      construction_progress: null,
-      resources_total: [{
-        name: ev.commodity,
-        nameLocalised: ev.commodityLocalised,
-        requiredAmount: 0,
-        providedAmount: ev.amount,
-        payment: 0,
-      }],
-      raw_event: ev as unknown as Record<string, unknown>,
-    }));
-    const insertedContributions = await insertColonisationEvents(svc, contributionRows);
+    const contributionRows = contributionEvents
+      .map((ev) => contributionEventRow(user.id, ev, importId))
+      .filter((row): row is NonNullable<typeof row> => row !== null);
+    const contributionWrite = await persistColonisationEvents(svc, contributionRows);
+    const insertedContributions = contributionWrite.inserted;
 
     // Old clients issue a single request without `finalize`; preserve their
     // completed status while a new client explicitly closes the final chunk.
@@ -211,6 +184,10 @@ export async function POST(req: Request) {
       importId,
       insertedDepots,
       insertedContributions,
+      // Сколько строк оказалось повтором уже сохранённых состояний: раньше
+      // такие повторы молча дописывались в таблицу.
+      duplicateDepots: depotWrite.duplicates,
+      duplicateContributions: contributionWrite.duplicates,
       snapshotCount,
       totalEvents: insertedDepots + insertedContributions,
       complete,

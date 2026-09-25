@@ -629,6 +629,30 @@ class ConstructionSnapshotCollector:
         self._signatures.add(signature)
         self.events.append(event)
 
+    def drain(self) -> List[dict]:
+        """Забрать накопленные snapshots и очистить накопитель.
+
+        Живой watcher читает журнал небольшими порциями, а коллектор живёт
+        всю сессию и запоминает уже отправленные состояния (иначе следующий
+        тик снова прислал бы то же состояние с новой меткой времени). Поэтому
+        забрать события нужно именно так: `collector.events` — это весь
+        накопленный список, и повторная отправка «как есть» росла бы с каждым
+        тиком. Набор подписей при `drain()` сохраняется.
+        """
+        taken = self.events
+        self.events = []
+        return taken
+
+    def requeue(self, events: List[dict]) -> None:
+        """Вернуть не отправленные snapshots: следующий тик повторит их.
+
+        Подпись уже записана, поэтому сама по себе запись в журнале больше не
+        сработает — без возврата пачка потерялась бы навсегда (так и было
+        раньше: коллектор создавался заново на каждый тик).
+        """
+        if events:
+            self.events = list(events) + self.events
+
 
 def _construction_event_from(ev: dict, current_system: str = None) -> Optional[dict]:
     """Собрать один snapshot стройплощадки из события журнала."""
