@@ -45,7 +45,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${PORT_BIND:-127.0.0.1:${PORT:-3000}:3000}"
+      - "127.0.0.1:3000:3000"
     volumes:
       # Pre-downloaded Spansh dump (~6 GiB). The web process downloads it here
       # (resumable) and imports from disk, so a dropped connection never costs
