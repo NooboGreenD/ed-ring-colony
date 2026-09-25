@@ -27,6 +27,8 @@ interface Summary {
   billing: any;
   lists: any;
   content: any;
+  // /api/mobile/admin-summary returns rows from public.app_flags (or []).
+  flags: Array<{ key: string; value: unknown; updated_at: string }>;
   health: any;
 }
 

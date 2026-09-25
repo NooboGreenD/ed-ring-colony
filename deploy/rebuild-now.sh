@@ -10,16 +10,18 @@
 #   bash deploy/rebuild-now.sh               # git pull + полная пересборка
 #   NO_PULL=1 bash deploy/rebuild-now.sh     # только пересборка, без git pull
 #   SKIP_TESTS=1 bash deploy/rebuild-now.sh  # экстренно: без npm test в сборке
+#   USE_CACHE=1 bash deploy/rebuild-now.sh   # повторная сборка с кэшем слоёв
 #   bash deploy/rebuild-now.sh --rollback    # вернуть предыдущий образ web
 #
 # Что делает: fetch + ff-only перемотку ветки, передаёт метаданные
 # APP_GIT_* в сборку, сохраняет текущий образ web как ed-ring-colony:prev,
 # гоняет `docker compose build --no-cache` (полная пересборка слоёв:
-# npm ci + тесты + next build), переключает контейнеры и проверяет
-# /api/health. Старый сайт продолжает работать, пока новая сборка не
-# прошла: при ошибке сборки контейнеры не заменяются.
+# npm ci + тесты + next build; USE_CACHE=1 переиспользует готовые слои),
+# переключает контейнеры и проверяет /api/health. При ошибке сборки
+# контейнеры не заменяются: до успешного build остаётся предыдущий образ.
 #
-# Пересборка на малом VPS идёт 30–60 минут — это не зависание
+# 30–60 минут на малом VPS — только ориентир: на HDD под нагрузкой
+# сначала проверьте I/O, а не повторяйте полную сборку вслепую
 # (см. DEPLOY.md, «Скорость сборки образа»).
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -91,6 +93,10 @@ for key in NEXT_PUBLIC_SUPABASE_URL NEXT_PUBLIC_SUPABASE_ANON_KEY \
            NEXT_PUBLIC_SITE_URL CRON_SECRET; do
   grep -qE "^${key}=..*" "$ENV_FILE" || die "$ENV_FILE: не задан (или пуст) $key"
 done
+case "${USE_CACHE:-0}" in
+  0|1) ;;
+  *) die "USE_CACHE должен быть 0 (полная сборка) или 1 (с кэшем)" ;;
+esac
 if [ "${SKIP_TESTS:-0}" = "1" ]; then
   export RUN_TESTS=0
   warn "SKIP_TESTS=1 — npm test внутри образа будет пропущен"
@@ -177,13 +183,20 @@ else
   warn "контейнер, публикующий порт 3000, не найден — снимок для отката не сделан"
 fi
 
-# ── 5. полная пересборка без кэша ───────────────────────────────────
+# ── 5. сборка (по умолчанию полная; повтор — с USE_CACHE=1) ──────────
+build_args=()
+if [ "${USE_CACHE:-0}" = "1" ]; then
+  say "▶ ПЕРЕСБОРКА с кэшем: $COMPOSE_SERVICES"
+  say "  (неизменившиеся слои переиспользуются; next build проверяет TypeScript)"
+else
+  build_args+=(--no-cache)
+  say "▶ ПОЛНАЯ ПЕРЕСБОРКА без кэша: $COMPOSE_SERVICES"
+  say "  (npm ci + тесты + next build; время зависит от CPU и дискового I/O)"
+  say "  повтор после исправления исходников: USE_CACHE=1 bash deploy/rebuild-now.sh"
+fi
 # $COMPOSE_SERVICES — список слов, разворачивается намеренно.
 # shellcheck disable=SC2086
-say "▶ ПОЛНАЯ ПЕРЕСБОРКА без кэша: $COMPOSE_SERVICES"
-say "  (npm ci + тесты + next build; 30–60 минут на малом VPS — это не зависание)"
-# shellcheck disable=SC2086
-compose_base build --no-cache $COMPOSE_SERVICES
+compose_base build "${build_args[@]}" $COMPOSE_SERVICES
 
 # ── 6. переключение ─────────────────────────────────────────────────
 say "▶ переключаю контейнеры"
