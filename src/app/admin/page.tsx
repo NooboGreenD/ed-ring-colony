@@ -530,7 +530,10 @@ export default function AdminPage() {
 
   return (
     <main className="card">
-      <h1>{t('admin.title')}</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
+        <h1 style={{ margin: 0 }}>{t('admin.title')}</h1>
+        <a href="/m-admin" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', border: '1px solid #e67e22', color: '#e67e22', borderRadius: 2, textDecoration: 'none', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase' }}>📱 Мобильная админка / Android</a>
+      </div>
       <div className="tabs">
         <button className={tab === 'content' ? 'tab tab-active' : 'tab'} onClick={() => setTab('content')}>{t('admin.content')}</button>
         <button className={tab === 'news' ? 'tab tab-active' : 'tab'} onClick={() => setTab('news')}>{t('admin.news')}</button>
