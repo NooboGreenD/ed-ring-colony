@@ -28,6 +28,8 @@ interface Summary {
   lists: any;
   content: any;
   health: any;
+  /** Флаги из app_flags: вкладка «Авторизация» показывает их как есть. */
+  flags?: any[];
 }
 
 function formatBytes(b: number | null | undefined): string {
