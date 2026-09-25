@@ -370,7 +370,6 @@ test('deploy scripts: синтаксис всех скриптов обновл�
     'deploy/monitoring-setup.sh',
     'deploy/prepare-standalone.sh',
     'deploy/rebuild-now.sh',
-    'deploy/start-docker.sh',
   ]) {
     const check = spawnSync('bash', ['-n', join(ROOT, file)], { encoding: 'utf8' });
     assert.equal(check.status, 0, file + ': ' + check.stderr);
@@ -441,66 +440,11 @@ test('apply-env.sh: живое пересоздание сервисов пер�
   assert.match(log, /up -d --force-recreate web/);
 });
 
-test('docker-compose.yml: порты сервиса web параметризованы через PORT_BIND с безопасным дефолтом', () => {
+test('docker-compose.yml: порты сервиса web зафиксированы на 127.0.0.1:3000:3000 (состояние 24 часа назад)', () => {
   const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
-  assert.match(compose, /\$\{PORT_BIND:-127\.0\.0\.1:\$\{PORT:-3000\}:3000\}/, 'порт web по умолчанию 127.0.0.1:3000:3000, настраивается через PORT_BIND');
-});
-
-test('ed-ring-colony-docker.service: systemd unit для Docker Compose существует и корректен', () => {
-  const service = readFileSync(join(ROOT, 'deploy', 'ed-ring-colony-docker.service'), 'utf8');
-  assert.match(service, /ExecStart=.*start-docker\.sh/, 'запускает start-docker.sh');
-  assert.match(service, /ExecStop=.*start-docker\.sh --stop/, 'останавливает через --stop');
-  assert.match(service, /ExecReload=.*start-docker\.sh --restart/, 'перезапускает через --restart');
-});
-
-test('start-docker.sh: запуск со стабом docker передаёт -f docker-compose.yml, сеть Supabase и проверяет health', { skip: needsBash }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'edrc-start-docker-'));
-  const deployDir = join(dir, 'deploy');
-  const binDir = join(dir, 'bin');
-  mkdirSync(deployDir, { recursive: true });
-  mkdirSync(binDir, { recursive: true });
-
-  copyFileSync(join(ROOT, 'deploy', 'start-docker.sh'), join(deployDir, 'start-docker.sh'));
-  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(deployDir, 'compose-lib.sh'));
-  copyFileSync(join(ROOT, 'deploy', 'compose.supabase-net.yml'), join(deployDir, 'compose.supabase-net.yml'));
-  writeFileSync(join(dir, 'docker-compose.yml'), 'services:\n  web:\n    image: test\n');
-  const envFile = join(dir, '.env.production');
-  writeFileSync(envFile, 'SUPABASE_NETWORK=test-supa-net\nPORT_BIND=127.0.0.1:3000:3000\n');
-
-  const logFile = join(dir, 'docker.log');
-  writeFileSync(join(binDir, 'docker'), [
-    '#!/usr/bin/env bash',
-    'if [ "$1" = "compose" ]; then',
-    '  shift',
-    `  echo "[docker-compose] $*" >> "${logFile}"`,
-    '  if [ "$1" = "config" ]; then exit 0; fi',
-    '  if [ "$1" = "ps" ]; then echo "NAME   IMAGE   COMMAND   SERVICE   STATUS   PORTS"; exit 0; fi',
-    '  exit 0',
-    'fi',
-    'if [ "$1" = "info" ]; then exit 0; fi',
-    'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then exit 0; fi',
-    'exit 0',
-  ].join('\n'), { mode: 0o755 });
-
-  writeFileSync(join(binDir, 'curl'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
-
-  const run = spawnSync('bash', [join(deployDir, 'start-docker.sh'), '--restart'], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PATH: `${binDir}:${process.env.PATH}`,
-      REPO_ROOT: dir,
-      ENV_FILE: envFile,
-    },
-  });
-
-  assert.equal(run.status, 0, `start-docker.sh failed: ${run.stdout}\n${run.stderr}`);
-  assert.match(run.stdout, /Принудительное пересоздание сервисов \(восстановление портов\)/);
-  assert.match(run.stdout, /Сайт успешно отвечает/);
-
-  const log = readFileSync(logFile, 'utf8');
-  assert.match(log, /-f .*docker-compose\.yml -f .*deploy\/compose\.supabase-net\.yml/, 'базовый compose и сеть переданы');
-  assert.match(log, /up -d --force-recreate web jobs/, 'сервисы пересозданы с force-recreate');
+  assert.match(compose, /"127\.0\.0\.1:3000:3000"/, 'порт web зафиксирован как 127.0.0.1:3000:3000 без параметризации');
+  assert.doesNotMatch(compose, /PORT_BIND/, 'PORT_BIND не используется после отката к состоянию 24 часа назад');
+  assert.doesNotMatch(compose, /SYNOLOGY_SITE_BIND/, 'SYNOLOGY_SITE_BIND удалён при откате');
 });
 
 test('обрамление: update-agent получил apply-env.sh, monitor-agent — pg, compose — MONITOR_DB_URL', () => {
