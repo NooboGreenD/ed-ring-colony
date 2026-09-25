@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { parse, parsePlPgSQL } = require('libpg-query');
+const { parse, parsePlPgSQL, scan } = require('libpg-query');
 
 /* ──────────────────────────────────────────────────────────────────────────
    SQL-файлы репозитория проверяются настоящим грамматическим разборщиком
@@ -30,6 +30,33 @@ function sqlFiles(dir) {
 }
 
 const FILES = sqlFiles(join(ROOT, 'supabase'));
+
+/**
+ * Миграции, которые намеренно ничего не делают или пока не работают.
+ * Первый файл — шаблон для ручного запуска, второй — заметка о заливке через
+ * Management API. Остальные четыре — та же поломка формата, что и в
+ * 20260903000000_wiki_fill_empty_categories.sql: код съеден комментарием, файл
+ * надо восстановить (см. SQL-MIGRATIONS-AUDIT.md). Если файл починили — уберите
+ * его отсюда, тест об этом напомнит.
+ */
+const KNOWN_DEAD = new Map([
+  ['20260902010000_wiki_colonization_guide.sql', 'шаблон-инструкция для ручного запуска в SQL Editor'],
+  ['20260908020000_wiki_exobiology_update.sql', 'заметка: контент залит через Management API'],
+  ['20260830152500_galnet_news.sql', 'формат потерян: комментарий съел таблицу galnet_news'],
+  ['20260903010000_wiki_update_colonization.sql', 'формат потерян: комментарий съел 3 статьи'],
+  ['20260903020000_wiki_lore_articles.sql', 'формат потерян: комментарий съел 5 статей'],
+  ['20260904100000_system_coords_cache.sql', 'формат потерян: комментарий съел таблицу system_coords'],
+]);
+
+/**
+ * supabase/full_schema.sql — снимок, собранный из тех же миграций: пока в них
+ * лежат потерявшие формат копии, дефект виден и здесь, поэтому проверяются
+ * сами миграции. Снимок пересобирают после их починки.
+ */
+const SNAPSHOT_FILES = new Set(['full_schema.sql']);
+
+const formatDamaged = (file) =>
+  KNOWN_DEAD.has(basename(file)) || SNAPSHOT_FILES.has(basename(file));
 
 test('SQL-файлы supabase/ находятся', () => {
   assert.ok(FILES.length > 40, `найдено ${FILES.length} файлов`);
@@ -97,6 +124,33 @@ test('тела SQL-функций в $fn$-кавычках разбираютс�
 });
 
 /**
+ * Внутренние $-кавычки тела DO ($c$…$c$ — тексты статей) заменяются на
+ * короткий строковый литерал. Для разбора plpgsql их содержимое не важно, а
+ * обёртка тела в отдельный тег на вложенных кавычках спотыкалась — раньше из-за
+ * этого тела сидов wiki вообще не проверялись.
+ * Возвращает null, если кавычки не сбалансированы (тогда тело не проверяем).
+ */
+function maskDollarQuoted(body) {
+  let out = '';
+  let masked = 0;
+  let i = 0;
+  while (i < body.length) {
+    const tag = /^\$[A-Za-z_0-9]*\$/.exec(body.slice(i));
+    if (!tag) {
+      out += body[i];
+      i += 1;
+      continue;
+    }
+    const end = body.indexOf(tag[0], i + tag[0].length);
+    if (end === -1) return null;
+    out += " '<content>' ";
+    masked += 1;
+    i = end + tag[0].length;
+  }
+  return { body: out, masked };
+}
+
+/**
  * Тела DO из дерева разбора: регуляркой границы $…$-кавычек не найти.
  * libpg_query 18 кладёт тело в DoStmt.args[].DefElem(arg=as).arg.String.sval.
  */
@@ -124,19 +178,23 @@ function doBlocks(node, out = []) {
 test('блоки DO разбираются как plpgsql', async () => {
   const failures = [];
   let blocks = 0;
+  let unparsed = 0;
   for (const file of FILES) {
+    if (formatDamaged(file)) continue; // известные дефекты формата — см. KNOWN_DEAD
     let tree;
     try {
       tree = await parse(readFileSync(file, 'utf8'));
     } catch {
       continue; // синтаксис файла проверяет отдельный тест
     }
-    for (const [index, body] of doBlocks(tree).entries()) {
-      // В исторических сидах wiki внутри блока лежат собственные $c$/$nl$-строки:
-      // обёртка для parsePlPgSQL на них ломается, а сам файл парсер уже принял.
-      if (/\$[A-Za-z_]*\$/.test(body)) continue;
-      blocks++;
-      const wrapped = `CREATE FUNCTION _sqlcheck_${index}() RETURNS void AS $wrap$${body}$wrap$ LANGUAGE plpgsql`;
+    for (const [index, raw] of doBlocks(tree).entries()) {
+      const masked = maskDollarQuoted(raw);
+      if (!masked) {
+        unparsed += 1;
+        continue;
+      }
+      blocks += 1;
+      const wrapped = `CREATE FUNCTION _sqlcheck_${index}() RETURNS void AS $wrap$${masked.body}$wrap$ LANGUAGE plpgsql`;
       try {
         await parsePlPgSQL(wrapped);
       } catch (error) {
@@ -144,8 +202,54 @@ test('блоки DO разбираются как plpgsql', async () => {
       }
     }
   }
-  assert.ok(blocks >= 3, `проверено блоков DO: ${blocks}`);
+  assert.ok(blocks >= 12, `проверено блоков DO: ${blocks} (не разобрано: ${unparsed})`);
   assert.deepEqual(failures, []);
+});
+
+/* ── Формат файлов: миграция не должна «теряться» целиком ── */
+
+test('ни один комментарий не съедает код', async () => {
+  // Миграция, сохранённая без переводов строк, ломается молча: первый же «-- …»
+  // превращает в комментарий весь остаток файла вместе с DO-блоком (так был
+  // испорчен 20260903000000_wiki_fill_empty_categories.sql). Честный
+  // комментарий в дереве короткий — самый длинный 228 символов, поэтому
+  // длинный токен SQL_COMMENT означает потерянные переводы строк.
+  const LIMIT = 400;
+  const failures = [];
+  for (const file of FILES) {
+    if (formatDamaged(file)) continue; // известные дефекты формата — см. KNOWN_DEAD
+    const sql = readFileSync(file, 'utf8');
+    let tokens;
+    try {
+      ({ tokens } = await scan(sql));
+    } catch {
+      continue; // файл без команд сканер может не разобрать — это ловит тест ниже
+    }
+    for (const token of tokens) {
+      if (token.tokenName !== 'SQL_COMMENT') continue;
+      const length = token.end - token.start;
+      if (length <= LIMIT) continue;
+      const line = sql.slice(0, token.start).split('\n').length;
+      failures.push(
+        `${relative(ROOT, file)}:${line} — комментарий на ${length} символов ` +
+          `(«${token.text.slice(0, 60).trim()}…»): файл сохранён без переводов строк?`,
+      );
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('каждая миграция содержит хотя бы одну команду', async () => {
+  const dead = [];
+  for (const file of sqlFiles(join(ROOT, 'supabase', 'migrations'))) {
+    const tree = await parse(readFileSync(file, 'utf8'));
+    const statements = Array.isArray(tree) ? tree : tree.stmts ?? [];
+    if (statements.length === 0) dead.push(basename(file));
+  }
+  const unexpected = dead.filter((name) => !KNOWN_DEAD.has(name));
+  const revived = [...KNOWN_DEAD.keys()].filter((name) => !dead.includes(name));
+  assert.deepEqual(unexpected, [], 'эти миграции не выполняют ни одной команды');
+  assert.deepEqual(revived, [], 'файлы снова работают — уберите их из KNOWN_DEAD');
 });
 
 /* ── Миграция масштаба: содержательные проверки, а не только синтаксис ── */
