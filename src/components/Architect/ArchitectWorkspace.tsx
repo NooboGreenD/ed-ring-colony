@@ -5,7 +5,18 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import InstallationPicker from '@/components/Architect/InstallationPicker';
 import PlanSummary from '@/components/Architect/PlanSummary';
+import ProgressPanel from '@/components/Architect/ProgressPanel';
+import SharePanel from '@/components/Architect/SharePanel';
+import SourcingPanel from '@/components/Architect/SourcingPanel';
 import { CATALOGUE_VERSION } from '@/lib/architect/catalogue';
+import {
+  matchProgress,
+  parseActualSites,
+  type ActualSite,
+  type ProgressReport,
+  type SiteProgress,
+} from '@/lib/architect/progress';
+import type { PlanView } from '@/lib/architect/store';
 import {
   PLAN_FORMAT_VERSION,
   addSite,
@@ -67,6 +78,13 @@ export default function ArchitectWorkspace() {
   const [pickerBody, setPickerBody] = useState<string>('');
   const [showMap, setShowMap] = useState(false);
   const [recent, setRecent] = useState<string[]>([]);
+  // Серверная копия плана: null — план пока только черновик в браузере.
+  const [remoteId, setRemoteId] = useState<string | null>(null);
+  const [actualSites, setActualSites] = useState<ActualSite[]>([]);
+  const [progressFetched, setProgressFetched] = useState(false);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState('');
+  const [progressSource, setProgressSource] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const bodies = useMemo<ArchitectBody[]>(() => fromScanRecords(rawRows, systemName), [rawRows, systemName]);
@@ -76,13 +94,60 @@ export default function ArchitectWorkspace() {
     [plan, bodies],
   );
   const structures = useMemo(() => (plan ? planToStructures(plan) : []), [plan]);
+  /** Отчёт пересчитывается при любой правке плана — площадки при этом не перезапрашиваются. */
+  const progress = useMemo<ProgressReport | null>(
+    () => (plan && progressFetched ? matchProgress(plan, actualSites) : null),
+    [plan, progressFetched, actualSites],
+  );
+  const progressBySite = useMemo(
+    () => new Map<string, SiteProgress>((progress?.sites ?? []).map((entry) => [entry.siteId, entry])),
+    [progress],
+  );
 
-  const loadSystem = useCallback(async (name: string) => {
+  /**
+   * Фактические стройплощадки системы. Источник — тот же, что у остального
+   * сайта (`/api/systems/progress`); при недоступности панель честно пишет,
+   * что данных нет, а планировщик продолжает работать.
+   */
+  const loadProgress = useCallback(async (name: string) => {
+    const target = name.trim();
+    if (!target) return;
+    setProgressLoading(true);
+    setProgressError('');
+    try {
+      const response = await fetch(`/api/systems/progress?name=${encodeURIComponent(target)}`, { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setActualSites([]);
+        setProgressFetched(false);
+        setProgressSource('');
+        setProgressError(String(data?.error || `Прогресс недоступен (HTTP ${response.status})`));
+        return;
+      }
+      setActualSites(parseActualSites(data));
+      setProgressSource(String(data?.source || 'raven'));
+      setProgressFetched(true);
+    } catch (error) {
+      setActualSites([]);
+      setProgressFetched(false);
+      setProgressSource('');
+      setProgressError(error instanceof Error ? error.message : 'Не удалось получить прогресс');
+    } finally {
+      setProgressLoading(false);
+    }
+  }, []);
+
+  const loadSystem = useCallback(async (name: string, overridePlan: ArchitectPlan | null = null) => {
     const target = name.trim();
     if (!target) return;
     setLoading(true);
     setLoadError('');
     setNotice('');
+    // Прогресс относится к прежней системе — сбрасываем, чтобы не показывать чужой.
+    setActualSites([]);
+    setProgressFetched(false);
+    setProgressError('');
+    setProgressSource('');
     try {
       const response = await fetch(`/api/atlas/system-bodies?system=${encodeURIComponent(target)}`, { cache: 'no-store' });
       const data = await response.json().catch(() => null);
@@ -93,7 +158,8 @@ export default function ArchitectWorkspace() {
         setSystemName(target);
         setSource('');
         setLoadError('Тел в системе не найдено: проверьте название или загрузите сканы через Colonial Helper.');
-        setPlan(createPlan(target));
+        setPlan(overridePlan ?? createPlan(target));
+        void loadProgress(target);
         return;
       }
       setRawRows(rows);
@@ -103,35 +169,66 @@ export default function ArchitectWorkspace() {
       writeRecent(target);
       setRecent(readRecent());
 
-      let restored: ArchitectPlan | null = null;
-      try {
-        const saved = window.localStorage.getItem(PLAN_PREFIX + target.toLowerCase());
-        if (saved) {
-          const parsed = parsePlan(saved);
-          if (parsed.plan) {
-            restored = parsed.plan;
-            if (parsed.warning) setNotice(parsed.warning);
+      let restored: ArchitectPlan | null = overridePlan;
+      if (!restored) {
+        try {
+          const saved = window.localStorage.getItem(PLAN_PREFIX + target.toLowerCase());
+          if (saved) {
+            const parsed = parsePlan(saved);
+            if (parsed.plan) {
+              restored = parsed.plan;
+              if (parsed.warning) setNotice(parsed.warning);
+            }
           }
+        } catch {
+          restored = null;
         }
-      } catch {
-        restored = null;
       }
       setPlan(restored ?? createPlan(target));
+      void loadProgress(target);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : 'Не удалось загрузить систему');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadProgress]);
+
+  /** Открыть план по ссылке `/architect?plan=<id>` или из списка системы. */
+  const openPlanById = useCallback(async (id: string) => {
+    setLoading(true);
+    setLoadError('');
+    setNotice('');
+    try {
+      const response = await fetch(`/api/architect/plans/${encodeURIComponent(id)}`, { cache: 'no-store' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(String(data?.error || `HTTP ${response.status}`));
+      const view = data?.plan as PlanView | undefined;
+      if (!view || typeof view.system !== 'string') throw new Error('Сервер не вернул описание плана');
+      const parsed = parsePlan(data?.draft);
+      if (!parsed.plan) throw new Error(parsed.error || 'Сохранённый план повреждён');
+      setRemoteId(view.id);
+      setSystemInput(view.system);
+      await loadSystem(view.system, parsed.plan);
+      setNotice(parsed.warning || `Открыт план «${view.title || 'без названия'}» автора ${view.authorName}`);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Не удалось открыть план по ссылке');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadSystem]);
 
   useEffect(() => {
     setRecent(readRecent());
-    const requested = new URLSearchParams(window.location.search).get('system');
-    if (requested) {
+    const params = new URLSearchParams(window.location.search);
+    const planId = params.get('plan');
+    const requested = params.get('system');
+    if (planId) {
+      void openPlanById(planId);
+    } else if (requested) {
       setSystemInput(requested);
       void loadSystem(requested);
     }
-    // Загрузка при первом открытии страницы по ссылке /architect?system=…
+    // Загрузка при первом открытии страницы по ссылке /architect?system=… или ?plan=…
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -207,7 +304,7 @@ export default function ArchitectWorkspace() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
             <span style={betaBadge}>тестовый режим · v{PLAN_FORMAT_VERSION}</span>
             <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'ui-monospace, monospace' }}>
-              каталог построек v{CATALOGUE_VERSION} · черновик хранится в браузере
+              каталог построек v{CATALOGUE_VERSION} · черновик в браузере, планы сохраняются на сервере
             </span>
           </div>
         </div>
@@ -279,9 +376,12 @@ export default function ArchitectWorkspace() {
             <li>Нажмите «+ постройка» у тела: список сразу покажет, что на это тело поставить нельзя и почему.</li>
             <li>Следите за очками системы: первый порт бесплатный, а каждый следующий порт дороже.</li>
             <li>Экспортируйте план в JSON или скопируйте сводку — её можно отдать эскадрилье и перевозчикам.</li>
+            <li>Сохраните план на сервере и опубликуйте: получите ссылку, по которой его откроют другие.</li>
+            <li>Сверьте план со стройплощадками и посчитайте «где купить» по рынкам EDDN.</li>
           </ol>
           <p style={{ marginBottom: 0 }}>
-            Это тестовый режим: план живёт в вашем браузере, публикация и совместное редактирование появятся позже.
+            Это тестовый режим: черновик живёт в вашем браузере, а сохранённые планы и ссылки — уже на сервере.
+            Совместное редактирование появится позже.
           </p>
         </section>
       )}
@@ -326,14 +426,36 @@ export default function ArchitectWorkspace() {
                 key={body.name}
                 body={body}
                 plan={plan}
+                progressBySite={progressBySite}
                 onAdd={() => setPickerBody(body.name)}
                 onRemove={(siteId) => setPlan(removeSite(plan, siteId))}
                 onCycle={(siteId, status) => setPlan(setSiteStatus(plan, siteId, status))}
               />
             ))}
+
+            <SharePanel
+              plan={plan}
+              systemName={systemName}
+              remoteId={remoteId}
+              onSaved={(view) => setRemoteId(view.id)}
+              onOpen={(planId) => void openPlanById(planId)}
+              onDeleted={() => setRemoteId(null)}
+              onNotice={setNotice}
+            />
           </section>
 
-          <PlanSummary plan={plan} evaluation={evaluation} />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <PlanSummary plan={plan} evaluation={evaluation} />
+            <ProgressPanel
+              systemName={systemName}
+              report={progress}
+              loading={progressLoading}
+              error={progressError}
+              source={progressSource}
+              onRefresh={() => void loadProgress(systemName)}
+            />
+            <SourcingPanel systemName={systemName} cargo={evaluation.cargo} />
+          </div>
         </div>
       )}
 
@@ -358,12 +480,14 @@ export default function ArchitectWorkspace() {
 function BodyCard({
   body,
   plan,
+  progressBySite,
   onAdd,
   onRemove,
   onCycle,
 }: {
   body: ArchitectBody;
   plan: ArchitectPlan;
+  progressBySite: Map<string, SiteProgress>;
   onAdd: () => void;
   onRemove: (siteId: string) => void;
   onCycle: (siteId: string, status: PlannedSiteStatus) => void;
@@ -419,6 +543,8 @@ function BodyCard({
               );
             }
             const nextStatus = STATUS_ORDER[(STATUS_ORDER.indexOf(site.status) + 1) % STATUS_ORDER.length];
+            const siteProgress = progressBySite.get(site.id);
+            const actual = siteProgress?.actual ?? null;
             return (
               <div
                 key={site.id}
@@ -439,6 +565,19 @@ function BodyCard({
                     {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
                     {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
                   </div>
+                  {actual && (
+                    <div style={{ fontSize: 11, marginTop: 2, color: actual.complete ? 'var(--green)' : 'var(--cyan)' }}>
+                      площадка: {Math.round(actual.progress)} %
+                      {siteProgress?.deliveredTons != null && siteProgress?.requiredTons != null
+                        ? ` · ${formatTons(siteProgress.deliveredTons)} из ${formatTons(siteProgress.requiredTons)}`
+                        : ''}
+                      {siteProgress?.matchKind === 'type' ? ' · совпало по типу' : ''}
+                      {siteProgress?.matchKind === 'body' ? ' · совпало по телу' : ''}
+                    </div>
+                  )}
+                  {siteProgress?.mismatch && (
+                    <div style={{ fontSize: 11, marginTop: 2, color: 'var(--orange)' }}>{siteProgress.mismatch}</div>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   <button type="button" style={ghostButton} onClick={() => onCycle(site.id, nextStatus)}>

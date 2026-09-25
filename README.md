@@ -49,8 +49,10 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   проектирования из Raven Colonial. Считает наземные слоты тел (радиус, атмосфера, вулканизм, терраформирование,
   потолок 7), очки системы T2/T3 с «налогом» на дополнительные порты, цепочки предшественников, порядок стройки,
   сводный тоннаж грузов, оценку системы, эффекты и открываемые сервисы; план показывается на той же 3D-карте
-  системы, выгружается в JSON и копируется сводкой. Движок — `lib/architect/` (каталог из 55 построек + правила),
-  подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
+  системы, выгружается в JSON и копируется сводкой. План можно сохранить на сервере (`system_plans`), опубликовать
+  и поделиться ссылкой `/architect?plan=<id>`; рядом показываются фактические стройплощадки системы
+  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Движок — `lib/architect/`
+  (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
 - **Forum** — Community discussions with markdown support, reactions, search, and moderation
 - **Wiki** — Full wiki system with categories, tags, revisions, favorites, and colonization guides
 - **Galnet** — Automatic sync of Frontier's Galnet news
@@ -213,7 +215,7 @@ ed-ring-colony/
       Starfield.tsx         # Canvas starfield
       GalaxyMap/            # 3D map components
       SystemMap/            # System orrery: SystemOrrery3D + body rail (/system/[name])
-      Architect/            # System architect planner UI (/architect, test mode)
+      Architect/            # System architect planner UI (/architect): workspace, picker, summary, share/progress/sourcing panels
       Forum/                # Forum components
       Wiki/                 # Wiki components
       Atlas/                # Atlas components
@@ -238,7 +240,7 @@ ed-ring-colony/
       dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
       orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
-      architect/            # System buildout planner: catalogue + rules engine (/architect)
+      architect/            # System buildout planner: catalogue, rules engine, plan store, progress matcher, sourcing
     types/
       monitor.ts            # ServerMonitorSnapshot types
       billing.ts            # Billing types

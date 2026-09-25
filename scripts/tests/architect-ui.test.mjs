@@ -41,7 +41,12 @@ function fixtureBodies() {
   ];
 }
 
-async function renderArchitect() {
+/**
+ * Заглушка сети: по умолчанию отвечает телами системы на любой адрес, но
+ * тест может передать свой обработчик `api(url, init)`, вернув `{ status, body }`.
+ * Так проверяются панели прогресса, публикации и «где купить» без Supabase.
+ */
+async function renderArchitect(options = {}) {
   const esbuild = await import('esbuild');
   const { JSDOM } = await import('jsdom');
 
@@ -71,18 +76,31 @@ async function renderArchitect() {
 
   const fetchCalls = [];
   const previousFetch = global.fetch;
-  global.fetch = async (url) => {
-    fetchCalls.push(String(url));
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ ok: true, system: SYSTEM, source: 'edsm', count: fixtureBodies().length, bodies: fixtureBodies() }),
-    };
+  const json = (body, status = 200) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  });
+  global.fetch = async (url, init) => {
+    const target = String(url);
+    fetchCalls.push(`${init?.method ?? 'GET'} ${target}`);
+    if (options.api) {
+      const custom = options.api(target, init);
+      if (custom) return json(custom.body, custom.status ?? 200);
+    }
+    if (target.includes('/api/atlas/system-bodies')) {
+      return json({ ok: true, system: SYSTEM, source: 'edsm', count: fixtureBodies().length, bodies: fixtureBodies() });
+    }
+    // Прочие адреса (прогресс, планы, закупки) по умолчанию пустые: панели
+    // обязаны честно говорить «данных нет», а не падать.
+    return json({ ok: true });
   };
 
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     pretendToBeVisual: true,
-    url: `http://localhost/architect?system=${encodeURIComponent(SYSTEM)}`,
+    // По умолчанию страница открывается по системе; тест может задать свой адрес,
+    // например `/architect?plan=<id>` — так проверяется открытие плана по ссылке.
+    url: options.url ?? `http://localhost/architect?system=${encodeURIComponent(SYSTEM)}`,
   });
   const previous = {
     window: global.window,
@@ -280,6 +298,188 @@ test('ошибки API показываются как понятный текс
     assert.match(ui.text(), /Тел в системе не найдено/);
 
     global.fetch = previousFetch;
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('прогресс стройплощадок подтягивается и сверяется с планом', async () => {
+  const projects = [{
+    buildId: 'b-1',
+    marketId: 4242,
+    buildName: 'Agricultural Settlement',
+    buildType: '$Agricultural_Settlement;',
+    bodyName: `${SYSTEM} A 1`,
+    progress: 42,
+    complete: false,
+    totalRequired: 2839,
+    totalProvided: 1192,
+  }];
+  const ui = await renderArchitect({
+    api: (url) => (url.includes('/api/systems/progress')
+      ? { status: 200, body: { source: 'raven', projects } }
+      : null),
+  });
+  try {
+    // Пока плана нет, площадка честно показана как «строится, но не в плане».
+    assert.match(ui.text(), /Фактический прогресс/);
+    assert.match(ui.text(), /Строится, но не в плане/);
+
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    const text = ui.text();
+    assert.match(text, /площадка: 42 %/, 'бейдж прогресса у постройки плана');
+    assert.match(text, /1\s?192 т из 2\s?839 т/, 'тоннаж площадки из данных Raven');
+    assert.match(text, /42\s?%/, 'прогресс системы по тоннажу');
+    assert.match(text, /На площадке \$Agricultural_Settlement;, в плане consus/);
+
+    // Кнопка обновления перезапрашивает площадки, а не перерисовывает старые.
+    await ui.click(ui.buttonByText('Обновить'));
+    assert.ok(ui.fetchCalls.filter((call) => call.includes('/api/systems/progress')).length >= 2);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('план сохраняется на сервере, публикуется и получает ссылку', async () => {
+  const view = {
+    id: 'plan-abc123',
+    system: SYSTEM,
+    title: 'Первая очередь',
+    authorId: 'u-1',
+    authorName: 'CMDR Tester',
+    visibility: 'public',
+    siteCount: 1,
+    haulTons: 2839,
+    score: 1,
+    tierPoints: { tier2: 1, tier3: 0 },
+    catalogueVersion: 3,
+    stale: false,
+    notes: '',
+    publishedAt: '2026-09-25T10:00:00.000Z',
+    createdAt: '2026-09-25T09:00:00.000Z',
+    updatedAt: '2026-09-25T10:00:00.000Z',
+    own: true,
+  };
+  const posts = [];
+  const ui = await renderArchitect({
+    api: (url, init) => {
+      if (url.includes('/api/architect/plans') && init?.method === 'POST') {
+        posts.push(JSON.parse(String(init.body)));
+        return { status: 201, body: { plan: view } };
+      }
+      if (url.includes('/api/architect/plans?system=')) {
+        return { status: 200, body: { system: SYSTEM, plans: [view], count: 1 } };
+      }
+      return null;
+    },
+  });
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+    await ui.click(ui.buttonByText('публичный'));
+    await ui.click(ui.buttonByText('Сохранить на сервере'));
+
+    assert.equal(posts.length, 1, 'план ушёл на сервер одним запросом');
+    assert.equal(posts[0].system, SYSTEM);
+    assert.equal(posts[0].visibility, 'public');
+    assert.equal(posts[0].plan.sites[0].installationId, 'consus');
+
+    const text = ui.text();
+    assert.match(text, /Сохранение и публикация/);
+    assert.match(text, /\/architect\?plan=plan-abc123/, 'ссылка, которой делятся планом');
+    assert.match(text, /Первая очередь/);
+    assert.match(text, /публичный · 1 постр\./);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('«где купить» считает закупки по рынкам и показывает остановки', async () => {
+  // Раскладку считаем настоящим движком — панель должна уметь её показать.
+  const { buildOffers, planSourcing } = await import('../../src/lib/architect/sourcing.ts');
+  const cargo = { steel: 14_076, titanium: 8_205 };
+  const rows = [
+    { station_name: 'Alpha Station', system_name: 'Near', commodity_name: '$Steel_Name;', sell_price: 500, stock: 9_000, reported_at: new Date().toISOString() },
+    { station_name: 'Alpha Station', system_name: 'Near', commodity_name: 'Titanium', sell_price: 1200, stock: 5_000, reported_at: new Date().toISOString() },
+    { station_name: 'Beta Hub', system_name: 'Far', commodity_name: 'Steel', sell_price: 420, stock: 6_000, reported_at: new Date().toISOString() },
+  ];
+  const offers = buildOffers(cargo, rows, {
+    origin: { x: 0, y: 0, z: 0 },
+    coordsByName: new Map([['near', { x: 8, y: 0, z: 0 }], ['far', { x: 40, y: 0, z: 0 }]]),
+  });
+  const plan = planSourcing(cargo, offers, { capacityTons: 720 });
+
+  const ui = await renderArchitect({
+    api: (url, init) => (url.includes('/api/architect/sourcing')
+      ? { status: 200, body: { source: 'db', system: SYSTEM, originFound: true, rowsScanned: rows.length, offers: offers.length, empty: false, plan } }
+      : null),
+  });
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    assert.match(ui.text(), /Где купить/);
+    await ui.click(ui.buttonByText('Рассчитать закупки'));
+
+    const text = ui.text();
+    // Сталь закрыта целиком (9 000 + 5 076), титан — только 5 000 из 8 205.
+    assert.match(text, /85,6 %/, 'покрытие считается по тоннажу всех товаров');
+    assert.match(text, /осталось 3\s?205/, 'недобор по титану показан честно');
+    assert.match(text, /закрыто/);
+    assert.match(text, /Остановки перевозчика/);
+    assert.match(text, /Alpha Station/);
+    assert.match(text, /Near · 8 св\. лет/);
+    assert.match(text, /Сталь|Титан/);
+    assert.ok(ui.fetchCalls.some((call) => call.startsWith('POST') && call.includes('/api/architect/sourcing')));
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('открытие плана по ссылке подставляет его вместо черновика', async () => {
+  const draft = {
+    version: 1,
+    system: SYSTEM,
+    architect: 'CMDR Other',
+    sites: [{ id: 's1', bodyName: `${SYSTEM} A 1`, installationId: 'consus', status: 'plan' }],
+  };
+  const ui = await renderArchitect({
+    url: 'http://localhost/architect?plan=plan-xyz',
+    api: (url) => (url.includes('/api/architect/plans/plan-xyz')
+      ? {
+        status: 200,
+        body: {
+          plan: {
+            id: 'plan-xyz',
+            system: SYSTEM,
+            title: 'Чужой план',
+            authorId: 'u-2',
+            authorName: 'CMDR Other',
+            visibility: 'unlisted',
+            siteCount: 1,
+            haulTons: 2839,
+            score: 1,
+            tierPoints: { tier2: 1, tier3: 0 },
+            catalogueVersion: 3,
+            stale: false,
+            notes: '',
+            publishedAt: null,
+            createdAt: null,
+            updatedAt: '2026-09-25T10:00:00.000Z',
+            own: false,
+          },
+          draft,
+        },
+      }
+      : null),
+  });
+  try {
+    const text = ui.text();
+    assert.match(text, /Открыт план «Чужой план» автора CMDR Other/);
+    assert.match(text, /Сельхозпоселение \(малое\)/, 'постройки плана на месте');
+    assert.ok(ui.fetchCalls.some((call) => call.includes('/api/architect/plans/plan-xyz')));
   } finally {
     await ui.cleanup();
   }
