@@ -4,10 +4,27 @@
 
 DO $$
 DECLARE
-  v_admin_id UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
-  v_cat_exo UUID;
+  -- Желаемый автор статей; если такого пользователя в базе нет (установка с
+  -- нуля до регистрации администратора), берём первого admin/moderator, а при
+  -- полном отсутствии авторов сид пропускаем: 13 INSERT-ов падали на внешнем
+  -- ключе wiki_articles_author_id_fkey и валили обновление проекта.
+  v_admin_id  UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
+  v_author_id UUID;
+  v_cat_exo   UUID;
   v_article_id UUID;
 BEGIN
+
+-- ── Автор статей ────────────────────────────────────────────
+SELECT COALESCE(
+         (SELECT id FROM auth.users WHERE id = v_admin_id),
+         (SELECT id FROM public.profiles
+           WHERE role IN ('admin', 'moderator')
+           ORDER BY created_at LIMIT 1)
+       ) INTO v_author_id;
+IF v_author_id IS NULL THEN
+  RAISE NOTICE 'wiki_exobiology: нет пользователя-автора (admin/moderator) — сид пропущен';
+  RETURN;
+END IF;
 
 -- ============================================================
 -- 0. Create Exobiology Category
@@ -106,11 +123,11 @@ VALUES (
 ---
 
 *«Каждая планета — это музей эволюции. Мы только начали читать её экспозиции.»* — Доктор Элиза Картрайт, Ксенобиологический институт Achenar.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Exobiology guide', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Exobiology guide', NOW());
 
 -- ============================================================
 -- 2. Bacteria — самая древняя форма жизни
@@ -181,11 +198,11 @@ VALUES (
 ---
 
 *«Если бы разумность измерялась количеством, бактерии правили бы галактикой.»* — Профессор Йонас Век, Университет Alioth.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Bacteria', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Bacteria', NOW());
 
 
 -- ============================================================
@@ -245,11 +262,11 @@ VALUES (
 ---
 
 *«Грибные леса на HIP 36601 C 1 a — это ландшафт из сна. Или кошмара.»* — CMDR Mycologist, отчёт экспедиции 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Fungoida', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Fungoida', NOW());
 
 -- ============================================================
 -- 4. Osseus — костяные образования
@@ -308,11 +325,11 @@ VALUES (
 ---
 
 *«Я думал, это окаменелости. Они оказались живыми. Это было... неприятно.»* — CMDR RockHound, журнал 3306.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Osseus', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Osseus', NOW());
 
 -- ============================================================
 -- 5. Frutexa — кустарниковые формы
@@ -371,11 +388,11 @@ VALUES (
 ---
 
 *«Фрутексы на icy worlds — единственное зелёное, что вы увидите в тысячах световых лет.»* — CMDR FrozenGreen, 3305.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Frutexa', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Frutexa', NOW());
 
 
 -- ============================================================
@@ -435,11 +452,11 @@ VALUES (
 ---
 
 *«Туссоки — это не трава. Это стекловолокно, которое научилось фотосинтезу.»* — Доктор Ли Вей, Лаборатория экстремобиологии.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Tussock', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Tussock', NOW());
 
 -- ============================================================
 -- 7. Cactoida — кактусовидные организмы
@@ -498,11 +515,11 @@ VALUES (
 ---
 
 *«Я никогда не думал, что буду ностальгировать по земным кактусам. Но эти... они прекрасны.»* — CMDR DesertFlower, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Cactoida', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Cactoida', NOW());
 
 -- ============================================================
 -- 8. Concha — раковинные формы
@@ -561,11 +578,11 @@ VALUES (
 ---
 
 *«Я нашёл конху размером с мою голову. Внутри было... лучше не знать.»* — CMDR ShellShock, 3306.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Concha', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Concha', NOW());
 
 
 -- ============================================================
@@ -627,11 +644,11 @@ VALUES (
 ---
 
 *«Это не жизнь. Это молния, которая решила остаться.»* — Профессор Алексей Воронов, Институт прикладной ксенобиологии.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Electricae', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Electricae', NOW());
 
 -- ============================================================
 -- 10. Stratum — слоистые образования
@@ -686,11 +703,11 @@ VALUES (
 ---
 
 *«Стратумы — это страницы книги, которую пишет сама планета.»* — CMDR LayerCake, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Stratum', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Stratum', NOW());
 
 -- ============================================================
 -- 11. Recepta — рецепторные формы
@@ -746,11 +763,11 @@ VALUES (
 ---
 
 *«Я видел рецепту, которая «смотрела» на мой корабль. Я не уверен, что мне это понравилось.»* — CMDR ParanoidAndroid, 3308.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Recepta', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Recepta', NOW());
 
 
 -- ============================================================
@@ -860,11 +877,11 @@ VALUES (
 ---
 
 *«Лучшая система для экзобиологии — та, на которой вы ещё не были.»* — CMDR FirstContact, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Top-10 systems', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Top-10 systems', NOW());
 
 -- ============================================================
 -- 13. Экзобиология и ранг Elite
@@ -955,10 +972,10 @@ VALUES (
 ---
 
 *«Я достиг Elite в Exploration, собирая бактерии на задворках галактики. Лучшие 200 часов в моей жизни.»* — CMDR BioHunter, 3308.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Exobiology and Elite rank', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Exobiology and Elite rank', NOW());
 
 END $$;

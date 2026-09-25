@@ -1060,7 +1060,6 @@ INSERT INTO public.site_content (id, kicker, title1, title2, manifest)
 VALUES (1, '', 'ED Ring Colony', 'The Galaxy Ring Project', '')
 ON CONFLICT (id) DO NOTHING;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 001_rls_policies.sql                                │
 -- └────────────────────────────────────────────────────────────────┘
@@ -1751,30 +1750,69 @@ GRANT INSERT ON public.raven_sync_log TO authenticated;
 
 -- ============================================================
 -- 29. FRIENDS
+--
+-- Колонки берём из самой таблицы: в этом репозитории она объявлена как
+-- user_id/friend_id (000_base_schema.sql), а в части развёрнутых баз осталась
+-- в старом виде — requester_id/addressee_id. Жёсткие имена ломали файл на
+-- «column "requester_id" does not exist», из-за чего обрывались и все разделы
+-- ниже по файлу (30. PUSH_SUBSCRIPTIONS и далее).
 -- ============================================================
-ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  v_user   TEXT;
+  v_friend TEXT;
+BEGIN
+  IF to_regclass('public.friends') IS NULL THEN
+    RAISE NOTICE 'rls_policies: таблицы public.friends нет — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_select ON public.friends;
-CREATE POLICY friends_select ON public.friends
-  FOR SELECT TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  SELECT (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'requester_id'),
+         (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'addressee_id')
+    INTO v_user, v_friend;
 
-DROP POLICY IF EXISTS friends_insert ON public.friends;
-CREATE POLICY friends_insert ON public.friends
-  FOR INSERT TO authenticated WITH CHECK (requester_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    SELECT (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'user_id'),
+           (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'friend_id')
+      INTO v_user, v_friend;
+  END IF;
 
-DROP POLICY IF EXISTS friends_update ON public.friends;
-CREATE POLICY friends_update ON public.friends
-  FOR UPDATE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid())
-  WITH CHECK (requester_id = auth.uid() OR addressee_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    RAISE NOTICE 'rls_policies: у public.friends незнакомые колонки — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_delete ON public.friends;
-CREATE POLICY friends_delete ON public.friends
-  FOR DELETE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  EXECUTE 'ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY';
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated;
+  EXECUTE 'DROP POLICY IF EXISTS friends_select ON public.friends';
+  EXECUTE format('CREATE POLICY friends_select ON public.friends'
+                 ' FOR SELECT TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_insert ON public.friends';
+  EXECUTE format('CREATE POLICY friends_insert ON public.friends'
+                 ' FOR INSERT TO authenticated WITH CHECK (%1$I = auth.uid())', v_user);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_update ON public.friends';
+  EXECUTE format('CREATE POLICY friends_update ON public.friends'
+                 ' FOR UPDATE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())'
+                 ' WITH CHECK (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_delete ON public.friends';
+  EXECUTE format('CREATE POLICY friends_delete ON public.friends'
+                 ' FOR DELETE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(%I)', v_user);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(%I)', v_friend);
+
+  EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated';
+END $$;
 
 -- ============================================================
 -- 30. PUSH_SUBSCRIPTIONS
@@ -2241,11 +2279,10 @@ CREATE INDEX IF NOT EXISTS idx_atlas_candidates_search_id ON public.atlas_candid
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_system_name ON public.raven_sync_log(system_name);
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_created_at ON public.raven_sync_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_system_progress_system_name ON public.system_progress(system_name);
-CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(requester_id);
-CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(addressee_id);
+-- Индексы idx_friends_requester / idx_friends_addressee создаются в разделе
+-- 29: имена колонок там берутся из самой таблицы.
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON public.api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user_id ON public.user_notifications(user_id);
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20250831160000_add_language_to_profiles.sql         │
@@ -2279,7 +2316,6 @@ CHECK (language IN ('ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'));
 -- Grant select on profiles to anon and authenticated roles (if not already granted)
 GRANT SELECT ON public.profiles TO anon;
 GRANT SELECT, UPDATE ON public.profiles TO authenticated;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20250906_support_system.sql                         │
@@ -2549,7 +2585,6 @@ CREATE TRIGGER trg_notify_user_reply
   FOR EACH ROW
   EXECUTE FUNCTION public.notify_user_on_staff_reply();
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20250907_fix_support_notifications.sql              │
 -- └────────────────────────────────────────────────────────────────┘
@@ -2611,7 +2646,6 @@ SELECT conname, pg_get_constraintdef(oid) as constraint_definition
 FROM pg_constraint
 WHERE conrelid = 'user_notifications'::regclass
   AND conname = 'user_notifications_type_check';
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260830102924_rls_policies.sql                     │
@@ -3565,7 +3599,6 @@ CREATE INDEX IF NOT EXISTS idx_raven_sync_log_system_name ON public.raven_sync_l
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_created_at ON public.raven_sync_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_system_progress_system_name ON public.system_progress(system_name);
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260830110258_rls_policies_v2.sql                  │
 -- └────────────────────────────────────────────────────────────────┘
@@ -4256,30 +4289,69 @@ GRANT INSERT ON public.raven_sync_log TO authenticated;
 
 -- ============================================================
 -- 29. FRIENDS
+--
+-- Колонки берём из самой таблицы: в этом репозитории она объявлена как
+-- user_id/friend_id (000_base_schema.sql), а в части развёрнутых баз осталась
+-- в старом виде — requester_id/addressee_id. Жёсткие имена ломали файл на
+-- «column "requester_id" does not exist», из-за чего обрывались и все разделы
+-- ниже по файлу (30. PUSH_SUBSCRIPTIONS и далее).
 -- ============================================================
-ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  v_user   TEXT;
+  v_friend TEXT;
+BEGIN
+  IF to_regclass('public.friends') IS NULL THEN
+    RAISE NOTICE 'rls_policies: таблицы public.friends нет — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_select ON public.friends;
-CREATE POLICY friends_select ON public.friends
-  FOR SELECT TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  SELECT (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'requester_id'),
+         (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'addressee_id')
+    INTO v_user, v_friend;
 
-DROP POLICY IF EXISTS friends_insert ON public.friends;
-CREATE POLICY friends_insert ON public.friends
-  FOR INSERT TO authenticated WITH CHECK (requester_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    SELECT (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'user_id'),
+           (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'friend_id')
+      INTO v_user, v_friend;
+  END IF;
 
-DROP POLICY IF EXISTS friends_update ON public.friends;
-CREATE POLICY friends_update ON public.friends
-  FOR UPDATE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid())
-  WITH CHECK (requester_id = auth.uid() OR addressee_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    RAISE NOTICE 'rls_policies: у public.friends незнакомые колонки — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_delete ON public.friends;
-CREATE POLICY friends_delete ON public.friends
-  FOR DELETE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  EXECUTE 'ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY';
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated;
+  EXECUTE 'DROP POLICY IF EXISTS friends_select ON public.friends';
+  EXECUTE format('CREATE POLICY friends_select ON public.friends'
+                 ' FOR SELECT TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_insert ON public.friends';
+  EXECUTE format('CREATE POLICY friends_insert ON public.friends'
+                 ' FOR INSERT TO authenticated WITH CHECK (%1$I = auth.uid())', v_user);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_update ON public.friends';
+  EXECUTE format('CREATE POLICY friends_update ON public.friends'
+                 ' FOR UPDATE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())'
+                 ' WITH CHECK (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_delete ON public.friends';
+  EXECUTE format('CREATE POLICY friends_delete ON public.friends'
+                 ' FOR DELETE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(%I)', v_user);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(%I)', v_friend);
+
+  EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated';
+END $$;
 
 -- ============================================================
 -- 30. PUSH_SUBSCRIPTIONS
@@ -4744,20 +4816,85 @@ CREATE INDEX IF NOT EXISTS idx_forum_posts_thread_id ON public.forum_posts(threa
 CREATE INDEX IF NOT EXISTS idx_forum_posts_author_id ON public.forum_posts(author_id);
 CREATE INDEX IF NOT EXISTS idx_atlas_candidates_search_id ON public.atlas_candidates(search_id);
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_system_name ON public.raven_sync_log(system_name);
-CREATE INDEX IF NOT EXISTS idx_raven_sync_log_synced_at ON public.raven_sync_log(synced_at);
+-- synced_at: колонку пишет API (src/app/api/ravencolonial/sync/log/route.ts,
+-- src/app/api/projects/[id]/progress/route.ts) и читает админка. В базах,
+-- развёрнутых до 20260930000000_raven_sync_log_synced_at.sql, её может не быть —
+-- тогда индекс не создаём, иначе файл падал с «column "synced_at" does not exist».
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'public' AND table_name = 'raven_sync_log'
+                AND column_name = 'synced_at') THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_raven_sync_log_synced_at ON public.raven_sync_log(synced_at)';
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_system_progress_system_name ON public.system_progress(system_name);
-CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(requester_id);
-CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(addressee_id);
+-- Индексы idx_friends_requester / idx_friends_addressee создаются в разделе
+-- 29: имена колонок там берутся из самой таблицы.
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON public.api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user_id ON public.user_notifications(user_id);
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260830152500_galnet_news.sql                      │
 -- └────────────────────────────────────────────────────────────────┘
 
--- ============================================================-- GALNET_NEWS — новости из Elite Dangerous Galnet-- Автоматически подтягиваются с официального API-- ============================================================CREATE TABLE IF NOT EXISTS public.galnet_news (  id          SERIAL PRIMARY KEY,  nid         TEXT UNIQUE NOT NULL,  -- внешний ID из Galnet API  title       TEXT NOT NULL,  body        TEXT NOT NULL,  image       TEXT,               -- URL изображения из Galnet  published_at TIMESTAMPTZ NOT NULL,  fetched_at   TIMESTAMPTZ DEFAULT NOW(),  created_at   TIMESTAMPTZ DEFAULT NOW()  );CREATE INDEX IF NOT EXISTS idx_galnet_published ON public.galnet_news(published_at DESC);CREATE INDEX IF NOT EXISTS idx_galnet_nid ON public.galnet_news(nid);ALTER TABLE public.galnet_news ENABLE ROW LEVEL SECURITY;DROP POLICY IF EXISTS galnet_select ON public.galnet_news;CREATE POLICY galnet_select ON public.galnet_news  FOR SELECT TO anon, authenticated USING (true);GRANT SELECT ON public.galnet_news TO anon, authenticated;-- ============================================================-- GALNET_SYNC_LOG — лог синхронизации-- ============================================================CREATE TABLE IF NOT EXISTS public.galnet_sync_log (  id          SERIAL PRIMARY KEY,  fetched_at  TIMESTAMPTZ DEFAULT NOW(),  articles_count INTEGER DEFAULT 0,  new_count      INTEGER DEFAULT 0,  error_msg      TEXT,  status         TEXT DEFAULT 'success'  );GRANT SELECT, INSERT ON public.galnet_sync_log TO anon, authenticated;ALTER TABLE public.galnet_sync_log ENABLE ROW LEVEL SECURITY;DROP POLICY IF EXISTS galnet_sync_select ON public.galnet_sync_log;CREATE POLICY galnet_sync_select ON public.galnet_sync_log  FOR SELECT TO anon, authenticated USING (true);DROP POLICY IF EXISTS galnet_sync_insert ON public.galnet_sync_log;CREATE POLICY galnet_sync_insert ON public.galnet_sync_log  FOR INSERT TO anon, authenticated WITH CHECK (true);
+-- ============================================================
+-- GALNET_NEWS — новости из Elite Dangerous Galnet
+-- Автоматически подтягиваются с официального API
+--
+-- ⚠ Файл восстановлен 2026-09-25. Прежняя версия лежала одной строкой без
+--   переводов строк: первый комментарий съедал весь остаток файла, поэтому
+--   миграция не создавала ни одной таблицы. psql считает пустой скрипт
+--   успешно выполненным, так что поломка была не видна до первого запроса:
+--   на таблице висели переводы Galnet (20260915000000), сверка структуры
+--   (20260924010000) и весь синк из scripts/lib/galnet-sync.mjs.
+-- ============================================================
 
+-- ─── GALNET_NEWS: лента новостей ────────────────────────────
+CREATE TABLE IF NOT EXISTS public.galnet_news (
+  id           SERIAL PRIMARY KEY,
+  nid          TEXT UNIQUE NOT NULL,  -- внешний ID из Galnet API (по нему идёт upsert)
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  image        TEXT,                  -- URL изображения из Galnet
+  published_at TIMESTAMPTZ NOT NULL,
+  fetched_at   TIMESTAMPTZ DEFAULT NOW(),
+  created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_galnet_published ON public.galnet_news(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_galnet_nid ON public.galnet_news(nid);
+
+ALTER TABLE public.galnet_news ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS galnet_select ON public.galnet_news;
+CREATE POLICY galnet_select ON public.galnet_news
+  FOR SELECT TO anon, authenticated USING (true);
+
+GRANT SELECT ON public.galnet_news TO anon, authenticated;
+
+-- ─── GALNET_SYNC_LOG: лог синхронизации ─────────────────────
+-- Пишут только сервисные задачи (service_role), читает админка.
+CREATE TABLE IF NOT EXISTS public.galnet_sync_log (
+  id             SERIAL PRIMARY KEY,
+  fetched_at     TIMESTAMPTZ DEFAULT NOW(),
+  articles_count INTEGER DEFAULT 0,
+  new_count      INTEGER DEFAULT 0,
+  error_msg      TEXT,
+  status         TEXT DEFAULT 'success'
+);
+
+GRANT SELECT, INSERT ON public.galnet_sync_log TO anon, authenticated;
+
+ALTER TABLE public.galnet_sync_log ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS galnet_sync_select ON public.galnet_sync_log;
+CREATE POLICY galnet_sync_select ON public.galnet_sync_log
+  FOR SELECT TO anon, authenticated USING (true);
+
+DROP POLICY IF EXISTS galnet_sync_insert ON public.galnet_sync_log;
+CREATE POLICY galnet_sync_insert ON public.galnet_sync_log
+  FOR INSERT TO anon, authenticated WITH CHECK (true);
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260831000000_comments.sql                         │
@@ -4824,7 +4961,6 @@ CREATE TRIGGER comments_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION update_updated_at_column();
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260831030000_comments_fix_fk.sql                  │
 -- └────────────────────────────────────────────────────────────────┘
@@ -4840,7 +4976,6 @@ ALTER TABLE public.comments
 ALTER TABLE public.comments
   ADD CONSTRAINT comments_author_id_fkey
   FOREIGN KEY (author_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260901000000_wiki.sql                             │
@@ -5099,14 +5234,6 @@ INSERT INTO public.wiki_categories (name, slug, description, sort_order) VALUES
   ('Проект Кольцо', 'ring-project', 'The Galaxy Ring Project', 8)
 ON CONFLICT (slug) DO NOTHING;
 
-
--- ┌────────────────────────────────────────────────────────────────┐
--- │ MIGRATION: 20260902010000_wiki_colonization_guide.sql          │
--- └────────────────────────────────────────────────────────────────┘
-
--- ============================================================ -- -- ED Ring Colony Wiki — Seed: Colonization Guide Article -- -- Вставляет статью в wiki_articles + создаёт ревизию -- -- ИНСТРУКЦИЯ: -- 1. Замените :author_id на UUID реального пользователя (auth.users.id) -- 2. Замените :category_id на UUID категории 'Колонизация' (wiki_categories.id) --    Или используйте подзапрос ниже для автопоиска -- 3. Выполните в Supabase SQL Editor -- ============================================================ -- -- 1. Найти категорию по slug (опционально, если знаете UUID) -- SELECT id FROM public.wiki_categories WHERE slug = 'colonization'; -- -- 2. Вставить статью (замените :author_id и :category_id) -- INSERT INTO public.wiki_articles ( title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at ) VALUES ( 'Полный гайд по колонизации в Elite Dangerous', 'polnyy-gayd-po-kolonizacii-v-elite-dangerous', E'# Полный гайд по колонизации в Elite Dangerous> **Актуально для:** Update 2 / Trailblazers Update 2 (сентябрь 2026)  > **Автор:** Сообщество ED Ring Colony  > **Категория:** Колонизация  > **Версия:** 1.0  > **Статус:** Актуально для текущего патча---## Содержание1. [Введение: что такое колонизация](#введение-что-такое-колонизация)2. [Этап 0: Подготовка](#этап-0-подготовка)3. [Этап 1: Выбор системы](#этап-1-выбор-системы)4. [Этап 2: Покупка клейма](#этап-2-покупка-клейма)5. [Этап 3: Размещение маяка](#этап-3-размещение-маяка)6. [Этап 4: Доставка материалов](#этап-4-доставка-материалов)7. [Этап 5: Становление System Architect](#этап-5-становление-system-architect)8. [Технологическое дерево (Tech Tree)](#технологическое-дерево-tech-tree)9. [Орбитальные объекты: полный справочник](#орбитальные-объекты-полный-справочник)10. [Поверхностные объекты: полный справочник](#поверхностные-объекты-полный-справочник)11. [Экономика системы](#экономика-системы)12. [BGS, фракции и Powerplay](#bgs-фракции-и-powerplay)13. [Логистика и Fleet Carrier](#логистика-и-fleet-carrier)14. [Construction Points (CP)](#construction-points-cp)15. [Доход и награды](#доход-и-награды)16. [Название объектов](#название-объектов)17. [Демонтаж и отмена строительства](#демонтаж-и-отмена-строительства)18. [Расширение: цепочки систем и мини-Bubble](#расширение-цепочки-систем-и-мини-bubble)19. [Частые ошибки и как их избежать](#частые-ошибки-и-как-их-избежать)20. [Полезные инструменты и ресурсы](#полезные-инструменты-и-ресурсы)21. [Приложения и таблицы](#приложения-и-таблицы)---## Введение: что такое колонизация**System Colonisation** — это механика, позволяющая игрокам заявлять незаселённые звёздные системы и развивать их, строя порты, аванпосты, поселения и другие объекты. Вы становитесь **System Architect** (Системным Архитектором) — бессрочным управляющим развитием своей колонии.### Ключевые факты- **101,862+ систем** колонизировано к февралю 2026 года- **307,014 космических** и **175,973 наземных** объектов построено- Механика вышла из бета-теста 11 ноября 2025 года- Колонизация — **PvE-контент**: другие игроки **не могут** разрушить вашу колонию- Нет ежемесячных расходов на содержание — развивайте в своём темпе- Каждая система уникальна: тип звезды, планеты, ресурсы влияют на экономику### Общая схема процесса![Общая схема процесса колонизации](/wiki/colonization-guide/ed_colonization_flowchart_v2.png)---## Этап 0: Подготовка### Минимальные требования| Параметр | Требование ||----------|------------|| Кредиты | Минимум **50–100 млн** (25 млн маяк + 25 млн резерв + стоимость корабля) || Корабль | С трюмом **200+ тонн** (Type-9, Cutter, Type-11) || FSD | Инженерный апгрейд от Felicity Farseer желателен || Fleet Carrier | **Не обязателен**, но делает процесс в 10 раз проще || Squadron | Желателен для координации и BGS-контроля |### Рекомендуемый набор кораблей1. **Type-11 Prospector** — массовые перевозки (большой трюм)2. **Python** — универсал: майнинг, доставки, SRV3. **Krait Mk II** — майнинг и боевые миссии4. **Anaconda** — дальние разведывательные рейсы5. **Diamondback Explorer** — поиск идеальных систем---## Этап 1: Выбор системы### Критерии выбора (от важного к менее важному)![Схема выбора системы](/wiki/colonization-guide/ed_colonization_system_choice_v2.png)### Обязательные условия1. **Расстояние** — в пределах **15 световых лет** от заселённой системы2. **Статус** — система должна быть **Unclaimed** (незаявленной)3. **Доступность** — не permit-locked, не в exclusion zone### Желательные условия| Фактор | Почему важно | Идеально ||--------|-------------|----------|| **Тип звезды** | K/G-тип стабильны, дают хорошие слоты | K- или G-звезда || **Количество планет** | Больше тел = больше орбитальных слотов | 5+ планет/лун || **Кольца** | Создают Resource Extraction Sites | Кольца на Rocky body || **Ресурсы** | Влияют на базовую экономику | Pristine reserves || **Geological signals** | Бонус к Refinery-экономике | Есть на Rocky/HMC || **Terraformable** | Бонус к населению и экономике | 1+ планета |### Типы планет и базовая экономика| Тип планеты | Базовая экономика | Бонус ||-------------|-------------------|-------|| Rocky body | Refinery +1.0 | Pristine = +, Depleted = − || High Metal Content (HMC) | Extraction +1.0 | Геология = + || Water World | Tourism потенциал | Terraformable = ++ || Gas Giant | Много лун = слоты | Кольца = RES |### Чего избегать- **Neutron stars / Black holes** — нет планет, нет слотов- **White dwarfs** — мало слотов, опасны для FSD- **Системы с 1-2 планетами** — мало возможностей для развития- **Системы в 14.9 св.лет** — сложно достичь, мало запаса для цепочки---## Этап 2: Покупка клейма### Процесс1. Прилетите в **любой Star Port** в заселённой системе2. Откройте **Station Services → Colonization Contact**3. Выберите незаселённую систему в пределах 15 св.лет4. Выберите тип **Primary Starport**### Типы портов| Тип порта | Стоимость клейма | Особенности ||-----------|-----------------|-------------|| **Outpost** | Дешевле | Только Medium площадки, меньше грузов || **Coriolis** | Средне | Классика, Large площадки, Colony-экономика || **Ocellus** | Дороже | Tier 3, высокие статы, красивый || **Orbis** | Дороже | Tier 3, аналог Ocellus || **Dodec** | Самый дорогой | Tier 3, максимальные статы, уникальный дизайн |### Специализации первого порта- **Commercial focus** → Colony-экономика, +Wealth- **Industrial focus** → Industrial-экономика, +Tech Level- **Military focus** → Military-экономика, +Security### Важно- Стоимость варьируется в зависимости от типа — проверяйте в игре- Клейм действует **24 часа** — за это время нужно разместить маяк- Если пропустили дедлайн — **3 дня блокировки** перед новой попыткой- Нельзя иметь несколько активных клеймов одновременно---## Этап 3: Размещение маяка### Что нужно сделать1. Полетите в заявленную систему2. Откройте **System Colonization Suite** (модуль по умолчанию на всех кораблях)3. Разверните **Colonization Beacon** в предустановленной точке4. Маяк стоит **25 млн кредитов**### Что происходит дальше- Система помечается как **Claimed** (заявленная)- Запускается обратный отсчёт **24 часа**- Прибывает гигантский **Colonization Ship** — временная база с 32 площадками- Вы становитесь **System Architect** (после завершения первого порта)### Если не успели за 24 часа- Клейм **аннулируется**- **3 дня** нельзя подавать новые заявки- Потраченные кредиты **не возвращаются**---## Этап 4: Доставка материалов### ЦельДоставить все необходимые **commodities** на Colonization Ship за **4 недели**.### Типы материалов| Категория | Примеры | Источник ||-----------|---------|----------|| **Руды (Minerals)** | Bauxite, Gallite, Indite, Coltan | Mining / Покупка || **Товары (Commodities)** | Food Cartridges, Insulating Membrane, CMM Composite | Рынки Bubble || **Материалы (Materials)** | Iron, Nickel, Carbon, Sulphur | SRV surface mining || **Топливо** | Tritium для FC | Рынки / Mining |### Логистика![Схема логистики](/wiki/colonization-guide/ed_colonization_logistics_v2.png)### Ключевые советы по доставке- **Fleet Carrier = must have** для серьёзных проектов: 25,000 т груза + прыжки 500 св.лет- **Type-11 Prospector** — лучший корабль для массовых перевозок- **Создавайте цепочки** систем каждые 15 св.лет для дальних колоний- Некоторые товары (**Insulating Membrane**) доступны **только** на орбитальных рынках- **CMM Composite** производится на планетах с Refinery-экономикой### Что происходит после доставки- Порт появляется в виде **строящейся станции** с лесами- После **еженедельного тика** (четверг, 07:00 UTC) порт достраивается- Маяк превращается в **Nav Beacon**- Система становится заселённой---## Этап 5: Становление System Architect### Ваши полномочия- **Размещение** новых объектов (орбитальных и поверхностных)- **Управление** экономикой, населением, безопасностью- **Назначение** названий объектов (платно через Arx)- **Демонтаж** ошибочно размещённых объектов### Ограничения- Нужно дождаться **первого еженедельного тика** после постройки порта- Количество **одновременных строек** ограничено (смотрите в Architect View)- Поверхностные объекты могут появляться с **задержкой до 48 часов**### Architect Mode- Открывается через **System Map**- Показывает доступные **орбитальные слоты** (иконки с «+»)- Показывает **поверхностные слоты** на каждой планете- Флаг на орбитальном слоте = место для **Primary Port**---## Технологическое дерево (Tech Tree)![Технологическое дерево](/wiki/colonization-guide/ed_colonization_techtree_v2.png)### Принцип работы- Каждый объект даёт **Construction Points (CP)**- **Tier 1** объекты открываются сразу (нужен только First Station)- **Tier 2** требуют определённых Tier 1 объектов- **Tier 3** требуют Tier 2 + достаточного количества CP### Пример цепочки```First Station → Scientific Outpost → Research Station → Ocellus Starport                    ↓             Mining Outpost → Asteroid Base```### Поверхностная ветка```First Station → Planetary Outposts → Settlements → Hubs → Planetary Port```---## Орбитальные объекты: полный справочник### Starports (Tier 2-3)| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ ||--------|------|-----------|----------|------|--------|-----|-----|------|---------|| **Coriolis** | 2 | Colony | -2 | 1 | 2 | 3 | 2 | 1 | 0 || **Asteroid Base** | 2 | Extraction | -1 | 3 | 5 | -4 | 7 | 1 | 0 || **Ocellus** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 || **Orbis** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 || **Dodec** | 3 | Colony | -4 | 8 | 9 | 7 | 10 | 8 | 4 |### Outposts (Tier 1)| Объект | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ ||--------|-----------|----------|------|--------|-----|-----|------|| Commercial Outpost | Colony | -1 | — | 2 | 5 | — | 0 || Industrial Outpost | Industrial | — | — | 3 | — | 2 | 0 || Criminal Outpost | Colony | -2 | — | 2 | — | — | 0 || Civilian Outpost | Colony | -1 | — | 1 | 1 | 1 | 0 || Scientific Outpost | Hightech | — | 3 | — | — | — | 1 || Military Outpost | Military | **+2** | — | — | — | — | 1 |### Installations (Tier 1-2)| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev ||--------|------|-----------|----------|------|--------|-----|-----|| Satellite | 1 | — | — | — | 1 | 1 | 1 || Communication Station | 1 | — | — | 1 | 3 | — | — || Space Farm | 1 | Agricultural | — | — | — | 5 | 1 || Pirate Base | 1 | Contraband | -4 | — | 3 | — | — || Mining Outpost | 1 | Extraction | — | — | 3 | -2 | — || Relay Station | 1 | Hightech | 1 | — | — | — | 1 || **Security Station** | 2 | Military | **+8** | — | — | 3 | 2 || **Government** | 2 | — | — | 2 | — | 6 | 2 || **Medical** | 2 | Hightech | — | 3 | — | 5 | — || **Research Station** | 2 | Hightech | — | **+8** | — | — | 2 || **Tourist** | 2 | Tourism | **-3** | — | 6 | — | 2 || **Bar** | 2 | Tourism | -2 | — | 2 | 3 | — |---## Поверхностные объекты: полный справочник### Outposts (Tier 1)| Объект | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ ||--------|-----------|----------|------|--------|-----|-----|------|---------|| Civilian Planetary Outpost | Colony | -2 | — | — | 3 | — | 2 | 0 || Industrial Planetary Outpost | Industrial | -1 | — | 2 | — | — | 1 | 0 || Scientific Planetary Outpost | Hightech | -1 | 5 | — | — | 1 | 1 | 0 |### Planetary Port (Tier 3)| Объект | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ ||--------|-----------|----------|------|--------|-----|-----|------|---------|| **Planetary Port** | Colony | -3 | 5 | 5 | 6 | 10 | **10** | **10** |> Planetary Port — лучший объект для населения. Дает +10/+10.### Settlements (Tier 1-2)| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev ||--------|------|-----------|----------|------|--------|-----|-----|| Small Agricultural Settlement | 1 | Agricultural | — | — | — | 3 | — || Medium Agricultural Settlement | 1 | Agricultural | — | — | — | 6 | — || Large Agricultural Settlement | 2 | Agricultural | — | — | — | 10 | — || Small Extraction Settlement | 1 | Extraction | — | — | 2 | — | — || Medium Extraction Settlement | 1 | Extraction | — | — | 5 | — | — || Large Extraction Settlement | 2 | Extraction | — | 1 | 7 | -2 | — || Small Industrial Settlement | 1 | Industrial | — | — | — | — | 2 || Medium Industrial Settlement | 1 | Industrial | — | — | — | — | 5 || Large Industrial Settlement | 2 | Industrial | — | — | 2 | — | 8 || Small Military Settlement | 1 | Military | **+2** | — | — | — | — || Medium Military Settlement | 1 | Military | **+4** | — | — | — | — || Large Military Settlement | 2 | Military | **+6** | — | — | — | 2 || Small Scientific Settlement | 2 | Hightech | — | 3 | — | — | 1 || Medium Scientific Settlement | 2 | Hightech | — | 6 | — | — | 1 || Large Scientific Settlement | 2 | Hightech | — | **+10** | — | — | 2 || Small Tourism Settlement | 2 | Tourism | -1 | — | 1 | — | — || Medium Tourism Settlement | 2 | Tourism | -1 | — | 2 | — | — || Large Tourism Settlement | 2 | Tourism | -1 | — | **+5** | — | — |### Hubs (Tier 2)| Объект | Требуется | Экономика | Security | Tech | Wealth | SoL | Dev ||--------|-----------|-----------|----------|------|--------|-----|-----|| Extraction Hub | Mining Settlement | Extraction | — | — | 10 | -4 | 2 || Civilian Hub | Agricultural Settlement | — | -3 | — | — | 3 | 2 || Exploration Hub | Communication Station | Tourism | -1 | 6 | — | — | 2 || Outpost Hub | Space Farm | — | -2 | — | — | 3 | 2 || Scientific Hub | First Station | Hightech | — | **+10** | — | — | — || Military Hub | Military | Military | **+10** | — | — | — | — || Refinery Hub | First Station | Refinery | -1 | 3 | 5 | -2 | 7 || High Tech Hub | First Station | Hightech | -2 | 10 | -2 | — | — || Industrial Hub | Mining Outpost | Industrial | — | 3 | 5 | -4 | 2 |---## Экономика системы### Как формируется экономика1. **Базовая экономика** от типа звезды и планет2. **Бонусы/штрафы** от reserves (Pristine = +, Depleted = −)3. **Влияние объектов** — каждый даёт очки в определённую экономику4. **Расстояние** объекта от порта — ближе = сильнее влияние### Топ-2 экономикиРынок системы определяется **двумя сильнейшими экономиками**. Чтобы получить нужную экономику — обеспечьте ей достаточно очков.### CMM Composite — как получитьCMM Composite — один из самых важных товаров для колонизации. Для его производства:**Вариант 1: Rocky body**- Базовая экономика: Refinery +1.0- Постройте Civilian Outpost или Planetary Port (Colony-экономика)- Добавьте Refinery Hubs для усиления Refinery-экономики- Pristine reserves = бонус, Depleted = штраф**Вариант 2: High Metal Content body**- Базовая экономика: Extraction +1.0- Постройте Colony-экономику (Civilian Outpost / Port)- Добавьте Refinery Hubs- Держите Refinery в топ-2 экономик### Commodities, доступные только на орбитальных рынках- Insulating Membrane- Некоторые виды high-tech товаров### Commodities, доступные только на поверхностных рынках- Некоторые agricultural товары---## BGS, фракции и Powerplay### Начальные фракции (появляются автоматически)1. **Фракция, у которой куплен клейм** (контролирующая)2. **Вторая по влиянию фракция** из системы покупки3. **Фракция вашего Squadron** (если вы в Squadron)4. **Случайная Anarchy-фракция** из системы покупки### Важно- Вы можете **выбирать** фракцию при покупке клейма — выбирайте ту, которая вам нужна- Ваш Squadron faction появляется **автоматически**- Фракции могут **потерять контроль** через BGS — но вы останетесь Архитектором- **Architect = навсегда**, независимо от BGS### Powerplay- Новая колония входит в статус **Unoccupied**- Можно захватить через механику **Acquisition**- Каждая система имеет **ценность** для Powerplay### Government Type- Определяется контролирующей фракцией- Влияет на доступные товары и миссии---## Логистика и Fleet Carrier### Без Fleet Carrier- Летать в Bubble за каждой партией товаров- Ограничение: трюм корабля (~700 тонн для Type-9)- Подходит для колоний **в пределах 100 св.лет** от Bubble### С Fleet Carrier- **25,000 тонн** груза- Прыжки **500 световых лет**- Тритий: ~1 тонна на прыжок- Можно создать **мобильную базу** рядом с колонией- Идеально для **дальних колоний** и цепочек систем### Создание цепочки (chain)```Bubble → System 1 (15 ly) → System 2 (15 ly) → System 3 (15 ly) → ... → Цель```- Каждая система в цепочке становится **точкой отсчёта** для следующей- Это позволяет достичь **любой точки** галактики- Пример: Grand Tiberian Highway (Bubble → Colonia)### Мини-Bubble- **5–10 систем** в радиусе 50 св.лет- Разные экономики для **самодостаточности**- Собственная **торговая сеть**- **Fleet Carrier** как центр логистики---## Construction Points (CP)### Что это- **CP** — валюта прогресса колонизации- Каждый объект даёт или требует CP- Нужны для открытия **следующего тира** объектов### Как работает| Действие | CP ||----------|-----|| Построить Tier 1 объект | +1 CP (часто) || Построить Tier 2 объект | Требует ~3 CP, даёт +1 CP || Построить Tier 3 объект | Требует ~6 CP |### Пример прогрессии```First Station (0 CP)    ↓Build 3x Tier 1 objects (+3 CP) → открыт Tier 2    ↓Build 2x Tier 2 objects (+2 CP, потратил ~6) → открыт Tier 3    ↓Build Dodec Starport (требует Tier 3 CP)```---## Доход и награды### Еженедельный пассивный доход- Выплачивается **каждую неделю**- Зависит от **количества и размера** объектов- Суммируется по **всем вашим системам**- Забирать у **Administration Contact**### Галактический налог- Если доход **> 5 млн/неделю** — налогообложение- Чем больше систем — тем выше общий доход### Скидки- **10% скидка** на корабли и модули в системах с **10+ объектами**### Другие награды- **Титул System Architect** — навсегда- **Возможность назвать** объекты (5000 Arx за кастомное имя)- **Влияние на BGS** галактики- **Собственная домашняя система**---## Название объектов### Бесплатно- **5 переименований** через случайный генератор имён- Можно крутить генератор **неограниченно** — имя применяется только при нажатии Apply### Платно- **5000 Arx** за кастомное имя- **Безлимитные** переименования после покупки- Имя командира **отображается** в системе### Первичный порт- Переименовывается **только после завершения** строительства- Через **System Map**---## Демонтаж и отмена строительства### Отмена активной стройки- Можно отменить **до завершения**- Материалы **теряются**### Демонтаж завершённого объекта- Возможен через **Architect Mode**- **Возвращает слот**, но не материалы- Используйте, если объект разместился **не в том слоте** (баг)### Важно- **Ground Ports** — пока **не работают** корректно (баг с экономикой)- Не стройте их, если нужна полноценная экономика- **Surface Settlements и Hubs** работают нормально---## Расширение: цепочки систем и мини-Bubble### Стратегия «Дейзи-чейн»1. Заявляйте системы **каждые 15 св.лет**2. Стройте **минимальный порт** (Outpost или Coriolis)3. Переходите к **следующей системе**4. Так создаётся **путь** к удалённой цели### Мини-Bubble- **5–10 систем** в радиусе 50 св.лет- Разные экономики для **самодостаточности**- Собственная **торговая сеть**- **Fleet Carrier** как центр логистики### Дальние колонии- Требуют **огромных вложений**- Рекомендуется **squadron** из 5–10 человек- Создавайте **мини-Bubble** для автономности- Пример успеха: **Colonia** — выросла из одной станции---## Частые ошибки и как их избежать| Ошибка | Последствия | Решение ||--------|-------------|---------|| Пропуск 24-часового дедлайна | Клейм аннулирован, 3 дня блокировки | Ставьте маяк **сразу** после покупки || Недостаток материалов за 4 недели | Клейм аннулирован, потеря всего | Планируйте заранее, используйте FC || Игнорирование Security | Система становится небезопасной | Стройте Military объекты || Строительство Ground Ports | Экономика не работает | Используйте Surface Settlements и Hubs || Неправильный выбор слота | Объект влияет не на ту экономику | Проверяйте расстояние до порта || Пропуск еженедельного тика | Нельзя строить новые объекты | Ждите четверга 07:00 UTC || Переоценка ресурсов | Проект застопорился | Начинайте с 1 системы, не 5 |---## Полезные инструменты и ресурсы### Планировщики| Инструмент | Ссылка | Описание ||------------|--------|----------|| **ED Colonisation Planner** | raven-colonial.com | Лучший планировщик: экономика, CP, зависимости || **Colonization Construction Details** | DaftMav (Reddit) | Таблицы со всеми статами || **ED Colony** | edcolony.app | Отслеживание активных строек || **ED Colonization Helper** | CMDR Mr.Smile | Мульти-CMDR поддержка |### Навигация и поиск| Инструмент | Ссылка | Описание ||------------|--------|----------|| **Spansh** | spansh.co.uk | Планирование маршрутов || **EDSM** | edsm.net | Карта галактики || **Inara** | inara.cz | Товары, рынки, фракции || **EDDB** | eddb.io | Поиск товаров и станций |### Сообщества- **r/EliteDangerous** — основной сабреддит- **r/EliteColonists** — специализированный по колонизации- **Frontier Forums** — официальные форумы- **Discord:** Elite Dangerous Community, New Pilots Initiative### Видео-гайды- **ObsidianAnt** — обзоры обновлений- **Down to Earth Astronomy** — гайды по механикам- **Exigeous** — быстрые туториалы- **TheYamiks** — подробные разборы---## Приложения и таблицы### Таблица A: Влияние объектов на параметры системы![Таблица влияния](/wiki/colonization-guide/ed_colonization_stats_v2.png)### Таблица B: Быстрый выбор объекта по цели| Ваша цель | Лучший объект | Альтернатива ||-----------|--------------|--------------|| Максимальное население | Planetary Port (+10/+10) | Dodec Starport (+8/+4) || Максимальная безопасность | Military Hub (+10) | Security Station (+8) || Максимальный Tech Level | Scientific Hub (+10) | Research Station (+8) || Максимальное развитие | Dodec Starport (+10) | Planetary Port (+10) || Максимальное богатство | Dodec Starport (+9) | Ocellus/Orbis (+7) || Быстрый старт Security | Military Outpost (+2) | Small Military Settlement (+2) || Самодостаточная экономика | Refinery Hub + Planetary Port | Asteroid Base + Extraction Hub |### Таблица C: Требования к материалам (примеры)> **Важно:** Точные требования меняются с обновлениями. Используйте ED Colonisation Planner для актуальных цифр.| Объект | Примерные товары | Объём ||--------|-----------------|-------|| Primary Port (Coriolis) | Bauxite, Food Cartridges, Indite, CMM Composite | ~5000–8000 т || Outpost | Меньше объём | ~1000–2000 т || Settlement | Зависит от типа | ~500–1500 т || Hub | Зависит от типа | ~1000–3000 т || Starport Tier 3 | Максимальный объём | ~10000+ т |### Таблица D: Время и инвестиции| Масштаб | Кредиты | Время | Сложность ||---------|---------|-------|-----------|| Первая колония (1 порт) | 50–100 млн | 2–4 недели | Легко || Развитая система (10 объектов) | 200–500 млн | 1–3 месяца | Средне || Мега-колония (50+ объектов) | 2–5 млрд | 6–12 месяцев | Сложно || Дальняя цепочка (10 систем) | 1–3 млрд | 3–6 месяцев | Очень сложно || Мини-Bubble (20+ систем) | 5+ млрд | 1+ год | Экстремально |---## ЗаключениеКолонизация в Elite Dangerous — это **марафон, а не спринт**. Не гонитесь за скоростью. Наслаждайтесь процессом: выбором системы, планированием, доставкой первой партии товаров, наблюдением за ростом вашей колонии.Ваша система — это **ваш вклад** в 400-миллиардную галактику. Как сказал Arthur Tolmie из Frontier: *«Мы доверили судьбу галактики в руки игроков»*. Идите и создавайте историю.**o7, командир. Удачи в колонизации. Увидимся в звёздах.**---*Дата: 2026-09-01 | Версия: 1.0 | Elite Dangerous © Frontier Developments plc. Данный гайд создан сообществом ED Ring Colony для сообщества Elite Dangerous.*', -- category_id: замените на UUID категории 'Колонизация' или используйте подзапрос: -- (SELECT id FROM public.wiki_categories WHERE slug = 'colonization') :category_id, -- author_id: замените на UUID пользователя :author_id, -- last_editor_id: замените на UUID пользователя :last_editor_id, 'published', TRUE, 0, 1, NOW(), NOW() ); -- -- 3. Создать начальную ревизию (опционально) -- INSERT INTO public.wiki_revisions ( --   article_id, --   content, --   editor_id, --   revision_number, --   change_summary -- ) VALUES ( --   (SELECT id FROM public.wiki_articles WHERE slug = 'polnyy-gayd-po-kolonizacii-v-elite-dangerous'), --   E'...', --   :author_id, --   1, --   'Initial publication' -- );
-
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260902120000_fix_forum_trigger_author_name.sql    │
 -- └────────────────────────────────────────────────────────────────┘
@@ -5164,7 +5291,6 @@ BEGIN
   RETURN NEW;
 END;
 $function$;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260903000000_wiki_fill_empty_categories.sql       │
@@ -5444,20 +5570,1660 @@ Elite Dangerous предлагает множество способов зар�
 END
 $seed$;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260903010000_wiki_update_colonization.sql         │
 -- └────────────────────────────────────────────────────────────────┘
 
--- ============================================================ -- ED Ring Colony Wiki — Update: Colonization guide + 2 new articles -- Выполнено: 2026-09-03 -- Автор: Noobo_GreeenD -- ============================================================ DO $$ DECLARE     v_admin_id UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';     v_cat_colonization UUID := '117fddde-9c52-4741-b00d-edb2788e4e42';     v_article_id UUID; BEGIN     -- ============================================================     -- ОБНОВЛЕНИЕ: Гайд по колонизации (версия 2.0)     -- ============================================================     UPDATE public.wiki_articles     SET content = $c$# Полный гайд по колонизации в Elite Dangerous$nl$$nl$> **Актуально для:** Update 2 / Trailblazers (февраль 2026)  $nl$> **Автор:** Сообщество ED Ring Colony  $nl$> **Категория:** Колонизация  $nl$> **Версия:** 2.0  $nl$> **Статус:** Актуально для текущего патча$nl$$nl$---$nl$$nl$## Содержание$nl$$nl$1. [Введение: что такое колонизация](#введение-что-такое-колонизация)$nl$2. [Этап 0: Подготовка](#этап-0-подготовка)$nl$3. [Этап 1: Выбор системы](#этап-1-выбор-системы)$nl$4. [Этап 2: Покупка клейма](#этап-2-покупка-клейма)$nl$5. [Этап 3: Размещение маяка](#этап-3-размещение-маяка)$nl$6. [Этап 4: Доставка материалов](#этап-4-доставка-материалов)$nl$7. [Этап 5: Становление System Architect](#этап-5-становление-system-architect)$nl$8. [Защита клейма от перехвата](#защита-клейма-от-перехвата)$nl$9. [Технологическое дерево (Tech Tree)](#технологическое-дерево-tech-tree)$nl$10. [Орбитальные объекты: полный справочник](#орбитальные-объекты-полный-справочник)$nl$11. [Поверхностные объекты: полный справочник](#поверхностные-объекты-полный-справочник)$nl$12. [Экономика системы](#экономика-системы)$nl$13. [BGS, фракции и Powerplay](#bgs-фракции-и-powerplay)$nl$14. [Логистика и Fleet Carrier](#логистика-и-fleet-carrier)$nl$15. [Construction Points (CP)](#construction-points-cp)$nl$16. [Доход и награды](#доход-и-награды)$nl$17. [Название объектов](#название-объектов)$nl$18. [Демонтаж и отмена строительства](#демонтаж-и-отмена-строительства)$nl$19. [Расширение: цепочки систем и мини-Bubble](#расширение-цепочки-систем-и-мини-bubble)$nl$20. [Частые ошибки и как их избежать](#частые-ошибки-и-как-их-избежать)$nl$21. [Полезные инструменты и ресурсы](#полезные-инструменты-и-ресурсы)$nl$$nl$---$nl$$nl$## Введение: что такое колонизация$nl$$nl$**System Colonisation** — это механика, позволяющая игрокам заявлять незаселённые звёздные системы и развивать их, строя порты, аванпосты, поселения и другие объекты. Вы становитесь **System Architect** (Системным Архитектором) — бессрочным управляющим развитием своей колонии.$nl$$nl$### Ключевые факты (февраль 2026)$nl$$nl$- **101,862+ систем** колонизировано по всей галактике$nl$- **307,014 космических** и **175,973 наземных** объектов построено$nl$- Механика вышла из бета-теста **11 ноября 2025 года** (Dodec Update)$nl$- **Trailblazer megaships** были удалены из игры — колонии теперь самодостаточны$nl$- Колонизация — **PvE-контент**: другие игроки **не могут** разрушить вашу колонию$nl$- **Нет ежемесячных расходов** на содержание — развивайте в своём темпе$nl$- Каждая система уникальна: тип звезды, планеты, ресурсы влияют на экономику$nl$$nl$### Общая схема процесса$nl$$nl$```$nl$Выбор системы → Покупка клейма → Размещение маяка → Доставка материалов → $nl$→ Постройка первого порта → System Architect → Расширение системы$nl$```$nl$$nl$---$nl$$nl$## Этап 0: Подготовка$nl$$nl$### Минимальные требования$nl$$nl$| Параметр | Требование |$nl$|----------|------------|$nl$| Кредиты | Минимум **50–100 млн** (25 млн маяк + 25 млн резерв + стоимость корабля) |$nl$| Корабль | С трюмом **200+ тонн** (Type-9, Cutter, Type-11, Panther Clipper Mk II) |$nl$| FSD | Инженерный апгрейд от Felicity Farseer желателен |$nl$| Fleet Carrier | **Не обязателен**, но делает процесс в 10 раз проще |$nl$| Squadron | Желателен для координации и BGS-контроля |$nl$$nl$### Рекомендуемый набор кораблей$nl$$nl$1. **Panther Clipper Mk II** — новый король грузоперевозок (до 1238 т, Large)$nl$2. **Type-11 Prospector** — массовые перевозки, SCO-optimized$nl$3. **Corsair** — быстрый средний корабль с хорошим трюмом (318 т, SCO)$nl$4. **Python** — универсал: доставки, SRV, майнинг$nl$5. **Krait Mk II** — боевые миссии и защита$nl$6. **Diamondback Explorer** — разведка и поиск систем$nl$$nl$---$nl$$nl$## Этап 1: Выбор системы$nl$$nl$### Критерии выбора (от важного к менее важному)$nl$$nl$### Обязательные условия$nl$$nl$1. **Расстояние** — в пределах **15 световых лет** от заселённой системы$nl$2. **Статус** — система должна быть **Unclaimed** (незаявленной)$nl$3. **Доступность** — не permit-locked, не в exclusion zone$nl$$nl$### Желательные условия$nl$$nl$| Фактор | Почему важно | Идеально |$nl$|--------|-------------|----------|$nl$| **Тип звезды** | K/G-тип стабильны, дают хорошие слоты | K- или G-звезда |$nl$| **Количество планет** | Больше тел = больше орбитальных слотов | 5+ планет/лун |$nl$| **Кольца** | Создают Resource Extraction Sites | Кольца на Rocky body |$nl$| **Ресурсы** | Влияют на базовую экономику | Pristine reserves |$nl$| **Geological signals** | Бонус к Refinery-экономике | Есть на Rocky/HMC |$nl$| **Terraformable** | Бонус к населению и экономике | 1+ планета |$nl$$nl$### Типы планет и базовая экономика$nl$$nl$| Тип планеты | Базовая экономика | Бонус |$nl$|-------------|-------------------|-------|$nl$| Rocky body | Refinery +1.0 | Pristine = +, Depleted = − |$nl$| High Metal Content (HMC) | Extraction +1.0 | Геология = + |$nl$| Water World | Tourism потенциал | Terraformable = ++ |$nl$| Gas Giant | Много лун = слоты | Кольца = RES |$nl$$nl$### Чего избегать$nl$$nl$- **Neutron stars / Black holes** — нет планет, нет слотов$nl$- **White dwarfs** — мало слотов, опасны для FSD$nl$- **Системы с 1-2 планетами** — мало возможностей для развития$nl$- **Системы в 14.9 св.лет** — сложно достичь, мало запаса для цепочки$nl$$nl$---$nl$$nl$## Этап 2: Покупка клейма$nl$$nl$### Процесс$nl$$nl$1. Прилетите в **любой Star Port** в заселённой системе$nl$2. Откройте **Station Services → Colonization Contact**$nl$3. Выберите незаселённую систему в пределах 15 св.лет$nl$4. Выберите тип **Primary Starport**$nl$$nl$### Типы портов$nl$$nl$| Тип порта | Стоимость клейма | Особенности |$nl$|-----------|-----------------|-------------|$nl$| **Outpost** | Дешевле | Только Medium площадки, меньше грузов |$nl$| **Coriolis** | Средне | Классика, Large площадки, Colony-экономика |$nl$| **Ocellus** | Дороже | Tier 3, высокие статы |$nl$| **Orbis** | Дороже | Tier 3, аналог Ocellus |$nl$| **Dodec** | Самый дорогой | Tier 3, максимальные статы, уникальный дизайн |$nl$$nl$### Важно$nl$$nl$- Клейм действует **24 часа** — за это время нужно разместить маяк$nl$- Если пропустили дедлайн — **3 дня блокировки** перед новой попыткой$nl$- Нельзя иметь несколько активных клеймов одновременно$nl$- После завершения первого порта можно заявлять следующую систему$nl$$nl$---$nl$$nl$## Этап 3: Размещение маяка$nl$$nl$### Что нужно сделать$nl$$nl$1. Полетите в заявленную систему$nl$2. Откройте **System Colonization Suite** (модуль по умолчанию на всех кораблях)$nl$3. Разверните **Colonization Beacon** в предустановленной точке$nl$4. Маяк стоит **25 млн кредитов**$nl$$nl$### Что происходит дальше$nl$$nl$- Система помечается как **Claimed** (заявленная)$nl$- Запускается обратный отсчёт **24 часа**$nl$- Прибывает гигантский **Colonization Ship** — временная база с 32 площадками$nl$- Вы становитесь **System Architect** (после завершения первого порта)$nl$$nl$### Если не успели за 24 часа$nl$$nl$- Клейм **аннулируется**$nl$- **3 дня** нельзя подавать новые заявки$nl$- Потраченные кредиты **не возвращаются**$nl$$nl$---$nl$$nl$## Этап 4: Доставка материалов$nl$$nl$### Цель$nl$$nl$Доставить все необходимые **commodities** на Colonization Ship за **4 недели**.$nl$$nl$### Типы материалов$nl$$nl$| Категория | Примеры | Источник |$nl$|-----------|---------|----------|$nl$| **Руды (Minerals)** | Bauxite, Gallite, Indite, Coltan | Mining / Покупка |$nl$| **Товары (Commodities)** | Food Cartridges, Insulating Membrane, CMM Composite | Рынки Bubble |$nl$| **Материалы (Materials)** | Iron, Nickel, Carbon, Sulphur | SRV surface mining |$nl$| **Топливо** | Tritium для FC | Рынки / Mining |$nl$$nl$### Ключевые советы по доставке$nl$$nl$- **Fleet Carrier = must have** для серьёзных проектов: 25,000 т груза + прыжки 500 св.лет$nl$- **Panther Clipper Mk II** — новый лучший корабль для массовых перевозок (1238 т)$nl$- **Type-11 Prospector** — SCO-optimized, хорошая альтернатива$nl$- **Создавайте цепочки** систем каждые 15 св.лет для дальних колоний$nl$- Некоторые товары (**Insulating Membrane**) доступны **только** на орбитальных рынках$nl$- **CMM Composite** производится на планетах с Refinery-экономикой$nl$$nl$### Что происходит после доставки$nl$$nl$- Порт появляется в виде **строящейся станции** с лесами$nl$- После **еженедельного тика** (четверг, 07:00 UTC) порт достраивается$nl$- Маяк превращается в **Nav Beacon**$nl$- Система становится заселённой$nl$$nl$---$nl$$nl$## Этап 5: Становление System Architect$nl$$nl$### Ваши полномочия$nl$$nl$- **Размещение** новых объектов (орбитальных и поверхностных)$nl$- **Управление** экономикой, населением, безопасностью$nl$- **Назначение** названий объектов (платно через Arx)$nl$- **Демонтаж** ошибочно размещённых объектов$nl$$nl$### Ограничения$nl$$nl$- Нужно дождаться **первого еженедельного тика** после постройки порта$nl$- Количество **одновременных строек** ограничено (смотрите в Architect View)$nl$- Поверхностные объекты могут появляться с **задержкой до 48 часов**$nl$- **Ground Ports (Planetary Port)** не работают с экономическими влияниями — используйте Orbital Ports$nl$$nl$### Architect Mode$nl$$nl$- Открывается через **System Map**$nl$- Показывает доступные **орбитальные слоты** (иконки с «+»)$nl$- Показывает **поверхностные слоты** на каждой планете$nl$- Флаг на орбитальном слоте = место для **Primary Port**$nl$$nl$---$nl$$nl$## Защита клейма от перехвата$nl$$nl$### Механика «Claim Sniping Protection»$nl$$nl$После завершения первого порта в новой системе действует **эксклюзивная блокировка** на подачу клеймов ИЗ этой системы:$nl$$nl$| Фаза | Длительность | Кто может заявлять |$nl$|------|-------------|-------------------|$nl$| **Phase 1** | 30 минут | Только System Architect |$nl$| **Phase 2** | 23.5 часа | Члены Squadron Architect'а |$nl$| **Phase 3** | После 24 часов | Любой игрок |$nl$$nl$### Важно$nl$$nl$- Если Architect **не в Squadron** — действует только 30-минутная блокировка$nl$- Блокировка отображается в панели клейма с таймером$nl$- Это позволяет строить **цепочки систем** без опасения, что кто-то «перехватит» ваш маршрут$nl$- Даже одиночный игрок в своём собственном Squadron получает полные 24 часа защиты$nl$$nl$---$nl$$nl$## Технологическое дерево (Tech Tree)$nl$$nl$### Принцип работы$nl$$nl$- Каждый объект даёт **Construction Points (CP)**$nl$- **Tier 1** объекты открываются сразу (нужен только First Station)$nl$- **Tier 2** требуют определённых Tier 1 объектов$nl$- **Tier 3** требуют Tier 2 + достаточного количества CP$nl$$nl$### Пример цепочки$nl$$nl$```$nl$First Station → Scientific Outpost → Research Station → Ocellus Starport$nl$                    ↓$nl$             Mining Outpost → Asteroid Base$nl$```$nl$$nl$### Поверхностная ветка$nl$$nl$```$nl$First Station → Planetary Outposts → Settlements → Hubs → Planetary Port$nl$```$nl$$nl$---$nl$$nl$## Орбитальные объекты: полный справочник$nl$$nl$### Starports (Tier 2-3)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ |$nl$|--------|------|-----------|----------|------|--------|-----|-----|------|---------|$nl$| **Coriolis** | 2 | Colony | -2 | 1 | 2 | 3 | 2 | 1 | 0 |$nl$| **Asteroid Base** | 2 | Extraction | -1 | 3 | 5 | -4 | 7 | 1 | 0 |$nl$| **Ocellus** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 |$nl$| **Orbis** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 |$nl$| **Dodec** | 3 | Colony | -4 | 8 | 9 | 7 | 10 | 8 | 4 |$nl$$nl$### Outposts (Tier 1)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | CP Reward |$nl$|--------|------|-----------|----------|------|--------|-----|-----|------|-----------|$nl$| **Commercial Outpost** | 1 | Colony | -1 | — | 2 | 5 | — | 0 | Tier 2: 1 |$nl$| **Industrial Outpost** | 1 | Industrial | — | 3 | — | — | 2 | 0 | Tier 2: 1 |$nl$| **Criminal Outpost** | 1 | Colony | -2 | — | 2 | — | — | 0 | Tier 2: 1 |$nl$| **Civilian Outpost** | 1 | Colony | -1 | — | 1 | 1 | 1 | 0 | Tier 2: 1 |$nl$| **Scientific Outpost** | 1 | Hightech | — | 3 | — | — | — | 1 | Tier 2: 1 |$nl$| **Military Outpost** | 1 | Military | 2 | — | — | — | — | 1 | Tier 2: 1 |$nl$$nl$### Installations (Tier 1-2)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |$nl$|--------|------|-----------|----------|------|--------|-----|-----|---------|-----------|$nl$| **Satellite** | 1 | — | — | — | 1 | 1 | 1 | — | Tier 2: 1 |$nl$| **Communication Station** | 1 | — | — | 1 | 3 | — | — | — | Tier 2: 1 |$nl$| **Space Farm** | 1 | Agricultural | — | — | — | 5 | 1 | — | Tier 2: 1 |$nl$| **Pirate Base** | 1 | Contraband | -4 | — | 3 | — | — | — | Tier 2: 1 |$nl$| **Mining Outpost** | 1 | Extraction | — | — | 3 | -2 | — | — | Tier 2: 1 |$nl$| **Relay Station** | 1 | Hightech | 1 | — | — | — | 1 | — | Tier 2: 1 |$nl$| **Military Installation** | 2 | Military | 6 | — | — | — | — | Tier 2: 1 | Tier 3: 1 |$nl$$nl$---$nl$$nl$## Поверхностные объекты: полный справочник$nl$$nl$### Planetary Outposts (Tier 1)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | CP Reward |$nl$|--------|------|-----------|----------|------|--------|-----|-----|------|-----------|$nl$| **Civilian Planetary Outpost** | 1 | Colony | -2 | — | — | 3 | — | 2 | Tier 2: 1 |$nl$| **Industrial Planetary Outpost** | 1 | Industrial | -1 | — | 2 | — | — | 1 | Tier 2: 1 |$nl$| **Scientific Planetary Outpost** | 1 | Hightech | -1 | 5 | — | — | 1 | 1 | Tier 2: 1 |$nl$$nl$### Planetary Port (Tier 3)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ | CP Cost |$nl$|--------|------|-----------|----------|------|--------|-----|-----|------|---------|---------|$nl$| **Planetary Port** | 3 | Colony | -3 | 5 | 5 | 6 | 10 | 10 | 10 | Tier 3: 6 |$nl$$nl$**Важно:** Planetary Port не получает экономических бонусов от других объектов. Используйте Orbital Ports для торговли.$nl$$nl$### Settlements (Tier 1-2)$nl$$nl$| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |$nl$|--------|------|-----------|----------|------|--------|-----|-----|---------|-----------|$nl$| **Small Agricultural Settlement** | 1 | Agricultural | — | — | — | 3 | — | — | Tier 2: 1 |$nl$| **Medium Agricultural Settlement** | 1 | Agricultural | — | — | — | 6 | — | — | Tier 2: 1 |$nl$| **Large Agricultural Settlement** | 2 | Agricultural | — | — | — | 10 | — | Tier 2: 1 | Tier 3: 2 |$nl$| **Small Extraction Settlement** | 1 | Extraction | — | — | 2 | — | — | — | Tier 2: 1 |$nl$| **Medium Extraction Settlement** | 1 | Extraction | — | — | 5 | — | — | — | Tier 2: 1 |$nl$| **Large Extraction Settlement** | 2 | Extraction | — | 1 | 7 | -2 | — | Tier 2: 1 | Tier 3: 2 |$nl$| **Small Industrial Settlement** | 1 | Industrial | — | — | — | — | 2 | — | Tier 2: 1 |$nl$| **Medium Industrial Settlement** | 1 | Industrial | — | — | — | — | 5 | — | Tier 2: 1 |$nl$| **Large Industrial Settlement** | 2 | Industrial | — | — | 2 | — | 8 | Tier 2: 1 | Tier 3: 2 |$nl$| **Small Military Settlement** | 1 | Military | 2 | — | — | — | — | — | Tier 2: 1 |$nl$| **Medium Military Settlement** | 1 | Military | 4 | — | — | — | — | — | Tier 2: 1 |$nl$| **Large Military Settlement** | 2 | Military | 6 | — | — | — | 2 | Tier 2: 1 | Tier 3: 2 |$nl$| **Small Scientific Settlement** | 2 | Hightech | — | 3 | — | — | 1 | Tier 2: 1 | Tier 3: 1 |$nl$| **Medium Scientific Settlement** | 2 | Hightech | — | 6 | — | — | 1 | Tier 2: 1 | Tier 3: 1 |$nl$| **Large Scientific Settlement** | 2 | Hightech | — | 10 | — | — | 2 | Tier 2: 1 | Tier 3: 2 |$nl$| **Small Tourism Settlement** | 2 | Tourism | -1 | — | 1 | — | — | Tier 2: 1 | Tier 3: 1 |$nl$| **Medium Tourism Settlement** | 2 | Tourism | -1 | — | 2 | — | — | Tier 2: 1 | Tier 3: 1 |$nl$| **Large Tourism Settlement** | 2 | Tourism | -1 | — | 5 | — | — | Tier 2: 1 | Tier 3: 2 |$nl$$nl$### Hubs (Tier 2)$nl$$nl$| Объект | Требует | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |$nl$|--------|---------|-----------|----------|------|--------|-----|-----|---------|-----------|$nl$| **Extraction Hub** | Small/Medium/Large Mining Settlement | Extraction | — | — | 10 | -4 | 2 | Tier 2: 1 | Tier 3: 1 |$nl$| **Civilian Hub** | Small/Medium/Large Agricultural Settlement | — | -3 | — | — | 3 | 2 | Tier 2: 1 | Tier 3: 1 |$nl$| **Exploration Hub** | Communication Station | Tourism | -1 | 6 | — | — | 2 | Tier 2: 1 | Tier 3: 1 |$nl$| **Outpost Hub** | Space Farm | — | -2 | — | — | 3 | 2 | Tier 2: 1 | Tier 3: 1 |$nl$| **Scientific Hub** | First Station | Hightech | — | 10 | — | — | — | Tier 2: 1 | Tier 3: 1 |$nl$| **Military Hub** | Military Installation | Military | 10 | — | — | — | — | Tier 2: 1 | Tier 3: 1 |$nl$| **Refinery Hub** | First Station | Refinery | -1 | 3 | 5 | -2 | 7 | Tier 2: 1 | Tier 3: 1 |$nl$| **High Tech Hub** | First Station | Hightech | -2 | 10 | -2 | — | — | Tier 2: 1 | Tier 3: 1 |$nl$| **Industrial Hub** | Mining Outpost | Industrial | — | 3 | 5 | -4 | 2 | Tier 2: 1 | Tier 3: 1 |$nl$$nl$---$nl$$nl$## Экономика системы$nl$$nl$### Как работает экономика$nl$$nl$Каждый объект влияет на **6 параметров** системы:$nl$$nl$| Параметр | Описание | Что влияет |$nl$|----------|----------|------------|$nl$| **Security** | Уровень безопасности | Высокий = меньше пиратов, налоги |$nl$| **Tech Level** | Технологический уровень | Доступность модулей и кораблей |$nl$| **Wealth** | Богатство | Цены на товары, миссии |$nl$| **Standard of Living** | Уровень жизни | Пассажирские миссии, tourism |$nl$| **Development Level** | Уровень развития | Рост населения, BGS |$nl$| **Population** | Население | Количество миссий, размер рынка |$nl$$nl$### Базовая экономика планет$nl$$nl$| Тип тела | Базовая экономика | Бонус |$nl$|----------|-------------------|-------|$nl$| Rocky body | Refinery +1.0 | Pristine/Major reserves = + |$nl$| High Metal Content | Extraction +1.0 | Геология = + |$nl$| Water World | Tourism потенциал | Terraformable = ++ |$nl$| Icy body | — | — |$nl$| Gas Giant | — | Кольца = RES |$nl$$nl$### CMM Composite$nl$$nl$Для производства **CMM Composite** нужна **Refinery-экономика** в топ-2:$nl$$nl$1. **Rocky body** + Planetary Port (Civilian) + Refinery Hub$nl$2. **High Metal Content** + Planetary Port (Civilian) + Refinery Hub$nl$$nl$Если на планете есть geological/biological signals — может потребоваться больше Refinery Hub'ов.$nl$$nl$### Расположение объектов$nl$$nl$- Объекты **ближе к планете** сильнее влияют на экономику$nl$- Объекты **дальше от Starport** имеют **слабое рыночное соединение**$nl$- Экономика объекта влияет на рынки портов на **том же теле**$nl$$nl$---$nl$$nl$## BGS, фракции и Powerplay$nl$$nl$### Фракции$nl$$nl$- **Фракция, у которой куплен клейм**, становится доминирующей в системе$nl$- Существующие BGS-фракции могут расширяться в вашу систему$nl$- Player Minor Factions можно привезти через прокси$nl$- Супердержавы расширяют влияние через фракции-прокси$nl$$nl$### Government Type$nl$$nl$| Тип | Эффект |$nl$|-----|--------|$nl$| **Anarchy** | Сниженная безопасность, легальны все товары |$nl$| **Corporate** | Баланс между порядком и свободой |$nl$| **Democracy** | Высокий SoL, средняя безопасность |$nl$| **Dictatorship** | Высокая безопасность, низкий SoL |$nl$| **Theocracy** | Специфические ограничения на товары |$nl$$nl$### Powerplay$nl$$nl$- После постройки первого порта система **НЕ контролируется Power**$nl$- Фракция переносится из исходной системы$nl$- Для Powerplay-контроля нужно отдельное влияние$nl$$nl$---$nl$$nl$## Логистика и Fleet Carrier$nl$$nl$### Fleet Carrier — must have?$nl$$nl$| Без FC | С FC |$nl$|--------|------|$nl$| Множество рейсов в Bubble | Один рейс = 25,000 т |$nl$| Зависимость от рынков | Собственный рынок |$nl$| Ограниченная дальность | Прыжки 500 св.лет |$nl$| Высокие временные затраты | Автономность месяцами |$nl$$nl$### Топливо для FC$nl$$nl$- **Tritium** — покупается на рынках или добывается$nl$- Расход: ~1 тонна на прыжок$nl$- Всегда держите запас на 2 прыжка + 500 тонн$nl$$nl$### Lynx Highliner$nl$$nl$- Новый пассажирский лайнер (Zorgon Peterson)$nl$- Отличен для пассажирских миссий в/из вашей колонии$nl$- Business-class каюты = высокий доход$nl$$nl$---$nl$$nl$## Construction Points (CP)$nl$$nl$### Как получить$nl$$nl$| Источник | CP | Условие |$nl$|----------|-----|---------|$nl$| Tier 1 объект | — | Даёт CP для Tier 2 |$nl$| Tier 2 объект | Тратит CP | Даёт CP для Tier 3 |$nl$| Tier 3 объект | Тратит CP | Максимальный уровень |$nl$$nl$### Пример прогрессии$nl$$nl$```$nl$First Station (бесплатно)$nl$    ↓$nl$Scientific Outpost → даёт 1 CP (Tier 2)$nl$    ↓$nl$Research Station → тратит 3 CP (Tier 2 cost)$nl$    ↓$nl$Ocellus Starport → тратит 6 CP (Tier 3 cost)$nl$```$nl$$nl$### Ускорение CP$nl$$nl$- **Boom state** — +25% к генерации$nl$- **Player activity** — миссии в системе ускоряют рост$nl$- **Powerplay** — некоторые Power дают бонусы$nl$$nl$---$nl$$nl$## Доход и награды$nl$$nl$### Пассивный доход$nl$$nl$- **Торговля** — ваши порты генерируют товары$nl$- **Миссии** — чем выше население, тем больше миссий$nl$- **Tourist** — Tourism-экономика = высокооплачиваемые пассажирские миссии$nl$- **Mining** — Extraction/Refinery = ресурсы для продажи$nl$$nl$### Активный доход$nl$$nl$- **Доставка товаров** в вашу систему = высокие цены$nl$- **Stackable massacre missions** — если Military-экономика$nl$- **Passenger missions** — если Tourism/High SoL$nl$$nl$### Нет upkeep costs!$nl$$nl$В отличие от Fleet Carrier, колонии **не требуют** еженедельных платежей. Развивайте в своём темпе.$nl$$nl$---$nl$$nl$## Название объектов$nl$$nl$### Процесс$nl$$nl$1. Откройте **System Map → Architect View**$nl$2. Выберите объект$nl$3. Нажмите **Rename**$nl$4. Стоимость: **Arx** (внутриигровая премиум-валюта)$nl$$nl$### Правила$nl$$nl$- Модерация Frontier — оскорбления и товарные знаки запрещены$nl$- Единый стиль важен для иммерсии$nl$- Названия остаются **навсегда**$nl$$nl$---$nl$$nl$## Демонтаж и отмена строительства$nl$$nl$### Как снести объект$nl$$nl$1. Откройте **Galaxy Map**$nl$2. Найдите систему с объектом$nl$3. Откройте **System Map → Architect View**$nl$4. Выберите объект$nl$5. Нажмите **Demolish** внизу списка commodities$nl$6. Подтвердите$nl$$nl$### Что происходит$nl$$nl$- Демонтаж завершается после **серверного тика**$nl$- Таймер отображается в UI$nl$- **Возвращается только часть ресурсов**$nl$- Если объект строился — строительство отменяется$nl$$nl$### Важно$nl$$nl$- Демонтаж **Primary Port** невозможен$nl$- Некоторые объекты нельзя снести, если они требуются для других$nl$- Планируйте заранее — демонтаж дорогой$nl$$nl$---$nl$$nl$## Расширение: цепочки систем и мини-Bubble$nl$$nl$### Цепочки (Highways)$nl$$nl$- Каждая новая система должна быть в **15 св.лет** от существующей$nl$- Создавайте «ступеньки» каждые 10–15 св.лет$nl$- Используйте **Neutron Highway** для ускорения$nl$$nl$### Мини-Bubble$nl$$nl$- Группа систем в радиусе 30–50 св.лет$nl$- Общая логистика через Fleet Carrier$nl$- Специализация: одна система — добыча, другая — производство, третья — торговля$nl$$nl$### Omega Nebula$nl$$nl$- Популярное направление для колонизации$nl$- **40+ ringed water worlds** по маршруту$nl$- **31 чёрная дыра** и **57 нейтронных звёзд** в радиусе 50 св.лет$nl$- Достигнута сообществом **6 января 2026**$nl$$nl$---$nl$$nl$## Частые ошибки и как их избежать$nl$$nl$| Ошибка | Последствие | Решение |$nl$|--------|-------------|---------|$nl$| **Пропустили 24 часа на маяк** | Потеря 25 млн + 3 дня блокировки | Ставьте таймер, не откладывайте |$nl$| **Построили Ground Port для торговли** | Нет экономических бонусов | Используйте Orbital Ports |$nl$| **Неправильное расположение** | Слабое влияние на экономику | Объекты ближе к планете = сильнее |$nl$| **Забыли про CP** | Нельзя строить Tier 3 | Планируйте Tech Tree заранее |$nl$| **Нет резерва Tritium** | FC застрял в пустоте | Всегда 2 прыжка + 500 тонн |$nl$| **Соло в дальней системе** | Сложно доставлять материалы | Squadron или FC-логистика |$nl$$nl$---$nl$$nl$## Полезные инструменты и ресурсы$nl$$nl$### Внеигровые инструменты$nl$$nl$| Инструмент | Ссылка | Описание |$nl$|------------|--------|----------|$nl$| **ED Colonisation Planner** | [edcolonisationplanner.com](https://edcolonisationplanner.com) | Автоматический планировщик: загрузите журнал, выберите цель — он рассчитает порядок строительства |$nl$| **DaftMav Spreadsheet** | [Google Sheets](https://docs.google.com) | Таблица со всеми объектами, CP, экономикой |$nl$| **Raven Colonial Corp** | [raven-colonial.org](https://raven-colonial.org) | Планирование колоний, экономика, логистика |$nl$| **Inara** | [inara.cz](https://inara.cz) | Поиск товаров, commodities, инженеры |$nl$| **Spansh** | [spansh.co.uk](https://spansh.co.uk) | Neutron Highway, маршруты |$nl$$nl$### Сообщества$nl$$nl$- **Frontier Forums** — [forums.frontier.co.uk/forums/system-colonisation](https://forums.frontier.co.uk/forums/system-colonisation/)$nl$- **Reddit** — r/EliteDangerous, r/EliteColonization$nl$- **Discord** — серверы Squadron и проектов$nl$$nl$---$nl$$nl$## Оценка$nl$$nl$Колонизация — это **конечная цель** для многих пилотов Elite Dangerous. Это не даёт прямого преимущества в PvP или PvE, но предоставляет **беспрецедентный уровень креативного контроля** над игровой вселенной. Ваша система останется в галактике **навсегда** — это ваш перманентный след в истории Elite Dangerous.$c$,         last_editor_id = v_admin_id,         version = 2,         updated_at = NOW()     WHERE slug = 'polnyy-gayd-po-kolonizacii-v-elite-dangerous';     -- Add revision for updated guide     INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)     SELECT id, content, v_admin_id, 2, 'Updated for February 2026: added claim sniping protection, Dodec stats, new ships (Panther Clipper, Corsair), ground port warnings, demolition info, updated statistics', NOW()     FROM public.wiki_articles WHERE slug = 'polnyy-gayd-po-kolonizacii-v-elite-dangerous';     -- ============================================================     -- НОВАЯ СТАТЬЯ 1: Выбор системы для колонизации     -- ============================================================     INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)     VALUES (         'Выбор системы для колонизации',         'vybor-sistemy-dlya-kolonizacii',         $c$# Выбор системы для колонизации$nl$$nl$**Тип:** Колонизация / Гайд$nl$**Сложность:** Начальный–Средний$nl$**Время чтения:** 10 минут$nl$$nl$## Описание$nl$$nl$Выбор правильной системы — это 50% успеха колонизации. Плохой выбор = ограниченное развитие, сложная логистика, разочарование. Этот гайд научит находить идеальные системы за 15 минут сканирования.$nl$$nl$## Чек-лист идеальной системы$nl$$nl$### Обязательно (без этого не начинайте)$nl$$nl$| Критерий | Почему важно | Минимум |$nl$|----------|-------------|---------|$nl$| **Unclaimed статус** | Иначе нельзя заявить | Да |$nl$| **В пределах 15 св.лет от inhabited** | Требование механики | ≤ 15 св.лет |$nl$| **Не permit-locked** | Иначе доступ закрыт | Да |$nl$| **Есть планеты** | Нужны слоты для объектов | 3+ тела |$nl$$nl$### Желательно (влияет на потенциал)$nl$$nl$| Критерий | Идеально | Хорошо | Плохо |$nl$|----------|----------|--------|-------|$nl$| **Тип звезды** | K, G | F, M | Neutron, WD, BH |$nl$| **Планеты** | 8+ | 5–7 | 1–2 |$nl$| **Rocky bodies** | 2+ с кольцами | 1 с кольцами | 0 |$nl$| **HMC планеты** | 2+ с геологией | 1 с геологией | 0 |$nl$| **Water Worlds** | 1 terraformable | 1 обычный | 0 |$nl$| **Резервы** | Pristine | Major | Low/Depleted |$nl$$nl$### Бонусы (делают систему уникальной)$nl$$nl$- **Кольца на Rocky body** → Resource Extraction Sites$nl$- **Terraformable Water World** → Tourism + Population$nl$- **Geological signals** → Refinery бонус$nl$- **Biological signals** → Exploration / Tourism$nl$- **Близость к Neutron star** → Быстрые путешествия$nl$$nl$## Пошаговый поиск$nl$$nl$### Шаг 1: Найти anchor-систему$nl$$nl$1. Откройте **Galaxy Map**$nl$2. Включите фильтр **«Inhabited Systems»**$nl$3. Найдите систему на **границе Bubble** или вашей мини-Bubble$nl$4. Запомните координаты$nl$$nl$### Шаг 2: Поиск в радиусе 15 св.лет$nl$$nl$1. Переключитесь на **«Unclaimed Systems»**$nl$2. Ищите в радиусе 15 св.лет от anchor$nl$3. Сканируйте каждую кандидатку FSS$nl$$nl$### Шаг 3: Быстрая оценка (FSS)$nl$$nl$| Что смотреть | За сколько секунд | Что значит |$nl$|--------------|-------------------|------------|$nl$| Тип звезды | 2 сек | K/G = хорошо, иначе skip |$nl$| Количество тел | 5 сек | 5+ = продолжаем, 3-4 = возможно, 1-2 = skip |$nl$| Кольца | 10 сек | Есть = отлично |$nl$| Terraformable | 15 сек | Есть = бонус |$nl$$nl$### Шаг 4: Детальное сканирование (если прошла отбор)$nl$$nl$1. Прилетите в систему$nl$2. Отсканируйте **Discovery Scanner**$nl$3. Откройте **System Map** и изучите каждое тело$nl$4. Проверьте **Planetary Information**:$nl$   - Composition (для ресурсов)$nl$   - Signals (геология/биология)$nl$   - Terraformable status$nl$$nl$### Шаг 5: Проверка слотов$nl$$nl$1. Откройте **Galaxy Map → System Colonisation view**$nl$2. Выберите систему$nl$3. Посмотрите **иконки слотов**:$nl$   - **+** = доступный слот$nl$   - **Флаг** = слот для Primary Port$nl$   - Чем больше слотов — тем лучше$nl$$nl$## Типы систем по назначению$nl$$nl$### Тип A: Промышленная$nl$$nl$**Цель:** Производство CMM Composite, Refinery, Industrial$nl$$nl$**Идеальные условия:**$nl$- Rocky body с Pristine reserves$nl$- Geological signals$nl$- 2+ HMC планеты$nl$- Много слотов$nl$$nl$**Что строить:**$nl$- Refinery Hub$nl$- Industrial Settlement (Large)$nl$- Mining Outpost$nl$- Planetary Port на Rocky body$nl$$nl$### Тип B: Туристическая$nl$$nl$**Цель:** Высокий доход от пассажиров$nl$$nl$**Идеальные условия:**$nl$- Terraformable Water World$nl$- Красивые виды (туманности, кольца)$nl$- Высокий SoL потенциал$nl$$nl$**Что строить:**$nl$- Tourism Settlement (Large)$nl$- Exploration Hub$nl$- Luxury Starport (Ocellus/Dodec)$nl$- Communication Station$nl$$nl$### Тип C: Военная$nl$$nl$**Цель:** Stackable massacre missions, высокая безопасность$nl$$nl$**Идеальные условия:**$nl$- Близость к Conflict Zones$nl$- Возможность Military-экономики$nl$$nl$**Что строить:**$nl$- Military Settlement (Large)$nl$- Military Hub$nl$- Military Outpost$nl$- Starport с высоким Security$nl$$nl$### Тип D: Исследовательская$nl$$nl$**Цель:** High Tech, продажа данных, Universal Cartographics$nl$$nl$**Идеальные условия:**$nl$- Необычная звезда (Wolf-Rayet, T Tauri)$nl$- Интересные планеты$nl$- Далеко от Bubble (для продажи данных)$nl$$nl$**Что строить:**$nl$- Scientific Settlement (Large)$nl$- Scientific Hub$nl$- Research Station$nl$- High Tech Hub$nl$$nl$## Красные флаги (пропускайте)$nl$$nl$| Проблема | Почему плохо |$nl$|----------|-------------|$nl$| **Только 1-2 планеты** | Мало слотов, нет развития |$nl$| **Нет Rocky/HMC** | Нет добычи, нет Refinery |$nl$| **White Dwarf primary** | Опасно, мало слотов |$nl$| **14.9 св.лет от inhabited** | Сложно достичь, нет запаса |$nl$| **Permit-locked** | Просто нельзя |$nl$| **Уже Claimed** | Кто-то успел раньше |$nl$$nl$## Инструменты для поиска$nl$$nl$| Инструмент | Как использовать |$nl$|------------|-----------------|$nl$| **EDSM** | Поиск систем по параметрам |$nl$| **Spansh** | Маршруты, neutron highway |$nl$| **Inara** | Проверка статуса системы |$nl$| **ED Colonisation Planner** | Загрузите скан — получите рекомендации |$nl$$nl$## Оценка$nl$$nl$Идеальная система — это баланс между логистикой (близость к Bubble), потенциалом (планеты, ресурсы) и вашими целями. Не гонитесь за «идеалом» — хорошая система в 5 св.лет лучше идеальной в 14.9. Помните: вы можете иметь **неограниченное количество** колоний, так что первую можно использовать для обучения.$c$,         v_cat_colonization, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()     ) RETURNING id INTO v_article_id;     INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)     VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW());     -- ============================================================     -- НОВАЯ СТАТЬЯ 2: Экономика колонии и BGS     -- ============================================================     INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)     VALUES (         'Экономика колонии и BGS',         'ekonomiya-kolonii-i-bgs',         $c$# Экономика колонии и BGS$nl$$nl$**Тип:** Колонизация / Механика$nl$**Сложность:** Средний–Высокий$nl$**Время чтения:** 12 минут$nl$$nl$## Описание$nl$$nl$Экономика колонии — это не просто цифры. Это живой организм, который определяет, какие товары продаются на ваших рынках, какие миссии доступны пилотам и как быстро растёт ваше население. Понимание BGS (Background Simulation) позволяет создавать системы, которые приносят **пассивный доход** и служат якорем для сообщества.$nl$$nl$## Шесть столпов экономики$nl$$nl$Каждый объект влияет на 6 параметров:$nl$$nl$| Параметр | Что делает | Как повысить |$nl$|----------|-----------|--------------|$nl$| **Security** | Уровень безопасности | Military объекты, Starports |$nl$| **Tech Level** | Технологический уровень | Scientific/High Tech объекты |$nl$| **Wealth** | Богатство | Commercial, Tourism, Refinery |$nl$| **Standard of Living (SoL)** | Пассажирские миссии, tourism | Agricultural, Civilian объекты |$nl$| **Development Level** | Уровень развития | Рост населения, BGS |$nl$| **Population** | Население | Starports, Planetary Port |$nl$$nl$## Как работает влияние объектов$nl$$nl$### Принцип близости$nl$$nl$- Объекты **ближе к планете** = **сильнее влияние**$nl$- Объекты **дальше от Starport** = **слабое рыночное соединение**$nl$- Экономика объекта влияет на рынки портов **на том же теле**$nl$$nl$### Пример$nl$$nl$```$nl$Планета A (Rocky body, Pristine)$nl$├── Orbital: Coriolis Starport (Slot 0) ← РЫНОК$nl$├── Orbital: Mining Outpost (Slot 1)    ← Влияет на Coriolis$nl$├── Orbital: Refinery Hub (Slot 2)      ← Влияет слабее$nl$└── Surface: Large Extraction Settlement  ← Влияет на Coriolis$nl$$nl$Планета B (Water World)$nl$├── Orbital: Ocellus Starport (Slot 0)  ← Свой рынок$nl$└── Orbital: Tourism Settlement           ← Влияет на Ocellus$nl$```$nl$$nl$## Создание CMM Composite$nl$$nl$CMM Composite — **ключевой товар** для колонизации. Без него сложно строить Tier 2-3 объекты.$nl$$nl$### Способ 1: Rocky body + Refinery$nl$$nl$1. Найдите **Rocky body** с **Pristine reserves**$nl$2. Постройте **Planetary Port (Civilian)** или **Planetary Outpost (Civilian)**$nl$3. Добавьте **Refinery Hub** на поверхности$nl$4. Убедитесь, что Refinery в **топ-2 экономик** системы$nl$$nl$### Способ 2: HMC + Refinery$nl$$nl$1. Найдите **High Metal Content** body$nl$2. Постройте **Planetary Port (Civilian)**$nl$3. Добавьте **Refinery Hub**$nl$4. Если есть geological signals — может потребоваться **2+ Refinery Hub**$nl$$nl$### Проверка$nl$$nl$- Откройте рынок на Starport$nl$- Посмотрите **Commodities → CMM Composite**$nl$- Если есть в продаже — Refinery работает$nl$- Если нет — добавьте ещё Refinery-объектов$nl$$nl$## Government Type и рынок$nl$$nl$| Government | Эффект на рынок | Особенности |$nl$|------------|----------------|-------------|$nl$| **Anarchy** | Все товары легальны | Низкая безопасность, пиратство |$nl$| **Corporate** | Баланс | Средние цены, стабильность |$nl$| **Democracy** | Высокий SoL | Больше пассажирских миссий |$nl$| **Dictatorship** | Высокая безопасность | Низкий SoL, строгий контроль |$nl$| **Theocracy** | Ограничения на товары | Некоторые товары illegal |$nl$$nl$**Важно:** Если government type считает товар **illegal** — он **не появится** на рынке, даже если экономика подходит.$nl$$nl$## BGS-циклы и состояния$nl$$nl$### Как работает BGS в колониях$nl$$nl$1. Каждая система имеет **фракцию-владельца** (та, у которой куплен клейм)$nl$2. Фракция может находиться в разных **состояниях (states)**$nl$3. Состояния меняются каждый **tick** (ежедневно)$nl$$nl$### Полезные состояния$nl$$nl$| State | Эффект | Как вызвать |$nl$|-------|--------|-------------|$nl$| **Boom** | +25% доход, быстрый рост | Торговля, миссии на доход |$nl$| **Expansion** | Расширение в соседние системы | Высокое влияние, население |$nl$| **Investment** | Бонусы к строительству | Продажа товаров, доходы |$nl$| **Civil Liberty** | Высокий SoL | Миссии на безопасность |$nl$$nl$### Вредные состояния$nl$$nl$| State | Эффект | Как избежать |$nl$|-------|--------|--------------|$nl$| **Bust** | -25% доход, замедление | Не допускайте дефицита товаров |$nl$| **Civil Unrest** | Низкая безопасность | Поддерживайте Security |$nl$| **Famine** | Нет еды, кризис | Стройте Agricultural объекты |$nl$| **Outbreak** | Медицинский кризис | Стройте медицинские объекты |$nl$$nl$## Манипуляция BGS$nl$$nl$### Для одиночек$nl$$nl$1. Выполняйте **миссии** для вашей фракции$nl$2. **Продавайте товары** на рынках вашей системы$nl$3. **Сканируйте** данные и продавайте их$nl$4. Участвуйте в **Conflict Zones** (если Military)$nl$$nl$### Для Squadron$nl$$nl$1. **Координируйте миссии** — 10 пилотов = 10x эффект$nl$2. **Организуйте торговые рейсы** — массовые продажи товаров$nl$3. **Stackable massacre missions** — Military-экономика + CZ$nl$4. **Bounty hunting** — повышает Security$nl$$nl$### Типичная BGS-рутина (30 минут)$nl$$nl$```$nl$1. Взять 3 миссии на доставку для вашей фракции$nl$2. Купить товары и доставить$nl$3. Взять 2 миссии на bounty hunting$nl$4. Полететь в RES, заработать 500k+ bounties$nl$5. Сдать миссии и bounties$nl$6. Повторить на следующей системе$nl$```$nl$$nl$## Экономические стратегии$nl$$nl$### Стратегия 1: Торговый хаб$nl$$nl$**Цель:** Максимальный Wealth + Population$nl$$nl$**Объекты:**$nl$- Coriolis / Ocellus (Commercial focus)$nl$- Commercial Outpost$nl$- Space Farm$nl$- Civilian Hub$nl$$nl$**Результат:** Высокие цены, много миссий, пассивный доход$nl$$nl$### Стратегия 2: Промышленный комплекс$nl$$nl$**Цель:** CMM Composite + Industrial товары$nl$$nl$**Объекты:**$nl$- Asteroid Base (Extraction)$nl$- Industrial Settlement (Large)$nl$- Refinery Hub$nl$- Mining Outpost$nl$$nl$**Результат:** Производство ключевых товаров, экспорт в Bubble$nl$$nl$### Стратегия 3: Военная база$nl$$nl$**Цель:** Stackable massacre missions$nl$$nl$**Объекты:**$nl$- Military Settlement (Large)$nl$- Military Hub$nl$- Military Outpost$nl$- Starport с высоким Security$nl$$nl$**Результат:** 50–100 млн/час на massacre missions$nl$$nl$### Стратегия 4: Научный центр$nl$$nl$**Цель:** High Tech + продажа данных$nl$$nl$**Объекты:**$nl$- Scientific Settlement (Large)$nl$- Scientific Hub$nl$- Research Station$nl$- Communication Station$nl$$nl$**Результат:** Доступ к G5 модулям, высокие цены на данные$nl$$nl$## Частые вопросы$nl$$nl$### Q: Почему на моём рынке нет товаров?$nl$$nl$A: Проверьте:$nl$1. Прошёл ли **первый тик** после постройки?$nl$2. Правильная ли **экономика** (Refinery для CMM)?$nl$3. Не считает ли **government** товар illegal?$nl$4. Достаточно ли **населения**?$nl$$nl$### Q: Как быстрее растить население?$nl$$nl$A:$nl$1. Стройте объекты с **Population Increase** (Starports, Planetary Port)$nl$2. Поддерживайте **Boom** state$nl$3. Стройте **Agricultural** объекты (SoL → рост населения)$nl$4. Ждите — рост пассивный, но ускоряется активностью$nl$$nl$### Q: Можно ли изменить government type?$nl$$nl$A: Напрямую — нет. Но можно привезти **Player Minor Faction** с нужным government type и вырастить её влияние до 75%+.$nl$$nl$### Q: Что делать, если фракция уходит в Bust?$nl$$nl$A:$nl$1. Массово продавайте товары на рынок$nl$2. Выполняйте миссии на доход$nl$3. Избегайте миссий, которые забирают товары из системы$nl$4. Подождите 3–7 дней — BGS самокорректируется$nl$$nl$## Оценка$nl$$nl$BGS — это «тёмная материя» Elite Dangerous. Она невидима, но определяет всё. Понимание экономики колонии позволяет превратить пустую систему в **процветающий торговый хаб** или **неприступную военную крепость**. Не игнорируйте BGS — это разница между «построил и забыл» и «построил и процветаю».$c$,         v_cat_colonization, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()     ) RETURNING id INTO v_article_id;     INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)     VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); END $$;
+-- ============================================================
+-- ED Ring Colony Wiki — Update: гайд по колонизации (версия 2.0) + 2 статьи
+--
+-- ⚠ Файл восстановлен 2026-09-25. Прежняя версия лежала одной строкой без
+--   переводов строк: первый комментарий съедал весь остаток файла вместе с
+--   блоком DO, поэтому миграция не выполняла ни одной команды (psql считает
+--   пустой скрипт успешным, и поломка была незаметна).
+--
+--   Что сохранено и что исправлено:
+--     • текст статей не менялся, маркеры $nl$ развёрнуты в реальные переводы
+--       строк (разворачивать их было некому — в базе оставалась одна строка);
+--     • гайд по колонизации обновляется до версии 2.0, а на базе, где его нет
+--       (чистая установка, гайд заводили вручную из шаблона), — создаётся сразу
+--       в версии 2.0: раньше UPDATE молча не находил ни одной строки;
+--     • повторный накат безопасен: статьи не дублируются (ON CONFLICT (slug)),
+--       ревизия №2 добавляется только если её ещё нет;
+--     • категория «Колонизация» и автор ищутся по базе — как в
+--       20260903000000_wiki_fill_empty_categories.sql.
+-- ============================================================
 
+DO $seed$
+DECLARE
+  v_admin_id         UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
+  v_author_id        UUID;
+  v_cat_colonization UUID;
+  v_article_id       UUID;
+  v_guide_content    TEXT;
+BEGIN
+  -- ============================================================
+  -- 0. Категория «Колонизация» и автор статей
+  -- ============================================================
+  SELECT id INTO v_cat_colonization FROM public.wiki_categories
+   WHERE id = '117fddde-9c52-4741-b00d-edb2788e4e42';
+  IF v_cat_colonization IS NULL THEN
+    SELECT id INTO v_cat_colonization FROM public.wiki_categories WHERE slug = 'colonization';
+  END IF;
+  IF v_cat_colonization IS NULL THEN
+    INSERT INTO public.wiki_categories (name, slug, description, sort_order)
+    VALUES ('Колонизация', 'colonization', 'Всё о колонизации систем', 7)
+    ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id INTO v_cat_colonization;
+  END IF;
+
+  SELECT COALESCE(
+           (SELECT id FROM auth.users WHERE id = v_admin_id),
+           (SELECT id FROM public.profiles
+             WHERE role IN ('admin', 'moderator')
+             ORDER BY created_at LIMIT 1)
+         ) INTO v_author_id;
+  IF v_author_id IS NULL THEN
+    RAISE NOTICE 'wiki_update_colonization: нет пользователя-автора (admin/moderator) — сид пропущен';
+    RETURN;
+  END IF;
+
+  v_guide_content := $c$# Полный гайд по колонизации в Elite Dangerous
+
+> **Актуально для:** Update 2 / Trailblazers (февраль 2026)  
+> **Автор:** Сообщество ED Ring Colony  
+> **Категория:** Колонизация  
+> **Версия:** 2.0  
+> **Статус:** Актуально для текущего патча
+
+---
+
+## Содержание
+
+1. [Введение: что такое колонизация](#введение-что-такое-колонизация)
+2. [Этап 0: Подготовка](#этап-0-подготовка)
+3. [Этап 1: Выбор системы](#этап-1-выбор-системы)
+4. [Этап 2: Покупка клейма](#этап-2-покупка-клейма)
+5. [Этап 3: Размещение маяка](#этап-3-размещение-маяка)
+6. [Этап 4: Доставка материалов](#этап-4-доставка-материалов)
+7. [Этап 5: Становление System Architect](#этап-5-становление-system-architect)
+8. [Защита клейма от перехвата](#защита-клейма-от-перехвата)
+9. [Технологическое дерево (Tech Tree)](#технологическое-дерево-tech-tree)
+10. [Орбитальные объекты: полный справочник](#орбитальные-объекты-полный-справочник)
+11. [Поверхностные объекты: полный справочник](#поверхностные-объекты-полный-справочник)
+12. [Экономика системы](#экономика-системы)
+13. [BGS, фракции и Powerplay](#bgs-фракции-и-powerplay)
+14. [Логистика и Fleet Carrier](#логистика-и-fleet-carrier)
+15. [Construction Points (CP)](#construction-points-cp)
+16. [Доход и награды](#доход-и-награды)
+17. [Название объектов](#название-объектов)
+18. [Демонтаж и отмена строительства](#демонтаж-и-отмена-строительства)
+19. [Расширение: цепочки систем и мини-Bubble](#расширение-цепочки-систем-и-мини-bubble)
+20. [Частые ошибки и как их избежать](#частые-ошибки-и-как-их-избежать)
+21. [Полезные инструменты и ресурсы](#полезные-инструменты-и-ресурсы)
+
+---
+
+## Введение: что такое колонизация
+
+**System Colonisation** — это механика, позволяющая игрокам заявлять незаселённые звёздные системы и развивать их, строя порты, аванпосты, поселения и другие объекты. Вы становитесь **System Architect** (Системным Архитектором) — бессрочным управляющим развитием своей колонии.
+
+### Ключевые факты (февраль 2026)
+
+- **101,862+ систем** колонизировано по всей галактике
+- **307,014 космических** и **175,973 наземных** объектов построено
+- Механика вышла из бета-теста **11 ноября 2025 года** (Dodec Update)
+- **Trailblazer megaships** были удалены из игры — колонии теперь самодостаточны
+- Колонизация — **PvE-контент**: другие игроки **не могут** разрушить вашу колонию
+- **Нет ежемесячных расходов** на содержание — развивайте в своём темпе
+- Каждая система уникальна: тип звезды, планеты, ресурсы влияют на экономику
+
+### Общая схема процесса
+
+```
+Выбор системы → Покупка клейма → Размещение маяка → Доставка материалов → 
+→ Постройка первого порта → System Architect → Расширение системы
+```
+
+---
+
+## Этап 0: Подготовка
+
+### Минимальные требования
+
+| Параметр | Требование |
+|----------|------------|
+| Кредиты | Минимум **50–100 млн** (25 млн маяк + 25 млн резерв + стоимость корабля) |
+| Корабль | С трюмом **200+ тонн** (Type-9, Cutter, Type-11, Panther Clipper Mk II) |
+| FSD | Инженерный апгрейд от Felicity Farseer желателен |
+| Fleet Carrier | **Не обязателен**, но делает процесс в 10 раз проще |
+| Squadron | Желателен для координации и BGS-контроля |
+
+### Рекомендуемый набор кораблей
+
+1. **Panther Clipper Mk II** — новый король грузоперевозок (до 1238 т, Large)
+2. **Type-11 Prospector** — массовые перевозки, SCO-optimized
+3. **Corsair** — быстрый средний корабль с хорошим трюмом (318 т, SCO)
+4. **Python** — универсал: доставки, SRV, майнинг
+5. **Krait Mk II** — боевые миссии и защита
+6. **Diamondback Explorer** — разведка и поиск систем
+
+---
+
+## Этап 1: Выбор системы
+
+### Критерии выбора (от важного к менее важному)
+
+### Обязательные условия
+
+1. **Расстояние** — в пределах **15 световых лет** от заселённой системы
+2. **Статус** — система должна быть **Unclaimed** (незаявленной)
+3. **Доступность** — не permit-locked, не в exclusion zone
+
+### Желательные условия
+
+| Фактор | Почему важно | Идеально |
+|--------|-------------|----------|
+| **Тип звезды** | K/G-тип стабильны, дают хорошие слоты | K- или G-звезда |
+| **Количество планет** | Больше тел = больше орбитальных слотов | 5+ планет/лун |
+| **Кольца** | Создают Resource Extraction Sites | Кольца на Rocky body |
+| **Ресурсы** | Влияют на базовую экономику | Pristine reserves |
+| **Geological signals** | Бонус к Refinery-экономике | Есть на Rocky/HMC |
+| **Terraformable** | Бонус к населению и экономике | 1+ планета |
+
+### Типы планет и базовая экономика
+
+| Тип планеты | Базовая экономика | Бонус |
+|-------------|-------------------|-------|
+| Rocky body | Refinery +1.0 | Pristine = +, Depleted = − |
+| High Metal Content (HMC) | Extraction +1.0 | Геология = + |
+| Water World | Tourism потенциал | Terraformable = ++ |
+| Gas Giant | Много лун = слоты | Кольца = RES |
+
+### Чего избегать
+
+- **Neutron stars / Black holes** — нет планет, нет слотов
+- **White dwarfs** — мало слотов, опасны для FSD
+- **Системы с 1-2 планетами** — мало возможностей для развития
+- **Системы в 14.9 св.лет** — сложно достичь, мало запаса для цепочки
+
+---
+
+## Этап 2: Покупка клейма
+
+### Процесс
+
+1. Прилетите в **любой Star Port** в заселённой системе
+2. Откройте **Station Services → Colonization Contact**
+3. Выберите незаселённую систему в пределах 15 св.лет
+4. Выберите тип **Primary Starport**
+
+### Типы портов
+
+| Тип порта | Стоимость клейма | Особенности |
+|-----------|-----------------|-------------|
+| **Outpost** | Дешевле | Только Medium площадки, меньше грузов |
+| **Coriolis** | Средне | Классика, Large площадки, Colony-экономика |
+| **Ocellus** | Дороже | Tier 3, высокие статы |
+| **Orbis** | Дороже | Tier 3, аналог Ocellus |
+| **Dodec** | Самый дорогой | Tier 3, максимальные статы, уникальный дизайн |
+
+### Важно
+
+- Клейм действует **24 часа** — за это время нужно разместить маяк
+- Если пропустили дедлайн — **3 дня блокировки** перед новой попыткой
+- Нельзя иметь несколько активных клеймов одновременно
+- После завершения первого порта можно заявлять следующую систему
+
+---
+
+## Этап 3: Размещение маяка
+
+### Что нужно сделать
+
+1. Полетите в заявленную систему
+2. Откройте **System Colonization Suite** (модуль по умолчанию на всех кораблях)
+3. Разверните **Colonization Beacon** в предустановленной точке
+4. Маяк стоит **25 млн кредитов**
+
+### Что происходит дальше
+
+- Система помечается как **Claimed** (заявленная)
+- Запускается обратный отсчёт **24 часа**
+- Прибывает гигантский **Colonization Ship** — временная база с 32 площадками
+- Вы становитесь **System Architect** (после завершения первого порта)
+
+### Если не успели за 24 часа
+
+- Клейм **аннулируется**
+- **3 дня** нельзя подавать новые заявки
+- Потраченные кредиты **не возвращаются**
+
+---
+
+## Этап 4: Доставка материалов
+
+### Цель
+
+Доставить все необходимые **commodities** на Colonization Ship за **4 недели**.
+
+### Типы материалов
+
+| Категория | Примеры | Источник |
+|-----------|---------|----------|
+| **Руды (Minerals)** | Bauxite, Gallite, Indite, Coltan | Mining / Покупка |
+| **Товары (Commodities)** | Food Cartridges, Insulating Membrane, CMM Composite | Рынки Bubble |
+| **Материалы (Materials)** | Iron, Nickel, Carbon, Sulphur | SRV surface mining |
+| **Топливо** | Tritium для FC | Рынки / Mining |
+
+### Ключевые советы по доставке
+
+- **Fleet Carrier = must have** для серьёзных проектов: 25,000 т груза + прыжки 500 св.лет
+- **Panther Clipper Mk II** — новый лучший корабль для массовых перевозок (1238 т)
+- **Type-11 Prospector** — SCO-optimized, хорошая альтернатива
+- **Создавайте цепочки** систем каждые 15 св.лет для дальних колоний
+- Некоторые товары (**Insulating Membrane**) доступны **только** на орбитальных рынках
+- **CMM Composite** производится на планетах с Refinery-экономикой
+
+### Что происходит после доставки
+
+- Порт появляется в виде **строящейся станции** с лесами
+- После **еженедельного тика** (четверг, 07:00 UTC) порт достраивается
+- Маяк превращается в **Nav Beacon**
+- Система становится заселённой
+
+---
+
+## Этап 5: Становление System Architect
+
+### Ваши полномочия
+
+- **Размещение** новых объектов (орбитальных и поверхностных)
+- **Управление** экономикой, населением, безопасностью
+- **Назначение** названий объектов (платно через Arx)
+- **Демонтаж** ошибочно размещённых объектов
+
+### Ограничения
+
+- Нужно дождаться **первого еженедельного тика** после постройки порта
+- Количество **одновременных строек** ограничено (смотрите в Architect View)
+- Поверхностные объекты могут появляться с **задержкой до 48 часов**
+- **Ground Ports (Planetary Port)** не работают с экономическими влияниями — используйте Orbital Ports
+
+### Architect Mode
+
+- Открывается через **System Map**
+- Показывает доступные **орбитальные слоты** (иконки с «+»)
+- Показывает **поверхностные слоты** на каждой планете
+- Флаг на орбитальном слоте = место для **Primary Port**
+
+---
+
+## Защита клейма от перехвата
+
+### Механика «Claim Sniping Protection»
+
+После завершения первого порта в новой системе действует **эксклюзивная блокировка** на подачу клеймов ИЗ этой системы:
+
+| Фаза | Длительность | Кто может заявлять |
+|------|-------------|-------------------|
+| **Phase 1** | 30 минут | Только System Architect |
+| **Phase 2** | 23.5 часа | Члены Squadron Architect'а |
+| **Phase 3** | После 24 часов | Любой игрок |
+
+### Важно
+
+- Если Architect **не в Squadron** — действует только 30-минутная блокировка
+- Блокировка отображается в панели клейма с таймером
+- Это позволяет строить **цепочки систем** без опасения, что кто-то «перехватит» ваш маршрут
+- Даже одиночный игрок в своём собственном Squadron получает полные 24 часа защиты
+
+---
+
+## Технологическое дерево (Tech Tree)
+
+### Принцип работы
+
+- Каждый объект даёт **Construction Points (CP)**
+- **Tier 1** объекты открываются сразу (нужен только First Station)
+- **Tier 2** требуют определённых Tier 1 объектов
+- **Tier 3** требуют Tier 2 + достаточного количества CP
+
+### Пример цепочки
+
+```
+First Station → Scientific Outpost → Research Station → Ocellus Starport
+                    ↓
+             Mining Outpost → Asteroid Base
+```
+
+### Поверхностная ветка
+
+```
+First Station → Planetary Outposts → Settlements → Hubs → Planetary Port
+```
+
+---
+
+## Орбитальные объекты: полный справочник
+
+### Starports (Tier 2-3)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ |
+|--------|------|-----------|----------|------|--------|-----|-----|------|---------|
+| **Coriolis** | 2 | Colony | -2 | 1 | 2 | 3 | 2 | 1 | 0 |
+| **Asteroid Base** | 2 | Extraction | -1 | 3 | 5 | -4 | 7 | 1 | 0 |
+| **Ocellus** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 |
+| **Orbis** | 3 | Colony | -3 | 6 | 7 | 5 | 8 | 5 | 1 |
+| **Dodec** | 3 | Colony | -4 | 8 | 9 | 7 | 10 | 8 | 4 |
+
+### Outposts (Tier 1)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | CP Reward |
+|--------|------|-----------|----------|------|--------|-----|-----|------|-----------|
+| **Commercial Outpost** | 1 | Colony | -1 | — | 2 | 5 | — | 0 | Tier 2: 1 |
+| **Industrial Outpost** | 1 | Industrial | — | 3 | — | — | 2 | 0 | Tier 2: 1 |
+| **Criminal Outpost** | 1 | Colony | -2 | — | 2 | — | — | 0 | Tier 2: 1 |
+| **Civilian Outpost** | 1 | Colony | -1 | — | 1 | 1 | 1 | 0 | Tier 2: 1 |
+| **Scientific Outpost** | 1 | Hightech | — | 3 | — | — | — | 1 | Tier 2: 1 |
+| **Military Outpost** | 1 | Military | 2 | — | — | — | — | 1 | Tier 2: 1 |
+
+### Installations (Tier 1-2)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |
+|--------|------|-----------|----------|------|--------|-----|-----|---------|-----------|
+| **Satellite** | 1 | — | — | — | 1 | 1 | 1 | — | Tier 2: 1 |
+| **Communication Station** | 1 | — | — | 1 | 3 | — | — | — | Tier 2: 1 |
+| **Space Farm** | 1 | Agricultural | — | — | — | 5 | 1 | — | Tier 2: 1 |
+| **Pirate Base** | 1 | Contraband | -4 | — | 3 | — | — | — | Tier 2: 1 |
+| **Mining Outpost** | 1 | Extraction | — | — | 3 | -2 | — | — | Tier 2: 1 |
+| **Relay Station** | 1 | Hightech | 1 | — | — | — | 1 | — | Tier 2: 1 |
+| **Military Installation** | 2 | Military | 6 | — | — | — | — | Tier 2: 1 | Tier 3: 1 |
+
+---
+
+## Поверхностные объекты: полный справочник
+
+### Planetary Outposts (Tier 1)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | CP Reward |
+|--------|------|-----------|----------|------|--------|-----|-----|------|-----------|
+| **Civilian Planetary Outpost** | 1 | Colony | -2 | — | — | 3 | — | 2 | Tier 2: 1 |
+| **Industrial Planetary Outpost** | 1 | Industrial | -1 | — | 2 | — | — | 1 | Tier 2: 1 |
+| **Scientific Planetary Outpost** | 1 | Hightech | -1 | 5 | — | — | 1 | 1 | Tier 2: 1 |
+
+### Planetary Port (Tier 3)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | Pop+ | MaxPop+ | CP Cost |
+|--------|------|-----------|----------|------|--------|-----|-----|------|---------|---------|
+| **Planetary Port** | 3 | Colony | -3 | 5 | 5 | 6 | 10 | 10 | 10 | Tier 3: 6 |
+
+**Важно:** Planetary Port не получает экономических бонусов от других объектов. Используйте Orbital Ports для торговли.
+
+### Settlements (Tier 1-2)
+
+| Объект | Tier | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |
+|--------|------|-----------|----------|------|--------|-----|-----|---------|-----------|
+| **Small Agricultural Settlement** | 1 | Agricultural | — | — | — | 3 | — | — | Tier 2: 1 |
+| **Medium Agricultural Settlement** | 1 | Agricultural | — | — | — | 6 | — | — | Tier 2: 1 |
+| **Large Agricultural Settlement** | 2 | Agricultural | — | — | — | 10 | — | Tier 2: 1 | Tier 3: 2 |
+| **Small Extraction Settlement** | 1 | Extraction | — | — | 2 | — | — | — | Tier 2: 1 |
+| **Medium Extraction Settlement** | 1 | Extraction | — | — | 5 | — | — | — | Tier 2: 1 |
+| **Large Extraction Settlement** | 2 | Extraction | — | 1 | 7 | -2 | — | Tier 2: 1 | Tier 3: 2 |
+| **Small Industrial Settlement** | 1 | Industrial | — | — | — | — | 2 | — | Tier 2: 1 |
+| **Medium Industrial Settlement** | 1 | Industrial | — | — | — | — | 5 | — | Tier 2: 1 |
+| **Large Industrial Settlement** | 2 | Industrial | — | — | 2 | — | 8 | Tier 2: 1 | Tier 3: 2 |
+| **Small Military Settlement** | 1 | Military | 2 | — | — | — | — | — | Tier 2: 1 |
+| **Medium Military Settlement** | 1 | Military | 4 | — | — | — | — | — | Tier 2: 1 |
+| **Large Military Settlement** | 2 | Military | 6 | — | — | — | 2 | Tier 2: 1 | Tier 3: 2 |
+| **Small Scientific Settlement** | 2 | Hightech | — | 3 | — | — | 1 | Tier 2: 1 | Tier 3: 1 |
+| **Medium Scientific Settlement** | 2 | Hightech | — | 6 | — | — | 1 | Tier 2: 1 | Tier 3: 1 |
+| **Large Scientific Settlement** | 2 | Hightech | — | 10 | — | — | 2 | Tier 2: 1 | Tier 3: 2 |
+| **Small Tourism Settlement** | 2 | Tourism | -1 | — | 1 | — | — | Tier 2: 1 | Tier 3: 1 |
+| **Medium Tourism Settlement** | 2 | Tourism | -1 | — | 2 | — | — | Tier 2: 1 | Tier 3: 1 |
+| **Large Tourism Settlement** | 2 | Tourism | -1 | — | 5 | — | — | Tier 2: 1 | Tier 3: 2 |
+
+### Hubs (Tier 2)
+
+| Объект | Требует | Экономика | Security | Tech | Wealth | SoL | Dev | CP Cost | CP Reward |
+|--------|---------|-----------|----------|------|--------|-----|-----|---------|-----------|
+| **Extraction Hub** | Small/Medium/Large Mining Settlement | Extraction | — | — | 10 | -4 | 2 | Tier 2: 1 | Tier 3: 1 |
+| **Civilian Hub** | Small/Medium/Large Agricultural Settlement | — | -3 | — | — | 3 | 2 | Tier 2: 1 | Tier 3: 1 |
+| **Exploration Hub** | Communication Station | Tourism | -1 | 6 | — | — | 2 | Tier 2: 1 | Tier 3: 1 |
+| **Outpost Hub** | Space Farm | — | -2 | — | — | 3 | 2 | Tier 2: 1 | Tier 3: 1 |
+| **Scientific Hub** | First Station | Hightech | — | 10 | — | — | — | Tier 2: 1 | Tier 3: 1 |
+| **Military Hub** | Military Installation | Military | 10 | — | — | — | — | Tier 2: 1 | Tier 3: 1 |
+| **Refinery Hub** | First Station | Refinery | -1 | 3 | 5 | -2 | 7 | Tier 2: 1 | Tier 3: 1 |
+| **High Tech Hub** | First Station | Hightech | -2 | 10 | -2 | — | — | Tier 2: 1 | Tier 3: 1 |
+| **Industrial Hub** | Mining Outpost | Industrial | — | 3 | 5 | -4 | 2 | Tier 2: 1 | Tier 3: 1 |
+
+---
+
+## Экономика системы
+
+### Как работает экономика
+
+Каждый объект влияет на **6 параметров** системы:
+
+| Параметр | Описание | Что влияет |
+|----------|----------|------------|
+| **Security** | Уровень безопасности | Высокий = меньше пиратов, налоги |
+| **Tech Level** | Технологический уровень | Доступность модулей и кораблей |
+| **Wealth** | Богатство | Цены на товары, миссии |
+| **Standard of Living** | Уровень жизни | Пассажирские миссии, tourism |
+| **Development Level** | Уровень развития | Рост населения, BGS |
+| **Population** | Население | Количество миссий, размер рынка |
+
+### Базовая экономика планет
+
+| Тип тела | Базовая экономика | Бонус |
+|----------|-------------------|-------|
+| Rocky body | Refinery +1.0 | Pristine/Major reserves = + |
+| High Metal Content | Extraction +1.0 | Геология = + |
+| Water World | Tourism потенциал | Terraformable = ++ |
+| Icy body | — | — |
+| Gas Giant | — | Кольца = RES |
+
+### CMM Composite
+
+Для производства **CMM Composite** нужна **Refinery-экономика** в топ-2:
+
+1. **Rocky body** + Planetary Port (Civilian) + Refinery Hub
+2. **High Metal Content** + Planetary Port (Civilian) + Refinery Hub
+
+Если на планете есть geological/biological signals — может потребоваться больше Refinery Hub'ов.
+
+### Расположение объектов
+
+- Объекты **ближе к планете** сильнее влияют на экономику
+- Объекты **дальше от Starport** имеют **слабое рыночное соединение**
+- Экономика объекта влияет на рынки портов на **том же теле**
+
+---
+
+## BGS, фракции и Powerplay
+
+### Фракции
+
+- **Фракция, у которой куплен клейм**, становится доминирующей в системе
+- Существующие BGS-фракции могут расширяться в вашу систему
+- Player Minor Factions можно привезти через прокси
+- Супердержавы расширяют влияние через фракции-прокси
+
+### Government Type
+
+| Тип | Эффект |
+|-----|--------|
+| **Anarchy** | Сниженная безопасность, легальны все товары |
+| **Corporate** | Баланс между порядком и свободой |
+| **Democracy** | Высокий SoL, средняя безопасность |
+| **Dictatorship** | Высокая безопасность, низкий SoL |
+| **Theocracy** | Специфические ограничения на товары |
+
+### Powerplay
+
+- После постройки первого порта система **НЕ контролируется Power**
+- Фракция переносится из исходной системы
+- Для Powerplay-контроля нужно отдельное влияние
+
+---
+
+## Логистика и Fleet Carrier
+
+### Fleet Carrier — must have?
+
+| Без FC | С FC |
+|--------|------|
+| Множество рейсов в Bubble | Один рейс = 25,000 т |
+| Зависимость от рынков | Собственный рынок |
+| Ограниченная дальность | Прыжки 500 св.лет |
+| Высокие временные затраты | Автономность месяцами |
+
+### Топливо для FC
+
+- **Tritium** — покупается на рынках или добывается
+- Расход: ~1 тонна на прыжок
+- Всегда держите запас на 2 прыжка + 500 тонн
+
+### Lynx Highliner
+
+- Новый пассажирский лайнер (Zorgon Peterson)
+- Отличен для пассажирских миссий в/из вашей колонии
+- Business-class каюты = высокий доход
+
+---
+
+## Construction Points (CP)
+
+### Как получить
+
+| Источник | CP | Условие |
+|----------|-----|---------|
+| Tier 1 объект | — | Даёт CP для Tier 2 |
+| Tier 2 объект | Тратит CP | Даёт CP для Tier 3 |
+| Tier 3 объект | Тратит CP | Максимальный уровень |
+
+### Пример прогрессии
+
+```
+First Station (бесплатно)
+    ↓
+Scientific Outpost → даёт 1 CP (Tier 2)
+    ↓
+Research Station → тратит 3 CP (Tier 2 cost)
+    ↓
+Ocellus Starport → тратит 6 CP (Tier 3 cost)
+```
+
+### Ускорение CP
+
+- **Boom state** — +25% к генерации
+- **Player activity** — миссии в системе ускоряют рост
+- **Powerplay** — некоторые Power дают бонусы
+
+---
+
+## Доход и награды
+
+### Пассивный доход
+
+- **Торговля** — ваши порты генерируют товары
+- **Миссии** — чем выше население, тем больше миссий
+- **Tourist** — Tourism-экономика = высокооплачиваемые пассажирские миссии
+- **Mining** — Extraction/Refinery = ресурсы для продажи
+
+### Активный доход
+
+- **Доставка товаров** в вашу систему = высокие цены
+- **Stackable massacre missions** — если Military-экономика
+- **Passenger missions** — если Tourism/High SoL
+
+### Нет upkeep costs!
+
+В отличие от Fleet Carrier, колонии **не требуют** еженедельных платежей. Развивайте в своём темпе.
+
+---
+
+## Название объектов
+
+### Процесс
+
+1. Откройте **System Map → Architect View**
+2. Выберите объект
+3. Нажмите **Rename**
+4. Стоимость: **Arx** (внутриигровая премиум-валюта)
+
+### Правила
+
+- Модерация Frontier — оскорбления и товарные знаки запрещены
+- Единый стиль важен для иммерсии
+- Названия остаются **навсегда**
+
+---
+
+## Демонтаж и отмена строительства
+
+### Как снести объект
+
+1. Откройте **Galaxy Map**
+2. Найдите систему с объектом
+3. Откройте **System Map → Architect View**
+4. Выберите объект
+5. Нажмите **Demolish** внизу списка commodities
+6. Подтвердите
+
+### Что происходит
+
+- Демонтаж завершается после **серверного тика**
+- Таймер отображается в UI
+- **Возвращается только часть ресурсов**
+- Если объект строился — строительство отменяется
+
+### Важно
+
+- Демонтаж **Primary Port** невозможен
+- Некоторые объекты нельзя снести, если они требуются для других
+- Планируйте заранее — демонтаж дорогой
+
+---
+
+## Расширение: цепочки систем и мини-Bubble
+
+### Цепочки (Highways)
+
+- Каждая новая система должна быть в **15 св.лет** от существующей
+- Создавайте «ступеньки» каждые 10–15 св.лет
+- Используйте **Neutron Highway** для ускорения
+
+### Мини-Bubble
+
+- Группа систем в радиусе 30–50 св.лет
+- Общая логистика через Fleet Carrier
+- Специализация: одна система — добыча, другая — производство, третья — торговля
+
+### Omega Nebula
+
+- Популярное направление для колонизации
+- **40+ ringed water worlds** по маршруту
+- **31 чёрная дыра** и **57 нейтронных звёзд** в радиусе 50 св.лет
+- Достигнута сообществом **6 января 2026**
+
+---
+
+## Частые ошибки и как их избежать
+
+| Ошибка | Последствие | Решение |
+|--------|-------------|---------|
+| **Пропустили 24 часа на маяк** | Потеря 25 млн + 3 дня блокировки | Ставьте таймер, не откладывайте |
+| **Построили Ground Port для торговли** | Нет экономических бонусов | Используйте Orbital Ports |
+| **Неправильное расположение** | Слабое влияние на экономику | Объекты ближе к планете = сильнее |
+| **Забыли про CP** | Нельзя строить Tier 3 | Планируйте Tech Tree заранее |
+| **Нет резерва Tritium** | FC застрял в пустоте | Всегда 2 прыжка + 500 тонн |
+| **Соло в дальней системе** | Сложно доставлять материалы | Squadron или FC-логистика |
+
+---
+
+## Полезные инструменты и ресурсы
+
+### Внеигровые инструменты
+
+| Инструмент | Ссылка | Описание |
+|------------|--------|----------|
+| **ED Colonisation Planner** | [edcolonisationplanner.com](https://edcolonisationplanner.com) | Автоматический планировщик: загрузите журнал, выберите цель — он рассчитает порядок строительства |
+| **DaftMav Spreadsheet** | [Google Sheets](https://docs.google.com) | Таблица со всеми объектами, CP, экономикой |
+| **Raven Colonial Corp** | [raven-colonial.org](https://raven-colonial.org) | Планирование колоний, экономика, логистика |
+| **Inara** | [inara.cz](https://inara.cz) | Поиск товаров, commodities, инженеры |
+| **Spansh** | [spansh.co.uk](https://spansh.co.uk) | Neutron Highway, маршруты |
+
+### Сообщества
+
+- **Frontier Forums** — [forums.frontier.co.uk/forums/system-colonisation](https://forums.frontier.co.uk/forums/system-colonisation/)
+- **Reddit** — r/EliteDangerous, r/EliteColonization
+- **Discord** — серверы Squadron и проектов
+
+---
+
+## Оценка
+
+Колонизация — это **конечная цель** для многих пилотов Elite Dangerous. Это не даёт прямого преимущества в PvP или PvE, но предоставляет **беспрецедентный уровень креативного контроля** над игровой вселенной. Ваша система останется в галактике **навсегда** — это ваш перманентный след в истории Elite Dangerous.$c$;
+
+  -- ============================================================
+  -- 1. ОБНОВЛЕНИЕ: Гайд по колонизации (версия 2.0)
+  -- ============================================================
+  UPDATE public.wiki_articles
+     SET content        = v_guide_content,
+         last_editor_id = v_author_id,
+         version        = 2,
+         updated_at     = NOW()
+   WHERE slug = 'polnyy-gayd-po-kolonizacii-v-elite-dangerous';
+
+  IF FOUND THEN
+    -- Ревизия №2 — как в исходной миграции; повторный накат её не дублирует.
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    SELECT a.id, a.content, v_author_id, 2, 'Updated for February 2026: added claim sniping protection, Dodec stats, new ships (Panther Clipper, Corsair), ground port warnings, demolition info, updated statistics', NOW()
+      FROM public.wiki_articles a
+     WHERE a.slug = 'polnyy-gayd-po-kolonizacii-v-elite-dangerous'
+       AND NOT EXISTS (
+             SELECT 1 FROM public.wiki_revisions r
+              WHERE r.article_id = a.id AND r.revision_number = 2
+           );
+  ELSE
+    -- Чистая установка: гайд создаётся сразу в версии 2.0.
+    INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+    VALUES (
+      'Полный гайд по колонизации в Elite Dangerous',
+      'polnyy-gayd-po-kolonizacii-v-elite-dangerous',
+      v_guide_content,
+      v_cat_colonization, v_author_id, v_author_id, 'published', true, 0, 2, NOW(), NOW()
+    )
+    RETURNING id INTO v_article_id;
+
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 2. НОВАЯ СТАТЬЯ: Выбор системы для колонизации
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'Выбор системы для колонизации',
+    'vybor-sistemy-dlya-kolonizacii',
+    $c$# Выбор системы для колонизации
+
+**Тип:** Колонизация / Гайд
+**Сложность:** Начальный–Средний
+**Время чтения:** 10 минут
+
+## Описание
+
+Выбор правильной системы — это 50% успеха колонизации. Плохой выбор = ограниченное развитие, сложная логистика, разочарование. Этот гайд научит находить идеальные системы за 15 минут сканирования.
+
+## Чек-лист идеальной системы
+
+### Обязательно (без этого не начинайте)
+
+| Критерий | Почему важно | Минимум |
+|----------|-------------|---------|
+| **Unclaimed статус** | Иначе нельзя заявить | Да |
+| **В пределах 15 св.лет от inhabited** | Требование механики | ≤ 15 св.лет |
+| **Не permit-locked** | Иначе доступ закрыт | Да |
+| **Есть планеты** | Нужны слоты для объектов | 3+ тела |
+
+### Желательно (влияет на потенциал)
+
+| Критерий | Идеально | Хорошо | Плохо |
+|----------|----------|--------|-------|
+| **Тип звезды** | K, G | F, M | Neutron, WD, BH |
+| **Планеты** | 8+ | 5–7 | 1–2 |
+| **Rocky bodies** | 2+ с кольцами | 1 с кольцами | 0 |
+| **HMC планеты** | 2+ с геологией | 1 с геологией | 0 |
+| **Water Worlds** | 1 terraformable | 1 обычный | 0 |
+| **Резервы** | Pristine | Major | Low/Depleted |
+
+### Бонусы (делают систему уникальной)
+
+- **Кольца на Rocky body** → Resource Extraction Sites
+- **Terraformable Water World** → Tourism + Population
+- **Geological signals** → Refinery бонус
+- **Biological signals** → Exploration / Tourism
+- **Близость к Neutron star** → Быстрые путешествия
+
+## Пошаговый поиск
+
+### Шаг 1: Найти anchor-систему
+
+1. Откройте **Galaxy Map**
+2. Включите фильтр **«Inhabited Systems»**
+3. Найдите систему на **границе Bubble** или вашей мини-Bubble
+4. Запомните координаты
+
+### Шаг 2: Поиск в радиусе 15 св.лет
+
+1. Переключитесь на **«Unclaimed Systems»**
+2. Ищите в радиусе 15 св.лет от anchor
+3. Сканируйте каждую кандидатку FSS
+
+### Шаг 3: Быстрая оценка (FSS)
+
+| Что смотреть | За сколько секунд | Что значит |
+|--------------|-------------------|------------|
+| Тип звезды | 2 сек | K/G = хорошо, иначе skip |
+| Количество тел | 5 сек | 5+ = продолжаем, 3-4 = возможно, 1-2 = skip |
+| Кольца | 10 сек | Есть = отлично |
+| Terraformable | 15 сек | Есть = бонус |
+
+### Шаг 4: Детальное сканирование (если прошла отбор)
+
+1. Прилетите в систему
+2. Отсканируйте **Discovery Scanner**
+3. Откройте **System Map** и изучите каждое тело
+4. Проверьте **Planetary Information**:
+   - Composition (для ресурсов)
+   - Signals (геология/биология)
+   - Terraformable status
+
+### Шаг 5: Проверка слотов
+
+1. Откройте **Galaxy Map → System Colonisation view**
+2. Выберите систему
+3. Посмотрите **иконки слотов**:
+   - **+** = доступный слот
+   - **Флаг** = слот для Primary Port
+   - Чем больше слотов — тем лучше
+
+## Типы систем по назначению
+
+### Тип A: Промышленная
+
+**Цель:** Производство CMM Composite, Refinery, Industrial
+
+**Идеальные условия:**
+- Rocky body с Pristine reserves
+- Geological signals
+- 2+ HMC планеты
+- Много слотов
+
+**Что строить:**
+- Refinery Hub
+- Industrial Settlement (Large)
+- Mining Outpost
+- Planetary Port на Rocky body
+
+### Тип B: Туристическая
+
+**Цель:** Высокий доход от пассажиров
+
+**Идеальные условия:**
+- Terraformable Water World
+- Красивые виды (туманности, кольца)
+- Высокий SoL потенциал
+
+**Что строить:**
+- Tourism Settlement (Large)
+- Exploration Hub
+- Luxury Starport (Ocellus/Dodec)
+- Communication Station
+
+### Тип C: Военная
+
+**Цель:** Stackable massacre missions, высокая безопасность
+
+**Идеальные условия:**
+- Близость к Conflict Zones
+- Возможность Military-экономики
+
+**Что строить:**
+- Military Settlement (Large)
+- Military Hub
+- Military Outpost
+- Starport с высоким Security
+
+### Тип D: Исследовательская
+
+**Цель:** High Tech, продажа данных, Universal Cartographics
+
+**Идеальные условия:**
+- Необычная звезда (Wolf-Rayet, T Tauri)
+- Интересные планеты
+- Далеко от Bubble (для продажи данных)
+
+**Что строить:**
+- Scientific Settlement (Large)
+- Scientific Hub
+- Research Station
+- High Tech Hub
+
+## Красные флаги (пропускайте)
+
+| Проблема | Почему плохо |
+|----------|-------------|
+| **Только 1-2 планеты** | Мало слотов, нет развития |
+| **Нет Rocky/HMC** | Нет добычи, нет Refinery |
+| **White Dwarf primary** | Опасно, мало слотов |
+| **14.9 св.лет от inhabited** | Сложно достичь, нет запаса |
+| **Permit-locked** | Просто нельзя |
+| **Уже Claimed** | Кто-то успел раньше |
+
+## Инструменты для поиска
+
+| Инструмент | Как использовать |
+|------------|-----------------|
+| **EDSM** | Поиск систем по параметрам |
+| **Spansh** | Маршруты, neutron highway |
+| **Inara** | Проверка статуса системы |
+| **ED Colonisation Planner** | Загрузите скан — получите рекомендации |
+
+## Оценка
+
+Идеальная система — это баланс между логистикой (близость к Bubble), потенциалом (планеты, ресурсы) и вашими целями. Не гонитесь за «идеалом» — хорошая система в 5 св.лет лучше идеальной в 14.9. Помните: вы можете иметь **неограниченное количество** колоний, так что первую можно использовать для обучения.$c$,
+    v_cat_colonization, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 3. НОВАЯ СТАТЬЯ: Экономика колонии и BGS
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'Экономика колонии и BGS',
+    'ekonomiya-kolonii-i-bgs',
+    $c$# Экономика колонии и BGS
+
+**Тип:** Колонизация / Механика
+**Сложность:** Средний–Высокий
+**Время чтения:** 12 минут
+
+## Описание
+
+Экономика колонии — это не просто цифры. Это живой организм, который определяет, какие товары продаются на ваших рынках, какие миссии доступны пилотам и как быстро растёт ваше население. Понимание BGS (Background Simulation) позволяет создавать системы, которые приносят **пассивный доход** и служат якорем для сообщества.
+
+## Шесть столпов экономики
+
+Каждый объект влияет на 6 параметров:
+
+| Параметр | Что делает | Как повысить |
+|----------|-----------|--------------|
+| **Security** | Уровень безопасности | Military объекты, Starports |
+| **Tech Level** | Технологический уровень | Scientific/High Tech объекты |
+| **Wealth** | Богатство | Commercial, Tourism, Refinery |
+| **Standard of Living (SoL)** | Пассажирские миссии, tourism | Agricultural, Civilian объекты |
+| **Development Level** | Уровень развития | Рост населения, BGS |
+| **Population** | Население | Starports, Planetary Port |
+
+## Как работает влияние объектов
+
+### Принцип близости
+
+- Объекты **ближе к планете** = **сильнее влияние**
+- Объекты **дальше от Starport** = **слабое рыночное соединение**
+- Экономика объекта влияет на рынки портов **на том же теле**
+
+### Пример
+
+```
+Планета A (Rocky body, Pristine)
+├── Orbital: Coriolis Starport (Slot 0) ← РЫНОК
+├── Orbital: Mining Outpost (Slot 1)    ← Влияет на Coriolis
+├── Orbital: Refinery Hub (Slot 2)      ← Влияет слабее
+└── Surface: Large Extraction Settlement  ← Влияет на Coriolis
+
+Планета B (Water World)
+├── Orbital: Ocellus Starport (Slot 0)  ← Свой рынок
+└── Orbital: Tourism Settlement           ← Влияет на Ocellus
+```
+
+## Создание CMM Composite
+
+CMM Composite — **ключевой товар** для колонизации. Без него сложно строить Tier 2-3 объекты.
+
+### Способ 1: Rocky body + Refinery
+
+1. Найдите **Rocky body** с **Pristine reserves**
+2. Постройте **Planetary Port (Civilian)** или **Planetary Outpost (Civilian)**
+3. Добавьте **Refinery Hub** на поверхности
+4. Убедитесь, что Refinery в **топ-2 экономик** системы
+
+### Способ 2: HMC + Refinery
+
+1. Найдите **High Metal Content** body
+2. Постройте **Planetary Port (Civilian)**
+3. Добавьте **Refinery Hub**
+4. Если есть geological signals — может потребоваться **2+ Refinery Hub**
+
+### Проверка
+
+- Откройте рынок на Starport
+- Посмотрите **Commodities → CMM Composite**
+- Если есть в продаже — Refinery работает
+- Если нет — добавьте ещё Refinery-объектов
+
+## Government Type и рынок
+
+| Government | Эффект на рынок | Особенности |
+|------------|----------------|-------------|
+| **Anarchy** | Все товары легальны | Низкая безопасность, пиратство |
+| **Corporate** | Баланс | Средние цены, стабильность |
+| **Democracy** | Высокий SoL | Больше пассажирских миссий |
+| **Dictatorship** | Высокая безопасность | Низкий SoL, строгий контроль |
+| **Theocracy** | Ограничения на товары | Некоторые товары illegal |
+
+**Важно:** Если government type считает товар **illegal** — он **не появится** на рынке, даже если экономика подходит.
+
+## BGS-циклы и состояния
+
+### Как работает BGS в колониях
+
+1. Каждая система имеет **фракцию-владельца** (та, у которой куплен клейм)
+2. Фракция может находиться в разных **состояниях (states)**
+3. Состояния меняются каждый **tick** (ежедневно)
+
+### Полезные состояния
+
+| State | Эффект | Как вызвать |
+|-------|--------|-------------|
+| **Boom** | +25% доход, быстрый рост | Торговля, миссии на доход |
+| **Expansion** | Расширение в соседние системы | Высокое влияние, население |
+| **Investment** | Бонусы к строительству | Продажа товаров, доходы |
+| **Civil Liberty** | Высокий SoL | Миссии на безопасность |
+
+### Вредные состояния
+
+| State | Эффект | Как избежать |
+|-------|--------|--------------|
+| **Bust** | -25% доход, замедление | Не допускайте дефицита товаров |
+| **Civil Unrest** | Низкая безопасность | Поддерживайте Security |
+| **Famine** | Нет еды, кризис | Стройте Agricultural объекты |
+| **Outbreak** | Медицинский кризис | Стройте медицинские объекты |
+
+## Манипуляция BGS
+
+### Для одиночек
+
+1. Выполняйте **миссии** для вашей фракции
+2. **Продавайте товары** на рынках вашей системы
+3. **Сканируйте** данные и продавайте их
+4. Участвуйте в **Conflict Zones** (если Military)
+
+### Для Squadron
+
+1. **Координируйте миссии** — 10 пилотов = 10x эффект
+2. **Организуйте торговые рейсы** — массовые продажи товаров
+3. **Stackable massacre missions** — Military-экономика + CZ
+4. **Bounty hunting** — повышает Security
+
+### Типичная BGS-рутина (30 минут)
+
+```
+1. Взять 3 миссии на доставку для вашей фракции
+2. Купить товары и доставить
+3. Взять 2 миссии на bounty hunting
+4. Полететь в RES, заработать 500k+ bounties
+5. Сдать миссии и bounties
+6. Повторить на следующей системе
+```
+
+## Экономические стратегии
+
+### Стратегия 1: Торговый хаб
+
+**Цель:** Максимальный Wealth + Population
+
+**Объекты:**
+- Coriolis / Ocellus (Commercial focus)
+- Commercial Outpost
+- Space Farm
+- Civilian Hub
+
+**Результат:** Высокие цены, много миссий, пассивный доход
+
+### Стратегия 2: Промышленный комплекс
+
+**Цель:** CMM Composite + Industrial товары
+
+**Объекты:**
+- Asteroid Base (Extraction)
+- Industrial Settlement (Large)
+- Refinery Hub
+- Mining Outpost
+
+**Результат:** Производство ключевых товаров, экспорт в Bubble
+
+### Стратегия 3: Военная база
+
+**Цель:** Stackable massacre missions
+
+**Объекты:**
+- Military Settlement (Large)
+- Military Hub
+- Military Outpost
+- Starport с высоким Security
+
+**Результат:** 50–100 млн/час на massacre missions
+
+### Стратегия 4: Научный центр
+
+**Цель:** High Tech + продажа данных
+
+**Объекты:**
+- Scientific Settlement (Large)
+- Scientific Hub
+- Research Station
+- Communication Station
+
+**Результат:** Доступ к G5 модулям, высокие цены на данные
+
+## Частые вопросы
+
+### Q: Почему на моём рынке нет товаров?
+
+A: Проверьте:
+1. Прошёл ли **первый тик** после постройки?
+2. Правильная ли **экономика** (Refinery для CMM)?
+3. Не считает ли **government** товар illegal?
+4. Достаточно ли **населения**?
+
+### Q: Как быстрее растить население?
+
+A:
+1. Стройте объекты с **Population Increase** (Starports, Planetary Port)
+2. Поддерживайте **Boom** state
+3. Стройте **Agricultural** объекты (SoL → рост населения)
+4. Ждите — рост пассивный, но ускоряется активностью
+
+### Q: Можно ли изменить government type?
+
+A: Напрямую — нет. Но можно привезти **Player Minor Faction** с нужным government type и вырастить её влияние до 75%+.
+
+### Q: Что делать, если фракция уходит в Bust?
+
+A:
+1. Массово продавайте товары на рынок
+2. Выполняйте миссии на доход
+3. Избегайте миссий, которые забирают товары из системы
+4. Подождите 3–7 дней — BGS самокорректируется
+
+## Оценка
+
+BGS — это «тёмная материя» Elite Dangerous. Она невидима, но определяет всё. Понимание экономики колонии позволяет превратить пустую систему в **процветающий торговый хаб** или **неприступную военную крепость**. Не игнорируйте BGS — это разница между «построил и забыл» и «построил и процветаю».$c$,
+    v_cat_colonization, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+END
+$seed$;
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260903020000_wiki_lore_articles.sql               │
 -- └────────────────────────────────────────────────────────────────┘
 
--- ED Ring Colony Wiki — Seed: 5 Lore Articles (History, CMDRs, Colonia, Generation Ships, Raxxla) -- ============================================================ -- Run this in Supabase SQL Editor after deployment DO $$ DECLARE v_admin_id UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a'; v_cat_lore UUID := 'ceb24c42-7d36-483c-880b-e0e08d5c4d99'; v_article_id UUID; BEGIN -- ============================================================ -- 1. История человечества — хронология от 2090 до 3308+ -- ============================================================ INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at) VALUES ( 'История человечества: хронология от 2090 до 3308+', 'istoriya-chelovechestva-hronologiya', $c$# История человечества: хронология от 2090 до 3308+$nl$$nl$**Тип:** Лор$nl$**Категория:** История вселенной$nl$**Время чтения:** 20 минут$nl$$nl$## XXI век: Первые шаги (2090–2200)$nl$$nl$### 2090 — Первые колонии за пределами Солнечной системы$nl$$nl$После decades of resource depletion и климатического кризиса человечество обратило взор к звёздам. Первые межзвёздные колонизационные корабли, оснащённые прототипами Frame Shift Drive, отправились к ближайшим системам: Alpha Centauri, Tau Ceti и Barnard's Star. Эти миссии были односторонними — колонисты знали, что связь с Землёй займёт годы.$nl$$nl$### 2150 — Формирование Федерации (Federation)$nl$$nl$Крупные корпорации, финансировавшие колонизацию, начали требовать политического представительства. Рождается **Federation of Star Systems** — первое наднациональное правительство, контролируемое корпоративными интересами. Земля (Sol) становится административным центром, но реальная власть переходит к совету акционеров.$nl$$nl$### 2200 — Открытие первых инопланетных артефактов$nl$$nl$На планете в системе Tau Ceti археологи находят странные структуры, предшествующие человеческой колонизации на миллионы лет. Эти находки засекречены, но слухи порождают первые культы, посвящённые «Древним» — предтечам современных теорий о Guardians и Thargoids.$nl$$nl$## XXIII век: Распад и войны (2200–2400)$nl$$nl$### 2242 — Война за независимость Achenar$nl$$nl$Колония в системе **Achenar** отказывается платить налоги Федерации. В ответ Федерация отправляет военный флот. Но колонисты, возглавляемые семьёй **Duval**, оказывают ожесточённое сопротивление. Война заканчивается поражением Федерации и провозглашением **Empire of Achenar** — будущей галактической сверхдержавы.$nl$$nl$### 2300 — Эра Generation Ships$nl$$nl$До массового распространения FSD человечество отправляет сотни **кораблей-поколений** (Generation Ships) к далёким звёздам. Эти гигантские арки с замороженными экипажами или замкнутыми экосистемами уходят в путь на сотни лет. Многие из них так и не выходят на связь — их судьба станет одной из величайших тайн галактики.$nl$$nl$### 2380 — Первый контакт с Thargoids$nl$$nl$На окраине исследованного пространства патрульный корабль Федерации сталкивается с неизвестными объектами органической формы. Контакт быстро переходит в бой. **Thargoids** — раса насекомоподобных существ с биологическими кораблями — объявляют человечеству войну. Конфликт затихает после разработки противотаргоидного оружия, но вражда не забыта.$nl$$nl$## XXV век: Технологический рывок (2400–2800)$nl$$nl$### 2800 — Изобретение Frame Shift Drive$nl$$nl$Прорыв в понимании пространственно-временной метрики приводит к созданию современного **FSD**. Путешествие между звёздами, занимавшее десятилетия, сокращается до секунд. Человечество взрывается в галактику — начинается **Великая Экспансия**.$nl$$nl$### 2850 — Основание Alliance$nl$$nl$Мелкие независимые системы, уставшие от геополитического противостояния Федерации и Империи, формируют **Alliance of Independent Systems**. Alliance провозглашает принципы самоопределения, свободной торговли и взаимной обороны. Становится третьей доминирующей силой в галактике.$nl$$nl$### 2900 — Эра пиратства и частных армий$nl$$nl$Быстрая колонизация порождает правовой вакуум. На окраинах появляются пиратские королевства, охотничьи кланы и корпоративные армии. В ответ появляются первые **Squadron** — объединения независимых пилотов, берущих на себя защиту слабых.$nl$$nl$## XXXIV век: Современность (3300–3308+)$nl$$nl$### 3301 — Возвращение командера Jameson$nl$$nl$Командер **John Jameson**, легендарный пилот эпохи первых войн с Thargoids, обнаруживается в криокамере на заброшенной станции. Его возвращение становится символом новой эры — эры, в которой один пилот может изменить судьбу галактики.$nl$$nl$### 3303 — Вторжение Thargoids$nl$$nl$Thargoids возвращаются в полную силу. Их биологические корабли — **Interceptors** и **Scouts** — атакуют станции в Pleiades и за её пределами. Начинается системная война, в которой пилоты-независимки играют ключевую роль в эвакуации и обороне.$nl$$nl$### 3305 — Открытие Colonia Bridge$nl$$nl$Построен маршрут станций между Bubble и Colonia — **Colonia Bridge**. Это событие окончательно интегрирует дальний регион в жизнь галактики и открывает эпоху массовой миграции.$nl$$nl$### 3307 — Распад и новые союзы$nl$$nl$Политическая напряжённость достигает пика. Федерация и Империя сталкиваются в прокси-войнах. Alliance укрепляет позиции через **Alliance Chieftain** и военные контракты. В тени этого противостояния растёт влияние **Project Dynasty** и других секретных программ.$nl$$nl$### 3308 — Эра колонизации$nl$$nl$Начинается новая волна экспансии. Система **Colonia** становится центром самоуправляемого региона. Пилоты-независимки получают инструменты для создания собственных станций и фракций. Человечество выходит за пределы известного пространства — в глубокий космос.$nl$$nl$## Будущее (3308+)$nl$$nl$Галактика стоит на пороге новых открытий. Слухи о **Stargoids**, таинственных объектах, движущихся через галактику, настораживают учёных. Проекты вроде **The Galaxy Ring** обещают соединить отдалённые регионы. А где-то в туманности **Raxxla** всё ещё ждёт своего первооткрывателя.$nl$$nl$---$nl$$nl$*«Мы смотрим на звёзды не потому, что они близки, а потому, что мы смелы»* — неизвестный пилот, 3301.$c$, v_cat_lore, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW() ) RETURNING id INTO v_article_id; INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at) VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); -- ============================================================ -- 2. CMDR: кто такие пилоты — ранг Elite, легендарные пилоты, Squadron -- ============================================================ INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at) VALUES ( 'CMDR: кто такие пилоты — ранг Elite, легендарные пилоты, Squadron', 'cmdr-kto-takie-piloty', $c$# CMDR: кто такие пилоты$nl$$nl$**Тип:** Лор / Геймплей$nl$**Категория:** Пилоты и общество$nl$**Время чтения:** 15 минут$nl$$nl$## Кто такие CMDR?$nl$$nl$**CMDR** (Commander) — стандартное обращение к лицензированным пилотам космических аппаратов в галактике человечества. Каждый CMDR — это независимый оператор, владеющий собственным кораблём и действующий на свой страх и риск. Система лицензирования появилась в середине XXIX века как способ контролировать хаос частного звёздного флота.$nl$$nl$CMDR может быть торговцем, наёмником, исследователем, спасателем или пиратом — закон не различает моральные качества, только квалификацию.$nl$$nl$## Система рангов$nl$$nl$Пилотская федерация (Pilots Federation) ведёт учёт достижений каждого CMDR в четырёх ключевых областях:$nl$$nl$| Ранг | Торговля (Trader) | Бой (Combat) | Исследования (Explorer) | CQC (Arena) |$nl$|------|-------------------|--------------|-------------------------|-------------|$nl$| Harmless / Penniless / Aimless / Helpless | — | — | — | — |$nl$| Mostly Harmless | + | + | + | + |$nl$| Novice | ++ | ++ | ++ | ++ |$nl$| Competent | +++ | +++ | +++ | +++ |$nl$| Expert | ++++ | ++++ | ++++ | ++++ |$nl$| Master | +++++ | +++++ | +++++ | +++++ |$nl$| Dangerous / Merchant / Scout / Amateur | — | — | — | — |$nl$| Deadly / Broker | — | — | — | — |$nl$| **Elite** | **Elite** | **Elite** | **Elite** | **Elite** |$nl$$nl$### Ранг Elite$nl$$nl$Достичь ранга **Elite** — значит войти в 0,1% лучших пилотов галактики. Это не просто статус: Elite-пилоты получают доступ к закрытым станциям, эксклюзивным контрактам и особым зонам вроде **Shinrarta Dezhra** (система, где продаются все корабли и модули со скидкой).$nl$$nl$Существует также звание **Elite Dangerous** — пожизненный статус, присваиваемый за достижение ранга Elite во всех трёх основных дисциплинах (Combat, Trade, Exploration).$nl$$nl$## Легендарные пилоты$nl$$nl$### John Jameson$nl$$nl$Герой Первой Таргоидской Войны. Его имя носит станция **Jameson Memorial** в Shinrarta Dezhra. Считается погибшим, но в 3301 году был найден в криостазе. Его корабль и записи раскрыли правду о секретных биологических программах INRA.$nl$$nl$### CMDR Besieger$nl$$nl$Один из первых пилотов, достигших Colonia в одиночку без Fleet Carrier. Его маршрут через neutron stars стал классикой для экспедиций.$nl$$nl$### CMDR Erimus Kamzel$nl$$nl$«Первопроходец Colonia». Именно его экспедиция 3302 года заложила основы для миграции в регион **Colonia**. В его честь названа станция **Kamzel's Reach**.$nl$$nl$### CMDR DoveEnigma13$nl$$nl$Легенда исследовательского сообщества. Первый, кто достиг галактического центра (Sagittarius A*) на стоковом Sidewinder без инженерных модификаций.$nl$$nl$### CMDR Harry Potter$nl$$nl$Пожалуй, самый известный PvP-пилот в истории игры. Его бои против кораблей класса «Анаконда» на лёгких истребителях вошли в учебники асимметричного боя.$nl$$nl$## Squadron — братва звёзд$nl$$nl$**Squadron** — объединение пилотов под единым командованием. Это может быть военная эскадрилья, торговая гильдия, исследовательская экспедиция или банда пиратов.$nl$$nl$### Типы Squadron$nl$$nl$| Тип | Фокус | Особенности |$nl$|-----|-------|-------------|$nl$| **PCC** (Player-created faction) | BGS | Контроль фракций в системах |$nl$| **Expedition** | Исследования | Дальние миры, совместные маршруты |$nl$| **PMF** (Private Military Force) | PvP / PvE | Наёмные операции, охрана конвоев |$nl$| **Trade Union** | Торговля | Совместные маршруты, защита цен |$nl$| **Explorer Corps** | Наука | Картография, первооткрытие |$nl$$nl$### Как создать Squadron$nl$$nl$1. Наберите минимум 4 пилотов$nl$2. Оплатите регистрацию в Pilots Federation (10 млн CR)$nl$3. Выберите тег (tag) — короткое обозначение вроде [RING] или [AXI]$nl$4. Настройте иерархию ролей: Leader, Deputy, Ambassador, Lieutenant, Agent, Rookie$nl$5. Выберите цветовую схему и лор$nl$$nl$### Крупнейшие Squadron галактики$nl$$nl$- **The Fuel Rats** — спасатели, вытащившие тысячи пилотов из без топлива$nl$- **The Hull Seals** — инженерная поддержка и ремонт в дальнем космосе$nl$- **Canonn Research** — научное сообщество, изучающее аномалии$nl$- **Anti-Xeno Initiative** — организованная оборона от Thargoids$nl$- **The Dark Wheel** — тайное общество, охотящееся за Raxxla (по слухам)$nl$$nl$---$nl$$nl$*«CMDR — это не просто позывной. Это обещание: где бы ты ни был, ты никогда не один»*.$c$, v_cat_lore, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW() ) RETURNING id INTO v_article_id; INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at) VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); -- ============================================================ -- 3. Colonia: край света — история Jaques Station, миграция, современная Colonia -- ============================================================ INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at) VALUES ( 'Colonia: край света — история Jaques Station, миграция, современная Colonia', 'colonia-kray-sveta', $c$# Colonia: край света$nl$$nl$**Тип:** Лор / География$nl$**Категория:** Регионы галактики$nl$**Время чтения:** 15 минут$nl$$nl$## Где находится Colonia?$nl$$nl$**Colonia** — регион галактики, расположенный примерно в **22 000 световых лет** от Sol в направлении галактического центра. Это самое крупное человеческое поселение за пределами Bubble (основной зоны цивилизации).$nl$$nl$Координаты: **Colonia (Eol Prou RS-T d3-94)**$nl$$nl$## История Jaques Station$nl$$nl$### 3302 — Побег орбитальной станции$nl$$nl$**Jaques Station** — уникальная **орбитальная станция с двигателями**, принадлежавшая цыганскому бармену **Jaques**. Она была единственной станцией в галактике, способной совершать межзвёздные прыжки.$nl$$nl$Jaques планировал перепрыгнуть в **Beagle Point** — самую дальнюю точку галактики. Но что-то пошло не так. Во время прыжка станция была повреждена неизвестным объектом и выброшена в систему **Eol Prou RS-T d3-94** — посреди ничего, в 22 000 св. лет от дома.$nl$$nl$### 3302–3303 — Спасательная операция$nl$$nl$Сообщество пилотов организовало масштабную спасательную операцию. Тысячи CMDR доставляли металлы, food cartridges и machinery для ремонта станции. Эта операция стала одним из первых примеров truly player-driven narrative в Elite Dangerous.$nl$$nl$### 3303 — Рождение Colonia$nl$$nl$После ремонта Jaques Station стала центром нового региона. Вокруг неё начали строиться новые станции, прибывали колонисты. Регион получил имя **Colonia** — по названию первой станции.$nl$$nl$## Великая миграция$nl$$nl$### Почему люди уезжают в Colonia?$nl$$nl$| Причина | Описание |$nl$|---------|----------|$nl$| **Свобода** | Нет давления BGS крупных фракций |$nl$| **Тишина** | Никаких гриферов, никакой перегруженности |$nl$| **Природа** | Уникальные планеты, близость к туманностям |$nl$| **Сообщество** | Тесные связи между пилотами |$nl$| **Новый старт** | Возможность создать что-то своё |$nl$$nl$### Маршруты в Colonia$nl$$nl$1. **Neutron Highway** — самый быстрый путь (500–800 прыжков). Требует Fuel Scoop и терпения.$nl$2. **Colonia Bridge** — цепочка станций и Fleet Carriers, построенная к 3305 году.$nl$3. **Fleet Carrier Taxi** — многие владельцы FC предлагают бесплатные рейсы.$nl$$nl$## Современная Colonia (3308)$nl$$nl$### Инфраструктура$nl$$nl$- **Jaques Station** — центр региона, орбитальный хаб$nl$- **Colonia Orbital** — промышленная станция$nl$- **Dove Enigma** — исследовательский аванпост$nl$- **Rohini** — первая система на пути из Bubble, точка сбора$nl$- **Eagle's Landing** — военный аванпост$nl$$nl$### Экономика$nl$$nl$Colonia живёт за счёт:$nl$- **Туризма** — пилоты со всей галактики$nl$- **Ремонта и дозаправки** — станции обслуживают путешественников$nl$- **Научных программ** — изучение уникальной флоры и геологии$nl$- **Миграционных услуг** — переезд кораблей и модулей$nl$$nl$### Проблемы$nl$$nl$- **Отдалённость** — доставка товаров из Bubble занимает недели$nl$- **Ограниченный выбор кораблей** — не все модели доступны$nl$- **Зависимость от пилотов** — без постоянного притока CMDR регион вымирает$nl$$nl$---$nl$$nl$*«Colonia — это не просто место. Это доказательство того, что человечество может начать всё сначала»* — Jaques, 3303.$c$, v_cat_lore, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW() ) RETURNING id INTO v_article_id; INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at) VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); -- ============================================================ -- 4. Generation Ships: призраки прошлого -- ============================================================ INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at) VALUES ( 'Generation Ships: призраки прошлого — заброшенные корабли-поколения', 'generation-ships-prizraki-proshlogo', $c$# Generation Ships: призраки прошлого$nl$$nl$**Тип:** Лор / Мистика$nl$**Категория:** Забытая история$nl$**Время чтения:** 12 минут$nl$$nl$## Что такое Generation Ships?$nl$$nl$**Корабли-поколения** (Generation Ships) — гигантские межзвёздные арки, запущенные до изобретения современного FSD. Они предназначались для путешествий, длящихся сотни лет. Экипажи либо жили в замкнутых экосистемах, передавая миссию из поколения в поколение, либо находились в анабиозе.$nl$$nl$Каждый такой корабль — это целый мир: жилые купола, фермы, фабрики, школы, больницы. Некоторые весили миллионы тонн и несли десятки тысяч колонистов.$nl$$nl$## Сколько их было?$nl$$nl$Точное число неизвестно. Историки насчитывают от **70 000 до 100 000** кораблей-поколений, запущенных между 2200 и 2700 годами. Из них связь поддерживала лишь горстка. Остальные исчезли в бездне.$nl$$nl$## Известные находки$nl$$nl$### The Golconda$nl$$nl$Самая известная находка. **The Golconda** был обнаружен в 3305 году в системе **Upaniklis**. На борту жили потомки оригинального экипажа, которые тысячу лет развивали собственную культуру, религию и язык.$nl$$nl$Они отказались покидать корабль, но согласились на компромисс: **Federation** построила для них станцию **Forester's Choice**, сохранив их образ жизни.$nl$$nl$### The Hesperus$nl$$nl$Корабль-призрак, найденный в 3307. На борту обнаружены следы борьбы за выживание и записи о «чём-то за бортом». Судьба экипажа неизвестна — корабль был пуст.$nl$$nl$### The Demeter$nl$$nl$Обнаружен с повреждёнными системами жизнеобеспечения. Экипаж погиб от отказа экосистемы за десятилетия до находки. Записи показывают, как они пытались починить корабль, используя поколенческие знания.$nl$$nl$### The Phobos$nl$$nl$Корабль, где экипаж разделился на две враждующие фракции. Гражданская война в замкнутом пространстве привела к полному уничтожению населения.$nl$$nl$### The Artemis$nl$$nl$Самая мрачная находка. Экипаж совершил массовый суицид после получения (или имитации) сигнала от инопланетного разума. Записи содержат описания «голосов из гиперпространства».$nl$$nl$## Что с ними случилось?$nl$$nl$| Сценарий | Доля кораблей | Примеры |$nl$|----------|---------------|---------|$nl$| Достигли цели и основали колонию | ~5% | Неизвестны |$nl$| Погибли от технических сбоев | ~30% | The Demeter |$nl$| Внутренние конфликты / социальный коллапс | ~20% | The Phobos |$nl$| Встреча с неизвестным (Thargoids?) | ~10% | The Artemis, The Hesperus |$nl$| Потерялись / сбились с курса | ~25% | Большинство |$nl$| Ещё в пути | ~10% | Теоретически возможно |$nl$$nl$## Можно ли их найти сегодня?$nl$$nl$Да. Каждый год пилоты-исследователи находят новые корабли-поколения. Обычно они обнаруживаются в виде сигналов «**Distress Call**» или «**Degraded Emissions**» в системах, не имеющих других объектов.$nl$$nl$Если вы нашли Generation Ship:$nl$1. Не стыкуйтесь без подготовки — атмосфера может быть токсичной$nl$2. Сканируйте все терминалы данных$nl$3. Фотографируйте — Canonn Research выплачивает награды за новые находки$nl$4. Уважайте погибших — это исторические памятники$nl$$nl$---$nl$$nl$*«Каждый Generation Ship — это гробница мечты. Но иногда мечта переживает тех, кто её нёс»*.$c$, v_cat_lore, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW() ) RETURNING id INTO v_article_id; INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at) VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); -- ============================================================ -- 5. Raxxla и The Dark Wheel — мистика, тайны, что известно -- ============================================================ INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at) VALUES ( 'Raxxla и The Dark Wheel — мистика, тайны, что известно', 'raxxla-i-the-dark-wheel', $c$# Raxxla и The Dark Wheel$nl$$nl$**Тип:** Лор / Мистика / Конспирология$nl$**Категория:** Великие тайны$nl$**Время чтения:** 15 минут$nl$**Важно:** Эта статья основана на подтверждённых фактах, слухах и теориях сообщества.$nl$$nl$## Что такое Raxxla?$nl$$nl$**Raxxla** — легендарный объект, место или состояние бытия, существование которого упоминается в пилотском фольклоре с XXIII века. Официально ни одна фракция не подтвердила его нахождение.$nl$$nl$### Официально известные факты$nl$$nl$1. **Название впервые задокументировано в 2296 году** — пилот-курьер упомянул «врата в Raxxla» в своём дневнике перед исчезновением.$nl$2. **В 2800-х годах** несколько экспедиций искали объект в секторе **Formidine Rift** — ни одна не вернулась.$nl$3. **В 3301 году** инженер **Brosa Meree** заявил, что «Raxxla — это не место, это путь». Он был объявлен невменяемым.$nl$4. **В 3303 году** сигнал, похожий на описания «песни Raxxla», был зарегистрирован в **Cone Sector** — но сектор был немедленно закрыт для посещения Аegis.$nl$$nl$### Теории сообщества$nl$$nl$| Теория | Описание | Статус |$nl$|--------|----------|--------|$nl$| Планета с вратами | Raxxla — планета с древней технологией телепортации | Неподтверждено |$nl$| Корабль-звезда | Объект размером с луну, движущийся по галактике | Неподтверждено |$nl$| Другое измерение | Raxxla — точка входа в параллельное пространство | Спекуляция |$nl$| Метафора | «Raxxla» — кодовое слово для секретной программы | Возможно |$nl$| Thargoid origin | Объект создан Thargoids как ловушка | Теория заговора |$nl$$nl$## The Dark Wheel — охотники за тайной$nl$$nl$### Что это?$nl$$nl$**The Dark Wheel** — тайное общество (или сеть агентов), посвящённое поиску Raxxla. Их существование не доказано, но упоминания встречаются в записях с 2700-х годов.$nl$$nl$### Что известно$nl$$nl$1. **Символ** — восьмиконечная звезда в круге.$nl$2. **Методы** — агенты внедряются во все крупные фракции, включая Pilots Federation.$nl$3. **Финансирование** — предположительно, неограниченное. Некоторые находки Generation Ships были «случайно» оплачены анонимными благотворителями.$nl$4. **Связь с Shinrarta Dezhra** — станция **Jameson Memorial** построена на орбите планеты, которая по некоторым данным была «точкой отсчёта» для первых карт Dark Wheel.$nl$$nl$### Точки интереса$nl$$nl$| Локация | Почему важна |$nl$|---------|--------------|$nl$| **Formidine Rift** | Здесь пропали первые экспедиции |$nl$| **Cone Sector** | Зарегистрирован «сигнал Raxxla», затем закрыт |$nl$| **Siren Sector** | Необъяснимые аномалии сканирования |$nl$| **Delphi** | Центр Anti-Xeno Initiative, но также — странные руины |$nl$| **Guardian Space** | Некоторые тексты Guardians упоминают «врата» |$nl$$nl$## Закрытые досье$nl$$nl$### Проект Dynasty$nl$$nl$Секретная программа Федерации (3300–3305) по поиску Raxxla. Финансировалась через чёрный бюджет. Была закрыта после инцидента в **HIP 22460**.$nl$$nl$### Записи CMDR Salomé$nl$$nl$Пилот и конспиролог **Salomé** утверждала, что Raxxla — это «ключ к свободе человечества от контроля элит». Она была убита в 3303 году при попытке передать координаты. Данные так и не были восстановлены.$nl$$nl$## Как искать Raxxla?$nl$$nl$Разработчики подтвердили, что Raxxla **действительно существует в игре** и может быть найдена. Вот что рекомендуют охотники:$nl$$nl$1. **Изучайте лор** — ключи спрятаны в GalNet и записях Generation Ships$nl$2. **Сканируйте необитаемые системы** — Raxxla не там, где все ищут$nl$3. **Обращайте внимание на аномалии** — странные сигналы, геологические образования, «ошибки» карт$nl$4. **Следите за патчами** — иногда разработчики добавляют подсказки$nl$5. **Не верьте всему** — 90% «координат Raxxla» — фейки$nl$$nl$---$nl$$nl$*«Raxxla — это не сокровище. Это зеркало. Кто ищет власть — найдёт погибель. Кто ищет знание — найдёт вопросы»* — предположительно, запись The Dark Wheel, 2844 год.$c$, v_cat_lore, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW() ) RETURNING id INTO v_article_id; INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at) VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed', NOW()); END $$;
+-- ============================================================
+-- ED Ring Colony Wiki — Seed: 5 статей лора
+-- (История человечества, CMDR, Colonia, Generation Ships, Raxxla)
+--
+-- ⚠ Файл восстановлен 2026-09-25. Прежняя версия лежала одной строкой без
+--   переводов строк: первый комментарий съедал весь остаток файла вместе с
+--   блоком DO, поэтому миграция не выполняла ни одной команды и пяти статей
+--   лора в базе не было (psql считает пустой скрипт успешным).
+--
+--   Что сохранено и что исправлено:
+--     • тексты статей не менялись, маркеры $nl$ развёрнуты в реальные переводы
+--       строк;
+--     • повторный накат безопасен: статьи не дублируются (ON CONFLICT (slug)),
+--       ревизия пишется только для действительно вставленной статьи;
+--     • категория «Лор» и автор ищутся по базе — как в
+--       20260903000000_wiki_fill_empty_categories.sql.
+-- ============================================================
 
+DO $seed$
+DECLARE
+  v_admin_id   UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
+  v_author_id  UUID;
+  v_cat_lore   UUID;
+  v_article_id UUID;
+BEGIN
+  -- ============================================================
+  -- 0. Категория «Лор» и автор статей
+  -- ============================================================
+  SELECT id INTO v_cat_lore FROM public.wiki_categories
+   WHERE id = 'ceb24c42-7d36-483c-880b-e0e08d5c4d99';
+  IF v_cat_lore IS NULL THEN
+    SELECT id INTO v_cat_lore FROM public.wiki_categories WHERE slug = 'lore';
+  END IF;
+  IF v_cat_lore IS NULL THEN
+    INSERT INTO public.wiki_categories (name, slug, description, sort_order)
+    VALUES ('Лор', 'lore', 'История и лор вселенной', 5)
+    ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+    RETURNING id INTO v_cat_lore;
+  END IF;
+
+  SELECT COALESCE(
+           (SELECT id FROM auth.users WHERE id = v_admin_id),
+           (SELECT id FROM public.profiles
+             WHERE role IN ('admin', 'moderator')
+             ORDER BY created_at LIMIT 1)
+         ) INTO v_author_id;
+  IF v_author_id IS NULL THEN
+    RAISE NOTICE 'wiki_lore_articles: нет пользователя-автора (admin/moderator) — сид пропущен';
+    RETURN;
+  END IF;
+
+  -- ============================================================
+  -- 1. История человечества: хронология 2090–3308+
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'История человечества: хронология от 2090 до 3308+',
+    'istoriya-chelovechestva-hronologiya',
+    $c$# История человечества: хронология от 2090 до 3308+
+
+**Тип:** Лор
+**Категория:** История вселенной
+**Время чтения:** 20 минут
+
+## XXI век: Первые шаги (2090–2200)
+
+### 2090 — Первые колонии за пределами Солнечной системы
+
+После decades of resource depletion и климатического кризиса человечество обратило взор к звёздам. Первые межзвёздные колонизационные корабли, оснащённые прототипами Frame Shift Drive, отправились к ближайшим системам: Alpha Centauri, Tau Ceti и Barnard's Star. Эти миссии были односторонними — колонисты знали, что связь с Землёй займёт годы.
+
+### 2150 — Формирование Федерации (Federation)
+
+Крупные корпорации, финансировавшие колонизацию, начали требовать политического представительства. Рождается **Federation of Star Systems** — первое наднациональное правительство, контролируемое корпоративными интересами. Земля (Sol) становится административным центром, но реальная власть переходит к совету акционеров.
+
+### 2200 — Открытие первых инопланетных артефактов
+
+На планете в системе Tau Ceti археологи находят странные структуры, предшествующие человеческой колонизации на миллионы лет. Эти находки засекречены, но слухи порождают первые культы, посвящённые «Древним» — предтечам современных теорий о Guardians и Thargoids.
+
+## XXIII век: Распад и войны (2200–2400)
+
+### 2242 — Война за независимость Achenar
+
+Колония в системе **Achenar** отказывается платить налоги Федерации. В ответ Федерация отправляет военный флот. Но колонисты, возглавляемые семьёй **Duval**, оказывают ожесточённое сопротивление. Война заканчивается поражением Федерации и провозглашением **Empire of Achenar** — будущей галактической сверхдержавы.
+
+### 2300 — Эра Generation Ships
+
+До массового распространения FSD человечество отправляет сотни **кораблей-поколений** (Generation Ships) к далёким звёздам. Эти гигантские арки с замороженными экипажами или замкнутыми экосистемами уходят в путь на сотни лет. Многие из них так и не выходят на связь — их судьба станет одной из величайших тайн галактики.
+
+### 2380 — Первый контакт с Thargoids
+
+На окраине исследованного пространства патрульный корабль Федерации сталкивается с неизвестными объектами органической формы. Контакт быстро переходит в бой. **Thargoids** — раса насекомоподобных существ с биологическими кораблями — объявляют человечеству войну. Конфликт затихает после разработки противотаргоидного оружия, но вражда не забыта.
+
+## XXV век: Технологический рывок (2400–2800)
+
+### 2800 — Изобретение Frame Shift Drive
+
+Прорыв в понимании пространственно-временной метрики приводит к созданию современного **FSD**. Путешествие между звёздами, занимавшее десятилетия, сокращается до секунд. Человечество взрывается в галактику — начинается **Великая Экспансия**.
+
+### 2850 — Основание Alliance
+
+Мелкие независимые системы, уставшие от геополитического противостояния Федерации и Империи, формируют **Alliance of Independent Systems**. Alliance провозглашает принципы самоопределения, свободной торговли и взаимной обороны. Становится третьей доминирующей силой в галактике.
+
+### 2900 — Эра пиратства и частных армий
+
+Быстрая колонизация порождает правовой вакуум. На окраинах появляются пиратские королевства, охотничьи кланы и корпоративные армии. В ответ появляются первые **Squadron** — объединения независимых пилотов, берущих на себя защиту слабых.
+
+## XXXIV век: Современность (3300–3308+)
+
+### 3301 — Возвращение командера Jameson
+
+Командер **John Jameson**, легендарный пилот эпохи первых войн с Thargoids, обнаруживается в криокамере на заброшенной станции. Его возвращение становится символом новой эры — эры, в которой один пилот может изменить судьбу галактики.
+
+### 3303 — Вторжение Thargoids
+
+Thargoids возвращаются в полную силу. Их биологические корабли — **Interceptors** и **Scouts** — атакуют станции в Pleiades и за её пределами. Начинается системная война, в которой пилоты-независимки играют ключевую роль в эвакуации и обороне.
+
+### 3305 — Открытие Colonia Bridge
+
+Построен маршрут станций между Bubble и Colonia — **Colonia Bridge**. Это событие окончательно интегрирует дальний регион в жизнь галактики и открывает эпоху массовой миграции.
+
+### 3307 — Распад и новые союзы
+
+Политическая напряжённость достигает пика. Федерация и Империя сталкиваются в прокси-войнах. Alliance укрепляет позиции через **Alliance Chieftain** и военные контракты. В тени этого противостояния растёт влияние **Project Dynasty** и других секретных программ.
+
+### 3308 — Эра колонизации
+
+Начинается новая волна экспансии. Система **Colonia** становится центром самоуправляемого региона. Пилоты-независимки получают инструменты для создания собственных станций и фракций. Человечество выходит за пределы известного пространства — в глубокий космос.
+
+## Будущее (3308+)
+
+Галактика стоит на пороге новых открытий. Слухи о **Stargoids**, таинственных объектах, движущихся через галактику, настораживают учёных. Проекты вроде **The Galaxy Ring** обещают соединить отдалённые регионы. А где-то в туманности **Raxxla** всё ещё ждёт своего первооткрывателя.
+
+---
+
+*«Мы смотрим на звёзды не потому, что они близки, а потому, что мы смелы»* — неизвестный пилот, 3301.$c$,
+    v_cat_lore, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 2. CMDR: кто такие пилоты
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'CMDR: кто такие пилоты — ранг Elite, легендарные пилоты, Squadron',
+    'cmdr-kto-takie-piloty',
+    $c$# CMDR: кто такие пилоты
+
+**Тип:** Лор / Геймплей
+**Категория:** Пилоты и общество
+**Время чтения:** 15 минут
+
+## Кто такие CMDR?
+
+**CMDR** (Commander) — стандартное обращение к лицензированным пилотам космических аппаратов в галактике человечества. Каждый CMDR — это независимый оператор, владеющий собственным кораблём и действующий на свой страх и риск. Система лицензирования появилась в середине XXIX века как способ контролировать хаос частного звёздного флота.
+
+CMDR может быть торговцем, наёмником, исследователем, спасателем или пиратом — закон не различает моральные качества, только квалификацию.
+
+## Система рангов
+
+Пилотская федерация (Pilots Federation) ведёт учёт достижений каждого CMDR в четырёх ключевых областях:
+
+| Ранг | Торговля (Trader) | Бой (Combat) | Исследования (Explorer) | CQC (Arena) |
+|------|-------------------|--------------|-------------------------|-------------|
+| Harmless / Penniless / Aimless / Helpless | — | — | — | — |
+| Mostly Harmless | + | + | + | + |
+| Novice | ++ | ++ | ++ | ++ |
+| Competent | +++ | +++ | +++ | +++ |
+| Expert | ++++ | ++++ | ++++ | ++++ |
+| Master | +++++ | +++++ | +++++ | +++++ |
+| Dangerous / Merchant / Scout / Amateur | — | — | — | — |
+| Deadly / Broker | — | — | — | — |
+| **Elite** | **Elite** | **Elite** | **Elite** | **Elite** |
+
+### Ранг Elite
+
+Достичь ранга **Elite** — значит войти в 0,1% лучших пилотов галактики. Это не просто статус: Elite-пилоты получают доступ к закрытым станциям, эксклюзивным контрактам и особым зонам вроде **Shinrarta Dezhra** (система, где продаются все корабли и модули со скидкой).
+
+Существует также звание **Elite Dangerous** — пожизненный статус, присваиваемый за достижение ранга Elite во всех трёх основных дисциплинах (Combat, Trade, Exploration).
+
+## Легендарные пилоты
+
+### John Jameson
+
+Герой Первой Таргоидской Войны. Его имя носит станция **Jameson Memorial** в Shinrarta Dezhra. Считается погибшим, но в 3301 году был найден в криостазе. Его корабль и записи раскрыли правду о секретных биологических программах INRA.
+
+### CMDR Besieger
+
+Один из первых пилотов, достигших Colonia в одиночку без Fleet Carrier. Его маршрут через neutron stars стал классикой для экспедиций.
+
+### CMDR Erimus Kamzel
+
+«Первопроходец Colonia». Именно его экспедиция 3302 года заложила основы для миграции в регион **Colonia**. В его честь названа станция **Kamzel's Reach**.
+
+### CMDR DoveEnigma13
+
+Легенда исследовательского сообщества. Первый, кто достиг галактического центра (Sagittarius A*) на стоковом Sidewinder без инженерных модификаций.
+
+### CMDR Harry Potter
+
+Пожалуй, самый известный PvP-пилот в истории игры. Его бои против кораблей класса «Анаконда» на лёгких истребителях вошли в учебники асимметричного боя.
+
+## Squadron — братва звёзд
+
+**Squadron** — объединение пилотов под единым командованием. Это может быть военная эскадрилья, торговая гильдия, исследовательская экспедиция или банда пиратов.
+
+### Типы Squadron
+
+| Тип | Фокус | Особенности |
+|-----|-------|-------------|
+| **PCC** (Player-created faction) | BGS | Контроль фракций в системах |
+| **Expedition** | Исследования | Дальние миры, совместные маршруты |
+| **PMF** (Private Military Force) | PvP / PvE | Наёмные операции, охрана конвоев |
+| **Trade Union** | Торговля | Совместные маршруты, защита цен |
+| **Explorer Corps** | Наука | Картография, первооткрытие |
+
+### Как создать Squadron
+
+1. Наберите минимум 4 пилотов
+2. Оплатите регистрацию в Pilots Federation (10 млн CR)
+3. Выберите тег (tag) — короткое обозначение вроде [RING] или [AXI]
+4. Настройте иерархию ролей: Leader, Deputy, Ambassador, Lieutenant, Agent, Rookie
+5. Выберите цветовую схему и лор
+
+### Крупнейшие Squadron галактики
+
+- **The Fuel Rats** — спасатели, вытащившие тысячи пилотов из без топлива
+- **The Hull Seals** — инженерная поддержка и ремонт в дальнем космосе
+- **Canonn Research** — научное сообщество, изучающее аномалии
+- **Anti-Xeno Initiative** — организованная оборона от Thargoids
+- **The Dark Wheel** — тайное общество, охотящееся за Raxxla (по слухам)
+
+---
+
+*«CMDR — это не просто позывной. Это обещание: где бы ты ни был, ты никогда не один»*.$c$,
+    v_cat_lore, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 3. Colonia: край света
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'Colonia: край света — история Jaques Station, миграция, современная Colonia',
+    'colonia-kray-sveta',
+    $c$# Colonia: край света
+
+**Тип:** Лор / География
+**Категория:** Регионы галактики
+**Время чтения:** 15 минут
+
+## Где находится Colonia?
+
+**Colonia** — регион галактики, расположенный примерно в **22 000 световых лет** от Sol в направлении галактического центра. Это самое крупное человеческое поселение за пределами Bubble (основной зоны цивилизации).
+
+Координаты: **Colonia (Eol Prou RS-T d3-94)**
+
+## История Jaques Station
+
+### 3302 — Побег орбитальной станции
+
+**Jaques Station** — уникальная **орбитальная станция с двигателями**, принадлежавшая цыганскому бармену **Jaques**. Она была единственной станцией в галактике, способной совершать межзвёздные прыжки.
+
+Jaques планировал перепрыгнуть в **Beagle Point** — самую дальнюю точку галактики. Но что-то пошло не так. Во время прыжка станция была повреждена неизвестным объектом и выброшена в систему **Eol Prou RS-T d3-94** — посреди ничего, в 22 000 св. лет от дома.
+
+### 3302–3303 — Спасательная операция
+
+Сообщество пилотов организовало масштабную спасательную операцию. Тысячи CMDR доставляли металлы, food cartridges и machinery для ремонта станции. Эта операция стала одним из первых примеров truly player-driven narrative в Elite Dangerous.
+
+### 3303 — Рождение Colonia
+
+После ремонта Jaques Station стала центром нового региона. Вокруг неё начали строиться новые станции, прибывали колонисты. Регион получил имя **Colonia** — по названию первой станции.
+
+## Великая миграция
+
+### Почему люди уезжают в Colonia?
+
+| Причина | Описание |
+|---------|----------|
+| **Свобода** | Нет давления BGS крупных фракций |
+| **Тишина** | Никаких гриферов, никакой перегруженности |
+| **Природа** | Уникальные планеты, близость к туманностям |
+| **Сообщество** | Тесные связи между пилотами |
+| **Новый старт** | Возможность создать что-то своё |
+
+### Маршруты в Colonia
+
+1. **Neutron Highway** — самый быстрый путь (500–800 прыжков). Требует Fuel Scoop и терпения.
+2. **Colonia Bridge** — цепочка станций и Fleet Carriers, построенная к 3305 году.
+3. **Fleet Carrier Taxi** — многие владельцы FC предлагают бесплатные рейсы.
+
+## Современная Colonia (3308)
+
+### Инфраструктура
+
+- **Jaques Station** — центр региона, орбитальный хаб
+- **Colonia Orbital** — промышленная станция
+- **Dove Enigma** — исследовательский аванпост
+- **Rohini** — первая система на пути из Bubble, точка сбора
+- **Eagle's Landing** — военный аванпост
+
+### Экономика
+
+Colonia живёт за счёт:
+- **Туризма** — пилоты со всей галактики
+- **Ремонта и дозаправки** — станции обслуживают путешественников
+- **Научных программ** — изучение уникальной флоры и геологии
+- **Миграционных услуг** — переезд кораблей и модулей
+
+### Проблемы
+
+- **Отдалённость** — доставка товаров из Bubble занимает недели
+- **Ограниченный выбор кораблей** — не все модели доступны
+- **Зависимость от пилотов** — без постоянного притока CMDR регион вымирает
+
+---
+
+*«Colonia — это не просто место. Это доказательство того, что человечество может начать всё сначала»* — Jaques, 3303.$c$,
+    v_cat_lore, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 4. Generation Ships: призраки прошлого
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'Generation Ships: призраки прошлого — заброшенные корабли-поколения',
+    'generation-ships-prizraki-proshlogo',
+    $c$# Generation Ships: призраки прошлого
+
+**Тип:** Лор / Мистика
+**Категория:** Забытая история
+**Время чтения:** 12 минут
+
+## Что такое Generation Ships?
+
+**Корабли-поколения** (Generation Ships) — гигантские межзвёздные арки, запущенные до изобретения современного FSD. Они предназначались для путешествий, длящихся сотни лет. Экипажи либо жили в замкнутых экосистемах, передавая миссию из поколения в поколение, либо находились в анабиозе.
+
+Каждый такой корабль — это целый мир: жилые купола, фермы, фабрики, школы, больницы. Некоторые весили миллионы тонн и несли десятки тысяч колонистов.
+
+## Сколько их было?
+
+Точное число неизвестно. Историки насчитывают от **70 000 до 100 000** кораблей-поколений, запущенных между 2200 и 2700 годами. Из них связь поддерживала лишь горстка. Остальные исчезли в бездне.
+
+## Известные находки
+
+### The Golconda
+
+Самая известная находка. **The Golconda** был обнаружен в 3305 году в системе **Upaniklis**. На борту жили потомки оригинального экипажа, которые тысячу лет развивали собственную культуру, религию и язык.
+
+Они отказались покидать корабль, но согласились на компромисс: **Federation** построила для них станцию **Forester's Choice**, сохранив их образ жизни.
+
+### The Hesperus
+
+Корабль-призрак, найденный в 3307. На борту обнаружены следы борьбы за выживание и записи о «чём-то за бортом». Судьба экипажа неизвестна — корабль был пуст.
+
+### The Demeter
+
+Обнаружен с повреждёнными системами жизнеобеспечения. Экипаж погиб от отказа экосистемы за десятилетия до находки. Записи показывают, как они пытались починить корабль, используя поколенческие знания.
+
+### The Phobos
+
+Корабль, где экипаж разделился на две враждующие фракции. Гражданская война в замкнутом пространстве привела к полному уничтожению населения.
+
+### The Artemis
+
+Самая мрачная находка. Экипаж совершил массовый суицид после получения (или имитации) сигнала от инопланетного разума. Записи содержат описания «голосов из гиперпространства».
+
+## Что с ними случилось?
+
+| Сценарий | Доля кораблей | Примеры |
+|----------|---------------|---------|
+| Достигли цели и основали колонию | ~5% | Неизвестны |
+| Погибли от технических сбоев | ~30% | The Demeter |
+| Внутренние конфликты / социальный коллапс | ~20% | The Phobos |
+| Встреча с неизвестным (Thargoids?) | ~10% | The Artemis, The Hesperus |
+| Потерялись / сбились с курса | ~25% | Большинство |
+| Ещё в пути | ~10% | Теоретически возможно |
+
+## Можно ли их найти сегодня?
+
+Да. Каждый год пилоты-исследователи находят новые корабли-поколения. Обычно они обнаруживаются в виде сигналов «**Distress Call**» или «**Degraded Emissions**» в системах, не имеющих других объектов.
+
+Если вы нашли Generation Ship:
+1. Не стыкуйтесь без подготовки — атмосфера может быть токсичной
+2. Сканируйте все терминалы данных
+3. Фотографируйте — Canonn Research выплачивает награды за новые находки
+4. Уважайте погибших — это исторические памятники
+
+---
+
+*«Каждый Generation Ship — это гробница мечты. Но иногда мечта переживает тех, кто её нёс»*.$c$,
+    v_cat_lore, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+  -- ============================================================
+  -- 5. Raxxla и The Dark Wheel
+  -- ============================================================
+  INSERT INTO public.wiki_articles (title, slug, content, category_id, author_id, last_editor_id, status, is_featured, view_count, version, created_at, updated_at)
+  VALUES (
+    'Raxxla и The Dark Wheel — мистика, тайны, что известно',
+    'raxxla-i-the-dark-wheel',
+    $c$# Raxxla и The Dark Wheel
+
+**Тип:** Лор / Мистика / Конспирология
+**Категория:** Великие тайны
+**Время чтения:** 15 минут
+**Важно:** Эта статья основана на подтверждённых фактах, слухах и теориях сообщества.
+
+## Что такое Raxxla?
+
+**Raxxla** — легендарный объект, место или состояние бытия, существование которого упоминается в пилотском фольклоре с XXIII века. Официально ни одна фракция не подтвердила его нахождение.
+
+### Официально известные факты
+
+1. **Название впервые задокументировано в 2296 году** — пилот-курьер упомянул «врата в Raxxla» в своём дневнике перед исчезновением.
+2. **В 2800-х годах** несколько экспедиций искали объект в секторе **Formidine Rift** — ни одна не вернулась.
+3. **В 3301 году** инженер **Brosa Meree** заявил, что «Raxxla — это не место, это путь». Он был объявлен невменяемым.
+4. **В 3303 году** сигнал, похожий на описания «песни Raxxla», был зарегистрирован в **Cone Sector** — но сектор был немедленно закрыт для посещения Аegis.
+
+### Теории сообщества
+
+| Теория | Описание | Статус |
+|--------|----------|--------|
+| Планета с вратами | Raxxla — планета с древней технологией телепортации | Неподтверждено |
+| Корабль-звезда | Объект размером с луну, движущийся по галактике | Неподтверждено |
+| Другое измерение | Raxxla — точка входа в параллельное пространство | Спекуляция |
+| Метафора | «Raxxla» — кодовое слово для секретной программы | Возможно |
+| Thargoid origin | Объект создан Thargoids как ловушка | Теория заговора |
+
+## The Dark Wheel — охотники за тайной
+
+### Что это?
+
+**The Dark Wheel** — тайное общество (или сеть агентов), посвящённое поиску Raxxla. Их существование не доказано, но упоминания встречаются в записях с 2700-х годов.
+
+### Что известно
+
+1. **Символ** — восьмиконечная звезда в круге.
+2. **Методы** — агенты внедряются во все крупные фракции, включая Pilots Federation.
+3. **Финансирование** — предположительно, неограниченное. Некоторые находки Generation Ships были «случайно» оплачены анонимными благотворителями.
+4. **Связь с Shinrarta Dezhra** — станция **Jameson Memorial** построена на орбите планеты, которая по некоторым данным была «точкой отсчёта» для первых карт Dark Wheel.
+
+### Точки интереса
+
+| Локация | Почему важна |
+|---------|--------------|
+| **Formidine Rift** | Здесь пропали первые экспедиции |
+| **Cone Sector** | Зарегистрирован «сигнал Raxxla», затем закрыт |
+| **Siren Sector** | Необъяснимые аномалии сканирования |
+| **Delphi** | Центр Anti-Xeno Initiative, но также — странные руины |
+| **Guardian Space** | Некоторые тексты Guardians упоминают «врата» |
+
+## Закрытые досье
+
+### Проект Dynasty
+
+Секретная программа Федерации (3300–3305) по поиску Raxxla. Финансировалась через чёрный бюджет. Была закрыта после инцидента в **HIP 22460**.
+
+### Записи CMDR Salomé
+
+Пилот и конспиролог **Salomé** утверждала, что Raxxla — это «ключ к свободе человечества от контроля элит». Она была убита в 3303 году при попытке передать координаты. Данные так и не были восстановлены.
+
+## Как искать Raxxla?
+
+Разработчики подтвердили, что Raxxla **действительно существует в игре** и может быть найдена. Вот что рекомендуют охотники:
+
+1. **Изучайте лор** — ключи спрятаны в GalNet и записях Generation Ships
+2. **Сканируйте необитаемые системы** — Raxxla не там, где все ищут
+3. **Обращайте внимание на аномалии** — странные сигналы, геологические образования, «ошибки» карт
+4. **Следите за патчами** — иногда разработчики добавляют подсказки
+5. **Не верьте всему** — 90% «координат Raxxla» — фейки
+
+---
+
+*«Raxxla — это не сокровище. Это зеркало. Кто ищет власть — найдёт погибель. Кто ищет знание — найдёт вопросы»* — предположительно, запись The Dark Wheel, 2844 год.$c$,
+    v_cat_lore, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
+  )
+  ON CONFLICT (slug) DO NOTHING
+  RETURNING id INTO v_article_id;
+
+  IF v_article_id IS NOT NULL THEN
+    INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
+    VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed', NOW());
+  END IF;
+
+END
+$seed$;
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260903170000_fix_squadron_friends.sql             │
@@ -5475,7 +7241,6 @@ DO $$
 BEGIN
   RAISE NOTICE 'Squadron profile synchronization is installed by migration 20260911030000.';
 END $$;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904000000_capi_journal_base.sql                │
@@ -5635,7 +7400,6 @@ CREATE INDEX idx_capi_tokens_user              ON capi_tokens(user_id);
 -- ─── Realtime ───
 ALTER PUBLICATION supabase_realtime ADD TABLE construction_depot_snapshots;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904010000_eddn_market_data.sql                 │
 -- └────────────────────────────────────────────────────────────────┘
@@ -5697,7 +7461,6 @@ CREATE POLICY "commodity_needs_manage_officer" ON commodity_needs
     )
   );
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904020000_squadron_live_tracking.sql           │
 -- └────────────────────────────────────────────────────────────────┘
@@ -5753,7 +7516,6 @@ CREATE POLICY "location_privacy_update_own" ON location_privacy
 
 ALTER PUBLICATION supabase_realtime ADD TABLE squadron_member_locations;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904030000_fleet_carriers.sql                   │
 -- └────────────────────────────────────────────────────────────────┘
@@ -5801,7 +7563,6 @@ CREATE POLICY "squadron_carriers_manage_owner" ON squadron_carriers
 
 CREATE INDEX idx_squadron_carriers_squadron ON squadron_carriers(squadron_id);
 CREATE INDEX idx_squadron_carriers_system ON squadron_carriers(current_system);
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904040000_cg_inara_integration.sql             │
@@ -5854,13 +7615,53 @@ CREATE TABLE inara_profiles (
 ALTER TABLE inara_profiles ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "inara_profiles_select_own" ON inara_profiles FOR SELECT USING (auth.uid() = user_id);
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260904100000_system_coords_cache.sql              │
 -- └────────────────────────────────────────────────────────────────┘
 
--- ════════════════════════════════════════════════════════════════ -- Migration 026: System Coordinates Cache + Map Pilots Support -- ════════════════════════════════════════════════════════════════ -- ─── system_coords: кэш координат систем для карты и пилотов ─── CREATE TABLE IF NOT EXISTS system_coords ( id SERIAL PRIMARY KEY, system_name TEXT NOT NULL UNIQUE, x NUMERIC(10,4), y NUMERIC(10,4), z NUMERIC(10,4), source TEXT DEFAULT 'edsm', updated_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW() ); ALTER TABLE system_coords ENABLE ROW LEVEL SECURITY; DO $$ BEGIN IF NOT EXISTS ( SELECT 1 FROM pg_policies WHERE tablename = 'system_coords' AND policyname = 'system_coords_public' ) THEN CREATE POLICY system_coords_public ON system_coords FOR SELECT USING (true); END IF; END $$; CREATE INDEX IF NOT EXISTS idx_system_coords_name ON system_coords(system_name); -- ─── Индексы для быстрого поиска пилотов на карте ─── CREATE INDEX IF NOT EXISTS idx_capi_profiles_current_system ON capi_profiles(current_system); CREATE INDEX IF NOT EXISTS idx_capi_profiles_last_updated ON capi_profiles(last_updated DESC);
+-- ════════════════════════════════════════════════════════════════
+-- Migration 026: System Coordinates Cache + Map Pilots Support
+--
+-- ⚠ Файл восстановлен 2026-09-25. Прежняя версия лежала одной строкой без
+--   переводов строк: первый комментарий съедал весь остаток файла, поэтому
+--   миграция не создавала ни таблицы, ни индексов (psql считает пустой
+--   скрипт успешным — поломка была незаметна).
+-- ════════════════════════════════════════════════════════════════
 
+-- ─── system_coords: кэш координат систем для карты и пилотов ───
+CREATE TABLE IF NOT EXISTS public.system_coords (
+  id          SERIAL PRIMARY KEY,
+  system_name TEXT NOT NULL UNIQUE,
+  x           NUMERIC(10,4),
+  y           NUMERIC(10,4),
+  z           NUMERIC(10,4),
+  source      TEXT DEFAULT 'edsm',
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.system_coords ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+     WHERE schemaname = 'public'
+       AND tablename  = 'system_coords'
+       AND policyname = 'system_coords_public'
+  ) THEN
+    CREATE POLICY system_coords_public ON public.system_coords
+      FOR SELECT USING (true);
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_system_coords_name ON public.system_coords(system_name);
+
+-- ─── Индексы для быстрого поиска пилотов на карте ───
+-- capi_profiles создаётся в 20260904000000_capi_journal_base.sql — раньше
+-- по порядку версий, поэтому здесь таблица уже есть.
+CREATE INDEX IF NOT EXISTS idx_capi_profiles_current_system ON public.capi_profiles(current_system);
+CREATE INDEX IF NOT EXISTS idx_capi_profiles_last_updated ON public.capi_profiles(last_updated DESC);
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260908010000_wiki_exobiology.sql                  │
@@ -5872,10 +7673,27 @@ CREATE POLICY "inara_profiles_select_own" ON inara_profiles FOR SELECT USING (au
 
 DO $$
 DECLARE
-  v_admin_id UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
-  v_cat_exo UUID;
+  -- Желаемый автор статей; если такого пользователя в базе нет (установка с
+  -- нуля до регистрации администратора), берём первого admin/moderator, а при
+  -- полном отсутствии авторов сид пропускаем: 13 INSERT-ов падали на внешнем
+  -- ключе wiki_articles_author_id_fkey и валили обновление проекта.
+  v_admin_id  UUID := 'd0680fc1-5fa0-4a54-b9bd-6918f88de63a';
+  v_author_id UUID;
+  v_cat_exo   UUID;
   v_article_id UUID;
 BEGIN
+
+-- ── Автор статей ────────────────────────────────────────────
+SELECT COALESCE(
+         (SELECT id FROM auth.users WHERE id = v_admin_id),
+         (SELECT id FROM public.profiles
+           WHERE role IN ('admin', 'moderator')
+           ORDER BY created_at LIMIT 1)
+       ) INTO v_author_id;
+IF v_author_id IS NULL THEN
+  RAISE NOTICE 'wiki_exobiology: нет пользователя-автора (admin/moderator) — сид пропущен';
+  RETURN;
+END IF;
 
 -- ============================================================
 -- 0. Create Exobiology Category
@@ -5974,11 +7792,11 @@ VALUES (
 ---
 
 *«Каждая планета — это музей эволюции. Мы только начали читать её экспозиции.»* — Доктор Элиза Картрайт, Ксенобиологический институт Achenar.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Exobiology guide', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Exobiology guide', NOW());
 
 -- ============================================================
 -- 2. Bacteria — самая древняя форма жизни
@@ -6049,11 +7867,11 @@ VALUES (
 ---
 
 *«Если бы разумность измерялась количеством, бактерии правили бы галактикой.»* — Профессор Йонас Век, Университет Alioth.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Bacteria', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Bacteria', NOW());
 
 
 -- ============================================================
@@ -6113,11 +7931,11 @@ VALUES (
 ---
 
 *«Грибные леса на HIP 36601 C 1 a — это ландшафт из сна. Или кошмара.»* — CMDR Mycologist, отчёт экспедиции 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Fungoida', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Fungoida', NOW());
 
 -- ============================================================
 -- 4. Osseus — костяные образования
@@ -6176,11 +7994,11 @@ VALUES (
 ---
 
 *«Я думал, это окаменелости. Они оказались живыми. Это было... неприятно.»* — CMDR RockHound, журнал 3306.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Osseus', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Osseus', NOW());
 
 -- ============================================================
 -- 5. Frutexa — кустарниковые формы
@@ -6239,11 +8057,11 @@ VALUES (
 ---
 
 *«Фрутексы на icy worlds — единственное зелёное, что вы увидите в тысячах световых лет.»* — CMDR FrozenGreen, 3305.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Frutexa', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Frutexa', NOW());
 
 
 -- ============================================================
@@ -6303,11 +8121,11 @@ VALUES (
 ---
 
 *«Туссоки — это не трава. Это стекловолокно, которое научилось фотосинтезу.»* — Доктор Ли Вей, Лаборатория экстремобиологии.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Tussock', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Tussock', NOW());
 
 -- ============================================================
 -- 7. Cactoida — кактусовидные организмы
@@ -6366,11 +8184,11 @@ VALUES (
 ---
 
 *«Я никогда не думал, что буду ностальгировать по земным кактусам. Но эти... они прекрасны.»* — CMDR DesertFlower, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Cactoida', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Cactoida', NOW());
 
 -- ============================================================
 -- 8. Concha — раковинные формы
@@ -6429,11 +8247,11 @@ VALUES (
 ---
 
 *«Я нашёл конху размером с мою голову. Внутри было... лучше не знать.»* — CMDR ShellShock, 3306.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Concha', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Concha', NOW());
 
 
 -- ============================================================
@@ -6495,11 +8313,11 @@ VALUES (
 ---
 
 *«Это не жизнь. Это молния, которая решила остаться.»* — Профессор Алексей Воронов, Институт прикладной ксенобиологии.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Electricae', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Electricae', NOW());
 
 -- ============================================================
 -- 10. Stratum — слоистые образования
@@ -6554,11 +8372,11 @@ VALUES (
 ---
 
 *«Стратумы — это страницы книги, которую пишет сама планета.»* — CMDR LayerCake, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Stratum', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Stratum', NOW());
 
 -- ============================================================
 -- 11. Recepta — рецепторные формы
@@ -6614,11 +8432,11 @@ VALUES (
 ---
 
 *«Я видел рецепту, которая «смотрела» на мой корабль. Я не уверен, что мне это понравилось.»* — CMDR ParanoidAndroid, 3308.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Recepta', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Recepta', NOW());
 
 
 -- ============================================================
@@ -6728,11 +8546,11 @@ VALUES (
 ---
 
 *«Лучшая система для экзобиологии — та, на которой вы ещё не были.»* — CMDR FirstContact, 3307.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', false, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', false, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Top-10 systems', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Top-10 systems', NOW());
 
 -- ============================================================
 -- 13. Экзобиология и ранг Elite
@@ -6823,26 +8641,30 @@ VALUES (
 ---
 
 *«Я достиг Elite в Exploration, собирая бактерии на задворках галактики. Лучшие 200 часов в моей жизни.»* — CMDR BioHunter, 3308.$c$,
-  v_cat_exo, v_admin_id, v_admin_id, 'published', true, 0, 1, NOW(), NOW()
+  v_cat_exo, v_author_id, v_author_id, 'published', true, 0, 1, NOW(), NOW()
 ) RETURNING id INTO v_article_id;
 
 INSERT INTO public.wiki_revisions (article_id, content, editor_id, revision_number, change_summary, created_at)
-VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_admin_id, 1, 'Initial seed: Exobiology and Elite rank', NOW());
+VALUES (v_article_id, (SELECT content FROM public.wiki_articles WHERE id = v_article_id), v_author_id, 1, 'Initial seed: Exobiology and Elite rank', NOW());
 
 END $$;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260908020000_wiki_exobiology_update.sql           │
 -- └────────────────────────────────────────────────────────────────┘
 
--- Exobiology articles update with actual data from Elite Dangerous Wiki (Fandom)
--- Applied: 2026-09-08
--- Source: elite-dangerous.fandom.com/wiki/Exobiologist
-
--- All 18 articles updated/inserted via Management API
--- See previous migration 20260908010000 for initial seed
-
+-- Заметка вместо миграции: обновление статей по экзобиологии (18 штук) делалось
+-- через Management API, в SQL-виде контент лежит в
+-- 20260908010000_wiki_exobiology.sql.
+--
+-- Раньше файл был просто набором комментариев: psql считает такой скрипт
+-- успешно выполненным, миграция отмечалась применённой и ничего не делала — это
+-- создавало иллюзию, что статья накатывается автоматически. Оставляем версию в
+-- истории (как 20260903170000_fix_squadron_friends.sql), но с явным NOTICE.
+DO $$
+BEGIN
+  RAISE NOTICE 'Exobiology articles are seeded by 20260908010000_wiki_exobiology.sql (content was uploaded via the Management API).';
+END $$;
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260909010000_fix_email_login_profile.sql          │
@@ -6878,7 +8700,6 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW
   EXECUTE FUNCTION public.handle_new_user();
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260911000000_raven_depot_snapshot_lookup.sql      │
 -- └────────────────────────────────────────────────────────────────┘
@@ -6889,7 +8710,6 @@ CREATE TRIGGER on_auth_user_created
 CREATE INDEX IF NOT EXISTS idx_colonisation_events_market_depot_timestamp
   ON public.colonisation_events (market_id, event_timestamp DESC)
   WHERE construction_id IS NOT NULL;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260911010000_delivery_import_idempotency.sql      │
@@ -6907,7 +8727,6 @@ CREATE INDEX IF NOT EXISTS idx_colonisation_events_market_depot_timestamp
 -- a bounded existing-hash check for safe retry behaviour.
 ALTER TABLE public.deliveries
   ADD COLUMN IF NOT EXISTS source_hash TEXT;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260911020000_precise_raven_progress.sql           │
@@ -7012,9 +8831,8 @@ BEGIN
   END LOOP;
 END $$;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
--- │ MIGRATION: 20260911030000_squadron_read_models_and_profile_sync.sql│
+-- │ MIGRATION: 20260911030000_squadron_read_models_and_profile_sync.sql │
 -- └────────────────────────────────────────────────────────────────┘
 
 -- Restore the squadron read models expected by the application without
@@ -7309,9 +9127,8 @@ CREATE INDEX IF NOT EXISTS idx_squadron_members_user_squadron
 CREATE INDEX IF NOT EXISTS idx_projects_squadron_id
   ON public.projects (squadron_id);
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
--- │ MIGRATION: 20260911040000_delivery_import_placement_resolver.sql│
+-- │ MIGRATION: 20260911040000_delivery_import_placement_resolver.sql │
 -- └────────────────────────────────────────────────────────────────┘
 
 -- Delivery imports used to download every hub and route-system row before each
@@ -7377,7 +9194,6 @@ $$;
 REVOKE ALL ON FUNCTION public.resolve_delivery_system_placements(text[]) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.resolve_delivery_system_placements(text[]) TO service_role;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260911050000_delivery_import_indexes.sql          │
 -- └────────────────────────────────────────────────────────────────┘
@@ -7393,7 +9209,6 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_user_source_hash
 CREATE INDEX IF NOT EXISTS idx_deliveries_user_delivered_at
   ON public.deliveries (user_id, delivered_at);
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260911060000_project_system_coordinates.sql       │
 -- └────────────────────────────────────────────────────────────────┘
@@ -7405,7 +9220,6 @@ ALTER TABLE public.project_systems
   ADD COLUMN IF NOT EXISTS x NUMERIC,
   ADD COLUMN IF NOT EXISTS y NUMERIC,
   ADD COLUMN IF NOT EXISTS z NUMERIC;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260912000000_atlas_ring_system_cache.sql          │
@@ -7431,7 +9245,6 @@ DROP POLICY IF EXISTS atlas_ring_cache_select ON public.atlas_ring_system_cache;
 CREATE POLICY atlas_ring_cache_select ON public.atlas_ring_system_cache
   FOR SELECT TO anon, authenticated USING (true);
 GRANT SELECT ON public.atlas_ring_system_cache TO anon, authenticated;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260915000000_galnet_translations.sql              │
@@ -7533,7 +9346,6 @@ ALTER TABLE public.galnet_sync_log ADD COLUMN IF NOT EXISTS updated_count INTEGE
 -- Права на чтение лога (пишет сервисный ключ, он обходит RLS).
 GRANT SELECT ON public.galnet_news TO anon, authenticated;
 GRANT SELECT ON public.galnet_sync_log TO anon, authenticated;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260916000000_system_scans_and_pilot_dossier.sql   │
@@ -7649,7 +9461,6 @@ CREATE POLICY pilot_stats_upsert ON public.pilot_stats
 
 GRANT SELECT, INSERT, UPDATE ON public.pilot_stats TO anon, authenticated;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260917000000_deliveries_transport_scope.sql       │
 -- └────────────────────────────────────────────────────────────────┘
@@ -7689,7 +9500,6 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_user_construction
 CREATE INDEX IF NOT EXISTS idx_deliveries_user_source
   ON public.deliveries (user_id, source)
   WHERE source IS NOT NULL;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260918000000_deliveries_cargo_scope.sql           │
@@ -7756,7 +9566,6 @@ COMMENT ON VIEW public.delivery_scope_summary IS
 CREATE INDEX IF NOT EXISTS idx_deliveries_user_kind
   ON public.deliveries (user_id, delivery_kind)
   WHERE delivery_kind IS NOT NULL;
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260918010000_profile_privacy_settings.sql         │
@@ -7826,7 +9635,6 @@ CREATE POLICY capi_profiles_select_squadron ON public.capi_profiles
     )
   );
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260918020000_pilot_stats_capi_fields.sql          │
 -- └────────────────────────────────────────────────────────────────┘
@@ -7862,9 +9670,8 @@ CREATE INDEX IF NOT EXISTS idx_pilot_stats_system
   ON public.pilot_stats (current_system)
   WHERE current_system IS NOT NULL;
 
-
 -- ┌────────────────────────────────────────────────────────────────┐
--- │ MIGRATION: 20260919000000_delivery_import_timeout_hardening.sql│
+-- │ MIGRATION: 20260919000000_delivery_import_timeout_hardening.sql │
 -- └────────────────────────────────────────────────────────────────┘
 
 -- Импорт журнала падал с «canceling statement due to statement timeout» на
@@ -7896,7 +9703,6 @@ CREATE INDEX IF NOT EXISTS idx_route_systems_system_name
 -- страховка для старых развёртываний API, которые фильтр ещё не добавляют.
 CREATE INDEX IF NOT EXISTS idx_deliveries_user_source_hash_full
   ON public.deliveries (user_id, source_hash);
-
 
 -- ┌────────────────────────────────────────────────────────────────┐
 -- │ MIGRATION: 20260920000000_site_content_translations.sql        │
@@ -7944,9 +9750,984 @@ UPDATE site_content SET
   manifest_ru = manifest
 WHERE id = 1;
 
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260921000000_billing_and_premium_shop.sql         │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ============================================================================
+-- 20260921000000_billing_and_premium_shop.sql
+-- ED Ring Colony — Billing, Subscription Management, Analytics & Premium Shop
+-- ============================================================================
+
+-- 1. Тарифные планы подписок
+CREATE TABLE IF NOT EXISTS public.billing_plans (
+  id              TEXT PRIMARY KEY,
+  name            TEXT NOT NULL,
+  name_en         TEXT,
+  description     TEXT,
+  description_en  TEXT,
+  price_rub       INTEGER NOT NULL DEFAULT 0,
+  price_credits   INTEGER NOT NULL DEFAULT 0,
+  period_days     INTEGER NOT NULL DEFAULT 30,
+  perks           JSONB NOT NULL DEFAULT '[]'::jsonb,
+  badge_label     TEXT,
+  color           TEXT DEFAULT '#e67e22',
+  is_active       BOOLEAN DEFAULT true,
+  is_popular      BOOLEAN DEFAULT false,
+  display_order   INTEGER DEFAULT 0,
+  created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- 2. Подписки пользователей
+CREATE TABLE IF NOT EXISTS public.user_subscriptions (
+  id              TEXT PRIMARY KEY,
+  user_id         UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  cmdr_name       TEXT,
+  plan_id         TEXT REFERENCES public.billing_plans(id) ON DELETE SET NULL,
+  status          TEXT NOT NULL DEFAULT 'active', -- 'active', 'trial', 'canceled', 'expired'
+  started_at      TIMESTAMPTZ DEFAULT now(),
+  expires_at      TIMESTAMPTZ,
+  auto_renew      BOOLEAN DEFAULT true,
+  payment_method  TEXT DEFAULT 'card',
+  notes           TEXT,
+  created_at      TIMESTAMPTZ DEFAULT now(),
+  updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON public.user_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON public.user_subscriptions(status);
+
+-- 3. Предметы премиум-магазина (украшения UI)
+CREATE TABLE IF NOT EXISTS public.shop_items (
+  id                      TEXT PRIMARY KEY,
+  category                TEXT NOT NULL, -- 'frame', 'badge', 'skin', 'glow', 'title'
+  title                   TEXT NOT NULL,
+  title_en                TEXT,
+  description             TEXT,
+  description_en          TEXT,
+  price_credits           INTEGER NOT NULL DEFAULT 0,
+  price_rub               INTEGER NOT NULL DEFAULT 0,
+  rarity                  TEXT NOT NULL DEFAULT 'common', -- 'common', 'rare', 'epic', 'legendary'
+  requires_subscription   TEXT, -- null or plan_id (e.g. 'elite', 'admiral')
+  subscriber_discount_pct INTEGER DEFAULT 0,
+  preview_data            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_active               BOOLEAN DEFAULT true,
+  is_featured             BOOLEAN DEFAULT false,
+  sales_count             INTEGER DEFAULT 0,
+  created_at              TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shop_items_category ON public.shop_items(category);
+CREATE INDEX IF NOT EXISTS idx_shop_items_active ON public.shop_items(is_active);
+
+-- 4. Инвентарь покупок пользователя
+CREATE TABLE IF NOT EXISTS public.user_inventory (
+  id                  TEXT PRIMARY KEY,
+  user_id             UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+  item_id             TEXT REFERENCES public.shop_items(id) ON DELETE CASCADE,
+  purchased_at        TIMESTAMPTZ DEFAULT now(),
+  price_paid_credits  INTEGER DEFAULT 0,
+  price_paid_rub      NUMERIC(10,2) DEFAULT 0,
+  transaction_id      TEXT,
+  is_equipped         BOOLEAN DEFAULT false,
+  UNIQUE(user_id, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_inventory_user_id ON public.user_inventory(user_id);
+
+-- 5. Экипированные украшения интерфейса
+CREATE TABLE IF NOT EXISTS public.user_cosmetics_equipped (
+  user_id         UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  frame_id        TEXT REFERENCES public.shop_items(id) ON DELETE SET NULL,
+  badge_id        TEXT REFERENCES public.shop_items(id) ON DELETE SET NULL,
+  skin_id         TEXT REFERENCES public.shop_items(id) ON DELETE SET NULL,
+  glow_id         TEXT REFERENCES public.shop_items(id) ON DELETE SET NULL,
+  title_id        TEXT REFERENCES public.shop_items(id) ON DELETE SET NULL,
+  updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- 6. Финансовые и внутриигровые транзакции
+CREATE TABLE IF NOT EXISTS public.billing_transactions (
+  id              TEXT PRIMARY KEY,
+  user_id         UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  cmdr_name       TEXT,
+  type            TEXT NOT NULL, -- 'subscription', 'shop_purchase', 'credit_topup', 'refund', 'admin_grant'
+  item_or_plan_id TEXT,
+  item_title      TEXT,
+  amount_rub      NUMERIC(10,2) DEFAULT 0,
+  amount_credits  INTEGER DEFAULT 0,
+  payment_method  TEXT DEFAULT 'card', -- 'card', 'sbp', 'credits', 'admin', 'crypto'
+  status          TEXT NOT NULL DEFAULT 'completed', -- 'completed', 'pending', 'refunded', 'failed'
+  metadata        JSONB DEFAULT '{}'::jsonb,
+  created_at      TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_billing_tx_user_id ON public.billing_transactions(user_id);
+CREATE INDEX IF NOT EXISTS idx_billing_tx_type ON public.billing_transactions(type);
+CREATE INDEX IF NOT EXISTS idx_billing_tx_created ON public.billing_transactions(created_at DESC);
+
+-- 7. Баланс очков/кредитов пользователя
+CREATE TABLE IF NOT EXISTS public.user_balances (
+  user_id               UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  credits               INTEGER NOT NULL DEFAULT 1500,
+  total_spent_rub       NUMERIC(10,2) DEFAULT 0,
+  total_spent_credits   INTEGER DEFAULT 0,
+  updated_at            TIMESTAMPTZ DEFAULT now()
+);
+
+-- RLS Policies
+ALTER TABLE public.billing_plans ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.shop_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_inventory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_cosmetics_equipped ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.billing_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_balances ENABLE ROW LEVEL SECURITY;
+
+-- Plans & shop items can be read by everyone
+CREATE POLICY "billing_plans_read" ON public.billing_plans FOR SELECT USING (true);
+CREATE POLICY "shop_items_read" ON public.shop_items FOR SELECT USING (true);
+
+-- Subscriptions: users can read their own, admins can read/write all
+CREATE POLICY "user_subscriptions_read_own" ON public.user_subscriptions FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "user_inventory_read_own" ON public.user_inventory FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "user_cosmetics_read_public" ON public.user_cosmetics_equipped FOR SELECT USING (true);
+CREATE POLICY "user_balances_read_own" ON public.user_balances FOR SELECT USING (auth.uid() = user_id);
+CREATE POLICY "billing_transactions_read_own" ON public.billing_transactions FOR SELECT USING (auth.uid() = user_id);
+
+-- End of migration
 
 -- ┌────────────────────────────────────────────────────────────────┐
--- │ MIGRATION: 20260928000000_colonisation_events_source_hash.sql   │
+-- │ MIGRATION: 20260921120000_galaxy_systems.sql                   │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ════════════════════════════════════════════════════════════════
+-- Migration: Spansh Galaxy Systems
+-- Источник данных: полный ночной дамп https://spansh.co.uk/dumps
+--   (systems.json.gz — «Just system details (no bodies or stations)»,
+--    формат BriefDumpSystem: id64, name, mainStar, coords{x,y,z},
+--    needsPermit, updateTime — одна система на строку).
+-- Загрузка: `npm run spansh:import` (scripts/import-spansh-systems.mjs).
+-- ════════════════════════════════════════════════════════════════
+
+-- ─── Все известные системы галактики (координаты — в той же системе,
+--     что и на сайте: Sol = (0,0,0), SgrA = (25.21875, -20.90625, 25899.96875) ───
+CREATE TABLE IF NOT EXISTS galaxy_systems (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  id64 TEXT NOT NULL,                          -- Spansh ID64 (до 2^64 → строка)
+  name TEXT NOT NULL,                          -- каноническое имя из Spansh
+  name_lc TEXT NOT NULL,                       -- нормализованный ключ поиска (lower, сжатие пробелов)
+  x DOUBLE PRECISION NOT NULL,
+  y DOUBLE PRECISION NOT NULL,
+  z DOUBLE PRECISION NOT NULL,
+  main_star TEXT,                              -- сырой класс главной звезды, напр. 'G (White-Yellow) Star'
+  star_type TEXT,                              -- нормализованный класс: o|b|a|f|g|k|m|brown_dwarf|neutron|black_hole|white_dwarf|wolf_rayet|herbig_ae_be|t_tauri|carbon|unknown
+  star_giant_class TEXT,                       -- dwarf|giant|supergiant (для обычных классов), NULL для экзотических
+  needs_permit BOOLEAN,
+  distance_from_sols DOUBLE PRECISION,         -- ly, Sol = (0,0,0)
+  distance_from_sgra DOUBLE PRECISION,         -- ly до Sagittarius A*
+  updated_at TIMESTAMPTZ,                      -- updateTime из дампа (последнее обновление системы)
+  imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Uniqueness: дамп не содержит дублей, но повторный импорт идёт как upsert
+CREATE UNIQUE INDEX IF NOT EXISTS uq_galaxy_systems_id64 ON galaxy_systems(id64);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_galaxy_systems_name_lc ON galaxy_systems(name_lc);
+
+-- Cube-запросы атласа (x/y/z BETWEEN …): три b-tree + bitmap AND
+CREATE INDEX IF NOT EXISTS idx_galaxy_systems_x ON galaxy_systems(x);
+CREATE INDEX IF NOT EXISTS idx_galaxy_systems_y ON galaxy_systems(y);
+CREATE INDEX IF NOT EXISTS idx_galaxy_systems_z ON galaxy_systems(z);
+
+-- Поиск по типу звезды (атлас: нейтроны/чёрные дыры/карлики и т.п.)
+CREATE INDEX IF NOT EXISTS idx_galaxy_systems_star_type ON galaxy_systems(star_type);
+CREATE INDEX IF NOT EXISTS idx_galaxy_systems_star_giant_class ON galaxy_systems(star_giant_class);
+
+-- ─── Метаданные последней загрузки (для «DB ready»-гated логики и UI) ───
+CREATE TABLE IF NOT EXISTS galaxy_systems_meta (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ─── RLS: открытое чтение (справочные данные), запись только через service role ───
+ALTER TABLE galaxy_systems ENABLE ROW LEVEL SECURITY;
+ALTER TABLE galaxy_systems_meta ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'galaxy_systems' AND policyname = 'galaxy_systems_public'
+  ) THEN
+    CREATE POLICY galaxy_systems_public ON galaxy_systems FOR SELECT USING (true);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies WHERE tablename = 'galaxy_systems_meta' AND policyname = 'galaxy_systems_meta_public'
+  ) THEN
+    CREATE POLICY galaxy_systems_meta_public ON galaxy_systems_meta FOR SELECT USING (true);
+  END IF;
+END $$;
+
+COMMENT ON TABLE galaxy_systems IS 'Все известные системы Elite Dangerous (ночной дамп Spansh, scripts/import-spansh-systems.mjs)';
+COMMENT ON TABLE galaxy_systems_meta IS 'Метаданные последней загрузки дампа Spansh (key=''stats'')';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260922000000_billing_real_data_payments.sql       │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ============================================================================
+-- 20260922000000_billing_real_data_payments.sql
+-- ED Ring Colony — Billing v2: real data storage, product settings,
+-- payment providers & payment intents (webhook-driven fulfilment)
+-- ============================================================================
+
+-- 1. Extra columns for product configuration
+ALTER TABLE public.shop_items
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS display_order INTEGER DEFAULT 0;
+
+ALTER TABLE public.billing_plans
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS discount_pct INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE public.user_subscriptions
+  ADD COLUMN IF NOT EXISTS provider_id TEXT,
+  ADD COLUMN IF NOT EXISTS external_id TEXT;
+
+ALTER TABLE public.billing_transactions
+  ADD COLUMN IF NOT EXISTS provider_id TEXT,
+  ADD COLUMN IF NOT EXISTS external_id TEXT,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now();
+
+ALTER TABLE public.user_balances
+  ALTER COLUMN credits SET DEFAULT 0;
+
+-- 2. Payment providers (admin-configured integrations)
+CREATE TABLE IF NOT EXISTS public.payment_providers (
+  id            TEXT PRIMARY KEY,                -- 'yookassa', 'stripe', 'robokassa', 'cryptobot', 'manual'
+  name          TEXT NOT NULL,
+  is_enabled    BOOLEAN NOT NULL DEFAULT false,
+  test_mode     BOOLEAN NOT NULL DEFAULT true,
+  config        JSONB NOT NULL DEFAULT '{}'::jsonb,  -- server-only secrets & settings
+  methods       TEXT[] NOT NULL DEFAULT '{}',        -- supported payment methods ('card','sbp','crypto')
+  display_order INTEGER NOT NULL DEFAULT 0,
+  last_check_at TIMESTAMPTZ,
+  last_check_ok BOOLEAN,
+  last_check_msg TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  updated_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 3. Payment intents — one per checkout; fulfilled via webhook/return
+CREATE TABLE IF NOT EXISTS public.payment_intents (
+  id              TEXT PRIMARY KEY,
+  user_id         UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  cmdr_name       TEXT,
+  provider_id     TEXT REFERENCES public.payment_providers(id) ON DELETE SET NULL,
+  external_id     TEXT,                         -- id in the payment system
+  purpose         TEXT NOT NULL,                -- 'credit_topup' | 'subscription' | 'shop_purchase'
+  target_id       TEXT,                         -- plan_id / item_id / topup pack id
+  amount_rub      NUMERIC(10,2) NOT NULL DEFAULT 0,
+  amount_credits  INTEGER NOT NULL DEFAULT 0,
+  currency        TEXT NOT NULL DEFAULT 'RUB',
+  status          TEXT NOT NULL DEFAULT 'pending', -- 'pending','paid','failed','canceled','expired'
+  payment_url     TEXT,
+  transaction_id  TEXT,
+  metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at      TIMESTAMPTZ DEFAULT now(),
+  updated_at      TIMESTAMPTZ DEFAULT now(),
+  paid_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_intents_user ON public.payment_intents(user_id);
+CREATE INDEX IF NOT EXISTS idx_payment_intents_external ON public.payment_intents(provider_id, external_id);
+CREATE INDEX IF NOT EXISTS idx_payment_intents_status ON public.payment_intents(status);
+
+-- 4. Webhook event log (idempotency & audit)
+CREATE TABLE IF NOT EXISTS public.payment_webhook_events (
+  id            TEXT PRIMARY KEY,
+  provider_id   TEXT,
+  event_type    TEXT,
+  external_id   TEXT,
+  payload       JSONB,
+  processed     BOOLEAN DEFAULT false,
+  error         TEXT,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 4b. Key/value settings (welcome credits, credit packs, etc.)
+CREATE TABLE IF NOT EXISTS public.billing_settings (
+  id          TEXT PRIMARY KEY,
+  value       JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at  TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE public.billing_settings ENABLE ROW LEVEL SECURITY;
+
+-- 5. RLS
+ALTER TABLE public.payment_providers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.payment_webhook_events ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "payment_intents_read_own" ON public.payment_intents;
+CREATE POLICY "payment_intents_read_own" ON public.payment_intents FOR SELECT USING (auth.uid() = user_id);
+-- providers / webhook events: service role only (no policies => no anon access)
+
+-- 6. Seed default providers (disabled until configured by admin)
+INSERT INTO public.payment_providers (id, name, is_enabled, test_mode, methods, display_order) VALUES
+  ('yookassa',  'ЮKassa (YooMoney)',      false, true, ARRAY['card','sbp'],   1),
+  ('robokassa', 'Robokassa',              false, true, ARRAY['card','sbp'],   2),
+  ('stripe',    'Stripe',                 false, true, ARRAY['card'],         3),
+  ('cryptobot', 'Crypto Pay (CryptoBot)', false, true, ARRAY['crypto'],       4),
+  ('manual',    'Ручное подтверждение',   false, false, ARRAY['manual'],      9)
+ON CONFLICT (id) DO NOTHING;
+
+-- 7. Seed default plans
+INSERT INTO public.billing_plans (id, name, name_en, description, description_en, price_rub, price_credits, period_days, perks, badge_label, color, is_active, is_popular, display_order, discount_pct) VALUES
+  ('pioneer', 'Пионер Кольца', 'Ring Pioneer',
+   'Базовый премиальный статус для исследователей и строителей колонии.',
+   'Standard premium tier for Ring explorers and builders.',
+   290, 2500, 30,
+   '["Особый позывной и тактический префикс [PIO]","Приоритетная синхронизация логов CAPI и журнала","Скидка 25% на косметические улучшения в магазине","Эксклюзивный знак отличия Пионера в профиле","Доступ к расширенной телеметрии экспедиции"]'::jsonb,
+   'PIONEER', '#3498db', true, false, 1, 25),
+  ('elite', 'Элита Колонии', 'Colonia Elite',
+   'Расширенный статус с кастомными темами интерфейса и голографическими рамками.',
+   'Advanced tier with custom HUD interface themes and holographic avatar frames.',
+   590, 5000, 30,
+   '["Все привилегии уровня «Пионер Кольца»","Голографическая неоновая рамка аватара на выбор","Кастомные HUD-темы оформления интерфейса сайта","Скидка 50% на все товары Премиум-магазина","Приоритет в голосовых каналах эскадрилий","Нагрудный знак ветерана Элиты Колонии","Увеличенный лимит избранных систем в Атласе до 100"]'::jsonb,
+   'ELITE', '#e67e22', true, true, 2, 50),
+  ('admiral', 'Флотоводец VIP', 'Fleet Admiral VIP',
+   'Высший ранг покровителя проекта с полным доступом ко всем украшениям и VIP-каналам.',
+   'Highest benefactor tier with full access to all cosmetics and VIP priority.',
+   1190, 10000, 30,
+   '["Полный безлимитный доступ ко всем модулям платформы","Анимированные эффекты хроматического свечения ника","Все легендарные голографические рамки аватаров","Скидка 75% в магазине косметики + доступ к VIP-эксклюзивам","VIP-статус в технической поддержке с ускоренным ответом","Именная золотая запись в реестре Основателей Кольца","Личный золотой штандарт Флотоводца с орлиными крыльями","Возможность закреплять сообщения в общем чате"]'::jsonb,
+   'VIP ADMIRAL', '#9b59b6', true, false, 3, 75)
+ON CONFLICT (id) DO NOTHING;
+
+-- 8. Seed default shop catalogue (the app also seeds these on first run)
+INSERT INTO public.shop_items (id, category, title, title_en, description, description_en, price_credits, price_rub, rarity, requires_subscription, subscriber_discount_pct, preview_data, is_active, is_featured, display_order) VALUES
+  ('frame-singularity','frame','Квантовая Сингулярность','Quantum Singularity','Вращающееся гравитационное кольцо аккреционного диска с фиолетовым свечением искривленного пространства.','Rotating gravitational accretion disk with violet curved space glow.',3500,450,'legendary',NULL,35,'{"color":"#a855f7","accentColor":"#3b82f6","glowColor":"rgba(168, 85, 247, 0.65)","frameStyle":"singularity","borderWidth":3}'::jsonb,true,true,1),
+  ('frame-vanguard','frame','Авангард Колонии','Colonia Vanguard','Тактическая бронированная рамка с угловыми оптическими визирами и янтарной телеметрией.','Tactical armored frame with corner optical brackets and amber telemetry.',2200,290,'epic',NULL,25,'{"color":"#e67e22","accentColor":"#f39c12","glowColor":"rgba(230, 126, 34, 0.55)","frameStyle":"vanguard","borderWidth":2}'::jsonb,true,false,2),
+  ('frame-subzero','frame','Ледяной Импульс','Sub-Zero Pulse','Криогенный гексагональный силовой щит с бегущей волной неонового циана.','Cryogenic hexagonal power shield with running neon cyan wave.',1500,190,'rare',NULL,20,'{"color":"#06b6d4","accentColor":"#38bdf8","glowColor":"rgba(6, 182, 212, 0.6)","frameStyle":"subzero","borderWidth":2}'::jsonb,true,false,3),
+  ('frame-solar','frame','Вспышка Сверхновой','Solar Flare','Плазменная корона звезды O-класса с пульсирующими выбросами солнечного протуберанца.','O-class star plasma corona with pulsing solar prominences.',2400,320,'epic','elite',50,'{"color":"#f97316","accentColor":"#eab308","glowColor":"rgba(249, 115, 22, 0.7)","frameStyle":"solar","borderWidth":3}'::jsonb,true,true,4),
+  ('frame-stealth','frame','Призрак Пустоты','Void Phantom','Матовая стелс-рамка с красными лазерными прицельными маркерами.','Matte stealth frame with red laser targeting markers.',1200,150,'rare',NULL,20,'{"color":"#ef4444","accentColor":"#991b1b","glowColor":"rgba(239, 68, 68, 0.5)","frameStyle":"stealth","borderWidth":2}'::jsonb,true,false,5),
+  ('badge-founder','badge','Орден Основателя Кольца','Ring Founder Order','Золотой знак с орлиными крыльями для первых покровителей проекта.','Golden badge with eagle wings for the first project benefactors.',2800,350,'legendary','admiral',75,'{"color":"#fbbf24","icon":"crown"}'::jsonb,true,true,10),
+  ('badge-explorer','badge','Звездный Первопроходец','Star Trailblazer','Компас исследователя дальнего космоса в неоново-голубом обрамлении.','Deep-space explorer compass in neon-blue trim.',900,120,'rare',NULL,20,'{"color":"#38bdf8","icon":"star"}'::jsonb,true,false,11),
+  ('badge-titan','badge','Покоритель Титанов','Titan Breaker','Изумрудный клинок — знак участника операций против Таргоидских Титанов.','Emerald blade — mark of anti-Thargoid Titan operations.',1600,210,'epic',NULL,25,'{"color":"#10b981","icon":"sword"}'::jsonb,true,false,12),
+  ('badge-carrier','badge','Владелец Флагмана','Fleet Carrier Owner','Синий якорь для командиров, владеющих собственным флотоносцем.','Blue anchor for commanders who own a Fleet Carrier.',1400,180,'epic',NULL,25,'{"color":"#60a5fa","icon":"anchor"}'::jsonb,true,false,13),
+  ('badge-mining','badge','Мастер Глубинного Бурения','Deep Core Mining Master','Салатовый кристалл — знак опытного добытчика.','Lime crystal — mark of an experienced miner.',600,80,'common',NULL,15,'{"color":"#a3e635","icon":"diamond"}'::jsonb,true,false,14),
+  ('skin-amber','skin','Янтарь Колонии','Colonia Amber','Классическая тёплая HUD-тема с янтарными акцентами Elite Dangerous.','Classic warm HUD theme with Elite Dangerous amber accents.',1800,240,'rare',NULL,25,'{"color":"#f59e0b","accentColor":"#fbbf24","hudSkinClass":"skin-colonia-amber"}'::jsonb,true,false,20),
+  ('skin-cyber','skin','Киберпанк 3309','Cyberpunk 3309','Высококонтрастная футуристичная тема с кибер-цианом и пульсирующей неоновой маджентой.','High-contrast futuristic HUD skin with cyber cyan and pulsing neon magenta.',2600,340,'epic','elite',50,'{"color":"#ec4899","accentColor":"#06b6d4","hudSkinClass":"skin-cyberpunk-3309"}'::jsonb,true,true,21),
+  ('skin-void','skin','Навигатор Пустоты','Void Navigator','Глубокая сине-фиолетовая тема дальних экспедиций.','Deep blue-violet theme for long-range expeditions.',2000,260,'rare',NULL,25,'{"color":"#3b82f6","accentColor":"#8b5cf6","hudSkinClass":"skin-void-navigator"}'::jsonb,true,false,22),
+  ('skin-imperial','skin','Имперское Золото','Imperial Gold','Роскошная тема в цветах Империи Ахенара.','Luxurious theme in the colours of the Achenar Empire.',3200,420,'legendary','admiral',75,'{"color":"#eab308","accentColor":"#f5f5f4","hudSkinClass":"skin-imperial-gold"}'::jsonb,true,false,23),
+  ('skin-emerald','skin','Изумрудный Аванпост','Emerald Outpost','Спокойная зелёная тема терраформированных миров.','Calm green theme of terraformed worlds.',1500,200,'common',NULL,15,'{"color":"#10b981","accentColor":"#34d399","hudSkinClass":"skin-emerald-outpost"}'::jsonb,true,false,24),
+  ('glow-hyperspace','glow','Гиперпространственный След','Hyperspace Trail','Анимированный хроматический градиент позывного.','Animated chromatic gradient callsign.',2900,380,'legendary','admiral',75,'{"color":"#8b5cf6","gradient":"linear-gradient(90deg, #ec4899, #8b5cf6, #06b6d4, #ec4899)"}'::jsonb,true,true,30),
+  ('glow-neutron','glow','Нейтронное Сияние','Neutron Glow','Холодное бело-голубое свечение нейтронной звезды.','Cold white-blue neutron star glow.',1700,220,'epic',NULL,25,'{"color":"#38bdf8","gradient":"linear-gradient(90deg, #38bdf8, #e0f2fe, #38bdf8)"}'::jsonb,true,false,31),
+  ('glow-solar','glow','Солнечная Корона','Solar Corona','Тёплое золотое свечение звезды класса G.','Warm golden G-class star glow.',1100,150,'rare',NULL,20,'{"color":"#f59e0b","gradient":"linear-gradient(90deg, #f59e0b, #fef08a, #f59e0b)"}'::jsonb,true,false,32),
+  ('glow-voidpulse','glow','Пульс Пустоты','Void Pulse','Глубокое фиолетовое пульсирующее свечение.','Deep violet pulsing glow.',1300,170,'rare',NULL,20,'{"color":"#9333ea","gradient":"linear-gradient(90deg, #9333ea, #e9d5ff, #9333ea)"}'::jsonb,true,false,33),
+  ('title-architect','title','Архитектор Нового Рубежа','Architect of the New Frontier','Почётный титул строителя колоний.','Honorary colony builder title.',1800,230,'epic',NULL,25,'{"color":"#f97316","subTitle":"ARCHITECT OF THE NEW FRONTIER"}'::jsonb,true,false,40),
+  ('title-trailblazer','title','Первопроходец Бездны','Void Trailblazer','Титул исследователя неизведанных секторов.','Explorer of uncharted sectors title.',1400,180,'rare',NULL,20,'{"color":"#a855f7","subTitle":"VOID TRAILBLAZER"}'::jsonb,true,false,41),
+  ('title-jaques','title','Легенда Жак-Стейшн','Jaques Station Legend','Титул в честь легендарной станции Колонии.','Title honouring the legendary Colonia station.',2200,290,'legendary','elite',50,'{"color":"#38bdf8","subTitle":"JAQUES STATION LEGEND"}'::jsonb,true,true,42),
+  ('title-marshal','title','Маршал Звездного Пути','Starway Marshal','Титул координатора маршрутов экспедиции.','Expedition route coordinator title.',1600,210,'epic',NULL,25,'{"color":"#eab308","subTitle":"STARWAY MARSHAL"}'::jsonb,true,false,43)
+ON CONFLICT (id) DO NOTHING;
+
+-- 9. Public read model for cosmetics (joined preview data for rendering across the site)
+CREATE OR REPLACE VIEW public.user_cosmetics_public AS
+SELECT
+  e.user_id,
+  p.cmdr_name,
+  e.frame_id, e.badge_id, e.skin_id, e.glow_id, e.title_id,
+  s.plan_id AS subscription_plan_id,
+  bp.badge_label AS subscription_badge
+FROM public.user_cosmetics_equipped e
+LEFT JOIN public.profiles p ON p.id = e.user_id
+LEFT JOIN LATERAL (
+  SELECT plan_id FROM public.user_subscriptions us
+  WHERE us.user_id = e.user_id AND us.status = 'active'
+    AND (us.expires_at IS NULL OR us.expires_at > now())
+  ORDER BY us.expires_at DESC NULLS LAST LIMIT 1
+) s ON true
+LEFT JOIN public.billing_plans bp ON bp.id = s.plan_id;
+
+GRANT SELECT ON public.user_cosmetics_public TO anon, authenticated;
+
+-- End of migration
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260922010000_tbank_provider.sql                   │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- T-Bank hosted one-stage payments. No credentials in migrations.
+INSERT INTO public.payment_providers (id, name, is_enabled, test_mode, methods, display_order)
+VALUES ('tbank', 'Т-Банк', false, true, ARRAY['card'], 5)
+ON CONFLICT (id) DO NOTHING;
+
+COMMENT ON COLUMN public.payment_intents.status IS
+  'pending, processing (atomically claimed; stalled fulfilment requires reconciliation), paid, failed, canceled, expired';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260923000000_vk_identities.sql                    │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- VK ID (id.vk.com) вход и привязка. Self-hosted GoTrue не имеет провайдера VK,
+-- поэтому соответствие «VK user_id ↔ auth.users.id» хранится здесь.
+-- Пишет только service_role (сервер сайта); пользователь видит лишь свою строку.
+CREATE TABLE IF NOT EXISTS public.vk_identities (
+  user_id      UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  vk_user_id   TEXT NOT NULL UNIQUE,
+  email        TEXT,
+  display_name TEXT,
+  avatar_url   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.vk_identities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS vk_identities_select_own ON public.vk_identities;
+CREATE POLICY vk_identities_select_own ON public.vk_identities
+  FOR SELECT USING (auth.uid() = user_id);
+-- INSERT/UPDATE/DELETE: политик нет → только service_role.
+
+CREATE INDEX IF NOT EXISTS idx_vk_identities_vk_user_id ON public.vk_identities(vk_user_id);
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260924000000_galaxy_systems_finish.sql            │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Finish the Spansh galaxy catalog: nearest-in-cube lookups (atlas + route
+-- finder), a trigram index for name autocomplete, and a public bucket the
+-- import uploads the map point cloud into (the web image does not contain it).
+
+-- ─── Nearest exotic/giant stars inside an axis-aligned cube ───
+CREATE OR REPLACE FUNCTION public.galaxy_star_candidates(
+  cx double precision,
+  cy double precision,
+  cz double precision,
+  half double precision,
+  star_types text[],
+  giant_classes text[],
+  lim integer
+)
+RETURNS SETOF public.galaxy_systems
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT *
+  FROM public.galaxy_systems
+  WHERE x BETWEEN cx - half AND cx + half
+    AND y BETWEEN cy - half AND cy + half
+    AND z BETWEEN cz - half AND cz + half
+    AND (
+      (cardinality(star_types) > 0 AND star_type = ANY(star_types))
+      OR (cardinality(giant_classes) > 0 AND star_giant_class = ANY(giant_classes))
+    )
+  ORDER BY ((x - cx) ^ 2 + (y - cy) ^ 2 + (z - cz) ^ 2)
+  LIMIT GREATEST(1, LEAST(COALESCE(lim, 2000), 2000));
+$$;
+
+-- ─── Any systems inside a cube, nearest first (route finder) ───
+CREATE OR REPLACE FUNCTION public.galaxy_systems_near(
+  cx double precision,
+  cy double precision,
+  cz double precision,
+  half double precision,
+  lim integer
+)
+RETURNS TABLE(name text, x double precision, y double precision, z double precision)
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT g.name, g.x, g.y, g.z
+  FROM public.galaxy_systems g
+  WHERE g.x BETWEEN cx - half AND cx + half
+    AND g.y BETWEEN cy - half AND cy + half
+    AND g.z BETWEEN cz - half AND cz + half
+  ORDER BY ((g.x - cx) ^ 2 + (g.y - cy) ^ 2 + (g.z - cz) ^ 2)
+  LIMIT GREATEST(1, LEAST(COALESCE(lim, 800), 2000));
+$$;
+
+GRANT EXECUTE ON FUNCTION public.galaxy_star_candidates(
+  double precision, double precision, double precision, double precision, text[], text[], integer
+) TO anon, authenticated, service_role;
+
+GRANT EXECUTE ON FUNCTION public.galaxy_systems_near(
+  double precision, double precision, double precision, double precision, integer
+) TO anon, authenticated, service_role;
+
+-- Substring autocomplete. Prefix search already uses the name_lc btree.
+-- pg_trgm is shipped with Supabase; skip quietly if this Postgres lacks it.
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_galaxy_systems_name_trgm ON public.galaxy_systems USING gin (name_lc gin_trgm_ops)';
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'galaxy name trigram index skipped: %', SQLERRM;
+END $$;
+
+-- Map point cloud (~36 MB). The web image does not contain the file, so the
+-- importer uploads it here. Service-role writes bypass RLS; the policy only
+-- covers a direct public read. Wrapped so a DB without the storage schema
+-- still gets the lookup functions above.
+DO $$
+BEGIN
+  INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+  VALUES (
+    'galaxy-data',
+    'galaxy-data',
+    true,
+    52428800,
+    ARRAY['application/octet-stream']::text[]
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    public = true,
+    file_size_limit = GREATEST(storage.buckets.file_size_limit, EXCLUDED.file_size_limit);
+
+  DROP POLICY IF EXISTS galaxy_data_select ON storage.objects;
+  CREATE POLICY galaxy_data_select ON storage.objects
+    FOR SELECT TO anon, authenticated
+    USING (bucket_id = 'galaxy-data');
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'galaxy-data bucket skipped: %', SQLERRM;
+END $$;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260924010000_reconcile_galnet_news_structure.sql  │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Reconcile public.galnet_news with the exported table structure.
+--
+-- The CSV export contains the following columns:
+--   id, nid, title, body, image, published_at, fetched_at, created_at,
+--   title_<language>, body_<language>, translated_at, translation_status,
+--   guid, slug, source_lang
+--
+-- This migration is intentionally idempotent so it can be applied to an
+-- existing Supabase project regardless of which earlier Galnet migrations
+-- have already been run.
+
+BEGIN;
+
+-- Core article fields. Existing installations normally already have these
+-- from 20260830152500_galnet_news.sql.
+ALTER TABLE public.galnet_news
+  ADD COLUMN IF NOT EXISTS nid TEXT,
+  ADD COLUMN IF NOT EXISTS title TEXT,
+  ADD COLUMN IF NOT EXISTS body TEXT,
+  ADD COLUMN IF NOT EXISTS image TEXT,
+  ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS fetched_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;
+
+-- Translation metadata.
+ALTER TABLE public.galnet_news
+  ADD COLUMN IF NOT EXISTS translated_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS translation_status TEXT,
+  ADD COLUMN IF NOT EXISTS guid TEXT,
+  ADD COLUMN IF NOT EXISTS slug TEXT,
+  ADD COLUMN IF NOT EXISTS source_lang TEXT;
+
+-- Localized title and body fields represented by the export.
+ALTER TABLE public.galnet_news
+  ADD COLUMN IF NOT EXISTS title_ru TEXT,
+  ADD COLUMN IF NOT EXISTS title_en TEXT,
+  ADD COLUMN IF NOT EXISTS title_de TEXT,
+  ADD COLUMN IF NOT EXISTS title_it TEXT,
+  ADD COLUMN IF NOT EXISTS title_ko TEXT,
+  ADD COLUMN IF NOT EXISTS title_zh TEXT,
+  ADD COLUMN IF NOT EXISTS title_ja TEXT,
+  ADD COLUMN IF NOT EXISTS body_ru TEXT,
+  ADD COLUMN IF NOT EXISTS body_en TEXT,
+  ADD COLUMN IF NOT EXISTS body_de TEXT,
+  ADD COLUMN IF NOT EXISTS body_it TEXT,
+  ADD COLUMN IF NOT EXISTS body_ko TEXT,
+  ADD COLUMN IF NOT EXISTS body_zh TEXT,
+  ADD COLUMN IF NOT EXISTS body_ja TEXT;
+
+-- Preserve the existing English source content and make the defaults apply
+-- to newly inserted rows. NULL checks keep this safe for existing data.
+UPDATE public.galnet_news
+SET title_en = title
+WHERE title_en IS NULL AND title IS NOT NULL;
+
+UPDATE public.galnet_news
+SET body_en = body
+WHERE body_en IS NULL AND body IS NOT NULL;
+
+UPDATE public.galnet_news
+SET source_lang = 'en'
+WHERE source_lang IS NULL;
+
+UPDATE public.galnet_news
+SET translation_status = 'pending'
+WHERE translation_status IS NULL;
+
+ALTER TABLE public.galnet_news
+  ALTER COLUMN source_lang SET DEFAULT 'en',
+  ALTER COLUMN translation_status SET DEFAULT 'pending';
+
+-- Keep the identifiers used by the sync and translation jobs efficient and
+-- unique when they are available. Partial indexes allow legacy NULL values.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_galnet_news_nid
+  ON public.galnet_news (nid)
+  WHERE nid IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_galnet_news_guid
+  ON public.galnet_news (guid)
+  WHERE guid IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_galnet_news_slug
+  ON public.galnet_news (slug)
+  WHERE slug IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_galnet_news_published_at
+  ON public.galnet_news (published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_galnet_news_translation_status
+  ON public.galnet_news (translation_status);
+
+COMMIT;
+
+-- Expected final columns:
+-- id, nid, title, body, image, published_at, fetched_at, created_at,
+-- title_ru, title_en, title_de, title_it, title_ko, title_zh, title_ja,
+-- body_ru, body_en, body_de, body_it, body_ko, body_zh, body_ja,
+-- translated_at, translation_status, guid, slug, source_lang
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260925000000_galaxy_systems_scale.sql             │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ════════════════════════════════════════════════════════════════
+-- Migration: galaxy_systems на масштабе всей галактики
+--
+-- Каталог — это не 1.3M строк. Spansh `systems.json.gz` (5.9 GiB) содержит все
+-- исследованные системы: EDAstro считает 203 642 699 систем (99.9M visited +
+-- 103.8M route-only). Порядок величины — 10⁸ строк, и прежняя схема для него
+-- не годится:
+--
+--   · три b-tree по x/y/z + bitmap AND на куб — это сотни тысяч обращений к
+--     странице на каждый запрос Атласа, а сортировка по расстоянию всё равно
+--     требует прочитать весь куб;
+--   · b-tree по star_type (16 значений) и star_giant_class (3 значения)
+--     планировщик не использует никогда: селективность слишком мала;
+--   · autovacuum по умолчанию ждёт 20% мёртвых строк — на 2×10⁸ это 4×10⁷
+--     строк до первой уборки.
+--
+-- Что делает миграция:
+--   1. GiST-индекс по cube(ARRAY[x,y,z]) — куб-фильтр и KNN-сортировка
+--      «ближайшие сначала» одним индексным сканированием;
+--   2. функции Атласа переписаны на этот индекс (`&&` + `<->`);
+--   3. пять устаревших индексов удаляются (только когда новый построен);
+--   4. fillfactor/autovacuum настраиваются под большую таблицу.
+--
+-- На большой таблице GiST создаётся БЕЗ блокировки записи отдельным скриптом
+-- supabase/maintenance/galaxy_systems_spatial_index.sql — миграция в этом
+-- случае только заменит функции и напишет NOTICE.
+--
+-- Проверка после применения (см. SPANSH-IMPORT.md → «Масштаб»):
+--   SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid))
+--   FROM pg_stat_user_indexes WHERE relname = 'galaxy_systems';
+-- ════════════════════════════════════════════════════════════════
+
+DO $$
+DECLARE
+  spatial_ready boolean;
+  total_rows bigint;
+BEGIN
+  -- cube входит в contrib и есть в образе Supabase; если расширения нет,
+  -- блок откатится целиком и схема останется прежней (функции включительно).
+  CREATE EXTENSION IF NOT EXISTS cube;
+
+  SELECT COALESCE(c.reltuples, 0)::bigint INTO total_rows
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public' AND c.relname = 'galaxy_systems';
+
+  SELECT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND tablename = 'galaxy_systems'
+      AND indexname = 'idx_galaxy_systems_coord'
+  ) INTO spatial_ready;
+
+  IF NOT spatial_ready AND total_rows < 5000000 THEN
+    -- Пустая/небольшая таблица (свежая установка): строим сразу.
+    EXECUTE 'CREATE INDEX idx_galaxy_systems_coord ON public.galaxy_systems USING gist (cube(ARRAY[x, y, z]))';
+    spatial_ready := true;
+  ELSIF NOT spatial_ready THEN
+    RAISE NOTICE
+      'galaxy_systems: ~% строк — GiST-индекс создайте без блокировки записи: psql -f supabase/maintenance/galaxy_systems_spatial_index.sql',
+      total_rows;
+  END IF;
+
+  -- ─── Ближайшие звёзды нужных классов в кубе ───
+  -- `&&` отсекает куб индексом, `<->` отдаёт строки уже в порядке расстояния,
+  -- поэтому LIMIT не требует читать и сортировать весь куб.
+  CREATE OR REPLACE FUNCTION public.galaxy_star_candidates(
+    cx double precision,
+    cy double precision,
+    cz double precision,
+    half double precision,
+    star_types text[],
+    giant_classes text[],
+    lim integer
+  )
+  RETURNS SETOF public.galaxy_systems
+  LANGUAGE sql
+  STABLE
+  AS $fn$
+    SELECT g.*
+    FROM public.galaxy_systems g
+    WHERE cube(ARRAY[g.x, g.y, g.z]) && cube(
+            ARRAY[cx - half, cy - half, cz - half],
+            ARRAY[cx + half, cy + half, cz + half]
+          )
+      AND (
+        (cardinality(star_types) > 0 AND g.star_type = ANY(star_types))
+        OR (cardinality(giant_classes) > 0 AND g.star_giant_class = ANY(giant_classes))
+      )
+    ORDER BY cube(ARRAY[g.x, g.y, g.z]) <-> cube(ARRAY[cx, cy, cz])
+    LIMIT GREATEST(1, LEAST(COALESCE(lim, 2000), 2000));
+  $fn$;
+
+  -- ─── Любые системы в кубе, ближайшие сначала (поиск маршрута) ───
+  CREATE OR REPLACE FUNCTION public.galaxy_systems_near(
+    cx double precision,
+    cy double precision,
+    cz double precision,
+    half double precision,
+    lim integer
+  )
+  RETURNS TABLE(name text, x double precision, y double precision, z double precision)
+  LANGUAGE sql
+  STABLE
+  AS $fn$
+    SELECT g.name, g.x, g.y, g.z
+    FROM public.galaxy_systems g
+    WHERE cube(ARRAY[g.x, g.y, g.z]) && cube(
+            ARRAY[cx - half, cy - half, cz - half],
+            ARRAY[cx + half, cy + half, cz + half]
+          )
+    ORDER BY cube(ARRAY[g.x, g.y, g.z]) <-> cube(ARRAY[cx, cy, cz])
+    LIMIT GREATEST(1, LEAST(COALESCE(lim, 800), 2000));
+  $fn$;
+
+  GRANT EXECUTE ON FUNCTION public.galaxy_star_candidates(
+    double precision, double precision, double precision, double precision, text[], text[], integer
+  ) TO anon, authenticated, service_role;
+
+  GRANT EXECUTE ON FUNCTION public.galaxy_systems_near(
+    double precision, double precision, double precision, double precision, integer
+  ) TO anon, authenticated, service_role;
+
+  IF spatial_ready THEN
+    -- Куб и KNN закрывает один GiST; классы звезды фильтруются внутри куба.
+    DROP INDEX IF EXISTS public.idx_galaxy_systems_x;
+    DROP INDEX IF EXISTS public.idx_galaxy_systems_y;
+    DROP INDEX IF EXISTS public.idx_galaxy_systems_z;
+    DROP INDEX IF EXISTS public.idx_galaxy_systems_star_type;
+    DROP INDEX IF EXISTS public.idx_galaxy_systems_star_giant_class;
+  END IF;
+
+  -- ─── Хранение и autovacuum под 10⁸ строк ───
+  -- fillfactor 100: апсерт меняет только реально обновившиеся системы, HOT нам
+  -- всё равно не доступен (индексируемые колонки), а 10% пустого места на
+  -- таблице такого размера — это гигабайты.
+  -- scale_factor 0.01/0.002: уборка и сбор статистики чаще, чем раз в 4×10⁷ строк.
+  ALTER TABLE public.galaxy_systems SET (
+    fillfactor = 100,
+    autovacuum_vacuum_scale_factor = 0.01,
+    autovacuum_analyze_scale_factor = 0.002,
+    autovacuum_vacuum_cost_limit = 2000,
+    autovacuum_vacuum_cost_delay = 2
+  );
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'galaxy_systems scale migration skipped: %', SQLERRM;
+END $$;
+
+-- Статистика по фактическим данным: без неё планировщик оценивает куб
+-- по прежнему (пустому) состоянию таблицы.
+ANALYZE public.galaxy_systems;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260925010000_yandex_identities.sql                │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Яндекс ID (oauth.yandex.ru) вход и привязка. Self-hosted GoTrue не имеет
+-- провайдера Яндекса, поэтому соответствие «Yandex user_id ↔ auth.users.id»
+-- хранится здесь. Пишет только service_role (сервер сайта); пользователь
+-- видит лишь свою строку.
+CREATE TABLE IF NOT EXISTS public.yandex_identities (
+  user_id         UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  yandex_user_id  TEXT NOT NULL UNIQUE,
+  email           TEXT,
+  display_name    TEXT,
+  avatar_url      TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.yandex_identities ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS yandex_identities_select_own ON public.yandex_identities;
+CREATE POLICY yandex_identities_select_own ON public.yandex_identities
+  FOR SELECT USING (auth.uid() = user_id);
+-- INSERT/UPDATE/DELETE: политик нет → только service_role.
+
+CREATE INDEX IF NOT EXISTS idx_yandex_identities_yandex_user_id ON public.yandex_identities(yandex_user_id);
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260926000000_site_content_footer_translations.sql │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ============================================================
+-- SITE_CONTENT — колонки переводов для подвала
+--
+-- Админка («Контент» → «Подвал сайта») пишет footer_copyright_ru /
+-- footer_discord_en / … , а миграция 20260920000000 добавила такие колонки
+-- только для kicker/title1/title2/manifest. Из-за этого:
+--   • upsert из админки падал с «column … does not exist», либо
+--   • GET /api/home-data не мог выбрать список колонок и молча откатывался
+--     на базовые footer_copyright/… — правки админки на сайте не появлялись.
+--
+-- Миграция идемпотентна: можно запускать повторно.
+-- ============================================================
+
+ALTER TABLE public.site_content
+  ADD COLUMN IF NOT EXISTS footer_copyright_ru text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_en text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_de text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_it text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_ko text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_zh text,
+  ADD COLUMN IF NOT EXISTS footer_copyright_ja text,
+  ADD COLUMN IF NOT EXISTS footer_discord_ru text,
+  ADD COLUMN IF NOT EXISTS footer_discord_en text,
+  ADD COLUMN IF NOT EXISTS footer_discord_de text,
+  ADD COLUMN IF NOT EXISTS footer_discord_it text,
+  ADD COLUMN IF NOT EXISTS footer_discord_ko text,
+  ADD COLUMN IF NOT EXISTS footer_discord_zh text,
+  ADD COLUMN IF NOT EXISTS footer_discord_ja text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_ru text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_en text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_de text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_it text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_ko text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_zh text,
+  ADD COLUMN IF NOT EXISTS footer_edsm_ja text,
+  ADD COLUMN IF NOT EXISTS footer_inara_ru text,
+  ADD COLUMN IF NOT EXISTS footer_inara_en text,
+  ADD COLUMN IF NOT EXISTS footer_inara_de text,
+  ADD COLUMN IF NOT EXISTS footer_inara_it text,
+  ADD COLUMN IF NOT EXISTS footer_inara_ko text,
+  ADD COLUMN IF NOT EXISTS footer_inara_zh text,
+  ADD COLUMN IF NOT EXISTS footer_inara_ja text;
+
+-- На базах, где применялся только «свободный» файл
+-- supabase/add_site_content_translations.sql (он не внесён в migrations),
+-- kicker/title1/title2/manifest могли остаться без *_ru. Докидываем, если
+-- чего-то нет: ADD COLUMN IF NOT EXISTS повторяет то, что уже есть безопасно.
+ALTER TABLE public.site_content
+  ADD COLUMN IF NOT EXISTS kicker_ru text,
+  ADD COLUMN IF NOT EXISTS title1_ru text,
+  ADD COLUMN IF NOT EXISTS title2_ru text,
+  ADD COLUMN IF NOT EXISTS manifest_ru text,
+  ADD COLUMN IF NOT EXISTS kicker_en text,
+  ADD COLUMN IF NOT EXISTS kicker_de text,
+  ADD COLUMN IF NOT EXISTS kicker_it text,
+  ADD COLUMN IF NOT EXISTS kicker_ko text,
+  ADD COLUMN IF NOT EXISTS kicker_zh text,
+  ADD COLUMN IF NOT EXISTS kicker_ja text,
+  ADD COLUMN IF NOT EXISTS title1_en text,
+  ADD COLUMN IF NOT EXISTS title1_de text,
+  ADD COLUMN IF NOT EXISTS title1_it text,
+  ADD COLUMN IF NOT EXISTS title1_ko text,
+  ADD COLUMN IF NOT EXISTS title1_zh text,
+  ADD COLUMN IF NOT EXISTS title1_ja text,
+  ADD COLUMN IF NOT EXISTS title2_en text,
+  ADD COLUMN IF NOT EXISTS title2_de text,
+  ADD COLUMN IF NOT EXISTS title2_it text,
+  ADD COLUMN IF NOT EXISTS title2_ko text,
+  ADD COLUMN IF NOT EXISTS title2_zh text,
+  ADD COLUMN IF NOT EXISTS title2_ja text,
+  ADD COLUMN IF NOT EXISTS manifest_en text,
+  ADD COLUMN IF NOT EXISTS manifest_de text,
+  ADD COLUMN IF NOT EXISTS manifest_it text,
+  ADD COLUMN IF NOT EXISTS manifest_ko text,
+  ADD COLUMN IF NOT EXISTS manifest_zh text,
+  ADD COLUMN IF NOT EXISTS manifest_ja text;
+
+-- Русская колонка = базовая колонка (админка считает каноническим именно ru).
+UPDATE public.site_content SET
+  footer_copyright_ru = COALESCE(footer_copyright_ru, footer_copyright),
+  footer_discord_ru   = COALESCE(footer_discord_ru,   footer_discord),
+  footer_edsm_ru      = COALESCE(footer_edsm_ru,      footer_edsm),
+  footer_inara_ru     = COALESCE(footer_inara_ru,     footer_inara),
+  kicker_ru           = COALESCE(kicker_ru,          kicker),
+  title1_ru           = COALESCE(title1_ru,          title1),
+  title2_ru           = COALESCE(title2_ru,          title2),
+  manifest_ru         = COALESCE(manifest_ru,        manifest)
+WHERE id = 1;
+
+-- ВАЖНО: остальные языки (en, de, it, ko, zh, ja) намеренно остаются NULL.
+-- Фронт уже подставляет базовую колонку, когда перевода нет (localizedValue),
+-- а «предзаполнение» русским текстом только усыпило бы админку: кнопка
+-- «перевести недостающее» считает заполненную колонку переведённой и никогда
+-- не принесла бы настоящий перевод.
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260927000000_app_flags_maintenance.sql            │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ══════════════════════════════════════════════════════════════════════
+-- Флаги приложения: технические работы и отметка о последней копии БД.
+--
+-- Зачем отдельная таблица, а не память веб-процесса:
+--   1. заглушку «Ведутся технические работы» отдаёт прокси (src/proxy.ts),
+--      который работает в отдельном рантайме и не видит переменные Node;
+--   2. контейнер web может перезапуститься посреди резервного копирования —
+--      признак с `expires_at` переживёт перезапуск и сам «отлипнет»;
+--   3. веб-контейнер не имеет доступа к файловой системе хоста, поэтому
+--      дата последней копии (для «прошла неделя — пора») хранится здесь.
+--
+-- Запись идёт только сервисным ключом (service_role обходит RLS); чтение
+-- разрешено всем — прокси должен узнать признак без секретов.
+-- ══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS public.app_flags (
+    key        text PRIMARY KEY,
+    value      jsonb NOT NULL DEFAULT '{}'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE public.app_flags IS
+    'Служебные флаги приложения: maintenance (заглушка техработ) и db_backup (отметка о последней копии).';
+COMMENT ON COLUMN public.app_flags.key IS
+    'maintenance — сайт под заглушкой; db_backup — когда и какая копия БД сделана последней.';
+
+ALTER TABLE public.app_flags ENABLE ROW LEVEL SECURITY;
+
+-- Чтение: прокси и заглушка читают признак анонимным ключом.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE tablename = 'app_flags' AND policyname = 'app_flags_public_read'
+    ) THEN
+        CREATE POLICY app_flags_public_read ON public.app_flags FOR SELECT USING (true);
+    END IF;
+END
+$$;
+
+GRANT SELECT ON TABLE public.app_flags TO anon, authenticated;
+-- INSERT/UPDATE/DELETE намеренно не выдаём никому: с включённым RLS и без
+-- политик записать флаг может только роль, обходящая RLS (service_role).
+
+-- updated_at пишется самим приложением (upsert в src/lib/maintenance.ts);
+-- триггер не заводим: в $fn$-телах этого репозитория по соглашению только SQL,
+-- а польза от автообновления метки при ручной правке из psql невелика.
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260928000000_colonisation_events_source_hash.sql  │
 -- └────────────────────────────────────────────────────────────────┘
 
 -- ─────────────────────────────────────────────────────────────────────────
@@ -7985,4 +10766,142 @@ ALTER TABLE public.colonisation_events
 
 COMMENT ON COLUMN public.colonisation_events.source_hash IS
   'Устойчивый ключ состояния стройки (colony-v1-…). Считается сервером; NULL у строк, записанных до миграции.';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260929000000_system_plans.sql                     │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- system_plans — серверное хранение и публикация планов застройки («Архитектор»)
+-- ─────────────────────────────────────────────────────────────────────────
+--
+-- Зачем. До этой миграции план архитектора жил только в `localStorage`
+-- браузера (`ed-architect:plan:<система>`): показать замысел эскадрилье было
+-- нечем, кроме выгрузки JSON вручную, а два командира не могли работать над
+-- одной системой. Таблица переносит план на сервер и добавляет три режима
+-- видимости:
+--
+--   * `private`  — видит только автор;
+--   * `unlisted` — читается по прямой ссылке `/architect?plan=<id>`, но в
+--     общем списке системы не показывается (то, что называют «поделиться
+--     ссылкой»);
+--   * `public`   — попадает в список планов системы и виден всем.
+--
+-- Что хранится. Сам план — JSONB той же структуры, что и в браузере
+-- (`src/lib/architect/types.ts` → `ArchitectPlan`), плюс версии формата и
+-- каталога: импорт обязан честно говорить, что план считался по другому
+-- набору стоимостей. Рядом лежат сводные числа (`site_count`, `haul_tons`,
+-- `score`, `tier2_points`, `tier3_points`, `cargo_items`) — их считает сервер
+-- движком `evaluatePlan()` при каждой записи, поэтому в списке планов не
+-- может оказаться «оценка 999», нарисованная клиентом, а список строится без
+-- чтения каждого JSONB целиком.
+--
+-- RLS. Читать разрешено всё, что не `private` (иначе `unlisted` нельзя было
+-- бы открыть по ссылке неавтору); в список система-страница берёт только
+-- `public` — фильтр по «unlisted» делается в API, а не политикой. Писать,
+-- менять видимость и удалять может только автор; админ/модератор удаляет
+-- чужое (как в `comments`).
+
+CREATE TABLE IF NOT EXISTS public.system_plans (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  system_name       TEXT NOT NULL CHECK (LENGTH(TRIM(system_name)) BETWEEN 1 AND 128),
+  -- Поиск планов системы идёт без учёта регистра: `HIP 90297` и `hip 90297`
+  -- обязаны находить одно и то же.
+  system_name_lc    TEXT GENERATED ALWAYS AS (lower(TRIM(system_name))) STORED,
+  title             TEXT NOT NULL DEFAULT '',
+  author_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  author_name       TEXT NOT NULL DEFAULT '',
+  visibility        TEXT NOT NULL DEFAULT 'private'
+                    CHECK (visibility IN ('private', 'unlisted', 'public')),
+  plan              JSONB NOT NULL,
+  format_version    INTEGER NOT NULL DEFAULT 1,
+  catalogue_version INTEGER NOT NULL DEFAULT 0,
+  site_count        INTEGER NOT NULL DEFAULT 0,
+  haul_tons         BIGINT NOT NULL DEFAULT 0,
+  score             INTEGER NOT NULL DEFAULT 0,
+  tier2_points      INTEGER NOT NULL DEFAULT 0,
+  tier3_points      INTEGER NOT NULL DEFAULT 0,
+  cargo_items       INTEGER NOT NULL DEFAULT 0,
+  notes             TEXT NOT NULL DEFAULT '',
+  published_at      TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE public.system_plans IS
+  'Планы застройки систем из «Архитектора» (/architect). plan — JSONB формата ArchitectPlan, сводные числа считает сервер.';
+
+CREATE INDEX IF NOT EXISTS idx_system_plans_system
+  ON public.system_plans (system_name_lc, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_plans_author
+  ON public.system_plans (author_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system_plans_public
+  ON public.system_plans (system_name_lc, updated_at DESC)
+  WHERE visibility = 'public';
+
+ALTER TABLE public.system_plans ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS system_plans_select ON public.system_plans;
+CREATE POLICY system_plans_select ON public.system_plans
+  FOR SELECT TO anon, authenticated USING (
+    visibility <> 'private' OR author_id = auth.uid()
+  );
+
+DROP POLICY IF EXISTS system_plans_insert ON public.system_plans;
+CREATE POLICY system_plans_insert ON public.system_plans
+  FOR INSERT TO authenticated WITH CHECK (author_id = auth.uid());
+
+DROP POLICY IF EXISTS system_plans_update ON public.system_plans;
+CREATE POLICY system_plans_update ON public.system_plans
+  FOR UPDATE TO authenticated USING (author_id = auth.uid())
+  WITH CHECK (author_id = auth.uid());
+
+DROP POLICY IF EXISTS system_plans_delete ON public.system_plans;
+CREATE POLICY system_plans_delete ON public.system_plans
+  FOR DELETE TO authenticated USING (
+    author_id = auth.uid()
+    OR EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE id = auth.uid() AND role IN ('admin', 'moderator')
+    )
+  );
+
+GRANT SELECT ON public.system_plans TO anon, authenticated;
+GRANT INSERT, UPDATE, DELETE ON public.system_plans TO authenticated;
+
+-- `update_updated_at_column()` уже создаёт миграция комментариев; повторяем
+-- определение, чтобы файл применялся и сам по себе.
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS system_plans_updated_at ON public.system_plans;
+CREATE TRIGGER system_plans_updated_at
+  BEFORE UPDATE ON public.system_plans
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at_column();
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20260930000000_raven_sync_log_synced_at.sql         │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Колонка public.raven_sync_log.synced_at: её пишет API
+-- (src/app/api/ravencolonial/sync/log/route.ts, src/app/api/projects/[id]/progress/route.ts),
+-- по ней сортирует лог админка (src/components/Admin/RavenSyncTab.tsx), но в
+-- схеме она нигде не была описана.
+--
+-- Из-за этого на базе, поднятой из 000_base_schema.sql, падал индекс
+-- idx_raven_sync_log_synced_at в 20260830110258_rls_policies_v2.sql
+-- («column "synced_at" does not exist»), а сам лог не заполнялся.
+ALTER TABLE public.raven_sync_log
+  ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ DEFAULT NOW();
+
+-- Свежие строки без явного synced_at не должны «проваливаться» в конец сортировки.
+UPDATE public.raven_sync_log SET synced_at = created_at WHERE synced_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raven_sync_log_synced_at ON public.raven_sync_log(synced_at);
 

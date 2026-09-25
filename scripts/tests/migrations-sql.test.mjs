@@ -31,33 +31,6 @@ function sqlFiles(dir) {
 
 const FILES = sqlFiles(join(ROOT, 'supabase'));
 
-/**
- * Миграции, которые намеренно ничего не делают или пока не работают.
- * Первый файл — шаблон для ручного запуска, второй — заметка о заливке через
- * Management API. Остальные четыре — та же поломка формата, что и в
- * 20260903000000_wiki_fill_empty_categories.sql: код съеден комментарием, файл
- * надо восстановить (см. SQL-MIGRATIONS-AUDIT.md). Если файл починили — уберите
- * его отсюда, тест об этом напомнит.
- */
-const KNOWN_DEAD = new Map([
-  ['20260902010000_wiki_colonization_guide.sql', 'шаблон-инструкция для ручного запуска в SQL Editor'],
-  ['20260908020000_wiki_exobiology_update.sql', 'заметка: контент залит через Management API'],
-  ['20260830152500_galnet_news.sql', 'формат потерян: комментарий съел таблицу galnet_news'],
-  ['20260903010000_wiki_update_colonization.sql', 'формат потерян: комментарий съел 3 статьи'],
-  ['20260903020000_wiki_lore_articles.sql', 'формат потерян: комментарий съел 5 статей'],
-  ['20260904100000_system_coords_cache.sql', 'формат потерян: комментарий съел таблицу system_coords'],
-]);
-
-/**
- * supabase/full_schema.sql — снимок, собранный из тех же миграций: пока в них
- * лежат потерявшие формат копии, дефект виден и здесь, поэтому проверяются
- * сами миграции. Снимок пересобирают после их починки.
- */
-const SNAPSHOT_FILES = new Set(['full_schema.sql']);
-
-const formatDamaged = (file) =>
-  KNOWN_DEAD.has(basename(file)) || SNAPSHOT_FILES.has(basename(file));
-
 test('SQL-файлы supabase/ находятся', () => {
   assert.ok(FILES.length > 40, `найдено ${FILES.length} файлов`);
   assert.ok(FILES.some((f) => f.endsWith('20260925000000_galaxy_systems_scale.sql')));
@@ -180,7 +153,6 @@ test('блоки DO разбираются как plpgsql', async () => {
   let blocks = 0;
   let unparsed = 0;
   for (const file of FILES) {
-    if (formatDamaged(file)) continue; // известные дефекты формата — см. KNOWN_DEAD
     let tree;
     try {
       tree = await parse(readFileSync(file, 'utf8'));
@@ -217,7 +189,6 @@ test('ни один комментарий не съедает код', async ()
   const LIMIT = 400;
   const failures = [];
   for (const file of FILES) {
-    if (formatDamaged(file)) continue; // известные дефекты формата — см. KNOWN_DEAD
     const sql = readFileSync(file, 'utf8');
     let tokens;
     try {
@@ -239,17 +210,43 @@ test('ни один комментарий не съедает код', async ()
   assert.deepEqual(failures, []);
 });
 
+test('в текстах статей не осталось маркеров $nl$', async () => {
+  // Исторические сиды wiki хранили переводы строк маркерами «$nl$», которые
+  // никто не разворачивал: в базу попадала одна строка с литералами вместо
+  // Markdown. Маркеры заменены реальными переводами строк — тест следит,
+  // чтобы они не вернулись. Комментарии не считаем: там про маркеры просто
+  // написано, а сканер отдаёт их отдельным токеном SQL_COMMENT.
+  const failures = [];
+  for (const file of FILES) {
+    const sql = readFileSync(file, 'utf8');
+    let tokens;
+    try {
+      ({ tokens } = await scan(sql));
+    } catch {
+      continue;
+    }
+    const literals = tokens.filter((token) => token.tokenName !== 'SQL_COMMENT' && token.text.includes('$nl$'));
+    if (literals.length > 0) {
+      const line = sql.slice(0, literals[0].start).split('\n').length;
+      failures.push(`${relative(ROOT, file)}:${line} — ${literals.length} маркер(ов) вне комментария`);
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
 test('каждая миграция содержит хотя бы одну команду', async () => {
+  // Пустой скрипт psql считает успешно выполненным, и миграция молча
+  // становится мёртвой — именно так «работали» 20260830152500_galnet_news.sql,
+  // 20260903010000/20260903020000 (wiki) и 20260904100000 (system_coords),
+  // пока в них не восстановили переводы строк. Исключений быть не должно:
+  // шаблон для SQL Editor живёт в supabase/templates/.
   const dead = [];
   for (const file of sqlFiles(join(ROOT, 'supabase', 'migrations'))) {
     const tree = await parse(readFileSync(file, 'utf8'));
     const statements = Array.isArray(tree) ? tree : tree.stmts ?? [];
     if (statements.length === 0) dead.push(basename(file));
   }
-  const unexpected = dead.filter((name) => !KNOWN_DEAD.has(name));
-  const revived = [...KNOWN_DEAD.keys()].filter((name) => !dead.includes(name));
-  assert.deepEqual(unexpected, [], 'эти миграции не выполняют ни одной команды');
-  assert.deepEqual(revived, [], 'файлы снова работают — уберите их из KNOWN_DEAD');
+  assert.deepEqual(dead, [], 'эти миграции не выполняют ни одной команды');
 });
 
 /* ── Миграция масштаба: содержательные проверки, а не только синтаксис ── */

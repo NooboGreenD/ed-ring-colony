@@ -224,7 +224,7 @@ service role). Слияния аккаунтов по e-mail нет: если п
 1. Создайте приложение на <https://oauth.yandex.ru> (платформа *Веб-сервисы*),
    **Callback URI** `https://edringcolony.ru/api/auth/yandex/callback`,
    доступы `login:email`, `login:info`, `login:avatar`.
-2. Примените миграцию `supabase/migrations/20260925000000_yandex_identities.sql`.
+2. Примените миграцию `supabase/migrations/20260925010000_yandex_identities.sql`.
 3. В `.env.production` сайта (или в карточке «Яндекс ID» в админке):
 
 ```env
