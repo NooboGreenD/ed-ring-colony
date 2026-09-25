@@ -3,6 +3,12 @@ import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { CapiClient } from '@/lib/capi/client';
 import { refreshAccessToken } from '@/lib/capi/oauth';
 import { parseColonisationEvents } from '@/lib/journalParser';
+import {
+  depotEventRow,
+  latestDepotEvents,
+  persistColonisationEvents,
+  type ColonisationEventRow,
+} from '@/lib/colonisationEvents';
 import { updateProjectProgress } from '@/lib/projects/autoProgress';
 import { syncMemberLocation } from '@/lib/capi/locationSync';
 
@@ -70,25 +76,22 @@ export async function POST(req: Request) {
       journal.events.map((e) => JSON.stringify(e)).join('\n')
     );
 
-    let inserted = 0;
-    if (events.depotEvents.length > 0) {
-      const rows = events.depotEvents.map((ev) => ({
-        user_id: user.id,
-        event_timestamp: ev.timestamp,
-        system_name: ev.systemName,
-        market_id: ev.marketId,
-        construction_name: ev.constructionName,
-        construction_id: ev.constructionId,
-        construction_progress: ev.constructionProgress,
-        resources_total: ev.resourcesRequired,
-        raw_event: ev as unknown as Record<string, unknown>,
-      }));
-      const { data } = await svc.from('colonisation_events').insert(rows).select();
-      inserted = data?.length || 0;
+    // События CAPI пишутся тем же путём, что и журнальные: upsert по
+    // `source_hash`. Раньше здесь был голый insert() без проверки ошибки —
+    // повторный синк того же окна падал на первом же конфликте и молча терял
+    // всю пачку, а события без системы (CAPI не всегда отдаёт StarSystem)
+    // оседали строками с пустым system_name.
+    const rows = events.depotEvents
+      .map((ev) => depotEventRow(user.id, ev))
+      .filter((row): row is ColonisationEventRow => row !== null);
+    const write = await persistColonisationEvents(svc, rows);
+    for (const warning of write.warnings) console.warn('[CAPI Sync]', warning);
+    const inserted = write.inserted;
 
-      for (const ev of events.depotEvents) {
-        await updateProjectProgress(ev.systemName, ev.constructionProgress, ev.resourcesRequired, 'capi');
-      }
+    // Прогресс проекта — по последнему состоянию каждой стройки: окно CAPI
+    // на каждом синке содержит одни и те же события.
+    for (const ev of latestDepotEvents(events.depotEvents)) {
+      await updateProjectProgress(ev.systemName, ev.constructionProgress, ev.resourcesRequired, 'capi');
     }
 
     await svc.from('capi_tokens').update({
@@ -96,7 +99,13 @@ export async function POST(req: Request) {
       cmdr_name: cmdrName,
     }).eq('user_id', user.id);
 
-    return NextResponse.json({ synced: true, eventsImported: inserted, cmdrName });
+    return NextResponse.json({
+      synced: true,
+      eventsImported: inserted,
+      eventsDuplicate: write.duplicates,
+      eventsSkipped: events.depotEvents.length - rows.length,
+      cmdrName,
+    });
   } catch (err: any) {
     console.error('[CAPI Sync]', err);
     return NextResponse.json({ error: err.message }, { status: 500 });

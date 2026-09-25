@@ -238,7 +238,7 @@ Invariants that must stay identical in both languages:
 | `direct_messages` | P2P messages |
 | `push_subscriptions` | Web push subscriptions |
 | `deliveries` | Per-commander cargo events (see 8.6); `source`, `is_construction`, `market_id` split "all cargo" from "delivered to construction sites" |
-| `colonisation_events` | Shared `ColonisationConstructionDepot` records (system, market, progress, required resources) |
+| `colonisation_events` | Shared `ColonisationConstructionDepot` records (system, market, progress, required resources). One row per **state change** per site: `source_hash` (`colony-v1-…`, see `src/lib/colonisationEvents.ts`) collapses the repeats the Journal writes every few seconds while a commander is docked |
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
@@ -517,7 +517,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `.colonial_helper_journal_offsets.json`.
 - Startup reconciliation processes unhandled bytes and shows byte/file progress
   in the desktop progress bar. Rotation is detected when file size decreases.
-- `source_hash` and server upsert keys make retries idempotent.
+- `source_hash` and server upsert keys make retries idempotent (deliveries since `20260911010000_delivery_import_idempotency.sql`, colonisation events since `20260928000000_colonisation_events_source_hash.sql`).
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
 - EDSM requires `fromSoftware`, `fromSoftwareVersion`, `fromGameVersion` and
@@ -598,7 +598,18 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `parse_events(..., hooks=[...])` feed deliveries, construction snapshots, ship
   tracking and third-party dispatch from the same stream.
 - Repeated `ColonisationConstructionDepot` snapshots with an unchanged state are
-  dropped before upload (`ConstructionSnapshotCollector`).
+  dropped before upload (`ConstructionSnapshotCollector`). The collector lives
+  for the whole watcher session (`_construction_collector`), and each tick sends
+  only what `drain()` returns: a per-tick collector used to lose the signature
+  set, so an unchanged state was uploaded again every 5 seconds.
+- Every path into `colonisation_events` (`/api/logs/import`, `/api/logs/upload`,
+  `/api/journal/import`, `/api/capi/sync`, `/api/cron/capi-sync`) writes through
+  `src/lib/colonisationEvents.ts`: rows carry `source_hash` (state fingerprint;
+  the timestamp is part of the key only for per-event records such as
+  `ColonisationContribution`), the write is an upsert on `(user_id, source_hash)`,
+  and a deployment without the column yet falls back to the old schema key.
+  Repeated states therefore do not add rows, and `construction_depot_snapshots`
+  only receives a snapshot for a state that was actually stored.
 - Site uploads are chunked and parallel: 100 deliveries per request / 100
   snapshots per request (server limit), up to 4 concurrent requests, with a
   progress callback. Startup reconciliation defers uploads and flushes them once

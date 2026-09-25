@@ -640,10 +640,35 @@ test('неразрешимый таймаут сканов остаётся в w
    загрузка добавляла те же строки заново.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** Мок-клиент с «уже записанными» снимками в таблице. */
-function snapshotClient(existingRows = []) {
+/**
+ * Мок-клиент: `colonisation_events` с уникальным ключом `(user_id, source_hash)`
+ * (как после миграции `20260928000000_colonisation_events_source_hash.sql`) и
+ * «уже записанные» снимки прогресса.
+ *
+ * `existingEventHashes` — отпечатки состояний, которые в таблице уже есть:
+ * повторная отправка того же состояния не должна ни писать строку, ни
+ * добавлять снимок прогресса.
+ */
+function snapshotClient(existingRows = [], existingEventHashes = []) {
   const inserted = [];
+  const events = [];
+  const writtenHashes = new Set(existingEventHashes);
   const chain = (table) => {
+    if (table === 'colonisation_events') {
+      return {
+        upsert: (rows) => ({
+          select: async () => {
+            const fresh = rows.filter((row) => !writtenHashes.has(row.source_hash));
+            for (const row of fresh) writtenHashes.add(row.source_hash);
+            events.push(...fresh);
+            return {
+              data: fresh.map((row, index) => ({ id: index + 1, source_hash: row.source_hash })),
+              error: null,
+            };
+          },
+        }),
+      };
+    }
     const self = {
       select: () => self,
       insert: async (rows) => {
@@ -653,6 +678,7 @@ function snapshotClient(existingRows = []) {
       upsert: async () => ({ error: null }),
       eq: () => self,
       in: () => self,
+      not: () => self,
       then: (resolve) => resolve({
         data: table === 'construction_depot_snapshots' ? existingRows : [],
         error: null,
@@ -660,7 +686,7 @@ function snapshotClient(existingRows = []) {
     };
     return self;
   };
-  return { client: { from: chain }, inserted };
+  return { client: { from: chain }, inserted, events };
 }
 
 const depotEvent = (constructionId, progress, timestamp) => ({
@@ -702,11 +728,56 @@ test('новый снимок той же стройки записываетс�
   assert.equal(outcome.snapshotDuplicates, 0);
 });
 
+test('повторное состояние стройки не пишется ни в события, ни в снимки', async () => {
+  // Журнал пишет `ColonisationConstructionDepot` каждые несколько секунд:
+  // состояние то же, меняется только метка времени. Раньше такая строка
+  // проходила мимо ключа схемы (в нём участвует timestamp) и оставалась в
+  // таблице, а вместе с ней добавлялся и «новый» снимок прогресса.
+  const { client, events, inserted } = snapshotClient([], []);
+
+  const first = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:00Z')],
+  }, 'Test Cmdr');
+  const second = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [depotEvent(7, 0.5, '2026-09-14T10:00:05Z')],
+  }, 'Test Cmdr');
+
+  assert.equal(first.constructionInserted, 1);
+  assert.equal(events.length, 1, 'одно состояние — одна строка истории');
+  assert.equal(second.constructionInserted, 0, 'повтор состояния записан как новое событие');
+  assert.equal(second.constructionDuplicates, 1, 'повтор не учтён в счётчике');
+  assert.equal(inserted.length, 1, 'повтор состояния добавил снимок прогресса');
+});
+
+test('событие без системы или метки времени не пишется', async () => {
+  const { client, events } = snapshotClient([], []);
+  const outcome = await persistJournalTelemetry(client, 'user-1', {
+    constructionEvents: [
+      { ...depotEvent(7, 0.5, '2026-09-14T10:00:00Z'), system_name: '' },
+      { ...depotEvent(8, 0.5, '2026-09-14T10:00:00Z'), timestamp: '' },
+    ],
+  }, 'Test Cmdr');
+
+  assert.equal(events.length, 0, 'строка без системы или метки времени всё же записана');
+  assert.equal(outcome.constructionInserted, 0);
+  assert.ok(outcome.warnings.some((w) => /без системы/.test(w)), 'пропуск не виден в warnings');
+});
+
 test('сбой сверки не теряет снимки', async () => {
   // Если SELECT не удался, пишем как раньше: лучше возможный повтор, чем
   // потерянный прогресс стройки.
   const inserted = [];
   const chain = (table) => {
+    if (table === 'colonisation_events') {
+      return {
+        upsert: (rows) => ({
+          select: async () => ({
+            data: rows.map((row, index) => ({ id: index + 1, source_hash: row.source_hash })),
+            error: null,
+          }),
+        }),
+      };
+    }
     const self = {
       select: () => self,
       insert: async (rows) => {
@@ -716,6 +787,7 @@ test('сбой сверки не теряет снимки', async () => {
       upsert: async () => ({ error: null }),
       eq: () => self,
       in: () => self,
+      not: () => self,
       then: (resolve) => resolve({ data: null, error: { message: 'permission denied' } }),
     };
     return self;
@@ -753,4 +825,54 @@ test('чередование стройплощадок не обходит де
   assert.equal(telemetry.constructionEvents.length, 2, 'чередование площадок обходит дедупликацию');
   assert.equal(telemetry.stats.constructionDuplicates, 3);
   assert.equal(telemetry.stats.constructionSnapshots, 2);
+});
+
+test('drain() отдаёт только новые snapshots, а finish() — всё накопленное', () => {
+  // Браузерный загрузчик разбирает журналы по файлам и складывает результат в
+  // общий список. `finish()` в цикле повторял уже собранное: на истории из
+  // сотен файлов в запросы к сайту уезжали десятки тысяч одинаковых строк.
+  const collector = new TelemetryCollector();
+  const state = (progress, timestamp) => line({
+    timestamp,
+    event: 'ColonisationConstructionDepot',
+    StarSystem: SYSTEM,
+    MarketID: 9001,
+    ConstructionID: 7,
+    ConstructionName: 'Ditceford Hub',
+    ConstructionProgress: progress,
+    ResourcesRequired: [],
+  });
+
+  const collected = [];
+  for (const raw of [state(0.5, '2026-09-14T10:00:00Z'), state(0.6, '2026-09-14T10:05:00Z'), state(0.7, '2026-09-14T10:10:00Z')]) {
+    collector.feed(raw, JSON.parse(raw));
+    collected.push(...collector.drain().constructionEvents);
+  }
+
+  assert.equal(collected.length, 3, 'drain() повторил уже собранное');
+  assert.equal(new Set(collected.map((event) => event.construction_progress)).size, 3);
+});
+
+test('drain() отдаёт шаг счётчиков, а не сумму по файлам', () => {
+  const collector = new TelemetryCollector();
+  const state = (progress, timestamp) => line({
+    timestamp,
+    event: 'ColonisationConstructionDepot',
+    StarSystem: SYSTEM,
+    MarketID: 9001,
+    ConstructionID: 7,
+    ConstructionName: 'Ditceford Hub',
+    ConstructionProgress: progress,
+    ResourcesRequired: [],
+  });
+
+  const parsed = [];
+  for (const raw of [state(0.5, '2026-09-14T10:00:00Z'), state(0.6, '2026-09-14T10:05:00Z')]) {
+    collector.feed(raw, JSON.parse(raw));
+    parsed.push(collector.drain().stats);
+  }
+
+  assert.deepEqual(parsed.map((stats) => stats.eventsParsed), [1, 1]);
+  assert.deepEqual(parsed.map((stats) => stats.constructionSnapshots), [1, 1]);
+  assert.equal(collector.finish().stats.constructionSnapshots, 2);
 });

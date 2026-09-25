@@ -4,6 +4,12 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { CapiClient } from '@/lib/capi/client';
 import { refreshAccessToken } from '@/lib/capi/oauth';
 import { parseColonisationEvents } from '@/lib/journalParser';
+import {
+  depotEventRow,
+  latestDepotEvents,
+  persistColonisationEvents,
+  type ColonisationEventRow,
+} from '@/lib/colonisationEvents';
 import { updateProjectProgress } from '@/lib/projects/autoProgress';
 import { syncMemberLocation } from '@/lib/capi/locationSync';
 
@@ -71,7 +77,17 @@ async function handle() {
         journal.events.map((e: any) => JSON.stringify(e)).join('\n')
       );
 
-      for (const ev of events.depotEvents) {
+      // Тем же путём, что и остальные клиенты: один `source_hash` на
+      // состояние стройки, поэтому повторный синк не дописывает копии.
+      const rows = events.depotEvents
+        .map((ev) => depotEventRow(token.user_id, ev))
+        .filter((row): row is ColonisationEventRow => row !== null);
+      const write = await persistColonisationEvents(svc, rows);
+      for (const warning of write.warnings) console.warn(`[Cron CAPI] User ${token.user_id}:`, warning);
+
+      // Прогресс проекта — по последнему состоянию каждой стройки, иначе
+      // каждое событие окна плодит снимки и обновления `commodity_needs`.
+      for (const ev of latestDepotEvents(events.depotEvents)) {
         await updateProjectProgress(ev.systemName, ev.constructionProgress, ev.resourcesRequired, 'capi');
       }
 

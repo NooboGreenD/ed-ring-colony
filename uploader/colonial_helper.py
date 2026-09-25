@@ -268,6 +268,12 @@ class ColonialHelperApp:
         self._defer_uploads = False
         self._backfill_deliveries: list = []
         self._backfill_construction: list = []
+        # Коллектор snapshots стройки живёт вместе с приложением, а не вместе
+        # с тиком watcher'а: набор уже отправленных состояний обязан переживать
+        # тик, иначе журнал (он пишет `ColonisationConstructionDepot` каждые
+        # несколько секунд, пока игрок у площадки) заливал сайт одинаковыми
+        # снимками с новой меткой времени — по одной строке на тик.
+        self._construction_collector = ConstructionSnapshotCollector()
         self._navroute_mtime = 0.0
 
         # Конфиг
@@ -6744,6 +6750,9 @@ class ColonialHelperApp:
         self._last_cargo = {}
         self._last_depot_state = {}
         self._last_contribution_state = {}
+        # Состояния площадок тоже забываем: пользователь ждёт повторной
+        # отправки, а не «ничего не произошло».
+        self._construction_collector = ConstructionSnapshotCollector()
         self.log(
             f"Кэш импорта сброшен ({count} записей) — файлы будут разобраны и загружены заново",
             "info",
@@ -8216,6 +8225,9 @@ class ColonialHelperApp:
             if result.get("ok"):
                 log(f"Первичная загрузка: snapshots стройки отправлены ({len(construction)})", "success")
             else:
+                # Та же причина, что и в живом тике: подписи состояний уже
+                # записаны, поэтому без возврата в накопитель пачка потеряется.
+                self._construction_collector.requeue(construction)
                 log(f"Первичная загрузка: snapshots стройки не отправлены — "
                     f"{result.get('error', 'ошибка')}", "warn")
 
@@ -8259,6 +8271,10 @@ class ColonialHelperApp:
         offsets = self._load_journal_offsets()
         self.last_file_mtimes = {}
         first_reconciliation = not bool(offsets)
+        # Сессия наблюдения начинается заново: текущее состояние площадок
+        # уходит на сайт один раз (повтор всё равно схлопывается по
+        # `source_hash`), а дальше отправляются только изменения.
+        self._construction_collector = ConstructionSnapshotCollector()
         for f in sorted(self.journal_path.glob("Journal.*.log"), key=lambda f: f.stat().st_mtime):
             try:
                 # Первый запуск проверяет историю с начала файлов; после этого
@@ -9750,7 +9766,7 @@ class ColonialHelperApp:
         # ОДИН проход по тексту: доставки, snapshots стройки, трекинг корабля
         # и (только в live-режиме) внешние API. Раньше текст разбирался дважды
         # — parse_journal() плюс отдельный построчный цикл на каждое событие.
-        collector = ConstructionSnapshotCollector()
+        collector = self._construction_collector
 
         def dispatch_hook(line, ev):
             station_type = str(self._last_depot_state.get("_station_type", "") or "")
@@ -9787,8 +9803,10 @@ class ColonialHelperApp:
         self._record_session_deliveries(deliveries)
         # Snapshots стройки собираются тем же проходом, что и доставки, с
         # отсевом повторов (состояние ColonisationConstructionDepot меняется
-        # заметно реже, чем пишется в журнал).
-        construction_events = collector.events
+        # заметно реже, чем пишется в журнал). `drain()` забирает только то,
+        # что накопилось за этот тик: сам коллектор живёт всю сессию, чтобы
+        # помнить уже отправленные состояния.
+        construction_events = collector.drain()
 
         # Первичная сверка: НЕ отправляем на сайт после каждого файла (на
         # истории это сотни отдельных запросов), а накапливаем и отправляем
@@ -9803,6 +9821,10 @@ class ColonialHelperApp:
         if construction_events and self.api.is_connected:
             construction_result = self.api.upload_construction_events(construction_events, cmdr_name)
             if not construction_result.get("ok"):
+                # Возвращаем пачку в накопитель: подпись состояния уже
+                # запомнена, поэтому сама по себе она больше не придёт, а
+                # следующий тик повторит отправку.
+                collector.requeue(construction_events)
                 self.root.after(0, lambda e=construction_result.get("error", "ошибка"):
                     self.log(f"[Watcher] Прогресс строек не отправлен: {e}", "warn"))
 

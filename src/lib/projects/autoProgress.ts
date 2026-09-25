@@ -3,6 +3,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { createServiceClient } from '@/lib/supabaseServer';
+import { depotStateFingerprint } from '@/lib/colonisationEvents';
 
 export interface ConstructionResource {
   name: string;
@@ -30,14 +31,27 @@ export async function updateProjectProgress(
     return null;
   }
 
-  // Create snapshot
-  await svc.from('construction_depot_snapshots').insert({
-    system_name: systemName,
-    progress,
-    resources_total: resources,
-    snapshot_at: new Date().toISOString(),
-    source,
-  });
+  // Снимок — только при смене состояния. Синхронизация CAPI повторяет одни и
+  // те же события при каждом прогоне, и запись снимка «на каждое событие»
+  // добавляла в историю точки с текущим временем, которые не сообщают ничего
+  // нового (таблица росла даже без изменений на стройке).
+  const stateFingerprint = depotStateFingerprint(progress, resources);
+  const { data: previousRows } = await svc
+    .from('construction_depot_snapshots')
+    .select('progress, resources_total')
+    .ilike('system_name', systemName)
+    .order('snapshot_at', { ascending: false })
+    .limit(1);
+  const previous = previousRows?.[0] as { progress?: unknown; resources_total?: unknown } | undefined;
+  if (!previous || depotStateFingerprint(previous.progress, previous.resources_total) !== stateFingerprint) {
+    await svc.from('construction_depot_snapshots').insert({
+      system_name: systemName,
+      progress,
+      resources_total: resources,
+      snapshot_at: new Date().toISOString(),
+      source,
+    });
+  }
 
   // Update project_systems status
   const newStatus = progress >= 100 ? 'done' : progress > 0 ? 'building' : 'planned';

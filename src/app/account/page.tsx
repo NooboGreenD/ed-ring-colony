@@ -387,7 +387,11 @@ export default function AccountPage() {
         const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState, [
           (line, event) => telemetry.feed(line, event),
         ]);
-        const telemetryResult = telemetry.finish();
+        // `drain()`, а не `finish()`: загрузчик идёт по файлам по одному, а
+        // `finish()` отдаёт накопленное целиком — его вызов в цикле повторял
+        // бы в запросах всё, что уже собрано к этому файлу (на истории из
+        // сотен файлов это десятки тысяч одинаковых строк snapshots).
+        const telemetryResult = telemetry.drain();
         allConstructionEvents.push(...telemetryResult.constructionEvents);
         for (const scan of telemetryResult.scans) allScans.set(`${scan.system_name}\u0000${scan.body_name}`, scan);
         if (Object.keys(telemetryResult.pilotStats).length > 0) pilotStats = { ...(pilotStats ?? {}), ...telemetryResult.pilotStats };
@@ -516,7 +520,10 @@ export default function AccountPage() {
 
       // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
       // собранное браузером, всегда было бы беднее досье игрока с хелпером.
-      let telemetryResult = { constructionInserted: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false };
+      let telemetryResult = { constructionInserted: 0, constructionDuplicates: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false };
+      // Состояния стройки после `drain()` — по одному на изменение: сервер
+      // всё равно схлопывает повторы по `source_hash`, но лишний трафик и
+      // лишние пачки запросов никому не нужны.
       const constructionEvents = allConstructionEvents;
       const scans = Array.from(allScans.values());
       const TELEMETRY_CHUNKS: Array<{ label: string; items: unknown[]; size: number; field: string }> = [
@@ -543,6 +550,7 @@ export default function AccountPage() {
             const json = await response.json().catch(() => ({}));
             if (response.ok && json.telemetry) {
               telemetryResult.constructionInserted += json.telemetry.constructionInserted ?? 0;
+              telemetryResult.constructionDuplicates += json.telemetry.constructionDuplicates ?? 0;
               telemetryResult.snapshotInserted += json.telemetry.snapshotInserted ?? 0;
               telemetryResult.systemScansInserted += json.telemetry.systemScansInserted ?? 0;
             }
