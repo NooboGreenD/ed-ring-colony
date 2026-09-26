@@ -819,8 +819,9 @@ class CarrierColumnGeometryTests(unittest.TestCase):
         self.assertEqual(len(header), len(CarrierOverlay.COLUMNS), header)
         self.assertEqual(len(cells), len(CarrierOverlay.COLUMNS), cells)
         for index, (_text, width, anchor) in enumerate(CarrierOverlay.COLUMNS):
-            self.assertEqual(header[index]["width"], width)
-            self.assertEqual(cells[index]["width"], width)
+            expected = overlay._name_chars if index == 0 else width
+            self.assertEqual(header[index]["width"], expected)
+            self.assertEqual(cells[index]["width"], expected)
             self.assertEqual(header[index]["anchor"], anchor)
             self.assertEqual(cells[index]["anchor"], anchor)
 

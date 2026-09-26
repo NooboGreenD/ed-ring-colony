@@ -314,8 +314,11 @@ class PredictionRowsTests(unittest.TestCase):
                 "volcanism": "", "surface_temperature": 188.0,
                 "surface_gravity": 4.2}
         rows = {row["genus"]: row for row in prediction_rows(body)}
-        # Род только с атмосферным правилом: совпало — значит 100 %.
-        self.assertEqual(rows["Tussock"]["percent"], 100)
+        # Совпало всё, что проверяемо, но класс тела неизвестен: процент
+        # высокий и при этом честно ниже 100 — данных о теле не хватает.
+        self.assertGreaterEqual(rows["Tussock"]["percent"], 85)
+        self.assertLess(rows["Tussock"]["percent"], 100)
+        self.assertTrue(any("данных о теле" in note for note in rows["Tussock"]["notes"]))
         # Electricae требует геологию и на таком теле не предсказывается вовсе.
         self.assertNotIn("Electricae", rows)
 
@@ -594,3 +597,50 @@ class ExobiologyEnhancementsTests(unittest.TestCase):
         self.assertEqual(state["first_footfall_by"], "Cmdr Explorer")
         for pred in state["predictions"]:
             self.assertFalse(pred["first_footfall_bonus"])
+
+
+class PredictionCalibrationTests(unittest.TestCase):
+    """Поправки модели: полнота данных, контекст системы, сигналы DSS."""
+
+    BODY = {
+        "atmosphere": "thin sulfur dioxide atmosphere",
+        "planet_class": "Rocky body",
+        "volcanism": "",
+        "surface_temperature": 188.0,
+        "surface_gravity": 0.3,
+        "landable": True,
+    }
+
+    def test_more_scan_data_raises_the_percent(self):
+        sparse = dict(self.BODY)
+        sparse.pop("planet_class")
+        rich = dict(self.BODY)
+        sparse_rows = {r["genus"]: r for r in prediction_rows(sparse)}
+        rich_rows = {r["genus"]: r for r in prediction_rows(rich)}
+        common = set(sparse_rows) & set(rich_rows)
+        self.assertTrue(common, "должны остаться общие роды")
+        self.assertTrue(
+            any(rich_rows[g]["percent"] >= sparse_rows[g]["percent"] for g in common),
+            "полный скан не может понижать уверенность",
+        )
+
+    def test_genus_found_elsewhere_in_system_gets_a_bonus(self):
+        plain = {r["genus"]: r for r in prediction_rows(self.BODY)}
+        # Берём род, которому есть куда расти: у 100 % бонус уже ничего не меняет.
+        genus = next((g for g, row in plain.items() if row["percent"] < 100), None)
+        self.assertIsNotNone(genus, "нужен род с неполной уверенностью")
+        boosted = {r["genus"]: r
+                   for r in prediction_rows(self.BODY, system_genera=[genus])}
+        self.assertGreater(boosted[genus]["percent"], plain[genus]["percent"])
+        self.assertTrue(any("в этой системе" in note for note in boosted[genus]["notes"]))
+
+    def test_dss_signal_count_demotes_the_tail(self):
+        body = dict(self.BODY)
+        plain = prediction_rows(body)
+        if len(plain) < 2:
+            self.skipTest("для проверки нужен список из двух и более родов")
+        body["bio_signals"] = 1
+        limited = prediction_rows(body)
+        tail = [row for row in limited if row.get("beyond_signals")]
+        self.assertTrue(tail, "роды за пределами числа сигналов должны быть помечены")
+        self.assertTrue(all(row["percent"] > 0 for row in limited), "род не исчезает совсем")

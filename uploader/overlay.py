@@ -1713,6 +1713,11 @@ class CarrierOverlay(OverlayWindow):
         # иначе она съедала ширину у строк, но не у шапки.
         self._row_font = (ff, fs - 1)
         self._row_font_bold = (ff, fs - 1, "bold")
+        # Ширина колонки «Товар» в символах: считается от ширины блока, а не
+        # берётся жёстко 18. На узком блоке названия по-прежнему обрезаются,
+        # но на расширенном видно целиком — список товаров при этом не
+        # сокращается никогда, режется только подпись.
+        self._name_chars = self._name_width_chars()
 
         list_frame = tk.Frame(self.content, bg=COLOR_PANEL)
         list_frame.pack(fill=tk.BOTH, expand=True)
@@ -1724,6 +1729,8 @@ class CarrierOverlay(OverlayWindow):
         header = tk.Frame(self.columns, bg=COLOR_PANEL)
         header.pack(fill=tk.X, pady=(0, 1))
         for index, (text, width, anchor) in enumerate(self.COLUMNS):
+            if index == 0:
+                width = self._name_chars
             # Шрифт заголовка обязан совпадать со шрифтом ячейки под ним:
             # `width` у tk.Label измеряется в символах средней ширины ДАННОГО
             # шрифта, поэтому у жирного и обычного начертания одно и то же
@@ -1750,6 +1757,7 @@ class CarrierOverlay(OverlayWindow):
         self._row_pool: list = []
         self._row_order: list = []
         self._empty_label: Optional[tk.Label] = None
+        self._scroll_job: Optional[str] = None
 
         self.summary_label = tk.Label(self.content, text="", font=(ff, fs - 1, "bold"),
                                       fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W,
@@ -1764,20 +1772,43 @@ class CarrierOverlay(OverlayWindow):
         ff = self.settings.get("font_family", "Consolas")
         fs = self.settings.get("font_size", 10)
 
+        stats_seen = bool(data.get("stats_seen"))
         name = str(data.get("name") or "").strip()
         self.name_label.config(text=name or "Fleet Carrier")
         callsign = str(data.get("callsign") or "").strip()
         system = str(data.get("system_name") or "").strip()
-        self.callsign_label.config(text=callsign or system)
+        # Вид носителя виден сразу: личный Drake-Class, эскадренный
+        # Javelin-Class или чужой. Без подписи цифры «на борту» читались как
+        # относящиеся к своему носителю, хотя показывались по чужому.
+        kind = str(data.get("kind") or "")
+        # Подпись ставим только когда она что-то сообщает: эскадренный
+        # Javelin-Class или чужой носитель под ногами. Свой носитель (по нему
+        # приходит CarrierStats) подписи не требует — это случай по умолчанию.
+        if kind == "squadron":
+            kind_mark = "эскадр."
+        elif kind == "other" and data.get("at_carrier") and not stats_seen:
+            kind_mark = "чужой"
+        else:
+            kind_mark = ""
+        head = " · ".join(part for part in (callsign or system, kind_mark) if part)
+        self.callsign_label.config(
+            text=head,
+            fg=COLOR_ACCENT if kind == "squadron" else COLOR_TEXT_MUTED,
+        )
 
         stored = int(data.get("stored") or 0)
         capacity = int(data.get("cargo_capacity") or 0)
         pct = int(data.get("fill_percent") or 0)
-        stats_seen = bool(data.get("stats_seen"))
 
         if stats_seen and capacity > 0:
             self.total_label.config(text=f"{stored} / {capacity} t")
-            self.cargo_bar_fill.config(width=int((pct / 100) * 300))
+            # Ширина полосы считалась от «магических» 300 px: у растянутого
+            # блока полоса обрывалась на трети, у узкого — вылезала за край,
+            # и заполнение выглядело неверным. Берём реальную ширину дорожки.
+            track = int(self.cargo_bar_bg.winfo_width() or 0)
+            if track <= 1:
+                track = max(60, int(self.settings.get("carrier_width", 330)) - 24)
+            self.cargo_bar_fill.config(width=max(0, int(track * pct / 100)))
             self.cargo_bar_fill.config(
                 bg=COLOR_GREEN_TEXT if pct < 80 else (COLOR_YELLOW if pct < 100 else COLOR_RED_TEXT)
             )
@@ -1843,12 +1874,46 @@ class CarrierOverlay(OverlayWindow):
             source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
         if source:
             summary = f"{summary}\n{source}" if summary else source
+
+        # Другие носители этой сессии: логист возит груз между личным и
+        # эскадренным носителем, и раньше при перелёте цифры второго просто
+        # пропадали. Теперь они сохраняются и видны одной строкой.
+        others = [row for row in (data.get("other_carriers") or []) if row]
+        if others:
+            parts = [
+                f"{str(row.get('name') or '')[:18]} {int(row.get('tracked_total') or 0)} t"
+                for row in others[:3]
+            ]
+            summary = (f"{summary}\n" if summary else "") + "ещё носители: " + ", ".join(parts)
+
         self.summary_label.config(text=summary, fg=color)
 
-        self.inner.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Пересчёт области прокрутки откладываем: `update_idletasks()` на
+        # каждом обновлении заставлял Tk пересчитывать геометрию всех строк
+        # синхронно, и при длинном списке товаров блок заметно подтормаживал
+        # вместе со всем HUD. Список при этом не сокращаем — меняется только
+        # момент пересчёта.
+        self._schedule_scrollregion()
 
     # -- список товаров ----------------------------------------------------
+    def _name_width_chars(self) -> int:
+        """Сколько символов помещается в колонку «Товар» при текущей ширине.
+
+        Числовые колонки занимают 9 + 7 + 6 символов и полосу прокрутки;
+        остальное отдаём названию. Ниже 12 символов не опускаемся — иначе
+        «Computer Components» превращается в «Comp…».
+        """
+        try:
+            width_px = int(self.settings.get("carrier_width", 330) or 330)
+        except (TypeError, ValueError):
+            width_px = 330
+        font_size = int(self.settings.get("font_size", 10) or 10)
+        # Ширина символа моноширинного шрифта ≈ 0.6 кегля.
+        char_px = max(5.0, (font_size - 1) * 0.62)
+        numeric = sum(width for _text, width, _anchor in self.COLUMNS[1:])
+        available = int((width_px - 28) / char_px) - numeric
+        return max(12, min(40, available))
+
     def _on_canvas_resize(self, event):
         """Подогнать внутренний фрейм под ширину canvas.
 
@@ -1862,11 +1927,30 @@ class CarrierOverlay(OverlayWindow):
         if width > 1:
             self.canvas.itemconfigure(self._inner_window, width=width)
 
+    def _schedule_scrollregion(self):
+        """Обновить область прокрутки один раз, когда Tk освободится."""
+        if self._scroll_job is not None:
+            return
+
+        def apply():
+            self._scroll_job = None
+            try:
+                self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            except tk.TclError:
+                pass
+
+        try:
+            self._scroll_job = self.canvas.after_idle(apply)
+        except tk.TclError:
+            self._scroll_job = None
+
     def _make_row(self) -> dict:
         """Одна строка списка: тот же грид и те же ширины, что и у шапки."""
         frame = tk.Frame(self.inner, bg=COLOR_PANEL)
         cells = {}
         for index, (_text, width, anchor) in enumerate(self.COLUMNS):
+            if index == 0:
+                width = self._name_chars
             font = self._row_font_bold if index in self.BOLD_COLUMNS else self._row_font
             cell = tk.Label(frame, text="", font=font, fg=COLOR_TEXT,
                             bg=COLOR_PANEL, anchor=anchor, width=width)
@@ -1931,8 +2015,10 @@ class CarrierOverlay(OverlayWindow):
             else:
                 tail, tail_color, board_color = "", COLOR_TEXT_MUTED, COLOR_TEXT
 
-            cells["name"].config(text=str(row.get("name") or row.get("key") or "")[:18],
-                                 fg=COLOR_TEXT)
+            label = str(row.get("name") or row.get("key") or "")
+            if len(label) > self._name_chars:
+                label = label[: self._name_chars - 1] + "…"
+            cells["name"].config(text=label, fg=COLOR_TEXT)
             cells["board"].config(text=on_board, fg=board_color)
             cells["need"].config(text=str(need) if need else "—", fg=COLOR_TEXT_MUTED)
             cells["tail"].config(text=tail, fg=tail_color)

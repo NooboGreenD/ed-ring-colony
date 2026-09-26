@@ -1139,3 +1139,82 @@ class CanonicalCommodityTests(unittest.TestCase):
         tracker.merge_remote({"cmm-composite": 5})
         self.assertEqual(list(tracker.state.commodities), ["cmmcomposite"],
                          "снимок Raven не заводит вторую строку")
+
+
+class SquadronCarrierTests(unittest.TestCase):
+    """Личный Drake-Class и эскадренный Javelin-Class — разные носители.
+
+    Раньше трекер держал одно состояние: стыковка к эскадренному носителю
+    стирала учёт личного, а перелёт обратно — учёт эскадренного. Логист,
+    который возит груз между ними, терял цифры на каждом перелёте.
+    """
+
+    OWN_ID = 3700005632
+    SQUADRON_ID = 3705550001
+
+    def _tracker(self) -> CarrierTracker:
+        tracker = CarrierTracker()
+        tracker.handle(CARRIER_STATS)
+        tracker.handle({
+            "event": "CargoTransfer", "MarketID": self.OWN_ID,
+            "Transfers": [{"Type": "steel", "Count": 100, "Direction": "tocarrier"}],
+        })
+        return tracker
+
+    def test_own_carrier_is_marked_and_kept(self):
+        tracker = self._tracker()
+        self.assertEqual(tracker.state.kind, "own")
+        self.assertEqual(tracker.state.commodities.get("steel"), 100)
+
+    def test_squadron_carrier_is_tracked_separately(self):
+        tracker = self._tracker()
+        tracker.handle({
+            "event": "Docked", "StationType": "SquadronCarrier",
+            "StationName": "Vanguard One", "MarketID": self.SQUADRON_ID,
+            "StarSystem": "Hermitage",
+        })
+        self.assertEqual(tracker.state.kind, "squadron")
+        self.assertFalse(tracker.state.commodities, "груз личного носителя не переносится")
+
+        tracker.handle({
+            "event": "CargoTransfer", "MarketID": self.SQUADRON_ID,
+            "Transfers": [{"Type": "titanium", "Count": 300, "Direction": "tocarrier"}],
+        })
+        self.assertEqual(tracker.state.commodities.get("titanium"), 300)
+
+        # Возвращаемся на свой носитель — его учёт на месте.
+        tracker.handle({
+            "event": "Docked", "StationType": "FleetCarrier",
+            "StationName": "Spirula", "MarketID": self.OWN_ID,
+            "StarSystem": "Hermitage",
+        })
+        self.assertEqual(tracker.state.kind, "own")
+        self.assertEqual(tracker.state.commodities.get("steel"), 100)
+
+        others = tracker.get_state_dict()["other_carriers"]
+        self.assertEqual(len(others), 1)
+        self.assertEqual(others[0]["kind"], "squadron")
+        self.assertEqual(others[0]["tracked_total"], 300)
+
+    def test_big_hold_alone_means_squadron_carrier(self):
+        """Тип станции игра уточняет не всегда — 60 000 т трюма уточняют сами."""
+        tracker = CarrierTracker()
+        tracker.handle({
+            "event": "Docked", "StationType": "FleetCarrier",
+            "StationName": "Vanguard One", "MarketID": self.SQUADRON_ID,
+        })
+        tracker.state.capacity = 60000
+        self.assertEqual(tracker._kind_for(tracker.state), "squadron")
+
+    def test_only_one_carrier_is_boarded_at_a_time(self):
+        tracker = self._tracker()
+        tracker.handle({
+            "event": "Docked", "StationType": "FleetCarrier",
+            "StationName": "Spirula", "MarketID": self.OWN_ID,
+        })
+        tracker.handle({
+            "event": "Docked", "StationType": "SquadronCarrier",
+            "StationName": "Vanguard One", "MarketID": self.SQUADRON_ID,
+        })
+        self.assertTrue(tracker.state.at_carrier)
+        self.assertFalse(tracker.carriers[self.OWN_ID].at_carrier)

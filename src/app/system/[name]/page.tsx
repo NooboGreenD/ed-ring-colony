@@ -77,6 +77,86 @@ function formatPercent(value: number | null | undefined): string {
     : '—';
 }
 
+/**
+ * Стили страницы системы приведены к общему стилю сайта (DESIGN.md):
+ * плоские панели без теней и тонировок, радиус не больше 4 px, заголовки —
+ * моноширинные, в верхнем регистре, с трекингом 2 px, цвета — только из
+ * палитры CSS-переменных. Раньше страница жила на своих hex-кодах и радиусах
+ * 6–12 px и заметно выбивалась из остального интерфейса.
+ */
+const pageStyle: React.CSSProperties = {
+  maxWidth: 1280,
+  margin: '24px auto',
+  padding: 24,
+  borderRadius: 4,
+};
+
+const titleStyle: React.CSSProperties = {
+  fontSize: 26,
+  fontWeight: 700,
+  color: 'var(--text)',
+  letterSpacing: 2,
+  textTransform: 'uppercase',
+  margin: '0 0 6px',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+};
+
+const sectionTitleStyle: React.CSSProperties = {
+  fontSize: 16,
+  fontWeight: 600,
+  color: 'var(--orange)',
+  letterSpacing: 2,
+  textTransform: 'uppercase',
+  margin: '0 0 14px',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+};
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: 'var(--muted)',
+  letterSpacing: 2,
+  textTransform: 'uppercase',
+  marginBottom: 4,
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+};
+
+const panelStyle: React.CSSProperties = {
+  background: 'var(--panel)',
+  border: '1px solid var(--line)',
+  borderRadius: 4,
+  padding: 18,
+  marginBottom: 20,
+};
+
+const innerPanelStyle: React.CSSProperties = {
+  background: 'var(--bg)',
+  border: '1px solid var(--line)',
+  borderRadius: 3,
+  padding: '10px 12px',
+};
+
+/** Кнопка-ссылка в шапке: единый вид для внешних сервисов и разделов сайта. */
+function linkButtonStyle(tone: string): React.CSSProperties {
+  return {
+    padding: '8px 14px',
+    background: 'transparent',
+    border: `1px solid ${tone}`,
+    color: tone,
+    borderRadius: 2,
+    textDecoration: 'none',
+    fontSize: 12,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+  };
+}
+
 /** Стабильный пустой массив: `?? []` на каждом рендере ломал бы зависимости useMemo. */
 const NO_ROWS: any[] = [];
 
@@ -173,7 +253,7 @@ export default function SystemPage() {
   if (loading) {
     return (
       <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 40, textAlign: 'center' }}>
-        <div style={{ color: '#e67e22', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2 }}>
+        <div style={{ color: 'var(--orange)', fontFamily: 'ui-monospace, monospace', fontSize: 14, letterSpacing: 2 }}>
           Загрузка системы...
         </div>
       </main>
@@ -183,42 +263,42 @@ export default function SystemPage() {
   if ((!system || !system.found) && galaxy) {
     const starLabel = STAR_CLASS_LABELS[galaxy.star_type] || galaxy.star_type;
     return (
-      <main className="card" style={{ maxWidth: 1280, margin: '24px auto', padding: 28, borderRadius: 4 }}>
+      <main className="card" style={pageStyle}>
         <div style={{ marginBottom: 20 }}>
-          <Link href="/map" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
         </div>
-        <h1 style={{ fontSize: 28, color: '#eeeeee', marginBottom: 8 }}>{galaxy.name}</h1>
-        <p style={{ color: '#9ca3af', marginTop: 0 }}>
+        <h1 style={titleStyle}>{galaxy.name}</h1>
+        <p style={{ color: 'var(--muted)', marginTop: 0 }}>
           Система есть в каталоге Spansh. Стройки на маршруте колонии здесь нет — это не статус «запланировано».
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12, marginBottom: 20 }}>
           <div>
-            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>Главная звезда</div>
-            <div style={{ color: '#eeeeee' }}>{starLabel}</div>
-            {galaxy.main_star && <div style={{ fontSize: 12, color: '#9ca3af' }}>{galaxy.main_star}</div>}
+            <div style={labelStyle}>Главная звезда</div>
+            <div style={{ color: 'var(--text)' }}>{starLabel}</div>
+            {galaxy.main_star && <div style={{ fontSize: 12, color: 'var(--muted)' }}>{galaxy.main_star}</div>}
           </div>
           <div>
-            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>Координаты</div>
-            <div style={{ color: '#eeeeee', fontFamily: 'ui-monospace, monospace', fontSize: 13 }}>
+            <div style={labelStyle}>Координаты</div>
+            <div style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace', fontSize: 13 }}>
               {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase' }}>До Sol / Sgr A*</div>
-            <div style={{ color: '#eeeeee' }}>
+            <div style={labelStyle}>До Sol / Sgr A*</div>
+            <div style={{ color: 'var(--text)' }}>
               {galaxy.distance_from_sols != null ? `${Number(galaxy.distance_from_sols).toFixed(1)} св.лет` : '—'}
               {' · '}
               {galaxy.distance_from_sgra != null ? `${Number(galaxy.distance_from_sgra).toFixed(1)} св.лет` : '—'}
             </div>
           </div>
           {galaxy.needs_permit && (
-            <div style={{ color: '#f87171' }}>Нужен permit</div>
+            <div style={{ color: 'var(--red)' }}>Нужен permit</div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
-          <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(59,130,246,0.15)', border: '1px solid rgba(59,130,246,0.4)', color: '#3b82f6', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>EDSM <IconExternalLink size={10} /></a>
-          <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(230,126,34,0.15)', border: '1px solid rgba(230,126,34,0.4)', color: '#e67e22', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>Raven <IconExternalLink size={10} /></a>
-          <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={{ padding: '8px 16px', background: 'rgba(255,209,102,0.12)', border: '1px solid rgba(255,209,102,0.35)', color: '#ffd166', borderRadius: 3, textDecoration: 'none', fontSize: 13 }}>Spansh <IconExternalLink size={10} /></a>
+          <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--cyan)')}>EDSM <IconExternalLink size={10} /></a>
+          <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Raven <IconExternalLink size={10} /></a>
+          <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Spansh <IconExternalLink size={10} /></a>
         </div>
         {bodies.length > 0 && (
           <SystemOrrery3D
@@ -232,7 +312,7 @@ export default function SystemPage() {
           />
         )}
         {orreryLayout.bodies.length > 0 && (
-          <p style={{ color: '#9ca3af', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
         )}
       </main>
     );
@@ -241,9 +321,9 @@ export default function SystemPage() {
   if (!system || !system.found) {
     return (
       <main className="card" style={{ maxWidth: 900, margin: '40px auto', padding: 40 }}>
-        <h1 style={{ color: '#e74c3c' }}><IconXCircle size={20} color="#e74c3c" /> Система не найдена</h1>
-        <p style={{ color: '#9ca3af' }}>{system?.error || 'Не удалось загрузить данные системы'}</p>
-        <Link href="/map" style={{ color: '#3b82f6', textDecoration: 'none' }}>← Вернуться к карте</Link>
+        <h1 style={{ color: 'var(--red)' }}><IconXCircle size={20} color="var(--red)" /> Система не найдена</h1>
+        <p style={{ color: 'var(--muted)' }}>{system?.error || 'Не удалось загрузить данные системы'}</p>
+        <Link href="/map" style={{ color: 'var(--cyan)', textDecoration: 'none' }}>← Вернуться к карте</Link>
       </main>
     );
   }
@@ -256,116 +336,91 @@ export default function SystemPage() {
   ), 0);
   const hasImportedCargo = hasSystemCargoTotals || importedCargo > 0;
   return (
-    <main className="card" style={{ maxWidth: 1280, margin: '24px auto', padding: 28, borderRadius: 4 }}>
+    <main className="card" style={pageStyle}>
       <div style={{ marginBottom: 20 }}>
-        <Link href="/map" style={{ color: '#9ca3af', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+        <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
       </div>
 
-      <h1 style={{ fontSize: 28, color: '#eeeeee', marginBottom: 8, letterSpacing: -0.5 }}>{systemName}</h1>
+      <h1 style={titleStyle}>{systemName}</h1>
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
+      {/* Ссылки на внешние источники и разделы сайта — один стиль кнопок HUD. */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
         <a
           href={`https://ravencolonial.com/#sys=${encodeURIComponent(systemName)}`}
           target="_blank"
           rel="noopener noreferrer"
-          style={{
-            padding: '8px 16px',
-            background: 'rgba(230,126,34,0.15)',
-            border: '1px solid rgba(230,126,34,0.4)',
-            color: '#e67e22',
-            borderRadius: 3,
-            textDecoration: 'none',
-            fontSize: 13,
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
+          style={linkButtonStyle('var(--orange)')}
         >
           <IconPlane size={12} /> RavenColonial <IconExternalLink size={10} />
         </a>
+        <Link href={`/architect?system=${encodeURIComponent(systemName)}`} style={linkButtonStyle('var(--orange)')}>
+          <IconConstruction size={12} /> Архитектор системы
+        </Link>
         <Link
           href={`/atlas?tab=market&system=${encodeURIComponent(systemName)}`}
-          style={{
-            padding: '8px 16px', background: 'rgba(34,197,94,0.12)',
-            border: '1px solid rgba(34,197,94,0.4)', color: '#22c55e',
-            borderRadius: 3, textDecoration: 'none', fontSize: 13,
-            fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6,
-          }}
+          style={linkButtonStyle('var(--green)')}
         >
-          <IconPackage size={12} /> Рынки рядом в Atlas
+          <IconPackage size={12} /> Рынки рядом
         </Link>
         <a
           href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(systemName)}`}
           target="_blank"
           rel="noopener noreferrer"
-          style={{
-            padding: '8px 16px',
-            background: 'rgba(59,130,246,0.15)',
-            border: '1px solid rgba(59,130,246,0.4)',
-            color: '#3b82f6',
-            borderRadius: 3,
-            textDecoration: 'none',
-            fontSize: 13,
-            fontWeight: 600,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
+          style={linkButtonStyle('var(--cyan)')}
         >
           <IconGlobe size={12} /> EDSM <IconExternalLink size={10} />
         </a>
       </div>
 
       {system.error && (
-        <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 6, color: '#fbbf24', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', fontSize: 12 }}>
+        <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 3, color: 'var(--orange)', background: 'transparent', border: '1px solid var(--line)', fontSize: 12 }}>
           {system.error}
         </div>
       )}
 
       {/* Статус строительства */}
-      <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 4, padding: 20, marginBottom: 24 }}>
-        <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconChart size={18} /> Статус строительства</h2>
+      <div style={panelStyle}>
+        <h2 style={sectionTitleStyle}><IconChart size={18} /> Статус строительства</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
           <div>
-            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Прогресс</div>
-            <div style={{ fontSize: 32, fontWeight: 700, color: system.progress === 100 ? '#22c55e' : '#e67e22' }}>
+            <div style={labelStyle}>Прогресс</div>
+            <div style={{ fontSize: 32, fontWeight: 700, color: system.progress === 100 ? 'var(--green)' : 'var(--orange)' }}>
               {system.progress == null ? '—' : `${formatPercent(system.progress)}%`}
             </div>
           </div>
           <div>
-            <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Статус</div>
-            <div style={{ fontSize: 16, fontWeight: 600, color: system.status === 'done' ? '#22c55e' : system.status === 'building' ? '#e67e22' : '#3b82f6' }}>
+            <div style={labelStyle}>Статус</div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: system.status === 'done' ? 'var(--green)' : system.status === 'building' ? 'var(--orange)' : 'var(--cyan)' }}>
               {system.status === 'done' ? <><IconCheckCircle size={16} /> Завершён</> : system.status === 'building' ? <><IconConstruction size={16} /> Строительство</> : <><IconCheck size={16} /> Запланирован</>}
             </div>
           </div>
           {hasImportedCargo && (
             <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Груз доставлен</div>
-              <div style={{ fontSize: 16, color: '#eeeeee', fontWeight: 600 }}>
+              <div style={labelStyle}>Груз доставлен</div>
+              <div style={{ fontSize: 16, color: 'var(--text)', fontWeight: 600 }}>
                 {formatCargo(hasSystemCargoTotals ? system.totalProvided : importedCargo)} / {formatCargo(system.totalRequired)} т
               </div>
-              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 3 }}>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
                 Осталось: {formatCargo(system.totalRemaining)} т
               </div>
             </div>
           )}
           {system.siteName && (
             <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Сайт</div>
-              <div style={{ fontSize: 16, color: '#eeeeee' }}>{system.siteName}</div>
+              <div style={labelStyle}>Сайт</div>
+              <div style={{ fontSize: 16, color: 'var(--text)' }}>{system.siteName}</div>
             </div>
           )}
           {system.architectName && (
             <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Архитектор</div>
-              <div style={{ fontSize: 16, color: '#eeeeee' }}>{system.architectName}</div>
+              <div style={labelStyle}>Архитектор</div>
+              <div style={{ fontSize: 16, color: 'var(--text)' }}>{system.architectName}</div>
             </div>
           )}
           {system.updated_at && (
             <div>
-              <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 4 }}>Обновлено</div>
-              <div style={{ fontSize: 14, color: '#9ca3af' }}>{new Date(system.updated_at).toLocaleString('ru-RU')}</div>
+              <div style={labelStyle}>Обновлено</div>
+              <div style={{ fontSize: 14, color: 'var(--muted)' }}>{new Date(system.updated_at).toLocaleString('ru-RU')}</div>
             </div>
           )}
         </div>
@@ -374,25 +429,25 @@ export default function SystemPage() {
       {/* Сводка по звёздам и обитаемым зонам: цифры, которые нужны при выборе
           площадки, — без похода в EDSM и Spansh. */}
       {(starFacts.length > 0 || galaxy) && (
-        <div style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 4, padding: 20, marginBottom: 24 }}>
-          <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconGlobe size={18} /> Система и обитаемые зоны</h2>
+        <div style={panelStyle}>
+          <h2 style={sectionTitleStyle}><IconGlobe size={18} /> Система и обитаемые зоны</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {starFacts.map((star) => (
-              <div key={star.name} style={{ background: '#1c1f22', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px' }}>
+              <div key={star.name} style={innerPanelStyle}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
-                  <span style={{ color: '#ffd166', fontWeight: 700, fontSize: 14 }}>★ {star.short}</span>
-                  <span style={{ color: '#9ca3af', fontSize: 11 }}>{star.cls || 'класс неизвестен'}</span>
+                  <span style={{ color: 'var(--orange)', fontWeight: 700, fontSize: 14 }}>★ {star.short}</span>
+                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{star.cls || 'класс неизвестен'}</span>
                 </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: '#cbd5e1' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: 'var(--muted)' }}>
                   {star.tempK > 0 && <span>{Math.round(star.tempK).toLocaleString('ru-RU')} K</span>}
                   {star.radiusM > 0 && <span>{Math.round(star.radiusM / 1000).toLocaleString('ru-RU')} км</span>}
                   {star.distanceLs > 0 && <span>{Math.round(star.distanceLs).toLocaleString('ru-RU')} св. с от входа</span>}
                 </div>
                 {star.zone[0] > 0 && (
-                  <div style={{ fontSize: 11, color: '#22c55e', marginTop: 6, lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 11, color: 'var(--green)', marginTop: 6, lineHeight: 1.5 }}>
                     Обитаемая зона: {Math.round(star.zone[0]).toLocaleString('ru-RU')}–{Math.round(star.zone[1]).toLocaleString('ru-RU')} св. с
                     <br />
-                    <span style={{ color: '#8b95a3' }}>
+                    <span style={{ color: 'var(--muted)' }}>
                       ({(star.zone[0] / 499.00478).toFixed(2)}–{(star.zone[1] / 499.00478).toFixed(2)} а.е.) — здесь стоит искать землеподобные планеты
                     </span>
                   </div>
@@ -400,17 +455,17 @@ export default function SystemPage() {
               </div>
             ))}
             {galaxy && (
-              <div style={{ background: '#1c1f22', border: '1px solid #323538', borderRadius: 8, padding: '10px 12px' }}>
-                <div style={{ color: '#9ca3af', fontSize: 11, textTransform: 'uppercase', marginBottom: 4 }}>В галактике</div>
-                <div style={{ color: '#eeeeee', fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }}>
+              <div style={innerPanelStyle}>
+                <div style={labelStyle}>В галактике</div>
+                <div style={{ color: 'var(--text)', fontFamily: 'ui-monospace, monospace', fontSize: 12.5 }}>
                   {galaxy.x.toFixed(2)}, {galaxy.y.toFixed(2)}, {galaxy.z.toFixed(2)}
                 </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: '#cbd5e1' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 6, fontSize: 11.5, color: 'var(--muted)' }}>
                   {galaxy.distance_from_sols != null && <span>до Sol: {Number(galaxy.distance_from_sols).toFixed(1)} св. лет</span>}
                   {galaxy.distance_from_sgra != null && <span>до Sgr A*: {Number(galaxy.distance_from_sgra).toFixed(1)} св. лет</span>}
                 </div>
-                {galaxy.needs_permit && <div style={{ color: '#f87171', fontSize: 11.5, marginTop: 4 }}>нужен permit</div>}
-                {galaxy.main_star && <div style={{ color: '#8b95a3', fontSize: 11, marginTop: 4 }}>каталог: {galaxy.main_star}</div>}
+                {galaxy.needs_permit && <div style={{ color: 'var(--red)', fontSize: 11.5, marginTop: 4 }}>нужен permit</div>}
+                {galaxy.main_star && <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 4 }}>каталог: {galaxy.main_star}</div>}
               </div>
             )}
           </div>
@@ -431,7 +486,7 @@ export default function SystemPage() {
       {/* Проекты / Постройки */}
       {system.projects.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconConstruction size={18} /> Постройки ({system.projects.length})</h2>
+          <h2 style={sectionTitleStyle}><IconConstruction size={18} /> Постройки ({system.projects.length})</h2>
           <div style={{ display: 'grid', gap: 12 }}>
             {system.projects.map((project) => {
               const hasProjectCargoTotals = typeof project.totalRequired === 'number'
@@ -439,15 +494,15 @@ export default function SystemPage() {
               const hasApproximateRows = project.resources.some((resource) => !hasExactAmounts(resource));
 
               return (
-                <div key={project.buildId} style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 10, padding: 16 }}>
+                <div key={project.buildId} style={{ ...panelStyle, marginBottom: 0, padding: 16 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
-                    <span style={{ fontSize: 16, fontWeight: 600, color: '#eeeeee' }}>{project.buildName}</span>
+                    <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--text)' }}>{project.buildName}</span>
                     <span style={{
                       fontSize: 14,
                       fontWeight: 600,
-                      color: project.complete ? '#22c55e' : '#e67e22',
+                      color: project.complete ? 'var(--green)' : 'var(--orange)',
                       padding: '4px 10px',
-                      background: project.complete ? 'rgba(34,197,94,0.1)' : 'rgba(230,126,34,0.1)',
+                      background: 'transparent',
                       borderRadius: 4,
                     }}>
                       {project.complete ? <><IconCheckCircle size={16} /> Завершён</> : `${formatPercent(project.progress)}%`}
@@ -455,44 +510,44 @@ export default function SystemPage() {
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8, marginBottom: 12 }}>
                     {project.buildType && (
-                      <div style={{ fontSize: 13, color: '#9ca3af' }}>
-                        <span style={{ color: '#eeeeee' }}>Тип:</span> {project.buildType}
+                      <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                        <span style={{ color: 'var(--text)' }}>Тип:</span> {project.buildType}
                       </div>
                     )}
                     {project.bodyName && (
-                      <div style={{ fontSize: 13, color: '#9ca3af' }}>
-                        <span style={{ color: '#eeeeee' }}>Тело:</span> {project.bodyName}
+                      <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                        <span style={{ color: 'var(--text)' }}>Тело:</span> {project.bodyName}
                       </div>
                     )}
                     {project.buildId && (
-                      <div style={{ fontSize: 13, color: '#9ca3af' }}>
-                        <span style={{ color: '#eeeeee' }}>ID:</span> {project.buildId}
+                      <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+                        <span style={{ color: 'var(--text)' }}>ID:</span> {project.buildId}
                       </div>
                     )}
                     {project.bodyName && (
                       <div style={{ fontSize: 13 }}>
                         <button
                           onClick={() => setMapFocus(project.bodyName ?? '')}
-                          style={{ background: 'rgba(0,243,255,0.08)', border: '1px solid rgba(0,243,255,0.35)', color: '#00f3ff', borderRadius: 4, fontSize: 11, padding: '3px 8px', cursor: 'pointer' }}
+                          style={{ ...linkButtonStyle('var(--cyan)'), padding: '3px 8px', fontSize: 10, cursor: 'pointer' }}
                         >
-                          🎯 показать на карте
+                          показать на карте
                         </button>
                       </div>
                     )}
                   </div>
 
                   {hasProjectCargoTotals && (
-                    <div style={{ marginBottom: 12, padding: '9px 12px', borderRadius: 6, background: 'rgba(59,130,246,0.09)', color: '#d1d5db', fontSize: 13, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <IconPackage size={13} color="#60a5fa" />
+                    <div style={{ marginBottom: 12, padding: '9px 12px', borderRadius: 3, background: 'transparent', color: 'var(--text)', fontSize: 13, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <IconPackage size={13} color="var(--cyan)" />
                       <span>Доставлено:</span>
-                      <strong style={{ color: '#eeeeee' }}>{formatCargo(project.totalProvided)} / {formatCargo(project.totalRequired)} т</strong>
-                      <span style={{ color: '#9ca3af' }}>· Осталось: {formatCargo(project.totalRemaining)} т</span>
+                      <strong style={{ color: 'var(--text)' }}>{formatCargo(project.totalProvided)} / {formatCargo(project.totalRequired)} т</strong>
+                      <span style={{ color: 'var(--muted)' }}>· Осталось: {formatCargo(project.totalRemaining)} т</span>
                     </div>
                   )}
 
                   {project.resources.length > 0 && (
                     <div style={{ marginTop: 12 }}>
-                      <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'uppercase', marginBottom: 8, fontWeight: 600 }}><IconPackage size={11} /> Ресурсы проекта</div>
+                      <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', marginBottom: 8, fontWeight: 600 }}><IconPackage size={11} /> Ресурсы проекта</div>
                       <div style={{ display: 'grid', gap: 6 }}>
                         {project.resources.map((resource) => {
                           const exact = hasExactAmounts(resource);
@@ -501,32 +556,32 @@ export default function SystemPage() {
                             : 0;
 
                           return (
-                            <div key={resource.key} style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#323538', borderRadius: 6, padding: '8px 12px' }}>
-                              <span style={{ color: '#eeeeee', fontSize: 13, minWidth: 140 }}>{resource.name}</span>
+                            <div key={resource.key} style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--line)', borderRadius: 3, padding: '8px 12px' }}>
+                              <span style={{ color: 'var(--text)', fontSize: 13, minWidth: 140 }}>{resource.name}</span>
                               {exact ? (
-                                <div style={{ flex: 1, background: '#3a3d40', borderRadius: 4, height: 8, overflow: 'hidden' }}>
+                                <div style={{ flex: 1, background: 'var(--line)', borderRadius: 4, height: 8, overflow: 'hidden' }}>
                                   <div style={{
                                     width: `${percent}%`,
-                                    background: resource.remaining === 0 ? '#22c55e' : '#3b82f6',
+                                    background: resource.remaining === 0 ? 'var(--green)' : 'var(--cyan)',
                                     height: '100%',
                                     borderRadius: 4,
                                   }} />
                                 </div>
                               ) : (
-                                <span style={{ flex: 1, color: '#7a7d80', fontSize: 11 }}>Нет точных данных о доставке</span>
+                                <span style={{ flex: 1, color: 'var(--muted)', fontSize: 11 }}>Нет точных данных о доставке</span>
                               )}
-                              <span style={{ color: '#9ca3af', fontSize: 12, minWidth: 130, textAlign: 'right' }}>
+                              <span style={{ color: 'var(--muted)', fontSize: 12, minWidth: 130, textAlign: 'right' }}>
                                 {exact
                                   ? `${formatCargo(resource.provided)} / ${formatCargo(resource.required)} т`
                                   : `Осталось: ${formatCargo(resource.remaining)} т`}
                               </span>
-                              {resource.remaining === 0 && <span style={{ color: '#22c55e', fontSize: 11, fontWeight: 600 }}><IconCheck size={12} color="#22c55e" /></span>}
+                              {resource.remaining === 0 && <span style={{ color: 'var(--green)', fontSize: 11, fontWeight: 600 }}><IconCheck size={12} color="var(--green)" /></span>}
                             </div>
                           );
                         })}
                       </div>
                       {hasApproximateRows && (
-                        <div style={{ marginTop: 8, color: '#9ca3af', fontSize: 11 }}>
+                        <div style={{ marginTop: 8, color: 'var(--muted)', fontSize: 11 }}>
                           RavenColonial передаёт по этим позициям текущий остаток. Общий доставленный объём выше рассчитан по исходной и оставшейся потребности.
                         </div>
                       )}
@@ -542,14 +597,14 @@ export default function SystemPage() {
       {/* Общие ресурсы системы */}
       {system.resources.length > 0 && (
         <div style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 18, color: '#eeeeee', marginBottom: 16 }}><IconPackage size={18} /> Общие ресурсы системы</h2>
+          <h2 style={sectionTitleStyle}><IconPackage size={18} /> Общие ресурсы системы</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: 10 }}>
             {system.resources.map((resource) => {
               const exact = hasExactAmounts(resource);
               return (
-                <div key={resource.key} style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 8, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                  <span style={{ color: '#eeeeee', fontSize: 14 }}>{resource.name}</span>
-                  <span style={{ color: resource.remaining === 0 ? '#22c55e' : '#e67e22', fontSize: 13, fontWeight: 600, textAlign: 'right' }}>
+                <div key={resource.key} style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 3, padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                  <span style={{ color: 'var(--text)', fontSize: 14 }}>{resource.name}</span>
+                  <span style={{ color: resource.remaining === 0 ? 'var(--green)' : 'var(--orange)', fontSize: 13, fontWeight: 600, textAlign: 'right' }}>
                     {exact
                       ? `${formatCargo(resource.provided)} / ${formatCargo(resource.required)} т`
                       : `Осталось: ${formatCargo(resource.remaining)} т`}
@@ -559,7 +614,7 @@ export default function SystemPage() {
             })}
           </div>
           {resourceRowsAreApproximate && (
-            <p style={{ color: '#9ca3af', fontSize: 11, marginTop: 10, marginBottom: 0 }}>
+            <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 10, marginBottom: 0 }}>
               Для общего списка RavenColonial публикует остаток по товару, а не историческое распределение доставок по каждой позиции.
             </p>
           )}

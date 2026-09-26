@@ -121,6 +121,13 @@ class CarrierState:
         # Как товар подписать в оверлее (локализованное имя из журнала).
         self.names: Dict[str, str] = {}
         self.last_event: str = ""
+        # Вид носителя: "own" — свой Drake-Class, "squadron" — эскадренный
+        # Javelin-Class (Vanguards, 2025), "other" — чужой авианосец.
+        # Эскадренный носитель у командира не «свой» (CarrierStats по нему не
+        # приходит), но груз туда возят так же, и учитывать его надо отдельно,
+        # а не затирать состояние личного носителя.
+        self.kind: str = "other"
+        self.station_type: str = ""
 
     # -- производные величины ---------------------------------------------
     @property
@@ -149,6 +156,18 @@ class CarrierState:
     @property
     def tracked_total(self) -> int:
         return sum(int(v) for v in self.commodities.values() if v > 0)
+
+    #: Трюм личного Drake-Class — 25 000 т; у эскадренного Javelin-Class —
+    #: 60 000 т. Разница и служит распознаванием, когда тип станции в журнале
+    #: не уточняет вид носителя.
+    SQUADRON_CARGO_HINT = 30_000
+
+    @property
+    def kind_label(self) -> str:
+        return {
+            "own": "ваш носитель",
+            "squadron": "эскадренный носитель",
+        }.get(self.kind, "чужой носитель")
 
     def display_name(self) -> str:
         if self.name:
@@ -225,6 +244,9 @@ class CarrierState:
             "callsign": self.callsign,
             "system_name": self.system_name,
             "at_carrier": bool(self.at_carrier),
+            "kind": self.kind,
+            "kind_label": self.kind_label,
+            "station_type": self.station_type,
             "stats_seen": bool(self.stats_seen),
             "remote_seen": bool(self.remote_seen),
             "pending_decommission": bool(self.pending_decommission),
@@ -255,6 +277,62 @@ class CarrierTracker:
 
     def __init__(self) -> None:
         self.state = CarrierState()
+        # Состояние по каждому носителю, с которым командир имел дело в этой
+        # сессии: market_id -> CarrierState. Раньше трекер держал ровно одно
+        # состояние и при стыковке к чужому носителю обнулял товары. Логист,
+        # который возит груз со своего Drake-Class на эскадренный Javelin-Class
+        # и обратно, из-за этого терял учёт на каждом перелёте, а блок CARRIER
+        # показывал то пусто, то цифры не того носителя.
+        self.carriers: Dict[int, CarrierState] = {}
+        # CarrierID личного носителя (приходит только в CarrierStats).
+        self.own_carrier_id: int = 0
+
+    # -- несколько носителей -------------------------------------------------
+    def _remember(self, state: CarrierState) -> None:
+        key = int(state.market_id or state.carrier_id or 0)
+        if key:
+            self.carriers[key] = state
+
+    def _switch_to(self, market_id: int, station_type: str = "") -> CarrierState:
+        """Сделать активным носитель с этим MarketID (создав состояние)."""
+        key = int(market_id or 0)
+        if not key:
+            return self.state
+        # Уходим с прежнего носителя: «вы на борту» относится ровно к одному.
+        self.state.at_carrier = False
+        self._remember(self.state)
+        state = self.carriers.get(key)
+        if state is None:
+            state = CarrierState()
+            state.market_id = key
+            state.carrier_id = key
+            self.carriers[key] = state
+        if station_type:
+            state.station_type = station_type
+        state.kind = self._kind_for(state)
+        self.state = state
+        return state
+
+    def _kind_for(self, state: CarrierState) -> str:
+        """Свой / эскадренный / чужой носитель.
+
+        Свой — тот, по которому пришёл `CarrierStats` (он приходит только
+        владельцу). Эскадренный Javelin-Class отличается трюмом (60 000 т
+        против 25 000 т) и типом станции, если игра его уточняет.
+        """
+        if self.own_carrier_id and int(state.carrier_id or 0) == int(self.own_carrier_id):
+            return "own"
+        station = str(state.station_type or "").lower()
+        if "squadron" in station or "javelin" in station:
+            return "squadron"
+        if state.capacity and int(state.capacity) >= CarrierState.SQUADRON_CARGO_HINT:
+            return "squadron"
+        return "other"
+
+    def states(self) -> Dict[int, CarrierState]:
+        """Все известные носители сессии (включая активный)."""
+        self._remember(self.state)
+        return dict(self.carriers)
 
     # -- входная точка -----------------------------------------------------
     def handle(self, event: Mapping[str, Any]) -> bool:
@@ -289,13 +367,18 @@ class CarrierTracker:
 
     def reset(self) -> None:
         self.state = CarrierState()
+        self.carriers = {}
+        self.own_carrier_id = 0
 
     # -- события ------------------------------------------------------------
     def _absorb_stats(self, event: Mapping[str, Any]) -> bool:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id:
             return False
-        state = self.state
+        # CarrierStats приходит только владельцу — значит это его носитель.
+        self.own_carrier_id = carrier_id
+        state = self.state if int(self.state.market_id or 0) in (0, carrier_id) \
+            else self._switch_to(carrier_id)
         state.carrier_id = carrier_id
         # У авианосца MarketID == CarrierID.
         state.market_id = carrier_id
@@ -316,6 +399,8 @@ class CarrierTracker:
             state.fuel_level = 0.0
         state.pending_decommission = bool(event.get("PendingDecommission"))
         state.stats_seen = True
+        state.kind = self._kind_for(state)
+        self._remember(state)
         return True
 
     def _absorb_rename(self, event: Mapping[str, Any]) -> bool:
@@ -362,11 +447,14 @@ class CarrierTracker:
         market_id = _as_int(event.get("MarketID"))
         if not market_id:
             return False
+        # Пришли к другому носителю — переключаем состояние, а не стираем его.
+        if int(self.state.market_id or 0) not in (0, market_id):
+            self._switch_to(market_id, station_type)
         state = self.state
-        previous_market = state.market_id
-        was_at_carrier = state.at_carrier
+        state.station_type = station_type
         state.market_id = market_id
         state.carrier_id = state.carrier_id or market_id
+        state.kind = self._kind_for(state)
         # Имя из `CarrierStats`/`CarrierNameChanged` достовернее: `StationName`
         # у непереименованного авианосца — это «FC L14X1J» по позывному.
         if event.get("StationName") and not state.name:
@@ -376,17 +464,7 @@ class CarrierTracker:
         if event.get("SystemAddress"):
             state.system_address = _as_int(event["SystemAddress"])
         state.at_carrier = True
-        # Стоим у чужого авианосца — наши цифры по товарам к нему не относятся.
-        # `changed` считали по `market_id` ПОСЛЕ перезаписи и всегда получали
-        # False: при перелёте с одного FC на другой цифры оставались от прежнего.
-        if state.carrier_id != market_id and (not was_at_carrier
-                                              or previous_market != market_id):
-            # Чужой авианосец — ни наш груз, ни наш снимок к нему не относятся.
-            state.commodities.clear()
-            state.delivered.clear()
-            state.remote_cargo.clear()
-            state.remote_at = 0.0
-            state.remote_seen = False
+        self._remember(state)
         return True
 
     def _absorb_undocked(self, event: Mapping[str, Any]) -> bool:
@@ -407,6 +485,10 @@ class CarrierTracker:
         if not is_carrier_market(market_id) and not self.state.carrier_id:
             return False
         if market_id:
+            # Перевод адресован конкретному носителю: если это не активный —
+            # переключаемся, иначе тонны легли бы не тому носителю.
+            if int(self.state.market_id or 0) not in (0, market_id):
+                self._switch_to(market_id)
             self.state.market_id = market_id
             self.state.carrier_id = self.state.carrier_id or market_id
         changed = False
@@ -436,6 +518,8 @@ class CarrierTracker:
         # не трогаем — иначе «груз авианосца» превратится в лог торговли.
         if not (is_carrier_market(market_id) or market_id == self.state.market_id):
             return False
+        if int(self.state.market_id or 0) not in (0, market_id):
+            self._switch_to(market_id)
         count = _as_int(event.get("Count"))
         if not count:
             return False
@@ -533,5 +617,22 @@ class CarrierTracker:
 
     def get_state_dict(self, need: Optional[Mapping[str, int]] = None,
                        need_label: str = "", need_source: str = "") -> Dict[str, Any]:
-        return self.state.get_state_dict(need, need_label=need_label,
+        data = self.state.get_state_dict(need, need_label=need_label,
                                          need_source=need_source)
+        others = []
+        for key, state in self.states().items():
+            if key == int(self.state.market_id or 0):
+                continue
+            if not (state.tracked_total or state.stats_seen):
+                continue
+            others.append({
+                "market_id": key,
+                "name": state.display_name() or f"FC {key}",
+                "kind": state.kind,
+                "kind_label": state.kind_label,
+                "tracked_total": state.tracked_total,
+                "stored": int(state.stored),
+            })
+        others.sort(key=lambda row: -int(row["tracked_total"] or 0))
+        data["other_carriers"] = others
+        return data

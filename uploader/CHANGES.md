@@ -1,3 +1,99 @@
+# Раунд 63 — 2.11.0: архитектор по факту, страница системы, зависания приложения, CARRIER, Exobio, выгрузки и вход на сайт
+
+## 1. Архитектор: «Уже построено в системе»
+
+* Новый модуль `src/lib/architect/existing.ts` переносит фактическую застройку
+  системы в план: станции и стройки RavenColonial/EDSM сопоставляются с
+  каталогом установок (`installationFromStationType`), добавляются в план и
+  сразу получают статус «построено» либо «в работе».
+* Маршрут `GET /api/architect/existing?system=…` собирает факт, панель
+  `src/components/Architect/ExistingPanel.tsx` даёт выбрать, что именно
+  применить. Тесты — `scripts/tests/architect-existing.test.mjs` (7).
+
+## 2. Страница системы в стиле сайта
+
+`src/app/system/[name]/page.tsx` перерисована по `DESIGN.md`: палитра
+CSS-переменных, панели без теней, радиусы ≤ 4, единая шапка с кнопками
+RavenColonial, «Архитектор системы», «Рынки рядом» и EDSM.
+
+## 3. Приложение больше не зависает после запуска
+
+Найдены и устранены три причины жёстких фризов окна:
+
+* `validate_token` выполнялся прямо в потоке Tk — вынесен в фоновый поток;
+* журналы читались синхронно при старте наблюдателя — теперь
+  `_watcher_thread_main` / `_prepare_watcher_state` работают в фоне;
+* `_determine_cmdr_system` читал `readlines()` по всем файлам `Journal.*.log`;
+  теперь читаются только хвосты, с лимитами `DETECT_SYSTEM_MAX_FILES = 8`
+  и `DETECT_SYSTEM_MAX_BYTES = 4 МБ` (восстановление состояния — 3 файла / 6 МБ).
+
+## 4. Оверлей CARRIER
+
+* `uploader/carrier.py`: трекер стал мультиносительным — состояние ведётся по
+  каждому `marketId`, у носителя есть вид (`kind`) и список `other_carriers`.
+  Эскадренный Javelin-Class распознаётся эвристикой по объёму трюма
+  (`SQUADRON_CARGO_HINT = 30 000` т против 25 000 т у Drake-Class), так как
+  отдельного типа станции и событий Squadron Bank в журнале нет.
+* `uploader/overlay.py`: ширина колонки названия считается динамически
+  (`_name_chars`), перерасчёт области прокрутки отложен
+  (`_schedule_scrollregion`), строки берутся из пула. **Список товаров не
+  сокращается** — оптимизировано только отображение; добавлена метка вида
+  носителя. Тесты: `tests/test_carrier.py::SquadronCarrierTests` (5).
+
+## 5. Выгрузка логов в EDSM и на RavenColonial
+
+Проверены `edsm_api.py`, `event_dispatch.py`, `raven_colonial_api.py`:
+обязательные `fromGameVersion` / `fromGameBuild`, разбор `msgnum`, ретраи,
+transient state, дедупликация и канонизация названий товаров — корректны.
+Исправлен пробел: список `EDSM_EVENTS` состоял всего из 8 событий и терял
+часть журнала. Теперь отправляются `Location, FSDJump, Docked, Undocked,
+CarrierJump, ApproachBody, LeaveBody, Touchdown, Liftoff, Scan, ScanBaryCentre,
+FSSDiscoveryScan, FSSAllBodiesFound, FSSBodySignals, SAAScanComplete,
+SAASignalsFound, CodexEntry, ApproachSettlement`.
+
+## 6. Предсказание биологии в оверлее Exobio
+
+Модель в `uploader/exobiology.py` откалибрована:
+
+* `percent = 100 · score / maximum · (COVERAGE_FLOOR + (1 − COVERAGE_FLOOR) ·
+  coverage)`, где `coverage = maximum / rule_weight_ceiling(genus)`,
+  `COVERAGE_FLOOR = 0.55`: неполные данные о теле больше не дают ложных 100 %;
+* роды, уже найденные в этой системе, получают `SYSTEM_CONTEXT_BONUS = 12`
+  (контекст собирает новый `ExobiologyTracker.system_genera()`);
+* подтверждённое DSS даёт 100 %, а хвост за пределами числа биосигналов
+  умножается на `SIGNAL_OVERFLOW_FACTOR = 0.6` и помечается `beyond_signals`,
+  а не обнуляется.
+
+Тесты: `PredictionCalibrationTests` (3) плюс переписанный тест процента;
+полный прогон — 1168 тестов.
+
+## 7. Версия
+
+`uploader/colonial_helper.py` — `VERSION = "2.11.0"`.
+
+## 8. Вход и регистрация на сайте
+
+* Сообщение «Отправка писем временно недоступна» выдаёт `requireEmailDelivery()`
+  (`src/lib/emailAuth.ts`) ровно при `AUTH_EMAIL_ENABLED !== 'true'` — это
+  конфигурация деплоя, а не ошибка кода.
+* Новый маршрут `GET /api/admin/email-health` показывает администратору
+  точную причину: флаг сайта, наличие anon-ключа, доступность Supabase
+  (с отдельным диагнозом проблемы TLS-сертификата — именно она даёт «иногда не
+  логинит»), а также `mailer_autoconfirm`, `disable_signup` и провайдер email
+  в живых настройках GoTrue. Для каждой непройденной проверки выводится, что
+  нужно поправить.
+
+## 9. Frontier CAPI
+
+* Новый `src/lib/capi/session.ts`: одна сессия на запрос обновляет токен
+  заранее по `expires_at` и повторяет **любой** вызов при 401/403/422. Раньше
+  обновление прикрывало только первый вызов, и синк падал, если токен истекал
+  между `/profile` и `/journal`.
+* `src/lib/capi/client.ts` шлёт осмысленный `User-Agent` (Frontier режет
+  анонимные запросы) и обрабатывает 422 в `/visitedstars`.
+* Маршруты `/api/capi/sync` и `/api/capi/journal` переведены на сессию.
+  Тесты: `scripts/tests/capi-session.test.mjs` (4).
+
 # Раунд 62 — 2.10.26: карта системы — движок three.js на сайте и сцена во вкладке приложения
 
 ## Задача

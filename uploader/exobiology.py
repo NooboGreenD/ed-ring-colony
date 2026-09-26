@@ -1008,6 +1008,30 @@ WEIGHT_MATERIAL = 1.0
 #: Ниже этого порога род в оверлей не попадает: лучше пусто, чем мусор.
 MIN_PREDICTION_PERCENT = 25
 
+# --- калибровка предсказания -------------------------------------------------
+#
+# Раньше процент считался как `score / maximum`, где `maximum` — сумма весов
+# только тех критериев, которые удалось проверить по этому телу. Побочный
+# эффект: род, у которого проверилась ровно одна характеристика, показывался
+# со 100 %, наравне с родом, сошедшимся по атмосфере, газу, классу, геологии и
+# температуре. Игрок садился на планету по «уверенному» прогнозу и не находил
+# ничего.
+#
+# Поэтому процент домножается на полноту данных: доля весов, которые вообще
+# удалось проверить, от всех весов правила рода.
+#: Какая часть процента держится на самом совпадении (остальное — на полноте).
+COVERAGE_FLOOR = 0.55
+#: Бонус за род, уже найденный в этой же системе: игра расселяет роды по
+#: системе, и повторная встреча — сильный сигнал. Значение подобрано так,
+#: чтобы бонус двигал порядок выдачи, но не перебивал прямое противоречие
+#: (противоречащие роды отсекаются раньше и бонуса не получают вовсе).
+SYSTEM_CONTEXT_BONUS = 12
+#: Насколько понижается процент у родов, не попавших в число био-сигналов DSS.
+#: Если DSS насчитал 2 сигнала, третий и далее род по списку физически не
+#: может расти на теле — но и исключать его нельзя: порядок нашей модели не
+#: обязан совпадать с порядком игры.
+SIGNAL_OVERFLOW_FACTOR = 0.6
+
 
 #: Атмосферы в журнале пишут то «sulfur», то «sulphur», то «SulfurDioxide», то
 #: «$Atmosphere_SulfurDioxide_Name;» — любое сравнение по подстроке на этом
@@ -1137,6 +1161,40 @@ def species_candidates(body: dict, genus: str, limit: int = 6) -> List[str]:
     return (matched or fallback)[:limit]
 
 
+def rule_weight_ceiling(genus: str) -> float:
+    """Сумма весов всех критериев правила рода — знаменатель полноты данных.
+
+    Показывает, сколько «доказательств» по этому роду вообще можно собрать,
+    если бы тело было просканировано полностью (DSS + состав атмосферы +
+    материалы). Сравнение с реально проверенными весами и даёт полноту.
+    """
+    rule = GENUS_RULES.get(genus) or {}
+    ceiling = 0.0
+    if rule.get("atmos"):
+        ceiling += WEIGHT_ATMOSPHERE
+    if rule.get("gases"):
+        ceiling += WEIGHT_GAS
+    if rule.get("classes"):
+        ceiling += WEIGHT_CLASS
+    if rule.get("geology"):
+        ceiling += WEIGHT_GEOLOGY
+    if rule.get("max_g") is not None:
+        ceiling += WEIGHT_GRAVITY
+    if rule.get("temp"):
+        ceiling += WEIGHT_TEMP
+    if rule.get("materials"):
+        ceiling += WEIGHT_MATERIAL
+    return ceiling
+
+
+def data_coverage(body: dict, genus: str, maximum: float) -> float:
+    """Доля критериев рода, которые удалось проверить по данным тела (0…1)."""
+    ceiling = rule_weight_ceiling(genus)
+    if ceiling <= 0:
+        return 1.0
+    return max(0.0, min(1.0, maximum / ceiling))
+
+
 def score_genus(body: dict, genus: str) -> Optional[Tuple[float, float, List[str], List[str]]]:
     """Оценка рода для тела: `(score, max, notes, species)` или None.
 
@@ -1259,13 +1317,26 @@ def predict_genera(body: dict, limit: Optional[int] = None) -> List[Tuple[str, f
 
 
 def prediction_rows(body: dict, limit: Optional[int] = None,
-                    first_discovery: Optional[bool] = None) -> List[Dict[str, Any]]:
+                    first_discovery: Optional[bool] = None,
+                    system_genera: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
     """То же, что `predict_genera`, но с процентом, видом и оценкой выплаты.
 
     Процент считается от максимума, достижимого именно для этого рода при
     данных конкретного тела, — «6» у Osseus и «3» у Bacterium иначе не
     сравнимы. Всё, что ниже `MIN_PREDICTION_PERCENT`, игроку не показывается.
     На телах без посадки био-прогноз отключен.
+
+    Поверх базовой оценки работают три поправки, которых раньше не было:
+
+    1. **Полнота данных.** Совпадение по одному проверяемому критерию больше
+       не даёт 100 %: процент домножается на долю критериев рода, которые
+       вообще удалось проверить (`data_coverage`). Досканируйте тело — процент
+       вырастет сам.
+    2. **Контекст системы** (`system_genera`): род, уже найденный на другом
+       теле этой системы, получает прибавку — игра расселяет роды по системе.
+    3. **Число био-сигналов DSS.** Если DSS насчитал N сигналов, роды за
+       пределами первых N в нашем списке понижаются: столько форм жизни на
+       теле физически нет.
     """
     if not body or not is_landable(body):
         return []
@@ -1280,12 +1351,25 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
 
     rows: List[Dict[str, Any]] = []
     confirmed = {normalize_genus(item) for item in (body.get("confirmed_genera") or [])}
+    # Роды, уже встреченные в этой системе (на других телах). Источник —
+    # вызывающая сторона: трекер знает все тела системы, модуль расчёта — нет.
+    context = {normalize_genus(item) for item in (system_genera or body.get("system_genera") or [])}
+    context -= confirmed
     for genus in GENUS_RULES:
         scored = score_genus(body, genus)
         if scored is None:
             continue
         score, maximum, notes, species = scored
-        percent = int(round(100 * score / maximum)) if maximum else 0
+        base = (100 * score / maximum) if maximum else 0.0
+        coverage = data_coverage(body, genus, maximum)
+        # Полнота данных: 55 % процента держится на самом совпадении, 45 % —
+        # на том, сколько критериев удалось проверить.
+        percent = int(round(base * (COVERAGE_FLOOR + (1 - COVERAGE_FLOOR) * coverage)))
+        if coverage < 1.0:
+            notes = list(notes) + [f"данных о теле: {int(round(coverage * 100))} %"]
+        if genus in context:
+            percent += SYSTEM_CONTEXT_BONUS
+            notes = list(notes) + ["род уже найден в этой системе"]
         if genus in confirmed:
             percent = 100
             notes = list(notes) + ["подтверждено DSS"]
@@ -1341,6 +1425,22 @@ def prediction_rows(body: dict, limit: Optional[int] = None,
         })
 
     rows.sort(key=lambda row: (not row["confirmed"], -row["percent"], -row["value_cr"], row["genus"]))
+
+    # Число био-сигналов DSS ограничивает, сколько родов на теле вообще есть.
+    # Роды за этой границей не выбрасываем (наш порядок не обязан совпадать с
+    # игровым), но понижаем — иначе список из восьми «вероятных» родов на теле
+    # с двумя сигналами вводил в заблуждение.
+    signals = int(body.get("bio_signals") or 0)
+    if signals > 0 and len(rows) > signals:
+        for index, row in enumerate(rows):
+            if index < signals or row["confirmed"]:
+                continue
+            row["percent"] = max(1, int(round(row["percent"] * SIGNAL_OVERFLOW_FACTOR)))
+            row["beyond_signals"] = True
+            row["notes"] = list(row["notes"]) + [f"сигналов DSS: {signals}"]
+        rows.sort(key=lambda row: (not row["confirmed"], -row["percent"],
+                                   -row["value_cr"], row["genus"]))
+
     return rows[:limit] if limit else rows
 
 
@@ -1642,6 +1742,32 @@ class ExobiologyTracker:
             elif no_first_footfall:
                 body["first_footfall_by"] = ""
 
+    def system_genera(self, system: str, exclude_key: str = "") -> List[str]:
+        """Роды, уже найденные в этой системе (кроме указанного тела).
+
+        Игра расселяет роды по системе: если на соседнем теле уже собран или
+        подтверждён DSS род, встретить его здесь заметно вероятнее. Считаем
+        только по фактам журнала — подтверждения DSS и собранные образцы.
+        """
+        wanted = str(system or "").strip().lower()
+        if not wanted:
+            return []
+        found: set = set()
+        for key, body in self.bodies.items():
+            if key == exclude_key:
+                continue
+            if str(body.get("system") or "").strip().lower() != wanted:
+                continue
+            for genus in body.get("confirmed_genera") or []:
+                normalized = normalize_genus(genus)
+                if normalized:
+                    found.add(normalized)
+            for species in (self.organics.get(key) or {}):
+                normalized = normalize_genus(self._genus_of(species))
+                if normalized:
+                    found.add(normalized)
+        return sorted(found)
+
     def current_body_state(self, now: Optional[float] = None) -> Optional[dict]:
         """Состояние текущего тела (с предсказанием и прогрессом образцов)."""
         key = self._key(self.current_system, self.current_body)
@@ -1687,7 +1813,12 @@ class ExobiologyTracker:
                 "seen_before": int(self.seen_species.get(species, 0) or 0) > samples,
             })
 
-        predictions = prediction_rows(body, first_discovery=no_first_footfall) if landable else []
+        predictions = prediction_rows(
+            body,
+            first_discovery=no_first_footfall,
+            # Контекст системы: роды, уже найденные на других её телах.
+            system_genera=self.system_genera(body.get("system", ""), exclude_key=key),
+        ) if landable else []
 
         return {
             "system": body.get("system", ""),
