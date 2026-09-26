@@ -133,7 +133,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -4518,18 +4518,36 @@ class ColonialHelperApp:
         if not hasattr(self, "_scans_to_upload"):
             self._scans_to_upload = []
         body_data = {
+            # Архитектору нужны не только название и посадочность: кольца,
+            # радиус, атмосфера, вулканизм и сигналы определяют доступные
+            # слоты и предупреждения по телу. Отправляем те же поля, которые
+            # понимает POST /api/atlas/system-bodies.
             "system_name": event.get("StarSystem") or self.system_map.current_system,
             "body_name": event.get("BodyName"),
             "body_id": event.get("BodyID"),
+            "body_type": "Star" if event.get("StarType") else "Planet",
             "sub_type": event.get("PlanetClass") or event.get("StarType"),
             "distance_ls": event.get("DistanceFromArrivalLS"),
+            "semi_major_axis_ls": event.get("SemiMajorAxis"),
+            "parents": event.get("Parents") or [],
             "radius_m": event.get("Radius"),
             "gravity": event.get("SurfaceGravity"),
+            "earth_masses": event.get("MassEM"),
+            "surface_pressure": event.get("SurfacePressure") or event.get("Pressure"),
             "surface_temp_k": event.get("SurfaceTemperature"),
             "atmosphere": event.get("Atmosphere") or event.get("AtmosphereType"),
+            "atmosphere_type": event.get("AtmosphereType"),
+            "atmosphere_composition": event.get("AtmosphereComposition") or [],
+            "solid_composition": event.get("Composition") or {},
+            "materials": event.get("Materials") or {},
+            "volcanism": event.get("Volcanism"),
+            "rings": event.get("Rings") or [],
+            "signals": event.get("Signals") or [],
+            "bio_genuses": event.get("Genuses") or [],
             "is_landable": bool(event.get("Landable")),
             "first_discovered_by": "Вы" if event.get("WasDiscovered") is False else None,
             "first_mapped_by": "Вы" if event.get("WasMapped") is False else None,
+            "first_footfall_by": "Вы" if event.get("WasFootfall") is False else None,
         }
         self._scans_to_upload.append(body_data)
         if len(self._scans_to_upload) >= 5 or (time.time() - getattr(self, "_last_scan_upload_time", 0.0)) > 60.0:
@@ -4546,9 +4564,18 @@ class ColonialHelperApp:
 
         def worker():
             try:
-                self.api_client.upload_system_scans(system, to_send)
+                result = self.api_client.upload_system_scans(
+                    system, to_send, cmdr=self._current_cmdr_name() or None,
+                )
+                if not result.get("ok"):
+                    # Не теряем сканы при кратком обрыве/401: они нужны
+                    # Архитектору для расчёта слотов и сигналов. Следующий
+                    # flush повторит тот же идемпотентный upsert.
+                    self._scans_to_upload = to_send + getattr(self, "_scans_to_upload", [])
+                    self.log(f"Сканы не отправлены, повторю позже: {result.get('error', 'ошибка')}", "warn")
             except Exception as exc:
-                self.log(f"Сбой отправки сканов: {exc}")
+                self._scans_to_upload = to_send + getattr(self, "_scans_to_upload", [])
+                self.log(f"Сбой отправки сканов, повторю позже: {exc}", "warn")
 
         threading.Thread(target=worker, daemon=True, name="UploadScans").start()
 

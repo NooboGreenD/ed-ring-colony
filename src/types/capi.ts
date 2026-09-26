@@ -4,6 +4,7 @@
 
 export interface CapiCommander {
   name: string;
+  id?: string;
 }
 
 export interface CapiRanks {

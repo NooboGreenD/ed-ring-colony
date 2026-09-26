@@ -13,6 +13,21 @@ import {
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
 
+async function loadJournalTelemetry(supabase: Awaited<ReturnType<typeof createClient>>, name: string) {
+  const { data, count, error } = await supabase
+    .from('construction_depot_snapshots')
+    .select('snapshot_at', { count: 'exact' })
+    .ilike('system_name', name)
+    .order('snapshot_at', { ascending: false })
+    .limit(1);
+  if (error) return { available: false, snapshots: 0, latestAt: null as string | null };
+  return {
+    available: (count ?? 0) > 0,
+    snapshots: count ?? 0,
+    latestAt: data?.[0]?.snapshot_at ?? null,
+  };
+}
+
 function mergeCached(
   names: { system_name: string; hub_name?: string; status?: string }[],
   cached: { system_name: string; progress: unknown; updated_at: string | null }[] | null,
@@ -39,8 +54,13 @@ export async function GET(req: Request) {
   const supabase = await createClient();
 
   if (name) {
+    // Uploader и Raven читаются параллельно. Журнальный snapshot даёт точные
+    // ресурсы последнего состояния, Raven — общий прогресс и вклад всех
+    // командиров; архитектору нужны оба источника, а не один вместо другого.
+    const telemetryPromise = loadJournalTelemetry(supabase, name);
     // 1. Пробуем RavenColonial напрямую
     const ravenData = await fetchRavenSystemProgress(name, enrichRavenSystemWithJournalSnapshots);
+    const telemetry = await telemetryPromise;
     if (ravenData.found && !ravenData.error) {
       // A system detail page is also a live Raven read. Store that same read
       // in the map cache so returning to /map cannot show an older 0% row.
@@ -77,6 +97,7 @@ export async function GET(req: Request) {
         totalRequired: ravenData.data?.totalRequired ?? null,
         totalProvided: ravenData.data?.totalProvided ?? null,
         totalRemaining: ravenData.data?.totalRemaining ?? 0,
+        telemetry,
         updated_at: ravenData.updated_at,
         error: ravenData.error,
       });
@@ -112,6 +133,7 @@ export async function GET(req: Request) {
         totalRequired: cachedData.totalRequired ?? null,
         totalProvided: cachedData.totalProvided ?? null,
         totalRemaining: cachedData.totalRemaining ?? 0,
+        telemetry,
         updated_at: cachedProgress?.updated_at ?? cached.updated_at,
         error: ravenData.error ? ravenData.error + ' Показаны сохранённые данные.' : undefined,
       });
@@ -152,6 +174,7 @@ export async function GET(req: Request) {
         totalRequired: null,
         totalProvided: null,
         totalRemaining: 0,
+        telemetry,
         error: ravenData.error || 'Данные о постройках не найдены.',
       });
     }
@@ -168,6 +191,7 @@ export async function GET(req: Request) {
       totalRequired: ravenData.data?.totalRequired ?? null,
       totalProvided: ravenData.data?.totalProvided ?? null,
       totalRemaining: ravenData.data?.totalRemaining ?? 0,
+      telemetry,
       updated_at: ravenData.updated_at,
       error: ravenData.error,
     });

@@ -1,8 +1,9 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-25.
-> Uploader release: 2.10.25.
+> Last updated: 2026-09-27.
+> Web/Uploader release: 2.12.0.
+> Frontier CAPI binding and Architect Uploader ↔ Raven dual-sync are included in this release.
 > Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://edringcolony.ru
@@ -271,6 +272,8 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
+| `capi_profiles` | Frontier CAPI cache keyed by `user_id`; includes ranks, CQC, loan, fleet and current location |
+| `capi_tokens` | Frontier OAuth/PKCE tokens keyed by the same `user_id` |
 | `galaxy_systems` | Full Spansh catalog (~2×10⁸ rows, GiST `cube` index): coords, main star class, permit. Public read. |
 
 ### 4.2 Key Relationships
@@ -526,9 +529,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Sync API: `/api/ravencolonial/sync`
 - Used for: Colonial data synchronization
 
-### 8.6 Colonial Helper uploader 2.2
+### 8.6 Colonial Helper uploader 2.12
 - Source: `uploader/colonial_helper.py`
-- Version: `2.3.0`
+- Version: `2.12.0`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -548,8 +551,8 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   delivery only while the commander is docked at a market that published a
   `ColonisationConstructionDepot`; `MarketSell` no longer suppresses the next
   `Cargo` snapshot. Historical rows keep `is_construction IS NULL` = site, so
-  existing dossiers never shrink. `PARSER_VERSION = 3` forces a re-import of
-  already-cached journals.
+  existing dossiers never shrink. `PARSER_VERSION = 5` forces a re-import of
+  already-cached journals after the expanded body-scan payload.
 - The website log importer (`/account` → `POST /api/logs/import`) parses with
   the same rules (`src/lib/journalParser.ts`) and, through the same pass, the
   same telemetry (`src/lib/journalTelemetry.ts`): construction snapshots,
@@ -562,6 +565,10 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Startup reconciliation processes unhandled bytes and shows byte/file progress
   in the desktop progress bar. Rotation is detected when file size decreases.
 - `source_hash` and server upsert keys make retries idempotent (deliveries since `20260911010000_delivery_import_idempotency.sql`, colonisation events since `20260928000000_colonisation_events_source_hash.sql`).
+- Scan batches sent by Colonial Helper use the same API token as deliveries and
+  include `cmdr`, body physics, atmosphere/composition, rings, signals and
+  `semi_major_axis_ls`; the server rejects more than 500 bodies and the helper
+  requeues a failed batch.
 - EDSM and Inara are independent external integrations and do not use the ED
   Ring Colony token.
 - EDSM requires `fromSoftware`, `fromSoftwareVersion`, `fromGameVersion` and
@@ -662,6 +669,10 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `path -> {size, mtime, parser}` so repeated imports skip unchanged files. The
   parser version (`PARSER_VERSION` in `journal_parser.py`) invalidates the cache
   when extraction rules change.
+- Architect progress reads Uploader snapshots and Raven Colonial in parallel:
+  Raven supplies the aggregate multi-pilot progress, while the latest journal
+  snapshot can provide exact resource totals. The UI marks the dual-source
+  state explicitly and warns when no Uploader snapshot exists.
 
 ### 8.7 Pilot infographic tab
 - The uploader has a `Пилот` tab with a **reworked infographic** (2.3.0): a KPI

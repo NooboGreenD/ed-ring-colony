@@ -72,6 +72,7 @@ function ProgressRow({ entry }: { entry: SiteProgress }) {
 interface ProgressPanelProps {
   systemName: string;
   report: ProgressReport | null;
+  telemetry?: { available: boolean; snapshots: number; latestAt: string | null } | null;
   loading: boolean;
   error: string;
   /** Откуда данные: 'raven' — из API, '' — ещё не запрашивали. */
@@ -79,7 +80,7 @@ interface ProgressPanelProps {
   onRefresh: () => void;
 }
 
-export default function ProgressPanel({ systemName, report, loading, error, source, onRefresh }: ProgressPanelProps) {
+export default function ProgressPanel({ systemName, report, telemetry, loading, error, source, onRefresh }: ProgressPanelProps) {
   const totals = report?.totals ?? null;
   const totalPercent = totals?.progress == null ? null : Math.max(0, Math.min(100, totals.progress));
   const started = report ? report.sites.filter((entry) => entry.actual !== null) : [];
@@ -96,6 +97,16 @@ export default function ProgressPanel({ systemName, report, loading, error, sour
         {systemName ? `Стройплощадки системы ${systemName}` : 'Сначала загрузите систему'}
         {source ? ` · источник: ${source}` : ''}
       </div>
+      {telemetry?.available ? (
+        <div style={{ marginTop: 8, padding: '7px 9px', border: '1px solid rgba(46,204,113,.35)', background: 'rgba(46,204,113,.06)', borderRadius: 4, fontSize: 11, color: 'var(--green)' }}>
+          <strong>Двойная сверка активна</strong> · Uploader передал {telemetry.snapshots} snapshot(ов), Raven Colonial даёт общий прогресс
+          {telemetry.latestAt ? ` · журнал ${new Date(telemetry.latestAt).toLocaleString('ru-RU')}` : ''}
+        </div>
+      ) : (
+        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--muted)' }}>
+          Uploader пока не передавал snapshots этой системы; отображаются данные Raven Colonial.
+        </div>
+      )}
 
       {error && <div style={{ ...errorText, marginTop: 8 }}>{error}</div>}
 

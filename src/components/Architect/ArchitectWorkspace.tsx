@@ -106,6 +106,8 @@ export default function ArchitectWorkspace() {
   const [progressLoading, setProgressLoading] = useState(false);
   const [progressError, setProgressError] = useState('');
   const [progressSource, setProgressSource] = useState('');
+  const [progressTelemetry, setProgressTelemetry] = useState<{ available: boolean; snapshots: number; latestAt: string | null } | null>(null);
+  const [bodyQuery, setBodyQuery] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
 
   const bodies = useMemo<ArchitectBody[]>(() => fromScanRecords(rawRows, systemName), [rawRows, systemName]);
@@ -115,6 +117,11 @@ export default function ArchitectWorkspace() {
     [plan, bodies],
   );
   const structures = useMemo(() => (plan ? planToStructures(plan) : []), [plan]);
+  const visibleBodies = useMemo(() => {
+    const query = bodyQuery.trim().toLocaleLowerCase();
+    if (!query) return bodies;
+    return bodies.filter((body) => `${body.name} ${body.subType}`.toLocaleLowerCase().includes(query));
+  }, [bodyQuery, bodies]);
   /** Отчёт пересчитывается при любой правке плана — площадки при этом не перезапрашиваются. */
   const progress = useMemo<ProgressReport | null>(
     () => (plan && progressFetched ? matchProgress(plan, actualSites) : null),
@@ -142,16 +149,19 @@ export default function ArchitectWorkspace() {
         setActualSites([]);
         setProgressFetched(false);
         setProgressSource('');
+        setProgressTelemetry(null);
         setProgressError(String(data?.error || `Прогресс недоступен (HTTP ${response.status})`));
         return;
       }
       setActualSites(parseActualSites(data));
       setProgressSource(String(data?.source || 'raven'));
+      setProgressTelemetry(data?.telemetry && typeof data.telemetry === 'object' ? data.telemetry : null);
       setProgressFetched(true);
     } catch (error) {
       setActualSites([]);
       setProgressFetched(false);
       setProgressSource('');
+      setProgressTelemetry(null);
       setProgressError(error instanceof Error ? error.message : 'Не удалось получить прогресс');
     } finally {
       setProgressLoading(false);
@@ -169,6 +179,7 @@ export default function ArchitectWorkspace() {
     setProgressFetched(false);
     setProgressError('');
     setProgressSource('');
+    setProgressTelemetry(null);
     setSourceStats(null);
     try {
       // Сверка на загрузке: сравниваются данные базы проекта и EDSM, для
@@ -466,13 +477,35 @@ export default function ArchitectWorkspace() {
               />
             </div>
 
+            {bodies.length > 0 && (
+              <>
+                <div className="architect-kpi-grid">
+                  <Kpi label="Тел в каталоге" value={bodies.length} tone="var(--cyan)" />
+                  <Kpi label="Построек в плане" value={plan.sites.length} tone="var(--orange)" />
+                  <Kpi label="Тоннаж" value={formatTons(evaluation.haulTons)} tone="var(--green)" />
+                  <Kpi label="Оценка системы" value={evaluation.score} tone="var(--orange)" />
+                </div>
+                <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Фильтр тел</span>
+                  <input
+                    value={bodyQuery}
+                    onChange={(event) => setBodyQuery(event.target.value)}
+                    placeholder="Название или класс тела"
+                    aria-label="Фильтр тел"
+                    style={{ ...inputStyle, flex: '1 1 220px', margin: 0 }}
+                  />
+                  <span style={{ color: 'var(--muted)', fontSize: 11 }}>{visibleBodies.length} из {bodies.length}</span>
+                </div>
+              </>
+            )}
+
             {bodies.length === 0 && (
               <div style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
                 Тела не загружены — планировать можно только по названию тела, проверка слотов будет недоступна.
               </div>
             )}
 
-            {bodies.map((body) => (
+            {visibleBodies.map((body) => (
               <BodyCard
                 key={body.name}
                 body={body}
@@ -501,6 +534,7 @@ export default function ArchitectWorkspace() {
             <ProgressPanel
               systemName={systemName}
               report={progress}
+              telemetry={progressTelemetry}
               loading={progressLoading}
               error={progressError}
               source={progressSource}
@@ -521,11 +555,24 @@ export default function ArchitectWorkspace() {
       )}
 
       <style>{`
+        .architect-kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+        @media (max-width: 640px) {
+          .architect-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
         @media (max-width: 980px) {
           .architect-grid { grid-template-columns: minmax(0, 1fr) !important; }
         }
       `}</style>
     </main>
+  );
+}
+
+function Kpi({ label, value, tone }: { label: string; value: string | number; tone: string }) {
+  return (
+    <div style={{ background: 'var(--panel)', border: '1px solid var(--line)', borderTop: `2px solid ${tone}`, borderRadius: 4, padding: '10px 12px', minWidth: 0 }}>
+      <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>{label}</div>
+      <div style={{ color: tone, fontFamily: 'ui-monospace, monospace', fontSize: 19, fontWeight: 700, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+    </div>
   );
 }
 

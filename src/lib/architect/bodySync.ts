@@ -53,6 +53,7 @@ export interface CompareSummary {
  * данные значением-заглушкой.
  */
 const FILLABLE_FIELDS = [
+  'semi_major_axis_ls',
   'radius_m',
   'gravity',
   'earth_masses',

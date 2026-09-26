@@ -179,6 +179,9 @@ type Props = {
   capiProfile?: {
     cmdr_name: string | null;
     credits: number | null;
+    loan?: number | null;
+    cqc_rank?: number | null;
+    frontier_id?: string | null;
     combat_rank: number | null;
     trade_rank: number | null;
     explore_rank: number | null;
@@ -187,6 +190,7 @@ type Props = {
     current_ship: string | null;
     current_system: string | null;
     current_station: string | null;
+    ships?: { shipType?: string; shipName?: string; shipIdent?: string }[] | null;
     last_updated: string | null;
   } | null;
   pilotStats?: {
@@ -1043,6 +1047,11 @@ export default function CmdrDossier(props: Props) {
                     color="#3b82f6"
                   />
                   <StatCard
+                    label="CQC"
+                    value={RANK_NAMES[props.capiProfile.cqc_rank ?? 0] ?? '—'}
+                    color="#06b6d4"
+                  />
+                  <StatCard
                     label="CR"
                     value={props.capiProfile.credits?.toLocaleString('ru-RU') ?? '—'}
                     color="#22c55e"
@@ -1076,6 +1085,8 @@ export default function CmdrDossier(props: Props) {
                       {showLocation ? (props.capiProfile.current_station ?? '—') : 'скрыто'}
                     </span>
                   </span>
+                  {showBalance && props.capiProfile.loan != null && <span>Займ: <span style={{ color: '#eeeeee' }}>{props.capiProfile.loan.toLocaleString('ru-RU')} CR</span></span>}
+                  {showLocation && props.capiProfile.ships && <span>Флот: <span style={{ color: '#eeeeee' }}>{props.capiProfile.ships.length} кораблей</span></span>}
                   {props.capiProfile.last_updated && (
                     <span style={{ marginLeft: 'auto' }}>
                       Обновлено:{' '}

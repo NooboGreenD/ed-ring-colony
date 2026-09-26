@@ -134,14 +134,17 @@ export function maskCapiProfile<T extends Record<string, any> | null | undefined
 ): T {
   if (!profile) return profile;
   const masked: Record<string, any> = { ...profile };
-  if (!privacy.balance && 'credits' in masked) masked.credits = null;
+  if (!privacy.balance) {
+    if ('credits' in masked) masked.credits = null;
+    if ('loan' in masked) masked.loan = null;
+  }
   if (!privacy.ranks) {
-    for (const field of ['combat_rank', 'trade_rank', 'explore_rank', 'empire_rank', 'federation_rank']) {
+    for (const field of ['combat_rank', 'trade_rank', 'explore_rank', 'empire_rank', 'federation_rank', 'cqc_rank']) {
       if (field in masked) masked[field] = null;
     }
   }
   if (!privacy.location) {
-    for (const field of ['current_ship', 'current_system', 'current_station']) {
+    for (const field of ['current_ship', 'current_system', 'current_station', 'ships']) {
       if (field in masked) masked[field] = null;
     }
   }
