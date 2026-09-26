@@ -26,9 +26,10 @@ export const UPDATE_PROTOCOL = '::edrc::';
  *
  * Поэтому агент сообщает свою версию в `/status`, а панель сверяет её со
  * своей и показывает предупреждение с кнопкой «Перезапустить агент».
- * Поднимайте число при любом изменении набора флагов запуска.
+ * Поднимайте число при изменении флагов запуска или возможностей управления
+ * агентом (v3: ручной restart больше не зависит от автоперезапуска).
  */
-export const UPDATE_AGENT_PROTOCOL = 2;
+export const UPDATE_AGENT_PROTOCOL = 3;
 
 export const UPDATE_STAGES = [
   { id: 'prepare', label: 'Проверка блокировок и репозитория', percent: 5 },
@@ -283,8 +284,14 @@ export function sanitizeAgentInfo(input) {
       : null,
     /** Умеет ли скрипт в клоне режим «только миграции» (без пересборки). */
     migrationsOnlySupported: raw.migrationsOnlySupported !== false,
-    /** Перезапустится ли агент сам (Docker/systemd поднимут процесс заново). */
+    /** Поддерживает ли агент явный перезапуск кнопкой администратора. */
     canRestart: raw.canRestart === true,
+    /**
+     * Включён ли автоматический перезапуск после успешного обновления.
+     * У протокола v2 отдельного поля не было: canRestart означал именно эту
+     * настройку, поэтому сохраняем корректную подпись при плавном обновлении.
+     */
+    autoRestart: raw.autoRestart === true || (raw.autoRestart == null && raw.canRestart === true),
   };
 }
 

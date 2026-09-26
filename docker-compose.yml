@@ -163,6 +163,10 @@ services:
       PROJECT_UPDATE_BRANCH: ${PROJECT_UPDATE_BRANCH:-main}
       PROJECT_DEPLOY_MODE: ${PROJECT_DEPLOY_MODE-compose}
       UPDATE_APPLY_MIGRATIONS: ${UPDATE_APPLY_MIGRATIONS:-1}
+      # 0 disables only the automatic post-update restart. The explicit
+      # admin-panel button remains available in either mode.
+      UPDATE_AGENT_SELF_RESTART: ${UPDATE_AGENT_SELF_RESTART:-1}
+      UPDATE_AGENT_RESTART_DELAY_SECONDS: ${UPDATE_AGENT_RESTART_DELAY_SECONDS:-12}
       UPDATE_STATE_DIR: /state
       UPDATE_HEALTH_URL: http://web:3000/api/health
       # pg_dump/pg_restore inside the updater talk to the self-hosted stack.

@@ -15,6 +15,7 @@ import {
   emptyUpdateState,
   parseProgressLine,
   publicUpdateView,
+  sanitizeAgentInfo,
   sanitizeLogLine,
   sanitizeUpdateState,
 } from '../lib/update-state.mjs';
@@ -204,6 +205,13 @@ test('config: агент, доступный не только с loopback, об
   // Лимиты резервной копии и применения ключей остаются прежними.
   assert.equal(defaultConfig.backupTimeoutMs, 120 * 60_000);
   assert.equal(defaultConfig.envTimeoutMs, 5 * 60_000);
+  assert.equal(defaultConfig.selfRestart, true, 'автоперезапуск включён по умолчанию');
+  assert.equal(updateAgentConfig({ UPDATE_AGENT_SELF_RESTART: '0' }).selfRestart, false,
+    'флаг отключает автоматику, но не ручной POST /restart');
+  assert.equal(sanitizeAgentInfo({ protocol: 2, canRestart: true }).autoRestart, true,
+    'у ответа v2 canRestart ещё означал включённую автоматику');
+  assert.equal(sanitizeAgentInfo({ protocol: 3, canRestart: true, autoRestart: false }).autoRestart, false,
+    'v3 передаёт возможность ручного и настройку автоматического перезапуска отдельно');
 });
 
 test('http contract: здоровье открыто, остальное — под токеном', async (t) => {
@@ -451,7 +459,8 @@ test('/status: агент рассказывает о себе, «только �
   const status = await (await fetch(origin + '/status', { headers: auth })).json();
   assert.equal(status.agent.protocol, UPDATE_AGENT_PROTOCOL, 'панель видит версию протокола агента');
   assert.equal(status.agent.migrationsOnlySupported, false, 'скрипт в клоне не умеет режим «только миграции»');
-  assert.equal(status.agent.canRestart, true, 'по умолчанию агент умеет перезапускаться сам');
+  assert.equal(status.agent.canRestart, true, 'агент поддерживает ручной перезапуск из панели');
+  assert.equal(status.agent.autoRestart, true, 'автоперезапуск по умолчанию включён');
   assert.equal(typeof status.agent.stale, 'boolean');
 
   const refused = await fetch(origin + '/update', { method: 'POST', headers: auth, body: JSON.stringify({ migrationsOnly: true }) });
@@ -466,7 +475,7 @@ test('/status: агент рассказывает о себе, «только �
   await waitFor(() => !manager.isBusy());
 });
 
-test('POST /restart: перезапуск планируется только у свободного агента и только если разрешён', { skip: needsBash }, async (t) => {
+test('POST /restart: ручной перезапуск свободного агента не зависит от настройки автоматики', { skip: needsBash }, async (t) => {
   // Задержка ставится предельной (120 с), чтобы таймер перезапуска не успел
   // сработать внутри теста: process.exit(0) убил бы весь прогон.
   const config = testConfig({ UPDATE_AGENT_RESTART_DELAY_SECONDS: '120' });
@@ -496,21 +505,28 @@ test('POST /restart: перезапуск планируется только у
   manager.stop();
   await waitFor(() => !manager.isBusy());
 
-  // Выключенный самоперезапуск — честный 503, а не молчаливое «принято».
-  const strict = testConfig({ UPDATE_AGENT_SELF_RESTART: '0' });
-  writeFileSync(strict.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
-  const strictManager = createUpdateManager(strict);
-  const strictServer = createUpdateServer({ config: strict, manager: strictManager });
-  const strictPort = await listen(strictServer);
-  t.after(async () => {
-    strictManager.stop();
-    await new Promise((done) => strictServer.close(done));
+  // UPDATE_AGENT_SELF_RESTART=0 выключает только автоматику. Явная кнопка
+  // администратора обязана работать — иначе предупреждение отправляет в SSH.
+  // Большая задержка не даёт process.exit завершить сам тестовый раннер.
+  const manualOnly = testConfig({
+    UPDATE_AGENT_SELF_RESTART: '0',
+    UPDATE_AGENT_RESTART_DELAY_SECONDS: '120',
   });
-  const denied = await fetch('http://127.0.0.1:' + strictPort + '/restart', { method: 'POST', headers: auth });
-  assert.equal(denied.status, 503);
-  const deniedBody = await denied.json();
-  assert.equal(deniedBody.ok, false);
-  assert.equal(deniedBody.agent.canRestart, false);
+  writeFileSync(manualOnly.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const manualManager = createUpdateManager(manualOnly);
+  const manualServer = createUpdateServer({ config: manualOnly, manager: manualManager });
+  const manualPort = await listen(manualServer);
+  t.after(async () => {
+    manualManager.stop();
+    await new Promise((done) => manualServer.close(done));
+  });
+  const accepted = await fetch('http://127.0.0.1:' + manualPort + '/restart', { method: 'POST', headers: auth });
+  assert.equal(accepted.status, 202);
+  const acceptedBody = await accepted.json();
+  assert.equal(acceptedBody.ok, true);
+  assert.equal(acceptedBody.agent.canRestart, true, 'ручная команда поддерживается');
+  assert.equal(acceptedBody.agent.autoRestart, false, 'автоматика остаётся выключенной');
+  assert.match(manualManager.status().log.map((line) => line.line).join('\n'), /перезапускаю update-agent/);
 });
 
 test('обновление, принёсшее нового агента, перезапускает его самого', { skip: needsBash }, async (t) => {
@@ -811,6 +827,8 @@ test('панель: журнал не мигает, а устаревший аг
   assert.match(tab, /agentInfo\?\.outdated === true/, 'панель предупреждает об устаревшем агенте');
   assert.match(tab, /Перезапустить агент/);
   assert.match(tab, /action: 'restart'/);
+  assert.match(tab, /agentInfo\.autoRestart/, 'панель различает автоматический и ручной перезапуск');
+  assert.match(tab, /После этого здесь появится кнопка/, 'для старой версии объяснён единственный ручной переход');
   // Подпись стадии не выдаётся за результат упавшего прогона.
   assert.match(tab, /update\.message && update\.state !== 'failed'/);
 });

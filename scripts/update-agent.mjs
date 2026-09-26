@@ -55,6 +55,10 @@
  *   ENV_FILE             the env file the panel edits (default <PROJECT_DIR>/.env.production)
  *   APPLY_ENV_SCRIPT     default <PROJECT_DIR>/deploy/apply-env.sh
  *   ENV_TIMEOUT_MINUTES  default 5 (a service recreate must be short)
+ *   UPDATE_AGENT_SELF_RESTART  "1" by default; "0" disables only the
+ *                        automatic restart after an update. POST /restart
+ *                        remains available to an administrator.
+ *   UPDATE_AGENT_RESTART_DELAY_SECONDS  default 12 (range 1–120)
  *
  * The agent is deliberately stateful-but-small: progress survives an agent
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
@@ -119,6 +123,16 @@ function runningEntry() {
   }
 }
 
+// Отпечатки фиксируются ПРИ СТАРТЕ процесса. Если агент запущен прямо из
+// смонтированного клона, `git merge` заменяет файл по тому же пути: повторное
+// чтение пути после обновления показало бы уже новый файл и ложно заявило,
+// что старый загруженный в память код актуален.
+const STARTED_ENTRY = runningEntry();
+const STARTED_REVISION = STARTED_ENTRY ? fileRevision(STARTED_ENTRY) : null;
+const STARTED_SHARED_REVISION = STARTED_ENTRY
+  ? fileRevision(join(dirname(STARTED_ENTRY), 'lib', 'update-state.mjs'))
+  : null;
+
 /**
  * Свежесть самого агента.
  *
@@ -133,15 +147,21 @@ function runningEntry() {
  * а после успешного обновления агент перезапускается сам.
  */
 export function agentSourceInfo(config, extra = {}) {
-  const entry = runningEntry();
+  const entry = STARTED_ENTRY;
   const repoEntry = join(config.projectDir, 'scripts', 'update-agent.mjs');
   const repoShared = join(config.projectDir, 'scripts', 'lib', 'update-state.mjs');
-  const runningRevision = entry ? fileRevision(entry) : null;
+  const runningRevision = STARTED_REVISION;
+  const runningSharedRevision = STARTED_SHARED_REVISION;
   const repoRevision = fileRevision(repoEntry);
+  const repoSharedRevision = fileRevision(repoShared);
   const fromRepo = Boolean(entry) && resolve(entry) === resolve(repoEntry);
   // Клон может быть неполным (нет scripts/) — тогда сравнивать не с чем и
-  // «устаревшим» агент не считается: иначе панель пугала бы зря.
-  const stale = Boolean(runningRevision && repoRevision && runningRevision !== repoRevision);
+  // «устаревшим» агент не считается: иначе панель пугала бы зря. Сравниваем
+  // с отпечатками старта, а не перечитываем исполняемый путь после git merge.
+  const stale = Boolean(
+    (runningRevision && repoRevision && runningRevision !== repoRevision)
+    || (runningSharedRevision && repoSharedRevision && runningSharedRevision !== repoSharedRevision),
+  );
   let migrationsOnlySupported = true;
   try {
     migrationsOnlySupported = readFileSync(config.script, 'utf8').includes('UPDATE_MIGRATIONS_ONLY');
@@ -154,9 +174,14 @@ export function agentSourceInfo(config, extra = {}) {
     fromRepo,
     revision: runningRevision,
     repoRevision,
-    sharedRevision: fileRevision(repoShared),
+    sharedRevision: runningSharedRevision,
+    repoSharedRevision,
     migrationsOnlySupported,
-    canRestart: config.selfRestart,
+    // Ручной POST /restart доступен независимо от настройки автоматического
+    // перезапуска. UPDATE_AGENT_SELF_RESTART=0 должен отключать только
+    // автоматический выход после обновления, а не кнопку администратора.
+    canRestart: true,
+    autoRestart: config.selfRestart,
     ...extra,
   };
 }
@@ -203,7 +228,8 @@ export function updateAgentConfig(env = process.env) {
     // поднимает супервизор (Docker `restart: unless-stopped` или systemd
     // `Restart=always`). Так агент подхватывает собственный новый код —
     // без этого он навсегда остаётся тем, каким был при первой сборке.
-    // UPDATE_AGENT_SELF_RESTART=0 отключает поведение.
+    // UPDATE_AGENT_SELF_RESTART=0 отключает только автоматическое поведение;
+    // явный POST /restart из админки остаётся доступен.
     selfRestart: (env.UPDATE_AGENT_SELF_RESTART ?? '1').toString().trim() !== '0',
     /** Пауза перед перезапуском: панель успевает забрать финальный статус. */
     selfRestartDelayMs: Math.min(120_000, Math.max(1_000, (Number(env.UPDATE_AGENT_RESTART_DELAY_SECONDS) || 12) * 1_000)),
@@ -271,13 +297,15 @@ export function createUpdateManager(config) {
   }
 
   /**
-   * Перезапуск агента после обновления, если его собственный код в клоне стал
-   * новее исполняемого. Процесс просто завершает работу — Docker/systemd
-   * поднимут его заново уже с новым кодом (см. deploy/Dockerfile.update-agent:
-   * контейнер запускает файл из смонтированного клона).
+   * Завершить агент с задержкой, чтобы Docker/systemd подняли его с новым
+   * кодом (контейнер запускает файл из смонтированного клона).
+   *
+   * UPDATE_AGENT_SELF_RESTART управляет только автоматическим перезапуском
+   * после обновления. Явная команда администратора (`manual: true`) должна
+   * работать и при значении 0 — именно для этого в панели есть кнопка.
    */
-  function scheduleSelfRestart(reason) {
-    if (!config.selfRestart || restartTimer) return false;
+  function scheduleRestart(reason, { manual = false } = {}) {
+    if ((!manual && !config.selfRestart) || restartTimer) return false;
     appendLog(`перезапускаю update-agent: ${reason}`);
     restartTimer = setTimeout(() => {
       // Никогда не бросаем прогон на середине: если к этому моменту снова
@@ -480,7 +508,7 @@ export function createUpdateManager(config) {
           // иначе следующий прогон снова пойдёт по старым правилам (именно
           // из-за этого флажки панели могли «не влиять» на сборку).
           if (!isBackup && !envApply && agentSourceInfo(config).stale) {
-            scheduleSelfRestart('в клоне лежит более новая версия агента');
+            scheduleRestart('в клоне лежит более новая версия агента');
           }
         } else {
           // Причина сбоя: сначала явное сообщение об ошибке от скрипта
@@ -512,10 +540,13 @@ export function createUpdateManager(config) {
       abort();
       return true;
     },
-    /** Завершить процесс, чтобы супервизор поднял агента с новым кодом. */
+    /**
+     * Явно завершить процесс по команде администратора. Эта операция не
+     * зависит от UPDATE_AGENT_SELF_RESTART: флаг запрещает только автоматику.
+     */
     restart(reason = 'запрос оператора') {
       if (state.state === 'running') return false;
-      return scheduleSelfRestart(reason);
+      return scheduleRestart(reason, { manual: true });
     },
   };
 }
@@ -764,9 +795,9 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
           return;
         }
         const scheduled = manager.restart('запрос из панели администратора');
-        send(response, scheduled ? 202 : 503, {
+        send(response, scheduled ? 202 : 409, {
           ok: scheduled,
-          error: scheduled ? null : 'Самоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0)',
+          error: scheduled ? null : 'Перезапуск update-agent уже запланирован',
           agent: agentSourceInfo(config, { startedAt: manager.startedAt ?? null }),
         });
         return;
