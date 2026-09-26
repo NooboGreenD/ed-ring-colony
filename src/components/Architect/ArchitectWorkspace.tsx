@@ -59,6 +59,22 @@ function readRecent(): string[] {
   }
 }
 
+/**
+ * Человеко-читаемое описание того, откуда взяты тела: при сверке (`compare`)
+ * показывает разбивку база/EDSM/уточнено, иначе — старую короткую подпись.
+ */
+function describeSourceStats(
+  source: string,
+  stats: { database: number; edsm: number; merged: number; total: number } | null,
+): string {
+  if (!stats || stats.total === 0) return source || '—';
+  const parts: string[] = [];
+  if (stats.database > 0) parts.push(`база: ${stats.database}`);
+  if (stats.edsm > 0) parts.push(`EDSM: ${stats.edsm}`);
+  if (stats.merged > 0) parts.push(`уточнено: ${stats.merged}`);
+  return `сверено с EDSM (${parts.join(', ')})`;
+}
+
 function writeRecent(system: string) {
   if (typeof window === 'undefined') return;
   const next = [system, ...readRecent().filter((item) => item.toLowerCase() !== system.toLowerCase())].slice(0, 8);
@@ -74,6 +90,8 @@ export default function ArchitectWorkspace() {
   const [systemName, setSystemName] = useState('');
   const [rawRows, setRawRows] = useState<Record<string, unknown>[]>([]);
   const [source, setSource] = useState('');
+  /** Сколько тел взято из базы проекта / EDSM / уточнено сверкой обоих источников. */
+  const [sourceStats, setSourceStats] = useState<{ database: number; edsm: number; merged: number; total: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState('');
@@ -151,15 +169,21 @@ export default function ArchitectWorkspace() {
     setProgressFetched(false);
     setProgressError('');
     setProgressSource('');
+    setSourceStats(null);
     try {
-      const response = await fetch(`/api/atlas/system-bodies?system=${encodeURIComponent(target)}`, { cache: 'no-store' });
+      // Сверка на загрузке: сравниваются данные базы проекта и EDSM, для
+      // каждого тела остаётся более точный/свежий источник (см. ARCHITECT.md,
+      // раздел «Сверка тел с EDSM»), а не «база, если она не пустая».
+      const response = await fetch(`/api/atlas/system-bodies?system=${encodeURIComponent(target)}&compare=1`, { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
       const rows = Array.isArray(data?.bodies) ? data.bodies : [];
+      const stats = data?.sources && typeof data.sources === 'object' ? data.sources : null;
       if (rows.length === 0) {
         setRawRows([]);
         setSystemName(target);
         setSource('');
+        setSourceStats(stats);
         setLoadError('Тел в системе не найдено: проверьте название или загрузите сканы через Colonial Helper.');
         setPlan(overridePlan ?? createPlan(target));
         void loadProgress(target);
@@ -168,6 +192,7 @@ export default function ArchitectWorkspace() {
       setRawRows(rows);
       setSystemName(target);
       setSource(String(data?.source || 'edsm'));
+      setSourceStats(stats);
       setSystemInput(target);
       writeRecent(target);
       setRecent(readRecent());
@@ -380,7 +405,7 @@ export default function ArchitectWorkspace() {
         {notice && <div style={{ marginTop: 10, color: 'var(--orange)', fontSize: 13 }}>{notice}</div>}
         {!loadError && systemName && (
           <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>
-            Тел: {bodies.length} · источник: {source || '—'}
+            Тел: {bodies.length} · источник: {describeSourceStats(source, sourceStats)}
             {plan && plan.sites.length > 0 ? ` · в плане: ${plan.sites.length}` : ''}
           </div>
         )}
