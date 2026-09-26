@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -193,15 +193,13 @@ test('config: агент, доступный не только с loopback, об
   assert.equal(script.applyMigrations, true, 'миграции по умолчанию применяются');
   assert.equal(updateAgentConfig({ UPDATE_APPLY_MIGRATIONS: '0' }).applyMigrations, false);
 
-  // Лимита сборки по умолчанию НЕТ: «45 минут билда» отменены, холодная
-  // сборка укладывается столько, сколько нужно. Ограничение — только
-  // явное, положительным числом минут.
+  // У полного обновления лимита НЕТ даже при унаследованном значении 45 в
+  // .env.production. Иначе долгий бэкап съедает почти весь бюджет и сборка
+  // принудительно обрывается уже через несколько минут.
   const defaultConfig = updateAgentConfig({});
-  assert.equal(defaultConfig.timeoutMs, null, 'по умолчанию обновление не ограничено по времени');
-  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: '0' }).timeoutMs, null, '0/off — лимита нет');
-  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: 'unlimited' }).timeoutMs, null);
-  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: 'мусор' }).timeoutMs, null, 'мусор не включает лимит обратно');
-  assert.equal(updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: '45' }).timeoutMs, 45 * 60_000, 'явное число минут — действующий лимит');
+  assert.equal('timeoutMs' in defaultConfig, false, 'таймер полного обновления удалён из конфигурации');
+  assert.equal('timeoutMs' in updateAgentConfig({ UPDATE_TIMEOUT_MINUTES: '45' }), false,
+    'устаревшая переменная UPDATE_TIMEOUT_MINUTES игнорируется');
   // Лимиты резервной копии и применения ключей остаются прежними.
   assert.equal(defaultConfig.backupTimeoutMs, 120 * 60_000);
   assert.equal(defaultConfig.envTimeoutMs, 5 * 60_000);
@@ -339,6 +337,7 @@ test('abort: остановка по-человечески помечает с�
 
   assert.equal(await waitFor(() => !manager.isBusy()), true);
   assert.equal(manager.status().state, 'aborted');
+  assert.notEqual(manager.status().exitCode, 0, 'остановленная задача не должна выглядеть успешно завершившейся');
   // Повторная остановка — не ошибка, а «нечего останавливать».
   assert.equal((await fetch('http://127.0.0.1:' + port + '/abort', { method: 'POST', headers: auth })).status, 409);
 });
@@ -383,6 +382,20 @@ test('http contract: флажки панели (тесты/бэкап/мигра
   await waitFor(() => !manager.isBusy());
   assert.match(manager.status().log.map((line) => line.line).join('\n'), /flags: tests=0 backup=0 only=1 migrations=1/,
     'migrationsOnly принудительно включает миграции и не даёт выключить их запросом');
+});
+
+test('полное обновление не получает таймер даже из старой конфигурации агента', { skip: needsBash }, async (t) => {
+  const config = testConfig({ UPDATE_TIMEOUT_MINUTES: '45' });
+  // Эмулируем и старое поле объекта config: менеджер не должен использовать
+  // его ни при каком значении. Короткий лимит сразу поймает регрессию.
+  config.timeoutMs = 20;
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'sleep 0.15', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  t.after(() => manager.stop());
+
+  assert.equal(manager.start({}).started, true);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+  assert.equal(manager.status().state, 'succeeded', 'живой update может выполняться сколько потребуется');
 });
 
 test('сбой прогона: в панель едет причина из вывода, а не подпись стадии', { skip: needsBash }, async (t) => {
@@ -546,9 +559,7 @@ test('обновление, принёсшее нового агента, пер
     'после успешного обновления агент уходит на перезапуск, иначе флажки панели так и останутся без действия');
 });
 
-test('crashed updater does not stick the panel in running state', () => {
-  // Таймаут задан явно: тест проверяет саму логику «running без процесса
-  // старше лимита → failed» и не зависит от дефолта UPDATE_TIMEOUT_MINUTES.
+test('устаревший UPDATE_TIMEOUT_MINUTES=45 не обрывает и не помечает обновление ошибкой', () => {
   const config = testConfig({ UPDATE_TIMEOUT_MINUTES: '45' });
   mkdirSync(config.stateDir, { recursive: true });
   writeFileSync(config.stateFile, JSON.stringify({
@@ -560,15 +571,12 @@ test('crashed updater does not stick the panel in running state', () => {
     log: [],
   }));
   const manager = createUpdateManager(config);
-  const status = manager.status();
-  assert.equal(status.state, 'failed', 'почасовой running без процесса — следствие рестарта хоста');
-  assert.match(status.error, /перезагружался/);
-  assert.equal(manager.isBusy(), false, 'кнопка снова активна');
-  assert.equal(existsSync(config.stateFile), true);
+  assert.equal(manager.status().state, 'running', 'старое значение 45 полностью игнорируется');
+  assert.equal(manager.isBusy(), true);
 });
 
 test('без лимита времени: свежий сбойный running не трогается, «вечный» — снимается', () => {
-  // Дефолт UPDATE_TIMEOUT_MINUTES снят («45 минут билда» отменены): один час
+  // UPDATE_TIMEOUT_MINUTES полностью игнорируется: один час
   // без процесса — это ещё может быть легитимная (после рестарта агента)
   // история, а многочасовой running без процесса обязан разблокировать панель.
   const writeStale = (minutesAgo) => {

@@ -42,12 +42,11 @@
  *   UPDATE_SCRIPT        default <PROJECT_DIR>/deploy/update-project.sh
  *   UPDATE_STATE_DIR     lock + state file (default <PROJECT_DIR>/../update-state)
  *   UPDATE_APPLY_MIGRATIONS  "1" (default) or "0"
- *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES — лимит длительного обновления;
- *        по умолчанию БЕЗ ограничения (сборка не убивается по времени):
- *        0/off/unlimited или вовсе не задан — лимита нет; положительное
- *        число — вернуть ограничение в минутах. Сломавшийся «running» без
- *        процесса (рестарт хоста) разблокируется сам через 6 часов либо
- *        кнопкой «Остановить».
+ *   UPDATE_HEALTH_URL     endpoint checked after switching services.
+ *   UPDATE_TIMEOUT_MINUTES is deprecated and ignored: a project update has
+ *        no wall-clock limit. A stale persisted «running» without a live
+ *        child (for example after a host restart) is still unlocked after
+ *        6 hours or by the «Остановить» button.
  *   BACKUP_SCRIPT        default <PROJECT_DIR>/deploy/db-backup.sh
  *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
  *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
@@ -90,20 +89,6 @@ const MAX_BODY_BYTES = 64 * 1024;
  * 6 часов — с запасом больше любой реальной холодной сборки.
  */
 const STALE_RUNNING_LIMIT_MS = 6 * 60 * 60 * 1000;
-
-/**
- * Лимит обновления в минутах → миллисекунды. Пусто / 0 / off / unlimited →
- * null — лимита нет, скрипт сборки не останавливается по времени («45 минут
- * билда» отменены); положительное число → действующее ограничение.
- */
-export function parseUpdateTimeoutMs(raw) {
-  const text = String(raw ?? '').trim().toLowerCase();
-  if (!text) return null;
-  if (text === '0' || text === '-1' || text === 'off' || text === 'none' || text === 'unlimited' || text === 'false') return null;
-  const minutes = Number(text);
-  if (!Number.isFinite(minutes) || minutes <= 0) return null;
-  return Math.max(60_000, Math.round(minutes) * 60_000);
-}
 
 /** Короткий отпечаток файла (или null, если файла нет). */
 function fileRevision(file) {
@@ -219,11 +204,10 @@ export function updateAgentConfig(env = process.env) {
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
     applyMigrations: (env.UPDATE_APPLY_MIGRATIONS ?? '1').toString().trim() !== '0',
     healthUrl: (env.UPDATE_HEALTH_URL || 'http://127.0.0.1:3000/api/health').trim(),
-    // Лимита сборки по умолчанию НЕТ: холодная сборка на малом VPS занимает
-    // десятки минут и не должна убиваться по времени. Ограничение — только
-    // явное: UPDATE_TIMEOUT_MINUTES=<число> в .env.production (старое
-    // «45» там стоит — удалите строку или поставьте 0).
-    timeoutMs: parseUpdateTimeoutMs(env.UPDATE_TIMEOUT_MINUTES),
+    // У полного обновления намеренно нет wall-clock таймера. Даже старое
+    // UPDATE_TIMEOUT_MINUTES=45 в окружении игнорируется: бэкап большой БД,
+    // npm test и холодная Docker-сборка суммарно легко занимают больше часа.
+    // Остановить живой прогон можно только явно через POST /abort.
     // Перезапуск агента после обновления: процесс просто завершается, а его
     // поднимает супервизор (Docker `restart: unless-stopped` или systemd
     // `Restart=always`). Так агент подхватывает собственный новый код —
@@ -346,13 +330,13 @@ export function createUpdateManager(config) {
     isBusy: () => state.state === 'running' || state.state === 'queued',
     status() {
       // A crashed host (state left as "running") must not block the panel
-      // forever: after the limit the state is reported as failed. The build
-      // itself may have NO limit (timeoutMs = null) — then the generic
-      // 6-hour stale threshold applies; «abort» frees the panel earlier.
+      // forever: after the limit the persisted state is reported as failed.
+      // This check runs only when there is NO live child; a real update has no
+      // wall-clock limit and continues for as many hours as it needs.
       if (state.state === 'running' && state.startedAt && !child) {
         const limit = state.kind === 'backup' ? config.backupTimeoutMs
           : state.kind === 'env' ? config.envTimeoutMs
-          : config.timeoutMs ?? STALE_RUNNING_LIMIT_MS;
+          : STALE_RUNNING_LIMIT_MS;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
             state: 'failed',
@@ -478,10 +462,11 @@ export function createUpdateManager(config) {
         }
       });
 
-      // Лимит времени: у сборки по умолчанию его НЕТ (config.timeoutMs =
-      // null) — длинный билд не убивается по часам; у бэкапа и применения
-      // ключей лимиты остаются, они никогда не бывают долгими.
-      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : config.timeoutMs;
+      // Полное обновление НЕ имеет лимита времени: резервная копия большой
+      // базы + тесты + холодная сборка могут идти несколько часов. Таймеры
+      // остаются только у отдельных ручных задач backup/env; остановка
+      // обновления возможна лишь явной кнопкой администратора.
+      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : null;
       if (timeoutMs) {
         timer = setTimeout(() => {
           appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
@@ -501,7 +486,9 @@ export function createUpdateManager(config) {
         child = null;
         const aborted = state.state === 'aborted' || code === null;
         if (aborted) {
-          finish({ state: 'aborted', exitCode: code, error: state.error || `${jobLabel} остановлено` });
+          // SIGTERM иногда успевает завершить shell с code=0. Для остановленной
+          // задачи «код 0» вводит в заблуждение: это не успешный результат.
+          finish({ state: 'aborted', exitCode: typeof code === 'number' && code > 0 ? code : null, error: state.error || `${jobLabel} остановлено` });
         } else if (code === 0) {
           finish({ state: 'succeeded', percent: 100, stage: 'done', exitCode: 0, error: null });
           // Обновление принесло новый код и самому агенту: перезапускаемся,

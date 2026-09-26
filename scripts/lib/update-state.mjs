@@ -186,7 +186,9 @@ export function sanitizeUpdateState(input) {
     startedAt: isoOrNull(raw.startedAt),
     updatedAt: isoOrNull(raw.updatedAt),
     finishedAt: isoOrNull(raw.finishedAt),
-    exitCode: clampNumber(raw.exitCode, 0, 255, null),
+    // Number(null) === 0, но отсутствие кода завершения не означает успех.
+    // Иначе остановленный по SIGTERM прогон показывался как «(код 0)».
+    exitCode: raw.exitCode == null ? null : clampNumber(raw.exitCode, 0, 255, null),
     mode: typeof raw.mode === 'string' && /^[a-z-]{1,24}$/.test(raw.mode) ? raw.mode : null,
     branch: typeof raw.branch === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(raw.branch) ? raw.branch : null,
     fromSha: shaOrNull(raw.fromSha),

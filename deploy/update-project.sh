@@ -395,8 +395,8 @@ if [ "$MODE" = "compose" ]; then
   # docker compose читает build-args из .env — держим symlink актуальным.
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
   # На малом VPS эта стадия — 30–60 минут (npm ci при смене lock-файла,
-  # тесты, next build): это норма, а не зависание. Таймаута на сборку по
-  # умолчанию нет (см. UPDATE_TIMEOUT_MINUTES в update-agent).
+  # тесты, next build): это норма, а не зависание. Полный update-agent не
+  # ограничивает прогон по времени; UPDATE_TIMEOUT_MINUTES игнорируется.
   #
   # Сборка и переключение разведены на два шага. Причин две:
   #   • флажок «с тестами» передаётся явным --build-arg RUN_TESTS=…, а не
