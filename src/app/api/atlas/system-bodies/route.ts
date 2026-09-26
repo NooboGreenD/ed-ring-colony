@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { signalsFromRecord, signalsToColumns } from '@/lib/bodySignals';
+import { compareSystemBodies, normalizeEdsmBody } from '@/lib/architect/bodySync';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,9 +33,61 @@ export async function GET(req: Request) {
     const { searchParams } = new URL(req.url);
     const system = (searchParams.get('system') || searchParams.get('name') || '').trim();
     const forceRefresh = searchParams.get('refresh') === '1';
+    // Режим сверки: используется «Архитектором» — оба источника запрашиваются
+    // всегда, а не только когда база пустая, и для каждого тела побеждает
+    // более точный/свежий источник (см. src/lib/architect/bodySync.ts).
+    const compareMode = searchParams.get('compare') === '1';
 
     if (!system) {
       return NextResponse.json({ error: 'system parameter is required' }, { status: 400 });
+    }
+
+    if (compareMode) {
+      const [dbResult, edsmBodies] = await Promise.all([
+        supabaseAdmin
+          .from('system_scans')
+          .select('*')
+          .ilike('system_name', system)
+          .order('distance_ls', { ascending: true }),
+        fetchEdsmBodies(system),
+      ]);
+
+      const dbRows = (!dbResult.error && Array.isArray(dbResult.data)) ? dbResult.data : [];
+      const edsmRows = (edsmBodies ?? []).map((b: any) => normalizeEdsmBody(system, b));
+
+      if (dbRows.length === 0 && edsmRows.length === 0) {
+        return NextResponse.json({
+          ok: true,
+          system,
+          count: 0,
+          source: 'none',
+          sources: { database: 0, edsm: 0, merged: 0, total: 0 },
+          bodies: [],
+        });
+      }
+
+      const { bodies, stats, toUpsert } = compareSystemBodies(dbRows, edsmRows);
+
+      // Дозаписываем в базу проекта только то, что сверка реально уточнила —
+      // не блокируя ответ при сбое записи.
+      if (toUpsert.length > 0) {
+        try {
+          await supabaseAdmin.from('system_scans').upsert(toUpsert, {
+            onConflict: 'system_name,body_name',
+          });
+        } catch (saveErr: any) {
+          console.warn('[system-bodies] Failed caching compared bodies into DB:', saveErr.message);
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        system,
+        count: bodies.length,
+        source: 'compare',
+        sources: stats,
+        bodies,
+      });
     }
 
     // 1. Поиск в БД проекта
@@ -69,45 +122,7 @@ export async function GET(req: Request) {
     }
 
     // 3. Форматируем и сохраняем тела из EDSM в базу данных проекта
-    const rowsToInsert = edsmBodies.map((b: any) => ({
-      system_name: system,
-      body_name: b.name || `${system} Body`,
-      body_id: b.bodyId ?? null,
-      body_type: b.type || (b.subType?.toLowerCase().includes('star') ? 'Star' : 'Planet'),
-      sub_type: b.subType || null,
-      distance_ls: typeof b.distanceToArrival === 'number' ? b.distanceToArrival : 0,
-      parents: Array.isArray(b.parents) ? b.parents : [],
-      radius_m: typeof b.radius === 'number' ? b.radius * 1000 : (typeof b.solarRadius === 'number' ? b.solarRadius * 6.957e8 : 0),
-      gravity: typeof b.gravity === 'number' ? b.gravity : 0,
-      earth_masses: typeof b.earthMasses === 'number' ? b.earthMasses : (typeof b.solarMasses === 'number' ? b.solarMasses * 333000 : 0),
-      surface_temp_k: typeof b.surfaceTemperature === 'number' ? b.surfaceTemperature : 0,
-      surface_pressure: typeof b.surfacePressure === 'number' ? b.surfacePressure : 0,
-      volcanism: b.volcanismType || null,
-      atmosphere: b.atmosphereType || null,
-      atmosphere_type: b.atmosphereType || null,
-      atmosphere_composition: Array.isArray(b.atmosphereComposition) ? b.atmosphereComposition : [],
-      solid_composition: b.solidComposition && typeof b.solidComposition === 'object' ? b.solidComposition : {},
-      materials: b.materials && typeof b.materials === 'object' ? b.materials : {},
-      rings: Array.isArray(b.rings) ? b.rings : [],
-      is_landable: !!b.isLandable,
-      // EDSM сигналы тел не отдаёт: они появляются только из журнала игрока
-      // (FSSBodySignals/SAASignalsFound), поэтому здесь честные нули.
-      bio_signals_count: 0,
-      geo_signals_count: 0,
-      human_signals_count: 0,
-      thargoid_signals_count: 0,
-      guardian_signals_count: 0,
-      other_signals_count: 0,
-      signals: [],
-      bio_genuses: [],
-      first_discovered_by: b.discovery?.commander || null,
-      first_mapped_by: null,
-      first_footfall_by: null,
-      scanned_by_cmdr: null,
-      source: 'edsm',
-      raw_data: b,
-      updated_at: new Date().toISOString(),
-    }));
+    const rowsToInsert = edsmBodies.map((b: any) => normalizeEdsmBody(system, b));
 
     // Фоновая запись в базу данных (не блокируя ответ при сбоях)
     try {
