@@ -14,7 +14,7 @@
 | Callback | `src/app/api/auth/yandex/callback/route.ts` |
 | Статус/отвязка в профиле | `src/app/api/auth/yandex/route.ts` (GET/DELETE) |
 | Кнопки на `/login` и `/account` | `src/components/AuthMethods.tsx` (рендерятся только если `/api/auth/providers` вернул `yandex: true`) |
-| Таблица соответствий Яндекс ↔ аккаунт | `supabase/migrations/20260925000000_yandex_identities.sql` |
+| Таблица соответствий Яндекс ↔ аккаунт | `supabase/migrations/20260925010000_yandex_identities.sql` |
 | Настройки провайдеров | Админ-панель → вкладка **«Авторизация»** (`/admin?tab=auth`) |
 | Тесты | `scripts/tests/yandex-auth.test.mjs` |
 
@@ -40,7 +40,7 @@
 ## Шаг 2. Миграция БД
 
 В Supabase Studio (SQL Editor) или через `psql` выполните
-`supabase/migrations/20260925000000_yandex_identities.sql`. Таблица
+`supabase/migrations/20260925010000_yandex_identities.sql`. Таблица
 `public.yandex_identities`: пишет только service role, пользователь видит
 только свою строку.
 

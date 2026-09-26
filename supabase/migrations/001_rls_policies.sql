@@ -684,30 +684,69 @@ GRANT INSERT ON public.raven_sync_log TO authenticated;
 
 -- ============================================================
 -- 29. FRIENDS
+--
+-- Колонки берём из самой таблицы: в этом репозитории она объявлена как
+-- user_id/friend_id (000_base_schema.sql), а в части развёрнутых баз осталась
+-- в старом виде — requester_id/addressee_id. Жёсткие имена ломали файл на
+-- «column "requester_id" does not exist», из-за чего обрывались и все разделы
+-- ниже по файлу (30. PUSH_SUBSCRIPTIONS и далее).
 -- ============================================================
-ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY;
+DO $$
+DECLARE
+  v_user   TEXT;
+  v_friend TEXT;
+BEGIN
+  IF to_regclass('public.friends') IS NULL THEN
+    RAISE NOTICE 'rls_policies: таблицы public.friends нет — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_select ON public.friends;
-CREATE POLICY friends_select ON public.friends
-  FOR SELECT TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  SELECT (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'requester_id'),
+         (SELECT column_name FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'addressee_id')
+    INTO v_user, v_friend;
 
-DROP POLICY IF EXISTS friends_insert ON public.friends;
-CREATE POLICY friends_insert ON public.friends
-  FOR INSERT TO authenticated WITH CHECK (requester_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    SELECT (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'user_id'),
+           (SELECT column_name FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = 'friends' AND column_name = 'friend_id')
+      INTO v_user, v_friend;
+  END IF;
 
-DROP POLICY IF EXISTS friends_update ON public.friends;
-CREATE POLICY friends_update ON public.friends
-  FOR UPDATE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid())
-  WITH CHECK (requester_id = auth.uid() OR addressee_id = auth.uid());
+  IF v_user IS NULL OR v_friend IS NULL THEN
+    RAISE NOTICE 'rls_policies: у public.friends незнакомые колонки — раздел пропущен';
+    RETURN;
+  END IF;
 
-DROP POLICY IF EXISTS friends_delete ON public.friends;
-CREATE POLICY friends_delete ON public.friends
-  FOR DELETE TO authenticated
-  USING (requester_id = auth.uid() OR addressee_id = auth.uid());
+  EXECUTE 'ALTER TABLE public.friends ENABLE ROW LEVEL SECURITY';
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated;
+  EXECUTE 'DROP POLICY IF EXISTS friends_select ON public.friends';
+  EXECUTE format('CREATE POLICY friends_select ON public.friends'
+                 ' FOR SELECT TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_insert ON public.friends';
+  EXECUTE format('CREATE POLICY friends_insert ON public.friends'
+                 ' FOR INSERT TO authenticated WITH CHECK (%1$I = auth.uid())', v_user);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_update ON public.friends';
+  EXECUTE format('CREATE POLICY friends_update ON public.friends'
+                 ' FOR UPDATE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())'
+                 ' WITH CHECK (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE 'DROP POLICY IF EXISTS friends_delete ON public.friends';
+  EXECUTE format('CREATE POLICY friends_delete ON public.friends'
+                 ' FOR DELETE TO authenticated'
+                 ' USING (%1$I = auth.uid() OR %2$I = auth.uid())', v_user, v_friend);
+
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(%I)', v_user);
+  EXECUTE format('CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(%I)', v_friend);
+
+  EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON public.friends TO authenticated';
+END $$;
 
 -- ============================================================
 -- 30. PUSH_SUBSCRIPTIONS
@@ -1174,7 +1213,7 @@ CREATE INDEX IF NOT EXISTS idx_atlas_candidates_search_id ON public.atlas_candid
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_system_name ON public.raven_sync_log(system_name);
 CREATE INDEX IF NOT EXISTS idx_raven_sync_log_created_at ON public.raven_sync_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_system_progress_system_name ON public.system_progress(system_name);
-CREATE INDEX IF NOT EXISTS idx_friends_requester ON public.friends(requester_id);
-CREATE INDEX IF NOT EXISTS idx_friends_addressee ON public.friends(addressee_id);
+-- Индексы idx_friends_requester / idx_friends_addressee создаются в разделе
+-- 29: имена колонок там берутся из самой таблицы.
 CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON public.api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_notifications_user_id ON public.user_notifications(user_id);

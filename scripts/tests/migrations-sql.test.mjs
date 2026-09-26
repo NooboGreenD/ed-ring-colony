@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { parse, parsePlPgSQL } = require('libpg-query');
+const { parse, parsePlPgSQL, scan } = require('libpg-query');
 
 /* ──────────────────────────────────────────────────────────────────────────
    SQL-файлы репозитория проверяются настоящим грамматическим разборщиком
@@ -97,6 +97,33 @@ test('тела SQL-функций в $fn$-кавычках разбираютс�
 });
 
 /**
+ * Внутренние $-кавычки тела DO ($c$…$c$ — тексты статей) заменяются на
+ * короткий строковый литерал. Для разбора plpgsql их содержимое не важно, а
+ * обёртка тела в отдельный тег на вложенных кавычках спотыкалась — раньше из-за
+ * этого тела сидов wiki вообще не проверялись.
+ * Возвращает null, если кавычки не сбалансированы (тогда тело не проверяем).
+ */
+function maskDollarQuoted(body) {
+  let out = '';
+  let masked = 0;
+  let i = 0;
+  while (i < body.length) {
+    const tag = /^\$[A-Za-z_0-9]*\$/.exec(body.slice(i));
+    if (!tag) {
+      out += body[i];
+      i += 1;
+      continue;
+    }
+    const end = body.indexOf(tag[0], i + tag[0].length);
+    if (end === -1) return null;
+    out += " '<content>' ";
+    masked += 1;
+    i = end + tag[0].length;
+  }
+  return { body: out, masked };
+}
+
+/**
  * Тела DO из дерева разбора: регуляркой границы $…$-кавычек не найти.
  * libpg_query 18 кладёт тело в DoStmt.args[].DefElem(arg=as).arg.String.sval.
  */
@@ -124,6 +151,7 @@ function doBlocks(node, out = []) {
 test('блоки DO разбираются как plpgsql', async () => {
   const failures = [];
   let blocks = 0;
+  let unparsed = 0;
   for (const file of FILES) {
     let tree;
     try {
@@ -131,12 +159,14 @@ test('блоки DO разбираются как plpgsql', async () => {
     } catch {
       continue; // синтаксис файла проверяет отдельный тест
     }
-    for (const [index, body] of doBlocks(tree).entries()) {
-      // В исторических сидах wiki внутри блока лежат собственные $c$/$nl$-строки:
-      // обёртка для parsePlPgSQL на них ломается, а сам файл парсер уже принял.
-      if (/\$[A-Za-z_]*\$/.test(body)) continue;
-      blocks++;
-      const wrapped = `CREATE FUNCTION _sqlcheck_${index}() RETURNS void AS $wrap$${body}$wrap$ LANGUAGE plpgsql`;
+    for (const [index, raw] of doBlocks(tree).entries()) {
+      const masked = maskDollarQuoted(raw);
+      if (!masked) {
+        unparsed += 1;
+        continue;
+      }
+      blocks += 1;
+      const wrapped = `CREATE FUNCTION _sqlcheck_${index}() RETURNS void AS $wrap$${masked.body}$wrap$ LANGUAGE plpgsql`;
       try {
         await parsePlPgSQL(wrapped);
       } catch (error) {
@@ -144,8 +174,79 @@ test('блоки DO разбираются как plpgsql', async () => {
       }
     }
   }
-  assert.ok(blocks >= 3, `проверено блоков DO: ${blocks}`);
+  assert.ok(blocks >= 12, `проверено блоков DO: ${blocks} (не разобрано: ${unparsed})`);
   assert.deepEqual(failures, []);
+});
+
+/* ── Формат файлов: миграция не должна «теряться» целиком ── */
+
+test('ни один комментарий не съедает код', async () => {
+  // Миграция, сохранённая без переводов строк, ломается молча: первый же «-- …»
+  // превращает в комментарий весь остаток файла вместе с DO-блоком (так был
+  // испорчен 20260903000000_wiki_fill_empty_categories.sql). Честный
+  // комментарий в дереве короткий — самый длинный 228 символов, поэтому
+  // длинный токен SQL_COMMENT означает потерянные переводы строк.
+  const LIMIT = 400;
+  const failures = [];
+  for (const file of FILES) {
+    const sql = readFileSync(file, 'utf8');
+    let tokens;
+    try {
+      ({ tokens } = await scan(sql));
+    } catch {
+      continue; // файл без команд сканер может не разобрать — это ловит тест ниже
+    }
+    for (const token of tokens) {
+      if (token.tokenName !== 'SQL_COMMENT') continue;
+      const length = token.end - token.start;
+      if (length <= LIMIT) continue;
+      const line = sql.slice(0, token.start).split('\n').length;
+      failures.push(
+        `${relative(ROOT, file)}:${line} — комментарий на ${length} символов ` +
+          `(«${token.text.slice(0, 60).trim()}…»): файл сохранён без переводов строк?`,
+      );
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('в текстах статей не осталось маркеров $nl$', async () => {
+  // Исторические сиды wiki хранили переводы строк маркерами «$nl$», которые
+  // никто не разворачивал: в базу попадала одна строка с литералами вместо
+  // Markdown. Маркеры заменены реальными переводами строк — тест следит,
+  // чтобы они не вернулись. Комментарии не считаем: там про маркеры просто
+  // написано, а сканер отдаёт их отдельным токеном SQL_COMMENT.
+  const failures = [];
+  for (const file of FILES) {
+    const sql = readFileSync(file, 'utf8');
+    let tokens;
+    try {
+      ({ tokens } = await scan(sql));
+    } catch {
+      continue;
+    }
+    const literals = tokens.filter((token) => token.tokenName !== 'SQL_COMMENT' && token.text.includes('$nl$'));
+    if (literals.length > 0) {
+      const line = sql.slice(0, literals[0].start).split('\n').length;
+      failures.push(`${relative(ROOT, file)}:${line} — ${literals.length} маркер(ов) вне комментария`);
+    }
+  }
+  assert.deepEqual(failures, []);
+});
+
+test('каждая миграция содержит хотя бы одну команду', async () => {
+  // Пустой скрипт psql считает успешно выполненным, и миграция молча
+  // становится мёртвой — именно так «работали» 20260830152500_galnet_news.sql,
+  // 20260903010000/20260903020000 (wiki) и 20260904100000 (system_coords),
+  // пока в них не восстановили переводы строк. Исключений быть не должно:
+  // шаблон для SQL Editor живёт в supabase/templates/.
+  const dead = [];
+  for (const file of sqlFiles(join(ROOT, 'supabase', 'migrations'))) {
+    const tree = await parse(readFileSync(file, 'utf8'));
+    const statements = Array.isArray(tree) ? tree : tree.stmts ?? [];
+    if (statements.length === 0) dead.push(basename(file));
+  }
+  assert.deepEqual(dead, [], 'эти миграции не выполняют ни одной команды');
 });
 
 /* ── Миграция масштаба: содержательные проверки, а не только синтаксис ── */
