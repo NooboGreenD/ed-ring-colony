@@ -13,6 +13,7 @@
  */
 
 import * as THREE from 'three';
+import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { RING_CLASS_COLORS, SCENE_COLORS, ringColor, structureColor } from './palette';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure, Vec3 } from './types';
 
@@ -24,6 +25,7 @@ export type LayerName =
   | 'rings'
   | 'structures'
   | 'moons'
+  | 'signals'
   | 'player';
 
 export const DEFAULT_LAYERS: Record<LayerName, boolean> = {
@@ -34,6 +36,7 @@ export const DEFAULT_LAYERS: Record<LayerName, boolean> = {
   rings: true,
   structures: true,
   moons: true,
+  signals: true,
   player: true,
 };
 
@@ -41,7 +44,7 @@ export interface OrrerySceneModel {
   root: THREE.Group;
   /** Объекты, которые ловят курсор: у каждого в `userData` лежит `pick`. */
   pickables: THREE.Object3D[];
-  groups: Record<'grid' | 'orbits' | 'moonOrbits' | 'zones' | 'stars' | 'planets' | 'moons' | 'rings' | 'structures' | 'player', THREE.Group>;
+  groups: Record<'grid' | 'orbits' | 'moonOrbits' | 'zones' | 'stars' | 'planets' | 'moons' | 'rings' | 'structures' | 'signals' | 'player', THREE.Group>;
   /** Точка, к которой цепляется подпись тела. */
   labelAnchors: Map<string, THREE.Object3D>;
   /** Точка подписи постройки (верх маркера). */
@@ -53,7 +56,22 @@ export interface OrrerySceneModel {
   setLayer: (layer: LayerName, visible: boolean) => void;
   /** Подсветить выбранное тело: чужие орбиты и тела притухают. */
   setEmphasis: (name: string | null) => void;
+  /**
+   * Пульсация меток сигналов: вызывается каждый кадр с временем в секундах.
+   * Именно она делает «эффект» заметным — статичную точку у планеты глаз
+   * теряет, а мигающую находит сразу.
+   */
+  pulse: (timeSeconds: number) => void;
   dispose: () => void;
+}
+
+/** Один пульсирующий объект слоя сигналов. */
+interface SignalPulse {
+  object: THREE.Object3D;
+  material: THREE.MeshBasicMaterial;
+  baseScale: number;
+  baseOpacity: number;
+  phase: number;
 }
 
 export interface PickInfo {
@@ -175,6 +193,73 @@ function addAtmosphereHaze(
   parent.add(mesh);
 }
 
+/**
+ * Метки сигналов у тела: аура + «маячки» по числу видов сигналов.
+ *
+ * Игра сообщает, что на теле есть биология, геология, следы людей, стражи
+ * или таргоиды, — для архитектора это прямая подсказка, где садиться и что
+ * рядом со стройкой уже есть. На карте вид сигнала различается цветом
+ * (`SIGNAL_META`), количество — числом маячков, а пульсация делает метку
+ * заметной среди десятков тел.
+ */
+function addSignalMarkers(
+  parent: THREE.Group,
+  body: OrreryViewBody,
+  radius: number,
+  registry: { geometries: THREE.BufferGeometry[]; materials: THREE.Material[] },
+  pulses: SignalPulse[],
+): void {
+  const kinds = activeSignalKinds(body.signals);
+  if (!kinds.length) return;
+
+  const group = new THREE.Group();
+  group.position.copy(toVector(body.position));
+  group.name = `signals-${body.name}`;
+
+  // Аура тела в цвете самого важного сигнала: видна даже на обзоре системы.
+  const auraColor = new THREE.Color(SIGNAL_META[kinds[0]].color);
+  const auraGeometry = new THREE.SphereGeometry(radius * 1.45, 24, 16);
+  const auraMaterial = new THREE.MeshBasicMaterial({
+    color: auraColor,
+    transparent: true,
+    opacity: 0.16,
+    side: THREE.BackSide,
+    depthWrite: false,
+  });
+  registry.geometries.push(auraGeometry);
+  registry.materials.push(auraMaterial);
+  const aura = new THREE.Mesh(auraGeometry, auraMaterial);
+  aura.userData.pick = { kind: 'body', name: body.name } satisfies PickInfo;
+  group.add(aura);
+  pulses.push({ object: aura, material: auraMaterial, baseScale: 1, baseOpacity: 0.16, phase: 0 });
+
+  // Маячки: по одному на вид сигнала, вокруг тела в плоскости системы.
+  const markerSize = Math.max(radius * 0.26, 0.22);
+  kinds.forEach((kind, index) => {
+    const angle = (index / Math.max(1, kinds.length)) * Math.PI * 2;
+    const distance = radius * 1.9 + markerSize * 2;
+    const geometry = new THREE.IcosahedronGeometry(markerSize, 0);
+    const material = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(SIGNAL_META[kind].color),
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+    });
+    registry.geometries.push(geometry);
+    registry.materials.push(material);
+    const marker = new THREE.Mesh(geometry, material);
+    marker.position.set(Math.cos(angle) * distance, Math.sin(angle) * distance, radius * 0.4);
+    // Наведение на маячок показывает карточку тела: отдельной сущности
+    // «сигнал» в интерфейсе нет, есть тело с сигналами.
+    marker.userData.pick = { kind: 'body', name: body.name } satisfies PickInfo;
+    marker.userData.signal = kind;
+    group.add(marker);
+    pulses.push({ object: marker, material, baseScale: 1, baseOpacity: 0.92, phase: index * 0.8 });
+  });
+
+  parent.add(group);
+}
+
 /** Значок постройки: форма зависит от назначения (порт/аутпост/стройка). */
 function structureGeometry(structure: OrreryViewStructure, size: number): THREE.BufferGeometry {
   const type = structure.type.toLowerCase();
@@ -213,6 +298,7 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     moons: new THREE.Group(),
     rings: new THREE.Group(),
     structures: new THREE.Group(),
+    signals: new THREE.Group(),
     player: new THREE.Group(),
   };
   for (const [name, group] of Object.entries(groups)) {
@@ -229,6 +315,7 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
   const structureAnchors = new Map<string, THREE.Object3D>();
   const bodyObjects = new Map<string, THREE.Object3D>();
   const structureObjects = new Map<string, THREE.Object3D>();
+  const signalPulses: SignalPulse[] = [];
 
   // ── Сетка эклиптики: концентрические круги + радиальные лучи ──────────────
   const gridMaterial = new THREE.LineBasicMaterial({
@@ -396,6 +483,9 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
 
     addAtmosphereHaze(group, body, radius, body.color, registry);
     addRings(groups.rings, body, radius, registry);
+    // Сигналы живут отдельным слоем (их гасят одной галочкой) и потому
+    // ставятся в мировых координатах, как кольца.
+    addSignalMarkers(groups.signals, body, radius, registry, signalPulses);
 
     (body.kind === 'moon' ? groups.moons : groups.planets).add(group);
   }
@@ -521,7 +611,19 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
         material.needsUpdate = true;
       }
     },
+    pulse(timeSeconds: number) {
+      // Дышащая метка: масштаб и прозрачность ходят по синусу. Фаза у
+      // каждого маячка своя, иначе тело мигает целиком и выглядит ошибкой
+      // отрисовки.
+      for (const item of signalPulses) {
+        const wave = Math.sin(timeSeconds * 2.2 + item.phase);
+        const scale = item.baseScale * (1 + wave * 0.12);
+        item.object.scale.setScalar(scale);
+        item.material.opacity = Math.max(0.06, item.baseOpacity * (0.82 + wave * 0.18));
+      }
+    },
     dispose() {
+      signalPulses.length = 0;
       for (const geometry of geometries) geometry.dispose();
       for (const material of materials) material.dispose();
       for (const texture of textures) texture.dispose();

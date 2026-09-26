@@ -29,7 +29,8 @@ COPY scripts/update-agent.mjs ./scripts/
 COPY scripts/lib/update-state.mjs ./scripts/lib/
 COPY deploy/update-project.sh ./deploy/
 COPY deploy/apply-env.sh ./deploy/
-RUN chmod +x /app/deploy/update-project.sh /app/deploy/apply-env.sh
+COPY deploy/update-agent-entrypoint.sh ./deploy/
+RUN chmod +x /app/deploy/update-project.sh /app/deploy/apply-env.sh /app/deploy/update-agent-entrypoint.sh
 
 # UPDATE_SCRIPT по умолчанию = $PROJECT_DIR/deploy/update-project.sh, то есть
 # скрипт из обновляемого репозитория (его правки вступают сразу). Копия в
@@ -41,4 +42,12 @@ ENV NODE_ENV=production \
     UPDATE_HEALTH_URL=http://web:3000/api/health
 
 EXPOSE 8092
-CMD ["node", "scripts/update-agent.mjs"]
+# Точка входа выбирает код агента из смонтированного клона, если он там есть.
+#
+# Обновление намеренно не пересоздаёт этот контейнер (он же выполняет
+# обновление), поэтому образ агента оставался тем, каким был при первой
+# сборке: панель уже умела «только миграции» и флажки прогона, а старый агент
+# про них не знал и запускал обычную полную пересборку. С запуском из клона
+# достаточно перезапустить контейнер — кнопка «Перезапустить агент» в панели
+# (или автоперезапуск после успешного обновления) делает это сама.
+ENTRYPOINT ["/app/deploy/update-agent-entrypoint.sh"]

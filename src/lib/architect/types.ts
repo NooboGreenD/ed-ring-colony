@@ -10,6 +10,8 @@
  * (`scripts/tests/system-architect.test.mjs`) и переиспользовать в API.
  */
 
+import type { BodySignals } from '../bodySignals.ts';
+
 /** Где стоит постройка. */
 export type ArchitectLocation = 'orbital' | 'surface';
 
@@ -116,6 +118,13 @@ export interface ArchitectBody {
   volcanism: boolean;
   /** Есть кольца/пояс астероидов — нужен для астероидной базы. */
   hasRings: boolean;
+  /**
+   * Сигналы тела из журнала: биология, геология, следы людей, стражи,
+   * таргоиды. Для архитектора это не украшение: биология на теле означает
+   * штраф за застройку для экзобиологов, геология — материалы под боком,
+   * человеческие сигналы — чужое присутствие рядом с будущей колонией.
+   */
+  signals: BodySignals;
   /** Признаки, которые влияют на число наземных слотов. */
   features: string[];
 }

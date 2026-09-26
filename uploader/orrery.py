@@ -282,6 +282,13 @@ def _body_view(body: Any) -> Dict[str, Any]:
         "surface_temp_k": _num(getattr(body, "surface_temp_k", 0.0)),
         "landable": bool(getattr(body, "landable", False)),
         "bio_signals": int(_num(getattr(body, "bio_signals", 0.0))),
+        # Остальные сигналы тела — зеркало `BodySignals` сайта.
+        "geo_signals": int(_num(getattr(body, "geo_signals", 0.0))),
+        "human_signals": int(_num(getattr(body, "human_signals", 0.0))),
+        "thargoid_signals": int(_num(getattr(body, "thargoid_signals", 0.0))),
+        "guardian_signals": int(_num(getattr(body, "guardian_signals", 0.0))),
+        "other_signals": int(_num(getattr(body, "other_signals", 0.0))),
+        "bio_genuses": [str(item) for item in (getattr(body, "bio_genuses", None) or [])],
         "atmosphere": str(getattr(body, "atmosphere", "") or ""),
         "scanned": bool(getattr(body, "scanned", False)),
         "mapped": bool(getattr(body, "mapped", False)),
@@ -969,6 +976,11 @@ def summarize_plan(plan: Dict[str, Any], stations: Sequence[Dict[str, Any]] = ()
         "landable": len([body for body in bodies if body["landable"]]),
         "bio_bodies": len([body for body in bodies if body["bio_signals"] > 0]),
         "bio_signals": int(sum(body["bio_signals"] for body in bodies)),
+        "signal_bodies": len([body for body in bodies
+                              if any(int(body.get(f"{kind}_signals") or 0) > 0
+                                     for kind in ("bio", "geo", "human", "thargoid", "guardian", "other"))]),
+        "signals": {kind: int(sum(int(body.get(f"{kind}_signals") or 0) for body in bodies))
+                    for kind in ("bio", "geo", "human", "thargoid", "guardian", "other")},
         "ringed": len([body for body in bodies if body["rings"]]),
         "structures": len(stations or ()),
         "active_sites": len([station for station in sites if not station.get("complete")]),

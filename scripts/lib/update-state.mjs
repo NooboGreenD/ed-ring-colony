@@ -14,6 +14,22 @@
 
 export const UPDATE_PROTOCOL = '::edrc::';
 
+/**
+ * Версия контракта «панель ↔ update-agent».
+ *
+ * Агент живёт в собственном контейнере (`deploy/Dockerfile.update-agent`) и
+ * НЕ пересоздаётся обновлением — иначе оно убило бы само себя на середине.
+ * Из-за этого он легко оказывается старее сайта: панель шлёт новые флажки
+ * («только миграции», «без бэкапа», «без тестов»), а старый агент их просто
+ * не знает и запускает обычную полную пересборку. Снаружи это выглядит как
+ * «галочки ни на что не влияют».
+ *
+ * Поэтому агент сообщает свою версию в `/status`, а панель сверяет её со
+ * своей и показывает предупреждение с кнопкой «Перезапустить агент».
+ * Поднимайте число при любом изменении набора флагов запуска.
+ */
+export const UPDATE_AGENT_PROTOCOL = 2;
+
 export const UPDATE_STAGES = [
   { id: 'prepare', label: 'Проверка блокировок и репозитория', percent: 5 },
   { id: 'fetch', label: 'Синхронизация с GitHub', percent: 15 },
@@ -223,6 +239,12 @@ export function applyProgressEvent(state, event, nowIso) {
     base.percent = forward(event.percent);
   }
   if (typeof event?.message === 'string') base.message = sanitizeLogLine(event.message);
+  // Отдельное поле ошибки. Раньше причина сбоя приезжала тем же `message`,
+  // что и подписи стадий, и при падении сборки панель показывала «Пересобираю
+  // docker-образы… (код 1)» — то есть последнюю НОРМАЛЬНУЮ строку прогресса
+  // вместо настоящей причины. Теперь скрипт шлёт `error`, и он переживает
+  // любые последующие сообщения.
+  if (typeof event?.error === 'string') base.error = sanitizeLogLine(event.error);
   if (typeof event?.mode === 'string') base.mode = event.mode;
   if (typeof event?.branch === 'string') base.branch = event.branch;
   if (typeof event?.fromSha === 'string') base.fromSha = event.fromSha;
@@ -235,6 +257,35 @@ export function applyProgressEvent(state, event, nowIso) {
   base.state = 'running';
   base.updatedAt = nowIso;
   return base;
+}
+
+/**
+ * Сведения о самом агенте: версия протокола, откуда запущен его код и не
+ * отстал ли он от клона. Панель по этим полям объясняет админу, почему
+ * флажки могут не действовать, и предлагает перезапуск одной кнопкой.
+ */
+export function sanitizeAgentInfo(input) {
+  const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : null;
+  if (!raw) return null;
+  const protocol = clampNumber(raw.protocol, 0, 9_999, 0) ?? 0;
+  return {
+    protocol,
+    /** Совпадает ли код агента с тем, что лежит в клоне (PROJECT_DIR). */
+    stale: raw.stale === true,
+    /** true — агент запущен прямо из клона, а не из копии в образе. */
+    fromRepo: raw.fromRepo === true,
+    /** Короткий отпечаток исполняемого кода — только для журнала панели. */
+    revision: typeof raw.revision === 'string' && /^[a-f0-9]{6,16}$/i.test(raw.revision) ? raw.revision.toLowerCase() : null,
+    /** Отпечаток кода в клоне: отличается от revision — агент устарел. */
+    repoRevision: typeof raw.repoRevision === 'string' && /^[a-f0-9]{6,16}$/i.test(raw.repoRevision) ? raw.repoRevision.toLowerCase() : null,
+    startedAt: typeof raw.startedAt === 'string' && Number.isFinite(Date.parse(raw.startedAt))
+      ? new Date(Date.parse(raw.startedAt)).toISOString()
+      : null,
+    /** Умеет ли скрипт в клоне режим «только миграции» (без пересборки). */
+    migrationsOnlySupported: raw.migrationsOnlySupported !== false,
+    /** Перезапустится ли агент сам (Docker/systemd поднимут процесс заново). */
+    canRestart: raw.canRestart === true,
+  };
 }
 
 export function emptyUpdateState(nowIso = new Date().toISOString()) {

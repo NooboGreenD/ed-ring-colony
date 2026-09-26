@@ -180,6 +180,37 @@ function lerpVec(a: Vec3, b: Vec3, t: number): Vec3 {
   return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
 }
 
+/**
+ * Нужно ли кадрировать сцену заново после обновления пакета данных.
+ *
+ * Камера принадлежит человеку: он её крутит, приближает и уводит в сторону.
+ * Раньше любая пересборка сцены заканчивалась кадрированием «как при
+ * открытии», и карта возвращалась в исходный вид от каждого обновления
+ * данных — а при частых ре-рендерах камеру вообще нельзя было сдвинуть.
+ *
+ * Поэтому заново кадрируем только когда смотреть стало не на что:
+ *  - открыли другую систему;
+ *  - переключили масштаб (орри ↔ линейный) — координаты меняются целиком;
+ *  - размах сцены изменился в разы (порог грубый: прилетевший скан далёкого
+ *    тела чуть двигает границы и поводом не является);
+ *  - выбранное тело пропало из данных, то есть камера смотрит в пустоту.
+ */
+export function shouldReframeCamera(
+  previous: OrreryViewPayload | null,
+  next: OrreryViewPayload,
+  options: { focus?: string; resetCamera?: boolean } = {},
+): boolean {
+  if (options.resetCamera === true) return true;
+  if (!previous) return true;
+  if (previous.system !== next.system) return true;
+  if (previous.scaleMode !== next.scaleMode) return true;
+  if (!(previous.span > 0)) return true;
+  if (Math.abs(next.span - previous.span) > previous.span * 0.5) return true;
+  const focus = options.focus ?? '';
+  if (focus && !next.bodies.some((body) => body.name === focus)) return true;
+  return false;
+}
+
 /** Состояние камеры, которое ведёт рендерер: цель (three.js) и её позиция. */
 export interface CameraState {
   position: Vec3;

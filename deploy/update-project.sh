@@ -38,7 +38,10 @@
 #   SYSTEMD_SERVICE / APP_DIR unit и standalone-выкладка для systemd-режима
 #   UPDATE_STATE_DIR         lock, журнал, отметки о применённых миграциях
 # ─────────────────────────────────────────────────────────────────────
-set -euo pipefail
+# -E (errtrace): без него ловушка ERR НЕ наследуется функциями, и падение
+# внутри `compose ...` завершало скрипт молча — панель показывала последнюю
+# нормальную подпись стадии («Пересобираю docker-образы…») вместо причины.
+set -Eeuo pipefail
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/ed-ring-colony/src}"
 BRANCH="${PROJECT_UPDATE_BRANCH:-main}"
@@ -72,16 +75,50 @@ compose() {
   fi
 }
 report() { printf '::edrc::{"stage":"%s","percent":%s,"message":"%s"}\n' "$1" "$2" "$(json_safe "$3")"; }
-# Ошибка пишется в stdout: менеджер разбирает именно этот поток, поэтому
-# админ увидит причину в панели, а не только код возврата.
-die()    { printf '::edrc::{"message":"%s"}\n' "$(json_safe "$*")"; say "ОШИБКА: $*" >&2; exit 1; }
+# Ошибка пишется в stdout ОТДЕЛЬНЫМ полем `error`: менеджер разбирает именно
+# этот поток и больше не выдаёт за причину сбоя подпись текущей стадии.
+die() {
+  # Ловушка снимается первой: `exit 1` сам считается упавшей командой и
+  # снова дёрнул бы ERR, затирая уже отправленную причину служебным
+  # «обновление прервано: строка N».
+  trap - ERR
+  printf '::edrc::{"error":"%s","message":"%s"}\n' "$(json_safe "$*")" "$(json_safe "$*")"
+  say "ОШИБКА: $*" >&2
+  exit 1
+}
 
 fail() {
   local code="$1" line="$2"
-  printf '::edrc::{"message":"%s"}\n' "$(json_safe "обновление прервано: строка $line, код $code")"
+  trap - ERR
+  printf '::edrc::{"error":"%s"}\n' "$(json_safe "обновление прервано: строка $line, код $code")"
   exit "$code"
 }
 trap 'fail $? $LINENO' ERR
+
+# Выполнить шаг, сохранив хвост вывода: при падении в панель уезжает
+# настоящая причина (упавший тест, «no space left on device», недоступный
+# registry), а не «код 1». Вывод при этом продолжает идти в журнал вживую.
+run_step() { # run_step "что делаем" команда...
+  local what="$1"; shift
+  local log code=0 reason
+  log="$(mktemp "${TMPDIR:-/tmp}/edrc-step.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-step.log")"
+  # ERR срабатывает независимо от `set -e`, поэтому ловушку на время шага
+  # снимаем: сбой разбирается здесь, с текстом причины, а не общим
+  # «обновление прервано: строка N».
+  trap - ERR
+  set +e
+  "$@" 2>&1 | tee "$log"
+  code="${PIPESTATUS[0]}"
+  set -e
+  trap 'fail $? $LINENO' ERR
+  if [ "$code" != "0" ]; then
+    reason="$(grep -aiE 'error|ошибк|failed|fatal|cannot|not found|no space|denied|refused|killed|unauthorized' "$log" 2>/dev/null | tail -n 2 | tr '\n' ' ' | cut -c1-200 || true)"
+    [ -n "$reason" ] || reason="$(tail -n 2 "$log" 2>/dev/null | tr '\n' ' ' | cut -c1-200 || true)"
+    rm -f "$log" 2>/dev/null || true
+    die "$what — код $code${reason:+: $reason}"
+  fi
+  rm -f "$log" 2>/dev/null || true
+}
 
 # ── 0. блокировка: два параллельных обновления испортят продов ───────
 report prepare 5 "Проверяю блокировки и репозиторий"
@@ -359,41 +396,49 @@ if [ "$MODE" = "compose" ]; then
   [ -e ".env" ] || ln -sf "$ENV_FILE" .env
   # На малом VPS эта стадия — 30–60 минут (npm ci при смене lock-файла,
   # тесты, next build): это норма, а не зависание. Таймаута на сборку по
-  # умолчанию нет (см. UPDATE_TIMEOUT_MINUTES в update-agent); флажок
-  # «с тестами» из панели задаёт RUN_TESTS для build-args — переменная
-  # окружения перекрывает значение из --env-file (приоритет окружения над
-  # env-файлом закреплён документацией Compose).
+  # умолчанию нет (см. UPDATE_TIMEOUT_MINUTES в update-agent).
+  #
+  # Сборка и переключение разведены на два шага. Причин две:
+  #   • флажок «с тестами» передаётся явным --build-arg RUN_TESTS=…, а не
+  #     через интерполяцию из env-файла — иначе «без тестов» зависело бы от
+  #     того, что написано в .env.production, и выглядело бы как «галочка ни
+  #     на что не влияет»;
+  #   • упавшая сборка больше не трогает работающие контейнеры: переключение
+  #     идёт отдельной командой уже после успешного build.
   export RUN_TESTS
-  say "тесты в сборке образа: RUN_TESTS=$RUN_TESTS"
-  report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
+  say "флажки прогона: тесты=$RUN_TESTS · бэкап БД=$BACKUP_BEFORE · миграции=$APPLY_MIGRATIONS"
+  COMPOSE_ARGS="-f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring"
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
+    COMPOSE_ARGS="--env-file $ENV_FILE $COMPOSE_ARGS"
   else
     say "⚠ $ENV_FILE не найден — пересобираю без --env-file"
-    compose -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --build $COMPOSE_SERVICES
   fi
+  # Образ апдейтера собирается вместе с остальными, но контейнер не
+  # пересоздаётся: он прямо сейчас выполняет этот скрипт. Свежий код агент
+  # подхватит перезапуском (он делает это сам после успешного обновления).
+  BUILD_SERVICES="$COMPOSE_SERVICES update-agent"
+  report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
+  run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
+  report switch 82 "Переключаю контейнеры на новые образы"
+  run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
   report switch 85 "Убираю висячие образы, чтобы не съедать диск"
   docker image prune -f >/dev/null 2>&1 || true
-  # jobs входит в COMPOSE_SERVICES: планировщик получает тот же новый образ,
-  # что и web. Сам update-agent намеренно не пересоздаётся — иначе обновление
-  # убило бы собственный процесс; его образ обновится следующим прогоном с
-  # --build или `docker compose --profile monitoring build update-agent`.
 else
   report build 62 "npm ci"
-  npm ci --no-audit --no-fund
+  run_step "npm ci" npm ci --no-audit --no-fund
   # Флажок «с тестами» и в systemd-режиме: тесты идут после npm ci и до
   # сборки — упавший тест останавливает обновление ДО перезапуска сервиса.
   if [ "$RUN_TESTS" = "1" ]; then
     report build 68 "Тесты (npm test)"
-    npm test
+    run_step "npm test" npm test
   else
     say "тесты пропущены (UPDATE_RUN_TESTS=0)"
   fi
   report build 75 "npm run build"
-  npm run build
+  run_step "npm run build" npm run build
   report switch 85 "Выкладываю standalone и перезапускаю $SYSTEMD_SERVICE"
-  bash deploy/prepare-standalone.sh "$APP_DIR"
-  systemctl restart "$SYSTEMD_SERVICE"
+  run_step "выкладка standalone" bash deploy/prepare-standalone.sh "$APP_DIR"
+  run_step "перезапуск $SYSTEMD_SERVICE" systemctl restart "$SYSTEMD_SERVICE"
 fi
 
 # ── 6. проверка живости ──────────────────────────────────────────────

@@ -33,7 +33,11 @@ from system_map import (
 )
 
 # Версия контракта пакета данных (см. `ORRERY_VIEW_VERSION` в types.ts).
-VIEW_VERSION = 3
+# 4 — у тел появились сигналы всех видов, а не только биологические.
+VIEW_VERSION = 4
+
+#: Виды сигналов тела в порядке важности — как `SIGNAL_KINDS` на сайте.
+_SIGNAL_KINDS = ("bio", "geo", "human", "thargoid", "guardian", "other")
 
 
 # ─────────────────────────── цвета и подписи ───────────────────────────────
@@ -425,6 +429,17 @@ def build_view_payload(
             "volcanism": str(view.get("volcanism") or ""),
             "landable": bool(view.get("landable")),
             "bioSignals": _as_int(view.get("bio_signals")),
+            # Сигналы тела целиком: биология, геология, следы людей, стражи,
+            # таргоиды. Ключи те же, что у `BodySignals` на сайте.
+            "signals": {
+                "bio": _as_int(view.get("bio_signals")),
+                "geo": _as_int(view.get("geo_signals")),
+                "human": _as_int(view.get("human_signals")),
+                "thargoid": _as_int(view.get("thargoid_signals")),
+                "guardian": _as_int(view.get("guardian_signals")),
+                "other": _as_int(view.get("other_signals")),
+                "genuses": [str(item) for item in (view.get("bio_genuses") or [])][:24],
+            },
             "mapped": bool(view.get("mapped")),
             "scanned": bool(view.get("scanned", True)),
             "rings": [
@@ -470,6 +485,11 @@ def build_view_payload(
         "landable": len([body for body in real_bodies if body["landable"]]),
         "bioBodies": len([body for body in real_bodies if body["bioSignals"] > 0]),
         "bioSignals": sum(body["bioSignals"] for body in real_bodies),
+        # Сколько тел вообще что-то излучает и сколько сигналов каждого вида
+        # (зеркало `OrreryViewSummary.signalBodies` / `.signals`).
+        "signalBodies": len([body for body in real_bodies
+                             if any(body["signals"][kind] > 0 for kind in _SIGNAL_KINDS)]),
+        "signals": {kind: sum(body["signals"][kind] for body in real_bodies) for kind in _SIGNAL_KINDS},
         "ringed": len([body for body in bodies if body["rings"]]),
         "structures": len(view_structures),
         "activeSites": len(active),

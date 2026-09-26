@@ -56,6 +56,15 @@ function setup() {
   stub(bin, 'docker', [
     'echo "[docker] $*" >> "$STUB_LOG"',
     'case "$*" in',
+    // STUB_BUILD_FAIL=1 — сборка образа падает так же, как на живом сервере:
+    // текст причины уходит в stderr, код возврата 1.
+    '  *" build "*)',
+    '    if [ "${STUB_BUILD_FAIL:-0}" = "1" ]; then',
+    '      echo "#12 42.5 npm ERR! code ENOSPC" >&2',
+    '      echo "ERROR: failed to solve: process \\"/bin/sh -c npm ci\\" did not complete successfully: no space left on device" >&2',
+    '      exit 1',
+    '    fi',
+    '    exit 0;;',
     '  *psql*)',
     '    input=$(cat)',
     '    if [ -f "$STUB_FAIL_ON" ] && printf "%s" "$input" | grep -qf "$STUB_FAIL_ON"; then',
@@ -173,10 +182,15 @@ test('первое обновление: перемотка, применени�
     const calls = readFileSync(ctx.log, 'utf8');
     assert.match(calls, /pg_dump/);
     assert.match(calls, /psql -U postgres -d postgres -q -v ON_ERROR_STOP=1/);
-    assert.match(calls, /compose --env-file .* up -d --build web jobs monitor-agent/);
+    // Сборка и переключение — два отдельных шага: упавший build не трогает
+    // работающие контейнеры, а RUN_TESTS уезжает явным --build-arg.
+    assert.match(calls, /compose --env-file .* build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
+    assert.match(calls, /compose --env-file .* up -d --no-build web jobs monitor-agent/);
     assert.match(calls, /image prune -f/);
-    // Сам апдейтер не пересоздаёт контейнер, из которого он запущен.
-    assert.equal(/up -d --build [^\n]*update-agent/.test(calls), false);
+    // Образ апдейтера пересобирается вместе со всеми (иначе агент навсегда
+    // остаётся старым), но контейнер, из которого запущен скрипт, не
+    // пересоздаётся: это убило бы обновление на середине.
+    assert.equal(/up -d [^\n]*update-agent/.test(calls), false);
 
     // Прода обновилась, локальная правка вернулась из stash, stash пуст.
     assert.equal(ctx.git(ctx.src, 'log', '--oneline').split('\n').length, 2);
@@ -206,7 +220,8 @@ test('повторный запуск: пересборка без перемо�
     assert.equal(done.migrationsApplied, 0, 'всё уже отмечено — накатывать нечего');
     assert.equal(done.fromSha, done.toSha, 'ревизия не менялась');
     const calls = readFileSync(ctx.log, 'utf8');
-    assert.match(calls, /up -d --build web jobs monitor-agent/, 'повторный прогон всё равно пересобирает');
+    assert.match(calls, /build --build-arg RUN_TESTS=1 web jobs monitor-agent/, 'повторный прогон всё равно пересобирает');
+    assert.match(calls, /up -d --no-build web jobs monitor-agent/, 'и переключает контейнеры на новый образ');
     assert.equal(calls.includes('psql'), false, 'отмеченная миграция не накатывается второй раз');
     // Дамп больше не привязан к наличию миграций: его решает флажок
     // «с бэкапом БД» (UPDATE_BACKUP_BEFORE), включённый по умолчанию.
@@ -229,12 +244,42 @@ test('флажок тестов: RUN_TESTS попадает в сборку, п�
 
     const withTests = ctx.run();
     assert.equal(withTests.status, 0, withTests.stdout + withTests.stderr);
-    assert.match(withTests.stdout, /тесты в сборке образа: RUN_TESTS=1/, 'по умолчанию тесты идут');
+    assert.match(withTests.stdout, /флажки прогона: тесты=1/, 'по умолчанию тесты идут');
+    assert.match(readFileSync(ctx.log, 'utf8'), /build --build-arg RUN_TESTS=1 /, 'RUN_TESTS уходит явным build-arg');
 
     const withoutTests = ctx.run({ UPDATE_RUN_TESTS: '0' });
     assert.equal(withoutTests.status, 0, withoutTests.stdout + withoutTests.stderr);
-    assert.match(withoutTests.stdout, /тесты в сборке образа: RUN_TESTS=0/, 'флажок «без тестов» дошёл до сборки');
-    assert.match(readFileSync(ctx.log, 'utf8'), /up -d --build web jobs monitor-agent/);
+    assert.match(withoutTests.stdout, /флажки прогона: тесты=0/, 'флажок «без тестов» дошёл до сборки');
+    // Значение не зависит от того, что написано в .env.production: оно
+    // передаётся аргументом сборки, а не интерполяцией env-файла.
+    assert.match(readFileSync(ctx.log, 'utf8'), /build --build-arg RUN_TESTS=0 /, 'без тестов — тоже явным build-arg');
+    assert.match(readFileSync(ctx.log, 'utf8'), /up -d --no-build web jobs monitor-agent/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('упавшая сборка: в панель уходит причина, а контейнеры не переключаются', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+
+    const run = ctx.run({ STUB_BUILD_FAIL: '1' });
+    assert.notEqual(run.status, 0, 'сбой сборки обязан завершать скрипт ошибкой');
+
+    // Причина приезжает отдельным полем `error`. Раньше её не было вовсе:
+    // ловушка ERR не наследовалась функцией compose(), и панель показывала
+    // последнюю подпись стадии — «Пересобираю docker-образы… (код 1)».
+    const failures = events(run.stdout).filter((event) => typeof event.error === 'string');
+    assert.ok(failures.length > 0, 'должно быть событие с полем error: ' + run.stdout);
+    const reason = failures[failures.length - 1].error;
+    assert.match(reason, /сборка образов/, 'в ошибке названа стадия');
+    assert.match(reason, /no space left on device/, 'в ошибке настоящая причина из вывода сборки');
+    assert.equal(/Пересобираю docker-образы/.test(reason), false, 'подпись стадии — не причина сбоя');
+
+    // Живой сайт не трогали: переключения контейнеров не было.
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.equal(calls.includes('up -d'), false, 'после падения сборки контейнеры остаются прежними');
   } finally {
     ctx.cleanup();
   }
@@ -267,7 +312,8 @@ test('режим «только миграции»: накатывает баз�
     const calls = readFileSync(ctx.log, 'utf8');
     assert.match(calls, /psql -U postgres -d postgres/);
     assert.match(calls, /pg_dump/, 'бэкап перед миграциями остаётся под флажком');
-    assert.equal(calls.includes('up -d --build'), false, 'compose up не вызывается');
+    assert.equal(calls.includes('up -d'), false, 'compose up не вызывается');
+    assert.equal(calls.includes('compose --env-file') && calls.includes(' build --build-arg'), false, 'образы не собираются');
     assert.match(run.stdout, /МИГРАЦИИ ПРИМЕНЕНЫ \(без пересборки\)/);
     assert.match(readFileSync(join(ctx.state, 'migrations.mark'), 'utf8'), /20261001000000_only\.sql/);
   } finally {

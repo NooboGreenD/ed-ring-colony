@@ -462,6 +462,50 @@ test('телеметрия: scan тела даёт body_type, атмосферу
   assert.equal(telemetry.stats.bioSignals, 5);
 });
 
+test('телеметрия: сигналы тела разбираются по видам, а не только биология', () => {
+  const text = [
+    jump(),
+    line({
+      timestamp: TS,
+      event: 'Scan',
+      BodyName: `${SYSTEM} 4`,
+      BodyID: 14,
+      PlanetClass: 'Rocky body',
+      DistanceFromArrivalLS: 800,
+      Landable: true,
+      Parents: [{ Star: 0 }],
+    }),
+    line({
+      timestamp: '2026-09-14T10:02:00Z',
+      event: 'SAASignalsFound',
+      BodyName: `${SYSTEM} 4`,
+      BodyID: 14,
+      Signals: [
+        { Type: '$SAA_SignalType_Biological;', Type_Localised: 'Биологический', Count: 3 },
+        { Type: '$SAA_SignalType_Geological;', Type_Localised: 'Геологический', Count: 7 },
+        { Type: '$SAA_SignalType_Human;', Type_Localised: 'Человеческий', Count: 1 },
+        { Type: '$SAA_SignalType_Guardian;', Count: 2 },
+        { Type: '$SAA_SignalType_Thargoid;', Count: 4 },
+        { Type: '$SAA_SignalType_PlanetAnomaly;', Count: 5 },
+      ],
+      Genuses: [
+        { Genus: '$Codex_Ent_Bacterial_Genus_Name;', Genus_Localised: 'Бактерии' },
+        { Genus: '$Codex_Ent_Stratum_Genus_Name;', Genus_Localised: 'Стратум' },
+      ],
+    }),
+  ].join('\n');
+  const telemetry = parseJournalTelemetry(text);
+  const scan = telemetry.scans[0];
+  assert.equal(scan.bio_signals_count, 3, 'биология');
+  assert.equal(scan.geo_signals_count, 7, 'геология');
+  assert.equal(scan.human_signals_count, 1, 'следы людей');
+  assert.equal(scan.guardian_signals_count, 2, 'стражи');
+  assert.equal(scan.thargoid_signals_count, 4, 'таргоиды');
+  assert.equal(scan.other_signals_count, 5, 'незнакомый вид уходит в «прочее»');
+  assert.deepEqual(scan.bio_genuses, ['Бактерии', 'Стратум'], 'роды биологии сохранены');
+  assert.equal(telemetry.stats.bioSignals, 3, 'в сводке журнала по-прежнему только биология');
+});
+
 test('телеметрия: звезда помечается body_type=Star', () => {
   const telemetry = parseJournalTelemetry([
     jump(),

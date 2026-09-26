@@ -21,10 +21,12 @@ import {
   frameFor,
   cameraStateFor,
   interpolateCamera,
+  shouldReframeCamera,
   type CameraState,
   type ViewPreset,
   type ZoomLevel,
 } from './camera';
+import { SIGNAL_META, activeSignalKinds, hasSignals } from '@/lib/bodySignals';
 import { MOTION_SPEEDS, positionAtTime } from './motion';
 import { SCENE_COLORS, structureColor } from './palette';
 import {
@@ -38,7 +40,7 @@ import {
 import { formatGravity, formatLightSeconds, formatNumber, formatPeriod, formatRadius, formatTons } from './palette';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure } from './types';
 
-export type FilterMode = 'all' | 'bodies' | 'landable' | 'bio' | 'sites' | 'rings' | 'unscanned';
+export type FilterMode = 'all' | 'bodies' | 'landable' | 'bio' | 'signals' | 'sites' | 'rings' | 'unscanned';
 export type LabelsMode = 'auto' | 'all' | 'none' | 'focus';
 
 export interface OrreryViewerOptions {
@@ -72,7 +74,15 @@ export interface OrreryViewerState {
 }
 
 export interface OrreryViewer {
-  setPayload: (payload: OrreryViewPayload, options?: { keepFocus?: boolean }) => void;
+  /**
+   * Обновить данные сцены.
+   *
+   * `keepFocus` сохраняет выбранное тело, `resetCamera` принудительно
+   * кадрирует систему заново. По умолчанию камера НЕ трогается: обновление
+   * данных (новые сканы, пересчёт построек, лишний ре-рендер React) не
+   * должно выдёргивать её из того положения, куда её поставил человек.
+   */
+  setPayload: (payload: OrreryViewPayload, options?: { keepFocus?: boolean; resetCamera?: boolean }) => void;
   focus: (target: string, zoom?: ZoomLevel) => void;
   setZoom: (zoom: ZoomLevel) => void;
   setView: (view: ViewPreset) => void;
@@ -162,7 +172,14 @@ export function bodyTooltipHtml(body: OrreryViewBody, structures: OrreryViewStru
 
   const tags: string[] = [];
   if (body.landable) tags.push('🛬 посадка');
-  if (body.bioSignals > 0) tags.push(`🌿 сигналов: ${body.bioSignals}`);
+  // Сигналы тела — по видам: биология, геология, следы людей, стражи,
+  // таргоиды. Раньше в подсказке была только биология, и остальные находки
+  // приходилось искать в игре вручную.
+  for (const kind of activeSignalKinds(body.signals)) {
+    const meta = SIGNAL_META[kind];
+    tags.push(`${meta.icon} ${meta.short}: ${body.signals[kind]}`);
+  }
+  if (body.signals.genuses.length) rows.push(['Роды', body.signals.genuses.slice(0, 4).join(', ')]);
   if (body.rings.length) tags.push(`💍 колец: ${body.rings.length}`);
   if (body.mapped) tags.push('🗺 карта');
   if (!body.scanned) tags.push('❔ нет подробного скана');
@@ -315,7 +332,7 @@ export function createOrreryViewer(
     toast.hidden = !message;
   }
 
-  function rebuildScene() {
+  function rebuildScene(rebuildOptions: { keepCamera?: boolean } = {}) {
     const previousFocus = state.focus;
     if (scene) {
       scene.root.removeFromParent();
@@ -346,8 +363,25 @@ export function createOrreryViewer(
       state.focus = '';
       state.zoom = 0;
     }
-    applyCamera(0);
+    if (rebuildOptions.keepCamera && camera && controls) {
+      // Камера остаётся ровно там, где её оставил пользователь. Пересчитать
+      // нужно только зависящие от размаха системы пределы, иначе после
+      // обновления данных колесо упирается в старые границы.
+      syncCameraLimits();
+    } else {
+      applyCamera(0);
+    }
     emit('state', getState());
+  }
+
+  /** Ближняя/дальняя плоскости и пределы приближения зависят от размаха сцены. */
+  function syncCameraLimits() {
+    if (!camera || !controls) return;
+    camera.near = currentPayload.span / 5000;
+    camera.far = currentPayload.span * 60;
+    camera.updateProjectionMatrix();
+    controls.minDistance = currentPayload.span * 0.02;
+    controls.maxDistance = currentPayload.span * 8;
   }
 
   function applyLayers() {
@@ -365,6 +399,8 @@ export function createOrreryViewer(
       case 'bodies': return body.kind !== 'star';
       case 'landable': return body.landable;
       case 'bio': return body.bioSignals > 0;
+      // «Есть сигналы» — любые: геологические точки, следы людей, стражи.
+      case 'signals': return hasSignals(body.signals);
       case 'sites': return body.structures.length > 0;
       case 'rings': return body.rings.length > 0;
       case 'unscanned': return !body.scanned;
@@ -389,6 +425,12 @@ export function createOrreryViewer(
       if (!object) continue;
       const group = object.parent;
       if (group) group.visible = state.layers.structures && matching.has(structure.body || currentPayload.system);
+    }
+    // Метки сигналов идут за своими телами: отфильтрованное тело не должно
+    // оставлять на карте висящий в пустоте маячок.
+    for (const child of scene.groups.signals.children) {
+      const name = String(child.name || '').replace(/^signals-/, '');
+      child.visible = !name || matching.has(name);
     }
     for (const line of scene.groups.orbits.children) {
       const name = (line.userData?.pick as PickInfo | undefined)?.name;
@@ -712,6 +754,7 @@ export function createOrreryViewer(
       if (progress >= 1) transition = null;
     }
     controls?.update();
+    scene?.pulse(clock.elapsedTime);
     if (renderer && camera && scene) {
       renderer.render(scene.root, camera);
       updateLabels();
@@ -740,13 +783,18 @@ export function createOrreryViewer(
     return { ...state, layers: { ...state.layers } };
   }
 
-  function setPayload(next: OrreryViewPayload, opts: { keepFocus?: boolean } = {}) {
+  function setPayload(next: OrreryViewPayload, opts: { keepFocus?: boolean; resetCamera?: boolean } = {}) {
+    const previous = currentPayload;
     currentPayload = next;
     if (!opts.keepFocus) {
       // Фокус мог остаться от прошлой системы — иначе камера улетает в никуда.
       state.focus = next.bodies.some((body) => body.name === state.focus) ? state.focus : '';
     }
-    rebuildScene();
+    // Решение «трогать ли камеру» вынесено в чистую функцию: её проверяют
+    // тесты движка, и она же документирует, что обновление данных камеру
+    // не сбрасывает (см. shouldReframeCamera).
+    const reframe = shouldReframeCamera(previous, next, { focus: state.focus, resetCamera: opts.resetCamera });
+    rebuildScene({ keepCamera: !reframe });
   }
 
   rebuildScene();

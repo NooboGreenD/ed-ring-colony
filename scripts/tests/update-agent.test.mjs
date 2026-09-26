@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   ENV_STAGES,
+  UPDATE_AGENT_PROTOCOL,
   UPDATE_PROTOCOL,
   UPDATE_STAGES,
   applyProgressEvent,
@@ -376,6 +377,159 @@ test('http contract: флажки панели (тесты/бэкап/мигра
     'migrationsOnly принудительно включает миграции и не даёт выключить их запросом');
 });
 
+test('сбой прогона: в панель едет причина из вывода, а не подпись стадии', { skip: needsBash }, async (t) => {
+  const config = testConfig();
+  // Так выглядит настоящий сбой сборки: скрипт успел объявить стадию, а
+  // потом упал, объяснив причину в stderr.
+  writeFileSync(config.script, [
+    '#!/usr/bin/env bash',
+    'printf ' + JSON.stringify(UPDATE_PROTOCOL + '{"stage":"build","percent":55,"message":"Пересобираю docker-образы — самая долгая часть"}') + '; echo',
+    'echo "ERROR: failed to solve: process \"/bin/sh -c npm ci\" did not complete successfully: no space left on device" >&2',
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o755 });
+
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  assert.equal((await fetch('http://127.0.0.1:' + port + '/update', { method: 'POST', headers: auth, body: '{}' })).status, 202);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+
+  const done = manager.status();
+  assert.equal(done.state, 'failed');
+  assert.equal(done.exitCode, 1);
+  assert.match(done.error, /no space left on device/, 'причина берётся из вывода процесса');
+  assert.match(done.error, /update-project\.sh, код 1/, 'указано, что именно упало');
+  assert.equal(/Пересобираю docker-образы/.test(done.error), false, 'подпись стадии — не причина сбоя');
+  // Подпись стадии гасится: иначе панель показывает её рядом с ошибкой и
+  // выглядит это как «ошибка: идёт сборка».
+  assert.equal(done.message, null);
+});
+
+test('сбой без внятного stderr: панель получает честное «код N», а не подпись стадии', { skip: needsBash }, async (t) => {
+  const config = testConfig();
+  writeFileSync(config.script, [
+    '#!/usr/bin/env bash',
+    'printf ' + JSON.stringify(UPDATE_PROTOCOL + '{"stage":"build","percent":55,"message":"Пересобираю docker-образы"}') + '; echo',
+    'exit 7',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  t.after(() => manager.stop());
+
+  assert.equal(manager.start({}).started, true);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+  const done = manager.status();
+  assert.equal(done.state, 'failed');
+  assert.equal(done.exitCode, 7);
+  assert.match(done.error, /update-project\.sh завершился с кодом 7/);
+  assert.equal(/Пересобираю docker-образы/.test(done.error), false);
+});
+
+test('/status: агент рассказывает о себе, «только миграции» на старом скрипте отклоняется', { skip: needsBash }, async (t) => {
+  const config = testConfig();
+  // Скрипт «предыдущей версии»: про UPDATE_MIGRATIONS_ONLY он не знает,
+  // поэтому режим «только миграции» молча превратился бы в полную
+  // пересборку — ровно та жалоба, что кнопка миграций пересобирает проект.
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'echo "старый скрипт"', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  const status = await (await fetch(origin + '/status', { headers: auth })).json();
+  assert.equal(status.agent.protocol, UPDATE_AGENT_PROTOCOL, 'панель видит версию протокола агента');
+  assert.equal(status.agent.migrationsOnlySupported, false, 'скрипт в клоне не умеет режим «только миграции»');
+  assert.equal(status.agent.canRestart, true, 'по умолчанию агент умеет перезапускаться сам');
+  assert.equal(typeof status.agent.stale, 'boolean');
+
+  const refused = await fetch(origin + '/update', { method: 'POST', headers: auth, body: JSON.stringify({ migrationsOnly: true }) });
+  assert.equal(refused.status, 503, 'лучше честный отказ, чем неожиданная пересборка');
+  const refusedBody = await refused.json();
+  assert.equal(refusedBody.reason, 'migrations-only-unsupported');
+  assert.match(refusedBody.error, /только миграции/, 'отказ объяснён по-человечески');
+  assert.equal(manager.isBusy(), false, 'отказ ничего не запускает');
+
+  // Обычное обновление тем же скриптом по-прежнему работает.
+  assert.equal((await fetch(origin + '/update', { method: 'POST', headers: auth, body: '{}' })).status, 202);
+  await waitFor(() => !manager.isBusy());
+});
+
+test('POST /restart: перезапуск планируется только у свободного агента и только если разрешён', { skip: needsBash }, async (t) => {
+  // Задержка ставится предельной (120 с), чтобы таймер перезапуска не успел
+  // сработать внутри теста: process.exit(0) убил бы весь прогон.
+  const config = testConfig({ UPDATE_AGENT_RESTART_DELAY_SECONDS: '120' });
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'sleep 30', ''].join('\n'), { mode: 0o755 });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => {
+    manager.stop();
+    await new Promise((done) => server.close(done));
+  });
+
+  const ok = await fetch(origin + '/restart', { method: 'POST', headers: auth });
+  assert.equal(ok.status, 202, 'свободный агент перезапускается по кнопке из панели');
+  const okBody = await ok.json();
+  assert.equal(okBody.ok, true);
+  assert.equal(okBody.agent.canRestart, true);
+  assert.match(manager.status().log.map((line) => line.line).join('\n'), /перезапускаю update-agent/);
+
+  // Идёт прогон — перезапуск оборвал бы его.
+  assert.equal(manager.start({}).started, true);
+  const busy = await fetch(origin + '/restart', { method: 'POST', headers: auth });
+  assert.equal(busy.status, 409);
+  assert.match((await busy.json()).error, /идёт задача/);
+  manager.stop();
+  await waitFor(() => !manager.isBusy());
+
+  // Выключенный самоперезапуск — честный 503, а не молчаливое «принято».
+  const strict = testConfig({ UPDATE_AGENT_SELF_RESTART: '0' });
+  writeFileSync(strict.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  const strictManager = createUpdateManager(strict);
+  const strictServer = createUpdateServer({ config: strict, manager: strictManager });
+  const strictPort = await listen(strictServer);
+  t.after(async () => {
+    strictManager.stop();
+    await new Promise((done) => strictServer.close(done));
+  });
+  const denied = await fetch('http://127.0.0.1:' + strictPort + '/restart', { method: 'POST', headers: auth });
+  assert.equal(denied.status, 503);
+  const deniedBody = await denied.json();
+  assert.equal(deniedBody.ok, false);
+  assert.equal(deniedBody.agent.canRestart, false);
+});
+
+test('обновление, принёсшее нового агента, перезапускает его самого', { skip: needsBash }, async (t) => {
+  const config = testConfig({ UPDATE_AGENT_RESTART_DELAY_SECONDS: '120' });
+  writeFileSync(config.script, ['#!/usr/bin/env bash', 'exit 0', ''].join('\n'), { mode: 0o755 });
+  // В клоне лежит ДРУГАЯ версия агента — значит запущенный код устарел.
+  mkdirSync(join(config.projectDir, 'scripts', 'lib'), { recursive: true });
+  writeFileSync(join(config.projectDir, 'scripts', 'update-agent.mjs'), '// новее того, что выполняется\n');
+  writeFileSync(join(config.projectDir, 'scripts', 'lib', 'update-state.mjs'), '// shared\n');
+
+  const manager = createUpdateManager(config);
+  t.after(() => manager.stop());
+  assert.equal(manager.start({}).started, true);
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+  assert.equal(manager.status().state, 'succeeded');
+  assert.match(manager.status().log.map((line) => line.line).join('\n'), /перезапускаю update-agent/,
+    'после успешного обновления агент уходит на перезапуск, иначе флажки панели так и останутся без действия');
+});
+
 test('crashed updater does not stick the panel in running state', () => {
   // Таймаут задан явно: тест проверяет саму логику «running без процесса
   // старше лимита → failed» и не зависит от дефолта UPDATE_TIMEOUT_MINUTES.
@@ -439,10 +593,16 @@ test('deploy/update-project.sh: синтаксис и полный набор с
     assert.match(source, new RegExp(UPDATE_PROTOCOL + '\\{"stage":"' + stage + '"|report ' + stage + ' '),
       'скрипт должен сообщать о стадии ' + stage);
   }
-  assert.match(source, /set -euo pipefail/);
+  // -E обязателен: без наследования ловушки ERR падение внутри функции
+  // (compose(), run_step()) проходило молча, и панель показывала подпись
+  // стадии вместо причины сбоя.
+  assert.match(source, /set -Eeuo pipefail/);
   assert.match(source, /trap 'fail/);
-  // Ошибка пишется в stdout: менеджер читает прогресс именно оттуда.
-  assert.match(source, /die\(\)\s*\{[^}]*::edrc::/s);
+  // Ошибка пишется в stdout ОТДЕЛЬНЫМ полем `error`: менеджер читает
+  // прогресс именно оттуда и не выдаёт подпись стадии за причину.
+  assert.match(source, /die\(\)\s*\{[\s\S]*?::edrc::\{"error"/);
+  assert.match(source, /run_step\(\)/, 'шаги обёрнуты в run_step: из вывода вытаскивается причина падения');
+  assert.match(source, /build --build-arg "RUN_TESTS=\$RUN_TESTS"/, 'флажок тестов уходит аргументом сборки, а не только в env-файл');
   assert.match(source, /git stash push/);
   assert.match(source, /git merge --ff-only/);
   assert.match(source, /UPDATE_APPLY_MIGRATIONS/);
@@ -624,6 +784,35 @@ test('панель мониторинга: диск, контент и обно�
   assert.match(tab, /runContent\('sync'\)/, 'кнопка «Синхронизировать Galnet сейчас»');
   assert.match(tab, /runContent\('translate'\)/, 'кнопка «Перевести недостающее»');
   assert.match(tab, /setInterval|setTimeout/, 'пока идёт сборка, панель опрашивает прогресс');
+});
+
+test('панель: журнал не мигает, а устаревший агент виден и перезапускается кнопкой', () => {
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  const tab = readFileSync(join(ROOT, 'src', 'components', 'Admin', 'ServerMonitorTab.tsx'), 'utf8');
+  const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'monitor', 'update', 'route.ts'), 'utf8');
+
+  // Причина мерцания: один кэш на два разных ответа. Публичный /api/status
+  // просит документ без журнала, админская панель — с журналом; отдавая
+  // первому ответу обслуживать второй запрос, панель теряла лог на секунду
+  // и получала обратно на следующем опросе.
+  assert.match(client, /full: boolean/, 'запись кэша помнит, полный ли это документ');
+  assert.match(client, /cache\.full \|\| !wantFull/, 'короткий ответ не обслуживает запрос с журналом');
+  assert.match(client, /cacheMs > 0 && cache/, 'cacheMs=0 минует кэш и на чтение');
+
+  // Панель дополнительно склеивает снимки: ответы POST/DELETE приходят без
+  // хвоста журнала и не должны стирать уже показанный.
+  assert.match(tab, /function mergeUpdate/);
+  assert.match(tab, /previous\.startedAt !== next\.startedAt/, 'новый прогон начинает журнал заново');
+  assert.equal(/setUpdate\(data\.update\)/.test(tab), false, 'снимок ставится только через склейку');
+
+  // Устаревший агент — видимое состояние, а не догадка админа.
+  assert.match(route, /agent: update\.agent/, 'роут отдаёт сведения об агенте');
+  assert.match(route, /action === 'restart'/, 'роут умеет перезапуск агента');
+  assert.match(tab, /agentInfo\?\.outdated === true/, 'панель предупреждает об устаревшем агенте');
+  assert.match(tab, /Перезапустить агент/);
+  assert.match(tab, /action: 'restart'/);
+  // Подпись стадии не выдаётся за результат упавшего прогона.
+  assert.match(tab, /update\.message && update\.state !== 'failed'/);
 });
 
 test('доступ: админские эндпоинты проверки и запуска требуют requireAdmin', () => {

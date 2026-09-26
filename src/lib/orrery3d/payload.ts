@@ -17,6 +17,7 @@ import {
   type OrreryLayout,
   type OrreryStructure,
 } from '@/lib/systemOrrery';
+import { SIGNAL_KINDS, SIGNAL_META, hasSignals } from '@/lib/bodySignals';
 import { bodyColor, orbitColor, starColor, structureColor } from './palette';
 import {
   ORRERY_VIEW_VERSION,
@@ -175,7 +176,8 @@ export function buildOrreryView(
       atmosphere: body.atmosphere,
       volcanism: body.volcanism,
       landable: body.landable,
-      bioSignals: body.bioSignals,
+      bioSignals: body.signals.bio,
+      signals: { ...body.signals, genuses: [...body.signals.genuses] },
       mapped: Boolean(body.raw && (body.raw.mapped || body.raw.was_mapped || body.raw.WasMapped)),
       scanned: Boolean(body.raw && (body.raw.scanned || body.raw.ScanType)),
       rings: body.rings.map((ring) => ({
@@ -231,6 +233,16 @@ export function buildOrreryView(
     landable: viewBodies.filter((body) => body.landable).length,
     bioBodies: viewBodies.filter((body) => body.bioSignals > 0).length,
     bioSignals: viewBodies.reduce((total, body) => total + body.bioSignals, 0),
+    // Сигналы всей системы: сводка над карточками показывает их одной
+    // строкой, а карта — метками у тел.
+    signalBodies: viewBodies.filter((body) => hasSignals(body.signals)).length,
+    signals: viewBodies.reduce((total, body) => {
+      for (const kind of SIGNAL_KINDS) total[kind] += body.signals[kind];
+      for (const genus of body.signals.genuses) {
+        if (!total.genuses.includes(genus)) total.genuses.push(genus);
+      }
+      return total;
+    }, { bio: 0, geo: 0, human: 0, thargoid: 0, guardian: 0, other: 0, genuses: [] as string[] }),
     ringed: layout.bodies.filter((body) => body.rings.length > 0).length,
     structures: viewStructures.length,
     activeSites: viewStructures.filter((structure) => !structure.complete).length,
@@ -289,6 +301,12 @@ export function describeView(payload: OrreryViewPayload): string[] {
   if (summary.moons) parts.push(`лун ${summary.moons}`);
   if (summary.landable) parts.push(`посадка: ${summary.landable}`);
   if (summary.bioSignals) parts.push(`био ${summary.bioSignals}`);
+  // Прочие сигналы — одной строкой: геология, люди, стражи, таргоиды.
+  for (const kind of SIGNAL_KINDS) {
+    if (kind === 'bio') continue;
+    const value = summary.signals[kind];
+    if (value) parts.push(`${SIGNAL_META[kind].short} ${value}`);
+  }
   if (summary.ringed) parts.push(`кольца: ${summary.ringed}`);
   if (summary.structures) {
     parts.push(summary.activeSites ? `строек ${summary.activeSites}` : `строек ${summary.structures}`);

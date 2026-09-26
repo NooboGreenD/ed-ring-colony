@@ -10,6 +10,7 @@ import ProgressPanel from '@/components/Architect/ProgressPanel';
 import SharePanel from '@/components/Architect/SharePanel';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
 import { CATALOGUE_VERSION } from '@/lib/architect/catalogue';
+import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { adoptExisting, type ExistingStructure } from '@/lib/architect/existing';
 import {
   matchProgress,
@@ -554,7 +555,31 @@ function BodyCard({
         {body.hasAtmosphere && <Tag tone="var(--cyan)" label="атмосфера" />}
         {body.volcanism && <Tag tone="var(--cyan)" label="вулканизм" />}
         {body.hasRings && <Tag tone="var(--cyan)" label="кольца / пояс" />}
+        {/*
+          Сигналы тела: биология и всё остальное, что нашёл сканер. Для
+          застройки это важные подсказки — биология рядом со стройкой
+          пропадёт, геология даёт материалы, человеческие сигналы говорят
+          о чужом присутствии.
+        */}
+        {activeSignalKinds(body.signals).map((kind) => (
+          <Tag
+            key={kind}
+            tone={SIGNAL_META[kind].color}
+            label={`${SIGNAL_META[kind].icon} ${SIGNAL_META[kind].label}: ${body.signals[kind]}`}
+          />
+        ))}
       </div>
+
+      {body.signals.genuses.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
+          роды биологии: {body.signals.genuses.join(', ')}
+        </div>
+      )}
+      {body.signals.bio > 0 && body.landable && (
+        <div style={{ marginTop: 6, fontSize: 11, color: SIGNAL_META.bio.color }}>
+          На теле есть биология — соберите образцы до начала стройки: поселение уничтожает находки рядом с собой.
+        </div>
+      )}
 
       {sites.length > 0 && (
         <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
