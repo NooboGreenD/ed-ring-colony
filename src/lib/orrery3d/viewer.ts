@@ -21,6 +21,7 @@ import {
   frameFor,
   cameraStateFor,
   interpolateCamera,
+  shouldReframeCamera,
   type CameraState,
   type ViewPreset,
   type ZoomLevel,
@@ -72,7 +73,15 @@ export interface OrreryViewerState {
 }
 
 export interface OrreryViewer {
-  setPayload: (payload: OrreryViewPayload, options?: { keepFocus?: boolean }) => void;
+  /**
+   * Обновить данные сцены.
+   *
+   * `keepFocus` сохраняет выбранное тело, `resetCamera` принудительно
+   * кадрирует систему заново. По умолчанию камера НЕ трогается: обновление
+   * данных (новые сканы, пересчёт построек, лишний ре-рендер React) не
+   * должно выдёргивать её из того положения, куда её поставил человек.
+   */
+  setPayload: (payload: OrreryViewPayload, options?: { keepFocus?: boolean; resetCamera?: boolean }) => void;
   focus: (target: string, zoom?: ZoomLevel) => void;
   setZoom: (zoom: ZoomLevel) => void;
   setView: (view: ViewPreset) => void;
@@ -315,7 +324,7 @@ export function createOrreryViewer(
     toast.hidden = !message;
   }
 
-  function rebuildScene() {
+  function rebuildScene(rebuildOptions: { keepCamera?: boolean } = {}) {
     const previousFocus = state.focus;
     if (scene) {
       scene.root.removeFromParent();
@@ -346,8 +355,25 @@ export function createOrreryViewer(
       state.focus = '';
       state.zoom = 0;
     }
-    applyCamera(0);
+    if (rebuildOptions.keepCamera && camera && controls) {
+      // Камера остаётся ровно там, где её оставил пользователь. Пересчитать
+      // нужно только зависящие от размаха системы пределы, иначе после
+      // обновления данных колесо упирается в старые границы.
+      syncCameraLimits();
+    } else {
+      applyCamera(0);
+    }
     emit('state', getState());
+  }
+
+  /** Ближняя/дальняя плоскости и пределы приближения зависят от размаха сцены. */
+  function syncCameraLimits() {
+    if (!camera || !controls) return;
+    camera.near = currentPayload.span / 5000;
+    camera.far = currentPayload.span * 60;
+    camera.updateProjectionMatrix();
+    controls.minDistance = currentPayload.span * 0.02;
+    controls.maxDistance = currentPayload.span * 8;
   }
 
   function applyLayers() {
@@ -740,13 +766,18 @@ export function createOrreryViewer(
     return { ...state, layers: { ...state.layers } };
   }
 
-  function setPayload(next: OrreryViewPayload, opts: { keepFocus?: boolean } = {}) {
+  function setPayload(next: OrreryViewPayload, opts: { keepFocus?: boolean; resetCamera?: boolean } = {}) {
+    const previous = currentPayload;
     currentPayload = next;
     if (!opts.keepFocus) {
       // Фокус мог остаться от прошлой системы — иначе камера улетает в никуда.
       state.focus = next.bodies.some((body) => body.name === state.focus) ? state.focus : '';
     }
-    rebuildScene();
+    // Решение «трогать ли камеру» вынесено в чистую функцию: её проверяют
+    // тесты движка, и она же документирует, что обновление данных камеру
+    // не сбрасывает (см. shouldReframeCamera).
+    const reframe = shouldReframeCamera(previous, next, { focus: state.focus, resetCamera: opts.resetCamera });
+    rebuildScene({ keepCamera: !reframe });
   }
 
   rebuildScene();

@@ -350,6 +350,36 @@ maybe('камера: уровни приближения уменьшают ка
   assert.deepEqual(module.cameraUp('iso'), [0, 1, 0]);
 });
 
+maybe('камера: обновление данных её не трогает, смена системы и масштаба — кадрирует', async () => {
+  const { module } = await enginePromise;
+  const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');
+  const payload = module.buildOrreryView(layout, [], { systemName: 'TestSys' });
+
+  // Тот же пакет, пересчитанный заново (ре-рендер React, новые сканы) —
+  // камеру не двигаем: из-за этого карта «постоянно возвращалась в исходное
+  // состояние», стоило мышке шевельнуться.
+  const again = module.buildOrreryView(layout, [], { systemName: 'TestSys' });
+  assert.equal(module.shouldReframeCamera(payload, again, { focus: 'TestSys 2' }), false);
+  assert.equal(module.shouldReframeCamera(payload, again, {}), false);
+
+  // Первый показ — кадрируем: смотреть иначе не на что.
+  assert.equal(module.shouldReframeCamera(null, payload, {}), true);
+  // Явная просьба (кнопка «вся система») — кадрируем.
+  assert.equal(module.shouldReframeCamera(payload, again, { resetCamera: true }), true);
+  // Другая система.
+  const other = module.buildOrreryView(module.buildOrreryLayout(binaryRecords(), 'BinSys'), [], { systemName: 'BinSys' });
+  assert.equal(module.shouldReframeCamera(payload, other, {}), true);
+  // Переключение масштаба: координаты меняются целиком.
+  const linear = module.buildOrreryView(layout, [], { systemName: 'TestSys', scaleMode: 'linear' });
+  assert.equal(module.shouldReframeCamera(payload, linear, {}), true);
+  // Выбранное тело пропало из данных — камера смотрела бы в пустоту.
+  const trimmed = { ...again, bodies: again.bodies.filter((body) => body.name !== 'TestSys 2') };
+  assert.equal(module.shouldReframeCamera(payload, trimmed, { focus: 'TestSys 2' }), true);
+  // Прилетел скан далёкого тела: границы чуть разъехались — это не повод.
+  assert.equal(module.shouldReframeCamera(payload, { ...again, span: payload.span * 1.2 }, {}), false);
+  assert.equal(module.shouldReframeCamera(payload, { ...again, span: payload.span * 3 }, {}), true);
+});
+
 maybe('движение: тело остаётся на нарисованной орбите', async () => {
   const { module } = await enginePromise;
   const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');

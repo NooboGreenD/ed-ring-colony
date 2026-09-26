@@ -62,6 +62,30 @@ const LABEL_MODES: { id: LabelsMode; label: string; hint: string }[] = [
   { id: 'none', label: 'нет', hint: 'Полностью скрыть подписи' },
 ];
 
+/**
+ * Пустые значения по умолчанию — общие на все рендеры.
+ *
+ * `structures = []` в параметрах создавал НОВЫЙ массив на каждый рендер:
+ * от него зависел useMemo пакета данных, пакет уезжал во вьюер, вьюер
+ * пересобирал сцену и ставил камеру в исходное положение — а заодно слал
+ * событие состояния, вызывая следующий рендер. Камеру в такой петле было
+ * невозможно увести с места.
+ */
+const NO_STRUCTURES: OrreryStructure[] = [];
+
+/** Поверхностное сравнение состояния вьюера: без него каждый кадр — ре-рендер. */
+function sameViewerState(a: OrreryViewerState, b: OrreryViewerState): boolean {
+  if (a === b) return true;
+  if (a.focus !== b.focus || a.zoom !== b.zoom || a.view !== b.view) return false;
+  if (a.filter !== b.filter || a.labels !== b.labels) return false;
+  if (a.playing !== b.playing || a.speed !== b.speed) return false;
+  // Время идёт непрерывно: подпись показывает десятые доли, поэтому мелкие
+  // шаги не должны дёргать React.
+  if (Math.abs(a.timeDays - b.timeDays) > 0.02) return false;
+  const layers = Object.keys(a.layers) as LayerName[];
+  return layers.every((layer) => a.layers[layer] === b.layers[layer]);
+}
+
 function buttonStyle(active: boolean): React.CSSProperties {
   return {
     background: active ? 'rgba(230,126,34,0.2)' : 'rgba(18,22,31,0.86)',
@@ -90,7 +114,7 @@ export default function SystemOrrery3D({
   systemName,
   bodies,
   layout: layoutProp,
-  structures = [],
+  structures = NO_STRUCTURES,
   focusTarget,
   onFocusChange,
   player = null,
@@ -121,18 +145,29 @@ export default function SystemOrrery3D({
     timeDays: 0,
   });
 
+  // Входные данные приходят от страниц, которые пересоздают массивы на
+  // каждый свой рендер. Считаем по содержимому, а не по ссылке: иначе пакет
+  // данных, а с ним и вся сцена, собирались бы заново от каждого движения
+  // мыши (наведение меняет состояние компонента).
+  const bodiesKey = useMemo(() => JSON.stringify(bodies ?? null), [bodies]);
+  const structuresKey = useMemo(() => JSON.stringify(structures), [structures]);
+  const playerKey = useMemo(() => JSON.stringify(player ?? null), [player]);
+  const stableBodies = useMemo(() => bodies ?? [], [bodiesKey]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const stableStructures = useMemo(() => structures, [structuresKey]);  // eslint-disable-line react-hooks/exhaustive-deps
+  const stablePlayer = useMemo(() => player ?? null, [playerKey]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const layout = useMemo(
-    () => layoutProp ?? buildOrreryLayout(bodies ?? [], systemName),
-    [layoutProp, bodies, systemName],
+    () => layoutProp ?? buildOrreryLayout(stableBodies, systemName),
+    [layoutProp, stableBodies, systemName],
   );
 
   const payload = useMemo(
-    () => buildOrreryView(layout, structures, {
+    () => buildOrreryView(layout, stableStructures, {
       systemName,
       scaleMode,
-      player,
+      player: stablePlayer,
     }),
-    [layout, structures, systemName, scaleMode, player],
+    [layout, stableStructures, systemName, scaleMode, stablePlayer],
   );
 
   // Вьюер поднимается один раз на систему: дальше обновляется пакет данных.
@@ -156,7 +191,10 @@ export default function SystemOrrery3D({
             onFocusChange?.(name);
           },
           onHover: (pick) => setHovered(pick ? (pick.kind === 'body' ? pick.name : pick.body ?? '') : ''),
-          onState: (next) => setState(next),
+          // Вьюер сообщает состояние на каждом кадре проигрывания орбит.
+          // Пропускаем одинаковые снимки: иначе React перерисовывался 60 раз
+          // в секунду, пересобирал пакет данных и вьюер возвращал камеру.
+          onState: (next) => setState((previous) => (sameViewerState(previous, next) ? previous : next)),
         });
         viewerRef.current = viewer;
         if (!viewer.getScene()) setWebglFailed(true);
@@ -175,6 +213,9 @@ export default function SystemOrrery3D({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [systemName]);
 
+  // Данные обновились (новые сканы, изменившиеся постройки) — сцена
+  // пересобирается, но камера остаётся там, куда её поставил пользователь.
+  // Переключение масштаба вьюер распознаёт сам и кадрирует заново.
   useEffect(() => {
     if (!ready) return;
     viewerRef.current?.setPayload(payload, { keepFocus: true });

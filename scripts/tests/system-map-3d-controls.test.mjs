@@ -127,6 +127,43 @@ maybe('фильтры, подписи и масштаб уезжают во вь
   }
 });
 
+maybe('камера: наведение и тиканье времени не пересобирают сцену', async () => {
+  // Регрессия на «камера постоянно возвращается в исходное состояние».
+  // Компонент отдавал вьюеру НОВЫЙ пакет данных на каждый свой рендер
+  // (пустые постройки создавались заново), вьюер пересобирал сцену и
+  // кадрировал её заново, а его же событие состояния вызывало следующий
+  // рендер — петля, из которой камеру было не вывести.
+  const view = await renderOrreryMap({ bodies: solBodies() });
+  try {
+    const before = view.viewerCall('setPayload').length;
+
+    // Наведение курсора на тело: компонент показывает подсказку и
+    // перерисовывается — но данные сцены не менялись.
+    view.emitHover({ kind: 'body', name: 'Sol 3' });
+    await view.flush(20);
+    view.emitHover(null);
+    await view.flush(20);
+
+    // Проигрывание орбит: вьюер шлёт состояние каждым кадром.
+    for (let step = 1; step <= 5; step += 1) {
+      view.emitState({ playing: true, timeDays: step * 0.5 });
+      await view.flush(10);
+    }
+
+    assert.equal(view.viewerCall('setPayload').length, before,
+      'пакет данных пересобрался без причины — сцена и камера сбросятся');
+
+    // Смена масштаба по-прежнему обязана доехать до вьюера.
+    const scaleSelect = view.select('Сжатый масштаб делает систему обозримой, линейный сохраняет пропорции');
+    await view.setSelect(scaleSelect, 'linear');
+    assert.ok(view.viewerCall('setPayload').length > before, 'смена масштаба должна обновлять пакет');
+    // Фокус при обновлении данных сохраняется — камера остаётся на месте.
+    assert.deepEqual(view.viewerCall('setPayload').slice(-1)[0][2], { keepFocus: true });
+  } finally {
+    await view.cleanup();
+  }
+});
+
 maybe('движение по орбитам: старт, скорость и возврат к дате сканов', async () => {
   const view = await boot();
   try {
