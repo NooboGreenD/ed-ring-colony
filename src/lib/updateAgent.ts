@@ -8,16 +8,33 @@
  * (stage + percent only), because «System Update» is shown to every visitor.
  */
 import {
+  UPDATE_AGENT_PROTOCOL,
   emptyUpdateState,
   publicUpdateView,
+  sanitizeAgentInfo,
   sanitizeUpdateState,
 } from '../../scripts/lib/update-state.mjs';
+
+export type UpdateAgentInfo = NonNullable<ReturnType<typeof sanitizeAgentInfo>> & {
+  /** Версия протокола, которую ждёт сайт (константа этой сборки). */
+  expectedProtocol: number;
+  /** true — агент старее сайта/клона: флажки прогона могут игнорироваться. */
+  outdated: boolean;
+};
 
 export interface UpdateAgentStatus {
   configured: boolean;
   connected: boolean;
   /** Admin-only detail (progress + log tail). Never exposed anonymously. */
   update: ReturnType<typeof sanitizeUpdateState> | null;
+  /**
+   * Кто именно отвечает на запросы: версия протокола агента и признак того,
+   * что он работает на устаревшем коде. Обновление намеренно не пересоздаёт
+   * контейнер апдейтера, поэтому он легко оказывается старее сайта — и тогда
+   * новые флажки («только миграции», «без бэкапа», «без тестов») до скрипта
+   * не доезжают. Панель показывает предупреждение и кнопку перезапуска.
+   */
+  agent: UpdateAgentInfo | null;
   /** What /api/status may reveal to any visitor. */
   public: ReturnType<typeof publicUpdateView>;
   /**
@@ -64,12 +81,20 @@ const idleState = () => sanitizeUpdateState(emptyUpdateState());
 
 function offline(configured: boolean, reason: string | null): UpdateAgentStatus {
   const update = idleState();
-  return { configured, connected: false, update, public: publicUpdateView(update), pendingMigrations: [], reason };
+  return { configured, connected: false, update, agent: null, public: publicUpdateView(update), pendingMigrations: [], reason };
 }
 
 interface CachedStatus {
   expiresAt: number;
   value: UpdateAgentStatus;
+  /**
+   * Был ли ответ получен с `?full=1`. Без этого флага кэш, заполненный
+   * публичным /api/status (там журнал не запрашивается), отдавался и
+   * админской панели — и хвост журнала в ней то появлялся, то пропадал
+   * каждые пару секунд. Проекция «полного» в «короткий» безопасна, обратная
+   * — нет, поэтому короткий ответ никогда не обслуживает полный запрос.
+   */
+  full: boolean;
 }
 
 let cache: CachedStatus | null = null;
@@ -86,8 +111,10 @@ export async function getUpdateAgentStatus(options: { full?: boolean; cacheMs?: 
   const cacheMs = options.cacheMs ?? PUBLIC_STATUS_CACHE_MS;
   const now = Date.now();
   const wantFull = options.full === true;
-  // The cached entry always keeps the full document; projections are cheap.
-  if (cache && cache.expiresAt > now) {
+  // cacheMs = 0 («дай свежее», так ходит админская панель) обязан миновать
+  // кэш и на чтение: раньше он лишь не продлевал запись, но сам продолжал
+  // читать чужой — публичный — ответ без журнала.
+  if (cacheMs > 0 && cache && cache.expiresAt > now && (cache.full || !wantFull)) {
     return project(cache.value, wantFull);
   }
 
@@ -113,19 +140,52 @@ export async function getUpdateAgentStatus(options: { full?: boolean; cacheMs?: 
       configured: true,
       connected: true,
       update,
+      agent: describeAgent(record.agent),
       public: publicUpdateView(update),
       pendingMigrations,
       reason: null,
     };
-    cache = { expiresAt: now + cacheMs, value };
+    cache = { expiresAt: now + cacheMs, value, full: wantFull };
     return project(value, wantFull);
   } catch {
     // An unreachable updater never means "the site is broken": the header
     // falls back to System Online and the button explains what is missing.
     const value = offline(true, 'update-agent не отвечает (проверьте, что update-agent запущен на хосте и токен совпадает)');
-    cache = { expiresAt: now + Math.max(cacheMs, 5_000), value };
+    cache = { expiresAt: now + Math.max(cacheMs, 5_000), value, full: true };
     return value;
   }
+}
+
+/**
+ * Свести ответ агента о себе к тому, что нужно панели.
+ *
+ * Агент старее сайта — не экзотика, а норма при нынешней схеме: обновление
+ * не пересоздаёт его контейнер. Молчащий про это интерфейс и порождал
+ * «галочки не влияют на сборку» и «кнопка миграций пересобирает проект».
+ */
+function describeAgent(raw: unknown): UpdateAgentInfo | null {
+  const info = sanitizeAgentInfo(raw);
+  if (!info) {
+    // Совсем старый агент про себя ничего не рассказывает — сам факт
+    // отсутствия поля и есть признак устаревшей версии.
+    return {
+      protocol: 0,
+      stale: true,
+      fromRepo: false,
+      revision: null,
+      repoRevision: null,
+      startedAt: null,
+      migrationsOnlySupported: false,
+      canRestart: false,
+      expectedProtocol: UPDATE_AGENT_PROTOCOL,
+      outdated: true,
+    };
+  }
+  return {
+    ...info,
+    expectedProtocol: UPDATE_AGENT_PROTOCOL,
+    outdated: info.stale || info.protocol < UPDATE_AGENT_PROTOCOL,
+  };
 }
 
 function project(value: UpdateAgentStatus, wantFull: boolean): UpdateAgentStatus {
@@ -137,7 +197,7 @@ function project(value: UpdateAgentStatus, wantFull: boolean): UpdateAgentStatus
  * Действия агента. `backup` идёт в тот же процессный слот, что и `start`:
  * дамп базы и пересборка стека не должны выполняться одновременно.
  */
-export type UpdateAction = 'start' | 'abort' | 'backup';
+export type UpdateAction = 'start' | 'abort' | 'backup' | 'restart';
 
 /**
  * Mapping to the agent's HTTP contract (see the endpoint list at the top of
@@ -149,6 +209,9 @@ const AGENT_PATHS: Record<UpdateAction, string> = {
   start: 'update',
   abort: 'abort',
   backup: 'backup',
+  // Перезапуск нужен, когда агент остался на старом коде: пока он не поднят
+  // заново, новые флажки прогона он попросту не понимает.
+  restart: 'restart',
 };
 
 /** Forwards an admin-confirmed action to the updater. Returns the raw agent answer. */
@@ -175,9 +238,17 @@ export async function callUpdateAgent(action: UpdateAction, body?: Record<string
     invalidateUpdateAgentCache();
     const record = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
     if (!response.ok) {
-      const reason = response.status === 409
+      // Агент объясняет отказ человеческим текстом (`reason`/`error`): режим
+      // «только миграции» не поддержан старым скриптом, самоперезапуск
+      // выключен и т.п. Такое сообщение полезнее, чем «ответил 503».
+      const said = typeof record.error === 'string' && record.error.trim()
+        ? record.error.trim()
+        : typeof record.reason === 'string' && record.reason.trim()
+          ? record.reason.trim()
+          : null;
+      const reason = said || (response.status === 409
         ? 'Агент уже занят (обновление или резервная копия) — дождитесь окончания'
-        : `Update-агент ответил ${response.status}`;
+        : `Update-агент ответил ${response.status}`);
       return { ok: false as const, status: response.status, error: reason, update: sanitizeUpdateState(record.update ?? null) };
     }
     return {

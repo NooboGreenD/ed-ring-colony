@@ -34,7 +34,11 @@ Environment=UPDATE_AGENT_HOST=127.0.0.1
 Environment=UPDATE_AGENT_PORT=8092
 Environment=UPDATE_HEALTH_URL=http://127.0.0.1:3000/api/health
 ExecStart=/usr/bin/node /opt/ed-ring-colony/src/scripts/update-agent.mjs
-Restart=on-failure
+# always, а не on-failure: после успешного обновления агент завершает себя
+# сам (exit 0), чтобы подняться уже с новым кодом из клона — иначе он навсегда
+# остаётся той версией, с которой сервис включили, и новые флажки панели
+# («только миграции», «без бэкапа», «без тестов») до скрипта не доезжают.
+Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true

@@ -33,6 +33,11 @@ export async function GET(request: Request) {
       connected: update.connected,
       reason: update.reason,
       update: update.update,
+      // Кто отвечает: версия агента и признак «работает на старом коде».
+      // Без этого панель не могла объяснить, почему флажки прогона не
+      // влияют на сборку.
+      agent: update.agent,
+      pendingMigrations: update.pendingMigrations,
     }, NO_STORE);
   } catch {
     return NextResponse.json({ error: 'Не удалось получить статус обновления' }, { status: 500, ...NO_STORE });
@@ -45,12 +50,27 @@ export async function POST(request: Request) {
     if ('response' in auth) return auth.response;
 
     const body = await request.json().catch(() => null) as {
+      action?: unknown;
       applyMigrations?: unknown;
       backup?: unknown;
       runTests?: unknown;
       migrationsOnly?: unknown;
       confirm?: unknown;
     } | null;
+
+    // Отдельное действие: перезапустить сам update-agent. Обновление
+    // намеренно не пересоздаёт его контейнер (иначе оно убило бы само себя),
+    // поэтому после выхода новой версии агент какое-то время работает на
+    // старом коде и игнорирует новые флажки прогона. Кнопка в панели
+    // завершает процесс — супервизор поднимает его заново из клона.
+    if (body?.action === 'restart') {
+      const restarted = await callUpdateAgent('restart');
+      if (!restarted.ok) {
+        return NextResponse.json({ success: false, error: restarted.error }, { status: restarted.status, ...NO_STORE });
+      }
+      return NextResponse.json({ success: true, restarted: true }, { status: 202, ...NO_STORE });
+    }
+
     // A rebuild of production must be an explicit action, never a stray POST.
     if (body?.confirm !== true) {
       return NextResponse.json({ error: 'Нужно подтверждение: confirm=true' }, { status: 400, ...NO_STORE });

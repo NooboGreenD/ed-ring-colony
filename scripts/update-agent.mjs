@@ -15,7 +15,9 @@
  *                         body: { applyMigrations?, backup?, runTests?,
  *                                 migrationsOnly? }           (token)
  *   POST /backup         → start a manual database backup      (token)
- *   POST /abort          → SIGTERM the running job             (token)
+ *   POST /abort          → SIGTERM the running job               (token)
+ *   POST /restart        → exit so the supervisor restarts the
+ *                         agent with the code from the checkout  (token)
  *   GET  /env            → masked env-file keys                (token)
  *   POST /env            → set/add one env key { key, value }  (token)
  *   DELETE /env?key=NAME → remove one env key                  (token)
@@ -57,14 +59,15 @@
  * The agent is deliberately stateful-but-small: progress survives an agent
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
  */
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
+  UPDATE_AGENT_PROTOCOL,
   UPDATE_LOG_LIMIT,
   applyProgressEvent,
   emptyUpdateState,
@@ -96,6 +99,66 @@ export function parseUpdateTimeoutMs(raw) {
   const minutes = Number(text);
   if (!Number.isFinite(minutes) || minutes <= 0) return null;
   return Math.max(60_000, Math.round(minutes) * 60_000);
+}
+
+/** Короткий отпечаток файла (или null, если файла нет). */
+function fileRevision(file) {
+  try {
+    return createHash('sha1').update(readFileSync(file)).digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
+/** Путь к файлу, из которого реально запущен этот модуль. */
+function runningEntry() {
+  try {
+    return fileURLToPath(import.meta.url);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Свежесть самого агента.
+ *
+ * Обновление намеренно НЕ пересоздаёт контейнер `update-agent`: он выполняет
+ * скрипт обновления, и пересоздание убило бы прогон на середине. Но образ
+ * агента при этом остаётся старым — а вместе с ним и код, который читает
+ * флажки панели. Ровно поэтому «без бэкапа», «без тестов» и «только миграции»
+ * могли ничего не менять: старый агент просто не передавал их скрипту.
+ *
+ * Здесь агент честно сравнивает исполняемый файл с копией из клона и
+ * отдаёт результат панели: та покажет предупреждение и кнопку перезапуска,
+ * а после успешного обновления агент перезапускается сам.
+ */
+export function agentSourceInfo(config, extra = {}) {
+  const entry = runningEntry();
+  const repoEntry = join(config.projectDir, 'scripts', 'update-agent.mjs');
+  const repoShared = join(config.projectDir, 'scripts', 'lib', 'update-state.mjs');
+  const runningRevision = entry ? fileRevision(entry) : null;
+  const repoRevision = fileRevision(repoEntry);
+  const fromRepo = Boolean(entry) && resolve(entry) === resolve(repoEntry);
+  // Клон может быть неполным (нет scripts/) — тогда сравнивать не с чем и
+  // «устаревшим» агент не считается: иначе панель пугала бы зря.
+  const stale = Boolean(runningRevision && repoRevision && runningRevision !== repoRevision);
+  let migrationsOnlySupported = true;
+  try {
+    migrationsOnlySupported = readFileSync(config.script, 'utf8').includes('UPDATE_MIGRATIONS_ONLY');
+  } catch {
+    migrationsOnlySupported = true;
+  }
+  return {
+    protocol: UPDATE_AGENT_PROTOCOL,
+    stale,
+    fromRepo,
+    revision: runningRevision,
+    repoRevision,
+    sharedRevision: fileRevision(repoShared),
+    migrationsOnlySupported,
+    canRestart: config.selfRestart,
+    ...extra,
+  };
 }
 
 export function updateAgentConfig(env = process.env) {
@@ -136,6 +199,14 @@ export function updateAgentConfig(env = process.env) {
     // явное: UPDATE_TIMEOUT_MINUTES=<число> в .env.production (старое
     // «45» там стоит — удалите строку или поставьте 0).
     timeoutMs: parseUpdateTimeoutMs(env.UPDATE_TIMEOUT_MINUTES),
+    // Перезапуск агента после обновления: процесс просто завершается, а его
+    // поднимает супервизор (Docker `restart: unless-stopped` или systemd
+    // `Restart=always`). Так агент подхватывает собственный новый код —
+    // без этого он навсегда остаётся тем, каким был при первой сборке.
+    // UPDATE_AGENT_SELF_RESTART=0 отключает поведение.
+    selfRestart: (env.UPDATE_AGENT_SELF_RESTART ?? '1').toString().trim() !== '0',
+    /** Пауза перед перезапуском: панель успевает забрать финальный статус. */
+    selfRestartDelayMs: Math.min(120_000, Math.max(1_000, (Number(env.UPDATE_AGENT_RESTART_DELAY_SECONDS) || 12) * 1_000)),
   };
 }
 
@@ -148,6 +219,14 @@ export function createUpdateManager(config) {
   if (!Array.isArray(state.log)) state.log = [];
   let child = null;
   let timer = null;
+  /**
+   * Последние строки stderr текущего прогона. Причина падения почти всегда
+   * именно здесь (`npm test` с упавшим тестом, `no space left on device`,
+   * недоступный registry), а раньше в панель уезжала просто подпись стадии.
+   */
+  let errorTail = [];
+  const startedAt = new Date().toISOString();
+  let restartTimer = null;
 
   function touch() {
     state.updatedAt = new Date().toISOString();
@@ -183,6 +262,34 @@ export function createUpdateManager(config) {
     persist();
   }
 
+  /** Строка из stderr, которая больше всего похожа на причину сбоя. */
+  function errorFromTail() {
+    if (!errorTail.length) return null;
+    const meaningful = /(error|ошибк|failed|fatal|cannot|not found|no space|denied|refused|killed|exit code|unauthorized|timeout)/i;
+    const picked = [...errorTail].reverse().find((line) => meaningful.test(line));
+    return sanitizeLogLine(picked ?? errorTail[errorTail.length - 1]);
+  }
+
+  /**
+   * Перезапуск агента после обновления, если его собственный код в клоне стал
+   * новее исполняемого. Процесс просто завершает работу — Docker/systemd
+   * поднимут его заново уже с новым кодом (см. deploy/Dockerfile.update-agent:
+   * контейнер запускает файл из смонтированного клона).
+   */
+  function scheduleSelfRestart(reason) {
+    if (!config.selfRestart || restartTimer) return false;
+    appendLog(`перезапускаю update-agent: ${reason}`);
+    restartTimer = setTimeout(() => {
+      // Никогда не бросаем прогон на середине: если к этому моменту снова
+      // что-то запущено, перезапуск просто отменяется.
+      if (child) { restartTimer = null; return; }
+      persist();
+      process.exit(0);
+    }, config.selfRestartDelayMs);
+    restartTimer.unref?.();
+    return true;
+  }
+
   function ingest(chunk) {
     for (const line of chunk.split('\n')) {
       if (!line.trim()) continue;
@@ -206,6 +313,8 @@ export function createUpdateManager(config) {
 
   return {
     get state() { return state; },
+    /** Когда поднялся сам процесс агента (не задача). */
+    get startedAt() { return startedAt; },
     isBusy: () => state.state === 'running' || state.state === 'queued',
     status() {
       // A crashed host (state left as "running") must not block the panel
@@ -237,6 +346,13 @@ export function createUpdateManager(config) {
       const envApply = kind === 'env';
       const script = envApply ? config.applyEnvScript : isBackup ? config.backupScript : config.script;
       const jobLabel = envApply ? 'применение ключей' : isBackup ? 'резервное копирование' : 'обновление';
+      // «Только миграции» без поддержки в скрипте — это молчаливая полная
+      // пересборка прода вместо обещанного наката миграций. Такой прогон не
+      // запускается вовсе: админ получит честную причину и починит клон.
+      if (migrationsOnly && !agentSourceInfo(config).migrationsOnlySupported) {
+        return { started: false, reason: 'migrations-only-unsupported' };
+      }
+      errorTail = [];
       // «Только миграции» — тот же kind=update, но отдельный режим: панель по
       // mode=migrations рисует свои стадии и подписи, а скрипт завершается до сборки.
       const updateMode = migrationsOnly ? 'migrations' : config.deployMode;
@@ -323,7 +439,16 @@ export function createUpdateManager(config) {
         pending = parts.pop() ?? '';
         ingest(parts.join('\n'));
       });
-      spawned.stderr?.on('data', (data) => appendLog(`! ${data}`));
+      spawned.stderr?.on('data', (data) => {
+        appendLog(`! ${data}`);
+        // Хвост stderr — единственное место, где остаётся настоящая причина
+        // падения сборки (упавший тест, кончившееся место, недоступный
+        // registry). Держим последние строки, чтобы показать их админу.
+        for (const line of String(data).split('\n')) {
+          const clean = sanitizeLogLine(line);
+          if (clean) errorTail = [...errorTail, clean].slice(-12);
+        }
+      });
 
       // Лимит времени: у сборки по умолчанию его НЕТ (config.timeoutMs =
       // null) — длинный билд не убивается по часам; у бэкапа и применения
@@ -351,8 +476,27 @@ export function createUpdateManager(config) {
           finish({ state: 'aborted', exitCode: code, error: state.error || `${jobLabel} остановлено` });
         } else if (code === 0) {
           finish({ state: 'succeeded', percent: 100, stage: 'done', exitCode: 0, error: null });
+          // Обновление принесло новый код и самому агенту: перезапускаемся,
+          // иначе следующий прогон снова пойдёт по старым правилам (именно
+          // из-за этого флажки панели могли «не влиять» на сборку).
+          if (!isBackup && !envApply && agentSourceInfo(config).stale) {
+            scheduleSelfRestart('в клоне лежит более новая версия агента');
+          }
         } else {
-          finish({ state: 'failed', exitCode: code, error: state.message || `${isBackup ? 'db-backup.sh' : 'updater'} завершился с кодом ${code}` });
+          // Причина сбоя: сначала явное сообщение об ошибке от скрипта
+          // (`::edrc::{"error": …}`), затем хвост stderr и только потом —
+          // безликое «завершился с кодом N». Подпись текущей стадии
+          // («Пересобираю docker-образы…») ошибкой больше не считается.
+          const reason = state.error || errorFromTail();
+          const label = isBackup ? 'db-backup.sh' : envApply ? 'apply-env.sh' : 'update-project.sh';
+          finish({
+            state: 'failed',
+            exitCode: code,
+            message: null,
+            error: reason
+              ? `${reason} (${label}, код ${code})`
+              : `${label} завершился с кодом ${code} — подробности в журнале ниже`,
+          });
         }
       });
       return { started: true };
@@ -367,6 +511,11 @@ export function createUpdateManager(config) {
       });
       abort();
       return true;
+    },
+    /** Завершить процесс, чтобы супервизор поднял агента с новым кодом. */
+    restart(reason = 'запрос оператора') {
+      if (state.state === 'running') return false;
+      return scheduleSelfRestart(reason);
     },
   };
 }
@@ -547,6 +696,9 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
           update: full ? state : { ...state, log: [] },
           public: publicUpdateView(state),
           pendingMigrations: listPendingMigrations(config),
+          // Свежесть самого агента: панель предупредит, если он старее клона
+          // (тогда флажки прогона могут игнорироваться), и предложит перезапуск.
+          agent: agentSourceInfo(config, { startedAt: manager.startedAt ?? null }),
         });
         return;
       }
@@ -565,7 +717,16 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
         const runTests = body?.runTests === undefined ? true : Boolean(body.runTests);
         const result = manager.start({ applyMigrations, backup, runTests, migrationsOnly });
         if (!result.started) {
-          send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
+          const reasons = {
+            'already-running': 'Агент уже занят — дождитесь окончания текущей задачи',
+            'migrations-only-unsupported': 'deploy/update-project.sh в клоне не умеет режим «только миграции» — обновите исходники обычной кнопкой',
+          };
+          send(response, result.reason === 'already-running' ? 409 : 503, {
+            ok: false,
+            reason: result.reason,
+            error: reasons[result.reason] ?? null,
+            update: manager.status(),
+          });
           return;
         }
         send(response, 202, { ok: true, startedAt: manager.state.startedAt, update: manager.status() });
@@ -586,6 +747,28 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
       if (request.method === 'POST' && url.pathname === '/abort') {
         const stopped = manager.stop();
         send(response, stopped ? 202 : 409, { ok: stopped, update: manager.status() });
+        return;
+      }
+      /**
+       * Перезапуск агента из панели.
+       *
+       * Обновление не пересоздаёт контейнер апдейтера (он же выполняет
+       * обновление), поэтому агент остаётся на коде той сборки, в которой его
+       * впервые подняли, и новые флажки панели до скрипта не доезжают.
+       * Кнопка «Перезапустить агент» завершает процесс — супервизор поднимает
+       * его заново уже с кодом из клона.
+       */
+      if (request.method === 'POST' && url.pathname === '/restart') {
+        if (manager.isBusy()) {
+          send(response, 409, { ok: false, error: 'Сейчас идёт задача — перезапуск прервал бы её' });
+          return;
+        }
+        const scheduled = manager.restart('запрос из панели администратора');
+        send(response, scheduled ? 202 : 503, {
+          ok: scheduled,
+          error: scheduled ? null : 'Самоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0)',
+          agent: agentSourceInfo(config, { startedAt: manager.startedAt ?? null }),
+        });
         return;
       }
       if (request.method === 'GET' && url.pathname === '/env') {

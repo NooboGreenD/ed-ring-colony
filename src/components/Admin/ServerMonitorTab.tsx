@@ -55,6 +55,27 @@ interface UpdateState {
   log: Array<{ at: string | null; line: string }>;
 }
 
+/**
+ * Сведения о самом update-agent (GET /api/admin/monitor/update → agent).
+ *
+ * Обновление не пересоздаёт контейнер апдейтера — иначе оно оборвало бы
+ * само себя, — поэтому агент может работать на коде предыдущей версии.
+ * Такой агент молча игнорирует новые флажки прогона, и со стороны это
+ * выглядит как «галочки ни на что не влияют».
+ */
+interface AgentInfo {
+  protocol: number;
+  expectedProtocol: number;
+  outdated: boolean;
+  stale: boolean;
+  fromRepo: boolean;
+  revision: string | null;
+  repoRevision: string | null;
+  startedAt: string | null;
+  migrationsOnlySupported: boolean;
+  canRestart: boolean;
+}
+
 // Ответ может прийти и успешным, и с ошибкой, и с 409 «уже идёт обновление» —
 // все поля держим опциональными, чтобы не гадать над вариантами union.
 type UpdateResponse = {
@@ -64,7 +85,24 @@ type UpdateResponse = {
   reason?: string | null;
   error?: string;
   update?: UpdateState | null;
+  agent?: AgentInfo | null;
 };
+
+/**
+ * Склейка нового снимка прогресса с уже показанным.
+ *
+ * Журнал приходит не в каждом ответе: POST/DELETE возвращают документ без
+ * хвоста, а раньше и GET мог получить из кэша «публичную» версию без лога.
+ * Прямая подстановка такого снимка стирала журнал на экране — он мигал,
+ * появляясь и пропадая каждые пару секунд. Для одного и того же прогона
+ * (`startedAt`) держим самый длинный виденный хвост; новый прогон начинает
+ * журнал с чистого листа.
+ */
+function mergeUpdate(previous: UpdateState | null, next: UpdateState): UpdateState {
+  if (!previous || previous.startedAt !== next.startedAt) return next;
+  const log = next.log.length >= previous.log.length ? next.log : previous.log;
+  return { ...next, log };
+}
 
 // Ключи окружения из /api/admin/env: маска (длина + хвост), сырого значения
 // нет — его не существует в браузере по построению.
@@ -398,6 +436,7 @@ export default function ServerMonitorTab() {
   const [loading, setLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [agentInfo, setAgentInfo] = useState<AgentInfo | null>(null);
   const [updateConnected, setUpdateConnected] = useState(false);
   const [updateConfigured, setUpdateConfigured] = useState(false);
   const [updateReason, setUpdateReason] = useState<string | null>(null);
@@ -429,7 +468,11 @@ export default function ServerMonitorTab() {
       setUpdateConfigured(data.configured === true);
       setUpdateConnected(data.connected === true);
       setUpdateReason('reason' in data ? data.reason ?? null : null);
-      if (data.update) setUpdate(data.update);
+      setAgentInfo(data.agent ?? null);
+      if (data.update) {
+        const fresh = data.update;
+        setUpdate((previous) => mergeUpdate(previous, fresh));
+      }
     } catch {
       setUpdateConnected(false);
     }
@@ -501,7 +544,7 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
-      if ('update' in data && data.update) setUpdate(data.update);
+      if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
       setUpdateMessage('Обновление запущено — прогресс ниже.');
     } catch (cause) {
       setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось запустить обновление');
@@ -529,7 +572,7 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
-      if ('update' in data && data.update) setUpdate(data.update);
+      if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
       setUpdateMessage('Миграции запущены — прогресс ниже.');
     } catch (cause) {
       setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось запустить миграции');
@@ -545,13 +588,43 @@ export default function ServerMonitorTab() {
       const response = await authFetch('/api/admin/monitor/update', { method: 'DELETE' });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
-      if ('update' in data && data.update) setUpdate(data.update);
+      if ('update' in data && data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
     } catch (cause) {
       setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось остановить обновление');
     } finally {
       setUpdateBusy(false);
     }
   }, []);
+
+  /**
+   * Перезапуск update-agent из панели.
+   *
+   * Нужен ровно тогда, когда агент старее клона: он крутится в контейнере,
+   * который обновление намеренно не пересоздаёт. Процесс завершается,
+   * супервизор (Docker `restart: unless-stopped` / systemd `Restart=always`)
+   * поднимает его заново — уже с кодом из репозитория.
+   */
+  const restartAgent = useCallback(async () => {
+    if (!window.confirm('Перезапустить update-agent?\nСайт это не затронет: агент поднимется заново за несколько секунд уже с новым кодом.')) return;
+    setUpdateBusy(true);
+    setUpdateMessage('');
+    try {
+      const response = await authFetch('/api/admin/monitor/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'restart' }),
+      });
+      const data = await response.json().catch(() => ({})) as UpdateResponse;
+      if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
+      setUpdateMessage('Агент перезапускается — статус обновится через несколько секунд.');
+      // Даём супервизору время поднять процесс и перечитываем статус.
+      window.setTimeout(() => void loadUpdate(), 6_000);
+    } catch (cause) {
+      setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось перезапустить агент');
+    } finally {
+      setUpdateBusy(false);
+    }
+  }, [loadUpdate]);
 
   const runContent = useCallback(async (action: 'sync' | 'translate') => {
     setContentBusy(action);
@@ -695,7 +768,7 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      if (data.update) setUpdate(data.update);
+      if (data.update) { const fresh = data.update; setUpdate((previous) => mergeUpdate(previous, fresh)); }
       setEnvMessage('Применение запущено — прогресс в блоке «Обновление проекта».');
     } catch (cause) {
       setEnvMessage(cause instanceof Error ? cause.message : 'Не удалось применить изменения');
@@ -961,6 +1034,32 @@ export default function ServerMonitorTab() {
               <IconXCircle size={16} /> {updateReason || 'Update-агент недоступен: обновление не запустится, сайт продолжает работать.'}
             </div>
           )}
+          {updateConnected && agentInfo?.outdated === true && (
+            <div className="ops-notice ops-notice-warning">
+              <IconAlert size={16} />
+              <span>
+                Update-агент работает на коде предыдущей версии
+                {agentInfo.revision && agentInfo.repoRevision
+                  ? ` (запущен ${agentInfo.revision}, в репозитории ${agentInfo.repoRevision})`
+                  : ''}
+                . Обновление не пересоздаёт его контейнер, поэтому новые флажки прогона
+                {agentInfo.migrationsOnlySupported ? '' : ' и режим «только миграции»'} могут игнорироваться.
+                {agentInfo.canRestart
+                  ? ' Перезапустите агент — он поднимется заново уже с новым кодом.'
+                  : ' Самоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0): перезапустите контейнер update-agent вручную.'}
+              </span>
+              {agentInfo.canRestart && (
+                <button
+                  type="button"
+                  className="ops-refresh-button"
+                  disabled={updateBusy || update?.active === true}
+                  onClick={() => void restartAgent()}
+                >
+                  <IconRefresh size={14} /> Перезапустить агент
+                </button>
+              )}
+            </div>
+          )}
 
           {update && (update.active || update.state !== 'idle') && (
             <>
@@ -989,10 +1088,16 @@ export default function ServerMonitorTab() {
                   </>
                 )}
               </dl>
-              {update.message && <div className="ops-inline-note ops-inline-progress">{update.message}</div>}
-              {update.error && (
+              {update.message && update.state !== 'failed' && (
+                <div className="ops-inline-note ops-inline-progress">{update.message}</div>
+              )}
+              {(update.error || update.state === 'failed') && (
                 <div className={`ops-notice ${update.state === 'failed' ? 'ops-notice-critical' : 'ops-notice-warning'}`}>
-                  <IconAlert size={16} /> {update.error}{update.exitCode != null ? ` (код ${update.exitCode})` : ''}
+                  <IconAlert size={16} />
+                  <span>
+                    {update.error || 'Прогон завершился ошибкой — подробности в журнале ниже.'}
+                    {update.exitCode != null ? ` (код ${update.exitCode})` : ''}
+                  </span>
                 </div>
               )}
               {update.log.length > 0 && (
