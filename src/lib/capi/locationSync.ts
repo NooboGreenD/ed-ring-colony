@@ -5,8 +5,13 @@
 import { createServiceClient } from '@/lib/supabaseServer';
 import { CapiClient } from './client';
 
-export async function syncMemberLocation(userId: string, accessToken: string): Promise<string | null> {
-  const client = new CapiClient(accessToken);
+export async function syncMemberLocation(
+  userId: string,
+  accessTokenOrClient: string | CapiClient,
+): Promise<string | null> {
+  const client = typeof accessTokenOrClient === 'string'
+    ? new CapiClient(accessTokenOrClient)
+    : accessTokenOrClient;
   const profile = await client.getProfile();
 
   if (!profile.currentSystem?.name) return null;

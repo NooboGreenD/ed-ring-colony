@@ -7,6 +7,8 @@ import { authFetch } from '@/lib/supabaseClient';
 interface CapiProfileData {
   cmdr_name: string | null;
   credits: number | null;
+  loan?: number | null;
+  cqc_rank?: number | null;
   combat_rank: number | null;
   trade_rank: number | null;
   explore_rank: number | null;
@@ -17,12 +19,21 @@ interface CapiProfileData {
   last_updated: string;
 }
 
+type BindingData = {
+  status: 'linked' | 'already_linked' | 'conflict' | 'missing';
+  siteName: string | null;
+  capiName: string | null;
+  tokenActive: boolean;
+  lastSyncedAt: string | null;
+};
+
 const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','Master','Dangerous','Deadly','Elite'];
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
 
 export default function CapiPage() {
   const [profile, setProfile] = useState<CapiProfileData | null>(null);
+  const [binding, setBinding] = useState<BindingData | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,6 +46,7 @@ export default function CapiPage() {
       if (res.ok) {
         const data = await res.json();
         setProfile(data.profile);
+        setBinding(data.binding ?? null);
       }
     } catch (profileError) {
       setError(profileError instanceof Error ? profileError.message : 'Could not load profile');
@@ -87,6 +99,24 @@ export default function CapiPage() {
               {' | '}
               Обновлено: {profile.last_updated ? new Date(profile.last_updated).toLocaleString('ru-RU') : '—'}
             </p>
+            <div style={{ marginTop: 12, padding: '10px 12px', border: `1px solid ${binding?.status === 'linked' || binding?.status === 'already_linked' ? 'var(--line)' : 'var(--orange)'}`, background: 'var(--bg)', borderRadius: 4, fontSize: 12 }}>
+              <strong style={{ color: binding?.status === 'linked' || binding?.status === 'already_linked' ? 'var(--green)' : 'var(--orange)' }}>
+                {binding?.status === 'conflict'
+                  ? 'Проверка привязки: требуется внимание'
+                  : binding?.status === 'missing'
+                    ? 'Проверка привязки: имя Frontier не подтверждено'
+                    : 'Проверка привязки: профиль связан'}
+              </strong>
+              <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+                Сайт: {binding?.siteName || 'имя будет заполнено из Frontier'} · Frontier: {binding?.capiName || '—'}
+              </div>
+              {binding?.status === 'conflict' && (
+                <div style={{ color: 'var(--orange)', marginTop: 4 }}>
+                  Имя в профиле сайта не изменено автоматически. Проверьте ник в личном кабинете, чтобы URL досье и данные CAPI совпадали.
+                </div>
+              )}
+              {binding?.lastSyncedAt && <div style={{ color: 'var(--muted)', marginTop: 4 }}>Последняя синхронизация: {new Date(binding.lastSyncedAt).toLocaleString('ru-RU')}</div>}
+            </div>
           </div>
 
           {error && (

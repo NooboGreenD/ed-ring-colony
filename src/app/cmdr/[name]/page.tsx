@@ -3,6 +3,7 @@ import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenColonialData } from '@/lib/ravenColonial';
 import { summarizeCargo } from '@/lib/dossierCargo';
 import { maskCapiProfile, maskPilotStats, privacyForViewer } from '@/lib/privacy';
+import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconSquadron, IconLeaderboard } from '@/components/Icons';
 import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
@@ -75,7 +76,7 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
     { data: recentRows },
     { data: rankRow },
     rcData,
-    { data: capiProfile },
+    { data: rawCapiProfile },
     { data: pilotStatsRow },
     { count: firstDiscoveredCount },
     { count: firstMappedCount },
@@ -97,6 +98,13 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
     supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_discovered_by', name),
     supabase.from('system_scans').select('id', { count: 'exact', head: true }).ilike('first_mapped_by', name),
   ]);
+
+  // CAPI привязан к UUID, но его имя всё равно проверяем перед показом в
+  // публичном досье: конфликтующий кэш не должен утечь в профиль с другим ником.
+  const capiBinding = assessProfileBinding(profile?.cmdr_name, rawCapiProfile?.cmdr_name);
+  const capiProfile = capiBinding.status === 'linked' || capiBinding.status === 'already_linked'
+    ? rawCapiProfile
+    : null;
 
   const pilotStats = {
     credits: pilotStatsRow?.credits ?? capiProfile?.credits ?? 0,

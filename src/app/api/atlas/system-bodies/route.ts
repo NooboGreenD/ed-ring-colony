@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { signalsFromRecord, signalsToColumns } from '@/lib/bodySignals';
 import { compareSystemBodies, normalizeEdsmBody } from '@/lib/architect/bodySync';
@@ -155,6 +156,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
     }
 
+    // Сканы отправляет Colonial Helper по API-токену. Раньше этот POST был
+    // открыт через service-role клиент, поэтому любой мог перезаписывать
+    // каталог тел чужим именем командира.
+    const token = typeof body.token === 'string' ? body.token.trim() : '';
+    if (!token) return NextResponse.json({ error: 'API token required' }, { status: 401 });
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const { data: apiToken, error: tokenError } = await supabaseAdmin
+      .from('api_tokens')
+      .select('user_id,is_revoked')
+      .eq('token_hash', tokenHash)
+      .maybeSingle();
+    if (tokenError || !apiToken || apiToken.is_revoked) {
+      return NextResponse.json({ error: 'Invalid or revoked token' }, { status: 401 });
+    }
+
     const systemName = (body.system || body.system_name || '').trim();
     const bodies = Array.isArray(body.bodies) ? body.bodies : [];
     const cmdr = (body.cmdr || body.commander || '').trim() || null;
@@ -165,14 +181,18 @@ export async function POST(req: Request) {
     if (bodies.length === 0) {
       return NextResponse.json({ ok: true, saved: 0, system: systemName });
     }
+    if (bodies.length > 500) {
+      return NextResponse.json({ error: 'Too many bodies in one request (max 500)' }, { status: 413 });
+    }
 
-    const rows = bodies.slice(0, 500).map((b: any) => ({
+    const rows = bodies.map((b: any) => ({
       system_name: systemName,
       body_name: (b.body_name || b.name || `${systemName} Body`).trim(),
       body_id: typeof b.body_id === 'number' ? b.body_id : (typeof b.bodyId === 'number' ? b.bodyId : null),
       body_type: b.body_type || b.type || null,
       sub_type: b.sub_type || b.subType || b.planet_class || b.star_type || null,
       distance_ls: typeof b.distance_ls === 'number' ? b.distance_ls : (typeof b.distanceToArrival === 'number' ? b.distanceToArrival : 0),
+      semi_major_axis_ls: typeof b.semi_major_axis_ls === 'number' ? b.semi_major_axis_ls : (typeof b.semiMajorAxis === 'number' ? b.semiMajorAxis : null),
       parents: Array.isArray(b.parents) ? b.parents : [],
       radius_m: typeof b.radius_m === 'number' ? b.radius_m : (typeof b.radius === 'number' ? b.radius : 0),
       gravity: typeof b.gravity === 'number' ? b.gravity : 0,

@@ -10,6 +10,7 @@ import {
 } from '@/lib/colonisationEvents';
 import { updateProjectProgress } from '@/lib/projects/autoProgress';
 import { syncMemberLocation } from '@/lib/capi/locationSync';
+import { assessProfileBinding } from '@/lib/capi/profileBinding';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,25 +35,36 @@ export async function POST(req: Request) {
     const session = await capiSession(svc, user.id, tokenRow);
     const profile = await session.run((client) => client.getProfile());
 
-    const cmdrName = profile.commander?.name || tokenRow.cmdr_name;
+    const cmdrName = profile.commander?.name || tokenRow.cmdr_name || null;
+    const { data: siteProfile } = await svc.from('profiles').select('cmdr_name').eq('id', user.id).maybeSingle();
+    const binding = assessProfileBinding(siteProfile?.cmdr_name, cmdrName);
+    if (binding.status === 'linked' && cmdrName) {
+      await svc.from('profiles').update({ cmdr_name: cmdrName }).eq('id', user.id);
+    }
 
-    await svc.from('capi_profiles').upsert({
+    const { error: profileError } = await svc.from('capi_profiles').upsert({
       user_id: user.id,
       cmdr_name: cmdrName,
-      credits: profile.credits || 0,
-      combat_rank: profile.ranks?.combat || 0,
-      trade_rank: profile.ranks?.trade || 0,
-      explore_rank: profile.ranks?.explore || 0,
-      empire_rank: profile.ranks?.empire || 0,
-      federation_rank: profile.ranks?.federation || 0,
+      credits: profile.credits ?? null,
+      loan: profile.loan ?? null,
+      cqc_rank: profile.ranks?.cqc ?? null,
+      frontier_id: profile.commander?.id ?? null,
+      combat_rank: profile.ranks?.combat ?? null,
+      trade_rank: profile.ranks?.trade ?? null,
+      explore_rank: profile.ranks?.explore ?? null,
+      empire_rank: profile.ranks?.empire ?? null,
+      federation_rank: profile.ranks?.federation ?? null,
       current_ship: profile.currentShip || null,
       current_system: profile.currentSystem?.name || null,
       current_station: profile.currentStation?.name || null,
       ships: profile.ships || [],
       last_updated: new Date().toISOString(),
     }, { onConflict: 'user_id' });
+    if (profileError) throw profileError;
 
-    await syncMemberLocation(user.id, session.token);
+    // Используем ту же сессию: если CAPI вернул 422 между `/profile` и
+    // синхронизацией локации, CapiSession обновит токен и повторит запрос.
+    await session.run((client) => syncMemberLocation(user.id, client));
 
     const journal = await session.run((client) => client.getJournal());
     const events = parseColonisationEvents(
@@ -88,6 +100,11 @@ export async function POST(req: Request) {
       eventsDuplicate: write.duplicates,
       eventsSkipped: events.depotEvents.length - rows.length,
       cmdrName,
+      binding: {
+        status: binding.status,
+        displayName: binding.displayName,
+        nameMismatch: binding.nameMismatch,
+      },
     });
   } catch (err: any) {
     console.error('[CAPI Sync]', err);

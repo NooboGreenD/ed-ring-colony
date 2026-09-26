@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { authFromRequest } from '@/lib/supabaseServer';
 import { maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { createHash } from 'crypto';
+import { assessProfileBinding } from '@/lib/capi/profileBinding';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,15 +106,26 @@ export async function GET(req: Request) {
     }
 
     const { data: ownerProfile } = ownerId
-      ? await supabaseAdmin.from('profiles').select('privacy_settings').eq('id', ownerId).maybeSingle()
+      ? await supabaseAdmin.from('profiles').select('privacy_settings, cmdr_name').eq('id', ownerId).maybeSingle()
       : { data: null };
 
     const privacy = privacyForViewer(ownerProfile?.privacy_settings, viewerId, ownerId);
     const visible = maskPilotStats(merged, privacy);
+    const binding = assessProfileBinding(ownerProfile?.cmdr_name, capiProfile?.cmdr_name);
 
     // Скрытые поля отдаём как null, а не как 0: «0 кредитов» — это ложь,
-    // а null клиент показывает как «—».
-    return NextResponse.json({ ok: true, stats: visible, privacy });
+    // а null клиент показывает как «—». Binding помогает клиенту отличить
+    // валидную CAPI-привязку от одноимённого, но конфликтующего кэша.
+    return NextResponse.json({
+      ok: true,
+      stats: visible,
+      privacy,
+      binding: {
+        status: binding.status,
+        displayName: binding.displayName,
+        nameMismatch: binding.nameMismatch,
+      },
+    });
   } catch (err: any) {
     console.error('[cmdr/stats] GET error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
@@ -155,15 +167,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized: valid API token or session required' }, { status: 401 });
     }
 
-    // Получаем имя командира из профиля, если не передано
-    if (!cmdrName) {
-      const { data: profile } = await supabaseAdmin
-        .from('profiles')
-        .select('cmdr_name')
-        .eq('id', userId)
-        .maybeSingle();
-      cmdrName = profile?.cmdr_name || '';
+    // UUID пользователя — главный ключ, а имя нужно только для ссылки на
+    // досье. Заполняем пустой профиль именем из Uploader/CAPI и никогда не
+    // перезаписываем уже сохранённый ник автоматически.
+    const { data: siteProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('cmdr_name')
+      .eq('id', userId)
+      .maybeSingle();
+    const binding = assessProfileBinding(siteProfile?.cmdr_name, cmdrName);
+    if (binding.status === 'linked' && binding.displayName) {
+      await supabaseAdmin.from('profiles').update({ cmdr_name: binding.displayName }).eq('id', userId);
     }
+    cmdrName = binding.displayName || cmdrName;
 
     const statsPayload: Record<string, any> = {
       user_id: userId,
@@ -202,13 +218,24 @@ export async function POST(req: Request) {
       .from('pilot_stats')
       .upsert(statsPayload, { onConflict: 'user_id' });
 
-    // 2. Также обновляем capi_profiles, если запись есть
+    // 2. Также обновляем capi_profiles, если запись есть. Имя CAPI не
+    // перезаписываем значением из site profile: иначе конфликт имён исчезал бы
+    // только потому, что Uploader прислал очередную статистику.
+    const { user_id: _statsUserId, cmdr_name: _statsCmdrName, ...capiStatsPayload } = statsPayload;
     await supabaseAdmin
       .from('capi_profiles')
-      .update(statsPayload)
+      .update(capiStatsPayload)
       .eq('user_id', userId);
 
-    return NextResponse.json({ ok: true, stats: statsPayload });
+    return NextResponse.json({
+      ok: true,
+      stats: statsPayload,
+      binding: {
+        status: binding.status,
+        displayName: binding.displayName,
+        nameMismatch: binding.nameMismatch,
+      },
+    });
   } catch (err: any) {
     console.error('[cmdr/stats] POST error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

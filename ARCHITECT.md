@@ -1,6 +1,7 @@
 # Архитектор системы (System Architect) — тестовый режим
 
 > Планировщик застройки системы под колонизацию: `/architect`.
+> Версия web/uploader: **2.12.0**.
 > Аналог инструмента проектирования системы из Raven Colonial
 > (ravencolonial.com, вкладка **Build** / «архитектор системы»), написанный
 > заново под архитектуру этого проекта.
@@ -33,6 +34,14 @@
 9. **«Где купить»** — закупки под план по рынкам из собственной базы EDDN
    (`market_prices`): ближайшие станции, цена, остановки перевозчика и число
    рейсов под выбранную вместимость.
+10. **Двойная сверка факта** — Colonial Helper отправляет snapshots
+    `ColonisationConstructionDepot` и расширенные сканы тел, сайт сохраняет их
+    идемпотентно, а `/api/systems/progress` параллельно читает журнал и Raven
+    Colonial. Raven остаётся источником общего прогресса всех пилотов, журнал —
+    точным состоянием ресурсов последнего скана.
+11. **Рабочий интерфейс** — KPI-полоса по системе, фильтр тел и заметный
+    индикатор «Uploader ↔ Raven Colonial», чтобы было видно не только план, но
+    и свежесть входящих данных.
 
 План можно показать на 3D-карте системы (тот же движок, что и на
 `/system/[name]`), экспортировать в JSON, импортировать обратно и скопировать
@@ -97,6 +106,7 @@
 | `src/app/api/architect/plans/[id]/route.ts` | `GET` план по ссылке, `PUT` обновление/видимость, `DELETE` удаление |
 | `src/app/api/architect/sourcing/route.ts` | `POST` расчёт «где купить» по `market_prices` |
 | `supabase/migrations/20260929000000_system_plans.sql` | Таблица `system_plans` с RLS |
+| `supabase/migrations/20261002010000_system_scans_orbit.sql` | Поле `semi_major_axis_ls` для орбитальной сверки сканов |
 | `scripts/tests/system-architect.test.mjs` | 21 тест движка и каталога |
 | `scripts/tests/architect-progress.test.mjs` | 10 тестов сопоставления плана и факта |
 | `scripts/tests/architect-sourcing.test.mjs` | 8 тестов расчёта закупок |
@@ -105,6 +115,7 @@
 | `scripts/tests/architect-ui.test.mjs` | 9 тестов интерфейса в jsdom (загрузка, каталог, сводка, ошибки, прогресс, публикация, закупки) |
 | `scripts/tests/architect-body-sync.test.mjs` | 12 тестов сверки тел (счёт точности, слияние, статистика источников) |
 | `scripts/tests/architect-system-bodies-route.test.mjs` | 3 теста маршрута `/api/atlas/system-bodies` в режиме сверки |
+| `scripts/tests/capi-profile-binding.test.mjs` | 4 теста безопасной привязки имени Frontier к UUID-профилю |
 
 Тела берутся из существующего маршрута `/api/atlas/system-bodies`. Обычный
 режим — как раньше: сначала каталог проекта, при отсутствии — EDSM. Архитектор
@@ -272,6 +283,25 @@ EDSM (`/atlas?system=…&tab=market`) — цены не выдумываются
 - «Где купить» считает только по товарам, которые уже есть в базе EDDN этого
   сайта: полнота зависит от того, сколько рынков выгружено.
 
+### Uploader и Raven Colonial: единый поток факта
+
+Colonial Helper не передаёт на сайт сырые `.log`. Watcher и ручной импорт
+отправляют структурированные пачки через `POST /api/logs/upload`:
+
+- `construction_events` → `colonisation_events` и
+  `construction_depot_snapshots`; повтор безопасен по `source_hash`;
+- `deliveries` → личный тоннаж сайта; та же доставка независимо ставится в
+  очередь `RavenColonialAPI`, где дедуплицируется локальным ledger'ом;
+- сканы тел → `POST /api/atlas/system-bodies` с API-токеном, кольцами,
+  физическими параметрами и всеми сигналами. При сетевой ошибке очередь
+  сканов не очищается и повторяется позже.
+
+При запросе прогресса архитектор запускает чтение Raven и последних snapshot'ов
+Uploader параллельно. Поэтому данные не теряются, если временно недоступен один
+из источников: интерфейс показывает источник и предупреждает о неполной
+сверке. Snapshot журнала уточняет ресурсы стройки, Raven учитывает общий вклад
+всех пилотов.
+
 ### Что логично добавить дальше
 
 1. Привязка плана к проекту/эскадрилье и назначение построек перевозчикам.
@@ -291,6 +321,7 @@ node --test scripts/tests/architect-plans-route.test.mjs
 node --test scripts/tests/architect-ui.test.mjs
 node --test scripts/tests/architect-body-sync.test.mjs
 node --test scripts/tests/architect-system-bodies-route.test.mjs
+node --test scripts/tests/capi-profile-binding.test.mjs
 npm run typecheck
 npm run build                                   # /architect статический, три API-маршрута динамические
 ```
