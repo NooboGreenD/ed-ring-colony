@@ -158,8 +158,15 @@ ensure_keys() {
 run_compose() {
   step "Сервис update-agent (профиль monitoring)"
   mkdir -p "$STATE_DIR"
+  # `compose up --build update-agent` также собирает его dependency `web`.
+  # На малом VPS это без необходимости повторяет долгий Next.js build. Сначала
+  # собираем только маленький образ агента, затем запускаем стек без сборки:
+  # существующий web при необходимости лишь пересоздастся с новым токеном.
+  say "  · собираю только образ update-agent (web не пересобирается)"
   compose_cmd -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" \
-    --profile monitoring up -d --build update-agent
+    --profile monitoring build update-agent
+  compose_cmd -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" \
+    --profile monitoring up -d --no-build update-agent
   say "  ✓ контейнер $(compose_cmd -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" ps --format '{{.Name}}' 2>/dev/null | grep update-agent | head -n1 || echo 'update-agent') поднят"
   say "  · журнал апдейтов: $STATE_DIR/update.log (или docker logs <проект>-update-agent-1)"
 }

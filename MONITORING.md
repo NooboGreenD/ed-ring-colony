@@ -277,10 +277,13 @@ sudo bash deploy/start-update-agent.sh     # то же самое: npm run updat
 права `600` на `.env.production` и запускает апдейтер:
 
 - **Docker-стек** — сервис `update-agent` в профиле `monitoring`
-  (`deploy/Dockerfile.update-agent`). Он единственный получает
-  `/var/run/docker.sock` на запись, и репозиторий примонтирован в него **под тем
-  же путём, что и на хосте** (`PROJECT_HOST_DIR`), иначе докер-демон не найдёт
-  контекст сборки. Публичного порта у него нет.
+  (`deploy/Dockerfile.update-agent`). Скрипт собирает только маленький образ
+  агента, не повторяя долгую сборку `web`; существующий `web` при необходимости
+  лишь пересоздаётся из уже готового образа, чтобы получить новый токен. Агент
+  единственный получает `/var/run/docker.sock` на запись, и репозиторий
+  примонтирован в него **под тем же путём, что и на хосте**
+  (`PROJECT_HOST_DIR`), иначе докер-демон не найдёт контекст сборки. Публичного
+  порта у него нет.
 - **Без Docker (systemd)** — хостовый unit `ed-ring-colony-update.service`
   (`UPDATE_AGENT_HOST=127.0.0.1`, порт 8092). Агент отказывается стартовать на
   непривычном интерфейсе без токена.
@@ -335,6 +338,7 @@ bash deploy/start-update-agent.sh --no-migrations  # миграции — тол
 |---|---|
 | `UPDATE_AGENT_URL не задан` / `UPDATE_AGENT_TOKEN не задан` | `.env.production` и пересоздание `web`: `docker compose --env-file .env.production up -d web` |
 | `update-agent не отвечает` | `docker compose --profile monitoring ps update-agent` или `systemctl status ed-ring-colony-update`; `journalctl -u ed-ring-colony-update -n 50` |
+| `apk add`: `DNS: transient error`, затем пакеты `no such package` | Не загрузился индекс Alpine, а пакеты не исчезли. Dockerfile делает до 5 попыток. Если все неудачны, проверьте DNS именно внутри Docker (`docker run --rm node:22-alpine nslookup dl-cdn.alpinelinux.org`) и настройку DNS демона, затем повторите запуск. |
 | 401 в ответ | токены в `web` и в агенте разошлись: перезапустите агента после правки env |
 | агент слушает, но из `web` не виден | для Docker-режима нужен `UPDATE_AGENT_HOST=0.0.0.0` и сеть Compose; для хостового — `extra_hosts: host.docker.internal:host-gateway` (уже в `docker-compose.yml`) |
 | обновление началось и пропало | состояние живёт в `UPDATE_STATE_DIR/update-state.json`, журнал — в `update.log`; панель подхватит их после перезапуска агента |
