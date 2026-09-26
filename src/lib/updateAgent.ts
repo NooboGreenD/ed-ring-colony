@@ -32,7 +32,8 @@ export interface UpdateAgentStatus {
    * что он работает на устаревшем коде. Обновление намеренно не пересоздаёт
    * контейнер апдейтера, поэтому он легко оказывается старее сайта — и тогда
    * новые флажки («только миграции», «без бэкапа», «без тестов») до скрипта
-   * не доезжают. Панель показывает предупреждение и кнопку перезапуска.
+   * не доезжают. Панель показывает предупреждение и кнопку перезапуска;
+   * ручная кнопка не зависит от настройки автоматического перезапуска.
    */
   agent: UpdateAgentInfo | null;
   /** What /api/status may reveal to any visitor. */
@@ -177,6 +178,7 @@ function describeAgent(raw: unknown): UpdateAgentInfo | null {
       startedAt: null,
       migrationsOnlySupported: false,
       canRestart: false,
+      autoRestart: false,
       expectedProtocol: UPDATE_AGENT_PROTOCOL,
       outdated: true,
     };

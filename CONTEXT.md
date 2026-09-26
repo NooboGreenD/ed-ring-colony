@@ -744,8 +744,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `scripts/lib/update-state.mjs` (`UPDATE_STAGES`). Всё остальное в stdout —
   журнал, который показывается админу после сокрытия похожих на секрет значений.
 - Состояние переживает рестарт сайта: `UPDATE_STATE_DIR/update-state.json` +
-  `update.log`; «залипший» `running` по истечении `UPDATE_TIMEOUT_MINUTES`
-  помечается ошибкой, а не блокирует панель навсегда.
+  `update.log`. У живого полного обновления нет wall-clock лимита;
+  `UPDATE_TIMEOUT_MINUTES` устарела и игнорируется. Оставшийся без дочернего
+  процесса «залипший» `running` снимается защитным шестичасовым порогом.
 - Веб-слой: `src/lib/updateAgent.ts` → `GET/POST/DELETE
   /api/admin/monitor/update` (все три — под `requireAdmin`; `POST` требует
   `confirm: true`) и публичный `GET /api/status` (только `publicUpdateView`:

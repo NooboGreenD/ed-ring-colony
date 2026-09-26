@@ -73,7 +73,10 @@ interface AgentInfo {
   repoRevision: string | null;
   startedAt: string | null;
   migrationsOnlySupported: boolean;
+  /** Ручная команда из панели поддерживается независимо от автоматики. */
   canRestart: boolean;
+  /** UPDATE_AGENT_SELF_RESTART: автоматический выход после обновления. */
+  autoRestart: boolean;
 }
 
 // Ответ может прийти и успешным, и с ошибкой, и с 409 «уже идёт обновление» —
@@ -446,6 +449,7 @@ export default function ServerMonitorTab() {
   const [runTests, setRunTests] = useState(true);
   const [backupBefore, setBackupBefore] = useState(true);
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [agentRestarting, setAgentRestarting] = useState(false);
   const [updateMessage, setUpdateMessage] = useState('');
   const [contentBusy, setContentBusy] = useState('');
   const [contentMessage, setContentMessage] = useState('');
@@ -468,13 +472,16 @@ export default function ServerMonitorTab() {
       setUpdateConfigured(data.configured === true);
       setUpdateConnected(data.connected === true);
       setUpdateReason('reason' in data ? data.reason ?? null : null);
-      setAgentInfo(data.agent ?? null);
+      const nextAgent = data.agent ?? null;
+      setAgentInfo(nextAgent);
       if (data.update) {
         const fresh = data.update;
         setUpdate((previous) => mergeUpdate(previous, fresh));
       }
+      return nextAgent;
     } catch {
       setUpdateConnected(false);
+      return null;
     }
   }, []);
 
@@ -606,7 +613,8 @@ export default function ServerMonitorTab() {
    */
   const restartAgent = useCallback(async () => {
     if (!window.confirm('Перезапустить update-agent?\nСайт это не затронет: агент поднимется заново за несколько секунд уже с новым кодом.')) return;
-    setUpdateBusy(true);
+    const previousStartedAt = agentInfo?.startedAt ?? null;
+    setAgentRestarting(true);
     setUpdateMessage('');
     try {
       const response = await authFetch('/api/admin/monitor/update', {
@@ -616,15 +624,29 @@ export default function ServerMonitorTab() {
       });
       const data = await response.json().catch(() => ({})) as UpdateResponse;
       if (!response.ok) throw new Error(('error' in data && data.error) || `HTTP ${response.status}`);
-      setUpdateMessage('Агент перезапускается — статус обновится через несколько секунд.');
-      // Даём супервизору время поднять процесс и перечитываем статус.
-      window.setTimeout(() => void loadUpdate(), 6_000);
+      setUpdateMessage('Агент перезапускается — жду его повторного запуска.');
+
+      // Агент отвечает до выхода с задержкой, затем Docker/systemd ещё нужно
+      // несколько секунд на запуск. Один прежний таймер на 6 с срабатывал
+      // слишком рано и оставлял в панели старое предупреждение навсегда.
+      let restarted = false;
+      for (const delayMs of [4_000, 6_000, 8_000, 10_000]) {
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        const freshAgent = await loadUpdate();
+        if (freshAgent && freshAgent.startedAt !== previousStartedAt) {
+          restarted = true;
+          break;
+        }
+      }
+      setUpdateMessage(restarted
+        ? 'Update-агент перезапущен и работает на актуальном коде.'
+        : 'Команда отправлена, но новый процесс пока не ответил. Проверьте Docker/systemd и обновите статус.');
     } catch (cause) {
       setUpdateMessage(cause instanceof Error ? cause.message : 'Не удалось перезапустить агент');
     } finally {
-      setUpdateBusy(false);
+      setAgentRestarting(false);
     }
-  }, [loadUpdate]);
+  }, [agentInfo?.startedAt, loadUpdate]);
 
   const runContent = useCallback(async (action: 'sync' | 'translate') => {
     setContentBusy(action);
@@ -1039,23 +1061,25 @@ export default function ServerMonitorTab() {
               <IconAlert size={16} />
               <span>
                 Update-агент работает на коде предыдущей версии
-                {agentInfo.revision && agentInfo.repoRevision
+                {agentInfo.revision && agentInfo.repoRevision && agentInfo.revision !== agentInfo.repoRevision
                   ? ` (запущен ${agentInfo.revision}, в репозитории ${agentInfo.repoRevision})`
                   : ''}
                 . Обновление не пересоздаёт его контейнер, поэтому новые флажки прогона
                 {agentInfo.migrationsOnlySupported ? '' : ' и режим «только миграции»'} могут игнорироваться.
                 {agentInfo.canRestart
-                  ? ' Перезапустите агент — он поднимется заново уже с новым кодом.'
-                  : ' Самоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0): перезапустите контейнер update-agent вручную.'}
+                  ? agentInfo.autoRestart
+                    ? ' Автоперезапуск включён; если он ещё не сработал, перезапустите агент кнопкой.'
+                    : ' Автоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0), но ручной перезапуск доступен кнопкой.'
+                  : ' Эта запущенная версия ещё не умеет ручной перезапуск: один раз перезапустите контейнер или systemd-сервис вручную. После этого здесь появится кнопка.'}
               </span>
               {agentInfo.canRestart && (
                 <button
                   type="button"
                   className="ops-refresh-button"
-                  disabled={updateBusy || update?.active === true}
+                  disabled={updateBusy || agentRestarting || update?.active === true}
                   onClick={() => void restartAgent()}
                 >
-                  <IconRefresh size={14} /> Перезапустить агент
+                  <IconRefresh size={14} /> {agentRestarting ? 'Перезапускаю…' : 'Перезапустить агент'}
                 </button>
               )}
             </div>
@@ -1139,7 +1163,7 @@ export default function ServerMonitorTab() {
             <button
               type="button"
               className="ops-button-primary"
-              disabled={!updateConnected || updateBusy || update?.active === true}
+              disabled={!updateConnected || updateBusy || agentRestarting || update?.active === true}
               onClick={() => void startUpdate()}
             >
               <IconRefresh size={14} />
@@ -1149,7 +1173,7 @@ export default function ServerMonitorTab() {
               type="button"
               className="ops-refresh-button"
               title="Синхронизировать исходники и применить неприменённые миграции — без сборки и перезапуска контейнеров"
-              disabled={!updateConnected || updateBusy || update?.active === true}
+              disabled={!updateConnected || updateBusy || agentRestarting || update?.active === true}
               onClick={() => void startMigrationsOnly()}
             >
               <IconDatabase size={14} /> Применить только миграции

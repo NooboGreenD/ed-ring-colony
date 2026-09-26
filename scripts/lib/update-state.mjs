@@ -26,9 +26,10 @@ export const UPDATE_PROTOCOL = '::edrc::';
  *
  * Поэтому агент сообщает свою версию в `/status`, а панель сверяет её со
  * своей и показывает предупреждение с кнопкой «Перезапустить агент».
- * Поднимайте число при любом изменении набора флагов запуска.
+ * Поднимайте число при изменении флагов запуска или возможностей управления
+ * агентом (v3: ручной restart больше не зависит от автоперезапуска).
  */
-export const UPDATE_AGENT_PROTOCOL = 2;
+export const UPDATE_AGENT_PROTOCOL = 3;
 
 export const UPDATE_STAGES = [
   { id: 'prepare', label: 'Проверка блокировок и репозитория', percent: 5 },
@@ -185,7 +186,9 @@ export function sanitizeUpdateState(input) {
     startedAt: isoOrNull(raw.startedAt),
     updatedAt: isoOrNull(raw.updatedAt),
     finishedAt: isoOrNull(raw.finishedAt),
-    exitCode: clampNumber(raw.exitCode, 0, 255, null),
+    // Number(null) === 0, но отсутствие кода завершения не означает успех.
+    // Иначе остановленный по SIGTERM прогон показывался как «(код 0)».
+    exitCode: raw.exitCode == null ? null : clampNumber(raw.exitCode, 0, 255, null),
     mode: typeof raw.mode === 'string' && /^[a-z-]{1,24}$/.test(raw.mode) ? raw.mode : null,
     branch: typeof raw.branch === 'string' && /^[A-Za-z0-9._/-]{1,120}$/.test(raw.branch) ? raw.branch : null,
     fromSha: shaOrNull(raw.fromSha),
@@ -283,8 +286,14 @@ export function sanitizeAgentInfo(input) {
       : null,
     /** Умеет ли скрипт в клоне режим «только миграции» (без пересборки). */
     migrationsOnlySupported: raw.migrationsOnlySupported !== false,
-    /** Перезапустится ли агент сам (Docker/systemd поднимут процесс заново). */
+    /** Поддерживает ли агент явный перезапуск кнопкой администратора. */
     canRestart: raw.canRestart === true,
+    /**
+     * Включён ли автоматический перезапуск после успешного обновления.
+     * У протокола v2 отдельного поля не было: canRestart означал именно эту
+     * настройку, поэтому сохраняем корректную подпись при плавном обновлении.
+     */
+    autoRestart: raw.autoRestart === true || (raw.autoRestart == null && raw.canRestart === true),
   };
 }
 

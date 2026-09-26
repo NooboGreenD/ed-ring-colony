@@ -42,12 +42,11 @@
  *   UPDATE_SCRIPT        default <PROJECT_DIR>/deploy/update-project.sh
  *   UPDATE_STATE_DIR     lock + state file (default <PROJECT_DIR>/../update-state)
  *   UPDATE_APPLY_MIGRATIONS  "1" (default) or "0"
- *   UPDATE_HEALTH_URL, UPDATE_TIMEOUT_MINUTES — лимит длительного обновления;
- *        по умолчанию БЕЗ ограничения (сборка не убивается по времени):
- *        0/off/unlimited или вовсе не задан — лимита нет; положительное
- *        число — вернуть ограничение в минутах. Сломавшийся «running» без
- *        процесса (рестарт хоста) разблокируется сам через 6 часов либо
- *        кнопкой «Остановить».
+ *   UPDATE_HEALTH_URL     endpoint checked after switching services.
+ *   UPDATE_TIMEOUT_MINUTES is deprecated and ignored: a project update has
+ *        no wall-clock limit. A stale persisted «running» without a live
+ *        child (for example after a host restart) is still unlocked after
+ *        6 hours or by the «Остановить» button.
  *   BACKUP_SCRIPT        default <PROJECT_DIR>/deploy/db-backup.sh
  *   UPDATE_BACKUP_DIR    where pg_dump writes (default /opt/ed-ring-colony/backups)
  *   UPDATE_BACKUP_KEEP   how many weekly copies to retain (default 4)
@@ -55,6 +54,10 @@
  *   ENV_FILE             the env file the panel edits (default <PROJECT_DIR>/.env.production)
  *   APPLY_ENV_SCRIPT     default <PROJECT_DIR>/deploy/apply-env.sh
  *   ENV_TIMEOUT_MINUTES  default 5 (a service recreate must be short)
+ *   UPDATE_AGENT_SELF_RESTART  "1" by default; "0" disables only the
+ *                        automatic restart after an update. POST /restart
+ *                        remains available to an administrator.
+ *   UPDATE_AGENT_RESTART_DELAY_SECONDS  default 12 (range 1–120)
  *
  * The agent is deliberately stateful-but-small: progress survives an agent
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
@@ -87,20 +90,6 @@ const MAX_BODY_BYTES = 64 * 1024;
  */
 const STALE_RUNNING_LIMIT_MS = 6 * 60 * 60 * 1000;
 
-/**
- * Лимит обновления в минутах → миллисекунды. Пусто / 0 / off / unlimited →
- * null — лимита нет, скрипт сборки не останавливается по времени («45 минут
- * билда» отменены); положительное число → действующее ограничение.
- */
-export function parseUpdateTimeoutMs(raw) {
-  const text = String(raw ?? '').trim().toLowerCase();
-  if (!text) return null;
-  if (text === '0' || text === '-1' || text === 'off' || text === 'none' || text === 'unlimited' || text === 'false') return null;
-  const minutes = Number(text);
-  if (!Number.isFinite(minutes) || minutes <= 0) return null;
-  return Math.max(60_000, Math.round(minutes) * 60_000);
-}
-
 /** Короткий отпечаток файла (или null, если файла нет). */
 function fileRevision(file) {
   try {
@@ -119,6 +108,16 @@ function runningEntry() {
   }
 }
 
+// Отпечатки фиксируются ПРИ СТАРТЕ процесса. Если агент запущен прямо из
+// смонтированного клона, `git merge` заменяет файл по тому же пути: повторное
+// чтение пути после обновления показало бы уже новый файл и ложно заявило,
+// что старый загруженный в память код актуален.
+const STARTED_ENTRY = runningEntry();
+const STARTED_REVISION = STARTED_ENTRY ? fileRevision(STARTED_ENTRY) : null;
+const STARTED_SHARED_REVISION = STARTED_ENTRY
+  ? fileRevision(join(dirname(STARTED_ENTRY), 'lib', 'update-state.mjs'))
+  : null;
+
 /**
  * Свежесть самого агента.
  *
@@ -133,15 +132,21 @@ function runningEntry() {
  * а после успешного обновления агент перезапускается сам.
  */
 export function agentSourceInfo(config, extra = {}) {
-  const entry = runningEntry();
+  const entry = STARTED_ENTRY;
   const repoEntry = join(config.projectDir, 'scripts', 'update-agent.mjs');
   const repoShared = join(config.projectDir, 'scripts', 'lib', 'update-state.mjs');
-  const runningRevision = entry ? fileRevision(entry) : null;
+  const runningRevision = STARTED_REVISION;
+  const runningSharedRevision = STARTED_SHARED_REVISION;
   const repoRevision = fileRevision(repoEntry);
+  const repoSharedRevision = fileRevision(repoShared);
   const fromRepo = Boolean(entry) && resolve(entry) === resolve(repoEntry);
   // Клон может быть неполным (нет scripts/) — тогда сравнивать не с чем и
-  // «устаревшим» агент не считается: иначе панель пугала бы зря.
-  const stale = Boolean(runningRevision && repoRevision && runningRevision !== repoRevision);
+  // «устаревшим» агент не считается: иначе панель пугала бы зря. Сравниваем
+  // с отпечатками старта, а не перечитываем исполняемый путь после git merge.
+  const stale = Boolean(
+    (runningRevision && repoRevision && runningRevision !== repoRevision)
+    || (runningSharedRevision && repoSharedRevision && runningSharedRevision !== repoSharedRevision),
+  );
   let migrationsOnlySupported = true;
   try {
     migrationsOnlySupported = readFileSync(config.script, 'utf8').includes('UPDATE_MIGRATIONS_ONLY');
@@ -154,9 +159,14 @@ export function agentSourceInfo(config, extra = {}) {
     fromRepo,
     revision: runningRevision,
     repoRevision,
-    sharedRevision: fileRevision(repoShared),
+    sharedRevision: runningSharedRevision,
+    repoSharedRevision,
     migrationsOnlySupported,
-    canRestart: config.selfRestart,
+    // Ручной POST /restart доступен независимо от настройки автоматического
+    // перезапуска. UPDATE_AGENT_SELF_RESTART=0 должен отключать только
+    // автоматический выход после обновления, а не кнопку администратора.
+    canRestart: true,
+    autoRestart: config.selfRestart,
     ...extra,
   };
 }
@@ -194,16 +204,16 @@ export function updateAgentConfig(env = process.env) {
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
     applyMigrations: (env.UPDATE_APPLY_MIGRATIONS ?? '1').toString().trim() !== '0',
     healthUrl: (env.UPDATE_HEALTH_URL || 'http://127.0.0.1:3000/api/health').trim(),
-    // Лимита сборки по умолчанию НЕТ: холодная сборка на малом VPS занимает
-    // десятки минут и не должна убиваться по времени. Ограничение — только
-    // явное: UPDATE_TIMEOUT_MINUTES=<число> в .env.production (старое
-    // «45» там стоит — удалите строку или поставьте 0).
-    timeoutMs: parseUpdateTimeoutMs(env.UPDATE_TIMEOUT_MINUTES),
+    // У полного обновления намеренно нет wall-clock таймера. Даже старое
+    // UPDATE_TIMEOUT_MINUTES=45 в окружении игнорируется: бэкап большой БД,
+    // npm test и холодная Docker-сборка суммарно легко занимают больше часа.
+    // Остановить живой прогон можно только явно через POST /abort.
     // Перезапуск агента после обновления: процесс просто завершается, а его
     // поднимает супервизор (Docker `restart: unless-stopped` или systemd
     // `Restart=always`). Так агент подхватывает собственный новый код —
     // без этого он навсегда остаётся тем, каким был при первой сборке.
-    // UPDATE_AGENT_SELF_RESTART=0 отключает поведение.
+    // UPDATE_AGENT_SELF_RESTART=0 отключает только автоматическое поведение;
+    // явный POST /restart из админки остаётся доступен.
     selfRestart: (env.UPDATE_AGENT_SELF_RESTART ?? '1').toString().trim() !== '0',
     /** Пауза перед перезапуском: панель успевает забрать финальный статус. */
     selfRestartDelayMs: Math.min(120_000, Math.max(1_000, (Number(env.UPDATE_AGENT_RESTART_DELAY_SECONDS) || 12) * 1_000)),
@@ -271,13 +281,15 @@ export function createUpdateManager(config) {
   }
 
   /**
-   * Перезапуск агента после обновления, если его собственный код в клоне стал
-   * новее исполняемого. Процесс просто завершает работу — Docker/systemd
-   * поднимут его заново уже с новым кодом (см. deploy/Dockerfile.update-agent:
-   * контейнер запускает файл из смонтированного клона).
+   * Завершить агент с задержкой, чтобы Docker/systemd подняли его с новым
+   * кодом (контейнер запускает файл из смонтированного клона).
+   *
+   * UPDATE_AGENT_SELF_RESTART управляет только автоматическим перезапуском
+   * после обновления. Явная команда администратора (`manual: true`) должна
+   * работать и при значении 0 — именно для этого в панели есть кнопка.
    */
-  function scheduleSelfRestart(reason) {
-    if (!config.selfRestart || restartTimer) return false;
+  function scheduleRestart(reason, { manual = false } = {}) {
+    if ((!manual && !config.selfRestart) || restartTimer) return false;
     appendLog(`перезапускаю update-agent: ${reason}`);
     restartTimer = setTimeout(() => {
       // Никогда не бросаем прогон на середине: если к этому моменту снова
@@ -318,13 +330,13 @@ export function createUpdateManager(config) {
     isBusy: () => state.state === 'running' || state.state === 'queued',
     status() {
       // A crashed host (state left as "running") must not block the panel
-      // forever: after the limit the state is reported as failed. The build
-      // itself may have NO limit (timeoutMs = null) — then the generic
-      // 6-hour stale threshold applies; «abort» frees the panel earlier.
+      // forever: after the limit the persisted state is reported as failed.
+      // This check runs only when there is NO live child; a real update has no
+      // wall-clock limit and continues for as many hours as it needs.
       if (state.state === 'running' && state.startedAt && !child) {
         const limit = state.kind === 'backup' ? config.backupTimeoutMs
           : state.kind === 'env' ? config.envTimeoutMs
-          : config.timeoutMs ?? STALE_RUNNING_LIMIT_MS;
+          : STALE_RUNNING_LIMIT_MS;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
             state: 'failed',
@@ -450,10 +462,11 @@ export function createUpdateManager(config) {
         }
       });
 
-      // Лимит времени: у сборки по умолчанию его НЕТ (config.timeoutMs =
-      // null) — длинный билд не убивается по часам; у бэкапа и применения
-      // ключей лимиты остаются, они никогда не бывают долгими.
-      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : config.timeoutMs;
+      // Полное обновление НЕ имеет лимита времени: резервная копия большой
+      // базы + тесты + холодная сборка могут идти несколько часов. Таймеры
+      // остаются только у отдельных ручных задач backup/env; остановка
+      // обновления возможна лишь явной кнопкой администратора.
+      const timeoutMs = envApply ? config.envTimeoutMs : isBackup ? config.backupTimeoutMs : null;
       if (timeoutMs) {
         timer = setTimeout(() => {
           appendLog(`timeout — принудительно останавливаю ${jobLabel}`);
@@ -473,14 +486,16 @@ export function createUpdateManager(config) {
         child = null;
         const aborted = state.state === 'aborted' || code === null;
         if (aborted) {
-          finish({ state: 'aborted', exitCode: code, error: state.error || `${jobLabel} остановлено` });
+          // SIGTERM иногда успевает завершить shell с code=0. Для остановленной
+          // задачи «код 0» вводит в заблуждение: это не успешный результат.
+          finish({ state: 'aborted', exitCode: typeof code === 'number' && code > 0 ? code : null, error: state.error || `${jobLabel} остановлено` });
         } else if (code === 0) {
           finish({ state: 'succeeded', percent: 100, stage: 'done', exitCode: 0, error: null });
           // Обновление принесло новый код и самому агенту: перезапускаемся,
           // иначе следующий прогон снова пойдёт по старым правилам (именно
           // из-за этого флажки панели могли «не влиять» на сборку).
           if (!isBackup && !envApply && agentSourceInfo(config).stale) {
-            scheduleSelfRestart('в клоне лежит более новая версия агента');
+            scheduleRestart('в клоне лежит более новая версия агента');
           }
         } else {
           // Причина сбоя: сначала явное сообщение об ошибке от скрипта
@@ -512,10 +527,13 @@ export function createUpdateManager(config) {
       abort();
       return true;
     },
-    /** Завершить процесс, чтобы супервизор поднял агента с новым кодом. */
+    /**
+     * Явно завершить процесс по команде администратора. Эта операция не
+     * зависит от UPDATE_AGENT_SELF_RESTART: флаг запрещает только автоматику.
+     */
     restart(reason = 'запрос оператора') {
       if (state.state === 'running') return false;
-      return scheduleSelfRestart(reason);
+      return scheduleRestart(reason, { manual: true });
     },
   };
 }
@@ -764,9 +782,9 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
           return;
         }
         const scheduled = manager.restart('запрос из панели администратора');
-        send(response, scheduled ? 202 : 503, {
+        send(response, scheduled ? 202 : 409, {
           ok: scheduled,
-          error: scheduled ? null : 'Самоперезапуск выключен (UPDATE_AGENT_SELF_RESTART=0)',
+          error: scheduled ? null : 'Перезапуск update-agent уже запланирован',
           agent: agentSourceInfo(config, { startedAt: manager.startedAt ?? null }),
         });
         return;
