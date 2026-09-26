@@ -738,6 +738,18 @@ test('обрамление: update-agent получил apply-env.sh, monitor-ag
   assert.match(startMonitoring, /MONITOR_DB_URL/, 'скрипт запуска зеркалирует URL из DATABASE_URL/SUPABASE_DB_URL');
 });
 
+test('Docker-запуск update-agent переживает краткий сбой APK CDN и не пересобирает web', () => {
+  const updateDockerfile = readFileSync(join(ROOT, 'deploy', 'Dockerfile.update-agent'), 'utf8');
+  assert.match(updateDockerfile, /for attempt in 1 2 3 4 5/, 'apk add повторяется после временного сетевого сбоя');
+  assert.match(updateDockerfile, /if apk add --no-cache[\s\S]*postgresql-client/, 'повторяется установка всего набора пакетов');
+  assert.match(updateDockerfile, /if \[ "\$attempt" = 5 \][\s\S]*exit 1/, 'последняя неудачная попытка не маскируется');
+
+  const startUpdater = readFileSync(join(ROOT, 'deploy', 'start-update-agent.sh'), 'utf8');
+  assert.match(startUpdater, /--profile monitoring build update-agent/, 'отдельно собирается только образ агента');
+  assert.match(startUpdater, /--profile monitoring up -d --no-build update-agent/, 'стек запускается без сборки dependency web');
+  assert.doesNotMatch(startUpdater, /up -d --build update-agent/, 'дорогая транзитивная пересборка web не возвращается');
+});
+
 test('start-update-agent.sh: идемпотентная запись ключей и ничего лишнего в выводе', { skip: needsBash }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'edrc-update-keys-'));
   const envFile = join(dir, '.env.production');
