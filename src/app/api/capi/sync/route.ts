@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
-import { CapiClient } from '@/lib/capi/client';
-import { refreshAccessToken } from '@/lib/capi/oauth';
+import { capiSession } from '@/lib/capi/session';
 import { parseColonisationEvents } from '@/lib/journalParser';
 import {
   depotEventRow,
@@ -30,26 +29,10 @@ export async function POST(req: Request) {
   }
 
   try {
-    let accessToken = tokenRow.access_token;
-    const client = new CapiClient(accessToken);
-    let profile;
-
-    try {
-      profile = await client.getProfile();
-    } catch (e: any) {
-      if (e.message === 'UNAUTHORIZED') {
-        const refreshed = await refreshAccessToken(tokenRow.refresh_token);
-        accessToken = refreshed.access_token;
-        await svc.from('capi_tokens').update({
-          access_token: refreshed.access_token,
-          refresh_token: refreshed.refresh_token,
-          expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
-        }).eq('user_id', user.id);
-        profile = await new CapiClient(accessToken).getProfile();
-      } else {
-        throw e;
-      }
-    }
+    // Одна сессия на весь синк: токен обновляется заранее по expires_at и
+    // повторно при 401/403/422 на ЛЮБОМ из вызовов ниже, а не только на первом.
+    const session = await capiSession(svc, user.id, tokenRow);
+    const profile = await session.run((client) => client.getProfile());
 
     const cmdrName = profile.commander?.name || tokenRow.cmdr_name;
 
@@ -69,9 +52,9 @@ export async function POST(req: Request) {
       last_updated: new Date().toISOString(),
     }, { onConflict: 'user_id' });
 
-    await syncMemberLocation(user.id, accessToken);
+    await syncMemberLocation(user.id, session.token);
 
-    const journal = await new CapiClient(accessToken).getJournal();
+    const journal = await session.run((client) => client.getJournal());
     const events = parseColonisationEvents(
       journal.events.map((e) => JSON.stringify(e)).join('\n')
     );

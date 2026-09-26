@@ -3,12 +3,14 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ExistingPanel, { structureKey } from '@/components/Architect/ExistingPanel';
 import InstallationPicker from '@/components/Architect/InstallationPicker';
 import PlanSummary from '@/components/Architect/PlanSummary';
 import ProgressPanel from '@/components/Architect/ProgressPanel';
 import SharePanel from '@/components/Architect/SharePanel';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
 import { CATALOGUE_VERSION } from '@/lib/architect/catalogue';
+import { adoptExisting, type ExistingStructure } from '@/lib/architect/existing';
 import {
   matchProgress,
   parseActualSites,
@@ -255,6 +257,29 @@ export default function ArchitectWorkspace() {
     setNotice('');
   }, [plan, pickerBody, bodiesByName]);
 
+  /** Ключи «тело + постройка» из плана: по ним панель факта помечает дубли. */
+  const plannedKeys = useMemo(
+    () => new Set((plan?.sites ?? []).map((site) => structureKey(site.bodyName, site.installationId))),
+    [plan],
+  );
+
+  /**
+   * Перенос реальной застройки в план.
+   *
+   * Ничего не удаляет и не создаёт дублей: уже имеющимся записям только
+   * подтягивает статус к факту (см. `adoptExisting`).
+   */
+  const applyExisting = useCallback((structures: ExistingStructure[]) => {
+    if (!plan) return;
+    const result = adoptExisting(plan, structures);
+    setPlan(result.plan);
+    const parts: string[] = [];
+    if (result.added.length > 0) parts.push(`добавлено ${result.added.length}`);
+    if (result.updated.length > 0) parts.push(`обновлён статус у ${result.updated.length}`);
+    if (result.unknown.length > 0) parts.push(`не опознано ${result.unknown.length}`);
+    setNotice(parts.length > 0 ? `Факт применён к плану: ${parts.join(', ')}.` : 'Переносить нечего.');
+  }, [plan]);
+
   const exportPlan = useCallback(() => {
     if (!plan) return;
     const blob = new Blob([serializePlan(plan)], { type: 'application/json' });
@@ -446,6 +471,7 @@ export default function ArchitectWorkspace() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <PlanSummary plan={plan} evaluation={evaluation} />
+            <ExistingPanel systemName={systemName} plannedKeys={plannedKeys} onApply={applyExisting} />
             <ProgressPanel
               systemName={systemName}
               report={progress}

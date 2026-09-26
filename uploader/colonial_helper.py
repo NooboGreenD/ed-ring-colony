@@ -133,7 +133,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.10.26"
+VERSION = "2.11.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 COLOR_BG = "#1e2022"
@@ -6799,6 +6799,19 @@ class ColonialHelperApp:
         self._on_close()
 
     def _on_validate_token(self):
+        """Проверка токена сайта — строго в фоновом потоке.
+
+        Раньше `self.api.validate_token()` вызывался прямо здесь, в потоке Tk,
+        и автопроверка при старте (`after(500, self._auto_validate)`) намертво
+        подвешивала окно: HTTP-запрос ждёт до 15 с, а при недоступном сервере
+        или неисправном TLS-сертификате к этому добавляются DNS и рукопожатие.
+        Пользователь видел «жёсткое зависание сразу после запуска» — окно не
+        перерисовывалось, кнопки не нажимались, Windows рисовал «Не отвечает».
+
+        Теперь сеть уходит в поток, а UI обновляется только через `after(0, …)`.
+        Повторный запуск проверки блокируется флагом: два параллельных
+        `validate_token` меняли бы состояние клиента одновременно.
+        """
         token = self.token_entry.get().strip()
         if not token:
             self.set_connection_status(False, "Токен не введён")
@@ -6809,12 +6822,26 @@ class ColonialHelperApp:
             self.log("Перед сменой API-токена остановите Watcher, чтобы не смешать аккаунты.", "error")
             return
 
+        if getattr(self, "_token_check_busy", False):
+            return
+        self._token_check_busy = True
+
         self.log("Проверка токена...", "info")
         self.bottom_status.config(text="Проверка токена...")
-        self.root.update_idletasks()
 
-        result = self.api.validate_token(token)
-        if result["ok"]:
+        def worker():
+            try:
+                result = self.api.validate_token(token)
+            except Exception as exc:  # сеть/TLS не должны ронять поток
+                result = {"ok": False, "error": f"Ошибка проверки: {exc}"}
+            self.root.after(0, lambda r=result: self._on_token_validated(r))
+
+        threading.Thread(target=worker, daemon=True, name="validate-token").start()
+
+    def _on_token_validated(self, result: dict):
+        """Результат проверки токена — уже в потоке Tk."""
+        self._token_check_busy = False
+        if result.get("ok"):
             self.set_connection_status(True, self.api.display_name)
             self.log(f"Авторизован как {self.api.display_name}", "success")
             self.save_config()
@@ -6823,7 +6850,6 @@ class ColonialHelperApp:
         else:
             self.set_connection_status(False, result.get("error", "Ошибка"))
             self.log(f"Ошибка: {result.get('error')}", "error")
-
         self.bottom_status.config(text="Готов")
 
     def _auto_validate(self):
@@ -7618,47 +7644,60 @@ class ColonialHelperApp:
         self._backfill_construction = []
         self.dispatcher.reset_stats()
 
-        self._auto_load_navroute()
-
-        # Определяем текущую систему CMDR ДО старта потока watcher'а.
-        # Иначе, если приложение запущено, когда игрок уже находится в
-        # системе (нет свежих FSDJump/Location/Docked с момента запуска),
-        # current_system/system_address останутся пустыми, и
-        # parse_journal() будет отбрасывать все доставки до первого
-        # прыжка/стыковки (там есть проверка "if current_system:").
-        detected_system, detected_addr = self._determine_cmdr_system()
-        if detected_system:
-            self.ship.state.current_system = detected_system
-            if detected_addr:
-                self.ship.state.system_address = detected_addr
-            self.log(f"Текущая система CMDR: {detected_system}", "info")
-        else:
-            self.log(
-                "Не удалось определить текущую систему CMDR из журналов — "
-                "будет определена по первому FSDJump/Location/Docked событию.",
-                "warn",
-            )
-
-        # Авианосец и стройплощадка — тоже из журнала. Без этого программа,
-        # запущенная, когда командир УЖЕ стоит у площадки или на борту FC,
-        # не знала ни market_id площадки, ни market_id авианосца: Raven не
-        # опрашивался, «осталось завезти» не считалось, а доставки, которые
-        # не успели уйти в прерванной сессии, не досылались.
         self.carrier.reset()
-        self._restore_station_state_from_journal()
 
         self.watcher_btn.config(text="⏹ Остановить", bootstyle="danger-outline")
         self.log("Watcher запущен. Мониторинг журналов...", "success")
         self.bottom_status.config(text="Watcher: активен")
         self.overlay_manager.log("Watcher запущен", "success")
 
-        self.watcher_thread = threading.Thread(target=self._watcher_loop, daemon=True)
+        # Всё чтение журналов ушло в поток watcher'а (`_prepare_watcher_state`).
+        # Раньше NavRoute, поиск текущей системы, восстановление площадки и
+        # авианосца, Loadout и Status.json читались прямо здесь, в потоке Tk:
+        # это десятки мегабайт разбора JSON при каждом старте, и окно висело
+        # «не отвечает» ровно столько, сколько занимал разбор папки журналов.
+        self.watcher_thread = threading.Thread(target=self._watcher_thread_main, daemon=True)
         self.watcher_thread.start()
         self._start_exobio_history_indexer()
 
-        # Сразу загружаем текущее состояние: сначала Loadout (базовая конфигурация),
-        # потом JSON-файлы (текущее состояние — может уточнить систему из Status.json,
-        # если он новее данных из журнала).
+    def _watcher_thread_main(self):
+        """Поток watcher'а: сперва восстановление состояния, затем цикл."""
+        try:
+            self._prepare_watcher_state()
+        except Exception as exc:
+            self.root.after(0, lambda e=exc: self.log(f"Подготовка watcher'а: {e}", "warn"))
+        self._watcher_loop()
+
+    def _prepare_watcher_state(self):
+        """Восстановить состояние по журналам — выполняется в фоне.
+
+        Порядок сохранён прежний, потому что он важен: маршрут → текущая
+        система → площадка и авианосец → Loadout → текущие JSON-файлы
+        (Status.json может уточнить систему). Единственное отличие — поток:
+        UI больше не ждёт разбора журналов.
+        """
+        self._auto_load_navroute()
+
+        # Если приложение запущено, когда игрок уже находится в системе (нет
+        # свежих FSDJump/Location/Docked), current_system остался бы пустым, и
+        # parse_journal() отбрасывал бы все доставки до первого прыжка.
+        detected_system, detected_addr = self._determine_cmdr_system()
+        if detected_system:
+            self.ship.state.current_system = detected_system
+            if detected_addr:
+                self.ship.state.system_address = detected_addr
+            self.root.after(0, lambda n=detected_system: self.log(f"Текущая система CMDR: {n}", "info"))
+        else:
+            self.root.after(0, lambda: self.log(
+                "Не удалось определить текущую систему CMDR из журналов — "
+                "будет определена по первому FSDJump/Location/Docked событию.",
+                "warn",
+            ))
+
+        # Площадка и авианосец: без этого программа, запущенная, когда командир
+        # УЖЕ стоит у площадки или на борту FC, не знает их market_id.
+        self._restore_station_state_from_journal()
+
         self._load_latest_loadout()
         self._load_current_state_files()
 
@@ -7790,29 +7829,42 @@ class ColonialHelperApp:
                 self.root.after(0, lambda e=exc: self.log(f"Не удалось загрузить NavRoute: {e}", "warn"))
         return False
 
-    def _determine_cmdr_system(self) -> tuple:
-        """Найти последнюю известную систему CMDR, просматривая journal-файлы
-        с конца (самые свежие файлы и строки — в первую очередь).
+    #: Сколько журналов и байт с конца просматриваем в поисках текущей системы.
+    DETECT_SYSTEM_MAX_FILES = 8
+    DETECT_SYSTEM_MAX_BYTES = 4 * 1024 * 1024
 
-        Возвращает (star_system, system_address) — любое из значений может
-        быть None/0, если найти не удалось.
+    def _determine_cmdr_system(self) -> tuple:
+        """Найти последнюю известную систему CMDR по хвостам свежих журналов.
+
+        Возвращает (star_system, system_address); любое значение может быть
+        None/0, если найти не удалось.
+
+        Раньше метод читал файлы целиком (`readlines()`) и обходил всю папку
+        журналов. У игроков с многолетней историей это сотни мегабайт и
+        десятки секунд — а вызывался он при каждом старте watcher'а. Теперь
+        читается только хвост последних файлов: событие `Location`/`FSDJump`/
+        `Docked` в свежем журнале всегда рядом с концом.
         """
         try:
             files = sorted(
                 self.journal_path.glob("Journal.*.log"),
                 key=lambda f: f.stat().st_mtime,
                 reverse=True,
-            )
+            )[: self.DETECT_SYSTEM_MAX_FILES]
         except Exception:
             return None, 0
 
-        for f in files:
+        for path in files:
             try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    lines = fh.readlines()
-            except Exception:
+                size = path.stat().st_size
+                with open(path, "rb") as fh:
+                    if size > self.DETECT_SYSTEM_MAX_BYTES:
+                        fh.seek(size - self.DETECT_SYSTEM_MAX_BYTES)
+                        fh.readline()  # отбрасываем неполную строку
+                    raw = fh.read()
+            except OSError:
                 continue
-            for line in reversed(lines):
+            for line in reversed(raw.decode("utf-8", errors="replace").splitlines()):
                 line = line.strip()
                 if not line or not line.startswith("{"):
                     continue

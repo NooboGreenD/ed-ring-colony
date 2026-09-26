@@ -51,9 +51,20 @@ from typing import Callable, Optional
 # CarrierJump и Undocked добавлены: без них на EDSM рвётся цепочка
 # «прыгнул — пристыковался — отстыковался», а перелёты авианосца не
 # попадают в журнал полётов вовсе.
+# Разведочные события EDSM принимает все, кроме списка `api-journal-v1/discard`
+# (в нём — бой, миссии, инженеры и прочее, чего EDSM не хранит). Раньше
+# отправлялись только восемь событий, и на EDSM не попадали ни био-сигналы
+# тел, ни отметка «система просканирована полностью», ни записи Кодекса —
+# то есть ровно то, ради чего исследователи и подключают EDSM.
 EDSM_EVENTS = frozenset({
+    # Навигация и стыковки.
     "Location", "FSDJump", "Docked", "Undocked", "CarrierJump",
-    "Scan", "FSSDiscoveryScan", "SAAScanComplete",
+    "ApproachBody", "LeaveBody", "Touchdown", "Liftoff",
+    # Сканирование системы и тел.
+    "Scan", "ScanBaryCentre", "FSSDiscoveryScan", "FSSAllBodiesFound",
+    "FSSBodySignals", "SAAScanComplete", "SAASignalsFound",
+    # Находки на поверхности и в космосе.
+    "CodexEntry", "ApproachSettlement",
 })
 
 # Диапазон MarketID, в котором живут Fleet Carrier.
