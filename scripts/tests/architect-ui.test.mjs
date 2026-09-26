@@ -35,7 +35,7 @@ const SYSTEM = 'Architest';
 function fixtureBodies() {
   return [
     { body_name: `${SYSTEM} A`, body_id: 1, body_type: 'Star', sub_type: 'K (Yellow-Orange) Star', distance_ls: 0, radius_m: 500_000_000, surface_temp_k: 4500, gravity: 0, is_landable: false, rings: [], raw_data: {} },
-    { body_name: `${SYSTEM} A 1`, body_id: 2, body_type: 'Planet', sub_type: 'Rocky body', distance_ls: 12, parents: [{ Star: 1 }], radius_m: 3_000_000, gravity: 1, surface_temp_k: 250, is_landable: true, rings: [], raw_data: {} },
+    { body_name: `${SYSTEM} A 1`, body_id: 2, body_type: 'Planet', sub_type: 'Rocky body', distance_ls: 12, parents: [{ Star: 1 }], radius_m: 3_000_000, gravity: 1, surface_temp_k: 250, is_landable: true, rings: [], bio_signals_count: 3, geo_signals_count: 2, human_signals_count: 1, bio_genuses: ['Бактерии'], raw_data: {} },
     { body_name: `${SYSTEM} A 2`, body_id: 3, body_type: 'Planet', sub_type: 'Sudarsky Class III gas giant', distance_ls: 900, parents: [{ Star: 1 }], radius_m: 60_000_000, gravity: 2.1, surface_temp_k: 120, is_landable: false, rings: [{ name: `${SYSTEM} A 2 A Ring` }], raw_data: {} },
     { body_name: `${SYSTEM} A 1 a`, body_id: 4, body_type: 'Planet', sub_type: 'Rocky body', distance_ls: 12.4, parents: [{ Planet: 2 }], radius_m: 900_000, gravity: 0.3, surface_temp_k: 240, is_landable: true, rings: [], raw_data: {} },
   ];
@@ -205,6 +205,20 @@ test('страница загружает систему по ссылке и п
     assert.match(text, /Тел: 4 · источник: edsm/);
     assert.match(text, /наземных слотов: 0 из 2/, 'у каменистой планеты радиусом 3000 км два наземных слота');
     assert.match(text, /звезда: только орбитальные постройки|орбитальных: 0/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('карточка тела показывает сигналы: биологию, геологию и следы людей', async () => {
+  const ui = await renderArchitect();
+  try {
+    const text = ui.text();
+    assert.match(text, /биологические сигналы: 3/, 'биология видна архитектору');
+    assert.match(text, /геологические сигналы: 2/, 'геология видна архитектору');
+    assert.match(text, /следы людей: 1/, 'человеческие сигналы видны архитектору');
+    assert.match(text, /роды биологии: Бактерии/, 'роды подписаны');
+    assert.match(text, /соберите образцы до начала стройки/, 'есть предупреждение экзобиологу');
   } finally {
     await ui.cleanup();
   }

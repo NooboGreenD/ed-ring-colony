@@ -16,7 +16,7 @@
  * её: `uploader/system_view.py` кладёт такую же, и тесты сверяют их между собой.
  */
 
-export const ORRERY_VIEW_VERSION = 3;
+export const ORRERY_VIEW_VERSION = 4;
 
 export type Vec3 = [number, number, number];
 
@@ -82,6 +82,12 @@ export interface OrreryViewBody {
   volcanism: string;
   landable: boolean;
   bioSignals: number;
+  /**
+   * Все сигналы тела: биология, геология, следы людей, стражи, таргоиды.
+   * `bioSignals` остаётся отдельно — на него смотрят старые сборки карты и
+   * приложение-помощник.
+   */
+  signals: OrreryViewSignals;
   /** Тело нанесено на карту (`SAASignalsFound`/картография). */
   mapped: boolean;
   /** Есть подробный скан. */
@@ -158,6 +164,18 @@ export interface OrreryViewCluster {
   bodies: string[];
 }
 
+/** Счётчики сигналов тела (зеркало `BodySignals` из `@/lib/bodySignals`). */
+export interface OrreryViewSignals {
+  bio: number;
+  geo: number;
+  human: number;
+  thargoid: number;
+  guardian: number;
+  other: number;
+  /** Роды организмов, если картография их уже показала. */
+  genuses: string[];
+}
+
 export interface OrreryViewSummary {
   stars: number;
   planets: number;
@@ -166,6 +184,10 @@ export interface OrreryViewSummary {
   landable: number;
   bioBodies: number;
   bioSignals: number;
+  /** Тел, у которых есть хоть какой-то сигнал. */
+  signalBodies: number;
+  /** Сколько сигналов каждого вида во всей системе. */
+  signals: OrreryViewSignals;
   ringed: number;
   structures: number;
   activeSites: number;
@@ -215,7 +237,9 @@ export function emptyOrreryView(system = ''): OrreryViewPayload {
     crowded: false,
     summary: {
       stars: 0, planets: 0, moons: 0, bodies: 0, landable: 0, bioBodies: 0,
-      bioSignals: 0, ringed: 0, structures: 0, activeSites: 0, completedSites: 0, unscanned: 0,
+      bioSignals: 0, signalBodies: 0,
+      signals: { bio: 0, geo: 0, human: 0, thargoid: 0, guardian: 0, other: 0, genuses: [] },
+      ringed: 0, structures: 0, activeSites: 0, completedSites: 0, unscanned: 0,
     },
     clusters: [],
     bodies: [],

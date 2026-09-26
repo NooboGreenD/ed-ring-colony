@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { buildOrreryLayout, type OrreryLayout, type OrreryStructure } from '@/lib/systemOrrery';
+import { SIGNAL_KINDS, SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { buildOrreryView } from '@/lib/orrery3d/payload';
 import { ZOOM_LABELS, type ViewPreset, type ZoomLevel } from '@/lib/orrery3d/camera';
 import { MOTION_SPEEDS } from '@/lib/orrery3d/motion';
@@ -45,6 +46,7 @@ const LAYER_LABELS: { id: LayerName; label: string; hint: string }[] = [
   { id: 'moonOrbits', label: 'орбиты лун', hint: 'Орбиты лун вокруг планет' },
   { id: 'zones', label: 'обитаемая зона', hint: 'Зона обитаемости звёзд' },
   { id: 'rings', label: 'кольца', hint: 'Кольца планет' },
+  { id: 'signals', label: 'сигналы', hint: 'Метки сигналов: биология, геология, следы людей, стражи, таргоиды' },
   { id: 'structures', label: 'постройки', hint: 'Стройплощадки, станции и поселения' },
   { id: 'moons', label: 'луны', hint: 'Сами луны' },
 ];
@@ -138,7 +140,7 @@ export default function SystemOrrery3D({
     labels: 'auto',
     layers: {
       grid: true, orbits: true, moonOrbits: true, zones: true, rings: true,
-      structures: true, moons: true, player: true,
+      structures: true, moons: true, signals: true, player: true,
     },
     playing: false,
     speed: 1,
@@ -339,6 +341,7 @@ export default function SystemOrrery3D({
               <option value="sites">со стройками</option>
               <option value="landable">с посадкой</option>
               <option value="bio">с био</option>
+              <option value="signals">с сигналами</option>
               <option value="rings">с кольцами</option>
               <option value="unscanned">без скана</option>
             </select>
@@ -475,7 +478,11 @@ export default function SystemOrrery3D({
                   <Chip>планет: {payload.summary.planets}</Chip>
                   {payload.summary.moons > 0 && <Chip>лун: {payload.summary.moons}</Chip>}
                   {payload.summary.landable > 0 && <Chip>посадка: {payload.summary.landable}</Chip>}
-                  {payload.summary.bioSignals > 0 && <Chip>био: {payload.summary.bioSignals}</Chip>}
+                  {SIGNAL_KINDS.filter((kind) => payload.summary.signals[kind] > 0).map((kind) => (
+                    <Chip key={kind} color={SIGNAL_META[kind].color}>
+                      {SIGNAL_META[kind].icon} {SIGNAL_META[kind].short}: {payload.summary.signals[kind]}
+                    </Chip>
+                  ))}
                   {payload.summary.ringed > 0 && <Chip>кольца: {payload.summary.ringed}</Chip>}
                   {payload.summary.structures > 0 && (
                     <Chip color={STRUCTURE_COLORS.active}>строек: {payload.summary.activeSites || payload.summary.structures}</Chip>
@@ -601,7 +608,12 @@ function FocusCard({
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
         {body.landable && <Chip color="#00f3ff">🛬 посадка</Chip>}
-        {body.bioSignals > 0 && <Chip color="#22c55e">🌿 сигналов: {body.bioSignals}</Chip>}
+        {activeSignalKinds(body.signals).map((kind) => (
+          <Chip key={kind} color={SIGNAL_META[kind].color}>
+            {SIGNAL_META[kind].icon} {SIGNAL_META[kind].label}: {body.signals[kind]}
+          </Chip>
+        ))}
+        {body.signals.genuses.length > 0 && <Chip color="#22c55e">роды: {body.signals.genuses.slice(0, 3).join(', ')}</Chip>}
         {body.rings.length > 0 && <Chip color="#9fd8ef">💍 колец: {body.rings.length}</Chip>}
         {body.mapped && <Chip color="#ffd166">🗺 нанесено на карту</Chip>}
         {body.firstDiscoveredBy && <Chip>🧭 {body.firstDiscoveredBy}</Chip>}

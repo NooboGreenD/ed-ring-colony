@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { signalsFromRecord, signalsToColumns } from '@/lib/bodySignals';
 
 export const dynamic = 'force-dynamic';
 
@@ -89,7 +90,15 @@ export async function GET(req: Request) {
       materials: b.materials && typeof b.materials === 'object' ? b.materials : {},
       rings: Array.isArray(b.rings) ? b.rings : [],
       is_landable: !!b.isLandable,
+      // EDSM сигналы тел не отдаёт: они появляются только из журнала игрока
+      // (FSSBodySignals/SAASignalsFound), поэтому здесь честные нули.
       bio_signals_count: 0,
+      geo_signals_count: 0,
+      human_signals_count: 0,
+      thargoid_signals_count: 0,
+      guardian_signals_count: 0,
+      other_signals_count: 0,
+      signals: [],
       bio_genuses: [],
       first_discovered_by: b.discovery?.commander || null,
       first_mapped_by: null,
@@ -163,8 +172,11 @@ export async function POST(req: Request) {
       materials: b.materials || {},
       rings: Array.isArray(b.rings) ? b.rings : [],
       is_landable: !!(b.is_landable || b.landable || b.isLandable),
-      bio_signals_count: typeof b.bio_signals_count === 'number' ? b.bio_signals_count : (typeof b.bio_signals === 'number' ? b.bio_signals : 0),
-      bio_genuses: Array.isArray(b.bio_genuses) ? b.bio_genuses : [],
+      // Сигналы тела: биология, геология, следы людей, стражи и таргоиды.
+      // Помощник присылает либо готовые счётчики, либо сырой список
+      // `signals` из события журнала — разбираем оба вида.
+      ...signalsToColumns(signalsFromRecord(b)),
+      signals: Array.isArray(b.signals) ? b.signals.slice(0, 32) : [],
       first_discovered_by: b.first_discovered_by || null,
       first_mapped_by: b.first_mapped_by || null,
       first_footfall_by: b.first_footfall_by || null,

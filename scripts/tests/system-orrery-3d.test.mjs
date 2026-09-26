@@ -127,7 +127,16 @@ function systemRecords() {
       rings: [{ name: 'TestSys 2 A Ring', ringClass: 'Icy', innerRadiusKm: 78000, outerRadiusKm: 118000 }],
     }),
     moon('TestSys 2 a', 4, 950, 3, { semi_major_axis_ls: 9000, orbital_period_days: 12 }),
-    planet('TestSys 3', 5, 4200, { sub_type: 'Icy body', semi_major_axis_ls: 14000, orbital_period_days: 9000 }),
+    planet('TestSys 3', 5, 4200, {
+      sub_type: 'Icy body',
+      semi_major_axis_ls: 14000,
+      orbital_period_days: 9000,
+      // Сигналы разных видов на одном теле: геология и следы людей.
+      signals: [
+        { type: '$SAA_SignalType_Geological;', count: 3 },
+        { type: '$SAA_SignalType_Human;', count: 1 },
+      ],
+    }),
   ];
 }
 
@@ -267,6 +276,56 @@ maybe('сцена: слои, приглушение фокуса и имена �
   scene.dispose();
   assert.equal(scene.pickables.length, 0);
   assert.ok(geometryCount > 0);
+});
+
+maybe('сигналы: пакет несёт все виды, сцена ставит метки и пульсирует', async () => {
+  const { module } = await enginePromise;
+  const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');
+  const payload = module.buildOrreryView(layout, module.toStructures(structuresFor()), { systemName: 'TestSys' });
+
+  const bio = payload.bodies.find((body) => body.name === 'TestSys 1');
+  assert.equal(bio.signals.bio, 4, 'биосигналы попали в пакет');
+  assert.equal(bio.bioSignals, 4, 'старое поле осталось совместимым');
+
+  const mixed = payload.bodies.find((body) => body.name === 'TestSys 3');
+  assert.equal(mixed.signals.geo, 3, 'геологические сигналы разобраны');
+  assert.equal(mixed.signals.human, 1, 'человеческие сигналы разобраны');
+  assert.equal(mixed.signals.bio, 0, 'чужие виды не смешиваются');
+
+  assert.equal(payload.summary.signals.bio, 4);
+  assert.equal(payload.summary.signals.geo, 3);
+  assert.equal(payload.summary.signalBodies, 2, 'сводка считает тела с любыми сигналами');
+
+  const description = module.describeView(payload).join(' · ');
+  assert.match(description, /гео 3/, 'описание пакета упоминает геологию');
+  assert.match(description, /люди 1/, 'описание пакета упоминает следы людей');
+
+  const roundTrip = JSON.parse(JSON.stringify(payload));
+  assert.deepEqual(roundTrip.bodies.find((body) => body.name === 'TestSys 3').signals, mixed.signals,
+    'сигналы переживают сериализацию');
+
+  const scene = module.buildOrreryScene(payload);
+  assert.ok(scene.groups.signals.children.length >= 2, 'у тел с сигналами появились метки');
+
+  // Метки кликабельны как само тело: попадание лучом ведёт на планету.
+  const markers = scene.groups.signals.children
+    .flatMap((group) => group.children)
+    .filter((child) => child.userData?.signal);
+  assert.ok(markers.length >= 3, 'по маячку на каждый вид сигнала');
+  assert.ok(markers.every((marker) => marker.userData.pick?.kind === 'body'), 'маячок ведёт на тело');
+
+  const marker = markers[0];
+  const scaleBefore = marker.scale.x;
+  scene.pulse(0);
+  scene.pulse(0.7);
+  assert.notEqual(marker.scale.x, scaleBefore, 'метки пульсируют во времени');
+
+  scene.setLayer('signals', false);
+  assert.equal(scene.groups.signals.visible, false, 'слой сигналов выключается');
+  scene.setLayer('signals', true);
+  assert.equal(scene.groups.signals.visible, true);
+
+  scene.dispose();
 });
 
 maybe('наведение лучом: попадание по телу и по стройплощадке', async () => {

@@ -50,6 +50,12 @@ def _kelt_snapshot():
                     "ScanType": "Detailed", "PlanetClass": "Icy body", "Radius": 2e6,
                     "DistanceFromArrivalLS": 41000.0, "SemiMajorAxis": 2.0e9,
                     "Parents": [{"Star": 2}]})
+    # Сигналы на планете: биология и геология приходят одним событием сканера.
+    builder.handle({"event": "SAASignalsFound", "StarSystem": "KELT", "BodyName": "KELT A 1",
+                    "Signals": [{"Type": "$SAA_SignalType_Biological;", "Count": 3},
+                                {"Type": "$SAA_SignalType_Geological;", "Count": 5},
+                                {"Type": "$SAA_SignalType_Human;", "Count": 1}],
+                    "Genuses": [{"Genus_Localised": "Бактерии"}]})
     builder.handle({"event": "ColonisationConstructionDepot", "StarSystem": "KELT",
                     "MarketID": 10, "ConstructionName": "KELT A 1 Colony",
                     "BodyName": "KELT A 1", "ConstructionProgress": 0.42,
@@ -246,6 +252,18 @@ class ViewPayloadTests(unittest.TestCase):
         text = json.dumps(self.payload, ensure_ascii=False)
         self.assertEqual(json.loads(text)["system"], "KELT")
         self.assertEqual(self.payload["version"], sv.VIEW_VERSION)
+
+    def test_body_carries_every_signal_kind(self):
+        """Сигналы тела едут в пакет целиком — как на сайте (`BodySignals`)."""
+        signals = _body(self.payload, "KELT A 1")["signals"]
+        self.assertEqual(signals["bio"], 3)
+        self.assertEqual(signals["geo"], 5)
+        self.assertEqual(signals["human"], 1)
+        self.assertEqual(signals["thargoid"], 0)
+        self.assertEqual(signals["genuses"], ["Бактерии"])
+        self.assertEqual(_body(self.payload, "KELT A 1")["bioSignals"], 3)
+        self.assertEqual(self.payload["summary"]["signals"]["geo"], 5)
+        self.assertEqual(self.payload["summary"]["signalBodies"], 1)
 
     def test_empty_system_still_builds(self):
         payload = sv.build_view_payload(sm.MapSnapshot(system="Пусто"))

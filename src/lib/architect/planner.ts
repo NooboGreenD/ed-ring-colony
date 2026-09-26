@@ -19,6 +19,7 @@
  * (`scripts/tests/system-architect.test.mjs`).
  */
 
+import { activeSignalKinds, signalsFromRecord } from '../bodySignals.ts';
 import {
   CATALOGUE_VERSION,
   COMMODITY_LABELS_RU,
@@ -170,6 +171,10 @@ export function fromScanRecords(rows: unknown, systemName = ''): ArchitectBody[]
     if (atmosphere) features.push('atmosphere');
     if (volcanism) features.push('volcanism');
     if (rings.length > 0) features.push('rings');
+    // Сигналы тела: каждый вид становится признаком, чтобы по ним можно
+    // было фильтровать и сортировать тела в планировщике.
+    const signals = signalsFromRecord(record);
+    for (const kind of activeSignalKinds(signals)) features.push(`signal:${kind}`);
 
     bodies.push({
       name,
@@ -185,6 +190,7 @@ export function fromScanRecords(rows: unknown, systemName = ''): ArchitectBody[]
       hasAtmosphere: Boolean(atmosphere),
       volcanism: Boolean(volcanism),
       hasRings: rings.length > 0,
+      signals,
       features,
     });
   }

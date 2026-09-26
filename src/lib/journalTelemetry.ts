@@ -17,6 +17,7 @@ import {
   telemetryConstructionRow,
   type ColonisationEventRow,
 } from './colonisationEvents.ts';
+import { signalsFromList } from './bodySignals.ts';
 
 export interface ConstructionResourceRow {
   Name?: string;
@@ -60,6 +61,16 @@ export interface SystemScanRow {
   parents: unknown[];
   rings: unknown[];
   bio_signals_count: number;
+  /**
+   * Остальные сигналы тела: геология, следы людей, стражи, таргоиды и
+   * «прочее». Раньше журнал разбирался только на биологию, и планировщик
+   * колонии не видел ни геологических точек, ни чужого присутствия.
+   */
+  geo_signals_count: number;
+  human_signals_count: number;
+  thargoid_signals_count: number;
+  guardian_signals_count: number;
+  other_signals_count: number;
   bio_genuses: string[];
   first_discovered_by: string | null;
   first_mapped_by: string | null;
@@ -266,6 +277,11 @@ export class TelemetryCollector {
         parents: Array.isArray(event.Parents) ? (event.Parents as unknown[]) : [],
         rings: Array.isArray(event.Rings) ? (event.Rings as unknown[]) : [],
         bio_signals_count: previous?.bio_signals_count ?? 0,
+        geo_signals_count: previous?.geo_signals_count ?? 0,
+        human_signals_count: previous?.human_signals_count ?? 0,
+        thargoid_signals_count: previous?.thargoid_signals_count ?? 0,
+        guardian_signals_count: previous?.guardian_signals_count ?? 0,
+        other_signals_count: previous?.other_signals_count ?? 0,
         bio_genuses: previous?.bio_genuses ?? [],
         // «WasDiscovered: false» — тело открыто впервые, то есть нами.
         first_discovered_by: event.WasDiscovered === false ? 'Вы' : (previous?.first_discovered_by ?? null),
@@ -278,25 +294,22 @@ export class TelemetryCollector {
       const system = str(event.StarSystem) || state.currentSystem || '';
       const bodyName = str(event.BodyName) || str(event.Body);
       if (!system || !bodyName) return;
-      const signals = Array.isArray(event.Signals) ? (event.Signals as Record<string, unknown>[]) : [];
-      let bio = 0;
-      for (const signal of signals) {
-        const type = `${str(signal.Type)} ${str(signal.Type_Localised)}`.toLowerCase();
-        if (type.includes('biological') || type.includes('biolog') || type.includes('биолог')) {
-          bio += num(signal.Count) ?? 0;
-        }
-      }
-      const genuses = Array.isArray(event.Genuses) ? (event.Genuses as Record<string, unknown>[]) : [];
-      const generaList = genuses
-        .map((genus) => str(genus.Genus_Localised) || str(genus.Genus))
-        .filter(Boolean);
+      // Считаются ВСЕ виды сигналов, а не только биология: геологические
+      // точки — это материалы, человеческие — чужое присутствие рядом со
+      // стройкой, стражи и таргоиды — повод выбрать другое тело.
+      const found = signalsFromList(event.Signals, event.Genuses);
       const key = scanKey(system, bodyName);
       const previous = state.scanByKey.get(key);
-      state.stats.bioSignals += bio;
+      state.stats.bioSignals += found.bio;
       state.scanByKey.set(key, {
         ...(previous ?? emptyScanRow(system, bodyName, num(event.BodyID))),
-        bio_signals_count: Math.max(previous?.bio_signals_count ?? 0, bio),
-        bio_genuses: Array.from(new Set([...(previous?.bio_genuses ?? []), ...generaList])),
+        bio_signals_count: Math.max(previous?.bio_signals_count ?? 0, found.bio),
+        geo_signals_count: Math.max(previous?.geo_signals_count ?? 0, found.geo),
+        human_signals_count: Math.max(previous?.human_signals_count ?? 0, found.human),
+        thargoid_signals_count: Math.max(previous?.thargoid_signals_count ?? 0, found.thargoid),
+        guardian_signals_count: Math.max(previous?.guardian_signals_count ?? 0, found.guardian),
+        other_signals_count: Math.max(previous?.other_signals_count ?? 0, found.other),
+        bio_genuses: Array.from(new Set([...(previous?.bio_genuses ?? []), ...found.genuses])),
       });
       return;
     }
@@ -457,6 +470,11 @@ function emptyScanRow(system: string, bodyName: string, bodyId: number | null): 
     parents: [],
     rings: [],
     bio_signals_count: 0,
+    geo_signals_count: 0,
+    human_signals_count: 0,
+    thargoid_signals_count: 0,
+    guardian_signals_count: 0,
+    other_signals_count: 0,
     bio_genuses: [],
     first_discovered_by: null,
     first_mapped_by: null,
@@ -724,6 +742,11 @@ export async function persistJournalTelemetry(
           parents: Array.isArray(scan.parents) ? scan.parents : [],
           rings: Array.isArray(scan.rings) ? scan.rings : [],
           bio_signals_count: number(scan.bio_signals_count) ?? 0,
+          geo_signals_count: number(scan.geo_signals_count) ?? 0,
+          human_signals_count: number(scan.human_signals_count) ?? 0,
+          thargoid_signals_count: number(scan.thargoid_signals_count) ?? 0,
+          guardian_signals_count: number(scan.guardian_signals_count) ?? 0,
+          other_signals_count: number(scan.other_signals_count) ?? 0,
           bio_genuses: Array.isArray(scan.bio_genuses) ? scan.bio_genuses : [],
           first_discovered_by: scan.first_discovered_by ? String(scan.first_discovered_by).slice(0, 250) : null,
           first_mapped_by: scan.first_mapped_by ? String(scan.first_mapped_by).slice(0, 250) : null,

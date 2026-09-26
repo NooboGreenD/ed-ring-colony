@@ -210,6 +210,12 @@ Invariants that must stay identical in both languages:
   class only as a fallback; marker size scales with the star's true radius
   (`starRadiusScale` / `star_radius_scale`, log-scaled and clamped to 0.45–2.6).
   Ring planes follow axial tilt, not orbital inclination.
+- Body signals (bio, geo, human, thargoid, guardian, other) live in one module,
+  `src/lib/bodySignals.ts`, mirrored by `SIGNAL_ATTRIBUTES` /
+  `classify_body_signal` in `uploader/system_map.py`. The journal parser, the
+  catalogue API, the orrery payload, the 3D scene and the architect all read
+  that module — do not re-derive counts from `raw_data` anywhere else. Version 4
+  of the view payload added `body.signals` and `summary.signals`.
 - The payload fed to the renderer is versioned: `ORRERY_VIEW_VERSION` (TS) must
   equal `uploader/system_view.py:VIEW_VERSION` and the `contract=` marker of the
   committed bundle; `uploader/tests/test_system_view.py` checks all three.

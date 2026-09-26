@@ -18,6 +18,7 @@ import {
   structureColor,
 } from '@/lib/orrery3d/palette';
 import type { FilterMode } from '@/lib/orrery3d/viewer';
+import { SIGNAL_META, activeSignalKinds, hasSignals } from '@/lib/bodySignals';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure } from '@/lib/orrery3d/types';
 
 export interface SystemBodyRailProps {
@@ -35,6 +36,7 @@ const FILTERS: { id: FilterMode; label: string; hint: string }[] = [
   { id: 'sites', label: 'стройки', hint: 'Только тела со стройплощадками' },
   { id: 'landable', label: 'посадка', hint: 'Тела, где можно сесть' },
   { id: 'bio', label: 'био', hint: 'Тела с биологическими сигнатурами' },
+  { id: 'signals', label: 'сигналы', hint: 'Тела с любыми сигналами: биология, геология, люди, стражи, таргоиды' },
   { id: 'rings', label: 'кольца', hint: 'Тела с кольцами' },
   { id: 'unscanned', label: 'без скана', hint: 'Не нанесены на карту' },
 ];
@@ -53,6 +55,7 @@ function matches(body: OrreryViewBody, filter: FilterMode): boolean {
     case 'bodies': return body.kind !== 'star';
     case 'landable': return body.landable;
     case 'bio': return body.bioSignals > 0;
+    case 'signals': return hasSignals(body.signals);
     case 'sites': return body.structures.length > 0;
     case 'rings': return body.rings.length > 0;
     case 'unscanned': return !body.scanned;
@@ -252,11 +255,15 @@ export default function SystemBodyRail({
                       {body.radiusM > 0 && <span>{formatNumber(body.radiusM / 1000, 0)} км</span>}
                       {body.gravity > 0 && <span>{formatGravity(body.gravity)}</span>}
                     </div>
-                    {(body.landable || body.bioSignals > 0 || body.rings.length > 0 || body.habitableBand === 'habitable' || !body.scanned) && (
+                    {(body.landable || hasSignals(body.signals) || body.rings.length > 0 || body.habitableBand === 'habitable' || !body.scanned) && (
                       <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 5 }}>
                         {body.habitableBand === 'habitable' && <Tag color="#2ecc71">🌍 обитаемая зона</Tag>}
                         {body.landable && <Tag color="#00f3ff">🛬 посадка</Tag>}
-                        {body.bioSignals > 0 && <Tag color="#22c55e">🌿 {body.bioSignals}</Tag>}
+                        {activeSignalKinds(body.signals).map((kind) => (
+                          <Tag key={kind} color={SIGNAL_META[kind].color}>
+                            {SIGNAL_META[kind].icon} {body.signals[kind]}
+                          </Tag>
+                        ))}
                         {body.rings.length > 0 && <Tag color="#9fd8ef">💍 {body.rings.length}</Tag>}
                         {!body.scanned && <Tag color="#9ca3af">❔ нет скана</Tag>}
                       </div>

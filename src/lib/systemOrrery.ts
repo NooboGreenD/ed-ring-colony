@@ -20,6 +20,8 @@
  *    планеты, что на масштабе системы выглядит как отдельный объект.
  */
 
+import { signalsFromRecord, type BodySignals } from './bodySignals.ts';
+
 export type BodyKind = 'star' | 'planet' | 'moon';
 
 export interface OrreryRing {
@@ -90,6 +92,8 @@ export interface OrreryBody {
   pressureAtm: number;
   landable: boolean;
   bioSignals: number;
+  /** Все сигналы тела: биология, геология, люди, стражи, таргоиды, прочее. */
+  signals: BodySignals;
   atmosphere: string;
   volcanism: string;
   rings: OrreryRing[];
@@ -226,6 +230,9 @@ export function normalizeBody(record: Record<string, unknown>, systemName = ''):
     });
   }
   const distanceLs = num(record.distance_ls ?? record.distanceLs ?? record.distanceToArrival ?? record.distance);
+  // Сигналы тела (биология, геология, люди, стражи, таргоиды) приходят из
+  // журнала: отдельными колонками каталога или списком `signals`.
+  const signals = signalsFromRecord(record);
 
   return {
     name,
@@ -246,7 +253,8 @@ export function normalizeBody(record: Record<string, unknown>, systemName = ''):
     tempK: num(record.surface_temp_k ?? record.surfaceTemperature ?? record.temp_k),
     pressureAtm: num(record.surface_pressure) / 101_325,
     landable: Boolean(record.is_landable ?? record.landable ?? record.isLandable),
-    bioSignals: num(record.bio_signals_count ?? record.bio_signals ?? record.bioSignalsCount),
+    bioSignals: signals.bio,
+    signals,
     atmosphere: str(record.atmosphere ?? record.atmosphere_type ?? record.atmosphereType),
     volcanism: str(record.volcanism ?? record.volcanismType),
     rings,

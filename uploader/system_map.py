@@ -48,6 +48,39 @@ KIND_PLANET = "planet"
 KIND_MOON = "moon"
 KIND_UNKNOWN = "unknown"
 
+#: Сигналы на телах (FSSBodySignals/SAASignalsFound). Ключи — те же, что у
+#: сайта в `src/lib/bodySignals.ts`, чтобы карта в окне и карта на сайте
+#: показывали одно и то же.
+SIGNAL_ATTRIBUTES: Dict[str, str] = {
+    "bio": "bio_signals",
+    "geo": "geo_signals",
+    "human": "human_signals",
+    "thargoid": "thargoid_signals",
+    "guardian": "guardian_signals",
+    "other": "other_signals",
+}
+
+
+def classify_body_signal(signal_type: object) -> str:
+    """Вид сигнала НА ТЕЛЕ по типу из журнала (ключ или его перевод).
+
+    Не путать с `classify_signal` ниже: та разбирает сигналы системы
+    (станции, точки интереса), а эта — находки сканера на поверхности.
+    """
+    value = str(signal_type or "").lower()
+    if "biolog" in value or "биолог" in value:
+        return "bio"
+    if "geolog" in value or "геолог" in value:
+        return "geo"
+    if "thargoid" in value or "таргоид" in value:
+        return "thargoid"
+    if "guardian" in value or "страж" in value:
+        return "guardian"
+    if "human" in value or "человеч" in value or "люд" in value:
+        return "human"
+    return "other"
+
+
 STATION_SITE = "construction_site"     # колонизационная стройплощадка
 STATION_PORT = "port"                  # станция/порт (построенный объект)
 STATION_PRIMARY_PORT = "primary_port"  # основной порт системы
@@ -312,6 +345,14 @@ class MapBody:
     gravity: float = 0.0
     surface_temp_k: float = 0.0
     bio_signals: int = 0
+    # Остальные сигналы тела: геология, следы людей, стражи, таргоиды и
+    # прочее. Раньше журнал разбирался только на биологию, и карта не могла
+    # показать, что рядом с будущей стройкой уже кто-то есть.
+    geo_signals: int = 0
+    human_signals: int = 0
+    thargoid_signals: int = 0
+    guardian_signals: int = 0
+    other_signals: int = 0
     bio_genuses: List[str] = field(default_factory=list)
     first_discovered_by: str = ""
     first_mapped_by: str = ""
@@ -866,8 +907,12 @@ class SystemMapBuilder:
             return False
         body = self._body(system, name)
         for sig in event.get("Signals") or []:
-            if isinstance(sig, dict) and "biological" in str(sig.get("Type") or "").lower():
-                body.bio_signals = _as_int(sig.get("Count"), body.bio_signals)
+            if not isinstance(sig, dict):
+                continue
+            kind = classify_body_signal(f"{sig.get('Type') or ''} {sig.get('Type_Localised') or ''}")
+            count = _as_int(sig.get("Count"), 0)
+            attribute = SIGNAL_ATTRIBUTES[kind]
+            setattr(body, attribute, max(getattr(body, attribute, 0), count))
         genuses = [str(g.get("Genus_Localised") or g.get("Genus") or "")
                    for g in (event.get("Genuses") or []) if isinstance(g, dict)]
         if genuses:
@@ -943,6 +988,12 @@ class SystemMapBuilder:
             body.first_mapped_by = str(entry.get("first_mapped_by") or body.first_mapped_by or "")
             body.first_footfall_by = str(entry.get("first_footfall_by") or body.first_footfall_by or "")
             body.bio_signals = _as_int(entry.get("bio_signals_count") or entry.get("bio_signals"), body.bio_signals)
+            for kind, attribute in SIGNAL_ATTRIBUTES.items():
+                if kind == "bio":
+                    continue
+                body_value = getattr(body, attribute, 0)
+                setattr(body, attribute, _as_int(
+                    entry.get(f"{kind}_signals_count") or entry.get(f"{kind}_signals"), body_value))
             if "rings" in entry and isinstance(entry["rings"], list):
                 body.rings = [r for r in entry["rings"] if isinstance(r, dict)]
             body.source = source
