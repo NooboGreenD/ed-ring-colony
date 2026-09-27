@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  DEFAULT_AUDIENCE,
   FRONTIER_APP_CLIENT_ID,
   buildAuthUrl,
   createCodeChallenge,
@@ -72,7 +73,10 @@ test('ссылка авторизации содержит PKCE-параметр
   assert.equal(parsed.origin + parsed.pathname, 'https://auth.frontierstore.net/auth');
   assert.equal(parsed.searchParams.get('code_challenge'), 'ch123');
   assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256');
-  assert.equal(parsed.searchParams.get('audience'), 'frontier');
+  // По умолчанию просим токен сразу для трёх платформ — как EDMC. С одним
+  // лишь 'frontier' пилот со Steam/Epic получает токен учётки магазина, и
+  // CAPI отвечает 400 «Please Visit the store to purchase Elite: Dangerous».
+  assert.equal(parsed.searchParams.get('audience'), 'frontier,steam,epic');
   assert.equal(parsed.searchParams.get('scope'), 'auth capi');
   assert.equal(parsed.searchParams.get('response_type'), 'code');
   assert.equal(parsed.searchParams.get('state'), 'st8');
@@ -110,15 +114,28 @@ test('без FRONTIER_REDIRECT_URI адрес возврата берётся о
   );
 });
 
-test('audience ограничен платформами Frontier', () => {
+test('audience: явная платформа уважается, пустая — список EDMC', () => {
   // Пилоту со Steam нужен свой audience, иначе диалог входа не предложит
-  // нужный способ. Всё непонятное — обратно к аккаунту Frontier.
+  // нужный способ. Всё непонятное и пустое — список EDMC, который подходит
+  // и магазину Frontier, и Steam, и Epic.
   assert.equal(normalizeAudience('steam'), 'steam');
   assert.equal(normalizeAudience('EPIC'), 'epic');
   assert.equal(normalizeAudience('psn'), 'psn');
-  assert.equal(normalizeAudience('nintendo'), 'frontier');
-  assert.equal(normalizeAudience(null), 'frontier');
   assert.equal(normalizeAudience(' xbox '), 'xbox');
+  assert.equal(normalizeAudience('nintendo'), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience(null), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience('auto'), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience('all'), DEFAULT_AUDIENCE);
+  assert.equal(DEFAULT_AUDIENCE, 'frontier,steam,epic');
+  // Список чистится от мусора и дублей, порядок сохраняется.
+  assert.equal(normalizeAudience('steam, frontier ,steam'), 'steam,frontier');
+  assert.equal(normalizeAudience('steam,nintendo'), 'steam');
+});
+
+test('явная платформа доезжает до ссылки авторизации', () => {
+  const url = withEnv({ FRONTIER_REDIRECT_URI: REDIRECT }, () =>
+    buildAuthUrl('st9', { codeChallenge: 'ch', audience: 'steam' }));
+  assert.equal(new URL(url).searchParams.get('audience'), 'steam');
 });
 
 test('обмен кода требует верификатор или секрет', async () => {

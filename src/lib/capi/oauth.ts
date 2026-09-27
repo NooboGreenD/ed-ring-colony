@@ -16,7 +16,7 @@
 // EDDI и др.) — см. `docs/FrontierDevelopments-oAuth2-notes.md` в
 // github.com/Athanasius/fd-api:
 //
-//   Authorization: https://auth.frontierstore.net/auth?audience=frontier
+//   Authorization: https://auth.frontierstore.net/auth?audience=frontier,steam,epic
 //                  &scope=auth capi&response_type=code&client_id=…
 //                  &code_challenge=…&code_challenge_method=S256&state=…
 //                  &redirect_uri=…
@@ -29,7 +29,10 @@
 //   • `code_challenge` — URL-safe base64 от SHA-256 верификатора БЕЗ «=»;
 //     с «=» сервер отвечает {"message":"An error occured."}.
 //   • `code_verifier` — URL-safe base64, и «=» в конце ОБЯЗАТЕЛЬНО остаётся.
-//   • `audience=frontier` — аккаунт Frontier (не Steam/Xbox/PlayStation).
+//   • `audience` — платформы аккаунта. По умолчанию `frontier,steam,epic`
+//     (как в EDMC): один лишь `frontier` даёт токен учётки магазина, и
+//     CAPI отвечает `400 Please Visit the store to purchase Elite:
+//     Dangerous` пилотам, купившим игру в Steam или Epic.
 //   • Access-токен живёт ~4 часа (expires_in = 14400), CAPI отвечает HTTP 422,
 //     когда он истёк; refresh-токен работает не дольше 25 дней с момента
 //     авторизации, после чего нужна повторная авторизация пользователя.
@@ -116,18 +119,34 @@ export function frontierRedirectUri(): string {
  * (hosting.zaonce.net/docs/oauth2/instructions.html); `epic` там не описан,
  * но принимается и используется EDMC, поэтому оставлен.
  *
- * По умолчанию `frontier`: это аккаунт frontierstore.net. Пилоту со Steam
- * или Epic нужна своя кнопка, иначе диалог входа просто не предложит нужный
- * способ, авторизация «пройдёт», а CAPI не отдаст данные.
+ * Значение по умолчанию — список `frontier,steam,epic`, ровно как в EDMC.
+ * Это важнее, чем кажется: с одним лишь `audience=frontier` пилот, купивший
+ * игру в Steam или Epic, получает токен учётки магазина frontierstore.net,
+ * за которой игры нет. OAuth при этом проходит полностью, `/me` отвечает —
+ * и только CAPI возвращает `400 Please Visit the store to purchase Elite:
+ * Dangerous`. Снаружи это выглядит как «подключилось, но не работает».
  */
-export const FRONTIER_AUDIENCES = ['frontier', 'steam', 'epic', 'xbox', 'psn', 'all'] as const;
+export const FRONTIER_AUDIENCES = ['frontier', 'steam', 'epic', 'xbox', 'psn'] as const;
 export type FrontierAudience = (typeof FRONTIER_AUDIENCES)[number];
 
-export function normalizeAudience(value: unknown): FrontierAudience {
+/** Список платформ по умолчанию — тот же, что запрашивает EDMC. */
+export const DEFAULT_AUDIENCE = 'frontier,steam,epic';
+
+/**
+ * Нормализовать выбор платформы. Пусто, `auto` и `all` → список EDMC;
+ * список через запятую чистится от неизвестных значений и дублей.
+ */
+export function normalizeAudience(value: unknown): string {
   const raw = String(value ?? '').trim().toLowerCase();
-  return (FRONTIER_AUDIENCES as readonly string[]).includes(raw)
-    ? (raw as FrontierAudience)
-    : 'frontier';
+  if (!raw || raw === 'auto' || raw === 'all' || raw === 'any') return DEFAULT_AUDIENCE;
+
+  const known = new Set<string>(FRONTIER_AUDIENCES);
+  const kept = raw
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter((part) => known.has(part));
+
+  return [...new Set(kept)].join(',') || DEFAULT_AUDIENCE;
 }
 
 /* ── PKCE ─────────────────────────────────────────────────────────── */
@@ -167,7 +186,8 @@ export interface AuthUrlOptions {
   /** Переопределение redirect_uri (например, loopback для десктоп-клиента). */
   redirectUri?: string;
   clientId?: string;
-  /** 'frontier' | 'steam' | 'ps4' | 'xbox' — платформа аккаунта. */
+  /** Платформа аккаунта: 'frontier' | 'steam' | 'epic' | 'xbox' | 'psn',
+   *  список через запятую или пусто = `frontier,steam,epic` (как в EDMC). */
   audience?: string;
   scope?: string;
 }
@@ -180,7 +200,9 @@ export function buildAuthUrl(state: string, options: Omit<AuthUrlOptions, 'state
   }
 
   const params = new URLSearchParams({
-    audience: options.audience || 'frontier',
+    // Без нормализации сюда легко уехало бы 'frontier' — самая частая
+    // причина 400 у CAPI для пилотов со Steam/Epic.
+    audience: normalizeAudience(options.audience),
     // 'auth capi' — доступ к Companion API. 'auth' дал бы только e-mail/имя.
     scope: options.scope || 'auth capi',
     response_type: 'code',

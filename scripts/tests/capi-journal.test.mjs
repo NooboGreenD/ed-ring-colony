@@ -149,3 +149,39 @@ test('запрос уходит с Bearer-токеном и корректным
   assert.equal(headers.Authorization, 'Bearer secret-token');
   assert.match(headers['User-Agent'], /^EDCD-EDRingColony-[.0-9]+$/);
 });
+
+/* ──────────────────────────────────────────────────────────────────────────
+   HTTP 400 от CAPI — это не «кривой запрос», а «за аккаунтом нет игры»:
+   токен выдан учётке магазина Frontier, тогда как игра куплена в Steam или
+   Epic. Пилот в этот момент видел «HTTP 400» и считал привязку сломанной
+   без единой подсказки, что делать.
+   ────────────────────────────────────────────────────────────────────────── */
+
+test('400 распознаётся как «аккаунт без Elite Dangerous», а не как сбой сервера', async () => {
+  await withFetch(
+    async () => new Response('Please Visit the store to purchase Elite: Dangerous.', { status: 400 }),
+    async () => {
+      await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
+        assert.equal(err.kind, 'no_entitlement');
+        assert.equal(err.status, 400);
+        // Повторять запрос бессмысленно, обновлять токен — тоже.
+        assert.equal(isUnauthorizedError(err), false);
+        const text = describeCapiError(err);
+        assert.match(text, /не видит купленную Elite Dangerous/);
+        assert.match(text, /Steam/);
+        assert.match(text, /Epic/);
+        return true;
+      });
+    },
+  );
+});
+
+test('прочие 4xx/5xx остаются «ошибкой сервера»', async () => {
+  await withFetch(async () => new Response('nope', { status: 500 }), async () => {
+    await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
+      assert.equal(err.kind, 'server');
+      assert.match(describeCapiError(err), /ошибкой 500/);
+      return true;
+    });
+  });
+});

@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-27.
-> Web/Uploader release: 2.12.0.
+> Web/Uploader release: 2.12.1.
 > Frontier CAPI binding and Architect Uploader ↔ Raven dual-sync are included in this release.
 > Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -541,7 +541,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 
 ### 8.6 Colonial Helper uploader 2.12
 - Source: `uploader/colonial_helper.py`
-- Version: `2.12.0`
+- Version: `2.12.1`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -832,6 +832,18 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - Squadron creation normalises the form in `src/lib/squadronForm.ts` (empty
   strings mean "not provided", `[rcv]` → `RCV`, a tag is derived from the name)
   and translates database failures into readable causes.
+
+### 8.13 Frontier CAPI: platform (`audience`) and HTTP 400
+- Frontier's `400` on `/profile` means "this account does not own the game"
+  (body: `Please Visit the store to purchase Elite: Dangerous`), not a
+  malformed request. It happens when the token was issued for the Frontier
+  store account while the game was bought on Steam/Epic.
+- Both the site and Colonial Helper now request `audience=frontier,steam,epic`
+  by default (the EDMC list); an explicit platform is still available on
+  `/account/capi` and in the uploader's "Где куплена игра" selector.
+- `CapiError` kind `no_entitlement` carries the explanation; the uploader shows
+  the same hint and only turns the status green after `/profile` answers.
+- Details and the user-facing checklist: [CAPI-400-FIX.md](CAPI-400-FIX.md).
 
 ---
 

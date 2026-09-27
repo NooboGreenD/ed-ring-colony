@@ -45,12 +45,28 @@ export function capiUserAgent(version = process.env.NEXT_PUBLIC_APP_VERSION): st
 
 export type CapiErrorKind =
   | 'unauthorized'
+  | 'no_entitlement'
   | 'maintenance'
   | 'no_content'
   | 'rate_limited'
   | 'server'
   | 'network'
   | 'malformed';
+
+/**
+ * Подсказка для самой частой и самой непонятной ошибки CAPI.
+ *
+ * `400` у Frontier означает не «кривой запрос», а «за этим аккаунтом игры
+ * нет»: тело ответа — `Please Visit the store to purchase Elite: Dangerous`.
+ * Так отвечают, когда токен выдан учётке магазина frontierstore.net, а игра
+ * куплена в Steam или Epic (и при известном сбое Frontier с Epic-привязками,
+ * issues.frontierstore.net/issue-detail/21258).
+ */
+export const NO_ENTITLEMENT_HINT =
+  'Frontier не видит купленную Elite Dangerous у этого аккаунта. '
+  + 'Отвяжите Frontier и подключите заново, выбрав платформу, где куплена игра '
+  + '(Steam или Epic), — на странице входа Frontier нужно нажать кнопку Steam/Epic, '
+  + 'а не входить почтой.';
 
 /** Ошибка обращения к CAPI с разобранной причиной. */
 export class CapiError extends Error {
@@ -81,6 +97,8 @@ export function describeCapiError(err: unknown): string {
     switch (err.kind) {
       case 'unauthorized':
         return 'Frontier отклонил токен доступа — нужна повторная авторизация';
+      case 'no_entitlement':
+        return NO_ENTITLEMENT_HINT;
       case 'maintenance':
         return 'Companion API Frontier на техобслуживании (HTTP 418), попробуйте позже';
       case 'no_content':
@@ -138,6 +156,11 @@ export class CapiClient {
 
     if (res.status === 401 || res.status === 403 || res.status === 422) {
       throw new CapiError('unauthorized', endpoint, res.status);
+    }
+    if (res.status === 400) {
+      // Не 'server': повторять бессмысленно, пилоту нужно переподключить
+      // аккаунт нужной платформы.
+      throw new CapiError('no_entitlement', endpoint, 400);
     }
     if (res.status === 418) {
       throw new CapiError('maintenance', endpoint, 418);

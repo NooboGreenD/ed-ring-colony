@@ -55,8 +55,16 @@ const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
 
-/** Платформы аккаунта: у Frontier это параметр `audience`. */
+/**
+ * Платформы аккаунта: у Frontier это параметр `audience`.
+ *
+ * «Определить автоматически» (`auto` → `frontier,steam,epic`) стоит первым и
+ * выбран по умолчанию: с одним лишь `frontier` пилот, купивший игру в Steam
+ * или Epic, проходит авторизацию, но получает токен учётки магазина — и CAPI
+ * отвечает `400 Please Visit the store to purchase Elite: Dangerous`.
+ */
 const PLATFORMS: { id: string; label: string }[] = [
+  { id: 'auto', label: 'Определить автоматически' },
   { id: 'frontier', label: 'Frontier' },
   { id: 'steam', label: 'Steam' },
   { id: 'epic', label: 'Epic' },
@@ -83,7 +91,7 @@ export default function CapiPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ kind: 'success' | 'partial' | 'error'; title: string; hint: string; detail?: string } | null>(null);
   const [syncReport, setSyncReport] = useState<SyncReport | null>(null);
-  const [platform, setPlatform] = useState('frontier');
+  const [platform, setPlatform] = useState('auto');
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
 
@@ -239,6 +247,8 @@ export default function CapiPage() {
           </p>
           <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
             Выберите, как вы входите в Elite Dangerous — диалог Frontier покажет именно этот способ входа.
+            Если не уверены, оставьте «Определить автоматически»: Frontier сам предложит Steam, Epic или вход почтой.
+            Ошибка «Please Visit the store to purchase Elite: Dangerous» после входа означает, что выбрана не та платформа.
           </p>
           <div className="capi-platforms">
             {PLATFORMS.map((item) => (
@@ -285,7 +295,7 @@ export default function CapiPage() {
                 <div className="capi-notice-hint">
                   {binding?.lastError || 'Refresh-токен Frontier живёт не дольше 25 дней.'} Подключите аккаунт заново:
                 </div>
-                <a href={`/api/capi/auth?platform=${binding?.platform || 'frontier'}`} className="btn btn-orange" style={{ marginTop: 8 }}>
+                <a href={`/api/capi/auth?platform=${binding?.platform || 'auto'}`} className="btn btn-orange" style={{ marginTop: 8 }}>
                   Переподключить
                 </a>
               </div>
