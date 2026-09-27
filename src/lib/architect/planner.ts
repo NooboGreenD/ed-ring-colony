@@ -43,7 +43,7 @@ import type {
 } from './types.ts';
 
 /** Версия формата плана: меняется, если меняется структура `ArchitectPlan`. */
-export const PLAN_FORMAT_VERSION = 1;
+export const PLAN_FORMAT_VERSION = 2;
 
 /** Потолок наземных слотов у одного тела. */
 export const SURFACE_SLOT_LIMIT = 7;
@@ -66,6 +66,36 @@ const INSTALLATION_BY_ID = new Map<string, ArchitectInstallation>(
 export function getInstallation(id: string | null | undefined): ArchitectInstallation | null {
   if (!id) return null;
   return INSTALLATION_BY_ID.get(id) ?? null;
+}
+
+/**
+ * Может ли постройка быть основным портом системы.
+ *
+ * Основным портом бывает только порт (аванпост или звёздный порт): у таких
+ * построек в каталоге есть список материалов основного порта (`primary`).
+ */
+export function canBePrimary(id: string | null | undefined): boolean {
+  return getInstallation(id)?.primary != null;
+}
+
+/** Запись плана, отмеченная как основной порт. */
+export function primarySiteOf(plan: ArchitectPlan): PlannedSite | null {
+  return plan.sites.find((site) => site.primary && canBePrimary(site.installationId)) ?? null;
+}
+
+/**
+ * Грузы записи плана с учётом роли: основной порт везёт «основной» список
+ * материалов (дороже обычного), остальные — обычный.
+ */
+export function siteCargo(
+  site: PlannedSite,
+): { cargo: Record<string, number>; haulTons: number; isPrimaryPort: boolean } | null {
+  const installation = getInstallation(site.installationId);
+  if (!installation) return null;
+  const isPrimaryPort = Boolean(site.primary) && installation.primary != null;
+  const cargo = isPrimaryPort && installation.primary ? installation.primary.cargo : installation.cargo;
+  const haulTons = Object.values(cargo).reduce((sum, tons) => sum + tons, 0);
+  return { cargo, haulTons, isPrimaryPort };
 }
 
 /** Каталог с фильтрами — для панели выбора постройки. */
@@ -324,21 +354,31 @@ function touched(plan: ArchitectPlan): ArchitectPlan {
   return { ...plan, updatedAt: new Date().toISOString() };
 }
 
+/** Убирает пометку основного порта со всех записей, кроме одной. */
+function keepSinglePrimary(sites: PlannedSite[], keepSiteId: string): PlannedSite[] {
+  return sites.map((site) => (site.id !== keepSiteId && site.primary ? { ...site, primary: undefined } : site));
+}
+
 /** Добавить постройку: возвращает новый план, старый не меняется. */
 export function addSite(
   plan: ArchitectPlan,
   bodyName: string,
   installationId: string,
-  extra: { note?: string; status?: PlannedSiteStatus } = {},
+  extra: { note?: string; status?: PlannedSiteStatus; primary?: boolean } = {},
 ): ArchitectPlan {
+  const wantsPrimary = extra.primary === true && canBePrimary(installationId);
   const site: PlannedSite = {
     id: nextSiteId(),
     bodyName,
     installationId,
     status: extra.status && SITE_STATUSES.includes(extra.status) ? extra.status : 'plan',
+    primary: wantsPrimary || undefined,
     note: extra.note ? String(extra.note).slice(0, 300) : undefined,
   };
-  return touched({ ...plan, sites: [...plan.sites, site] });
+  const sites = wantsPrimary
+    ? [...keepSinglePrimary(plan.sites, site.id), site]
+    : [...plan.sites, site];
+  return touched({ ...plan, sites });
 }
 
 export function removeSite(plan: ArchitectPlan, siteId: string): ArchitectPlan {
@@ -351,6 +391,61 @@ export function setSiteStatus(plan: ArchitectPlan, siteId: string, status: Plann
     ...plan,
     sites: plan.sites.map((site) => (site.id === siteId ? { ...site, status } : site)),
   });
+}
+
+/**
+ * Отметить или снять «основной порт» у записи.
+ *
+ * Основной порт в плане может быть только один: новая пометка снимает
+ * прежнюю. Пометку можно поставить только порту — иначе план не меняется.
+ */
+export function setSitePrimary(plan: ArchitectPlan, siteId: string, primary: boolean): ArchitectPlan {
+  const site = plan.sites.find((entry) => entry.id === siteId);
+  if (!site) return plan;
+  if (primary && !canBePrimary(site.installationId)) return plan;
+  const sites = primary
+    ? keepSinglePrimary(plan.sites, siteId).map((entry) => (entry.id === siteId ? { ...entry, primary: true } : entry))
+    : plan.sites.map((entry) => (entry.id === siteId ? { ...entry, primary: undefined } : entry));
+  return touched({ ...plan, sites });
+}
+
+/** Правка записи плана: что именно менять — каждое поле необязательно. */
+export interface SitePatch {
+  installationId?: string;
+  bodyName?: string;
+  status?: PlannedSiteStatus;
+  note?: string | null;
+  primary?: boolean;
+}
+
+/**
+ * Редактирование уже добавленной в план постройки: тип, тело, статус,
+ * заметка и роль основного порта. Проверки размещения (`placementCheck`)
+ * остаются на вызывающем коде — здесь только аккуратное применение правок.
+ */
+export function updateSite(plan: ArchitectPlan, siteId: string, patch: SitePatch): ArchitectPlan {
+  const site = plan.sites.find((entry) => entry.id === siteId);
+  if (!site) return plan;
+
+  const installationId = patch.installationId !== undefined
+    ? (getInstallation(patch.installationId) ? patch.installationId : site.installationId)
+    : site.installationId;
+  const bodyName = patch.bodyName !== undefined ? patch.bodyName.trim().slice(0, 120) || site.bodyName : site.bodyName;
+  const status = patch.status !== undefined && SITE_STATUSES.includes(patch.status) ? patch.status : site.status;
+  const note = patch.note === undefined
+    ? site.note
+    : patch.note === null ? undefined : String(patch.note).slice(0, 300) || undefined;
+  // Основным портом бывает только порт: смена типа на непригодный снимает пометку.
+  const capable = canBePrimary(installationId);
+  const primary = patch.primary === true && capable
+    ? true
+    : patch.primary === false || !capable ? undefined : site.primary;
+
+  let sites: PlannedSite[] = plan.sites.map((entry) => (
+    entry.id === siteId ? { ...entry, installationId, bodyName, status, note, primary } : entry
+  ));
+  if (primary) sites = keepSinglePrimary(sites, siteId);
+  return touched({ ...plan, sites });
 }
 
 export function setPlanNotes(plan: ArchitectPlan, notes: string): ArchitectPlan {
@@ -368,7 +463,11 @@ export function computeBuildOrder(plan: ArchitectPlan): string[] {
   const sites = plan.sites.slice();
   if (sites.length === 0) return [];
 
-  const primary = sites.find((site) => getInstallation(site.installationId)?.buildClass === 'starport');
+  // Основной порт строится первым; если он не отмечен, первым в порядке
+  // остаётся первый звёздный порт (как в планах старого формата).
+  const primary = primarySiteOf(plan)
+    ?? sites.find((site) => getInstallation(site.installationId)?.buildClass === 'starport')
+    ?? null;
   const remaining = new Set(sites.map((site) => site.id));
   const done = new Set<string>();
   const order: string[] = [];
@@ -434,7 +533,11 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
   const bodiesByName = new Map(bodies.map((body) => [body.name, body]));
   const order = computeBuildOrder(plan);
   const sitesById = new Map(plan.sites.map((site) => [site.id, site]));
-  const primarySite = plan.sites.find((site) => getInstallation(site.installationId)?.buildClass === 'starport');
+  const primarySite = primarySiteOf(plan);
+  const hasPort = plan.sites.some((site) => {
+    const buildClass = getInstallation(site.installationId)?.buildClass;
+    return buildClass === 'starport' || buildClass === 'outpost';
+  });
 
   const tierPoints = { tier2: 0, tier3: 0 };
   const tierSpent = { tier2: 0, tier3: 0 };
@@ -514,8 +617,11 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     }
 
     score += installation.score;
-    haulTons += installation.haulTons;
-    for (const [key, tons] of Object.entries(installation.cargo)) {
+    // Основной порт везёт «основной» список материалов — дороже обычного.
+    const effectiveCargo = siteCargo(site);
+    const cargoMap = effectiveCargo ? effectiveCargo.cargo : installation.cargo;
+    haulTons += effectiveCargo ? effectiveCargo.haulTons : installation.haulTons;
+    for (const [key, tons] of Object.entries(cargoMap)) {
       cargo[key] = (cargo[key] ?? 0) + tons;
     }
     for (const key of EFFECT_KEYS) {
@@ -542,12 +648,30 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     satisfied: unlock.buildTypes.some((type) => installedTypes.includes(type)),
   }));
 
-  if (plan.sites.length > 0 && !primarySite) {
+  if (plan.sites.length > 0 && !hasPort) {
     issues.push({
       level: 'warning',
       message: 'В плане нет ни одного порта: система останется без статуса колонизированной',
     });
   }
+  if (hasPort && !primarySite) {
+    issues.push({
+      level: 'warning',
+      message: 'Не отмечен основной порт — все порты посчитаны платными. Для новой колонии отметьте порт, который строится с колониального корабля (он не тратит очки системы); если система уже колонизирована, снимите пометку с портов',
+    });
+  }
+
+  const primaryInstallation = primarySite ? getInstallation(primarySite.installationId) : null;
+  const primaryPort: PlanEvaluation['primaryPort'] = primarySite && primaryInstallation
+    ? {
+      siteId: primarySite.id,
+      installationId: primarySite.installationId,
+      bodyName: primarySite.bodyName,
+      tons: siteCargo(primarySite)?.haulTons ?? primaryInstallation.haulTons,
+      approximate: primaryInstallation.primary?.approximate === true,
+      economy: primaryInstallation.influence,
+    }
+    : null;
 
   return {
     order,
@@ -555,6 +679,7 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     tierSpent,
     tierGiven,
     portCosts,
+    primaryPort,
     cargo,
     haulTons,
     score,
@@ -607,13 +732,40 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
       continue;
     }
     const status = str(site.status);
+    const primary = site.primary === true;
+    if (primary && !canBePrimary(installationId)) {
+      warnings.push(`Пометка «основной порт» снята с постройки «${getInstallation(installationId)?.nameRu ?? installationId}»: основным портом бывает только порт`);
+    }
     sites.push({
       id: str(site.id) || nextSiteId(),
       bodyName,
       installationId,
       status: SITE_STATUSES.includes(status as PlannedSiteStatus) ? (status as PlannedSiteStatus) : 'plan',
+      primary: primary && canBePrimary(installationId) ? true : undefined,
       note: str(site.note) ? str(site.note).slice(0, 300) : undefined,
     });
+  }
+
+  // Основной порт в плане один: лишние пометки снимаем, честно предупреждая.
+  const primaryIndex = sites.findIndex((site) => site.primary);
+  if (primaryIndex >= 0) {
+    for (let index = primaryIndex + 1; index < sites.length; index += 1) {
+      if (sites[index].primary) {
+        warnings.push(`Основным портом остаётся только «${getInstallation(sites[primaryIndex].installationId)?.nameRu}» — пометка с «${getInstallation(sites[index].installationId)?.nameRu}» снята`);
+        sites[index] = { ...sites[index], primary: undefined };
+      }
+    }
+  }
+
+  // Старый формат (v1) не знал явной пометки: первый звёздный порт в нём всегда
+  // считался бесплатным, поэтому миграция отмечает его основным — расчёт старого
+  // плана сохраняет смысл.
+  if (version > 0 && version < 2 && !sites.some((site) => site.primary)) {
+    const firstPort = sites.find((site) => getInstallation(site.installationId)?.buildClass === 'starport');
+    if (firstPort) {
+      firstPort.primary = true;
+      warnings.push('План сохранён в старом формате: первый звёздный порт отмечен основным, тоннаж пересчитан по списку материалов основного порта');
+    }
   }
 
   const system = str(record.system ?? record.systemName) || 'Неизвестная система';
@@ -656,18 +808,22 @@ export function planToStructures(plan: ArchitectPlan): {
   return plan.sites.flatMap((site) => {
     const installation = getInstallation(site.installationId);
     if (!installation) return [];
+    const effectiveCargo = siteCargo(site);
+    const requiredTons = effectiveCargo ? effectiveCargo.haulTons : installation.haulTons;
+    const cargoMap = effectiveCargo ? effectiveCargo.cargo : installation.cargo;
     const complete = site.status === 'complete';
+    const baseName = site.note ? `${installation.nameRu} — ${site.note}` : installation.nameRu;
     return [{
       id: site.id,
-      name: site.note ? `${installation.nameRu} — ${site.note}` : installation.nameRu,
+      name: effectiveCargo?.isPrimaryPort ? `★ ${baseName}` : baseName,
       type: installation.nameEn,
       bodyName: site.bodyName,
       progress: complete ? 100 : site.status === 'building' ? 50 : 0,
       complete,
-      requiredTons: installation.haulTons,
-      providedTons: complete ? installation.haulTons : 0,
+      requiredTons,
+      providedTons: complete ? requiredTons : 0,
       surface: installation.location === 'surface',
-      resources: Object.entries(installation.cargo)
+      resources: Object.entries(cargoMap)
         .sort((left, right) => right[1] - left[1])
         .map(([key, tons]) => ({ name: commodityLabel(key), required: tons, provided: complete ? tons : 0 })),
     }];
@@ -695,12 +851,18 @@ export function summarizePlan(plan: ArchitectPlan, evaluation: PlanEvaluation): 
   lines.push(`Построек: ${plan.sites.length}, тоннаж: ${formatTons(evaluation.haulTons)}, оценка системы: ${evaluation.score}`);
   lines.push(`Очки системы: T2 ${evaluation.tierPoints.tier2 >= 0 ? '+' : ''}${evaluation.tierPoints.tier2}, T3 ${evaluation.tierPoints.tier3 >= 0 ? '+' : ''}${evaluation.tierPoints.tier3}`);
 
+  if (evaluation.primaryPort) {
+    const installation = getInstallation(evaluation.primaryPort.installationId);
+    lines.push(`Основной порт: ${installation?.nameRu ?? evaluation.primaryPort.installationId} — ${evaluation.primaryPort.bodyName} (${formatTons(evaluation.primaryPort.tons)})`);
+  }
+
   const orderLines = evaluation.order
     .map((siteId, index) => {
       const site = sitesById.get(siteId);
       const installation = site ? getInstallation(site.installationId) : null;
       if (!site || !installation) return null;
-      return `${index + 1}. ${installation.nameRu} — ${site.bodyName} (${formatTons(installation.haulTons)})`;
+      const tons = siteCargo(site)?.haulTons ?? installation.haulTons;
+      return `${index + 1}. ${site.primary ? '★ ' : ''}${installation.nameRu} — ${site.bodyName} (${formatTons(tons)})`;
     })
     .filter((line): line is string => Boolean(line));
   if (orderLines.length) {

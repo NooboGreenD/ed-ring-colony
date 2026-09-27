@@ -204,7 +204,7 @@ maybe('список планов: автор видит свои приватн�
       visibility: 'private',
       catalogue_version: 3,
       site_count: 2,
-      haul_tons: 56_562,
+      haul_tons: 71_664,
       score: 9,
       tier2_points: 1,
       tier3_points: 1,
@@ -215,7 +215,7 @@ maybe('список планов: автор видит свои приватн�
     const query = mod.db.queries.find((item) => item.table === 'system_plans');
     assert.equal(query.orFilter, 'visibility.eq.public,author_id.eq.author-id');
     assert.equal(response.body.count, 1);
-    assert.equal(response.body.plans[0].haulTons, 56_562);
+    assert.equal(response.body.plans[0].haulTons, 71_664);
     assert.equal(response.body.plans[0].own, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -248,7 +248,7 @@ maybe('сохранение плана: без входа 401, битый пла
       author_name: 'CMDR Tester',
       visibility: 'public',
       site_count: 2,
-      haul_tons: 56_562,
+      haul_tons: 71_664,
       score: 9,
       tier2_points: 1,
       tier3_points: 1,
@@ -271,7 +271,7 @@ maybe('сохранение плана: без входа 401, битый пла
     assert.equal(inserted.visibility, 'public');
     assert.equal(inserted.title, 'Первая очередь');
     assert.equal(inserted.score, 9, 'оценка посчитана движком, а не взята из тела запроса');
-    assert.equal(inserted.haul_tons, 56_562);
+    assert.equal(inserted.haul_tons, 71_664);
     assert.equal(inserted.site_count, 2);
     assert.equal(typeof inserted.published_at, 'string');
     assert.equal(inserted.plan.sites.length, 2);
@@ -320,7 +320,7 @@ maybe('план по ссылке: чужой приватный план выг
       plan: samplePlan(),
       catalogue_version: 3,
       site_count: 2,
-      haul_tons: 56_562,
+      haul_tons: 71_664,
       score: 9,
       tier2_points: 1,
       tier3_points: 1,
@@ -367,7 +367,7 @@ maybe('обновление плана: чужой план менять нел�
     assert.equal(patch.visibility, 'unlisted');
     assert.equal(patch.title, 'Черновик');
     assert.equal(patch.published_at, '2026-09-25T08:00:00.000Z', 'дата первой публикации сохраняется');
-    assert.equal(patch.haul_tons, 56_562, 'сводка пересчитана по сохранённому плану');
+    assert.equal(patch.haul_tons, 71_664, 'сводка пересчитана по сохранённому плану');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

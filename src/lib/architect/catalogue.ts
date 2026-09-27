@@ -20,11 +20,12 @@ import type {
   ArchitectInstallation,
   ArchitectPadSize,
   ArchitectPreReq,
+  PrimaryPortCargo,
   SystemEconomy,
 } from './types.ts';
 
 /** Версия набора данных: bump при изменении стоимостей или правил. */
-export const CATALOGUE_VERSION = 3;
+export const CATALOGUE_VERSION = 4;
 
 /** Русские названия товаров (как в русской локализации игры). */
 export const COMMODITY_LABELS_RU: Record<string, string> = {
@@ -160,7 +161,7 @@ export const SYSTEM_UNLOCKS: { id: string; label: string; buildTypes: string[] }
 ];
 
 /** Все постройки каталога. Порядок — орбитальные порты, аванпосты, установки, наземные, поселения, хабы. */
-export const INSTALLATIONS: ArchitectInstallation[] = [
+const CATALOGUE_ENTRIES: ArchitectInstallation[] = [
   {
     id: 'no_truss',
     nameRu: 'Кориолис (звёздный порт)',
@@ -2285,3 +2286,152 @@ export const INSTALLATIONS: ArchitectInstallation[] = [
     },
   },
 ];
+
+/**
+ * Материалы основного порта системы.
+ *
+ * Основной порт — первый порт колонии: он строится с колониального корабля,
+ * не тратит очки системы, но требует больше материалов, чем тот же порт
+ * в уже колонизированной системе (аванпосты ≈ +18 %, Кориолис ≈ +28 %,
+ * порты T3 ≈ +16 %). Игра «плавает» количества на ±5 % и пересчитывает их
+ * при каждой новой заявке, поэтому списки — ориентир для планирования
+ * перевозок, а не точный счёт; оценочные списки помечены `approximate`.
+ *
+ * Источники: сканы стройплощадок, опубликованные сообществом
+ * (ED Wiki: Coriolis / Orbis / Outpost; обсуждения Frontier и Steam).
+ * Точные списки сняты с реальных основных портов; для остальных классов
+ * (аванпосты, Додекаэдр, планетарный порт) обычный список умножен на
+ * коэффициент подорожания и округлён до 5 т.
+ */
+const CORIOLIS_PRIMARY_CARGO: Record<string, number> = {
+  aluminium: 12550,
+  ceramiccomposites: 1300,
+  cmmcomposite: 14200,
+  computercomponents: 200,
+  copper: 730,
+  foodcartridges: 230,
+  fruitandvegetables: 140,
+  insulatingmembrane: 800,
+  liquidoxygen: 5000,
+  medicaldiagnosticequipment: 25,
+  nonlethalweapons: 25,
+  polymers: 1100,
+  powergenerators: 60,
+  semiconductors: 210,
+  steel: 18200,
+  superconductors: 350,
+  titanium: 11500,
+  water: 2100,
+  waterpurifiers: 105,
+};
+
+const ORBIS_PRIMARY_CARGO: Record<string, number> = {
+  aluminium: 44962,
+  ceramiccomposites: 4964,
+  cmmcomposite: 51993,
+  computercomponents: 397,
+  copper: 2785,
+  foodcartridges: 489,
+  fruitandvegetables: 295,
+  insulatingmembrane: 1630,
+  liquidoxygen: 16696,
+  medicaldiagnosticequipment: 49,
+  nonlethalweapons: 49,
+  polymers: 2324,
+  powergenerators: 136,
+  semiconductors: 429,
+  steel: 67426,
+  superconductors: 676,
+  titanium: 38828,
+  water: 7618,
+  waterpurifiers: 214,
+};
+
+/** Обычный список постройки × коэффициент подорожания, округление до 5 т. */
+function scaledPrimaryCargo(base: Record<string, number>, factor: number): Record<string, number> {
+  const cargo: Record<string, number> = {};
+  for (const [key, tons] of Object.entries(base)) {
+    cargo[key] = Math.round((tons * factor) / 5) * 5;
+  }
+  return cargo;
+}
+
+function rawCargo(id: string): Record<string, number> {
+  const entry = CATALOGUE_ENTRIES.find((installation) => installation.id === id);
+  return entry ? entry.cargo : {};
+}
+
+const OUTPOST_PRIMARY_FACTOR = 1.18;
+const T3_PRIMARY_FACTOR = 1.157;
+
+const PRIMARY_PORT_DATA: Record<string, PrimaryPortCargo> = {
+  no_truss: {
+    cargo: CORIOLIS_PRIMARY_CARGO,
+    note: 'Скан основного порта (ED Wiki): ≈69 000 т против 53 723 т у обычного Кориолиса',
+  },
+  asteroid: {
+    cargo: CORIOLIS_PRIMARY_CARGO,
+    note: 'База стоит как Кориолис, поэтому основной порт взят по списку Кориолиса (≈69 000 т)',
+  },
+  apollo: {
+    cargo: ORBIS_PRIMARY_CARGO,
+    note: 'Скан основного порта (ED Wiki): ≈242 000 т против 209 122 т у обычного Орбиса',
+  },
+  ocellus: {
+    cargo: ORBIS_PRIMARY_CARGO,
+    note: 'Оцеллус стоит как Орбис, поэтому основной порт взят по списку Орбиса (≈242 000 т)',
+  },
+  dodec: {
+    cargo: scaledPrimaryCargo(rawCargo('dodec'), T3_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного Додекаэдра нет`,
+  },
+  zeus: {
+    cargo: scaledPrimaryCargo(rawCargo('zeus'), T3_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${T3_PRIMARY_FACTOR} — точного скана основного планетарного порта нет`,
+  },
+  plutus: {
+    cargo: scaledPrimaryCargo(rawCargo('plutus'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+  },
+  vulcan: {
+    cargo: scaledPrimaryCargo(rawCargo('vulcan'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+  },
+  dysnomia: {
+    cargo: scaledPrimaryCargo(rawCargo('dysnomia'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+  },
+  vesta: {
+    cargo: scaledPrimaryCargo(rawCargo('vesta'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+  },
+  prometheus: {
+    cargo: scaledPrimaryCargo(rawCargo('prometheus'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — основной аванпост дороже примерно на 18 %`,
+  },
+  nemesis: {
+    cargo: scaledPrimaryCargo(rawCargo('nemesis'), OUTPOST_PRIMARY_FACTOR),
+    approximate: true,
+    note: `Оценка: обычный список ×${OUTPOST_PRIMARY_FACTOR} — военный аванпост везёт другой набор грузов`,
+  },
+};
+
+/**
+ * Каталог с прикреплёнными списками материалов основного порта.
+ *
+ * Поле `primary` есть только у портов (аванпосты и звёздные порты) —
+ * по нему планировщик понимает, что постройка может быть основным портом.
+ */
+export const INSTALLATIONS: ArchitectInstallation[] = CATALOGUE_ENTRIES.map((installation) => {
+  const primary = PRIMARY_PORT_DATA[installation.id];
+  return primary
+    ? { ...installation, primary: { ...primary, approximate: primary.approximate === true } }
+    : installation;
+});

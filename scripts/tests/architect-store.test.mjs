@@ -21,7 +21,8 @@ const OTHER = '11111111-2222-3333-4444-555555555555';
 
 function samplePlan() {
   let plan = createPlan('HIP 90297', 'CMDR Tester');
-  plan = addSite(plan, 'HIP 90297 A', 'no_truss');
+  // Основной порт отмечен явно: только он не тратит очки системы.
+  plan = addSite(plan, 'HIP 90297 A', 'no_truss', { primary: true });
   plan = addSite(plan, 'HIP 90297 A 1', 'consus');
   return plan;
 }
@@ -38,7 +39,7 @@ function storedRow(overrides = {}) {
     format_version: PLAN_FORMAT_VERSION,
     catalogue_version: CATALOGUE_VERSION,
     site_count: 2,
-    haul_tons: 56_562,
+    haul_tons: 71_664,
     score: 9,
     tier2_points: 1,
     tier3_points: 1,
@@ -54,9 +55,10 @@ function storedRow(overrides = {}) {
 test('сводные числа считает движок, а не доверие клиенту', () => {
   const metrics = planMetrics(samplePlan());
   assert.equal(metrics.siteCount, 2);
-  assert.equal(metrics.haulTons, 53_723 + 2_839);
+  // Основной порт везёт «основной» список материалов: 68 825 т вместо 53 723 т.
+  assert.equal(metrics.haulTons, 68_825 + 2_839);
   assert.equal(metrics.score, 8 + 1);
-  assert.equal(metrics.tier2Points, 1, 'аванпост T1 дал очко T2, порт T2 его потратил');
+  assert.equal(metrics.tier2Points, 1, 'аванпост T1 дал очко T2, основной порт его не потратил');
   assert.equal(metrics.tier3Points, 1, 'порт T2 дал очко T3');
   assert.ok(metrics.cargoItems > 10);
 });
@@ -70,7 +72,7 @@ test('вставка на сервер: приватный план без да�
   assert.equal(privateInsert.published_at, null);
   assert.equal(privateInsert.catalogue_version, CATALOGUE_VERSION);
   assert.equal(privateInsert.format_version, PLAN_FORMAT_VERSION);
-  assert.equal(privateInsert.haul_tons, 56_562);
+  assert.equal(privateInsert.haul_tons, 71_664);
   assert.deepEqual(Object.keys(privateInsert.plan).sort(), Object.keys(plan).sort());
 
   const publicInsert = buildPlanInsert(plan, { authorId: AUTHOR, visibility: 'public', title: 'Кольцо' });
@@ -108,7 +110,7 @@ test('строка таблицы превращается в представл
   assert.equal(view.title, 'Первая очередь');
   assert.equal(view.authorName, 'CMDR Tester');
   assert.equal(view.visibility, 'public');
-  assert.equal(view.haulTons, 56_562);
+  assert.equal(view.haulTons, 71_664);
   assert.deepEqual(view.tierPoints, { tier2: 1, tier3: 1 });
   assert.equal(view.stale, false);
   assert.equal(view.own, true, 'автор видит свой план как собственный');

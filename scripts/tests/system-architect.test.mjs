@@ -13,6 +13,7 @@ import {
   SURFACE_MAX_TEMP_K,
   SURFACE_SLOT_LIMIT,
   addSite,
+  canBePrimary,
   cargoList,
   commodityLabel,
   computeBuildOrder,
@@ -30,9 +31,11 @@ import {
   predictSurfaceSlots,
   removeSite,
   serializePlan,
+  setSitePrimary,
   setSiteStatus,
   summarizePlan,
   surfaceSlotReason,
+  updateSite,
 } from '../../src/lib/architect/planner.ts';
 
 /** Строка `system_scans` такой, какой её отдаёт /api/atlas/system-bodies. */
@@ -202,7 +205,7 @@ test('порядок стройки: первым идёт порт, предш�
   const planet = bodies[1];
   let plan = createPlan('Test');
   plan = addSite(plan, planet.name, 'vacuna');      // зависит от военного поселения
-  plan = addSite(plan, 'Test A', 'no_truss');      // порт
+  plan = addSite(plan, 'Test A', 'no_truss', { primary: true }); // основной порт
   plan = addSite(plan, planet.name, 'ioke');       // предшественник
 
   const order = computeBuildOrder(plan);
@@ -221,7 +224,7 @@ test('очки системы: первый порт бесплатный, ав�
   ], 'Test');
 
   let plan = createPlan('Test', 'CMDR Tester');
-  plan = addSite(plan, 'Test A', 'no_truss');   // порт: бесплатно, даёт 1 очко T3
+  plan = addSite(plan, 'Test A', 'no_truss', { primary: true });   // основной порт: бесплатно, даёт 1 очко T3
   plan = addSite(plan, 'Test A 1', 'vesta');    // аванпост T1: даёт 1 очко T2
   plan = addSite(plan, 'Test A 2', 'plutus');   // аванпост T1: даёт 1 очко T2
 
@@ -261,7 +264,7 @@ test('четыре порта: первый бесплатный, два сле�
     plan = addSite(plan, `Test A ${index}`, 'plutus');
   }
   for (let index = 13; index <= 16; index += 1) {
-    plan = addSite(plan, `Test A ${index}`, 'no_truss');
+    plan = addSite(plan, `Test A ${index}`, 'no_truss', index === 13 ? { primary: true } : {});
   }
 
   const evaluation = evaluatePlan(plan, bodies);
@@ -280,7 +283,7 @@ test('нехватка очков — ошибка плана с указани�
   ], 'Test');
 
   let plan = createPlan('Test');
-  plan = addSite(plan, 'Test A', 'no_truss');
+  plan = addSite(plan, 'Test A', 'no_truss', { primary: true });
   plan = addSite(plan, 'Test A 1', 'no_truss');
 
   const evaluation = evaluatePlan(plan, bodies);
@@ -429,4 +432,168 @@ test(' unlocks системы описаны и ссылаются на суще
       assert.ok(getInstallation(buildType), `${unlock.id}: неизвестная постройка ${buildType}`);
     }
   }
+});
+
+test('основным портом бывают только порты, и у каждого есть список материалов', () => {
+  const ports = INSTALLATIONS.filter((installation) => canBePrimary(installation.id));
+  assert.equal(ports.length, 12, '6 аванпостов и 6 звёздных портов');
+  for (const installation of ports) {
+    assert.ok(installation.buildClass === 'starport' || installation.buildClass === 'outpost', `${installation.id} — порт`);
+    const primary = installation.primary;
+    assert.ok(primary, `${installation.id}: есть список материалов основного порта`);
+    assert.ok(primary.note, `${installation.id}: список снабжён источником`);
+    const tons = Object.values(primary.cargo).reduce((sum, value) => sum + value, 0);
+    assert.ok(tons > installation.haulTons, `${installation.id}: основной порт дороже обычного (${tons} > ${installation.haulTons})`);
+  }
+  for (const installation of INSTALLATIONS.filter((entry) => !canBePrimary(entry.id))) {
+    assert.equal(installation.primary, undefined, `${installation.id}: не порт — списка основного порта нет`);
+  }
+});
+
+test('основной порт: один на план, пометка переезжает, грузов больше', () => {
+  const bodies = fromScanRecords([
+    scanRow({ body_name: 'Test A', body_type: 'Star', is_landable: false }),
+    scanRow({ body_name: 'Test A 1', is_landable: false }),
+  ], 'Test');
+
+  let plan = createPlan('Test');
+  plan = addSite(plan, 'Test A', 'no_truss', { primary: true });
+  plan = addSite(plan, 'Test A 1', 'vesta', { primary: true });
+  // Основным стал аванпост — пометка переехала с Кориолиса на него.
+  assert.equal(plan.sites[0].primary, undefined);
+  assert.equal(plan.sites[1].primary, true);
+
+  const coriolis = getInstallation('no_truss');
+  const evaluation = evaluatePlan(plan, bodies);
+  assert.equal(evaluation.primaryPort.siteId, plan.sites[1].id);
+  assert.equal(evaluation.primaryPort.installationId, 'vesta');
+  // 21 795 т основного аванпоста + 53 723 т обычного Кориолиса.
+  assert.equal(evaluation.haulTons, 21_795 + coriolis.haulTons);
+  assert.equal(evaluation.primaryPort.approximate, true, 'список аванпоста оценочный');
+  // Основной порт бесплатный даже когда это аванпост, а Кориолис платит очки.
+  assert.deepEqual(evaluation.portCosts.map((port) => port.cost), [3]);
+
+  // Пометку можно снять: все порты становятся платными, появляется предупреждение.
+  plan = setSitePrimary(plan, plan.sites[1].id, false);
+  const unmarked = evaluatePlan(plan, bodies);
+  assert.equal(unmarked.primaryPort, null);
+  assert.deepEqual(unmarked.portCosts.map((port) => port.cost), [3]);
+  assert.ok(unmarked.issues.some((issue) => issue.level === 'warning' && /Не отмечен основной порт/.test(issue.message)));
+
+  // Не порт пометить нельзя — план не меняется.
+  const before = plan;
+  plan = addSite(plan, 'Test A 1', 'consus');
+  const withSettlement = setSitePrimary(plan, plan.sites[2].id, true);
+  assert.equal(withSettlement.sites[2].primary, undefined);
+  assert.equal(withSettlement, plan, 'пометка не-порта не меняет план');
+  assert.equal(before.sites.length, 2);
+});
+
+test('редактирование записи: тип, тело, статус, заметка и основной порт', () => {
+  const bodies = fromScanRecords([
+    scanRow({ body_name: 'Test A', body_type: 'Star', is_landable: false }),
+    scanRow({ body_name: 'Test A 1', is_landable: false }),
+    scanRow({ body_name: 'Test A 2', body_id: 3 }),
+  ], 'Test');
+
+  let plan = createPlan('Test');
+  plan = addSite(plan, 'Test A 1', 'consus', { note: 'первая очередь' });
+  const siteId = plan.sites[0].id;
+
+  plan = updateSite(plan, siteId, { installationId: 'ioke', note: 'военное поселение' });
+  assert.equal(plan.sites[0].installationId, 'ioke');
+  assert.equal(plan.sites[0].note, 'военное поселение');
+
+  plan = updateSite(plan, siteId, { bodyName: 'Test A 2', status: 'building' });
+  assert.equal(plan.sites[0].bodyName, 'Test A 2');
+  assert.equal(plan.sites[0].status, 'building');
+
+  // Смена типа на порт + пометка основного: у не-порта пометка невозможна.
+  plan = updateSite(plan, siteId, { installationId: 'plutus', primary: true });
+  assert.equal(plan.sites[0].installationId, 'plutus');
+  assert.equal(plan.sites[0].primary, true);
+  plan = updateSite(plan, siteId, { installationId: 'consus' });
+  assert.equal(plan.sites[0].primary, undefined, 'смена типа на поселение снимает пометку основного порта');
+
+  // Неизвестная постройка и пустое тело игнорируются, мусор не появляется.
+  plan = updateSite(plan, siteId, { installationId: 'нет_такой', bodyName: '   ' });
+  assert.equal(plan.sites[0].installationId, 'consus');
+  assert.equal(plan.sites[0].bodyName, 'Test A 2');
+
+  // Пометка основного переезжает и через правку: второй порт забирает её себе.
+  plan = addSite(plan, 'Test A', 'no_truss');
+  plan = updateSite(plan, plan.sites[1].id, { primary: true });
+  assert.equal(plan.sites[0].primary, undefined);
+  assert.equal(plan.sites[1].primary, true);
+  assert.ok(evaluatePlan(plan, bodies).primaryPort);
+});
+
+test('основной порт меняет грузы: Кориолис везёт ~69 000 т, а не 53 723 т', () => {
+  const bodies = fromScanRecords([
+    scanRow({ body_name: 'Test A', body_type: 'Star', is_landable: false }),
+    scanRow({ body_name: 'Test A 1', is_landable: false }),
+  ], 'Test');
+
+  let plan = createPlan('Test');
+  plan = addSite(plan, 'Test A', 'no_truss', { primary: true });
+  const primaryEvaluation = evaluatePlan(plan, bodies);
+  assert.equal(primaryEvaluation.haulTons, 68_825);
+  assert.equal(primaryEvaluation.primaryPort.tons, 68_825);
+  assert.equal(primaryEvaluation.primaryPort.approximate, false, 'Кориолис — точный скан');
+  assert.equal(primaryEvaluation.cargo.steel, 18_200);
+  assert.equal(primaryEvaluation.issues.filter((issue) => issue.level === 'error').length, 0);
+
+  plan = setSitePrimary(plan, plan.sites[0].id, false);
+  const regularEvaluation = evaluatePlan(plan, bodies);
+  assert.equal(regularEvaluation.haulTons, getInstallation('no_truss').haulTons);
+
+  // Орбис и Оцеллус делят один список основного порта, Додекаэдр — оценочный.
+  assert.equal(Object.values(getInstallation('apollo').primary.cargo).reduce((a, b) => a + b, 0), 241_960);
+  assert.equal(getInstallation('ocellus').primary.approximate, false);
+  assert.equal(getInstallation('dodec').primary.approximate, true);
+  assert.equal(Object.values(getInstallation('dodec').primary.cargo).reduce((a, b) => a + b, 0), 273_410);
+
+  // В оверрей основной порт уходит «основным» списком и со звездой.
+  const structures = planToStructures(addSite(createPlan('Test'), 'Test A', 'no_truss', { primary: true }));
+  assert.match(structures[0].name, /^★ /);
+  assert.equal(structures[0].requiredTons, 68_825);
+});
+
+test('импорт: пометка основного порта читается, чистится и мигрирует из v1', () => {
+  const current = parsePlan({
+    version: PLAN_FORMAT_VERSION,
+    system: 'Test',
+    sites: [
+      { bodyName: 'Test A', installationId: 'no_truss', primary: true },
+      { bodyName: 'Test A 1', installationId: 'vesta', primary: true },
+      { bodyName: 'Test A 2', installationId: 'consus', primary: true },
+    ],
+  });
+  assert.equal(current.plan.sites[0].primary, true, 'первая пометка остаётся');
+  assert.equal(current.plan.sites[1].primary, undefined, 'вторая снята');
+  assert.equal(current.plan.sites[2].primary, undefined, 'пометка с не-порта снята');
+  assert.match(current.warning, /основным портом остаётся/i);
+  assert.match(current.warning, /снята/i);
+
+  // v1 не знал пометки: первый звёздный порт становится основным автоматически.
+  const legacy = parsePlan({
+    version: 1,
+    system: 'Test',
+    sites: [
+      { bodyName: 'Test A 1', installationId: 'consus' },
+      { bodyName: 'Test A', installationId: 'no_truss' },
+    ],
+  });
+  assert.equal(legacy.plan.sites[0].primary, undefined);
+  assert.equal(legacy.plan.sites[1].primary, true);
+  assert.match(legacy.warning, /первый звёздный порт отмечен основным/i);
+
+  // Кругосветка сохраняет пометку без предупреждений.
+  const round = parsePlan(serializePlan(parsePlan({
+    version: PLAN_FORMAT_VERSION,
+    system: 'Test',
+    sites: [{ bodyName: 'Test A', installationId: 'apollo', primary: true }],
+  }).plan));
+  assert.equal(round.warning, undefined);
+  assert.equal(round.plan.sites[0].primary, true);
 });
