@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1035,6 +1035,319 @@ test('env apply: job runs deploy/apply-env.sh in the same slot (kind=env)', { sk
   assert.equal(done.percent, 100);
   assert.equal(done.stage, 'done');
   assert.match(done.message, /recreating/, 'stages from the script make it into the protocol');
+});
+
+/* ── Настройки почты: SMTP стека Supabase (Админка → Авторизация) ─── */
+
+test('smtp keys: маски, allowlist, запись в .env стека Supabase', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-update-smtp-'));
+  const supaDir = join(dir, 'supabase');
+  mkdirSync(supaDir, { recursive: true });
+  writeFileSync(join(supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test',
+    'SMTP_PASS=existing-mail-secret',
+    'DISABLE_SIGNUP=true',
+    'POSTGRES_PASSWORD=postgres-secret-must-stay',
+  ].join('\n'));
+  writeFileSync(join(supaDir, 'docker-compose.override.yml'),
+    'services:\n  auth:\n    environment:\n      GOTRUE_SMTP_HOST: ${SMTP_HOST}\n');
+  const config = testConfig({
+    PROJECT_DIR: dir,
+    UPDATE_STATE_DIR: join(dir, 'state'),
+    SUPABASE_HOST_DIR: supaDir,
+    APPLY_SMTP_SCRIPT: join(dir, 'deploy', 'apply-smtp.sh'),
+  });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => { manager.stop(); await new Promise((resolve) => server.close(resolve)); });
+
+  assert.equal((await fetch(origin + '/smtp')).status, 401, 'без токеля — 401');
+
+  const listed = await (await fetch(origin + '/smtp', { headers: auth })).json();
+  assert.equal(listed.ok, true);
+  assert.equal(listed.available, true, '.env стека существует и доступен на запись');
+  assert.equal(listed.override.passesSmtp, true, 'override передаёт SMTP в auth');
+  // Не секретные значения админ видит целиком; пароль — только маской.
+  const host = listed.keys.find((k) => k.name === 'SMTP_HOST');
+  assert.equal(host.value, 'smtp.example.test');
+  const pass = listed.keys.find((k) => k.name === 'SMTP_PASS');
+  assert.equal(pass.value, undefined, 'пароль SMTP наружу не уезжает');
+  assert.equal(JSON.stringify(listed).includes('existing-mail-secret'), false, 'сырое значение не утекает');
+  assert.equal(JSON.stringify(listed).includes('postgres-secret-must-stay'), false, 'чужие ключи стека не показываются');
+
+  // Allowlist: переписать произвольную конфигурацию стека через /smtp нельзя.
+  const hostile = await fetch(origin + '/smtp', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'POSTGRES_PASSWORD', value: 'pwn' }) });
+  assert.equal(hostile.status, 400, 'ключ вне allowlist настроек почты');
+
+  const updated = await fetch(origin + '/smtp', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'SMTP_HOST', value: 'smtp.new.test' }) });
+  assert.equal(updated.status, 200);
+  const created = await fetch(origin + '/smtp', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'SMTP_SENDER_NAME', value: 'ED Ring Colony' }) });
+  assert.equal(created.status, 201);
+
+  const disk = readFileSync(join(supaDir, '.env'), 'utf8');
+  assert.match(disk, /^SMTP_HOST=smtp\.new\.test$/m);
+  assert.match(disk, /^POSTGRES_PASSWORD=postgres-secret-must-stay$/m, 'прочая конфигурация стека не трогается');
+
+  const removed = await fetch(origin + '/smtp?key=SMTP_SENDER_NAME', { method: 'DELETE', headers: auth });
+  assert.equal(removed.status, 200);
+  assert.equal(readFileSync(join(supaDir, '.env'), 'utf8').includes('SMTP_SENDER_NAME'), false);
+});
+
+test('smtp keys: агент без доступа к стеку честно отказывает, а не пишет в пустоту', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-update-smtp-missing-'));
+  const config = testConfig({
+    PROJECT_DIR: dir,
+    UPDATE_STATE_DIR: join(dir, 'state'),
+    SUPABASE_HOST_DIR: join(dir, 'no-such-stack'),
+    APPLY_SMTP_SCRIPT: join(dir, 'deploy', 'apply-smtp.sh'),
+  });
+  const server = createUpdateServer({ config, manager: createUpdateManager(config) });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const listed = await (await fetch(origin + '/smtp', { headers: auth })).json();
+  assert.equal(listed.available, false, 'панель предупреждает об отсутствии доступа');
+
+  const save = await fetch(origin + '/smtp', { method: 'POST', headers: auth, body: JSON.stringify({ key: 'SMTP_HOST', value: 'smtp.example.test' }) });
+  assert.equal(save.status, 503, 'файла .env стека нет — запись обязана отказать');
+  assert.equal(existsSync(join(dir, 'no-such-stack', '.env')), false, 'агент не создаёт .env стека сам');
+});
+
+test('smtp apply: job пересоздаёт auth и web в общем слоте (kind=smtp)', { skip: needsBash }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-update-smtpapply-'));
+  const scriptPath = join(dir, 'deploy', 'apply-smtp.sh');
+  mkdirSync(dirname(scriptPath), { recursive: true });
+  const healthUrlFile = join(dir, 'auth-health-url.txt');
+  const proto = (obj) => UPDATE_PROTOCOL + JSON.stringify(obj);
+  writeFileSync(scriptPath, [
+    '#!/usr/bin/env bash',
+    `echo '${proto({ stage: 'smtp_prepare', percent: 5 })}'`,
+    `echo '${proto({ stage: 'smtp_switch', percent: 35, message: 'recreating auth' })}'`,
+    `printf '%s' "$AUTH_HEALTH_URL" > "${healthUrlFile}"`,
+    `echo '${proto({ stage: 'done', percent: 100 })}'`,
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const config = testConfig({
+    PROJECT_DIR: dir,
+    UPDATE_STATE_DIR: join(dir, 'state'),
+    APPLY_SMTP_SCRIPT: scriptPath,
+  });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
+  const port = await listen(server);
+  const origin = 'http://127.0.0.1:' + port;
+  const auth = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  t.after(async () => { manager.stop(); await new Promise((resolve) => server.close(resolve)); });
+
+  const started = await fetch(origin + '/smtp/apply', {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ authHealthUrl: 'https://supabase.example.test/auth/v1/health' }),
+  });
+  assert.equal(started.status, 202);
+  const body = await started.json();
+  assert.equal(body.update.kind, 'smtp', 'панель по kind выбирает стадии SMTP_STAGES');
+  assert.equal(body.update.mode, 'smtp');
+  // Тот же процессный слот: параллельная задача невозможна.
+  assert.equal((await fetch(origin + '/smtp/apply', { method: 'POST', headers: auth, body: '{}' })).status, 409);
+
+  assert.equal(await waitFor(() => !manager.isBusy()), true);
+  const done = manager.status();
+  assert.equal(done.state, 'succeeded');
+  assert.equal(done.kind, 'smtp');
+  assert.equal(done.stage, 'done');
+  assert.equal(done.percent, 100);
+  // Адрес проверки auth панель передала агенту — тот отдал его скрипту.
+  assert.equal(readFileSync(healthUrlFile, 'utf8'), 'https://supabase.example.test/auth/v1/health');
+});
+
+test('apply-smtp.sh: override из шаблона, пересоздание auth и web, проверка живости', { skip: needsBash }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-apply-smtp-'));
+  const supaDir = join(dir, 'supabase');
+  const projectDir = join(dir, 'src');
+  const binDir = join(dir, 'bin');
+  const log = join(dir, 'calls.log');
+  mkdirSync(supaDir, { recursive: true });
+  mkdirSync(join(projectDir, 'deploy', 'selfhost'), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(log, '');
+  writeFileSync(join(supaDir, 'docker-compose.yml'), 'services:\n  auth:\n    image: supabase/gotrue\n');
+  writeFileSync(join(supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test',
+    'SMTP_PORT=587',
+    'SMTP_PASS=mail-secret',
+    'DISABLE_SIGNUP=false',
+    'API_EXTERNAL_URL=https://supabase.example.test',
+  ].join('\n'));
+  copyFileSync(join(ROOT, 'deploy', 'apply-smtp.sh'), join(projectDir, 'deploy', 'apply-smtp.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'selfhost', 'supabase-auth.override.yml'), join(projectDir, 'deploy', 'selfhost', 'supabase-auth.override.yml'));
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(projectDir, 'deploy', 'compose-lib.sh'));
+  writeFileSync(join(projectDir, 'docker-compose.yml'), 'services:\n  web:\n    image: web\n');
+  writeFileSync(join(projectDir, '.env.production'), 'PROJECT_REPOSITORY=test\n');
+
+  writeFileSync(join(binDir, 'docker'), [
+    '#!/usr/bin/env bash',
+    'echo "[docker] $*" >> "$STUB_LOG"',
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  writeFileSync(join(binDir, 'curl'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+
+  const run = spawnSync('bash', [join(projectDir, 'deploy', 'apply-smtp.sh')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: binDir + ':/usr/bin:/bin',
+      STUB_LOG: log,
+      SUPABASE_HOST_DIR: supaDir,
+      PROJECT_DIR: projectDir,
+      ENV_FILE: join(projectDir, '.env.production'),
+      AUTH_HEALTH_URL: 'https://supabase.example.test/auth/v1/health',
+      UPDATE_HEALTH_URL: 'http://127.0.0.1:9/api/health',
+      PROJECT_DEPLOY_MODE: 'compose',
+      HEALTH_TRIES: '2',
+    },
+  });
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+
+  const calls = readFileSync(log, 'utf8');
+  assert.match(calls, /up -d --no-deps --force-recreate auth/, 'auth пересоздаётся с новыми SMTP-ключами');
+  assert.match(calls, /--env-file .* -f docker-compose\.yml up -d --force-recreate web/, 'web пересоздаётся за ним (ключи сайта)');
+
+  // Override установлен из шаблона репозитория и передаёт SMTP.
+  const override = readFileSync(join(supaDir, 'docker-compose.override.yml'), 'utf8');
+  assert.match(override, /GOTRUE_SMTP_HOST/, 'SMTP доезжает до контейнера auth');
+  assert.match(override, /GOTRUE_MAILER_AUTOCONFIRM: "false"/, 'автоподтверждение почты не включается');
+
+  const stages = run.stdout.split('\n').filter((line) => line.includes('::edrc::'));
+  const joined = stages.join('>');
+  for (const stage of ['smtp_prepare', 'smtp_override', 'smtp_switch', 'smtp_verify', 'smtp_web', 'done']) {
+    assert.ok(joined.includes(`"stage":"${stage}"`), `стадия ${stage} должна быть в потоке: ${joined}`);
+  }
+});
+
+test('apply-smtp.sh: чужой override без SMTP — честный отказ, auth не трогаем', { skip: needsBash }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-apply-smtp-foreign-'));
+  const supaDir = join(dir, 'supabase');
+  const projectDir = join(dir, 'src');
+  const binDir = join(dir, 'bin');
+  const log = join(dir, 'calls.log');
+  mkdirSync(join(projectDir, 'deploy', 'selfhost'), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(supaDir, { recursive: true });
+  writeFileSync(log, '');
+  writeFileSync(join(supaDir, 'docker-compose.yml'), 'services:\n  auth:\n    image: supabase/gotrue\n');
+  writeFileSync(join(supaDir, '.env'), 'SMTP_HOST=smtp.example.test\nDISABLE_SIGNUP=false\n');
+  // Операторский override без передачи SMTP: скрипт не имеет права его молча
+  // перезаписывать — только честно отказаться и подсказать ручной мердж.
+  writeFileSync(join(supaDir, 'docker-compose.override.yml'), 'services:\n  auth:\n    environment:\n      GOTRUE_LOG_LEVEL: debug\n');
+  copyFileSync(join(ROOT, 'deploy', 'apply-smtp.sh'), join(projectDir, 'deploy', 'apply-smtp.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'selfhost', 'supabase-auth.override.yml'), join(projectDir, 'deploy', 'selfhost', 'supabase-auth.override.yml'));
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(projectDir, 'deploy', 'compose-lib.sh'));
+
+  writeFileSync(join(binDir, 'docker'), [
+    '#!/usr/bin/env bash',
+    'echo "[docker] $*" >> "$STUB_LOG"',
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+
+  const run = spawnSync('bash', [join(projectDir, 'deploy', 'apply-smtp.sh')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: binDir + ':/usr/bin:/bin',
+      STUB_LOG: log,
+      SUPABASE_HOST_DIR: supaDir,
+      PROJECT_DIR: projectDir,
+      PROJECT_DEPLOY_MODE: 'compose',
+    },
+  });
+  assert.notEqual(run.status, 0, 'скрипт обязан упасть, а не применять наполовину');
+  assert.match(run.stdout + run.stderr, /GOTRUE_SMTP_HOST|смёржите/, 'причина отказа — про override');
+  const calls = readFileSync(log, 'utf8');
+  assert.equal(/force-recreate auth/.test(calls), false, 'auth не пересоздаётся без гарантии SMTP');
+});
+
+test('smtp обрамление: маршруты за requireAdmin, блок в разделе авторизации, агент видит стек', () => {
+  const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'route.ts'), 'utf8');
+  const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'apply', 'route.ts'), 'utf8');
+  for (const method of ['GET', 'POST', 'DELETE']) {
+    const start = route.indexOf('export async function ' + method);
+    assert.ok(start >= 0, 'маршрут ' + method + ' существует');
+    assert.match(route.slice(start, start + 400), /requireAdmin\(/, method + ' требует права администратора');
+  }
+  assert.match(applyRoute, /requireAdmin\(/, 'применение тоже требует права администратора');
+  assert.match(applyRoute, /auth\/v1\/health/, 'адрес проверки GoTrue агенту передаёт web');
+
+  const card = readFileSync(join(ROOT, 'src', 'components', 'Admin', 'MailSettingsCard.tsx'), 'utf8');
+  assert.match(card, /\/api\/admin\/smtp/, 'блок почты ходит через админ-маршрут');
+  assert.match(card, /\/api\/admin\/email-health/, 'кнопка диагностики использует готовый маршрут');
+  const tab = readFileSync(join(ROOT, 'src', 'components', 'Admin', 'AuthProvidersTab.tsx'), 'utf8');
+  assert.match(tab, /MailSettingsCard/, 'настройки почты — в разделе авторизации');
+  const monitor = readFileSync(join(ROOT, 'src', 'components', 'Admin', 'ServerMonitorTab.tsx'), 'utf8');
+  assert.match(monitor, /SMTP_STAGES/, 'job kind=smtp рисует свои стадии');
+  const client = readFileSync(join(ROOT, 'src', 'lib', 'updateAgent.ts'), 'utf8');
+  assert.match(client, /'POST', '\/smtp\/apply'/, 'применение идёт через агента, не из web-контейнера');
+
+  const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+  const updater = compose.slice(compose.indexOf('  update-agent:'));
+  assert.match(updater, /SUPABASE_HOST_DIR/, 'агенту передан каталог стека Supabase');
+  assert.match(updater, /\$\{SUPABASE_HOST_DIR:-\/opt\/supabase\}:\$\{SUPABASE_HOST_DIR:-\/opt\/supabase\}/,
+    'каталог стека смонтирован по тому же пути, что и на хосте');
+});
+
+test('уборка диска: после обновления срезается кэш BuildKit, а не только висячие образы', () => {
+  const lib = readFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), 'utf8');
+  assert.match(lib, /edrc_cleanup_docker_disk/, 'общая функция уборки в compose-lib.sh');
+  assert.match(lib, /builder prune -f --keep-storage/, 'кэш BuildKit чистится с бюджетом');
+  assert.match(lib, /until=48h/, 'старый docker без --keep-storage получает фильтр по времени');
+  assert.match(lib, /UPDATE_DOCKER_CACHE_KEEP/, 'бюджет настраивается из env');
+
+  const update = readFileSync(join(ROOT, 'deploy', 'update-project.sh'), 'utf8');
+  assert.match(update, /edrc_cleanup_docker_disk/, 'обновление подчищает кэш сборки');
+  const rebuild = readFileSync(join(ROOT, 'deploy', 'rebuild-now.sh'), 'utf8');
+  assert.match(rebuild, /edrc_cleanup_docker_disk/, 'ручная пересборка тоже');
+
+  const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
+  const web = compose.slice(compose.indexOf('  web:'), compose.indexOf('  jobs:'));
+  assert.match(web, /max-size/, 'логи web больше не безграничны');
+});
+
+test('сборка: npm-notice отключён, кэши npm/next переживают даже --no-cache', () => {
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+  assert.match(dockerfile, /^# syntax=docker\/dockerfile:1\n/, 'frontend с поддержкой RUN --mount');
+  // «New major version of npm available!» — уведомление самой npm, к проекту
+  // отношения не имеет; раньше печаталось в лог каждой сборки.
+  assert.match(dockerfile, /npm_config_update_notifier=false/, 'уведомление npm погашено');
+  assert.match(dockerfile, /^RUN --mount=type=cache,target=\/root\/\.npm npm ci --no-audit --no-fund$/m,
+    'закачки npm кэшируются между сборками: холодный npm ci не качает всё заново');
+  assert.match(dockerfile, /^RUN --mount=type=cache,target=\/app\/\.next\/cache npm run build$/m,
+    'инкрементальный кэш Next.js живёт между сборками');
+
+  const monitor = readFileSync(join(ROOT, 'deploy', 'Dockerfile.monitor'), 'utf8');
+  assert.match(monitor, /npm_config_update_notifier=false/, 'monitor-agent: npm i pg без уведомления');
+
+  const updateScript = readFileSync(join(ROOT, 'deploy', 'update-project.sh'), 'utf8');
+  assert.match(updateScript, /npm_config_update_notifier=false npm ci/, 'systemd-режим: npm ci без уведомления');
+  // Подрезка кэша ДО старта: серия сорвавшихся сборок больше не распухает.
+  assert.match(updateScript, /edrc_trim_build_cache/, 'обновление подрезает кэш до сборки');
+  const rebuild = readFileSync(join(ROOT, 'deploy', 'rebuild-now.sh'), 'utf8');
+  assert.match(rebuild, /edrc_trim_build_cache/, 'ручная пересборка тоже подрезает кэш до старта');
+  const lib = readFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), 'utf8');
+  assert.match(lib, /edrc_trim_build_cache/, 'функция предbuild-подрезки в общем lib');
+
+  // Контекст сборки не должен тянуть мусор: остатки тестов и локальные артефакты.
+  const dockerignore = readFileSync(join(ROOT, '.dockerignore'), 'utf8');
+  for (const pattern of ['.tmp-*', 'deploy-out', 'android-app', 'playwright-report', 'test-results']) {
+    const re = new RegExp('^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'm');
+    assert.match(dockerignore, re, 'в контекст образа не едет: ' + pattern);
+  }
 });
 
 test('web routes: /api/admin/env requires requireAdmin, client goes through the agent', () => {

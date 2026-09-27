@@ -194,6 +194,12 @@ else
   say "  (npm ci + тесты + next build; время зависит от CPU и дискового I/O)"
   say "  повтор после исправления исходников: USE_CACHE=1 bash deploy/rebuild-now.sh"
 fi
+# До старта: кэш BuildKit в бюджете. Полная пересборка с --no-cache создаёт
+# новую пачку записей кэша, а чистилась она раньше только после успеха —
+# серия сорвавшихся пересборок распухала и замедляла каждую следующую.
+if declare -F edrc_trim_build_cache >/dev/null 2>&1; then
+  edrc_trim_build_cache || true
+fi
 # $COMPOSE_SERVICES — список слов, разворачивается намеренно.
 # shellcheck disable=SC2086
 compose_base build "${build_args[@]}" $COMPOSE_SERVICES
@@ -202,7 +208,13 @@ compose_base build "${build_args[@]}" $COMPOSE_SERVICES
 say "▶ переключаю контейнеры"
 # shellcheck disable=SC2086
 compose_base up -d $COMPOSE_SERVICES
-docker image prune -f >/dev/null 2>&1 || true
+# Полная пересборка (--no-cache) особенно быстро копит кэш BuildKit и висячие
+# образы: убираем всё, кроме свежего кэша в бюджете UPDATE_DOCKER_CACHE_KEEP.
+if declare -F edrc_cleanup_docker_disk >/dev/null 2>&1; then
+  edrc_cleanup_docker_disk || true
+else
+  docker image prune -f >/dev/null 2>&1 || true
+fi
 compose_base ps
 
 # ── 7. проверка живости ─────────────────────────────────────────────

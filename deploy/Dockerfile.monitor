@@ -3,6 +3,9 @@
 FROM node:22-alpine
 
 WORKDIR /app
+# Без этого `npm i pg` печатает «New major version of npm available!» в лог
+# каждой пересборки — версии npm, зашитой в базовый образ, это не касается.
+ENV npm_config_update_notifier=false
 COPY scripts/monitor-agent.mjs scripts/job-schedule.mjs ./scripts/
 
 # `pg` — только для опционального замера размера БД по MONITOR_DB_URL

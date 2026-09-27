@@ -417,15 +417,33 @@ if [ "$MODE" = "compose" ]; then
   # пересоздаётся: он прямо сейчас выполняет этот скрипт. Свежий код агент
   # подхватит перезапуском (он делает это сам после успешного обновления).
   BUILD_SERVICES="$COMPOSE_SERVICES update-agent"
+  # Перед сборкой: кэш BuildKit в бюджете. Уборка после переключения помогает
+  # только успешным прогонам — сорвавшиеся сборки копили кэш без чистки, и
+  # каждая следующая шла всё дольше по забитому диску.
+  if declare -F edrc_trim_build_cache >/dev/null 2>&1; then
+    edrc_trim_build_cache || true
+  fi
   report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
   run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
   report switch 82 "Переключаю контейнеры на новые образы"
   run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
-  report switch 85 "Убираю висячие образы, чтобы не съедать диск"
-  docker image prune -f >/dev/null 2>&1 || true
+  report switch 85 "Убираю мусор сборки: кэш BuildKit, висячие образы"
+  # Каждая пересборка оставляет гигабайты кэша BuildKit (инвалидируется слой
+  # COPY — даже при правке в 3 КБ), а кэш прошлых прогонов раньше никто не
+  # подчищал: `docker image prune` его не трогает, и диск таял после каждого
+  # обновления. Функция держит бюджет кэша (UPDATE_DOCKER_CACHE_KEEP,
+  # default 8g) — свежие записи остаются для быстрой следующей сборки.
+  if declare -F edrc_cleanup_docker_disk >/dev/null 2>&1; then
+    edrc_cleanup_docker_disk || true
+  else
+    docker image prune -f >/dev/null 2>&1 || true
+  fi
 else
   report build 62 "npm ci"
-  run_step "npm ci" npm ci --no-audit --no-fund
+  # npm_config_update_notifier=false — не печатать «New major version of npm
+  # available!» в журнал обновления: версия npm зашита в системе, к проекту
+  # это уведомление отношения не имеет.
+  run_step "npm ci" env npm_config_update_notifier=false npm ci --no-audit --no-fund
   # Флажок «с тестами» и в systemd-режиме: тесты идут после npm ci и до
   # сборки — упавший тест останавливает обновление ДО перезапуска сервиса.
   if [ "$RUN_TESTS" = "1" ]; then

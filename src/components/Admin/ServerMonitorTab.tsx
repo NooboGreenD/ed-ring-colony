@@ -16,7 +16,7 @@ import {
   IconSync,
   IconXCircle,
 } from '@/components/Icons';
-import { BACKUP_STAGES, ENV_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
+import { BACKUP_STAGES, ENV_STAGES, SMTP_STAGES, UPDATE_STAGES } from '../../../scripts/lib/update-state.mjs';
 import { authFetch } from '@/lib/supabaseClient';
 import type {
   MonitorContainer,
@@ -206,8 +206,19 @@ const MIGRATIONS_STATE_META: Record<string, { label: string; level: MonitorLevel
   aborted: { label: 'Применение миграций остановлено', level: 'warning' },
 };
 
+// Job kind='smtp': пересоздание auth стека Supabase и web ради настроек
+// почты (Админка → Авторизация → «Отправка писем»).
+const SMTP_STATE_META: Record<string, { label: string; level: MonitorLevel }> = {
+  idle: { label: 'Настройки почты не применяются', level: 'unknown' },
+  running: { label: 'Применяю настройки почты (auth + web)', level: 'warning' },
+  succeeded: { label: 'Настройки почты применены', level: 'healthy' },
+  failed: { label: 'Применение настроек почты завершилось с ошибкой', level: 'critical' },
+  aborted: { label: 'Применение настроек почты остановлено', level: 'warning' },
+};
+
 function stateMetaFor(update: UpdateState | null): { label: string; level: MonitorLevel } {
   if (update?.kind === 'env') return ENV_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
+  if (update?.kind === 'smtp') return SMTP_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
   if (update?.mode === 'migrations') return MIGRATIONS_STATE_META[update.state || 'idle'] ?? { label: '—', level: 'unknown' };
   const table = UPDATE_STATE_META;
   return table[update?.state || 'idle'] ?? { label: '—', level: 'unknown' };
@@ -219,6 +230,7 @@ const MIGRATIONS_ONLY_STAGE_IDS = new Set(['prepare', 'fetch', 'compare', 'backu
 
 function stagesForKind(update: UpdateState | null): Array<{ id: string; label: string; percent: number }> {
   if (update?.kind === 'env') return ENV_STAGES;
+  if (update?.kind === 'smtp') return SMTP_STAGES;
   if (update?.kind === 'backup') return BACKUP_STAGES;
   if (update?.mode === 'migrations') return UPDATE_STAGES.filter((stage) => MIGRATIONS_ONLY_STAGE_IDS.has(stage.id));
   return UPDATE_STAGES;
@@ -701,8 +713,9 @@ export default function ServerMonitorTab() {
     return () => window.clearInterval(timer);
   }, [autoRefresh, loadEnvKeys]);
 
-  // Когда применение ключей завершилось, список пересобираем сразу.
-  const envJobFinished = update?.kind === 'env' && update.active === false && update.state !== 'idle';
+  // Когда применение ключей (или настроек почты — они тоже меняют .env сайта)
+  // завершилось, список пересобираем сразу.
+  const envJobFinished = (update?.kind === 'env' || update?.kind === 'smtp') && update.active === false && update.state !== 'idle';
   useEffect(() => {
     if (envJobFinished) void loadEnvKeys();
   }, [envJobFinished, loadEnvKeys]);
@@ -1104,6 +1117,8 @@ export default function ServerMonitorTab() {
                 <div><dt>Обновлено</dt><dd>{formatDate(update.updatedAt)}</dd></div>
                 {update.kind === 'env' ? (
                   <div><dt>Область</dt><dd>{update.mode === 'all' ? 'web + jobs + monitor-agent' : 'web'}</dd></div>
+                ) : update.kind === 'smtp' ? (
+                  <div><dt>Область</dt><dd>auth (Supabase) + web</dd></div>
                 ) : (
                   <>
                     <div><dt>Режим</dt><dd>{update.mode === 'migrations' ? 'только миграции (без сборки)' : update.mode || '—'}</dd></div>
@@ -1304,7 +1319,7 @@ export default function ServerMonitorTab() {
               </div>
             </div>
 
-            {(update?.kind === 'env' && update.active === true) && (
+            {((update?.kind === 'env' || update?.kind === 'smtp') && update.active === true) && (
               <div className="ops-env-applying">
                 <div className="ops-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(update.percent || 0)}>
                   <div className="ops-progress-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(update.percent || 0)))}%` }} />
@@ -1324,7 +1339,7 @@ export default function ServerMonitorTab() {
                 onClick={() => void applyEnvKeys()}
               >
                 <IconRefresh size={14} />
-                {envBusy === 'apply' || (update?.kind === 'env' && update.active === true)
+                {envBusy === 'apply' || ((update?.kind === 'env' || update?.kind === 'smtp') && update.active === true)
                   ? 'Применяю…'
                   : 'Применить (пересоздать web)'}
               </button>

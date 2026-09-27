@@ -173,6 +173,8 @@ ADDITIONAL_REDIRECT_URLS=http://ВАШ_IP/api/auth/callback,http://ВАШ_IP/aut
 
 # До настройки настоящего SMTP новые регистрации закрыты.
 # Подтверждение email не отключать; см. UBUNTU20-UPGRADE.md, раздел почты.
+# SMTP можно заполнить позже из админки: Авторизация → «Отправка писем»
+# (пишет эти же ключи и пересоздаёт auth; см. MONITORING.md).
 ENABLE_EMAIL_AUTOCONFIRM=false
 DISABLE_SIGNUP=true
 ```

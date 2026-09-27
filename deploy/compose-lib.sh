@@ -84,3 +84,58 @@ edrc_persist_env() {
     printf '%s=%s\n' "$k" "$v" >> "$f"
   fi
 }
+
+# edrc_builder_prune [cache_keep] — подрезать кэш BuildKit до бюджета.
+#
+# Но-op, когда кэш и так в бюджете: свежие записи остаются ради быстрой
+# следующей сборки, срезаются только старейшие. На Docker без --keep-storage
+# (старее 23.0) — фильтр until=48h. Строго best-effort: недоступный Docker
+# или незнакомый флаг никогда не валят запуск.
+edrc_builder_prune() {
+  local keep="${1:-${UPDATE_DOCKER_CACHE_KEEP:-8g}}"
+  if docker builder prune --help 2>&1 | grep -q -- '--keep-storage'; then
+    docker builder prune -f --keep-storage "$keep" >/dev/null 2>&1 \
+      || docker builder prune -f --filter until=48h >/dev/null 2>&1 \
+      || true
+  elif docker builder prune --help 2>&1 | grep -q -- '--filter'; then
+    docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
+  fi
+  return 0
+}
+
+# edrc_trim_build_cache — ПЕРЕД сборкой: кэш BuildKit в бюджете.
+#
+# Уборка после переключения контейнеров помогает только успешным прогонам;
+# сорвавшиеся сборки (упавший тест, ENOSPC, таймаут) копили кэш без чистки,
+# и каждая следующая сборка шла всё дольше: распухший кэш + почти заполненный
+# диск — это деградация I/O и самого BuildKit. Подрезка до старта — no-op,
+# когда всё в порядке, и спасение, когда накопилось.
+edrc_trim_build_cache() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  edrc_builder_prune
+  return 0
+}
+
+# edrc_cleanup_docker_disk [cache_keep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.
+#
+# Источник «диск тает после каждого обновления, даже при правке в 3 КБ»:
+#   • кэш BuildKit. Любое изменение исходников инвалидирует слой COPY,
+#     и сборка оставляет НОВЫЙ кэш npm ci / next build (гигабайты), а кэш
+#     прошлых прогонов никто не удалял — `docker image prune` его не трогает;
+#   • висячие образы и остановленные контейнеры (чистились и раньше);
+#   • несрезанные слои от --no-cache пересборок.
+#
+# Итоговая таблица docker system df печатается в журнал.
+edrc_cleanup_docker_disk() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+
+  docker container prune -f >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+  edrc_builder_prune
+
+  # Краткий отчёт оператору: что именно занимает диск после уборки.
+  docker system df 2>/dev/null | head -n 8 || true
+  return 0
+}
