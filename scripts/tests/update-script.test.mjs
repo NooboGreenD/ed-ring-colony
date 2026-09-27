@@ -201,6 +201,16 @@ test('первое обновление: перемотка, применени�
     assert.match(calls, /image prune -f/);
     assert.match(calls, /builder prune -f --keep-storage 8g/);
     assert.match(calls, /container prune -f/);
+    // Подрезка кэша ДО старта сборки: сорвавшиеся прогоны больше не копят
+    // гигабайты, и следующая сборка не ползёт по забитому диску.
+    {
+      const logLines = readFileSync(ctx.log, 'utf8').split('\n');
+      const trimAt = logLines.findIndex((line) => line.includes('builder prune -f --keep-storage'));
+      const buildAt = logLines.findIndex((line) => line.includes(' build ') && line.includes('--build-arg'));
+      assert.ok(trimAt >= 0, 'подрезка кэша вызвана');
+      assert.ok(buildAt >= 0, 'сборка вызвана');
+      assert.ok(trimAt < buildAt, 'кэш подрезается до старта сборки, а не только после');
+    }
     // Образ апдейтера пересобирается вместе со всеми (иначе агент навсегда
     // остаётся старым), но контейнер, из которого запущен скрипт, не
     // пересоздаётся: это убило бы обновление на середине.

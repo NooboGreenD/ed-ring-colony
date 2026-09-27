@@ -194,6 +194,12 @@ else
   say "  (npm ci + тесты + next build; время зависит от CPU и дискового I/O)"
   say "  повтор после исправления исходников: USE_CACHE=1 bash deploy/rebuild-now.sh"
 fi
+# До старта: кэш BuildKit в бюджете. Полная пересборка с --no-cache создаёт
+# новую пачку записей кэша, а чистилась она раньше только после успеха —
+# серия сорвавшихся пересборок распухала и замедляла каждую следующую.
+if declare -F edrc_trim_build_cache >/dev/null 2>&1; then
+  edrc_trim_build_cache || true
+fi
 # $COMPOSE_SERVICES — список слов, разворачивается намеренно.
 # shellcheck disable=SC2086
 compose_base build "${build_args[@]}" $COMPOSE_SERVICES

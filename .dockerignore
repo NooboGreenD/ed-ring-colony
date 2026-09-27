@@ -25,3 +25,15 @@ venv
 
 .edrc-release.json
 .source-*-complete
+
+# Android-обёртка в образ сайта не входит: каждый лишний файл едет в контекст
+# КАЖДОЙ сборки и раздувает слой COPY . .
+android-app
+# Остатки тестов (scripts/tests/*.test.mjs создают .tmp-* в корне репозитория)
+# и локальных сборок: без этого каталоги от упавших прогонов разрастали
+# контекст и замедляли все следующие сборки.
+.tmp-*
+deploy-out
+playwright-report
+test-results
+*.tsbuildinfo

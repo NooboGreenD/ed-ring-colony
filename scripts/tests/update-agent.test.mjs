@@ -1319,6 +1319,37 @@ test('уборка диска: после обновления срезаетс�
   assert.match(web, /max-size/, 'логи web больше не безграничны');
 });
 
+test('сборка: npm-notice отключён, кэши npm/next переживают даже --no-cache', () => {
+  const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
+  assert.match(dockerfile, /^# syntax=docker\/dockerfile:1\n/, 'frontend с поддержкой RUN --mount');
+  // «New major version of npm available!» — уведомление самой npm, к проекту
+  // отношения не имеет; раньше печаталось в лог каждой сборки.
+  assert.match(dockerfile, /npm_config_update_notifier=false/, 'уведомление npm погашено');
+  assert.match(dockerfile, /^RUN --mount=type=cache,target=\/root\/\.npm npm ci --no-audit --no-fund$/m,
+    'закачки npm кэшируются между сборками: холодный npm ci не качает всё заново');
+  assert.match(dockerfile, /^RUN --mount=type=cache,target=\/app\/\.next\/cache npm run build$/m,
+    'инкрементальный кэш Next.js живёт между сборками');
+
+  const monitor = readFileSync(join(ROOT, 'deploy', 'Dockerfile.monitor'), 'utf8');
+  assert.match(monitor, /npm_config_update_notifier=false/, 'monitor-agent: npm i pg без уведомления');
+
+  const updateScript = readFileSync(join(ROOT, 'deploy', 'update-project.sh'), 'utf8');
+  assert.match(updateScript, /npm_config_update_notifier=false npm ci/, 'systemd-режим: npm ci без уведомления');
+  // Подрезка кэша ДО старта: серия сорвавшихся сборок больше не распухает.
+  assert.match(updateScript, /edrc_trim_build_cache/, 'обновление подрезает кэш до сборки');
+  const rebuild = readFileSync(join(ROOT, 'deploy', 'rebuild-now.sh'), 'utf8');
+  assert.match(rebuild, /edrc_trim_build_cache/, 'ручная пересборка тоже подрезает кэш до старта');
+  const lib = readFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), 'utf8');
+  assert.match(lib, /edrc_trim_build_cache/, 'функция предbuild-подрезки в общем lib');
+
+  // Контекст сборки не должен тянуть мусор: остатки тестов и локальные артефакты.
+  const dockerignore = readFileSync(join(ROOT, '.dockerignore'), 'utf8');
+  for (const pattern of ['.tmp-*', 'deploy-out', 'android-app', 'playwright-report', 'test-results']) {
+    const re = new RegExp('^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'm');
+    assert.match(dockerignore, re, 'в контекст образа не едет: ' + pattern);
+  }
+});
+
 test('web routes: /api/admin/env requires requireAdmin, client goes through the agent', () => {
   const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'route.ts'), 'utf8');
   const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'apply', 'route.ts'), 'utf8');
