@@ -498,3 +498,113 @@ test('открытие плана по ссылке подставляет ег�
     await ui.cleanup();
   }
 });
+
+test('наземные и орбитальные постройки лежат в отдельных разделах карточки тела', async () => {
+  const ui = await renderArchitect();
+  try {
+    // Наземная постройка — на планету, орбитальная — к звезде.
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+    await ui.click(ui.cardButton(`${SYSTEM} A`, '+ постройка'));
+    await ui.click(ui.rowButton('Гражданский аванпост'));
+
+    const text = ui.text();
+    assert.match(text, /Наземные постройки\s+1 из 2/, 'наземный раздел с счётчиком слотов');
+    assert.match(text, /Орбитальные постройки\s+0/, 'орбитальный раздел планеты пуст, но виден');
+    assert.match(text, /наземных слотов: 1 из 2 · орбитальных: 0/);
+
+    // У звезды — только орбитальный раздел.
+    const starCard = Array.from(ui.document.querySelectorAll('.architect-body'))
+      .find((element) => (element.textContent || '').includes('K (Yellow-Orange) Star'));
+    assert.ok(starCard, 'у звезды есть карточка');
+    assert.match(starCard.textContent || '', /Орбитальные постройки\s+1/);
+    assert.doesNotMatch(starCard.textContent || '', /Наземные постройки/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('постройку можно отредактировать после добавления в план', async () => {
+  const ui = await renderArchitect();
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    await ui.click(ui.buttonByText('изменить'));
+    assert.match(ui.text(), /Редактирование постройки/);
+    assert.match(ui.text(), /Сельхозпоселение \(малое\)/);
+
+    // Меняем тип постройки на военное поселение и статус.
+    const iokeRow = ui.buttons().find((item) => (item.textContent || '').includes('Военное поселение (малое)'));
+    assert.ok(iokeRow, 'в редакторе есть строка военного поселения');
+    await ui.click(iokeRow);
+    await ui.click(ui.buttonByText('строится'));
+    await ui.click(ui.buttonByText('Сохранить'));
+
+    const text = ui.text();
+    assert.doesNotMatch(text, /Редактирование постройки/, 'редактор закрылся');
+    assert.match(text, /Военное поселение \(малое\)/, 'тип постройки изменился');
+    assert.doesNotMatch(text, /Сельхозпоселение \(малое\)/);
+    assert.match(ui.dom.window.localStorage.getItem(`ed-architect:plan:${SYSTEM.toLowerCase()}`) || '', /ioke/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('переключатель основного порта: пометка, материалы и бесплатный порт', async () => {
+  const ui = await renderArchitect();
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A`, '+ постройка'));
+    await ui.click(ui.rowButton('Гражданский аванпост'));
+    assert.match(ui.text(), /18 473 т|18\u00a0473 т/, 'обычный тоннаж аванпоста');
+
+    // Переключатель в строке постройки.
+    await ui.click(ui.buttonByText('☆ основной'));
+    let text = ui.text();
+    assert.match(text, /★ основной/, 'пометка основного порта видна');
+    assert.match(text, /21 795 т|21\u00a0795 т/, 'тоннаж пересчитан по материалам основного порта');
+    assert.match(text, /основной порт: Гражданский аванпост/);
+    assert.match(text, /Гражданский аванпост/);
+
+    // Карточка основного порта в сводке: экономика и список материалов.
+    assert.match(text, /★ Основной порт/);
+    assert.match(text, /экономика системы: колония/);
+    await ui.click(ui.buttonByText(/Материалы основного порта/));
+    text = ui.text();
+    assert.match(text, /Сталь/);
+    assert.match(text, /основной аванпост дороже примерно на 18 %/);
+
+    // Снятие пометки возвращает обычный список грузов.
+    await ui.click(ui.buttonByText('★ основной'));
+    assert.match(ui.text(), /18 473 т|18\u00a0473 т/);
+    assert.match(ui.text(), /Основной порт не отмечен/, 'сводка подсказывает, что основного порта нет');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('карточки тел сворачиваются, фильтр «с постройками» прячет пустые', async () => {
+  const ui = await renderArchitect();
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    assert.match(ui.text(), /Наземные постройки/);
+    // Свёрнутая карточка прячит разделы, но кнопка «+ постройка» остаётся.
+    const header = Array.from(ui.document.querySelectorAll('.architect-body-header'))
+      .find((element) => (element.textContent || '').includes(`${SYSTEM} A 1`));
+    assert.ok(header, 'карточка тела нашлась');
+    await ui.click(header);
+    assert.doesNotMatch(ui.text(), /Наземные постройки/, 'разделы свёрнуты');
+    await ui.click(header);
+    assert.match(ui.text(), /Наземные постройки/, 'разделы вернулись');
+
+    // Фильтр «с постройками» оставляет только тела с записями плана.
+    await ui.click(ui.buttonByText('с постройками'));
+    const text = ui.text();
+    assert.match(text, new RegExp(`${SYSTEM} A 1`));
+    assert.doesNotMatch(text, new RegExp(`${SYSTEM} A 2`), 'пустая планета спрятана');
+  } finally {
+    await ui.cleanup();
+  }
+});

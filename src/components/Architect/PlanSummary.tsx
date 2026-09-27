@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
-import { cargoList, formatTons, getInstallation } from '@/lib/architect/planner';
+import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
 import type { ArchitectPlan, PlanEvaluation, SystemEffectKey } from '@/lib/architect/types';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
@@ -20,16 +20,37 @@ const STATUS_LABELS = { plan: 'план', building: 'строится', complete
 interface PlanSummaryProps {
   plan: ArchitectPlan;
   evaluation: PlanEvaluation;
+  /** Клик по порту без пометки — быстро назначить его основным портом. */
+  onMarkPrimary?: (siteId: string) => void;
 }
 
-export default function PlanSummary({ plan, evaluation }: PlanSummaryProps) {
+export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSummaryProps) {
   const [showAllCargo, setShowAllCargo] = useState(false);
   const [showAllUnlocks, setShowAllUnlocks] = useState(false);
+  const [showPrimaryCargo, setShowPrimaryCargo] = useState(false);
 
   const cargo = useMemo(() => cargoList(evaluation), [evaluation]);
   const errors = evaluation.issues.filter((issue) => issue.level === 'error');
   const warnings = evaluation.issues.filter((issue) => issue.level === 'warning');
   const sitesById = useMemo(() => new Map(plan.sites.map((site) => [site.id, site])), [plan.sites]);
+
+  const primaryPort = evaluation.primaryPort;
+  const primaryInstallation = primaryPort ? getInstallation(primaryPort.installationId) : null;
+  const primaryCargoList = useMemo(() => (
+    primaryInstallation?.primary
+      ? Object.entries(primaryInstallation.primary.cargo)
+        .sort((left, right) => right[1] - left[1])
+        .map(([key, tons]) => ({ key, label: commodityLabel(key), tons }))
+      : []
+  ), [primaryInstallation]);
+  const portsWithoutPrimary = useMemo(() => (
+    onMarkPrimary
+      ? plan.sites.filter((site) => {
+        const buildClass = getInstallation(site.installationId)?.buildClass;
+        return !site.primary && (buildClass === 'starport' || buildClass === 'outpost');
+      })
+      : []
+  ), [plan.sites, onMarkPrimary]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -70,7 +91,7 @@ export default function PlanSummary({ plan, evaluation }: PlanSummaryProps) {
                 <div key={port.siteId} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)' }}>
                   <span>
                     {index + 1}. {installation?.nameRu ?? port.installationId}
-                    {index === 0 ? ' (первый порт — бесплатно)' : ''}
+                    {port.siteId === primaryPort?.siteId ? ' ★ основной — бесплатно' : ''}
                   </span>
                   <span style={{ color: port.taxed ? 'var(--orange)' : 'var(--text)' }}>
                     {port.cost > 0 ? `${port.cost} очк. T${port.tier}` : '—'}
@@ -79,6 +100,67 @@ export default function PlanSummary({ plan, evaluation }: PlanSummaryProps) {
               );
             })}
           </div>
+        )}
+      </section>
+
+      <section style={{ ...cardStyle, borderColor: primaryPort ? 'var(--orange)' : 'var(--line)' }}>
+        <h3 style={{ ...sectionTitle, color: 'var(--orange)' }}>★ Основной порт</h3>
+        {primaryPort && primaryInstallation ? (
+          <>
+            <div style={{ fontSize: 14, color: 'var(--text)' }}>
+              {primaryInstallation.nameRu}
+              <span style={{ color: 'var(--muted)', fontSize: 12 }}> — {primaryPort.bodyName}</span>
+            </div>
+            <div style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+              экономика системы: {ECONOMY_LABELS_RU[primaryPort.economy] ?? primaryPort.economy}
+              {' · '}
+              материалов: {primaryPort.approximate ? '≈ ' : ''}{formatTons(primaryPort.tons)}
+              {' · '}очков системы не тратит
+            </div>
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>{primaryInstallation.primary?.note}</div>
+            {primaryCargoList.length > 0 && (
+              <>
+                <button type="button" style={linkButton} onClick={() => setShowPrimaryCargo((value) => !value)}>
+                  {showPrimaryCargo ? 'Свернуть материалы' : `Материалы основного порта (${primaryCargoList.length})`}
+                </button>
+                {showPrimaryCargo && (
+                  <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '2px 10px', fontSize: 12 }}>
+                    {primaryCargoList.map((item) => (
+                      <div key={item.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                        <span style={{ color: 'var(--text)' }}>{item.label}</span>
+                        <span style={{ color: 'var(--muted)' }}>{formatTons(item.tons)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.6 }}>
+              Основной порт не отмечен. Первый порт новой колонии строится с колониального корабля:
+              он не тратит очки системы, но требует больше материалов. Если система уже колонизирована —
+              основной порт в плане не нужен.
+            </div>
+            {portsWithoutPrimary.length > 0 && onMarkPrimary && (
+              <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {portsWithoutPrimary.map((site) => {
+                  const installation = getInstallation(site.installationId);
+                  return (
+                    <button
+                      key={site.id}
+                      type="button"
+                      onClick={() => onMarkPrimary(site.id)}
+                      style={{ ...chipStyle, borderColor: 'var(--orange)', color: 'var(--orange)' }}
+                    >
+                      ★ {installation?.nameRu ?? site.installationId}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </>
         )}
       </section>
 
@@ -108,12 +190,14 @@ export default function PlanSummary({ plan, evaluation }: PlanSummaryProps) {
             const site = sitesById.get(siteId);
             const installation = site ? getInstallation(site.installationId) : null;
             if (!site || !installation) return null;
+            const tons = siteCargo(site)?.haulTons ?? installation.haulTons;
             return (
               <li key={siteId} style={{ marginBottom: 4 }}>
+                {site.primary ? <span style={{ color: 'var(--orange)' }}>★ </span> : null}
                 {installation.nameRu}
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                   {' · '}
-                  {site.bodyName} · {formatTons(installation.haulTons)} · {STATUS_LABELS[site.status]}
+                  {site.bodyName} · {formatTons(tons)} · {STATUS_LABELS[site.status]}
                 </span>
               </li>
             );
@@ -255,4 +339,16 @@ const linkButton: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 12,
   padding: 0,
+};
+
+const chipStyle: React.CSSProperties = {
+  background: 'transparent',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'var(--line)',
+  color: 'var(--muted)',
+  padding: '3px 9px',
+  borderRadius: 3,
+  cursor: 'pointer',
+  fontSize: 12,
 };

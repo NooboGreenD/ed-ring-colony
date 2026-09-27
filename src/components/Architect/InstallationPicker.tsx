@@ -25,6 +25,8 @@ interface InstallationPickerProps {
   plan: ArchitectPlan;
   onPick: (installationId: string) => void;
   onClose: () => void;
+  /** Начальный фильтр расположения — когда каталог открыт из раздела «наземные»/«орбитальные». */
+  initialLocation?: 'any' | 'orbital' | 'surface';
 }
 
 type LocationFilter = 'any' | 'orbital' | 'surface';
@@ -32,9 +34,9 @@ type TierFilter = 0 | 1 | 2 | 3;
 
 const TIER_LABELS: Record<TierFilter, string> = { 0: 'все тиры', 1: 'T1', 2: 'T2', 3: 'T3' };
 
-export default function InstallationPicker({ body, plan, onPick, onClose }: InstallationPickerProps) {
+export default function InstallationPicker({ body, plan, onPick, onClose, initialLocation = 'any' }: InstallationPickerProps) {
   const [query, setQuery] = useState('');
-  const [location, setLocation] = useState<LocationFilter>('any');
+  const [location, setLocation] = useState<LocationFilter>(initialLocation);
   const [tier, setTier] = useState<TierFilter>(0);
   const [expanded, setExpanded] = useState<string>('');
 
@@ -169,6 +171,11 @@ function PickerRow({
 }) {
   const preReq = installation.preReq ? PRE_REQS[installation.preReq] : null;
   const cargo = Object.entries(installation.cargo).sort((left, right) => right[1] - left[1]);
+  const primary = installation.primary;
+  const primaryCargo = primary
+    ? Object.entries(primary.cargo).sort((left, right) => right[1] - left[1])
+    : [];
+  const primaryTons = primaryCargo.reduce((sum, [, tons]) => sum + tons, 0);
 
   return (
     <div style={{ border: '1px solid var(--line)', borderRadius: 4, marginBottom: 6, background: 'var(--bg)' }}>
@@ -185,6 +192,14 @@ function PickerRow({
           <div style={{ color: 'var(--text)', fontSize: 14 }}>
             {installation.nameRu}
             <span style={{ color: 'var(--muted)', fontSize: 12 }}> · {installation.id}</span>
+            {primary ? (
+              <span
+                title={primary.note}
+                style={{ marginLeft: 6, fontSize: 11, color: 'var(--orange)', border: '1px solid var(--orange)', borderRadius: 3, padding: '0 5px' }}
+              >
+                ★ может быть основным портом
+              </span>
+            ) : null}
           </div>
           <div style={{ color: 'var(--muted)', fontSize: 11 }}>
             {BUILD_CLASS_LABELS_RU[installation.buildClass]} · T{installation.tier}
@@ -196,6 +211,7 @@ function PickerRow({
         </div>
         <div style={{ textAlign: 'right', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
           {formatTons(installation.haulTons)}
+          {primary ? <div style={{ fontSize: 11, color: 'var(--orange)' }}>основной: {primary.approximate ? '≈ ' : ''}{formatTons(primaryTons)}</div> : null}
           <div style={{ fontSize: 11 }}>оценка +{installation.score}</div>
         </div>
         <button
@@ -235,6 +251,22 @@ function PickerRow({
               </div>
             ))}
           </div>
+          {primary && (
+            <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+              <div style={{ fontSize: 11, color: 'var(--orange)', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
+                Материалы основного порта {primary.approximate ? '(оценка)' : ''} — {formatTons(primaryTons)}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 6 }}>{primary.note}</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '2px 16px', fontSize: 12 }}>
+                {primaryCargo.map(([key, tons]) => (
+                  <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ color: 'var(--text)' }}>{commodityLabel(key)}</span>
+                    <span style={{ color: 'var(--muted)' }}>{formatTons(tons)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

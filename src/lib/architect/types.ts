@@ -69,6 +69,27 @@ export interface TierCost {
   count: number;
 }
 
+/**
+ * Материалы основного порта.
+ *
+ * Основной порт — первый порт системы, который строится с колониального
+ * корабля: он не тратит очки системы, но требует больше материалов, чем
+ * такой же порт в уже колонизированной системе. Какой именно порт станет
+ * основным, игрок выбирает при размещении, поэтому у каждой портовой
+ * постройки есть свой «основной» список грузов.
+ */
+export interface PrimaryPortCargo {
+  /** Товар → тонны для основного порта (дороже обычного списка). */
+  cargo: Record<string, number>;
+  /**
+   * Числа оценочные: посчитаны по коэффициенту подорожания, а не сняты
+   * со стройплощадки. Интерфейс помечает такие списки «≈».
+   */
+  approximate?: boolean;
+  /** Происхождение чисел — одна строка для подсказки в интерфейсе. */
+  note: string;
+}
+
 /** Одна постройка из каталога. */
 export interface ArchitectInstallation {
   /** Игровой buildType: `no_truss`, `consus`, `tartarus`… */
@@ -95,6 +116,12 @@ export interface ArchitectInstallation {
   haulTons: number;
   /** Товар → тонны. */
   cargo: Record<string, number>;
+  /**
+   * Материалы, если постройка выбирается основным портом системы.
+   * Есть только у портов (аванпосты и звёздные порты) — по отсутствию поля
+   * движок понимает, что постройка основным портом быть не может.
+   */
+  primary?: PrimaryPortCargo;
 }
 
 export type ArchitectBodyKind = 'star' | 'planet' | 'moon';
@@ -139,6 +166,12 @@ export interface PlannedSite {
   bodyName: string;
   installationId: string;
   status: PlannedSiteStatus;
+  /**
+   * Основной порт системы: строится с колониального корабля, не тратит
+   * очки системы и требует «основного» списка материалов. В плане такой
+   * порт может быть только один.
+   */
+  primary?: boolean;
   note?: string;
 }
 
@@ -155,6 +188,20 @@ export interface ArchitectPlan {
 }
 
 export type IssueLevel = 'error' | 'warning' | 'info';
+
+/** Итоговая информация об основном порте плана. */
+export interface PrimaryPortInfo {
+  siteId: string;
+  installationId: string;
+  bodyName: string;
+  /** Тоннаж по «основному» списку материалов (не обычному). */
+  tons: number;
+  /** Числа приблизительные — посчитаны по коэффициенту, а не со скана. */
+  approximate: boolean;
+  /** Экономика, которую основной порт задаёт системе. */
+  economy: SystemEconomy;
+}
+
 
 /** Замечание по плану: привязано к записи или к системе в целом. */
 export interface PlanIssue {
@@ -176,6 +223,8 @@ export interface PlanEvaluation {
   tierGiven: { tier2: number; tier3: number };
   /** Стоимость каждого порта с учётом «налога» на дополнительные порты. */
   portCosts: { siteId: string; installationId: string; tier: ArchitectTier; cost: number; taxed: boolean }[];
+  /** Основной порт плана: null — не отмечен (или в системе уже есть свой). */
+  primaryPort: PrimaryPortInfo | null;
   /** Товар → тонны по всему плану. */
   cargo: Record<string, number>;
   /** Суммарный тоннаж перевозок. */
