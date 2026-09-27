@@ -10926,3 +10926,279 @@ COMMENT ON COLUMN public.capi_profiles.loan IS 'Текущий кредитны�
 ALTER TABLE public.system_scans
   ADD COLUMN IF NOT EXISTS semi_major_axis_ls DOUBLE PRECISION;
 
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261001000000_body_signals.sql                     │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ═══════════════════════════════════════════════════════════════
+-- Migration: сигналы тел — не только биология
+-- ═══════════════════════════════════════════════════════════════
+--
+-- `system_scans` умел считать лишь биологические сигналы. Игра сообщает
+-- в `FSSBodySignals`/`SAASignalsFound` и остальные: геологические точки
+-- (материалы), следы людей (чужое присутствие рядом со стройкой),
+-- сигналы стражей и таргоидов. Архитектору системы они нужны на карточке
+-- тела и на 3D-карте, поэтому храним их рядом с биологией.
+--
+-- Колонки добавляются отдельно от `bio_signals_count`, а не заменяют его:
+-- на него ссылаются уже записанные строки, импорт EDSM и приложение-помощник.
+
+ALTER TABLE public.system_scans
+  ADD COLUMN IF NOT EXISTS geo_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS human_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS thargoid_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS guardian_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS other_signals_count INTEGER DEFAULT 0,
+  -- Сырой список сигналов события: тип + количество. Хранится «как есть»,
+  -- чтобы новые типы сигналов не требовали новой миграции.
+  ADD COLUMN IF NOT EXISTS signals JSONB DEFAULT '[]'::jsonb;
+
+-- Выборка «где есть сигналы» по системе: карточки тел в архитекторе и
+-- фильтр «есть сигналы» на 3D-карте ходят именно так.
+CREATE INDEX IF NOT EXISTS idx_system_scans_signals
+  ON public.system_scans (system_name)
+  WHERE bio_signals_count > 0
+     OR geo_signals_count > 0
+     OR human_signals_count > 0
+     OR thargoid_signals_count > 0
+     OR guardian_signals_count > 0
+     OR other_signals_count > 0;
+
+COMMENT ON COLUMN public.system_scans.geo_signals_count IS 'Геологические сигналы тела (FSSBodySignals/SAASignalsFound)';
+COMMENT ON COLUMN public.system_scans.human_signals_count IS 'Сигналы человеческого присутствия на теле';
+COMMENT ON COLUMN public.system_scans.thargoid_signals_count IS 'Сигналы таргоидов на теле';
+COMMENT ON COLUMN public.system_scans.guardian_signals_count IS 'Сигналы стражей на теле';
+COMMENT ON COLUMN public.system_scans.other_signals_count IS 'Прочие сигналы, которые игра не отнесла к известным типам';
+COMMENT ON COLUMN public.system_scans.signals IS 'Сырой список сигналов: [{"type": "...", "count": N}]';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261002000000_capi_profile_binding_and_fleet.sql   │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Frontier CAPI: дополнительные поля для полной карточки пилота.
+--
+-- Привязка выполняется по user_id (UUID), а cmdr_name используется только
+-- для ссылки /cmdr/<name>. Поэтому смена имени Frontier не должна создавать
+-- второй профиль или затирать пользовательский ник сайта.
+
+ALTER TABLE public.capi_profiles
+  ADD COLUMN IF NOT EXISTS cqc_rank INTEGER,
+  ADD COLUMN IF NOT EXISTS loan BIGINT,
+  ADD COLUMN IF NOT EXISTS frontier_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_capi_profiles_cmdr_name
+  ON public.capi_profiles (cmdr_name);
+
+COMMENT ON COLUMN public.capi_profiles.frontier_id IS 'Идентификатор командира Frontier, если его отдаёт CAPI';
+COMMENT ON COLUMN public.capi_profiles.loan IS 'Текущий кредитный займ командира из Frontier CAPI';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261002010000_system_scans_orbit.sql               │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Сохраняем большую полуось из события Scan для орбитальной сверки в Архитекторе.
+ALTER TABLE public.system_scans
+  ADD COLUMN IF NOT EXISTS semi_major_axis_ls DOUBLE PRECISION;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261003000000_capi_binding_diagnostics.sql         │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────
+-- Frontier CAPI: состояние привязки должно быть видно, а не угадываться.
+--
+-- Зачем
+-- -----
+-- Жалоба «все этапы проходят, но привязка не делается» была неотличима от
+-- «Companion API временно недоступен» и от «база отстала на миграцию»:
+-- в capi_tokens хранился только сам токен, а причина сбоя нигде не
+-- фиксировалась. Ниже — минимум полей, по которым сайт и cron понимают,
+-- жива ли связь и что с ней случилось в последний раз.
+--
+--   platform      — на каком аккаунте авторизовался пилот (audience OAuth:
+--                   frontier/steam/epic/xbox/psn). Нужен, чтобы предложить
+--                   тот же способ входа при переподключении.
+--   linked_at     — когда привязка создана. Refresh-токен Frontier живёт не
+--                   дольше 25 дней от авторизации, и по этой дате видно,
+--                   что пора просить пилота авторизоваться заново.
+--   last_error    — текст последнего сбоя синхронизации.
+--   last_error_at — когда он случился.
+--
+-- Колонки добавляются NULL'ами: у существующих привязок истории нет, а
+-- «нет данных» и «ошибок не было» — разные состояния.
+-- ─────────────────────────────────────────────────────────────
+
+ALTER TABLE public.capi_tokens
+  ADD COLUMN IF NOT EXISTS platform      TEXT,
+  ADD COLUMN IF NOT EXISTS linked_at     TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS last_error    TEXT,
+  ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;
+
+-- Один аккаунт Frontier — одна учётная запись сайта. Индекс нужен колбэку:
+-- он проверяет, не привязан ли этот customer_id к кому-то ещё, прежде чем
+-- перезаписывать токены.
+CREATE INDEX IF NOT EXISTS idx_capi_tokens_frontier_id
+  ON public.capi_tokens (frontier_id)
+  WHERE frontier_id IS NOT NULL;
+
+-- Cron берёт привязки по времени последнего синка, начиная с тех, которых
+-- не синхронизировали ни разу.
+CREATE INDEX IF NOT EXISTS idx_capi_tokens_sync_queue
+  ON public.capi_tokens (last_synced_at NULLS FIRST)
+  WHERE is_active;
+
+COMMENT ON COLUMN public.capi_tokens.platform IS 'Платформа аккаунта Frontier (audience OAuth): frontier, steam, epic, xbox, psn';
+COMMENT ON COLUMN public.capi_tokens.linked_at IS 'Когда пилот прошёл авторизацию Frontier; refresh-токен живёт не дольше 25 дней от этой даты';
+COMMENT ON COLUMN public.capi_tokens.last_error IS 'Последняя ошибка синхронизации CAPI — показывается в /account/capi';
+
+-- Ранги Odyssey из CAPI (commander.rank.soldier / .exobiologist): колонки
+-- уже есть в capi_profiles с миграции 20260916000000, но у баз, залитых
+-- ранним снимком схемы, их может не быть — повторяем идемпотентно, иначе
+-- синк молча теряет эти два ранга.
+ALTER TABLE public.capi_profiles
+  ADD COLUMN IF NOT EXISTS mercenary_rank    INTEGER,
+  ADD COLUMN IF NOT EXISTS exobiologist_rank INTEGER,
+  ADD COLUMN IF NOT EXISTS cqc_rank          INTEGER,
+  ADD COLUMN IF NOT EXISTS loan              BIGINT,
+  ADD COLUMN IF NOT EXISTS frontier_id       TEXT;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261004000000_profile_avatars_fallback.sql         │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────
+-- Аватары профиля: запасное хранилище и гарантированный бакет.
+--
+-- Зачем
+-- -----
+-- Жалоба: «картинки профиля не загружаются, при смене аватарки ошибка 503».
+-- 503 отдаёт не сайт: браузер грузил файл НАПРЯМУЮ в Supabase Storage
+-- (`supabase.<домен>/storage/v1/...`), и когда контейнер storage не поднят
+-- или Kong не видит живой upstream, шлюз отвечает 503 Service Unavailable.
+-- Пилот при этом видел только текст ошибки из SDK и терял аватар.
+--
+-- Теперь загрузка идёт через сайт (`POST /api/account/avatar`), а если
+-- Storage недоступен, картинка сохраняется прямо в базе и отдаётся
+-- маршрутом `/api/avatars/<user_id>`. Аватары продолжают работать даже при
+-- мёртвом storage-контейнере, а починка инфраструктуры перестаёт быть
+-- условием для смены картинки.
+--
+-- Размер намеренно ограничен приложением (≤ 1 МБ после проверки MIME):
+-- база — не файловое хранилище, это именно запасной путь.
+-- ─────────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS public.profile_avatars (
+  user_id    UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  mime       TEXT        NOT NULL,
+  bytes      BYTEA       NOT NULL,
+  byte_size  INTEGER     NOT NULL,
+  checksum   TEXT        NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE public.profile_avatars IS
+  'Запасное хранилище аватаров: используется, когда Supabase Storage недоступен (см. /api/account/avatar)';
+COMMENT ON COLUMN public.profile_avatars.checksum IS
+  'SHA-256 содержимого: служит версией в адресе /api/avatars/<id>?v=… и ETag при отдаче';
+
+ALTER TABLE public.profile_avatars ENABLE ROW LEVEL SECURITY;
+
+-- Пишет и читает эти строки сервер под service_role (он RLS не подчиняется).
+-- Пилоту оставляем чтение собственной строки: полезно для отладки и не даёт
+-- выгрузить чужие картинки одним запросом PostgREST.
+DROP POLICY IF EXISTS profile_avatars_select_own ON public.profile_avatars;
+CREATE POLICY profile_avatars_select_own ON public.profile_avatars
+  FOR SELECT TO authenticated
+  USING (user_id = auth.uid());
+
+REVOKE ALL ON public.profile_avatars FROM anon;
+GRANT SELECT ON public.profile_avatars TO authenticated;
+
+-- ── Бакет avatars ────────────────────────────────────────────
+-- В 000_base_schema.sql он создаётся внутри DO-блока, который молча
+-- пропускается, если схема storage ещё не развёрнута (частый порядок при
+-- self-hosted установке: сначала SQL, потом контейнеры). Повторяем создание
+-- идемпотентно — иначе Storage отвечает «Bucket not found» и после починки
+-- 503 загрузка всё равно не работает.
+DO $$
+BEGIN
+  IF to_regclass('storage.buckets') IS NOT NULL THEN
+    INSERT INTO storage.buckets (id, name, public)
+    VALUES ('avatars', 'avatars', true)
+    ON CONFLICT (id) DO UPDATE SET public = true;
+
+    BEGIN
+      DROP POLICY IF EXISTS avatars_read ON storage.objects;
+      CREATE POLICY avatars_read ON storage.objects
+        FOR SELECT TO anon, authenticated USING (bucket_id = 'avatars');
+
+      DROP POLICY IF EXISTS avatars_insert ON storage.objects;
+      CREATE POLICY avatars_insert ON storage.objects
+        FOR INSERT TO authenticated WITH CHECK (bucket_id = 'avatars');
+
+      DROP POLICY IF EXISTS avatars_update ON storage.objects;
+      CREATE POLICY avatars_update ON storage.objects
+        FOR UPDATE TO authenticated
+        USING (bucket_id = 'avatars' AND owner = auth.uid());
+
+      DROP POLICY IF EXISTS avatars_delete ON storage.objects;
+      CREATE POLICY avatars_delete ON storage.objects
+        FOR DELETE TO authenticated
+        USING (bucket_id = 'avatars' AND owner = auth.uid());
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE NOTICE 'storage.objects принадлежит supabase_admin — политики бакета avatars настройте через Dashboard';
+    END;
+  ELSE
+    RAISE NOTICE 'Схема storage не найдена: бакет avatars будет создан приложением при первой загрузке';
+  END IF;
+END $$;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261005000000_squadron_tag_optional.sql            │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────
+-- Эскадрильи: тег перестаёт быть обязательным в базе.
+--
+-- Зачем
+-- -----
+-- Жалоба «не создаются эскадрильи». Одна из причин — расхождение между
+-- интерфейсом и схемой: форма считает тег необязательным (в личном кабинете
+-- он отправляется как `undefined`), а колонка объявлена
+-- `tag TEXT NOT NULL` ещё в 000_base_schema.sql. Insert падал с
+-- «null value in column "tag" violates not-null constraint», и пилот видел
+-- общее «Could not create squadron».
+--
+-- Приложение теперь собирает тег из названия, когда пилот его не ввёл
+-- (см. src/lib/squadronForm.ts), но держать в схеме требование, которого нет
+-- в интерфейсе, всё равно неправильно: любой другой клиент (мобильное
+-- приложение, скрипт) наступит на те же грабли.
+--
+-- Идемпотентно: DROP NOT NULL можно выполнять повторно.
+-- ─────────────────────────────────────────────────────────────
+
+DO $$
+BEGIN
+  IF to_regclass('public.squadrons') IS NULL THEN
+    RAISE NOTICE 'Таблицы public.squadrons нет — миграция пропущена';
+    RETURN;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'squadrons'
+      AND column_name = 'tag' AND is_nullable = 'NO'
+  ) THEN
+    ALTER TABLE public.squadrons ALTER COLUMN tag DROP NOT NULL;
+    RAISE NOTICE 'squadrons.tag теперь необязателен';
+  END IF;
+END $$;
+
+COMMENT ON COLUMN public.squadrons.tag IS
+  'Тег эскадрильи (2–10 латинских букв/цифр). Необязателен: приложение собирает его из названия, если пилот не ввёл свой';
+
+-- Поиск по тегу — частый путь (страница эскадрилий, проверка занятости).
+CREATE INDEX IF NOT EXISTS idx_squadrons_tag_lower
+  ON public.squadrons (lower(tag))
+  WHERE tag IS NOT NULL;

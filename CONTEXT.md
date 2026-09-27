@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-27.
-> Web/Uploader release: 2.12.0.
+> Web/Uploader release: 2.12.2.
 > Frontier CAPI binding and Architect Uploader ↔ Raven dual-sync are included in this release.
 > Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -272,6 +272,7 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
+| `profile_avatars` | Fallback avatar storage (bytea + SHA-256) used when Supabase Storage is unavailable; served by `/api/avatars/[id]` |
 | `capi_profiles` | Frontier CAPI cache keyed by `user_id`; includes ranks, CQC, loan, fleet and current location |
 | `capi_tokens` | Frontier OAuth/PKCE tokens keyed by the same `user_id` |
 | `galaxy_systems` | Full Spansh catalog (~2×10⁸ rows, GiST `cube` index): coords, main star class, permit. Public read. |
@@ -403,6 +404,15 @@ Applied via `npx supabase db push`.
 | `/api/ravencolonial/sync/log` | GET | Admin | Sync log |
 | `/api/logs/upload` | POST | API token | Deliveries and construction snapshots from Colonial Helper |
 | `/api/journal/import` | POST | Auth | Browser/CAPI Journal import |
+| `/api/account/avatar` | POST/DELETE | Auth | Avatar upload through the site: Storage first, database fallback when Storage answers 503 |
+| `/api/avatars/[id]` | GET | None | Serves a database-stored avatar (ETag + immutable cache) |
+| `/api/capi/auth` | GET | Auth | Starts the Frontier PKCE flow (`?platform=` picks the OAuth `audience`) |
+| `/api/capi/callback` | GET | Signed cookie | Token exchange → saves `capi_tokens` → first sync; always redirects to `/account/capi?status=…&reason=…` |
+| `/api/capi/sync` | POST | Auth | Manual sync (profile + journal) with a report: `journalStatus`, imported/duplicate events, warnings |
+| `/api/capi/profile` | GET | Auth | Cached profile + `binding` (linked, token active, expiry, platform, last error) |
+| `/api/capi/journal` | GET | Auth | Raw CAPI journal for a date; `204/206` reported as `empty`/`partial` |
+| `/api/capi/status` | GET | Auth | Binding diagnostics without secrets (masked client id, redirect match, stored row, live CAPI probe) |
+| `/api/capi/unlink` | POST | Auth | Deactivates the token and clears the cached profile |
 | `/api/translate` | POST | Auth | Translate content |
 | `/api/cron/translate` | POST | Cron | Auto-translation job |
 | `/api/galnet` | POST | Cron | Galnet sync + translate new articles |
@@ -531,7 +541,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 
 ### 8.6 Colonial Helper uploader 2.12
 - Source: `uploader/colonial_helper.py`
-- Version: `2.12.0`
+- Version: `2.12.2`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -788,6 +798,78 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - ВАЖНО: поле `field_galnet_date` («11 SEP 3312») — внутриигровая дата,
   в колонку `published_at` (TIMESTAMPTZ) не попадает
 
+### 8.11 Frontier CAPI (account binding → dossier)
+- Flow: `/api/capi/auth` (PKCE, no FDEV Shared Key) → Frontier login →
+  `/api/capi/callback`. The callback **saves `capi_tokens` first** and only then
+  pulls data, so a CAPI outage degrades to `status=partial` instead of losing
+  the binding. See [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md) for the root-cause
+  analysis of the earlier "OAuth succeeds but nothing is linked" behaviour.
+- Modules in `src/lib/capi/`: `oauth.ts` (auth/token/decode, `audience`),
+  `client.ts` (HTTP, `EDCD-EDRingColony-<version>` User-Agent, `204/206/418`
+  handling), `profile.ts` (the only place the CAPI payload is mapped:
+  `commander.credits`, `commander.debt`, `commander.rank.*`, `lastSystem.name`,
+  `lastStarport.name` only while docked, `ship.shipName`), `journal.ts` (NDJSON),
+  `persist.ts` (writes survive a database that misses a migration),
+  `linkState.ts` (flow cookies, 30-minute TTL, HMAC-signed owner),
+  `syncPilot.ts` (shared by callback, manual sync and cron), `messages.ts` (UI text).
+- Storage: `capi_tokens` (binding + `platform`, `linked_at`, `last_error`),
+  `capi_profiles` (cache), `pilot_stats` (dossier source of truth for
+  `/api/cmdr/stats` and `/cmdr/[name]`), plus colonisation events and member
+  location from the journal.
+- Rate limit: roughly one CAPI request per minute per account; `/journal` is not
+  realtime. Cron `/api/cron/capi-sync` processes a small batch per run.
+
+### 8.12 Avatars and the account tabs
+- Upload path: browser → `POST /api/account/avatar` → Supabase Storage, with a
+  database fallback (`profile_avatars`) when Storage is down. A direct
+  browser → Storage upload used to surface the gateway's raw `503`; see
+  [ACCOUNT-AVATAR-SQUADRON-FIX.md](ACCOUNT-AVATAR-SQUADRON-FIX.md).
+- `src/lib/avatarUrl.ts` rewrites storage objects left on the pre-migration
+  host to the configured `NEXT_PUBLIC_SUPABASE_URL`; `src/components/Avatar.tsx`
+  falls back to initials instead of a broken image.
+- Account tabs are Profile and "Сообщения и друзья" (`/account/friends`);
+  `/account/messages` redirects there.
+- Squadron creation normalises the form in `src/lib/squadronForm.ts` (empty
+  strings mean "not provided", `[rcv]` → `RCV`, a tag is derived from the name)
+  and translates database failures into readable causes.
+
+### 8.13 Frontier CAPI: platform (`audience`) and HTTP 400
+- Frontier's `400` on `/profile` means "this account does not own the game"
+  (body: `Please Visit the store to purchase Elite: Dangerous`), not a
+  malformed request. It happens when the token was issued for the Frontier
+  store account while the game was bought on Steam/Epic.
+- Both the site and Colonial Helper now request `audience=frontier,steam,epic`
+  by default (the EDMC list); an explicit platform is still available on
+  `/account/capi` and in the uploader's "Где куплена игра" selector.
+- `CapiError` kind `no_entitlement` carries the explanation; the uploader shows
+  the same hint and only turns the status green after `/profile` answers.
+- Details and the user-facing checklist: [CAPI-400-FIX.md](CAPI-400-FIX.md).
+
+### 8.14 Fleet Carrier cargo: reconciliation with `CarrierStats`
+- The CARRIER overlay block mixes two sources: the itemized list (Raven
+  Colonial snapshot `GET /api/fc/{marketId}/cargo` plus journal deltas) and the
+  authoritative tonnage `CarrierStats.SpaceUsage.Cargo`. Only the tonnage is
+  trustworthy — other commanders take cargo and buy from the FC market without
+  producing a single journal event for the owner.
+- `CarrierState.reconcile()` (`uploader/carrier.py`) keeps the two consistent:
+  `Cargo == 0` clears the list, an overstated list is trimmed back to the
+  tonnage (excess is taken from positions we never hauled ourselves first,
+  then proportionally), a list overstated by more than
+  `RECONCILE_DROP_RATIO` (50%) is dropped entirely, and the leftover tonnage is
+  exposed as `untracked` ("прочее N t").
+- Freshness decides who wins: data newer than the tonnage by more than
+  `RECONCILE_GRACE_SECONDS` (300 s) is never trimmed, so a `CarrierStats` read
+  from an old journal during startup cannot erase today's cargo. Event age
+  comes from the journal `timestamp` (`carrier.event_time`).
+- Between `CarrierStats` events the tonnage is advanced by our own deltas
+  (`stored_estimated: true`, shown as `≈` in the block).
+- Raven snapshots are addressed (`merge_remote(..., market_id=...)`) and an
+  empty snapshot only clears the list when confirmed (`Cargo == 0`, or Raven
+  previously reported a non-empty list and no local delta happened since).
+- State dict additions consumed by the overlay: `untracked`,
+  `stored_estimated`, `reconciled` (`""|emptied|trimmed|dropped`),
+  `cargo_source` (`remote|journal|estimate`), `stats_age` (minutes).
+
 ---
 
 ## 9. Environment Variables
@@ -821,6 +903,12 @@ GALAXY_IMPORT_FILE=...     # pin a local dump; import reads it, downloads nothin
 
 # External APIs
 RAVEN_API_BASE=...
+
+# Frontier CAPI (PKCE — no FDEV Shared Key required)
+FRONTIER_REDIRECT_URI=https://<site>/api/capi/callback   # defaults to NEXT_PUBLIC_SITE_URL + /api/capi/callback
+FRONTIER_CLIENT_ID=...     # optional, built-in app key is used when empty
+FRONTIER_CLIENT_SECRET=    # optional, confidential clients only
+CAPI_STATE_SECRET=...      # optional, signs the flow-owner cookie (falls back to the service role key)
 ```
 
 ---

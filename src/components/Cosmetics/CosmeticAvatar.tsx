@@ -1,7 +1,8 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { IconProfile } from "@/components/Icons";
+import { resolveAvatarUrl } from "@/lib/avatarUrl";
 import { resolvePreview, withAlpha } from "./types";
 
 interface CosmeticAvatarProps {
@@ -30,6 +31,13 @@ export default function CosmeticAvatar({
   showScanlines = false,
 }: CosmeticAvatarProps) {
   const p = resolvePreview(frameId, framePreview);
+  // Адрес аватара приводится к текущему Supabase: после переезда на свой
+  // сервер в базе остались ссылки на прежний хост (см. src/lib/avatarUrl.ts).
+  // Если файл всё равно не открылся — показываем значок, а не «битую»
+  // картинку: именно так выглядела жалоба «картинки профиля не загружаются».
+  const resolvedAvatar = resolveAvatarUrl(avatarUrl);
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [resolvedAvatar]);
   const hasFrame = Boolean(p);
   const pad = hasFrame ? Math.max(4, Math.round(size * 0.08)) : 0;
   const innerSize = size - pad * 2;
@@ -98,8 +106,13 @@ export default function CosmeticAvatar({
       `}</style>
       {renderFrame()}
       <div style={{ position: "relative", width: innerSize, height: innerSize, borderRadius: radius, clipPath: clip, overflow: "hidden", background: "#25282b", border: hasFrame ? "none" : "1px solid var(--line, #3a3d40)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2 }}>
-        {avatarUrl ? (
-          <img src={avatarUrl} alt={cmdrName || "CMDR"} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        {resolvedAvatar && !broken ? (
+          <img
+            src={resolvedAvatar}
+            alt={cmdrName || "CMDR"}
+            style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+            onError={() => setBroken(true)}
+          />
         ) : (
           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "#323538" }}>
             <IconProfile size={Math.round(innerSize * 0.55)} color="#9ca3af" />

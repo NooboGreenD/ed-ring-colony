@@ -96,7 +96,7 @@ export default function NotificationBell() {
         type: "message",
         title: g.name,
         subtitle: `${g.count} новых · ${g.lastContent.slice(0, 40)}${g.lastContent.length > 40 ? "…" : ""}`,
-        href: "/account/messages",
+        href: "/account/friends",
         createdAt: g.lastAt,
         senderId,
         isRead: false,

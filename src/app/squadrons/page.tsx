@@ -58,6 +58,7 @@ export default function SquadronsListPage() {
   const [user, setUser] = useState<any>(null);
   const [mySquadronId, setMySquadronId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [createForm, setCreateForm] = useState({
     name: "",
     tag: "",
@@ -105,16 +106,40 @@ export default function SquadronsListPage() {
       toast("Введите название эскадрильи", "error");
       return;
     }
-    const res = await authFetch("/api/squadrons", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(createForm),
-    });
-    const json = await res.json();
-    if (!res.ok) {
-      toast(json.error || "Ошибка создания", "error");
+    if (creating) return;
+    setCreating(true);
+    // Незаполненные поля отправляем как отсутствующие, а не пустыми
+    // строками: именно из-за `tag: ""` сервер отвечал «Некорректные данные
+    // эскадрильи» и эскадрилья не создавалась.
+    const payload = Object.fromEntries(
+      Object.entries(createForm)
+        .map(([key, value]) => [key, typeof value === "string" ? value.trim() : value])
+        .filter(([, value]) => value !== "" && value !== null && value !== undefined),
+    );
+    let res: Response;
+    try {
+      res = await authFetch("/api/squadrons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      setCreating(false);
+      toast(err instanceof Error ? err.message : "Сервер недоступен", "error");
       return;
     }
+    const json = await res.json().catch(() => ({}));
+    setCreating(false);
+    if (!res.ok) {
+      // Сервер присылает список причин по полям — показываем их, а не
+      // одно общее «Ошибка создания».
+      const detail = Array.isArray(json.errors) && json.errors.length
+        ? json.errors.join(". ")
+        : json.error;
+      toast(detail || `Ошибка создания (HTTP ${res.status})`, "error");
+      return;
+    }
+    if (json.warning) toast(json.warning, "error");
     toast("Эскадрилья создана!", "success");
     setShowCreate(false);
     setCreateForm({
@@ -247,7 +272,18 @@ export default function SquadronsListPage() {
           <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>Новая эскадрилья</h3>
           <div style={{ display: "flex", flexDirection: "column", gap: 12, maxWidth: 800 }}>
             <input placeholder="Название эскадрильи *" value={createForm.name} onChange={(e) => setCreateForm((p) => ({ ...p, name: e.target.value }))} style={{ width: "100%" }} />
-            <input placeholder="Тег [TAG] (2-10 символов)" value={createForm.tag} onChange={(e) => setCreateForm((p) => ({ ...p, tag: e.target.value }))} style={{ width: "100%" }} />
+            <input
+              placeholder="Тег: 2–10 латинских букв или цифр (необязательно)"
+              value={createForm.tag}
+              maxLength={12}
+              // Скобки и пробелы из привычной записи «[RCV]» убираются сразу,
+              // чтобы форма не отвергала собственную же подсказку.
+              onChange={(e) => setCreateForm((p) => ({ ...p, tag: e.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 10) }))}
+              style={{ width: "100%" }}
+            />
+            <span style={{ fontSize: 12, color: "var(--muted)", marginTop: -6 }}>
+              Если тег не указать, он будет составлен из названия — изменить можно в настройках эскадрильи.
+            </span>
             <textarea placeholder="Описание эскадрильи..." value={createForm.description} onChange={(e) => setCreateForm((p) => ({ ...p, description: e.target.value }))} style={{ minHeight: 80 }} />
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <label style={fieldLabel}>Цвет:</label>
@@ -305,7 +341,7 @@ export default function SquadronsListPage() {
               </div>
             </div>
 
-            <button onClick={createSquadron} className="btn btn-cyan" style={{ alignSelf: "flex-start" }}>
+            <button onClick={createSquadron} disabled={creating} className="btn btn-cyan" style={{ alignSelf: "flex-start", opacity: creating ? 0.6 : 1 }}>
               Создать эскадрилью
             </button>
           </div>

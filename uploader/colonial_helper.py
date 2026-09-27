@@ -73,8 +73,9 @@ except ImportError:
 
 from api_client import ApiClient
 from site_config import normalize_site_url, saved_connection
-from companion_api import (CompanionAuth, CompanionAuthError, CompanionClient,
-                           profile_to_stats)
+from companion_api import (AUDIENCE_LABELS, CompanionAuth, CompanionAuthError,
+                           CompanionClient, normalize_audience, profile_to_stats,
+                           set_app_version as set_capi_app_version)
 from journal_parser import (
     parse_file,          # noqa: F401 — оставлен как публичный API парсера
     parse_journal,       # noqa: F401
@@ -133,8 +134,13 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.12.0"
+VERSION = "2.12.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
+
+# Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
+# (EDCD/FDevIDs → Frontier API/README.md). Версию отдаём модулю CAPI сразу,
+# чтобы в заголовке был настоящий номер сборки, а не заглушка.
+set_capi_app_version(VERSION)
 
 COLOR_BG = "#1e2022"
 COLOR_PANEL = "#2a2d30"
@@ -286,8 +292,11 @@ class ColonialHelperApp:
         # секретный ключ FDEV не требуется. Токены храним отдельно от настроек
         # и с правами 0600.
         self.capi_auth_path = Path.home() / ".colonial_helper_capi.json"
-        self.capi_auth = CompanionAuth(str(self.capi_auth_path),
-                                       client_id=str(self.config.get("frontier_client_id", "")))
+        # Настройки читаются ниже (`load_config`), поэтому здесь создаём
+        # клиент с умолчаниями, а client_id/платформу накладываем после
+        # загрузки конфига — раньше `frontier_client_id` из файла не
+        # применялся вовсе, потому что self.config тут ещё пустой.
+        self.capi_auth = CompanionAuth(str(self.capi_auth_path))
         # Кэш последнего ответа Raven: карта не ждёт сеть при старте приложения.
         self.map_cache = MapRavenCache(
             self.config_path.with_name(".colonial_helper_map_cache.json"))
@@ -297,6 +306,7 @@ class ColonialHelperApp:
         self.exobiology.load_from_cache(self.exobio_cache)
         self._exobio_history_scanned_systems = set()
         self.load_config()
+        self._apply_capi_config()
 
         # Raven Colonial API
         self.raven_api = RavenColonialAPI(self.config.get("raven_colonial_key", ""))
@@ -665,6 +675,26 @@ class ColonialHelperApp:
             wraplength=700,
             justify=LEFT,
         ).pack(anchor=W, pady=(0, 8))
+
+        # Выбор платформы = параметр `audience` у Frontier. Если войти учёткой
+        # магазина Frontier, когда игра куплена в Steam/Epic, авторизация
+        # пройдёт, но CAPI ответит 400 «Please Visit the store to purchase
+        # Elite: Dangerous» — привязка будет выглядеть рабочей и не работать.
+        capi_platform_frame = tb.Frame(frame)
+        capi_platform_frame.pack(anchor=W, pady=(0, 8))
+        tb.Label(capi_platform_frame, text="Где куплена игра:",
+                 font=("Segoe UI", 10)).pack(side=LEFT, padx=(0, 8))
+        self.capi_audience_var = tk.StringVar(value=self._capi_audience_label())
+        self.capi_audience_combo = tb.Combobox(
+            capi_platform_frame,
+            textvariable=self.capi_audience_var,
+            width=32,
+            state="readonly",
+            values=[label for _key, label in AUDIENCE_LABELS],
+        )
+        self.capi_audience_combo.pack(side=LEFT)
+        self.capi_audience_combo.bind(
+            "<<ComboboxSelected>>", lambda _e: self._on_capi_audience_changed())
 
         capi_btn_frame = tb.Frame(frame)
         capi_btn_frame.pack(anchor=W, pady=(0, 8))
@@ -4592,19 +4622,74 @@ class ColonialHelperApp:
         except Exception:
             pass
 
+    def _apply_capi_config(self):
+        """Наложить настройки из конфига на клиент Frontier CAPI."""
+        client_id = str(self.config.get("frontier_client_id", "") or "").strip()
+        if client_id:
+            self.capi_auth.client_id = client_id
+        self.capi_auth.audience = normalize_audience(
+            self.config.get("frontier_audience", ""))
+
+    def _capi_audience_label(self) -> str:
+        """Подпись выбранной платформы для комбобокса."""
+        current = normalize_audience(self.config.get("frontier_audience", ""))
+        for key, label in AUDIENCE_LABELS:
+            if normalize_audience(key) == current:
+                return label
+        return AUDIENCE_LABELS[0][1]
+
+    def _on_capi_audience_changed(self):
+        """Пользователь выбрал платформу аккаунта Frontier."""
+        label = self.capi_audience_var.get()
+        key = next((k for k, text in AUDIENCE_LABELS if text == label), "auto")
+        self.config["frontier_audience"] = key
+        self.capi_auth.audience = normalize_audience(key)
+        self.save_config()
+        self.log(f"Frontier CAPI: платформа аккаунта — {label} "
+                 f"(audience={self.capi_auth.audience})", "info")
+
     def _capi_refresh_status(self):
-        """Показать в UI, есть ли сохранённая авторизация Frontier."""
+        """Показать в UI состояние привязки Frontier.
+
+        Важно различать «токен сохранён» и «связь работает»: OAuth может
+        пройти успешно, а CAPI — отвечать 400, если игра куплена не на той
+        платформе. Поэтому зелёный статус даём только после ответа CAPI.
+        """
         try:
-            linked = self.capi_auth.is_linked()
+            state = self.capi_auth.status()
         except Exception:
-            linked = False
-        if linked:
-            tokens = self.capi_auth.load()
-            obtained = float(tokens.get("obtained_at") or tokens.get("saved_at") or 0)
-            when = datetime.fromtimestamp(obtained).strftime("%d.%m.%Y %H:%M") if obtained else "—"
-            self._capi_set_status(f"Frontier подключён (авторизация от {when})", ok=True)
-        else:
+            state = {"linked": False}
+
+        if not state.get("linked"):
             self._capi_set_status("Frontier не подключён", ok=None)
+            return
+
+        authorized = float(state.get("authorized_at") or 0)
+        when = datetime.fromtimestamp(authorized).strftime("%d.%m.%Y %H:%M") if authorized else "—"
+
+        if state.get("error"):
+            hint = state.get("hint") or ""
+            self._capi_set_status(
+                f"Связь с Frontier не подтверждена: {state['error']}"
+                + (f"\n{hint}" if hint else ""),
+                ok=False,
+            )
+            return
+
+        if state.get("verified"):
+            cmdr = state.get("cmdr") or ""
+            self._capi_set_status(
+                f"Frontier подключён и проверен{f' ({cmdr})' if cmdr else ''}, "
+                f"авторизация от {when}",
+                ok=True,
+            )
+            return
+
+        self._capi_set_status(
+            f"Токен Frontier сохранён (от {when}), связь ещё не проверялась — "
+            "нажмите «Обновить досье»",
+            ok=None,
+        )
 
     def _on_capi_link(self):
         """Открыть браузер и пройти авторизацию Frontier (PKCE, без секретного ключа)."""
@@ -4612,7 +4697,8 @@ class ColonialHelperApp:
         if btn:
             btn.config(state="disabled")
         self._capi_set_status("Ожидаю подтверждения в браузере…")
-        self.log("Frontier CAPI: открываю браузер для авторизации (PKCE)", "info")
+        self.log("Frontier CAPI: открываю браузер для авторизации (PKCE), "
+                 f"платформа audience={self.capi_auth.audience}", "info")
 
         def worker():
             error = None
@@ -4631,8 +4717,10 @@ class ColonialHelperApp:
                     self._capi_set_status(f"Не удалось подключиться: {error}", ok=False)
                     self.log(f"Frontier CAPI: {error}", "error")
                     return
-                self._capi_refresh_status()
-                self.log("Frontier CAPI: авторизация получена", "success")
+                self.log("Frontier CAPI: токен получен, проверяю связь с Companion API",
+                         "info")
+                # Токен сам по себе ничего не гарантирует: подтверждение —
+                # только успешный ответ /profile.
                 self._capi_fetch_and_upload()
 
             self.root.after(0, done)
@@ -4654,23 +4742,28 @@ class ColonialHelperApp:
     def _capi_fetch_and_upload(self):
         """Скачать профиль из CAPI и отправить его на сайт в досье."""
         if not getattr(self, "api_client", None) or not self.api_client.is_connected:
-            self.log("Frontier CAPI: нет токена сайта — данные останутся локально", "warning")
+            self.log("Frontier CAPI: нет токена сайта — данные останутся локально", "warn")
 
         self._capi_set_status("Загружаю досье из Frontier…")
 
         def worker():
             error = None
+            hint = ""
             stats: dict = {}
             cmdr = ""
             try:
                 client = CompanionClient(self.capi_auth)
-                profile = client.get_profile()
-                stats = profile_to_stats(profile)
-                cmdr = str(stats.get("cmdr") or "")
-                if not stats:
-                    error = "Frontier вернул пустой профиль"
+                # verify() сам пишет рядом с токенами, подтверждена связь или
+                # нет, и возвращает разобранную причину отказа.
+                result = client.verify()
+                stats = result.get("stats") or {}
+                cmdr = str(result.get("cmdr") or "")
+                if not result.get("ok"):
+                    error = str(result.get("error") or "Frontier не отдал профиль")
+                    hint = str(result.get("hint") or "")
             except CompanionAuthError as exc:
                 error = str(exc)
+                hint = exc.hint
             except Exception as exc:
                 error = f"Сбой загрузки досье: {exc}"
 
@@ -4682,12 +4775,17 @@ class ColonialHelperApp:
 
             def done():
                 if error:
-                    self._capi_set_status(f"Досье не обновлено: {error}", ok=False)
+                    self._capi_set_status(
+                        f"Досье не обновлено: {error}" + (f"\n{hint}" if hint else ""),
+                        ok=False,
+                    )
                     self.log(f"Frontier CAPI: {error}", "error")
+                    if hint:
+                        self.log(f"Что делать: {hint}", "warn")
                     return
                 if upload_error:
                     self._capi_set_status("Данные получены, но не отправлены на сайт", ok=False)
-                    self.log(f"Досье из CAPI получено, загрузка на сайт не удалась: {upload_error}", "warning")
+                    self.log(f"Досье из CAPI получено, загрузка на сайт не удалась: {upload_error}", "warn")
                     return
                 self._capi_set_status(
                     f"Досье обновлено из Frontier{f' ({cmdr})' if cmdr else ''}", ok=True)
@@ -6598,6 +6696,18 @@ class ColonialHelperApp:
     # ============================================================
     #  Конфиг
     # ============================================================
+    @property
+    def api_client(self):
+        """Совместимый псевдоним `self.api`.
+
+        Досье из CAPI, выгрузка сканов и синхронизация статистики пилота
+        писались под имя `api_client`, которого у приложения нет: клиент
+        живёт в `self.api`. Проверки вида `getattr(self, "api_client", None)`
+        это скрывали — выгрузка молча не работала, а поток досье падал с
+        AttributeError, и статус навсегда застывал на «Загружаю досье…».
+        """
+        return getattr(self, "api", None)
+
     def load_config(self):
         if self.config_path.exists():
             try:
@@ -7951,6 +8061,7 @@ class ColonialHelperApp:
         """
         restored = {"site": False, "carrier": False}
         map_events: list = []
+        state_events: list = []
         try:
             files = sorted(
                 self.journal_path.glob("Journal.*.log"),
@@ -7979,25 +8090,32 @@ class ColonialHelperApp:
                     events.append(event)
             if not events:
                 continue
-            # Хронологический порядок важен: трекеры «отпускают» площадку по
-            # Undocked и чужой авианосец по Docked к другой станции.
             for event in events:
                 map_events.append(event)
-                if event.get("event") not in self.RESTORE_STATE_EVENTS:
-                    continue
-                try:
-                    self.construction.handle("", event)
-                    self.carrier.handle(event)
-                except Exception:
-                    continue
-
-            site = self.construction.site
-            if site is not None and site.market_id and site.docked:
-                restored["site"] = True
-            if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
-                restored["carrier"] = True
+                if event.get("event") in self.RESTORE_STATE_EVENTS:
+                    state_events.append(event)
             # Не прерываем сбор событий карты и экзобиологии: даже если пилот уже
             # пристыкован, сканы тел системы могли быть сделаны в предыдущих файлах.
+
+        # Хронологический порядок важен: трекеры «отпускают» площадку по
+        # Undocked и чужой авианосец по Docked к другой станции, а трекер
+        # авианосца сверяет поимённый груз с тоннажем из CarrierStats. Файлы
+        # читаются от новых к старым, поэтому раньше события вчерашнего
+        # журнала применялись ПОСЛЕ сегодняшних: активным оставался носитель,
+        # от которого командир давно улетел, а его груз — в блоке CARRIER.
+        state_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        for event in state_events:
+            try:
+                self.construction.handle("", event)
+                self.carrier.handle(event)
+            except Exception:
+                continue
+
+        site = self.construction.site
+        if site is not None and site.market_id and site.docked:
+            restored["site"] = True
+        if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
+            restored["carrier"] = True
 
         # Карта системы собирается хронологически: файлы идут от новых к
         # старым, а положение пилота определяет последнее событие, а не первое
@@ -9160,7 +9278,8 @@ class ColonialHelperApp:
         # борту авианосца смысла нет: при разгрузке трюма их десятки.
         if str(event.get("event")) in (
             "CarrierStats", "Docked", "Location", "CarrierJump", "Undocked",
-            "CarrierNameChanged", "CarrierDecommission",
+            "CarrierNameChanged", "CarrierDecommission", "CarrierCancelDecommission",
+            "CarrierBuy",
         ):
             self.overlay_manager.log(self.carrier.state.summary(), "info")
         # Товары поимённо журнал не отдаёт: дельты считаем сами, а точную
@@ -9212,8 +9331,15 @@ class ColonialHelperApp:
         # «товар -> тонны» (это под-ресурс /api/fc/{id}/cargo). Принимаем оба
         # варианта: числовые значения и есть груз, остальное — служебные поля.
         data = result.get("data")
+        # `explicit` — Raven ответил именно картой груза, а не «чем-то, из
+        # чего мы выбрали числа». Только такому ответу можно верить, когда он
+        # пустой: это «на борту ничего нет», а не «Raven про этот носитель
+        # ничего не знает». Иначе пустой ответ молча стирал бы честный
+        # локальный учёт по журналу.
+        explicit = False
         if isinstance(data, dict) and isinstance(data.get("cargo"), dict):
             cargo = data["cargo"]
+            explicit = True
         elif isinstance(data, dict):
             cargo = {
                 key: value for key, value in data.items()
@@ -9221,7 +9347,9 @@ class ColonialHelperApp:
             }
         else:
             cargo = data
-        if not isinstance(cargo, dict) or not cargo:
+        if not isinstance(cargo, dict):
+            return
+        if not cargo and not explicit:
             return
         # Подписываем в лог только РЕАЛЬНО изменившийся снимок: запрос уходит
         # по таймеру каждые пять минут, и «груз получен» на каждом обновлении
@@ -9232,7 +9360,10 @@ class ColonialHelperApp:
             for key, value in cargo.items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         ))
-        if self.carrier.merge_remote(cargo):
+        # Снимок адресован тому носителю, по которому его запрашивали: пока
+        # фоновый запрос летел, пилот мог перестыковаться к соседнему, и без
+        # адреса чужие тонны оседали в его блоке навсегда.
+        if self.carrier.merge_remote(cargo, market_id=market_id, allow_empty=explicit):
             if signature != self._carrier_cargo_log_sig:
                 self._carrier_cargo_log_sig = signature
                 self.log(

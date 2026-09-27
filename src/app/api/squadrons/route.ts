@@ -1,29 +1,9 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createClient, createServiceClient } from '@/lib/supabaseServer';
-import { z } from 'zod';
-import { SQUADRON_MEMBER_LIMIT } from '@/lib/squadronConstants';
 import { loadSquadronSummaries } from '@/lib/squadronData';
+import { parseSquadronInput, squadronWriteError, tagFromName } from '@/lib/squadronForm';
 
 export const dynamic = 'force-dynamic';
-
-const createSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  tag: z.string().trim().min(2).max(10).regex(/^[A-Za-z0-9]+$/).optional(),
-  description: z.string().max(1000).optional(),
-  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  icon: z.string().max(50).optional(),
-  allegiance: z.string().max(50).optional(),
-  power: z.string().max(50).optional(),
-  language: z.string().max(50).optional(),
-  timezone: z.string().max(50).optional(),
-  member_limit: z.number().min(1).max(SQUADRON_MEMBER_LIMIT).optional(),
-  discord_url: z.string().max(500).optional(),
-  website_url: z.string().max(500).optional(),
-  recruitment_message: z.string().max(1000).optional(),
-  activity_type: z.string().max(50).optional(),
-  is_open_recruitment: z.boolean().optional(),
-  home_system: z.string().max(100).optional(),
-});
 
 function boundedInteger(value: string | null, fallback: number, min: number, max: number) {
   const parsed = Number.parseInt(value ?? '', 10);
@@ -50,13 +30,41 @@ export async function GET(req: Request) {
   }
 }
 
+/**
+ * Создание эскадрильи.
+ *
+ * Здесь же лечится жалоба «эскадрильи не создаются». Причин было три:
+ *
+ *  1. форма страницы `/squadrons` шлёт незаполненные поля пустыми строками,
+ *     а проверка требовала у тега 2–10 символов: `tag: ""` — это не
+ *     «не указан», поэтому запрос отклонялся ещё до базы;
+ *  2. когда тег действительно не приходил, в базу уходил `NULL`, а колонка
+ *     `squadrons.tag` объявлена `NOT NULL` — падал уже insert;
+ *  3. любой отказ базы превращался в «Could not create squadron», из-за чего
+ *     ни пилот, ни поддержка не понимали, что произошло.
+ *
+ * Теперь ввод нормализуется (`parseSquadronInput`), тег при необходимости
+ * собирается из названия, а ошибки записи переводятся в понятный текст.
+ */
 export async function POST(req: Request) {
+  let body: unknown;
   try {
-    const body = await req.json();
-    const parsed = createSchema.parse(body);
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: 'Некорректный JSON' }, { status: 400 });
+  }
 
+  const parsed = parseSquadronInput(body);
+  if (!parsed.ok || !parsed.value) {
+    return NextResponse.json(
+      { error: parsed.errors.join('. '), errors: parsed.errors },
+      { status: 400 },
+    );
+  }
+
+  try {
     const { user } = await authFromRequest(req);
-    if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!user) return NextResponse.json({ error: 'Войдите в аккаунт' }, { status: 401 });
 
     // A member relation is authoritative, while created_by covers legacy
     // squadrons made before the automatic membership trigger was available.
@@ -83,39 +91,96 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Вы уже состоите в эскадрилье. Сначала покиньте текущую.' }, { status: 409 });
     }
 
+    // `squadrons.created_by` ссылается на `profiles`. У аккаунтов, созданных
+    // до автоматического создания профиля (или при сбое OAuth), строки может
+    // не быть — тогда insert падал внешним ключом. Создаём её молча: это то
+    // же, что делает /api/auth/ensure-profile при входе.
+    const { data: existingProfile } = await service
+      .from('profiles')
+      .select('id')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (!existingProfile) {
+      const { error: profileError } = await service
+        .from('profiles')
+        .insert({ id: user.id, email: user.email ?? null });
+      // 23505 — профиль успели создать параллельно; это не ошибка.
+      if (profileError && profileError.code !== '23505') {
+        console.error('[squadrons POST] profile bootstrap', profileError.message);
+        return NextResponse.json({ error: squadronWriteError(profileError) }, { status: 409 });
+      }
+    }
 
-    const { data: squadron, error } = await service
+    const row = { ...parsed.value, created_by: user.id };
+    let { data: squadron, error } = await service
       .from('squadrons')
-      .insert({
-        name: parsed.name,
-        tag: parsed.tag || null,
-        description: parsed.description || null,
-        color: parsed.color || '#3b82f6',
-        icon: parsed.icon || 'squadron',
-        allegiance: parsed.allegiance || 'Independent',
-        power: parsed.power || null,
-        language: parsed.language || 'Russian',
-        timezone: parsed.timezone || 'Moscow',
-        member_limit: SQUADRON_MEMBER_LIMIT,
-        discord_url: parsed.discord_url || null,
-        website_url: parsed.website_url || null,
-        recruitment_message: parsed.recruitment_message || null,
-        activity_type: parsed.activity_type || 'Mixed',
-        is_open_recruitment: parsed.is_open_recruitment ?? true,
-        home_system: parsed.home_system || null,
-        created_by: user.id,
-      })
+      .insert(row)
       .select()
       .single();
 
-    if (error || !squadron) throw error || new Error('Could not create squadron');
+    // Схема отстала и колонки нет — пробуем ещё раз без неё, чтобы эскадрилья
+    // всё же появилась (остальные поля пилот дозаполнит в настройках).
+    const missing = error?.code === 'PGRST204' || error?.code === '42703'
+      ? error.message?.match(/'([^']+)' column/)?.[1] ?? error.message?.match(/column "([^"]+)"/)?.[1]
+      : null;
+    if (missing && missing in row && !['name', 'created_by'].includes(missing)) {
+      const retry = { ...row };
+      delete (retry as Record<string, unknown>)[missing];
+      console.warn(`[squadrons POST] в таблице squadrons нет колонки ${missing} — примените миграции`);
+      ({ data: squadron, error } = await service.from('squadrons').insert(retry).select().single());
+    }
+
+    // Колонка tag объявлена NOT NULL на старых базах: подставляем тег из
+    // названия, вместо того чтобы возвращать пилоту ошибку PostgreSQL.
+    if (error?.code === '23502' && /"?tag"?/.test(error.message ?? '')) {
+      ({ data: squadron, error } = await service
+        .from('squadrons')
+        .insert({ ...row, tag: row.tag || tagFromName(row.name) })
+        .select()
+        .single());
+    }
+
+    if (error || !squadron) {
+      console.error('[squadrons POST]', error?.code, error?.message);
+      return NextResponse.json({ error: squadronWriteError(error) }, { status: 500 });
+    }
+
+    // Состав создаёт триггер on_squadron_created. Если его нет (база не
+    // обновлена), эскадрилья осталась бы без командира — дозаписываем сами.
+    const { data: membership } = await service
+      .from('squadron_members')
+      .select('id')
+      .eq('squadron_id', squadron.id)
+      .eq('user_id', user.id)
+      .maybeSingle();
+    if (!membership) {
+      const { data: commanderRank } = await service
+        .from('squadron_ranks')
+        .select('id')
+        .eq('squadron_id', squadron.id)
+        .order('sort_order', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      const { error: memberError } = await service
+        .from('squadron_members')
+        .insert({
+          squadron_id: squadron.id,
+          user_id: user.id,
+          role: 'commander',
+          ...(commanderRank?.id ? { rank_id: commanderRank.id } : {}),
+        });
+      if (memberError) {
+        console.error('[squadrons POST] membership', memberError.message);
+        return NextResponse.json(
+          { squadron, warning: `Эскадрилья создана, но вас не удалось записать в состав: ${squadronWriteError(memberError)}` },
+        );
+      }
+    }
+
     return NextResponse.json({ squadron });
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: 'Некорректные данные эскадрильи' }, { status: 400 });
-    }
     const message = error instanceof Error ? error.message : 'Could not create squadron';
     console.error('[squadrons POST]', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: squadronWriteError(error as { message?: string }) }, { status: 500 });
   }
 }

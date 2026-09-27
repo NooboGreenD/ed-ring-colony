@@ -1801,7 +1801,11 @@ class CarrierOverlay(OverlayWindow):
         pct = int(data.get("fill_percent") or 0)
 
         if stats_seen and capacity > 0:
-            self.total_label.config(text=f"{stored} / {capacity} t")
+            # «≈» — тоннаж сдвинут нашими переводами после последнего
+            # CarrierStats: цифра живая, но это уже оценка, а не то, что
+            # игра написала в журнал.
+            mark = "≈" if data.get("stored_estimated") else ""
+            self.total_label.config(text=f"{mark}{stored} / {capacity} t")
             # Ширина полосы считалась от «магических» 300 px: у растянутого
             # блока полоса обрывалась на трети, у узкого — вылезала за край,
             # и заполнение выглядело неверным. Берём реальную ширину дорожки.
@@ -1826,6 +1830,11 @@ class CarrierOverlay(OverlayWindow):
             details.append(f"свободно {int(data.get('free') or 0)} t")
             if int(data.get("reserved") or 0):
                 details.append(f"резерв {int(data.get('reserved') or 0)} t")
+            # Тонны на борту, которых нет в поимённом списке: груз чужих
+            # командиров. Раньше эта разница молча исчезала, и список
+            # выглядел как полный состав трюма.
+            if int(data.get("untracked") or 0):
+                details.append(f"прочее {int(data.get('untracked') or 0)} t")
         if bool(data.get("pending_decommission")):
             details.append("списывается!")
         if bool(data.get("at_carrier")):
@@ -1833,7 +1842,7 @@ class CarrierOverlay(OverlayWindow):
         self.detail_label.config(text="  ·  ".join(details))
 
         rows = list(data.get("commodities") or [])
-        self._render_rows(rows)
+        self._render_rows(rows, self._empty_text(data))
 
         # Чей список материалов показан.
         need_label = str(data.get("need_label") or "").strip()
@@ -1863,13 +1872,18 @@ class CarrierOverlay(OverlayWindow):
             color = COLOR_CYAN
 
         # Откуда цифры по товарам: снимок Raven Colonial видит груз всех
-        # командиров, локальный учёт — только ваши переводы из журнала.
-        if bool(data.get("remote_seen")):
-            source = "груз: Raven Colonial"
-        elif tracked_total or delivered_total:
-            source = "груз: по журналу (только ваши перевозки)"
-        else:
-            source = ""
+        # командиров, локальный учёт — только ваши переводы из журнала, а
+        # «оценка» — список, сведённый с тоннажем из CarrierStats (часть
+        # позиций к этому моменту уже увезли без нашего ведома).
+        cargo_source = str(data.get("cargo_source") or "")
+        if not cargo_source:
+            cargo_source = "remote" if data.get("remote_seen") else (
+                "journal" if (tracked_total or delivered_total) else "")
+        source = {
+            "remote": "груз: Raven Colonial",
+            "journal": "груз: по журналу (только ваши перевозки)",
+            "estimate": "груз: оценка, сведена с CarrierStats",
+        }.get(cargo_source, "")
         if delivered_total and need_total:
             source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
         if source:
@@ -1959,7 +1973,31 @@ class CarrierOverlay(OverlayWindow):
         frame.grid_columnconfigure(0, weight=1)
         return {"frame": frame, "cells": cells}
 
-    def _render_rows(self, rows: list):
+    #: Что писать вместо списка товаров, когда показывать нечего.
+    EMPTY_DEFAULT = ("[ Нет данных по товарам ]\nОткройте Carrier Management\n"
+                     "или пристыкуйтесь к авианосцу")
+
+    @classmethod
+    def _empty_text(cls, data: dict) -> str:
+        """Почему список пуст — это разные ситуации, и врать нельзя.
+
+        «Нет данных» и «трюм пуст» командир различает по последствиям:
+        в первом случае надо открыть Carrier Management, во втором — везти
+        груз. Отдельный случай — список выброшен сверкой с тоннажем: товары
+        на борту есть, но состав мы честно не знаем.
+        """
+        data = data or {}
+        if not data.get("stats_seen"):
+            return cls.EMPTY_DEFAULT
+        stored = int(data.get("stored") or 0)
+        if stored <= 0:
+            return "[ Трюм пуст ]\nПо CarrierStats на борту 0 t"
+        if str(data.get("reconciled") or "") == "dropped":
+            return (f"[ Состав груза неизвестен ]\nНа борту {stored} t по CarrierStats,\n"
+                    "поимённый учёт устарел")
+        return cls.EMPTY_DEFAULT
+
+    def _render_rows(self, rows: list, empty_text: str = ""):
         """Обновить список, переиспользуя виджеты.
 
         Прежний код уничтожал и создавал заново все строки на каждое
@@ -1968,8 +2006,7 @@ class CarrierOverlay(OverlayWindow):
         if self._empty_label is None:
             self._empty_label = tk.Label(
                 self.inner,
-                text="[ Нет данных по товарам ]\nОткройте Carrier Management\n"
-                     "или пристыкуйтесь к авианосцу",
+                text=empty_text or self.EMPTY_DEFAULT,
                 font=self._row_font, fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, justify=tk.LEFT,
             )
 
@@ -1978,6 +2015,7 @@ class CarrierOverlay(OverlayWindow):
                 for entry in self._row_pool:
                     entry["frame"].pack_forget()
                 self._row_order = []
+            self._empty_label.config(text=empty_text or self.EMPTY_DEFAULT)
             self._empty_label.pack(pady=18, anchor=tk.W)
             return
 
@@ -3437,9 +3475,11 @@ class OverlayManager:
             self.exobio_overlay.update_exobiology(data.get("exobiology"))
 
         if self.carrier_overlay:
-            carrier_data = data.get("carrier")
-            if carrier_data:
-                self.carrier_overlay.update_carrier(carrier_data)
+            # Обновляем всегда, даже когда данных нет: при `if carrier_data`
+            # блок замирал на последнем непустом состоянии, и после сброса
+            # (смена командира, разгруженный носитель) в нём продолжали
+            # висеть старые строки груза.
+            self.carrier_overlay.update_carrier(data.get("carrier") or {})
 
         if self.session_overlay:
             current_sys = data.get("current", "-")

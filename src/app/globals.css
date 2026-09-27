@@ -4467,3 +4467,168 @@ html[data-hud-effect="glow"]::before {
   .ops-env-actions { justify-content: flex-start; }
   .ops-env-add-row { grid-template-columns: 1fr; }
 }
+
+/* ── Frontier CAPI: страница привязки /account/capi ──────────────────
+   Классы .capi-* использовались разметкой, но стилей для них в проекте не
+   было — блок статуса и сетка рангов рисовались «голым» потоком текста. */
+
+.capi-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.capi-status-connected,
+.capi-status-broken {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.capi-status-connected { color: var(--green); }
+.capi-status-broken { color: var(--red); }
+
+.capi-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.capi-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--orange);
+  margin-bottom: 16px;
+}
+
+.capi-rank-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.capi-rank-box {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 10px 12px;
+}
+
+.capi-rank-name {
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.capi-rank-value {
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+  color: var(--text);
+  margin-top: 4px;
+}
+
+.capi-binding {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.capi-binding-warn { border-color: var(--orange); }
+
+/* Сообщения о результате привязки: раньше колбэк присылал их в URL, а
+   страница молчала — отсюда «все этапы проходят, но ничего не работает». */
+.capi-notice {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  background: var(--panel);
+  border-radius: 4px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+
+.capi-notice strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.capi-notice-success { border-left-color: var(--green); }
+.capi-notice-partial { border-left-color: var(--orange); }
+.capi-notice-error { border-left-color: var(--red); }
+
+.capi-notice-hint {
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.capi-notice-detail {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.capi-warnings {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.capi-platforms {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.capi-platform {
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .2s ease, color .2s ease;
+}
+
+.capi-platform:hover { color: var(--text); }
+
+.capi-platform-active {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+.capi-diagnostics {
+  max-height: 340px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

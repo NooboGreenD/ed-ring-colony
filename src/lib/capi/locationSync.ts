@@ -1,18 +1,28 @@
 // ═══════════════════════════════════════════════════════════════
-// Sync squadron member locations from CAPI
+// Положение членов эскадрильи по данным CAPI
 // ═══════════════════════════════════════════════════════════════
+//
+// Принимает уже полученный профиль, токен или клиент. Вариант с профилем —
+// основной: синк и так только что забрал `/profile`, а Frontier просит не
+// частить (не больше пары запросов в секунду, в идеале — один в минуту).
+// Раньше функция всегда ходила в CAPI сама, то есть каждый синк дёргал
+// `/profile` дважды.
 
 import { createServiceClient } from '@/lib/supabaseServer';
-import { CapiClient } from './client';
+import { CapiClient } from './client.ts';
+import type { CapiProfile } from '@/types/capi';
+
+function isProfile(value: unknown): value is CapiProfile {
+  return typeof value === 'object' && value !== null && 'cmdrName' in value;
+}
 
 export async function syncMemberLocation(
   userId: string,
-  accessTokenOrClient: string | CapiClient,
+  source: string | CapiClient | CapiProfile,
 ): Promise<string | null> {
-  const client = typeof accessTokenOrClient === 'string'
-    ? new CapiClient(accessTokenOrClient)
-    : accessTokenOrClient;
-  const profile = await client.getProfile();
+  const profile: CapiProfile = isProfile(source)
+    ? source
+    : await (typeof source === 'string' ? new CapiClient(source) : source).getProfile();
 
   if (!profile.currentSystem?.name) return null;
 
@@ -23,7 +33,7 @@ export async function syncMemberLocation(
     .from('location_privacy')
     .select('share_with')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (privacy?.share_with === 'none') return null;
 

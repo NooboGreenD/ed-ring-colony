@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+  DEFAULT_AUDIENCE,
   FRONTIER_APP_CLIENT_ID,
   buildAuthUrl,
   createCodeChallenge,
@@ -9,8 +10,10 @@ import {
   createPkcePair,
   exchangeCode,
   frontierClientId,
+  frontierRedirectUri,
   isPkceConfigured,
   isTokenExpiredStatus,
+  normalizeAudience,
 } from '../../src/lib/capi/oauth.ts';
 
 // Все тесты ниже работают с подменённым окружением: OAuth-функции читают
@@ -70,7 +73,10 @@ test('ссылка авторизации содержит PKCE-параметр
   assert.equal(parsed.origin + parsed.pathname, 'https://auth.frontierstore.net/auth');
   assert.equal(parsed.searchParams.get('code_challenge'), 'ch123');
   assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256');
-  assert.equal(parsed.searchParams.get('audience'), 'frontier');
+  // По умолчанию просим токен сразу для трёх платформ — как EDMC. С одним
+  // лишь 'frontier' пилот со Steam/Epic получает токен учётки магазина, и
+  // CAPI отвечает 400 «Please Visit the store to purchase Elite: Dangerous».
+  assert.equal(parsed.searchParams.get('audience'), 'frontier,steam,epic');
   assert.equal(parsed.searchParams.get('scope'), 'auth capi');
   assert.equal(parsed.searchParams.get('response_type'), 'code');
   assert.equal(parsed.searchParams.get('state'), 'st8');
@@ -86,7 +92,50 @@ test('client_id по умолчанию — приложение ED Ring Colony 
   assert.equal(clientId, '0d6027a7-2561-4e1b-af2e-2fe71b296bdd');
   // «Настроен» означает наличие redirect_uri, а не секрета.
   assert.equal(withEnv({ FRONTIER_REDIRECT_URI: REDIRECT }, () => isPkceConfigured()), true);
-  assert.equal(withEnv({ FRONTIER_REDIRECT_URI: undefined }, () => isPkceConfigured()), false);
+});
+
+test('без FRONTIER_REDIRECT_URI адрес возврата берётся от адреса сайта', () => {
+  // Раньше пустая переменная роняла buildAuthUrl исключением ещё до
+  // редиректа: пилот видел пустую страницу ошибки, а в логах — «not
+  // configured». Колбэк живёт по фиксированному пути, поэтому собрать
+  // адрес из NEXT_PUBLIC_SITE_URL можно без всякой настройки.
+  const url = withEnv(
+    { FRONTIER_REDIRECT_URI: undefined, NEXT_PUBLIC_SITE_URL: 'https://colony.test' },
+    () => frontierRedirectUri(),
+  );
+  assert.equal(url, 'https://colony.test/api/capi/callback');
+  assert.equal(withEnv({ FRONTIER_REDIRECT_URI: undefined }, () => isPkceConfigured()), true);
+
+  // Явная переменная всегда важнее вычисленного значения.
+  assert.equal(
+    withEnv({ FRONTIER_REDIRECT_URI: REDIRECT, NEXT_PUBLIC_SITE_URL: 'https://colony.test' },
+      () => frontierRedirectUri()),
+    REDIRECT,
+  );
+});
+
+test('audience: явная платформа уважается, пустая — список EDMC', () => {
+  // Пилоту со Steam нужен свой audience, иначе диалог входа не предложит
+  // нужный способ. Всё непонятное и пустое — список EDMC, который подходит
+  // и магазину Frontier, и Steam, и Epic.
+  assert.equal(normalizeAudience('steam'), 'steam');
+  assert.equal(normalizeAudience('EPIC'), 'epic');
+  assert.equal(normalizeAudience('psn'), 'psn');
+  assert.equal(normalizeAudience(' xbox '), 'xbox');
+  assert.equal(normalizeAudience('nintendo'), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience(null), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience('auto'), DEFAULT_AUDIENCE);
+  assert.equal(normalizeAudience('all'), DEFAULT_AUDIENCE);
+  assert.equal(DEFAULT_AUDIENCE, 'frontier,steam,epic');
+  // Список чистится от мусора и дублей, порядок сохраняется.
+  assert.equal(normalizeAudience('steam, frontier ,steam'), 'steam,frontier');
+  assert.equal(normalizeAudience('steam,nintendo'), 'steam');
+});
+
+test('явная платформа доезжает до ссылки авторизации', () => {
+  const url = withEnv({ FRONTIER_REDIRECT_URI: REDIRECT }, () =>
+    buildAuthUrl('st9', { codeChallenge: 'ch', audience: 'steam' }));
+  assert.equal(new URL(url).searchParams.get('audience'), 'steam');
 });
 
 test('обмен кода требует верификатор или секрет', async () => {

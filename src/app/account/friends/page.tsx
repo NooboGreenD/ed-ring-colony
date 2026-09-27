@@ -46,7 +46,7 @@ export default function FriendsPage() {
 
   return (
     <div>
-      <h2>Друзья</h2>
+      <h2>Сообщения и друзья</h2>
       <FriendsPanel
         userId={user.id}
         myName={nickFromUser(user, profile)}

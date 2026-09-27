@@ -57,7 +57,9 @@ class PkceEncodingTests(unittest.TestCase):
             state="st",
         )
         self.assertTrue(url.startswith(companion_api.AUTH_URL + "?"))
-        for fragment in ("audience=frontier", "scope=auth+capi", "response_type=code",
+        # audience по умолчанию — список EDMC: иначе пилот со Steam/Epic
+        # получит токен учётки магазина, и CAPI ответит 400.
+        for fragment in ("audience=frontier%2Csteam%2Cepic", "scope=auth+capi", "response_type=code",
                          "client_id=cid", "code_challenge=ch",
                          "code_challenge_method=S256", "state=st"):
             self.assertIn(fragment, url)

@@ -40,7 +40,10 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Frontier CAPI** — досье заполняется из Companion API по потоку **PKCE**, поэтому Shared Key от FDEV не
   требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — ключ
   приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper). Десктопный Colonial Helper авторизуется сам и присылает
-  профиль на сайт
+  профиль на сайт. Привязка фиксируется сразу после обмена кода на токены, поэтому недоступный CAPI
+  (техобслуживание `418`, аккаунт без входа в игру) даёт «привязано, данных пока нет», а не потерю связи;
+  `/account/capi` показывает причину, срок действия токена и диагностику (`/api/capi/status`).
+  Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md)
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
   правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота
 - **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
@@ -55,7 +58,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   остальные — оценка «≈»). План показывается на той же 3D-карте
   системы, выгружается в JSON и копируется сводкой. План можно сохранить на сервере (`system_plans`), опубликовать
   и поделиться ссылкой `/architect?plan=<id>`; рядом показываются фактические стройплощадки системы
-  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Uploader 2.12.0
+  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Uploader 2.12.2
   отправляет расширенные сканы тел и snapshots стройки, а прогресс сверяется параллельно с Raven Colonial.
   Движок — `lib/architect/`
   (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
@@ -428,7 +431,7 @@ docker compose exec web node scripts/galnet-sync.mjs --translate-only
 npm test
 ```
 
-## Colonial Helper uploader 2.12.0
+## Colonial Helper uploader 2.12.2
 
 В репозитории находится Windows/Python uploader `uploader/colonial_helper.py`
 для загрузки данных Elite Dangerous на ED Ring Colony. В этой версии он передаёт

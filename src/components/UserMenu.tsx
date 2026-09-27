@@ -8,6 +8,7 @@ import { authFetch, createSupabaseClient, getCurrentUser } from "@/lib/supabaseC
 import { avatarFromUser, nickFromUser } from "@/lib/authProfile";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
+import Avatar from "@/components/Avatar";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
 import { useCosmeticsFor } from "@/components/Cosmetics/useCosmetics";
 import { IconStore } from "@/components/Icons";
@@ -164,10 +165,8 @@ export default function UserMenu() {
       <button type="button" className="user-menu-btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         {cosmetics?.frame ? (
           <CosmeticAvatar avatarUrl={avatar} cmdrName={nick} frameId={cosmetics.frame.id} framePreview={cosmetics.frame.preview} size={30} />
-        ) : avatar ? (
-          <img src={avatar} alt="" className="avatar-sm" />
         ) : (
-          <span className="avatar-sm" style={{ background: "#3a3d40", display: "inline-block" }} />
+          <Avatar url={avatar} name={nick} size={30} className="avatar-sm" />
         )}
         <span className="user-menu-nick">
           {cosmetics?.glow || cosmetics?.tier ? (
@@ -183,21 +182,24 @@ export default function UserMenu() {
               <span>{mySquadron.tag ? `[${mySquadron.tag}] ` : ""}{mySquadron.name}</span>
             </Link>
           )}
-          <Link href="/account/friends" className="user-menu-item" onClick={() => setOpen(false)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span>{t('account.friends') || 'Друзья'}</span>
-            {friendRequestCount > 0 && (
-              <span style={{ background: "#e67e22", color: "#fff", fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                {friendRequestCount > 99 ? "99+" : friendRequestCount}
-              </span>
-            )}
-          </Link>
-          <Link href="/account/messages" className="user-menu-item" onClick={() => setOpen(false)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span>{t('account.messages') || 'Сообщения'}</span>
-            {msgCount > 0 && (
-              <span style={{ background: "#e74c3c", color: "#fff", fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-                {msgCount > 99 ? "99+" : msgCount}
-              </span>
-            )}
+          {/* Сообщения и друзья — один пункт: переписка возможна только с
+              друзьями, и держать для неё отдельную страницу незачем.
+              Счётчики остаются раздельными: оранжевый — заявки в друзья,
+              красный — непрочитанные сообщения. */}
+          <Link href="/account/friends" className="user-menu-item" onClick={() => setOpen(false)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <span>{t('account.messagesAndFriends') || 'Сообщения и друзья'}</span>
+            <span style={{ display: "inline-flex", gap: 4 }}>
+              {friendRequestCount > 0 && (
+                <span title={t('account.friends') || 'Друзья'} style={{ background: "#e67e22", color: "#fff", fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+                  {friendRequestCount > 99 ? "99+" : friendRequestCount}
+                </span>
+              )}
+              {msgCount > 0 && (
+                <span title={t('account.messages') || 'Сообщения'} style={{ background: "#e74c3c", color: "#fff", fontSize: 11, fontWeight: 700, minWidth: 18, height: 18, borderRadius: 9, display: "inline-flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+                  {msgCount > 99 ? "99+" : msgCount}
+                </span>
+              )}
+            </span>
           </Link>
           <Link href={statsHref} className="user-menu-item" onClick={() => setOpen(false)}>{t('account.myStats') || 'Моя статистика'}</Link>
           <Link href="/premium-shop" className="user-menu-item" onClick={() => setOpen(false)}><IconStore size={14} color="#e67e22" /> {t('account.shop') || 'Премиум-магазин'}</Link>

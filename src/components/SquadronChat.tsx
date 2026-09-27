@@ -7,6 +7,7 @@ import { IconSend, IconTrash, IconLock } from '@/components/Icons';
 import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
 import CosmeticAvatar from '@/components/Cosmetics/CosmeticAvatar';
 import { useCosmeticsFor } from '@/components/Cosmetics/useCosmetics';
+import Avatar from "@/components/Avatar";
 
 function SquadronAvatar({ userId, name, avatarUrl }: { userId: string; name: string; avatarUrl?: string | null }) {
   const c = useCosmeticsFor(userId);
@@ -313,7 +314,7 @@ export default function SquadronChat({ squadronId, userId, isOfficer, members }:
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
               >
                 {m.avatar_url ? (
-                  <img src={m.avatar_url} alt="" style={{ width: 24, height: 24, borderRadius: '50%' }} />
+                  <Avatar url={m.avatar_url} name={m.cmdr_name} size={24} />
                 ) : (
                   <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#3a3d40', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10 }}>
                     {m.cmdr_name?.[0]?.toUpperCase() || '?'}

@@ -237,7 +237,11 @@ class CarrierRemainingTests(unittest.TestCase):
         data = self.tracker.state.get_state_dict({"$steel_name;": 200, "tritium": 300})
         self.assertEqual(data["name"], "Spirula")
         self.assertTrue(data["at_carrier"])
-        self.assertEqual(data["stored"], 440)
+        # 440 t из CarrierStats + 420 t, которые мы только что перевели:
+        # в игре Cargo растёт сразу, и блок обязан показывать то же самое.
+        self.assertEqual(data["stored"], 860)
+        self.assertTrue(data["stored_estimated"])
+        # Вместимость под груз не меняется: занятое + свободное.
         self.assertEqual(data["cargo_capacity"], 17819)
         self.assertEqual(data["need_total"], 500)
         rows = {row["key"]: row for row in data["commodities"]}
@@ -387,7 +391,8 @@ class CarrierOverlayIntegrationTests(unittest.TestCase):
 
         data = self.app._get_overlay_data()["carrier"]
         self.assertEqual(data["name"], "Spirula")
-        self.assertEqual(data["stored"], 440)
+        # 440 t по CarrierStats + 420 t нашего перевода.
+        self.assertEqual(data["stored"], 860)
         self.assertEqual(data["cargo_capacity"], 17819)
         rows = {row["key"]: row for row in data["commodities"]}
         # Потребность площадки: Steel 6680-720=5960, Liquid oxygen 1865-0=1865.
