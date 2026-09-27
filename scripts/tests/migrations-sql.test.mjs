@@ -294,3 +294,51 @@ test('autovacuum и fillfactor настроены под большую табл
   assert.match(SCALE, /autovacuum_vacuum_scale_factor = 0\.01/);
   assert.match(SCALE, /autovacuum_analyze_scale_factor = 0\.002/);
 });
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Снимок схемы. `supabase/full_schema.sql` разворачивает свежую базу одним
+   файлом, и отставание снимка от `migrations/` — не теоретическая проблема:
+   на 27.09.2026 в нём не хватало трёх миграций, включая
+   `20261002000000_capi_profile_binding_and_fleet.sql`. На такой базе первый
+   же upsert привязки Frontier падал с PGRST204 («колонки нет»), а пилот
+   видел «OAuth прошёл, привязки нет». Раньше это ловилось только глазами
+   (SQL-MIGRATIONS-AUDIT.md → «Осталось на будущее»).
+   ────────────────────────────────────────────────────────────────────────── */
+
+test('снимок full_schema.sql содержит все миграции и в том же порядке', () => {
+  const snapshot = readFileSync(join(ROOT, 'supabase', 'full_schema.sql'), 'utf8');
+  const inSnapshot = [...snapshot.matchAll(/MIGRATION:\s*(\S+\.sql)/g)].map((m) => m[1]);
+  const onDisk = readdirSync(join(ROOT, 'supabase', 'migrations'))
+    .filter((f) => f.endsWith('.sql'))
+    .sort();
+
+  const missing = onDisk.filter((f) => !inSnapshot.includes(f));
+  assert.deepEqual(missing, [], 'миграции есть в каталоге, но не в снимке — пересоберите full_schema.sql');
+
+  const extra = inSnapshot.filter((f) => !onDisk.includes(f));
+  assert.deepEqual(extra, [], 'в снимке остались блоки удалённых/переименованных миграций');
+
+  // Порядок = порядок применения на сервере (deploy/update-project.sh идёт по
+  // алфавиту), иначе снимок может создать таблицу после ALTER'а по ней.
+  assert.deepEqual(inSnapshot, onDisk, 'порядок блоков снимка должен совпадать с порядком применения');
+});
+
+test('миграция диагностики привязки CAPI идемпотентна и даёт колонки, которые пишет код', () => {
+  const file = join(ROOT, 'supabase', 'migrations', '20261003000000_capi_binding_diagnostics.sql');
+  const sql = readFileSync(file, 'utf8');
+
+  // Миграция накатывается на живую базу: только ADD COLUMN IF NOT EXISTS и
+  // CREATE INDEX IF NOT EXISTS, никаких CREATE TABLE и DROP.
+  assert.ok(!/CREATE\s+TABLE/i.test(sql), 'таблицы здесь не создаются');
+  assert.ok(!/\bDROP\s+(TABLE|COLUMN)\b/i.test(sql), 'ничего не удаляется');
+  for (const column of ['platform', 'linked_at', 'last_error', 'last_error_at']) {
+    assert.match(sql, new RegExp(`ADD COLUMN IF NOT EXISTS\\s+${column}\\b`), `capi_tokens.${column}`);
+  }
+  // Колбэк ищет чужую привязку по frontier_id, cron — очередь по last_synced_at.
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_capi_tokens_frontier_id/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_capi_tokens_sync_queue/);
+  // Ранги Odyssey и заём: у баз с ранним снимком схемы этих колонок нет.
+  for (const column of ['mercenary_rank', 'exobiologist_rank', 'cqc_rank', 'loan', 'frontier_id']) {
+    assert.match(sql, new RegExp(`ADD COLUMN IF NOT EXISTS\\s+${column}\\b`), `capi_profiles.${column}`);
+  }
+});

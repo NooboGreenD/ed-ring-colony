@@ -100,7 +100,11 @@ export default function AccountPage() {
       const res = await authFetch('/api/capi/profile');
       if (res.ok) {
         const json = await res.json();
-        setCapiLinked(!!json.profile);
+        // Признак привязки — сохранённый токен, а не кэш профиля CAPI:
+        // строки в capi_profiles может не быть при живой связи (командир
+        // ещё не заходил в игру, Companion API на техобслуживании), и
+        // кнопка «Привязать» в такой момент только путала.
+        setCapiLinked(Boolean(json.binding?.linked));
       }
     })();
   }, [user]);

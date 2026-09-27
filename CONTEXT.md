@@ -403,6 +403,13 @@ Applied via `npx supabase db push`.
 | `/api/ravencolonial/sync/log` | GET | Admin | Sync log |
 | `/api/logs/upload` | POST | API token | Deliveries and construction snapshots from Colonial Helper |
 | `/api/journal/import` | POST | Auth | Browser/CAPI Journal import |
+| `/api/capi/auth` | GET | Auth | Starts the Frontier PKCE flow (`?platform=` picks the OAuth `audience`) |
+| `/api/capi/callback` | GET | Signed cookie | Token exchange → saves `capi_tokens` → first sync; always redirects to `/account/capi?status=…&reason=…` |
+| `/api/capi/sync` | POST | Auth | Manual sync (profile + journal) with a report: `journalStatus`, imported/duplicate events, warnings |
+| `/api/capi/profile` | GET | Auth | Cached profile + `binding` (linked, token active, expiry, platform, last error) |
+| `/api/capi/journal` | GET | Auth | Raw CAPI journal for a date; `204/206` reported as `empty`/`partial` |
+| `/api/capi/status` | GET | Auth | Binding diagnostics without secrets (masked client id, redirect match, stored row, live CAPI probe) |
+| `/api/capi/unlink` | POST | Auth | Deactivates the token and clears the cached profile |
 | `/api/translate` | POST | Auth | Translate content |
 | `/api/cron/translate` | POST | Cron | Auto-translation job |
 | `/api/galnet` | POST | Cron | Galnet sync + translate new articles |
@@ -788,6 +795,27 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - ВАЖНО: поле `field_galnet_date` («11 SEP 3312») — внутриигровая дата,
   в колонку `published_at` (TIMESTAMPTZ) не попадает
 
+### 8.11 Frontier CAPI (account binding → dossier)
+- Flow: `/api/capi/auth` (PKCE, no FDEV Shared Key) → Frontier login →
+  `/api/capi/callback`. The callback **saves `capi_tokens` first** and only then
+  pulls data, so a CAPI outage degrades to `status=partial` instead of losing
+  the binding. See [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md) for the root-cause
+  analysis of the earlier "OAuth succeeds but nothing is linked" behaviour.
+- Modules in `src/lib/capi/`: `oauth.ts` (auth/token/decode, `audience`),
+  `client.ts` (HTTP, `EDCD-EDRingColony-<version>` User-Agent, `204/206/418`
+  handling), `profile.ts` (the only place the CAPI payload is mapped:
+  `commander.credits`, `commander.debt`, `commander.rank.*`, `lastSystem.name`,
+  `lastStarport.name` only while docked, `ship.shipName`), `journal.ts` (NDJSON),
+  `persist.ts` (writes survive a database that misses a migration),
+  `linkState.ts` (flow cookies, 30-minute TTL, HMAC-signed owner),
+  `syncPilot.ts` (shared by callback, manual sync and cron), `messages.ts` (UI text).
+- Storage: `capi_tokens` (binding + `platform`, `linked_at`, `last_error`),
+  `capi_profiles` (cache), `pilot_stats` (dossier source of truth for
+  `/api/cmdr/stats` and `/cmdr/[name]`), plus colonisation events and member
+  location from the journal.
+- Rate limit: roughly one CAPI request per minute per account; `/journal` is not
+  realtime. Cron `/api/cron/capi-sync` processes a small batch per run.
+
 ---
 
 ## 9. Environment Variables
@@ -821,6 +849,12 @@ GALAXY_IMPORT_FILE=...     # pin a local dump; import reads it, downloads nothin
 
 # External APIs
 RAVEN_API_BASE=...
+
+# Frontier CAPI (PKCE — no FDEV Shared Key required)
+FRONTIER_REDIRECT_URI=https://<site>/api/capi/callback   # defaults to NEXT_PUBLIC_SITE_URL + /api/capi/callback
+FRONTIER_CLIENT_ID=...     # optional, built-in app key is used when empty
+FRONTIER_CLIENT_SECRET=    # optional, confidential clients only
+CAPI_STATE_SECRET=...      # optional, signs the flow-owner cookie (falls back to the service role key)
 ```
 
 ---

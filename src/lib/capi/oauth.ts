@@ -41,6 +41,11 @@
 // `FRONTIER_CLIENT_ID` переопределяет его (например, для отдельного стенда).
 
 import { createHash, randomBytes } from 'crypto';
+// Относительные пути с расширением — сознательно: эти модули грузит не
+// только сборка Next, но и `node --test` напрямую, а он про алиас `@/`
+// ничего не знает (см. scripts/tests/capi-pkce.test.mjs).
+import { getSiteUrl } from '../siteUrl.ts';
+import { capiUserAgent } from './client.ts';
 
 const FRONTIER_AUTH_URL = 'https://auth.frontierstore.net/auth';
 const FRONTIER_TOKEN_URL = 'https://auth.frontierstore.net/token';
@@ -81,8 +86,48 @@ export function isPkceConfigured(): boolean {
   return Boolean(frontierRedirectUri());
 }
 
+/** Путь колбэка на сайте. Он же зарегистрирован в Developer Zone Frontier. */
+export const FRONTIER_CALLBACK_PATH = '/api/capi/callback';
+
+/**
+ * Куда Frontier вернёт пользователя.
+ *
+ * `FRONTIER_REDIRECT_URI` — приоритет (отдельный стенд, свой клиент). Если
+ * переменная не задана, берём публичный адрес сайта: раньше пустое значение
+ * роняло `buildAuthUrl` ещё до редиректа, и «привязка» заканчивалась белой
+ * страницей ошибки без единого объяснения. Адрес обязан совпадать с
+ * зарегистрированным у Frontier до символа.
+ */
 export function frontierRedirectUri(): string {
-  return (process.env.FRONTIER_REDIRECT_URI || '').trim();
+  const configured = (process.env.FRONTIER_REDIRECT_URI || '').trim();
+  if (configured) return configured;
+
+  try {
+    return `${getSiteUrl()}${FRONTIER_CALLBACK_PATH}`;
+  } catch {
+    // NEXT_PUBLIC_SITE_URL задан некорректно — пусть вызывающий код скажет
+    // об этом человеческим языком.
+    return '';
+  }
+}
+
+/**
+ * Платформы аккаунта (`audience`). Значения — из документации Frontier
+ * (hosting.zaonce.net/docs/oauth2/instructions.html); `epic` там не описан,
+ * но принимается и используется EDMC, поэтому оставлен.
+ *
+ * По умолчанию `frontier`: это аккаунт frontierstore.net. Пилоту со Steam
+ * или Epic нужна своя кнопка, иначе диалог входа просто не предложит нужный
+ * способ, авторизация «пройдёт», а CAPI не отдаст данные.
+ */
+export const FRONTIER_AUDIENCES = ['frontier', 'steam', 'epic', 'xbox', 'psn', 'all'] as const;
+export type FrontierAudience = (typeof FRONTIER_AUDIENCES)[number];
+
+export function normalizeAudience(value: unknown): FrontierAudience {
+  const raw = String(value ?? '').trim().toLowerCase();
+  return (FRONTIER_AUDIENCES as readonly string[]).includes(raw)
+    ? (raw as FrontierAudience)
+    : 'frontier';
 }
 
 /* ── PKCE ─────────────────────────────────────────────────────────── */
@@ -160,22 +205,59 @@ export interface TokenResponse {
   token_type: string;
 }
 
-async function postForm(body: URLSearchParams): Promise<TokenResponse> {
-  const res = await fetch(FRONTIER_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-    },
-    body,
-  });
+/**
+ * Ошибка сервера авторизации Frontier с сохранённым кодом ответа.
+ *
+ * Код нужен, чтобы отличать «пилот больше не авторизован» (400/401 — код
+ * использован повторно, refresh-токен старше 25 дней) от временной аварии
+ * (5xx, сеть). В первом случае привязку надо помечать неактивной и просить
+ * пройти авторизацию заново, во втором — просто повторить позже.
+ */
+export class FrontierAuthError extends Error {
+  readonly status: number;
+  readonly body: string;
+  /** Пилоту нужно заново пройти авторизацию: токен уже не восстановить. */
+  readonly needsReauth: boolean;
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Frontier token error: ${res.status} ${errText}`);
+  constructor(status: number, body: string) {
+    super(`Frontier token error: ${status} ${body}`.trim());
+    this.name = 'FrontierAuthError';
+    this.status = status;
+    this.body = body;
+    this.needsReauth = status === 400 || status === 401 || status === 403;
+  }
+}
+
+async function postForm(body: URLSearchParams): Promise<TokenResponse> {
+  let res: Response;
+  try {
+    res = await fetch(FRONTIER_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+        // Frontier просит инструменты сообщества представляться по шаблону
+        // EDCD-<App>-<version> — и на /auth, и на /token.
+        'User-Agent': capiUserAgent(),
+      },
+      body,
+      cache: 'no-store',
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (err) {
+    throw new FrontierAuthError(0, err instanceof Error ? err.message : String(err));
   }
 
-  return res.json();
+  const text = await res.text();
+  if (!res.ok) {
+    throw new FrontierAuthError(res.status, text.slice(0, 500));
+  }
+
+  try {
+    return JSON.parse(text) as TokenResponse;
+  } catch {
+    throw new FrontierAuthError(res.status, 'Frontier вернул нечитаемый ответ на запрос токена');
+  }
 }
 
 export interface ExchangeCodeOptions {
@@ -262,6 +344,7 @@ export async function decodeFrontierToken(
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
       Accept: 'application/json',
+      'User-Agent': capiUserAgent(),
     },
     body: new URLSearchParams({ token: accessToken }),
   });
@@ -285,4 +368,51 @@ export async function decodeFrontierToken(
  */
 export function isTokenExpiredStatus(status: number): boolean {
   return status === 401 || status === 403 || status === 422;
+}
+
+export interface FrontierIdentity {
+  /** `customer_id` аккаунта Frontier — стабильный ключ привязки. */
+  frontierId: string | null;
+  email: string | null;
+  /** 'frontier' | 'steam' | 'epic' | 'xbox' | 'psn'. */
+  platform: string | null;
+}
+
+/**
+ * Узнать владельца токена через `GET /me`.
+ *
+ * Зачем: имя командира приходит из CAPI и может меняться, а `customer_id`
+ * постоянен. Сохранённый `frontier_id` позволяет увидеть, что один и тот же
+ * аккаунт Frontier пытаются привязать к двум учётным записям сайта, и не
+ * выдавать чужие данные. Вызов необязательный: любая ошибка — просто null,
+ * привязку она рвать не должна.
+ */
+export async function fetchFrontierIdentity(accessToken: string): Promise<FrontierIdentity | null> {
+  try {
+    const res = await fetch(FRONTIER_ME_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'User-Agent': capiUserAgent(),
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const user = (data && typeof data === 'object' && 'usr' in data
+      ? (data as { usr: Record<string, unknown> }).usr
+      : data) as Record<string, unknown> | null;
+    if (!user || typeof user !== 'object') return null;
+
+    const id = user.customer_id ?? user.customerId ?? null;
+    return {
+      frontierId: id === null || id === undefined ? null : String(id),
+      email: typeof user.email === 'string' ? user.email : null,
+      platform: typeof user.platform === 'string' ? user.platform : null,
+    };
+  } catch {
+    return null;
+  }
 }

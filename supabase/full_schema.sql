@@ -10926,3 +10926,138 @@ COMMENT ON COLUMN public.capi_profiles.loan IS 'Текущий кредитны�
 ALTER TABLE public.system_scans
   ADD COLUMN IF NOT EXISTS semi_major_axis_ls DOUBLE PRECISION;
 
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261001000000_body_signals.sql                     │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ═══════════════════════════════════════════════════════════════
+-- Migration: сигналы тел — не только биология
+-- ═══════════════════════════════════════════════════════════════
+--
+-- `system_scans` умел считать лишь биологические сигналы. Игра сообщает
+-- в `FSSBodySignals`/`SAASignalsFound` и остальные: геологические точки
+-- (материалы), следы людей (чужое присутствие рядом со стройкой),
+-- сигналы стражей и таргоидов. Архитектору системы они нужны на карточке
+-- тела и на 3D-карте, поэтому храним их рядом с биологией.
+--
+-- Колонки добавляются отдельно от `bio_signals_count`, а не заменяют его:
+-- на него ссылаются уже записанные строки, импорт EDSM и приложение-помощник.
+
+ALTER TABLE public.system_scans
+  ADD COLUMN IF NOT EXISTS geo_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS human_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS thargoid_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS guardian_signals_count INTEGER DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS other_signals_count INTEGER DEFAULT 0,
+  -- Сырой список сигналов события: тип + количество. Хранится «как есть»,
+  -- чтобы новые типы сигналов не требовали новой миграции.
+  ADD COLUMN IF NOT EXISTS signals JSONB DEFAULT '[]'::jsonb;
+
+-- Выборка «где есть сигналы» по системе: карточки тел в архитекторе и
+-- фильтр «есть сигналы» на 3D-карте ходят именно так.
+CREATE INDEX IF NOT EXISTS idx_system_scans_signals
+  ON public.system_scans (system_name)
+  WHERE bio_signals_count > 0
+     OR geo_signals_count > 0
+     OR human_signals_count > 0
+     OR thargoid_signals_count > 0
+     OR guardian_signals_count > 0
+     OR other_signals_count > 0;
+
+COMMENT ON COLUMN public.system_scans.geo_signals_count IS 'Геологические сигналы тела (FSSBodySignals/SAASignalsFound)';
+COMMENT ON COLUMN public.system_scans.human_signals_count IS 'Сигналы человеческого присутствия на теле';
+COMMENT ON COLUMN public.system_scans.thargoid_signals_count IS 'Сигналы таргоидов на теле';
+COMMENT ON COLUMN public.system_scans.guardian_signals_count IS 'Сигналы стражей на теле';
+COMMENT ON COLUMN public.system_scans.other_signals_count IS 'Прочие сигналы, которые игра не отнесла к известным типам';
+COMMENT ON COLUMN public.system_scans.signals IS 'Сырой список сигналов: [{"type": "...", "count": N}]';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261002000000_capi_profile_binding_and_fleet.sql   │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Frontier CAPI: дополнительные поля для полной карточки пилота.
+--
+-- Привязка выполняется по user_id (UUID), а cmdr_name используется только
+-- для ссылки /cmdr/<name>. Поэтому смена имени Frontier не должна создавать
+-- второй профиль или затирать пользовательский ник сайта.
+
+ALTER TABLE public.capi_profiles
+  ADD COLUMN IF NOT EXISTS cqc_rank INTEGER,
+  ADD COLUMN IF NOT EXISTS loan BIGINT,
+  ADD COLUMN IF NOT EXISTS frontier_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_capi_profiles_cmdr_name
+  ON public.capi_profiles (cmdr_name);
+
+COMMENT ON COLUMN public.capi_profiles.frontier_id IS 'Идентификатор командира Frontier, если его отдаёт CAPI';
+COMMENT ON COLUMN public.capi_profiles.loan IS 'Текущий кредитный займ командира из Frontier CAPI';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261002010000_system_scans_orbit.sql               │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- Сохраняем большую полуось из события Scan для орбитальной сверки в Архитекторе.
+ALTER TABLE public.system_scans
+  ADD COLUMN IF NOT EXISTS semi_major_axis_ls DOUBLE PRECISION;
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261003000000_capi_binding_diagnostics.sql         │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────
+-- Frontier CAPI: состояние привязки должно быть видно, а не угадываться.
+--
+-- Зачем
+-- -----
+-- Жалоба «все этапы проходят, но привязка не делается» была неотличима от
+-- «Companion API временно недоступен» и от «база отстала на миграцию»:
+-- в capi_tokens хранился только сам токен, а причина сбоя нигде не
+-- фиксировалась. Ниже — минимум полей, по которым сайт и cron понимают,
+-- жива ли связь и что с ней случилось в последний раз.
+--
+--   platform      — на каком аккаунте авторизовался пилот (audience OAuth:
+--                   frontier/steam/epic/xbox/psn). Нужен, чтобы предложить
+--                   тот же способ входа при переподключении.
+--   linked_at     — когда привязка создана. Refresh-токен Frontier живёт не
+--                   дольше 25 дней от авторизации, и по этой дате видно,
+--                   что пора просить пилота авторизоваться заново.
+--   last_error    — текст последнего сбоя синхронизации.
+--   last_error_at — когда он случился.
+--
+-- Колонки добавляются NULL'ами: у существующих привязок истории нет, а
+-- «нет данных» и «ошибок не было» — разные состояния.
+-- ─────────────────────────────────────────────────────────────
+
+ALTER TABLE public.capi_tokens
+  ADD COLUMN IF NOT EXISTS platform      TEXT,
+  ADD COLUMN IF NOT EXISTS linked_at     TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS last_error    TEXT,
+  ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ;
+
+-- Один аккаунт Frontier — одна учётная запись сайта. Индекс нужен колбэку:
+-- он проверяет, не привязан ли этот customer_id к кому-то ещё, прежде чем
+-- перезаписывать токены.
+CREATE INDEX IF NOT EXISTS idx_capi_tokens_frontier_id
+  ON public.capi_tokens (frontier_id)
+  WHERE frontier_id IS NOT NULL;
+
+-- Cron берёт привязки по времени последнего синка, начиная с тех, которых
+-- не синхронизировали ни разу.
+CREATE INDEX IF NOT EXISTS idx_capi_tokens_sync_queue
+  ON public.capi_tokens (last_synced_at NULLS FIRST)
+  WHERE is_active;
+
+COMMENT ON COLUMN public.capi_tokens.platform IS 'Платформа аккаунта Frontier (audience OAuth): frontier, steam, epic, xbox, psn';
+COMMENT ON COLUMN public.capi_tokens.linked_at IS 'Когда пилот прошёл авторизацию Frontier; refresh-токен живёт не дольше 25 дней от этой даты';
+COMMENT ON COLUMN public.capi_tokens.last_error IS 'Последняя ошибка синхронизации CAPI — показывается в /account/capi';
+
+-- Ранги Odyssey из CAPI (commander.rank.soldier / .exobiologist): колонки
+-- уже есть в capi_profiles с миграции 20260916000000, но у баз, залитых
+-- ранним снимком схемы, их может не быть — повторяем идемпотентно, иначе
+-- синк молча теряет эти два ранга.
+ALTER TABLE public.capi_profiles
+  ADD COLUMN IF NOT EXISTS mercenary_rank    INTEGER,
+  ADD COLUMN IF NOT EXISTS exobiologist_rank INTEGER,
+  ADD COLUMN IF NOT EXISTS cqc_rank          INTEGER,
+  ADD COLUMN IF NOT EXISTS loan              BIGINT,
+  ADD COLUMN IF NOT EXISTS frontier_id       TEXT;

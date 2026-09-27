@@ -9,8 +9,10 @@ import {
   createPkcePair,
   exchangeCode,
   frontierClientId,
+  frontierRedirectUri,
   isPkceConfigured,
   isTokenExpiredStatus,
+  normalizeAudience,
 } from '../../src/lib/capi/oauth.ts';
 
 // Все тесты ниже работают с подменённым окружением: OAuth-функции читают
@@ -86,7 +88,37 @@ test('client_id по умолчанию — приложение ED Ring Colony 
   assert.equal(clientId, '0d6027a7-2561-4e1b-af2e-2fe71b296bdd');
   // «Настроен» означает наличие redirect_uri, а не секрета.
   assert.equal(withEnv({ FRONTIER_REDIRECT_URI: REDIRECT }, () => isPkceConfigured()), true);
-  assert.equal(withEnv({ FRONTIER_REDIRECT_URI: undefined }, () => isPkceConfigured()), false);
+});
+
+test('без FRONTIER_REDIRECT_URI адрес возврата берётся от адреса сайта', () => {
+  // Раньше пустая переменная роняла buildAuthUrl исключением ещё до
+  // редиректа: пилот видел пустую страницу ошибки, а в логах — «not
+  // configured». Колбэк живёт по фиксированному пути, поэтому собрать
+  // адрес из NEXT_PUBLIC_SITE_URL можно без всякой настройки.
+  const url = withEnv(
+    { FRONTIER_REDIRECT_URI: undefined, NEXT_PUBLIC_SITE_URL: 'https://colony.test' },
+    () => frontierRedirectUri(),
+  );
+  assert.equal(url, 'https://colony.test/api/capi/callback');
+  assert.equal(withEnv({ FRONTIER_REDIRECT_URI: undefined }, () => isPkceConfigured()), true);
+
+  // Явная переменная всегда важнее вычисленного значения.
+  assert.equal(
+    withEnv({ FRONTIER_REDIRECT_URI: REDIRECT, NEXT_PUBLIC_SITE_URL: 'https://colony.test' },
+      () => frontierRedirectUri()),
+    REDIRECT,
+  );
+});
+
+test('audience ограничен платформами Frontier', () => {
+  // Пилоту со Steam нужен свой audience, иначе диалог входа не предложит
+  // нужный способ. Всё непонятное — обратно к аккаунту Frontier.
+  assert.equal(normalizeAudience('steam'), 'steam');
+  assert.equal(normalizeAudience('EPIC'), 'epic');
+  assert.equal(normalizeAudience('psn'), 'psn');
+  assert.equal(normalizeAudience('nintendo'), 'frontier');
+  assert.equal(normalizeAudience(null), 'frontier');
+  assert.equal(normalizeAudience(' xbox '), 'xbox');
 });
 
 test('обмен кода требует верификатор или секрет', async () => {

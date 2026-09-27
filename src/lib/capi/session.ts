@@ -19,7 +19,7 @@
 // истечения), сохраняет новую пару в `capi_tokens` и даёт `run()`, который
 // повторяет ЛЮБОЙ вызов после однократного обновления.
 
-import { CapiClient } from './client.ts';
+import { CapiClient, isUnauthorizedError } from './client.ts';
 import { refreshAccessToken } from './oauth.ts';
 
 /** За сколько до истечения обновляем токен, не дожидаясь 422. */
@@ -78,7 +78,9 @@ export class CapiSession {
     try {
       return await action(this.client);
     } catch (err) {
-      if (!(err instanceof Error) || err.message !== 'UNAUTHORIZED') throw err;
+      // 418 (техобслуживание), 204 и сетевые сбои обновлением токена не
+      // лечатся — повторять их бессмысленно и вредно для лимитов Frontier.
+      if (!isUnauthorizedError(err)) throw err;
       await this.refresh();
       return action(this.client);
     }
