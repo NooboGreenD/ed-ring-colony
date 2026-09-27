@@ -354,3 +354,76 @@ export async function applyEnvKeys(scope: 'web' | 'all' = 'web') {
       : null,
   };
 }
+
+// ── Настройки почты: SMTP-ключи стека Supabase (Админка → Авторизация) ──────
+//
+// Письма подтверждения отправляет GoTrue, и его SMTP-конфигурация живёт в
+// .env стека Supabase (/opt/supabase/.env), а не сайта. Значения идут через
+// тот же узкий хоппинг в update-agent и наружу возвращаются только масками.
+// Список — зеркала allowlist агента (SMTP_ENV_KEYS в scripts/update-agent.mjs):
+// панель управляет ровно доставкой писем и регистрацией, не всей конфигурацией
+// стека.
+
+export const SMTP_KEYS = [
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'SMTP_ADMIN_EMAIL',
+  'SMTP_SENDER_NAME',
+  'DISABLE_SIGNUP',
+  'ENABLE_EMAIL_AUTOCONFIRM',
+] as const;
+export type SmtpKeyName = (typeof SMTP_KEYS)[number];
+
+export interface SmtpKeyEntry {
+  name: string;
+  /** Значение целиком — только для не секретных ключей (SMTP_PASS маскируется). */
+  value?: string;
+  masked: string;
+  length: number;
+}
+
+// type-алиас (не interface): только так структура удовлетворяет ограничению
+// agentRequest<T extends Record<string, unknown>>.
+export type SmtpStatus = {
+  ok?: boolean;
+  /** Файл .env стека существует и доступен агенту на запись. */
+  available?: boolean;
+  envExists?: boolean;
+  writable?: boolean;
+  /** Override стека: передаёт ли он SMTP в контейнер auth. */
+  override?: { file: string; passesSmtp: boolean } | null;
+  keys?: SmtpKeyEntry[];
+};
+
+/** Список SMTP-ключей .env стека Supabase — в маске, без сырых значений. */
+export function listSmtpKeys() {
+  return agentRequest<SmtpStatus>('GET', '/smtp');
+}
+
+/** Записать один SMTP-ключ (allowlist). Возврат: 201 — создан, 200 — обновлён. */
+export function saveSmtpKey(key: SmtpKeyName, value: string) {
+  return agentRequest<{ key?: string; created?: boolean; masked?: string }>('POST', '/smtp', { key, value });
+}
+
+export function deleteSmtpKey(key: SmtpKeyName) {
+  return agentRequest<{ key?: string; removed?: boolean }>('DELETE', `/smtp?key=${encodeURIComponent(key)}`);
+}
+
+/**
+ * Применить настройки почты: пересоздать auth (поднял SMTP стека) и web
+ * (поднял ключи сайта вроде AUTH_EMAIL_ENABLED). Job с `kind: 'smtp'`
+ * (стадии SMTP_STAGES) в общем процессном слоте.
+ */
+export async function applySmtpSettings(authHealthUrl = '') {
+  const result = await agentRequest<{ update?: unknown }>('POST', '/smtp/apply', { authHealthUrl });
+  return {
+    ok: result.ok,
+    status: result.status,
+    error: result.error,
+    update: result.payload && result.payload.update != null
+      ? sanitizeUpdateState(result.payload.update)
+      : null,
+  };
+}

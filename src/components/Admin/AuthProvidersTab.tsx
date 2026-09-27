@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { authFetch } from '@/lib/supabaseClient';
 import type { AuthProviderMeta } from '@/lib/authProviders/registry';
 import { IconInfo } from '@/components/Icons';
+import MailSettingsCard from '@/components/Admin/MailSettingsCard';
 
 type PublicSetting = { enabled: boolean; client_id: string; notes: string; updated_at: string | null; has_secret: boolean };
 type Payload = {
@@ -121,6 +122,10 @@ export default function AuthProvidersTab() {
   const visible = data.registry.filter(meta => showAll || meta.kind !== 'gotrue' || data.env.gotrueAllowed.includes(meta.gotrue!) || ['discord', 'google', 'github'].includes(meta.id));
 
   return <div>
+    {/* Почта — часть авторизации: без настроенного SMTP регистрация по e-mail
+        не работает. Блок первый, потому что «не отправляются письма» — самый
+        частый инцидент этого раздела, а раньше SMTP настраивался только по SSH. */}
+    <MailSettingsCard />
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
       <h2 style={{ margin: 0 }}>Сервисы авторизации</h2>
       <label style={{ fontSize: 12, color: '#9ca3af' }}>

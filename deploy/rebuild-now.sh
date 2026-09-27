@@ -202,7 +202,13 @@ compose_base build "${build_args[@]}" $COMPOSE_SERVICES
 say "▶ переключаю контейнеры"
 # shellcheck disable=SC2086
 compose_base up -d $COMPOSE_SERVICES
-docker image prune -f >/dev/null 2>&1 || true
+# Полная пересборка (--no-cache) особенно быстро копит кэш BuildKit и висячие
+# образы: убираем всё, кроме свежего кэша в бюджете UPDATE_DOCKER_CACHE_KEEP.
+if declare -F edrc_cleanup_docker_disk >/dev/null 2>&1; then
+  edrc_cleanup_docker_disk || true
+else
+  docker image prune -f >/dev/null 2>&1 || true
+fi
 compose_base ps
 
 # ── 7. проверка живости ─────────────────────────────────────────────

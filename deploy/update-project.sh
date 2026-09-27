@@ -421,8 +421,17 @@ if [ "$MODE" = "compose" ]; then
   run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
   report switch 82 "Переключаю контейнеры на новые образы"
   run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
-  report switch 85 "Убираю висячие образы, чтобы не съедать диск"
-  docker image prune -f >/dev/null 2>&1 || true
+  report switch 85 "Убираю мусор сборки: кэш BuildKit, висячие образы"
+  # Каждая пересборка оставляет гигабайты кэша BuildKit (инвалидируется слой
+  # COPY — даже при правке в 3 КБ), а кэш прошлых прогонов раньше никто не
+  # подчищал: `docker image prune` его не трогает, и диск таял после каждого
+  # обновления. Функция держит бюджет кэша (UPDATE_DOCKER_CACHE_KEEP,
+  # default 8g) — свежие записи остаются для быстрой следующей сборки.
+  if declare -F edrc_cleanup_docker_disk >/dev/null 2>&1; then
+    edrc_cleanup_docker_disk || true
+  else
+    docker image prune -f >/dev/null 2>&1 || true
+  fi
 else
   report build 62 "npm ci"
   run_step "npm ci" npm ci --no-audit --no-fund

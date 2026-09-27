@@ -71,9 +71,26 @@ export const ENV_STAGES = [
   { id: 'done', label: 'Готово', percent: 100 },
 ];
 
+/**
+ * Этапы применения настроек почты (Админка → Авторизация → «Отправка писем»).
+ * SMTP живёт в окружении стека Supabase, а не сайта: скрипт deploy/apply-smtp.sh
+ * проверяет override, пересоздаёт контейнер auth, затем web (чтобы поднялись
+ * ключи сайта вроде AUTH_EMAIL_ENABLED). Проценты обязаны совпадать с
+ * report-строками deploy/apply-smtp.sh.
+ */
+export const SMTP_STAGES = [
+  { id: 'smtp_prepare', label: 'Проверка доступа к стеку Supabase', percent: 5 },
+  { id: 'smtp_override', label: 'Проверка compose-override для auth', percent: 15 },
+  { id: 'smtp_switch', label: 'Пересоздание контейнера auth (GoTrue)', percent: 35 },
+  { id: 'smtp_verify', label: 'Проверка доступности auth', percent: 55 },
+  { id: 'smtp_web', label: 'Пересоздание web с новыми ключами сайта', percent: 70 },
+  { id: 'done', label: 'Готово', percent: 100 },
+];
+
 const STAGE_BY_ID = new Map([
   ...UPDATE_STAGES.map((stage) => [stage.id, stage]),
   ...ENV_STAGES.map((stage) => [stage.id, stage]),
+  ...SMTP_STAGES.map((stage) => [stage.id, stage]),
 ]);
 
 export const UPDATE_LOG_LIMIT = 160;
@@ -174,10 +191,10 @@ export function sanitizeUpdateState(input) {
 
   return {
     state,
-    // Одна машина состояний обслуживает обновление, резервную копию и
-    // применение ключей: панель по этому полю выбирает словарь этапов и
-    // тексты кнопок.
-    kind: raw.kind === 'backup' ? 'backup' : raw.kind === 'env' ? 'env' : 'update',
+    // Одна машина состояний обслуживает обновление, резервную копию,
+    // применение ключей и применение настроек почты: панель по этому полю
+    // выбирает словарь этапов и тексты кнопок.
+    kind: raw.kind === 'backup' ? 'backup' : raw.kind === 'env' ? 'env' : raw.kind === 'smtp' ? 'smtp' : 'update',
     active: state === 'running' || state === 'queued',
     stage,
     stageLabel: stageLabel(stage),

@@ -84,3 +84,43 @@ edrc_persist_env() {
     printf '%s=%s\n' "$k" "$v" >> "$f"
   fi
 }
+
+# edrc_cleanup_docker_disk [cache_keep] — убрать то, что копит каждая сборка.
+#
+# Источник «диск тает после каждого обновления, даже при правке в 3 КБ»:
+#   • кэш BuildKit. Любое изменение исходников инвалидирует слой COPY,
+#     и сборка оставляет НОВЫЙ кэш npm ci / next build (гигабайты), а кэш
+#     прошлых прогонов никто не удалял — `docker image prune` его не трогает;
+#   • висячие образы и остановленные контейнеры (чистились и раньше);
+#   • несрезанные слои от --no-cache пересборок.
+#
+# Полностью кэш НЕ сносим: свежие записи ускоряют следующую сборку. Держим
+# бюджет (по умолчанию 8 ГБ, переменная UPDATE_DOCKER_CACHE_KEEP или аргумент):
+# BuildKit сам удаляет старейшие записи, пока кэш не влезет в бюджет. На Docker
+# без --keep-storage (старее 23.0) — фильтр until=48h: свежий кэш этого прогона
+# остаётся, копии прошлых дней уходят. Если ни то, ни другое не поддерживается —
+# builder prune пропускается (там классический builder, его слои уже убраны
+# image prune).
+#
+# Функция строго best-effort: недоступный Docker или незнакомый флаг никогда
+# не валят обновление. Итоговая таблица docker system df печатается в журнал.
+edrc_cleanup_docker_disk() {
+  local keep="${1:-${UPDATE_DOCKER_CACHE_KEEP:-8g}}"
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+
+  docker container prune -f >/dev/null 2>&1 || true
+  docker image prune -f >/dev/null 2>&1 || true
+
+  if docker builder prune --help 2>&1 | grep -q -- '--keep-storage'; then
+    docker builder prune -f --keep-storage "$keep" >/dev/null 2>&1 \
+      || docker builder prune -f --filter until=48h >/dev/null 2>&1 \
+      || true
+  elif docker builder prune --help 2>&1 | grep -q -- '--filter'; then
+    docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
+  fi
+
+  # Краткий отчёт оператору: что именно занимает диск после уборки.
+  docker system df 2>/dev/null | head -n 8 || true
+  return 0
+}

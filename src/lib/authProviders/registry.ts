@@ -48,7 +48,7 @@ export const AUTH_PROVIDER_REGISTRY: AuthProviderMeta[] = [
   { id: 'email', label: 'E-mail + пароль', kind: 'builtin', redirect: 'none',
     env: ['AUTH_EMAIL_ENABLED', 'GOTRUE_SMTP_*', 'DISABLE_SIGNUP'],
     note: 'Регистрация и восстановление требуют настроенного SMTP в GoTrue.' ,
-    help: { guide: 'https://github.com/NooboGreenD/ed-ring-colony/blob/main/POST-MIGRATION.md', guideLabel: 'POST-MIGRATION.md → почта', steps: ['Вход по паролю работает всегда.', 'Для регистрации и восстановления настройте SMTP в GoTrue (GOTRUE_SMTP_HOST/PORT/USER/PASS, шаблоны писем с TokenHash).', 'Затем AUTH_EMAIL_ENABLED=true на сайте и DISABLE_SIGNUP=false в GoTrue.'] } },
+    help: { guide: 'https://github.com/NooboGreenD/ed-ring-colony/blob/main/POST-MIGRATION.md', guideLabel: 'POST-MIGRATION.md → почта', steps: ['Вход по паролю работает всегда.', 'SMTP настраивается прямо здесь: блок «Отправка писем» выше (ключи уходят в .env стека Supabase через update-agent; нужен запущенный агент).', 'Включите «регистрация открыта» и «формы на сайте», нажмите «Сохранить» и «Применить и перезапустить» — auth и web пересоздадутся с новыми ключами.', 'Кнопка «Диагностика» проверяет всю цепочку: флаг сайта, доступность GoTrue, autoconfirm и разрешение регистрации.'] } },
   { id: 'magiclink', label: 'Magic link (вход по ссылке из письма)', kind: 'builtin', redirect: 'none',
     env: ['GOTRUE_SMTP_*', 'GOTRUE_MAILER_URLPATHS_*'] ,
     help: { steps: ['Использует те же SMTP-настройки GoTrue, что и e-mail.', 'Отдельной кнопки на сайте нет: ссылка приходит из формы восстановления/подтверждения.'] } },

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,6 +56,12 @@ function setup() {
   stub(bin, 'docker', [
     'echo "[docker] $*" >> "$STUB_LOG"',
     'case "$*" in',
+    // Свежий docker: у builder prune есть бюджет кэша (--keep-storage) —
+    // как на реальном сервере, чтобы сценарий гонял именно эту ветку уборки.
+    '  *"builder prune --help"*)',
+    '    echo "  --keep-storage   keep the specified amount of build cache"',
+    '    echo "  --filter        provide filter values"',
+    '    exit 0;;',
     // STUB_BUILD_FAIL=1 — сборка образа падает так же, как на живом сервере:
     // текст причины уходит в stderr, код возврата 1.
     '  *" build "*)',
@@ -107,6 +113,10 @@ function setup() {
   writeFileSync(join(src, '.env.production'), 'PROJECT_REPOSITORY=test\n');
   mkdirSync(join(src, 'supabase', 'migrations'), { recursive: true });
   writeFileSync(join(src, 'supabase', 'migrations', '20260101000000_base.sql'), '-- base\n');
+  // Настоящий compose-lib.sh из репозитория: уборка кэша BuildKit идёт его
+  // функцией edrc_cleanup_docker_disk — проверяем реальный код, а не заглушку.
+  mkdirSync(join(src, 'deploy'), { recursive: true });
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(src, 'deploy', 'compose-lib.sh'));
   git(src, 'add', '-A');
   git(src, 'commit', '-qm', 'init');
   git(src, 'remote', 'add', 'origin', origin);
@@ -186,7 +196,11 @@ test('первое обновление: перемотка, применени�
     // работающие контейнеры, а RUN_TESTS уезжает явным --build-arg.
     assert.match(calls, /compose --env-file .* build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
     assert.match(calls, /compose --env-file .* up -d --no-build web jobs monitor-agent/);
+    // Уборка диска после обновления: висячие образы/контейнеры И кэш BuildKit
+    // в бюджете (именно он съедал гигабайты после каждой пересборки).
     assert.match(calls, /image prune -f/);
+    assert.match(calls, /builder prune -f --keep-storage 8g/);
+    assert.match(calls, /container prune -f/);
     // Образ апдейтера пересобирается вместе со всеми (иначе агент навсегда
     // остаётся старым), но контейнер, из которого запущен скрипт, не
     // пересоздаётся: это убило бы обновление на середине.

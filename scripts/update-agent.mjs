@@ -22,11 +22,15 @@
  *   POST /env            → set/add one env key { key, value }  (token)
  *   DELETE /env?key=NAME → remove one env key                  (token)
  *   POST /env/apply      → recreate services so new keys apply (token)
+ *   GET  /smtp           → masked Supabase SMTP env keys       (token)
+ *   POST /smtp           → set one SMTP key { key, value }     (token)
+ *   DELETE /smtp?key=NAME → remove one SMTP key                (token)
+ *   POST /smtp/apply     → recreate auth + web so mail applies (token)
  *
- * All jobs (update, backup, env apply) share ONE state machine and one
- * process slot: a database dump, a stack rebuild and an env change must never
- * overlap, and the admin panel sees which of the three is running through the
- * `kind` field.
+ * All jobs (update, backup, env apply, smtp apply) share ONE state machine
+ * and one process slot: a database dump, a stack rebuild, an env change and
+ * an SMTP change must never overlap, and the admin panel sees which of them
+ * is running through the `kind` field.
  *
  * Env-file keys are read back MASKED (length + last 4 chars only): the raw
  * value never travels to the browser, so editing an existing key means
@@ -54,6 +58,12 @@
  *   ENV_FILE             the env file the panel edits (default <PROJECT_DIR>/.env.production)
  *   APPLY_ENV_SCRIPT     default <PROJECT_DIR>/deploy/apply-env.sh
  *   ENV_TIMEOUT_MINUTES  default 5 (a service recreate must be short)
+ *   SUPABASE_HOST_DIR    self-hosted Supabase stack on the host
+ *                        (default /opt/supabase); mounted into this container
+ *                        at the SAME path so the panel can edit its .env
+ *   SUPABASE_ENV_FILE    default <SUPABASE_HOST_DIR>/.env (GoTrue SMTP keys)
+ *   APPLY_SMTP_SCRIPT    default <PROJECT_DIR>/deploy/apply-smtp.sh
+ *   SMTP_TIMEOUT_MINUTES default 10 (auth + web recreate and health checks)
  *   UPDATE_AGENT_SELF_RESTART  "1" by default; "0" disables only the
  *                        automatic restart after an update. POST /restart
  *                        remains available to an administrator.
@@ -64,7 +74,7 @@
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, accessSync, chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -82,6 +92,8 @@ import {
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1']);
 const MAX_BODY_BYTES = 64 * 1024;
+/** Ротация файла журнала агента: одна живая копия + одна .old (см. appendLog). */
+const UPDATE_LOG_FILE_LIMIT = 2 * 1024 * 1024;
 
 /**
  * «Залипший» running БЕЗ процесса (агент/хост перезагрузились посреди
@@ -199,6 +211,17 @@ export function updateAgentConfig(env = process.env) {
     envFile: resolve((env.ENV_FILE || join(projectDir, '.env.production')).trim()),
     applyEnvScript: (env.APPLY_ENV_SCRIPT || join(projectDir, 'deploy', 'apply-env.sh')).trim(),
     envTimeoutMs: Math.max(60_000, (Number(env.ENV_TIMEOUT_MINUTES) || 5) * 60_000),
+    /**
+     * Стек Supabase на хосте: письма подтверждения отправляет GoTrue (сервис
+     * auth), поэтому SMTP-ключи лежат в .env СТЕКА, а не сайта. Каталог
+     * смонтирован в контейнер агента по тому же пути (см. docker-compose.yml):
+     * файл читается и пишется напрямую, а пересоздание auth идёт через
+     * Docker-сокет тем же compose-контекстом, что и на хосте.
+     */
+    supabaseDir: resolve((env.SUPABASE_HOST_DIR || '/opt/supabase').trim()),
+    supabaseEnvFile: resolve((env.SUPABASE_ENV_FILE || join(resolve((env.SUPABASE_HOST_DIR || '/opt/supabase').trim()), '.env')).trim()),
+    applySmtpScript: (env.APPLY_SMTP_SCRIPT || join(projectDir, 'deploy', 'apply-smtp.sh')).trim(),
+    smtpTimeoutMs: Math.max(60_000, (Number(env.SMTP_TIMEOUT_MINUTES) || 10) * 60_000),
     branch: (env.PROJECT_UPDATE_BRANCH || 'main').trim(),
     repository: (env.PROJECT_REPOSITORY || 'NooboGreenD/ed-ring-colony').trim(),
     deployMode: (env.PROJECT_DEPLOY_MODE || 'auto').trim(),
@@ -259,6 +282,15 @@ export function createUpdateManager(config) {
     if (!clean) return;
     state.log = [...state.log, { at: new Date().toISOString(), line: clean }].slice(-UPDATE_LOG_LIMIT);
     try {
+      // Журнал — копия для оператора, и он же единственный файл агента,
+      // который рос без ограничения: каждая пересборка дописывала сотни строк,
+      // и после десятков обновлений update.log незаметно съедал диск.
+      // Ротация: при превышении лимита старый файл остаётся одной копией .old.
+      try {
+        if (statSync(config.logFile).size > UPDATE_LOG_FILE_LIMIT) {
+          renameSync(config.logFile, `${config.logFile}.old`);
+        }
+      } catch { /* файла ещё нет или он недоступен — просто пишем дальше */ }
       appendFileSync(config.logFile, `${new Date().toISOString()} ${clean}\n`);
     } catch {
       // The log file is a convenience copy; the in-memory tail is enough.
@@ -336,6 +368,7 @@ export function createUpdateManager(config) {
       if (state.state === 'running' && state.startedAt && !child) {
         const limit = state.kind === 'backup' ? config.backupTimeoutMs
           : state.kind === 'env' ? config.envTimeoutMs
+          : state.kind === 'smtp' ? config.smtpTimeoutMs
           : STALE_RUNNING_LIMIT_MS;
         if (Date.now() - Date.parse(state.startedAt) > limit) {
           finish({
@@ -346,18 +379,21 @@ export function createUpdateManager(config) {
               ? 'агент перезагружался во время резервного копирования'
               : state.kind === 'env'
                 ? 'агент перезагружался во время применения ключей'
-                : 'агент перезагружался во время обновления',
+                : state.kind === 'smtp'
+                  ? 'агент перезагружался во время применения настроек почты'
+                  : 'агент перезагружался во время обновления',
           });
         }
       }
       return sanitizeUpdateState(state);
     },
-    start({ applyMigrations, backup = true, runTests = true, migrationsOnly = false, kind = 'update', full = false, scope = 'web' } = {}) {
+    start({ applyMigrations, backup = true, runTests = true, migrationsOnly = false, kind = 'update', full = false, scope = 'web', authHealthUrl = '' } = {}) {
       if (state.state === 'running' || state.state === 'queued') return { started: false, reason: 'already-running' };
       const isBackup = kind === 'backup';
       const envApply = kind === 'env';
-      const script = envApply ? config.applyEnvScript : isBackup ? config.backupScript : config.script;
-      const jobLabel = envApply ? 'применение ключей' : isBackup ? 'резервное копирование' : 'обновление';
+      const smtpApply = kind === 'smtp';
+      const script = envApply ? config.applyEnvScript : smtpApply ? config.applySmtpScript : isBackup ? config.backupScript : config.script;
+      const jobLabel = envApply ? 'применение ключей' : smtpApply ? 'применение настроек почты' : isBackup ? 'резервное копирование' : 'обновление';
       // «Только миграции» без поддержки в скрипте — это молчаливая полная
       // пересборка прода вместо обещанного наката миграций. Такой прогон не
       // запускается вовсе: админ получит честную причину и починит клон.
@@ -373,15 +409,15 @@ export function createUpdateManager(config) {
       Object.assign(state, emptyUpdateState(nowIso), {
         state: 'running',
         kind,
-        stage: envApply ? 'env_prepare' : 'prepare',
+        stage: envApply ? 'env_prepare' : smtpApply ? 'smtp_prepare' : 'prepare',
         // Опорный процент той же стадии из UPDATE_STAGES: панель не должна
         // видеть «stage=prepare, percent=0» до первой прогресс-строки скрипта
         // ( гонка «POST → GET» раньше времени роняла проверку «процент не
         // отстаёт от стадии»).
         percent: envApply ? 10 : 5,
-        message: envApply ? 'запускаю deploy/apply-env.sh' : isBackup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
-        mode: envApply ? scope : isBackup ? (full ? 'full' : 'fast') : updateMode,
-        branch: isBackup || envApply ? null : config.branch,
+        message: envApply ? 'запускаю deploy/apply-env.sh' : smtpApply ? 'запускаю deploy/apply-smtp.sh' : isBackup ? 'запускаю deploy/db-backup.sh' : 'запускаю deploy/update-project.sh',
+        mode: envApply ? scope : smtpApply ? 'smtp' : isBackup ? (full ? 'full' : 'fast') : updateMode,
+        branch: isBackup || envApply || smtpApply ? null : config.branch,
         startedAt: nowIso,
         log: [],
       });
@@ -389,9 +425,11 @@ export function createUpdateManager(config) {
       persist();
       appendLog(envApply
         ? `env apply requested; scope=${scope} file=[файл окружения]`
-        : isBackup
-          ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
-          : `update requested; project=${config.repository} branch=${config.branch} mode=${updateMode} tests=${flag(runTests)} backup=${flag(backup)} migrations=${flag(applyMigrations)} only=${migrationsOnly ? '1' : '0'}`);
+        : smtpApply
+          ? 'smtp apply requested; file=[.env стека Supabase]'
+          : isBackup
+            ? `backup requested; full=${full ? '1' : '0'} dir=${config.backupDir} keep=${config.backupKeep}`
+            : `update requested; project=${config.repository} branch=${config.branch} mode=${updateMode} tests=${flag(runTests)} backup=${flag(backup)} migrations=${flag(applyMigrations)} only=${migrationsOnly ? '1' : '0'}`);
 
       let spawned;
       try {
@@ -410,7 +448,19 @@ export function createUpdateManager(config) {
                   UPDATE_HEALTH_URL: config.healthUrl,
                   PROJECT_DEPLOY_MODE: config.deployMode,
                 }
-              : isBackup
+              : smtpApply
+                ? {
+                    // Стек Supabase: где лежит .env с SMTP и compose-контекст,
+                    // в котором пересоздаётся auth. Адрес проверки auth панель
+                    // передаёт сама (web знает NEXT_PUBLIC_SUPABASE_URL).
+                    SUPABASE_HOST_DIR: config.supabaseDir,
+                    SUPABASE_ENV_FILE: config.supabaseEnvFile,
+                    AUTH_HEALTH_URL: typeof authHealthUrl === 'string' ? authHealthUrl.trim() : '',
+                    ENV_FILE: config.envFile,
+                    UPDATE_HEALTH_URL: config.healthUrl,
+                    PROJECT_DEPLOY_MODE: config.deployMode,
+                  }
+                : isBackup
                 ? {
                     // По умолчанию каталог систем в дамп не попадает: он
                     // восстанавливается импортом дампа Spansh, а весит десятки
@@ -494,7 +544,7 @@ export function createUpdateManager(config) {
           // Обновление принесло новый код и самому агенту: перезапускаемся,
           // иначе следующий прогон снова пойдёт по старым правилам (именно
           // из-за этого флажки панели могли «не влиять» на сборку).
-          if (!isBackup && !envApply && agentSourceInfo(config).stale) {
+          if (!isBackup && !envApply && !smtpApply && agentSourceInfo(config).stale) {
             scheduleRestart('в клоне лежит более новая версия агента');
           }
         } else {
@@ -503,7 +553,7 @@ export function createUpdateManager(config) {
           // безликое «завершился с кодом N». Подпись текущей стадии
           // («Пересобираю docker-образы…») ошибкой больше не считается.
           const reason = state.error || errorFromTail();
-          const label = isBackup ? 'db-backup.sh' : envApply ? 'apply-env.sh' : 'update-project.sh';
+          const label = isBackup ? 'db-backup.sh' : envApply ? 'apply-env.sh' : smtpApply ? 'apply-smtp.sh' : 'update-project.sh';
           finish({
             state: 'failed',
             exitCode: code,
@@ -522,6 +572,7 @@ export function createUpdateManager(config) {
         state: 'aborted',
         error: state.kind === 'backup' ? 'резервное копирование остановлено оператором'
           : state.kind === 'env' ? 'применение ключей остановлено оператором'
+          : state.kind === 'smtp' ? 'применение настроек почты остановлено оператором'
           : 'обновление остановлено оператором',
       });
       abort();
@@ -661,6 +712,67 @@ export function deleteEnvKey(file, key) {
   writeFileSync(tmp, kept.join('\n'));
   renameSync(tmp, file);
   return true;
+}
+
+// ── Настройки почты: SMTP-ключи стека Supabase (Админка → Авторизация) ──────
+//
+// Письма подтверждения при регистрации отправляет GoTrue (сервис auth стека
+// Supabase). Его SMTP-конфигурация живёт в /opt/supabase/.env и передаётся в
+// контейнер через docker-compose.override.yml (шаблон — deploy/selfhost/
+// supabase-auth.override.yml). Раньше единственным способом настроить почту
+// был ручной вход на сервер по SSH — теперь те же ключи редактируются из
+// админ-панели через тот же узкий хоппинг в update-agent.
+//
+// Список ключей — намеренный allowlist: панель управляет ровно тем, что нужно
+// для доставки писем и разрешения регистрации, и не может переписать прочую
+// конфигурацию стека Supabase (пароли Postgres, JWT-секреты и т.п.).
+export const SMTP_ENV_KEYS = [
+  'SMTP_HOST',
+  'SMTP_PORT',
+  'SMTP_USER',
+  'SMTP_PASS',
+  'SMTP_ADMIN_EMAIL',
+  'SMTP_SENDER_NAME',
+  'DISABLE_SIGNUP',
+  'ENABLE_EMAIL_AUTOCONFIRM',
+];
+
+/** Единственный по-настоящему секретный ключ почты: только он маскируется. */
+const SMTP_SECRET_KEYS = new Set(['SMTP_PASS']);
+
+/** Что панель видит о доступе к стеку Supabase (секрет — только маской). */
+export function readSupabaseSmtpState(config) {
+  let envExists = false;
+  try { statSync(config.supabaseEnvFile).isFile(); envExists = true; } catch { envExists = false; }
+  let writable = false;
+  if (envExists) {
+    try { accessSync(config.supabaseEnvFile, fsConstants.W_OK); writable = true; } catch { writable = false; }
+  }
+  // Override, через который SMTP попадает в контейнер auth. Панель честно
+  // предупреждает, если файл есть, но SMTP в него не передаётся: без этого
+  // пересоздание auth молча оставило бы почту неработающей.
+  let override = null;
+  for (const candidate of ['docker-compose.override.yml', 'docker-compose.smtp-override.yml']) {
+    try {
+      const text = readFileSync(join(config.supabaseDir, candidate), 'utf8');
+      override = { file: candidate, passesSmtp: /GOTRUE_SMTP_HOST/.test(text) };
+      break;
+    } catch { /* нет такого файла — проверяем следующий */ }
+  }
+  const keys = envExists
+    ? [...parseEnvContent(readFileSync(config.supabaseEnvFile, 'utf8')).entries()]
+        .filter(([name]) => SMTP_ENV_KEYS.includes(name))
+        .map(([name, value]) => ({
+          name,
+          // Адрес сервера, логин и имя отправителя — не секреты: админу нужно
+          // видеть их целиком. Пароль SMTP наружу не уезжает никогда.
+          value: SMTP_SECRET_KEYS.has(name) ? undefined : String(value),
+          masked: maskEnvValue(value),
+          length: String(value).length,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : [];
+  return { available: envExists && writable, envExists, writable, override, keys };
 }
 
 function send(response, status, payload) {
@@ -832,6 +944,67 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
         const body = await readJsonBody(request);
         const scope = body?.scope === 'all' ? 'all' : 'web';
         const result = manager.start({ kind: 'env', scope });
+        if (!result.started) {
+          send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
+          return;
+        }
+        send(response, 202, { ok: true, startedAt: manager.state.startedAt, update: manager.status() });
+        return;
+      }
+      // ── Настройки почты (SMTP стека Supabase) ─────────────────────────
+      // Те же правила, что у /env: allowlist имён, маски вместо значений,
+      // применение — отдельной задачей в общем процессном слоте (kind='smtp').
+      if (request.method === 'GET' && url.pathname === '/smtp') {
+        send(response, 200, { ok: true, ...readSupabaseSmtpState(config) });
+        return;
+      }
+      if (request.method === 'POST' && url.pathname === '/smtp') {
+        const body = await readJsonBody(request);
+        const key = typeof body?.key === 'string' ? body.key.trim() : '';
+        const value = typeof body?.value === 'string' ? body.value : null;
+        if (!SMTP_ENV_KEYS.includes(key)) {
+          send(response, 400, { ok: false, error: `Ключ не входит в список настроек почты: ${SMTP_ENV_KEYS.join(', ')}` });
+          return;
+        }
+        if (value == null || /[\r\n]/.test(value) || Buffer.byteLength(value, 'utf8') > ENV_MAX_VALUE_BYTES) {
+          send(response, 400, { ok: false, error: 'Значение: одна строка до 8 КБ без перевода строки' });
+          return;
+        }
+        // Файл .env стека обязан уже существовать: если /opt/supabase не
+        // смонтирован в контейнер агента, «успешная» запись ушла бы в
+        // локальный путь контейнера и ничего не меняла на хосте.
+        let created = false;
+        try {
+          statSync(config.supabaseEnvFile).isFile();
+          created = writeEnvKey(config.supabaseEnvFile, key, value);
+        } catch {
+          send(response, 503, { ok: false, error: 'Нет доступа к .env стека Supabase: смонтируйте его каталог в update-agent (SUPABASE_HOST_DIR) и перезапустите агент' });
+          return;
+        }
+        send(response, created ? 201 : 200, { ok: true, key, created, masked: maskEnvValue(value), length: value.length });
+        return;
+      }
+      if (request.method === 'DELETE' && url.pathname === '/smtp') {
+        const key = url.searchParams.get('key') || '';
+        if (!SMTP_ENV_KEYS.includes(key)) {
+          send(response, 400, { ok: false, error: 'Ключ не входит в список настроек почты' });
+          return;
+        }
+        let removed = false;
+        try { removed = deleteEnvKey(config.supabaseEnvFile, key); } catch { removed = false; }
+        if (!removed) {
+          send(response, 404, { ok: false, error: 'Ключ не найден в .env стека Supabase' });
+          return;
+        }
+        send(response, 200, { ok: true, key, removed: true });
+        return;
+      }
+      // Применить настройки почты: пересоздать auth (поднял SMTP из .env
+      // стека), затем web (поднял ключи сайта вроде AUTH_EMAIL_ENABLED).
+      if (request.method === 'POST' && url.pathname === '/smtp/apply') {
+        const body = await readJsonBody(request);
+        const authHealthUrl = typeof body?.authHealthUrl === 'string' ? body.authHealthUrl.trim() : '';
+        const result = manager.start({ kind: 'smtp', authHealthUrl });
         if (!result.started) {
           send(response, result.reason === 'already-running' ? 409 : 503, { ok: false, reason: result.reason, update: manager.status() });
           return;

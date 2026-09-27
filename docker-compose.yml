@@ -58,6 +58,14 @@ services:
       - default
       - monitor
     restart: unless-stopped
+    # json-file без лимитов растёт без конца (у jobs/агентов лимиты уже были,
+    # у web — нет): очередной источник «куда девается диск». Те же границы,
+    # что у остальных сервисов стека.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -176,9 +184,15 @@ services:
       UPDATE_BACKUP_DIR: ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}
       UPDATE_BACKUP_KEEP: ${UPDATE_BACKUP_KEEP:-4}
       BACKUP_TIMEOUT_MINUTES: ${BACKUP_TIMEOUT_MINUTES:-120}
+      # Mail settings from Админка → Авторизация: the GoTrue (auth) container
+      # reads SMTP from the SUPABASE stack's env, not this compose file. The
+      # agent edits /opt/supabase/.env and recreates `auth` through the socket;
+      # the directory is mounted at the SAME host path (same reason as PROJECT_DIR).
+      SUPABASE_HOST_DIR: ${SUPABASE_HOST_DIR:-/opt/supabase}
     volumes:
       - ${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}:${PROJECT_HOST_DIR:-/opt/ed-ring-colony/src}
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${SUPABASE_HOST_DIR:-/opt/supabase}:${SUPABASE_HOST_DIR:-/opt/supabase}
       - update-state:/state
       # The rootfs is read-only, so the dump needs an explicit writable path
       # on the host; the same path is where the operator finds the copies.
