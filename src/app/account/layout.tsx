@@ -3,10 +3,18 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+/**
+ * Вкладки личного кабинета.
+ *
+ * «Сообщения» и «Друзья» объединены в одну вкладку: переписка в проекте
+ * возможна только с друзьями, поэтому отдельная страница сообщений была
+ * заглушкой со ссылкой «перейдите в раздел Друзья». Теперь список друзей,
+ * заявки и сама переписка живут на одной странице, а старый адрес
+ * `/account/messages` перенаправляет сюда же.
+ */
 const TABS = [
   { href: "/account", label: "Профиль" },
-  { href: "/account/messages", label: "Сообщения" },
-  { href: "/account/friends", label: "Друзья" },
+  { href: "/account/friends", label: "Сообщения и друзья", alias: ["/account/messages"] },
 ];
 
 export default function AccountLayout({
@@ -30,7 +38,7 @@ export default function AccountLayout({
         }}
       >
         {TABS.map((tab) => {
-          const active = pathname === tab.href;
+          const active = pathname === tab.href || (tab.alias ?? []).includes(pathname);
           return (
             <Link
               key={tab.href}

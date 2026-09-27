@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { IconStats, IconActivity, IconDone } from "@/components/Icons";
+import Avatar from "@/components/Avatar";
 
 interface Category {
   id: number;
@@ -202,9 +203,10 @@ export default function ForumPage() {
               const cat = thread ? catMap.get(thread.category_id) : null;
               return (
                 <div key={post.id} className="recent-post-item">
-                  <img
-                    src={author?.avatar_url || "/default-avatar.png"}
-                    alt=""
+                  <Avatar
+                    url={author?.avatar_url}
+                    name={author?.cmdr_name}
+                    size={32}
                     className="recent-post-avatar"
                   />
                   <div className="recent-post-body">

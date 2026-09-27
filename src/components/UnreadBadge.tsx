@@ -35,7 +35,7 @@ export default function UnreadBadge() {
   }, [userId]);
   if (!count) return null;
   return (
-    <Link href="/account/messages" className="badge">
+    <Link href="/account/friends" className="badge">
       Сообщения: {count}
     </Link>
   );

@@ -78,6 +78,7 @@ export default function AccountPage() {
   const [newPass, setNewPass] = useState("");
   const [newPass2, setNewPass2] = useState("");
   const [msg, setMsg] = useState("");
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [mySquadron, setMySquadron] = useState<any>(null);
   const [squadronMsg, setSquadronMsg] = useState("");
   const [showCreateSquadron, setShowCreateSquadron] = useState(false);
@@ -297,23 +298,33 @@ export default function AccountPage() {
     }
   };
 
+  /**
+   * Смена аватара идёт через собственный API сайта.
+   *
+   * Прямая загрузка в Supabase Storage падала с «503 Service Unavailable»,
+   * когда контейнер storage не поднят: пилот видел техническую ошибку SDK и
+   * оставался без аватара. Сервер сам решает, куда положить картинку
+   * (Storage или запасная таблица), и возвращает готовый адрес.
+   */
   const uploadAvatar = async (file: File) => {
-    const client = createSupabaseClient();
-    const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-    const path = user.id + "/" + Date.now() + "." + ext;
-    const { error } = await client.storage
-      .from("avatars")
-      .upload(path, file, { upsert: true });
-    if (error) {
-      alert(error.message);
-      return;
+    setAvatarBusy(true);
+    setMsg("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await authFetch("/api/account/avatar", { method: "POST", body: form });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg(json.error || t('account.avatarUploadFailed'));
+        return;
+      }
+      setProfile((p: any) => ({ ...p, avatar_url: json.avatarUrl }));
+      setMsg(json.warning || t('account.avatarUpdated'));
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : t('account.avatarUploadFailed'));
+    } finally {
+      setAvatarBusy(false);
     }
-    const { data } = client.storage.from("avatars").getPublicUrl(path);
-    await client
-      .from("profiles")
-      .update({ avatar_url: data.publicUrl })
-      .eq("id", user.id);
-    setProfile((p: any) => ({ ...p, avatar_url: data.publicUrl }));
   };
 
   const upload = async () => {
@@ -676,10 +687,44 @@ export default function AccountPage() {
             <CosmeticCallsign name={nickFromUser(user, profile)} glowId={cosmetics?.glow?.id} glowPreview={cosmetics?.glow?.preview} tier={cosmetics?.tier?.label || null} tierColor={cosmetics?.tier?.color || null} fontSize={22} monospace={false} />
           </h1>
           <p style={{ margin: "4px 0", color: "#9ca3af", fontSize: 13 }}>{user.email}</p>
-          <label className="btn btn-cyan" style={{ padding: "6px 14px", cursor: "pointer", fontSize: 11, marginTop: 6 }}>
-            {t('account.changeAvatar')}
-            <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files?.[0] && uploadAvatar(e.target.files[0])} />
-          </label>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+            <label className="btn btn-cyan" style={{ padding: "6px 14px", cursor: avatarBusy ? "wait" : "pointer", fontSize: 11, opacity: avatarBusy ? 0.6 : 1 }}>
+              {avatarBusy ? t('account.avatarUploading') : t('account.changeAvatar')}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                disabled={avatarBusy}
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  // Сбрасываем значение: иначе повторный выбор того же файла
+                  // (после ошибки) не вызовет onChange.
+                  e.target.value = "";
+                  if (file) void uploadAvatar(file);
+                }}
+              />
+            </label>
+            {profile?.avatar_url && (
+              <button
+                type="button"
+                className="btn"
+                disabled={avatarBusy}
+                style={{ padding: "6px 14px", fontSize: 11 }}
+                onClick={async () => {
+                  setAvatarBusy(true);
+                  const res = await authFetch("/api/account/avatar", { method: "DELETE" });
+                  const json = await res.json().catch(() => ({}));
+                  setAvatarBusy(false);
+                  if (!res.ok) { setMsg(json.error || t('account.avatarUploadFailed')); return; }
+                  setProfile((p: any) => ({ ...p, avatar_url: null }));
+                  setMsg(t('account.avatarRemoved'));
+                }}
+              >
+                {t('account.avatarRemove')}
+              </button>
+            )}
+            <span style={{ fontSize: 11, color: "#9ca3af" }}>{t('account.avatarHint')}</span>
+          </div>
         </div>
       </div>
 
@@ -863,10 +908,29 @@ export default function AccountPage() {
                 <textarea placeholder={t('account.squadronDescPlaceholder')} value={newSquadronDesc} onChange={(e) => setNewSquadronDesc(e.target.value)} style={{ minHeight: 60 }} className="bulk-textarea" />
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={async () => {
-                    const res = await authFetch('/api/squadrons', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newSquadronName, tag: newSquadronTag || undefined, description: newSquadronDesc || undefined }) });
-                    const json = await res.json();
-                    if (!res.ok) { setSquadronMsg(json.error); return; }
-                    setShowCreateSquadron(false); setNewSquadronName(''); setNewSquadronTag(''); setNewSquadronDesc(''); setSquadronMsg(''); setMySquadron(json);
+                    const res = await authFetch('/api/squadrons', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        name: newSquadronName.trim(),
+                        // Пустые поля не отправляем вовсе: пустая строка
+                        // не проходила проверку тега и ломала создание.
+                        ...(newSquadronTag.trim() ? { tag: newSquadronTag.trim() } : {}),
+                        ...(newSquadronDesc.trim() ? { description: newSquadronDesc.trim() } : {}),
+                      }),
+                    });
+                    const json = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                      const detail = Array.isArray(json.errors) && json.errors.length ? json.errors.join('. ') : json.error;
+                      setSquadronMsg(detail || `${t('account.createSquadron')}: HTTP ${res.status}`);
+                      return;
+                    }
+                    setShowCreateSquadron(false); setNewSquadronName(''); setNewSquadronTag(''); setNewSquadronDesc('');
+                    setSquadronMsg(json.warning || '');
+                    // Перечитываем состав: ответ создания содержит только
+                    // саму эскадрилью, а вкладке нужны звания и участники.
+                    const mine = await authFetch('/api/squadrons/my', { cache: 'no-store' });
+                    setMySquadron(mine.ok ? await mine.json() : { squadron: json.squadron, members: [], ranks: [], projects: [] });
                   }} className="btn btn-cyan">{t('account.create')}</button>
                   <button onClick={() => setShowCreateSquadron(false)}>{t('account.cancel')}</button>
                 </div>

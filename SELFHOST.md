@@ -396,7 +396,10 @@ docker exec -i supabase-db pg_restore -U postgres -d postgres --clean --if-exist
 - [ ] после регистрации в profiles появилась строка (триггер);
 - [ ] форум: тема + ответ; карта /map рендерится;
 - [ ] личные сообщения приходят без перезагрузки (Realtime/WebSocket);
-- [ ] загрузка аватара в /account (Storage).
+- [ ] загрузка аватара в /account. Сайт кладёт файл через `POST /api/account/avatar`;
+      если ответ содержит `"storage": "database"`, Supabase Storage недоступен —
+      аватар сохранён в базе, но контейнер `storage` нужно поднять
+      (см. [ACCOUNT-AVATAR-SQUADRON-FIX.md](ACCOUNT-AVATAR-SQUADRON-FIX.md)).
 
 Диагностика:
 

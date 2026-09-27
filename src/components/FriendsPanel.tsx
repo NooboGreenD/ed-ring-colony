@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useFriends } from "@/hooks/useFriends";
 import { supabase } from "@/lib/supabaseClient";
 import PilotIdentity from "@/components/Cosmetics/PilotIdentity";
+import Avatar from "@/components/Avatar";
 import {
   IconSearch,
   IconCheck,
@@ -144,7 +145,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 </div>
                 {pendingIncoming.map((f) => (
                   <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px", background: "#1a1c1e", borderRadius: 6, marginBottom: 6 }}>
-                    {f.friend_avatar ? <img src={f.friend_avatar} className="avatar-sm" alt="" /> : <div className="avatar-sm" style={{ background: "#323538" }} />}
+                    <Avatar url={f.friend_avatar} name={f.friend_name} size={34} className="avatar-sm" />
                     <span style={{ flex: 1, fontSize: 13 }}>{f.friend_name}</span>
                     <button onClick={() => acceptRequest(f.id)} className="btn btn-cyan" style={{ fontSize: 11, padding: "4px 8px" }}>
                       <IconCheck size={12} />
@@ -165,7 +166,7 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
                 </div>
                 {pendingOutgoing.map((f) => (
                   <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px", background: "#1a1c1e", borderRadius: 6, marginBottom: 6, opacity: 0.7 }}>
-                    {f.friend_avatar ? <img src={f.friend_avatar} className="avatar-sm" alt="" /> : <div className="avatar-sm" style={{ background: "#323538" }} />}
+                    <Avatar url={f.friend_avatar} name={f.friend_name} size={34} className="avatar-sm" />
                     <span style={{ flex: 1, fontSize: 13 }}>{f.friend_name}</span>
                     <span style={{ fontSize: 11, color: "#9ca3af" }}>Ожидание...</span>
                     <button onClick={() => rejectRequest(f.id)} className="btn" style={{ fontSize: 11, padding: "4px 8px", borderColor: "#e74c3c", color: "#e74c3c" }}>
@@ -322,7 +323,7 @@ function DirectChat({
     <div>
       {/* Заголовок диалога */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#1a1c1e", borderRadius: "6px 6px 0 0", borderBottom: "1px solid #2d3033" }}>
-        {peerAvatar ? <img src={peerAvatar} style={{ width: 32, height: 32, borderRadius: "50%" }} alt="" /> : <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#323538" }} />}
+        <Avatar url={peerAvatar} name={peerName} size={32} />
         <span style={{ fontWeight: 600, fontSize: 14 }}>{peerName}</span>
         <Link href={`/cmdr/${encodeURIComponent(peerName)}`} style={{ marginLeft: "auto", fontSize: 11, color: "#e67e22" }}>
           Профиль

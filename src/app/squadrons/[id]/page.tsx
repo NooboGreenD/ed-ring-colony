@@ -23,6 +23,7 @@ import {
   IconCheck
 } from "@/components/Icons";
 import SquadronChat from "@/components/SquadronChat";
+import Avatar from "@/components/Avatar";
 
 type Tab = "overview" | "pilots" | "ranks" | "projects" | "settings" | "chat";
 
@@ -319,7 +320,7 @@ export default function SquadronPage() {
                   <tr key={m.id}>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        {m.avatar_url ? <img src={m.avatar_url} className="avatar-sm" alt="" /> : <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#323538", flexShrink: 0 }} />}
+                        <Avatar url={m.avatar_url} name={m.cmdr_name} size={34} className="avatar-sm" />
                         <Link href={`/cmdr/${encodeURIComponent(m.cmdr_name || "")}`} style={{ color: "var(--text)", textDecoration: "none", fontWeight: 600 }}>
                           {m.cmdr_name || "Неизвестный"}
                         </Link>
@@ -699,7 +700,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
               <tr key={m.id}>
                 <td>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    {m.avatar_url ? <img src={m.avatar_url} className="avatar-sm" alt="" /> : <div style={{ width: 34, height: 34, borderRadius: "50%", background: "#323538", flexShrink: 0 }} />}
+                    <Avatar url={m.avatar_url} name={m.cmdr_name} size={34} className="avatar-sm" />
                     <Link href={`/cmdr/${encodeURIComponent(m.cmdr_name || "")}`} style={{ color: "var(--text)", textDecoration: "none", fontWeight: 600 }}>
                       {m.cmdr_name || "Неизвестный"}
                     </Link>

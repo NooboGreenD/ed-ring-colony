@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase, authFetch } from "@/lib/supabaseClient";
 import Link from "next/link";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
+import Avatar from "@/components/Avatar";
 
  type ProjectMember = {
   user_id: string;
@@ -595,7 +596,7 @@ export default function ProjectPage() {
                 {members.map((m: ProjectMember) => (
                   <div key={m.user_id} className="member-row">
                     {m.profile?.avatar_url ? (
-                      <img src={m.profile.avatar_url} alt="" className="member-avatar" />
+                      <Avatar url={m.profile.avatar_url} name={m.profile.cmdr_name} size={32} className="member-avatar" />
                     ) : (
                       <div className="member-avatar-placeholder" />
                     )}
@@ -642,7 +643,7 @@ export default function ProjectPage() {
                     .map((sp: any) => (
                       <div key={sp.user_id} className="member-row">
                         {sp.avatar_url ? (
-                          <img src={sp.avatar_url} alt="" className="member-avatar" />
+                          <Avatar url={sp.avatar_url} name={sp.cmdr_name} size={32} className="member-avatar" />
                         ) : (
                           <div className="member-avatar-placeholder" />
                         )}

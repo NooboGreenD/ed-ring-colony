@@ -272,6 +272,7 @@ Invariants that must stay identical in both languages:
 | `construction_depot_snapshots` | Progress snapshots per construction market, deduplicated by state signature |
 | `system_scans` | One row per body: orbit, radius, gravity, temperature, atmosphere, volcanism, rings, biosignals, discovery records |
 | `pilot_stats` | Balance, Odyssey ranks and exobiology counters mirrored into the pilot dossier |
+| `profile_avatars` | Fallback avatar storage (bytea + SHA-256) used when Supabase Storage is unavailable; served by `/api/avatars/[id]` |
 | `capi_profiles` | Frontier CAPI cache keyed by `user_id`; includes ranks, CQC, loan, fleet and current location |
 | `capi_tokens` | Frontier OAuth/PKCE tokens keyed by the same `user_id` |
 | `galaxy_systems` | Full Spansh catalog (~2×10⁸ rows, GiST `cube` index): coords, main star class, permit. Public read. |
@@ -403,6 +404,8 @@ Applied via `npx supabase db push`.
 | `/api/ravencolonial/sync/log` | GET | Admin | Sync log |
 | `/api/logs/upload` | POST | API token | Deliveries and construction snapshots from Colonial Helper |
 | `/api/journal/import` | POST | Auth | Browser/CAPI Journal import |
+| `/api/account/avatar` | POST/DELETE | Auth | Avatar upload through the site: Storage first, database fallback when Storage answers 503 |
+| `/api/avatars/[id]` | GET | None | Serves a database-stored avatar (ETag + immutable cache) |
 | `/api/capi/auth` | GET | Auth | Starts the Frontier PKCE flow (`?platform=` picks the OAuth `audience`) |
 | `/api/capi/callback` | GET | Signed cookie | Token exchange → saves `capi_tokens` → first sync; always redirects to `/account/capi?status=…&reason=…` |
 | `/api/capi/sync` | POST | Auth | Manual sync (profile + journal) with a report: `journalStatus`, imported/duplicate events, warnings |
@@ -815,6 +818,20 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   location from the journal.
 - Rate limit: roughly one CAPI request per minute per account; `/journal` is not
   realtime. Cron `/api/cron/capi-sync` processes a small batch per run.
+
+### 8.12 Avatars and the account tabs
+- Upload path: browser → `POST /api/account/avatar` → Supabase Storage, with a
+  database fallback (`profile_avatars`) when Storage is down. A direct
+  browser → Storage upload used to surface the gateway's raw `503`; see
+  [ACCOUNT-AVATAR-SQUADRON-FIX.md](ACCOUNT-AVATAR-SQUADRON-FIX.md).
+- `src/lib/avatarUrl.ts` rewrites storage objects left on the pre-migration
+  host to the configured `NEXT_PUBLIC_SUPABASE_URL`; `src/components/Avatar.tsx`
+  falls back to initials instead of a broken image.
+- Account tabs are Profile and "Сообщения и друзья" (`/account/friends`);
+  `/account/messages` redirects there.
+- Squadron creation normalises the form in `src/lib/squadronForm.ts` (empty
+  strings mean "not provided", `[rcv]` → `RCV`, a tag is derived from the name)
+  and translates database failures into readable causes.
 
 ---
 
