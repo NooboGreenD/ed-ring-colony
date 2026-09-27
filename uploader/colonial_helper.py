@@ -134,7 +134,7 @@ import updater
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.12.1"
+VERSION = "2.12.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -8061,6 +8061,7 @@ class ColonialHelperApp:
         """
         restored = {"site": False, "carrier": False}
         map_events: list = []
+        state_events: list = []
         try:
             files = sorted(
                 self.journal_path.glob("Journal.*.log"),
@@ -8089,25 +8090,32 @@ class ColonialHelperApp:
                     events.append(event)
             if not events:
                 continue
-            # Хронологический порядок важен: трекеры «отпускают» площадку по
-            # Undocked и чужой авианосец по Docked к другой станции.
             for event in events:
                 map_events.append(event)
-                if event.get("event") not in self.RESTORE_STATE_EVENTS:
-                    continue
-                try:
-                    self.construction.handle("", event)
-                    self.carrier.handle(event)
-                except Exception:
-                    continue
-
-            site = self.construction.site
-            if site is not None and site.market_id and site.docked:
-                restored["site"] = True
-            if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
-                restored["carrier"] = True
+                if event.get("event") in self.RESTORE_STATE_EVENTS:
+                    state_events.append(event)
             # Не прерываем сбор событий карты и экзобиологии: даже если пилот уже
             # пристыкован, сканы тел системы могли быть сделаны в предыдущих файлах.
+
+        # Хронологический порядок важен: трекеры «отпускают» площадку по
+        # Undocked и чужой авианосец по Docked к другой станции, а трекер
+        # авианосца сверяет поимённый груз с тоннажем из CarrierStats. Файлы
+        # читаются от новых к старым, поэтому раньше события вчерашнего
+        # журнала применялись ПОСЛЕ сегодняшних: активным оставался носитель,
+        # от которого командир давно улетел, а его груз — в блоке CARRIER.
+        state_events.sort(key=lambda item: str(item.get("timestamp") or ""))
+        for event in state_events:
+            try:
+                self.construction.handle("", event)
+                self.carrier.handle(event)
+            except Exception:
+                continue
+
+        site = self.construction.site
+        if site is not None and site.market_id and site.docked:
+            restored["site"] = True
+        if int(self.carrier.state.market_id or 0) and self.carrier.state.at_carrier:
+            restored["carrier"] = True
 
         # Карта системы собирается хронологически: файлы идут от новых к
         # старым, а положение пилота определяет последнее событие, а не первое
@@ -9270,7 +9278,8 @@ class ColonialHelperApp:
         # борту авианосца смысла нет: при разгрузке трюма их десятки.
         if str(event.get("event")) in (
             "CarrierStats", "Docked", "Location", "CarrierJump", "Undocked",
-            "CarrierNameChanged", "CarrierDecommission",
+            "CarrierNameChanged", "CarrierDecommission", "CarrierCancelDecommission",
+            "CarrierBuy",
         ):
             self.overlay_manager.log(self.carrier.state.summary(), "info")
         # Товары поимённо журнал не отдаёт: дельты считаем сами, а точную
@@ -9322,8 +9331,15 @@ class ColonialHelperApp:
         # «товар -> тонны» (это под-ресурс /api/fc/{id}/cargo). Принимаем оба
         # варианта: числовые значения и есть груз, остальное — служебные поля.
         data = result.get("data")
+        # `explicit` — Raven ответил именно картой груза, а не «чем-то, из
+        # чего мы выбрали числа». Только такому ответу можно верить, когда он
+        # пустой: это «на борту ничего нет», а не «Raven про этот носитель
+        # ничего не знает». Иначе пустой ответ молча стирал бы честный
+        # локальный учёт по журналу.
+        explicit = False
         if isinstance(data, dict) and isinstance(data.get("cargo"), dict):
             cargo = data["cargo"]
+            explicit = True
         elif isinstance(data, dict):
             cargo = {
                 key: value for key, value in data.items()
@@ -9331,7 +9347,9 @@ class ColonialHelperApp:
             }
         else:
             cargo = data
-        if not isinstance(cargo, dict) or not cargo:
+        if not isinstance(cargo, dict):
+            return
+        if not cargo and not explicit:
             return
         # Подписываем в лог только РЕАЛЬНО изменившийся снимок: запрос уходит
         # по таймеру каждые пять минут, и «груз получен» на каждом обновлении
@@ -9342,7 +9360,10 @@ class ColonialHelperApp:
             for key, value in cargo.items()
             if isinstance(value, (int, float)) and not isinstance(value, bool)
         ))
-        if self.carrier.merge_remote(cargo):
+        # Снимок адресован тому носителю, по которому его запрашивали: пока
+        # фоновый запрос летел, пилот мог перестыковаться к соседнему, и без
+        # адреса чужие тонны оседали в его блоке навсегда.
+        if self.carrier.merge_remote(cargo, market_id=market_id, allow_empty=explicit):
             if signature != self._carrier_cargo_log_sig:
                 self._carrier_cargo_log_sig = signature
                 self.log(

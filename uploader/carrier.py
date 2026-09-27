@@ -36,11 +36,37 @@ Raven Colonial             ``GET /api/fc/{marketId}/cargo`` — товары п�
 
 Тоннаж из ``CarrierStats`` — всегда достоверный: он не зависит от того,
 видели мы дельты или нет.
+
+Сверка списка с тоннажем (``CarrierState.reconcile``)
+-----------------------------------------------------
+
+Поимённый список «протухает» легко: груз с авианосца забирают другие
+командиры, покупают с его рынка, увозят на стройку — в журнале владельца
+таких событий нет. Плюс при запуске разбирается хвост старых журналов, и
+дельты трёхдневной давности выглядят как груз «на борту прямо сейчас».
+Именно так в блоке CARRIER оставались записи товаров, которых там давно нет.
+
+Поэтому список всегда сверяется с достоверным тоннажем:
+
+* ``CarrierStats.SpaceUsage.Cargo`` — сколько тонн лежит на борту на самом
+  деле. Между ``CarrierStats`` тоннаж ведём сами: наши ``CargoTransfer`` и
+  сделки на рынке FC двигают и его (``stored_estimated``).
+* ``stored == 0`` → поимённый список обнуляется: трюм пуст, показывать
+  нечего.
+* сумма по товарам больше тоннажа → список ужимается пропорционально, а
+  если «лишнего» больше половины — выбрасывается целиком (состав
+  недостоверен, честнее показать один тоннаж).
+* тоннаж больше суммы по товарам → разница показывается как «прочее»: это
+  груз, который завезли не мы и о котором Raven ещё не знает.
+
+Сверка выполняется только когда тоннаж не старше поимённых данных (см.
+``RECONCILE_GRACE_SECONDS``): свежий снимок Raven урезать нечем.
 """
 
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Mapping, Optional
 
 from event_dispatch import (
@@ -78,6 +104,33 @@ def is_carrier_market(market_id) -> bool:
     """MarketID лежит в диапазоне авианосцев (3.7 … 3.8 млрд)."""
     value = _as_int(market_id)
     return FLEET_CARRIER_MARKET_MIN <= value < FLEET_CARRIER_MARKET_MAX
+
+
+def event_time(event: Mapping[str, Any], default: Optional[float] = None) -> float:
+    """Время события журнала в секундах epoch.
+
+    Нужно, чтобы отличать «CarrierStats пришёл только что» от «CarrierStats
+    вычитан из журнала трёхдневной давности при запуске». От этого зависит,
+    можно ли сверять поимённый список с тоннажем: старый тоннаж не должен
+    урезать свежий снимок Raven.
+
+    Формат журнала — ISO-8601 в UTC (`2023-10-18T15:54:12Z`). Всё, что не
+    разбирается, считаем «сейчас»: событие пришло в реальном времени.
+    Будущее время (часы пилота спешат) прижимаем к текущему моменту.
+    """
+    now = time.time() if default is None else float(default)
+    raw = str((event or {}).get("timestamp") or "").strip()
+    if not raw:
+        return now
+    try:
+        stamp = datetime.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")
+    except (TypeError, ValueError):
+        return now
+    try:
+        value = stamp.replace(tzinfo=timezone.utc).timestamp()
+    except (OverflowError, OSError, ValueError):
+        return now
+    return min(float(value), now)
 
 
 class CarrierState:
@@ -118,6 +171,20 @@ class CarrierState:
         # Последний снимок груза из Raven Colonial (товар -> тонны).
         self.remote_cargo: Dict[str, int] = {}
         self.remote_at: float = 0.0
+        # Когда тоннаж был достоверно известен (время события CarrierStats).
+        # Сравнивается с `remote_at`: сверять список с тоннажем можно только
+        # если тоннаж не старше самого списка.
+        self.stats_at: float = 0.0
+        # Время последней дельты журнала (перевод/сделка на борту).
+        self.delta_at: float = 0.0
+        # `stored` сдвинут нашими дельтами после последнего CarrierStats —
+        # значит это уже оценка, а не цифра из игры.
+        self.stored_estimated: bool = False
+        # Тонны на борту, которые не удалось разложить по товарам (груз
+        # других командиров, о котором Raven ещё не знает).
+        self.untracked: int = 0
+        # Что сделала последняя сверка: "" | "emptied" | "trimmed" | "dropped".
+        self.reconciled: str = ""
         # Как товар подписать в оверлее (локализованное имя из журнала).
         self.names: Dict[str, str] = {}
         self.last_event: str = ""
@@ -161,6 +228,21 @@ class CarrierState:
     #: 60 000 т. Разница и служит распознаванием, когда тип станции в журнале
     #: не уточняет вид носителя.
     SQUADRON_CARGO_HINT = 30_000
+
+    #: На сколько тонн поимённый список может превышать тоннаж, не считаясь
+    #: испорченным. Ноль: у честного учёта расхождения вверх не бывает —
+    #: журнал показывает только наши тонны, а их всегда не больше, чем лежит
+    #: на борту.
+    RECONCILE_TOLERANCE = 0
+    #: Если достоверный тоннаж меньше этой доли от суммы по товарам, состав
+    #: считается недостоверным целиком: показываем тоннаж, а список прячем —
+    #: пропорционально ужимать «Steel 2000» до «Steel 40» бессмысленно.
+    RECONCILE_DROP_RATIO = 0.5
+    #: Насколько CarrierStats может быть старше снимка Raven и всё равно
+    #: считаться достовернее. Raven отдаёт то, что последними прислали
+    #: клиенты, — его карта груза тоже бывает несвежей, поэтому небольшую
+    #: фору тоннажу из игры даём осознанно.
+    RECONCILE_GRACE_SECONDS = 300.0
 
     @property
     def kind_label(self) -> str:
@@ -206,6 +288,166 @@ class CarrierState:
             result[key] = max(0, want - have)
         return result
 
+    # -- сверка списка с тоннажем -------------------------------------------
+    def clear_cargo(self, reason: str = "") -> bool:
+        """Забыть поимённый груз (тоннаж и «завезено мной» не трогаем).
+
+        `delivered` — это «сколько тонн привёз лично командир», счётчик его
+        работы, а не содержимое трюма: обнулять его при разгрузке носителя
+        неправильно. В строках оверлея он и так не может превысить «на
+        борту» (см. `get_state_dict`).
+        """
+        if not (self.commodities or self.remote_cargo):
+            self.reconciled = reason or self.reconciled
+            return False
+        self.commodities = {}
+        self.remote_cargo = {}
+        self.remote_seen = False
+        self.reconciled = reason
+        return True
+
+    @staticmethod
+    def _spread(shares: Mapping[str, int], amount: int) -> Dict[str, int]:
+        """Разложить `amount` по долям `shares` (метод наибольших остатков).
+
+        Ни одна позиция не отдаёт больше своей доли, а сумма разложенного
+        точно равна `amount` (или всей сумме долей, если их меньше).
+        """
+        total = sum(max(0, int(value or 0)) for value in shares.values())
+        amount = min(int(amount), total)
+        if amount <= 0 or total <= 0:
+            return {}
+        taken: Dict[str, int] = {}
+        remainders = []
+        used = 0
+        for key, share in shares.items():
+            share = max(0, int(share or 0))
+            if not share:
+                continue
+            exact = share * amount / total
+            whole = min(share, int(exact))
+            taken[key] = whole
+            used += whole
+            remainders.append((exact - whole, key))
+        remainders.sort(key=lambda item: (-item[0], item[1]))
+        for _rest, key in remainders:
+            if used >= amount:
+                break
+            if taken[key] < max(0, int(shares[key] or 0)):
+                taken[key] += 1
+                used += 1
+        return taken
+
+    def _trim_to(self, target: int) -> None:
+        """Убрать «лишние» тонны, начиная с тех, что возили не мы.
+
+        Свои перевозки (`delivered`) — самая надёжная часть списка: их мы
+        видели в журнале своими глазами. А вот позиции без наших доставок
+        приходят из снимка Raven, который обновляют другие клиенты и который
+        как раз и «протухает». Поэтому расхождение сначала списывается с
+        них, и только если этого мало — ужимается всё пропорционально.
+        """
+        excess = self.tracked_total - int(target)
+        if excess <= 0:
+            return
+        foreign = {}
+        for key, value in self.commodities.items():
+            mine = int(self.delivered.get(key, 0) or 0)
+            foreign[key] = max(0, int(value or 0) - mine)
+        for key, amount in self._spread(foreign, excess).items():
+            self.commodities[key] = max(0, int(self.commodities[key]) - int(amount))
+        self.commodities = {key: value for key, value in self.commodities.items() if value > 0}
+        if self.tracked_total > int(target):
+            self._scale_commodities(int(target))
+
+    def _scale_commodities(self, target: int) -> None:
+        """Ужать список до `target` тонн, сохранив пропорции.
+
+        Метод наибольших остатков: сумма после округления точно равна
+        `target`, иначе «на борту» в блоке не сходилось бы с тоннажем.
+        """
+        total = self.tracked_total
+        if target <= 0 or total <= 0:
+            self.commodities = {}
+            return
+        scaled: Dict[str, int] = {}
+        remainders = []
+        used = 0
+        for key, value in self.commodities.items():
+            value = int(value or 0)
+            if value <= 0:
+                continue
+            exact = value * target / total
+            whole = int(exact)
+            scaled[key] = whole
+            used += whole
+            remainders.append((exact - whole, key))
+        remainders.sort(key=lambda item: (-item[0], item[1]))
+        for _rest, key in remainders[: max(0, target - used)]:
+            scaled[key] += 1
+        self.commodities = {key: value for key, value in scaled.items() if value > 0}
+
+    def reconcile(self) -> bool:
+        """Свести поимённый список с достоверным тоннажем `CarrierStats`.
+
+        Возвращает True, если список пришлось править. Без `CarrierStats`
+        (чужой или эскадренный носитель) сверять не с чем — выходим сразу.
+
+        Правила и зачем они такие:
+
+        * тоннаж старше поимённых данных (снимок Raven новее более чем на
+          `RECONCILE_GRACE_SECONDS`) — не трогаем ничего, иначе свежая
+          погрузка другого командира была бы «урезана» по старому числу;
+        * `stored == 0` — трюм пуст, список обнуляем: это и есть те самые
+          «призрачные» строки, ради которых всё затевалось;
+        * сумма по товарам больше тоннажа — ужимаем (или выбрасываем, если
+          расхождение больше `RECONCILE_DROP_RATIO`);
+        * остаток тоннажа сверх списка запоминаем в `untracked` — блок
+          покажет его как «прочее», а не будет делать вид, что его нет.
+        """
+        if not self.stats_seen:
+            self.untracked = 0
+            return False
+        stored = max(0, int(self.stored))
+        total = self.tracked_total
+        fresher = max(self.remote_at, self.delta_at)
+        if fresher and fresher > self.stats_at + self.RECONCILE_GRACE_SECONDS:
+            # Поимённые данные свежее тоннажа: сверять нечем и незачем.
+            # Так же отрабатывает разбор старых журналов при запуске —
+            # вчерашний CarrierStats не имеет права урезать сегодняшний груз.
+            self.untracked = max(0, stored - total)
+            return False
+        if stored <= 0:
+            self.untracked = 0
+            return self.clear_cargo("emptied")
+        if total > stored + self.RECONCILE_TOLERANCE:
+            if stored < total * self.RECONCILE_DROP_RATIO:
+                self.clear_cargo("dropped")
+            else:
+                self._trim_to(stored)
+                self.remote_seen = False
+                self.reconciled = "trimmed"
+            self.untracked = max(0, stored - self.tracked_total)
+            return True
+        self.untracked = max(0, stored - total)
+        return False
+
+    @property
+    def cargo_source(self) -> str:
+        """Откуда взялись цифры по товарам — для подписи в блоке CARRIER.
+
+        `remote` — чистый снимок Raven Colonial, `journal` — наши дельты,
+        `estimate` — список после сверки с тоннажем (уже не «как есть»),
+        пустая строка — данных по товарам нет вовсе.
+        """
+        if self.remote_seen:
+            return "remote"
+        if self.reconciled in ("trimmed", "dropped", "emptied"):
+            return "estimate"
+        if self.commodities or self.delivered:
+            return "journal"
+        return ""
+
     def get_state_dict(self, need: Optional[Mapping[str, int]] = None,
                        need_label: str = "", need_source: str = "") -> Dict[str, Any]:
         """Словарь для оверлея и для хеша данных (см. `_hash_data`).
@@ -231,8 +473,11 @@ class CarrierState:
                 "name": self.names.get(key) or key,
                 # Сколько лежит на борту (снимок Raven + дельты журнала).
                 "amount": have,
-                # Сколько завёз лично этот командир.
-                "delivered": int(self.delivered.get(key, 0) or 0),
+                # Сколько завёз лично этот командир. В строке это доля от
+                # «на борту», поэтому больше него быть не может: после
+                # сверки с тоннажем (или разгрузки носителя другими) счётчик
+                # доставок иначе показывал бы «120 из 40».
+                "delivered": min(int(self.delivered.get(key, 0) or 0), have),
                 "need": want,
                 "remaining": max(0, want - have),
             })
@@ -259,6 +504,19 @@ class CarrierState:
             "fill_percent": int(self.fill_percent),
             "tracked_total": int(self.tracked_total),
             "delivered_total": sum(int(v) for v in self.delivered.values() if v > 0),
+            # Тонны на борту сверх поимённого списка: груз чужих командиров,
+            # о котором ни журнал, ни Raven ещё не рассказали.
+            "untracked": int(self.untracked),
+            # `stored` сдвинут нашими дельтами после CarrierStats — блок
+            # подписывает такое число как приблизительное.
+            "stored_estimated": bool(self.stored_estimated),
+            # Что сделала последняя сверка с тоннажем и откуда цифры товаров.
+            "reconciled": str(self.reconciled or ""),
+            "cargo_source": self.cargo_source,
+            # Возраст достоверного тоннажа — в минутах (как и `remote_age`,
+            # чтобы блок не перерисовывался каждую секунду).
+            "stats_age": (int(max(0.0, time.time() - self.stats_at) // 60)
+                          if self.stats_at else 0),
             # Возраст снимка — в минутах, не в секундах. Поле попадает в хеш
             # данных оверлея (`OverlayManager._hash_data`), и секундная
             # точность перерисовывала блок CARRIER каждую секунду: текст
@@ -313,6 +571,35 @@ class CarrierTracker:
         self.state = state
         return state
 
+    def _state_for(self, market_id: int) -> Optional[CarrierState]:
+        """Состояние конкретного носителя, НЕ меняя активный.
+
+        `CarrierStats` приходит владельцу где угодно — в том числе пока он
+        стоит на чужом носителе (Carrier Management открывается удалённо).
+        Раньше такое событие делало активным личный носитель, и блок CARRIER
+        показывал его груз вместо того, у которого командир стоит. То же
+        самое с фоновым ответом Raven: пока он летел, пилот мог перестыковаться,
+        и чужой груз ложился в состояние соседнего носителя.
+        """
+        key = int(market_id or 0)
+        if not key:
+            return None
+        if int(self.state.market_id or 0) == key:
+            return self.state
+        if key in self.carriers:
+            return self.carriers[key]
+        if not int(self.state.market_id or 0):
+            # Активное состояние ещё пустое — заселяем его, а не плодим второе.
+            self.state.market_id = key
+            self.state.carrier_id = self.state.carrier_id or key
+            self._remember(self.state)
+            return self.state
+        state = CarrierState()
+        state.market_id = key
+        state.carrier_id = key
+        self.carriers[key] = state
+        return state
+
     def _kind_for(self, state: CarrierState) -> str:
         """Свой / эскадренный / чужой носитель.
 
@@ -346,6 +633,7 @@ class CarrierTracker:
             "CarrierStats": self._absorb_stats,
             "CarrierNameChanged": self._absorb_rename,
             "CarrierDecommission": self._absorb_decommission,
+            "CarrierCancelDecommission": self._absorb_cancel_decommission,
             "CarrierBuy": self._absorb_buy,
             "Docked": self._absorb_docked,
             "Location": self._absorb_docked,
@@ -377,8 +665,12 @@ class CarrierTracker:
             return False
         # CarrierStats приходит только владельцу — значит это его носитель.
         self.own_carrier_id = carrier_id
-        state = self.state if int(self.state.market_id or 0) in (0, carrier_id) \
-            else self._switch_to(carrier_id)
+        state = self._state_for(carrier_id) or self.state
+        # Пока мы стоим на чужом носителе, активным остаётся он: сводка по
+        # своему обновится «в фоне» и попадёт в строку «ещё носители».
+        if state is not self.state and not self.state.at_carrier:
+            self._switch_to(carrier_id)
+            state = self.state
         state.carrier_id = carrier_id
         # У авианосца MarketID == CarrierID.
         state.market_id = carrier_id
@@ -399,7 +691,12 @@ class CarrierTracker:
             state.fuel_level = 0.0
         state.pending_decommission = bool(event.get("PendingDecommission"))
         state.stats_seen = True
+        # Тоннаж снова достоверный: запоминаем момент (по времени события —
+        # при разборе старого журнала это не «сейчас») и сверяем список.
+        state.stats_at = event_time(event)
+        state.stored_estimated = False
         state.kind = self._kind_for(state)
+        state.reconcile()
         self._remember(state)
         return True
 
@@ -407,16 +704,21 @@ class CarrierTracker:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id or not event.get("Name"):
             return False
-        self.state.carrier_id = carrier_id
-        self.state.market_id = carrier_id
-        self.state.name = str(event["Name"])
+        # Переименование адресовано конкретному носителю: раньше имя
+        # приклеивалось к активному состоянию, и «свой» носитель получал имя,
+        # пока пилот стоял у чужого.
+        state = self._state_for(carrier_id) or self.state
+        state.carrier_id = carrier_id
+        state.market_id = carrier_id
+        state.name = str(event["Name"])
         return True
 
     def _absorb_buy(self, event: Mapping[str, Any]) -> bool:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id:
             return False
-        state = self.state
+        self.own_carrier_id = carrier_id
+        state = self._state_for(carrier_id) or self.state
         state.carrier_id = carrier_id
         state.market_id = carrier_id
         if event.get("Callsign"):
@@ -426,13 +728,37 @@ class CarrierTracker:
         if event.get("SystemAddress"):
             state.system_address = _as_int(event["SystemAddress"])
         state.pending_decommission = False
+        # Только что купленный носитель пуст: любые товары, оставшиеся от
+        # прежнего с тем же MarketID, — мусор.
+        state.clear_cargo("bought")
+        state.delivered = {}
+        state.stored = 0
+        state.stored_estimated = False
+        state.untracked = 0
+        state.kind = self._kind_for(state)
         return True
 
     def _absorb_decommission(self, event: Mapping[str, Any]) -> bool:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id:
             return False
-        self.state.pending_decommission = True
+        state = self._state_for(carrier_id) or self.state
+        state.pending_decommission = True
+        return True
+
+    def _absorb_cancel_decommission(self, event: Mapping[str, Any]) -> bool:
+        """Списание отменено — снимаем метку.
+
+        Событие входило в `CARRIER_EVENTS`, но обработчика не имело: метка
+        «списывается!» висела в блоке до перезапуска программы.
+        """
+        carrier_id = _as_int(event.get("CarrierID"))
+        if not carrier_id:
+            return False
+        state = self._state_for(carrier_id) or self.state
+        if not state.pending_decommission:
+            return False
+        state.pending_decommission = False
         return True
 
     def _absorb_docked(self, event: Mapping[str, Any]) -> bool:
@@ -492,6 +818,7 @@ class CarrierTracker:
             self.state.market_id = market_id
             self.state.carrier_id = self.state.carrier_id or market_id
         changed = False
+        when = event_time(event)
         for transfer in transfers:
             if not isinstance(transfer, Mapping):
                 continue
@@ -505,7 +832,7 @@ class CarrierTracker:
             key = canonical_commodity(transfer.get("Type") or transfer.get("Type_Localised"))
             if not key or not delta:
                 continue
-            self._add_commodity(key, delta, transfer.get("Type_Localised"))
+            self._add_commodity(key, delta, transfer.get("Type_Localised"), when=when)
             changed = True
         return changed
 
@@ -530,16 +857,21 @@ class CarrierTracker:
             self.state.carrier_id = market_id
             self.state.market_id = market_id
         delta = count if str(event.get("event")) == "MarketSell" else -count
-        self._add_commodity(key, delta, event.get("Type_Localised"))
+        self._add_commodity(key, delta, event.get("Type_Localised"), when=event_time(event))
         return True
 
     # -- служебное ----------------------------------------------------------
-    def _add_commodity(self, key: str, delta: int, label=None) -> None:
+    def _add_commodity(self, key: str, delta: int, label=None, when: Optional[float] = None) -> None:
         """Прибавить дельту к товару (ниже нуля не опускаемся).
 
         Дельта применяется к оценке груза на борту и отдельно учитывается как
         «завезено этим командиром». Снимок Raven при этом не портится: он
         остаётся в `remote_cargo`, и следующая дельта считается уже от него.
+
+        Тоннаж (`stored`/`free`) двигается той же дельтой: в игре после
+        перевода `CarrierStats.SpaceUsage.Cargo` именно так и меняется, а
+        замороженное число ломало бы сверку — свежую погрузку приняли бы за
+        расхождение и урезали.
         """
         delta = int(delta)
         current = int(self.state.commodities.get(key, 0) or 0)
@@ -558,16 +890,47 @@ class CarrierTracker:
             self.state.names[key] = str(label)
         # Цифры Raven перестали быть «чистым снимком»: после него были дельты.
         self.state.remote_seen = False
+        self.state.delta_at = float(when if when is not None else time.time())
+        if self.state.reconciled == "emptied":
+            # Трюм был подтверждённо пуст, и всё, что в нём теперь есть, мы
+            # видели своими глазами: это уже не «оценка», а точный учёт.
+            self.state.reconciled = ""
+        if self.state.stats_seen and delta:
+            # Считаем по полной дельте, а не по «сколько влезло в список»:
+            # из трюма ушли настоящие тонны, даже если поимённо мы знали не
+            # весь груз (остальное лежало в «прочем»).
+            self.state.stored = max(0, int(self.state.stored) + delta)
+            self.state.free = max(0, int(self.state.free) - delta)
+            self.state.stored_estimated = True
+        # После дельты пересчитываем «прочее»: сколько тонн на борту так и
+        # осталось не разложено по товарам.
+        self.state.untracked = max(
+            0, int(self.state.stored) - self.state.tracked_total) if self.state.stats_seen else 0
 
     def merge_remote(self, cargo: Mapping[str, Any], capacity: Optional[int] = None,
-                     name: str = "") -> bool:
+                     name: str = "", market_id: Optional[int] = None,
+                     allow_empty: bool = False) -> bool:
         """Подставить поимённый груз из Raven Colonial.
 
         ``cargo`` — карта «товар -> тонны» (имена в нижнем регистре, как их
         хранит Raven). Локальный учёт по дельтам журнала заменяется целиком:
         Raven видел груз всех клиентов, а не только наши переводы.
+
+        ``market_id`` — какому носителю адресован снимок. Запрос уходит в
+        фоновый поток, и пока он летит, пилот успевает перестыковаться к
+        другому носителю: без адреса чужой груз ложился в состояние соседа и
+        оставался там навсегда. Без аргумента (старое поведение) снимок
+        применяется к активному носителю.
+
+        ``allow_empty`` — принимать ли пустой ответ как «трюм пуст». Raven
+        отдаёт пустую карту и для носителей, о которых ему просто ничего не
+        присылали, поэтому очищаем список только когда пустота подтверждена:
+        либо `CarrierStats` говорит `Cargo == 0`, либо раньше снимок по
+        этому носителю приходил непустым и с тех пор наших дельт не было.
         """
-        if not isinstance(cargo, Mapping) or not cargo:
+        if not isinstance(cargo, Mapping):
+            return False
+        if not cargo and not allow_empty:
             return False
         merged: Dict[str, int] = {}
         aliases: Dict[str, int] = {}
@@ -588,19 +951,38 @@ class CarrierTracker:
                 aliases[key] = value
         for key, value in aliases.items():
             merged.setdefault(key, value)
-        if not merged:
+        state = self.state if market_id in (None, 0) else self._state_for(market_id)
+        if state is None:
             return False
-        self.state.remote_cargo = dict(merged)
-        self.state.remote_at = time.time()
+        if not merged:
+            if not allow_empty:
+                return False
+            # Пустой ответ — это «на борту ничего нет» только когда пустоту
+            # подтверждает второй источник. Иначе это молчание Raven, и
+            # затирать им честный локальный учёт нельзя.
+            confirmed_empty = state.stats_seen and int(state.stored) <= 0
+            # `remote_seen` ещё держится — значит после прошлого снимка наших
+            # дельт не было, и пустота пришла от того же источника, что и
+            # прежний непустой список.
+            known_carrier = bool(state.remote_cargo) and state.remote_seen
+            if not (confirmed_empty or known_carrier):
+                return False
+        state.remote_cargo = dict(merged)
+        state.remote_at = time.time()
         # Локальный учёт по дельтам заменяется снимком целиком: Raven видел
         # груз всех командиров, а не только наши переводы. «Завезено мной»
         # при этом сохраняем — это другая величина.
-        self.state.commodities = dict(merged)
-        self.state.remote_seen = True
+        state.commodities = dict(merged)
+        state.remote_seen = True
+        state.reconciled = ""
         if capacity:
-            self.state.capacity = _as_int(capacity) or self.state.capacity
-        if name and not self.state.name:
-            self.state.name = str(name)
+            state.capacity = _as_int(capacity) or state.capacity
+        if name and not state.name:
+            state.name = str(name)
+        # Свежий снимок тоже сверяем с тоннажем: если CarrierStats новее (мы
+        # только что открыли Carrier Management), правда за ним.
+        state.reconcile()
+        self._remember(state)
         return True
 
     @property
@@ -615,8 +997,36 @@ class CarrierTracker:
             return 0.0
         return max(0.0, time.time() - float(self.state.remote_at))
 
+    def reconcile(self) -> bool:
+        """Сверить с тоннажем все известные носители.
+
+        Вызывается перед выдачей данных в оверлей: блок CARRIER не должен
+        показывать товары, которых по достоверному тоннажу на борту уже нет.
+        Операция идемпотентна — повторный вызов ничего не меняет.
+        """
+        changed = False
+        # Активный носитель может быть ещё «безымянным» (MarketID не известен)
+        # и в `carriers` не попасть — сверяем его отдельно.
+        seen = {id(self.state)}
+        try:
+            changed = bool(self.state.reconcile())
+        except Exception:
+            changed = False
+        for state in self.states().values():
+            if id(state) in seen:
+                continue
+            seen.add(id(state))
+            try:
+                changed = bool(state.reconcile()) or changed
+            except Exception:
+                continue
+        return changed
+
     def get_state_dict(self, need: Optional[Mapping[str, int]] = None,
                        need_label: str = "", need_source: str = "") -> Dict[str, Any]:
+        # Сверка перед показом: за время между событиями могла прийти правда
+        # о тоннаже (CarrierStats), и старые строки обязаны исчезнуть.
+        self.reconcile()
         data = self.state.get_state_dict(need, need_label=need_label,
                                          need_source=need_source)
         others = []

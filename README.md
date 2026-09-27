@@ -58,7 +58,7 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   остальные — оценка «≈»). План показывается на той же 3D-карте
   системы, выгружается в JSON и копируется сводкой. План можно сохранить на сервере (`system_plans`), опубликовать
   и поделиться ссылкой `/architect?plan=<id>`; рядом показываются фактические стройплощадки системы
-  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Uploader 2.12.1
+  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Uploader 2.12.2
   отправляет расширенные сканы тел и snapshots стройки, а прогресс сверяется параллельно с Raven Colonial.
   Движок — `lib/architect/`
   (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
@@ -431,7 +431,7 @@ docker compose exec web node scripts/galnet-sync.mjs --translate-only
 npm test
 ```
 
-## Colonial Helper uploader 2.12.1
+## Colonial Helper uploader 2.12.2
 
 В репозитории находится Windows/Python uploader `uploader/colonial_helper.py`
 для загрузки данных Elite Dangerous на ED Ring Colony. В этой версии он передаёт

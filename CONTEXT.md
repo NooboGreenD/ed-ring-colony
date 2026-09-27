@@ -2,7 +2,7 @@
 
 > **Living document for developers and AI assistants.**
 > Last updated: 2026-09-27.
-> Web/Uploader release: 2.12.1.
+> Web/Uploader release: 2.12.2.
 > Frontier CAPI binding and Architect Uploader ↔ Raven dual-sync are included in this release.
 > Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
@@ -541,7 +541,7 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 
 ### 8.6 Colonial Helper uploader 2.12
 - Source: `uploader/colonial_helper.py`
-- Version: `2.12.1`
+- Version: `2.12.2`
 - Desktop token endpoint: `POST /api/logs/upload`
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
@@ -844,6 +844,31 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
 - `CapiError` kind `no_entitlement` carries the explanation; the uploader shows
   the same hint and only turns the status green after `/profile` answers.
 - Details and the user-facing checklist: [CAPI-400-FIX.md](CAPI-400-FIX.md).
+
+### 8.14 Fleet Carrier cargo: reconciliation with `CarrierStats`
+- The CARRIER overlay block mixes two sources: the itemized list (Raven
+  Colonial snapshot `GET /api/fc/{marketId}/cargo` plus journal deltas) and the
+  authoritative tonnage `CarrierStats.SpaceUsage.Cargo`. Only the tonnage is
+  trustworthy — other commanders take cargo and buy from the FC market without
+  producing a single journal event for the owner.
+- `CarrierState.reconcile()` (`uploader/carrier.py`) keeps the two consistent:
+  `Cargo == 0` clears the list, an overstated list is trimmed back to the
+  tonnage (excess is taken from positions we never hauled ourselves first,
+  then proportionally), a list overstated by more than
+  `RECONCILE_DROP_RATIO` (50%) is dropped entirely, and the leftover tonnage is
+  exposed as `untracked` ("прочее N t").
+- Freshness decides who wins: data newer than the tonnage by more than
+  `RECONCILE_GRACE_SECONDS` (300 s) is never trimmed, so a `CarrierStats` read
+  from an old journal during startup cannot erase today's cargo. Event age
+  comes from the journal `timestamp` (`carrier.event_time`).
+- Between `CarrierStats` events the tonnage is advanced by our own deltas
+  (`stored_estimated: true`, shown as `≈` in the block).
+- Raven snapshots are addressed (`merge_remote(..., market_id=...)`) and an
+  empty snapshot only clears the list when confirmed (`Cargo == 0`, or Raven
+  previously reported a non-empty list and no local delta happened since).
+- State dict additions consumed by the overlay: `untracked`,
+  `stored_estimated`, `reconciled` (`""|emptied|trimmed|dropped`),
+  `cargo_source` (`remote|journal|estimate`), `stats_age` (minutes).
 
 ---
 
