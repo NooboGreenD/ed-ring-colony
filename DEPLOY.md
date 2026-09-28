@@ -138,7 +138,16 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
 - закачки npm и инкрементальный кэш Next.js (`.next/cache`) живут в
   кэш-маунтах BuildKit (`RUN --mount=type=cache` в Dockerfile) и переживают
   даже `--no-cache`-пересборку: пакеты берутся с диска, а не из сети —
-  холодный `npm ci` перестал быть самой долгой частью;
+  холодный `npm ci` перестал быть самой долгой частью. Кэш-маунты требует
+  BuildKit: если у compose нет плагина buildx (docker.io из дистрибутива,
+  старый образ агента обновления), скрипты обновления сами подставляют
+  запасной Dockerfile без маунтов (`deploy/compose.legacy-build.yml`,
+  генерирует `edrc_prepare_legacy_build` из `deploy/compose-lib.sh`), а
+  «голый» `docker compose up -d --build` упадёт с «the --mount option
+  requires BuildKit» — поставьте `docker-buildx-plugin` (репозиторий
+  download.docker.com: `apt install docker-buildx-plugin`) или собирайте
+  через `bash deploy/rebuild-now.sh`. Выключатель на случай капризного
+  демона — `EDRC_FORCE_LEGACY_BUILD=1` в `.env.production`;
 - перед сборкой кэш BuildKit подрезается до бюджета, после переключения —
   полная уборка (`edrc_trim_build_cache`/`edrc_cleanup_docker_disk`):
   серия сорвавшихся сборок больше не распухает и не замедляет следующую.

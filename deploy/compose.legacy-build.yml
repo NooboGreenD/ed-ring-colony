@@ -1,0 +1,22 @@
+# ED Ring Colony — сборка web без BuildKit (запасной Dockerfile).
+#
+# Подключается в список -f ТОЛЬКО когда compose не может собрать с BuildKit
+# (нет плагина buildx, DOCKER_BUILDKIT=0, docker-compose v1): функция
+# edrc_prepare_legacy_build из deploy/compose-lib.sh генерирует
+# .edrc-legacy-Dockerfile в корне контекста из основного Dockerfile,
+# убирая RUN --mount=type=cache, и возвращает этот файл как доп. -f.
+# С BuildKit override не подключается никогда: кэш-маунты npm/.next
+# работают только там.
+#
+# Переопределён только dockerfile: контекст, build-args и имя образа
+# наследуются из основного docker-compose.yml, сети/тома не меняются —
+# up -d переключает контейнеры как обычно.
+#
+# Файл .edrc-legacy-Dockerfile в git не живёт (генерируется при каждом
+# прогоне), поэтому вручную этот override запускать не нужно — только
+# через deploy/rebuild-now.sh, deploy/update-project.sh,
+# deploy/start-monitoring.sh или deploy/selfhost/install.sh.
+services:
+  web:
+    build:
+      dockerfile: .edrc-legacy-Dockerfile

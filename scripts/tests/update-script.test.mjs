@@ -62,6 +62,10 @@ function setup() {
     '    echo "  --keep-storage   keep the specified amount of build cache"',
     '    echo "  --filter        provide filter values"',
     '    exit 0;;',
+    // STUB_BUILDX_EXIT=1 — плагина buildx нет, как в Alpine-образе агента
+    // обновления до пакета docker-cli-buildx: compose уходит в legacy-билдер.
+    '  *"buildx version"*)',
+    '    exit "${STUB_BUILDX_EXIT:-0}";;',
     // STUB_BUILD_FAIL=1 — сборка образа падает так же, как на живом сервере:
     // текст причины уходит в stderr, код возврата 1.
     '  *" build "*)',
@@ -115,8 +119,11 @@ function setup() {
   writeFileSync(join(src, 'supabase', 'migrations', '20260101000000_base.sql'), '-- base\n');
   // Настоящий compose-lib.sh из репозитория: уборка кэша BuildKit идёт его
   // функцией edrc_cleanup_docker_disk — проверяем реальный код, а не заглушку.
+  // Dockerfile и override — чтобы проверялся и запасной путь без BuildKit.
   mkdirSync(join(src, 'deploy'), { recursive: true });
   copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(src, 'deploy', 'compose-lib.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'compose.legacy-build.yml'), join(src, 'deploy', 'compose.legacy-build.yml'));
+  copyFileSync(join(ROOT, 'Dockerfile'), join(src, 'Dockerfile'));
   git(src, 'add', '-A');
   git(src, 'commit', '-qm', 'init');
   git(src, 'remote', 'add', 'origin', origin);
@@ -221,6 +228,32 @@ test('первое обновление: перемотка, применени�
     assert.ok(existsSync(join(ctx.src, 'CHANGELOG.md')));
     assert.match(readFileSync(join(ctx.src, '.env.production'), 'utf8'), /LOCAL=keep-me/);
     assert.equal(ctx.git(ctx.src, 'stash', 'list'), '', 'stash должен быть выгружен обратно');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('без BuildKit: web собирается по запасному Dockerfile без кэш-маунтов', { skip }, () => {
+  const ctx = setup();
+  try {
+    // «Сервер» фикстуры: плагина buildx нет (docker buildx version падает) —
+    // ровно как в Alpine-образе агента до пакета docker-cli-buildx. Раньше
+    // compose уходил в legacy-билдер и падал «the --mount option requires
+    // BuildKit» на Step 5/33 — обновление не доходило даже до npm ci.
+    const run = ctx.run({ STUB_BUILDX_EXIT: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
+    // Переключение — тот же список -f, образ тот же: контейнеры поднимаются.
+    assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring up -d --no-build web jobs monitor-agent/);
+    assert.match(run.stdout, /BuildKit недоступен/);
+    // Запасной Dockerfile сгенерирован из основного: убраны только кэш-маунты.
+    const legacy = readFileSync(join(ctx.src, '.edrc-legacy-Dockerfile'), 'utf8');
+    assert.doesNotMatch(legacy, /^RUN --mount/m);
+    assert.match(legacy, /^RUN npm ci --no-audit --no-fund$/m);
+    assert.match(legacy, /^RUN npm run build$/m, 'сборка Next.js идёт, просто без кэш-маунта');
+    const list = events(run.stdout);
+    assert.equal(list[list.length - 1].stage, 'done', 'обновление дошло до конца');
   } finally {
     ctx.cleanup();
   }

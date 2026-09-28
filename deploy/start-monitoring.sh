@@ -180,7 +180,15 @@ require_docker() {
   if declare -F edrc_extra_compose_files >/dev/null 2>&1; then
     extra="$(edrc_extra_compose_files "$REPO_ROOT" "$ENV_FILE")"
   fi
-  COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml $extra --profile monitoring)
+  # Сборка без BuildKit (нет плагина buildx / DOCKER_BUILDKIT=0): web получает
+  # автогенерируемый Dockerfile без кэш-маунтов — иначе legacy-билдер падает
+  # на «the --mount option requires BuildKit».
+  local legacy=""
+  if declare -F edrc_prepare_legacy_build >/dev/null 2>&1; then
+    legacy="$(edrc_prepare_legacy_build "$REPO_ROOT")"
+    [ -n "$legacy" ] && say "⚠ BuildKit недоступен — web собирается без кэш-маунтов (медленнее, но работает)"
+  fi
+  COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.yml $extra $legacy --profile monitoring)
 }
 
 # Метаданные ревизии не секреты: попадут только в runtime-образ web и видны

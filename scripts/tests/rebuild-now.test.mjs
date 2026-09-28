@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,7 +30,10 @@ function runRebuild(t, overrides = {}) {
     'SUPABASE_NETWORK=fixture_supabase',
     '',
   ].join('\n'));
-  for (const name of ['compose-lib.sh', 'compose.supabase-net.yml']) {
+  // Настоящий Dockerfile: в нём есть RUN --mount=type=cache, по которому
+  // скрипт обязан среагировать, когда BuildKit недоступен.
+  copyFileSync(join(ROOT, 'Dockerfile'), join(dir, 'Dockerfile'));
+  for (const name of ['compose-lib.sh', 'compose.supabase-net.yml', 'compose.legacy-build.yml']) {
     copyFileSync(join(ROOT, 'deploy', name), join(deploy, name));
   }
 
@@ -42,6 +45,9 @@ function runRebuild(t, overrides = {}) {
   stub('docker', [
     'printf "[docker] %s\\n" "$*" >> "$STUB_LOG"',
     'case "$*" in',
+    // STUB_BUILDX_EXIT=1 — плагина buildx нет (как в Alpine-образе агента
+    // до пакета docker-cli-buildx): compose уходит в legacy-билдер.
+    '  *"buildx version"*) exit "${STUB_BUILDX_EXIT:-0}" ;;',
     '  *" build "*) exit "${STUB_BUILD_EXIT:-0}" ;;',
     'esac',
     'exit 0',
@@ -69,7 +75,7 @@ function runRebuild(t, overrides = {}) {
       ...overrides,
     },
   });
-  return { ...result, calls: readFileSync(log, 'utf8') };
+  return { ...result, dir, calls: readFileSync(log, 'utf8') };
 }
 
 test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t) => {
@@ -107,6 +113,44 @@ test('rebuild-now: rejects a mistyped cache setting before building or deploying
   assert.equal(run.status, 1, run.stdout + run.stderr);
   assert.match(run.stderr, /USE_CACHE должен быть 0/);
   assert.doesNotMatch(run.calls, / build | up -d /);
+});
+
+test('rebuild-now: без BuildKit web собирается по запасному Dockerfile без кэш-маунтов', { skip }, (t) => {
+  // Ровно сбой с прод-сервера: «the --mount option requires BuildKit».
+  // Плагина buildx нет → legacy-билдер → RUN --mount для него синтаксическая
+  // ошибка. Скрипт обязан подставить сгенерированный Dockerfile и дойти
+  // до конца, а не упасть на Step 5.
+  const run = runRebuild(t, { STUB_BUILDX_EXIT: '1' });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  assert.match(build, /-f deploy\/compose\.supabase-net\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache web jobs$/);
+  assert.match(run.stdout, /BuildKit недоступен/);
+  // Запасной Dockerfile сгенерирован из основного: убраны только --mount,
+  // сами команды (npm ci, next build) не тронуты.
+  const legacy = readFileSync(join(run.dir, '.edrc-legacy-Dockerfile'), 'utf8');
+  assert.doesNotMatch(legacy, /^RUN --mount/m);
+  assert.match(legacy, /^RUN npm ci --no-audit --no-fund$/m);
+  assert.match(legacy, /^RUN npm run build$/m, 'сборка Next.js идёт, просто без кэш-маунта');
+  // up — с тем же списком -f: контейнеры переключаются на собранный образ.
+  assert.match(run.calls, /-f deploy\/compose\.legacy-build\.yml --profile monitoring up -d web jobs/);
+  assert.match(run.calls, /\[curl\].*api\/health/);
+});
+
+test('rebuild-now: с плагином buildx кэш-маунты BuildKit остаются', { skip }, (t) => {
+  const run = runRebuild(t, { STUB_BUILDX_EXIT: '0' });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  assert.doesNotMatch(build, /legacy-build/, 'override не подключается: кэш-маунты работают');
+  assert.equal(existsSync(join(run.dir, '.edrc-legacy-Dockerfile')), false, 'запасной Dockerfile не генерируется');
+});
+
+test('rebuild-now: EDRC_FORCE_LEGACY_BUILD=1 собирает без кэш-маунтов даже при buildx', { skip }, (t) => {
+  // Аварийный выключатель: демон хоста может не тянуть BuildKit-сборки,
+  // хотя плагин buildx формально установлен.
+  const run = runRebuild(t, { EDRC_FORCE_LEGACY_BUILD: '1' });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  assert.match(build, /-f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache web jobs$/);
 });
 
 test('Docker builder inherits installed dependencies without a node_modules copy', () => {

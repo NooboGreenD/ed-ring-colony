@@ -448,6 +448,22 @@ docker compose --env-file .env.production --profile monitoring up -d --force-rec
 переживают даже `--no-cache`-пересборку — повторная пересборка не качает
 пакеты из сети заново.
 
+Кэш-маунты понимает только BuildKit, поэтому сборка защищена с двух сторон:
+
+- **образ агента** ставит `docker-cli-buildx` — compose внутри агента
+  собирает через BuildKit, а не уходит в legacy-билдер (без плагина он
+  печатает «Docker Compose requires buildx plugin» и падает на
+  «the --mount option requires BuildKit»). Правка вступает в силу после
+  пересборки и перезапуска агента (кнопка «Перезапустить агент» или
+  автоперезапуск после успешного обновления);
+- **если BuildKit всё же недоступен** (агент ещё старого образа,
+  docker-compose v1, `DOCKER_BUILDKIT=0`), `update-project.sh` сам
+  генерирует `.edrc-legacy-Dockerfile` — основной Dockerfile без кэш-маунтов
+  — и подключает `deploy/compose.legacy-build.yml`. Сборка медленнее, но
+  обновление доходит до конца на любом Docker. Принудить этот путь можно
+  переменной `EDRC_FORCE_LEGACY_BUILD=1` (например, если демон хоста старше
+  20.10 и не тянет BuildKit-сборки).
+
 Логи `web` тоже больше не безграничны: в `docker-compose.yml` добавлена
 ротация `json-file` (`max-size: 10m`, `max-file: 3`) — как у остальных
 сервисов стека.

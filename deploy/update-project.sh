@@ -407,7 +407,19 @@ if [ "$MODE" = "compose" ]; then
   #     идёт отдельной командой уже после успешного build.
   export RUN_TESTS
   say "флажки прогона: тесты=$RUN_TESTS · бэкап БД=$BACKUP_BEFORE · миграции=$APPLY_MIGRATIONS"
-  COMPOSE_ARGS="-f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring"
+  # Dockerfile web использует RUN --mount=type=cache — это умеет только
+  # BuildKit. Пока в образе агента не было пакета docker-cli-buildx, compose
+  # печатал «requires buildx plugin», уходил в legacy-билдер и падал на
+  # «the --mount option requires BuildKit» — обновление не доходило даже до
+  # npm ci. Если BuildKit по-прежнему недоступен (старый образ агента до его
+  # пересборки, docker-compose v1, DOCKER_BUILDKIT=0), web собирается по
+  # автогенерируемому Dockerfile без кэш-маунтов: медленнее, но до конца.
+  EDRC_LEGACY_BUILD=""
+  if declare -F edrc_prepare_legacy_build >/dev/null 2>&1; then
+    EDRC_LEGACY_BUILD="$(edrc_prepare_legacy_build "$PROJECT_DIR")"
+    [ -n "$EDRC_LEGACY_BUILD" ] && say "⚠ BuildKit недоступен — web собирается без кэш-маунтов (медленнее; поставьте плагин buildx или пересоберите агента, чтобы вернуть скорость)"
+  fi
+  COMPOSE_ARGS="-f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES $EDRC_LEGACY_BUILD --profile monitoring"
   if [ -f "$ENV_FILE" ]; then
     COMPOSE_ARGS="--env-file $ENV_FILE $COMPOSE_ARGS"
   else
