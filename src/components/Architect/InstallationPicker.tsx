@@ -91,7 +91,9 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
             <button type="button" onClick={onClose} style={buttonStyle}>Закрыть</button>
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-            {body.subType}
+            {body.subType && body.subType !== 'Неизвестно'
+              ? body.subType
+              : <span style={{ color: 'var(--orange)' }}>класс тела неизвестен</span>}
             {body.kind === 'planet' || body.kind === 'moon' ? (
               <>
                 {' · '}

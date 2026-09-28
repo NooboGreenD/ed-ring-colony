@@ -2,13 +2,26 @@ import { NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { signalsFromRecord, signalsToColumns } from '@/lib/bodySignals';
-import { compareSystemBodies, normalizeEdsmBody } from '@/lib/architect/bodySync';
+import { compareBodySources, normalizeEdsmBody, normalizeSpanshBody } from '@/lib/architect/bodySync';
+import { findSystemByName } from '@/lib/galaxySystemsDb';
+import { spanshSystemDump } from '@/lib/spanshClient';
 
 export const dynamic = 'force-dynamic';
 
 const EDSM_FETCH_TIMEOUT = 8000;
 
-async function fetchEdsmBodies(systemName: string): Promise<any[] | null> {
+/** Что вернул источник — нужно «Архитектору», чтобы честно показать статус синхронизации. */
+type SourceStatus = 'ok' | 'empty' | 'unavailable' | 'skipped';
+
+interface EdsmBodiesResult {
+  bodies: any[] | null;
+  /** id64 системы: EDSM отдаёт его вместе с телами, и он нужен для дампа Spansh. */
+  id64: number | null;
+  status: SourceStatus;
+  error?: string;
+}
+
+async function fetchEdsmBodies(systemName: string): Promise<EdsmBodiesResult> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), EDSM_FETCH_TIMEOUT);
   try {
@@ -18,15 +31,44 @@ async function fetchEdsmBodies(systemName: string): Promise<any[] | null> {
       signal: controller.signal,
       cache: 'no-store',
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { bodies: null, id64: null, status: 'unavailable', error: `HTTP ${res.status}` };
     const data = await res.json();
-    return Array.isArray(data?.bodies) ? data.bodies : null;
+    const bodies = Array.isArray(data?.bodies) ? data.bodies : null;
+    return {
+      bodies,
+      id64: typeof data?.id64 === 'number' ? data.id64 : null,
+      status: bodies && bodies.length > 0 ? 'ok' : 'empty',
+    };
   } catch (err: any) {
     console.error(`[system-bodies] EDSM fetch error for ${systemName}:`, err.message);
-    return null;
+    return { bodies: null, id64: null, status: 'unavailable', error: err.message };
   } finally {
     clearTimeout(id);
   }
+}
+
+/**
+ * id64 системы для дампа Spansh: сначала то, что вернул EDSM, иначе локальный
+ * каталог галактики. Без сети и без обращения к Spansh по имени.
+ */
+async function resolveId64(systemName: string, fromEdsm: number | null): Promise<string | null> {
+  if (fromEdsm) return String(fromEdsm);
+  try {
+    const row = await findSystemByName(systemName);
+    return row?.id64 ? String(row.id64) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Самая свежая отметка времени среди строк — для подписи «данные от …». */
+function latestUpdate(rows: any[]): string | null {
+  let best: number | null = null;
+  for (const row of rows) {
+    const value = Date.parse(String(row?.updated_at ?? ''));
+    if (Number.isFinite(value) && (best === null || value > best)) best = value;
+  }
+  return best === null ? null : new Date(best).toISOString();
 }
 
 export async function GET(req: Request) {
@@ -44,7 +86,11 @@ export async function GET(req: Request) {
     }
 
     if (compareMode) {
-      const [dbResult, edsmBodies] = await Promise.all([
+      // Spansh опрашивается только по явному запросу «Архитектора»
+      // (`?spansh=1`, по умолчанию включён): дампы больших систем тяжёлые.
+      const useSpansh = searchParams.get('spansh') !== '0';
+
+      const [dbResult, edsm] = await Promise.all([
         supabaseAdmin
           .from('system_scans')
           .select('*')
@@ -54,28 +100,78 @@ export async function GET(req: Request) {
       ]);
 
       const dbRows = (!dbResult.error && Array.isArray(dbResult.data)) ? dbResult.data : [];
-      const edsmRows = (edsmBodies ?? []).map((b: any) => normalizeEdsmBody(system, b));
+      const edsmRows = (edsm.bodies ?? []).map((b: any) => normalizeEdsmBody(system, b));
 
-      if (dbRows.length === 0 && edsmRows.length === 0) {
+      let spanshRows: any[] = [];
+      let spanshStatus: SourceStatus = useSpansh ? 'empty' : 'skipped';
+      let spanshNote: string | undefined;
+      let spanshUpdated: string | null = null;
+      if (useSpansh) {
+        const id64 = await resolveId64(system, edsm.id64);
+        if (!id64) {
+          spanshStatus = 'skipped';
+          spanshNote = 'id64 системы неизвестен';
+        } else {
+          const dump = await spanshSystemDump(id64);
+          if (dump.ok) {
+            spanshRows = dump.bodies.map((b) => normalizeSpanshBody(system, b as Record<string, unknown>));
+            spanshStatus = spanshRows.length > 0 ? 'ok' : 'empty';
+            spanshUpdated = dump.updatedAt;
+          } else {
+            spanshStatus = dump.reason === 'not-found' ? 'empty' : 'unavailable';
+            spanshNote = dump.reason;
+          }
+        }
+      }
+
+      const sync = {
+        database: {
+          status: (dbResult.error ? 'unavailable' : dbRows.length > 0 ? 'ok' : 'empty') as SourceStatus,
+          count: dbRows.length,
+          updatedAt: latestUpdate(dbRows),
+          note: dbResult.error?.message,
+        },
+        edsm: {
+          status: edsm.status,
+          count: edsmRows.length,
+          updatedAt: null as string | null,
+          note: edsm.error,
+        },
+        spansh: {
+          status: spanshStatus,
+          count: spanshRows.length,
+          updatedAt: spanshUpdated,
+          note: spanshNote,
+        },
+      };
+
+      if (dbRows.length === 0 && edsmRows.length === 0 && spanshRows.length === 0) {
         return NextResponse.json({
           ok: true,
           system,
           count: 0,
           source: 'none',
-          sources: { database: 0, edsm: 0, merged: 0, total: 0 },
+          sources: { database: 0, edsm: 0, spansh: 0, merged: 0, total: 0 },
+          sync,
           bodies: [],
         });
       }
 
-      const { bodies, stats, toUpsert } = compareSystemBodies(dbRows, edsmRows);
+      const { bodies, stats, toUpsert, duplicates } = compareBodySources({
+        database: dbRows,
+        edsm: edsmRows,
+        spansh: spanshRows,
+      });
 
       // Дозаписываем в базу проекта только то, что сверка реально уточнила —
       // не блокируя ответ при сбое записи.
+      let cached = 0;
       if (toUpsert.length > 0) {
         try {
           await supabaseAdmin.from('system_scans').upsert(toUpsert, {
             onConflict: 'system_name,body_name',
           });
+          cached = toUpsert.length;
         } catch (saveErr: any) {
           console.warn('[system-bodies] Failed caching compared bodies into DB:', saveErr.message);
         }
@@ -87,6 +183,7 @@ export async function GET(req: Request) {
         count: bodies.length,
         source: 'compare',
         sources: stats,
+        sync: { ...sync, cached, duplicates },
         bodies,
       });
     }
@@ -111,7 +208,7 @@ export async function GET(req: Request) {
     }
 
     // 2. Если в БД нет данных, запрашиваем EDSM
-    const edsmBodies = await fetchEdsmBodies(system);
+    const { bodies: edsmBodies } = await fetchEdsmBodies(system);
     if (!edsmBodies || edsmBodies.length === 0) {
       return NextResponse.json({
         ok: true,

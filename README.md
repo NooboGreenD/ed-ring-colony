@@ -60,6 +60,9 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   и поделиться ссылкой `/architect?plan=<id>`; рядом показываются фактические стройплощадки системы
   (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Uploader 2.12.2
   отправляет расширенные сканы тел и snapshots стройки, а прогресс сверяется параллельно с Raven Colonial.
+  План смотрится тремя видами — «Тела», «Таблица» и «Аналитика» (бюджет очков по шагам стройки, тоннаж и рейсы,
+  доли товаров, экономики, эффекты, загрузка тел); загруженные данные проверяются на дубли и невозможные значения,
+  а панель источников показывает, кто ответил: база проекта, EDSM, Spansh и Raven Colonial.
   Движок — `lib/architect/`
   (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
 - **Forum** — Community discussions with markdown support, reactions, search, and moderation

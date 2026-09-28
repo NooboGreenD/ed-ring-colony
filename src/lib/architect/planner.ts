@@ -19,7 +19,8 @@
  * (`scripts/tests/system-architect.test.mjs`).
  */
 
-import { activeSignalKinds, signalsFromRecord } from '../bodySignals.ts';
+import { activeSignalKinds, mergeSignals, signalsFromRecord } from '../bodySignals.ts';
+import { buildBodyIndex, normalizeBodyKey, resolveBodyName, sameBodyName } from './bodyNames.ts';
 import {
   CATALOGUE_VERSION,
   COMMODITY_LABELS_RU,
@@ -36,6 +37,7 @@ import type {
   ArchitectPreReq,
   PlanEvaluation,
   PlanIssue,
+  PlanStep,
   PlannedSite,
   PlannedSiteStatus,
   PlacementCheck,
@@ -146,20 +148,90 @@ function nonEmptyText(value: unknown, denied: string[]): string {
 }
 
 /**
+ * Полнота записи тела: по ней при дублях выбирается лучшая версия.
+ * Сигналы весят больше — их отдаёт только сканер игрока.
+ */
+function bodyCompleteness(body: ArchitectBody): number {
+  let score = 0;
+  if (body.radiusKm > 0) score += 1;
+  if (body.gravity > 0) score += 1;
+  if (body.tempK > 0) score += 1;
+  if (body.subType && body.subType !== 'Неизвестно') score += 1;
+  if (body.distanceLs > 0) score += 1;
+  if (body.bodyId != null) score += 1;
+  if (body.landable) score += 1;
+  if (body.hasAtmosphere) score += 1;
+  if (body.volcanism) score += 1;
+  if (body.hasRings) score += 1;
+  if (activeSignalKinds(body.signals).length > 0) score += 4;
+  return score;
+}
+
+/**
+ * Слияние дублей одного тела: за основу берётся более полная запись, а её
+ * пустые поля достраиваются из второй. Так тело, пришедшее дважды (из базы и
+ * из EDSM, либо двумя строками с разным регистром имени), не превращается ни
+ * в две карточки, ни в потерю данных.
+ */
+function mergeBodies(primary: ArchitectBody, secondary: ArchitectBody): ArchitectBody {
+  const merged: ArchitectBody = {
+    ...primary,
+    bodyId: primary.bodyId ?? secondary.bodyId,
+    subType: primary.subType && primary.subType !== 'Неизвестно' ? primary.subType : secondary.subType,
+    distanceLs: primary.distanceLs > 0 ? primary.distanceLs : secondary.distanceLs,
+    radiusKm: primary.radiusKm > 0 ? primary.radiusKm : secondary.radiusKm,
+    gravity: primary.gravity > 0 ? primary.gravity : secondary.gravity,
+    tempK: primary.tempK > 0 ? primary.tempK : secondary.tempK,
+    landable: primary.landable || secondary.landable,
+    terraformable: primary.terraformable || secondary.terraformable,
+    hasAtmosphere: primary.hasAtmosphere || secondary.hasAtmosphere,
+    volcanism: primary.volcanism || secondary.volcanism,
+    hasRings: primary.hasRings || secondary.hasRings,
+    signals: mergeSignals(primary.signals, secondary.signals),
+    features: [...new Set([...primary.features, ...secondary.features])],
+  };
+  // Признаки зависят от слитых полей — пересобираем, чтобы фильтры не врали.
+  const features = new Set(merged.features);
+  if (merged.landable) features.add('landable');
+  if (merged.terraformable) features.add('terraformable');
+  if (merged.hasAtmosphere) features.add('atmosphere');
+  if (merged.volcanism) features.add('volcanism');
+  if (merged.hasRings) features.add('rings');
+  for (const kind of activeSignalKinds(merged.signals)) features.add(`signal:${kind}`);
+  merged.features = [...features];
+  return merged;
+}
+
+/**
  * Тела системы из строк `system_scans` (или сырых ответов EDSM/журнала).
  *
  * Функция тотальная: на мусоре она возвращает пустой список, а не падает —
  * страница планировщика обязана жить и на неполных данных.
+ *
+ * Здесь же чистятся данные, которые иначе ломали интерфейс:
+ *
+ *   * **дубли** одного тела (разный регистр, лишние пробелы, одна и та же
+ *     запись из двух источников) схлопываются в одну карточку — раньше они
+ *     давали два блока с одинаковым именем и один и тот же React-ключ;
+ *   * тела **без имени** получают уникальную подпись `<система> Body N`, а не
+ *     одно и то же имя на всех;
+ *   * расстояние округляется до сотых: `112.40000000000001 св. с` — это не
+ *     точность, а мусор в интерфейсе.
  */
 export function fromScanRecords(rows: unknown, systemName = ''): ArchitectBody[] {
   if (!Array.isArray(rows)) return [];
   const bodies: ArchitectBody[] = [];
+  let unnamed = 0;
   for (const row of rows) {
     const record = asRecord(row);
     if (!record) continue;
     const raw = asRecord(record.raw_data) ?? asRecord(record.rawData);
-    const name = str(record.body_name ?? record.name ?? record.bodyName)
-      || (systemName ? `${systemName} Body` : 'Неизвестное тело');
+    const rawName = str(record.body_name ?? record.name ?? record.bodyName).replace(/\s+/g, ' ');
+    let name = rawName;
+    if (!name) {
+      unnamed += 1;
+      name = systemName ? `${systemName} Body ${unnamed}` : `Неизвестное тело ${unnamed}`;
+    }
     const bodyType = str(record.body_type ?? record.type ?? record.bodyType).toLowerCase();
     const subType = str(record.sub_type ?? record.subType ?? record.planet_class ?? record.star_type);
     const parents = Array.isArray(record.parents) ? record.parents : [];
@@ -213,7 +285,7 @@ export function fromScanRecords(rows: unknown, systemName = ''): ArchitectBody[]
       bodyId: Number.isSafeInteger(num(record.body_id ?? record.bodyId)) ? num(record.body_id ?? record.bodyId) : null,
       kind,
       subType: subType || bodyType || 'Неизвестно',
-      distanceLs: num(record.distance_ls ?? record.distanceLs ?? record.distanceToArrival),
+      distanceLs: Math.round(num(record.distance_ls ?? record.distanceLs ?? record.distanceToArrival) * 100) / 100,
       radiusKm: Math.round(radiusKm * 10) / 10,
       gravity: Math.round(num(record.gravity) * 100) / 100,
       tempK: Math.round(num(record.surface_temp_k ?? record.surfaceTemperature ?? record.temp_k)),
@@ -226,7 +298,27 @@ export function fromScanRecords(rows: unknown, systemName = ''): ArchitectBody[]
       features,
     });
   }
-  return bodies.sort((left, right) => left.distanceLs - right.distanceLs || left.name.localeCompare(right.name));
+
+  // Схлопывание дублей: ключ — нормализованное имя (регистр и пробелы значения
+  // не имеют), при совпадении остаётся более полная запись, дополненная второй.
+  const byKey = new Map<string, ArchitectBody>();
+  for (const body of bodies) {
+    const key = normalizeBodyKey(body.name);
+    const known = byKey.get(key);
+    if (!known) {
+      byKey.set(key, body);
+      continue;
+    }
+    byKey.set(key, bodyCompleteness(body) > bodyCompleteness(known)
+      ? mergeBodies(body, known)
+      : mergeBodies(known, body));
+  }
+
+  return [...byKey.values()].sort((left, right) => (
+    left.distanceLs - right.distanceLs
+    || (left.bodyId ?? Number.MAX_SAFE_INTEGER) - (right.bodyId ?? Number.MAX_SAFE_INTEGER)
+    || left.name.localeCompare(right.name, 'ru')
+  ));
 }
 
 /**
@@ -296,7 +388,10 @@ export function placementCheck(
   if (!installation) return { ok: false, errors: ['Неизвестная постройка'], warnings };
   if (!body) return { ok: false, errors: ['Тело не найдено в данных системы'], warnings };
 
-  const others = plan.sites.filter((site) => site.bodyName === body.name);
+  // Имена тел в плане могут прийти из стороннего источника («A 1» вместо
+  // «Sol A 1»), поэтому слоты считаем по терпимому сравнению имён — иначе
+  // перенесённая застройка не занимала бы слоты и переполнение не ловилось.
+  const others = plan.sites.filter((site) => sameBodyName(site.bodyName, body.name, plan.system));
 
   if (installation.location === 'surface') {
     const limit = predictSurfaceSlots(body);
@@ -541,7 +636,12 @@ export function portTax(tier: number, cost: number, taxStep: number): number {
 /** Полный расчёт плана: очки, грузы, эффекты, порядок, замечания. */
 export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []): PlanEvaluation {
   const issues: PlanIssue[] = [];
-  const bodiesByName = new Map(bodies.map((body) => [body.name, body]));
+  // Тело записи ищется через индекс имён: план может хранить имя из чужого
+  // источника, и строгое сравнение прятало бы такие постройки от расчёта.
+  const bodyIndex = buildBodyIndex(bodies, plan.system);
+  const bodyOf = (name: string): ArchitectBody | null => (
+    bodies.length > 0 ? resolveBodyName(name, bodyIndex).body : null
+  );
   const order = computeBuildOrder(plan);
   const sitesById = new Map(plan.sites.map((site) => [site.id, site]));
   const primarySite = primarySiteOf(plan);
@@ -554,6 +654,7 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
   const tierSpent = { tier2: 0, tier3: 0 };
   const tierGiven = { tier2: 0, tier3: 0 };
   const portCosts: PlanEvaluation['portCosts'] = [];
+  const timeline: PlanStep[] = [];
   const cargo: Record<string, number> = {};
   const effects: SystemEffects = { ...EMPTY_EFFECTS };
   const economies: Partial<Record<SystemEconomy, number>> = {};
@@ -565,13 +666,20 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
   // Замечания по телам и слотам — до расчёта очков, чтобы список читался сверху вниз.
   for (const site of plan.sites) {
     const installation = getInstallation(site.installationId);
-    const body = bodiesByName.get(site.bodyName) ?? null;
+    const body = bodyOf(site.bodyName);
     if (!installation) {
       issues.push({ level: 'error', siteId: site.id, message: `Неизвестная постройка «${site.installationId}» — удалите запись или обновите каталог` });
       continue;
     }
     if (bodies.length > 0 && !body) {
-      issues.push({ level: 'warning', siteId: site.id, bodyName: site.bodyName, message: `Тело «${site.bodyName}» не найдено в данных системы` });
+      issues.push({
+        level: 'warning',
+        siteId: site.id,
+        bodyName: site.bodyName,
+        message: site.bodyName
+          ? `Тело «${site.bodyName}» не найдено в данных системы`
+          : `Не указано тело для «${installation.nameRu}»: задайте его в редакторе записи`,
+      });
     }
     // Слоты считаем «без этой записи»: так переполнение видно на самой записи.
     const check = placementCheck(body, site.installationId, { ...plan, sites: plan.sites.filter((other) => other.id !== site.id) });
@@ -643,13 +751,38 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     }
 
     if (installation.location === 'surface') {
-      const body = bodiesByName.get(site.bodyName) ?? null;
+      const body = bodyOf(site.bodyName);
       const limit = predictSurfaceSlots(body);
-      const usage = surfaceUsage[site.bodyName] ?? { used: 0, limit };
+      // Ключ — каноническое имя тела: иначе одно тело попадало бы в отчёт
+      // дважды под разными написаниями и слоты считались бы по отдельности.
+      const key = body?.name ?? site.bodyName;
+      const usage = surfaceUsage[key] ?? { used: 0, limit };
       usage.used += 1;
       usage.limit = limit;
-      surfaceUsage[site.bodyName] = usage;
+      surfaceUsage[key] = usage;
     }
+
+    // Снимок бюджета после шага — из него инфографика рисует график очков.
+    const stepTons = effectiveCargo ? effectiveCargo.haulTons : installation.haulTons;
+    timeline.push({
+      index: timeline.length + 1,
+      siteId: site.id,
+      installationId: installation.id,
+      nameRu: installation.nameRu,
+      bodyName: site.bodyName,
+      tier: installation.tier,
+      status: site.status,
+      primary: primarySite?.id === site.id,
+      cost,
+      costTier: cost > 0 ? installation.needs.tier : 0,
+      gives: installation.gives.tier > 1 ? installation.gives.count : 0,
+      givesTier: installation.gives.tier > 1 ? installation.gives.tier : 0,
+      tier2After: tierPoints.tier2,
+      tier3After: tierPoints.tier3,
+      deficit: tierPoints.tier2 < 0 || tierPoints.tier3 < 0,
+      tons: stepTons,
+      tonsCumulative: haulTons,
+    });
   }
 
   const installedTypes = plan.sites.map((site) => site.installationId);
@@ -686,6 +819,7 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
 
   return {
     order,
+    timeline,
     tierPoints,
     tierSpent,
     tierGiven,
