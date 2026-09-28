@@ -10,7 +10,8 @@ import ProgressPanel from '@/components/Architect/ProgressPanel';
 import SharePanel from '@/components/Architect/SharePanel';
 import SiteEditor from '@/components/Architect/SiteEditor';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
-import { CATALOGUE_VERSION } from '@/lib/architect/catalogue';
+import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
+import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
 import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
 import { adoptExisting, type ExistingStructure } from '@/lib/architect/existing';
 import {
@@ -834,6 +835,7 @@ function BodyCard({
     : surfaceUsed >= surfaceLimit ? 'var(--red)' : surfaceUsed / surfaceLimit > 0.7 ? 'var(--orange)' : 'var(--green)';
   const allowSurface = body.kind === 'planet' || body.kind === 'moon';
   const allowOrbital = body.kind !== 'moon';
+  const boostedEconomies = body.kind !== 'star' ? bodyBoostedEconomies(body) : [];
   // Разделы «наземные/орбитальные» показываем у тел с постройками и у тех,
   // где соответствующее размещение вообще возможно.
   const showSurfaceGroup = allowSurface && (sites.length > 0 || surfaceUsed > 0);
@@ -919,6 +921,15 @@ function BodyCard({
             ))}
           </div>
 
+          {boostedEconomies.length > 0 && (
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
+              🏭 усиливает экономики:{' '}
+              <span style={{ color: 'var(--green)' }}>
+                {boostedEconomies.map((economy) => ECONOMY_LABELS_RU[economy]).join(', ')}
+              </span>
+            </div>
+          )}
+
           {body.signals.genuses.length > 0 && (
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
               роды биологии: {body.signals.genuses.join(', ')}
@@ -934,6 +945,7 @@ function BodyCard({
             <SiteGroup
               title="Наземные постройки"
               counter={` ${surfaceUsed} из ${surfaceLimit}`}
+              body={body}
               onAdd={() => onAdd('surface')}
               sites={surfaceSites}
               progressBySite={progressBySite}
@@ -947,6 +959,7 @@ function BodyCard({
             <SiteGroup
               title="Орбитальные постройки"
               counter={` ${orbitalUsed}`}
+              body={body}
               onAdd={() => onAdd('orbital')}
               sites={orbitalSites}
               progressBySite={progressBySite}
@@ -966,6 +979,7 @@ function BodyCard({
 function SiteGroup({
   title,
   counter,
+  body,
   sites,
   progressBySite,
   onAdd,
@@ -976,6 +990,7 @@ function SiteGroup({
 }: {
   title: string;
   counter: string;
+  body: ArchitectBody;
   sites: PlannedSite[];
   progressBySite: Map<string, SiteProgress>;
   onAdd: () => void;
@@ -1002,6 +1017,7 @@ function SiteGroup({
         <SiteRow
           key={site.id}
           site={site}
+          body={body}
           progressBySite={progressBySite}
           onRemove={onRemove}
           onCycle={onCycle}
@@ -1015,6 +1031,7 @@ function SiteGroup({
 
 function SiteRow({
   site,
+  body,
   progressBySite,
   onRemove,
   onCycle,
@@ -1022,6 +1039,7 @@ function SiteRow({
   onTogglePrimary,
 }: {
   site: PlannedSite;
+  body: ArchitectBody;
   progressBySite: Map<string, SiteProgress>;
   onRemove: (siteId: string) => void;
   onCycle: (siteId: string, status: PlannedSiteStatus) => void;
@@ -1043,6 +1061,10 @@ function SiteRow({
   const cargo = siteCargo(site);
   const tons = cargo?.haulTons ?? installation.haulTons;
   const isPrimary = Boolean(site.primary);
+  // Соответствие экономики постройки телу (звёзды не учитываем).
+  const economyFit = installation.influence !== 'none' && body.kind !== 'star'
+    ? economyBodyFit(installation.influence, body)
+    : null;
 
   return (
     <div
@@ -1066,6 +1088,17 @@ function SiteRow({
           {isPrimary ? ' (основной порт)' : ''}
           {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
           {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+          экономика: {ECONOMY_LABELS_RU[installation.influence]}
+          {economyFit && economyFit.level !== 'neutral' && (
+            <span
+              style={{ marginLeft: 6, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)' }}
+              title={economyFit.reason}
+            >
+              {economyFit.level === 'boost' ? '▲ усилена телом' : '▽ слабо на этом теле'}
+            </span>
+          )}
         </div>
         {site.note && (
           <div style={{ fontSize: 11, color: 'var(--cyan)', marginTop: 2 }}>📝 {site.note}</div>

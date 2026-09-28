@@ -2435,3 +2435,58 @@ export const INSTALLATIONS: ArchitectInstallation[] = CATALOGUE_ENTRIES.map((ins
     ? { ...installation, primary: { ...primary, approximate: primary.approximate === true } }
     : installation;
 });
+
+const INSTALLATIONS_BY_ID = new Map(INSTALLATIONS.map((installation) => [installation.id, installation]));
+
+/** Короткая ссылка на постройку — для графа зависимостей. */
+export interface BuildingRef {
+  id: string;
+  nameRu: string;
+}
+
+/**
+ * Связи одной постройки с остальными:
+ *   * `requires`   — что должно уже стоять в системе (цепочка предшественников);
+ *   * `requiredBy` — постройки, для которых эта служит предшественником;
+ *   * `enables`    — сервисы/возможности системы, которые она открывает.
+ *
+ * Данные выводятся из `PRE_REQS`, поля `preReq` построек и `SYSTEM_UNLOCKS`, а
+ * не дублируются руками, поэтому граф всегда согласован с каталогом.
+ */
+export interface BuildingLinks {
+  requires: { preReq: ArchitectPreReq; label: string; options: BuildingRef[] }[];
+  requiredBy: BuildingRef[];
+  enables: { id: string; label: string }[];
+}
+
+function buildingRef(id: string): BuildingRef {
+  const installation = INSTALLATIONS_BY_ID.get(id);
+  return { id, nameRu: installation?.nameRu ?? id };
+}
+
+export function installationLinks(id: string): BuildingLinks {
+  const installation = INSTALLATIONS_BY_ID.get(id);
+  const requires: BuildingLinks['requires'] = [];
+  if (installation?.preReq) {
+    const preReq = PRE_REQS[installation.preReq];
+    requires.push({
+      preReq: installation.preReq,
+      label: preReq.label,
+      options: preReq.buildTypes.map(buildingRef),
+    });
+  }
+
+  // Кто зависит от этой постройки: она входит в список buildTypes чьего-то preReq.
+  const requiredBy: BuildingRef[] = [];
+  for (const other of INSTALLATIONS) {
+    if (!other.preReq) continue;
+    if (PRE_REQS[other.preReq].buildTypes.includes(id)) requiredBy.push(buildingRef(other.id));
+  }
+
+  // Что система открывает благодаря этой постройке.
+  const enables = SYSTEM_UNLOCKS
+    .filter((unlock) => unlock.buildTypes.includes(id))
+    .map((unlock) => ({ id: unlock.id, label: unlock.label }));
+
+  return { requires, requiredBy, enables };
+}

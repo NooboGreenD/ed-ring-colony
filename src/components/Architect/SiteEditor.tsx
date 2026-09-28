@@ -4,9 +4,11 @@ import { useMemo, useState } from 'react';
 import {
   BUILD_CLASS_LABELS_RU,
   ECONOMY_LABELS_RU,
+  installationLinks,
   PAD_LABELS_RU,
   PRE_REQS,
 } from '@/lib/architect/catalogue';
+import { economyBodyFit } from '@/lib/architect/economy';
 import {
   canBePrimary,
   formatTons,
@@ -72,6 +74,12 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
   const chosenCheck = installation ? placementCheck(targetBody, installationId, planWithoutSite) : null;
   const errors = chosenCheck?.errors ?? ['Неизвестная постройка'];
   const warnings = chosenCheck?.warnings ?? [];
+  // Соответствие экономики выбранному телу и связи постройки с остальными.
+  const economyFit = installation && installation.influence !== 'none' && targetBody && targetBody.kind !== 'star'
+    ? economyBodyFit(installation.influence, targetBody)
+    : null;
+  const links = installation ? installationLinks(installationId) : null;
+  const installedIds = useMemo(() => new Set(plan.sites.map((entry) => entry.installationId)), [plan.sites]);
   const primaryCargo = effectivePrimary ? installation?.primary : null;
   const regularTons = installation?.haulTons ?? 0;
   const effectiveTons = primaryCargo
@@ -233,6 +241,39 @@ export default function SiteEditor({ site, plan, bodies, onSave, onClose, onDele
                       ? `Строится с колониального корабля: очков системы не тратит, но материалов нужно больше — ${formatTons(effectiveTons)} вместо ${formatTons(regularTons)}. ${primaryCargo?.approximate ? 'Числа оценочные: ' : ''}${installation.primary?.note ?? ''}`
                       : 'Основной порт строится с колониального корабля и не тратит очки системы — в плане он может быть только один.'}
                   </div>
+                </div>
+              )}
+
+              {(economyFit || (links && (links.requires.length > 0 || links.enables.length > 0 || links.requiredBy.length > 0))) && (
+                <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--line)', display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {economyFit && economyFit.level !== 'neutral' && (
+                    <div style={{ fontSize: 11, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)', lineHeight: 1.5 }}>
+                      {economyFit.level === 'boost' ? '▲ ' : '▽ '}{economyFit.reason}
+                    </div>
+                  )}
+                  {links && links.requires.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      нужен предшественник:{' '}
+                      {links.requires.map((req) => {
+                        const ok = req.options.some((option) => installedIds.has(option.id));
+                        return (
+                          <span key={req.preReq} style={{ color: ok ? 'var(--green)' : 'var(--red)' }}>
+                            {ok ? '✓ ' : '✗ '}{req.label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {links && links.enables.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--cyan)', lineHeight: 1.5 }}>
+                      открывает: {links.enables.map((enable) => enable.label).join('; ')}
+                    </div>
+                  )}
+                  {links && links.requiredBy.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
+                      нужна для: {links.requiredBy.map((ref) => ref.nameRu).join(', ')}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

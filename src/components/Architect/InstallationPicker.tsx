@@ -3,9 +3,12 @@
 import { useMemo, useState } from 'react';
 import {
   BUILD_CLASS_LABELS_RU,
+  ECONOMY_LABELS_RU,
+  installationLinks,
   PAD_LABELS_RU,
   PRE_REQS,
 } from '@/lib/architect/catalogue';
+import { ECONOMY_MARKET } from '@/lib/architect/economy';
 import {
   commodityLabel,
   formatTons,
@@ -170,6 +173,8 @@ function PickerRow({
   onPick: () => void;
 }) {
   const preReq = installation.preReq ? PRE_REQS[installation.preReq] : null;
+  const links = installationLinks(installation.id);
+  const market = ECONOMY_MARKET[installation.influence];
   const cargo = Object.entries(installation.cargo).sort((left, right) => right[1] - left[1]);
   const primary = installation.primary;
   const primaryCargo = primary
@@ -207,6 +212,7 @@ function PickerRow({
             {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
             {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
             {preReq ? ` · нужен: ${preReq.label}` : ''}
+            {installation.influence !== 'none' ? ` · экономика: ${ECONOMY_LABELS_RU[installation.influence]}` : ''}
           </div>
         </div>
         <div style={{ textAlign: 'right', color: 'var(--muted)', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -243,6 +249,34 @@ function PickerRow({
           <div style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 6 }}>
             {installation.nameEn} · {installation.group} · расположение: {installation.location === 'surface' ? 'поверхность' : 'орбита'}
           </div>
+
+          {(links.requires.length > 0 || links.enables.length > 0 || links.requiredBy.length > 0 || market.produces.length > 0) && (
+            <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 11 }}>
+              {links.requires.length > 0 && (
+                <div style={{ color: 'var(--muted)' }}>
+                  нужен предшественник: <span style={{ color: 'var(--text)' }}>{links.requires.map((req) => req.label).join(' / ')}</span>
+                </div>
+              )}
+              {links.enables.length > 0 && (
+                <div style={{ color: 'var(--cyan)' }}>открывает: {links.enables.map((enable) => enable.label).join('; ')}</div>
+              )}
+              {links.requiredBy.length > 0 && (
+                <div style={{ color: 'var(--muted)' }}>
+                  нужна для: <span style={{ color: 'var(--text)' }}>{links.requiredBy.map((ref) => ref.nameRu).join(', ')}</span>
+                </div>
+              )}
+              {market.produces.length > 0 && (
+                <div style={{ color: 'var(--muted)' }}>
+                  <span style={{ color: 'var(--green)' }}>рынок продаёт:</span> {market.produces.join(', ')}
+                </div>
+              )}
+              {market.imports.length > 0 && (
+                <div style={{ color: 'var(--muted)' }}>
+                  <span style={{ color: 'var(--cyan)' }}>рынок ввозит:</span> {market.imports.join(', ')}
+                </div>
+              )}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '2px 16px', fontSize: 12 }}>
             {cargo.map(([key, tons]) => (
               <div key={key} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
