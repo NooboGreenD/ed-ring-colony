@@ -59,6 +59,7 @@ ENV NODE_ENV=production \
     UPDATE_AGENT_PORT=8092 \
     UPDATE_AGENT_HOST=0.0.0.0 \
     UPDATE_STATE_DIR=/state \
+    DOCKER_CONFIG=/state/.docker \
     UPDATE_HEALTH_URL=http://web:3000/api/health
 
 EXPOSE 8092

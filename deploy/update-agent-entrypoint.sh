@@ -28,6 +28,19 @@ IMAGE_ENTRY="/app/scripts/update-agent.mjs"
 REPO_ENTRY="$PROJECT_DIR/scripts/update-agent.mjs"
 REPO_SHARED="$PROJECT_DIR/scripts/lib/update-state.mjs"
 
+# Docker CLI (и плагин buildx) создают конфиг в $DOCKER_CONFIG, по умолчанию
+# $HOME/.docker. Rootfs контейнера смонтирован read-only, поэтому дефолт даёт
+# «mkdir /root/.docker: read-only file system» на первой же BuildKit-сборке.
+# Готовим каталог на записываемом томе заранее: compose из docker-compose.yml
+# передаёт DOCKER_CONFIG=/state/.docker, для ручного запуска подставляем /tmp.
+DOCKER_CONFIG="${DOCKER_CONFIG:-${UPDATE_STATE_DIR:-/tmp}/.docker}"
+export DOCKER_CONFIG
+if ! mkdir -p "$DOCKER_CONFIG" 2>/dev/null; then
+  echo "update-agent: $DOCKER_CONFIG недоступен для записи — пробую /tmp/.docker" >&2
+  DOCKER_CONFIG=/tmp/.docker
+  mkdir -p "$DOCKER_CONFIG"
+fi
+
 ENTRY="${UPDATE_AGENT_ENTRY:-}"
 if [ -z "$ENTRY" ]; then
   if [ "${UPDATE_AGENT_FROM_REPO:-1}" != "0" ] && [ -f "$REPO_ENTRY" ] && [ -f "$REPO_SHARED" ]; then
