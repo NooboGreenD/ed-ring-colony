@@ -64,9 +64,9 @@ export type CapiErrorKind =
  */
 export const NO_ENTITLEMENT_HINT =
   'Frontier не видит купленную Elite Dangerous у этого аккаунта. '
-  + 'Отвяжите Frontier и подключите заново, выбрав платформу, где куплена игра '
-  + '(Steam или Epic), — на странице входа Frontier нужно нажать кнопку Steam/Epic, '
-  + 'а не входить почтой.';
+  + 'Переподключите аккаунт, выбрав платформу, где куплена игра '
+  + '(Steam или Epic Games Store, EGS), — на странице входа Frontier нужно '
+  + 'нажать кнопку Steam/Epic, а не входить почтой.';
 
 /** Ошибка обращения к CAPI с разобранной причиной. */
 export class CapiError extends Error {
@@ -89,6 +89,19 @@ export class CapiError extends Error {
 export function isUnauthorizedError(err: unknown): boolean {
   if (err instanceof CapiError) return err.kind === 'unauthorized';
   return err instanceof Error && err.message === 'UNAUTHORIZED';
+}
+
+/**
+ * Ошибка entitlement требует другого входа, а не повторного запроса.
+ *
+ * Frontier может принять OAuth-токен, но выдать его для Frontier Store,
+ * когда игра фактически куплена в Steam или Epic Games Store. Тогда `/me`
+ * работает, а CAPI отвечает 400. Нельзя оставлять такую привязку активной:
+ * интерфейс должен предложить повторный вход с правильной кнопкой платформы.
+ */
+export function needsCapiRelink(err: unknown): boolean {
+  return isUnauthorizedError(err)
+    || (err instanceof CapiError && err.kind === 'no_entitlement');
 }
 
 /** Человеческое объяснение — его показываем пилоту, а не «CAPI /profile: 418». */

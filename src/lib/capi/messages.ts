@@ -76,6 +76,11 @@ const REASONS: Record<CapiLinkReason, CapiReasonText> = {
     hint: 'Проверьте миграции базы: в capi_profiles может не хватать колонок. Диагностика ниже покажет подробности.',
     retryAuth: false,
   },
+  platform_not_entitled: {
+    title: 'Игра не найдена у выбранного аккаунта',
+    hint: 'Если Elite Dangerous куплена в Steam или Epic Games Store (EGS), переподключите аккаунт и на странице Frontier нажмите кнопку Steam или Epic Games. Для покупки в Frontier Store выберите вход Frontier. При выборе «Авто» Frontier предложит все варианты.',
+    retryAuth: true,
+  },
   capi_maintenance: {
     title: 'Companion API на техобслуживании',
     hint: 'Frontier отвечает HTTP 418. Привязка не пострадала, повторите синхронизацию позже.',

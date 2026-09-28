@@ -140,6 +140,7 @@ export type CapiLinkReason =
   | 'profile_unavailable'
   | 'profile_empty'
   | 'profile_save_failed'
+  | 'platform_not_entitled'
   | 'capi_maintenance'
   | 'already_linked_elsewhere'
   | 'unknown';

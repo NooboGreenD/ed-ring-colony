@@ -67,7 +67,7 @@ const PLATFORMS: { id: string; label: string }[] = [
   { id: 'auto', label: 'Определить автоматически' },
   { id: 'frontier', label: 'Frontier' },
   { id: 'steam', label: 'Steam' },
-  { id: 'epic', label: 'Epic' },
+  { id: 'epic', label: 'Epic Games Store (EGS)' },
   { id: 'xbox', label: 'Xbox' },
   { id: 'psn', label: 'PlayStation' },
 ];

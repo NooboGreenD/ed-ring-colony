@@ -59,6 +59,9 @@
 - `/api/capi/auth` — выбор платформы (`audience`: frontier/steam/epic/…), подписанная cookie владельца, TTL 30 минут.
   По умолчанию запрашивается список `frontier,steam,epic` (как в EDMC): один лишь `frontier` даёт токен учётки
   магазина, и CAPI отвечает `400 Please Visit the store to purchase Elite: Dangerous` — см. [CAPI-400-FIX.md](CAPI-400-FIX.md).
+  Алиасы `egs`/`epic-games` приводятся к `epic`. Если первый `/profile` возвращает
+  `400 no_entitlement`, токен сохраняется для диагностики, но помечается неактивным
+  и интерфейс сразу предлагает переподключиться с режимом «Авто».
 - `/api/capi/callback` — порядок из 2.1, понятные `reason`, отказ при попытке привязать один аккаунт Frontier к двум учётным записям (`already_linked_elsewhere`).
 - `/api/capi/sync` — ручной синк через общий `syncCapiPilot()`, отвечает отчётом (`journalStatus`, импортировано/дубликаты, предупреждения).
 - `/api/capi/profile` — отдаёт `binding.linked` по строке `capi_tokens`, поэтому живая привязка видна и без строки в `capi_profiles`.

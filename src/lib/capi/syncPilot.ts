@@ -13,7 +13,7 @@
 // это не ошибка привязки, а состояние, о котором надо честно сказать.
 
 import { capiSession, type CapiTokenRow, type RefreshFn } from './session.ts';
-import { CapiError, describeCapiError, isUnauthorizedError } from './client.ts';
+import { CapiError, describeCapiError, needsCapiRelink } from './client.ts';
 import { assessProfileBinding, type ProfileBindingStatus } from './profileBinding.ts';
 import { capiProfileRow, isBlankProfile, pilotStatsRow } from './profile.ts';
 import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
@@ -104,7 +104,10 @@ export async function syncCapiPilot(
     profile = await session.run((client) => client.getProfile());
   } catch (err) {
     result.error = describeCapiError(err);
-    result.needsReauth = isUnauthorizedError(err);
+    // 400 no_entitlement означает не «временный CAPI-сбой», а токен,
+    // полученный через неправильную кнопку магазина. Помечаем привязку для
+    // переподключения, чтобы пилоту не приходилось сначала искать «Отвязать».
+    result.needsReauth = needsCapiRelink(err);
     return result;
   }
 
@@ -220,7 +223,7 @@ export async function syncCapiPilot(
       } else {
         // Журнал — не привязка: профиль уже сохранён, синк считается удачным.
         warnings.push(`Журнал CAPI не получен: ${describeCapiError(err)}`);
-        if (isUnauthorizedError(err)) result.needsReauth = true;
+        if (needsCapiRelink(err)) result.needsReauth = true;
       }
     }
   }

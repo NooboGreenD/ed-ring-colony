@@ -141,9 +141,15 @@ export function normalizeAudience(value: unknown): string {
   if (!raw || raw === 'auto' || raw === 'all' || raw === 'any') return DEFAULT_AUDIENCE;
 
   const known = new Set<string>(FRONTIER_AUDIENCES);
+  const aliases: Record<string, string> = {
+    egs: 'epic',
+    epicgames: 'epic',
+    'epic-games': 'epic',
+    frontierstore: 'frontier',
+  };
   const kept = raw
     .split(/[,\s]+/)
-    .map((part) => part.trim())
+    .map((part) => aliases[part.trim()] || part.trim())
     .filter((part) => known.has(part));
 
   return [...new Set(kept)].join(',') || DEFAULT_AUDIENCE;

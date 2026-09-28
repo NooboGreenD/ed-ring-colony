@@ -157,7 +157,14 @@ def normalize_audience(value) -> str:
     raw = str(value or "").strip().lower()
     if not raw or raw in ("auto", "all", "any"):
         return DEFAULT_AUDIENCE
-    parts = [part.strip() for part in raw.replace(" ", ",").split(",")]
+    aliases = {
+        "egs": "epic",
+        "epicgames": "epic",
+        "epic-games": "epic",
+        "frontierstore": "frontier",
+    }
+    parts = [aliases.get(part.strip(), part.strip())
+             for part in raw.replace(" ", ",").split(",")]
     kept = [part for part in parts if part in KNOWN_AUDIENCES]
     # dict.fromkeys — уникальные значения с сохранением порядка.
     return ",".join(dict.fromkeys(kept)) or DEFAULT_AUDIENCE
