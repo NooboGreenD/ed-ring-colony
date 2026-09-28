@@ -16,7 +16,9 @@
 # ═════════════════════════════════════════════════════════════════════
 FROM node:22-alpine
 
-# git — сам апдейт; docker-cli(+compose) — пересборка стека;
+# git — сам апдейт; docker-cli(+compose) — пересборка стека; docker-cli-buildx
+# — BuildKit для compose build: без плагина compose уходит в legacy-билдер и
+# падает на «the --mount option requires BuildKit» из Dockerfile web;
 # postgresql-client — бэкап и миграции, если база не в контейнере;
 # curl — проверка живости после переключения.
 #
@@ -28,7 +30,7 @@ FROM node:22-alpine
 # установки разрешаем Git работать с явно примонтированным репозиторием.
 RUN set -eux; \
   for attempt in 1 2 3 4 5; do \
-    if apk add --no-cache bash git curl docker-cli docker-cli-compose postgresql-client; then \
+    if apk add --no-cache bash git curl docker-cli docker-cli-compose docker-cli-buildx postgresql-client; then \
       break; \
     fi; \
     if [ "$attempt" = 5 ]; then \

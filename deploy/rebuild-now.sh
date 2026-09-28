@@ -152,6 +152,19 @@ else
   fi
 fi
 
+# ── 1b. запасной Dockerfile, если собирать будет legacy-билдер ──────
+# RUN --mount=type=cache в Dockerfile web требует BuildKit: compose без
+# плагина buildx уходит в legacy-билдер и падает «the --mount option
+# requires BuildKit». Хелпер сам решает, нужен ли запасной Dockerfile,
+# и добавляет override в тот же список -f (имя образа не меняется).
+if declare -F edrc_prepare_legacy_build >/dev/null 2>&1; then
+  LEGACY_BUILD="$(edrc_prepare_legacy_build "$REPO_DIR")" || true
+  if [ -n "$LEGACY_BUILD" ]; then
+    EXTRA_FILES="$EXTRA_FILES $LEGACY_BUILD"
+    warn "BuildKit недоступен — web собирается без кэш-маунтов (медленнее; поставьте плагин buildx, чтобы вернуть скорость)"
+  fi
+fi
+
 # ── 2. метаданные ревизии для панели «Версия проекта» ───────────────
 APP_GIT_SHA="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
 APP_GIT_REF="$BRANCH"

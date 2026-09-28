@@ -1350,6 +1350,35 @@ test('сборка: npm-notice отключён, кэши npm/next пережи�
   }
 });
 
+test('сборка без BuildKit: запасной Dockerfile web и buildx в образе агента', () => {
+  // Агент обновления собирает стек из своего Alpine-образа: пока в нём не
+  // было пакета docker-cli-buildx, compose печатал «requires buildx plugin»,
+  // уходил в legacy-билдер и падал на «the --mount option requires BuildKit»
+  // (Step 5/33, npm ci) — кнопка «Обновить» не доходила до конца.
+  const agent = readFileSync(join(ROOT, 'deploy', 'Dockerfile.update-agent'), 'utf8');
+  assert.match(agent, /docker-cli-buildx/, 'в образ агента установлен buildx: кэш-маунты работают');
+
+  // Запасной путь для хостов без BuildKit: статический override +
+  // автогенерация Dockerfile без кэш-маунтов (compose-lib.sh).
+  const override = readFileSync(join(ROOT, 'deploy', 'compose.legacy-build.yml'), 'utf8');
+  assert.match(override, /dockerfile: \.edrc-legacy-Dockerfile/, 'override переключает web на запасной Dockerfile');
+  assert.match(override, /^services:$/m);
+
+  const lib = readFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), 'utf8');
+  assert.match(lib, /edrc_prepare_legacy_build/, 'генерация запасного Dockerfile — в общем compose-lib.sh');
+  assert.match(lib, /edrc_compose_uses_buildkit/, 'BuildKit проверяется по плагину buildx перед каждой сборкой');
+  assert.match(lib, /EDRC_FORCE_LEGACY_BUILD/, 'есть ручной выключатель BuildKit для капризных демонов');
+
+  for (const script of ['deploy/update-project.sh', 'deploy/rebuild-now.sh', 'deploy/start-monitoring.sh', 'deploy/selfhost/install.sh']) {
+    assert.match(readFileSync(join(ROOT, script), 'utf8'), /edrc_prepare_legacy_build/,
+      script + ' подставляет запасной Dockerfile при отсутствии BuildKit');
+  }
+
+  // Сгенерированный файл не едет ни в git, ни в контекст сборки.
+  assert.match(readFileSync(join(ROOT, '.gitignore'), 'utf8'), /^\.edrc-legacy-Dockerfile$/m);
+  assert.match(readFileSync(join(ROOT, '.dockerignore'), 'utf8'), /^\.edrc-legacy-Dockerfile$/m);
+});
+
 test('web routes: /api/admin/env requires requireAdmin, client goes through the agent', () => {
   const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'route.ts'), 'utf8');
   const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'env', 'apply', 'route.ts'), 'utf8');

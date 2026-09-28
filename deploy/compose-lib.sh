@@ -73,6 +73,69 @@ edrc_extra_compose_files() {
   printf -- '-f %s' "${override#$repo_root/}"
 }
 
+# edrc_compose_uses_buildkit — сможет ли СБОРКА compose работать с BuildKit.
+#
+# RUN --mount=type=cache (кэши npm и .next/cache в Dockerfile web) понимает
+# только BuildKit. Compose v2 собирает через BuildKit плагином buildx: без
+# него он печатает «Docker Compose requires buildx plugin» и молча уходит в
+# legacy-билдер, для которого --mount — синтаксическая ошибка («the --mount
+# option requires BuildKit»). Python-compose v1 не умеет BuildKit вовсе.
+# Важно: возможен ли BuildKit, определяется не хостом, а тем, ЧЕМ запускается
+# compose — агент обновления собирает стек из своего Alpine-образа, и до
+# пакета docker-cli-buildx у него плагина buildx не было.
+edrc_compose_uses_buildkit() {
+  # Ручной выключатель: собрать без кэш-маунтов, даже если buildx есть
+  # (например, когда демон хоста старше 20.10 и не тянет BuildKit-сборки).
+  [ "${EDRC_FORCE_LEGACY_BUILD:-0}" = "1" ] && return 1
+  # DOCKER_BUILDKIT=0 переводит и docker build, и compose в legacy-билдер.
+  [ "${DOCKER_BUILDKIT:-}" = "0" ] && return 1
+  command -v docker >/dev/null 2>&1 || return 1
+  if docker compose version >/dev/null 2>&1; then
+    # Compose v2: BuildKit-сборка идёт через плагин buildx CLI.
+    docker buildx version >/dev/null 2>&1 && return 0
+  elif command -v docker-compose >/dev/null 2>&1; then
+    # Standalone docker-compose: v2 тоже собирает через buildx; python-v1
+    # (1.29.x, «docker-compose version 1…») не умеет BuildKit в принципе.
+    docker-compose version 2>/dev/null | grep -q 'Compose version v2' \
+      && docker buildx version >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+# edrc_prepare_legacy_build [repo_root] — Dockerfile web без кэш-маунтов.
+#
+# Возвращает «-f deploy/compose.legacy-build.yml», когда собирать будет
+# legacy-билдер: генерирует .edrc-legacy-Dockerfile в корне контекста
+# (канонический Dockerfile, из которого sed убирает только RUN --mount=…),
+# а статический override deploy/compose.legacy-build.yml переключает на
+# него сервис web. Имя образа и все build-args не меняются — «up -d»
+# переключает контейнеры как обычно. С BuildKit вывод пуст: кэш-маунты
+# работают как задумано. Файл .edrc-legacy-Dockerfile перегенерируется при
+# каждом прогоне и занесён в .gitignore/.dockerignore.
+#
+# Сборка по запасному Dockerfile медленнее (нет переживающих --no-cache
+# кэшей npm/.next), зато обновление доходит до конца на любом Docker.
+edrc_prepare_legacy_build() {
+  local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+  repo_root="${repo_root%/}"
+  local dockerfile="$repo_root/Dockerfile"
+  local legacy="$repo_root/.edrc-legacy-Dockerfile"
+  local override="$repo_root/deploy/compose.legacy-build.yml"
+  [ -f "$dockerfile" ] || return 0
+  grep -q -- '--mount=type=cache' "$dockerfile" 2>/dev/null || return 0
+  [ -f "$override" ] || return 0
+  edrc_compose_uses_buildkit && return 0
+  # Убираем только флаги --mount (их может быть несколько подряд), сама
+  # команда (npm ci / npm run build) остаётся без изменений. BRE-интервал
+  # вместо sed -E — чтобы работало и в busybox sed внутри агента (Alpine).
+  if ! sed -e 's/^RUN \(--mount=[^ ][^ ]* \)\{1,\}/RUN /' "$dockerfile" > "$legacy" 2>/dev/null; then
+    printf '⚠ edrc_prepare_legacy_build: не могу записать %s — сборка пойдёт по исходному Dockerfile\n' "$legacy" >&2
+    return 0
+  fi
+  printf -- '-f deploy/compose.legacy-build.yml'
+  return 0
+}
+
 # edrc_persist_env FILE KEY VALUE — записать значение в env-файл (sed-аналог
 # set_env из start-monitoring.sh, вынесен сюда, чтобы не дублировать).
 edrc_persist_env() {

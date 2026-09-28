@@ -390,12 +390,19 @@ set_env "$SE" APP_BUILD_TIME "$APP_BUILD_TIME"
 source "$SRC_DIR/deploy/compose-lib.sh"
 EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$SRC_DIR" "$SE")"
 
+# Свежая машина с docker.io из дистрибутива может не иметь плагина buildx:
+# тогда compose уходит в legacy-билдер, которому RUN --mount из Dockerfile
+# web незнаком. Готовим запасной Dockerfile без кэш-маунтов (медленнее,
+# но установка доходит до конца; поставьте docker-buildx-plugin для скорости).
+LEGACY_COMPOSE_FILES="$(edrc_prepare_legacy_build "$SRC_DIR")" || true
+[ -n "$LEGACY_COMPOSE_FILES" ] && echo "⚠ buildx не найден — web собирается без кэш-маунтов (медленнее, но работает)"
+
 if [ "$DO_MONITOR" = 1 ]; then
   # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
   # он единственный получает docker.sock, web ходит к нему только с токеном.
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES --profile monitoring up -d --build web jobs monitor-agent update-agent )
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES --profile monitoring up -d --build web jobs monitor-agent update-agent )
 else
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES up -d --build )
+  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES up -d --build )
 fi
 
 echo -n "жду ответа сайта"

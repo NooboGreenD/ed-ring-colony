@@ -67,6 +67,10 @@ dist-archive/
 # Local verification and deployment scratch files
 .cache/
 
+# Запасной Dockerfile web без кэш-маунтов (deploy/compose-lib.sh,
+# edrc_prepare_legacy_build): генерируется при сборке без BuildKit.
+.edrc-legacy-Dockerfile
+
 # Spansh dump download + generated points file (scripts/import-spansh-systems.mjs)
 data/spansh/
 public/data/

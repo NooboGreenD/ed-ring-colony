@@ -25,6 +25,9 @@ venv
 
 .edrc-release.json
 .source-*-complete
+# Запасной Dockerfile web (сборка без BuildKit): генерируется локально,
+# в контекст образа ему ездить незачем.
+.edrc-legacy-Dockerfile
 
 # Android-обёртка в образ сайта не входит: каждый лишний файл едет в контекст
 # КАЖДОЙ сборки и раздувает слой COPY . .
