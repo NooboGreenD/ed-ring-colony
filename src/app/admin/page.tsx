@@ -25,7 +25,8 @@ import AdminComments from "./components/AdminComments";
 import SupportAdmin from "@/components/Support/SupportAdmin";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
-import { IconCoins, IconDatabase, IconLock } from "@/components/Icons";
+import HelperUpdatesTab from "@/components/Admin/HelperUpdatesTab";
+import { IconCoins, IconDatabase, IconLock, IconPackage } from "@/components/Icons";
 
 const LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 const LOCALE_FLAGS: Record<string, string> = { ru: '🇷🇺', en: '🇬🇧', de: '🇩🇪', it: '🇮🇹', ko: '🇰🇷', zh: '🇨🇳', ja: '🇯🇵' };
@@ -73,7 +74,7 @@ function LangInputs({ label, values, onChange, textarea = false, placeholder }: 
 export default function AdminPage() {
   const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
-  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'monitor' | 'auth' | 'galaxy' | 'backup'>('billing');
+  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'monitor' | 'auth' | 'galaxy' | 'backup' | 'helper'>('billing');
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
@@ -549,6 +550,7 @@ export default function AdminPage() {
         {role === 'admin' && <button className={tab === 'galaxy' ? 'tab tab-active' : 'tab'} onClick={() => setTab('galaxy')} title="Полный каталог систем Spansh: импорт, облако точек для карты"><IconGlobe size={12} color="#e67e22" /> Каталог систем</button>}
         {role === 'admin' && <button className={tab === 'backup' ? 'tab tab-active' : 'tab'} onClick={() => setTab('backup')} title="Резервная копия базы: раз в неделю, вручную"><IconDatabase size={12} color="#e67e22" /> Бэкапы</button>}
         {role === 'admin' && <button className={tab === 'auth' ? 'tab tab-active' : 'tab'} onClick={() => setTab('auth')}><IconLock size={12} color="#e67e22" /> Авторизация</button>}
+        {role === 'admin' && <button className={tab === 'helper' ? 'tab tab-active' : 'tab'} onClick={() => setTab('helper')} title="Канал обновлений Colonial Helper: версии и откат"><IconPackage size={12} color="#e67e22" /> Обновления Helper</button>}
       </div>
 
       {tab === 'content' && (
@@ -812,6 +814,7 @@ export default function AdminPage() {
       {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
       {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
+      {tab === 'helper' && role === 'admin' && <HelperUpdatesTab />}
     </main>
   );
 }

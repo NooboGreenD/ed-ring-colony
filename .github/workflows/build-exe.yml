@@ -4,26 +4,25 @@ on:
   push:
     branches:
       - main
-      # Все рабочие ветки агента/сессий собирают EXE и публикуют его
-      # в Releases: main — полноценным релизом, arena/** — prerelease
-      # с суффиксом ветки в теге (иначе ветки перезаписывали бы друг друга).
+      # Базовая сборка (лаунчер) — это Python, tkinter, ttkbootstrap и requests.
+      # Код программы в неё больше не «впаян»: он едет пакетом с нашего сервера
+      # (см. build-bundle.yml). Поэтому exe пересобирается ТОЛЬКО когда меняется
+      # рантайм или сам механизм запуска — иначе пилоты снова получали бы
+      # 22-мегабайтное «обновление», в котором для них ничего не изменилось.
       - arena/**
-    # Сборка запускается ТОЛЬКО когда в push есть правки самой программы.
-    # Пуши, которые трогают лишь сайт (src/**, supabase/**, deploy/**, доки),
-    # не должны гонять 10-минутный Windows-раннер и, что важнее, публиковать
-    # новый релиз с тем же EXE: у пользователей это выглядит как обновление,
-    # в котором ничего не изменилось.
-    #
-    # Сам workflow в списке намеренно: правка правил сборки обязана
-    # проверяться сборкой. Если нужно собрать EXE без изменений в uploader/ —
-    # ручной запуск (workflow_dispatch) фильтром путей не ограничен.
     paths:
-      - 'uploader/**'
+      - 'uploader/requirements.txt'
+      - 'uploader/launcher.py'
+      - 'uploader/build_exe.py'
+      - 'uploader/build_bundle.py'
+      - 'uploader/bundle.py'
+      - 'uploader/bundle_updater.py'
+      - 'uploader/site_config.py'
       - '.github/workflows/build-exe.yml'
   workflow_dispatch:
     inputs:
       upload_release:
-        description: "Deprecated: релиз теперь публикуется при каждом push"
+        description: "Deprecated: релиз публикуется при каждом запуске"
         required: false
         default: true
         type: boolean
@@ -38,6 +37,13 @@ jobs:
       # раннера (cp1252/cp850) роняет print с UnicodeEncodeError.
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
+      # Пакет, вшитый в exe для первого запуска, подписывается тем же ключом,
+      # что и обычные обновления: иначе лаунчер не сможет проверить ни его,
+      # ни то, что приедет следом по сети.
+      UPLOADER_SIGN_KEY: ${{ secrets.UPLOADER_SIGN_KEY }}
+      UPLOADER_SIGN_KEY_ID: ${{ secrets.UPLOADER_SIGN_KEY_ID }}
+      UPLOADER_PUBLISH_URL: ${{ secrets.UPLOADER_PUBLISH_URL }}
+      UPLOADER_PUBLISH_TOKEN: ${{ secrets.UPLOADER_PUBLISH_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,8 +59,11 @@ jobs:
           pip install -r uploader/requirements.txt
 
       - name: Validate uploader sources
+        shell: bash
         run: |
-          python -m py_compile uploader/colonial_helper.py uploader/overlay.py uploader/api_client.py uploader/site_config.py uploader/journal_parser.py uploader/event_dispatch.py uploader/edsm_api.py uploader/inara_api.py uploader/raven_colonial_api.py uploader/game_monitor.py uploader/exobiology.py uploader/hotkeys.py uploader/colonisation.py uploader/carrier.py uploader/updater.py uploader/http_errors.py uploader/system_map.py uploader/orrery.py uploader/system_view.py uploader/tk_orrery.py uploader/map_export.py uploader/map_font.py uploader/companion_api.py uploader/ship_hud.py uploader/ship_tracker.py uploader/route_tracker.py
+          # Список модулей берём с диска: при ручном перечислении новый файл
+          # годами не попадал в проверку.
+          python -m py_compile uploader/*.py
 
       - name: Run uploader tests
         shell: bash
@@ -133,3 +142,15 @@ jobs:
           prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Сервер должен знать, где лежит новая базовая сборка и какой у неё
+      # хеш: программа спрашивает это, когда пакет требует min_launcher выше
+      # установленного.
+      - name: Publish launcher metadata
+        if: ${{ env.UPLOADER_PUBLISH_URL != '' && env.UPLOADER_PUBLISH_TOKEN != '' }}
+        shell: bash
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.meta.outputs.tag }}/ColonialHelper.exe"
+          python uploader/build_bundle.py \
+            --publish-launcher uploader/dist/ColonialHelper.exe \
+            --launcher-url "$url"
