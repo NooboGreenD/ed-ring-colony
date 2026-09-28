@@ -1,9 +1,15 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
+import { ECONOMY_LABELS_RU, installationLinks } from '@/lib/architect/catalogue';
+import {
+  BODY_TRAIT_LABELS_RU,
+  ECONOMY_AFFINITY,
+  ECONOMY_MARKET,
+  type BodyTrait,
+} from '@/lib/architect/economy';
 import { cargoList, commodityLabel, formatTons, getInstallation, siteCargo } from '@/lib/architect/planner';
-import type { ArchitectPlan, PlanEvaluation, SystemEffectKey } from '@/lib/architect/types';
+import type { ArchitectPlan, PlanEvaluation, SystemEconomy, SystemEffectKey } from '@/lib/architect/types';
 
 const EFFECT_LABELS: Record<SystemEffectKey, string> = {
   pop: 'население',
@@ -28,6 +34,33 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
   const [showAllCargo, setShowAllCargo] = useState(false);
   const [showAllUnlocks, setShowAllUnlocks] = useState(false);
   const [showPrimaryCargo, setShowPrimaryCargo] = useState(false);
+  const [showEconomyRef, setShowEconomyRef] = useState(false);
+
+  // Экономики плана в порядке убывания числа построек — для блока «рынки».
+  const planEconomies = useMemo(() => (
+    (Object.entries(evaluation.economies) as [SystemEconomy, number][])
+      .filter(([economy]) => economy !== 'none')
+      .sort((left, right) => right[1] - left[1])
+      .map(([economy, count]) => ({ economy, count }))
+  ), [evaluation.economies]);
+
+  // Уникальные постройки плана и их связи (предшественники → постройка → что открывает).
+  const buildingLinks = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const site of plan.sites) counts.set(site.installationId, (counts.get(site.installationId) ?? 0) + 1);
+    const installedIds = new Set(plan.sites.map((site) => site.installationId));
+    return [...counts.entries()]
+      .map(([id, count]) => {
+        const installation = getInstallation(id);
+        const links = installationLinks(id);
+        const hasPreReq = links.requires.length === 0
+          || links.requires.every((req) => req.options.some((option) => installedIds.has(option.id)));
+        return { id, nameRu: installation?.nameRu ?? id, count, links, hasPreReq };
+      })
+      // В граф попадают только постройки, у которых есть хоть какая-то связь.
+      .filter((entry) => entry.links.requires.length > 0 || entry.links.enables.length > 0)
+      .sort((left, right) => left.nameRu.localeCompare(right.nameRu));
+  }, [plan.sites]);
 
   const cargo = useMemo(() => cargoList(evaluation), [evaluation]);
   const errors = evaluation.issues.filter((issue) => issue.level === 'error');
@@ -245,6 +278,145 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
         )}
       </section>
 
+      {planEconomies.length > 0 && (
+        <section style={cardStyle}>
+          <h3 style={sectionTitle}>Экономики и торговые рынки</h3>
+          <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 0, marginBottom: 10 }}>
+            Что рынки системы будут продавать и покупать. Ассортимент станции плавает — это ориентир
+            для перевозчиков, а не точный прайс.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {planEconomies.map(({ economy, count }) => {
+              const market = ECONOMY_MARKET[economy];
+              const affinity = ECONOMY_AFFINITY[economy];
+              return (
+                <div key={economy} style={{ borderLeft: '2px solid var(--line)', paddingLeft: 10 }}>
+                  <div style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600 }}>
+                    {ECONOMY_LABELS_RU[economy]} <span style={{ color: 'var(--muted)', fontWeight: 400 }}>×{count}</span>
+                  </div>
+                  {market.produces.length > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+                      <span style={{ color: 'var(--green)' }}>продаёт:</span> {market.produces.join(', ')}
+                    </div>
+                  )}
+                  {market.imports.length > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
+                      <span style={{ color: 'var(--cyan)' }}>ввозит:</span> {market.imports.join(', ')}
+                    </div>
+                  )}
+                  {affinity.bodyDependent && affinity.boost.length > 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, fontStyle: 'italic' }}>
+                      усиливается телом: {affinity.boost.map((trait: BodyTrait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {buildingLinks.length > 0 && (
+        <section style={cardStyle}>
+          <h3 style={sectionTitle}>Связи построек</h3>
+          <p style={{ fontSize: 11, color: 'var(--muted)', marginTop: 0, marginBottom: 10 }}>
+            Цепочки зависимостей: что нужно построить раньше (предшественники) и что постройка
+            открывает системе.
+          </p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {buildingLinks.map(({ id, nameRu, count, links, hasPreReq }) => (
+              <div
+                key={id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  flexWrap: 'wrap',
+                  fontSize: 12,
+                  border: '1px solid var(--line)',
+                  borderRadius: 3,
+                  padding: '6px 9px',
+                  background: 'var(--bg)',
+                }}
+              >
+                {links.requires.length > 0 && (
+                  <>
+                    <span
+                      style={{
+                        color: hasPreReq ? 'var(--green)' : 'var(--red)',
+                        maxWidth: 220,
+                      }}
+                      title={hasPreReq ? 'Предшественник есть в плане' : 'Предшественника нет в плане'}
+                    >
+                      {hasPreReq ? '✓ ' : '✗ '}
+                      {links.requires.map((req) => req.label).join(' / ')}
+                    </span>
+                    <span style={{ color: 'var(--muted)' }}>→</span>
+                  </>
+                )}
+                <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                  {nameRu}{count > 1 ? ` ×${count}` : ''}
+                </span>
+                {links.enables.length > 0 && (
+                  <>
+                    <span style={{ color: 'var(--muted)' }}>→</span>
+                    <span style={{ color: 'var(--cyan)' }}>
+                      открывает: {links.enables.map((enable) => shortEnableLabel(enable.label)).join(', ')}
+                    </span>
+                  </>
+                )}
+                {links.requires.length === 0 && links.enables.length === 0 && (
+                  <span style={{ color: 'var(--muted)' }}>самостоятельная постройка</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <section style={cardStyle}>
+        <button
+          type="button"
+          onClick={() => setShowEconomyRef((value) => !value)}
+          style={{ ...sectionTitle, background: 'transparent', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}
+        >
+          Справочник: экономики и тела {showEconomyRef ? '▾' : '▸'}
+        </button>
+        {showEconomyRef && (
+          <div style={{ overflowX: 'auto', marginTop: 8 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+                  <th style={refCell}>Экономика</th>
+                  <th style={refCell}>Усиливается на телах</th>
+                  <th style={refCell}>Зависит от тела</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(Object.keys(ECONOMY_AFFINITY) as SystemEconomy[])
+                  .filter((economy) => economy !== 'none')
+                  .map((economy) => {
+                    const affinity = ECONOMY_AFFINITY[economy];
+                    return (
+                      <tr key={economy} style={{ borderTop: '1px solid var(--line)' }}>
+                        <td style={{ ...refCell, color: 'var(--text)' }}>{ECONOMY_LABELS_RU[economy]}</td>
+                        <td style={{ ...refCell, color: 'var(--muted)' }}>
+                          {affinity.boost.length > 0
+                            ? affinity.boost.map((trait) => BODY_TRAIT_LABELS_RU[trait]).join(', ')
+                            : '—'}
+                        </td>
+                        <td style={{ ...refCell, color: affinity.bodyDependent ? 'var(--orange)' : 'var(--muted)' }}>
+                          {affinity.bodyDependent ? 'да' : 'нет'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <section style={cardStyle}>
         <h3 style={sectionTitle}>Что открывает система</h3>
         {(showAllUnlocks ? evaluation.unlocks : evaluation.unlocks.filter((unlock) => unlock.satisfied)).map((unlock) => (
@@ -301,11 +473,22 @@ function TierBadge({ tier, free, spent, given }: { tier: string; free: number; s
   );
 }
 
+/** Сокращаем длинные подписи «открывает» — в скобках у них пояснение «нужен …». */
+function shortEnableLabel(label: string): string {
+  const cut = label.indexOf(' (');
+  return cut > 0 ? label.slice(0, cut) : label;
+}
+
 const cardStyle: React.CSSProperties = {
   background: 'var(--panel)',
   border: '1px solid var(--line)',
   borderRadius: 4,
   padding: 14,
+};
+
+const refCell: React.CSSProperties = {
+  padding: '5px 8px',
+  verticalAlign: 'top',
 };
 
 const sectionTitle: React.CSSProperties = {

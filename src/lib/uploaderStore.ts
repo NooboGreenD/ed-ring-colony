@@ -20,7 +20,15 @@
  * Сервер проверяет её повторно (ключи в `UPLOADER_SIGN_PUBLIC_KEYS`), чтобы
  * сломанный или чужой пакет не доехал до канала вообще.
  */
-import { createHash, createPublicKey, timingSafeEqual, verify as cryptoVerify } from 'node:crypto';
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  randomBytes,
+  timingSafeEqual,
+  verify as cryptoVerify,
+} from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -45,6 +53,8 @@ const VERSION = /^\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]{1,40})?$/;
 const MEMBER = /^[0-9A-Za-z._-]+(?:\/[0-9A-Za-z._-]+)*$/;
 const ALLOWED_SUFFIX = ['.py', '.json', '.txt', '.md', '.ico', '.png', '.csv'];
 const PLATFORM = /^[a-z0-9_-]{2,20}$/;
+/** Идентификатор ключа подписи: короткий, без запятых и двоеточий (формат `id:base64`). */
+const KEY_ID = /^[0-9A-Za-z._-]{1,40}$/;
 
 export interface ManifestFile {
   path: string;
@@ -102,6 +112,10 @@ function launcherPath(platform: string): string {
   return join(storeRoot(), 'launcher', `${platform}.json`);
 }
 
+function configPath(): string {
+  return join(storeRoot(), 'config.json');
+}
+
 async function writeAtomic(path: string, data: Buffer | string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
@@ -115,6 +129,142 @@ async function readJson<T>(path: string): Promise<T | null> {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+//  Настройки, редактируемые из админки (config.json в хранилище)
+// ---------------------------------------------------------------------------
+/**
+ * Часть настроек канала обновлений раньше жила только в переменных окружения
+ * (`UPLOADER_SIGN_PUBLIC_KEYS`, `UPLOADER_PUBLISH_TOKEN`). Их неудобно менять:
+ * нужен доступ к серверу и рестарт. Поэтому те же значения можно хранить в
+ * `config.json` внутри тома хранилища и править прямо из админки.
+ *
+ * Переменные окружения при этом никуда не деваются — это по-прежнему
+ * «жёсткая» конфигурация деплоя. Значения из файла добавляются к ним:
+ * доверенным считается ключ из окружения ИЛИ из файла, публиковать можно
+ * токеном из окружения ИЛИ из файла. Так деплой нельзя случайно ослабить из
+ * UI, но можно дополнить и ротировать без доступа к серверу.
+ */
+export interface SignKeyConfig {
+  id: string;
+  /** Публичный ключ ed25519, base64 (ровно 32 байта после декодирования). */
+  publicKey: string;
+}
+
+export interface UploaderConfig {
+  signKeys: SignKeyConfig[];
+  /** Токен публикации; наружу (в статус/UI) никогда не отдаётся, только факт наличия. */
+  publishToken?: string;
+}
+
+function normalizeConfig(parsed: unknown): UploaderConfig {
+  const source = (parsed ?? {}) as Record<string, unknown>;
+  const rawKeys = Array.isArray(source.signKeys) ? source.signKeys : [];
+  const signKeys: SignKeyConfig[] = [];
+  for (const item of rawKeys) {
+    if (!item || typeof item !== 'object') continue;
+    const id = String((item as Record<string, unknown>).id ?? '').trim();
+    const publicKey = String((item as Record<string, unknown>).publicKey ?? '').trim();
+    if (!KEY_ID.test(id) || Buffer.from(publicKey, 'base64').length !== 32) continue;
+    if (signKeys.some((k) => k.id === id)) continue;
+    signKeys.push({ id, publicKey });
+  }
+  const token = typeof source.publishToken === 'string' ? source.publishToken.trim() : '';
+  return { signKeys, publishToken: token || undefined };
+}
+
+/** Синхронное чтение — нужно проверке подписи и токена, которые сами синхронны. */
+function readConfigSync(): UploaderConfig {
+  try {
+    return normalizeConfig(JSON.parse(readFileSync(configPath(), 'utf8')));
+  } catch {
+    return { signKeys: [] };
+  }
+}
+
+export async function readConfig(): Promise<UploaderConfig> {
+  try {
+    return normalizeConfig(JSON.parse(await readFile(configPath(), 'utf8')));
+  } catch {
+    return { signKeys: [] };
+  }
+}
+
+async function writeConfig(config: UploaderConfig): Promise<void> {
+  await writeAtomic(configPath(), JSON.stringify(config, null, 2));
+}
+
+/** Проверить и нормализовать публичный ключ: строго 32 байта base64. */
+export function normalizePublicKey(value: string): string | null {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return null;
+  const raw = Buffer.from(trimmed, 'base64');
+  if (raw.length !== 32) return null;
+  // Возвращаем канонический base64, чтобы `id:base64` в статусе выглядел ровно.
+  return raw.toString('base64');
+}
+
+/** Публичный ключ ed25519 (base64) из 32-байтового seed'а — как в bundle.py. */
+export function deriveEd25519Public(seed: Buffer): string {
+  const der = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
+  const priv = createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+  const jwk = createPublicKey(priv).export({ format: 'jwk' }) as { x?: string };
+  return Buffer.from(String(jwk.x ?? ''), 'base64url').toString('base64');
+}
+
+export interface GeneratedSignKey {
+  id: string;
+  publicKey: string;
+  /** Приватный ключ (seed, base64). Показывается один раз — на сервере не хранится. */
+  privateKey: string;
+}
+
+/** Сгенерировать пару ключей подписи (эквивалент `build_bundle.py --keygen`). */
+export function generateSignKey(id?: string): GeneratedSignKey {
+  const seed = randomBytes(32);
+  const keyId = id?.trim() || `k${new Date().toISOString().slice(0, 7).replace('-', '')}`;
+  return { id: keyId, publicKey: deriveEd25519Public(seed), privateKey: seed.toString('base64') };
+}
+
+/** Добавить/заменить доверенный публичный ключ в config.json. */
+export async function upsertSignKey(id: string, publicKey: string): Promise<PublishResult> {
+  const trimmedId = String(id ?? '').trim();
+  if (!KEY_ID.test(trimmedId)) return { ok: false, error: 'id ключа: только буквы, цифры и . _ - (до 40 символов)' };
+  const normalized = normalizePublicKey(publicKey);
+  if (!normalized) return { ok: false, error: 'публичный ключ должен быть 32 байта в base64' };
+  const config = await readConfig();
+  const signKeys = config.signKeys.filter((k) => k.id !== trimmedId);
+  signKeys.push({ id: trimmedId, publicKey: normalized });
+  await writeConfig({ ...config, signKeys });
+  return { ok: true };
+}
+
+/** Убрать публичный ключ из config.json (ключи из окружения так не убрать). */
+export async function removeSignKey(id: string): Promise<PublishResult> {
+  const trimmedId = String(id ?? '').trim();
+  const config = await readConfig();
+  if (!config.signKeys.some((k) => k.id === trimmedId)) {
+    return { ok: false, error: `ключа ${trimmedId} нет в настройках (возможно, он задан в окружении)` };
+  }
+  await writeConfig({ ...config, signKeys: config.signKeys.filter((k) => k.id !== trimmedId) });
+  return { ok: true };
+}
+
+/** Задать (или очистить пустой строкой) токен публикации в config.json. */
+export async function setPublishToken(token: string | null): Promise<PublishResult> {
+  const value = String(token ?? '').trim();
+  if (value && value.length < 16) return { ok: false, error: 'токен слишком короткий: минимум 16 символов' };
+  const config = await readConfig();
+  await writeConfig({ ...config, publishToken: value || undefined });
+  return { ok: true };
+}
+
+/** Сгенерировать длинный случайный токен публикации и сохранить его. */
+export async function generatePublishToken(): Promise<{ ok: boolean; token?: string; error?: string }> {
+  const token = randomBytes(36).toString('base64url');
+  const result = await setPublishToken(token);
+  return result.ok ? { ok: true, token } : { ok: false, error: result.error };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +332,13 @@ export function canonicalManifestBytes(manifest: Record<string, unknown>): Buffe
   return Buffer.from(stringify(payload), 'utf8');
 }
 
-/** Доверенные публичные ключи: `UPLOADER_SIGN_PUBLIC_KEYS="id:base64,id2:base64"`. */
+/**
+ * Доверенные публичные ключи. Источники складываются:
+ *   * окружение `UPLOADER_SIGN_PUBLIC_KEYS="id:base64,id2:base64"` (деплой);
+ *   * `config.json`, редактируемый из админки.
+ * Ключ из файла может дополнить или заменить одноимённый ключ окружения —
+ * это и есть ротация через UI.
+ */
 export function trustedKeys(): Map<string, Buffer> {
   const keys = new Map<string, Buffer>();
   for (const chunk of (process.env.UPLOADER_SIGN_PUBLIC_KEYS ?? '').split(',')) {
@@ -191,7 +347,22 @@ export function trustedKeys(): Map<string, Buffer> {
     const raw = Buffer.from(encoded.trim(), 'base64');
     if (raw.length === 32) keys.set(id.trim(), raw);
   }
+  for (const key of readConfigSync().signKeys) {
+    const raw = Buffer.from(key.publicKey, 'base64');
+    if (raw.length === 32) keys.set(key.id, raw);
+  }
   return keys;
+}
+
+/** Идентификаторы ключей, заданных именно в окружении (их нельзя убрать из UI). */
+export function envKeyIds(): string[] {
+  const ids: string[] = [];
+  for (const chunk of (process.env.UPLOADER_SIGN_PUBLIC_KEYS ?? '').split(',')) {
+    const [id, encoded] = chunk.split(':');
+    if (!id?.trim() || !encoded?.trim()) continue;
+    if (Buffer.from(encoded.trim(), 'base64').length === 32) ids.push(id.trim());
+  }
+  return ids;
 }
 
 /**
@@ -224,15 +395,24 @@ export function verifyManifestSignature(manifest: BundleManifest): { ok: boolean
   }
 }
 
-/** Токен публикации из CI (`UPLOADER_PUBLISH_TOKEN`), сравнение без утечки времени. */
+/**
+ * Токен публикации из CI. Принимается токен из окружения
+ * (`UPLOADER_PUBLISH_TOKEN`) ИЛИ из `config.json` (заданный в админке).
+ * Сравнение — без утечки времени, по каждому кандидату.
+ */
 export function isPublishAuthorized(request: Request): boolean {
-  const secret = process.env.UPLOADER_PUBLISH_TOKEN?.trim();
-  if (!secret) return false;
+  const secrets = [process.env.UPLOADER_PUBLISH_TOKEN?.trim(), readConfigSync().publishToken?.trim()]
+    .filter((value): value is string => Boolean(value));
+  if (secrets.length === 0) return false;
   const header = request.headers.get('authorization') ?? '';
   const supplied = /^Bearer (.+)$/i.exec(header)?.[1] ?? '';
-  const expected = Buffer.from(secret);
   const actual = Buffer.from(supplied);
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  // Проверяем все кандидаты, а не только первый совпавший по длине, чтобы
+  // токен из файла работал даже когда в окружении задан другой.
+  return secrets.some((secret) => {
+    const expected = Buffer.from(secret);
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -496,8 +676,14 @@ export interface StoreStatus {
   versions: number;
   /** Задан ли токен, которым публикует CI (сам токен наружу не отдаётся). */
   publishConfigured: boolean;
+  /** Откуда взят токен публикации: окружение, файл настроек или нигде. */
+  publishTokenSource: 'env' | 'config' | 'none';
   /** Идентификаторы доверенных ключей подписи — без самих ключей. */
   keyIds: string[];
+  /** Ключи, заданные в окружении: их видно, но из UI не отредактировать. */
+  envKeyIds: string[];
+  /** Ключи из config.json — их можно менять и удалять из админки. */
+  configKeys: SignKeyConfig[];
 }
 
 export async function storeStatus(): Promise<StoreStatus> {
@@ -508,11 +694,19 @@ export async function storeStatus(): Promise<StoreStatus> {
   } catch {
     ready = false;
   }
+  const config = await readConfig();
+  const envToken = (process.env.UPLOADER_PUBLISH_TOKEN ?? '').trim().length > 0;
+  const publishTokenSource = envToken ? 'env' : config.publishToken ? 'config' : 'none';
   return {
     root,
     ready,
     versions: (await listVersions()).length,
-    publishConfigured: (process.env.UPLOADER_PUBLISH_TOKEN ?? '').trim().length > 0,
-    keyIds: Object.keys(trustedKeys()),
+    publishConfigured: publishTokenSource !== 'none',
+    publishTokenSource,
+    // trustedKeys() — это Map; Object.keys() по нему всегда пуст (старая ошибка,
+    // из-за которой панель показывала «ключи не настроены» даже когда они были).
+    keyIds: [...trustedKeys().keys()],
+    envKeyIds: envKeyIds(),
+    configKeys: config.signKeys,
   };
 }

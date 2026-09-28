@@ -269,3 +269,83 @@ maybe('манифест лежит в хранилище и читается о�
   assert.equal(stored.version, '3.0.0');
   assert.ok(stored.signature?.value, 'подпись обязана сохраняться вместе с манифестом');
 });
+
+// ---------------------------------------------------------------------------
+//  Настройки, редактируемые из админки (config.json)
+// ---------------------------------------------------------------------------
+
+maybe('generateSignKey даёт публичный ключ, выводимый из приватного seed', () => {
+  delete process.env.UPLOADER_SIGN_PUBLIC_KEYS;
+  const generated = store.generateSignKey('k-gen');
+  assert.equal(generated.id, 'k-gen');
+  const seed = Buffer.from(generated.privateKey, 'base64');
+  assert.equal(seed.length, 32, 'приватный ключ — 32-байтовый seed');
+  assert.equal(
+    store.deriveEd25519Public(seed), generated.publicKey,
+    'публичный ключ должен выводиться из приватного seed по RFC 8032',
+  );
+});
+
+maybe('ключ, добавленный в config.json из UI, начинает проверять подпись', async () => {
+  delete process.env.UPLOADER_SIGN_PUBLIC_KEYS;
+  const key = makeKey();
+  const seed = Buffer.from(key.privateKey.export({ format: 'jwk' }).d, 'base64url');
+  // Кладём тот же публичный ключ, что у seed'а, но через API настроек.
+  const added = await store.upsertSignKey('ui-key', store.deriveEd25519Public(seed));
+  assert.equal(added.ok, true);
+
+  const status = await store.storeStatus();
+  assert.ok(status.keyIds.includes('ui-key'), 'ключ из config.json виден в статусе');
+  assert.ok(status.configKeys.some((k) => k.id === 'ui-key'), 'ключ помечен как редактируемый');
+  assert.deepEqual(status.envKeyIds, [], 'ключей из окружения сейчас нет');
+
+  // Публикация с подписью этим ключом теперь проверяется по-настоящему.
+  const manifest = signManifest(manifestFor(FILES, { version: '9.1.0' }), key, 'ui-key');
+  const ok = await store.publishBundle({ manifest, files: encodeFiles(FILES) });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.signatureChecked, true, 'подпись реально проверена ключом из config.json');
+
+  // Чужая подпись под тем же id отклоняется.
+  const other = makeKey();
+  const forged = signManifest(manifestFor(FILES, { version: '9.2.0' }), other, 'ui-key');
+  const bad = await store.publishBundle({ manifest: forged, files: encodeFiles(FILES) });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /подпис/);
+});
+
+maybe('removeSignKey убирает ключ, а невалидный ключ не принимается', async () => {
+  const rejected = await store.upsertSignKey('bad', 'не-base64-32-байта');
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /32 байта/);
+
+  const removed = await store.removeSignKey('ui-key');
+  assert.equal(removed.ok, true);
+  const status = await store.storeStatus();
+  assert.ok(!status.keyIds.includes('ui-key'), 'после удаления ключа его нет в статусе');
+});
+
+maybe('токен публикации из config.json авторизует так же, как из окружения', async () => {
+  delete process.env.UPLOADER_PUBLISH_TOKEN;
+  const withHeader = (value) => new Request('https://edringcolony.ru/api/admin/uploader/publish', {
+    method: 'POST',
+    headers: value ? { authorization: value } : {},
+  });
+  // Слишком короткий токен не сохраняется.
+  const short = await store.setPublishToken('short');
+  assert.equal(short.ok, false);
+
+  const saved = await store.setPublishToken('config-token-1234567890');
+  assert.equal(saved.ok, true);
+  assert.equal(store.isPublishAuthorized(withHeader('Bearer config-token-1234567890')), true);
+  assert.equal(store.isPublishAuthorized(withHeader('Bearer config-token-000')), false);
+
+  const status = await store.storeStatus();
+  assert.equal(status.publishTokenSource, 'config');
+  assert.equal(status.publishConfigured, true);
+
+  // Очистка убирает токен.
+  const cleared = await store.setPublishToken('');
+  assert.equal(cleared.ok, true);
+  assert.equal(store.isPublishAuthorized(withHeader('Bearer config-token-1234567890')), false);
+  assert.equal((await store.storeStatus()).publishTokenSource, 'none');
+});

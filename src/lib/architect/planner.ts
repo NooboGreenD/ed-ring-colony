@@ -23,10 +23,12 @@ import { activeSignalKinds, signalsFromRecord } from '../bodySignals.ts';
 import {
   CATALOGUE_VERSION,
   COMMODITY_LABELS_RU,
+  ECONOMY_LABELS_RU,
   INSTALLATIONS,
   PRE_REQS,
   SYSTEM_UNLOCKS,
 } from './catalogue.ts';
+import { economyBodyFit } from './economy.ts';
 import type {
   ArchitectBody,
   ArchitectInstallation,
@@ -318,6 +320,15 @@ export function placementCheck(
   }
   if (installation.location === 'surface' && body.terraformable) {
     warnings.push('Тело терраформируемое: часть площадки может уйти под терраформирование');
+  }
+  // Экономика постройки зависит от тела: у профильных экономик (добыча, сельское
+  // хозяйство, переработка, промышленность, туризм) на неподходящем теле выхлоп
+  // слабее — стоит предупредить. Звёзды не проверяем: их порты экономику тела не наследуют.
+  if (body.kind !== 'star' && installation.influence !== 'none') {
+    const fit = economyBodyFit(installation.influence, body);
+    if (fit.level === 'weak') {
+      warnings.push(`${ECONOMY_LABELS_RU[installation.influence]}: ${fit.reason}`);
+    }
   }
   if (installation.tier === 3 && !plan.sites.some((site) => getInstallation(site.installationId)?.buildClass === 'starport')) {
     warnings.push('Порт T3 стоит 6 очков T3 — без построек T1/T2 очков не хватит');
