@@ -90,26 +90,28 @@ function sameViewerState(a: OrreryViewerState, b: OrreryViewerState): boolean {
 
 function buttonStyle(active: boolean): React.CSSProperties {
   return {
-    background: active ? 'rgba(230,126,34,0.2)' : 'rgba(18,22,31,0.86)',
-    border: `1px solid ${active ? '#e67e22' : '#323538'}`,
-    color: active ? '#ff9f43' : '#cbd5e1',
-    borderRadius: 6,
-    padding: '4px 8px',
-    fontSize: 11.5,
+    background: active ? 'rgba(230,126,34,0.12)' : 'transparent',
+    border: `1px solid ${active ? 'var(--orange)' : 'var(--line)'}`,
+    color: active ? 'var(--orange)' : 'var(--muted)',
+    borderRadius: 2,
+    padding: '6px 9px',
+    fontSize: 11,
     cursor: 'pointer',
     display: 'inline-flex',
     alignItems: 'center',
     gap: 4,
     whiteSpace: 'nowrap',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   };
 }
 
 const PANEL: React.CSSProperties = {
-  background: 'rgba(11,14,20,0.9)',
-  border: '1px solid #2b3038',
-  borderRadius: 10,
-  padding: '8px 10px',
-  backdropFilter: 'blur(6px)',
+  background: 'var(--panel)',
+  border: '1px solid var(--line)',
+  borderRadius: 3,
+  padding: '10px 12px',
 };
 
 export default function SystemOrrery3D({
@@ -269,7 +271,7 @@ export default function SystemOrrery3D({
   }, [state.playing, state.timeDays]);
 
   return (
-    <section style={{ marginBottom: 24 }}>
+    <section className="orrery3d-shell" style={{ marginBottom: 24 }}>
       <style>{ORRERY_SITE_CSS}</style>
       <div
         style={{
@@ -277,10 +279,10 @@ export default function SystemOrrery3D({
           gap: 10,
           alignItems: 'stretch',
           flexWrap: 'wrap',
-          border: '1px solid #323538',
-          borderRadius: 12,
-          background: '#14171b',
-          padding: 10,
+          border: '1px solid var(--line)',
+          borderRadius: 4,
+          background: 'var(--panel)',
+          padding: 12,
         }}
       >
         <div style={{ flex: '1 1 620px', minWidth: 320, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -301,7 +303,7 @@ export default function SystemOrrery3D({
                 <span aria-hidden>{entry.icon}</span> {entry.label}
               </button>
             ))}
-            <span style={{ width: 1, height: 20, background: '#2b3038' }} />
+            <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
             {VIEW_LABELS.map((entry) => (
               <button
                 key={entry.id}
@@ -364,7 +366,7 @@ export default function SystemOrrery3D({
               <option value="orrery">масштаб: сжатый</option>
               <option value="linear">масштаб: линейный</option>
             </select>
-            <span style={{ width: 1, height: 20, background: '#2b3038' }} />
+            <span style={{ width: 1, height: 20, background: 'var(--line)' }} />
             <button
               type="button"
               onClick={() => viewerRef.current?.setMotion(!state.playing)}
@@ -425,14 +427,14 @@ export default function SystemOrrery3D({
               height,
               minHeight: 320,
               width: '100%',
-              borderRadius: 10,
-              border: '1px solid #242a33',
+              borderRadius: 2,
+              border: '1px solid var(--line)',
               overflow: 'hidden',
-              background: `radial-gradient(120% 90% at 50% 0%, ${SCENE_COLORS.backgroundTop} 0%, ${SCENE_COLORS.background} 62%)`,
+              background: SCENE_COLORS.background,
             }}
           >
             {!ready && !webglFailed && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#7e8794', fontSize: 13 }}>
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--muted)', fontSize: 13 }}>
                 Готовим 3D-карту системы…
               </div>
             )}
@@ -440,7 +442,7 @@ export default function SystemOrrery3D({
 
           {/* ── Легенда и подсказка ───────────────────────────────────── */}
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 10.5, color: '#9ca3af' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--muted)' }}>
               <Legend color="#ffd166" label="звезда" />
               <Legend color="#8d99ae" label="планета/луна" />
               <Legend color={STRUCTURE_COLORS.active} label="стройка в работе" />
@@ -448,7 +450,7 @@ export default function SystemOrrery3D({
               <Legend color={SCENE_COLORS.habitableZone} label="обитаемая зона" />
               <Legend color={SCENE_COLORS.player} label="вы здесь" />
             </div>
-            <span style={{ fontSize: 10.5, color: '#6b7280' }}>
+            <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>
               колесо — зум · ЛКМ — вращение · ПКМ — панорама · клик по телу — фокус · двойной клик — ближе
             </span>
           </div>
@@ -470,7 +472,7 @@ export default function SystemOrrery3D({
               />
             ) : (
               <>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#eeeeee', marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)', marginBottom: 6 }}>
                   {systemName}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, fontSize: 10.5 }}>
@@ -488,7 +490,7 @@ export default function SystemOrrery3D({
                     <Chip color={STRUCTURE_COLORS.active}>строек: {payload.summary.activeSites || payload.summary.structures}</Chip>
                   )}
                 </div>
-                <p style={{ margin: '8px 0 0', fontSize: 11, color: '#8b95a3', lineHeight: 1.45 }}>
+                <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--muted)', lineHeight: 1.45 }}>
                   Выберите тело на карте или в списке — здесь появятся его факты, орбита и постройки.
                   {hoveredBody ? ` Сейчас под курсором: ${hoveredBody.shortName}.` : ''}
                 </p>
@@ -512,7 +514,7 @@ export default function SystemOrrery3D({
       </div>
 
       {timeLabel && (
-        <div style={{ marginTop: 6, fontSize: 11, color: '#8b95a3' }}>
+        <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
           Время на карте: {timeLabel} · положение рассчитано по настоящим периодам обращения
         </div>
       )}
@@ -539,11 +541,12 @@ function Chip({ children, color }: { children: React.ReactNode; color?: string }
     <span
       style={{
         fontSize: 10.5,
-        color: color ?? '#cbd5e1',
+        color: color ?? 'var(--text)',
         background: `${color ?? '#8b95a3'}1a`,
         border: `1px solid ${color ?? '#8b95a3'}33`,
-        borderRadius: 999,
-        padding: '1px 7px',
+        borderRadius: 2,
+        padding: '2px 7px',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
       }}
     >
       {children}
@@ -582,8 +585,8 @@ function FocusCard({
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 4 }}>
-        <span style={{ fontSize: 13, fontWeight: 700, color: '#f8fafc' }}>{body.name}</span>
-        <span style={{ fontSize: 10.5, color: '#8b95a3' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text)' }}>{body.name}</span>
+        <span style={{ fontSize: 10.5, color: 'var(--muted)' }}>
           {body.kind === 'star' ? 'звезда' : body.kind === 'moon' ? 'луна' : 'планета'}
           {cluster && payload.summary.stars > 1 ? ` · ★ ${cluster.star.replace(`${payload.system} `, '')}` : ''}
         </span>
@@ -591,7 +594,7 @@ function FocusCard({
           type="button"
           onClick={onClear}
           title="Снять фокус"
-          style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: '#8b95a3', cursor: 'pointer', fontSize: 13 }}
+          style={{ marginLeft: 'auto', background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 13 }}
         >
           ✕
         </button>
@@ -600,8 +603,8 @@ function FocusCard({
       <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '2px 8px', margin: '0 0 8px', fontSize: 11.5 }}>
         {rows.map(([key, value]) => (
           <div key={key} style={{ display: 'contents' }}>
-            <dt style={{ color: '#8b95a3' }}>{key}</dt>
-            <dd style={{ margin: 0, color: '#e6eef8' }}>{value}</dd>
+            <dt style={{ color: 'var(--muted)' }}>{key}</dt>
+            <dd style={{ margin: 0, color: 'var(--text)' }}>{value}</dd>
           </div>
         ))}
       </dl>
@@ -629,14 +632,14 @@ function FocusCard({
       </div>
 
       {structures.map((structure) => (
-        <div key={structure.id} style={{ borderTop: '1px solid #262b33', paddingTop: 6, marginTop: 6 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5, color: '#e6eef8' }}>
+        <div key={structure.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 6, marginTop: 6 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11.5, color: 'var(--text)' }}>
             <span>{structure.name}</span>
             <b style={{ color: structure.complete ? STRUCTURE_COLORS.complete : STRUCTURE_COLORS.active }}>
               {structure.complete ? 'готово' : `${Math.round(structure.progress)}%`}
             </b>
           </div>
-          <div style={{ height: 5, background: '#2b2f33', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
+          <div style={{ height: 5, background: 'var(--line)', borderRadius: 3, marginTop: 4, overflow: 'hidden' }}>
             <div
               style={{
                 width: `${Math.max(0, Math.min(100, structure.progress))}%`,
@@ -645,7 +648,7 @@ function FocusCard({
               }}
             />
           </div>
-          <div style={{ fontSize: 10.5, color: '#8b95a3', marginTop: 3 }}>
+          <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 3 }}>
             {structure.requiredTons > 0
               ? `доставлено ${formatTons(structure.providedTons)} из ${formatTons(structure.requiredTons)} · осталось ${formatTons(structure.remainingTons)}`
               : structure.type}
@@ -658,6 +661,10 @@ function FocusCard({
 
 /** Мини-adaptation: одна колонка на узком экране, легенда переносится. */
 const ORRERY_SITE_CSS = `
+.orrery3d-shell { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+.orrery3d-shell button, .orrery3d-shell select, .orrery3d-shell input { font-family: inherit; }
+.orrery3d-shell button:not(:disabled):hover { border-color: var(--orange) !important; color: var(--text) !important; background: rgba(230,126,34,0.06) !important; }
+.orrery3d-shell button:focus-visible, .orrery3d-shell select:focus-visible, .orrery3d-shell input:focus-visible { outline: 1px solid var(--orange); outline-offset: 2px; }
 @media (max-width: 900px) {
   .orrery3d-host { height: 62vh !important; }
 }

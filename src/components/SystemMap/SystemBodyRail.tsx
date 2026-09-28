@@ -129,7 +129,7 @@ export default function SystemBodyRail({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
-      <div style={{ padding: '10px 12px', borderBottom: '1px solid #323538' }}>
+      <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--line)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <input
             value={query}
@@ -137,8 +137,8 @@ export default function SystemBodyRail({
             placeholder="поиск тела…"
             aria-label="Поиск тела"
             style={{
-              flex: 1, minWidth: 0, background: '#1c1f22', border: '1px solid #3a3d40', borderRadius: 6,
-              color: '#eeeeee', padding: '6px 9px', fontSize: 12.5, outline: 'none',
+              flex: 1, minWidth: 0, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 2,
+              color: 'var(--text)', padding: '6px 9px', fontSize: 12.5, outline: 'none',
             }}
           />
           <select
@@ -146,7 +146,7 @@ export default function SystemBodyRail({
             onChange={(event) => setSort(event.target.value as typeof sort)}
             aria-label="Сортировка тел"
             style={{
-              background: '#1c1f22', border: '1px solid #3a3d40', borderRadius: 6, color: '#cbd5e1',
+              background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 2, color: 'var(--text)',
               padding: '6px 6px', fontSize: 12,
             }}
           >
@@ -159,7 +159,7 @@ export default function SystemBodyRail({
               type="button"
               onClick={onClose}
               title="Свернуть список"
-              style={{ background: 'transparent', border: '1px solid #3a3d40', borderRadius: 6, color: '#9ca3af', cursor: 'pointer', padding: '4px 8px', fontSize: 12 }}
+              style={{ background: 'transparent', border: '1px solid var(--line)', borderRadius: 2, color: 'var(--muted)', cursor: 'pointer', padding: '4px 8px', fontSize: 12 }}
             >
               ✕
             </button>
@@ -177,10 +177,10 @@ export default function SystemBodyRail({
                   onFilterChange?.(entry.id);
                 }}
                 style={{
-                  background: active ? 'rgba(230,126,34,0.18)' : '#1c1f22',
-                  border: `1px solid ${active ? '#e67e22' : '#3a3d40'}`,
-                  color: active ? '#ff9f43' : '#9ca3af',
-                  borderRadius: 999,
+                  background: active ? 'rgba(230,126,34,0.12)' : 'var(--bg)',
+                  border: `1px solid ${active ? 'var(--orange)' : 'var(--line)'}`,
+                  color: active ? 'var(--orange)' : 'var(--muted)',
+                  borderRadius: 2,
                   padding: '3px 9px',
                   fontSize: 11,
                   cursor: 'pointer',
@@ -195,7 +195,7 @@ export default function SystemBodyRail({
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '8px 10px 24px' }}>
         {totalShown === 0 && (
-          <p style={{ color: '#7e8794', fontSize: 12, marginTop: 12 }}>
+          <p style={{ color: 'var(--muted)', fontSize: 12, marginTop: 12 }}>
             Ничего не найдено. Сбросьте фильтр или поиск.
           </p>
         )}
@@ -230,12 +230,13 @@ export default function SystemBodyRail({
                     title={`Показать ${body.name} на карте`}
                     style={{
                       textAlign: 'left',
-                      background: active ? 'rgba(0,243,255,0.08)' : '#1c1f22',
-                      border: `1px solid ${active ? 'rgba(0,243,255,0.55)' : '#323538'}`,
-                      borderRadius: 8,
+                      background: active ? 'rgba(230,126,34,0.08)' : 'var(--bg)',
+                      border: `1px solid ${active ? 'var(--orange)' : 'var(--line)'}`,
+                      borderRadius: 2,
                       padding: '8px 10px',
                       cursor: 'pointer',
-                      color: '#eeeeee',
+                      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                      color: 'var(--text)',
                     }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -249,7 +250,7 @@ export default function SystemBodyRail({
                         </span>
                       )}
                     </div>
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 3, fontSize: 10.5, color: '#9ca3af' }}>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 3, fontSize: 10.5, color: 'var(--muted)' }}>
                       <span>{body.cls || (body.kind === 'star' ? 'звезда' : 'тело')}</span>
                       {body.orbitLs > 0 && body.kind !== 'star' && <span>{formatLightSeconds(body.orbitLs)}</span>}
                       {body.radiusM > 0 && <span>{formatNumber(body.radiusM / 1000, 0)} км</span>}
@@ -278,7 +279,7 @@ export default function SystemBodyRail({
                           <div style={{ width: `${Math.max(0, Math.min(100, structure.progress))}%`, height: '100%', background: structureColor(structure) }} />
                         </div>
                         {structure.remainingTons > 0 && (
-                          <div style={{ fontSize: 10, color: '#7e8794' }}>осталось {formatTons(structure.remainingTons)}</div>
+                          <div style={{ fontSize: 10, color: 'var(--muted)' }}>осталось {formatTons(structure.remainingTons)}</div>
                         )}
                       </div>
                     ))}
@@ -295,7 +296,7 @@ export default function SystemBodyRail({
 
 function Tag({ color, children }: { color: string; children: React.ReactNode }) {
   return (
-    <span style={{ fontSize: 9.5, color, background: `${color}1f`, border: `1px solid ${color}44`, borderRadius: 999, padding: '0 6px', lineHeight: '15px' }}>
+    <span style={{ fontSize: 9.5, color, background: `${color}1f`, border: `1px solid ${color}44`, borderRadius: 2, padding: '0 6px', lineHeight: '15px' }}>
       {children}
     </span>
   );
