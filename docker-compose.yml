@@ -191,6 +191,13 @@ services:
       UPDATE_AGENT_RESTART_DELAY_SECONDS: ${UPDATE_AGENT_RESTART_DELAY_SECONDS:-12}
       UPDATE_STATE_DIR: /state
       UPDATE_HEALTH_URL: http://web:3000/api/health
+      # Docker CLI пишет конфиг в $HOME/.docker, а rootfs агента read-only:
+      # BuildKit-сборка падала на «mkdir /root/.docker: read-only file system»
+      # сразу после того, как в образе появился плагин buildx (legacy-билдер
+      # конфиг не трогал, поэтому раньше проблема не проявлялась). Каталог
+      # переносим на том update-state: он записываемый и переживает
+      # пересоздание контейнера, так что состояние buildx не теряется.
+      DOCKER_CONFIG: /state/.docker
       # pg_dump/pg_restore inside the updater talk to the self-hosted stack.
       SUPABASE_CONTAINER: ${SUPABASE_CONTAINER:-supabase-db}
       # Manual weekly database backup (Админка → Бэкапы): where the dumps go
