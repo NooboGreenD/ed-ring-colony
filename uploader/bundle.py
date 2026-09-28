@@ -82,7 +82,7 @@ MAX_LAUNCH_ATTEMPTS = 2
 #: Приватный ключ уходит в секреты CI (`UPLOADER_SIGN_KEY`), публичный — сюда.
 #: Пустой словарь означает «канал обновлений не настроен»: клиент не поставит
 #: НИ ОДНОГО пакета, и это правильное поведение по умолчанию.
-TRUSTED_KEYS: Dict[str, str] = {}
+TRUSTED_KEYS: Dict[str, str] = {"k202609": "UUJ4horqlVxQ/GTVuCV9fxjgyfP0rC36RwZglPmG/gI="}
 
 #: Переменная окружения для своего ключа (self-hosted и отладка):
 #: `COLONIAL_HELPER_UPDATE_KEYS="dev:BASE64[,id2:BASE64]"`.
