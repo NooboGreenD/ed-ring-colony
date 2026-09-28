@@ -14,7 +14,9 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getInstallation } from '@/lib/architect/planner';
+import type { SyncSourceState } from '@/lib/architect/bodySync';
 import { parseExistingStructures, type ExistingStructure } from '@/lib/architect/existing';
+import type { ArchitectBody } from '@/lib/architect/types';
 import {
   cardStyle,
   errorText,
@@ -40,17 +42,34 @@ const STATUS_COLORS: Record<ExistingStructure['status'], string> = {
 
 interface ExistingPanelProps {
   systemName: string;
+  /**
+   * Тела системы: по ним имена из Raven/EDSM приводятся к каталогу ещё до
+   * переноса, поэтому в списке сразу видно, на какое тело встанет постройка.
+   */
+  bodies: ArchitectBody[];
   /** Ключи построек, которые уже есть в плане (тело + тип) — чтобы не предлагать дубли. */
   plannedKeys: Set<string>;
   onApply: (structures: ExistingStructure[]) => void;
+  /** Сообщить наверх состояние источников — для панели «Источники данных». */
+  onSources?: (sources: SyncSourceState[]) => void;
 }
+
+/** Как нашли тело — подпись под названием постройки. */
+const MATCH_LABELS: Record<ExistingStructure['bodyMatch'], string> = {
+  exact: '',
+  short: 'имя тела уточнено по каталогу',
+  compact: 'имя тела уточнено по каталогу',
+  id: 'тело определено по номеру',
+  ring: 'кольцо отнесено к родительскому телу',
+  none: 'тело не найдено в каталоге системы',
+};
 
 /** Ключ «тело + постройка» — тем же способом считается на стороне плана. */
 export function structureKey(bodyName: string | null, installationId: string | null): string {
   return `${String(bodyName ?? '').trim().toLowerCase()}|${installationId ?? ''}`;
 }
 
-export default function ExistingPanel({ systemName, plannedKeys, onApply }: ExistingPanelProps) {
+export default function ExistingPanel({ systemName, bodies, plannedKeys, onApply, onSources }: ExistingPanelProps) {
   const [structures, setStructures] = useState<ExistingStructure[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -67,20 +86,43 @@ export default function ExistingPanel({ systemName, plannedKeys, onApply }: Exis
       const response = await fetch(`/api/architect/existing?system=${encodeURIComponent(target)}`, { cache: 'no-store' });
       const data = await response.json().catch(() => null);
       if (!response.ok) throw new Error(String(data?.error || `HTTP ${response.status}`));
-      const parsed = parseExistingStructures(data);
+      // Каталог тел передаётся в разбор: имена из источников сразу приводятся
+      // к каталогу системы, иначе перенос кладёт в план «чужое» имя тела.
+      const parsed = parseExistingStructures(data, { bodies, system: target });
       setStructures(parsed);
       setWarnings(Array.isArray(data?.warnings) ? data.warnings.map(String) : []);
       // По умолчанию отмечаем всё, что можно перенести без домыслов.
       setSelected(new Set(parsed.filter((item) => item.installationId).map((item) => item.key)));
       setFetched(true);
+
+      const sources = (data?.sources ?? {}) as Record<string, unknown>;
+      onSources?.([
+        {
+          id: 'raven',
+          label: 'Raven Colonial',
+          status: sources.raven === 'ok' ? 'ok' : 'unavailable',
+          count: parsed.filter((item) => item.source === 'raven').length,
+          updatedAt: null,
+          note: sources.raven === 'ok' ? null : 'нет ответа',
+        },
+        {
+          id: 'edsm-stations',
+          label: 'EDSM: станции',
+          status: sources.edsm === 'ok' ? 'ok' : 'unavailable',
+          count: parsed.filter((item) => item.source === 'edsm').length,
+          updatedAt: null,
+          note: sources.edsm === 'ok' ? null : 'нет ответа',
+        },
+      ]);
     } catch (err) {
       setStructures([]);
       setFetched(false);
       setError(err instanceof Error ? err.message : 'Не удалось получить застройку системы');
+      onSources?.([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [bodies, onSources]);
 
   // Смена системы обнуляет список: чужая застройка в плане недопустима.
   useEffect(() => {
@@ -162,11 +204,25 @@ export default function ExistingPanel({ systemName, plannedKeys, onApply }: Exis
                     <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {item.name}</span>
                   </span>
                   <span style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}>
-                    {item.bodyName || 'тело не указано'} · {item.source === 'raven' ? 'Raven' : 'EDSM'}
+                    {item.bodyName || item.rawBodyName || 'тело не указано'} · {item.source === 'raven' ? 'Raven' : 'EDSM'}
                     {' · '}
                     <span style={{ color: STATUS_COLORS[item.status] }}>{STATUS_LABELS[item.status]}</span>
+                    {item.primary ? <span style={{ color: 'var(--orange)' }}> · ★ основной порт</span> : null}
                     {already ? ' · уже в плане' : ''}
                   </span>
+                  {MATCH_LABELS[item.bodyMatch] && (
+                    <span
+                      style={{
+                        display: 'block', fontSize: 11,
+                        color: item.bodyMatch === 'none' ? 'var(--orange)' : 'var(--cyan)',
+                      }}
+                    >
+                      {MATCH_LABELS[item.bodyMatch]}
+                      {item.bodyMatch !== 'none' && item.rawBodyName && item.rawBodyName !== item.bodyName
+                        ? `: «${item.rawBodyName}» → «${item.bodyName}»`
+                        : ''}
+                    </span>
+                  )}
                 </span>
               </label>
             );

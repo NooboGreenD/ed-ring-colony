@@ -608,3 +608,195 @@ test('карточки тел сворачиваются, фильтр «с по
     await ui.cleanup();
   }
 });
+
+test('перенос фактической застройки виден в плане: карточка тела, подсветка и сводка', async () => {
+  // Источники называют тела по-своему: Raven — коротко («A 1»), EDSM — полностью.
+  // Раньше такие записи попадали в план, но нигде не показывались, и перенос
+  // выглядел как «ничего не произошло».
+  const ui = await renderArchitect({
+    api: (url) => {
+      if (!url.includes('/api/architect/existing')) return null;
+      return {
+        body: {
+          system: SYSTEM,
+          sites: [
+            { id: 's1', name: 'Первый порт', buildType: 'no_truss', bodyName: 'A 1', status: 'complete' },
+            { id: 's2', name: 'Поселение', buildType: 'consus', bodyName: `${SYSTEM} A 1`, status: 'build', progress: 40 },
+            { id: 's3', name: 'Дальний аванпост', buildType: 'vulcan', bodyName: 'Совсем другое тело', status: 'complete' },
+          ],
+          stations: [],
+          sources: { raven: 'ok', edsm: 'unavailable' },
+          warnings: [],
+        },
+      };
+    },
+  });
+  try {
+    await ui.click(ui.buttonByText('Проверить'));
+    let text = ui.text();
+    assert.match(text, /Первый порт/, 'список факта загрузился');
+    assert.match(text, /имя тела уточнено по каталогу/, 'короткое имя приведено к каталогу');
+
+    await ui.click(ui.buttonByText(/Применить к плану/));
+    text = ui.text();
+
+    assert.match(text, /Факт применён к плану: добавлено 3/, 'сводка переноса честная');
+    assert.match(text, /в плане: 3/, 'шапка показывает новые записи');
+
+    // Главное: записи видны в карточке тела, а не «провалились» мимо интерфейса.
+    const card = Array.from(ui.document.querySelectorAll('.architect-body'))
+      .find((element) => (element.textContent || '').includes(`${SYSTEM} A 1`));
+    assert.ok(card, 'карточка тела нашлась');
+    assert.match(card.textContent, /Кориолис/, 'порт с коротким именем тела встал на своё тело');
+    assert.match(card.textContent, /Сельхозпоселение/, 'второе поселение тоже здесь');
+    assert.match(card.textContent, /построек: 2/);
+
+    // Подсветка перенесённых записей.
+    assert.ok(ui.document.querySelector('.architect-flash'), 'перенесённые записи подсвечены');
+
+    // Тело, которого нет в каталоге, не теряется — оно в отдельной карточке.
+    assert.match(text, /Постройки вне каталога тел/);
+    assert.match(text, /Совсем другое тело/);
+    assert.match(text, /тело не опознано у 1/, 'сводка переноса называет проблему');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('повторное применение факта не плодит дубли, а подтягивает статус', async () => {
+  const ui = await renderArchitect({
+    api: (url) => {
+      if (!url.includes('/api/architect/existing')) return null;
+      return {
+        body: {
+          system: SYSTEM,
+          sites: [{ id: 's1', name: 'Поселение', buildType: 'consus', bodyName: `${SYSTEM} A 1`, status: 'complete' }],
+          stations: [],
+          sources: { raven: 'ok', edsm: 'ok' },
+          warnings: [],
+        },
+      };
+    },
+  });
+  try {
+    await ui.click(ui.buttonByText('Проверить'));
+    await ui.click(ui.buttonByText(/Применить к плану/));
+    assert.match(ui.text(), /Факт применён к плану: добавлено 1/);
+
+    await ui.click(ui.buttonByText(/Применить к плану/));
+    const text = ui.text();
+    assert.doesNotMatch(text, /добавлено 2/, 'второй раз ничего не добавляется');
+    assert.match(text, /в плане: 1/, 'запись в плане осталась одна');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('вид «Таблица» показывает план списком, вид «Аналитика» — инфографику', async () => {
+  const ui = await renderArchitect();
+  try {
+    await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
+    await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
+
+    await ui.click(ui.buttonByText('Таблица'));
+    let text = ui.text();
+    assert.match(text, /постройка/, 'в таблице есть колонка построек');
+    assert.match(text, /тоннаж/);
+    assert.match(text, /Сельхозпоселение \(малое\)/);
+    assert.doesNotMatch(text, /Фильтр тел/, 'фильтр тел в табличном виде не нужен');
+
+    await ui.click(ui.buttonByText('Аналитика'));
+    text = ui.text();
+    assert.match(text, /Бюджет очков системы/);
+    assert.match(text, /Тоннаж и рейсы/);
+    assert.match(text, /Экономики и стадии|Экономика системы|Стадии/);
+
+    await ui.click(ui.buttonByText('Тела'));
+    assert.match(ui.text(), /Фильтр тел/, 'возврат к карточкам тел работает');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('панель качества данных показывает дубли тел и пустые поля', async () => {
+  const ui = await renderArchitect({
+    api: (url) => {
+      if (!url.includes('/api/atlas/system-bodies')) return null;
+      return {
+        body: {
+          ok: true,
+          system: SYSTEM,
+          source: 'compare',
+          sources: { database: 2, edsm: 1, spansh: 1, merged: 1, total: 4 },
+          sync: {
+            database: { status: 'ok', count: 4, updatedAt: '2026-09-20T10:00:00Z' },
+            edsm: { status: 'unavailable', count: 0, updatedAt: null, note: 'HTTP 500' },
+            spansh: { status: 'ok', count: 3, updatedAt: '2026-09-25T04:46:07Z' },
+            cached: 2,
+          },
+          bodies: [
+            ...fixtureBodies(),
+            // Тот же ключ имени с другим регистром — классический дубль источников.
+            { body_name: `${SYSTEM.toLowerCase()} a 1`, body_id: 2, body_type: 'Planet', sub_type: 'Rocky body', distance_ls: 12, radius_m: 0, gravity: 0, surface_temp_k: 0, is_landable: true, rings: [], raw_data: {} },
+          ],
+        },
+      };
+    },
+  });
+  try {
+    const text = ui.text();
+    assert.match(text, /Качество данных/);
+    assert.match(text, /повторов: 1/, 'дубль найден и посчитан');
+
+    // Подробности раскрываются по кнопке.
+    await ui.click(ui.buttonByText('Подробно'));
+    const details = ui.text();
+    assert.match(details, /Заполненность полей/);
+    assert.match(details, /Повторяющиеся тела/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('панель источников показывает, кто ответил, а кто нет', async () => {
+  const ui = await renderArchitect({
+    api: (url) => {
+      if (url.includes('/api/architect/existing')) {
+        return { body: { system: SYSTEM, sites: [], stations: [], sources: { raven: 'ok', edsm: 'unavailable' }, warnings: [] } };
+      }
+      if (!url.includes('/api/atlas/system-bodies')) return null;
+      return {
+        body: {
+          ok: true,
+          system: SYSTEM,
+          source: 'compare',
+          sources: { database: 3, edsm: 0, spansh: 1, merged: 0, total: 4 },
+          sync: {
+            database: { status: 'ok', count: 4, updatedAt: '2026-09-20T10:00:00Z' },
+            edsm: { status: 'unavailable', count: 0, updatedAt: null, note: 'HTTP 500' },
+            spansh: { status: 'skipped', count: 0, updatedAt: null, note: 'too-large' },
+            cached: 0,
+          },
+          bodies: fixtureBodies(),
+        },
+      };
+    },
+  });
+  try {
+    let text = ui.text();
+    assert.match(text, /Источники данных/);
+    assert.match(text, /База проекта/);
+    assert.match(text, /EDSM/);
+    assert.match(text, /недоступен/, 'сбой источника виден пользователю');
+    assert.match(text, /дамп слишком большой/, 'причина пропуска Spansh переведена на человеческий');
+    assert.match(text, /Сверка: 4 тел/);
+
+    // Источники фактической застройки добавляются в ту же панель.
+    await ui.click(ui.buttonByText('Проверить'));
+    text = ui.text();
+    assert.match(text, /Raven Colonial/);
+    assert.match(text, /EDSM: станции/);
+  } finally {
+    await ui.cleanup();
+  }
+});

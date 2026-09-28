@@ -82,3 +82,73 @@ export function isTerraformable(body: { is_terraformable?: boolean; subtype?: st
   if (body.is_terraformable) return true;
   return ['High metal content world','Rocky body','Rocky ice world','Icy body','Metal-rich body'].includes(body.subtype || '');
 }
+
+export interface SpanshDumpBody {
+  name?: string;
+  bodyId?: number;
+  type?: string;
+  subType?: string;
+  distanceToArrival?: number;
+  [key: string]: unknown;
+}
+
+export interface SpanshDumpResult {
+  ok: boolean;
+  /** Тела системы из дампа (пустой массив, если дамп не получен). */
+  bodies: SpanshDumpBody[];
+  /** Имя системы, как его знает Spansh (полезно для сверки написания). */
+  systemName: string | null;
+  updatedAt: string | null;
+  /** Причина, по которой данных нет: 'not-found' | 'too-large' | 'timeout' | 'error'. */
+  reason?: string;
+}
+
+/**
+ * Забирает дамп системы Spansh (`/api/dump/{id64}`) — тот же источник, из
+ * которого Raven Colonial берёт тела и порты при планировании системы.
+ *
+ * Дампы больших систем весят десятки мегабайт, поэтому здесь жёсткие
+ * предохранители: таймаут и отказ по `content-length`. Функция никогда не
+ * бросает исключение — при любой проблеме возвращает `ok: false`, чтобы
+ * маршрут спокойно работал на оставшихся источниках.
+ */
+export async function spanshSystemDump(
+  id64: string | number,
+  opts: { timeoutMs?: number; maxBytes?: number; revalidate?: number } = {},
+): Promise<SpanshDumpResult> {
+  const { timeoutMs = 8000, maxBytes = 8 * 1024 * 1024, revalidate = 21600 } = opts;
+  const empty = (reason: string): SpanshDumpResult => ({ ok: false, bodies: [], systemName: null, updatedAt: null, reason });
+
+  const id = String(id64 ?? '').trim();
+  if (!id || !/^\d+$/.test(id)) return empty('not-found');
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${SPANSH_BASE}/dump/${id}`, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+      next: { revalidate },
+    });
+    if (!res.ok) return empty(res.status === 404 ? 'not-found' : `http-${res.status}`);
+
+    const length = Number(res.headers.get('content-length') ?? 0);
+    if (length > maxBytes) return empty('too-large');
+
+    const data = await res.json() as { system?: { name?: string; bodies?: SpanshDumpBody[]; updateTime?: string } };
+    const system = data?.system;
+    if (!system || !Array.isArray(system.bodies)) return empty('not-found');
+
+    return {
+      ok: true,
+      bodies: system.bodies,
+      systemName: typeof system.name === 'string' ? system.name : null,
+      updatedAt: typeof system.updateTime === 'string' ? system.updateTime : null,
+    };
+  } catch (error) {
+    const aborted = error instanceof Error && error.name === 'AbortError';
+    return empty(aborted ? 'timeout' : 'error');
+  } finally {
+    clearTimeout(timer);
+  }
+}

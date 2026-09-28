@@ -230,7 +230,8 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
                 {installation.nameRu}
                 <span style={{ color: 'var(--muted)', fontSize: 12 }}>
                   {' · '}
-                  {site.bodyName} · {formatTons(tons)} · {STATUS_LABELS[site.status]}
+                  {site.bodyName || <span style={{ color: 'var(--orange)' }}>тело не задано</span>}
+                  {' · '}{formatTons(tons)} · {STATUS_LABELS[site.status]}
                 </span>
               </li>
             );

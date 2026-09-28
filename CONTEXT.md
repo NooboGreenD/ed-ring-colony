@@ -1,9 +1,12 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: 2026-09-27.
-> Web/Uploader release: 2.12.2.
+> Last updated: 2026-09-28.
+> Web release: 2.13.0 · Uploader release: 2.12.2.
 > Frontier CAPI binding and Architect Uploader ↔ Raven dual-sync are included in this release.
+> 2.13.0 reworks the Architect: three plan views (bodies / table / analytics),
+> Spansh as a third body source, body-name resolution across services, and a
+> data-quality audit of everything that is loaded.
 > Mobile admin: /m-admin + android-app/ (Kotlin Compose) — 2026-09-25.
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://edringcolony.ru
@@ -683,6 +686,13 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   Raven supplies the aggregate multi-pilot progress, while the latest journal
   snapshot can provide exact resource totals. The UI marks the dual-source
   state explicitly and warns when no Uploader snapshot exists.
+- Architect body data is compared across three sources (project DB, EDSM,
+  Spansh dump by `id64`) in `src/lib/architect/bodySync.ts`; duplicates inside
+  a single source are merged, and `/api/atlas/system-bodies?compare=1` reports
+  per-source status in `sync` (`ok` / `empty` / `unavailable` / `skipped`).
+- Body names coming from third-party services are resolved against the system
+  catalogue (`src/lib/architect/bodyNames.ts`), so structures adopted from
+  Raven Colonial land on the right body card instead of silently disappearing.
 
 ### 8.7 Pilot infographic tab
 - The uploader has a `Пилот` tab with a **reworked infographic** (2.3.0): a KPI

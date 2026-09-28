@@ -219,3 +219,122 @@ test('без ?compare=1 поведение прежнее: непустая ба
   assert.equal(data.source, 'database');
   assert.equal(fetchCalled, false);
 });
+
+test('/api/atlas/system-bodies?compare=1 добавляет Spansh третьим источником и отчитывается о нём', async (t) => {
+  if (!esbuild) return t.skip('esbuild недоступен');
+  const { mod, dir } = await buildRoute();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  mod.db.rows = [dbBodyRow()];
+
+  const calls = [];
+  const previousFetch = global.fetch;
+  global.fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    if (target.includes('edsm.net')) {
+      return {
+        ok: true,
+        json: async () => ({
+          // id64 из ответа EDSM — по нему берётся дамп Spansh, без лишних запросов.
+          id64: 10477373803,
+          bodies: [{ name: 'Architest 1', bodyId: 1, type: 'Planet', subType: 'Rocky body', distanceToArrival: 100, radius: 3000 }],
+        }),
+      };
+    }
+    if (target.includes('spansh.co.uk/api/dump/')) {
+      return {
+        ok: true,
+        headers: new Headers({ 'content-length': '2048' }),
+        json: async () => ({
+          system: {
+            name: 'Architest',
+            updateTime: '2026-09-25 04:46:07',
+            bodies: [
+              {
+                name: 'Architest 1',
+                bodyId: 1,
+                type: 'Planet',
+                subType: 'Rocky body',
+                distanceToArrival: 100,
+                radius: 3000,
+                gravity: 0.4,
+                surfaceTemperature: 210,
+                isLandable: true,
+                signals: { signals: { '$SAA_SignalType_Geological;': 5 } },
+                updateTime: '2026-09-25 04:46:07',
+              },
+              { name: 'Architest 3', bodyId: 3, type: 'Planet', subType: 'Icy body', distanceToArrival: 900, updateTime: '2026-09-25 04:46:07' },
+            ],
+          },
+        }),
+      };
+    }
+    throw new Error(`неожиданный запрос: ${target}`);
+  };
+  t.after(() => { global.fetch = previousFetch; });
+
+  const req = new Request('http://web:3000/api/atlas/system-bodies?system=Architest&compare=1');
+  const res = await mod.route.GET(req);
+  const data = await res.json();
+
+  assert.ok(calls.some((url) => url.includes('spansh.co.uk/api/dump/10477373803')), 'дамп Spansh запрошен по id64 из EDSM');
+  assert.equal(data.count, 2, 'тело из Spansh добавилось к телам базы и EDSM');
+  assert.equal(data.sources.spansh, 1);
+  assert.equal(data.sync.spansh.status, 'ok');
+  assert.equal(data.sync.spansh.count, 2);
+  assert.equal(data.sync.edsm.status, 'ok');
+
+  const first = data.bodies.find((b) => b.body_name === 'Architest 1');
+  assert.equal(first.bio_signals_count, 2, 'сигналы игрока из базы сохранились');
+  assert.equal(first.geo_signals_count, 5, 'геология пришла из Spansh');
+  assert.ok(data.bodies.some((b) => b.body_name === 'Architest 3'), 'тело, известное только Spansh, не потерялось');
+});
+
+test('/api/atlas/system-bodies?compare=1 переживает недоступность Spansh и честно это показывает', async (t) => {
+  if (!esbuild) return t.skip('esbuild недоступен');
+  const { mod, dir } = await buildRoute();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  mod.db.rows = [dbBodyRow()];
+  const previousFetch = global.fetch;
+  global.fetch = async (url) => {
+    const target = String(url);
+    if (target.includes('edsm.net')) {
+      return { ok: true, json: async () => ({ id64: 10477373803, bodies: [] }) };
+    }
+    throw new Error('сеть недоступна');
+  };
+  t.after(() => { global.fetch = previousFetch; });
+
+  const req = new Request('http://web:3000/api/atlas/system-bodies?system=Architest&compare=1');
+  const res = await mod.route.GET(req);
+  const data = await res.json();
+
+  assert.equal(res.status, 200, 'сбой стороннего сервиса не ломает загрузку системы');
+  assert.equal(data.count, 1, 'тела базы на месте');
+  assert.equal(data.sync.spansh.status, 'unavailable');
+  assert.equal(data.sync.edsm.status, 'empty');
+});
+
+test('/api/atlas/system-bodies?compare=1&spansh=0 не ходит в Spansh', async (t) => {
+  if (!esbuild) return t.skip('esbuild недоступен');
+  const { mod, dir } = await buildRoute();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  mod.db.rows = [dbBodyRow()];
+  const calls = [];
+  const previousFetch = global.fetch;
+  global.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => ({ id64: 10477373803, bodies: [] }) };
+  };
+  t.after(() => { global.fetch = previousFetch; });
+
+  const req = new Request('http://web:3000/api/atlas/system-bodies?system=Architest&compare=1&spansh=0');
+  const res = await mod.route.GET(req);
+  const data = await res.json();
+
+  assert.ok(!calls.some((url) => url.includes('spansh')), 'к Spansh не обращались');
+  assert.equal(data.sync.spansh.status, 'skipped');
+});

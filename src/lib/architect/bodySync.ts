@@ -16,7 +16,10 @@
  * Модуль без сети и без React: его можно гонять в тестах напрямую.
  */
 
-export type BodyRecordSource = 'database' | 'edsm' | 'merged';
+export type BodyRecordSource = 'database' | 'edsm' | 'spansh' | 'merged';
+
+/** Источник данных о телах, участвующий в сверке. */
+export type BodySourceId = 'database' | 'edsm' | 'spansh';
 
 /** Строка в форме таблицы `system_scans` (или её EDSM-эквивалент). */
 export type BodyRow = Record<string, unknown>;
@@ -38,7 +41,7 @@ export interface BodyComparison {
 
 export interface CompareSummary {
   bodies: BodyRow[];
-  stats: { database: number; edsm: number; merged: number; total: number };
+  stats: { database: number; edsm: number; spansh: number; merged: number; total: number };
   /**
    * Записи, которые стоит записать в базу проекта: EDSM дала данные, которых
    * там не было, либо слияние что-то уточнило. Уже в форме для upsert
@@ -53,6 +56,14 @@ export interface CompareSummary {
  * данные значением-заглушкой.
  */
 const FILLABLE_FIELDS = [
+  // Описательные поля: без класса тела «Архитектор» показывал «Неизвестно»
+  // и не мог судить о слотах, хотя соседний источник класс знал.
+  'sub_type',
+  'body_type',
+  'body_id',
+  'distance_ls',
+  'parents',
+  'is_terraformable',
   'semi_major_axis_ls',
   'radius_m',
   'gravity',
@@ -206,59 +217,137 @@ export function compareBodyRecords(
   };
 }
 
+/**
+ * Ключ тела для сверки: имя без учёта регистра, лишних и неразрывных
+ * пробелов. Раньше ключ был «как пришло, в нижнем регистре», поэтому
+ * `Colonia  2` и `Colonia 2` считались разными телами и попадали в список
+ * дважды.
+ */
 function bodyKey(row: BodyRow): string {
-  const name = String(row.body_name ?? row.name ?? '').trim().toLowerCase();
-  return name;
+  return String(row.body_name ?? row.name ?? '')
+    .replace(/[\u00a0\u202f\u2007]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
 /**
- * Сверяет весь список тел системы: строит объединение по имени тела и для
- * каждого выбирает/дополняет запись через `compareBodyRecords`. Порядок
- * результата — по `distance_ls` (как раньше отдавала база), тела без
- * известного расстояния уходят в конец.
+ * Сложить строки одного источника в индекс по имени тела. Дубли внутри
+ * источника (одно тело двумя строками) не отбрасываются вслепую: остаётся
+ * запись с большим счётом точности, а её пустые поля достраиваются из
+ * второй — иначе терялись бы сигналы из более старой записи.
+ */
+function indexSource(rows: BodyRow[], opts: CompareOptions): { index: Map<string, BodyRow>; duplicates: number } {
+  const index = new Map<string, BodyRow>();
+  let duplicates = 0;
+  for (const row of rows) {
+    const key = bodyKey(row);
+    if (!key) continue;
+    const known = index.get(key);
+    if (!known) {
+      index.set(key, row);
+      continue;
+    }
+    duplicates += 1;
+    const merged = compareBodyRecords(known, row, opts);
+    index.set(key, merged?.record ?? known);
+  }
+  return { index, duplicates };
+}
+
+/**
+ * Сверка тел по нескольким источникам сразу (база проекта, EDSM, Spansh).
+ *
+ * Для каждого тела выбирается запись с наибольшим счётом точности, а её
+ * пустые поля достраиваются из остальных источников по убыванию счёта.
+ * Это обобщение `compareSystemBodies` на N источников: Spansh (тот же
+ * источник, из которого импортирует Raven Colonial) отдаёт сигналы тел и
+ * терраформирование, которых нет в EDSM, но может отставать от свежего
+ * скана игрока — поэтому «кто точнее» решает счёт, а не порядок аргументов.
+ */
+export function compareBodySources(
+  sources: Partial<Record<BodySourceId, BodyRow[]>>,
+  opts: CompareOptions = {},
+): CompareSummary & { duplicates: Partial<Record<BodySourceId, number>> } {
+  const order: BodySourceId[] = ['database', 'edsm', 'spansh'];
+  const indexes = new Map<BodySourceId, Map<string, BodyRow>>();
+  const duplicates: Partial<Record<BodySourceId, number>> = {};
+
+  for (const id of order) {
+    const rows = sources[id];
+    if (!rows || rows.length === 0) continue;
+    const { index, duplicates: count } = indexSource(rows, opts);
+    indexes.set(id, index);
+    if (count > 0) duplicates[id] = count;
+  }
+
+  const keys = new Set<string>();
+  for (const index of indexes.values()) for (const key of index.keys()) keys.add(key);
+
+  const stats = { database: 0, edsm: 0, spansh: 0, merged: 0, total: 0 };
+  const bodies: BodyRow[] = [];
+  const toUpsert: BodyRow[] = [];
+
+  for (const key of keys) {
+    const candidates = order
+      .map((id) => ({ id, row: indexes.get(id)?.get(key) ?? null }))
+      .filter((entry): entry is { id: BodySourceId; row: BodyRow } => entry.row != null)
+      .map((entry) => ({ ...entry, score: scoreBodyRecord(entry.row, opts) }))
+      // При равном счёте выигрывает более ранний источник: база → EDSM → Spansh.
+      .sort((left, right) => right.score - left.score || order.indexOf(left.id) - order.indexOf(right.id));
+
+    if (candidates.length === 0) continue;
+    const winner = candidates[0];
+    const merged: BodyRow = { ...winner.row };
+    const filledFrom: string[] = [];
+    for (const other of candidates.slice(1)) {
+      for (const field of FILLABLE_FIELDS) {
+        if (isEmptyValue(merged[field]) && !isEmptyValue(other.row[field])) {
+          merged[field] = other.row[field];
+          filledFrom.push(field);
+        }
+      }
+    }
+
+    const source: BodyRecordSource = filledFrom.length > 0 ? 'merged' : winner.id;
+    stats.total += 1;
+    stats[source] += 1;
+    bodies.push(merged);
+
+    // В базу дозаписываем всё, что пришло не из неё или было уточнено.
+    if (source !== 'database') {
+      const { id, ...rest } = merged as Record<string, unknown> & { id?: unknown };
+      toUpsert.push({ ...rest, updated_at: new Date(opts.now ?? Date.now()).toISOString() });
+    }
+  }
+
+  bodies.sort(compareByDistance);
+
+  return { bodies, stats, toUpsert, duplicates };
+}
+
+/** Сортировка тел: по расстоянию, затем по номеру тела и имени — стабильно. */
+function compareByDistance(a: BodyRow, b: BodyRow): number {
+  const da = typeof a.distance_ls === 'number' ? a.distance_ls : Number.POSITIVE_INFINITY;
+  const db = typeof b.distance_ls === 'number' ? b.distance_ls : Number.POSITIVE_INFINITY;
+  if (da !== db) return da - db;
+  const ia = typeof a.body_id === 'number' ? a.body_id : Number.MAX_SAFE_INTEGER;
+  const ib = typeof b.body_id === 'number' ? b.body_id : Number.MAX_SAFE_INTEGER;
+  if (ia !== ib) return ia - ib;
+  return String(a.body_name ?? '').localeCompare(String(b.body_name ?? ''), 'ru');
+}
+
+/**
+ * Сверяет тела базы проекта и EDSM. Обёртка над `compareBodySources`,
+ * оставленная ради совместимости: ею пользуется обычный режим маршрута и
+ * существующие тесты.
  */
 export function compareSystemBodies(
   dbRows: BodyRow[],
   edsmRows: BodyRow[],
   opts: CompareOptions = {},
 ): CompareSummary {
-  const dbByKey = new Map<string, BodyRow>();
-  for (const row of dbRows) {
-    const key = bodyKey(row);
-    if (key) dbByKey.set(key, row);
-  }
-  const edsmByKey = new Map<string, BodyRow>();
-  for (const row of edsmRows) {
-    const key = bodyKey(row);
-    if (key) edsmByKey.set(key, row);
-  }
-
-  const keys = new Set<string>([...dbByKey.keys(), ...edsmByKey.keys()]);
-  const stats = { database: 0, edsm: 0, merged: 0, total: 0 };
-  const bodies: BodyRow[] = [];
-  const toUpsert: BodyRow[] = [];
-
-  for (const key of keys) {
-    const comparison = compareBodyRecords(dbByKey.get(key) ?? null, edsmByKey.get(key) ?? null, opts);
-    if (!comparison) continue;
-    stats.total += 1;
-    stats[comparison.source] += 1;
-    bodies.push(comparison.record);
-
-    // В базу стоит дозаписать всё, где источник не «чистая база без изменений»:
-    // сама EDSM-запись, либо запись с дополненными из EDSM полями.
-    if (comparison.source !== 'database') {
-      const { id, ...rest } = comparison.record as Record<string, unknown> & { id?: unknown };
-      toUpsert.push({ ...rest, updated_at: new Date(opts.now ?? Date.now()).toISOString() });
-    }
-  }
-
-  bodies.sort((a, b) => {
-    const da = typeof a.distance_ls === 'number' ? a.distance_ls : Number.POSITIVE_INFINITY;
-    const db = typeof b.distance_ls === 'number' ? b.distance_ls : Number.POSITIVE_INFINITY;
-    return da - db;
-  });
-
+  const { bodies, stats, toUpsert } = compareBodySources({ database: dbRows, edsm: edsmRows }, opts);
   return { bodies, stats, toUpsert };
 }
 
@@ -309,5 +398,169 @@ export function normalizeEdsmBody(systemName: string, b: Record<string, unknown>
     source: 'edsm',
     raw_data: b,
     updated_at: new Date().toISOString(),
+  };
+}
+
+/**
+ * Приводит одно тело из дампа Spansh (`api/dump/{id64}` → `system.bodies[]`)
+ * к форме строки `system_scans`.
+ *
+ * Spansh — тот же источник, из которого тянет тела Raven Colonial, и он
+ * заметно богаче EDSM: отдаёт сигналы тел (`signals.signals`), признак
+ * терраформирования и кольца в готовом виде. Ради этого он и добавлен в
+ * сверку третьим источником.
+ */
+export function normalizeSpanshBody(systemName: string, b: Record<string, unknown>): BodyRow {
+  const anyB = b as any;
+  const signalMap: Record<string, unknown> = anyB.signals?.signals && typeof anyB.signals.signals === 'object'
+    ? anyB.signals.signals
+    : {};
+  const genuses: string[] = Array.isArray(anyB.signals?.genuses) ? anyB.signals.genuses : [];
+
+  // Spansh хранит сигналы словарём вида {"$SAA_SignalType_Biological;": 3}.
+  const signalCount = (needle: string): number => {
+    let total = 0;
+    for (const [key, value] of Object.entries(signalMap)) {
+      if (!key.toLowerCase().includes(needle)) continue;
+      if (typeof value === 'number') total += value;
+    }
+    return total;
+  };
+
+  const isStar = String(anyB.type ?? '').toLowerCase() === 'star';
+  const radiusM = typeof anyB.radius === 'number'
+    ? anyB.radius * 1000
+    : typeof anyB.solarRadius === 'number' ? anyB.solarRadius * 6.957e8 : 0;
+
+  return {
+    system_name: systemName,
+    body_name: anyB.name || `${systemName} Body`,
+    body_id: typeof anyB.bodyId === 'number' ? anyB.bodyId : null,
+    body_type: anyB.type || (isStar ? 'Star' : 'Planet'),
+    sub_type: anyB.subType || null,
+    distance_ls: typeof anyB.distanceToArrival === 'number' ? anyB.distanceToArrival : 0,
+    parents: Array.isArray(anyB.parents) ? anyB.parents : [],
+    radius_m: radiusM,
+    gravity: typeof anyB.gravity === 'number' ? anyB.gravity : 0,
+    earth_masses: typeof anyB.earthMasses === 'number'
+      ? anyB.earthMasses
+      : typeof anyB.solarMasses === 'number' ? anyB.solarMasses * 333_000 : 0,
+    surface_temp_k: typeof anyB.surfaceTemperature === 'number' ? anyB.surfaceTemperature : 0,
+    surface_pressure: typeof anyB.surfacePressure === 'number' ? anyB.surfacePressure : 0,
+    volcanism: anyB.volcanismType || null,
+    atmosphere: anyB.atmosphereType || null,
+    atmosphere_type: anyB.atmosphereType || null,
+    atmosphere_composition: anyB.atmosphereComposition && typeof anyB.atmosphereComposition === 'object'
+      ? anyB.atmosphereComposition
+      : [],
+    solid_composition: anyB.solidComposition && typeof anyB.solidComposition === 'object' ? anyB.solidComposition : {},
+    materials: anyB.materials && typeof anyB.materials === 'object' ? anyB.materials : {},
+    rings: Array.isArray(anyB.rings) ? anyB.rings : [],
+    is_landable: !!anyB.isLandable,
+    is_terraformable: anyB.terraformingState === 'Candidate for terraforming'
+      || anyB.terraformingState === 'Terraformable'
+      || !!anyB.isTerraformable,
+    bio_signals_count: signalCount('biological'),
+    geo_signals_count: signalCount('geological'),
+    human_signals_count: signalCount('human'),
+    thargoid_signals_count: signalCount('thargoid'),
+    guardian_signals_count: signalCount('guardian'),
+    other_signals_count: signalCount('other'),
+    signals: Object.entries(signalMap).map(([type, count]) => ({ type, count })),
+    bio_genuses: genuses,
+    first_discovered_by: null,
+    first_mapped_by: null,
+    first_footfall_by: null,
+    scanned_by_cmdr: null,
+    source: 'spansh',
+    raw_data: b,
+    updated_at: typeof anyB.updateTime === 'string'
+      ? new Date(anyB.updateTime.replace(' ', 'T') + (anyB.updateTime.endsWith('Z') ? '' : 'Z')).toISOString()
+      : new Date().toISOString(),
+  };
+}
+
+/** Состояние одного источника данных для панели синхронизации. */
+export type SyncStatus = 'ok' | 'empty' | 'unavailable' | 'skipped';
+
+export interface SyncSourceState {
+  id: string;
+  label: string;
+  status: SyncStatus;
+  /** Сколько строк пришло от источника. */
+  count: number;
+  /** Самая свежая отметка времени у строк источника, ISO или null. */
+  updatedAt: string | null;
+  /** Причина отказа/пропуска — коротким текстом. */
+  note: string | null;
+}
+
+export interface SystemSyncReport {
+  sources: SyncSourceState[];
+  /** Сколько тел «Архитектор» дозаписал в базу проекта после сверки. */
+  cached: number;
+  /** Дубли внутри одного источника (одно тело двумя строками). */
+  duplicates: Record<string, number>;
+  /** Кто выиграл сверку: сколько тел от какого источника. */
+  winners: { database: number; edsm: number; spansh: number; merged: number; total: number };
+}
+
+const SOURCE_LABELS: Record<string, string> = {
+  database: 'База проекта',
+  edsm: 'EDSM',
+  spansh: 'Spansh',
+  raven: 'Raven Colonial',
+  progress: 'Прогресс строек',
+};
+
+const SYNC_STATUSES: SyncStatus[] = ['ok', 'empty', 'unavailable', 'skipped'];
+
+function toSyncStatus(value: unknown): SyncStatus {
+  const text = String(value ?? '').toLowerCase();
+  return (SYNC_STATUSES as string[]).includes(text) ? (text as SyncStatus) : 'unavailable';
+}
+
+/**
+ * Разбирает поле `sync` из ответа `/api/atlas/system-bodies?compare=1` в
+ * форму, удобную панели синхронизации. Отдельная чистая функция, потому что
+ * ответ приходит из сети в виде `any`, а тесты должны проверять разбор без
+ * рендера компонента.
+ */
+export function parseSyncReport(payload: unknown): SystemSyncReport {
+  const raw = (payload ?? {}) as Record<string, any>;
+  const sync = (raw.sync ?? {}) as Record<string, any>;
+  const stats = (raw.sources ?? {}) as Record<string, any>;
+
+  const sources: SyncSourceState[] = ['database', 'edsm', 'spansh']
+    .filter((id) => sync[id])
+    .map((id) => {
+      const entry = sync[id] as Record<string, any>;
+      return {
+        id,
+        label: SOURCE_LABELS[id] ?? id,
+        status: toSyncStatus(entry.status),
+        count: Number.isFinite(entry.count) ? Number(entry.count) : 0,
+        updatedAt: typeof entry.updatedAt === 'string' ? entry.updatedAt : null,
+        note: entry.note ? String(entry.note) : null,
+      };
+    });
+
+  const duplicates: Record<string, number> = {};
+  const rawDuplicates = (sync.duplicates ?? {}) as Record<string, any>;
+  for (const [id, count] of Object.entries(rawDuplicates)) {
+    if (Number.isFinite(count) && Number(count) > 0) duplicates[id] = Number(count);
+  }
+
+  return {
+    sources,
+    cached: Number.isFinite(sync.cached) ? Number(sync.cached) : 0,
+    duplicates,
+    winners: {
+      database: Number(stats.database ?? 0),
+      edsm: Number(stats.edsm ?? 0),
+      spansh: Number(stats.spansh ?? 0),
+      merged: Number(stats.merged ?? 0),
+      total: Number(stats.total ?? 0),
+    },
   };
 }

@@ -211,10 +211,44 @@ export interface PlanIssue {
   message: string;
 }
 
+/**
+ * Шаг стройки: то же, что одна строка порядка, но с состоянием бюджета
+ * очков системы **после** этого шага. Нужен инфографике — по нему рисуется
+ * график, где видно, в какой момент очков T2/T3 перестаёт хватать.
+ */
+export interface PlanStep {
+  /** Порядковый номер, начиная с 1. */
+  index: number;
+  siteId: string;
+  installationId: string;
+  nameRu: string;
+  bodyName: string;
+  tier: ArchitectTier;
+  status: PlannedSiteStatus;
+  primary: boolean;
+  /** Сколько очков тратит шаг (с учётом налога на порты). */
+  cost: number;
+  costTier: ArchitectTier;
+  /** Сколько очков даёт после завершения. */
+  gives: number;
+  givesTier: ArchitectTier;
+  /** Баланс очков после шага. */
+  tier2After: number;
+  tier3After: number;
+  /** На этом шаге очков не хватило. */
+  deficit: boolean;
+  /** Тоннаж шага (у основного порта — по «основному» списку материалов). */
+  tons: number;
+  /** Накопленный тоннаж с начала стройки. */
+  tonsCumulative: number;
+}
+
 /** Итог расчёта плана. */
 export interface PlanEvaluation {
   /** Порядок стройки: id записей в последовательности, которой стоит придерживаться. */
   order: string[];
+  /** Тот же порядок, но с бюджетом очков и тоннажом на каждом шаге. */
+  timeline: PlanStep[];
   /** Свободные очки системы после всего плана. */
   tierPoints: { tier2: number; tier3: number };
   /** Сколько очков план суммарно тратит. */

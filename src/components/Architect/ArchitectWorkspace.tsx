@@ -3,16 +3,23 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import DataQualityPanel from '@/components/Architect/DataQualityPanel';
 import ExistingPanel, { structureKey } from '@/components/Architect/ExistingPanel';
 import InstallationPicker from '@/components/Architect/InstallationPicker';
+import PlanInsights from '@/components/Architect/PlanInsights';
 import PlanSummary from '@/components/Architect/PlanSummary';
 import ProgressPanel from '@/components/Architect/ProgressPanel';
 import SharePanel from '@/components/Architect/SharePanel';
 import SiteEditor from '@/components/Architect/SiteEditor';
+import SiteTable from '@/components/Architect/SiteTable';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
+import SyncPanel from '@/components/Architect/SyncPanel';
 import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
 import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
 import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
+import { buildBodyIndex, resolveBodyName } from '@/lib/architect/bodyNames';
+import { parseSyncReport, type SyncSourceState, type SystemSyncReport } from '@/lib/architect/bodySync';
+import { auditBodyRows, auditPlanData } from '@/lib/architect/dataQuality';
 import { adoptExisting, type ExistingStructure } from '@/lib/architect/existing';
 import {
   matchProgress,
@@ -59,9 +66,12 @@ const KIND_LABELS: Record<ArchitectBody['kind'], string> = { star: 'звезда
 type BodySort = 'distance' | 'slots' | 'structures';
 type BodyFilter = 'all' | 'planned' | 'slots' | 'issues';
 type PickerLocation = 'any' | 'surface' | 'orbital';
+/** Как смотреть на план: карточки тел, плоская таблица или инфографика. */
+type WorkspaceView = 'bodies' | 'table' | 'insights';
 
 const BODY_SORT_LABELS: Record<BodySort, string> = { distance: 'по расстоянию', slots: 'по свободным слотам', structures: 'по постройкам' };
 const BODY_FILTER_LABELS: Record<BodyFilter, string> = { all: 'все', planned: 'с постройками', slots: 'есть слоты', issues: 'с ошибками' };
+const VIEW_LABELS: Record<WorkspaceView, string> = { bodies: 'Тела', table: 'Таблица', insights: 'Аналитика' };
 
 function readRecent(): string[] {
   if (typeof window === 'undefined') return [];
@@ -80,14 +90,15 @@ function readRecent(): string[] {
  */
 function describeSourceStats(
   source: string,
-  stats: { database: number; edsm: number; merged: number; total: number } | null,
+  stats: { database: number; edsm: number; spansh?: number; merged: number; total: number } | null,
 ): string {
   if (!stats || stats.total === 0) return source || '—';
   const parts: string[] = [];
   if (stats.database > 0) parts.push(`база: ${stats.database}`);
   if (stats.edsm > 0) parts.push(`EDSM: ${stats.edsm}`);
+  if ((stats.spansh ?? 0) > 0) parts.push(`Spansh: ${stats.spansh}`);
   if (stats.merged > 0) parts.push(`уточнено: ${stats.merged}`);
-  return `сверено с EDSM (${parts.join(', ')})`;
+  return `сверка источников (${parts.join(', ')})`;
 }
 
 function writeRecent(system: string) {
@@ -106,7 +117,11 @@ export default function ArchitectWorkspace() {
   const [rawRows, setRawRows] = useState<Record<string, unknown>[]>([]);
   const [source, setSource] = useState('');
   /** Сколько тел взято из базы проекта / EDSM / уточнено сверкой обоих источников. */
-  const [sourceStats, setSourceStats] = useState<{ database: number; edsm: number; merged: number; total: number } | null>(null);
+  const [sourceStats, setSourceStats] = useState<{ database: number; edsm: number; spansh?: number; merged: number; total: number } | null>(null);
+  /** Состояние сторонних источников тел — показывает панель «Источники данных». */
+  const [syncReport, setSyncReport] = useState<SystemSyncReport | null>(null);
+  /** Состояние источников фактической застройки (Raven, EDSM) от `ExistingPanel`. */
+  const [existingSources, setExistingSources] = useState<SyncSourceState[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState('');
@@ -129,10 +144,43 @@ export default function ArchitectWorkspace() {
   const [collapsedBodies, setCollapsedBodies] = useState<string[]>([]);
   /** Редактируемая запись плана: null — модальное окно закрыто. */
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
+  /** Вид рабочей области: карточки тел, таблица плана или инфографика. */
+  const [view, setView] = useState<WorkspaceView>('bodies');
+  /** Записи, которых только что коснулся перенос факта, — подсвечиваются. */
+  const [flashIds, setFlashIds] = useState<string[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const bodies = useMemo<ArchitectBody[]>(() => fromScanRecords(rawRows, systemName), [rawRows, systemName]);
   const bodiesByName = useMemo(() => new Map(bodies.map((body) => [body.name, body])), [bodies]);
+  /** Индекс имён тел: по нему постройки плана привязываются к карточкам. */
+  const bodyIndex = useMemo(() => buildBodyIndex(bodies, systemName), [bodies, systemName]);
+  const knownBodyNames = useMemo(() => new Set(bodies.map((body) => body.name)), [bodies]);
+
+  /**
+   * Постройки плана, разложенные по телам каталога.
+   *
+   * Раньше карточка тела фильтровала план строкой `site.bodyName === body.name`,
+   * и запись с именем из стороннего источника («A 1» вместо «Sol A 1») нигде
+   * не показывалась — перенос факта выглядел как «ничего не произошло».
+   * Теперь имя приводится индексом, а всё, что не привязалось, честно
+   * попадает в отдельную карточку «вне каталога тел».
+   */
+  const { sitesByBody, unassignedSites } = useMemo(() => {
+    const map = new Map<string, PlannedSite[]>();
+    const unassigned: PlannedSite[] = [];
+    for (const site of plan?.sites ?? []) {
+      const match = bodies.length > 0 ? resolveBodyName(site.bodyName, bodyIndex) : null;
+      const target = match?.name || (bodies.length === 0 ? site.bodyName : '');
+      if (!target) {
+        unassigned.push(site);
+        continue;
+      }
+      const list = map.get(target);
+      if (list) list.push(site);
+      else map.set(target, [site]);
+    }
+    return { sitesByBody: map, unassignedSites: unassigned };
+  }, [plan, bodies, bodyIndex]);
   const evaluation = useMemo(
     () => (plan ? evaluatePlan(plan, bodies) : null),
     [plan, bodies],
@@ -146,30 +194,61 @@ export default function ArchitectWorkspace() {
   /** Занятые наземные слоты по телам — для фильтра и сортировки списка. */
   const surfaceUsedByBody = useMemo(() => {
     const map = new Map<string, number>();
-    for (const site of plan?.sites ?? []) {
-      if (getInstallation(site.installationId)?.location === 'surface') {
-        map.set(site.bodyName, (map.get(site.bodyName) ?? 0) + 1);
-      }
+    for (const [bodyName, sites] of sitesByBody) {
+      const used = sites.filter((site) => getInstallation(site.installationId)?.location === 'surface').length;
+      if (used > 0) map.set(bodyName, used);
     }
     return map;
-  }, [plan]);
+  }, [sitesByBody]);
 
   const sitesCountByBody = useMemo(() => {
     const map = new Map<string, number>();
-    for (const site of plan?.sites ?? []) {
-      map.set(site.bodyName, (map.get(site.bodyName) ?? 0) + 1);
-    }
+    for (const [bodyName, sites] of sitesByBody) map.set(bodyName, sites.length);
     return map;
-  }, [plan]);
+  }, [sitesByBody]);
 
   const issuesByBody = useMemo(() => {
     const map = new Map<string, number>();
     for (const issue of evaluation?.issues ?? []) {
       if (!issue.bodyName) continue;
-      map.set(issue.bodyName, (map.get(issue.bodyName) ?? 0) + 1);
+      // Замечание приходит с именем из записи плана — приводим его к каталогу,
+      // иначе счётчик проблем не попадал бы на карточку тела.
+      const name = bodies.length > 0 ? (resolveBodyName(issue.bodyName, bodyIndex).name || issue.bodyName) : issue.bodyName;
+      map.set(name, (map.get(name) ?? 0) + 1);
     }
     return map;
-  }, [evaluation]);
+  }, [evaluation, bodies, bodyIndex]);
+
+  /**
+   * Состояние источника фактического прогресса — в той же панели источников,
+   * что и тела: пользователю важно одним взглядом понять, какие данные живые.
+   */
+  const progressSourceState = useMemo<SyncSourceState[]>(() => {
+    if (!systemName) return [];
+    const label = progressSource === 'raven' ? 'Стройплощадки: Raven'
+      : progressSource ? `Стройплощадки: ${progressSource}` : 'Стройплощадки';
+    if (progressError) {
+      return [{ id: 'progress', label, status: 'unavailable', count: 0, updatedAt: null, note: progressError }];
+    }
+    if (!progressFetched) {
+      return [{ id: 'progress', label, status: 'skipped', count: 0, updatedAt: null, note: 'не запрошено' }];
+    }
+    return [{
+      id: 'progress',
+      label,
+      status: actualSites.length > 0 ? 'ok' : 'empty',
+      count: actualSites.length,
+      updatedAt: progressTelemetry?.latestAt ?? null,
+      note: progressTelemetry?.available === false ? 'снимков Uploader нет' : null,
+    }];
+  }, [systemName, progressSource, progressError, progressFetched, actualSites, progressTelemetry]);
+
+  /** Аудит загруженных данных: дубли, пустые поля, невозможные значения. */
+  const dataReport = useMemo(() => auditBodyRows(rawRows, { system: systemName }), [rawRows, systemName]);
+  const planReport = useMemo(
+    () => auditPlanData(plan ?? createPlan(systemName || 'Без системы'), bodies),
+    [plan, bodies, systemName],
+  );
 
   const visibleBodies = useMemo(() => {
     const query = bodyQuery.trim().toLocaleLowerCase();
@@ -248,6 +327,9 @@ export default function ArchitectWorkspace() {
     setProgressSource('');
     setProgressTelemetry(null);
     setSourceStats(null);
+    setSyncReport(null);
+    setExistingSources([]);
+    setFlashIds([]);
     setCollapsedBodies([]);
     setEditingSiteId(null);
     setPickerBody('');
@@ -260,6 +342,7 @@ export default function ArchitectWorkspace() {
       if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
       const rows = Array.isArray(data?.bodies) ? data.bodies : [];
       const stats = data?.sources && typeof data.sources === 'object' ? data.sources : null;
+      setSyncReport(parseSyncReport(data));
       if (rows.length === 0) {
         setRawRows([]);
         setSystemName(target);
@@ -386,14 +469,35 @@ export default function ArchitectWorkspace() {
    */
   const applyExisting = useCallback((structures: ExistingStructure[]) => {
     if (!plan) return;
-    const result = adoptExisting(plan, structures);
+    // Каталог тел передаётся внутрь: имена из источников приводятся к нему,
+    // иначе перенесённые записи не попадали бы на карточки тел и выглядели
+    // бы как «ничего не изменилось».
+    const result = adoptExisting(plan, structures, { bodies, index: bodyIndex, system: systemName });
     setPlan(result.plan);
+
+    // Раскрываем карточки затронутых тел и подсвечиваем изменённые записи —
+    // результат переноса должен быть виден без прокрутки вслепую.
+    setCollapsedBodies((list) => list.filter((name) => !result.touchedBodies.includes(name)));
+    setFlashIds(result.touchedSiteIds);
+    if (result.touchedSiteIds.length > 0) {
+      window.setTimeout(() => setFlashIds([]), 2600);
+      // Если пользователь смотрит аналитику, возвращаем его к телам: правки плана там не видны.
+      setView((current) => (current === 'insights' ? 'bodies' : current));
+    }
+
     const parts: string[] = [];
     if (result.added.length > 0) parts.push(`добавлено ${result.added.length}`);
     if (result.updated.length > 0) parts.push(`обновлён статус у ${result.updated.length}`);
-    if (result.unknown.length > 0) parts.push(`не опознано ${result.unknown.length}`);
-    setNotice(parts.length > 0 ? `Факт применён к плану: ${parts.join(', ')}.` : 'Переносить нечего.');
-  }, [plan]);
+    if (result.unmatchedBodies.length > 0) {
+      const names = result.unmatchedBodies
+        .map((item) => item.rawBodyName || item.name)
+        .slice(0, 3)
+        .join(', ');
+      parts.push(`тело не опознано у ${result.unmatchedBodies.length} (${names}) — записи в конце списка`);
+    }
+    if (result.unknown.length > 0) parts.push(`тип не опознан у ${result.unknown.length}`);
+    setNotice(parts.length > 0 ? `Факт применён к плану: ${parts.join(', ')}.` : 'Переносить нечего: всё уже в плане.');
+  }, [plan, bodies, bodyIndex, systemName]);
 
   const exportPlan = useCallback(() => {
     if (!plan) return;
@@ -607,7 +711,51 @@ export default function ArchitectWorkspace() {
                     active={bodyFilter === 'issues'}
                     onClick={() => setBodyFilter(bodyFilter === 'issues' ? 'all' : 'issues')}
                   />
+                  {/*
+                    Очки тиров — главный ограничитель плана, поэтому они в шапке,
+                    а не только в сводке: отрицательное значение сразу красное.
+                  */}
+                  <Kpi
+                    label="Очки T2"
+                    value={evaluation.tierPoints.tier2}
+                    tone={evaluation.tierPoints.tier2 < 0 ? 'var(--red)' : 'var(--cyan)'}
+                    hint={`потрачено ${evaluation.tierSpent.tier2} из ${evaluation.tierGiven.tier2}`}
+                  />
+                  <Kpi
+                    label="Очки T3"
+                    value={evaluation.tierPoints.tier3}
+                    tone={evaluation.tierPoints.tier3 < 0 ? 'var(--red)' : 'var(--cyan)'}
+                    hint={`потрачено ${evaluation.tierSpent.tier3} из ${evaluation.tierGiven.tier3}`}
+                  />
+                  <Kpi
+                    label="Качество данных"
+                    value={dataReport.score}
+                    tone={dataReport.score >= 80 ? 'var(--green)' : dataReport.score >= 50 ? 'var(--orange)' : 'var(--red)'}
+                    hint={dataReport.issues.length > 0 ? `замечаний: ${dataReport.issues.length}` : 'замечаний нет'}
+                  />
                 </div>
+                {/* Переключатель вида: карточки тел ↔ таблица плана ↔ инфографика. */}
+                <div style={{ ...cardStyle, padding: '8px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Вид</span>
+                  {(Object.keys(VIEW_LABELS) as WorkspaceView[]).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setView(value)}
+                      aria-pressed={view === value}
+                      style={{ ...chipStyle, ...(view === value ? chipActive : {}) }}
+                    >
+                      {VIEW_LABELS[value]}
+                    </button>
+                  ))}
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--muted)' }}>
+                    {view === 'bodies' ? 'постройки по телам системы'
+                      : view === 'table' ? 'весь план одним списком'
+                        : 'очки, тоннаж, экономики и эффекты'}
+                  </span>
+                </div>
+
+                {view === 'bodies' && (
                 <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Фильтр тел</span>
                   <input
@@ -647,6 +795,7 @@ export default function ArchitectWorkspace() {
                   </button>
                   <span style={{ color: 'var(--muted)', fontSize: 11 }}>{visibleBodies.length} из {bodies.length}</span>
                 </div>
+                )}
               </>
             )}
 
@@ -656,30 +805,94 @@ export default function ArchitectWorkspace() {
               </div>
             )}
 
-            {visibleBodies.length === 0 && bodies.length > 0 && (
-              <div style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
-                Под фильтр не подошло ни одного тела.
-              </div>
+            {view === 'bodies' && (
+              <>
+                {visibleBodies.length === 0 && bodies.length > 0 && (
+                  <div style={{ ...cardStyle, color: 'var(--muted)', fontSize: 13 }}>
+                    Под фильтр не подошло ни одного тела.
+                  </div>
+                )}
+
+                {visibleBodies.map((body) => (
+                  <BodyCard
+                    key={body.name}
+                    body={body}
+                    sites={sitesByBody.get(body.name) ?? []}
+                    progressBySite={progressBySite}
+                    flashIds={flashIds}
+                    collapsed={collapsedBodies.includes(body.name)}
+                    errorCount={issuesByBody.get(body.name) ?? 0}
+                    onToggleCollapse={() => setCollapsedBodies((list) => (
+                      list.includes(body.name) ? list.filter((name) => name !== body.name) : [...list, body.name]
+                    ))}
+                    onAdd={(location) => openPicker(body.name, location)}
+                    onRemove={(siteId) => setPlan(removeSite(plan, siteId))}
+                    onCycle={(siteId, status) => setPlan(setSiteStatus(plan, siteId, status))}
+                    onEdit={(siteId) => setEditingSiteId(siteId)}
+                    onTogglePrimary={togglePrimary}
+                  />
+                ))}
+
+                {/*
+                  Постройки, тело которых не нашлось в каталоге: раньше такие
+                  записи просто исчезали из интерфейса — план менялся, а на
+                  экране ничего не происходило. Теперь они видны и их можно
+                  привязать к телу вручную.
+                */}
+                {unassignedSites.length > 0 && (
+                  <div className="architect-body" style={{ ...cardStyle, borderColor: 'var(--orange)' }}>
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: 16, color: 'var(--orange)' }}>Постройки вне каталога тел</div>
+                      <span style={{ fontSize: 11, color: 'var(--muted)' }}>
+                        {unassignedSites.length} шт. · тело не найдено в данных системы
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
+                      Такое бывает, когда источник называет тело иначе, чем каталог, или данных о теле нет вовсе.
+                      Откройте запись и выберите тело — проверка слотов и экономик заработает.
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      {unassignedSites.map((site) => (
+                        <SiteRow
+                          key={site.id}
+                          site={site}
+                          body={null}
+                          progressBySite={progressBySite}
+                          flash={flashIds.includes(site.id)}
+                          onRemove={(siteId) => setPlan(removeSite(plan, siteId))}
+                          onCycle={(siteId, status) => setPlan(setSiteStatus(plan, siteId, status))}
+                          onEdit={(siteId) => setEditingSiteId(siteId)}
+                          onTogglePrimary={togglePrimary}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
             )}
 
-            {visibleBodies.map((body) => (
-              <BodyCard
-                key={body.name}
-                body={body}
+            {view === 'table' && (
+              <SiteTable
                 plan={plan}
+                evaluation={evaluation}
                 progressBySite={progressBySite}
-                collapsed={collapsedBodies.includes(body.name)}
-                errorCount={issuesByBody.get(body.name) ?? 0}
-                onToggleCollapse={() => setCollapsedBodies((list) => (
-                  list.includes(body.name) ? list.filter((name) => name !== body.name) : [...list, body.name]
-                ))}
-                onAdd={(location) => openPicker(body.name, location)}
+                knownBodyNames={knownBodyNames}
+                flashIds={flashIds}
+                onEdit={(siteId) => setEditingSiteId(siteId)}
                 onRemove={(siteId) => setPlan(removeSite(plan, siteId))}
                 onCycle={(siteId, status) => setPlan(setSiteStatus(plan, siteId, status))}
-                onEdit={(siteId) => setEditingSiteId(siteId)}
                 onTogglePrimary={togglePrimary}
               />
-            ))}
+            )}
+
+            {view === 'insights' && (
+              <PlanInsights
+                plan={plan}
+                evaluation={evaluation}
+                bodies={bodies}
+                onSelectSite={(siteId) => setEditingSiteId(siteId)}
+              />
+            )}
 
             <SharePanel
               plan={plan}
@@ -698,7 +911,29 @@ export default function ArchitectWorkspace() {
               evaluation={evaluation}
               onMarkPrimary={(siteId) => togglePrimary(siteId)}
             />
-            <ExistingPanel systemName={systemName} plannedKeys={plannedKeys} onApply={applyExisting} />
+            <ExistingPanel
+              systemName={systemName}
+              bodies={bodies}
+              plannedKeys={plannedKeys}
+              onApply={applyExisting}
+              onSources={setExistingSources}
+            />
+            <DataQualityPanel
+              report={dataReport}
+              planReport={planReport}
+              onShowUnknownBodies={() => {
+                setView('bodies');
+                setBodyFilter('all');
+                setBodyQuery('');
+              }}
+            />
+            <SyncPanel
+              system={systemName}
+              report={syncReport}
+              extra={[...existingSources, ...progressSourceState]}
+              loading={loading}
+              onRefresh={() => void loadSystem(systemName)}
+            />
             <ProgressPanel
               systemName={systemName}
               report={progress}
@@ -752,6 +987,16 @@ export default function ArchitectWorkspace() {
         .architect-site:hover { background: var(--panel); }
         .architect-site-primary { border-color: var(--orange) !important; }
         @keyframes architect-fade-in { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+        /* Подсветка записей, которых коснулся перенос фактической застройки. */
+        .architect-flash { animation: architect-flash 2.4s ease-out; }
+        @keyframes architect-flash {
+          0% { background: rgba(0, 229, 255, .22); border-color: var(--cyan); }
+          60% { background: rgba(0, 229, 255, .10); }
+          100% { background: var(--bg); }
+        }
+        .architect-chart-col { cursor: pointer; }
+        .architect-chart-col:hover .architect-chart-bar { filter: brightness(1.35); }
+        .architect-chart-col:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
         .architect-slotbar { height: 5px; background: var(--bg); border: 1px solid var(--line); border-radius: 3px; overflow: hidden; margin-top: 8px; }
         .architect-slotbar-fill { height: 100%; transition: width .25s ease; }
         .architect-sitegroup { margin-top: 10px; }
@@ -770,6 +1015,7 @@ function Kpi({
   label,
   value,
   tone,
+  hint,
   active,
   clickable,
   onClick,
@@ -777,6 +1023,8 @@ function Kpi({
   label: string;
   value: string | number;
   tone: string;
+  /** Пояснение мелким шрифтом под числом: из чего оно сложилось. */
+  hint?: string;
   active?: boolean;
   clickable?: boolean;
   onClick?: () => void;
@@ -794,14 +1042,20 @@ function Kpi({
     >
       <div style={{ color: 'var(--muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 1 }}>{label}</div>
       <div style={{ color: tone, fontFamily: 'ui-monospace, monospace', fontSize: 19, fontWeight: 700, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+      {hint && (
+        <div style={{ color: 'var(--muted)', fontSize: 10, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
 
 function BodyCard({
   body,
-  plan,
+  sites,
   progressBySite,
+  flashIds,
   collapsed,
   errorCount,
   onToggleCollapse,
@@ -812,8 +1066,14 @@ function BodyCard({
   onTogglePrimary,
 }: {
   body: ArchitectBody;
-  plan: ArchitectPlan;
+  /**
+   * Постройки этого тела. Список приходит сверху: там имена из плана
+   * приводятся к каталогу индексом имён, поэтому запись с именем из чужого
+   * источника («A 1» вместо «Sol A 1») больше не теряется.
+   */
+  sites: PlannedSite[];
   progressBySite: Map<string, SiteProgress>;
+  flashIds: string[];
   collapsed: boolean;
   errorCount: number;
   onToggleCollapse: () => void;
@@ -823,7 +1083,6 @@ function BodyCard({
   onEdit: (siteId: string) => void;
   onTogglePrimary: (siteId: string) => void;
 }) {
-  const sites = plan.sites.filter((site) => site.bodyName === body.name);
   const surfaceLimit = predictSurfaceSlots(body);
   const surfaceSites = sites.filter((site) => getInstallation(site.installationId)?.location === 'surface');
   const orbitalSites = sites.filter((site) => getInstallation(site.installationId)?.location !== 'surface');
@@ -865,10 +1124,19 @@ function BodyCard({
               )}
             </div>
             <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-              {body.subType} · {KIND_LABELS[body.kind]} · {body.distanceLs.toLocaleString('ru-RU')} св. с
-              {body.radiusKm > 0 ? ` · R ${body.radiusKm.toLocaleString('ru-RU')} км` : ''}
-              {body.tempK > 0 ? ` · ${body.tempK} K` : ''}
-              {body.gravity > 0 ? ` · ${body.gravity} g` : ''}
+              {/*
+                Числа форматируются одинаково (русский разделитель разрядов и
+                не больше двух знаков после запятой): раньше расстояние шло с
+                запятой, а гравитация — с точкой, и таблица выглядела так,
+                будто данные из разных мест.
+              */}
+              {body.subType && body.subType !== 'Неизвестно'
+                ? body.subType
+                : <span style={{ color: 'var(--orange)' }}>класс тела неизвестен</span>}
+              {' · '}{KIND_LABELS[body.kind]} · {formatNumber(body.distanceLs)} св. с
+              {body.radiusKm > 0 ? ` · R ${formatNumber(body.radiusKm)} км` : ''}
+              {body.tempK > 0 ? ` · ${formatNumber(body.tempK)} K` : ''}
+              {body.gravity > 0 ? ` · ${formatNumber(body.gravity)} g` : ''}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -949,6 +1217,7 @@ function BodyCard({
               onAdd={() => onAdd('surface')}
               sites={surfaceSites}
               progressBySite={progressBySite}
+              flashIds={flashIds}
               onRemove={onRemove}
               onCycle={onCycle}
               onEdit={onEdit}
@@ -963,6 +1232,7 @@ function BodyCard({
               onAdd={() => onAdd('orbital')}
               sites={orbitalSites}
               progressBySite={progressBySite}
+              flashIds={flashIds}
               onRemove={onRemove}
               onCycle={onCycle}
               onEdit={onEdit}
@@ -982,6 +1252,7 @@ function SiteGroup({
   body,
   sites,
   progressBySite,
+  flashIds,
   onAdd,
   onRemove,
   onCycle,
@@ -993,6 +1264,7 @@ function SiteGroup({
   body: ArchitectBody;
   sites: PlannedSite[];
   progressBySite: Map<string, SiteProgress>;
+  flashIds: string[];
   onAdd: () => void;
   onRemove: (siteId: string) => void;
   onCycle: (siteId: string, status: PlannedSiteStatus) => void;
@@ -1019,6 +1291,7 @@ function SiteGroup({
           site={site}
           body={body}
           progressBySite={progressBySite}
+          flash={flashIds.includes(site.id)}
           onRemove={onRemove}
           onCycle={onCycle}
           onEdit={onEdit}
@@ -1033,14 +1306,18 @@ function SiteRow({
   site,
   body,
   progressBySite,
+  flash = false,
   onRemove,
   onCycle,
   onEdit,
   onTogglePrimary,
 }: {
   site: PlannedSite;
-  body: ArchitectBody;
+  /** null — запись показывается в карточке «вне каталога тел». */
+  body: ArchitectBody | null;
   progressBySite: Map<string, SiteProgress>;
+  /** Подсветить запись: её только что затронул перенос факта. */
+  flash?: boolean;
   onRemove: (siteId: string) => void;
   onCycle: (siteId: string, status: PlannedSiteStatus) => void;
   onEdit: (siteId: string) => void;
@@ -1062,13 +1339,13 @@ function SiteRow({
   const tons = cargo?.haulTons ?? installation.haulTons;
   const isPrimary = Boolean(site.primary);
   // Соответствие экономики постройки телу (звёзды не учитываем).
-  const economyFit = installation.influence !== 'none' && body.kind !== 'star'
+  const economyFit = installation.influence !== 'none' && body && body.kind !== 'star'
     ? economyBodyFit(installation.influence, body)
     : null;
 
   return (
     <div
-      className={`architect-site${isPrimary ? ' architect-site-primary' : ''}`}
+      className={`architect-site${isPrimary ? ' architect-site-primary' : ''}${flash ? ' architect-flash' : ''}`}
       style={{
         display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between',
         border: '1px solid var(--line)', borderLeft: `3px solid ${isPrimary ? 'var(--orange)' : STATUS_TONES[site.status]}`,
@@ -1081,6 +1358,13 @@ function SiteRow({
           {installation.nameRu}
           <span style={{ color: 'var(--muted)', fontSize: 11 }}> · {installation.id}</span>
         </div>
+        {!body && (
+          <div style={{ fontSize: 11, color: 'var(--orange)' }}>
+            {site.bodyName
+              ? `тело: ${site.bodyName} — не найдено в каталоге системы`
+              : 'тело не указано источником — выберите его в редакторе записи'}
+          </div>
+        )}
         <div style={{ fontSize: 11, color: 'var(--muted)' }}>
           {installation.location === 'surface' ? 'поверхность' : 'орбита'} · T{installation.tier}
           {' · '}
@@ -1150,6 +1434,11 @@ function SiteRow({
       </div>
     </div>
   );
+}
+
+/** Число в русском формате: разделитель разрядов, не больше двух знаков дроби. */
+function formatNumber(value: number): string {
+  return value.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
 }
 
 function Tag({ label, tone }: { label: string; tone: string }) {
