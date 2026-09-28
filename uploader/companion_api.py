@@ -109,10 +109,10 @@ DEFAULT_AUDIENCE = "frontier,steam,epic"
 
 #: Человеческие названия для UI (ключ → подпись).
 AUDIENCE_LABELS = (
-    ("auto", "Авто (Frontier / Steam / Epic)"),
+    ("auto", "Авто (Frontier / Steam / Epic Games Store)"),
     ("frontier", "Только Frontier Store"),
     ("steam", "Только Steam"),
-    ("epic", "Только Epic Games"),
+    ("epic", "Только Epic Games Store (EGS)"),
     ("xbox", "Xbox"),
     ("psn", "PlayStation"),
 )
@@ -157,7 +157,14 @@ def normalize_audience(value) -> str:
     raw = str(value or "").strip().lower()
     if not raw or raw in ("auto", "all", "any"):
         return DEFAULT_AUDIENCE
-    parts = [part.strip() for part in raw.replace(" ", ",").split(",")]
+    aliases = {
+        "egs": "epic",
+        "epicgames": "epic",
+        "epic-games": "epic",
+        "frontierstore": "frontier",
+    }
+    parts = [aliases.get(part.strip(), part.strip())
+             for part in raw.replace(" ", ",").split(",")]
     kept = [part for part in parts if part in KNOWN_AUDIENCES]
     # dict.fromkeys — уникальные значения с сохранением порядка.
     return ",".join(dict.fromkeys(kept)) or DEFAULT_AUDIENCE
@@ -269,8 +276,9 @@ _NO_GAME_MARKERS = ("purchase", "not own", "no game", "store to purchase")
 #: Подсказка про платформу — самая частая причина 400.
 _WRONG_PLATFORM_HINT = (
     "Скорее всего, вход выполнен не той учётной записью. Если игра куплена в "
-    "Steam или Epic, нажмите «Отключить», выберите свою платформу в списке и "
-    "подключитесь заново — на странице Frontier нужно войти кнопкой Steam/Epic, "
+    "Steam или Epic Games Store (EGS), нажмите «Отключить», выберите свою "
+    "платформу в списке и подключитесь заново — на странице Frontier нужно "
+    "войти кнопкой Steam/Epic, "
     "а не почтой. Проверить связку можно на user.frontierstore.net → Linked "
     "Thirdparty Accounts."
 )

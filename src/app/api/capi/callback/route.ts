@@ -7,7 +7,7 @@ import {
   frontierRedirectUri,
 } from '@/lib/capi/oauth';
 import { createServiceClient, authFromRequest } from '@/lib/supabaseServer';
-import { syncCapiPilot } from '@/lib/capi/syncPilot';
+import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
 import {
   CAPI_LINK_COOKIE,
@@ -174,9 +174,18 @@ export async function GET(req: NextRequest) {
 
   if (!sync.ok) {
     console.error('[CAPI Callback] first sync failed:', sync.error);
+    if (sync.needsReauth) {
+      // OAuth уже выдал токен, но CAPI подтвердил, что выбранная учётка не
+      // владеет игрой (частый случай: игра куплена в Steam/EGS, а вошли
+      // кнопкой Frontier). Не оставляем такую привязку зелёной: страница
+      // покажет «Переподключить» и сохранит причину для диагностики.
+      await markCapiTokenBroken(svc, userId, sync.error || 'Требуется повторная авторизация Frontier');
+    }
     return finish({
       status: 'partial',
-      reason: sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable',
+      reason: sync.needsReauth
+        ? 'platform_not_entitled'
+        : sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable',
       detail: sync.error,
       binding: sync.binding.status,
     });

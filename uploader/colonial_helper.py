@@ -5843,8 +5843,7 @@ class ColonialHelperApp:
 
     def _on_hide_without_game_changed(self):
         enabled = bool(self.hide_without_game_var.get())
-        self.overlay_manager.settings["hide_when_game_off"] = enabled
-        self.overlay_manager.save_settings()
+        self.overlay_manager.set_hide_when_game_off(enabled)
         self.log(
             "Оверлей прячется, когда игра не запущена" if enabled
             else "Оверлей показывается всегда, даже без игры",

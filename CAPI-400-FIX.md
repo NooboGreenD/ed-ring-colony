@@ -63,8 +63,10 @@ Please Visit the store to purchase Elite: Dangerous.
 ```
 
 * `DEFAULT_AUDIENCE = "frontier,steam,epic"`, в настройках — список
-  **«Где куплена игра»** (Авто / Frontier / Steam / Epic / Xbox / PlayStation),
-  сохраняется как `frontier_audience` в `~/.colonial_helper.json`.
+  **«Где куплена игра»** (Авто / Frontier / Steam / Epic Games Store (EGS) /
+  Xbox / PlayStation), сохраняется как `frontier_audience` в
+  `~/.colonial_helper.json`. Алиасы `EGS`, `Epic Games Store` и
+  `frontierstore` нормализуются в правильный `audience`.
 * `CompanionClient.verify()` — единственный источник зелёного статуса;
   результат пишется рядом с токенами (`verified_at`, `verified_cmdr`,
   `last_error`, `last_hint`), поэтому после перезапуска видно реальное

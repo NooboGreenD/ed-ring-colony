@@ -58,11 +58,9 @@ export async function POST(request: Request) {
       confirm?: unknown;
     } | null;
 
-    // Отдельное действие: перезапустить сам update-agent. Обновление
-    // намеренно не пересоздаёт его контейнер (иначе оно убило бы само себя),
-    // поэтому после выхода новой версии агент какое-то время работает на
-    // старом коде и игнорирует новые флажки прогона. Кнопка в панели
-    // завершает процесс — супервизор поднимает его заново из клона.
+    // Отдельное действие: перезапустить сам update-agent. Полный Docker-update
+    // заменяет контейнер detached helper-ом после health-check; эта кнопка
+    // остаётся ручным fallback для старых/host-run установок.
     if (body?.action === 'restart') {
       const restarted = await callUpdateAgent('restart');
       if (!restarted.ok) {

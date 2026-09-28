@@ -8,7 +8,7 @@ import {
   frontierRedirectUri,
 } from '@/lib/capi/oauth';
 import { capiSession } from '@/lib/capi/session';
-import { CapiError, describeCapiError, isUnauthorizedError } from '@/lib/capi/client';
+import { CapiError, describeCapiError, needsCapiRelink } from '@/lib/capi/client';
 import { isBlankProfile } from '@/lib/capi/profile';
 
 export const dynamic = 'force-dynamic';
@@ -119,7 +119,7 @@ export async function GET(req: Request) {
         ok: false,
         status: err instanceof CapiError ? err.status : null,
         kind: err instanceof CapiError ? err.kind : 'unknown',
-        needsReauth: isUnauthorizedError(err),
+        needsReauth: needsCapiRelink(err),
         message: describeCapiError(err),
       };
     }

@@ -521,6 +521,29 @@ class OverlayBehaviourTests(_ManagerTestCase):
         result = self.manager.evaluate_block_visibility({}, game_visible=False)
         self.assertTrue(all(not visible for visible in result.values()))
 
+    def test_hide_when_game_off_false_shows_live_windows_without_game(self):
+        """The checkbox must win over attach_to_game when no game exists."""
+        blocks = self.attach("route", "ship")
+        self.manager.game_monitor = mock.Mock(state=mock.Mock(running=False, focused=False, monitor=None))
+        self.manager.set_hide_when_game_off(False)
+        self.assertFalse(self.manager.settings["hide_when_game_off"])
+        self.assertTrue(blocks["route"].shown)
+        self.assertTrue(blocks["ship"].shown)
+
+    def test_visibility_evaluator_honours_hide_preference_from_context(self):
+        self.manager.settings["hide_when_game_off"] = True
+        result = self.manager.evaluate_block_visibility({"game_running": False})
+        self.assertTrue(all(not visible for visible in result.values()))
+        self.manager.settings["hide_when_game_off"] = False
+        result = self.manager.evaluate_block_visibility({"game_running": False})
+        self.assertTrue(all(result.values()))
+
+    def test_attach_to_game_is_saved_and_reapplies_layout(self):
+        self.manager.set_attach_to_game(False)
+        self.assertFalse(self.manager.settings["attach_to_game"])
+        from overlay import load_overlay_settings
+        self.assertFalse(load_overlay_settings(self.config_path)["attach_to_game"])
+
     def test_idle_hides_everything_until_activity(self):
         self.manager.set_idle_timeout(1)
         self.manager._last_activity = time.monotonic() - 10

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { journalPath, parseCapiJournal } from '../../src/lib/capi/journal.ts';
-import { CapiClient, capiUserAgent, describeCapiError, isUnauthorizedError } from '../../src/lib/capi/client.ts';
+import { CapiClient, capiUserAgent, describeCapiError, isUnauthorizedError, needsCapiRelink } from '../../src/lib/capi/client.ts';
 
 /* ──────────────────────────────────────────────────────────────────────────
    `/journal` отдаёт СЫРОЙ журнал построчным JSON. Прежний код делал
@@ -166,6 +166,7 @@ test('400 распознаётся как «аккаунт без Elite Dangerou
         assert.equal(err.status, 400);
         // Повторять запрос бессмысленно, обновлять токен — тоже.
         assert.equal(isUnauthorizedError(err), false);
+        assert.equal(needsCapiRelink(err), true, 'неверная платформа требует переподключения');
         const text = describeCapiError(err);
         assert.match(text, /не видит купленную Elite Dangerous/);
         assert.match(text, /Steam/);

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
 import { capiSession } from '@/lib/capi/session';
-import { describeCapiError, isUnauthorizedError } from '@/lib/capi/client';
+import { describeCapiError, needsCapiRelink } from '@/lib/capi/client';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,8 +47,8 @@ export async function GET(req: Request) {
     });
   } catch (err) {
     return NextResponse.json(
-      { error: describeCapiError(err), needsReauth: isUnauthorizedError(err) },
-      { status: isUnauthorizedError(err) ? 401 : 502 },
+      { error: describeCapiError(err), needsReauth: needsCapiRelink(err) },
+      { status: needsCapiRelink(err) ? 401 : 502 },
     );
   }
 }

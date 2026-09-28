@@ -20,26 +20,63 @@
 #   SYSTEMD_SERVICE  unit сайта для systemd-режима (default ed-ring-colony)
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
+# ERR is inherited inside run_step/compose helpers so unexpected failures keep a reason.
+set -E
 
 PROJECT_DIR="${PROJECT_DIR:-/opt/ed-ring-colony/src}"
 ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env.production}"
 SCOPE="${APPLY_ENV_SCOPE:-web}"
 HEALTH_URL="${UPDATE_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 SYSTEMD_SERVICE="${SYSTEMD_SERVICE:-ed-ring-colony}"
-HEALTH_TRIES="${HEALTH_TRIES:-45}"
+STATE_DIR="${UPDATE_STATE_DIR:-$PROJECT_DIR/../update-state}"
+HEALTH_TRIES="${HEALTH_TRIES:-30}"
+HEALTH_INTERVAL_SECONDS="${HEALTH_INTERVAL_SECONDS:-2}"
 
 json_safe() { printf '%s' "${1:-}" | tr -d '"\\' | tr '\n\r' '  ' | cut -c1-200; }
 say()    { printf '%s\n' "$*"; }
 report() { printf '::edrc::{"stage":"%s","percent":%s,"message":"%s"}\n' "$1" "$2" "$(json_safe "$3")"; }
-die()    { printf '::edrc::{"message":"%s"}\n' "$(json_safe "$*")"; say "ОШИБКА: $*" >&2; exit 1; }
+# Ошибка должна приезжать отдельным полем `error`. Если упал compose, поле
+# `message` уже занято последней стадией и update-agent иначе показывает
+# «пересоздаю сервисы» вместо причины сбоя.
+die() {
+  trap - ERR
+  printf '::edrc::{"error":"%s","message":"%s"}\n' "$(json_safe "$*")" "$(json_safe "$*")"
+  say "ОШИБКА: $*" >&2
+  exit 1
+}
 fail() {
   local code="$1" line="$2"
-  printf '::edrc::{"message":"%s"}\n' "$(json_safe "применение ключей прервано: строка $line, код $code")"
+  trap - ERR
+  printf '::edrc::{"error":"%s"}\n' "$(json_safe "применение ключей прервано: строка $line, код $code")"
   exit "$code"
 }
 trap 'fail $? $LINENO' ERR
 
+# Печатает вывод команды в журнал в реальном времени, но при ненулевом коде
+# превращает его хвост в понятную причину для update-agent. Важно не оставлять
+# compose в pipeline под set -e: ERR иначе видит только номер строки pipeline.
+run_step() { # run_step "что делаем" команда...
+  local what="$1"; shift
+  local log code=0 reason
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  log="$(mktemp "${TMPDIR:-/tmp}/edrc-env-step.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-step.log")"
+  trap - ERR
+  set +e
+  "$@" 2>&1 | tee "$log"
+  code="${PIPESTATUS[0]}"
+  set -e
+  trap 'fail $? $LINENO' ERR
+  if [ "$code" != "0" ]; then
+    reason="$(grep -aiE 'error|ошибк|failed|fatal|cannot|not found|no space|denied|refused|killed|unauthorized|timeout' "$log" 2>/dev/null | tail -n 2 | tr '\n' ' ' | cut -c1-200 || true)"
+    [ -n "$reason" ] || reason="$(tail -n 2 "$log" 2>/dev/null | tr '\n' ' ' | cut -c1-200 || true)"
+    rm -f "$log" 2>/dev/null || true
+    die "$what — код $code${reason:+: $reason}"
+  fi
+  rm -f "$log" 2>/dev/null || true
+}
+
 compose() {
+
   if docker compose version >/dev/null 2>&1; then docker compose "$@"
   elif command -v docker-compose >/dev/null 2>&1; then docker-compose "$@"
   else return 127
@@ -83,18 +120,18 @@ wait_health() {
   if command -v curl >/dev/null 2>&1; then
     for _ in $(seq 1 "$HEALTH_TRIES"); do
       if curl -sf -o /dev/null --max-time 5 "$HEALTH_URL"; then return 0; fi
-      sleep 4
+      sleep "$HEALTH_INTERVAL_SECONDS"
     done
   elif command -v wget >/dev/null 2>&1; then
     for _ in $(seq 1 "$HEALTH_TRIES"); do
       if wget -q -T 5 -O /dev/null "$HEALTH_URL"; then return 0; fi
-      sleep 4
+      sleep "$HEALTH_INTERVAL_SECONDS"
     done
   else
     say "⚠ нет ни curl, ни wget — пропускаю проверку доступности"
     return 0
   fi
-  die "сайт не ответил по $HEALTH_URL за $((HEALTH_TRIES * 4))с; docker logs <проект>-web-1 или journalctl -u $SYSTEMD_SERVICE"
+  die "сайт не ответил по $HEALTH_URL за $((HEALTH_TRIES * HEALTH_INTERVAL_SECONDS))с; docker logs <проект>-web-1 или journalctl -u $SYSTEMD_SERVICE"
 }
 
 # ── 2. пересоздание сервисов ─────────────────────────────────────────
@@ -115,11 +152,14 @@ if [ "$COMPOSE_OK" = 1 ]; then
   SERVICES="web"
   if [ "$SCOPE" = "all" ]; then SERVICES="web jobs monitor-agent"; fi
   report env_switch 40 "Пересоздаю: $SERVICES (без пересборки образов)"
+  # `--no-build` is intentional: applying runtime keys must never turn into a
+  # full source rebuild. The option is kept after the service list for
+  # compatibility with older Compose releases that accept interspersed flags.
   if [ -f "$ENV_FILE" ]; then
-    compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    run_step "пересоздание сервисов" compose --env-file "$ENV_FILE" -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES --no-build
   else
     say "⚠ $ENV_FILE не найден — пересоздаю без --env-file"
-    compose -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES 2>&1 | sed -e 's/\r$//' | cut -c1-300
+    run_step "пересоздание сервисов" compose -f docker-compose.yml $EDRC_EXTRA_COMPOSE_FILES --profile monitoring up -d --force-recreate $SERVICES --no-build
   fi
   report env_verify 90 "Жду, пока сайт ответит"
   wait_health

@@ -337,6 +337,24 @@ maybe('CAPI на техобслуживании (418) не отменяет пр
   }
 });
 
+maybe('400 о неверной платформе оставляет токен, но предлагает переподключение', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 400 });
+  try {
+    const res = await mod.callback.GET(callbackRequest(dir));
+    const location = new URL(res.headers.get('location'));
+
+    assert.equal(location.searchParams.get('status'), 'partial');
+    assert.equal(location.searchParams.get('reason'), 'platform_not_entitled');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, false,
+      'неверная платформа не должна выглядеть рабочей');
+    assert.match(mod.db.tables.capi_tokens[0].last_error, /купленную|CAPI/i);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 maybe('пустой журнал (204) — не ошибка: профиль всё равно сохранён', async () => {
   const { mod, dir } = await buildRoutes();
   const frontier = fakeFrontier({ journalStatus: 204 });

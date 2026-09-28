@@ -3264,9 +3264,17 @@ class OverlayManager:
                 game = self.game_state()
             except Exception:
                 game = GameState()
-            if self.settings.get("hide_when_game_off", True) and not game.running:
-                self.master.after(0, lambda: self._set_all_visibility(False))
+            if not game.running:
+                # `hide_when_game_off` is an explicit user choice. Previously
+                # the unchecked option only skipped this early hide, but the
+                # `attach_to_game` branch below hid the windows again because
+                # there was no focused game window. That made the setting look
+                # intermittent and its UI message (“show even without game”)
+                # was false in practice.
+                hide_without_game = bool(self.settings.get("hide_when_game_off", True))
+                self.master.after(0, lambda show=not hide_without_game: self._set_all_visibility(show))
                 last_game_running = False
+                ed_active_counter = 0
                 # Пока игры нет — простой не копим: вернулись в игру, HUD
                 # должен появиться сразу, а не через таймер автоскрытия.
                 self.mark_activity()
@@ -3675,7 +3683,30 @@ class OverlayManager:
         self._exobio_state_provider = provider
 
     def set_attach_to_game(self, attach: bool):
-        self.settings["attach_to_game"] = attach
+        """Переключить привязку и сразу сохранить её.
+
+        The old setter changed only the in-memory value. A restart therefore
+        silently restored the previous mode, which looked like the overlay
+        ignored the checkbox. Re-apply anchors as well so the monitor choice
+        changes without restarting the HUD.
+        """
+        self.settings["attach_to_game"] = bool(attach)
+        self.apply_anchors()
+        self.save_settings()
+
+    def set_hide_when_game_off(self, hide: bool):
+        """Choose whether the HUD is hidden while Elite Dangerous is closed."""
+        self.settings["hide_when_game_off"] = bool(hide)
+        self.save_settings()
+        # The update thread normally applies this on its next tick. Apply the
+        # no-game case now too, so toggling the checkbox has no one-second stale
+        # window and cannot be overwritten by attach_to_game handling.
+        try:
+            game = self.game_state()
+            if not game.running:
+                self.master.after(0, lambda show=not bool(hide): self._set_all_visibility(show))
+        except Exception:
+            pass
 
     # ============================================================
     #  Настройки блоков: вид, размер, поведение — всё на лету
@@ -3934,6 +3965,11 @@ class OverlayManager:
         истёк таймер простоя.
         """
         ctx = context if context is not None else (self._context_state or {})
+        # Keep the preference meaningful even for callers that provide a
+        # context directly instead of going through _update_loop. This avoids
+        # one path showing blocks while the loop correctly hides them.
+        if self.settings.get("hide_when_game_off", True) and ctx.get("game_running") is False:
+            game_visible = False
         timeout = self.idle_timeout()
         idle_hidden = timeout > 0 and (time.monotonic() - self._last_activity) > timeout
         self._hidden_by_idle = idle_hidden

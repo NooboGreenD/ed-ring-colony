@@ -122,6 +122,9 @@ test('audience: явная платформа уважается, пустая �
   assert.equal(normalizeAudience('EPIC'), 'epic');
   assert.equal(normalizeAudience('psn'), 'psn');
   assert.equal(normalizeAudience(' xbox '), 'xbox');
+  assert.equal(normalizeAudience('egs'), 'epic');
+  assert.equal(normalizeAudience('epic-games'), 'epic');
+  assert.equal(normalizeAudience('frontierstore'), 'frontier');
   assert.equal(normalizeAudience('nintendo'), DEFAULT_AUDIENCE);
   assert.equal(normalizeAudience(null), DEFAULT_AUDIENCE);
   assert.equal(normalizeAudience('auto'), DEFAULT_AUDIENCE);

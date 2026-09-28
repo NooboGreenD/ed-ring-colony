@@ -77,6 +77,11 @@ class AudienceTests(unittest.TestCase):
         self.assertEqual(normalize_audience("EPIC"), "epic")
         self.assertEqual(normalize_audience("psn"), "psn")
 
+    def test_egs_and_store_aliases_map_to_frontier_audiences(self):
+        self.assertEqual(normalize_audience("egs"), "epic")
+        self.assertEqual(normalize_audience("Epic Games Store"), "epic")
+        self.assertEqual(normalize_audience("frontierstore"), "frontier")
+
     def test_lists_are_cleaned_and_deduplicated(self):
         self.assertEqual(normalize_audience("steam, frontier ,steam"), "steam,frontier")
         self.assertEqual(normalize_audience("steam,garbage"), "steam")
@@ -430,7 +435,7 @@ class AppDossierFlowTests(unittest.TestCase):
 
     def test_platform_selector_saves_the_choice(self):
         self.app.capi_audience_var = mock.Mock()
-        self.app.capi_audience_var.get.return_value = "Только Epic Games"
+        self.app.capi_audience_var.get.return_value = "Только Epic Games Store (EGS)"
         self.app.save_config = mock.Mock()
 
         self.app._on_capi_audience_changed()
