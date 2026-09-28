@@ -58,10 +58,10 @@ interface UpdateState {
 /**
  * Сведения о самом update-agent (GET /api/admin/monitor/update → agent).
  *
- * Обновление не пересоздаёт контейнер апдейтера — иначе оно оборвало бы
- * само себя, — поэтому агент может работать на коде предыдущей версии.
- * Такой агент молча игнорирует новые флажки прогона, и со стороны это
- * выглядит как «галочки ни на что не влияют».
+ * В foreground обновление не пересоздаёт контейнер апдейтера — иначе оно
+ * оборвало бы само себя. После успешного health-check его заменяет detached
+ * helper; до этого агент может кратко работать на предыдущей версии. Такой
+ * переход показываем явно, чтобы не выглядело как «галочки не влияют».
  */
 interface AgentInfo {
   protocol: number;
@@ -618,10 +618,9 @@ export default function ServerMonitorTab() {
   /**
    * Перезапуск update-agent из панели.
    *
-   * Нужен ровно тогда, когда агент старее клона: он крутится в контейнере,
-   * который обновление намеренно не пересоздаёт. Процесс завершается,
-   * супервизор (Docker `restart: unless-stopped` / systemd `Restart=always`)
-   * поднимает его заново — уже с кодом из репозитория.
+   * Нужен для старых/host-run установок, где автоматическая безопасная замена
+   * контейнера не сработала. В Docker обычный полный update запускает такую
+   * замену detached helper-ом после health-check.
    */
   const restartAgent = useCallback(async () => {
     if (!window.confirm('Перезапустить update-agent?\nСайт это не затронет: агент поднимется заново за несколько секунд уже с новым кодом.')) return;
@@ -1077,8 +1076,8 @@ export default function ServerMonitorTab() {
                 {agentInfo.revision && agentInfo.repoRevision && agentInfo.revision !== agentInfo.repoRevision
                   ? ` (запущен ${agentInfo.revision}, в репозитории ${agentInfo.repoRevision})`
                   : ''}
-                . Обновление не пересоздаёт его контейнер, поэтому новые флажки прогона
-                {agentInfo.migrationsOnlySupported ? '' : ' и режим «только миграции»'} могут игнорироваться.
+                . До безопасной замены контейнера новые флажки прогона
+                {agentInfo.migrationsOnlySupported ? '' : ' и режим «только миграции»'} могут кратко работать на старом коде.
                 {agentInfo.canRestart
                   ? agentInfo.autoRestart
                     ? ' Автоперезапуск включён; если он ещё не сработал, перезапустите агент кнопкой.'

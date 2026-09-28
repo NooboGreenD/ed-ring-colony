@@ -74,6 +74,47 @@ compose() {
   else return 127
   fi
 }
+
+# The updater builds a fresh update-agent image but deliberately does not
+# recreate its own container in the foreground: doing that would kill this
+# process before it can report success. A detached helper, started from the old
+# image by its immutable ID, performs that one safe self-refresh after a short
+# delay. This is important for packages installed in the agent image (notably
+# docker-cli-buildx): restarting the Node process alone cannot install packages
+# into an already-running container.
+refresh_update_agent_container() {
+  [ "${PROJECT_DEPLOY_MODE:-auto}" != "systemd" ] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  [ -S /var/run/docker.sock ] || return 0
+
+  local self_id self_image helper_name
+  self_id="${HOSTNAME:-}"
+  self_image="$(docker inspect --format '{{.Image}}' "$self_id" 2>/dev/null || true)"
+  [ -n "$self_image" ] || {
+    say "⚠ не удалось определить текущий image update-agent — обновление агента отложено"
+    return 0
+  }
+  helper_name="edrc-update-agent-refresh-$(date +%s)"
+  say "обновляю контейнер update-agent, чтобы новый Docker CLI/buildx вступил в силу"
+  docker run -d --rm --name "$helper_name" \
+    --entrypoint /bin/sh \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$PROJECT_DIR:$PROJECT_DIR" \
+    "$self_image" -c '
+      sleep 5
+      cd "$1" || exit 1
+      if docker compose version >/dev/null 2>&1; then
+        docker compose --env-file "$2" -f "$1/docker-compose.yml" \
+          --profile monitoring up -d --no-build update-agent
+      elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose --env-file "$2" -f "$1/docker-compose.yml" \
+          --profile monitoring up -d --no-build update-agent
+      else
+        exit 127
+      fi
+    ' -- "$PROJECT_DIR" "$ENV_FILE" >/dev/null 2>&1 || \
+    say "⚠ не удалось запустить безопасное обновление контейнера update-agent"
+}
 report() { printf '::edrc::{"stage":"%s","percent":%s,"message":"%s"}\n' "$1" "$2" "$(json_safe "$3")"; }
 # Ошибка пишется в stdout ОТДЕЛЬНЫМ полем `error`: менеджер разбирает именно
 # этот поток и больше не выдаёт за причину сбоя подпись текущей стадии.
@@ -487,6 +528,12 @@ done
 if [ "$checked" = "1" ]; then say "сайт отвечает: $HEALTH_URL"; fi
 if [ "$checked" = "0" ]; then
   die "сайт не ответил по $HEALTH_URL за $((HEALTH_TRIES * 4))с; docker logs src-web-1 или journalctl -u $SYSTEMD_SERVICE"
+fi
+
+# The new update-agent image contains the buildx plugin. Refresh it only after
+# the new web stack is healthy, so a self-recreate cannot hide a failed deploy.
+if [ "$MODE" = "compose" ]; then
+  refresh_update_agent_container
 fi
 
 printf '::edrc::{"stage":"done","percent":100,"mode":"%s","branch":"%s","fromSha":"%s","toSha":"%s","migrationsApplied":%s,"message":"%s"}\n' \

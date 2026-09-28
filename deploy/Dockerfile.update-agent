@@ -64,10 +64,9 @@ ENV NODE_ENV=production \
 EXPOSE 8092
 # Точка входа выбирает код агента из смонтированного клона, если он там есть.
 #
-# Обновление намеренно не пересоздаёт этот контейнер (он же выполняет
-# обновление), поэтому образ агента оставался тем, каким был при первой
-# сборке: панель уже умела «только миграции» и флажки прогона, а старый агент
-# про них не знал и запускал обычную полную пересборку. С запуском из клона
-# достаточно перезапустить контейнер — кнопка «Перезапустить агент» в панели
-# (или автоперезапуск после успешного обновления) делает это сама.
+# Foreground update does not recreate this container (it is the process doing
+# the update). After the new stack is healthy, update-project.sh starts a small
+# detached helper from the old image; that helper recreates update-agent from
+# the freshly built image. This matters for image-level packages such as
+# docker-cli-buildx: restarting only the Node process cannot install them.
 ENTRYPOINT ["/app/deploy/update-agent-entrypoint.sh"]

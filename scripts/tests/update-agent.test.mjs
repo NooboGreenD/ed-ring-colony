@@ -1385,6 +1385,7 @@ test('сборка: npm-notice отключён, кэши npm/next пережи�
   assert.match(updateScript, /npm_config_update_notifier=false npm ci/, 'systemd-режим: npm ci без уведомления');
   // Подрезка кэша ДО старта: серия сорвавшихся сборок больше не распухает.
   assert.match(updateScript, /edrc_trim_build_cache/, 'обновление подрезает кэш до сборки');
+  assert.match(updateScript, /refresh_update_agent_container/, 'после сборки обновляется контейнер самого агента');
   const rebuild = readFileSync(join(ROOT, 'deploy', 'rebuild-now.sh'), 'utf8');
   assert.match(rebuild, /edrc_trim_build_cache/, 'ручная пересборка тоже подрезает кэш до старта');
   const lib = readFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), 'utf8');
