@@ -109,10 +109,10 @@ DEFAULT_AUDIENCE = "frontier,steam,epic"
 
 #: Человеческие названия для UI (ключ → подпись).
 AUDIENCE_LABELS = (
-    ("auto", "Авто (Frontier / Steam / Epic)"),
+    ("auto", "Авто (Frontier / Steam / Epic Games Store)"),
     ("frontier", "Только Frontier Store"),
     ("steam", "Только Steam"),
-    ("epic", "Только Epic Games"),
+    ("epic", "Только Epic Games Store (EGS)"),
     ("xbox", "Xbox"),
     ("psn", "PlayStation"),
 )
@@ -276,8 +276,9 @@ _NO_GAME_MARKERS = ("purchase", "not own", "no game", "store to purchase")
 #: Подсказка про платформу — самая частая причина 400.
 _WRONG_PLATFORM_HINT = (
     "Скорее всего, вход выполнен не той учётной записью. Если игра куплена в "
-    "Steam или Epic, нажмите «Отключить», выберите свою платформу в списке и "
-    "подключитесь заново — на странице Frontier нужно войти кнопкой Steam/Epic, "
+    "Steam или Epic Games Store (EGS), нажмите «Отключить», выберите свою "
+    "платформу в списке и подключитесь заново — на странице Frontier нужно "
+    "войти кнопкой Steam/Epic, "
     "а не почтой. Проверить связку можно на user.frontierstore.net → Linked "
     "Thirdparty Accounts."
 )

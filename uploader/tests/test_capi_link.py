@@ -435,7 +435,7 @@ class AppDossierFlowTests(unittest.TestCase):
 
     def test_platform_selector_saves_the_choice(self):
         self.app.capi_audience_var = mock.Mock()
-        self.app.capi_audience_var.get.return_value = "Только Epic Games"
+        self.app.capi_audience_var.get.return_value = "Только Epic Games Store (EGS)"
         self.app.save_config = mock.Mock()
 
         self.app._on_capi_audience_changed()
