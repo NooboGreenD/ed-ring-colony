@@ -181,6 +181,10 @@ services:
       PROJECT_UPDATE_BRANCH: ${PROJECT_UPDATE_BRANCH:-main}
       PROJECT_DEPLOY_MODE: ${PROJECT_DEPLOY_MODE-compose}
       UPDATE_APPLY_MIGRATIONS: ${UPDATE_APPLY_MIGRATIONS:-1}
+      # Keep the BuildKit cache budget in the agent environment. Without this
+      # explicit pass-through, a value in .env.production never reaches the
+      # host-side cleanup helper and failed --no-cache builds can accumulate.
+      UPDATE_DOCKER_CACHE_KEEP: ${UPDATE_DOCKER_CACHE_KEEP:-8g}
       # 0 disables only the automatic post-update restart. The explicit
       # admin-panel button remains available in either mode.
       UPDATE_AGENT_SELF_RESTART: ${UPDATE_AGENT_SELF_RESTART:-1}

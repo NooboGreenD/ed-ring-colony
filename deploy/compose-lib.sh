@@ -156,12 +156,24 @@ edrc_persist_env() {
 # или незнакомый флаг никогда не валят запуск.
 edrc_builder_prune() {
   local keep="${1:-${UPDATE_DOCKER_CACHE_KEEP:-8g}}"
-  if docker builder prune --help 2>&1 | grep -q -- '--keep-storage'; then
-    docker builder prune -f --keep-storage "$keep" >/dev/null 2>&1 \
-      || docker builder prune -f --filter until=48h >/dev/null 2>&1 \
+  # `--all` matters for repeated --no-cache builds: without it BuildKit may
+  # retain intermediate records that are not dangling from the current image.
+  # Try the budgeted command directly: probing `--help` first is racy on some
+  # Docker wrappers and made the real prune branch silently fall back to the
+  # 48-hour filter. Old daemons simply take the compatibility fallback.
+  docker builder prune -f --keep-storage "$keep" --all >/dev/null 2>&1 \
+    || docker builder prune -f --keep-storage "$keep" >/dev/null 2>&1 \
+    || docker builder prune -f --filter until=48h >/dev/null 2>&1 \
+    || true
+
+  # Buildx can have builders separate from the legacy `docker builder` view.
+  # Prune its active cache too; otherwise switching builders makes the budget
+  # above look effective while old builder instances continue to consume disk.
+  if docker buildx version >/dev/null 2>&1; then
+    docker buildx prune -f --keep-storage "$keep" --all >/dev/null 2>&1 \
+      || docker buildx prune -f --keep-storage "$keep" >/dev/null 2>&1 \
+      || docker buildx prune -f --filter until=48h >/dev/null 2>&1 \
       || true
-  elif docker builder prune --help 2>&1 | grep -q -- '--filter'; then
-    docker builder prune -f --filter until=48h >/dev/null 2>&1 || true
   fi
   return 0
 }

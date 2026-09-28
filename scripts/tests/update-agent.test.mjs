@@ -718,6 +718,53 @@ test('apply-env.sh: живое пересоздание сервисов пер�
   const log = readFileSync(logFile, 'utf8');
   assert.match(log, /-f docker-compose\.yml -f deploy\/compose\.supabase-net\.yml/, 'оба файла переданы в правильном порядке');
   assert.match(log, /up -d --force-recreate web/);
+  assert.match(log, /--no-build/, 'применение ключей не запускает полную сборку');
+});
+
+test('apply-env.sh: ошибка compose попадает в поле error и не маскируется стадией', { skip: needsBash }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-apply-env-fail-'));
+  const deployDir = join(dir, 'deploy');
+  const binDir = join(dir, 'bin');
+  mkdirSync(deployDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  copyFileSync(join(ROOT, 'deploy', 'apply-env.sh'), join(deployDir, 'apply-env.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(deployDir, 'compose-lib.sh'));
+  writeFileSync(join(dir, 'docker-compose.yml'), 'services:\n  web:\n    image: test\n');
+  const envFile = join(dir, '.env.production');
+  writeFileSync(envFile, 'PROJECT_DEPLOY_MODE=compose\n');
+  writeFileSync(join(binDir, 'docker'), [
+    '#!/usr/bin/env bash',
+    'if [ "$1" = "compose" ]; then',
+    '  shift',
+    '  if [ "$1" = "version" ]; then exit 0; fi',
+    '  echo "ERROR: failed to recreate web: no space left on device" >&2',
+    '  exit 23',
+    'fi',
+    'if [ "$1" = "info" ]; then exit 0; fi',
+    'if [ "$1" = "network" ]; then exit 1; fi',
+    'exit 0',
+  ].join('\n'), { mode: 0o755 });
+
+  const run = spawnSync('bash', [join(deployDir, 'apply-env.sh')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      PROJECT_DIR: dir,
+      ENV_FILE: envFile,
+      UPDATE_STATE_DIR: join(dir, 'state'),
+      PROJECT_DEPLOY_MODE: 'compose',
+      HEALTH_TRIES: '1',
+    },
+  });
+  assert.notEqual(run.status, 0);
+  const events = run.stdout.split('\n')
+    .filter((line) => line.includes('::edrc::{'))
+    .map((line) => JSON.parse(line.slice(line.indexOf('::edrc::') + UPDATE_PROTOCOL.length)));
+  const failure = events.find((event) => event.error);
+  assert.ok(failure, `ошибка должна быть отдельным событием: ${run.stdout}`);
+  assert.match(failure.error, /no space left on device/);
+  assert.equal(failure.message, failure.error, 'для совместимости message дублирует ошибку, но state.error уже заполнен');
 });
 
 test('docker-compose.yml: порты сервиса web зафиксированы на 127.0.0.1:3000:3000 (состояние 24 часа назад)', () => {
@@ -734,6 +781,7 @@ test('обрамление: update-agent получил apply-env.sh, monitor-ag
   assert.match(monitorDockerfile, /npm i .*pg/, 'monitor-agent умеет мерить размер БД');
   const compose = readFileSync(join(ROOT, 'docker-compose.yml'), 'utf8');
   assert.match(compose, /MONITOR_DB_URL/, 'compose передаёт агенту URL базы');
+  assert.match(compose, /UPDATE_DOCKER_CACHE_KEEP/, 'бюджет BuildKit доходит до update-agent');
   const startMonitoring = readFileSync(join(ROOT, 'deploy', 'start-monitoring.sh'), 'utf8');
   assert.match(startMonitoring, /MONITOR_DB_URL/, 'скрипт запуска зеркалирует URL из DATABASE_URL/SUPABASE_DB_URL');
 });
