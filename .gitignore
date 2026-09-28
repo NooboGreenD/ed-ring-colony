@@ -70,3 +70,9 @@ dist-archive/
 # Spansh dump download + generated points file (scripts/import-spansh-systems.mjs)
 data/spansh/
 public/data/
+# Пакеты обновлений Colonial Helper при локальном запуске сервера
+# (на боевом сервере это том /data/uploader).
+data/uploader/
+# Сборочные артефакты пакета: манифест, архив версии, встроенная копия.
+uploader/dist/
+uploader/build/

@@ -132,15 +132,36 @@ from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
 from raven_colonial_api import RavenColonialAPI, project_url
 import updater
 
+# Пакетное обновление кода: программа запускается лаунчером (ColonialHelper.exe),
+# а её модули лежат отдельным пакетом и обновляются пофайлово с нашего сервера.
+# При запуске из исходников этих модулей может не быть — это нормально.
+try:
+    import bundle
+    import bundle_updater
+except Exception:  # pragma: no cover - запуск из исходников без пакета
+    bundle = None
+    bundle_updater = None
+
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.12.2"
+VERSION = "2.13.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
 # (EDCD/FDevIDs → Frontier API/README.md). Версию отдаём модулю CAPI сразу,
 # чтобы в заголовке был настоящий номер сборки, а не заглушка.
 set_capi_app_version(VERSION)
+
+# Что нам сообщил лаунчер: свою версию и версию запущенного пакета кода.
+# Пусто — значит, программа запущена не из сборки (исходники, отладка), и
+# обновлять код пакетом нечего: обновляется git-клон, а не установка.
+LAUNCHER_VERSION = os.environ.get("COLONIAL_HELPER_LAUNCHER", "")
+ACTIVE_BUNDLE_VERSION = os.environ.get("COLONIAL_HELPER_ACTIVE_VERSION", "")
+
+
+def bundle_mode() -> bool:
+    """Можно ли обновлять код пакетом (программа запущена лаунчером)."""
+    return bool(bundle and bundle_updater and LAUNCHER_VERSION and ACTIVE_BUNDLE_VERSION)
 
 COLOR_BG = "#1e2022"
 COLOR_PANEL = "#2a2d30"
@@ -416,6 +437,10 @@ class ColonialHelperApp:
         # мешать отрисовке окна и автопроверке токена.
         self._update_busy = False
         self.after(2500, self._auto_check_update)
+        # Отметка «версия рабочая» для лаунчера. Восемь секунд — это заведомо
+        # позже окна, вкладок и первого тика watcher'а: если программа падает
+        # на старте, до отметки дело не дойдёт и лаунчер откатится сам.
+        self.after(8000, self._mark_bundle_healthy)
 
     # ============================================================
     #  Стили
@@ -493,6 +518,18 @@ class ColonialHelperApp:
             variable=self.update_auto_var,
             command=self._on_update_settings_changed,
         ).pack(side=LEFT)
+
+        # Лечение установки: нужно, когда файл пакета испорчен (антивирус,
+        # сбой записи) — тогда пофайловой дельте верить нельзя, и пакет
+        # скачивается целиком. Кнопка есть только там, где есть что лечить.
+        if bundle_mode():
+            tb.Button(
+                update_frame,
+                text="⛭ Восстановить",
+                width=16,
+                bootstyle="secondary-outline",
+                command=self._on_repair_install,
+            ).pack(side=LEFT, padx=(8, 0))
 
         self.update_hint = tb.Label(
             update_frame,
@@ -6474,11 +6511,35 @@ class ColonialHelperApp:
             except Exception:
                 pass
 
+    # ------------------------------------------------------------------
+    #  Обновление кода пакетом (структурой), а не перекачиванием exe
+    # ------------------------------------------------------------------
+    def _bundle_root(self):
+        """Каталог установки, с которым работает лаунчер."""
+        if not bundle:
+            return None
+        override = os.environ.get("COLONIAL_HELPER_HOME", "").strip()
+        return Path(override) if override else bundle.install_root()
+
+    def _mark_bundle_healthy(self):
+        """Сказать лаунчеру, что версия дожила до рабочего окна.
+
+        Без этой отметки лаунчер считает версию «на испытательном сроке» и
+        после двух запусков подряд без неё откатится на предыдущую. Это и есть
+        защита от обновления, которое падает на старте.
+        """
+        if not bundle_mode():
+            return
+        try:
+            bundle.mark_healthy(self._bundle_root(), ACTIVE_BUNDLE_VERSION)
+        except Exception:
+            pass
+
     def _on_check_update(self, manual: bool = False):
-        """Спросить GitHub Releases, есть ли сборка новее установленной.
+        """Есть ли обновление: сначала пакет кода, при неудаче — сборка целиком.
 
         Сетевой запрос — только в фоновом потоке: интерфейс не должен ждать
-        ответа GitHub, тем более при автопроверке на старте.
+        ответа сервера, тем более при автопроверке на старте.
         """
         if self._update_busy:
             return
@@ -6488,13 +6549,221 @@ class ColonialHelperApp:
         self.log("Проверяю обновления…", "info")
 
         def worker():
-            result = updater.check_for_update(VERSION, channel=channel)
+            result = self._check_update_sources(channel)
             self.after(0, lambda r=result: self._on_update_checked(r, manual))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _check_update_sources(self, channel: str) -> dict:
+        """Пакет кода с нашего сервера, а если канал недоступен — GitHub.
+
+        Пока канал пакетов не настроен (или сервер не отвечает), программа
+        обновляется по-старому: пилот не должен остаться без обновлений
+        из-за переезда канала на свой сервер.
+        """
+        if bundle_mode():
+            result = bundle_updater.check_for_update(
+                VERSION, channel=channel, launcher_version=LAUNCHER_VERSION)
+            if result.get("ok"):
+                result["kind"] = "bundle"
+                return result
+            fallback = updater.check_for_update(VERSION, channel=channel)
+            fallback["kind"] = "release"
+            fallback["bundle_error"] = result.get("error")
+            return fallback
+        result = updater.check_for_update(VERSION, channel=channel)
+        result["kind"] = "release"
+        return result
+
+    def _on_bundle_checked(self, result: dict, manual: bool):
+        """Ответ канала пакетов: обновить код, обновить базовую сборку или ничего."""
+        latest = str(result.get("latest") or VERSION)
+
+        if result.get("needs_launcher"):
+            # Пакет собран под новый рантайм: обновить одни модули нельзя.
+            need = str(result.get("min_launcher") or "")
+            self._set_update_ui(False, hint=f"нужна базовая сборка ≥ {need}")
+            self.log(f"Версия {latest} требует новой базовой сборки "
+                     f"(лаунчер {LAUNCHER_VERSION}, нужен {need}).", "warn")
+            if manual:
+                self._offer_launcher_update(latest)
+            return
+
+        if not result.get("update_available"):
+            self._set_update_ui(False, hint=f"актуальная версия v{latest}")
+            self.log(f"Установлена актуальная версия {VERSION}", "success")
+            return
+
+        manifest = result.get("manifest") or {}
+        try:
+            plan = bundle_updater.plan_update(self._bundle_root(), manifest)
+        except Exception:
+            plan = {"download": [], "reuse": [], "bytes": 0}
+        size_kb = int(plan.get("bytes") or 0) / 1024
+        changed = len(plan.get("download") or [])
+        self._set_update_ui(False, hint=f"доступна v{latest} ({size_kb:.0f} КБ)")
+        self.log(f"Доступна версия {latest} (установлена {VERSION}): "
+                 f"изменилось файлов — {changed}, скачать {size_kb:.0f} КБ. "
+                 "Программу перекачивать не нужно.", "warn")
+        if not manual:
+            self.log("Нажмите «Обновить программу», чтобы установить.", "info")
+            return
+
+        if not messagebox.askyesno(
+            "Обновление Colonial Helper",
+            f"Доступна версия {latest} (у вас {VERSION}).\n\n"
+            f"Обновятся только изменившиеся модули: {changed} шт., "
+            f"{size_kb:.0f} КБ.\n"
+            "Программа перезапустится — токен и настройки сохранятся.\n\n"
+            "Обновить сейчас?",
+            parent=self.root,
+        ):
+            return
+        self._start_bundle_update(manifest)
+
+    def _start_bundle_update(self, manifest: dict):
+        """Скачать изменившиеся файлы и переключить программу на новую версию."""
+        self._update_busy = True
+        self._update_last_percent = -10
+        self._set_update_ui(True, hint="обновление…", button_text="Обновляю…")
+
+        def report(done: int, total: int):
+            if not total:
+                return
+            percent = int(done * 100 / total)
+            if percent - getattr(self, "_update_last_percent", -10) < 5:
+                return
+            self._update_last_percent = percent
+            self.after(0, lambda p=percent: self._set_update_ui(
+                True, hint=f"обновление {p}%", button_text="Обновляю…"))
+
+        def worker():
+            result = bundle_updater.apply_update(
+                self._bundle_root(), manifest, progress=report)
+            self.after(0, lambda r=result: self._on_bundle_applied(r))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_bundle_applied(self, result: dict):
+        self._update_busy = False
+        self._update_last_percent = -10
+        if not result.get("ok"):
+            message = str(result.get("error") or "неизвестная ошибка")
+            self._set_update_ui(False, hint="обновление не установлено")
+            self.log(f"Обновление не установлено: {message}", "error")
+            if messagebox.askyesno(
+                "Обновление Colonial Helper",
+                f"Не удалось установить обновление:\n{message}\n\n"
+                "Скачать пакет целиком и восстановить установку?",
+                parent=self.root,
+            ):
+                self._on_repair_install()
+            return
+
+        version = str(result.get("version") or "")
+        downloaded_kb = int(result.get("downloaded") or 0) / 1024
+        self._set_update_ui(False, hint=f"установлена v{version} — нужен перезапуск")
+        self.log(f"Версия {version} установлена ({downloaded_kb:.0f} КБ скачано, "
+                 f"{result.get('reused')} файлов взято из текущей версии).", "success")
+        if messagebox.askyesno(
+            "Обновление установлено",
+            f"Версия {version} установлена.\n\n"
+            "Перезапустить программу сейчас?",
+            parent=self.root,
+        ):
+            self._restart_after_update()
+        else:
+            self.log("Новая версия заработает после перезапуска программы.", "info")
+
+    def _restart_after_update(self):
+        """Запустить новый процесс и аккуратно закрыть текущий."""
+        if not bundle_updater.restart_program():
+            messagebox.showinfo(
+                "Перезапуск",
+                "Не удалось перезапустить автоматически — закройте и откройте "
+                "программу вручную.",
+                parent=self.root)
+            return
+        self.log("Перезапуск на новой версии…", "info")
+        # Закрываемся штатно: оверлей, фоновые потоки и настройки — как при
+        # обычном выходе, иначе новая копия столкнётся со старыми окнами.
+        self.after(200, self._on_close)
+
+    def _on_repair_install(self):
+        """«Восстановить установку»: скачать пакет целиком и переложить файлы."""
+        if not bundle_mode():
+            messagebox.showinfo(
+                "Восстановление",
+                "Программа запущена из исходников — восстанавливать нечего.",
+                parent=self.root)
+            return
+        if self._update_busy:
+            return
+        self._update_busy = True
+        channel = self._update_channel_value()
+        self._set_update_ui(True, hint="восстановление…", button_text="Качаю пакет…")
+        self.log("Скачиваю пакет программы целиком…", "info")
+
+        def worker():
+            result = bundle_updater.repair(self._bundle_root(), channel=channel)
+            self.after(0, lambda r=result: self._on_repair_done(r))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_repair_done(self, result: dict):
+        self._update_busy = False
+        if not result.get("ok"):
+            self._set_update_ui(False, hint="восстановить не удалось")
+            self.log(f"Восстановление не удалось: {result.get('error')}", "error")
+            return
+        version = str(result.get("version") or "")
+        self._set_update_ui(False, hint=f"восстановлена v{version}")
+        self.log(f"Установка восстановлена: версия {version}.", "success")
+        if messagebox.askyesno("Восстановление", "Перезапустить программу сейчас?",
+                               parent=self.root):
+            self._restart_after_update()
+
+    def _offer_launcher_update(self, latest: str):
+        """Редкий случай: нужен новый exe (сменился рантайм программы)."""
+        def worker():
+            info = bundle_updater.check_launcher(LAUNCHER_VERSION)
+            self.after(0, lambda i=info: self._on_launcher_checked(i, latest))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_launcher_checked(self, info: dict, latest: str):
+        if not info.get("ok") or not info.get("url"):
+            # Сервер не знает про базовую сборку — идём привычным путём.
+            self.log("Скачайте новую сборку со страницы релизов.", "info")
+            self._on_check_update(manual=True)
+            return
+        size_mb = int(info.get("size") or 0) / (1024 * 1024)
+        if not messagebox.askyesno(
+            "Нужна новая базовая сборка",
+            f"Версия {latest} требует обновлённой программы "
+            f"({info.get('version')}).\n\n"
+            f"Скачать {size_mb:.1f} МБ? Это бывает редко — обычные обновления "
+            "весят килобайты.",
+            parent=self.root,
+        ):
+            return
+        folder = updater.download_folder()
+        self._update_busy = True
+        self._set_update_ui(True, hint="скачивание сборки…", button_text="Скачиваю…")
+
+        def worker():
+            result = bundle_updater.download_launcher(info, folder)
+            self.after(0, lambda r=result: self._on_update_downloaded(
+                r, {"version_text": info.get("version", ""),
+                    "asset_name": "ColonialHelper.exe"}))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_update_checked(self, result: dict, manual: bool):
         self._update_busy = False
+        if str(result.get("kind") or "") == "bundle":
+            self._on_bundle_checked(result, manual)
+            return
         latest = str(result.get("latest") or VERSION)
         if not result.get("ok"):
             message = str(result.get("error") or "нет данных")

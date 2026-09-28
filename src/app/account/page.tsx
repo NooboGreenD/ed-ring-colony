@@ -1005,7 +1005,11 @@ export default function AccountPage() {
               <input type="file" multiple accept=".log" style={{ display: "none" }} onChange={(e) => setFiles(e.target.files)} />
             </label>
             <button disabled={busy || !files?.length} onClick={upload} className="btn btn-orange">{busy ? t('account.processing') : t('account.uploadAndParse')}</button>
-            <a href="https://github.com/NooboGreenD/ed-ring-colony/releases" target="_blank" rel="noreferrer" className="btn btn-cyan" style={{ fontSize: 12 }}>{t('account.downloadColonialHelper')}</a>
+            {/* Ссылка на свой сервер: адрес постоянный, а куда он ведёт —
+                решает сервер (сейчас релиз на GitHub, дальше — зеркало или
+                диск). Программа потом обновляется пакетами кода, поэтому этот
+                файл пилот скачивает один раз, а не на каждую версию. */}
+            <a href="/api/uploader/download" rel="noreferrer" className="btn btn-cyan" style={{ fontSize: 12 }}>{t('account.downloadColonialHelper')}</a>
           </div>
 
           {files && files.length > 0 && (<p style={{ fontSize: 12, color: '#9ca3af' }}>{t('account.filesSelected')} {files.length}</p>)}

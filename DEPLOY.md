@@ -274,10 +274,11 @@ sudo certbot --nginx -d ваш-домен
 3. **Frontier** (`user.frontierstore.net`, если создавали свой CLIENT):
    Redirect URI → `https://ваш-домен/api/capi/callback`; и обязательно
    `FRONTIER_REDIRECT_URI` в `.env.production`.
-4. **Десктопный uploader / Colonial Helper**: если в нём захардкожен адрес
-   сайта — обновить и пересобрать EXE (workflow `build-exe.yml`). Он
-   срабатывает на правки `uploader/**`; если адрес поменялся только на стороне
-   сайта, запустите workflow вручную через **Run workflow**.
+4. **Десктопный uploader / Colonial Helper**: адрес сайта и канал обновлений
+   зашиты в программе (`uploader/site_config.py`, `bundle_updater.py`). При
+   смене домена правку кода развозит workflow `build-bundle.yml` (пакет кода,
+   ~30 с), а EXE пересобирается только при смене рантайма — `build-exe.yml`
+   (см. раздел 12).
 5. Push-подписки браузеров привязаны к домену — пользователи переподпишутся
    автоматически при первом заходе на новый домен (sw.js отдаётся с него же).
 
@@ -390,3 +391,48 @@ jobs:
 Откат делается к сохранённому образу сайта и конфигурациям на своём сервере:
 сначала остановите `jobs`, затем верните сайт; не включайте два расписания.
 Подробности — [POST-MIGRATION.md](POST-MIGRATION.md), раздел «Откат».
+
+## 13. Канал обновлений Colonial Helper
+
+Десктопная программа обновляется **пакетом кода, а не новым exe**: пилот
+качает только изменившиеся модули (5–130 КиБ вместо 22.1 МиБ). Пакеты лежат
+на диске сервера и раздаются тем же nginx.
+
+**Что нужно на сервере**
+
+```env
+# .env.production
+UPLOADER_STORE_DIR=/data/uploader          # том uploader-store в docker-compose
+UPLOADER_PUBLISH_TOKEN=<длинная случайная строка>   # им публикует CI
+UPLOADER_SIGN_PUBLIC_KEYS=k202609:<публичный ключ>  # проверка подписи манифеста
+```
+
+Том `uploader-store:/data/uploader` уже описан в `docker-compose.yml`, а
+правила кэша для `/api/uploader/blob|bundle/` — в `deploy/nginx.conf`.
+Каталог переживает пересборку образа: в нём лежат все опубликованные версии,
+включая ту, на которую можно откатиться.
+
+**Что нужно в GitHub** (Settings → Secrets → Actions)
+
+| Секрет | Значение |
+|---|---|
+| `UPLOADER_SIGN_KEY` | приватный ключ подписи (`python uploader/build_bundle.py --keygen`) |
+| `UPLOADER_SIGN_KEY_ID` | идентификатор ключа, например `k202609` |
+| `UPLOADER_PUBLISH_URL` | `https://ваш-домен/api/admin/uploader/publish` |
+| `UPLOADER_PUBLISH_TOKEN` | тот же токен, что в `.env.production` |
+
+Без секретов ничего не ломается: пакет соберётся и останется артефактом
+сборки, а программа продолжит проверять обновления по-старому.
+
+**Проверка и управление**
+
+```bash
+curl -s https://ваш-домен/api/uploader/manifest | head -c 300   # что в канале
+du -sh /var/lib/docker/volumes/*uploader-store/_data            # сколько занято
+```
+
+Админка → **Обновления Helper**: список версий, что стоит в каналах и кнопка
+вернуть канал на прошлую версию (это и есть откат неудачного релиза —
+пилотам она приедет обычным обновлением).
+
+Подробный разбор устройства — [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md).
