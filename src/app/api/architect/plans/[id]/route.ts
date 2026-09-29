@@ -114,6 +114,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         title: typeof record.title === 'string' ? record.title : undefined,
         previous: previous as never,
       }))
+      // Supabase/PostgREST запрещает UPDATE без фильтра. Чтение строки выше
+      // не переносит условие в новый builder, поэтому id нужно указать снова.
+      .eq('id', id)
       .select('id,system_name,title,author_id,author_name,visibility,format_version,catalogue_version,'
         + 'site_count,haul_tons,score,tier2_points,tier3_points,cargo_items,notes,'
         + 'published_at,created_at,updated_at')

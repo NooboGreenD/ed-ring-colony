@@ -80,6 +80,7 @@ export default function SharePanel({
   const [error, setError] = useState('');
   const [list, setList] = useState<PlanView[]>([]);
   const [listLoading, setListLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   /** JSON сохранённого плана: сравнение с текущим показывает «есть правки». */
   const [savedSignature, setSavedSignature] = useState('');
@@ -200,6 +201,28 @@ export default function SharePanel({
     }
   }, [remoteId, onDeleted, refreshList, systemName]);
 
+  const removeFromList = useCallback(async (item: PlanView) => {
+    if (!item.own || deletingId) return;
+    if (!window.confirm(`Удалить сохранённый план «${item.title || 'Без названия'}»?`)) return;
+    setDeletingId(item.id);
+    setError('');
+    try {
+      const response = await fetch(`/api/architect/plans/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        setError(String(data?.error || `Не удалось удалить (${response.status})`));
+        return;
+      }
+      setList((current) => current.filter((planItem) => planItem.id !== item.id));
+      if (item.id === remoteId) onDeleted();
+      onNotice('Сохранённый план удалён');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Не удалось удалить план');
+    } finally {
+      setDeletingId(null);
+    }
+  }, [deletingId, remoteId, onDeleted, onNotice]);
+
   const copyLink = useCallback(async () => {
     if (!shareUrl) return;
     try {
@@ -310,7 +333,20 @@ export default function SharePanel({
                     {' · '}обновлён {formatDate(item.updatedAt)}
                   </div>
                 </div>
-                <button type="button" onClick={() => onOpen(item.id)} style={ghostButton}>Открыть</button>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" onClick={() => onOpen(item.id)} style={ghostButton}>Открыть</button>
+                  {item.own && (
+                    <button
+                      type="button"
+                      onClick={() => void removeFromList(item)}
+                      disabled={Boolean(deletingId)}
+                      style={{ ...ghostButton, color: 'var(--red)' }}
+                      aria-label={`Удалить план ${item.title || 'Без названия'}`}
+                    >
+                      {deletingId === item.id ? 'Удаление…' : 'Удалить'}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

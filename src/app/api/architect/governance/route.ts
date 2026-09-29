@@ -102,33 +102,44 @@ export async function PUT(req: Request) {
     if (!system) {
       return NextResponse.json({ error: 'Не указано название системы' }, { status: 400 });
     }
+    const assignSelf = record.self === true;
     const architectName = validSystemName(record.architect);
     const needle = sanitizeSearch(architectName);
-    if (!architectName || !needle) {
+    if (!assignSelf && (!architectName || !needle)) {
       return NextResponse.json({ error: 'Не указан позывной архитектора' }, { status: 400 });
     }
 
-    // Позывной ищем без учёта регистра: командир введёт его как помнит.
-    const { data: matches, error: findError } = await supabase
-      .from('profiles')
-      .select('id, cmdr_name')
-      .ilike('cmdr_name', needle)
-      .limit(2);
-    if (findError) return NextResponse.json({ error: findError.message }, { status: 500 });
-    const candidates = (matches ?? []) as { id?: unknown; cmdr_name?: unknown }[];
-    if (candidates.length === 0) {
-      return NextResponse.json(
-        { error: `Командир «${architectName}» не найден — пусть он хотя бы раз войдёт на сайт` },
-        { status: 404 },
-      );
+    let candidate: { id?: unknown; cmdr_name?: unknown };
+    if (assignSelf) {
+      // Назначение самого админа не должно зависеть от поиска по позывному:
+      // старые/OAuth-профили иногда имеют пустой cmdr_name, хотя пользователь
+      // уже авторизован и его роль только что была успешно проверена.
+      const metadataName = validSystemName(user.user_metadata?.cmdr_name)
+        || validSystemName(user.user_metadata?.full_name);
+      candidate = { id: user.id, cmdr_name: caller.cmdrName || metadataName || architectName || 'Администратор' };
+    } else {
+      // Позывной ищем без учёта регистра: командир введёт его как помнит.
+      const { data: matches, error: findError } = await supabase
+        .from('profiles')
+        .select('id, cmdr_name')
+        .ilike('cmdr_name', needle)
+        .limit(2);
+      if (findError) return NextResponse.json({ error: findError.message }, { status: 500 });
+      const candidates = (matches ?? []) as { id?: unknown; cmdr_name?: unknown }[];
+      if (candidates.length === 0) {
+        return NextResponse.json(
+          { error: `Командир «${architectName}» не найден — пусть он хотя бы раз войдёт на сайт` },
+          { status: 404 },
+        );
+      }
+      if (candidates.length > 1) {
+        return NextResponse.json(
+          { error: 'Найдено несколько командиров с таким позывным — укажите точное имя' },
+          { status: 409 },
+        );
+      }
+      candidate = candidates[0];
     }
-    if (candidates.length > 1) {
-      return NextResponse.json(
-        { error: 'Найдено несколько командиров с таким позывным — укажите точное имя' },
-        { status: 409 },
-      );
-    }
-    const candidate = candidates[0];
     const candidateId = String(candidate.id ?? '');
     const candidateName = String(candidate.cmdr_name ?? '').trim() || 'Командир';
     if (!candidateId) {
