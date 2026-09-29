@@ -89,6 +89,11 @@ export default function PlanSummary({ plan, evaluation, onMarkPrimary }: PlanSum
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <section style={cardStyle}>
         <h3 style={sectionTitle}>Сводка плана</h3>
+        {plan.architect && (
+          <div style={{ marginBottom: 10, color: 'var(--muted)', fontSize: 12 }}>
+            Архитектор системы: <span style={{ color: 'var(--cyan)' }}>{plan.architect}</span>
+          </div>
+        )}
         <div style={metricGrid}>
           <Metric label="построек" value={String(plan.sites.length)} />
           <Metric label="тоннаж" value={formatTons(evaluation.haulTons)} />

@@ -48,6 +48,7 @@ import {
   removeSite,
   serializePlan,
   setOrbitalSlots,
+  setPlanArchitect,
   setSitePrimary,
   setSiteStatus,
   siteCargo,
@@ -643,6 +644,7 @@ export default function ArchitectWorkspace() {
           <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>
             Тел: {bodies.length} · источник: {describeSourceStats(source, sourceStats)}
             {plan && plan.sites.length > 0 ? ` · в плане: ${plan.sites.length}` : ''}
+            {plan?.architect ? ` · архитектор: ${plan.architect}` : ''}
             {primaryName ? ` · основной порт: ${primaryName}` : ''}
           </div>
         )}
@@ -704,6 +706,24 @@ export default function ArchitectWorkspace() {
                   event.target.value = '';
                 }}
               />
+            </div>
+
+            <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label htmlFor="architect-name" style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>
+                Архитектор системы
+              </label>
+              <input
+                id="architect-name"
+                aria-label="Архитектор системы"
+                value={plan.architect}
+                maxLength={120}
+                onChange={(event) => setPlan(setPlanArchitect(plan, event.target.value))}
+                placeholder="CMDR или позывной ответственного"
+                style={{ ...inputStyle, flex: '1 1 240px', margin: 0 }}
+              />
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>
+                Отметка попадёт в план, экспорт и текстовую сводку.
+              </span>
             </div>
 
             {bodies.length > 0 && (

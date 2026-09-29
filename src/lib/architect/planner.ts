@@ -586,6 +586,11 @@ export function updateSite(plan: ArchitectPlan, siteId: string, patch: SitePatch
   return touched({ ...plan, sites });
 }
 
+/** Указать командира, отвечающего за архитектуру системы. */
+export function setPlanArchitect(plan: ArchitectPlan, architect: string): ArchitectPlan {
+  return touched({ ...plan, architect: String(architect ?? '').trimStart().slice(0, 120) });
+}
+
 export function setPlanNotes(plan: ArchitectPlan, notes: string): ArchitectPlan {
   return touched({ ...plan, notes: String(notes ?? '').slice(0, 2000) });
 }
@@ -979,7 +984,7 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
     plan: {
       version: PLAN_FORMAT_VERSION,
       system,
-      architect: str(record.architect),
+      architect: str(record.architect).trim().slice(0, 120),
       createdAt: str(record.createdAt) || now,
       updatedAt: now,
       notes: str(record.notes).slice(0, 2000),

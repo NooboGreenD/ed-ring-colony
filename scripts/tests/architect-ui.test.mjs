@@ -211,6 +211,24 @@ test('страница загружает систему по ссылке и п
   }
 });
 
+test('отметка архитектора системы сохраняется в плане и видна в сводке', async () => {
+  const ui = await renderArchitect();
+  try {
+    const input = ui.document.querySelector('input[aria-label="Архитектор системы"]');
+    assert.ok(input, 'поле архитектора есть в плане');
+    await ui.typeInto(input, 'CMDR Planner');
+
+    assert.match(ui.text(), /Архитектор системы:\s*CMDR Planner/);
+    assert.match(ui.text(), /архитектор: CMDR Planner/);
+    assert.match(
+      ui.dom.window.localStorage.getItem(`ed-architect:plan:${SYSTEM.toLowerCase()}`) || '',
+      /"architect": "CMDR Planner"/,
+    );
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test('карточка тела показывает сигналы: биологию, геологию и следы людей', async () => {
   const ui = await renderArchitect();
   try {

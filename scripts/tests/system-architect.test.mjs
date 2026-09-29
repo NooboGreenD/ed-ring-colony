@@ -32,6 +32,7 @@ import {
   removeSite,
   serializePlan,
   setOrbitalSlots,
+  setPlanArchitect,
   setSitePrimary,
   setSiteStatus,
   summarizePlan,
@@ -371,7 +372,8 @@ test('удаление записи и смена статуса не ломаю
 
 test('экспорт и импорт плана сохраняют записи и честно сообщают о чужой версии', () => {
   const bodies = bodiesFixture();
-  let plan = createPlan('Test', 'CMDR Tester');
+  let plan = createPlan('Test');
+  plan = setPlanArchitect(plan, 'CMDR Tester');
   plan = addSite(plan, 'Test A 1', 'consus', { note: 'первая очередь' });
   plan = addSite(plan, 'Test A', 'vesta');
   plan = setOrbitalSlots(plan, 'Test A 1', 3);
