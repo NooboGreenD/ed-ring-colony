@@ -151,7 +151,12 @@ test('installer wires the monitoring profile, dedicated token and revision metad
   const installer = readFileSync(installScript, 'utf8');
   assert.match(installer, /MONITOR_AGENT_TOKEN=\$\(openssl rand -hex 32\)/);
   assert.match(installer, /set_env "\$SE" MONITOR_AGENT_TOKEN\s+"\$MONITOR_AGENT_TOKEN"/);
-  assert.match(installer, /--profile monitoring up -d --build web jobs monitor-agent/);
+  // Профиль monitoring и полный список сервисов сохраняются, но сборка идёт
+  // отдельным шагом и по одному образу (edrc_build_each): параллельные таргеты
+  // на слабой машине роняли установку по дедлайну BuildKit.
+  assert.match(installer, /--profile monitoring"\s+INSTALL_SERVICES="web jobs monitor-agent update-agent"/);
+  assert.match(installer, /edrc_build_each docker compose \$INSTALL_COMPOSE_ARGS build -- \$INSTALL_SERVICES/);
+  assert.match(installer, /docker compose \$INSTALL_COMPOSE_ARGS up -d --no-build \$INSTALL_SERVICES/);
   assert.match(installer, /APP_GIT_SHA/);
   assert.match(installer, /APP_BUILD_TIME/);
   assert.match(installer, /--no-monitor\)\s+DO_MONITOR=0/);

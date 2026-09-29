@@ -103,6 +103,8 @@ function runRebuild(t, overrides = {}) {
       STUB_LOG: log,
       STUB_COUNT: join(dir, 'build-attempts'),
       STUB_BUILD_EXIT: '0',
+      // Пауза перед повтором нужна живому демону, а не тесту.
+      UPDATE_BUILD_RETRY_DELAY: '0',
       ...overrides,
     },
   });
@@ -112,7 +114,12 @@ function runRebuild(t, overrides = {}) {
 test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t) => {
   const run = runRebuild(t);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  assert.match(run.calls, /\[docker\].* build --no-cache web jobs\n/);
+  // Образы собираются по одному (web последним): параллельные таргеты душили
+  // диск и роняли сборку по дедлайну BuildKit — см. edrc_build_each.
+  assert.match(run.calls, /\[docker\].* build --no-cache jobs\n/);
+  assert.match(run.calls, /\[docker\].* build --no-cache web\n/);
+  const order = run.calls.split('\n').filter((line) => line.includes(' build '));
+  assert.ok(order[order.length - 1].endsWith(' web'), 'web собирается последним: ' + order.join(' | '));
   assert.match(run.stdout, /ПОЛНАЯ ПЕРЕСБОРКА без кэша/);
   assert.match(run.calls, /\[docker\].* up -d web jobs\n/);
 });
@@ -122,7 +129,7 @@ test('rebuild-now: USE_CACHE=1 reuses layers and preserves the Supabase Compose 
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const build = run.calls.split('\n').find((line) => line.includes(' build '));
   assert.ok(build, 'the image is still built');
-  assert.match(build, /-f deploy\/compose\.supabase-net\.yml --profile monitoring build web jobs$/);
+  assert.match(build, /-f deploy\/compose\.supabase-net\.yml --profile monitoring build jobs$/);
   assert.doesNotMatch(build, /--no-cache/);
   assert.match(run.stdout, /ПЕРЕСБОРКА с кэшем/);
   assert.match(run.calls, /-f deploy\/compose\.supabase-net\.yml --profile monitoring up -d web jobs/);
@@ -134,9 +141,11 @@ for (const useCache of ['0', '1']) {
   test(`rebuild-now: failed build never replaces containers, but cleans up and retries (USE_CACHE=${useCache})`, { skip }, (t) => {
     const run = runRebuild(t, { USE_CACHE: useCache, STUB_BUILD_EXIT: '17' });
     assert.equal(run.status, 17, run.stdout + run.stderr);
-    // Постоянный сбой: один автоповтор (UPDATE_BUILD_RETRIES=1) — две попытки.
+    // Постоянный сбой: два автоповтора (UPDATE_BUILD_RETRIES=2) — три попытки
+    // одного и того же образа; до следующего образа дело не доходит.
     const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
-    assert.equal(builds.length, 2, 'один автоповтор после уборки');
+    assert.equal(builds.length, 3, 'два автоповтора после уборки');
+    assert.ok(builds.every((line) => line.endsWith(' jobs')), 'повторяется упавший образ: ' + builds.join(' | '));
     assert.match(run.stdout, /пробую собрать ещё раз/);
     // Работающие контейнеры НЕ трогаем, health не опрашиваем.
     assert.doesNotMatch(run.calls, / up -d /);
@@ -153,8 +162,9 @@ test('rebuild-now: кратковременный сбой сборки пере
   const run = runRebuild(t, { STUB_BUILD_FAIL_ONCE: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
-  assert.equal(builds.length, 2, 'первая попытка умерла дедлайном — вторая доехала');
-  assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 2\) после уборки/);
+  // Два образа по одному + один повтор сорвавшегося первого.
+  assert.equal(builds.length, 3, 'первая попытка умерла дедлайном — вторая доехала');
+  assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 3\) после уборки/);
   assert.match(run.calls, / up -d /, 'успех доходит до переключения контейнеров');
   assert.match(run.calls, /\[curl\]/);
 });
@@ -183,7 +193,7 @@ test('rebuild-now: без BuildKit web собирается по запасно�
   const run = runRebuild(t, { STUB_BUILDX_EXIT: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const build = run.calls.split('\n').find((line) => line.includes(' build '));
-  assert.match(build, /-f deploy\/compose\.supabase-net\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache web jobs$/);
+  assert.match(build, /-f deploy\/compose\.supabase-net\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache jobs$/);
   assert.match(run.stdout, /BuildKit недоступен/);
   // Запасной Dockerfile сгенерирован из основного: убраны только --mount,
   // сами команды (npm ci, next build) не тронуты.
@@ -210,7 +220,7 @@ test('rebuild-now: EDRC_FORCE_LEGACY_BUILD=1 собирает без кэш-ма
   const run = runRebuild(t, { EDRC_FORCE_LEGACY_BUILD: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
   const build = run.calls.split('\n').find((line) => line.includes(' build '));
-  assert.match(build, /-f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache web jobs$/);
+  assert.match(build, /-f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache jobs$/);
 });
 
 test('Docker builder inherits installed dependencies without a node_modules copy', () => {

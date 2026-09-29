@@ -153,6 +153,16 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
   серия сорвавшихся сборок больше не распухает и не замедляет следующую.
   Бюджет кэша — `UPDATE_DOCKER_CACHE_KEEP` (по умолчанию `8g`, см.
   `MONITORING.md` → «Уборка диска после обновления»);
+- **образы собираются по одному, `web` — последним** (`edrc_build_each`).
+  Общий `compose build web jobs monitor-agent update-agent` запускал все
+  четыре таргета параллельно: на слабом диске они дрались за I/O, полностью
+  закэшированные стадии ползли («load build definition» на 7 КБ — 43 с), и
+  первым по дедлайну BuildKit ронял случайный лёгкий образ уже ПОСЛЕ его
+  «exporting to image … DONE» — в журнале это выглядело как
+  `target update-agent: failed to solve: DeadlineExceeded`, хотя с агентом
+  обновления ничего не случилось. Теперь у каждого образа свой вызов, свой
+  автоповтор и своя строка в журнале («── собираю образ: web ──»), а падение
+  web не заставляет пересобирать агентов;
 - сборка идёт под стражем диска и с автоповтором
   (`edrc_build_with_retry`): **до старта** проверяется фактически свободное
   место на диске Docker — меньше `UPDATE_DOCKER_MIN_FREE` (по умолчанию
@@ -161,8 +171,20 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
   причиной («не хватает места (no space)»), а не ползёт час до дедлайна.
   При срыве сборки **остатки вычищаются сразу** (кэш failed-сборки не копит
   диск), и сборка повторяется сама в пределах `UPDATE_BUILD_RETRIES`
-  (по умолчанию 1 повтор): кратковременный дедлайн или мигание сети не
-  требуют ручного перезапуска обновления;
+  (по умолчанию 2 повтора) с паузой `UPDATE_BUILD_RETRY_DELAY` (20 с — демон
+  успевает разгрести прерванную сборку, иначе повтор попадает в ту же яму):
+  кратковременный дедлайн или мигание сети не требуют ручного перезапуска
+  обновления;
+- **сборка не ходит в Docker Hub за фронтендом Dockerfile.** Директива
+  `# syntax=docker/dockerfile:1` убрана: с ней BuildKit на каждом прогоне
+  резолвил образ фронтенда в реестре («resolve image config for
+  docker-image://docker.io/docker/dockerfile:1» — десятки секунд, а на
+  мигающем канале обрыв). `RUN --mount=type=cache` понимает и встроенный
+  фронтенд BuildKit. Если внешний фронтенд зачем-то нужен:
+  `docker compose build --build-arg BUILDKIT_SYNTAX=docker/dockerfile:1 web`;
+- при тесном диске (свободно меньше двойного `UPDATE_DOCKER_MIN_FREE`) кэш
+  BuildKit перед сборкой подрезается жёстче обычного — до
+  `UPDATE_DOCKER_CACHE_KEEP_TIGHT` (по умолчанию `2g`);
 - «npm notice New major version of npm available!» — безвредное уведомление
   САМОЙ npm (её версия зашита в базовый образ `node:22-alpine`, к проекту
   отношения не имеет). В сборках образа и в обновлении оно отключено
@@ -170,8 +192,15 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
 - у полного обновления лимита времени нет: `UPDATE_TIMEOUT_MINUTES` устарела
   и игнорируется при любом значении. Строку `UPDATE_TIMEOUT_MINUTES=45` из
   `.env.production` можно удалить; живой прогон останавливается только кнопкой;
-- `failed to solve: DeadlineExceeded: context deadline exceeded` имеет ДВЕ
+- `failed to solve: DeadlineExceeded: context deadline exceeded` имеет ТРИ
   типовых причины, смотрите контекст вокруг строки лога:
+  - **`target <лёгкий образ>: failed to solve` через минуту после его же
+    «exporting to image … DONE»** (обычно `update-agent`, `jobs` или
+    `monitor-agent`, все стадии CACHED) — это не тот образ виноват: четыре
+    таргета собирались параллельно и задушили диск. Лечится сборкой по
+    одному образу (`edrc_build_each`, включено по умолчанию). Если запускаете
+    `docker compose build` руками — собирайте сервисы по очереди, а не
+    списком;
   - на шаге `resolving provenance for metadata file` — это НЕ сама сборка
     (образы к этому моменту уже готовы), а запись provenance-аттестации:
     buildx по умолчанию в конце сборки ходит в Docker Hub за манифестом

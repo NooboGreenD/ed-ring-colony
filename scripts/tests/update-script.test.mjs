@@ -149,6 +149,8 @@ function setup() {
     HEALTH_TRIES: '2',
     SUPABASE_CONTAINER: 'supabase-db',
     UPDATE_APPLY_MIGRATIONS: '1',
+    // Пауза между попытками сборки нужна живому демону, а не тесту.
+    UPDATE_BUILD_RETRY_DELAY: '0',
   };
 
   spawnSync('git', ['init', '-q', '--initial-branch=main', '--bare', origin], { encoding: 'utf8' });
@@ -243,7 +245,12 @@ test('первое обновление: перемотка, применени�
     assert.match(calls, /psql -U postgres -d postgres -q -v ON_ERROR_STOP=1/);
     // Сборка и переключение — два отдельных шага: упавший build не трогает
     // работающие контейнеры, а RUN_TESTS уезжает явным --build-arg.
-    assert.match(calls, /compose --env-file .* build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
+    // Образы собираются по одному (см. отдельный тест про порядок) —
+    // проверяем, что каждый из четырёх получил свой вызов с тем же env-file.
+    for (const service of ['web', 'jobs', 'monitor-agent', 'update-agent']) {
+      assert.match(calls, new RegExp('compose --env-file .* build --build-arg RUN_TESTS=1 ' + service + '\\n'),
+        'образ ' + service + ' собран отдельным вызовом');
+    }
     assert.match(calls, /compose --env-file .* up -d --no-build web jobs monitor-agent/);
     // Provenance-аттестации выключены по умолчанию: их запись — лишний вызов
     // Docker Hub уже ПОСЛЕ собранных образов («resolving provenance for
@@ -290,7 +297,7 @@ test('без BuildKit: web собирается по запасному Dockerfi
     const run = ctx.run({ STUB_BUILDX_EXIT: '1' });
     assert.equal(run.status, 0, run.stdout + run.stderr);
     const calls = readFileSync(ctx.log, 'utf8');
-    assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
+    assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --build-arg RUN_TESTS=1 web\n/);
     // Переключение — тот же список -f, образ тот же: контейнеры поднимаются.
     assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring up -d --no-build web jobs monitor-agent/);
     assert.match(run.stdout, /BuildKit недоступен/);
@@ -324,7 +331,7 @@ test('повторный запуск: пересборка без перемо�
     assert.equal(done.migrationsApplied, 0, 'всё уже отмечено — накатывать нечего');
     assert.equal(done.fromSha, done.toSha, 'ревизия не менялась');
     const calls = readFileSync(ctx.log, 'utf8');
-    assert.match(calls, /build --build-arg RUN_TESTS=1 web jobs monitor-agent/, 'повторный прогон всё равно пересобирает');
+    assert.match(calls, /build --build-arg RUN_TESTS=1 web\n/, 'повторный прогон всё равно пересобирает');
     assert.match(calls, /up -d --no-build web jobs monitor-agent/, 'и переключает контейнеры на новый образ');
     assert.equal(calls.includes('psql'), false, 'отмеченная миграция не накатывается второй раз');
     // Дамп больше не привязан к наличию миграций: его решает флажок
@@ -417,12 +424,18 @@ test('упавшая сборка: в панель уходит причина, 
       if (line.includes(' build ') && line.includes('--build-arg')) buildAt.push(i);
       if (line.includes('builder prune -f')) pruneAt.push(i);
     });
-    assert.equal(buildAt.length, 2, 'один автоповтор после уборки: было 2 попытки сборки');
+    assert.equal(buildAt.length, 3, 'два автоповтора после уборки: всего 3 попытки (UPDATE_BUILD_RETRIES=2)');
     assert.ok(pruneAt.some((i) => i > buildAt[0] && i < buildAt[1]),
       'остатки первой сорвавшейся попытки вычищены до ретрая');
-    assert.ok(pruneAt.some((i) => i > buildAt[1]),
-      'остатки второй попытки тоже вычищены — кэш failed-сборки не остаётся');
+    assert.ok(pruneAt.some((i) => i > buildAt[2]),
+      'остатки последней попытки тоже вычищены — кэш failed-сборки не остаётся');
     assert.match(run.stdout, /пробую собрать ещё раз/);
+    // Упавший образ не тянет за собой остальные: пока первый не собрался,
+    // до следующих дело не доходит (раньше падал весь общий build).
+    const attempted = [...new Set(lines
+      .filter((line) => line.includes(' build ') && line.includes('--build-arg'))
+      .map((line) => line.trim().split(' ').pop()))];
+    assert.deepEqual(attempted, ['jobs'], 'все три попытки — один и тот же образ: ' + attempted.join(','));
   } finally {
     ctx.cleanup();
   }
@@ -443,8 +456,9 @@ test('мигание сборки: автоповтор после уборки 
     lines.forEach((line, i) => {
       if (line.includes(' build ') && line.includes('--build-arg')) buildAt.push(i);
     });
-    assert.equal(buildAt.length, 2, 'одна повторная попытка, не больше');
-    assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 2\) после уборки/);
+    // Четыре образа по одному + одна повторная попытка сорвавшегося первого.
+    assert.equal(buildAt.length, 5, 'повтор ровно один, остальные образы собираются по разу');
+    assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 3\) после уборки/);
     const pruneBetween = lines
       .slice(buildAt[0] + 1, buildAt[1])
       .some((line) => line.includes('builder prune -f'));
@@ -452,6 +466,76 @@ test('мигание сборки: автоповтор после уборки 
     // Успех доходит до переключения контейнеров и финального done.
     assert.match(readFileSync(ctx.log, 'utf8'), /up -d --no-build web jobs monitor-agent/);
     assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('сборка идёт по одному образу, web — последним', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+
+    // Прод-инцидент: общий `compose build web jobs monitor-agent update-agent`
+    // запускал все таргеты параллельно, они дрались за диск, и BuildKit ронял
+    // сборку по своему дедлайну на СЛУЧАЙНОМ лёгком образе, уже выгруженном
+    // в docker («target update-agent: failed to solve: DeadlineExceeded»
+    // спустя минуту после его же «exporting to image … DONE»).
+    const builds = readFileSync(ctx.log, 'utf8')
+      .split('\n')
+      .filter((line) => line.includes(' build ') && line.includes('--build-arg'));
+    assert.equal(builds.length, 4, 'по одному вызову на образ: ' + builds.join(' | '));
+
+    const services = builds.map((line) => line.trim().split(' ').slice(-1)[0]);
+    assert.deepEqual(services.slice().sort(), ['jobs', 'monitor-agent', 'update-agent', 'web'].sort(),
+      'собраны все сервисы стека и образ агента обновления');
+    assert.equal(services[services.length - 1], 'web',
+      'тяжёлый web идёт последним, когда лёгкие образы уже закрыты');
+    for (const line of builds) {
+      const tail = line.slice(line.indexOf(' build ') + ' build '.length);
+      const names = tail.split(' ').filter((word) => !word.startsWith('-') && !word.includes('='));
+      assert.equal(names.length, 1, 'в одном вызове ровно один сервис: ' + line);
+    }
+    // Порядок «сначала лёгкие» виден и человеку в журнале обновления.
+    assert.match(run.stdout, /── собираю образ: web ──/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('тесный диск: кэш BuildKit подрезается жёстче, сборка всё равно идёт', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // 5 ГБ свободно: порога UPDATE_DOCKER_MIN_FREE (4g) хватает, но запаса
+    // почти нет. Держать 8 ГБ кэша в таких условиях — значит гнать сборку по
+    // остаткам диска, где даже передача килобайт занимает десятки секунд
+    // (ровно то, чем начинался прод-инцидент с DeadlineExceeded).
+    const dfFile = join(ctx.work, 'df-free');
+    writeFileSync(dfFile, '5242880');
+    const run = ctx.run({ STUB_DF_FILE: dfFile });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.match(calls, /builder prune -f --keep-storage 2g --all/, 'бюджет кэша урезан до 2g');
+    assert.match(run.stdout, /подрезаю кэш BuildKit жёстче обычного/);
+    assert.match(calls, / build --build-arg /, 'сборка при этом не блокируется');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('повтор сборки идёт после паузы: демону дают разгрести прерванную попытку', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    const started = Date.now();
+    const run = ctx.run({ STUB_BUILD_FAIL_ONCE: '1', UPDATE_BUILD_RETRY_DELAY: '2' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /жду 2 с, чтобы демон Docker разгрёб остатки/);
+    assert.ok(Date.now() - started >= 2000, 'пауза действительно выдержана');
   } finally {
     ctx.cleanup();
   }

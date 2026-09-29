@@ -489,13 +489,20 @@ if [ "$MODE" = "compose" ]; then
     export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
   fi
   report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
-  if declare -F edrc_build_with_retry >/dev/null 2>&1; then
-    # Сборка под тремя защитами (compose-lib.sh): проверка свободного места
-    # на диске Docker ДО старта; немедленная уборка кэша каждой сорвавшейся
-    # попытки (раньше уборка шла только после успеха — кэш failed-сборок
-    # безгранично ел диск); авто-повтор после уборки: кратковременный сбой
-    # демона/сети («DeadlineExceeded: context deadline exceeded» на ползущих
-    # от забитого диска передачах) переживается без ручного перезапуска.
+  if declare -F edrc_build_each >/dev/null 2>&1; then
+    # Сборка под четырьмя защитами (compose-lib.sh):
+    #   • образы собираются ПО ОДНОМУ, web — последним. Параллельные таргеты
+    #     дерутся за диск, и на нагруженной машине первым падал случайный
+    #     лёгкий образ, уже выгруженный в docker: «target update-agent:
+    #     failed to solve: DeadlineExceeded» через минуту после своего же
+    #     «exporting to image … DONE»;
+    #   • проверка свободного места на диске Docker ДО старта;
+    #   • немедленная уборка кэша каждой сорвавшейся попытки (раньше уборка
+    #     шла только после успеха — кэш failed-сборок безгранично ел диск);
+    #   • авто-повтор с паузой: кратковременный сбой демона/сети переживается
+    #     без ручного перезапуска, и повторяется только упавший образ.
+    run_step "сборка образов" edrc_build_each compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" -- $BUILD_SERVICES
+  elif declare -F edrc_build_with_retry >/dev/null 2>&1; then
     run_step "сборка образов" edrc_build_with_retry compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
   else
     run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
