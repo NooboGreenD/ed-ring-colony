@@ -47,10 +47,13 @@ import type {
 } from './types.ts';
 
 /** Версия формата плана: меняется, если меняется структура `ArchitectPlan`. */
-export const PLAN_FORMAT_VERSION = 2;
+export const PLAN_FORMAT_VERSION = 3;
 
 /** Потолок наземных слотов у одного тела. */
 export const SURFACE_SLOT_LIMIT = 7;
+
+/** Защита от случайного ввода нереалистичного числа орбитальных слотов. */
+export const ORBITAL_SLOT_LIMIT = 12;
 
 /** Горячее этого наземную постройку не поставить. */
 export const SURFACE_MAX_TEMP_K = 700;
@@ -353,13 +356,37 @@ export function surfaceSlotReason(body: ArchitectBody | null | undefined): strin
 }
 
 /**
- * Сколько орбитальных построек вмещает тело. `null` — без жёсткого лимита:
- * орбитальные установки в игре ограничены не слотами, а очками системы.
+ * Сколько орбитальных построек вмещает тело. `null` — без жёсткого лимита.
+ *
+ * Внешние каталоги тел не передают игровые орбитальные площадки. Поэтому для
+ * планет и лун безопасное начальное значение — 0: доступными становятся только
+ * тела, которым пользователь подтвердил число слотов на карточке. Звёзды
+ * сохраняют прежнее поведение без жёсткого лимита.
  */
-export function orbitalLimit(body: ArchitectBody | null | undefined): number | null {
+export function orbitalLimit(
+  body: ArchitectBody | null | undefined,
+  plan?: Pick<ArchitectPlan, 'orbitalSlots' | 'system'> | null,
+): number | null {
   if (!body) return 0;
-  if (body.kind === 'moon') return 0;
-  return null;
+  if (body.kind === 'star') return null;
+  for (const [bodyName, slots] of Object.entries(plan?.orbitalSlots ?? {})) {
+    if (sameBodyName(bodyName, body.name, plan?.system)) return slots;
+  }
+  return 0;
+}
+
+/** Записать подтверждённое пользователем число орбитальных слотов тела. */
+export function setOrbitalSlots(plan: ArchitectPlan, bodyName: string, slots: number): ArchitectPlan {
+  const name = bodyName.trim().slice(0, 120);
+  if (!name) return plan;
+  const value = Math.max(0, Math.min(ORBITAL_SLOT_LIMIT, Math.trunc(Number(slots) || 0)));
+  const orbitalSlots = { ...plan.orbitalSlots };
+  // Не плодим ключи для разных написаний одного и того же тела.
+  for (const knownName of Object.keys(orbitalSlots)) {
+    if (knownName !== name && sameBodyName(knownName, name, plan.system)) delete orbitalSlots[knownName];
+  }
+  orbitalSlots[name] = value;
+  return touched({ ...plan, orbitalSlots });
 }
 
 function needsPreReq(installation: ArchitectInstallation, sites: PlannedSite[]): string | null {
@@ -400,8 +427,12 @@ export function placementCheck(
       errors.push(`Свободных наземных слотов нет: занято ${limit} из ${limit}`);
     }
   } else {
-    const limit = orbitalLimit(body);
-    if (limit === 0) errors.push('Орбитальные постройки вокруг лун недоступны');
+    const limit = orbitalLimit(body, plan);
+    const used = others.filter((site) => getInstallation(site.installationId)?.location === 'orbital').length;
+    if (limit === 0) errors.push('У тела нет доступных орбитальных слотов');
+    else if (limit !== null && used >= limit) {
+      errors.push(`Свободных орбитальных слотов нет: занято ${limit} из ${limit}`);
+    }
     if (installation.id === 'asteroid' && !body.hasRings) {
       errors.push('Астероидная база ставится только у пояса астероидов');
     }
@@ -446,6 +477,7 @@ export function createPlan(system: string, architect = ''): ArchitectPlan {
     updatedAt: now,
     notes: '',
     sites: [],
+    orbitalSlots: {},
   };
 }
 
@@ -659,6 +691,7 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
   const effects: SystemEffects = { ...EMPTY_EFFECTS };
   const economies: Partial<Record<SystemEconomy, number>> = {};
   const surfaceUsage: PlanEvaluation['surfaceUsage'] = {};
+  const orbitalUsage: PlanEvaluation['orbitalUsage'] = {};
   let score = 0;
   let haulTons = 0;
   let taxStep = -2;
@@ -760,6 +793,14 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
       usage.used += 1;
       usage.limit = limit;
       surfaceUsage[key] = usage;
+    } else {
+      const body = bodyOf(site.bodyName);
+      const limit = orbitalLimit(body, plan);
+      const key = body?.name ?? site.bodyName;
+      const usage = orbitalUsage[key] ?? { used: 0, limit };
+      usage.used += 1;
+      usage.limit = limit;
+      orbitalUsage[key] = usage;
     }
 
     // Снимок бюджета после шага — из него инфографика рисует график очков.
@@ -833,6 +874,7 @@ export function evaluatePlan(plan: ArchitectPlan, bodies: ArchitectBody[] = []):
     unlocks,
     issues,
     surfaceUsage,
+    orbitalUsage,
   };
 }
 
@@ -914,6 +956,24 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
   }
 
   const system = str(record.system ?? record.systemName) || 'Неизвестная система';
+  const orbitalSlots: Record<string, number> = {};
+  const rawOrbitalSlots = asRecord(record.orbitalSlots ?? record.orbital_slots);
+  for (const [rawName, rawSlots] of Object.entries(rawOrbitalSlots ?? {})) {
+    const name = rawName.trim().slice(0, 120);
+    const slots = Math.trunc(num(rawSlots));
+    if (name && Number.isFinite(slots) && slots >= 0) orbitalSlots[name] = Math.min(slots, ORBITAL_SLOT_LIMIT);
+  }
+  // Старые планы не знали лимита. Сохраняем уже запланированные орбитальные
+  // объекты доступными, даже если их на одном теле больше нового дефолта.
+  if (version > 0 && version < 3) {
+    for (const site of sites) {
+      if (getInstallation(site.installationId)?.location !== 'orbital') continue;
+      const knownName = Object.keys(orbitalSlots).find((name) => sameBodyName(name, site.bodyName, system));
+      const key = knownName ?? site.bodyName;
+      orbitalSlots[key] = (orbitalSlots[key] ?? 0) + 1;
+    }
+  }
+
   const now = new Date().toISOString();
   return {
     plan: {
@@ -924,6 +984,7 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
       updatedAt: now,
       notes: str(record.notes).slice(0, 2000),
       sites,
+      orbitalSlots,
     },
     warning: warnings.length ? warnings.join('; ') : undefined,
   };

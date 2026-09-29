@@ -31,6 +31,7 @@ import {
   predictSurfaceSlots,
   removeSite,
   serializePlan,
+  setOrbitalSlots,
   setSitePrimary,
   setSiteStatus,
   summarizePlan,
@@ -151,25 +152,34 @@ test('наземные слоты: база по радиусу, бонусы з
   assert.equal(predictSurfaceSlots(null), 0);
 });
 
-test('орбитальные постройки: луны не принимают, астероидная база требует пояс', () => {
+test('орбитальные постройки: слоты планет и лун редактируются, астероидная база требует пояс', () => {
   const bodies = bodiesFixture();
   const moon = bodies[2];
   const planet = bodies[1];
-  const plan = createPlan('Test');
+  let plan = createPlan('Test');
 
-  assert.equal(orbitalLimit(moon), 0);
-  assert.equal(orbitalLimit(planet), null);
+  assert.equal(orbitalLimit(moon, plan), 0);
+  assert.equal(orbitalLimit(planet, plan), 0);
 
-  const onMoon = placementCheck(moon, 'vesta', plan);
-  assert.equal(onMoon.ok, false);
-  assert.match(onMoon.errors[0], /вокруг лун недоступны/);
+  const blockedMoon = placementCheck(moon, 'vesta', plan);
+  assert.equal(blockedMoon.ok, false);
+  assert.match(blockedMoon.errors[0], /нет доступных орбитальных слотов/);
 
+  plan = setOrbitalSlots(plan, moon.name, 2);
+  assert.equal(orbitalLimit(moon, plan), 2);
+  assert.equal(placementCheck(moon, 'vesta', plan).ok, true);
+  plan = addSite(plan, moon.name, 'vesta');
+  plan = addSite(plan, moon.name, 'vesta');
+  assert.match(placementCheck(moon, 'vesta', plan).errors[0], /Свободных орбитальных слотов нет/);
+
+  plan = setOrbitalSlots(plan, planet.name, 1);
   const asteroid = placementCheck(planet, 'asteroid', plan);
   assert.equal(asteroid.ok, false);
   assert.match(asteroid.errors[0], /пояса астероидов/);
 
   const [ringed] = fromScanRecords([scanRow({ rings: [{ name: 'Test A 1 A Ring' }], is_landable: false })]);
-  assert.equal(placementCheck(ringed, 'asteroid', plan).ok, true);
+  const ringedPlan = setOrbitalSlots(plan, ringed.name, 1);
+  assert.equal(placementCheck(ringed, 'asteroid', ringedPlan).ok, true);
 });
 
 test('наземную постройку нельзя поставить на звезду и в занятые слоты', () => {
@@ -190,7 +200,7 @@ test('наземную постройку нельзя поставить на �
 test('предшественник обязателен: военная установка без военного поселения не ставится', () => {
   const bodies = bodiesFixture();
   const planet = bodies[1];
-  const empty = createPlan('Test');
+  const empty = setOrbitalSlots(createPlan('Test'), planet.name, 1);
 
   const blocked = placementCheck(planet, 'vacuna', empty);
   assert.equal(blocked.ok, false);
@@ -224,6 +234,8 @@ test('очки системы: первый порт бесплатный, ав�
   ], 'Test');
 
   let plan = createPlan('Test', 'CMDR Tester');
+  plan = setOrbitalSlots(plan, 'Test A 1', 1);
+  plan = setOrbitalSlots(plan, 'Test A 2', 1);
   plan = addSite(plan, 'Test A', 'no_truss', { primary: true });   // основной порт: бесплатно, даёт 1 очко T3
   plan = addSite(plan, 'Test A 1', 'vesta');    // аванпост T1: даёт 1 очко T2
   plan = addSite(plan, 'Test A 2', 'plutus');   // аванпост T1: даёт 1 очко T2
@@ -261,9 +273,11 @@ test('четыре порта: первый бесплатный, два сле�
 
   let plan = createPlan('Test');
   for (let index = 1; index <= 12; index += 1) {
+    plan = setOrbitalSlots(plan, `Test A ${index}`, 1);
     plan = addSite(plan, `Test A ${index}`, 'plutus');
   }
   for (let index = 13; index <= 16; index += 1) {
+    plan = setOrbitalSlots(plan, `Test A ${index}`, 1);
     plan = addSite(plan, `Test A ${index}`, 'no_truss', index === 13 ? { primary: true } : {});
   }
 
@@ -283,6 +297,7 @@ test('нехватка очков — ошибка плана с указани�
   ], 'Test');
 
   let plan = createPlan('Test');
+  plan = setOrbitalSlots(plan, 'Test A 1', 1);
   plan = addSite(plan, 'Test A', 'no_truss', { primary: true });
   plan = addSite(plan, 'Test A 1', 'no_truss');
 
@@ -359,12 +374,14 @@ test('экспорт и импорт плана сохраняют записи 
   let plan = createPlan('Test', 'CMDR Tester');
   plan = addSite(plan, 'Test A 1', 'consus', { note: 'первая очередь' });
   plan = addSite(plan, 'Test A', 'vesta');
+  plan = setOrbitalSlots(plan, 'Test A 1', 3);
 
   const parsed = parsePlan(serializePlan(plan));
   assert.equal(parsed.error, undefined);
   assert.equal(parsed.warning, undefined);
   assert.equal(parsed.plan.system, 'Test');
   assert.equal(parsed.plan.architect, 'CMDR Tester');
+  assert.equal(parsed.plan.orbitalSlots['Test A 1'], 3);
   assert.deepEqual(
     parsed.plan.sites.map((site) => [site.bodyName, site.installationId, site.note]),
     plan.sites.map((site) => [site.bodyName, site.installationId, site.note]),
