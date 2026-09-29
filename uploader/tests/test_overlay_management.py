@@ -132,7 +132,21 @@ class _ManagerTestCase(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 class BlockSettingHelpersTests(unittest.TestCase):
-    """Чистые функции настроек блоков."""
+    """Чистые функции настроек блоков и единого визуального языка."""
+
+    def test_strict_hud_metadata_covers_every_overlay(self):
+        from overlay import OVERLAY_META, OverlayManager
+
+        self.assertEqual(set(OVERLAY_META), set(OverlayManager.BLOCKS))
+        codes = [OVERLAY_META[key][0] for key in OverlayManager.BLOCKS]
+        self.assertEqual(len(codes), len(set(codes)))
+        self.assertEqual(codes, [f"{index:02d}" for index in range(1, 9)])
+
+    def test_section_caption_keeps_dynamic_value_case(self):
+        from overlay import _section_text
+
+        self.assertEqual(_section_text("D", "Поиск планет · найдено 8"),
+                         "D / Поиск планет · найдено 8")
 
     def test_preset_size_is_multiple_of_default(self):
         from overlay import DEFAULT_BLOCK_POSITIONS, preset_size

@@ -167,22 +167,40 @@ def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0) -> bool:
 # ============================================================
 #  Цветовая схема в стиле ED Ring Colony сайта
 # ============================================================
-COLOR_BG = "#0d1117"
-COLOR_PANEL = "#161b22"
-COLOR_PANEL_HOVER = "#1c2128"
-COLOR_TEXT = "#e6edf3"
-COLOR_TEXT_MUTED = "#8b949e"
-COLOR_ACCENT = "#e67e22"
-COLOR_ACCENT_HOVER = "#f39c12"
-COLOR_CYAN = "#58a6ff"
-COLOR_GREEN = "#238636"
-COLOR_GREEN_TEXT = "#3fb950"
-COLOR_RED = "#da3633"
-COLOR_RED_TEXT = "#f85149"
-COLOR_YELLOW = "#d29922"
-COLOR_BORDER = "#30363d"
-COLOR_BORDER_ACTIVE = "#58a6ff"
-COLOR_LINE = "#21262d"
+# Палитра остаётся узнаваемой (графит + ED-orange), но стала строже:
+# меньше случайных оттенков, выше контраст между корпусом, секциями и данными.
+COLOR_BG = "#090d12"
+COLOR_PANEL = "#111820"
+COLOR_PANEL_ALT = "#141d26"
+COLOR_SURFACE = "#18222c"
+COLOR_PANEL_HOVER = "#1d2935"
+COLOR_TEXT = "#e8edf2"
+COLOR_TEXT_MUTED = "#8794a1"
+COLOR_TEXT_DIM = "#5f6b76"
+COLOR_ACCENT = "#df7b24"
+COLOR_ACCENT_HOVER = "#f0953f"
+COLOR_CYAN = "#61a9d8"
+COLOR_GREEN = "#246b45"
+COLOR_GREEN_TEXT = "#55bd82"
+COLOR_RED = "#9e3940"
+COLOR_RED_TEXT = "#ef6a70"
+COLOR_YELLOW = "#d2a84a"
+COLOR_BORDER = "#34414d"
+COLOR_BORDER_ACTIVE = "#61a9d8"
+COLOR_LINE = "#26313b"
+
+# Номер и назначение блока образуют единый визуальный язык всех восьми
+# оверлеев. Номер помогает быстро узнавать блок боковым зрением в игре.
+OVERLAY_META = {
+    "route": ("01", "NAVIGATION"),
+    "status": ("02", "CONNECTION"),
+    "ship": ("03", "VESSEL"),
+    "cargo": ("04", "HOLD"),
+    "session": ("05", "ACTIVITY"),
+    "events": ("06", "EVENT LOG"),
+    "exobio": ("07", "ANALYSIS"),
+    "carrier": ("08", "FLEET CARRIER"),
+}
 
 
 # ============================================================
@@ -257,6 +275,45 @@ format_table.font_family = "Consolas"
 def _make_separator(parent, color=COLOR_LINE) -> tk.Frame:
     sep = tk.Frame(parent, bg=color, height=1)
     return sep
+
+
+def _section_header(parent, text: str, font_family: str = "Consolas",
+                    font_size: int = 8, index: str = "") -> tk.Frame:
+    """Строгий заголовок секции: индекс, название и продолжающая линия.
+
+    Одинаковая конструкция во всех блоках убирает визуальную «простыню» и
+    даёт данным предсказуемую иерархию, не меняя HUD-стиль приложения.
+    """
+    row = tk.Frame(parent, bg=COLOR_PANEL)
+    if index:
+        tk.Label(row, text=index, font=(font_family, max(7, font_size), "bold"),
+                 fg=COLOR_ACCENT, bg=COLOR_PANEL, width=3, anchor=tk.W).pack(side=tk.LEFT)
+    tk.Label(row, text=str(text).upper(),
+             font=(font_family, max(7, font_size), "bold"),
+             fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W).pack(side=tk.LEFT)
+    line = tk.Frame(row, bg=COLOR_LINE, height=1)
+    line.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(7, 0))
+    return row
+
+
+def _section_text(index: str, text: str) -> str:
+    """Префикс секции без изменения регистра динамических значений."""
+    return f"{index} / {str(text).strip().rstrip(':')}"
+
+
+def _metric_row(parent, label: str, value: str, font_family: str, font_size: int,
+                value_color: str = COLOR_TEXT) -> tk.Label:
+    """Единая строка «подпись ........ значение» для компактных показателей."""
+    row = tk.Frame(parent, bg=COLOR_PANEL_ALT)
+    row.pack(fill=tk.X, pady=1)
+    tk.Label(row, text=str(label).upper(), font=(font_family, max(7, font_size - 1)),
+             fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT, anchor=tk.W,
+             padx=5, pady=2).pack(side=tk.LEFT)
+    output = tk.Label(row, text=value, font=(font_family, font_size, "bold"),
+                      fg=value_color, bg=COLOR_PANEL_ALT, anchor=tk.E,
+                      padx=5, pady=2)
+    output.pack(side=tk.RIGHT)
+    return output
 
 
 # ============================================================
@@ -617,28 +674,42 @@ class OverlayWindow:
         # Идёт ли сейчас перетаскивание/ресайз: пока да, Z-order не трогаем.
         self._dragging = False
 
-        # Главный контейнер с границей
-        self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=1)
+        # Главный контейнер: тонкая рамка и отдельная верхняя сигнальная линия.
+        # Раньше каждый блок выглядел просто набором Label на тёмном фоне;
+        # теперь у всех один строгий «корпус прибора».
+        self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=0)
         self.outer.pack(fill=tk.BOTH, expand=True)
+        self.signal_rail = tk.Frame(self.outer, bg=COLOR_ACCENT, height=2)
+        self.signal_rail.pack(fill=tk.X)
 
-        # Header
-        self.header = tk.Frame(self.outer, bg=COLOR_BG, height=26)
-        self.header.pack(fill=tk.X, padx=1, pady=(1, 0))
+        # Header: номер модуля / название / назначение / компактные controls.
+        self.header = tk.Frame(self.outer, bg=COLOR_BG, height=30)
+        self.header.pack(fill=tk.X, padx=1)
         self.header.pack_propagate(False)
 
-        # Цветной индикатор слева
-        self.header_indicator = tk.Frame(self.header, bg=COLOR_ACCENT, width=4)
-        self.header_indicator.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
+        code, purpose = OVERLAY_META.get(overlay_key, ("00", overlay_key.upper()))
+        self.header_indicator = tk.Frame(self.header, bg=COLOR_ACCENT, width=2)
+        self.header_indicator.pack(side=tk.LEFT, fill=tk.Y)
+        self.code_label = tk.Label(
+            self.header, text=code, font=("Consolas", 8, "bold"),
+            fg=COLOR_BG, bg=COLOR_ACCENT, width=3,
+        )
+        self.code_label.pack(side=tk.LEFT, fill=tk.Y)
 
-        # Заголовок
         self.title_label = tk.Label(
             self.header,
             text=title,
             font=(settings.get("font_family", "Consolas"), 9, "bold"),
-            fg=COLOR_ACCENT,
+            fg=COLOR_TEXT,
             bg=COLOR_BG,
         )
-        self.title_label.pack(side=tk.LEFT, padx=(0, 4))
+        self.title_label.pack(side=tk.LEFT, padx=(8, 5))
+        self.purpose_label = tk.Label(
+            self.header, text=f"/ {purpose}",
+            font=(settings.get("font_family", "Consolas"), 7),
+            fg=COLOR_TEXT_DIM, bg=COLOR_BG,
+        )
+        self.purpose_label.pack(side=tk.LEFT)
 
         # Кнопки управления
         self._build_control_buttons()
@@ -651,12 +722,13 @@ class OverlayWindow:
         self.title_label.bind("<B1-Motion>", self._on_drag_motion)
         self.title_label.bind("<ButtonRelease-1>", self._on_drag_release)
 
-        # Content
-        self.content = tk.Frame(self.outer, bg=COLOR_PANEL)
-        self.content.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+        # Content — одинаковые внутренние поля у всех блоков. Жёсткая сетка
+        # отступов делает списки и метрики спокойнее, не ломая размеры окон.
+        self.content = tk.Frame(self.outer, bg=COLOR_PANEL, padx=9, pady=7)
+        self.content.pack(fill=tk.BOTH, expand=True, padx=1, pady=(0, 1))
 
-        # Resize handle
-        self.resize_handle = tk.Frame(self.window, bg=COLOR_BORDER, width=12, height=12, cursor="size_nw_se")
+        # Resize handle — небольшой контрастный угол вместо заметного квадрата.
+        self.resize_handle = tk.Frame(self.window, bg=COLOR_ACCENT, width=10, height=10, cursor="size_nw_se")
         self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
         self.resize_handle.bind("<Button-1>", self._on_resize_start)
         self.resize_handle.bind("<B1-Motion>", self._on_resize_motion)
@@ -771,8 +843,8 @@ class OverlayWindow:
             self.settings[save_key] = enabled
         try:
             self.through_btn.config(
-                text=">" if self._click_through else "<",
-                fg=COLOR_CYAN if self._click_through else COLOR_TEXT_MUTED,
+                text="CT",
+                fg=COLOR_CYAN if self._click_through else COLOR_TEXT_DIM,
             )
         except Exception:
             pass
@@ -789,18 +861,20 @@ class OverlayWindow:
         btn_frame = tk.Frame(self.header, bg=COLOR_BG)
         btn_frame.pack(side=tk.RIGHT, padx=(0, 4))
 
-        lock_text = "L" if self._locked else "U"
+        lock_text = "LK" if self._locked else "UL"
         self.lock_btn = tk.Label(
             btn_frame, text=lock_text,
-            font=("Consolas", 8), fg=COLOR_TEXT_MUTED, bg=COLOR_BG,
+            font=("Consolas", 7, "bold"),
+            fg=COLOR_ACCENT if self._locked else COLOR_TEXT_DIM, bg=COLOR_BG,
             cursor="hand2", width=2
         )
         self.lock_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.lock_btn.bind("<Button-1>", lambda e: self._toggle_lock())
 
         self.through_btn = tk.Label(
-            btn_frame, text=">" if self._click_through else "<",
-            font=("Consolas", 8), fg=COLOR_CYAN if self._click_through else COLOR_TEXT_MUTED,
+            btn_frame, text="CT",
+            font=("Consolas", 7, "bold"),
+            fg=COLOR_CYAN if self._click_through else COLOR_TEXT_DIM,
             bg=COLOR_BG, cursor="hand2", width=2
         )
         self.through_btn.pack(side=tk.LEFT, padx=(0, 4))
@@ -808,16 +882,16 @@ class OverlayWindow:
             not self._click_through, f"{self.overlay_key}_click_through"))
 
         self.edit_btn = tk.Label(
-            btn_frame, text="*",
-            font=("Consolas", 10), fg=COLOR_TEXT_MUTED, bg=COLOR_BG,
-            cursor="hand2", width=2
+            btn_frame, text="···",
+            font=("Consolas", 8, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_BG,
+            cursor="hand2", width=3
         )
         self.edit_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.edit_btn.bind("<Button-1>", lambda e: self._show_edit_menu())
 
         self.drag_label = tk.Label(
-            btn_frame, text="=",
-            font=("Consolas", 10), fg=COLOR_TEXT_MUTED, bg=COLOR_BG,
+            btn_frame, text="::",
+            font=("Consolas", 8, "bold"), fg=COLOR_TEXT_DIM, bg=COLOR_BG,
             cursor="fleur" if not self._locked else "no",
             width=2
         )
@@ -831,7 +905,10 @@ class OverlayWindow:
         self._locked = bool(locked)
         self.settings[f"{self.overlay_key}_locked"] = self._locked
         try:
-            self.lock_btn.config(text="L" if self._locked else "U")
+            self.lock_btn.config(
+                text="LK" if self._locked else "UL",
+                fg=COLOR_ACCENT if self._locked else COLOR_TEXT_DIM,
+            )
             self.drag_label.config(cursor="no" if self._locked else "fleur")
         except Exception:
             pass
@@ -849,7 +926,13 @@ class OverlayWindow:
     def _flash_indicator(self, color: str, duration_ms: int = 300):
         try:
             self.header_indicator.config(bg=color)
-            self.window.after(duration_ms, lambda: self.header_indicator.config(bg=COLOR_ACCENT))
+            self.signal_rail.config(bg=color)
+
+            def restore():
+                self.header_indicator.config(bg=COLOR_ACCENT)
+                self.signal_rail.config(bg=COLOR_ACCENT)
+
+            self.window.after(duration_ms, restore)
         except Exception:
             pass
 
@@ -1182,21 +1265,29 @@ class RouteOverlay(OverlayWindow):
         self.progress_fill = tk.Frame(self.progress_bg, bg=COLOR_ACCENT, height=6, width=0)
         self.progress_fill.place(x=0, y=0)
 
-        tk.Label(self.content, text="CURRENT", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(anchor=tk.W)
-        self.current_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.current_frame.pack(fill=tk.X, pady=(2, 0))
-        self.current_dot = tk.Label(self.current_frame, text=">", font=(ff, 8), fg=COLOR_ACCENT, bg=COLOR_PANEL)
+        _section_header(self.content, "Current waypoint", ff, fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 3))
+        self.current_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        self.current_frame.pack(fill=tk.X)
+        self.current_dot = tk.Label(self.current_frame, text="■", font=(ff, 7),
+                                    fg=COLOR_ACCENT, bg=COLOR_PANEL_ALT)
         self.current_dot.pack(side=tk.LEFT)
-        self.current_label = tk.Label(self.current_frame, text="-", font=(ff, fs + 1, "bold"), fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
-        self.current_label.pack(side=tk.LEFT, padx=(4, 0))
+        self.current_label = tk.Label(
+            self.current_frame, text="-", font=(ff, fs + 1, "bold"),
+            fg=COLOR_TEXT, bg=COLOR_PANEL_ALT, anchor=tk.W)
+        self.current_label.pack(side=tk.LEFT, padx=(6, 0))
 
-        tk.Label(self.content, text="NEXT", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL).pack(anchor=tk.W, pady=(6, 0))
-        self.next_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.next_frame.pack(fill=tk.X, pady=(2, 0))
-        self.next_dot = tk.Label(self.next_frame, text=">", font=(ff, 8), fg=COLOR_CYAN, bg=COLOR_PANEL)
+        _section_header(self.content, "Next waypoint", ff, fs - 2, "B").pack(
+            fill=tk.X, pady=(7, 3))
+        self.next_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        self.next_frame.pack(fill=tk.X)
+        self.next_dot = tk.Label(self.next_frame, text="■", font=(ff, 7),
+                                 fg=COLOR_CYAN, bg=COLOR_PANEL_ALT)
         self.next_dot.pack(side=tk.LEFT)
-        self.next_label = tk.Label(self.next_frame, text="-", font=(ff, fs), fg=COLOR_CYAN, bg=COLOR_PANEL, anchor=tk.W)
-        self.next_label.pack(side=tk.LEFT, padx=(4, 0))
+        self.next_label = tk.Label(
+            self.next_frame, text="-", font=(ff, fs), fg=COLOR_CYAN,
+            bg=COLOR_PANEL_ALT, anchor=tk.W)
+        self.next_label.pack(side=tk.LEFT, padx=(6, 0))
 
         self.stats_frame = tk.Frame(self.content, bg=COLOR_PANEL)
         self.stats_frame.pack(fill=tk.X, pady=(6, 0))
@@ -1249,7 +1340,15 @@ class SessionEventsOverlay(OverlayWindow):
         super().__init__(master, "SESSION EVENTS", settings.get("events_x", 740), settings.get("events_y", 50), settings.get("events_width", 360), settings.get("events_height", 260), settings, "events")
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 9)
-        self.text = tk.Text(self.content, height=12, font=(ff, fs - 1), fg=COLOR_TEXT, bg=COLOR_BG, wrap=tk.WORD, state=tk.DISABLED, highlightthickness=0, borderwidth=0, padx=6, pady=4)
+        _section_header(self.content, "Chronological stream", ff, fs - 1, "LOG").pack(
+            fill=tk.X, pady=(0, 5))
+        self.text = tk.Text(
+            self.content, height=12, font=(ff, fs - 1), fg=COLOR_TEXT,
+            bg=COLOR_SURFACE, wrap=tk.WORD, state=tk.DISABLED,
+            highlightthickness=1, highlightbackground=COLOR_LINE,
+            highlightcolor=COLOR_BORDER_ACTIVE, borderwidth=0, padx=8, pady=6,
+            spacing1=2, spacing3=2,
+        )
         self.text.pack(fill=tk.BOTH, expand=True)
 
     def add_event(self, message: str, level: str = "info"):
@@ -1279,26 +1378,36 @@ class StatusOverlay(OverlayWindow):
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
 
-        self.status_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.status_frame.pack(fill=tk.X, pady=(4, 0))
-        self.status_dot = tk.Label(self.status_frame, text="*", font=(ff, 12), fg=COLOR_RED, bg=COLOR_PANEL)
-        self.status_dot.pack(side=tk.LEFT, padx=(0, 6))
-        self.status_text = tk.Label(self.status_frame, text="Offline", font=(ff, fs, "bold"), fg=COLOR_RED_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        _section_header(self.content, "System health", ff, fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 4))
+        self.status_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        self.status_frame.pack(fill=tk.X, pady=1)
+        self.status_dot = tk.Label(self.status_frame, text="■", font=(ff, 7),
+                                   fg=COLOR_RED, bg=COLOR_PANEL_ALT)
+        self.status_dot.pack(side=tk.LEFT, padx=(0, 7))
+        self.status_text = tk.Label(
+            self.status_frame, text="OFFLINE", font=(ff, fs, "bold"),
+            fg=COLOR_RED_TEXT, bg=COLOR_PANEL_ALT, anchor=tk.W)
         self.status_text.pack(side=tk.LEFT)
 
-        self.game_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.game_frame.pack(fill=tk.X, pady=(4, 0))
-        self.game_dot = tk.Label(self.game_frame, text="o", font=(ff, 10), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
-        self.game_dot.pack(side=tk.LEFT, padx=(0, 6))
-        self.game_text = tk.Label(self.game_frame, text="Игра: нет данных", font=(ff, fs - 1),
-                                  fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
+        self.game_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=3)
+        self.game_frame.pack(fill=tk.X, pady=1)
+        self.game_dot = tk.Label(self.game_frame, text="□", font=(ff, 8),
+                                 fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT)
+        self.game_dot.pack(side=tk.LEFT, padx=(0, 7))
+        self.game_text = tk.Label(
+            self.game_frame, text="ИГРА / НЕТ ДАННЫХ", font=(ff, fs - 1),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT, anchor=tk.W)
         self.game_text.pack(side=tk.LEFT)
 
-        self.watcher_frame = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.watcher_frame.pack(fill=tk.X, pady=(4, 0))
-        self.watcher_dot = tk.Label(self.watcher_frame, text="o", font=(ff, 10), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL)
-        self.watcher_dot.pack(side=tk.LEFT, padx=(0, 6))
-        self.watcher_text = tk.Label(self.watcher_frame, text="Watcher: off", font=(ff, fs - 1), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
+        self.watcher_frame = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=3)
+        self.watcher_frame.pack(fill=tk.X, pady=1)
+        self.watcher_dot = tk.Label(self.watcher_frame, text="□", font=(ff, 8),
+                                    fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT)
+        self.watcher_dot.pack(side=tk.LEFT, padx=(0, 7))
+        self.watcher_text = tk.Label(
+            self.watcher_frame, text="WATCHER / OFF", font=(ff, fs - 1),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT, anchor=tk.W)
         self.watcher_text.pack(side=tk.LEFT)
 
         self.progress_text = tk.Label(self.content, text="", font=(ff, fs - 1), fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
@@ -1314,29 +1423,33 @@ class StatusOverlay(OverlayWindow):
     def set_status(self, online: bool, detail: str = ""):
         if online:
             self.status_dot.config(fg=COLOR_GREEN_TEXT)
-            self.status_text.config(text=f"Online  {detail}", fg=COLOR_GREEN_TEXT)
+            self.status_text.config(text=f"ONLINE  {detail}".rstrip(), fg=COLOR_GREEN_TEXT)
         else:
             self.status_dot.config(fg=COLOR_RED_TEXT)
-            self.status_text.config(text="Offline", fg=COLOR_RED_TEXT)
+            self.status_text.config(text="OFFLINE", fg=COLOR_RED_TEXT)
 
     def set_game(self, running: bool, focused: bool = False, detail: str = ""):
         """Строка «Игра: запущена / в фокусе / не запущена»."""
         if running:
             color = COLOR_GREEN_TEXT if focused else COLOR_YELLOW
-            text = "Игра: в фокусе" if focused else "Игра: запущена"
-            dot = "*"
+            text = "ИГРА / В ФОКУСЕ" if focused else "ИГРА / ЗАПУЩЕНА"
+            dot = "■"
         else:
             color = COLOR_RED_TEXT
-            text = "Игра: не запущена"
-            dot = "o"
+            text = "ИГРА / НЕ ЗАПУЩЕНА"
+            dot = "□"
         if detail:
             text = f"{text} ({detail})"
         self.game_dot.config(fg=color, text=dot)
         self.game_text.config(text=text, fg=color)
 
     def set_watcher(self, active: bool):
-        self.watcher_dot.config(fg=COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED, text="*" if active else "o")
-        self.watcher_text.config(text="Watcher: ON" if active else "Watcher: off", fg=COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED)
+        self.watcher_dot.config(
+            fg=COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED,
+            text="■" if active else "□")
+        self.watcher_text.config(
+            text="WATCHER / ON" if active else "WATCHER / OFF",
+            fg=COLOR_GREEN_TEXT if active else COLOR_TEXT_MUTED)
 
     def set_progress(self, text: str):
         self.progress_text.config(text=text)
@@ -1402,11 +1515,14 @@ class ShipOverlay(OverlayWindow):
         self._wrap = wrap
         self._last_data: Dict[str, Any] = {}
 
-        self.ship_name_label = tk.Label(self.content, text="Корабль не определён",
-                                        font=(self._ff, self._fs + 1, "bold"), fg=COLOR_ACCENT,
-                                        bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT,
-                                        wraplength=wrap)
-        self.ship_name_label.pack(fill=tk.X, pady=(2, 0))
+        _section_header(self.content, "Vessel telemetry", self._ff, self._fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 4))
+        self.ship_name_label = tk.Label(
+            self.content, text="КОРАБЛЬ НЕ ОПРЕДЕЛЁН",
+            font=(self._ff, self._fs + 1, "bold"), fg=COLOR_ACCENT,
+            bg=COLOR_PANEL_ALT, anchor=tk.W, justify=tk.LEFT,
+            wraplength=wrap, padx=6, pady=4)
+        self.ship_name_label.pack(fill=tk.X)
 
         # Чипы состояния: строка плашек над показателями.
         self.chips_frame = tk.Frame(self.content, bg=COLOR_PANEL)
@@ -1423,9 +1539,10 @@ class ShipOverlay(OverlayWindow):
     def _row_widget(self, index: int) -> tk.Label:
         """i-я строка HUD: создать при необходимости, иначе переиспользовать."""
         while len(self._row_labels) <= index:
-            label = tk.Label(self.content, text="", font=(self._ff, self._fs), fg=COLOR_TEXT,
-                             bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT,
-                             wraplength=self._wrap)
+            label = tk.Label(
+                self.content, text="", font=(self._ff, self._fs), fg=COLOR_TEXT,
+                bg=COLOR_PANEL, anchor=tk.W, justify=tk.LEFT,
+                wraplength=self._wrap, padx=5, pady=1)
             label.pack(fill=tk.X)
             self._row_labels.append(label)
         return self._row_labels[index]
@@ -1474,8 +1591,10 @@ class ShipOverlay(OverlayWindow):
             label = self._row_widget(index)
             delta = ship_hud.ROW_FONT_DELTA.get(row["kind"], 0)
             color = self.TONE_COLORS.get(row.get("tone", "text"), COLOR_TEXT)
-            label.config(text=row["text"], fg=color,
-                         font=(self._ff, max(7, int(self._fs) + delta)))
+            label.config(
+                text=row["text"], fg=color,
+                bg=COLOR_PANEL_ALT if index % 2 else COLOR_PANEL,
+                font=(self._ff, max(7, int(self._fs) + delta)))
             if not label.winfo_manager():
                 label.pack(fill=tk.X)
         for label in self._row_labels[len(rows):]:
@@ -1527,11 +1646,17 @@ class CargoOverlay(OverlayWindow):
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
 
-        header = tk.Frame(self.content, bg=COLOR_PANEL)
-        header.pack(fill=tk.X, pady=(4, 0))
-        self.total_label = tk.Label(header, text="0 / 0 t", font=(ff, fs + 1, "bold"), fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
+        _section_header(self.content, "Capacity", ff, fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 4))
+        header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        header.pack(fill=tk.X)
+        self.total_label = tk.Label(
+            header, text="0 / 0 T", font=(ff, fs + 1, "bold"),
+            fg=COLOR_ACCENT, bg=COLOR_PANEL_ALT, anchor=tk.W)
         self.total_label.pack(side=tk.LEFT)
-        self.fill_pct = tk.Label(header, text="0%", font=(ff, fs - 1), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E)
+        self.fill_pct = tk.Label(
+            header, text="0%", font=(ff, fs - 1, "bold"),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT, anchor=tk.E)
         self.fill_pct.pack(side=tk.RIGHT)
 
         self.cargo_bar_bg = tk.Frame(self.content, bg=COLOR_LINE, height=6)
@@ -1539,9 +1664,12 @@ class CargoOverlay(OverlayWindow):
         self.cargo_bar_fill = tk.Frame(self.cargo_bar_bg, bg=COLOR_ACCENT, height=6, width=0)
         self.cargo_bar_fill.place(x=0, y=0)
 
-        _make_separator(self.content).pack(fill=tk.X, pady=2)
+        _section_header(self.content, "Hold manifest", ff, fs - 2, "B").pack(
+            fill=tk.X, pady=(5, 3))
 
-        self.cargo_canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=240)
+        self.cargo_canvas = tk.Canvas(
+            self.content, bg=COLOR_PANEL, highlightthickness=1,
+            highlightbackground=COLOR_LINE, height=240)
         self.cargo_canvas.pack(fill=tk.BOTH, expand=True)
 
         scrollbar = tk.Scrollbar(self.content, orient=tk.VERTICAL, command=self.cargo_canvas.yview)
@@ -1624,6 +1752,11 @@ class CargoOverlay(OverlayWindow):
 
         for index, item in enumerate(inventory):
             entry = self._cargo_pool[index]
+            row_bg = COLOR_PANEL_ALT if index % 2 else COLOR_PANEL
+            entry["frame"].config(bg=row_bg)
+            entry["icon"].config(bg=row_bg)
+            entry["name"].config(bg=row_bg)
+            entry["count"].config(bg=row_bg)
             name = item.get("Name_Localised") or item.get("Name", "Unknown")
             count = int(item.get("Count") or 0)
             stolen = int(item.get("Stolen") or 0)
@@ -1674,13 +1807,17 @@ class CarrierOverlay(OverlayWindow):
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
 
-        header = tk.Frame(self.content, bg=COLOR_PANEL)
-        header.pack(fill=tk.X, pady=(4, 0))
-        self.name_label = tk.Label(header, text="Fleet Carrier", font=(ff, fs + 1, "bold"),
-                                   fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
+        _section_header(self.content, "Carrier status", ff, fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 4))
+        header = tk.Frame(self.content, bg=COLOR_PANEL_ALT, padx=6, pady=4)
+        header.pack(fill=tk.X)
+        self.name_label = tk.Label(
+            header, text="FLEET CARRIER", font=(ff, fs + 1, "bold"),
+            fg=COLOR_ACCENT, bg=COLOR_PANEL_ALT, anchor=tk.W)
         self.name_label.pack(side=tk.LEFT)
-        self.callsign_label = tk.Label(header, text="", font=(ff, fs - 1),
-                                       fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.E)
+        self.callsign_label = tk.Label(
+            header, text="", font=(ff, fs - 1),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL_ALT, anchor=tk.E)
         self.callsign_label.pack(side=tk.RIGHT)
 
         self.total_label = tk.Label(self.content, text="— / — t", font=(ff, fs),
@@ -1704,7 +1841,8 @@ class CarrierOverlay(OverlayWindow):
                                       justify=tk.LEFT, wraplength=300)
         self.project_label.pack(fill=tk.X, pady=(2, 0))
 
-        _make_separator(self.content).pack(fill=tk.X, pady=2)
+        _section_header(self.content, "Cargo manifest", ff, fs - 2, "B").pack(
+            fill=tk.X, pady=(5, 3))
 
         # Список товаров. Шапка и canvas живут в одном контейнере, а ширина
         # внутреннего фрейма canvas подгоняется под реальную ширину canvas
@@ -2038,6 +2176,10 @@ class CarrierOverlay(OverlayWindow):
         for index, row in enumerate(rows):
             entry = self._row_pool[index]
             cells = entry["cells"]
+            row_bg = COLOR_PANEL_ALT if index % 2 else COLOR_PANEL
+            entry["frame"].config(bg=row_bg)
+            for cell in cells.values():
+                cell.config(bg=row_bg)
             amount = int(row.get("amount") or 0)        # сколько лежит на борту
             delivered = int(row.get("delivered") or 0)  # сколько завезли вы
             need = int(row.get("need") or 0)
@@ -2117,10 +2259,13 @@ class ExobiologyOverlay(OverlayWindow):
         self._planets_shown: bool = True
 
         # Заголовок тела
-        self.body_label = tk.Label(self.content, text="Тело: —", font=(ff, fs, "bold"),
-                                   fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W,
-                                   justify=tk.LEFT, wraplength=wrap)
-        self.body_label.pack(fill=tk.X, pady=(2, 0))
+        _section_header(self.content, "Target body", ff, fs - 2, "A").pack(
+            fill=tk.X, pady=(0, 4))
+        self.body_label = tk.Label(
+            self.content, text="ТЕЛО / —", font=(ff, fs, "bold"),
+            fg=COLOR_ACCENT, bg=COLOR_PANEL_ALT, anchor=tk.W,
+            justify=tk.LEFT, wraplength=wrap, padx=6, pady=4)
+        self.body_label.pack(fill=tk.X)
 
         # Визуальная панель значков телеметрии (Badges & Chips)
         # Сокращает вертикальное пространство, объединяя статус био, посадки,
@@ -2172,8 +2317,9 @@ class ExobiologyOverlay(OverlayWindow):
         _make_separator(self.content).pack(fill=tk.X, pady=(3, 2))
 
         # Раздел образцов
-        self.samples_header = tk.Label(self.content, text="Образцы:", font=(ff, fs - 1, "bold"),
-                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.samples_header = tk.Label(
+            self.content, text="B / ОБРАЗЦЫ", font=(ff, fs - 1, "bold"),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
         self.samples_header.pack(fill=tk.X)
         self.organics_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                        fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W,
@@ -2189,8 +2335,9 @@ class ExobiologyOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=(3, 2))
 
-        self.predict_header = tk.Label(self.content, text="Вероятные роды:", font=(ff, fs - 1, "bold"),
-                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.predict_header = tk.Label(
+            self.content, text="C / ВЕРОЯТНЫЕ РОДЫ", font=(ff, fs - 1, "bold"),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
         self.predict_header.pack(fill=tk.X)
         self.predict_label = tk.Label(self.content, text="нет данных", font=(ff, fs - 1),
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
@@ -2202,8 +2349,9 @@ class ExobiologyOverlay(OverlayWindow):
         # обрезается низ — а это как раз то, ради чего раздел добавляли.
         self.planet_separator = _make_separator(self.content)
         self.planet_separator.pack(fill=tk.X, pady=(3, 2))
-        self.planets_header = tk.Label(self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
-                                       fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.planets_header = tk.Label(
+            self.content, text="Поиск планет:", font=(ff, fs - 1, "bold"),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
         self.planets_header.pack(fill=tk.X)
         self.planets_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                       fg=COLOR_GREEN_TEXT, bg=COLOR_PANEL, anchor=tk.W,
@@ -2212,8 +2360,9 @@ class ExobiologyOverlay(OverlayWindow):
 
         self.bodies_separator = _make_separator(self.content)
         self.bodies_separator.pack(fill=tk.X, pady=(3, 2))
-        self.bodies_header = tk.Label(self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
-                                      fg=COLOR_TEXT, bg=COLOR_PANEL, anchor=tk.W)
+        self.bodies_header = tk.Label(
+            self.content, text="Тела системы:", font=(ff, fs - 1, "bold"),
+            fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W)
         self.bodies_header.pack(fill=tk.X)
         self.bodies_label = tk.Label(self.content, text="—", font=(ff, fs - 1),
                                      fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W,
@@ -2430,14 +2579,14 @@ class ExobiologyOverlay(OverlayWindow):
             self.body_label.config(text="Тело: —")
             self.params_label.config(text="Отсканируйте тело (FSS или подход)")
             self.signals_label.config(text="")
-            self.samples_header.config(text="Образцы:")
+            self.samples_header.config(text=_section_text("B", "Образцы"))
             self.organics_label.config(text="—")
             self.next_action_label.config(text="")
             self._set_action_visible(False)
             if hasattr(self, "predict_header"):
-                self.predict_header.config(text="Вероятные роды:")
+                self.predict_header.config(text=_section_text("C", "Вероятные роды"))
             self.predict_label.config(text="нет данных")
-            self.bodies_header.config(text="Тела системы:")
+            self.bodies_header.config(text=_section_text("E", "Тела системы"))
             self.bodies_label.config(text="—")
             self._hide_telemetry_chips()
             self._render_planets({})
@@ -2477,10 +2626,10 @@ class ExobiologyOverlay(OverlayWindow):
                 self.next_action_label.config(text="")
                 self._set_action_visible(False)
 
-            self.samples_header.config(text="Образцы:")
+            self.samples_header.config(text=_section_text("B", "Образцы"))
             self.organics_label.config(text="—")
             if hasattr(self, "predict_header"):
-                self.predict_header.config(text="Вероятные роды:")
+                self.predict_header.config(text=_section_text("C", "Вероятные роды"))
             self.predict_label.config(text="нет данных")
             self._hide_telemetry_chips()
             self._render_bodies(state)
@@ -2553,7 +2702,7 @@ class ExobiologyOverlay(OverlayWindow):
         no_footfall = bool(state.get("no_first_footfall"))
         bonus_tag = " (бонус ×5)" if no_footfall else ""
         header = f"Образцы{bonus_tag}:" + (f"  ≈ {format_credits(total_value)} кр" if total_value else "")
-        self.samples_header.config(text=header)
+        self.samples_header.config(text=_section_text("B", header))
 
         if not organics:
             self.organics_label.config(text="образцы не взяты")
@@ -2623,7 +2772,7 @@ class ExobiologyOverlay(OverlayWindow):
     def _render_predictions(self, state: dict, mapped: bool):
         if not state.get("landable", True):
             if hasattr(self, "predict_header"):
-                self.predict_header.config(text="Вероятные роды:")
+                self.predict_header.config(text=_section_text("C", "Вероятные роды"))
             self.predict_label.config(text="посадка невозможна — био-прогноз отключен")
             return
 
@@ -2636,7 +2785,8 @@ class ExobiologyOverlay(OverlayWindow):
 
         no_footfall = bool(state.get("no_first_footfall"))
         if hasattr(self, "predict_header"):
-            self.predict_header.config(text=f"Вероятные роды{' (бонус ×5)' if no_footfall else ''}:")
+            self.predict_header.config(text=_section_text(
+                "C", f"Вероятные роды{' (бонус ×5)' if no_footfall else ''}"))
 
         if not predictions:
             self.predict_label.config(
@@ -2725,14 +2875,15 @@ class ExobiologyOverlay(OverlayWindow):
         self._set_planets_visible(True)
 
         if not criteria:
-            self.planets_header.config(text="Поиск планет:")
+            self.planets_header.config(text=_section_text("D", "Поиск планет"))
             self.planets_label.config(
                 text="критерии не выбраны — вкладка «Экзобиология»",
                 fg=COLOR_TEXT_MUTED)
             return
 
         rows = state.get("planets") or []
-        self.planets_header.config(text=f"Поиск планет: найдено {len(rows)}")
+        self.planets_header.config(
+            text=_section_text("D", f"Поиск планет · найдено {len(rows)}"))
         if not rows:
             known = int(state.get("system_known_bodies") or state.get("system_scanned_bodies") or 0)
             if known:
@@ -2785,8 +2936,8 @@ class ExobiologyOverlay(OverlayWindow):
 
     def _render_bodies(self, state: dict):
         bodies = state.get("system_bodies") or []
-        self.bodies_header.config(
-            text=f"Тела системы с биосигналами: {len(bodies)}" if bodies else "Тела системы:")
+        self.bodies_header.config(text=_section_text(
+            "E", f"Тела системы · биосигналы {len(bodies)}" if bodies else "Тела системы"))
         if not bodies:
             self.bodies_label.config(text="в этой системе биосигналов не найдено")
             return
@@ -2828,13 +2979,12 @@ class SessionOverlay(OverlayWindow):
         ff = settings.get("font_family", "Consolas")
         fs = settings.get("font_size", 10)
 
-        self.session_header = tk.Label(self.content, text="SESSION STATS", font=(ff, fs, "bold"), fg=COLOR_ACCENT, bg=COLOR_PANEL, anchor=tk.W)
-        self.session_header.pack(fill=tk.X, pady=(4, 0))
-
-        _make_separator(self.content).pack(fill=tk.X, pady=4)
+        self.session_header = _section_header(
+            self.content, "Session metrics", ff, fs - 2, "A")
+        self.session_header.pack(fill=tk.X, pady=(0, 4))
 
         self.stats_grid = tk.Frame(self.content, bg=COLOR_PANEL)
-        self.stats_grid.pack(fill=tk.X, pady=(0, 4))
+        self.stats_grid.pack(fill=tk.X, pady=(0, 5))
 
         self.systems_label = self._make_stat_row(self.stats_grid, "Systems:", "0", COLOR_CYAN)
         self.deliveries_label = self._make_stat_row(self.stats_grid, "Deliveries:", "0", COLOR_GREEN_TEXT)
@@ -2848,9 +2998,12 @@ class SessionOverlay(OverlayWindow):
 
         _make_separator(self.content).pack(fill=tk.X, pady=4)
 
-        tk.Label(self.content, text="CARGO HISTORY", font=(ff, fs - 2, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W).pack(fill=tk.X)
+        _section_header(self.content, "Cargo history", ff, fs - 2, "B").pack(
+            fill=tk.X, pady=(3, 2))
 
-        self.chart_canvas = tk.Canvas(self.content, bg=COLOR_PANEL, highlightthickness=0, height=100)
+        self.chart_canvas = tk.Canvas(
+            self.content, bg=COLOR_SURFACE, highlightthickness=1,
+            highlightbackground=COLOR_LINE, height=100)
         self.chart_canvas.pack(fill=tk.X, pady=(4, 0))
 
         self.route_info = tk.Label(self.content, text="", font=(ff, fs - 2), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, anchor=tk.W, wraplength=280)
@@ -2863,14 +3016,10 @@ class SessionOverlay(OverlayWindow):
         self.current_system = ""
 
     def _make_stat_row(self, parent, label, value, value_color):
-        ff = self.settings.get("font_family", "Consolas")
-        fs = self.settings.get("font_size", 10)
-        row = tk.Frame(parent, bg=COLOR_PANEL)
-        row.pack(fill=tk.X, pady=1)
-        tk.Label(row, text=label, font=(ff, fs - 1), fg=COLOR_TEXT_MUTED, bg=COLOR_PANEL, width=12, anchor=tk.W).pack(side=tk.LEFT)
-        lbl = tk.Label(row, text=value, font=(ff, fs, "bold"), fg=value_color, bg=COLOR_PANEL, anchor=tk.E)
-        lbl.pack(side=tk.RIGHT)
-        return lbl
+        return _metric_row(
+            parent, label.rstrip(":"), value,
+            self.settings.get("font_family", "Consolas"),
+            int(self.settings.get("font_size", 10) or 10), value_color)
 
     def update_session(self, data: dict):
         systems_visited = data.get("systems_visited", 0)
