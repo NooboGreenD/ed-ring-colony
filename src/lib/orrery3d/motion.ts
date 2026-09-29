@@ -9,7 +9,7 @@
  */
 
 import { orbitPoint, solveKepler, trueAnomaly } from '@/lib/systemOrrery';
-import type { OrreryViewBody, OrreryViewOrbit, Vec3 } from './types';
+import type { OrreryViewBody, OrreryViewOrbit, OrreryViewPayload, Vec3 } from './types';
 
 export interface OrbitBasis {
   center: Vec3;
@@ -137,6 +137,41 @@ function length(point: Vec3): number {
 function normalize(point: Vec3): Vec3 {
   const size = length(point) || 1;
   return [point[0] / size, point[1] / size, point[2] / size];
+}
+
+/**
+ * Смещения всех тел системы на момент `timeDays` относительно момента скана.
+ *
+ * Считается «сверху вниз»: звёзды → планеты → луны. Смещение родителя входит
+ * в смещение ребёнка, иначе луна продолжает кружить вокруг точки, где планета
+ * была на момент скана, а планеты двойной системы отрываются от своей звезды.
+ * Именно из-за этого при включении проигрывания тела «слетали с орбит».
+ *
+ * Возвращает карту «имя тела → смещение» в координатах пакета (Z вверх).
+ * Тела без орбиты (главная звезда) получают нулевое смещение.
+ */
+export function orbitalDeltas(payload: OrreryViewPayload, timeDays: number): Map<string, Vec3> {
+  const deltas = new Map<string, Vec3>();
+  const byName = new Map(payload.bodies.map((body) => [body.name, body]));
+  const orbitOf = (name: string) => payload.orbits.find((orbit) => orbit.name === name)
+    ?? payload.moonOrbits.find((orbit) => orbit.name === name);
+  const rank: Record<OrreryViewBody['kind'], number> = { star: 0, planet: 1, moon: 2 };
+
+  for (const body of [...payload.bodies].sort((left, right) => rank[left.kind] - rank[right.kind])) {
+    const orbit = orbitOf(body.name);
+    const next = orbit ? positionAtTime(body, orbit, timeDays) : body.position;
+    let parent = '';
+    if (body.kind === 'moon') parent = orbit?.owner && byName.has(orbit.owner) ? orbit.owner : '';
+    else if (body.kind === 'planet') parent = body.star && byName.has(body.star) ? body.star : '';
+    if (parent === body.name) parent = '';
+    const parentDelta = parent ? deltas.get(parent) : undefined;
+    deltas.set(body.name, [
+      next[0] - body.position[0] + (parentDelta?.[0] ?? 0),
+      next[1] - body.position[1] + (parentDelta?.[1] ?? 0),
+      next[2] - body.position[2] + (parentDelta?.[2] ?? 0),
+    ]);
+  }
+  return deltas;
 }
 
 /** Скорости проигрывания: «сколько суток в секунду». */

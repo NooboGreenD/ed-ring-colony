@@ -53,6 +53,17 @@ export interface OrrerySceneModel {
   bodyObjects: Map<string, THREE.Object3D>;
   /** Меши построек: id → объект. */
   structureObjects: Map<string, THREE.Object3D>;
+  /**
+   * Всё, что обязано ехать вместе с телом: сама сфера, кольца, метки сигналов.
+   *
+   * Кольца и сигналы живут в отдельных слоях (их гасят галочкой), то есть в
+   * мировых координатах. Без этого индекса при проигрывании орбит планета
+   * уезжала, а её кольца и маячки оставались висеть на месте скана.
+   *
+   * `base` — исходная позиция объекта в координатах пакета: движение всегда
+   * считается от неё, а не «плюс дельта к текущей» (иначе ошибка копится).
+   */
+  bodyAttachments: Map<string, { object: THREE.Object3D; base: THREE.Vector3 }[]>;
   setLayer: (layer: LayerName, visible: boolean) => void;
   /** Подсветить выбранное тело: чужие орбиты и тела притухают. */
   setEmphasis: (name: string | null) => void;
@@ -138,8 +149,9 @@ function addRings(
   body: OrreryViewBody,
   radius: number,
   registry: { geometries: THREE.BufferGeometry[]; materials: THREE.Material[] },
-): void {
-  if (!body.rings.length) return;
+): THREE.Object3D[] {
+  const created: THREE.Object3D[] = [];
+  if (!body.rings.length) return created;
   body.rings.forEach((ring, index) => {
     const realOuter = ring.outerKm > 0 ? ring.outerKm : 0;
     const realInner = ring.innerKm > 0 ? ring.innerKm : 0;
@@ -166,7 +178,9 @@ function addRings(
     registry.geometries.push(geometry);
     registry.materials.push(material);
     parent.add(mesh);
+    created.push(mesh);
   });
+  return created;
 }
 
 function addAtmosphereHaze(
@@ -208,9 +222,9 @@ function addSignalMarkers(
   radius: number,
   registry: { geometries: THREE.BufferGeometry[]; materials: THREE.Material[] },
   pulses: SignalPulse[],
-): void {
+): THREE.Object3D | null {
   const kinds = activeSignalKinds(body.signals);
-  if (!kinds.length) return;
+  if (!kinds.length) return null;
 
   const group = new THREE.Group();
   group.position.copy(toVector(body.position));
@@ -258,6 +272,7 @@ function addSignalMarkers(
   });
 
   parent.add(group);
+  return group;
 }
 
 /** Значок постройки: форма зависит от назначения (порт/аутпост/стройка). */
@@ -315,7 +330,16 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
   const structureAnchors = new Map<string, THREE.Object3D>();
   const bodyObjects = new Map<string, THREE.Object3D>();
   const structureObjects = new Map<string, THREE.Object3D>();
+  const bodyAttachments = new Map<string, { object: THREE.Object3D; base: THREE.Vector3 }[]>();
   const signalPulses: SignalPulse[] = [];
+
+  /** Запомнить объект, который обязан ехать вместе с телом. */
+  const attach = (bodyName: string, object: THREE.Object3D | null | undefined) => {
+    if (!object) return;
+    const list = bodyAttachments.get(bodyName) ?? [];
+    list.push({ object, base: object.position.clone() });
+    bodyAttachments.set(bodyName, list);
+  };
 
   // ── Сетка эклиптики: концентрические круги + радиальные лучи ──────────────
   const gridMaterial = new THREE.LineBasicMaterial({
@@ -356,14 +380,18 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
   for (const star of starBodies) {
     const position = toVector(star.position);
     const radius = Math.max(span * 0.012, clampRadius(star.marker * 0.09, span) * 3);
+    // У каждой звезды своя группа: сфера, гало и источник света едут вместе,
+    // а фильтры и движение по орбите двигают одну звезду, а не весь слой.
+    const starGroup = new THREE.Group();
+    starGroup.name = `body-${star.name}`;
+    starGroup.position.copy(position);
     const geometry = new THREE.SphereGeometry(radius, 32, 20);
     const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(star.color) });
     geometries.push(geometry);
     materials.push(material);
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.copy(position);
     mesh.userData.pick = { kind: 'body', name: star.name } satisfies PickInfo;
-    groups.stars.add(mesh);
+    starGroup.add(mesh);
     pickables.push(mesh);
     bodyObjects.set(star.name, mesh);
     labelAnchors.set(star.name, mesh);
@@ -381,14 +409,16 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
       materials.push(spriteMaterial);
       const sprite = new THREE.Sprite(spriteMaterial);
       sprite.scale.setScalar(radius * 9);
-      sprite.position.copy(position);
-      groups.stars.add(sprite);
+      starGroup.add(sprite);
     }
 
     const light = new THREE.PointLight(new THREE.Color(star.color), Math.max(1.4, 3.2 / Math.max(1, starBodies.length)), 0, 1.6);
-    light.position.copy(position);
     light.decay = 0;
-    groups.stars.add(light);
+    starGroup.add(light);
+
+    groups.stars.add(starGroup);
+    attach(star.name, starGroup);
+    attach(star.name, addSignalMarkers(groups.signals, star, radius, registry, signalPulses));
   }
 
   // ── Орбиты ───────────────────────────────────────────────────────────────
@@ -482,12 +512,14 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     labelAnchors.set(body.name, mesh);
 
     addAtmosphereHaze(group, body, radius, body.color, registry);
-    addRings(groups.rings, body, radius, registry);
-    // Сигналы живут отдельным слоем (их гасят одной галочкой) и потому
-    // ставятся в мировых координатах, как кольца.
-    addSignalMarkers(groups.signals, body, radius, registry, signalPulses);
+    // Кольца и сигналы живут отдельными слоями (их гасят галочкой) и потому
+    // ставятся в мировых координатах — значит, при движении по орбите их
+    // нужно двигать вручную, вместе с телом.
+    for (const ring of addRings(groups.rings, body, radius, registry)) attach(body.name, ring);
+    attach(body.name, addSignalMarkers(groups.signals, body, radius, registry, signalPulses));
 
     (body.kind === 'moon' ? groups.moons : groups.planets).add(group);
+    attach(body.name, group);
   }
 
   // ── Постройки и станции ──────────────────────────────────────────────────
@@ -577,6 +609,7 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     structureAnchors,
     bodyObjects,
     structureObjects,
+    bodyAttachments,
     setLayer(layer: LayerName, visible: boolean) {
       const group = groups[layer];
       if (group) group.visible = visible;
@@ -632,6 +665,7 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
       structureAnchors.clear();
       bodyObjects.clear();
       structureObjects.clear();
+      bodyAttachments.clear();
       pickables.length = 0;
       root.clear();
     },

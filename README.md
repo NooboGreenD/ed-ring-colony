@@ -67,6 +67,18 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   а панель источников показывает, кто ответил: база проекта, EDSM, Spansh и Raven Colonial.
   Движок — `lib/architect/`
   (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
+- **Верфь (Outfitting)** — `/outfitting`: конструктор сборок кораблей по образцу coriolis.io на собственных
+  расчётах. Все корпуса, слоты (основные, орудия, утилиты, внутренние, военные), переборки, модули и
+  инженерные чертежи; сводка считает массу, дальность одного прыжка и полный радиус, скорость и буст,
+  щит с сопротивлениями, броню, баланс энергии по приоритетам, ёмкости распределителя, трюм, пассажирские
+  места и стоимость. Сборка кодируется в ссылку `?b=<код>` и сохраняется в браузере.
+  Движок — `lib/outfitting/` (формулы игры: кривая массы двигателей и щитов, формула прыжка, применение
+  модификаций multiplicative/additive/overwrite), данные — `public/data/outfitting.json`,
+  собирается `scripts/build-outfitting-data.mjs` из открытого набора [EDCD/coriolis-data](https://github.com/EDCD/coriolis-data)
+- **Инженеры** — `/engineers`: логическое дерево разблокировки. Корабельная и наземная (Одиссея) ветки,
+  связи «кто о ком рассказывает», условие встречи, плата за приглашение, отметки пройденного (в браузере)
+  и полный список чертежей каждого инженера с максимальным уровнем — те же данные, что и у верфи,
+  поэтому страницы не расходятся (`/outfitting` ↔ `/engineers?engineer=<id>`)
 - **Forum** — Community discussions with markdown support, reactions, search, and moderation
 - **Wiki** — Full wiki system with categories, tags, revisions, favorites, and colonization guides
 - **Galnet** — Automatic sync of Frontier's Galnet news
@@ -230,6 +242,8 @@ ed-ring-colony/
       GalaxyMap/            # 3D map components
       SystemMap/            # System orrery: SystemOrrery3D + body rail (/system/[name])
       Architect/            # System architect planner UI (/architect): workspace, picker, summary, share/progress/sourcing panels
+      Outfitting/           # Ship builder UI (/outfitting): workspace, module picker, stats panel
+      Engineers/            # Engineer unlock tree (/engineers)
       Forum/                # Forum components
       Wiki/                 # Wiki components
       Atlas/                # Atlas components
@@ -255,6 +269,8 @@ ed-ring-colony/
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
       orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
       architect/            # System buildout planner: catalogue, rules engine, plan store, progress matcher, sourcing
+      outfitting/           # Ship builder: data contracts, game formulas (calc), builds & share links, data loader
+      engineers/            # Engineer unlock tree data (requirements, referrals, links to blueprints)
     types/
       monitor.ts            # ServerMonitorSnapshot types
       billing.ts            # Billing types
@@ -579,6 +595,8 @@ MIT
 - EDDN for real-time data
 - Spansh for route planning
 - Raven Colonial for colonial data
+- EDCD / coriolis-data for ship and module statistics (ship builder)
+- INARA for engineer unlock requirements
 - Yandex Translate for i18n
 
 ---

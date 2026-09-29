@@ -207,10 +207,29 @@ edrc_builder_prune() {
 # и каждая следующая сборка шла всё дольше: распухший кэш + почти заполненный
 # диск — это деградация I/O и самого BuildKit. Подрезка до старта — no-op,
 # когда всё в порядке, и спасение, когда накопилось.
+# Бюджет кэша адаптивный: при тесном диске держать 8 ГБ кэша — значит
+# оставить сборке ползти по остаткам. Если свободного места меньше двойного
+# порога (UPDATE_DOCKER_MIN_FREE), кэш подрезается жёстче: несколько лишних
+# минут на повторное скачивание пакетов дешевле сорвавшегося обновления.
 edrc_trim_build_cache() {
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
-  edrc_builder_prune
+  local keep="${UPDATE_DOCKER_CACHE_KEEP:-8g}"
+  local tight="${UPDATE_DOCKER_CACHE_KEEP_TIGHT:-2g}"
+  local free_kb min_kb
+  free_kb="$(edrc_docker_free_kb || true)"
+  min_kb="$(edrc_size_to_kb "${UPDATE_DOCKER_MIN_FREE:-4g}")"
+  case "$free_kb" in
+    ''|*[!0-9]*) : ;;  # место определить не удалось — обычный бюджет
+    *)
+      if [ "$free_kb" -lt $(( min_kb * 2 )) ]; then
+        printf 'свободно %s МБ — подрезаю кэш BuildKit жёстче обычного (до %s вместо %s)\n' \
+          $(( free_kb / 1024 )) "$tight" "$keep"
+        keep="$tight"
+      fi
+      ;;
+  esac
+  edrc_builder_prune "$keep"
   return 0
 }
 
@@ -308,10 +327,14 @@ edrc_ensure_disk_for_build() {
 # вызывающий скрипт (run_step / set -e) прервётся как раньше, но кэш к этому
 # моменту уже подчищен, а случайная сетевая заминка пережита.
 edrc_build_with_retry() {
-  local retries="${UPDATE_BUILD_RETRIES:-1}"
+  local retries="${UPDATE_BUILD_RETRIES:-2}"
+  local delay="${UPDATE_BUILD_RETRY_DELAY:-20}"
   local attempt=1 max_attempts code=0
   case "$retries" in
-    *[!0-9]*|"") retries=1 ;;
+    *[!0-9]*|"") retries=2 ;;
+  esac
+  case "$delay" in
+    *[!0-9]*|"") delay=20 ;;
   esac
   max_attempts=$(( retries + 1 ))
   edrc_ensure_disk_for_build || return 1
@@ -332,9 +355,86 @@ edrc_build_with_retry() {
       return "$code"
     fi
     attempt=$((attempt + 1))
+    # Пауза перед повтором. Типовой срыв — «DeadlineExceeded» на перегруженном
+    # демоне: сразу после падения он ещё доразгребает прерванную сборку
+    # (распаковка слоёв, уборка снапшотов), и мгновенный повтор попадает
+    # ровно в ту же яму. Двадцати секунд хватает, чтобы I/O успокоился.
+    if [ "$delay" -gt 0 ]; then
+      printf '⏸ жду %s с, чтобы демон Docker разгрёб остатки прерванной сборки…\n' "$delay"
+      sleep "$delay" || true
+    fi
     printf '↻ пробую собрать ещё раз (попытка %s из %s) после уборки…\n' "$attempt" "$max_attempts"
     edrc_ensure_disk_for_build || return 1
   done
+}
+
+# edrc_build_order svc… — порядок сборки: лёгкие образы первыми, web последним.
+#
+# web — единственный тяжёлый таргет (npm ci, тесты, next build). Остальные —
+# тонкие обёртки над node:22-alpine, которые почти всегда собираются из кэша
+# за секунды. Если сначала быстро закрыть их, тяжёлая сборка получает машину
+# в своё распоряжение, а не делит с ними диск.
+edrc_build_order() {
+  local svc light="" heavy=""
+  for svc in "$@"; do
+    case "$svc" in
+      web|*-web) heavy="$heavy $svc" ;;
+      *)         light="$light $svc" ;;
+    esac
+  done
+  printf '%s' "${light# }"
+  [ -n "$light" ] && [ -n "$heavy" ] && printf ' '
+  printf '%s\n' "${heavy# }"
+}
+
+# edrc_build_each команда… -- сервис… — собрать сервисы ПО ОДНОМУ.
+#
+# Прод-инцидент: `compose build web jobs monitor-agent update-agent` запускает
+# все четыре таргета ОДНОВРЕМЕННО. На маленьком VPS они дерутся за один диск,
+# и даже полностью закэшированные образы ползут: «load build definition»
+# (7 КБ!) — 43 с, «load .dockerignore» — 45 с. У gRPC-вызовов BuildKit есть
+# собственный дедлайн, поэтому первым падает не тяжёлый web, а случайный
+# лёгкий таргет, уже выгрузивший свой образ:
+#   «target update-agent: failed to solve: DeadlineExceeded» через минуту
+#   после его же «exporting to image … DONE».
+# Симптом выглядел как поломка агента обновления, хотя ломалась очередь I/O.
+#
+# Поэтому сборка разведена по отдельным вызовам: параллелизма между таргетами
+# нет, каждый сервис получает свой авто-повтор (падение web больше не заставляет
+# пересобирать агентов), а в журнале видно, на каком именно образе встало.
+# Общий прогон становится чуть длиннее на здоровой машине и НАМНОГО надёжнее
+# на нагруженной.
+edrc_build_each() {
+  local -a prefix=() services=()
+  local seen_separator=0 arg svc code=0
+  for arg in "$@"; do
+    if [ "$seen_separator" = 0 ] && [ "$arg" = "--" ]; then
+      seen_separator=1
+      continue
+    fi
+    if [ "$seen_separator" = 0 ]; then prefix+=("$arg"); else services+=("$arg"); fi
+  done
+  # Разделителя нет или список сервисов пуст — ведём себя как раньше
+  # (compose сам решит, что собирать).
+  if [ "${#services[@]}" -eq 0 ]; then
+    edrc_build_with_retry "${prefix[@]}"
+    return $?
+  fi
+  local ordered
+  ordered="$(edrc_build_order "${services[@]}")"
+  for svc in $ordered; do
+    printf '── собираю образ: %s ──\n' "$svc"
+    # Код берётся из `|| code=$?`, а НЕ из `if ! …; then code=$?`: во втором
+    # случае `$?` — статус инвертированного условия, то есть всегда 0, и
+    # упавшая сборка «успешно» доезжала до переключения контейнеров.
+    code=0
+    edrc_build_with_retry "${prefix[@]}" "$svc" || code=$?
+    if [ "$code" != 0 ]; then
+      printf 'ОШИБКА: не собрался образ %s (код %s)\n' "$svc" "$code" >&2
+      return "$code"
+    fi
+  done
+  return 0
 }
 
 # edrc_cleanup_docker_disk [cache_keep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.

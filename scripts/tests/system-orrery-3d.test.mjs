@@ -480,3 +480,75 @@ maybe('пустая система: пакет и сцена собираютс�
   assert.ok(frame.distance > 0);
   scene.dispose();
 });
+
+maybe('движение: луна едет за планетой, планеты — за своей звездой', async () => {
+  const { module } = await enginePromise;
+  const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');
+  const payload = module.buildOrreryView(layout, [], { systemName: 'TestSys' });
+
+  const planet = payload.bodies.find((body) => body.name === 'TestSys 2');
+  const moonBody = payload.bodies.find((body) => body.name === 'TestSys 2 a');
+  const baseGap = Math.hypot(
+    moonBody.position[0] - planet.position[0],
+    moonBody.position[1] - planet.position[1],
+    moonBody.position[2] - planet.position[2],
+  );
+
+  for (const days of [5, 60, 800]) {
+    const deltas = module.orbitalDeltas(payload, days);
+    const planetDelta = deltas.get('TestSys 2');
+    const moonDelta = deltas.get('TestSys 2 a');
+    const planetNow = planet.position.map((value, index) => value + planetDelta[index]);
+    const moonNow = moonBody.position.map((value, index) => value + moonDelta[index]);
+    const gap = Math.hypot(
+      moonNow[0] - planetNow[0], moonNow[1] - planetNow[1], moonNow[2] - planetNow[2],
+    );
+    // Луна остаётся на своей орбите вокруг планеты, а не улетает к точке скана.
+    assert.ok(Math.abs(gap - baseGap) < Math.max(0.6, baseGap * 0.25),
+      `через ${days} сут луна ушла от планеты: ${gap.toFixed(2)} вместо ${baseGap.toFixed(2)}`);
+  }
+
+  // Нулевое время — все смещения нулевые (это же и «сброс к моменту скана»).
+  for (const delta of module.orbitalDeltas(payload, 0).values()) {
+    assert.ok(Math.hypot(...delta) < 1e-9, 'на нулевом времени тела стоят на месте');
+  }
+
+  // Двойная система: планета второй звезды едет вместе с ней.
+  const binary = module.buildOrreryView(module.buildOrreryLayout(binaryRecords(), 'BinSys'), [], { systemName: 'BinSys' });
+  const secondary = binary.bodies.find((body) => body.name === 'BinSys B');
+  const child = binary.bodies.find((body) => body.name === 'BinSys B 1');
+  if (secondary && child && child.star === secondary.name) {
+    const deltas = module.orbitalDeltas(binary, 400);
+    const starDelta = deltas.get(secondary.name);
+    const childDelta = deltas.get(child.name);
+    const starShift = Math.hypot(...starDelta);
+    if (starShift > 1e-6) {
+      const relative = Math.hypot(
+        childDelta[0] - starDelta[0], childDelta[1] - starDelta[1], childDelta[2] - starDelta[2],
+      );
+      // Планета ушла от звезды не дальше своей орбиты — то есть поехала с ней.
+      const orbit = binary.orbits.find((candidate) => candidate.name === child.name);
+      assert.ok(relative <= orbit.radius * 2.6, 'планета осталась при своей звезде');
+    }
+  }
+});
+
+maybe('сцена: кольца, метки сигналов и постройки привязаны к телу', async () => {
+  const { module } = await enginePromise;
+  const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');
+  const payload = module.buildOrreryView(layout, module.toStructures(structuresFor()), { systemName: 'TestSys' });
+  const scene = module.buildOrreryScene(payload);
+
+  // У планеты с кольцами в «прицепе» есть и сама сфера, и кольца.
+  const ringed = scene.bodyAttachments.get('TestSys 2');
+  assert.ok(ringed && ringed.length >= 2, 'кольца едут вместе с планетой');
+  const signalled = scene.bodyAttachments.get('TestSys 3');
+  assert.ok(signalled && signalled.length >= 2, 'метки сигналов едут вместе с телом');
+
+  // Звезда — отдельная группа, а не общий слой: движение не тащит всё небо.
+  const starObject = scene.bodyObjects.get('TestSys');
+  assert.ok(starObject.parent && starObject.parent.name === 'body-TestSys', 'у звезды своя группа');
+  assert.notEqual(starObject.parent, scene.groups.stars);
+
+  scene.dispose();
+});

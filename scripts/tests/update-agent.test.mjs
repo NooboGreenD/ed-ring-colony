@@ -1171,12 +1171,19 @@ test('smtp apply: job пересоздаёт auth и web в общем слот�
   const scriptPath = join(dir, 'deploy', 'apply-smtp.sh');
   mkdirSync(dirname(scriptPath), { recursive: true });
   const healthUrlFile = join(dir, 'auth-health-url.txt');
+  // Скрипт держит слот, пока тест не отпустит его файлом-семафором. Без этого
+  // проверка «второй запуск получает 409» была гонкой: на быстрой машине
+  // заглушка успевала завершиться раньше второго запроса, и тест падал
+  // случайно раз на два-три прогона (а при RUN_TESTS=1 это случайно роняло
+  // сборку образа на сервере).
+  const releaseFile = join(dir, 'release');
   const proto = (obj) => UPDATE_PROTOCOL + JSON.stringify(obj);
   writeFileSync(scriptPath, [
     '#!/usr/bin/env bash',
     `echo '${proto({ stage: 'smtp_prepare', percent: 5 })}'`,
     `echo '${proto({ stage: 'smtp_switch', percent: 35, message: 'recreating auth' })}'`,
     `printf '%s' "$AUTH_HEALTH_URL" > "${healthUrlFile}"`,
+    `for _ in $(seq 1 600); do [ -f "${releaseFile}" ] && break; sleep 0.05; done`,
     `echo '${proto({ stage: 'done', percent: 100 })}'`,
     'exit 0',
     '',
@@ -1204,6 +1211,7 @@ test('smtp apply: job пересоздаёт auth и web в общем слот�
   // Тот же процессный слот: параллельная задача невозможна.
   assert.equal((await fetch(origin + '/smtp/apply', { method: 'POST', headers: auth, body: '{}' })).status, 409);
 
+  writeFileSync(releaseFile, '');  // слот проверили — отпускаем скрипт
   assert.equal(await waitFor(() => !manager.isBusy()), true);
   const done = manager.status();
   assert.equal(done.state, 'succeeded');
@@ -1378,7 +1386,11 @@ test('уборка диска: после обновления срезаетс�
 
 test('сборка: npm-notice отключён, кэши npm/next переживают даже --no-cache', () => {
   const dockerfile = readFileSync(join(ROOT, 'Dockerfile'), 'utf8');
-  assert.match(dockerfile, /^# syntax=docker\/dockerfile:1\n/, 'frontend с поддержкой RUN --mount');
+  // Директивы `# syntax=…` быть НЕ должно: с ней BuildKit на каждой сборке
+  // ходит в Docker Hub за образом фронтенда, и на нестабильном канале этот
+  // вызов вешал сборку до дедлайна. Кэш-маунты понимает встроенный фронтенд.
+  assert.equal(/^# syntax=/m.test(dockerfile), false,
+    'сборка не должна зависеть от внешнего фронтенда из Docker Hub');
   // «New major version of npm available!» — уведомление самой npm, к проекту
   // отношения не имеет; раньше печаталось в лог каждой сборки.
   assert.match(dockerfile, /npm_config_update_notifier=false/, 'уведомление npm погашено');

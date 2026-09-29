@@ -403,13 +403,24 @@ LEGACY_COMPOSE_FILES="$(edrc_prepare_legacy_build "$SRC_DIR")" || true
 # deadline exceeded» уже после собранных образов.
 edrc_disable_default_attestations
 
+# Сборка и запуск разведены, а образы собираются ПО ОДНОМУ (web последним).
+# `up -d --build` строит все таргеты параллельно: на слабой машине они дерутся
+# за диск, и BuildKit роняет по своему дедлайну случайный уже готовый образ
+# («target update-agent: failed to solve: DeadlineExceeded» сразу после его же
+# «exporting to image … DONE»). Подробности — edrc_build_each в compose-lib.sh.
 if [ "$DO_MONITOR" = 1 ]; then
   # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
   # он единственный получает docker.sock, web ходит к нему только с токеном.
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES --profile monitoring up -d --build web jobs monitor-agent update-agent )
+  INSTALL_COMPOSE_ARGS="--env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES --profile monitoring"
+  INSTALL_SERVICES="web jobs monitor-agent update-agent"
 else
-  ( cd "$SRC_DIR" && docker compose --env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES up -d --build )
+  INSTALL_COMPOSE_ARGS="--env-file .env.production -f docker-compose.yml $EXTRA_COMPOSE_FILES $LEGACY_COMPOSE_FILES"
+  INSTALL_SERVICES="web jobs"
 fi
+# shellcheck disable=SC2086
+( cd "$SRC_DIR" && edrc_build_each docker compose $INSTALL_COMPOSE_ARGS build -- $INSTALL_SERVICES )
+# shellcheck disable=SC2086
+( cd "$SRC_DIR" && docker compose $INSTALL_COMPOSE_ARGS up -d --no-build $INSTALL_SERVICES )
 
 echo -n "жду ответа сайта"
 for i in $(seq 1 36); do

@@ -27,7 +27,7 @@ import {
   type ZoomLevel,
 } from './camera';
 import { SIGNAL_META, activeSignalKinds, hasSignals } from '@/lib/bodySignals';
-import { MOTION_SPEEDS, positionAtTime } from './motion';
+import { MOTION_SPEEDS, orbitalDeltas } from './motion';
 import { SCENE_COLORS, structureColor } from './palette';
 import {
   DEFAULT_LAYERS,
@@ -39,6 +39,18 @@ import {
 } from './scene';
 import { formatGravity, formatLightSeconds, formatNumber, formatPeriod, formatRadius, formatTons } from './palette';
 import type { OrreryViewBody, OrreryViewPayload, OrreryViewStructure } from './types';
+
+/** Объект сцены и его позиция из скана (в координатах пакета). */
+interface MotionObject {
+  object: THREE.Object3D;
+  base: THREE.Vector3;
+}
+
+/** Узел модели движения: тело и всё, что обязано ехать вместе с ним. */
+interface MotionNode {
+  name: string;
+  objects: MotionObject[];
+}
 
 export type FilterMode = 'all' | 'bodies' | 'landable' | 'bio' | 'signals' | 'sites' | 'rings' | 'unscanned';
 export type LabelsMode = 'auto' | 'all' | 'none' | 'focus';
@@ -316,10 +328,23 @@ export function createOrreryViewer(
   const tempVector = new THREE.Vector3();
   let hover: PickInfo | null = null;
   let pointerInside = false;
-  let motionAnchors: { object: THREE.Object3D; body: string; offset: THREE.Vector3 }[] = [];
+  /**
+   * Модель движения: что и вокруг чего ходит.
+   *
+   * Считается один раз на пересборку сцены. Порядок важен: сначала звёзды,
+   * потом планеты, потом луны — каждое тело добавляет к своему смещению
+   * смещение родителя, иначе луна улетает от «уехавшей» планеты, а планета —
+   * от своей звезды в двойной системе.
+   */
+  let motionModel: MotionNode[] = [];
   let frameRequest = 0;
   let transition: { from: CameraState; to: CameraState; started: number; duration: number } | null = null;
   let labelCache: { text: string; kind: string; flags: string }[] = [];
+  /** Когда состояние уходило наружу в последний раз (троттлинг проигрывания). */
+  let lastStateEmit = 0;
+  /** Где нажали кнопку мыши: клик после перетаскивания камеры — не клик. */
+  let pointerDown: { x: number; y: number; time: number } | null = null;
+  let dragged = false;
 
   const now = () => (container.ownerDocument.defaultView?.performance?.now?.() ?? Date.now());
 
@@ -343,21 +368,10 @@ export function createOrreryViewer(
     applyLayers();
     applyFilter();
     applyEmphasis();
-    motionAnchors = [];
-    if (scene) {
-      for (const structure of currentPayload.structures) {
-        const object = scene.structureObjects.get(structure.id);
-        if (!object || !structure.body) continue;
-        const bodyPosition = currentPayload.bodies.find((body) => body.name === structure.body)?.position;
-        if (!bodyPosition) continue;
-        const offset = new THREE.Vector3(
-          structure.position[0] - bodyPosition[0],
-          structure.position[2] - bodyPosition[1],
-          -(structure.position[1] - bodyPosition[2]),
-        );
-        motionAnchors.push({ object: object.parent ?? object, body: structure.body, offset });
-      }
-    }
+    motionModel = buildMotionModel();
+    // Сцена собрана по позициям из скана: если время уже идёт, тела нужно
+    // сразу поставить туда, где они на текущий момент.
+    if (state.timeDays !== 0) applyMotion();
     setToast(currentPayload.bodies.length ? '' : 'Сканов этого тела/системы пока нет — карта пустая.');
     if (previousFocus && !currentPayload.bodies.some((body) => body.name === previousFocus)) {
       state.focus = '';
@@ -451,51 +465,60 @@ export function createOrreryViewer(
       ?? currentPayload.moonOrbits.find((orbit) => orbit.name === name);
   }
 
-  /** Применить время: тела едут по своим орбитам, постройки — за телами. */
-  function applyMotion() {
-    if (!scene || state.timeDays === 0) return;
+  /**
+   * Собрать модель движения по текущей сцене.
+   *
+   * Все позиции — в координатах пакета (Z вверх): корневая группа сцены уже
+   * повёрнута, поэтому никакой перестановки осей здесь быть не должно.
+   * Раньше движение пересчитывало координаты ещё раз ([x, z, −y]) — при
+   * включении проигрывания тела мгновенно разлетались с орбит.
+   */
+  function buildMotionModel(): MotionNode[] {
+    if (!scene) return [];
+    const nodes: MotionNode[] = [];
     for (const body of currentPayload.bodies) {
-      if (body.kind === 'star' && currentPayload.bodies.filter((candidate) => candidate.kind === 'star').length === 1) continue;
-      const orbit = findOrbit(body.name);
-      if (!orbit) continue;
-      const next = positionAtTime(body, orbit, state.timeDays);
-      const object = scene.bodyObjects.get(body.name);
-      if (!object) continue;
-      const delta = new THREE.Vector3(
-        next[0] - body.position[0],
-        next[2] - body.position[2],
-        -(next[1] - body.position[1]),
-      );
-      (object.parent ?? object).position.add(delta);
+      const objects: MotionObject[] = (scene.bodyAttachments.get(body.name) ?? [])
+        .map((entry) => ({ object: entry.object, base: entry.base.clone() }));
+
+      // Постройки тела едут вместе с ним: их смещение — смещение тела.
+      for (const structure of currentPayload.structures) {
+        if (structure.body !== body.name) continue;
+        const object = scene.structureObjects.get(structure.id);
+        const group = object?.parent ?? object;
+        if (!group) continue;
+        objects.push({ object: group, base: group.position.clone() });
+      }
+
+      if (!objects.length) continue;
+      nodes.push({ name: body.name, objects });
     }
-    for (const anchor of motionAnchors) {
-      const body = currentPayload.bodies.find((candidate) => candidate.name === anchor.body);
-      if (!body) continue;
-      const orbit = findOrbit(body.name);
-      if (!orbit) continue;
-      const next = positionAtTime(body, orbit, state.timeDays);
-      const delta = new THREE.Vector3(
-        next[0] - body.position[0],
-        next[2] - body.position[2],
-        -(next[1] - body.position[1]),
-      );
-      anchor.object.position.add(delta);
+    return nodes;
+  }
+
+  /**
+   * Поставить тела в положение на момент `timeDays`.
+   *
+   * Позиция считается от скана (а не «прибавить дельту к текущей»), поэтому
+   * ошибка не копится и тело никогда не сходит с нарисованной орбиты.
+   * `timeDays = 0` — это и есть сброс к моменту скана.
+   */
+  function applyMotion(timeDays = state.timeDays) {
+    if (!scene || !motionModel.length) return;
+    const deltas = orbitalDeltas(currentPayload, timeDays);
+    for (const node of motionModel) {
+      const delta = deltas.get(node.name) ?? [0, 0, 0];
+      for (const entry of node.objects) {
+        entry.object.position.set(
+          entry.base.x + delta[0],
+          entry.base.y + delta[1],
+          entry.base.z + delta[2],
+        );
+      }
     }
   }
 
   function resetMotion() {
-    if (!scene) return;
-    for (const body of currentPayload.bodies) {
-      const object = scene.bodyObjects.get(body.name);
-      if (!object) continue;
-      (object.parent ?? object).position.set(body.position[0], body.position[2], -body.position[1]);
-    }
-    for (const anchor of motionAnchors) {
-      const body = currentPayload.bodies.find((candidate) => candidate.name === anchor.body);
-      if (!body) continue;
-      const base = new THREE.Vector3(body.position[0], body.position[2], -body.position[1]);
-      anchor.object.position.copy(base).add(anchor.offset);
-    }
+    applyMotion(0);
   }
 
   function applyCamera(durationMs = 700) {
@@ -682,6 +705,14 @@ export function createOrreryViewer(
     showTooltip(info, clientX, clientY);
   }
 
+  /**
+   * Выбор тела кликом.
+   *
+   * Камера едет только когда выбрано НОВОЕ тело. Клик по пустоте лишь снимает
+   * выделение: раньше он ещё и кадрировал систему заново, поэтому любой промах
+   * мимо планеты (в том числе после вращения сцены мышью) отбрасывал камеру
+   * в исходный вид. Вернуть обзор можно кнопкой «вся система» / `fit()`.
+   */
   function select(info: PickInfo | null) {
     if (info) {
       // Клик по постройке ведёт к её телу: иначе фокус уедет в пустую точку.
@@ -694,11 +725,9 @@ export function createOrreryViewer(
           applyCamera();
         }
       }
-    } else {
+    } else if (state.focus) {
       state.focus = '';
-      state.zoom = 0;
       applyEmphasis();
-      applyCamera();
     }
     emit('select', info);
     emit('state', getState());
@@ -707,6 +736,12 @@ export function createOrreryViewer(
   function handlePointerMove(event: PointerEvent) {
     pointerInside = true;
     if (controls?.autoRotate) controls.autoRotate = false;
+    // Вращение и панорама мышью заканчиваются событием click. Если не
+    // отличать перетаскивание от клика, каждый поворот сцены «выбирал» то,
+    // что оказалось под курсором в конце, и камера прыгала.
+    if (pointerDown && Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) {
+      dragged = true;
+    }
     const info = pickAt(event.clientX, event.clientY);
     setHover(info, event.clientX, event.clientY);
     if (renderer) renderer.domElement.style.cursor = info ? 'pointer' : 'grab';
@@ -717,8 +752,19 @@ export function createOrreryViewer(
     setHover(null);
   }
 
+  function handlePointerDown(event: PointerEvent) {
+    pointerDown = { x: event.clientX, y: event.clientY, time: now() };
+    dragged = false;
+  }
+
   function handleClick(event: MouseEvent) {
+    const wasDragged = dragged;
+    const held = pointerDown ? now() - pointerDown.time : 0;
+    pointerDown = null;
+    dragged = false;
     if (!pointerInside) return;
+    // Долгое удержание — тоже управление камерой, а не выбор тела.
+    if (wasDragged || held > 350) return;
     const info = pickAt(event.clientX, event.clientY);
     select(info);
   }
@@ -739,11 +785,16 @@ export function createOrreryViewer(
     const delta = clock.getDelta();
     if (state.playing) {
       state.timeDays += delta * state.speed;
-      // Тела возвращаются к позициям из скана и едут заново: так накопленная
-      // ошибка не съезжает с нарисованных орбит даже через сотни кадров.
-      resetMotion();
+      // Положение считается от момента скана, поэтому накопленной ошибки нет
+      // и тело не съезжает с нарисованной орбиты даже через сотни кадров.
       applyMotion();
-      emit('state', getState());
+      // Состояние наружу — не чаще 8 раз в секунду. Событие на каждом кадре
+      // заставляло React перерисовывать обвязку 60 раз в секунду: интерфейс
+      // тормозил, а любой нестабильный пропс страницы возвращал камеру.
+      if (now() - lastStateEmit > 125) {
+        lastStateEmit = now();
+        emit('state', getState());
+      }
     }
     if (transition && camera && controls) {
       const progress = Math.min(1, (now() - transition.started) / transition.duration);
@@ -764,6 +815,7 @@ export function createOrreryViewer(
   function bind() {
     if (!renderer) return;
     const element = renderer.domElement;
+    element.addEventListener('pointerdown', handlePointerDown);
     element.addEventListener('pointermove', handlePointerMove);
     element.addEventListener('pointerleave', handlePointerLeave);
     element.addEventListener('click', handleClick);
@@ -773,6 +825,7 @@ export function createOrreryViewer(
   function unbind() {
     if (!renderer) return;
     const element = renderer.domElement;
+    element.removeEventListener('pointerdown', handlePointerDown);
     element.removeEventListener('pointermove', handlePointerMove);
     element.removeEventListener('pointerleave', handlePointerLeave);
     element.removeEventListener('click', handleClick);

@@ -229,7 +229,12 @@ fi
 # копился до следующего успешного прогона и забивал диск, превращая
 # каждую следующую сборку в гонку на исход «DeadlineExceeded».
 # shellcheck disable=SC2086
-if declare -F edrc_build_with_retry >/dev/null 2>&1; then
+if declare -F edrc_build_each >/dev/null 2>&1; then
+  # По одному образу за раз (web последним): параллельные таргеты на слабом
+  # диске роняют сборку «DeadlineExceeded» ещё до того, как дело дойдёт до
+  # тяжёлого web. Подробности — edrc_build_each в compose-lib.sh.
+  edrc_build_each compose_base build "${build_args[@]}" -- $COMPOSE_SERVICES
+elif declare -F edrc_build_with_retry >/dev/null 2>&1; then
   edrc_build_with_retry compose_base build "${build_args[@]}" $COMPOSE_SERVICES
 else
   compose_base build "${build_args[@]}" $COMPOSE_SERVICES
