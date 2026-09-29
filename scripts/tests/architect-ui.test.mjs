@@ -429,6 +429,100 @@ test('план сохраняется на сервере, публикуетс�
   }
 });
 
+test('назначенный архитектор: панель показывает его, а сохранение закрыто замком', async () => {
+  const ui = await renderArchitect({
+    api: (url) => {
+      if (url.includes('/api/architect/governance')) {
+        return {
+          status: 200,
+          body: {
+            system: SYSTEM,
+            architect: {
+              userId: 'chief-1',
+              name: 'CMDR Chief',
+              assignedBy: 'admin-1',
+              assignedByName: 'Boss',
+              assignedAt: '2026-09-28T10:00:00.000Z',
+            },
+            viewer: { userId: 'viewer-id', isAdmin: false, isArchitect: false },
+          },
+        };
+      }
+      return null;
+    },
+  });
+  try {
+    await ui.flush(60);
+    const text = ui.text();
+    assert.match(text, /Администрирование системы/, 'панель администрирования на месте');
+    assert.match(text, /CMDR Chief/, 'видно, кто архитектор системы');
+    assert.match(text, /архитектор системы/);
+    assert.match(text, /создавать и изменять планы теперь может только он/);
+    const saveButton = ui.buttonByText('Сохранить на сервере');
+    assert.ok(saveButton, 'кнопка сохранения всё ещё есть');
+    assert.equal(saveButton.disabled, true, 'но закрыта замком для не-архитектора');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('администрирование: админ назначает архитектора по позывному из подсказки', async () => {
+  let architectAssigned = false;
+  const puts = [];
+  const searches = [];
+  const ui = await renderArchitect({
+    api: (url, init) => {
+      if (url.includes('/api/architect/governance') && init?.method === 'PUT') {
+        puts.push(JSON.parse(String(init.body)));
+        architectAssigned = true;
+        return { status: 200, body: { ok: true, system: SYSTEM, architect: { userId: 'u-2', name: 'CMDR New', assignedBy: 'admin-1', assignedByName: 'Boss', assignedAt: '2026-09-29T10:00:00.000Z' } } };
+      }
+      if (url.includes('/api/architect/governance') && url.includes('search=')) {
+        searches.push(url);
+        return { status: 200, body: { search: 'cmdr', candidates: [{ id: 'u-2', name: 'CMDR New' }] } };
+      }
+      if (url.includes('/api/architect/governance?system=')) {
+        return {
+          status: 200,
+          body: {
+            system: SYSTEM,
+            architect: architectAssigned
+              ? { userId: 'u-2', name: 'CMDR New', assignedBy: 'admin-1', assignedByName: 'Boss', assignedAt: '2026-09-29T10:00:00.000Z' }
+              : null,
+            viewer: { userId: 'admin-1', isAdmin: true, isArchitect: architectAssigned },
+          },
+        };
+      }
+      return null;
+    },
+  });
+  try {
+    await ui.flush(60);
+    assert.match(ui.text(), /Архитектор не назначен/);
+    assert.match(ui.text(), /Назначить архитектора \(админ\)/);
+
+    const input = ui.document.querySelector('input[aria-label="Позывной нового архитектора"]');
+    assert.ok(input, 'поле позывного есть у админа');
+    await ui.typeInto(input, 'cmdr');
+    await ui.flush(350); // дебаунс автоподбора 250 мс
+    assert.ok(searches.some((url) => url.includes('search=cmdr')), 'подбор пошёл поиском по позывному');
+
+    const candidate = ui.buttonByText('CMDR New');
+    assert.ok(candidate, 'кандидат из подсказки виден');
+    await ui.click(candidate);
+    await ui.click(ui.buttonByText(/Назначить|Сменить/));
+
+    assert.equal(puts.length, 1, 'назначение ушло одним PUT');
+    assert.equal(puts[0].system, SYSTEM);
+    assert.equal(puts[0].architect, 'CMDR New');
+    await ui.flush(60);
+    assert.match(ui.text(), /★ CMDR New/, 'после назначения панель показывает архитектора системы');
+    assert.match(ui.text(), /Отказаться от системы/, 'админ видит кнопку отказа для себя, если он и архитектор');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test('«где купить» считает закупки по рынкам и показывает остановки', async () => {
   // Раскладку считаем настоящим движком — панель должна уметь её показать.
   const { buildOffers, planSourcing } = await import('../../src/lib/architect/sourcing.ts');

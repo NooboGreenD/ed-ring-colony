@@ -46,6 +46,12 @@ interface SharePanelProps {
   systemName: string;
   /** id сохранённого плана, если он уже на сервере. */
   remoteId: string | null;
+  /**
+   * У системы есть назначенный архитектор, и это не текущий пользователь:
+   * сохранение на сервере закрыто (сервер всё равно ответит 403, но честнее
+   * показать замок заранее). null — сохраняем как обычно.
+   */
+  lockReason?: string | null;
   onSaved: (view: PlanView) => void;
   onOpen: (planId: string) => void;
   onDeleted: () => void;
@@ -62,6 +68,7 @@ export default function SharePanel({
   plan,
   systemName,
   remoteId,
+  lockReason = null,
   onSaved,
   onOpen,
   onDeleted,
@@ -235,8 +242,15 @@ export default function SharePanel({
       </div>
       <div style={{ ...mutedText, marginTop: 6 }}>{VISIBILITY_HINTS_RU[visibility]}</div>
 
+      {lockReason && (
+        <div style={{ ...mutedText, marginTop: 8, color: 'var(--cyan)' }}>
+          🔒 {lockReason} Черновик в браузере можно вести дальше, но на сервер его положит
+          только назначенный архитектор.
+        </div>
+      )}
+
       <div style={{ ...rowStyle, marginTop: 10 }}>
-        <button type="button" onClick={() => void save()} disabled={busy} style={primaryButton}>
+        <button type="button" onClick={() => void save()} disabled={busy || Boolean(lockReason)} style={primaryButton}>
           {busy ? 'Сохранение…' : remoteId ? 'Сохранить изменения' : 'Сохранить на сервере'}
         </button>
         {remoteId && (

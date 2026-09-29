@@ -48,6 +48,9 @@ export const db = {
   inserted: [],
   updated: [],
   deleted: [],
+  // Ответы «со своих» таблиц (напр. system_architects): тест указывает их
+  // здесь, не смешивая с общими rows/single, которые читают старые проверки.
+  tables: {},
 };
 
 export function reset() {
@@ -59,12 +62,23 @@ export function reset() {
   db.inserted.length = 0;
   db.updated.length = 0;
   db.deleted.length = 0;
+  db.tables = {};
+}
+
+function tableStore(table) {
+  if (!db.tables[table]) db.tables[table] = { rows: null, single: null };
+  return db.tables[table];
 }
 
 function makeQuery(table) {
+  const store = tableStore(table);
   const record = { table, verb: null, filters: [], orders: [], limitValue: null, orFilter: null };
   db.queries.push(record);
-  const respond = () => ({ data: record.single || record.verb === 'select' ? db.single ?? db.rows : db.rows, error: db.error });
+  const respond = () => {
+    const rows = store.rows ?? db.rows;
+    const single = store.single ?? db.single;
+    return { data: record.single ? single ?? rows : rows, error: db.error };
+  };
   const api = {
     select: () => { record.verb = record.verb || 'select'; return api; },
     insert: (row) => { record.verb = 'insert'; db.inserted.push(row); return api; },
@@ -391,6 +405,110 @@ maybe('удаление плана требует входа', async () => {
     assert.equal(removed.status, 200);
     assert.deepEqual(removed.body, { ok: true, id: 'plan-1' });
     assert.equal(mod.db.deleted[0].table, 'system_plans');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('назначенный архитектор: чужой план системы не сохранить', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    mod.db.tables.system_architects = {
+      rows: null,
+      single: { user_id: 'chief-id', architect_name: 'CMDR Chief' },
+    };
+    const response = await json(await mod.plans.POST(request('POST', 'http://localhost/api/architect/plans', {
+      system: 'HIP 90297',
+      plan: samplePlan(),
+    })));
+    assert.equal(response.status, 403);
+    assert.match(response.body.error, /архитектор CMDR Chief/);
+    const gate = mod.db.queries.find((item) => item.table === 'system_architects');
+    assert.deepEqual(gate.filters, [['eq', 'system_name_lc', 'hip 90297']]);
+    assert.equal(mod.db.inserted.length, 0, 'план не должен уйти в базу');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('назначенный архитектор: свою систему сохраняет сам архитектор', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    mod.db.tables.system_architects = {
+      rows: null,
+      single: { user_id: 'author-id', architect_name: 'CMDR Tester' },
+    };
+    mod.db.single = {
+      id: 'plan-10',
+      system_name: 'HIP 90297',
+      author_id: 'author-id',
+      author_name: 'CMDR Tester',
+      visibility: 'private',
+      site_count: 2,
+      haul_tons: 71_664,
+      score: 9,
+      catalogue_version: 3,
+      updated_at: '2026-09-25T10:00:00.000Z',
+    };
+    const response = await json(await mod.plans.POST(request('POST', 'http://localhost/api/architect/plans', {
+      system: 'HIP 90297',
+      plan: samplePlan(),
+    })));
+    assert.equal(response.status, 201);
+    assert.equal(mod.db.inserted.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('назначенный архитектор: после назначения автор теряет правки', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    mod.db.single = {
+      id: 'plan-1',
+      system_name: 'HIP 90297',
+      author_id: 'author-id',
+      visibility: 'public',
+      plan: samplePlan(),
+    };
+    mod.db.tables.system_architects = {
+      rows: null,
+      single: { user_id: 'chief-id', architect_name: 'CMDR Chief' },
+    };
+    const response = await json(await mod.planById.PUT(
+      request('PUT', 'http://localhost/api/architect/plans/plan-1', { title: 'Мой план' }),
+      { params: Promise.resolve({ id: 'plan-1' }) },
+    ));
+    assert.equal(response.status, 403);
+    assert.match(response.body.error, /архитектор CMDR Chief/);
+    assert.equal(mod.db.updated.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('назначенный архитектор: архитектор правит любой план своей системы', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    mod.db.single = {
+      id: 'plan-1',
+      system_name: 'HIP 90297',
+      author_id: 'someone-else',
+      visibility: 'public',
+      plan: samplePlan(),
+      published_at: '2026-09-25T08:00:00.000Z',
+      catalogue_version: 3,
+    };
+    mod.db.tables.system_architects = {
+      rows: null,
+      single: { user_id: 'author-id', architect_name: 'CMDR Tester' },
+    };
+    const response = await json(await mod.planById.PUT(
+      request('PUT', 'http://localhost/api/architect/plans/plan-1', { title: 'Официальный план' }),
+      { params: Promise.resolve({ id: 'plan-1' }) },
+    ));
+    assert.equal(response.status, 200);
+    assert.equal(mod.db.updated[0].title, 'Официальный план');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { parsePlan } from '@/lib/architect/planner';
+import { checkPlanEditRights, lockReasonRu } from '@/lib/architect/governance';
 import {
   PLAN_TABLE,
   buildPlanUpdate,
@@ -72,7 +73,16 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     if (!existing) return NextResponse.json({ error: 'Plan not found' }, { status: 404 });
 
     const previous = existing as Record<string, unknown>;
-    if (previous.author_id !== user.id) {
+    // Правка плана: пока у системы нет назначенного архитектора — право остаётся
+    // за автором; после назначения план этой системы меняет только архитектор
+    // (админ — тоже, для разбора споров). RLS повторяет то же правило в базе.
+    const gate = await checkPlanEditRights(supabase, String(previous.system_name ?? ''), user.id);
+    if (gate.error) return NextResponse.json({ error: gate.error }, { status: 500 });
+    if (gate.architect) {
+      if (!gate.allowed) {
+        return NextResponse.json({ error: lockReasonRu(gate.architect) }, { status: 403 });
+      }
+    } else if (previous.author_id !== user.id) {
       return NextResponse.json({ error: 'План может менять только его автор' }, { status: 403 });
     }
 
