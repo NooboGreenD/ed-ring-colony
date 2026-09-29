@@ -73,7 +73,10 @@ dist-archive/
 
 # Spansh dump download + generated points file (scripts/import-spansh-systems.mjs)
 data/spansh/
-public/data/
+public/data/*
+# Справочник верфи собирается скриптом, но нужен в поставке: без него страница
+# /outfitting пустая, а пересобрать его на боевом сервере нечем.
+!public/data/outfitting.json
 # Пакеты обновлений Colonial Helper при локальном запуске сервера
 # (на боевом сервере это том /data/uploader).
 data/uploader/

@@ -203,6 +203,18 @@ Invariants that must stay identical in both languages:
   never leave its cluster budget and the distance ordering stays monotonic.
   Bodies without elements keep the golden-angle fallback, and `fromData` /
   `has_real_elements` is what tells the UI not to label a fallback orbit as real.
+- **Playback is absolute, not incremental.** `motion.orbitalDeltas(t)` returns a
+  displacement per body (`positionAtTime − scanPosition`, plus the parent's own
+  displacement for moons and planets around moving stars), and `viewer.applyMotion`
+  writes `base + delta` into every dependent object registered in
+  `scene.bodyAttachments` (body group, rings, signal markers, ground structures).
+  Nothing accumulates, so `t = 0` is an exact reset and bodies cannot drift off
+  their drawn orbits. Coordinates are used verbatim: the root group is already
+  rotated (`root.rotation.x = -π/2`), so no extra axis swizzle in the viewer.
+- **The camera belongs to the user.** `applyCamera()` runs only on explicit
+  selection or focus changes; a click that follows a drag (> 4 px or > 350 ms) is
+  ignored, an empty click merely clears emphasis, and the `state` event is
+  throttled to 8/s so React re-renders never reset the orbit controls.
 - **Element units differ by source** and are disambiguated by field name, never by
   magnitude: the journal's `Scan` gives `SemiMajorAxis` in metres and
   `OrbitalPeriod` in seconds; EDSM `/api-system-v1/bodies` gives `semiMajorAxis`
@@ -427,6 +439,30 @@ Applied via `npx supabase db push`.
 | `/api/friends` | POST | Auth | Add friend |
 | `/api/home-data` | GET | None | Homepage data |
 | `/api/m-admin` | — | — | Not an API — page `/m-admin` is PWA mobile admin (React) that consumes `/api/mobile/admin-summary` |
+
+### 5.1 Ship builder and engineers (no API)
+
+Обе страницы работают полностью на клиенте и не ходят в базу:
+
+| Страница | Что делает | Данные |
+|----------|------------|--------|
+| `/outfitting` | Конструктор сборок кораблей (аналог coriolis.io): слоты, модули, переборки, инженерия, сводка, ссылка `?b=<код>`, сохранения в `localStorage` | `public/data/outfitting.json` (`fetch`, `cache: force-cache`) |
+| `/engineers` | Дерево разблокировки инженеров, `?engineer=<id или имя>` | `lib/engineers/data.ts` + тот же `outfitting.json` для списка чертежей |
+
+Справочник пересобирается из открытого набора EDCD:
+
+```bash
+git clone --depth 1 https://github.com/EDCD/coriolis-data.git /tmp/coriolis-data
+node scripts/build-outfitting-data.mjs /tmp/coriolis-data   # → public/data/outfitting.json
+```
+
+Формулы (`lib/outfitting/calc.ts`) повторяют игровые: кривая множителя по массе
+для двигателей и генераторов щита, формула прыжка
+`(optmass / масса) * (топливо / fuelmul)^(1/fuelpower)`, модификации
+`multiplicative` / `additive` / `overwrite` с ползунком качества прогона.
+Экспериментальные эффекты показываются справочно: в открытых данных у них нет
+числовых модификаторов, поэтому в сводке они не учитываются — так и написано в
+интерфейсе. Тесты — `scripts/tests/outfitting.test.mjs`.
 
 ---
 
