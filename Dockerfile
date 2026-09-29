@@ -92,6 +92,9 @@ RUN addgroup -S nodejs -g 1001 && adduser -S nextjs -u 1001 \
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Админка выпускает Helper прямо из исходников, соответствующих этой версии
+# сайта; поэтому они должны быть доступны и в standalone runtime-образе.
+COPY --from=builder --chown=nextjs:nodejs /app/uploader ./uploader
 
 # Каталог предварительного скачивания дампа Spansh (~6 ГиБ). В docker-compose
 # на него повешен именованный том galaxy-dump — файл переживает пересборку

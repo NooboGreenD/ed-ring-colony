@@ -1491,8 +1491,14 @@ function SiteRow({
           {installation.needs.count > 0 ? ` · нужно ${installation.needs.count} очк. T${installation.needs.tier}` : ''}
           {installation.gives.count > 0 ? ` · даёт ${installation.gives.count} очк. T${installation.gives.tier}` : ''}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
-          экономика: {ECONOMY_LABELS_RU[installation.influence]}
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+          <span>экономика:</span>
+          <span
+            title="Экономика, которую постройка добавляет системе"
+            style={{ ...chipStyle, padding: '1px 5px', color: installation.influence === 'none' ? 'var(--muted)' : 'var(--cyan)' }}
+          >
+            {ECONOMY_LABELS_RU[installation.influence]}
+          </span>
           {economyFit && economyFit.level !== 'neutral' && (
             <span
               style={{ marginLeft: 6, color: economyFit.level === 'boost' ? 'var(--green)' : 'var(--orange)' }}

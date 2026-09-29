@@ -116,9 +116,9 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
     };
   }, [assignInput, governance?.viewer?.isAdmin]);
 
-  const assign = useCallback(async () => {
+  const assign = useCallback(async (self = false) => {
     const architect = assignInput.trim();
-    if (!architect || busy) return;
+    if ((!architect && !self) || busy) return;
     setBusy(true);
     setError('');
     setDone('');
@@ -126,7 +126,7 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
       const response = await fetch('/api/architect/governance', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ system: systemName, architect }),
+        body: JSON.stringify({ system: systemName, architect, self }),
       });
       const data = await response.json().catch(() => null);
       if (!response.ok) {
@@ -248,6 +248,15 @@ export default function GovernancePanel({ systemName, onNotice, onState }: Gover
               style={primaryButton}
             >
               {busy ? '…' : architect ? 'Сменить' : 'Назначить'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void assign(true)}
+              disabled={busy || viewer.isArchitect}
+              style={ghostButton}
+              title="Назначить текущего администратора без поиска профиля по позывному"
+            >
+              Назначить себя
             </button>
           </div>
           {candidates.length > 0 && (

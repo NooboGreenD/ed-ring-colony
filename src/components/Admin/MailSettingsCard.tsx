@@ -201,8 +201,9 @@ export default function MailSettingsCard() {
     </div>}
 
     {status?.override && !status.override.passesSmtp && <div style={{ border: '1px solid #e67e22', background: 'rgba(230,126,34,0.08)', padding: '8px 10px', fontSize: 13, color: '#fdba74', borderRadius: 2, marginBottom: 10 }}>
-      В {status.override.file} стека Supabase не передаётся GOTRUE_SMTP_HOST: смёржите вручную
-      deploy/selfhost/supabase-auth.override.yml (см. POST-MIGRATION.md) — иначе auth не увидит SMTP.
+      Текущий {status.override.file} пока не передаёт SMTP. Ничего объединять вручную не нужно:
+      «Применить и перезапустить» создаст отдельный управляемый docker-compose.smtp-override.yml,
+      сохранив существующие настройки стека.
     </div>}
 
     <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginBottom: 10 }}>

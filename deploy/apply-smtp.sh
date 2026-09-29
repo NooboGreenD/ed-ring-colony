@@ -65,6 +65,17 @@ supa_env_value() {
   grep -E "^$1=" "$SUPABASE_ENV" 2>/dev/null | tail -n1 | cut -d= -f2- || true
 }
 
+# Атомарно заменить ключ в env-файле, не раскрывая его значение в журнале.
+env_set() { # $1=file $2=key $3=value
+  local file="$1" key="$2" value="$3" tmp
+  tmp="${file}.smtp.$$"
+  [ -f "$file" ] || : > "$file"
+  awk -v key="$key" 'index($0, key "=") != 1 { print }' "$file" > "$tmp"
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$file"
+}
+
 wait_http() { # $1 = URL, $2 = что говорим в процессе
   local url="$1" what="$2" i
   for i in $(seq 1 "$HEALTH_TRIES"); do
@@ -89,35 +100,38 @@ command -v docker >/dev/null 2>&1 || die "docker не найден: примен
 [ -f "$SUPABASE_ENV" ] || die "нет .env стека Supabase ($SUPABASE_ENV): сначала сохраните SMTP-ключи в панели"
 [ -w "$SUPABASE_ENV" ] || die ".env стека Supabase недоступен на запись — проверьте монтирование каталога в update-agent"
 
-SMTP_HOST_VAL="$(supa_env_value SMTP_HOST)"
-if [ -z "$SMTP_HOST_VAL" ]; then
-  die "в .env стека нет SMTP_HOST: заполните поля SMTP в Админка → Авторизация → «Отправка писем» и сохраните"
-fi
-say "SMTP_HOST задан, DISABLE_SIGNUP=$(supa_env_value DISABLE_SIGNUP || echo '(не задан)')"
+for required in SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_ADMIN_EMAIL; do
+  [ -n "$(supa_env_value "$required")" ] || die "в .env стека не заполнен $required: заполните SMTP в админке и сохраните"
+done
 
-# ── 2. compose-override должен передавать SMTP в auth ──────────────
-report smtp_override 15 "Проверяю compose-override для auth"
+# Успешно заполненный SMTP означает, что обе половины email-регистрации должны
+# быть включены. Раньше галочки сохранялись, но старые false в окружении
+# переживали перезапуск, из-за чего диагностика продолжала видеть две ошибки.
+env_set "$SUPABASE_ENV" DISABLE_SIGNUP false
+env_set "$SUPABASE_ENV" ENABLE_EMAIL_AUTOCONFIRM false
+[ -w "$(dirname "$ENV_FILE")" ] || die "каталог env сайта недоступен на запись: $(dirname "$ENV_FILE")"
+env_set "$ENV_FILE" AUTH_EMAIL_ENABLED true
+say "SMTP заполнен; регистрация GoTrue и формы сайта включены"
+
+# ── 2. отдельный управляемый override передаёт SMTP в auth ─────────
+report smtp_override 15 "Подготавливаю SMTP override для auth"
 OVERRIDE="$SUPABASE_DIR/docker-compose.override.yml"
+SMTP_OVERRIDE="$SUPABASE_DIR/docker-compose.smtp-override.yml"
 TEMPLATE="$PROJECT_DIR/deploy/selfhost/supabase-auth.override.yml"
-if [ -f "$OVERRIDE" ]; then
-  if grep -q 'GOTRUE_SMTP_HOST' "$OVERRIDE"; then
-    say "override уже передаёт SMTP в auth: $OVERRIDE"
-  else
-    die "в $OVERRIDE нет передачи SMTP (GOTRUE_SMTP_HOST): смёржите вручную $TEMPLATE — скрипт не трогает чужой override"
-  fi
-else
-  [ -f "$TEMPLATE" ] || die "шаблон override не найден в клоне: $TEMPLATE"
-  cp "$TEMPLATE" "$OVERRIDE"
-  chmod 600 "$OVERRIDE" 2>/dev/null || true
-  say "установлен compose-override для auth из шаблона репозитория"
-fi
+[ -f "$TEMPLATE" ] || die "шаблон override не найден в клоне: $TEMPLATE"
+cp "$TEMPLATE" "$SMTP_OVERRIDE"
+chmod 600 "$SMTP_OVERRIDE" 2>/dev/null || true
+say "SMTP override установлен автоматически: $SMTP_OVERRIDE"
 
 # ── 3. пересоздание auth с новыми SMTP-ключами ─────────────────────
 report smtp_switch 35 "Пересоздаю контейнер auth (GoTrue)"
 cd "$SUPABASE_DIR"
-# Compose сам подхватит .env из каталога стека. Вывод режем: имена сервисов
-# безвредны, но длинный pull-шум панели не нужен.
-compose up -d --no-deps --force-recreate auth 2>&1 | sed -e 's/\r$//' | cut -c1-300
+# Чужой docker-compose.override.yml не переписываем, а подключаем вместе с
+# отдельным управляемым файлом. Так настройки оператора и SMTP складываются.
+AUTH_COMPOSE=(-f docker-compose.yml)
+[ -f "$OVERRIDE" ] && AUTH_COMPOSE+=(-f docker-compose.override.yml)
+AUTH_COMPOSE+=(-f docker-compose.smtp-override.yml)
+compose "${AUTH_COMPOSE[@]}" up -d --no-deps --force-recreate auth 2>&1 | sed -e 's/\r$//' | cut -c1-300
 
 # ── 4. проверка живости auth ────────────────────────────────────────
 report smtp_verify 55 "Жду, пока auth начнёт отвечать"

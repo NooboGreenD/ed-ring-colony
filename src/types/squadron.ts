@@ -26,6 +26,10 @@ export interface Squadron {
   activity_type: string | null;
   is_open_recruitment: boolean;
   home_system: string | null;
+  logo_url: string | null;
+  banner_url: string | null;
+  banner_position: 'top' | 'center' | 'bottom';
+  motto: string | null;
 }
 
 export interface SquadronRank {

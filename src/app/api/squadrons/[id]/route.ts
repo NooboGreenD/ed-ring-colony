@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { createClient, authFromRequest } from '@/lib/supabaseServer'
+import { createClient, createServiceClient, authFromRequest } from '@/lib/supabaseServer'
 import { NAME_CHANGE_COOLDOWN_DAYS } from '@/lib/squadronConstants'
 import { getSquadronMembership, loadSquadronMembers, loadSquadronProjects } from '@/lib/squadronData'
 
@@ -72,19 +72,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     // the optional squadron_member_detail view is absent.
     const membership = await getSquadronMembership(supabase, squadronId, user.id)
 
-    if (!membership || !membership.can_edit_squadron) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
-
-    // Получаем текущие данные эскадрильи для проверок
+    // Получаем текущие данные эскадрильи для прав владельца и проверок.
     const { data: current } = await supabase
       .from('squadrons')
-      .select('name, name_changed_at')
+      .select('name, name_changed_at, created_by')
       .eq('id', squadronId)
       .single()
 
     if (!current) {
       return NextResponse.json({ error: 'Squadron not found' }, { status: 404 })
+    }
+    if (current.created_by !== user.id && !membership?.can_edit_squadron) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
     const update: Record<string, any> = {}
@@ -123,8 +122,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     if (body.activity_type !== undefined) update.activity_type = body.activity_type
     if (body.is_open_recruitment !== undefined) update.is_open_recruitment = body.is_open_recruitment
     if (body.home_system !== undefined) update.home_system = body.home_system
+    if (body.motto !== undefined) update.motto = String(body.motto).trim().slice(0, 160) || null
+    if (body.banner_position !== undefined && ['top', 'center', 'bottom'].includes(body.banner_position)) {
+      update.banner_position = body.banner_position
+    }
 
-    const { data, error } = await supabase
+    // Право уже проверено выше. Service client нужен потому, что историческая
+    // RLS-политика squadrons разрешает UPDATE только создателю, хотя ранги
+    // давно поддерживают делегированное can_edit_squadron.
+    const { data, error } = await createServiceClient()
       .from('squadrons')
       .update(update)
       .eq('id', squadronId)
