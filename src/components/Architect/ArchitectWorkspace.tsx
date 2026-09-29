@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import DataQualityPanel from '@/components/Architect/DataQualityPanel';
 import ExistingPanel, { structureKey } from '@/components/Architect/ExistingPanel';
+import GovernancePanel from '@/components/Architect/GovernancePanel';
 import InstallationPicker from '@/components/Architect/InstallationPicker';
 import PlanInsights from '@/components/Architect/PlanInsights';
 import PlanSummary from '@/components/Architect/PlanSummary';
@@ -29,6 +30,7 @@ import {
   type SiteProgress,
 } from '@/lib/architect/progress';
 import type { PlanView } from '@/lib/architect/store';
+import { lockReasonRu, type GovernanceInfo } from '@/lib/architect/governance';
 import type { SitePatch } from '@/lib/architect/planner';
 import {
   ORBITAL_SLOT_LIMIT,
@@ -136,6 +138,8 @@ export default function ArchitectWorkspace() {
   const [recent, setRecent] = useState<string[]>([]);
   // Серверная копия плана: null — план пока только черновик в браузере.
   const [remoteId, setRemoteId] = useState<string | null>(null);
+  // Назначенный архитектор системы и наши права на редактирование её планов.
+  const [planGovernance, setPlanGovernance] = useState<GovernanceInfo | null>(null);
   const [actualSites, setActualSites] = useState<ActualSite[]>([]);
   const [progressFetched, setProgressFetched] = useState(false);
   const [progressLoading, setProgressLoading] = useState(false);
@@ -189,6 +193,17 @@ export default function ArchitectWorkspace() {
     () => (plan ? evaluatePlan(plan, bodies) : null),
     [plan, bodies],
   );
+  /**
+   * Замок плана: у системы назначен архитектор, а текущий пользователь — ни он,
+   * ни админ. Черновик в браузере вести можно, сохранение на сервере закроется.
+   */
+  const planLockReason = useMemo(() => {
+    const architect = planGovernance?.architect;
+    if (!architect) return null;
+    const viewer = planGovernance?.viewer;
+    if (viewer?.isAdmin || viewer?.isArchitect) return null;
+    return lockReasonRu(architect);
+  }, [planGovernance]);
   const structures = useMemo(() => (plan ? planToStructures(plan) : []), [plan]);
   const editingSite = useMemo(
     () => plan?.sites.find((site) => site.id === editingSiteId) ?? null,
@@ -355,6 +370,7 @@ export default function ArchitectWorkspace() {
     setCollapsedBodies([]);
     setEditingSiteId(null);
     setPickerBody('');
+    setPlanGovernance(null);
     try {
       // Сверка на загрузке: сравниваются данные базы проекта и EDSM, для
       // каждого тела остаётся более точный/свежий источник (см. ARCHITECT.md,
@@ -942,6 +958,7 @@ export default function ArchitectWorkspace() {
               plan={plan}
               systemName={systemName}
               remoteId={remoteId}
+              lockReason={planLockReason}
               onSaved={(view) => setRemoteId(view.id)}
               onOpen={(planId) => void openPlanById(planId)}
               onDeleted={() => setRemoteId(null)}
@@ -950,6 +967,11 @@ export default function ArchitectWorkspace() {
           </section>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <GovernancePanel
+              systemName={systemName}
+              onNotice={setNotice}
+              onState={setPlanGovernance}
+            />
             <PlanSummary
               plan={plan}
               evaluation={evaluation}

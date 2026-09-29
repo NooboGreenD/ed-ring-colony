@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import PilotIdentity from '@/components/Cosmetics/PilotIdentity';
+import LeaderboardStats from '@/components/LeaderboardStats';
 import type { LeaderboardEntry } from '@/types/atlas';
 import { ACHIEVEMENT_TRACKS, rankProgress, tierColor, tierBg, tierBorder } from '@/lib/achievements';
 import { IconLeaderboard } from '@/components/Icons';
@@ -99,6 +100,7 @@ export function Leaderboard() {
   const periodLabels: Record<string, string> = { all: 'Всё время', week: 'Неделя', month: 'Месяц' };
 
   return (
+    <>
     <div className="card" style={{ border: '1px solid #323538', background: '#1a1c1e', borderRadius: 6, padding: '20px 24px' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 18 }}>
@@ -174,5 +176,9 @@ export function Leaderboard() {
         <p style={{ color: '#9ca3af', textAlign: 'center', marginTop: 24, fontSize: 13 }}>Пока нет данных</p>
       )}
     </div>
+
+    {/* Отдельные блоки статистики: застроенные системы и топ архитекторов */}
+    <LeaderboardStats period={period} />
+    </>
   );
 }

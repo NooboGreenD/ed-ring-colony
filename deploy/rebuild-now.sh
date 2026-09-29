@@ -223,8 +223,17 @@ else
   export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
 fi
 # $COMPOSE_SERVICES — список слов, разворачивается намеренно.
+# Сборка идёт через edrc_build_with_retry (compose-lib.sh): сначала проверка
+# свободного места на диске Docker, при срыве — немедленная уборка кэша
+# сорвавшейся попытки и один авто-повтор. Раньше кэш упавших сборок
+# копился до следующего успешного прогона и забивал диск, превращая
+# каждую следующую сборку в гонку на исход «DeadlineExceeded».
 # shellcheck disable=SC2086
-compose_base build "${build_args[@]}" $COMPOSE_SERVICES
+if declare -F edrc_build_with_retry >/dev/null 2>&1; then
+  edrc_build_with_retry compose_base build "${build_args[@]}" $COMPOSE_SERVICES
+else
+  compose_base build "${build_args[@]}" $COMPOSE_SERVICES
+fi
 
 # ── 6. переключение ─────────────────────────────────────────────────
 say "▶ переключаю контейнеры"

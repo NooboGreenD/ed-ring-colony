@@ -48,8 +48,38 @@ function runRebuild(t, overrides = {}) {
     // STUB_BUILDX_EXIT=1 — плагина buildx нет (как в Alpine-образе агента
     // до пакета docker-cli-buildx): compose уходит в legacy-билдер.
     '  *"buildx version"*) exit "${STUB_BUILDX_EXIT:-0}" ;;',
-    '  *" build "*) exit "${STUB_BUILD_EXIT:-0}" ;;',
+    // Страж диска спрашивает корень Docker через info --format.
+    '  *info*) printf "/var/lib/docker\\n" ;;',
+    // Освобождение места — сабстантивная уборка (container/image prune из
+    // edrc_cleanup_docker_disk); бюджетная подрезка builder prune файл df
+    // не переписывает. STUB_DF_AFTER_PRUNE — сколько КБ осталось после.
+    '  *"container prune"*|*"image prune"*)',
+    '    if [ -n "${STUB_DF_FILE:-}" ]; then',
+    '      printf "%s" "${STUB_DF_AFTER_PRUNE:-52428800}" > "$STUB_DF_FILE"',
+    '    fi',
+    '    exit 0 ;;',
+    '  *" build "*)',
+    // STUB_BUILD_FAIL_ONCE=1 — кратковременный сбой: первая сборка умирает
+    // дедлайном, повторная после уборки успешна (счётчик — STUB_COUNT).
+    '    if [ "${STUB_BUILD_FAIL_ONCE:-0}" = "1" ]; then',
+    '      count="$(cat "$STUB_COUNT" 2>/dev/null || echo 0)"',
+    '      printf "%s" "$((count + 1))" > "$STUB_COUNT"',
+    '      if [ "$count" = "0" ]; then',
+    '        echo "ERROR: failed to solve: DeadlineExceeded: context deadline exceeded" >&2',
+    '        exit 1',
+    '      fi',
+    '    fi',
+    '    exit "${STUB_BUILD_EXIT:-0}" ;;',
     'esac',
+    'exit 0',
+  ].join('\n'));
+  // Стаб df для стража диска: свободное место (КБ, 4-е поле -Pk) — из
+  // файла STUB_DF_FILE (по умолчанию 51200 МБ — сборке хватает).
+  stub('df', [
+    'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"',
+    'free="$(cat "${STUB_DF_FILE:-/edrc-nonexistent}" 2>/dev/null || true)"',
+    '[ -n "$free" ] || free=52428800',
+    'printf "/dev/sda1 104857600 31457280 %s 30%% /var/lib/docker\\n" "$free"',
     'exit 0',
   ].join('\n'));
   stub('curl', 'printf "[curl] %s\\n" "$*" >> "$STUB_LOG"\nexit 0');
@@ -71,6 +101,7 @@ function runRebuild(t, overrides = {}) {
       HEALTH_TRIES: '1',
       WEB_URL: 'http://example.invalid/api/health',
       STUB_LOG: log,
+      STUB_COUNT: join(dir, 'build-attempts'),
       STUB_BUILD_EXIT: '0',
       ...overrides,
     },
@@ -100,13 +131,42 @@ test('rebuild-now: USE_CACHE=1 reuses layers and preserves the Supabase Compose 
 });
 
 for (const useCache of ['0', '1']) {
-  test(`rebuild-now: failed build never replaces containers (USE_CACHE=${useCache})`, { skip }, (t) => {
+  test(`rebuild-now: failed build never replaces containers, but cleans up and retries (USE_CACHE=${useCache})`, { skip }, (t) => {
     const run = runRebuild(t, { USE_CACHE: useCache, STUB_BUILD_EXIT: '17' });
     assert.equal(run.status, 17, run.stdout + run.stderr);
-    assert.match(run.calls, / build /);
-    assert.doesNotMatch(run.calls, / up -d |image prune|\[curl\]/);
+    // Постоянный сбой: один автоповтор (UPDATE_BUILD_RETRIES=1) — две попытки.
+    const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+    assert.equal(builds.length, 2, 'один автоповтор после уборки');
+    assert.match(run.stdout, /пробую собрать ещё раз/);
+    // Работающие контейнеры НЕ трогаем, health не опрашиваем.
+    assert.doesNotMatch(run.calls, / up -d /);
+    assert.doesNotMatch(run.calls, /\[curl\]/);
+    // Остатки сорвавшейся сборки чистим СРАЗУ после каждой попытки — раньше
+    // кэш failed-сборок жил до следующего успешного прогона и съедал диск,
+    // превращая каждую следующую сборку в гонку на «DeadlineExceeded».
+    assert.match(run.calls, /builder prune -f/, 'остатки упавшей сборки убираются немедленно');
+    assert.match(run.calls, /container prune -f/);
   });
 }
+
+test('rebuild-now: кратковременный сбой сборки переживается автоповтором без ручного клика', { skip }, (t) => {
+  const run = runRebuild(t, { STUB_BUILD_FAIL_ONCE: '1' });
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+  assert.equal(builds.length, 2, 'первая попытка умерла дедлайном — вторая доехала');
+  assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 2\) после уборки/);
+  assert.match(run.calls, / up -d /, 'успех доходит до переключения контейнеров');
+  assert.match(run.calls, /\[curl\]/);
+});
+
+test('rebuild-now: UPDATE_BUILD_RETRIES=0 — без автоповтора, уборка после срыва остаётся', { skip }, (t) => {
+  const run = runRebuild(t, { STUB_BUILD_EXIT: '17', UPDATE_BUILD_RETRIES: '0' });
+  assert.equal(run.status, 17, run.stdout + run.stderr);
+  const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+  assert.equal(builds.length, 1, 'оператор явно отключил повторы');
+  assert.doesNotMatch(run.calls, / up -d /);
+  assert.match(run.calls, /builder prune -f/, 'кэш сорвавшейся сборки чистится и без ретрая');
+});
 
 test('rebuild-now: rejects a mistyped cache setting before building or deploying', { skip }, (t) => {
   const run = runRebuild(t, { USE_CACHE: 'yes' });
