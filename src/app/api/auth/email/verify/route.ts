@@ -4,6 +4,8 @@ import { authError, authJson, EmailAuthError, readAuthBody } from '@/lib/emailAu
 import { getSiteUrl } from '@/lib/siteUrl';
 import { ensureUserProfile } from '@/lib/ensureProfile';
 import { createRecoveryGrant, RECOVERY_COOKIE, RECOVERY_TTL, sessionId } from '@/lib/passwordRecovery';
+import { supabaseCookieOptions } from '@/lib/supabaseUrl';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,7 +22,8 @@ export async function POST(request: Request) {
     const cookieStore = await cookies();
     const jar = new Map(cookieStore.getAll().map(cookie => [cookie.name, cookie.value]));
     const staged: { name: string; value: string; options: CookieOptions }[] = [];
-    const client = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    const client = createServerClient(getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+      cookieOptions: supabaseCookieOptions(),
       cookies: {
         getAll: () => Array.from(jar, ([name, value]) => ({ name, value })),
         setAll(items: typeof staged) { for (const item of items) { jar.set(item.name, item.value); staged.push(item); } },

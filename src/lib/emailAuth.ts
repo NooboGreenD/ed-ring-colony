@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { isIP } from 'node:net';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getSiteUrl } from '@/lib/siteUrl';
+import { getServerSupabaseUrl } from './supabaseServerUrl';
 
 export class EmailAuthError extends Error {
   constructor(message: string, public status = 400) { super(message); }
@@ -67,9 +68,9 @@ export function normalizedEmail(value: unknown) {
   return email;
 }
 export function publicAuthClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getServerSupabaseUrl();
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) throw new EmailAuthError('Сервис авторизации не настроен.', 503);
+  if (!key) throw new EmailAuthError('Сервис авторизации не настроен.', 503);
   return createClient(url, key, { auth: {
     persistSession: false, autoRefreshToken: false, detectSessionInUrl: false,
     // Email templates use TokenHash, not implicit access tokens or a device-bound verifier.
@@ -79,9 +80,9 @@ export function publicAuthClient() {
 /** Fail closed if GoTrue would silently auto-confirm an attacker-supplied email. */
 export async function requireEmailDelivery(signup = false, fetchImpl = fetch) {
   if (!emailAuthEnabled()) throw new EmailAuthError('Отправка писем временно недоступна. Обратитесь к администратору.', 503);
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getServerSupabaseUrl();
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) throw new EmailAuthError('Сервис авторизации не настроен.', 503);
+  if (!key) throw new EmailAuthError('Сервис авторизации не настроен.', 503);
   const response = await fetchImpl(`${url.replace(/\/$/, '')}/auth/v1/settings`, {
     headers: { apikey: key }, cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(10_000),
   });

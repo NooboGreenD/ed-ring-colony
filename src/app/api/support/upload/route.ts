@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupportRequestContext } from "@/lib/supportTickets";
+import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
 
 export const dynamic = "force-dynamic";
 
@@ -86,7 +87,9 @@ export async function POST(req: NextRequest) {
       return response({ error: "Could not upload attachment" }, { status: 500 });
     }
 
-    const { data: urlData } = storage.getPublicUrl(path);
+    // `context.db` may use the internal Docker Kong address. Store only a
+    // browser-reachable URL; the existing site gateway serves this path.
+    const publicUrl = `${getPublicSupabaseUrl()}/storage/v1/object/public/${path}`;
     const { data: attachment, error: attachmentError } = await context.db
       .from("support_attachments")
       .insert({
@@ -95,7 +98,7 @@ export async function POST(req: NextRequest) {
         file_type: candidate.type,
         file_size: candidate.size,
         storage_path: path,
-        public_url: urlData.publicUrl,
+        public_url: publicUrl,
         uploaded_by: context.user.id,
       })
       .select("*")

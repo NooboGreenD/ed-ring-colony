@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createHash } from 'crypto';
 import { authFromRequest, createServiceClient } from '@/lib/supabaseServer';
+import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,11 +97,11 @@ async function uploadToStorage(
     if (error) {
       return { url: null, error: errorText(error), unavailable: looksUnavailable(error) };
     }
-    const { data } = svc.storage.from(BUCKET).getPublicUrl(path);
-    const url = data?.publicUrl ?? null;
-    return url
-      ? { url, error: null, unavailable: false }
-      : { url: null, error: 'Storage не вернул публичный адрес', unavailable: false };
+    // The service client may use an unencrypted Docker URL (`http://kong:8000`).
+    // Never persist that private host: browsers must receive the public
+    // same-origin gateway URL instead.
+    const url = `${getPublicSupabaseUrl()}/storage/v1/object/public/${BUCKET}/${path}`;
+    return { url, error: null, unavailable: false };
   } catch (err) {
     // Сеть до Storage вообще не установилась — это точно «недоступно».
     return { url: null, error: errorText(err), unavailable: true };

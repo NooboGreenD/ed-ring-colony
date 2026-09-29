@@ -1,5 +1,6 @@
 import { createClient as createJsClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import { createClient as createCookieClient } from '@/lib/supabaseServer';
+import { getServerSupabaseUrl } from './supabaseServerUrl';
 
 function jwtFromHeader(req: Request): string | null {
   const auth = req.headers.get('authorization') || req.headers.get('x-journal-token') || '';
@@ -13,7 +14,7 @@ function jwtFromHeader(req: Request): string | null {
 
 function tokenClient(jwt: string): SupabaseClient {
   return createJsClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    getServerSupabaseUrl(),
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       global: { headers: { Authorization: `Bearer ${jwt}` } },

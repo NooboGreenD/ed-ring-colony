@@ -1,10 +1,16 @@
 import { createBrowserClient } from "@supabase/ssr";
+import { getPublicSupabaseUrl, supabaseCookieOptions } from '@/lib/supabaseUrl';
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://supabase.edringcolony.ru";
+const url = getPublicSupabaseUrl();
 const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.e30.dummy";
 
 // One browser client owns the Supabase SSR cookie session for the whole app.
-export const supabase = createBrowserClient(url, key, { auth: { detectSessionInUrl: false } });
+// The explicit name keeps sessions valid when the public endpoint is moved
+// behind the site-origin gateway while server code talks to Kong directly.
+export const supabase = createBrowserClient(url, key, {
+  auth: { detectSessionInUrl: false },
+  cookieOptions: supabaseCookieOptions(),
+});
 
 export function createSupabaseClient() {
   return supabase;

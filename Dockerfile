@@ -42,6 +42,9 @@ ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_SITE_URL
 ARG NEXT_PUBLIC_VAPID_PUBLIC_KEY
+# Build-time only: next.config.mjs turns this private Kong URL into an
+# external rewrite. It is deliberately not a NEXT_PUBLIC_* value.
+ARG SUPABASE_INTERNAL_URL
 # Deployment metadata is deliberately server-only. Pass it from the release
 # command; it powers the protected operations dashboard and never reaches the
 # browser bundle.
@@ -52,6 +55,7 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
     NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
     NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL \
     NEXT_PUBLIC_VAPID_PUBLIC_KEY=$NEXT_PUBLIC_VAPID_PUBLIC_KEY \
+    SUPABASE_INTERNAL_URL=$SUPABASE_INTERNAL_URL \
     NEXT_TELEMETRY_DISABLED=1
 
 # Former site CI checks now run during the server-side image build.

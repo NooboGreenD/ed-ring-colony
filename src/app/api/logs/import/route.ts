@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
 import { persistImportedDeliveries } from '@/lib/deliveryImport';
 import { persistJournalTelemetry } from '@/lib/journalTelemetry';
@@ -18,9 +19,9 @@ function hashToken(token: string): string {
 }
 
 function getAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getServerSupabaseUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) throw new Error('Server delivery-import credentials are not configured');
+  if (!key) throw new Error('Server delivery-import credentials are not configured');
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }
 

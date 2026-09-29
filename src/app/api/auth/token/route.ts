@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
 function getAdminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const url = getServerSupabaseUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }

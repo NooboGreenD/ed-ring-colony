@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
 function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  // Keep this module directly importable by the standalone data scripts too:
+  // they execute TypeScript without Next's path aliases/extension resolver.
+  const supabaseUrl = process.env.SUPABASE_INTERNAL_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!supabaseUrl || !serviceRoleKey) {
