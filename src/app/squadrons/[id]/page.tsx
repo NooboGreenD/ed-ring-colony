@@ -40,6 +40,7 @@ export default function SquadronPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [brandingBusy, setBrandingBusy] = useState<"logo" | "banner" | null>(null);
 
   const [form, setForm] = useState<Partial<Squadron>>({});
 
@@ -98,6 +99,8 @@ export default function SquadronPage() {
         is_open_recruitment: form.is_open_recruitment,
         home_system: form.home_system,
         status: form.status,
+        motto: form.motto,
+        banner_position: form.banner_position,
       }),
     });
     const json = await res.json();
@@ -109,6 +112,36 @@ export default function SquadronPage() {
       setForm(json.squadron);
     }
     setSaving(false);
+  };
+
+  const uploadBranding = async (kind: "logo" | "banner", file: File | null) => {
+    if (!file) return;
+    setBrandingBusy(kind); setMsg("");
+    const data = new FormData();
+    data.set("kind", kind);
+    data.set("file", file);
+    try {
+      const res = await authFetch(`/api/squadrons/${id}/branding`, { method: "POST", body: data });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Не удалось загрузить изображение");
+      setSquadron(json.squadron);
+      setForm(json.squadron);
+      setMsg(kind === "logo" ? "Логотип обновлён" : "Фоновое изображение обновлено");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Ошибка загрузки");
+    } finally { setBrandingBusy(null); }
+  };
+
+  const removeBranding = async (kind: "logo" | "banner") => {
+    if (!confirm(`Удалить ${kind === "logo" ? "логотип" : "фоновое изображение"}?`)) return;
+    setBrandingBusy(kind); setMsg("");
+    try {
+      const res = await authFetch(`/api/squadrons/${id}/branding?kind=${kind}`, { method: "DELETE" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Не удалось удалить изображение");
+      setSquadron(json.squadron); setForm(json.squadron); setMsg("Оформление обновлено");
+    } catch (error) { setMsg(error instanceof Error ? error.message : "Ошибка удаления"); }
+    finally { setBrandingBusy(null); }
   };
 
   const daysUntilNameChange = (): number | null => {
@@ -131,13 +164,21 @@ export default function SquadronPage() {
   return (
     <div className="card" style={{ width: "100%" }}>
       {/* Шапка */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16, marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 12, height: 48, borderRadius: 2, background: squadron.color, flexShrink: 0 }} />
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16,
+        marginBottom: 24, padding: squadron.banner_url ? "32px 22px" : 0, borderRadius: 4, position: "relative", overflow: "hidden",
+        backgroundImage: squadron.banner_url ? `linear-gradient(90deg, rgba(12,14,16,.94), rgba(12,14,16,.58)), url("${squadron.banner_url}")` : undefined,
+        backgroundSize: "cover", backgroundPosition: `center ${squadron.banner_position || "center"}`,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, position: "relative", zIndex: 1 }}>
+          {squadron.logo_url ? (
+            <img src={squadron.logo_url} alt={`Логотип ${squadron.name}`} style={{ width: 88, height: 88, objectFit: "contain", borderRadius: 8, background: "rgba(0,0,0,.45)", border: `1px solid ${squadron.color}`, padding: 4 }} />
+          ) : <div style={{ width: 12, height: 48, borderRadius: 2, background: squadron.color, flexShrink: 0 }} />}
           <div>
             <div className="kicker">{squadron.tag ? `[${squadron.tag}]` : "Эскадрилья"}</div>
             <h1 style={{ margin: "4px 0 0", color: squadron.color }}>{squadron.name}</h1>
-            {squadron.description && <p style={{ color: "var(--muted)", marginTop: 6, maxWidth: 600, fontSize: 14, lineHeight: 1.6 }}>{squadron.description}</p>}
+            {squadron.motto && <div style={{ color: "#f3f4f6", fontSize: 13, fontStyle: "italic", marginTop: 4 }}>«{squadron.motto}»</div>}
+            {squadron.description && <p style={{ color: squadron.banner_url ? "#d1d5db" : "var(--muted)", marginTop: 6, maxWidth: 600, fontSize: 14, lineHeight: 1.6 }}>{squadron.description}</p>}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -379,6 +420,36 @@ export default function SquadronPage() {
       {tab === "settings" && (canEditSquadron || isCreator) && (
         <div className="card" style={{ background: "#25282b" }}>
           <h3 style={{ margin: "0 0 16px", color: "var(--text)" }}>Настройки эскадрильи</h3>
+
+          <div style={{ border: "1px solid var(--line)", background: "var(--bg)", padding: 14, marginBottom: 16 }}>
+            <h4 style={{ margin: "0 0 10px", color: "var(--text)" }}>Оформление страницы</h4>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+              <div>
+                <label style={labelStyle}>Логотип (до 2 МБ)</label>
+                {form.logo_url && <img src={form.logo_url} alt="Логотип" style={{ width: 92, height: 92, objectFit: "contain", display: "block", marginBottom: 8, background: "#111", border: "1px solid var(--line)" }} />}
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={brandingBusy !== null} onChange={e => { void uploadBranding("logo", e.target.files?.[0] ?? null); e.target.value = ""; }} />
+                {form.logo_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("logo")} style={{ fontSize: 11, marginTop: 6 }}>Удалить логотип</button>}
+              </div>
+              <div>
+                <label style={labelStyle}>Фоновое изображение (до 6 МБ)</label>
+                {form.banner_url && <div style={{ height: 92, marginBottom: 8, backgroundImage: `url("${form.banner_url}")`, backgroundSize: "cover", backgroundPosition: `center ${form.banner_position || "center"}`, border: "1px solid var(--line)" }} />}
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" disabled={brandingBusy !== null} onChange={e => { void uploadBranding("banner", e.target.files?.[0] ?? null); e.target.value = ""; }} />
+                {form.banner_url && <button type="button" className="btn" disabled={brandingBusy !== null} onClick={() => void removeBranding("banner")} style={{ fontSize: 11, marginTop: 6 }}>Удалить фон</button>}
+              </div>
+              <div>
+                <label style={labelStyle}>Положение фонового изображения</label>
+                <select value={form.banner_position || "center"} onChange={e => setForm(p => ({ ...p, banner_position: e.target.value as Squadron["banner_position"] }))} style={{ width: "100%" }}>
+                  <option value="top">По верхнему краю</option><option value="center">По центру</option><option value="bottom">По нижнему краю</option>
+                </select>
+              </div>
+              <div>
+                <label style={labelStyle}>Девиз</label>
+                <input value={form.motto || ""} maxLength={160} onChange={e => setForm(p => ({ ...p, motto: e.target.value }))} placeholder="Короткий девиз эскадрильи" style={{ width: "100%" }} />
+              </div>
+            </div>
+            {brandingBusy && <div style={{ color: "var(--cyan)", fontSize: 12, marginTop: 8 }}>Загрузка изображения…</div>}
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             {/* Название */}
             <div style={{ gridColumn: "1 / -1" }}>
