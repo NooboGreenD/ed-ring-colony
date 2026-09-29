@@ -214,6 +214,129 @@ edrc_trim_build_cache() {
   return 0
 }
 
+# ── Защита диска и устойчивость сборки ──────────────────────────────
+# Порочный круг из прод-инцидента: сорвавшаяся сборка оставляла свой кэш
+# BuildKit (docker image prune его не трогает), уборка шла только после
+# УСПЕШНОГО обновления, а подрезка перед сборкой хранит самые свежие записи
+# — то есть как раз кэш сорвавшихся прогонов. Диск заполнялся, демон
+# начинал ползать (передача КИЛОбайт контекста занимала по 20+ секунд),
+# и очередная сборка умирала на «failed to solve: DeadlineExceeded: context
+# deadline exceeded» около 3-й минуты всего цикла. Ниже: страж свободного
+# места и обёртка сборки с немедленной уборкой остатков и авто-повтором.
+
+# edrc_size_to_kb 8g|512m|4096k|1048576 — размер в КБ (сравнения места).
+edrc_size_to_kb() {
+  local v="${1:-0}"
+  case "$v" in
+    *g|*G) echo $(( ${v%[gG]} * 1024 * 1024 )) ;;
+    *m|*M) echo $(( ${v%[mM]} * 1024 )) ;;
+    *k|*K) echo $(( ${v%[kK]} )) ;;
+    *)     echo $(( ${v:-0} )) ;;
+  esac
+}
+
+# edrc_docker_free_kb — свободно КБ на ФС, где лежит корень Docker.
+# Пустой вывод (при невозможности узнать) НЕ должен мешать сборке: вызывающий
+# код трактует его как «пропустить проверку», а не как «диск пуст».
+edrc_docker_free_kb() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$root" ] || root="/var/lib/docker"
+  df -Pk "$root" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+# edrc_ensure_disk_for_build [min_free] — место под сборку или понятный отказ.
+#
+# Проверяет фактически свободное место на диске Docker против порога
+# UPDATE_DOCKER_MIN_FREE (по умолчанию 4g — web-образ с node_modules и
+# промежуточными слоями легко съедает несколько гигабайт рабочего пространца).
+# При дефиците сначала САМА запускает уборку (кэш выше бюджета, висячие
+# образы, остановленные контейнеры) и перепроверяет; если места всё равно
+# мало — возвращает 1 с понятным сообщением вместо того, чтобы сборка час
+# ползала по забитому диску и умерла безликим «DeadlineExceeded». 2>&1
+# склейка отсутствует: в update-project.sh сообщение попадает в журнал
+# стадии и извлекается в `error` как настоящая причина.
+edrc_ensure_disk_for_build() {
+  local min_free="${1:-${UPDATE_DOCKER_MIN_FREE:-4g}}"
+  local min_kb free_kb
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  min_kb="$(edrc_size_to_kb "$min_free")"
+  free_kb="$(edrc_docker_free_kb || true)"
+  case "$free_kb" in
+    *[!0-9]*|"") return 0 ;;  # определить не удалось — сборку не блокируем
+  esac
+  if [ "$free_kb" -ge "$min_kb" ]; then
+    printf 'свободно под Docker: %s МБ (нужно минимум %s МБ)\n' \
+      $(( free_kb / 1024 )) $(( min_kb / 1024 ))
+    return 0
+  fi
+  printf '⚠ свободно под Docker всего %s МБ (порог %s МБ) — выполняю уборку и перепроверяю…\n' \
+    $(( free_kb / 1024 )) $(( min_kb / 1024 )) >&2
+  edrc_cleanup_docker_disk >/dev/null 2>&1 || true
+  free_kb="$(edrc_docker_free_kb || true)"
+  case "$free_kb" in
+    *[!0-9]*|"") return 0 ;;
+  esac
+  if [ "$free_kb" -ge "$min_kb" ]; then
+    printf '✓ после уборки свободно %s МБ — продолжаю\n' $(( free_kb / 1024 ))
+    return 0
+  fi
+  # Токен «no space» в фатальной строке — не для людей, а для run_step
+  # update-project.sh: он вытаскивает причину сбоя grep'ом по латинским
+  # токенам, кириллическое «ОШИБКА» в C-локали не сворачивается регистром
+  # и в error уезжала бы безликая подсказка вместо «не хватает места».
+  printf 'ОШИБКА: не хватает места для сборки (no space): свободно %s МБ при пороге %s МБ даже после уборки кэша\n' \
+    $(( free_kb / 1024 )) $(( min_kb / 1024 )) >&2
+  printf '       Разберите диск вручную: df -h · docker system df -v · docker builder prune -af\n' >&2
+  printf '       (подробности — DEPLOY.md, «failed to solve: DeadlineExceeded»)\n' >&2
+  return 1
+}
+
+# edrc_build_with_retry команда... — сборка с немедленной уборкой остатков
+# и автоповтором. Контракт ответа на «почему диск опять съеден»:
+#
+#   • диск проверяется ДО старта (см. выше);
+#   • остатки КАЖДОЙ сорвавшейся попытки вычищаются сразу же (раньше — только
+#     после успешного обновления: кэш failed-сборок рос неограниченно);
+#   • после уборки сборка повторяется до UPDATE_BUILD_RETRIES раз (по умолчанию
+#     1): кратковременный сбой сети/демона больше не требует ручного повтора
+#     всего обновления, ещё час сборки не теряется на второй клик.
+#
+# Постоянная ошибка (упавший тест, синтаксис) возвращается последним кодом —
+# вызывающий скрипт (run_step / set -e) прервётся как раньше, но кэш к этому
+# моменту уже подчищен, а случайная сетевая заминка пережита.
+edrc_build_with_retry() {
+  local retries="${UPDATE_BUILD_RETRIES:-1}"
+  local attempt=1 max_attempts code=0
+  case "$retries" in
+    *[!0-9]*|"") retries=1 ;;
+  esac
+  max_attempts=$(( retries + 1 ))
+  edrc_ensure_disk_for_build || return 1
+  while :; do
+    # Код ловится в else: `$?` после `if …; fi` — статус составного if (0),
+    # а не упавшей команды — ловушка, съевшая причину в первой редакции.
+    if "$@"; then
+      return 0
+    else
+      code=$?
+    fi
+    # Ход прогонов (предупреждение + ретрай) — в stdout: так сообщения видны
+    # и в журнале update-project.sh, и в консоли rebuild-now.sh.
+    printf '⚠ сборка не удалась (код %s, попытка %s из %s) — убираю её остатки\n' "$code" "$attempt" "$max_attempts"
+    edrc_cleanup_docker_disk || true
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      printf 'ОШИБКА: сборка не удалась после %s попыток (последний код %s)\n' "$max_attempts" "$code" >&2
+      return "$code"
+    fi
+    attempt=$((attempt + 1))
+    printf '↻ пробую собрать ещё раз (попытка %s из %s) после уборки…\n' "$attempt" "$max_attempts"
+    edrc_ensure_disk_for_build || return 1
+  done
+}
+
 # edrc_cleanup_docker_disk [cache_keep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.
 #
 # Источник «диск тает после каждого обновления, даже при правке в 3 КБ»:

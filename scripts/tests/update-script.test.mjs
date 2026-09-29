@@ -66,6 +66,21 @@ function setup() {
     // обновления до пакета docker-cli-buildx: compose уходит в legacy-билдер.
     '  *"buildx version"*)',
     '    exit "${STUB_BUILDX_EXIT:-0}";;',
+    // Страж диска спрашивает корень Docker через info --format; сообщаем
+    // фейковый путь — свободное место придёт из стаба df (STUB_DF_FILE).
+    '  *info*)',
+    '    printf "/var/lib/docker\\n";',
+    '    exit 0;;',
+    // Освобождение места имитирует только сабстантивная уборка:
+    // container/image prune приходят из edrc_cleanup_docker_disk. Бюджетная
+    // подрезка builder prune до сборки (edrc_trim_build_cache) файл df не
+    // трогает — значит, и заметного места не освобождает.
+    // STUB_DF_AFTER_PRUNE — сколько КБ осталось после уборки.
+    '  *"container prune"*|*"image prune"*)',
+    '    if [ -n "${STUB_DF_FILE:-}" ]; then',
+    '      printf "%s" "${STUB_DF_AFTER_PRUNE:-52428800}" > "$STUB_DF_FILE"',
+    '    fi',
+    '    exit 0;;',
     // STUB_BUILD_FAIL=1 — сборка образа падает так же, как на живом сервере:
     // текст причины уходит в stderr, код возврата 1.
     '  *" build "*)',
@@ -77,6 +92,18 @@ function setup() {
     '      echo "#12 42.5 npm ERR! code ENOSPC" >&2',
     '      echo "ERROR: failed to solve: process \\"/bin/sh -c npm ci\\" did not complete successfully: no space left on device" >&2',
     '      exit 1',
+    '    fi',
+    // STUB_BUILD_FAIL_ONCE=1 — кратковременный сбой, как на проде: первая
+    // сборка рвётся дедлайном на ползущем по забитому диску демоне, повтор
+    // после уборки уже успешен. Счётчик попыток — файл STUB_COUNT.
+    '    if [ "${STUB_BUILD_FAIL_ONCE:-0}" = "1" ]; then',
+    '      count="$(cat "$STUB_COUNT" 2>/dev/null || echo 0)"',
+    '      printf "%s" "$((count + 1))" > "$STUB_COUNT"',
+    '      if [ "$count" = "0" ]; then',
+    '        echo "#33 191.2 transferring context stalled" >&2',
+    '        echo "ERROR: failed to solve: DeadlineExceeded: context deadline exceeded" >&2',
+    '        exit 1',
+    '      fi',
     '    fi',
     '    exit 0;;',
     '  *psql*)',
@@ -90,6 +117,16 @@ function setup() {
     'exit 0',
   ].join('\n'));
   stub(bin, 'curl', 'echo "[curl] $*" >> "$STUB_LOG"\nexit 0');
+  // Стаб df для стража диска: свободное место (КБ, 4-е поле вывода -Pk)
+  // читается из файла STUB_DF_FILE (по умолчанию 51200 МБ — сборке хватает).
+  // Так проверка места под Docker детерминирована и не зависит от CI-диска.
+  stub(bin, 'df', [
+    'printf "Filesystem 1024-blocks Used Available Capacity Mounted on\\n"',
+    'free="$(cat "${STUB_DF_FILE:-/edrc-nonexistent}" 2>/dev/null || true)"',
+    '[ -n "$free" ] || free=52428800',
+    'printf "/dev/sda1 104857600 31457280 %s 30%% /var/lib/docker\\n" "$free"',
+    'exit 0',
+  ].join('\n'));
 
   const git = (cwd, ...args) => {
     const run = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
@@ -100,6 +137,7 @@ function setup() {
     ...process.env,
     PATH: bin + ':/usr/bin:/bin',
     STUB_LOG: log,
+    STUB_COUNT: join(work, 'build-attempts'),
     PROJECT_DIR: src,
     PROJECT_DEPLOY_MODE: 'compose',
     PROJECT_UPDATE_BRANCH: 'main',
@@ -344,7 +382,7 @@ test('provenance-аттестации: по умолчанию выключен�
   }
 });
 
-test('упавшая сборка: в панель уходит причина, а контейнеры не переключаются', { skip }, () => {
+test('упавшая сборка: в панель уходит причина, контейнеры не переключаются, кэш чистится, идёт автоповтор', { skip }, () => {
   const ctx = setup();
   try {
     ctx.release({ 'CHANGELOG.md': '# release\n' });
@@ -365,6 +403,105 @@ test('упавшая сборка: в панель уходит причина, 
     // Живой сайт не трогали: переключения контейнеров не было.
     const calls = readFileSync(ctx.log, 'utf8');
     assert.equal(calls.includes('up -d'), false, 'после падения сборки контейнеры остаются прежними');
+
+    // Новый контракт «кэш failed-сборок не ест диск»: постоянный сбой
+    // собирается ДВАЖДЫ (один автоповтор, UPDATE_BUILD_RETRIES=1), а кэш
+    // каждой сорвавшейся попытки вычищается сразу, а не после редкого
+    // успешного обновления. Раньше серия сорвавшихся сборок забивала диск,
+    // и последующие начинали ползать до «DeadlineExceeded: context deadline
+    // exceeded» — порочный круг из прод-инцидента.
+    const lines = calls.split('\n');
+    const buildAt = [];
+    const pruneAt = [];
+    lines.forEach((line, i) => {
+      if (line.includes(' build ') && line.includes('--build-arg')) buildAt.push(i);
+      if (line.includes('builder prune -f')) pruneAt.push(i);
+    });
+    assert.equal(buildAt.length, 2, 'один автоповтор после уборки: было 2 попытки сборки');
+    assert.ok(pruneAt.some((i) => i > buildAt[0] && i < buildAt[1]),
+      'остатки первой сорвавшейся попытки вычищены до ретрая');
+    assert.ok(pruneAt.some((i) => i > buildAt[1]),
+      'остатки второй попытки тоже вычищены — кэш failed-сборки не остаётся');
+    assert.match(run.stdout, /пробую собрать ещё раз/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('мигание сборки: автоповтор после уборки доходит до успеха без ручного перезапуска', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // Первая сборка умирает дедлайном (ползущий по забитому диску демон),
+    // повторная — после уборки кэша — успешна. Раньше такое требовало
+    // ручного перезапуска всего обновления (~час сборки на каждый клик).
+    const run = ctx.run({ STUB_BUILD_FAIL_ONCE: '1' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+
+    const lines = readFileSync(ctx.log, 'utf8').split('\n');
+    const buildAt = [];
+    lines.forEach((line, i) => {
+      if (line.includes(' build ') && line.includes('--build-arg')) buildAt.push(i);
+    });
+    assert.equal(buildAt.length, 2, 'одна повторная попытка, не больше');
+    assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 2\) после уборки/);
+    const pruneBetween = lines
+      .slice(buildAt[0] + 1, buildAt[1])
+      .some((line) => line.includes('builder prune -f'));
+    assert.ok(pruneBetween, 'между попытками стоит уборка кэша сорвавшейся сборки');
+    // Успех доходит до переключения контейнеров и финального done.
+    assert.match(readFileSync(ctx.log, 'utf8'), /up -d --no-build web jobs monitor-agent/);
+    assert.equal(events(run.stdout).pop().stage, 'done');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('переполненный диск: сборка не стартует, причина — недостаток места, а не обезличенный «код 1»', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // 50 МБ свободных при пороге UPDATE_DOCKER_MIN_FREE=4g, и уборка места
+    // не освобождает (STUB_DF_AFTER_PRUNE оставляет то же число). На живом
+    // сервере сборка в таких условиях часами ползала до DeadlineExceeded;
+    // теперь страж падает ДО старта с понятной причиной.
+    const dfFile = join(ctx.work, 'df-free');
+    writeFileSync(dfFile, '51200');
+    const run = ctx.run({ STUB_DF_FILE: dfFile, STUB_DF_AFTER_PRUNE: '51200' });
+    assert.notEqual(run.status, 0, run.stdout + run.stderr);
+
+    const calls = readFileSync(ctx.log, 'utf8');
+    assert.equal(calls.includes(' build --build-arg'), false, 'сборка на умирающем диске не запускается');
+    assert.match(calls, /builder prune -f/, 'страж всё равно попытался вычистить кэш перед отказом');
+
+    const failures = events(run.stdout).filter((event) => typeof event.error === 'string');
+    const reason = failures[failures.length - 1]?.error || '';
+    assert.match(reason, /не хватает места|no space/i, 'в панель уходит причина про место: ' + reason);
+    assert.match(run.stdout, /docker builder prune -af/, 'журнал подсказывает ручную очистку');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('страж диска: автоуборка освободила место — сборка идёт без ручного вмешательства', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    // Стартовых 50 МБ не хватает, но чистка кэша освобождает 50 ГБ:
+    // страж перепроверяет и продолжает. Это и есть ответ на «диск съедается
+    // кэшем неудачных сборок» — кэш срезается сам, до того как диск станет
+    // причиной очередного DeadlineExceeded.
+    const dfFile = join(ctx.work, 'df-free');
+    writeFileSync(dfFile, '51200');
+    const run = ctx.run({ STUB_DF_FILE: dfFile, STUB_DF_AFTER_PRUNE: '52428800' });
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    // Первый чек видит 50 МБ и бьёт тревогу, уборка освобождает место,
+    // второй чек даёт добро — весь прогон без ручного вмешательства.
+    // (run_step сливает stderr стадии в stdout, поток здесь один.)
+    assert.match(run.stdout, /выполняю уборку и перепроверяю/);
+    assert.match(run.stdout, /после уборки свободно \d+ МБ — продолжаю/);
+    assert.match(readFileSync(ctx.log, 'utf8'), / build --build-arg /);
+    assert.equal(events(run.stdout).pop().stage, 'done');
   } finally {
     ctx.cleanup();
   }

@@ -489,7 +489,17 @@ if [ "$MODE" = "compose" ]; then
     export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
   fi
   report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
-  run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
+  if declare -F edrc_build_with_retry >/dev/null 2>&1; then
+    # Сборка под тремя защитами (compose-lib.sh): проверка свободного места
+    # на диске Docker ДО старта; немедленная уборка кэша каждой сорвавшейся
+    # попытки (раньше уборка шла только после успеха — кэш failed-сборок
+    # безгранично ел диск); авто-повтор после уборки: кратковременный сбой
+    # демона/сети («DeadlineExceeded: context deadline exceeded» на ползущих
+    # от забитого диска передачах) переживается без ручного перезапуска.
+    run_step "сборка образов" edrc_build_with_retry compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
+  else
+    run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
+  fi
   report switch 82 "Переключаю контейнеры на новые образы"
   run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
   report switch 85 "Убираю мусор сборки: кэш BuildKit, висячие образы"
