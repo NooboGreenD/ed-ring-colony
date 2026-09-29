@@ -87,6 +87,8 @@ export default function HelperUpdatesTab() {
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseChannel, setReleaseChannel] = useState('stable');
   const [releaseNotes, setReleaseNotes] = useState('');
+  const [releaseSource, setReleaseSource] = useState<'server' | 'upload'>('server');
+  const [releasePromote, setReleasePromote] = useState(true);
   const [releaseFiles, setReleaseFiles] = useState<File[]>([]);
   const [launcherVersion, setLauncherVersion] = useState('1.0.0');
   const [launcherFile, setLauncherFile] = useState<File | null>(null);
@@ -246,8 +248,9 @@ export default function HelperUpdatesTab() {
   }, [configAction, keyId, privateKeyInput]);
 
   const publishRelease = useCallback(async () => {
-    if (!releaseVersion.trim() || releaseFiles.length === 0) return;
-    if (!window.confirm(`Собрать, подписать и опубликовать ${releaseVersion} в канал «${CHANNEL_LABELS[releaseChannel]}»?`)) return;
+    if (!releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)) return;
+    const action = releasePromote ? 'подготовить и сразу включить' : 'только подготовить';
+    if (!window.confirm(`${action} версию ${releaseVersion} для канала «${CHANNEL_LABELS[releaseChannel]}»?`)) return;
     setBusy(true);
     setError('');
     setMessage('Сервер считает хеши, подписывает и собирает пакет…');
@@ -258,6 +261,8 @@ export default function HelperUpdatesTab() {
       form.set('channel', releaseChannel);
       form.set('notes', releaseNotes);
       form.set('minLauncher', '1.0.0');
+      form.set('source', releaseSource);
+      form.set('promote', String(releasePromote));
       const paths: string[] = [];
       for (const file of releaseFiles) {
         form.append('files', file, file.name);
@@ -267,7 +272,9 @@ export default function HelperUpdatesTab() {
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
       if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setMessage(`Версия ${releaseVersion} опубликована на сервере в канал «${CHANNEL_LABELS[releaseChannel]}»`);
+      setMessage(releasePromote
+        ? `Версия ${releaseVersion} подготовлена и включена в канал «${CHANNEL_LABELS[releaseChannel]}»`
+        : `Версия ${releaseVersion} подготовлена. ZIP доступен в списке версий; канал пока не переключён.`);
       setReleaseVersion('');
       setReleaseNotes('');
       setReleaseFiles([]);
@@ -278,7 +285,7 @@ export default function HelperUpdatesTab() {
     } finally {
       setBusy(false);
     }
-  }, [refresh, releaseChannel, releaseFiles, releaseNotes, releaseVersion]);
+  }, [refresh, releaseChannel, releaseFiles, releaseNotes, releasePromote, releaseSource, releaseVersion]);
 
   const publishLauncher = useCallback(async () => {
     if (!launcherFile || !launcherVersion.trim()) return;
@@ -506,9 +513,9 @@ export default function HelperUpdatesTab() {
       <div style={{ background: '#1a1c1f', border: '1px solid #e67e22', borderRadius: 8, padding: 16, marginBottom: 16 }}>
         <h3 style={{ margin: '0 0 6px', color: '#e67e22' }}>Опубликовать новую версию на сервере</h3>
         <p style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
-          Выберите каталог <code>uploader</code> из подготовленной версии. Сервер исключит тесты и
-          сборочные скрипты, посчитает SHA-256, подпишет манифест, соберёт ZIP и переключит канал.
-          Версия после публикации неизменяема — исправление выпускается новым номером.
+          В обычном режиме сервер сам берёт актуальный Helper из своей установки, подставляет номер
+          версии, считает SHA-256, подписывает манифест и формирует готовый ZIP. Загружать файлы или
+          запускать сборочные скрипты вручную не требуется. Версия после создания неизменяема.
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: '140px 190px minmax(240px, 1fr)', gap: 8, marginBottom: 8 }}>
           <input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="2.13.1" style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
@@ -516,29 +523,44 @@ export default function HelperUpdatesTab() {
             <option value="stable">Стабильный</option>
             <option value="beta">Тестовый</option>
           </select>
-          <input
-            type="file"
-            multiple
-            {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
-            onChange={(event) => {
-              const excluded = new Set(['build_exe.py', 'build_bundle.py', 'launcher.py', 'updater.py']);
-              const selected = Array.from(event.target.files ?? []).filter((file) => {
-                const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-                const parts = relative.replace(/\\/g, '/').split('/');
-                const name = parts.at(-1) || file.name;
-                // Только *.py непосредственно из выбранного uploader, без
-                // tests/build/dist: лишнее даже не отправляем по сети.
-                return parts.length <= 2 && name.endsWith('.py') && !excluded.has(name);
-              });
-              setReleaseFiles(selected);
-            }}
-            style={{ color: '#9ca3af', fontSize: 12 }}
-          />
+          <select value={releaseSource} onChange={(event) => setReleaseSource(event.target.value as 'server' | 'upload')} style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }}>
+            <option value="server">Исходники с этого сервера (рекомендуется)</option>
+            <option value="upload">Загрузить другой каталог uploader</option>
+          </select>
         </div>
+        {releaseSource === 'upload' && (
+          <div style={{ background: '#141619', border: '1px solid #2d3033', borderRadius: 6, padding: 10, marginBottom: 8 }}>
+            <input
+              type="file"
+              multiple
+              {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+              onChange={(event) => {
+                const excluded = new Set(['build_exe.py', 'build_bundle.py', 'launcher.py', 'updater.py']);
+                const selected = Array.from(event.target.files ?? []).filter((file) => {
+                  const relative = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+                  const parts = relative.replace(/\\/g, '/').split('/');
+                  const name = parts.at(-1) || file.name;
+                  return parts.length <= 2 && name.endsWith('.py') && !excluded.has(name);
+                });
+                setReleaseFiles(selected);
+              }}
+              style={{ color: '#9ca3af', fontSize: 12 }}
+            />
+            <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 8 }}>выбрано файлов: {releaseFiles.length}</span>
+          </div>
+        )}
         <textarea value={releaseNotes} onChange={(event) => setReleaseNotes(event.target.value)} placeholder="Что изменилось в этой версии" style={{ width: '100%', minHeight: 68, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb', resize: 'vertical', marginBottom: 8 }} />
+        <label style={{ display: 'flex', gap: 7, alignItems: 'center', color: '#d1d5db', fontSize: 12, marginBottom: 10 }}>
+          <input type="checkbox" checked={releasePromote} onChange={(event) => setReleasePromote(event.target.checked)} />
+          Сразу переключить выбранный канал на новую версию
+        </label>
         {busy && <progress style={{ width: '100%', height: 8, marginBottom: 8 }} />}
-        <button className="btn btn-cyan" disabled={busy || !store?.serverSigningConfigured || !releaseVersion.trim() || releaseFiles.length === 0} onClick={() => void publishRelease()}>
-          Собрать, подписать и опубликовать ({releaseFiles.length || 0} файлов)
+        <button
+          className="btn btn-cyan"
+          disabled={busy || !store?.serverSigningConfigured || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
+          onClick={() => void publishRelease()}
+        >
+          {releasePromote ? 'Сформировать ZIP и выпустить обновление' : 'Сформировать ZIP без публикации в канал'}
         </button>
         {!store?.serverSigningConfigured && <span style={{ color: '#f1c40f', fontSize: 12, marginLeft: 10 }}>Сначала настройте серверную пару ключей.</span>}
 
@@ -580,6 +602,7 @@ export default function HelperUpdatesTab() {
                 <th style={{ padding: '6px 8px' }}>Файлов</th>
                 <th style={{ padding: '6px 8px' }}>Размер</th>
                 <th style={{ padding: '6px 8px' }}>Подпись</th>
+                <th style={{ padding: '6px 8px' }}>Файл скачивания</th>
                 <th style={{ padding: '6px 8px' }}>Перевести канал</th>
               </tr>
             </thead>
@@ -596,6 +619,16 @@ export default function HelperUpdatesTab() {
                     <td style={{ padding: '6px 8px' }}>{formatBytes(row.bytes)}</td>
                     <td style={{ padding: '6px 8px', color: row.signed ? '#2ecc71' : '#e74c3c' }}>
                       {row.signed ? 'есть' : 'нет'}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <a
+                        className="btn"
+                        style={{ fontSize: 11, display: 'inline-block', textDecoration: 'none' }}
+                        href={`/api/uploader/bundle/${encodeURIComponent(row.version)}.zip`}
+                        download
+                      >
+                        Скачать ZIP
+                      </a>
                     </td>
                     <td style={{ padding: '6px 8px', display: 'flex', gap: 6 }}>
                       <button
