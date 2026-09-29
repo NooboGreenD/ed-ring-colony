@@ -185,6 +185,14 @@ services:
       # explicit pass-through, a value in .env.production never reaches the
       # host-side cleanup helper and failed --no-cache builds can accumulate.
       UPDATE_DOCKER_CACHE_KEEP: ${UPDATE_DOCKER_CACHE_KEEP:-8g}
+      # Provenance-аттестации по умолчанию выключены: их запись — лишний
+      # сетевой вызов в Docker Hub в конце сборки («resolving provenance for
+      # metadata file»), и на нестабильном канале он ронял весь compose build
+      # строкой «DeadlineExceeded: context deadline exceeded» уже после
+      # собранных образов. Скрипты экспортируют переменную и сами; проброс
+      # нужен, чтобы значением 0 в .env.production можно было вернуть
+      # аттестации — иначе до контейнера агента оно не доходит.
+      BUILDX_NO_DEFAULT_ATTESTATIONS: ${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}
       # 0 disables only the automatic post-update restart. The explicit
       # admin-panel button remains available in either mode.
       UPDATE_AGENT_SELF_RESTART: ${UPDATE_AGENT_SELF_RESTART:-1}

@@ -136,6 +136,28 @@ edrc_prepare_legacy_build() {
   return 0
 }
 
+# edrc_disable_default_attestations — сборки без provenance-аттестаций.
+#
+# Buildx с версии 0.10 (BuildKit 0.11+) добавляет КАЖДОМУ образу
+# provenance-аттестацию (mode=min). Чтобы её записать, в КОНЦЕ сборки — уже
+# после «naming to docker.io/library/…» — BuildKit заново идёт в реестр за
+# манифестом базового образа («resolving provenance for metadata file»).
+# На хостах с нестабильным доступом к Docker Hub именно этот шаг ронял весь
+# compose build строкой «failed to solve: DeadlineExceeded: context deadline
+# exceeded»: образы к тому моменту полностью собраны и лежат в docker-сторадж,
+# но update-project.sh/fail получает код 1 и обновление обрывается.
+#
+# Практической ценности для этого стека аттестации не имеют — образы не
+# пушатся в реестр, а загружаются в локальный Docker той же машины, — поэтому
+# по умолчанию выключаем их всем сборкам. Compose v2 вызывает сборку через
+# библиотеку buildx, которая читает эту переменную: срабатывает и для
+# `docker compose build`, и для `up -d --build`. Явное значение оператора
+# (BUILDX_NO_DEFAULT_ATTESTATIONS=0) не перекрываем — аттестации вернутся.
+edrc_disable_default_attestations() {
+  export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
+  return 0
+}
+
 # edrc_persist_env FILE KEY VALUE — записать значение в env-файл (sed-аналог
 # set_env из start-monitoring.sh, вынесен сюда, чтобы не дублировать).
 edrc_persist_env() {
