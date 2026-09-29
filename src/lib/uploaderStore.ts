@@ -25,16 +25,18 @@ import {
   createPrivateKey,
   createPublicKey,
   randomBytes,
+  sign as cryptoSign,
   timingSafeEqual,
   verify as cryptoVerify,
 } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
-import { gzip } from 'node:zlib';
+import { deflateRaw, gzip } from 'node:zlib';
 
 const gzipAsync = promisify(gzip);
+const deflateRawAsync = promisify(deflateRaw);
 
 /** Ниже этого размера сжатие только увеличивает ответ. */
 const GZIP_MIN_BYTES = 1024;
@@ -112,6 +114,10 @@ function launcherPath(platform: string): string {
   return join(storeRoot(), 'launcher', `${platform}.json`);
 }
 
+function launcherBinaryPath(platform: string): string {
+  return join(storeRoot(), 'launcher', `${platform}.exe`);
+}
+
 function configPath(): string {
   return join(storeRoot(), 'config.json');
 }
@@ -119,7 +125,7 @@ function configPath(): string {
 async function writeAtomic(path: string, data: Buffer | string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(temp, data);
+  await writeFile(temp, data, { mode: 0o600 });
   await rename(temp, path);
 }
 
@@ -150,6 +156,11 @@ export interface SignKeyConfig {
   id: string;
   /** Публичный ключ ed25519, base64 (ровно 32 байта после декодирования). */
   publicKey: string;
+  /**
+   * Приватный seed нужен автономному серверному издателю. Он никогда не
+   * попадает в API статуса и хранится только в config.json тома (mode 0600).
+   */
+  privateKey?: string;
 }
 
 export interface UploaderConfig {
@@ -168,7 +179,16 @@ function normalizeConfig(parsed: unknown): UploaderConfig {
     const publicKey = String((item as Record<string, unknown>).publicKey ?? '').trim();
     if (!KEY_ID.test(id) || Buffer.from(publicKey, 'base64').length !== 32) continue;
     if (signKeys.some((k) => k.id === id)) continue;
-    signKeys.push({ id, publicKey });
+    const privateKey = String((item as Record<string, unknown>).privateKey ?? '').trim();
+    // Не доверяем записанной паре на слово: неверный seed сделал бы релизы,
+    // которые не принимает ни сервер, ни Helper.
+    const validPrivate = Buffer.from(privateKey, 'base64').length === 32
+      && deriveEd25519Public(Buffer.from(privateKey, 'base64')) === Buffer.from(publicKey, 'base64').toString('base64');
+    signKeys.push({
+      id,
+      publicKey: Buffer.from(publicKey, 'base64').toString('base64'),
+      ...(validPrivate ? { privateKey: Buffer.from(privateKey, 'base64').toString('base64') } : {}),
+    });
   }
   const token = typeof source.publishToken === 'string' ? source.publishToken.trim() : '';
   return { signKeys, publishToken: token || undefined };
@@ -192,6 +212,10 @@ export async function readConfig(): Promise<UploaderConfig> {
 }
 
 async function writeConfig(config: UploaderConfig): Promise<void> {
+  await mkdir(storeRoot(), { recursive: true, mode: 0o700 });
+  // На dev/systemd каталог мог существовать с обычным umask; приватный seed
+  // не должен быть доступен другим пользователям хоста.
+  await chmod(storeRoot(), 0o700);
   await writeAtomic(configPath(), JSON.stringify(config, null, 2));
 }
 
@@ -223,7 +247,10 @@ export interface GeneratedSignKey {
 /** Сгенерировать пару ключей подписи (эквивалент `build_bundle.py --keygen`). */
 export function generateSignKey(id?: string): GeneratedSignKey {
   const seed = randomBytes(32);
-  const keyId = id?.trim() || `k${new Date().toISOString().slice(0, 7).replace('-', '')}`;
+  // Суффикс не даёт случайно заменить одноимённый уже вшитый в клиенты ключ
+  // другой парой (особенно при двух нажатиях в одном месяце).
+  const keyId = id?.trim()
+    || `k${new Date().toISOString().slice(0, 7).replace('-', '')}-${randomBytes(3).toString('hex')}`;
   return { id: keyId, publicKey: deriveEd25519Public(seed), privateKey: seed.toString('base64') };
 }
 
@@ -234,10 +261,35 @@ export async function upsertSignKey(id: string, publicKey: string): Promise<Publ
   const normalized = normalizePublicKey(publicKey);
   if (!normalized) return { ok: false, error: 'публичный ключ должен быть 32 байта в base64' };
   const config = await readConfig();
+  const previous = config.signKeys.find((k) => k.id === trimmedId && k.publicKey === normalized);
   const signKeys = config.signKeys.filter((k) => k.id !== trimmedId);
-  signKeys.push({ id: trimmedId, publicKey: normalized });
+  signKeys.push({ id: trimmedId, publicKey: normalized, ...(previous?.privateKey ? { privateKey: previous.privateKey } : {}) });
   await writeConfig({ ...config, signKeys });
   return { ok: true };
+}
+
+/** Сохранить серверную пару: она позволяет выпускать версии без CI/GitHub. */
+export async function storeSignKey(key: GeneratedSignKey): Promise<PublishResult> {
+  const normalized = normalizePublicKey(key.publicKey);
+  const seed = Buffer.from(String(key.privateKey ?? ''), 'base64');
+  if (!KEY_ID.test(key.id) || !normalized || seed.length !== 32) {
+    return { ok: false, error: 'некорректная пара ключей' };
+  }
+  if (deriveEd25519Public(seed) !== normalized) return { ok: false, error: 'приватный и публичный ключ не образуют пару' };
+  const config = await readConfig();
+  const signKeys = config.signKeys.filter((item) => item.id !== key.id);
+  signKeys.push({ id: key.id, publicKey: normalized, privateKey: seed.toString('base64') });
+  await writeConfig({ ...config, signKeys });
+  return { ok: true };
+}
+
+/** Импортировать seed существующего клиентского ключа и проверить его пару. */
+export async function importSignKey(id: string, privateKey: string): Promise<PublishResult> {
+  const trimmedId = String(id ?? '').trim();
+  const seed = Buffer.from(String(privateKey ?? '').trim(), 'base64');
+  if (!KEY_ID.test(trimmedId)) return { ok: false, error: 'некорректный id ключа' };
+  if (seed.length !== 32) return { ok: false, error: 'приватный ключ должен быть seed из 32 байт в base64' };
+  return storeSignKey({ id: trimmedId, privateKey: seed.toString('base64'), publicKey: deriveEd25519Public(seed) });
 }
 
 /** Убрать публичный ключ из config.json (ключи из окружения так не убрать). */
@@ -534,6 +586,15 @@ export async function readLauncher(platform: string): Promise<LauncherInfo | nul
   return readJson<LauncherInfo>(launcherPath(platform));
 }
 
+export async function readLauncherBinary(platform: string): Promise<Buffer | null> {
+  if (!PLATFORM.test(platform)) return null;
+  try {
+    return await readFile(launcherBinaryPath(platform));
+  } catch {
+    return null;
+  }
+}
+
 export async function listVersions(): Promise<string[]> {
   try {
     const names = await readdir(join(storeRoot(), 'manifests'));
@@ -578,6 +639,147 @@ export interface PublishResult {
   storedBlobs?: number;
   missing?: string[];
   signatureChecked?: boolean;
+}
+
+/** Серверный ключ, которым администратор выпускает релиз без внешнего CI. */
+function serverSigningKey(): { id: string; seed: Buffer } | null {
+  const config = readConfigSync();
+  for (const key of [...config.signKeys].reverse()) {
+    if (!key.privateKey) continue;
+    const seed = Buffer.from(key.privateKey, 'base64');
+    if (seed.length === 32 && deriveEd25519Public(seed) === key.publicKey) return { id: key.id, seed };
+  }
+  // Переходный вариант: существующий секрет можно перенести с CI на сервер
+  // через env, не открывая его в браузере.
+  const envSeed = Buffer.from((process.env.UPLOADER_SIGN_KEY ?? '').trim(), 'base64');
+  if (envSeed.length === 32) {
+    return { id: (process.env.UPLOADER_SIGN_KEY_ID ?? 'server').trim() || 'server', seed: envSeed };
+  }
+  return null;
+}
+
+function privateKeyFromSeed(seed: Buffer) {
+  const der = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
+  return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+}
+
+/** CRC32 нужен только контейнеру ZIP; целостность кода защищает SHA-256 манифеста. */
+function crc32(data: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/** Минимальный стандартный ZIP без сторонней зависимости (deflate + UTF-8). */
+async function createZip(files: Map<string, Buffer>): Promise<Buffer> {
+  const local: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const [path, data] of files) {
+    const name = Buffer.from(path, 'utf8');
+    const packed = await deflateRawAsync(data, { level: 9 });
+    const crc = crc32(data);
+    const header = Buffer.alloc(30);
+    header.writeUInt32LE(0x04034b50, 0);
+    header.writeUInt16LE(20, 4);
+    header.writeUInt16LE(0x0800, 6);
+    header.writeUInt16LE(8, 8);
+    header.writeUInt32LE(crc, 14);
+    header.writeUInt32LE(packed.length, 18);
+    header.writeUInt32LE(data.length, 22);
+    header.writeUInt16LE(name.length, 26);
+    local.push(header, name, packed);
+
+    const item = Buffer.alloc(46);
+    item.writeUInt32LE(0x02014b50, 0);
+    item.writeUInt16LE(20, 4);
+    item.writeUInt16LE(20, 6);
+    item.writeUInt16LE(0x0800, 8);
+    item.writeUInt16LE(8, 10);
+    item.writeUInt32LE(crc, 16);
+    item.writeUInt32LE(packed.length, 20);
+    item.writeUInt32LE(data.length, 24);
+    item.writeUInt16LE(name.length, 28);
+    item.writeUInt32LE(offset, 42);
+    central.push(item, name);
+    offset += header.length + name.length + packed.length;
+  }
+  const centralSize = central.reduce((sum, item) => sum + item.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.size, 8);
+  end.writeUInt16LE(files.size, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...local, ...central, end]);
+}
+
+export interface ServerReleaseInput {
+  version: string;
+  channel: Channel;
+  notes?: string;
+  minLauncher?: string;
+  files: Map<string, Buffer>;
+  promote?: boolean;
+}
+
+/** Собрать, подписать и опубликовать версию целиком на этом сервере. */
+export async function createServerRelease(input: ServerReleaseInput): Promise<PublishResult> {
+  const version = String(input.version ?? '').trim().replace(/^v/i, '');
+  if (!VERSION.test(version)) return { ok: false, error: 'версия должна иметь вид 2.13.1' };
+  if ((await readManifest(version)) !== null) return { ok: false, error: `версия ${version} уже существует и неизменяема` };
+  const signing = serverSigningKey();
+  if (!signing) return { ok: false, error: 'на сервере нет приватного ключа подписи — создайте или импортируйте пару в настройках' };
+
+  const clean = new Map<string, Buffer>();
+  let total = 0;
+  for (const [rawPath, data] of input.files) {
+    // При выборе каталога браузер присылает uploader/foo.py. В пакете нужен foo.py.
+    const path = rawPath.replace(/\\/g, '/').replace(/^(?:.*\/)?uploader\//, '').replace(/^\/+/, '');
+    if (!MEMBER.test(path) || path.includes('..')) {
+      return { ok: false, error: `небезопасный путь ${rawPath}` };
+    }
+    // Текущий bundle-контракт — только корневые Python-модули, как у
+    // build_bundle.py. Выбор каталога также приносит tests/, __pycache__,
+    // README и requirements; они пилоту не нужны и не должны раздувать пакет.
+    if (path.includes('/') || !path.endsWith('.py')) continue;
+    if (['build_exe.py', 'build_bundle.py', 'launcher.py', 'updater.py'].includes(path)) continue;
+    if (data.length > MAX_FILE_BYTES) return { ok: false, error: `файл ${path} слишком велик` };
+    total += data.length;
+    clean.set(path, data);
+  }
+  if (!clean.has('colonial_helper.py')) return { ok: false, error: 'в выбранном каталоге нет colonial_helper.py' };
+  const sourceVersion = /^VERSION\s*=\s*["']([^"']+)["']/m.exec(clean.get('colonial_helper.py')!.toString('utf8'))?.[1] ?? '';
+  if (sourceVersion !== version) {
+    return { ok: false, error: `номер формы ${version} не совпадает с VERSION = ${sourceVersion || 'не найден'} в colonial_helper.py` };
+  }
+  if (clean.size > MAX_FILES || total > MAX_BUNDLE_BYTES) return { ok: false, error: 'пакет превышает допустимый размер' };
+
+  const manifest: BundleManifest = {
+    schema: MANIFEST_SCHEMA,
+    channel: input.channel,
+    version,
+    entry: 'colonial_helper.py',
+    min_launcher: String(input.minLauncher || '1.0.0'),
+    released_at: new Date().toISOString(),
+    notes: String(input.notes ?? '').slice(0, 20_000),
+    files: [...clean.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({
+      path,
+      size: data.length,
+      sha256: createHash('sha256').update(data).digest('hex'),
+    })),
+  };
+  const signature = cryptoSign(null, canonicalManifestBytes(manifest), privateKeyFromSeed(signing.seed));
+  manifest.signature = { alg: 'ed25519', key_id: signing.id, value: signature.toString('base64') };
+
+  const archiveFiles = new Map(clean);
+  archiveFiles.set('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
+  const archive = await createZip(archiveFiles);
+  const files = Object.fromEntries([...clean].map(([path, data]) => [path, data.toString('base64')]));
+  return publishBundle({ manifest, files, bundleBase64: archive.toString('base64'), promote: input.promote });
 }
 
 /** Опубликовать пакет: разложить файлы по хешам и (по умолчанию) поднять канал. */
@@ -656,6 +858,27 @@ export async function promoteVersion(channel: Channel, version: string): Promise
   return { ok: true, version, channel };
 }
 
+/** Сохранить exe непосредственно на сервере и его проверяемые метаданные. */
+export async function saveLauncherBinary(
+  platform: string,
+  version: string,
+  data: Buffer,
+  publicUrl: string,
+): Promise<PublishResult> {
+  if (!PLATFORM.test(platform)) return { ok: false, error: 'плохая платформа' };
+  if (!VERSION.test(version)) return { ok: false, error: 'плохая версия лаунчера' };
+  if (data.length < 1024 || data.length > 128 * 1024 * 1024) return { ok: false, error: 'некорректный размер exe' };
+  if (data[0] !== 0x4d || data[1] !== 0x5a) return { ok: false, error: 'файл не похож на Windows PE (нет заголовка MZ)' };
+  await writeAtomic(launcherBinaryPath(platform), data);
+  return saveLauncher({
+    platform,
+    version,
+    url: publicUrl,
+    sha256: createHash('sha256').update(data).digest('hex'),
+    size: data.length,
+  });
+}
+
 /** Сохранить метаданные базовой сборки (exe) для канала обновлений лаунчера. */
 export async function saveLauncher(info: LauncherInfo): Promise<PublishResult> {
   if (!PLATFORM.test(info.platform)) return { ok: false, error: 'плохая платформа' };
@@ -682,8 +905,10 @@ export interface StoreStatus {
   keyIds: string[];
   /** Ключи, заданные в окружении: их видно, но из UI не отредактировать. */
   envKeyIds: string[];
-  /** Ключи из config.json — их можно менять и удалять из админки. */
-  configKeys: SignKeyConfig[];
+  /** Ключи из config.json — приватная часть никогда не возвращается. */
+  configKeys: Array<SignKeyConfig & { hasPrivate: boolean }>;
+  /** Сервер способен сам подписывать релизы, без GitHub Actions/CI. */
+  serverSigningConfigured: boolean;
 }
 
 export async function storeStatus(): Promise<StoreStatus> {
@@ -707,6 +932,11 @@ export async function storeStatus(): Promise<StoreStatus> {
     // из-за которой панель показывала «ключи не настроены» даже когда они были).
     keyIds: [...trustedKeys().keys()],
     envKeyIds: envKeyIds(),
-    configKeys: config.signKeys,
+    configKeys: config.signKeys.map(({ id, publicKey, privateKey }) => ({
+      id,
+      publicKey,
+      hasPrivate: Boolean(privateKey),
+    })),
+    serverSigningConfigured: serverSigningKey() !== null,
   };
 }

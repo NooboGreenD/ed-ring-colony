@@ -276,17 +276,17 @@ maybe('архив версии отдаётся, а чужой путь — не
   }
 });
 
-maybe('базовая сборка: пока её нет — 404 со ссылкой на релизы, потом данные', async () => {
+maybe('базовая сборка: пока её нет — автономный 404 без GitHub, потом данные', async () => {
   const empty = await routes.launcherGET(new Request('https://edringcolony.ru/api/uploader/launcher?platform=win64'));
   assert.equal(empty.status, 404);
   const fallback = await empty.json();
-  assert.match(fallback.url, /github\.com/, 'пилот не должен остаться без ссылки на файл');
+  assert.equal(fallback.url, undefined, 'сервер не должен отправлять пилота на GitHub');
 
   const saved = await publish({
     launcher: {
       platform: 'win64',
       version: '1.1.0',
-      url: 'https://github.com/NooboGreenD/ed-ring-colony/releases/download/v2.13.0/ColonialHelper.exe',
+      url: 'https://edringcolony.ru/api/uploader/launcher/win64',
       sha256: createHash('sha256').update('exe').digest('hex'),
       size: 23_159_225,
     },
