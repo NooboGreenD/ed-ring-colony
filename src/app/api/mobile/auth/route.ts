@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { authFromRequest } from '@/lib/requestUser';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
     }
     // Создаём клиент без сессии и пытаемся логин
     const { createClient } = await import('@supabase/supabase-js');
-    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
+    const supabase = createClient(getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error || !data.session || !data.user) {
       return NextResponse.json({ success: false, error: error?.message || 'Неверные данные' }, { status: 401 });

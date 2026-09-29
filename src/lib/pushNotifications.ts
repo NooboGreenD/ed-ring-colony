@@ -1,8 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
+import { getServerSupabaseUrl } from './supabaseServerUrl';
 
 function getSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url = getServerSupabaseUrl();
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
     throw new Error("Missing env vars: NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");

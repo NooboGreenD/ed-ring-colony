@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { getServerSupabaseUrl } from '../supabaseServerUrl';
 
 export type Row = Record<string, any>;
 
@@ -298,7 +299,7 @@ export function hasSupabaseServiceConfig(): boolean {
 async function buildAdapter(): Promise<TableAdapter> {
   if (hasSupabaseServiceConfig() && process.env.BILLING_STORAGE !== 'file') {
     try {
-      const client = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
+      const client = createClient(getServerSupabaseUrl(), process.env.SUPABASE_SERVICE_ROLE_KEY!, {
         auth: { autoRefreshToken: false, persistSession: false },
         global: { fetch: (i: RequestInfo | URL, init?: RequestInit) => fetch(i, { ...init, cache: 'no-store' }) },
       });

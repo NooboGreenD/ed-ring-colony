@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { z } from 'zod';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -111,7 +112,7 @@ export async function PATCH(req: Request) {
 
   const { createClient: createServiceClient } = await import('@supabase/supabase-js');
   const serviceSupabase = createServiceClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    getServerSupabaseUrl(),
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 

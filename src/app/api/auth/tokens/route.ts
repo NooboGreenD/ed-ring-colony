@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHash, randomBytes } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -12,7 +13,7 @@ function generateToken(): string {
 }
 
 function anonClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const url = getServerSupabaseUrl();
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 }

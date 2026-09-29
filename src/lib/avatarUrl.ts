@@ -17,14 +17,22 @@
 const STORAGE_PUBLIC_PREFIX = '/storage/v1/object/public/';
 const STORAGE_SIGNED_PREFIX = '/storage/v1/object/sign/';
 
-/** Адрес Supabase, настроенный для текущего стенда. */
+/**
+ * Публичный base URL Supabase для текущего стенда.
+ *
+ * Обычно это один origin; при аварийном same-origin gateway в URL есть
+ * обязательный префикс `/api/supabase`, который нельзя потерять при переносе
+ * старой ссылки Storage.
+ */
 export function configuredSupabaseUrl(
   value: string | null | undefined = process.env.NEXT_PUBLIC_SUPABASE_URL,
 ): string | null {
   const raw = (value ?? '').trim();
   if (!raw) return null;
   try {
-    return new URL(raw).origin;
+    const url = new URL(raw);
+    const pathname = url.pathname.replace(/\/+$/, '');
+    return `${url.origin}${pathname === '/' ? '' : pathname}`;
   } catch {
     return null;
   }
@@ -76,11 +84,20 @@ export function resolveAvatarUrl(
   } catch {
     return raw;
   }
-  if (parsed.origin === target.origin) return raw;
+  const targetPrefix = target.pathname === '/'
+    ? ''
+    : target.pathname.replace(/\/+$/, '');
+  // The URL is already on the current origin only when it also includes the
+  // gateway prefix. Comparing origin alone would turn `/storage/...` into a
+  // request to the site rather than `/api/supabase/storage/...`.
+  if (parsed.origin === target.origin && (!targetPrefix ||
+      parsed.pathname === targetPrefix || parsed.pathname.startsWith(`${targetPrefix}/`))) return raw;
 
-  // Тот же объект, но с текущего хоста: путь и параметры сохраняются.
+  // The same object, but from the current public Supabase base: both the
+  // Storage path/query and an optional same-origin gateway prefix survive.
   parsed.protocol = target.protocol;
   parsed.host = target.host;
+  parsed.pathname = `${targetPrefix}${parsed.pathname}`;
   return parsed.toString();
 }
 

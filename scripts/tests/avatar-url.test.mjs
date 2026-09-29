@@ -35,6 +35,16 @@ test('адрес с текущего хоста остаётся прежним'
   assert.equal(resolveAvatarUrl(same, CURRENT), same);
 });
 
+test('same-origin gateway сохраняет свой path prefix для старых и новых Storage-ссылок', () => {
+  const gateway = 'https://edringcolony.ru/api/supabase';
+  assert.equal(
+    resolveAvatarUrl(LEGACY_OBJECT, gateway),
+    'https://edringcolony.ru/api/supabase/storage/v1/object/public/avatars/user-1/1695800000000.png',
+  );
+  const same = 'https://edringcolony.ru/api/supabase/storage/v1/object/public/avatars/user-1/a.png';
+  assert.equal(resolveAvatarUrl(same, gateway), same);
+});
+
 test('подписанные ссылки Storage тоже переносятся вместе с параметрами', () => {
   const signed = 'https://old.supabase.co/storage/v1/object/sign/avatars/u/a.png?token=abc';
   assert.equal(
@@ -68,8 +78,8 @@ test('без настроенного Supabase адрес остаётся ка�
   assert.equal(resolveAvatarUrl(LEGACY_OBJECT, null), LEGACY_OBJECT);
 });
 
-test('configuredSupabaseUrl берёт только origin и переживает мусор', () => {
-  assert.equal(configuredSupabaseUrl('https://db.example.com/rest/v1/'), 'https://db.example.com');
+test('configuredSupabaseUrl сохраняет base path gateway и переживает мусор', () => {
+  assert.equal(configuredSupabaseUrl('https://db.example.com/rest/v1/'), 'https://db.example.com/rest/v1');
   assert.equal(configuredSupabaseUrl(''), null);
   assert.equal(configuredSupabaseUrl('не адрес'), null);
 });

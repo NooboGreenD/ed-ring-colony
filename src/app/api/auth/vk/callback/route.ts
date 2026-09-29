@@ -6,6 +6,8 @@ import { createAdminClient } from '@/lib/supabaseAdmin';
 import { exchangeVkCode, fetchVkUserInfo, readVkFlow, VK_FLOW_COOKIE, VK_PROVIDER, VkAuthError } from '@/lib/vkId';
 import { resolveVkSettings } from '@/lib/authProviders/settings';
 import { linkVkIdentity, resolveVkLogin, sessionTokenHash } from '@/lib/vkAccount';
+import { supabaseCookieOptions } from '@/lib/supabaseUrl';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +46,8 @@ export async function GET(request: NextRequest) {
   if (!code || !deviceId) return redirect(destination, 'no_code');
   if (!state || state !== flow.state) return redirect(destination, 'state_mismatch');
 
-  const supabase = createServerClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+  const supabase = createServerClient(getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll: () => Array.from(jar, ([name, value]) => ({ name, value })),
       setAll(items: typeof staged) { for (const cookie of items) { jar.set(cookie.name, cookie.value); staged.push(cookie); } },

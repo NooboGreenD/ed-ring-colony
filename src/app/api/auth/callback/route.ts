@@ -3,6 +3,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { getSiteUrl } from '@/lib/siteUrl';
 import { readOAuthFlow, OAUTH_FLOW_COOKIE } from '@/lib/oauthFlow';
 import { ensureUserProfile } from '@/lib/ensureProfile';
+import { supabaseCookieOptions } from '@/lib/supabaseUrl';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,7 +51,8 @@ export async function GET(request: NextRequest) {
   if (!code) return redirect(destination, 'no_code');
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+    getServerSupabaseUrl(), process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+      cookieOptions: supabaseCookieOptions(),
       cookies: {
         getAll: () => Array.from(jar, ([name, value]) => ({ name, value })),
         setAll(items: { name: string; value: string; options: CookieOptions }[]) {

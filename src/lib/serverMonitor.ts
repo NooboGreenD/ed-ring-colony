@@ -18,6 +18,7 @@ import type {
 import { describePgConnectionError, galaxyDbUrl, loadPg, type PgClientLike } from './pgModule';
 import { hasTranslateCredentials } from './translate';
 import { getUpdateAgentStatus } from './updateAgent';
+import { getServerSupabaseUrl } from './supabaseServerUrl';
 
 const DATABASE_TIMEOUT_MS = 4_000;
 /** `pg_database_size` is cheap; a huge catalogue is not — keep the probe bounded. */
@@ -100,9 +101,9 @@ function configuredMonitorAgent(): { configured: boolean; url: URL | null; token
 }
 
 function supabaseRest(): { origin: URL; serviceKey: string } | null {
-  const base = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
+  const base = getServerSupabaseUrl();
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
-  if (!base || !serviceKey) return null;
+  if (!serviceKey) return null;
   try {
     const origin = new URL(base);
     if (!['http:', 'https:'].includes(origin.protocol)) return null;

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin, errorResponse } from '@/lib/billing/auth';
-import { DEFAULT_SUPABASE_URL } from '@/lib/siteUrl';
+import { getPublicSupabaseUrl } from '@/lib/supabaseUrl';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,7 +38,7 @@ interface Check {
 }
 
 function supabaseUrl(): string {
-  return (process.env.NEXT_PUBLIC_SUPABASE_URL || DEFAULT_SUPABASE_URL).replace(/\/$/, '');
+  return getServerSupabaseUrl();
 }
 
 /** Живой запрос к GoTrue: отвечает ли и что говорит о почте. */
@@ -75,9 +76,19 @@ export async function GET(req: Request) {
     if ('response' in auth) return auth.response;
 
     const url = supabaseUrl();
+    const publicUrl = getPublicSupabaseUrl();
     const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
     const emailEnabled = process.env.AUTH_EMAIL_ENABLED === 'true';
     const checks: Check[] = [];
+
+    if (publicUrl !== url) {
+      checks.push({
+        id: 'site-gateway',
+        ok: true,
+        title: 'Публичный шлюз Supabase',
+        detail: `Браузер использует ${publicUrl}; web обращается к GoTrue по приватному адресу ${url}.`,
+      });
+    }
 
     checks.push({
       id: 'site-flag',
@@ -102,7 +113,7 @@ export async function GET(req: Request) {
     checks.push({
       id: 'gotrue-reachable',
       ok: Boolean(probe?.reachable),
-      title: `Доступность ${url}`,
+      title: `Доступность GoTrue из web (${url})`,
       detail: probe
         ? (probe.reachable
           ? 'GoTrue отвечает.'

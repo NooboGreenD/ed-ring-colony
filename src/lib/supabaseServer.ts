@@ -2,14 +2,16 @@ import { createServerClient } from "@supabase/ssr";
 import { createClient as createJsClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { NextRequest } from "next/server";
+import { supabaseCookieOptions } from './supabaseUrl';
+import { getServerSupabaseUrl } from './supabaseServerUrl';
 
 function assertEnv(name: string, value: string | undefined): string {
   if (!value) throw new Error(`Missing environment variable: ${name}`);
   return value;
 }
 
-function getSupabaseUrl() {
-  return process.env.NEXT_PUBLIC_SUPABASE_URL || "https://supabase.edringcolony.ru";
+export function getSupabaseUrl() {
+  return getServerSupabaseUrl();
 }
 
 function getSupabaseConfig() {
@@ -24,6 +26,7 @@ export async function createClient() {
   const { url, key } = getSupabaseConfig();
 
   return createServerClient(url, key, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll() {
         return cookieStore.getAll();
@@ -45,6 +48,7 @@ export function createRouteClient(request: NextRequest) {
   const { url, key } = getSupabaseConfig();
 
   return createServerClient(url, key, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll() {
         return request.cookies.getAll();
@@ -116,6 +120,7 @@ function requestCookies(request: Request) {
 
 function createRequestCookieClient(request: Request, url: string, key: string) {
   return createServerClient(url, key, {
+    cookieOptions: supabaseCookieOptions(),
     cookies: {
       getAll() {
         return requestCookies(request);

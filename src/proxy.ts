@@ -3,12 +3,20 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 import { readMaintenanceCached } from '@/lib/maintenanceEdge';
 import { isMaintenanceExemptPath } from '@/lib/maintenanceFlag';
+import { supabaseCookieOptions } from '@/lib/supabaseUrl';
+import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 
 /** Сколько просить браузер подождать перед повторной попыткой (секунды). */
 const MAINTENANCE_RETRY_AFTER = '120';
 
 export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
+
+  // The site-origin Supabase gateway is a transparent HTTP/WebSocket tunnel.
+  // Do not try to refresh a session or read maintenance state on its requests:
+  // that would add a second auth request before every GoTrue/PostgREST call and
+  // can recurse back through the same gateway.
+  if (path === '/api/supabase' || path.startsWith('/api/supabase/')) return NextResponse.next();
 
   // ── Технические работы ──────────────────────────────────────────────
   // Пока идёт резервное копирование базы, посетители видят заглушку вместо
@@ -50,9 +58,10 @@ export async function proxy(request: NextRequest) {
 
   try {
     const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      getServerSupabaseUrl(),
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
       {
+        cookieOptions: supabaseCookieOptions(),
         cookies: {
           getAll() {
             return request.cookies.getAll();

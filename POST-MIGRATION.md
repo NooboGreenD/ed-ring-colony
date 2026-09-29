@@ -323,6 +323,78 @@ docker compose logs --tail=50 auth
    никаких секретов. Это runtime-настройка, пересборка клиентского JS для списка
    кнопок не нужна. Привязка использует тот же UUID и те же ограничения, что Discord.
 
+### Аварийный шлюз Supabase без изменения Synology
+
+> Это обход **только для браузерных запросов к Supabase**. Он не заменяет
+> рабочий HTTPS у `edringcolony.ru`: если мобильный браузер видит Synology 404
+> или не получает сертификат именно для главного домена, никакой код сайта ещё
+> не успеет выполниться. В DSM нужно лишь продлить/назначить уже существующий
+> сертификат текущему reverse-proxy правилу и проверить текущий проброс 80/443;
+> новые правила reverse proxy и новые порты для этого не нужны.
+
+Если `https://edringcolony.ru` открывается с мобильной сети по HTTPS, но
+`https://supabase.edringcolony.ru` выдаёт ошибку сертификата, можно временно
+убрать этот второй origin из браузера. Next уже умеет проксировать и обычные
+Supabase HTTP-запросы, и Realtime WebSocket через существующий сайт:
+
+```dotenv
+# /opt/ed-ring-colony/src/.env.production
+NEXT_PUBLIC_SITE_URL=https://edringcolony.ru
+NEXT_PUBLIC_SUPABASE_URL=https://edringcolony.ru/api/supabase
+
+# Не публичный URL и не новый порт. Выберите ОДИН адрес, который реально
+# открывается ИЗ контейнера web:
+SUPABASE_INTERNAL_URL=http://kong:8000
+# если Kong опубликован на хосте, а общей docker-сети нет:
+# SUPABASE_INTERNAL_URL=http://host.docker.internal:8000
+```
+
+`http://kong:8000` работает, когда `web` подключён к существующей сети
+Supabase (`deploy/compose.supabase-net.yml`); `host.docker.internal` уже
+прописан в `docker-compose.yml` и использует текущий локальный порт Kong. Ни
+одна из строк не публикует порт наружу и не меняет Synology.
+
+Адрес шлюза вшивается в `next.config.mjs`, а `NEXT_PUBLIC_*` — в клиентский
+bundle, поэтому после изменения обязательна пересборка **только web**:
+
+```bash
+cd /opt/ed-ring-colony/src
+# Сначала убедитесь, что Kong отвечает именно из web. В ответе health — JSON.
+docker compose --env-file .env.production exec web \
+  wget -qO- http://kong:8000/auth/v1/health
+# Если этот hostname не резолвится, проверьте второй допустимый вариант:
+# docker compose --env-file .env.production exec web \
+#   wget -qO- http://host.docker.internal:8000/auth/v1/health
+
+docker compose --env-file .env.production build web
+docker compose --env-file .env.production up -d --no-deps web
+```
+
+Проверьте в приватном окне и на телефоне **через мобильную сеть**: Network
+должен показывать `https://edringcolony.ru/api/supabase/auth/v1/...`, а не
+`supabase.edringcolony.ru`. После нормального ремонта сертификата сабдомена
+можно вернуть прежний `NEXT_PUBLIC_SUPABASE_URL` и очистить
+`SUPABASE_INTERNAL_URL` с такой же пересборкой. Вход по email/паролю,
+регистрация, Storage и Realtime используют шлюз; OAuth-провайдеры по-прежнему
+возвращают пользователя на `https://supabase.edringcolony.ru/auth/v1/callback`,
+поэтому их callback и сертификат сабдомена всё равно необходимо восстановить.
+
+Перед включением обхода проверьте край сети именно извне NAS (например, с
+мобильного Интернета или CI), а не с домашнего ПК, где возможен hairpin NAT:
+
+```bash
+openssl s_client -connect edringcolony.ru:443 -servername edringcolony.ru -verify_return_error </dev/null
+openssl s_client -connect supabase.edringcolony.ru:443 -servername supabase.edringcolony.ru -verify_return_error </dev/null
+curl -fsS https://edringcolony.ru/api/health
+curl -fsS https://supabase.edringcolony.ru/auth/v1/health
+```
+
+Обе первые команды должны показать сертификат и `Verify return code: 0 (ok)`.
+`no peer certificate`, `unexpected eof`, сертификат другого имени или Synology
+404 означают проблему на границе сети/DSM (сертификат, назначение текущему
+правилу, DNS, firewall/port-forward), а не ошибку логина или SMTP. Не отключайте
+проверку TLS в браузере, Uploader или Node ради временной «починки».
+
 ### Email: исправление регистрации и восстановление
 
 `/api/auth/register` больше не использует admin auto-confirm. Для отправки
