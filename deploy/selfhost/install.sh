@@ -397,6 +397,12 @@ EXTRA_COMPOSE_FILES="$(edrc_extra_compose_files "$SRC_DIR" "$SE")"
 LEGACY_COMPOSE_FILES="$(edrc_prepare_legacy_build "$SRC_DIR")" || true
 [ -n "$LEGACY_COMPOSE_FILES" ] && echo "⚠ buildx не найден — web собирается без кэш-маунтов (медленнее, но работает)"
 
+# Provenance-аттестации buildx здесь не нужны (образы остаются локальными),
+# а их запись — лишний вызов Docker Hub в конце сборки: на нестабильном
+# канале установка обрывалась «failed to solve: DeadlineExceeded: context
+# deadline exceeded» уже после собранных образов.
+edrc_disable_default_attestations
+
 if [ "$DO_MONITOR" = 1 ]; then
   # Профиль monitoring поднимает приватный monitor-agent (без открытого порта):
   # он единственный получает docker.sock, web ходит к нему только с токеном.

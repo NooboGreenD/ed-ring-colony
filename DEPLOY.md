@@ -160,6 +160,15 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
 - у полного обновления лимита времени нет: `UPDATE_TIMEOUT_MINUTES` устарела
   и игнорируется при любом значении. Строку `UPDATE_TIMEOUT_MINUTES=45` из
   `.env.production` можно удалить; живой прогон останавливается только кнопкой;
+- `failed to solve: DeadlineExceeded: context deadline exceeded` на шаге
+  `resolving provenance for metadata file` — это НЕ сама сборка (образы к
+  этому моменту уже готовы), а запись provenance-аттестации: buildx по
+  умолчанию в конце сборки ходит в Docker Hub за манифестом базового образа,
+  и на нестабильном канале этот вызов висит до таймаута и роняет весь
+  `compose build`. Обновление, ручная пересборка и установка выключают
+  аттестации через `BUILDX_NO_DEFAULT_ATTESTATIONS=1`; для «голого»
+  `docker compose build` с хоста задайте ту же переменную окружения
+  (см. `.env.example` → «Provenance-аттестации сборки»);
 - если сборка всё равно не влезает в сервер — вариант §5 (собрать локально и
   залить готовый артефакт).
 

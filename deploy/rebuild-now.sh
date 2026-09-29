@@ -213,6 +213,15 @@ fi
 if declare -F edrc_trim_build_cache >/dev/null 2>&1; then
   edrc_trim_build_cache || true
 fi
+# Без provenance-аттестаций: их запись — лишний вызов Docker Hub в конце
+# сборки, на нестабильном канале он ронял build «DeadlineExceeded: context
+# deadline exceeded» уже после готовых образов (см. edrc_disable_default_attestations
+# в compose-lib.sh). Явное BUILDX_NO_DEFAULT_ATTESTATIONS=0 сохраняется.
+if declare -F edrc_disable_default_attestations >/dev/null 2>&1; then
+  edrc_disable_default_attestations
+else
+  export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
+fi
 # $COMPOSE_SERVICES — список слов, разворачивается намеренно.
 # shellcheck disable=SC2086
 compose_base build "${build_args[@]}" $COMPOSE_SERVICES

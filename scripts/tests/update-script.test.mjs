@@ -69,6 +69,10 @@ function setup() {
     // STUB_BUILD_FAIL=1 — сборка образа падает так же, как на живом сервере:
     // текст причины уходит в stderr, код возврата 1.
     '  *" build "*)',
+    // Окружение, с которым сборка ушла в docker: скрипт обязан выключать
+    // provenance-аттестации (BUILDX_NO_DEFAULT_ATTESTATIONS), уважая
+    // явное значение оператора.
+    '    echo "[build-env] BUILDX_NO_DEFAULT_ATTESTATIONS=${BUILDX_NO_DEFAULT_ATTESTATIONS-unset}" >> "$STUB_LOG"',
     '    if [ "${STUB_BUILD_FAIL:-0}" = "1" ]; then',
     '      echo "#12 42.5 npm ERR! code ENOSPC" >&2',
     '      echo "ERROR: failed to solve: process \\"/bin/sh -c npm ci\\" did not complete successfully: no space left on device" >&2',
@@ -203,6 +207,11 @@ test('первое обновление: перемотка, применени�
     // работающие контейнеры, а RUN_TESTS уезжает явным --build-arg.
     assert.match(calls, /compose --env-file .* build --build-arg RUN_TESTS=1 web jobs monitor-agent update-agent/);
     assert.match(calls, /compose --env-file .* up -d --no-build web jobs monitor-agent/);
+    // Provenance-аттестации выключены по умолчанию: их запись — лишний вызов
+    // Docker Hub уже ПОСЛЕ собранных образов («resolving provenance for
+    // metadata file»), и на нестабильном канале именно он ронял сборку
+    // «failed to solve: DeadlineExceeded: context deadline exceeded».
+    assert.match(calls, /\[build-env\] BUILDX_NO_DEFAULT_ATTESTATIONS=1/);
     // Уборка диска после обновления: висячие образы/контейнеры И кэш BuildKit
     // в бюджете (именно он съедал гигабайты после каждой пересборки).
     assert.match(calls, /image prune -f/);
@@ -311,6 +320,25 @@ test('флажок тестов: RUN_TESTS попадает в сборку, п�
     // передаётся аргументом сборки, а не интерполяцией env-файла.
     assert.match(readFileSync(ctx.log, 'utf8'), /build --build-arg RUN_TESTS=0 /, 'без тестов — тоже явным build-arg');
     assert.match(readFileSync(ctx.log, 'utf8'), /up -d --no-build web jobs monitor-agent/);
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('provenance-аттестации: по умолчанию выключены, явное значение оператора сохраняется', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+
+    const fresh = ctx.run();
+    assert.equal(fresh.status, 0, fresh.stdout + fresh.stderr);
+    assert.match(readFileSync(ctx.log, 'utf8'), /\[build-env\] BUILDX_NO_DEFAULT_ATTESTATIONS=1/, 'без настроек оператора аттестации выключены');
+
+    // Оператор мог вернуть аттестации явным 0 — не перекрываем его выбор.
+    writeFileSync(ctx.log, '');
+    const keep = ctx.run({ BUILDX_NO_DEFAULT_ATTESTATIONS: '0' });
+    assert.equal(keep.status, 0, keep.stdout + keep.stderr);
+    assert.match(readFileSync(ctx.log, 'utf8'), /\[build-env\] BUILDX_NO_DEFAULT_ATTESTATIONS=0/, 'явный 0 доезжает до сборки без подмены');
   } finally {
     ctx.cleanup();
   }

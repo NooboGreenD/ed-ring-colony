@@ -163,6 +163,10 @@ run_compose() {
   # собираем только маленький образ агента, затем запускаем стек без сборки:
   # существующий web при необходимости лишь пересоздастся с новым токеном.
   say "  · собираю только образ update-agent (web не пересобирается)"
+  # Без provenance-аттестаций: их запись — лишний вызов Docker Hub в конце
+  # сборки, на нестабильном канале он ронял build «DeadlineExceeded: context
+  # deadline exceeded» уже после собранного образа.
+  export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
   compose_cmd -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" \
     --profile monitoring build update-agent
   compose_cmd -f "$PROJECT_DIR/docker-compose.yml" --env-file "$ENV_FILE" \

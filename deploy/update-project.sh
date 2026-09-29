@@ -476,6 +476,18 @@ if [ "$MODE" = "compose" ]; then
   if declare -F edrc_trim_build_cache >/dev/null 2>&1; then
     edrc_trim_build_cache || true
   fi
+  # Provenance-аттестации отключаем ПО УМОЛЧАНИЮ (явный ...=0 оператора
+  # сохраняется): их запись — лишний сетевой вызов в Docker Hub («resolving
+  # provenance for metadata file») уже ПОСЛЕ того, как образы собраны и
+  # экспортированы. На хостах с нестабильным доступом к registry-1.docker.io
+  # именно он обрывал сборку строкой «failed to solve: DeadlineExceeded:
+  # context deadline exceeded». Хелпер в compose-lib.sh; при частичном дереве
+  # без неё выставляем переменную тем же значением — buildx читает её и так.
+  if declare -F edrc_disable_default_attestations >/dev/null 2>&1; then
+    edrc_disable_default_attestations
+  else
+    export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
+  fi
   report build 70 "Пересобираю docker-образы — самая долгая часть (до ~60 мин на малом сервере, это не зависание)"
   run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
   report switch 82 "Переключаю контейнеры на новые образы"
