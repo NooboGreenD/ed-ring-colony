@@ -749,11 +749,14 @@ export function readSupabaseSmtpState(config) {
   // предупреждает, если файл есть, но SMTP в него не передаётся: без этого
   // пересоздание auth молча оставило бы почту неработающей.
   let override = null;
-  for (const candidate of ['docker-compose.override.yml', 'docker-compose.smtp-override.yml']) {
+  for (const candidate of ['docker-compose.smtp-override.yml', 'docker-compose.override.yml']) {
     try {
       const text = readFileSync(join(config.supabaseDir, candidate), 'utf8');
-      override = { file: candidate, passesSmtp: /GOTRUE_SMTP_HOST/.test(text) };
-      break;
+      const current = { file: candidate, passesSmtp: /GOTRUE_SMTP_HOST/.test(text) };
+      // Управляемый SMTP-файл приоритетнее чужого общего override. Если
+      // подходящего ещё нет, всё равно покажем первый найденный для подсказки.
+      if (!override || current.passesSmtp) override = current;
+      if (current.passesSmtp) break;
     } catch { /* нет такого файла — проверяем следующий */ }
   }
   const keys = envExists

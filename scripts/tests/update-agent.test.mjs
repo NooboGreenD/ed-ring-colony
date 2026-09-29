@@ -1228,8 +1228,10 @@ test('apply-smtp.sh: override из шаблона, пересоздание auth
   writeFileSync(join(supaDir, '.env'), [
     'SMTP_HOST=smtp.example.test',
     'SMTP_PORT=587',
+    'SMTP_USER=no-reply@example.test',
     'SMTP_PASS=mail-secret',
-    'DISABLE_SIGNUP=false',
+    'SMTP_ADMIN_EMAIL=no-reply@example.test',
+    'DISABLE_SIGNUP=true',
     'API_EXTERNAL_URL=https://supabase.example.test',
   ].join('\n'));
   copyFileSync(join(ROOT, 'deploy', 'apply-smtp.sh'), join(projectDir, 'deploy', 'apply-smtp.sh'));
@@ -1267,10 +1269,12 @@ test('apply-smtp.sh: override из шаблона, пересоздание auth
   assert.match(calls, /up -d --no-deps --force-recreate auth/, 'auth пересоздаётся с новыми SMTP-ключами');
   assert.match(calls, /--env-file .* -f docker-compose\.yml up -d --force-recreate web/, 'web пересоздаётся за ним (ключи сайта)');
 
-  // Override установлен из шаблона репозитория и передаёт SMTP.
-  const override = readFileSync(join(supaDir, 'docker-compose.override.yml'), 'utf8');
+  // Отдельный управляемый override установлен из шаблона и передаёт SMTP.
+  const override = readFileSync(join(supaDir, 'docker-compose.smtp-override.yml'), 'utf8');
   assert.match(override, /GOTRUE_SMTP_HOST/, 'SMTP доезжает до контейнера auth');
   assert.match(override, /GOTRUE_MAILER_AUTOCONFIRM: "false"/, 'автоподтверждение почты не включается');
+  assert.match(readFileSync(join(supaDir, '.env'), 'utf8'), /DISABLE_SIGNUP=false/, 'регистрация GoTrue включена');
+  assert.match(readFileSync(join(projectDir, '.env.production'), 'utf8'), /AUTH_EMAIL_ENABLED=true/, 'формы сайта включены');
 
   const stages = run.stdout.split('\n').filter((line) => line.includes('::edrc::'));
   const joined = stages.join('>');
@@ -1279,7 +1283,7 @@ test('apply-smtp.sh: override из шаблона, пересоздание auth
   }
 });
 
-test('apply-smtp.sh: чужой override без SMTP — честный отказ, auth не трогаем', { skip: needsBash }, () => {
+test('apply-smtp.sh: чужой override сохраняется, SMTP подключается отдельным файлом', { skip: needsBash }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'edrc-apply-smtp-foreign-'));
   const supaDir = join(dir, 'supabase');
   const projectDir = join(dir, 'src');
@@ -1290,10 +1294,13 @@ test('apply-smtp.sh: чужой override без SMTP — честный отка
   mkdirSync(supaDir, { recursive: true });
   writeFileSync(log, '');
   writeFileSync(join(supaDir, 'docker-compose.yml'), 'services:\n  auth:\n    image: supabase/gotrue\n');
-  writeFileSync(join(supaDir, '.env'), 'SMTP_HOST=smtp.example.test\nDISABLE_SIGNUP=false\n');
-  // Операторский override без передачи SMTP: скрипт не имеет права его молча
-  // перезаписывать — только честно отказаться и подсказать ручной мердж.
-  writeFileSync(join(supaDir, 'docker-compose.override.yml'), 'services:\n  auth:\n    environment:\n      GOTRUE_LOG_LEVEL: debug\n');
+  writeFileSync(join(supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test', 'SMTP_PORT=587', 'SMTP_USER=no-reply@example.test',
+    'SMTP_PASS=secret', 'SMTP_ADMIN_EMAIL=no-reply@example.test', 'DISABLE_SIGNUP=true',
+  ].join('\n'));
+  // Операторский override без SMTP должен остаться нетронутым.
+  const foreignOverride = 'services:\n  auth:\n    environment:\n      GOTRUE_LOG_LEVEL: debug\n';
+  writeFileSync(join(supaDir, 'docker-compose.override.yml'), foreignOverride);
   copyFileSync(join(ROOT, 'deploy', 'apply-smtp.sh'), join(projectDir, 'deploy', 'apply-smtp.sh'));
   copyFileSync(join(ROOT, 'deploy', 'selfhost', 'supabase-auth.override.yml'), join(projectDir, 'deploy', 'selfhost', 'supabase-auth.override.yml'));
   copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(projectDir, 'deploy', 'compose-lib.sh'));
@@ -1304,6 +1311,7 @@ test('apply-smtp.sh: чужой override без SMTP — честный отка
     'exit 0',
     '',
   ].join('\n'), { mode: 0o755 });
+  writeFileSync(join(binDir, 'curl'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
 
   const run = spawnSync('bash', [join(projectDir, 'deploy', 'apply-smtp.sh')], {
     encoding: 'utf8',
@@ -1316,10 +1324,11 @@ test('apply-smtp.sh: чужой override без SMTP — честный отка
       PROJECT_DEPLOY_MODE: 'compose',
     },
   });
-  assert.notEqual(run.status, 0, 'скрипт обязан упасть, а не применять наполовину');
-  assert.match(run.stdout + run.stderr, /GOTRUE_SMTP_HOST|смёржите/, 'причина отказа — про override');
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  assert.equal(readFileSync(join(supaDir, 'docker-compose.override.yml'), 'utf8'), foreignOverride, 'чужой override не изменён');
+  assert.match(readFileSync(join(supaDir, 'docker-compose.smtp-override.yml'), 'utf8'), /GOTRUE_SMTP_HOST/, 'SMTP вынесен в управляемый override');
   const calls = readFileSync(log, 'utf8');
-  assert.equal(/force-recreate auth/.test(calls), false, 'auth не пересоздаётся без гарантии SMTP');
+  assert.match(calls, /-f docker-compose\.override\.yml -f docker-compose\.smtp-override\.yml up -d --no-deps --force-recreate auth/, 'оба override применены вместе');
 });
 
 test('smtp обрамление: маршруты за requireAdmin, блок в разделе авторизации, агент видит стек', () => {
