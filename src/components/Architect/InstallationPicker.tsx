@@ -14,6 +14,7 @@ import {
   formatTons,
   getInstallation,
   listInstallations,
+  orbitalLimit,
   placementCheck,
   predictSurfaceSlots,
 } from '@/lib/architect/planner';
@@ -46,6 +47,10 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
   const surfaceLimit = predictSurfaceSlots(body);
   const usedSurface = plan.sites.filter(
     (site) => site.bodyName === body.name && getInstallation(site.installationId)?.location === 'surface',
+  ).length;
+  const orbitalSlots = orbitalLimit(body, plan);
+  const usedOrbital = plan.sites.filter(
+    (site) => site.bodyName === body.name && getInstallation(site.installationId)?.location === 'orbital',
   ).length;
 
   const rows = useMemo(() => {
@@ -102,6 +107,9 @@ export default function InstallationPicker({ body, plan, onPick, onClose, initia
                   : 'наземных слотов нет'}
               </>
             ) : ' · звезда: только орбитальные постройки'}
+            {' · '}{orbitalSlots === null
+              ? `орбитальных: ${usedOrbital}, без лимита`
+              : `орбитальных слотов: ${usedOrbital} из ${orbitalSlots}`}
           </div>
         </div>
 

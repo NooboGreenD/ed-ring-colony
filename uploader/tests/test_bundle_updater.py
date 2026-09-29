@@ -152,6 +152,15 @@ class BundleUpdateTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertFalse(result["update_available"])
 
+    def test_admin_channel_rollback_is_applied_even_to_newer_client(self):
+        server = _Server(self.manifest_v1)
+        result = bundle_updater.check_for_update("1.1.0", session=server, base=BASE,
+                                                 keys=self.keys, launcher_version="1.0.0")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["update_available"])
+        self.assertTrue(result["rollback"])
+        self.assertEqual(result["latest"], "1.0.0")
+
     def test_bad_signature_is_not_an_update(self):
         broken = json.loads(json.dumps(self.manifest_v2))
         broken["version"] = "9.9.9"  # подпись считалась по другому содержимому

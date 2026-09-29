@@ -44,7 +44,7 @@ import bundle  # noqa: E402
 import updater  # noqa: E402  (переиспользуем чтение VERSION и ченджлога)
 
 #: Что в пакет не попадает: инструменты сборки и сам лаунчер (он внутри exe).
-EXCLUDE = {"build_exe.py", "build_bundle.py", "launcher.py"}
+EXCLUDE = {"build_exe.py", "build_bundle.py", "launcher.py", "updater.py"}
 
 #: Переменные окружения для CI.
 KEY_ENV = "UPLOADER_SIGN_KEY"

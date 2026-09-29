@@ -9,7 +9,7 @@
  */
 
 import { ECONOMY_LABELS_RU } from './catalogue.ts';
-import { commodityLabel, getInstallation, predictSurfaceSlots, siteCargo } from './planner.ts';
+import { commodityLabel, getInstallation, orbitalLimit, predictSurfaceSlots, siteCargo } from './planner.ts';
 import { normalizeBodyKey } from './bodyNames.ts';
 import type {
   ArchitectBody,
@@ -193,8 +193,11 @@ export interface BodyLoad {
   used: number;
   limit: number;
   orbital: number;
+  orbitalLimit: number | null;
   /** Занятость наземных слотов, 0..100. */
   percent: number;
+  /** Занятость орбитальных слотов, 0..100; у звезды без лимита — 0. */
+  orbitalPercent: number;
   distanceLs: number;
 }
 
@@ -214,13 +217,19 @@ export function bodyLoads(plan: ArchitectPlan, bodies: ArchitectBody[]): BodyLoa
       const key = normalizeBodyKey(body.name);
       const used = surface.get(key) ?? 0;
       const limit = predictSurfaceSlots(body);
+      const orbitalUsed = orbital.get(key) ?? 0;
+      const orbitalSlots = orbitalLimit(body, plan);
       return {
         name: body.name,
         kind: body.kind,
         used,
         limit,
-        orbital: orbital.get(key) ?? 0,
+        orbital: orbitalUsed,
+        orbitalLimit: orbitalSlots,
         percent: limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0,
+        orbitalPercent: orbitalSlots !== null && orbitalSlots > 0
+          ? Math.min(100, Math.round((orbitalUsed / orbitalSlots) * 100))
+          : 0,
         distanceLs: body.distanceLs,
       };
     })

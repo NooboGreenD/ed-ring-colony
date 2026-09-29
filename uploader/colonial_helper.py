@@ -130,8 +130,6 @@ from ship_tracker import ShipTracker
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
-import updater
-
 # Пакетное обновление кода: программа запускается лаунчером (ColonialHelper.exe),
 # а её модули лежат отдельным пакетом и обновляются пофайлово с нашего сервера.
 # При запуске из исходников этих модулей может не быть — это нормально.
@@ -144,7 +142,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.13.0"
+VERSION = "2.13.2"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -457,9 +455,7 @@ class ColonialHelperApp:
     # ============================================================
     #  Шапка
     # ============================================================
-    #: Каналы обновлений: какие релизы GitHub предлагать.
-    #: CI публикует сборки и с main (полноценный релиз), и с arena/**
-    #: (prerelease) — см. .github/workflows/build-exe.yml.
+    #: Каналы автономного сервера: stable либо самый свежий stable/beta.
     UPDATE_CHANNEL_LABELS = {
         "stable": "Только стабильные (main)",
         "all": "Все сборки (включая arena)",
@@ -538,6 +534,17 @@ class ColonialHelperApp:
             foreground=COLOR_MUTED,
         )
         self.update_hint.pack(side=RIGHT)
+
+        # Настоящий индикатор выполнения: текст «37 %» плохо заметен и не
+        # показывает, зависло ли скачивание. При проверке/подготовке работает
+        # indeterminate, при передаче байтов — determinate 0..100.
+        self.update_progress = tb.Progressbar(
+            frame,
+            mode="determinate",
+            maximum=100,
+            bootstyle="info-striped",
+        )
+        # До начала операции не занимает место в шапке.
 
         # Индикатор игры: запущен ли клиент Elite Dangerous и в фокусе ли он.
         game_frame = tb.Frame(frame)
@@ -6495,8 +6502,13 @@ class ColonialHelperApp:
             return
         self._on_check_update(manual=False)
 
-    def _set_update_ui(self, busy: bool, hint: str = "", button_text: str = ""):
-        """Состояние строки обновлений: кнопка занята/свободна + подсказка."""
+    def _set_update_ui(self, busy: bool, hint: str = "", button_text: str = "",
+                       progress=None):
+        """Кнопка, подпись и progressbar одной операции обновления.
+
+        ``progress=None`` означает неопределённую по длительности стадию
+        (проверка/проверка хешей), число 0..100 — известный прогресс скачивания.
+        """
         try:
             self.update_button.config(
                 state="disabled" if busy else "normal",
@@ -6509,6 +6521,24 @@ class ColonialHelperApp:
                 self.update_hint.config(text=hint)
             except Exception:
                 pass
+        if not hasattr(self, "update_progress"):
+            return
+        try:
+            bar = self.update_progress
+            bar.stop()
+            if not busy:
+                bar.pack_forget()
+                bar.configure(mode="determinate", value=0)
+                return
+            if not bar.winfo_manager():
+                bar.pack(fill=X, pady=(5, 0), before=self.status_frame)
+            if progress is None:
+                bar.configure(mode="indeterminate", value=0)
+                bar.start(12)
+            else:
+                bar.configure(mode="determinate", value=max(0, min(100, float(progress))))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     #  Обновление кода пакетом (структурой), а не перекачиванием exe
@@ -6554,29 +6584,34 @@ class ColonialHelperApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _check_update_sources(self, channel: str) -> dict:
-        """Пакет кода с нашего сервера, а если канал недоступен — GitHub.
+        """Проверить только автономный канал нашего сервера.
 
-        Пока канал пакетов не настроен (или сервер не отвечает), программа
-        обновляется по-старому: пилот не должен остаться без обновлений
-        из-за переезда канала на свой сервер.
+        GitHub больше не является ни основным, ни резервным источником: иначе
+        недоступность собственного канала незаметно возвращала старую
+        зависимость и снова предлагала ручную замену exe.
         """
-        if bundle_mode():
-            result = bundle_updater.check_for_update(
-                VERSION, channel=channel, launcher_version=LAUNCHER_VERSION)
-            if result.get("ok"):
-                result["kind"] = "bundle"
-                return result
-            fallback = updater.check_for_update(VERSION, channel=channel)
-            fallback["kind"] = "release"
-            fallback["bundle_error"] = result.get("error")
-            return fallback
-        result = updater.check_for_update(VERSION, channel=channel)
-        result["kind"] = "release"
+        if not bundle_mode():
+            return {
+                "ok": False,
+                "kind": "bundle",
+                "error": "пакетные обновления доступны в базовой сборке ColonialHelper.exe",
+                "latest": VERSION,
+            }
+        result = bundle_updater.check_for_update(
+            VERSION, channel=channel, launcher_version=LAUNCHER_VERSION)
+        result["kind"] = "bundle"
         return result
 
     def _on_bundle_checked(self, result: dict, manual: bool):
         """Ответ канала пакетов: обновить код, обновить базовую сборку или ничего."""
         latest = str(result.get("latest") or VERSION)
+
+        if not result.get("ok"):
+            message = str(result.get("error") or "сервер не вернул манифест")
+            self._set_update_ui(False, hint=f"канал недоступен: {message[:36]}")
+            if manual:
+                self.log(f"Обновления не проверены: {message}", "warn")
+            return
 
         if result.get("needs_launcher"):
             # Пакет собран под новый рантайм: обновить одни модули нельзя.
@@ -6600,17 +6635,20 @@ class ColonialHelperApp:
             plan = {"download": [], "reuse": [], "bytes": 0}
         size_kb = int(plan.get("bytes") or 0) / 1024
         changed = len(plan.get("download") or [])
-        self._set_update_ui(False, hint=f"доступна v{latest} ({size_kb:.0f} КБ)")
-        self.log(f"Доступна версия {latest} (установлена {VERSION}): "
-                 f"изменилось файлов — {changed}, скачать {size_kb:.0f} КБ. "
-                 "Программу перекачивать не нужно.", "warn")
+        rollback = bool(result.get("rollback"))
+        action = "откат канала" if rollback else "доступна"
+        self._set_update_ui(False, hint=f"{action} v{latest} ({size_kb:.0f} КБ)")
+        self.log(f"{'Администратор откатил канал на' if rollback else 'Доступна версия'} "
+                 f"{latest} (установлена {VERSION}): изменилось файлов — {changed}, "
+                 f"скачать {size_kb:.0f} КБ. Программу перекачивать не нужно.", "warn")
         if not manual:
             self.log("Нажмите «Обновить программу», чтобы установить.", "info")
             return
 
         if not messagebox.askyesno(
             "Обновление Colonial Helper",
-            f"Доступна версия {latest} (у вас {VERSION}).\n\n"
+            f"{'Администратор вернул канал на' if rollback else 'Доступна версия'} "
+            f"{latest} (у вас {VERSION}).\n\n"
             f"Обновятся только изменившиеся модули: {changed} шт., "
             f"{size_kb:.0f} КБ.\n"
             "Программа перезапустится — токен и настройки сохранятся.\n\n"
@@ -6634,7 +6672,7 @@ class ColonialHelperApp:
                 return
             self._update_last_percent = percent
             self.after(0, lambda p=percent: self._set_update_ui(
-                True, hint=f"обновление {p}%", button_text="Обновляю…"))
+                True, hint=f"обновление {p}%", button_text="Обновляю…", progress=p))
 
         def worker():
             result = bundle_updater.apply_update(
@@ -6703,8 +6741,16 @@ class ColonialHelperApp:
         self._set_update_ui(True, hint="восстановление…", button_text="Качаю пакет…")
         self.log("Скачиваю пакет программы целиком…", "info")
 
+        def report(done: int, total: int):
+            if total:
+                percent = int(done * 100 / total)
+                self.after(0, lambda p=percent: self._set_update_ui(
+                    True, hint=f"восстановление {p}%", button_text="Качаю пакет…",
+                    progress=p))
+
         def worker():
-            result = bundle_updater.repair(self._bundle_root(), channel=channel)
+            result = bundle_updater.repair(
+                self._bundle_root(), channel=channel, progress=report)
             self.after(0, lambda r=result: self._on_repair_done(r))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -6732,9 +6778,9 @@ class ColonialHelperApp:
 
     def _on_launcher_checked(self, info: dict, latest: str):
         if not info.get("ok") or not info.get("url"):
-            # Сервер не знает про базовую сборку — идём привычным путём.
-            self.log("Скачайте новую сборку со страницы релизов.", "info")
-            self._on_check_update(manual=True)
+            self._set_update_ui(False, hint="базовая сборка не опубликована")
+            self.log("Новая базовая сборка ещё не опубликована на сервере. "
+                     "Обратитесь к администратору.", "warn")
             return
         size_mb = int(info.get("size") or 0) / (1024 * 1024)
         if not messagebox.askyesno(
@@ -6746,12 +6792,19 @@ class ColonialHelperApp:
             parent=self.root,
         ):
             return
-        folder = updater.download_folder()
+        folder = Path.home() / "Downloads"
         self._update_busy = True
         self._set_update_ui(True, hint="скачивание сборки…", button_text="Скачиваю…")
 
+        def report(done: int, total: int):
+            if total:
+                percent = int(done * 100 / total)
+                self.after(0, lambda p=percent: self._set_update_ui(
+                    True, hint=f"скачивание сборки {p}%", button_text="Скачиваю…",
+                    progress=p))
+
         def worker():
-            result = bundle_updater.download_launcher(info, folder)
+            result = bundle_updater.download_launcher(info, folder, progress=report)
             self.after(0, lambda r=result: self._on_update_downloaded(
                 r, {"version_text": info.get("version", ""),
                     "asset_name": "ColonialHelper.exe"}))
@@ -6759,78 +6812,9 @@ class ColonialHelperApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_update_checked(self, result: dict, manual: bool):
+        """Все проверки теперь относятся только к серверному bundle-каналу."""
         self._update_busy = False
-        if str(result.get("kind") or "") == "bundle":
-            self._on_bundle_checked(result, manual)
-            return
-        latest = str(result.get("latest") or VERSION)
-        if not result.get("ok"):
-            message = str(result.get("error") or "нет данных")
-            self._set_update_ui(False, hint=f"не проверено: {message[:40]}")
-            # Автопроверка без сети — обычное дело, в лог пишем только по кнопке.
-            if manual:
-                self.log(f"Обновления не проверены: {message}", "warn")
-            return
-
-        if not result.get("update_available"):
-            if result.get("channel_empty"):
-                # В канале нет ни одного релиза. Это не «версия свежая», а
-                # «смотреть нечего»: писать «актуальная версия» было бы ложью.
-                self._set_update_ui(
-                    False, hint="в этом канале сборок нет — смените канал")
-                if manual:
-                    self.log(
-                        f"В канале «{self._update_channel_label()}» нет ни одной "
-                        "сборки. Переключите канал на «Все сборки».", "warn")
-                return
-            self._set_update_ui(False, hint=f"актуальная версия v{latest}")
-            self.log(f"Установлена актуальная версия {VERSION}", "success")
-            return
-
-        release = result.get("release") or {}
-        self._set_update_ui(False, hint=f"доступна v{latest}")
-        self.log(
-            f"Доступна новая версия {latest} (установлена {VERSION}): "
-            f"{release.get('name') or release.get('tag') or ''}", "warn")
-        if not manual:
-            # При автопроверке окно не выпрыгивает: пишем в лог и подсказку.
-            self.log("Нажмите «Обновить программу», чтобы скачать сборку.", "info")
-            return
-
-        size_mb = int(release.get("asset_size") or 0) / (1024 * 1024)
-        if not messagebox.askyesno(
-            "Обновление Colonial Helper",
-            f"Доступна версия {latest} (у вас {VERSION}).\n\n"
-            f"Файл: {release.get('asset_name') or 'ColonialHelper.exe'}"
-            f"{f' ({size_mb:.1f} МБ)' if size_mb else ''}\n\n"
-            "Скачать новую сборку?",
-            parent=self.root,
-        ):
-            return
-        self._start_update_download(release)
-
-    def _start_update_download(self, release: dict):
-        """Скачать сборку в «Загрузки» и показать папку."""
-        folder = updater.download_folder()
-        self._update_busy = True
-        self._set_update_ui(True, hint="скачивание…", button_text="Скачиваю…")
-
-        def report(done: int, total: int):
-            if not total:
-                return
-            # Не чаще раза в ~5%, иначе очередь Tk забьётся прогрессом.
-            percent = int(done * 100 / total)
-            if percent - getattr(self, "_update_last_percent", -10) < 5:
-                return
-            self._update_last_percent = percent
-            self.after(0, lambda p=percent: self._set_update_ui(
-                True, hint=f"скачивание {p}%", button_text="Скачиваю…"))
-
-        def worker():
-            result = updater.download_asset(release, folder, progress=report)
-            self.after(0, lambda r=result: self._on_update_downloaded(r, release))
-
-        threading.Thread(target=worker, daemon=True).start()
+        self._on_bundle_checked(result, manual)
 
     def _on_update_downloaded(self, result: dict, release: dict):
         self._update_busy = False

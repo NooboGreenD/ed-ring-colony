@@ -81,7 +81,8 @@ ENV NODE_ENV=production \
     APP_GIT_REF=$APP_GIT_REF \
     APP_BUILD_TIME=$APP_BUILD_TIME
 
-RUN addgroup -S nodejs -g 1001 && adduser -S nextjs -u 1001
+RUN addgroup -S nodejs -g 1001 && adduser -S nextjs -u 1001 \
+    && apk add --no-cache su-exec
 
 # standalone-сервер + статика + public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
@@ -92,8 +93,16 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 # на него повешен именованный том galaxy-dump — файл переживает пересборку
 # образа. Папка существует в образе, чтобы copy-up тома сохранил владельца
 # nextjs (иначе контейнер не смог бы писать в том).
-RUN mkdir -p /app/data/spansh && chown nextjs:nodejs /app/data/spansh
+RUN mkdir -p /app/data/spansh /data/uploader \
+    && chown nextjs:nodejs /app/data/spansh /data/uploader
 
-USER nextjs
+# Именованный том старой установки мог быть создан root:root. Перед стартом
+# приводим небольшой uploader-store к uid web-процесса, затем безвозвратно
+# сбрасываем права. Это устраняет HTTP 500 при генерации
+# ключа/первой публикации из админки.
+COPY --chown=root:root deploy/web-entrypoint.sh /usr/local/bin/web-entrypoint
+RUN chmod 0755 /usr/local/bin/web-entrypoint
+
 EXPOSE 3000
+ENTRYPOINT ["web-entrypoint"]
 CMD ["node", "server.js"]

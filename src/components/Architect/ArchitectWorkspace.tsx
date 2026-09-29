@@ -31,6 +31,7 @@ import {
 import type { PlanView } from '@/lib/architect/store';
 import type { SitePatch } from '@/lib/architect/planner';
 import {
+  ORBITAL_SLOT_LIMIT,
   PLAN_FORMAT_VERSION,
   addSite,
   canBePrimary,
@@ -39,12 +40,15 @@ import {
   formatTons,
   fromScanRecords,
   getInstallation,
+  orbitalLimit,
   parsePlan,
   placementCheck,
   planToStructures,
   predictSurfaceSlots,
   removeSite,
   serializePlan,
+  setOrbitalSlots,
+  setPlanArchitect,
   setSitePrimary,
   setSiteStatus,
   siteCargo,
@@ -201,6 +205,15 @@ export default function ArchitectWorkspace() {
     return map;
   }, [sitesByBody]);
 
+  const orbitalUsedByBody = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const [bodyName, sites] of sitesByBody) {
+      const used = sites.filter((site) => getInstallation(site.installationId)?.location === 'orbital').length;
+      if (used > 0) map.set(bodyName, used);
+    }
+    return map;
+  }, [sitesByBody]);
+
   const sitesCountByBody = useMemo(() => {
     const map = new Map<string, number>();
     for (const [bodyName, sites] of sitesByBody) map.set(bodyName, sites.length);
@@ -256,17 +269,26 @@ export default function ArchitectWorkspace() {
     if (query) list = list.filter((body) => `${body.name} ${body.subType}`.toLocaleLowerCase().includes(query));
     if (bodyFilter === 'planned') list = list.filter((body) => (sitesCountByBody.get(body.name) ?? 0) > 0);
     if (bodyFilter === 'slots') {
-      list = list.filter((body) => predictSurfaceSlots(body) - (surfaceUsedByBody.get(body.name) ?? 0) > 0);
+      list = list.filter((body) => {
+        const surfaceFree = predictSurfaceSlots(body) - (surfaceUsedByBody.get(body.name) ?? 0);
+        const orbitalSlots = plan ? orbitalLimit(body, plan) : 0;
+        const orbitalFree = orbitalSlots === null ? 1 : orbitalSlots - (orbitalUsedByBody.get(body.name) ?? 0);
+        return surfaceFree > 0 || orbitalFree > 0;
+      });
     }
     if (bodyFilter === 'issues') list = list.filter((body) => (issuesByBody.get(body.name) ?? 0) > 0);
     if (bodySort === 'slots' || bodySort === 'structures') {
       const weight = (body: ArchitectBody) => bodySort === 'slots'
         ? predictSurfaceSlots(body) - (surfaceUsedByBody.get(body.name) ?? 0)
+          + (() => {
+            const limit = plan ? orbitalLimit(body, plan) : 0;
+            return limit === null ? 1 : Math.max(0, limit - (orbitalUsedByBody.get(body.name) ?? 0));
+          })()
         : (sitesCountByBody.get(body.name) ?? 0);
       list = [...list].sort((left, right) => weight(right) - weight(left) || left.distanceLs - right.distanceLs);
     }
     return list;
-  }, [bodies, bodyQuery, bodyFilter, bodySort, surfaceUsedByBody, sitesCountByBody, issuesByBody]);
+  }, [bodies, bodyQuery, bodyFilter, bodySort, surfaceUsedByBody, orbitalUsedByBody, sitesCountByBody, issuesByBody, plan]);
 
   /** Отчёт пересчитывается при любой правке плана — площадки при этом не перезапрашиваются. */
   const progress = useMemo<ProgressReport | null>(
@@ -622,6 +644,7 @@ export default function ArchitectWorkspace() {
           <div style={{ marginTop: 10, color: 'var(--muted)', fontSize: 12 }}>
             Тел: {bodies.length} · источник: {describeSourceStats(source, sourceStats)}
             {plan && plan.sites.length > 0 ? ` · в плане: ${plan.sites.length}` : ''}
+            {plan?.architect ? ` · архитектор: ${plan.architect}` : ''}
             {primaryName ? ` · основной порт: ${primaryName}` : ''}
           </div>
         )}
@@ -683,6 +706,24 @@ export default function ArchitectWorkspace() {
                   event.target.value = '';
                 }}
               />
+            </div>
+
+            <div style={{ ...cardStyle, padding: '9px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <label htmlFor="architect-name" style={{ color: 'var(--muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>
+                Архитектор системы
+              </label>
+              <input
+                id="architect-name"
+                aria-label="Архитектор системы"
+                value={plan.architect}
+                maxLength={120}
+                onChange={(event) => setPlan(setPlanArchitect(plan, event.target.value))}
+                placeholder="CMDR или позывной ответственного"
+                style={{ ...inputStyle, flex: '1 1 240px', margin: 0 }}
+              />
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>
+                Отметка попадёт в план, экспорт и текстовую сводку.
+              </span>
             </div>
 
             {bodies.length > 0 && (
@@ -822,6 +863,9 @@ export default function ArchitectWorkspace() {
                     flashIds={flashIds}
                     collapsed={collapsedBodies.includes(body.name)}
                     errorCount={issuesByBody.get(body.name) ?? 0}
+                    orbitalSlots={orbitalLimit(body, plan)}
+                    orbitalSlotsCustom={Object.keys(plan.orbitalSlots).some((name) => resolveBodyName(name, bodyIndex).name === body.name)}
+                    onSetOrbitalSlots={(slots) => setPlan(setOrbitalSlots(plan, body.name, slots))}
                     onToggleCollapse={() => setCollapsedBodies((list) => (
                       list.includes(body.name) ? list.filter((name) => name !== body.name) : [...list, body.name]
                     ))}
@@ -1058,6 +1102,9 @@ function BodyCard({
   flashIds,
   collapsed,
   errorCount,
+  orbitalSlots,
+  orbitalSlotsCustom,
+  onSetOrbitalSlots,
   onToggleCollapse,
   onAdd,
   onRemove,
@@ -1076,6 +1123,9 @@ function BodyCard({
   flashIds: string[];
   collapsed: boolean;
   errorCount: number;
+  orbitalSlots: number | null;
+  orbitalSlotsCustom: boolean;
+  onSetOrbitalSlots: (slots: number) => void;
   onToggleCollapse: () => void;
   onAdd: (location: PickerLocation) => void;
   onRemove: (siteId: string) => void;
@@ -1092,13 +1142,16 @@ function BodyCard({
   const slotTone = surfaceLimit <= 0
     ? 'var(--red)'
     : surfaceUsed >= surfaceLimit ? 'var(--red)' : surfaceUsed / surfaceLimit > 0.7 ? 'var(--orange)' : 'var(--green)';
+  const orbitalTone = orbitalSlots === 0 || (orbitalSlots !== null && orbitalUsed >= orbitalSlots)
+    ? 'var(--red)'
+    : orbitalSlots !== null && orbitalUsed / orbitalSlots > 0.7 ? 'var(--orange)' : 'var(--green)';
   const allowSurface = body.kind === 'planet' || body.kind === 'moon';
-  const allowOrbital = body.kind !== 'moon';
+  const allowOrbital = orbitalSlots === null || orbitalSlots > 0;
   const boostedEconomies = body.kind !== 'star' ? bodyBoostedEconomies(body) : [];
   // Разделы «наземные/орбитальные» показываем у тел с постройками и у тех,
   // где соответствующее размещение вообще возможно.
   const showSurfaceGroup = allowSurface && (sites.length > 0 || surfaceUsed > 0);
-  const showOrbitalGroup = allowOrbital && sites.length > 0;
+  const showOrbitalGroup = allowOrbital || orbitalUsed > 0;
 
   return (
     <div className="architect-body" style={{ ...cardStyle, borderColor: errorCount > 0 ? 'var(--red)' : undefined }}>
@@ -1140,12 +1193,12 @@ function BodyCard({
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <span style={{ fontSize: 12, color: surfaceLimit > 0 ? 'var(--muted)' : 'var(--red)' }}>
-              {body.kind === 'star'
-                ? `орбитальных: ${orbitalUsed}`
-                : surfaceLimit > 0
-                  ? `наземных слотов: ${surfaceUsed} из ${surfaceLimit} · орбитальных: ${orbitalUsed}`
-                  : blocked}
+            <span style={{ fontSize: 12, color: surfaceLimit > 0 || allowOrbital ? 'var(--muted)' : 'var(--red)' }}>
+              {body.kind !== 'star' && (surfaceLimit > 0
+                ? `наземных: ${surfaceUsed} из ${surfaceLimit}`
+                : blocked)}
+              {body.kind !== 'star' && ' · '}
+              орбитальных: {orbitalUsed}{orbitalSlots === null ? '' : ` из ${orbitalSlots}`}
             </span>
             <button
               type="button"
@@ -1162,6 +1215,11 @@ function BodyCard({
         {body.kind !== 'star' && surfaceLimit > 0 && (
           <div className="architect-slotbar" title={`Занято наземных слотов: ${surfaceUsed} из ${surfaceLimit}`}>
             <div className="architect-slotbar-fill" style={{ width: `${Math.min(100, (surfaceUsed / surfaceLimit) * 100)}%`, background: slotTone }} />
+          </div>
+        )}
+        {orbitalSlots !== null && orbitalSlots > 0 && (
+          <div className="architect-slotbar" title={`Занято орбитальных слотов: ${orbitalUsed} из ${orbitalSlots}`} style={{ marginTop: 3 }}>
+            <div className="architect-slotbar-fill" style={{ width: `${Math.min(100, (orbitalUsed / orbitalSlots) * 100)}%`, background: orbitalTone }} />
           </div>
         )}
       </div>
@@ -1188,6 +1246,41 @@ function BodyCard({
               />
             ))}
           </div>
+
+          {body.kind !== 'star' && orbitalSlots !== null && (
+            <div
+              className="architect-orbital-slots"
+              style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', fontSize: 12 }}
+            >
+              <span style={{ color: 'var(--muted)' }}>Орбитальные слоты:</span>
+              <button
+                type="button"
+                aria-label="Уменьшить число орбитальных слотов"
+                onClick={() => onSetOrbitalSlots(Math.max(0, orbitalSlots - 1))}
+                disabled={orbitalSlots <= 0}
+                style={linkButton}
+              >−</button>
+              <input
+                aria-label={`Орбитальные слоты тела ${body.name}`}
+                type="number"
+                min={0}
+                max={ORBITAL_SLOT_LIMIT}
+                value={orbitalSlots}
+                onChange={(event) => onSetOrbitalSlots(Number(event.target.value))}
+                style={{ width: 52, padding: '3px 5px', textAlign: 'center', background: 'var(--bg)', color: 'var(--text)', border: '1px solid var(--line)', borderRadius: 3 }}
+              />
+              <button
+                type="button"
+                aria-label="Увеличить число орбитальных слотов"
+                onClick={() => onSetOrbitalSlots(orbitalSlots + 1)}
+                disabled={orbitalSlots >= ORBITAL_SLOT_LIMIT}
+                style={linkButton}
+              >+</button>
+              <span style={{ color: orbitalSlotsCustom ? 'var(--cyan)' : 'var(--muted)', fontSize: 11 }}>
+                {orbitalSlotsCustom ? 'задано вручную' : 'не подтверждено — сверьте с картой системы'}
+              </span>
+            </div>
+          )}
 
           {boostedEconomies.length > 0 && (
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }}>
@@ -1227,8 +1320,9 @@ function BodyCard({
           {showOrbitalGroup && (
             <SiteGroup
               title="Орбитальные постройки"
-              counter={` ${orbitalUsed}`}
+              counter={orbitalSlots === null ? ` ${orbitalUsed}` : ` ${orbitalUsed} из ${orbitalSlots}`}
               body={body}
+              canAdd={allowOrbital && (orbitalSlots === null || orbitalUsed < orbitalSlots)}
               onAdd={() => onAdd('orbital')}
               sites={orbitalSites}
               progressBySite={progressBySite}
@@ -1253,6 +1347,7 @@ function SiteGroup({
   sites,
   progressBySite,
   flashIds,
+  canAdd = true,
   onAdd,
   onRemove,
   onCycle,
@@ -1265,6 +1360,7 @@ function SiteGroup({
   sites: PlannedSite[];
   progressBySite: Map<string, SiteProgress>;
   flashIds: string[];
+  canAdd?: boolean;
   onAdd: () => void;
   onRemove: (siteId: string) => void;
   onCycle: (siteId: string, status: PlannedSiteStatus) => void;
@@ -1278,7 +1374,7 @@ function SiteGroup({
           {title}
           <span style={{ color: 'var(--text)' }}>{counter}</span>
         </span>
-        <button type="button" onClick={onAdd} style={{ ...linkButton, margin: 0 }}>+ добавить</button>
+        <button type="button" onClick={onAdd} disabled={!canAdd} style={{ ...linkButton, margin: 0, opacity: canAdd ? 1 : 0.45 }}>+ добавить</button>
       </div>
       {sites.length === 0 && (
         <div style={{ fontSize: 12, color: 'var(--muted)', border: '1px dashed var(--line)', borderRadius: 3, padding: '6px 8px' }}>

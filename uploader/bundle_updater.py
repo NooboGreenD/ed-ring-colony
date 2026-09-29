@@ -95,8 +95,8 @@ def _get_json(http, url: str, params: Optional[Dict[str, Any]] = None,
 
 
 def _get_bytes(http, url: str, expect_sha: str = "", limit: int = bundle.MAX_FILE_BYTES,
-               current: str = "") -> bytes:
-    """Скачать файл целиком в память с проверкой размера и хеша."""
+               current: str = "", progress=None) -> bytes:
+    """Скачать файл с проверкой размера/хеша и побайтовым прогрессом."""
     with http.get(url, headers=_headers(current), timeout=TIMEOUT, stream=True) as response:
         if not getattr(response, "ok", False):
             status = getattr(response, "status_code", "?")
@@ -106,6 +106,11 @@ def _get_bytes(http, url: str, expect_sha: str = "", limit: int = bundle.MAX_FIL
             if not chunk:
                 continue
             buffer.write(chunk)
+            if progress:
+                try:
+                    progress(buffer.tell())
+                except Exception:
+                    pass
             if buffer.tell() > limit:
                 raise RuntimeError(f"Файл больше допустимого ({limit} байт): {url}")
         data = buffer.getvalue()
@@ -137,6 +142,8 @@ def check_for_update(current: str, channel: str = "stable", launcher_version: st
         "min_launcher": "",
         "channel": str(channel or "stable"),
         "download_bytes": 0,
+        # Канал на сервере может быть намеренно возвращён администратором.
+        "rollback": False,
     }
     api = update_base(base)
     try:
@@ -158,8 +165,14 @@ def check_for_update(current: str, channel: str = "stable", launcher_version: st
     latest = str(manifest.get("version") or "")
     result["latest"] = latest
     result["min_launcher"] = str(manifest.get("min_launcher") or "")
-    if bundle.version_tuple(latest) <= bundle.version_tuple(current):
+    comparison = (bundle.version_tuple(latest) > bundle.version_tuple(current)) - (
+        bundle.version_tuple(latest) < bundle.version_tuple(current))
+    if comparison == 0:
         return result
+    # Указатель канала — источник истины. Если администратор откатил его на
+    # меньший номер, клиент должен поставить эту версию, а не считать себя
+    # «новее и потому актуальным».
+    result["rollback"] = comparison < 0
     if launcher_version and not bundle.launcher_supports(manifest, launcher_version):
         # Пакет собран под новый рантайм (появилась библиотека, сменился
         # Python). Код обновить нельзя — нужна новая базовая сборка.
@@ -291,8 +304,11 @@ def apply_update(root, manifest: Dict[str, Any], progress=None, session=None,
             last: Optional[Exception] = None
             for _ in range(MAX_ATTEMPTS):
                 try:
-                    data = _get_bytes(http, url, expect_sha=meta["sha256"],
-                                      limit=max(int(meta["size"] or 0) + 1024, 4096))
+                    data = _get_bytes(
+                        http, url, expect_sha=meta["sha256"],
+                        limit=max(int(meta["size"] or 0) + 1024, 4096),
+                        progress=(lambda part: progress(downloaded + part, int(plan["bytes"]) or 1))
+                        if progress else None)
                     downloaded += len(data)
                     return data
                 except Exception as exc:  # сеть/битый файл — пробуем ещё раз

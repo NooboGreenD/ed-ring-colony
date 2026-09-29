@@ -5,8 +5,6 @@ import { readLauncher } from '@/lib/uploaderStore';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const FALLBACK_URL = 'https://github.com/NooboGreenD/ed-ring-colony/releases/latest';
-
 /**
  * Базовая сборка (`ColonialHelper.exe`) — тот самый файл, который теперь
  * качают редко.
@@ -25,9 +23,7 @@ export async function GET(request: NextRequest) {
       {
         ok: false,
         platform,
-        error: 'Базовая сборка для этой платформы не опубликована',
-        // Пилот не должен остаться без файла: страница релизов есть всегда.
-        url: FALLBACK_URL,
+        error: 'Базовая сборка для этой платформы не опубликована на сервере',
       },
       { status: 404, headers: { 'Cache-Control': 'no-store' } },
     );

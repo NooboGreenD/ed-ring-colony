@@ -185,6 +185,12 @@ export interface ArchitectPlan {
   updatedAt: string;
   notes: string;
   sites: PlannedSite[];
+  /**
+   * Ручное число орбитальных слотов по именам тел. Поле хранится в плане,
+   * потому что источники сканирования не сообщают, у каких планет и лун игра
+   * разрешила орбитальную застройку.
+   */
+  orbitalSlots: Record<string, number>;
 }
 
 export type IssueLevel = 'error' | 'warning' | 'info';
@@ -275,6 +281,8 @@ export interface PlanEvaluation {
   issues: PlanIssue[];
   /** Число занятых наземных слотов по телам. */
   surfaceUsage: Record<string, { used: number; limit: number }>;
+  /** Число занятых орбитальных слотов; null означает лимит без жёсткой границы. */
+  orbitalUsage: Record<string, { used: number; limit: number | null }>;
 }
 
 /** Проверка «можно ли поставить эту постройку на это тело». */

@@ -286,7 +286,9 @@ export default function PlanInsights({ plan, evaluation, bodies, onSelectSite }:
                   <span style={{ color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{load.name}</span>
                   <span style={{ color: 'var(--muted)', fontFamily: 'ui-monospace, monospace', flex: '0 0 auto' }}>
                     {load.limit > 0 ? `${load.used}/${load.limit} назем.` : 'без наземных'}
-                    {load.orbital > 0 ? ` · ${load.orbital} орбит.` : ''}
+                    {load.orbitalLimit === null
+                      ? ` · ${load.orbital} орбит. (без лимита)`
+                      : ` · ${load.orbital}/${load.orbitalLimit} орбит.`}
                   </span>
                 </div>
                 <div style={{ height: 5, border: '1px solid var(--line)', borderRadius: 3, overflow: 'hidden', marginTop: 3, background: 'var(--bg)' }}>

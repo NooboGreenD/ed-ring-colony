@@ -4,8 +4,10 @@ import { requireAdmin } from '@/lib/billing/auth';
 import {
   generatePublishToken,
   generateSignKey,
+  importSignKey,
   removeSignKey,
   setPublishToken,
+  storeSignKey,
   storeStatus,
   upsertSignKey,
 } from '@/lib/uploaderStore';
@@ -36,6 +38,7 @@ interface ConfigBody {
   action?: string;
   id?: unknown;
   publicKey?: unknown;
+  privateKey?: unknown;
   token?: unknown;
 }
 
@@ -57,7 +60,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, store, ...extra }, NO_STORE);
   };
 
-  switch (action) {
+  try {
+    switch (action) {
     case 'addKey':
       return done(await upsertSignKey(String(body?.id ?? ''), String(body?.publicKey ?? '')));
 
@@ -65,14 +69,18 @@ export async function POST(request: Request) {
       return done(await removeSignKey(String(body?.id ?? '')));
 
     case 'generateKey': {
-      // Приватный ключ показываем один раз — на сервере он не хранится.
+      // Для автономной публикации seed хранится в закрытом config.json тома.
+      // В ответе показываем его один раз — для резервной копии и переноса.
       const generated = generateSignKey(body?.id ? String(body.id) : undefined);
-      const saved = await upsertSignKey(generated.id, generated.publicKey);
+      const saved = await storeSignKey(generated);
       if (!saved.ok) return done(saved);
       return done(saved, {
         generated: { id: generated.id, publicKey: generated.publicKey, privateKey: generated.privateKey },
       });
     }
+
+    case 'importPrivateKey':
+      return done(await importSignKey(String(body?.id ?? ''), String(body?.privateKey ?? '')));
 
     case 'setPublishToken':
       return done(await setPublishToken(String(body?.token ?? '')));
@@ -88,5 +96,12 @@ export async function POST(request: Request) {
 
     default:
       return NextResponse.json({ ok: false, error: `Неизвестное действие: ${action}` }, { status: 400, ...NO_STORE });
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    const hint = /EACCES|permission denied/i.test(detail)
+      ? 'Хранилище недоступно для записи. Пересоздайте web-контейнер после обновления или исправьте владельца тома uploader-store.'
+      : `Не удалось сохранить настройки: ${detail}`;
+    return NextResponse.json({ ok: false, error: hint }, { status: 500, ...NO_STORE });
   }
 }

@@ -203,8 +203,27 @@ test('страница загружает систему по ссылке и п
     assert.match(text, /тестовый режим/);
     assert.match(text, new RegExp(`${SYSTEM} A 1`));
     assert.match(text, /Тел: 4 · источник: edsm/);
-    assert.match(text, /наземных слотов: 0 из 2/, 'у каменистой планеты радиусом 3000 км два наземных слота');
+    assert.match(text, /наземных: 0 из 2/, 'у каменистой планеты радиусом 3000 км два наземных слота');
+    assert.match(text, /орбитальных: 0 из 0/, 'неподтверждённая планета не получает орбитальный слот автоматически');
     assert.match(text, /звезда: только орбитальные постройки|орбитальных: 0/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('отметка архитектора системы сохраняется в плане и видна в сводке', async () => {
+  const ui = await renderArchitect();
+  try {
+    const input = ui.document.querySelector('input[aria-label="Архитектор системы"]');
+    assert.ok(input, 'поле архитектора есть в плане');
+    await ui.typeInto(input, 'CMDR Planner');
+
+    assert.match(ui.text(), /Архитектор системы:\s*CMDR Planner/);
+    assert.match(ui.text(), /архитектор: CMDR Planner/);
+    assert.match(
+      ui.dom.window.localStorage.getItem(`ed-architect:plan:${SYSTEM.toLowerCase()}`) || '',
+      /"architect": "CMDR Planner"/,
+    );
   } finally {
     await ui.cleanup();
   }
@@ -249,7 +268,7 @@ test('каталог честно объясняет, почему постро�
     const text = ui.text();
     assert.doesNotMatch(text, /Выбор постройки/, 'каталог закрылся после выбора');
     assert.match(text, /Сельхозпоселение \(малое\)/);
-    assert.match(text, /наземных слотов: 1 из 2/);
+    assert.match(text, /наземных: 1 из 2/);
     assert.match(text, /2 839 т|2\u00a0839 т/);
     assert.match(ui.dom.window.localStorage.getItem(`ed-architect:plan:${SYSTEM.toLowerCase()}`) || '', /consus/);
   } finally {
@@ -502,6 +521,11 @@ test('открытие плана по ссылке подставляет ег�
 test('наземные и орбитальные постройки лежат в отдельных разделах карточки тела', async () => {
   const ui = await renderArchitect();
   try {
+    // Орбитальный раздел планеты появляется только после подтверждения слота.
+    const orbitalInput = ui.document.querySelector(`input[aria-label="Орбитальные слоты тела ${SYSTEM} A 1"]`);
+    assert.ok(orbitalInput);
+    await ui.typeInto(orbitalInput, '1');
+
     // Наземная постройка — на планету, орбитальная — к звезде.
     await ui.click(ui.cardButton(`${SYSTEM} A 1`, '+ постройка'));
     await ui.click(ui.rowButton('Сельхозпоселение (малое)'));
@@ -511,7 +535,7 @@ test('наземные и орбитальные постройки лежат �
     const text = ui.text();
     assert.match(text, /Наземные постройки\s+1 из 2/, 'наземный раздел с счётчиком слотов');
     assert.match(text, /Орбитальные постройки\s+0/, 'орбитальный раздел планеты пуст, но виден');
-    assert.match(text, /наземных слотов: 1 из 2 · орбитальных: 0/);
+    assert.match(text, /наземных: 1 из 2 · орбитальных: 0 из 1/);
 
     // У звезды — только орбитальный раздел.
     const starCard = Array.from(ui.document.querySelectorAll('.architect-body'))
@@ -519,6 +543,28 @@ test('наземные и орбитальные постройки лежат �
     assert.ok(starCard, 'у звезды есть карточка');
     assert.match(starCard.textContent || '', /Орбитальные постройки\s+1/);
     assert.doesNotMatch(starCard.textContent || '', /Наземные постройки/);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test('орбитальные слоты луны редактируются и сохраняются в плане', async () => {
+  const ui = await renderArchitect();
+  try {
+    const input = ui.document.querySelector(`input[aria-label="Орбитальные слоты тела ${SYSTEM} A 1 a"]`);
+    assert.ok(input, 'у луны есть редактор орбитальных слотов');
+    assert.equal(input.value, '0');
+    await ui.typeInto(input, '2');
+
+    assert.equal(input.value, '2');
+    const moonCard = Array.from(ui.document.querySelectorAll('.architect-body'))
+      .find((element) => (element.textContent || '').includes(`${SYSTEM} A 1 a`));
+    assert.match(moonCard?.textContent || '', /Орбитальные постройки\s+0 из 2/);
+    assert.match(moonCard?.textContent || '', /задано вручную/);
+    assert.match(
+      ui.dom.window.localStorage.getItem(`ed-architect:plan:${SYSTEM.toLowerCase()}`) || '',
+      /"orbitalSlots"[\s\S]*"Architest A 1 a": 2/,
+    );
   } finally {
     await ui.cleanup();
   }
