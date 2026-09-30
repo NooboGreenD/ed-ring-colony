@@ -1418,6 +1418,17 @@ test('сборка: npm-notice отключён, кэши npm/next пережи�
     const re = new RegExp('^' + pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'm');
     assert.match(dockerignore, re, 'в контекст образа не едет: ' + pattern);
   }
+
+  // Админ-маршрут выпускает Helper из /app/uploader/*.py уже в runtime-образе.
+  // Если исключить весь каталог, builder его не увидит и финальный COPY упадёт
+  // с «/app/uploader: not found» после долгой сборки Next.js.
+  assert.doesNotMatch(dockerignore, /^uploader\/?$/m,
+    'исходники Helper не должны целиком исключаться из build context');
+  assert.match(dockerignore, /^uploader\/tests\/$/m,
+    'из контекста достаточно исключить тесты Helper, а не его исходники');
+  assert.match(dockerfile,
+    /^COPY --from=builder --chown=nextjs:nodejs \/app\/uploader \.\/uploader$/m,
+    'Python-исходники Helper переносятся в runtime-образ');
 });
 
 test('сборка без BuildKit: запасной Dockerfile web и buildx в образе агента', () => {
