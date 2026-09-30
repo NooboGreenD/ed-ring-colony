@@ -54,11 +54,13 @@ export interface OrrerySceneModel {
   /** Меши построек: id → объект. */
   structureObjects: Map<string, THREE.Object3D>;
   /**
-   * Всё, что обязано ехать вместе с телом: сама сфера, кольца, метки сигналов.
+   * Всё, что обязано ехать вместе с телом или его системой отсчёта: сама
+   * сфера, кольца, метки сигналов, а также орбиты дочерних тел и зоны.
    *
-   * Кольца и сигналы живут в отдельных слоях (их гасят галочкой), то есть в
-   * мировых координатах. Без этого индекса при проигрывании орбит планета
-   * уезжала, а её кольца и маячки оставались висеть на месте скана.
+   * Кольца, сигналы и линии орбит живут в отдельных слоях (их гасят
+   * галочкой), то есть в мировых координатах. Без этого индекса при
+   * проигрывании орбит планета уезжала, а её кольца, маячки и орбита вокруг
+   * движущейся звезды оставались на месте скана.
    *
    * `base` — исходная позиция объекта в координатах пакета: движение всегда
    * считается от неё, а не «плюс дельта к текущей» (иначе ошибка копится).
@@ -439,6 +441,12 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     const line = new THREE.Line(geometry, material);
     line.userData.pick = { kind: 'body', name: orbit.name } satisfies PickInfo;
     group.add(line);
+    // Линия орбиты задаётся в мировых координатах. Орбита планеты должна
+    // ехать за своей звездой, а орбита луны — за планетой: иначе в двойной
+    // системе тела двигаются верно, но их траектории остаются в точке скана.
+    // У вторичной звезды путь, наоборот, закреплён за главным центром системы
+    // и не должен тащиться самой звездой.
+    if (orbit.kind !== 'star' && orbit.owner) attach(orbit.owner, line);
     orbitEntries.push({ object: line, material, owner: orbit.owner, name: orbit.name, base: material.opacity });
     return line;
   };
@@ -463,6 +471,9 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     band.rotation.x = -Math.PI / 2;
     band.position.copy(toVector(zone.center));
     groups.zones.add(band);
+    // Обитаемая зона принадлежит звезде: у вторичной звезды она должна
+    // сдвигаться вместе с её кластером, как и планетные орбиты.
+    if (zone.owner) attach(zone.owner, band);
 
     const edgeGeometry = new THREE.BufferGeometry().setFromPoints(
       new THREE.EllipseCurve(zone.center[0], zone.center[1], zone.outer, zone.outer, 0, Math.PI * 2)
@@ -481,6 +492,7 @@ export function buildOrreryScene(payload: OrreryViewPayload, options: BuildOptio
     const edge = new THREE.Line(edgeGeometry, edgeMaterial);
     edge.computeLineDistances();
     groups.zones.add(edge);
+    if (zone.owner) attach(zone.owner, edge);
   }
 
   // ── Тела ─────────────────────────────────────────────────────────────────

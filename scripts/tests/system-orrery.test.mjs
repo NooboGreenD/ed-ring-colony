@@ -136,6 +136,24 @@ test('мультизвёздная система: тела группируют
   );
 });
 
+test('вторичная звезда без элементов сразу лежит на своей орбите', () => {
+  const layout = buildOrreryLayout([
+    star('KELT A', 1, 0),
+    // Без элементов орбита восстанавливается детерминированно. Именно этот
+    // случай раньше давал кольцо со смещённым центром до старта движения.
+    star('KELT B', 2, 41_000, { parents: [{ Star: 1 }] }),
+  ], 'KELT');
+
+  const secondary = layout.positions['KELT B'];
+  const orbit = layout.orbits.find((candidate) => candidate.name === 'KELT B');
+  assert.ok(orbit, 'для вторичной звезды есть орбита');
+  assert.deepEqual(orbit.center, [0, 0, 0], 'центр орбиты — главная звезда');
+  const nearest = Math.min(...orbit.points.map((point) => Math.hypot(
+    point[0] - secondary[0], point[1] - secondary[1], point[2] - secondary[2],
+  )));
+  assert.ok(nearest < 1e-9, `звезда должна стоять на линии орбиты, отклонение ${nearest}`);
+});
+
 test('десятки звёзд: карта не ломается, подписи урезаются, размеры уменьшаются', () => {
   const records = [];
   records.push(star('HIP A', 1, 0));

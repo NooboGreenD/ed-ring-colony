@@ -533,6 +533,54 @@ maybe('движение: луна едет за планетой, планеты
   }
 });
 
+maybe('двойная система: орбиты дочерних тел привязаны к движущимся центрам', async () => {
+  const { module } = await enginePromise;
+  const payload = module.buildOrreryView(
+    module.buildOrreryLayout(binaryRecords(), 'BinSys'),
+    [],
+    { systemName: 'BinSys' },
+  );
+  const secondary = payload.bodies.find((body) => body.name === 'BinSys B');
+  const child = payload.bodies.find((body) => body.name === 'BinSys B 1');
+  assert.ok(secondary && child && child.star === secondary.name, 'планета закреплена за второй звездой');
+
+  // Стартовая точка вторичной звезды уже находится на линии её орбиты; запуск
+  // проигрывания не должен «исправлять» положение внезапным прыжком.
+  const starOrbit = payload.orbits.find((orbit) => orbit.name === secondary.name);
+  assert.ok(starOrbit);
+  const initialGap = Math.min(...starOrbit.points.map((point) => Math.hypot(
+    point[0] - secondary.position[0],
+    point[1] - secondary.position[1],
+    point[2] - secondary.position[2],
+  )));
+  assert.ok(initialGap < 1e-9, `вторая звезда не на своей орбите: ${initialGap}`);
+
+  const scene = module.buildOrreryScene(payload);
+  const childOrbitLine = scene.groups.orbits.children.find((line) => line.userData.pick?.name === child.name);
+  const starOrbitLine = scene.groups.orbits.children.find((line) => line.userData.pick?.name === secondary.name);
+  assert.ok(childOrbitLine && starOrbitLine, 'линии орбит собраны');
+
+  // Планетная орбита — часть кластера вторичной звезды и получает её дельту;
+  // сама траектория звезды остаётся вокруг главного центра системы.
+  const starAttachments = scene.bodyAttachments.get(secondary.name) ?? [];
+  const planetOrbitAttachment = starAttachments.find((entry) => entry.object === childOrbitLine);
+  assert.ok(planetOrbitAttachment, 'орбита планеты едет вместе со своей звездой');
+  assert.ok(!starAttachments.some((entry) => entry.object === starOrbitLine),
+    'орбита звезды не должна ехать за самой звездой');
+
+  const starDelta = module.orbitalDeltas(payload, 100).get(secondary.name);
+  assert.ok(Math.hypot(...starDelta) > 1e-6, 'у вторичной звезды есть движение');
+  planetOrbitAttachment.object.position.set(
+    planetOrbitAttachment.base.x + starDelta[0],
+    planetOrbitAttachment.base.y + starDelta[1],
+    planetOrbitAttachment.base.z + starDelta[2],
+  );
+  assert.ok(planetOrbitAttachment.object.position.distanceTo(planetOrbitAttachment.base) > 1e-6,
+    'линия орбиты сдвинулась на дельту звезды');
+
+  scene.dispose();
+});
+
 maybe('сцена: кольца, метки сигналов и постройки привязаны к телу', async () => {
   const { module } = await enginePromise;
   const layout = module.buildOrreryLayout(systemRecords(), 'TestSys');

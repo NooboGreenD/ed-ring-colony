@@ -477,7 +477,13 @@ export function buildOrreryLayout(
         radius * Math.sin(angle) * Math.cos(inclination),
         radius * Math.sin(angle) * Math.sin(inclination),
       ];
-      orbit = ellipsePath(radius, center, 0, inclination, 48);
+      // Восстановленная орбита вторичной звезды всё равно обращается вокруг
+      // главной звезды (нуля сцены), а не вокруг собственной стартовой точки.
+      // Иначе до запуска анимации звезда висела в центре нарисованного рядом
+      // с ней кольца, а при первом же кадре «перепрыгивала» на другую траекторию.
+      // Фаза пути равна фазе `center`, поэтому начальная точка тела лежит на
+      // своей орбите так же, как и для планет без элементов.
+      orbit = ellipsePath(radius, [0, 0, 0], angle, inclination, 48);
     }
 
     positions[star.name] = center;
