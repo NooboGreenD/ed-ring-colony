@@ -1,16 +1,8 @@
 'use client';
 
 /**
- * Дерево инженеров: кто о ком рассказывает, что просит за знакомство и что
- * умеет улучшать.
- *
- * Раскладка повторяет привычную «схему разблокировки»: сверху — инженеры,
- * доступные сразу, ниже — те, к кому ведёт наводка, связи нарисованы линиями.
- * Карточку можно отметить как открытую — отметки живут в браузере и сразу
- * подсвечивают, кто стал доступен следующим.
- *
- * Список улучшений подтягивается из того же справочника, что и верфь, поэтому
- * страницы не расходятся: `/outfitting?engineer=<id>` и наоборот.
+ * Вертикальное дерево инженеров. Карточки можно раскрывать, искать и отмечать
+ * как открытые; прогресс сохраняется в localStorage.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -38,7 +30,6 @@ interface UpgradeRow {
   blueprints: { id: string; label: string; grade: number }[];
 }
 
-/** Что инженер улучшает — из справочника верфи, сгруппировано по модулям. */
 function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
   const { data } = useOutfittingData();
   return useMemo(() => {
@@ -53,11 +44,7 @@ function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
     for (const [key, grade] of Object.entries(merged)) {
       const [group, blueprint] = key.split(':');
       if (!rows.has(group)) {
-        rows.set(group, {
-          group,
-          groupName: data.groups[group]?.name ?? group.toUpperCase(),
-          blueprints: [],
-        });
+        rows.set(group, { group, groupName: data.groups[group]?.name ?? group.toUpperCase(), blueprints: [] });
       }
       rows.get(group)!.blueprints.push({ id: blueprint, label: blueprintLabel(blueprint), grade });
     }
@@ -68,40 +55,68 @@ function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
   }, [data, engineer]);
 }
 
+function engineerMatches(engineer: Engineer, query: string) {
+  if (!query) return true;
+  return [engineer.name, engineer.system, engineer.station, engineer.focus, engineer.discovery]
+    .join(' ')
+    .toLocaleLowerCase('ru')
+    .includes(query);
+}
+
+function subtreeMatches(engineer: Engineer, branch: EngineerBranch, query: string, hideColonia: boolean): boolean {
+  if (hideColonia && engineer.colonia) return false;
+  if (engineerMatches(engineer, query)) return true;
+  return childrenOf(engineer.id, branch)
+    .filter((child) => child.from[0] === engineer.id)
+    .some((child) => subtreeMatches(child, branch, query, hideColonia));
+}
+
 function Card({
-  engineer,
-  selected,
-  unlocked,
-  available,
-  onSelect,
-  onToggle,
+  engineer, selected, unlocked, available, childCount, collapsed, onSelect, onToggle, onCollapse,
 }: {
   engineer: Engineer;
   selected: boolean;
   unlocked: boolean;
   available: boolean;
+  childCount: number;
+  collapsed: boolean;
   onSelect: () => void;
   onToggle: () => void;
+  onCollapse: () => void;
 }) {
   const accent = unlocked ? 'var(--green)' : available ? 'var(--orange)' : 'var(--line)';
   return (
     <div
       className="eng-card"
+      data-selected={selected || undefined}
       style={{
-        border: `1px solid ${selected ? 'var(--cyan)' : accent}`,
+        borderColor: selected ? 'var(--cyan)' : accent,
         background: selected ? 'rgba(52,152,219,0.10)' : 'var(--panel)',
         boxShadow: selected ? '0 0 0 1px var(--cyan)' : undefined,
-        opacity: unlocked || available ? 1 : 0.82,
+        opacity: unlocked || available ? 1 : 0.78,
       }}
     >
-      <button type="button" onClick={onSelect} className="eng-card-main">
-        <span className="eng-card-name" style={{ color: unlocked ? 'var(--green)' : 'var(--text)' }}>
-          {engineer.name}
+      {childCount > 0 && (
+        <button
+          type="button"
+          onClick={onCollapse}
+          className="eng-card-collapse"
+          aria-label={collapsed ? `Показать ветку ${engineer.name}` : `Скрыть ветку ${engineer.name}`}
+          aria-expanded={!collapsed}
+          title={collapsed ? `Показать учеников (${childCount})` : 'Свернуть ветку'}
+        >
+          <span className={collapsed ? '' : 'open'}>›</span>
+        </button>
+      )}
+      <button type="button" onClick={onSelect} className="eng-card-main" aria-pressed={selected}>
+        <span className="eng-card-heading">
+          <span className="eng-card-name" style={{ color: unlocked ? 'var(--green)' : 'var(--text)' }}>{engineer.name}</span>
+          <span className={`eng-status ${unlocked ? 'done' : available ? 'available' : ''}`}>
+            {unlocked ? 'открыт' : available ? 'доступен' : 'закрыт'}
+          </span>
         </span>
         <span className="eng-card-sub">
-          {engineer.system}
-          {engineer.permit ? ' · пермит' : ''}
-          {engineer.colonia ? ' · Колония' : ''}
+          {engineer.system}{engineer.permit ? ' · пермит' : ''}{engineer.colonia ? ' · Колония' : ''}
         </span>
         <span className="eng-card-focus" title={engineer.focus}>{engineer.focus}</span>
       </button>
@@ -109,6 +124,7 @@ function Card({
         type="button"
         onClick={onToggle}
         className="eng-card-mark"
+        aria-label={unlocked ? `Отметить ${engineer.name} как не открытого` : `Отметить ${engineer.name} как открытого`}
         title={unlocked ? 'Отметить как не открытого' : 'Отметить как открытого'}
         style={{ color: unlocked ? 'var(--green)' : 'var(--muted)', borderColor: unlocked ? 'var(--green)' : 'var(--line)' }}
       >
@@ -123,14 +139,22 @@ function Node(props: {
   branch: EngineerBranch;
   selected: string | null;
   unlocked: Set<string>;
+  collapsed: Set<string>;
+  query: string;
+  hideColonia: boolean;
   onSelect: (id: string) => void;
   onToggle: (id: string) => void;
+  onCollapse: (id: string) => void;
 }) {
-  const { engineer, branch, selected, unlocked, onSelect, onToggle } = props;
-  // Инженера с несколькими наставниками (Yi Shen) рисуем только под первым,
-  // чтобы дерево не двоилось; остальные связи видно в карточке.
-  const children = childrenOf(engineer.id, branch).filter((child) => child.from[0] === engineer.id);
+  const { engineer, branch, selected, unlocked, collapsed, query, hideColonia, onSelect, onToggle, onCollapse } = props;
+  const allChildren = childrenOf(engineer.id, branch)
+    .filter((child) => child.from[0] === engineer.id && !(hideColonia && child.colonia));
+  const children = query
+    ? allChildren.filter((child) => subtreeMatches(child, branch, query, hideColonia))
+    : allChildren;
   const available = engineer.from.length === 0 || engineer.from.some((parent) => unlocked.has(parent));
+  const isCollapsed = !query && collapsed.has(engineer.id);
+
   return (
     <li className="eng-node">
       <Card
@@ -138,14 +162,15 @@ function Node(props: {
         selected={selected === engineer.id}
         unlocked={unlocked.has(engineer.id)}
         available={available}
+        childCount={allChildren.length}
+        collapsed={isCollapsed}
         onSelect={() => onSelect(engineer.id)}
         onToggle={() => onToggle(engineer.id)}
+        onCollapse={() => onCollapse(engineer.id)}
       />
-      {children.length > 0 && (
+      {children.length > 0 && !isCollapsed && (
         <ul className="eng-children">
-          {children.map((child) => (
-            <Node key={child.id} {...props} engineer={child} />
-          ))}
+          {children.map((child) => <Node key={child.id} {...props} engineer={child} />)}
         </ul>
       )}
     </li>
@@ -156,15 +181,15 @@ export default function EngineerTree() {
   const [branch, setBranch] = useState<EngineerBranch>('ship');
   const [selected, setSelected] = useState<string | null>(null);
   const [unlocked, setUnlocked] = useState<Set<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [hideColonia, setHideColonia] = useState(false);
+  const [search, setSearch] = useState('');
 
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORE_KEY);
       if (raw) setUnlocked(new Set(JSON.parse(raw) as string[]));
-    } catch {
-      /* отметки — приятный бонус, без них страница работает так же */
-    }
+    } catch { /* Страница работает и без сохранения отметок. */ }
     const engineer = resolveEngineer(new URLSearchParams(window.location.search).get('engineer'));
     if (engineer) {
       setSelected(engineer.id);
@@ -175,8 +200,7 @@ export default function EngineerTree() {
   const toggle = useCallback((id: string) => {
     setUnlocked((previous) => {
       const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
       window.localStorage.setItem(STORE_KEY, JSON.stringify([...next]));
       return next;
     });
@@ -189,75 +213,116 @@ export default function EngineerTree() {
     window.history.replaceState(null, '', url.toString());
   }, []);
 
+  const toggleCollapse = useCallback((id: string) => {
+    setCollapsed((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const query = search.trim().toLocaleLowerCase('ru');
   const current = selected ? ENGINEER_BY_ID.get(selected) ?? null : null;
   const upgrades = useUpgrades(current);
-  const roots = rootsOf(branch).filter((engineer) => !(hideColonia && engineer.colonia));
-  const total = ENGINEERS.filter((engineer) => engineer.branch === branch).length;
-  const done = ENGINEERS.filter((engineer) => engineer.branch === branch && unlocked.has(engineer.id)).length;
+  const roots = rootsOf(branch).filter((engineer) => subtreeMatches(engineer, branch, query, hideColonia));
+  const branchEngineers = ENGINEERS.filter((engineer) => engineer.branch === branch && !(hideColonia && engineer.colonia));
+  const total = branchEngineers.length;
+  const done = branchEngineers.filter((engineer) => unlocked.has(engineer.id)).length;
+  const progress = total ? Math.round((done / total) * 100) : 0;
+  const parents = branchEngineers.filter((engineer) => childrenOf(engineer.id, branch).some((child) => child.from[0] === engineer.id));
+
+  const changeBranch = (next: EngineerBranch) => {
+    setBranch(next);
+    setSearch('');
+    setSelected(null);
+  };
 
   return (
     <>
       <style>{treeCss}</style>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
-        <button type="button" style={button(branch === 'ship')} onClick={() => setBranch('ship')}>корабли</button>
-        <button type="button" style={button(branch === 'odyssey')} onClick={() => setBranch('odyssey')}>одиссея</button>
-        <button type="button" style={button(hideColonia)} onClick={() => setHideColonia((value) => !value)}>
-          {hideColonia ? 'колония скрыта' : 'скрыть колонию'}
-        </button>
-        <span style={{ ...LABEL, marginLeft: 'auto' }}>
-          открыто {done} из {total}
-        </span>
-        {done > 0 && (
-          <button
-            type="button"
-            style={button(false, 'var(--red)')}
-            onClick={() => {
+      <section className="eng-toolbar" aria-label="Управление схемой">
+        <div className="eng-toolbar-row">
+          <div className="eng-segmented" aria-label="Ветка инженеров">
+            <button type="button" className={branch === 'ship' ? 'active' : ''} onClick={() => changeBranch('ship')}>корабли</button>
+            <button type="button" className={branch === 'odyssey' ? 'active' : ''} onClick={() => changeBranch('odyssey')}>одиссея</button>
+          </div>
+          <label className="eng-search">
+            <span aria-hidden="true">⌕</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Инженер, система или специализация…"
+              aria-label="Найти инженера"
+            />
+            {search && <button type="button" onClick={() => setSearch('')} aria-label="Очистить поиск">×</button>}
+          </label>
+        </div>
+        <div className="eng-toolbar-row eng-toolbar-actions">
+          <button type="button" style={button(hideColonia)} onClick={() => setHideColonia((value) => !value)}>
+            {hideColonia ? 'показать колонию' : 'скрыть колонию'}
+          </button>
+          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set())}>развернуть всё</button>
+          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set(parents.map((engineer) => engineer.id)))}>свернуть всё</button>
+          {done > 0 && (
+            <button type="button" style={button(false, 'var(--red)')} onClick={() => {
               setUnlocked(new Set());
               window.localStorage.removeItem(STORE_KEY);
-            }}
-          >
-            сбросить отметки
-          </button>
-        )}
-      </div>
+            }}>сбросить отметки</button>
+          )}
+          <div className="eng-progress" title={`${progress}% инженеров открыто`}>
+            <span>открыто {done} из {total}</span>
+            <div><i style={{ width: `${progress}%` }} /></div>
+          </div>
+        </div>
+      </section>
 
-      <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <div className="eng-tree-wrap" style={{ flex: '1 1 640px', minWidth: 300 }}>
-          <ul className="eng-roots">
-            {roots.map((engineer) => (
-              <Node
-                key={engineer.id}
-                engineer={engineer}
-                branch={branch}
-                selected={selected}
-                unlocked={unlocked}
-                onSelect={select}
-                onToggle={toggle}
-              />
-            ))}
-          </ul>
+      <div className="eng-layout">
+        <div className="eng-tree-wrap">
+          {roots.length > 0 ? (
+            <ul className="eng-roots">
+              {roots.map((engineer) => (
+                <Node
+                  key={engineer.id}
+                  engineer={engineer}
+                  branch={branch}
+                  selected={selected}
+                  unlocked={unlocked}
+                  collapsed={collapsed}
+                  query={query}
+                  hideColonia={hideColonia}
+                  onSelect={select}
+                  onToggle={toggle}
+                  onCollapse={toggleCollapse}
+                />
+              ))}
+            </ul>
+          ) : (
+            <div className="eng-empty">Ничего не найдено. Попробуйте изменить запрос.</div>
+          )}
         </div>
 
-        <aside style={{ flex: '0 1 340px', minWidth: 260, position: 'sticky', top: 12 }}>
+        <aside className="eng-details">
           {!current && (
             <div style={PANEL}>
               <p style={{ ...LABEL, marginTop: 0 }}>как читать схему</p>
               <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, marginBottom: 0 }}>
-                Верхний ряд — инженеры, о которых известно сразу. Линии вниз — наводки: чтобы узнать о нижнем
-                инженере, нужно поднять верхнего до 3–4 уровня. Нажмите на карточку, чтобы увидеть условия
-                знакомства и полный список чертежей; «+» отмечает уже открытых.
+                Схема идёт сверху вниз: вложенные карточки — инженеры, о которых расскажет наставник. Нажмите на
+                стрелку, чтобы свернуть ветку, на карточку — чтобы увидеть условия и чертежи, на «+» — отметить
+                инженера открытым. Поиск автоматически раскрывает подходящие ветки.
               </p>
             </div>
           )}
 
           {current && (
             <div style={PANEL}>
-              <h2 style={{ fontSize: 15, margin: '0 0 2px' }}>{current.name}</h2>
+              <div className="eng-details-head">
+                <h2>{current.name}</h2>
+                <button type="button" onClick={() => setSelected(null)} aria-label="Закрыть подробности">×</button>
+              </div>
               <p style={{ fontSize: 11.5, color: 'var(--muted)', fontFamily: MONO, margin: '0 0 10px' }}>
-                {current.station} · {current.system}
-                {current.permit ? ' · нужен пермит' : ''}
-                {current.colonia ? ' · Колония' : ''}
+                {current.station} · {current.system}{current.permit ? ' · нужен пермит' : ''}{current.colonia ? ' · Колония' : ''}
               </p>
 
               <Row title="как узнать">{current.discovery}</Row>
@@ -269,13 +334,7 @@ export default function EngineerTree() {
                 <Row title="сначала откройте">
                   {pathTo(current.id).slice(0, -1).map((parent, index, list) => (
                     <span key={parent.id}>
-                      <button
-                        type="button"
-                        onClick={() => select(parent.id)}
-                        style={{ background: 'none', border: 'none', padding: 0, margin: 0, color: 'var(--cyan)', cursor: 'pointer', fontSize: 12, textTransform: 'none', letterSpacing: 0 }}
-                      >
-                        {parent.name}
-                      </button>
+                      <button type="button" onClick={() => select(parent.id)} className="eng-inline-link">{parent.name}</button>
                       {index < list.length - 1 ? ' → ' : ''}
                     </span>
                   ))}
@@ -284,27 +343,14 @@ export default function EngineerTree() {
               )}
 
               <p style={{ ...LABEL, margin: '14px 0 6px', color: 'var(--orange)' }}>что улучшает</p>
-              {current.skills && (
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, lineHeight: 1.7 }}>
-                  {current.skills.map((skill) => <li key={skill}>{skill}</li>)}
-                </ul>
-              )}
-              {!current.skills && upgrades.length === 0 && (
-                <p style={{ fontSize: 12, color: 'var(--muted)' }}>Загрузка списка чертежей…</p>
-              )}
+              {current.skills && <ul className="eng-skills">{current.skills.map((skill) => <li key={skill}>{skill}</li>)}</ul>}
+              {!current.skills && upgrades.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>Загрузка списка чертежей…</p>}
               {upgrades.map((row) => (
                 <div key={row.group} style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 11.5, color: 'var(--cyan)', fontFamily: MONO, marginBottom: 2 }}>{row.groupName}</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  <div className="eng-blueprints">
                     {row.blueprints.map((blueprint) => (
-                      <span
-                        key={blueprint.id}
-                        title={`${blueprint.label} — максимум ${blueprint.grade} уровень`}
-                        style={{
-                          fontSize: 10.5, fontFamily: MONO, border: '1px solid var(--line)', borderRadius: 2,
-                          padding: '2px 5px', color: blueprint.grade >= 5 ? 'var(--orange)' : 'var(--muted)',
-                        }}
-                      >
+                      <span key={blueprint.id} title={`${blueprint.label} — максимум ${blueprint.grade} уровень`} className={blueprint.grade >= 5 ? 'grade-five' : ''}>
                         {blueprint.label} · G{blueprint.grade}
                       </span>
                     ))}
@@ -312,11 +358,7 @@ export default function EngineerTree() {
                 </div>
               ))}
 
-              {current.branch === 'ship' && (
-                <p style={{ marginTop: 12, marginBottom: 0 }}>
-                  <Link href="/outfitting" style={{ fontSize: 12 }}>Собрать корабль с этими улучшениями →</Link>
-                </p>
-              )}
+              {current.branch === 'ship' && <p style={{ marginTop: 12, marginBottom: 0 }}><Link href="/outfitting" style={{ fontSize: 12 }}>Собрать корабль с этими улучшениями →</Link></p>}
             </div>
           )}
         </aside>
@@ -326,74 +368,71 @@ export default function EngineerTree() {
 }
 
 function Row({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={LABEL}>{title}</div>
-      <div style={{ fontSize: 12, lineHeight: 1.6 }}>{children}</div>
-    </div>
-  );
+  return <div style={{ marginBottom: 8 }}><div style={LABEL}>{title}</div><div style={{ fontSize: 12, lineHeight: 1.6 }}>{children}</div></div>;
 }
 
-/**
- * Раскладка дерева. Вертикальные и горизонтальные линии рисуются рамками
- * псевдоэлементов — никакого canvas и пересчёта координат при ресайзе.
- */
 const treeCss = `
-.eng-tree-wrap { overflow-x: auto; padding-bottom: 8px; }
-.eng-roots, .eng-children {
-  display: flex; justify-content: center; list-style: none; margin: 0; padding: 0;
-}
-.eng-roots { align-items: flex-start; gap: 4px; padding-top: 4px; }
-.eng-children { padding-top: 28px; }
-.eng-node { position: relative; display: flex; flex-direction: column; align-items: center; padding: 0 5px; }
-/* вертикаль вниз от карточки-наставника до перекладины */
-.eng-node > .eng-children { position: relative; }
-.eng-node > .eng-children::before {
-  content: ''; position: absolute; top: 0; left: 50%; width: 1px; height: 14px;
-  background: var(--orange); opacity: 0.55;
-}
-/* вертикаль от перекладины вниз к карточке ученика */
-.eng-children > .eng-node::before {
-  content: ''; position: absolute; top: -14px; left: 50%; width: 1px; height: 14px;
-  background: var(--orange); opacity: 0.55;
-}
-/* перекладина между учениками одного наставника */
-.eng-children > .eng-node::after {
-  content: ''; position: absolute; top: -14px; left: 0; right: 0; height: 1px;
-  background: var(--orange); opacity: 0.55;
-}
-.eng-children > .eng-node:first-child::after { left: 50%; }
-.eng-children > .eng-node:last-child::after { right: 50%; }
-.eng-children > .eng-node:only-child::after { display: none; }
-.eng-card {
-  position: relative; display: flex; align-items: stretch; width: 186px; min-height: 76px;
-  border-radius: 3px;
-  transition: border-color .12s ease, background .12s ease;
-}
-.eng-card-main {
-  display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left;
-  flex: 1; min-width: 0; background: none; border: none; cursor: pointer; padding: 7px 8px;
-  color: var(--text); margin: 0; text-transform: none; letter-spacing: 0;
-}
+.eng-toolbar { border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 80%, transparent); border-radius: 5px; padding: 10px; margin-bottom: 14px; }
+.eng-toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.eng-toolbar-row + .eng-toolbar-row { margin-top: 8px; }
+.eng-segmented { display: flex; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.eng-segmented button { border: 0; border-right: 1px solid var(--line); border-radius: 0; margin: 0; padding: 7px 13px; background: transparent; color: var(--muted); }
+.eng-segmented button:last-child { border-right: 0; }
+.eng-segmented button.active { background: rgba(230,126,34,.13); color: var(--orange); }
+.eng-search { flex: 1 1 280px; position: relative; display: flex; align-items: center; border: 1px solid var(--line); border-radius: 3px; padding-left: 9px; color: var(--muted); }
+.eng-search:focus-within { border-color: var(--cyan); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cyan) 30%, transparent); }
+.eng-search input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); padding: 7px 8px; font-size: 12px; }
+.eng-search button { border: 0; background: none; color: var(--muted); font-size: 18px; padding: 0 9px; margin: 0; }
+.eng-progress { min-width: 150px; margin-left: auto; color: var(--muted); font: 10px ${MONO}; text-align: right; }
+.eng-progress > div { height: 3px; margin-top: 4px; background: var(--line); overflow: hidden; border-radius: 2px; }
+.eng-progress i { display: block; height: 100%; background: var(--green); transition: width .25s ease; }
+.eng-layout { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(280px, 340px); gap: 14px; align-items: start; }
+.eng-tree-wrap { min-width: 0; }
+.eng-roots, .eng-children { display: flex; flex-direction: column; list-style: none; margin: 0; padding: 0; gap: 7px; }
+.eng-roots { padding: 3px; }
+.eng-node { position: relative; min-width: 0; }
+.eng-children { position: relative; margin: 7px 0 0 20px; padding-left: 20px; }
+.eng-children::before { content: ''; position: absolute; top: -7px; bottom: 21px; left: 0; width: 1px; background: var(--orange); opacity: .48; }
+.eng-children > .eng-node::before { content: ''; position: absolute; top: 21px; left: -20px; width: 20px; height: 1px; background: var(--orange); opacity: .48; }
+.eng-card { position: relative; display: flex; align-items: stretch; width: 100%; min-height: 72px; border: 1px solid var(--line); border-radius: 4px; transition: border-color .15s ease, background .15s ease, transform .15s ease; }
+.eng-card:hover { transform: translateX(2px); }
+.eng-card-collapse { width: 28px; flex: 0 0 28px; border: 0; border-right: 1px solid var(--line); background: rgba(255,255,255,.018); color: var(--orange); padding: 0; margin: 0; }
+.eng-card-collapse span { display: inline-block; font-size: 21px; transition: transform .18s ease; }
+.eng-card-collapse span.open { transform: rotate(90deg); }
+.eng-card-main { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; text-align: left; flex: 1; min-width: 0; background: none; border: none; cursor: pointer; padding: 8px 10px; color: var(--text); margin: 0; text-transform: none; letter-spacing: 0; }
+.eng-card-heading { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .eng-card-name { font-size: 12.5px; font-weight: 600; line-height: 1.25; }
-.eng-card-sub {
-  font-size: 10px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+.eng-status { flex: none; padding: 1px 5px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font: 8px ${MONO}; letter-spacing: .6px; text-transform: uppercase; }
+.eng-status.available { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 55%, transparent); }
+.eng-status.done { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
+.eng-card-sub { font-size: 10px; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; font-family: ${MONO}; }
+.eng-card-focus { font-size: 10.5px; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.eng-card-mark { width: 34px; flex: 0 0 34px; background: none; border: none; border-left: 1px solid var(--line); cursor: pointer; font-size: 15px; margin: 0; padding: 0; border-radius: 0; }
+.eng-card-mark:hover { background: rgba(255,255,255,.04); }
+.eng-details { min-width: 0; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+.eng-details-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
+.eng-details-head h2 { font-size: 15px; margin: 0 0 2px; }
+.eng-details-head button { border: 0; background: none; color: var(--muted); padding: 0 3px; margin: 0; font-size: 18px; }
+.eng-inline-link { background: none; border: none; padding: 0; margin: 0; color: var(--cyan); cursor: pointer; font-size: 12px; text-transform: none; letter-spacing: 0; }
+.eng-skills { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.7; }
+.eng-blueprints { display: flex; flex-wrap: wrap; gap: 4px; }
+.eng-blueprints span { font-size: 10.5px; font-family: ${MONO}; border: 1px solid var(--line); border-radius: 2px; padding: 2px 5px; color: var(--muted); }
+.eng-blueprints span.grade-five { color: var(--orange); }
+.eng-empty { border: 1px dashed var(--line); color: var(--muted); padding: 32px 16px; text-align: center; font-size: 12px; }
+@media (max-width: 900px) {
+  .eng-layout { grid-template-columns: 1fr; }
+  .eng-details { position: static; max-height: none; }
 }
-.eng-card-focus {
-  font-size: 10.5px; color: var(--muted); line-height: 1.35;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-.eng-card-mark {
-  width: 26px; flex: 0 0 26px; background: none; border: none; border-left: 1px solid var(--line);
-  cursor: pointer; font-size: 13px; margin: 0; padding: 0; border-radius: 0;
-}
-@media (max-width: 720px) {
-  .eng-roots, .eng-children { flex-direction: column; align-items: stretch; gap: 6px; padding-top: 8px; }
-  .eng-children { padding-left: 16px; border-left: 1px solid rgba(230,126,34,0.55); padding-top: 6px; }
-  .eng-children > .eng-node::before, .eng-children > .eng-node::after,
-  .eng-node > .eng-children::before { display: none; }
-  .eng-node { padding: 0; align-items: stretch; }
-  .eng-card { width: auto; min-height: 0; }
+@media (max-width: 560px) {
+  .eng-toolbar { padding: 8px; }
+  .eng-segmented { width: 100%; }
+  .eng-segmented button { flex: 1; }
+  .eng-search { flex-basis: 100%; }
+  .eng-toolbar-actions > button { flex: 1 1 calc(50% - 4px); }
+  .eng-progress { width: 100%; margin-left: 0; text-align: left; }
+  .eng-children { margin-left: 9px; padding-left: 12px; }
+  .eng-children > .eng-node::before { left: -12px; width: 12px; }
+  .eng-card-collapse { width: 25px; flex-basis: 25px; }
+  .eng-status { display: none; }
 }
 `;
