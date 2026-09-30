@@ -24,10 +24,13 @@ function setLocaleCookie(locale: string) {
   document.cookie = `${COOKIE_KEY}=${locale};path=/;max-age=${60 * 60 * 24 * 365};SameSite=Lax`;
 }
 
+/** Значения для подстановки в шаблон перевода: `{value}`, `{mass}`, … */
+export type TranslationParams = Record<string, string | number>;
+
 interface I18nContextType {
   locale: string;
   setLocale: (locale: string) => void;
-  t: (key: string) => string;
+  t: (key: string, params?: TranslationParams) => string;
   supportedLocales: string[];
   localeNames: Record<string, string>;
   localeFlags: Record<string, string>;
@@ -69,9 +72,14 @@ export function I18nProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const t = useCallback(
-    (key: string) => {
+    (key: string, params?: TranslationParams) => {
       const dict = translations[locale] || translations['ru'];
-      return dict[key] ?? key;
+      // Нет перевода в выбранном языке — берём русский, а не показываем ключ.
+      const template = dict[key] ?? translations['ru'][key] ?? key;
+      if (!params) return template;
+      return template.replace(/\{(\w+)\}/g, (match, name: string) => (
+        name in params ? String(params[name]) : match
+      ));
     },
     [locale]
   );

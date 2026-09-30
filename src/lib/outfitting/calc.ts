@@ -295,7 +295,18 @@ export interface BuildStats {
   emptySlots: number;
   /** Модулей с инженерными доработками. */
   engineered: number;
-  warnings: string[];
+  /** Ошибки сборки кодами — текст подставляет интерфейс на своём языке. */
+  warnings: BuildWarning[];
+}
+
+/**
+ * Проблема сборки. Расчёт не знает языка интерфейса, поэтому возвращает код
+ * и, если нужно, число (например, нехватку мегаватт), а перевод собирает
+ * `StatsPanel` через `t('outfitting.warn.…')`.
+ */
+export interface BuildWarning {
+  code: 'shield' | 'power' | 'noFsd' | 'noThrusters' | 'overweight';
+  value?: string;
 }
 
 interface SlotView {
@@ -360,7 +371,7 @@ export function thrusterMultiplier(thrusters: OutfittingModule | null, mass: num
 /** Полный расчёт сборки. */
 export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats {
   const ship = data.ships[build.ship];
-  const warnings: string[] = [];
+  const warnings: BuildWarning[] = [];
   const empty: BuildStats = {
     unladenMass: 0, fuelledMass: 0, ladenMass: 0, hullMass: 0, cargo: 0, fuel: 0, passengers: 0, cost: 0,
     jumpRange: 0, maxJumpRange: 0, ladenJumpRange: 0, totalRange: 0,
@@ -480,7 +491,7 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
     ? ship.properties.baseShieldStrength * shieldMul * (1 + shieldBoost) + shieldAddition
     : 0;
   if (shieldGenerator && ship.properties.hullMass > Number(shieldGenerator.maxmass ?? Infinity)) {
-    warnings.push('Генератор щита слишком мал для этого корпуса — щит почти не работает.');
+    warnings.push({ code: 'shield' });
   }
   if (shieldGenerator) {
     shieldRes.kinetic = combineResistance(shieldRes.kinetic, Number(shieldGenerator.kinres ?? 0));
@@ -491,12 +502,12 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
   const armour = ship.properties.baseArmour * (1 + Number(bulkhead?.hullboost ?? 0)) + hullReinforcement;
 
   if (powerDeployed > powerCapacity) {
-    warnings.push(`Реактору не хватает ${(powerDeployed - powerCapacity).toFixed(2)} МВт при развёрнутых орудиях.`);
+    warnings.push({ code: 'power', value: (powerDeployed - powerCapacity).toFixed(2) });
   }
-  if (!fsd) warnings.push('Нет гипердвигателя: корабль не сможет прыгать.');
-  if (!thrusters) warnings.push('Нет маршевых двигателей.');
+  if (!fsd) warnings.push({ code: 'noFsd' });
+  if (!thrusters) warnings.push({ code: 'noThrusters' });
   if (thrusters && ladenMass > Number(thrusters.maxmass ?? Infinity)) {
-    warnings.push('Двигатели не тянут снаряжённую массу — корабль будет ползти.');
+    warnings.push({ code: 'overweight' });
   }
 
   return {

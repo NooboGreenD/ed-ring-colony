@@ -14,13 +14,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { buildSlots, computeStats, effectiveModule } from '@/lib/outfitting/calc';
 import { blueprintLabel, decodeBuild, defaultBuild, encodeBuild, moduleLabel, strippedBuild } from '@/lib/outfitting/build';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import type { BuildSlot, ShipBuild, SlotModification } from '@/lib/outfitting/types';
 import ModulePicker from './ModulePicker';
 import StatsPanel from './StatsPanel';
-import { LABEL, MONO, PANEL, button, credits, num } from './styles';
+import { LABEL, MONO, PANEL, button, formatters } from './styles';
 
 const STORE_KEY = 'ed-ring-colony:outfitting:builds';
 
@@ -54,6 +55,8 @@ function SectionTitle({ children, hint }: { children: React.ReactNode; hint?: st
 }
 
 export default function OutfittingWorkspace() {
+  const { t, locale } = useI18n();
+  const { num, credits, date } = formatters(locale);
   const { data, error } = useOutfittingData();
   const [build, setBuild] = useState<ShipBuild | null>(null);
   const [picker, setPicker] = useState<string | null>(null);
@@ -125,26 +128,30 @@ export default function OutfittingWorkspace() {
   }, [data, search]);
 
   if (error) {
-    return <p style={{ color: 'var(--red)' }}>{error}</p>;
+    // Текст ошибки из загрузчика технический и русский — показываем свой.
+    return <p style={{ color: 'var(--red)' }}>{t('outfitting.loadFailed')}</p>;
   }
   if (!data || !build || !ship || !stats) {
     return (
       <p style={{ color: 'var(--orange)', fontFamily: MONO, letterSpacing: 2, fontSize: 13 }}>
-        Загрузка справочника верфи…
+        {t('outfitting.loading')}
       </p>
     );
   }
 
   const activeSlot = picker ? slots.find((slot) => slot.key === picker) ?? null : null;
-  const sections: { title: string; hint: string; items: BuildSlot[] }[] = [
-    { title: 'основные модули', hint: 'реактор, двигатели, FSD, жизнеобеспечение, распределитель, сенсоры, бак', items: slots.filter((slot) => slot.section === 'standard') },
-    { title: 'орудия', hint: 'чем больше класс пилона, тем тяжелее орудие', items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class > 0) },
-    { title: 'утилиты', hint: 'усилители щита, теплоотводы, сканеры', items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class === 0) },
-    { title: 'внутренние отсеки', hint: 'трюм, щит, топливозаборник, усиления', items: slots.filter((slot) => slot.section === 'internal') },
+  const sections: { key: string; title: string; hint: string; items: BuildSlot[] }[] = [
+    { key: 'core', title: t('outfitting.sec.core'), hint: t('outfitting.sec.core.hint'), items: slots.filter((slot) => slot.section === 'standard') },
+    { key: 'hardpoints', title: t('outfitting.sec.hardpoints'), hint: t('outfitting.sec.hardpoints.hint'), items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class > 0) },
+    { key: 'utility', title: t('outfitting.sec.utility'), hint: t('outfitting.sec.utility.hint'), items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class === 0) },
+    { key: 'internal', title: t('outfitting.sec.internal'), hint: t('outfitting.sec.internal.hint'), items: slots.filter((slot) => slot.section === 'internal') },
   ];
 
   const saveBuild = () => {
-    const name = window.prompt('Название сборки', build.name || `${ship.properties.name} — моя сборка`);
+    const name = window.prompt(
+      t('outfitting.prompt.name'),
+      build.name || t('outfitting.defaultName', { ship: ship.properties.name }),
+    );
     if (!name) return;
     const entry: SavedBuild = {
       id: `${Date.now()}`,
@@ -157,7 +164,7 @@ export default function OutfittingWorkspace() {
     window.localStorage.setItem(STORE_KEY, JSON.stringify(next));
     setSaved(next);
     setBuild({ ...build, name });
-    setNotice('Сборка сохранена в этом браузере.');
+    setNotice(t('outfitting.notice.saved'));
   };
 
   const removeSaved = (id: string) => {
@@ -171,7 +178,7 @@ export default function OutfittingWorkspace() {
     url.searchParams.set('b', encodeBuild(build));
     try {
       await navigator.clipboard.writeText(url.toString());
-      setNotice('Ссылка на сборку скопирована.');
+      setNotice(t('outfitting.notice.link'));
     } catch {
       setNotice(url.toString());
     }
@@ -197,22 +204,22 @@ export default function OutfittingWorkspace() {
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="фильтр кораблей"
+              placeholder={t('outfitting.shipFilter')}
               style={{ fontSize: 12, fontFamily: MONO, width: 150, margin: 0 }}
             />
-            <button type="button" style={button(false)} onClick={() => setBuild(defaultBuild(data, build.ship))}>заводская</button>
-            <button type="button" style={button(false)} onClick={() => setBuild(strippedBuild(data, build.ship))}>снять всё</button>
-            <button type="button" style={button(false)} onClick={copyLink}>ссылка</button>
-            <button type="button" style={button(false)} onClick={saveBuild}>сохранить</button>
+            <button type="button" style={button(false)} onClick={() => setBuild(defaultBuild(data, build.ship))}>{t('outfitting.btnStock')}</button>
+            <button type="button" style={button(false)} onClick={() => setBuild(strippedBuild(data, build.ship))}>{t('outfitting.btnStripped')}</button>
+            <button type="button" style={button(false)} onClick={copyLink}>{t('outfitting.btnLink')}</button>
+            <button type="button" style={button(false)} onClick={saveBuild}>{t('outfitting.btnSave')}</button>
           </div>
 
           <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginTop: 8, fontSize: 11, color: 'var(--muted)', fontFamily: MONO }}>
-            <span>масса корпуса {num(ship.properties.hullMass, 0)} т</span>
-            <span>экипаж {ship.properties.crew}</span>
-            <span>база щита {ship.properties.baseShieldStrength}</span>
-            <span>база брони {ship.properties.baseArmour}</span>
-            <span>жёсткость {ship.properties.hardness}</span>
-            <span>корпус {credits(ship.properties.hullCost)}</span>
+            <span>{t('outfitting.hullMass', { value: num(ship.properties.hullMass, 0) })}</span>
+            <span>{t('outfitting.crew', { value: ship.properties.crew })}</span>
+            <span>{t('outfitting.baseShield', { value: ship.properties.baseShieldStrength })}</span>
+            <span>{t('outfitting.baseArmour', { value: ship.properties.baseArmour })}</span>
+            <span>{t('outfitting.hardness', { value: ship.properties.hardness })}</span>
+            <span>{t('outfitting.hullCost', { value: credits(ship.properties.hullCost) })}</span>
           </div>
 
           {/* Переборки — это тоже выбор, и он сильно меняет массу. */}
@@ -222,7 +229,11 @@ export default function OutfittingWorkspace() {
                 key={bulkhead.id}
                 type="button"
                 style={button(build.bulkhead === index)}
-                title={`масса ${bulkhead.mass} т · броня ×${(1 + bulkhead.hullboost).toFixed(2)} · ${credits(bulkhead.cost)}`}
+                title={t('outfitting.bulkheadTitle', {
+                  mass: bulkhead.mass,
+                  boost: (1 + bulkhead.hullboost).toFixed(2),
+                  cost: credits(bulkhead.cost),
+                })}
                 onClick={() => setBuild({ ...build, bulkhead: index })}
               >
                 {bulkhead.name}
@@ -234,7 +245,7 @@ export default function OutfittingWorkspace() {
 
         {/* ── Слоты ───────────────────────────────────────────────────── */}
         {sections.filter((section) => section.items.length > 0).map((section) => (
-          <div key={section.title}>
+          <div key={section.key}>
             <SectionTitle hint={section.hint}>{section.title}</SectionTitle>
             <div style={{ ...PANEL, padding: 0 }}>
               {section.items.map((slot) => {
@@ -263,15 +274,17 @@ export default function OutfittingWorkspace() {
                     </span>
                     <span style={{ flex: 1, minWidth: 0 }}>
                       <span style={{ fontSize: 12.5, fontFamily: MONO, color: module ? 'var(--text)' : 'var(--muted)' }}>
-                        {module ? moduleLabel(data, module) : '— пусто —'}
+                        {module ? moduleLabel(data, module, locale) : t('outfitting.emptySlot')}
                       </span>
                       <span style={{ display: 'flex', gap: 10, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--muted)', marginTop: 2 }}>
-                        {effective && <span>{num(Number(effective.mass ?? 0), 1)} т</span>}
-                        {effective && Number(effective.power ?? 0) > 0 && <span>{num(Number(effective.power), 2)} МВт</span>}
+                        {effective && <span>{t('outfitting.unit.t', { value: num(Number(effective.mass ?? 0), 1) })}</span>}
+                        {effective && Number(effective.power ?? 0) > 0 && (
+                          <span>{t('outfitting.unit.mw', { value: num(Number(effective.power), 2) })}</span>
+                        )}
                         {module && <span>{credits(Number(module.cost ?? 0))}</span>}
                         {modification?.blueprint && (
                           <span style={{ color: 'var(--green)' }}>
-                            ⚙ {blueprintLabel(modification.blueprint)} G{modification.grade ?? 1}
+                            ⚙ {blueprintLabel(modification.blueprint, locale)} G{modification.grade ?? 1}
                           </span>
                         )}
                         {modification?.special && (
@@ -290,7 +303,7 @@ export default function OutfittingWorkspace() {
         {/* ── Локальные сохранения ────────────────────────────────────── */}
         {saved.length > 0 && (
           <>
-            <SectionTitle hint="хранятся в этом браузере">мои сборки</SectionTitle>
+            <SectionTitle hint={t('outfitting.saved.hint')}>{t('outfitting.saved.title')}</SectionTitle>
             <div style={{ ...PANEL, padding: 0 }}>
               {saved.map((entry) => (
                 <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderBottom: '1px solid var(--line)' }}>
@@ -313,11 +326,10 @@ export default function OutfittingWorkspace() {
         )}
 
         <p style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 12, lineHeight: 1.6 }}>
-          Цифры модулей и кораблей — из открытого набора{' '}
+          {t('outfitting.source.prefix')}{' '}
           <a href="https://github.com/EDCD/coriolis-data" target="_blank" rel="noopener noreferrer">EDCD/coriolis-data</a>
-          {' '}(на нём же работает coriolis.io); справочник собран {new Date(data.generatedAt).toLocaleDateString('ru-RU')}.
-          Инженерные чертежи и их уровни — оттуда же, инженеры и условия доступа — на странице{' '}
-          <Link href="/engineers">инженеров</Link>.
+          {' '}{t('outfitting.source.middle', { date: date(data.generatedAt) })}{' '}
+          <Link href="/engineers">{t('outfitting.source.engineers')}</Link>.
         </p>
       </div>
 

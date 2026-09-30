@@ -8,6 +8,7 @@
  */
 
 import { STANDARD_GROUPS, findModule, moduleRef } from './calc';
+import { blueprintPrefix, blueprintWord, groupName, mountName } from './i18n';
 import type { OutfittingData, OutfittingModule, ShipBuild } from './types';
 
 /** Группы модулей по разделам — нужны для разбора заводской комплектации. */
@@ -144,79 +145,26 @@ export function decodeBuild(code: string): ShipBuild | null {
   }
 }
 
-/** Русские названия чертежей: собираются из частей идентификатора Coriolis. */
-const BLUEPRINT_WORDS: Record<string, string> = {
-  Advanced: 'улучшенный',
-  Armoured: 'бронированный',
-  Boosted: 'усиленный',
-  Charge: 'заряд',
-  Cheap: 'дешёвый',
-  Double: 'двойной',
-  Dirty: 'форсированные',
-  Efficient: 'экономичный',
-  Explosive: 'противоосколочный',
-  Expanded: 'расширенный',
-  FastBoot: 'быстрый запуск',
-  FastCharge: 'быстрый заряд',
-  FastScan: 'быстрое сканирование',
-  Focused: 'сфокусированный',
-  Force: 'силовой',
-  Heavy: 'тяжёлый',
-  HeavyDuty: 'усиленный (heavy duty)',
-  HighCapacity: 'ёмкий',
-  Kinetic: 'противокинетический',
-  Lightweight: 'облегчённый',
-  LightWeight: 'облегчённый',
-  LongRange: 'дальнобойный',
-  Optimised: 'оптимизированный',
-  Overcharged: 'форсированный',
-  Penetrator: 'бронебойный',
-  Rapid: 'скорострельный',
-  RapidCharge: 'быстрая перезарядка',
-  RapidFire: 'скорострельный',
-  Reinforced: 'усиленный',
-  Shielded: 'экранированный',
-  Short: 'короткий',
-  ShortRange: 'ближнего боя',
-  Sturdy: 'прочный',
-  Stealth: 'малозаметный',
-  Strong: 'прочный',
-  Thermic: 'противотермический',
-  Thermal: 'термический',
-  WideAngle: 'широкоугольный',
-};
-
-const BLUEPRINT_PREFIX: Record<string, string> = {
-  AFM: 'AFMU',
-  Armour: 'Броня',
-  Engine: 'Двигатели',
-  FSD: 'FSD',
-  FSDinterdictor: 'Интердиктор',
-  HullReinforcement: 'Усиление корпуса',
-  Misc: 'Модуль',
-  PowerPlant: 'Реактор',
-  PowerDistributor: 'Распределитель',
-  Sensor: 'Сенсоры',
-  Scanner: 'Сканер',
-  ShieldBooster: 'Усилитель щита',
-  ShieldCellBank: 'Батарея щита',
-  ShieldGenerator: 'Генератор щита',
-  Weapon: 'Орудие',
-};
-
-/** «FSD_LongRange» → «FSD · дальнобойный». */
-export function blueprintLabel(id: string): string {
+/** «FSD_LongRange» → «FSD · дальнобойный» на языке интерфейса. */
+export function blueprintLabel(id: string, locale = 'ru'): string {
   const [prefix, ...rest] = id.split('_');
-  const head = BLUEPRINT_PREFIX[prefix] ?? prefix.replace(/([a-z])([A-Z])/g, '$1 $2');
-  const tail = rest.map((part) => BLUEPRINT_WORDS[part] ?? part.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase());
+  const head = blueprintPrefix(locale, prefix);
+  const tail = rest.map((part) => blueprintWord(locale, part));
   return tail.length ? `${head} · ${tail.join(' ')}` : head;
 }
 
 /** Человеческое имя модуля для списков: «3A Генератор щита». */
-export function moduleLabel(data: OutfittingData, module: OutfittingModule | null): string {
+export function moduleLabel(data: OutfittingData, module: OutfittingModule | null, locale = 'ru'): string {
   if (!module) return '—';
-  const group = data.groups[module.grp]?.name ?? module.grp;
-  const name = module.name && module.name !== group ? module.name : group;
-  const mount = module.mount === 'G' ? ' (турель)' : module.mount === 'T' ? ' (наводящееся)' : module.mount === 'F' ? ' (фикс.)' : '';
-  return `${module.class}${module.rating} ${name}${mount}`;
+  // Название группы берём из словаря интерфейса, а не из справочника: файл
+  // данных собран один раз и только по-русски.
+  const group = groupName(locale, module.grp, data.groups[module.grp]?.name);
+  // Имя модуля из Coriolis иногда просто повторяет название группы
+  // («Shield Generator») — тогда показываем переведённое название группы, а не
+  // английский дубль. Настоящие собственные имена («Advanced Docking
+  // Computer», «Imperial Hammer») одинаковы во всех языках и остаются как есть.
+  const duplicates = new Set([group, data.groups[module.grp]?.name, groupName('en', module.grp), groupName('ru', module.grp)]);
+  const name = module.name && !duplicates.has(module.name) ? module.name : group;
+  const mount = mountName(locale, module.mount);
+  return `${module.class}${module.rating} ${name}${mount ? ` ${mount}` : ''}`;
 }

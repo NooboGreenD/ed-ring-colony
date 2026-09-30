@@ -1,5 +1,9 @@
 import type { Locale } from "./types";
-export const translations: Record<string, Record<string, string>> = {
+import { engineersTranslations } from "./engineers";
+import { outfittingTranslations } from "./outfitting";
+
+/** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
+const baseTranslations: Record<string, Record<string, string>> = {
   ru: {
     'nav.home': 'Главная',
     'nav.map': 'Карта кольца',
@@ -3429,6 +3433,25 @@ export const translations: Record<string, Record<string, string>> = {
     'forum.errorSave': '保存エラー',
   },
 };
+
+/**
+ * Итоговый словарь: базовые ключи плюс разделы верфи и инженеров. Разделы
+ * держим в разных файлах, но `t()` видит их одинаково — по плоскому ключу.
+ */
+const sectionTranslations = [outfittingTranslations, engineersTranslations];
+
+export const translations: Record<string, Record<string, string>> = Object.fromEntries(
+  [...new Set([
+    ...Object.keys(baseTranslations),
+    ...sectionTranslations.flatMap((section) => Object.keys(section)),
+  ])].map((locale) => [
+    locale,
+    sectionTranslations.reduce(
+      (dictionary, section) => ({ ...dictionary, ...(section[locale] ?? {}) }),
+      { ...(baseTranslations[locale] ?? {}) },
+    ),
+  ]),
+);
 
 export const SUPPORTED_LOCALES: Locale[] = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 
