@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,7 +106,12 @@ function setup() {
     '      fi',
     '    fi',
     '    exit 0;;',
-    '  *psql*)',
+    '  *pg_dump*)',
+  // Дамп перед обновлением «успешен»: файл непустой, ротация выполняется.
+  // Аргументы (—exclude-table или полный дамп) проверяются по журналу вызовов.
+  '    printf "EDRC-PGDMP-fake-dump-payload-for-tests\\n"',
+  '    exit 0 ;;',
+  '  *psql*)',
     '    input=$(cat)',
     '    if [ -f "$STUB_FAIL_ON" ] && printf "%s" "$input" | grep -qf "$STUB_FAIL_ON"; then',
     '      echo "${STUB_FAIL_MSG:-ERROR: syntax error at or near}" >&2; exit 3',
@@ -242,6 +247,10 @@ test('первое обновление: перемотка, применени�
     // Реальные вызовы: бэкап, psql, пересборка, prune.
     const calls = readFileSync(ctx.log, 'utf8');
     assert.match(calls, /pg_dump/);
+    // Дамп перед обновлением не тащит каталог систем: public.galaxy_systems
+    // весит десятки гигабайт и восстанавливается импортом дампа Spansh.
+    // Раньше каждая переборка с флажком «с бэкапом БД» писала ПОЛНЫЙ дамп.
+    assert.match(calls, /pg_dump -U postgres -d postgres -Fc --exclude-table=public\.galaxy_systems/);
     assert.match(calls, /psql -U postgres -d postgres -q -v ON_ERROR_STOP=1/);
     // Сборка и переключение — два отдельных шага: упавший build не трогает
     // работающие контейнеры, а RUN_TESTS уезжает явным --build-arg.
@@ -272,6 +281,20 @@ test('первое обновление: перемотка, применени�
       assert.ok(buildAt >= 0, 'сборка вызвана');
       assert.ok(trimAt < buildAt, 'кэш подрезается до старта сборки, а не только после');
     }
+    // Кэш-МАУНТЫ BuildKit (/root/.npm и /app/.next/cache) — отдельный,
+    // невидимый для builder prune потребитель: с Next 16.3 Turbopack пишет
+    // персистентный кэш сборки в .next/cache, и без бюджета каждая переборка
+    // дописывала туда по 1–2 ГБ «в никуда» при минимальном кэше сборки.
+    // Проверяем и ДО сборки (edrc_trim_build_cache), и ПОСЛЕ переключения
+    // (edrc_cleanup_docker_disk).
+    {
+      const logLines = readFileSync(ctx.log, 'utf8').split('\n');
+      const mountTrims = logLines.filter((line) => line.includes('edrc-cachetrim'));
+      assert.ok(mountTrims.length >= 2, 'кэш-маунты проверяются до сборки и после переключения: ' + mountTrims.length);
+      const mountTrimAt = logLines.findIndex((line) => line.includes('edrc-cachetrim'));
+      const buildAt = logLines.findIndex((line) => line.includes(' build ') && line.includes('--build-arg'));
+      assert.ok(mountTrimAt >= 0 && mountTrimAt < buildAt, 'кэш-маунты подрезаются до старта сборки');
+    }
     // Образ апдейтера пересобирается вместе со всеми (иначе агент навсегда
     // остаётся старым), но контейнер, из которого запущен скрипт, не
     // пересоздаётся: это убило бы обновление на середине.
@@ -301,6 +324,9 @@ test('без BuildKit: web собирается по запасному Dockerfi
     // Переключение — тот же список -f, образ тот же: контейнеры поднимаются.
     assert.match(calls, /-f docker-compose\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring up -d --no-build web jobs monitor-agent/);
     assert.match(run.stdout, /BuildKit недоступен/);
+    // Кэш-маунтов нет (Dockerfile без --mount) — синтетическая сборка для их
+    // подрезки не запускается.
+    assert.equal(calls.includes('edrc-cachetrim'), false, 'без BuildKit кэш-маунты не проверяются');
     // Запасной Dockerfile сгенерирован из основного: убраны только кэш-маунты.
     const legacy = readFileSync(join(ctx.src, '.edrc-legacy-Dockerfile'), 'utf8');
     assert.doesNotMatch(legacy, /^RUN --mount/m);
@@ -343,6 +369,45 @@ test('повторный запуск: пересборка без перемо�
     const noBackup = ctx.run({ UPDATE_BACKUP_BEFORE: '0' });
     assert.equal(noBackup.status, 0, noBackup.stdout + noBackup.stderr);
     assert.equal(readFileSync(ctx.log, 'utf8').includes('pg_dump'), false, 'UPDATE_BACKUP_BEFORE=0 — без дампа');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('бэкап перед обновлением: каталог систем исключён, BACKUP_FULL=1 возвращает полный дамп', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+
+    // По умолчанию — как у ручного бэкапа: без public.galaxy_systems
+    // (десятки гигабайт, восстанавливается импортом Spansh). Иначе каждая
+    // переборка с флажком «с бэкапом БД» писала бы полную копию базы.
+    const run = ctx.run();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /каталог систем \(public\.galaxy_systems\) в дамп не попадает/);
+    const dumps = readdirSync(join(ctx.work, 'backups'))
+      .filter((name) => name.startsWith('edrc-before-update-'));
+    assert.equal(dumps.length, 1, 'дамп перед обновлением создан');
+    assert.ok(statSync(join(ctx.work, 'backups', dumps[0])).size > 0, 'дамп непустой (стаб pg_dump пишет полезную нагрузку)');
+    assert.match(readFileSync(ctx.log, 'utf8'), /pg_dump -U postgres -d postgres -Fc --exclude-table=public\.galaxy_systems/);
+
+    // Ротация: держим 5 свежих копий, старые уезжают.
+    for (let i = 0; i < 7; i++) {
+      writeFileSync(join(ctx.work, 'backups', `edrc-before-update-2026010${i}T000000Z.dump`), 'x');
+    }
+    writeFileSync(ctx.log, '');
+    const again = ctx.run();
+    assert.equal(again.status, 0, again.stdout + again.stderr);
+    const kept = readdirSync(join(ctx.work, 'backups')).filter((name) => name.startsWith('edrc-before-update-'));
+    assert.ok(kept.length <= 6, 'ротация держит не больше 5 копий + свежий дамп: ' + kept.length);
+
+    // Осознанный полный режим — каталог систем возвращается в дамп.
+    writeFileSync(ctx.log, '');
+    const full = ctx.run({ BACKUP_FULL: '1' });
+    assert.equal(full.status, 0, full.stdout + full.stderr);
+    const fullCalls = readFileSync(ctx.log, 'utf8');
+    assert.match(fullCalls, /pg_dump -U postgres -d postgres -Fc\n/, 'BACKUP_FULL=1 — дамп без исключений');
+    assert.equal(fullCalls.includes('--exclude-table'), false, 'BACKUP_FULL=1 — дамп без исключений');
   } finally {
     ctx.cleanup();
   }

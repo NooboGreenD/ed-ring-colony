@@ -53,6 +53,14 @@ APPLY_MIGRATIONS="${UPDATE_APPLY_MIGRATIONS:-1}"
 BACKUP_BEFORE="${UPDATE_BACKUP_BEFORE:-1}"
 RUN_TESTS="${UPDATE_RUN_TESTS:-1}"
 MIGRATIONS_ONLY="${UPDATE_MIGRATIONS_ONLY:-0}"
+# Политика та же, что у ручного бэкапа (deploy/db-backup.sh): каталог систем
+# public.galaxy_systems весит десятки гигабайт и полностью восстанавливается
+# импортом дампа Spansh, поэтому в предобновленческую копию он ПО УМОЛЧАНИЮ
+# не входит. Раньше здесь делался ПОЛНЫЙ pg_dump: каждая переборка с включённым
+# флажком «с бэкапом БД» писала гигабайты каталога на диск. BACKUP_FULL=1 —
+# осознанный выбор оператора, как и у ручной копии.
+BACKUP_FULL="${BACKUP_FULL:-0}"
+BACKUP_EXCLUDE_TABLE="${BACKUP_EXCLUDE_TABLE:-public.galaxy_systems}"
 STATE_DIR="${UPDATE_STATE_DIR:-$PROJECT_DIR/../update-state}"
 BACKUP_DIR="${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}"
 HEALTH_URL="${UPDATE_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
@@ -348,16 +356,24 @@ if [ "$BACKUP_BEFORE" = "1" ] && [ -n "$DB_PSQL" ]; then
     say "⚠ некуда писать pg_dump ($STATE_DIR тоже только для чтения) — продолжаю без копии"
   fi
   DUMP=""; [ -n "$BACKUP_DIR" ] && DUMP="$BACKUP_DIR/edrc-before-update-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  if [ -n "$DUMP" ]; then
+    DUMP_ARGS=(-Fc)
+    if [ "$BACKUP_FULL" != "1" ]; then
+      DUMP_ARGS+=(--exclude-table="$BACKUP_EXCLUDE_TABLE")
+      say "каталог систем ($BACKUP_EXCLUDE_TABLE) в дамп не попадает — как у ручного бэкапа (BACKUP_FULL=1 вернёт полную копию)"
+    fi
+  fi
   if [ "$DB_PSQL" = "container" ] && [ -n "$DUMP" ]; then
-    docker exec "$SUPA_CONTAINER" pg_dump -U postgres -d postgres -Fc > "$DUMP" 2>/dev/null || DUMP=""
+    docker exec "$SUPA_CONTAINER" pg_dump -U postgres -d postgres "${DUMP_ARGS[@]}" > "$DUMP" 2>/dev/null || DUMP=""
   elif [ -n "$DUMP" ] && command -v pg_dump >/dev/null 2>&1; then
-    pg_dump "$DB_URL" -Fc -f "$DUMP" 2>/dev/null || DUMP=""
+    pg_dump "$DB_URL" "${DUMP_ARGS[@]}" -f "$DUMP" 2>/dev/null || DUMP=""
   else
     DUMP=""
   fi
   if [ -n "$DUMP" ] && [ -s "$DUMP" ]; then
     say "резервная копия: $DUMP ($(wc -c < "$DUMP") байт)"
     ls -1t "$BACKUP_DIR"/edrc-before-update-*.dump 2>/dev/null | tail -n +6 | while read -r old; do rm -f "$old"; done
+    say "каталог копий: $(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1 || echo '?') — $BACKUP_DIR"
   else
     DUMP=""
     say "⚠ pg_dump недоступен — продолжаю без резервной копии (откат только через git)"

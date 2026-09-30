@@ -111,6 +111,13 @@ function runRebuild(t, overrides = {}) {
   return { ...result, dir, calls: readFileSync(log, 'utf8') };
 }
 
+// Строки журнала, в которых compose собирает ОБРАЗ сервиса. Отдельно от
+// кэш-маунтов: edrc_trim_cache_mounts тоже вызывает `docker build`
+// (синтетическая сборка-чистка), и её строки тоже содержат ' build '.
+const imageBuilds = (calls) => calls
+  .split('\n')
+  .filter((line) => line.includes(' build ') && line.includes('compose'));
+
 test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t) => {
   const run = runRebuild(t);
   assert.equal(run.status, 0, run.stdout + run.stderr);
@@ -118,7 +125,7 @@ test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t)
   // диск и роняли сборку по дедлайну BuildKit — см. edrc_build_each.
   assert.match(run.calls, /\[docker\].* build --no-cache jobs\n/);
   assert.match(run.calls, /\[docker\].* build --no-cache web\n/);
-  const order = run.calls.split('\n').filter((line) => line.includes(' build '));
+  const order = imageBuilds(run.calls);
   assert.ok(order[order.length - 1].endsWith(' web'), 'web собирается последним: ' + order.join(' | '));
   assert.match(run.stdout, /ПОЛНАЯ ПЕРЕСБОРКА без кэша/);
   assert.match(run.calls, /\[docker\].* up -d web jobs\n/);
@@ -127,13 +134,17 @@ test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t)
 test('rebuild-now: USE_CACHE=1 reuses layers and preserves the Supabase Compose override', { skip }, (t) => {
   const run = runRebuild(t, { USE_CACHE: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  const build = imageBuilds(run.calls)[0];
   assert.ok(build, 'the image is still built');
   assert.match(build, /-f deploy\/compose\.supabase-net\.yml --profile monitoring build jobs$/);
   assert.doesNotMatch(build, /--no-cache/);
   assert.match(run.stdout, /ПЕРЕСБОРКА с кэшем/);
   assert.match(run.calls, /-f deploy\/compose\.supabase-net\.yml --profile monitoring up -d web jobs/);
-  assert.ok(run.calls.indexOf(' build ') < run.calls.indexOf(' up -d '));
+  {
+    const firstBuild = imageBuilds(run.calls)[0];
+    const firstUp = run.calls.split('\n').find((line) => line.includes(' up -d '));
+    assert.ok(firstBuild && firstUp && run.calls.indexOf(firstBuild) < run.calls.indexOf(firstUp), 'сборка раньше переключения');
+  }
   assert.match(run.calls, /\[curl\].*api\/health/);
 });
 
@@ -143,7 +154,7 @@ for (const useCache of ['0', '1']) {
     assert.equal(run.status, 17, run.stdout + run.stderr);
     // Постоянный сбой: два автоповтора (UPDATE_BUILD_RETRIES=2) — три попытки
     // одного и того же образа; до следующего образа дело не доходит.
-    const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+    const builds = imageBuilds(run.calls);
     assert.equal(builds.length, 3, 'два автоповтора после уборки');
     assert.ok(builds.every((line) => line.endsWith(' jobs')), 'повторяется упавший образ: ' + builds.join(' | '));
     assert.match(run.stdout, /пробую собрать ещё раз/);
@@ -161,7 +172,7 @@ for (const useCache of ['0', '1']) {
 test('rebuild-now: кратковременный сбой сборки переживается автоповтором без ручного клика', { skip }, (t) => {
   const run = runRebuild(t, { STUB_BUILD_FAIL_ONCE: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+  const builds = imageBuilds(run.calls);
   // Два образа по одному + один повтор сорвавшегося первого.
   assert.equal(builds.length, 3, 'первая попытка умерла дедлайном — вторая доехала');
   assert.match(run.stdout, /пробую собрать ещё раз \(попытка 2 из 3\) после уборки/);
@@ -172,7 +183,7 @@ test('rebuild-now: кратковременный сбой сборки пере
 test('rebuild-now: UPDATE_BUILD_RETRIES=0 — без автоповтора, уборка после срыва остаётся', { skip }, (t) => {
   const run = runRebuild(t, { STUB_BUILD_EXIT: '17', UPDATE_BUILD_RETRIES: '0' });
   assert.equal(run.status, 17, run.stdout + run.stderr);
-  const builds = run.calls.split('\n').filter((line) => line.includes(' build '));
+  const builds = imageBuilds(run.calls);
   assert.equal(builds.length, 1, 'оператор явно отключил повторы');
   assert.doesNotMatch(run.calls, / up -d /);
   assert.match(run.calls, /builder prune -f/, 'кэш сорвавшейся сборки чистится и без ретрая');
@@ -192,7 +203,7 @@ test('rebuild-now: без BuildKit web собирается по запасно�
   // до конца, а не упасть на Step 5.
   const run = runRebuild(t, { STUB_BUILDX_EXIT: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  const build = imageBuilds(run.calls)[0];
   assert.match(build, /-f deploy\/compose\.supabase-net\.yml -f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache jobs$/);
   assert.match(run.stdout, /BuildKit недоступен/);
   // Запасной Dockerfile сгенерирован из основного: убраны только --mount,
@@ -209,9 +220,13 @@ test('rebuild-now: без BuildKit web собирается по запасно�
 test('rebuild-now: с плагином buildx кэш-маунты BuildKit остаются', { skip }, (t) => {
   const run = runRebuild(t, { STUB_BUILDX_EXIT: '0' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  const build = imageBuilds(run.calls)[0];
   assert.doesNotMatch(build, /legacy-build/, 'override не подключается: кэш-маунты работают');
   assert.equal(existsSync(join(run.dir, '.edrc-legacy-Dockerfile')), false, 'запасной Dockerfile не генерируется');
+  // Кэш-маунты живут — значит, их надо и подрезать: синтетическая сборка
+  // edrc-cachetrim зовётся и до сборки, и в уборке после переключения
+  // (с Next 16.3 Turbopack дописывает в .next/cache кэш каждой переборки).
+  assert.ok(run.calls.includes('edrc-cachetrim'), 'кэш-маунты проверяются/подрезаются');
 });
 
 test('rebuild-now: EDRC_FORCE_LEGACY_BUILD=1 собирает без кэш-маунтов даже при buildx', { skip }, (t) => {
@@ -219,7 +234,7 @@ test('rebuild-now: EDRC_FORCE_LEGACY_BUILD=1 собирает без кэш-ма
   // хотя плагин buildx формально установлен.
   const run = runRebuild(t, { EDRC_FORCE_LEGACY_BUILD: '1' });
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const build = run.calls.split('\n').find((line) => line.includes(' build '));
+  const build = imageBuilds(run.calls)[0];
   assert.match(build, /-f deploy\/compose\.legacy-build\.yml --profile monitoring build --no-cache jobs$/);
 });
 
