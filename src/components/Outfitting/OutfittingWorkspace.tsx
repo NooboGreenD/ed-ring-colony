@@ -19,7 +19,9 @@ import { buildSlots, computeStats, effectiveModule } from '@/lib/outfitting/calc
 import { blueprintLabel, decodeBuild, defaultBuild, encodeBuild, moduleLabel, strippedBuild } from '@/lib/outfitting/build';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import type { BuildSlot, ShipBuild, SlotModification } from '@/lib/outfitting/types';
+import ArmourEngineering from './ArmourEngineering';
 import ModulePicker from './ModulePicker';
+import { specialName } from './SpecialEffectCard';
 import StatsPanel from './StatsPanel';
 import { LABEL, MONO, PANEL, button, formatters } from './styles';
 
@@ -240,6 +242,21 @@ export default function OutfittingWorkspace() {
               </button>
             ))}
           </div>
+
+          {/* Броню тоже можно отправить к инженеру — вместе с эффектом. */}
+          <ArmourEngineering
+            data={data}
+            modification={build.mods.BH ?? null}
+            onModify={(next) => setBuild((previous) => {
+              if (!previous) return previous;
+              const mods = { ...previous.mods };
+              if (next) mods.BH = next;
+              else delete mods.BH;
+              return { ...previous, mods };
+            })}
+            t={t}
+            locale={locale}
+          />
           {notice && <p style={{ fontSize: 11, color: 'var(--green)', marginBottom: 0, marginTop: 8 }}>{notice}</p>}
         </div>
 
@@ -288,7 +305,7 @@ export default function OutfittingWorkspace() {
                           </span>
                         )}
                         {modification?.special && (
-                          <span style={{ color: '#c9a0ff' }}>✦ {data.specials[modification.special]?.name ?? modification.special}</span>
+                          <span style={{ color: '#c9a0ff' }}>✦ {specialName(t, data.specials[modification.special]) || modification.special}</span>
                         )}
                       </span>
                     </span>

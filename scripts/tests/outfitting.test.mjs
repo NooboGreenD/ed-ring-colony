@@ -12,8 +12,11 @@
  *    комплектации, масса, энергобаланс, рост дальности от облегчения.
  * 4. Инженерия применяется в нужную сторону: дальнобойный FSD увеличивает
  *    optmass и дальность, чем выше уровень — тем больше.
- * 5. Ссылка на сборку кодируется и раскодируется без потерь.
- * 6. Дерево инженеров связно: у всех наводок есть источник, циклов нет,
+ * 5. Экспериментальные эффекты описаны у всех, применяются к модулю по
+ *    правилам игры (проценты, сопротивления «от остатка», интервал вместо
+ *    скорострельности) и попадают в сводку.
+ * 6. Ссылка на сборку кодируется и раскодируется без потерь.
+ * 7. Дерево инженеров связно: у всех наводок есть источник, циклов нет,
  *    имена совпадают со справочником верфи (включая опечатки в исходных
  *    данных), у каждого корабельного инженера есть чертежи.
  */
@@ -46,7 +49,7 @@ async function loadLib() {
   const bundle = join(dir, 'lib.mjs');
   writeFileSync(
     entry,
-    "export * from '@/lib/outfitting/calc';\nexport * from '@/lib/outfitting/build';\nexport * from '@/lib/engineers/data';\n",
+    "export * from '@/lib/outfitting/calc';\nexport * from '@/lib/outfitting/build';\nexport * from '@/lib/outfitting/specials';\nexport * from '@/lib/engineers/data';\n",
   );
   await esbuild.build({
     entryPoints: [entry],
@@ -210,7 +213,155 @@ maybe('усиленный чертёж реактора прибавляет м�
   assert.ok(boosted > base, `реактор должен усиливаться: ${base} → ${boosted}`);
 });
 
-// ── 5. Ссылка на сборку ────────────────────────────────────────────────
+// ── 5. Экспериментальные эффекты ───────────────────────────────────────
+
+test('у каждого эффекта есть ключ перевода, материалы и понятные поправки', () => {
+  const ids = Object.keys(data.specials);
+  assert.ok(ids.length >= 85, `эффектов должно быть не меньше 85, а их ${ids.length}`);
+
+  const objectValued = new Set(['damagedist']);
+  for (const [id, special] of Object.entries(data.specials)) {
+    assert.ok(special.kind, `у эффекта ${id} нет ключа перевода`);
+    assert.match(special.kind, /^[a-z][A-Za-z]*$/, `ключ перевода ${id} должен быть camelCase`);
+
+    for (const [property, value] of Object.entries(special.features ?? {})) {
+      if (objectValued.has(property)) {
+        const shares = Object.values(value);
+        assert.ok(shares.length > 0, `пустое распределение урона у ${id}`);
+        const sum = shares.reduce((total, share) => total + share, 0);
+        assert.ok(Math.abs(sum - 1) < 1e-6, `доли урона у ${id} должны давать единицу, а дают ${sum}`);
+        continue;
+      }
+      assert.equal(typeof value, 'number', `поправка ${property} у ${id} должна быть числом`);
+      assert.ok(Number.isFinite(value), `поправка ${property} у ${id} не число`);
+      assert.ok(Math.abs(value) <= 3, `подозрительно большая поправка ${property}=${value} у ${id}`);
+    }
+  }
+
+  // Эффекты без цифр — это боевые эффекты, у них обязателен `tag`.
+  for (const [id, special] of Object.entries(data.specials)) {
+    if (Object.keys(special.features ?? {}).length === 0) {
+      assert.ok(special.tag, `у эффекта без цифр ${id} должен быть боевой эффект`);
+    }
+  }
+
+  // Материалы в исходных данных есть не у всех: у пары старых записей
+  // («Feedback Cascade» без охлаждения, «Plasma Slug» до разделения) их нет.
+  // Такая запись допустима, только если тот же эффект есть в живом варианте.
+  const withMaterials = new Set(
+    Object.values(data.specials).filter((special) => Object.keys(special.components ?? {}).length > 0).map((special) => special.kind),
+  );
+  for (const [id, special] of Object.entries(data.specials)) {
+    if (Object.keys(special.components ?? {}).length === 0) {
+      assert.ok(withMaterials.has(special.kind), `у эффекта ${id} нет ни материалов, ни живого двойника`);
+    }
+  }
+});
+
+test('каждый эффект доступен хотя бы одной группе модулей', () => {
+  const reachable = new Set();
+  for (const entry of Object.values(data.moduleBlueprints)) {
+    for (const id of entry.specials ?? []) reachable.add(id);
+  }
+  for (const id of reachable) assert.ok(data.specials[id], `группа ссылается на неизвестный эффект ${id}`);
+  assert.ok(reachable.size >= 85, `в списках групп должно быть не меньше 85 эффектов, а их ${reachable.size}`);
+
+  // Один и тот же эффект встречается под разными id (обычная и охлаждённая
+  // версия «Plasma Slug»), но каждый вид должен где-то предлагаться — иначе
+  // мы перевели название, которого игрок никогда не увидит.
+  const shown = new Set([...reachable].map((id) => data.specials[id].kind));
+  const hidden = [...new Set(Object.values(data.specials).map((special) => special.kind))].filter((kind) => !shown.has(kind));
+  assert.deepEqual(hidden, [], `эти эффекты нельзя выбрать ни у одной группы: ${hidden.join(', ')}`);
+});
+
+maybe('эффект меняет характеристики модуля по правилам игры', async () => {
+  const lib = await libPromise;
+
+  // Проценты: «Увеличенный калибр» — +3 % урона и +5 % энергии.
+  const cannon = data.modules.mc.find((module) => module.class === 2 && module.mount === 'F');
+  assert.ok(cannon, 'в справочнике должна быть многоствольная пушка класса 2');
+  const oversized = lib.effectiveModule(data, cannon, { special: 'special_weapon_damage' });
+  assert.ok(Math.abs(oversized.damage - cannon.damage * 1.03) < 1e-9, 'урон должен вырасти на 3 %');
+  assert.ok(Math.abs(oversized.power - cannon.power * 1.05) < 1e-9, 'энергия должна вырасти на 5 %');
+
+  // Скорострельность хранится как поправка к интервалу между выстрелами.
+  const servos = lib.effectiveModule(data, cannon, { special: 'special_weapon_rateoffire' });
+  assert.ok(servos.fireint < cannon.fireint, 'интервал между выстрелами должен сократиться');
+  assert.ok(Math.abs(1 / servos.fireint - 1 / cannon.fireint * 1.03) < 1e-3, 'выстрелов в секунду должно стать примерно на 3 % больше');
+
+  // Сопротивления складываются «от остатка», а не напрямую.
+  const generator = data.modules.sg.find((module) => module.class === 5 && module.rating === 'A');
+  assert.ok(generator, 'в справочнике должен быть генератор щита 5A');
+  const weave = lib.effectiveModule(data, generator, { special: 'special_shield_resistive' });
+  const base = Number(generator.kinres ?? 0);
+  assert.ok(Math.abs(weave.kinres - (base + 0.03 * (1 - base))) < 1e-9, 'сопротивление растёт от остатка');
+  assert.ok(weave.kinres < base + 0.03, 'прибавка не должна складываться напрямую');
+
+  // Распределение урона переписывается целиком.
+  const incendiary = lib.effectiveModule(data, cannon, { special: 'special_incendiary_rounds' });
+  assert.deepEqual(incendiary.damagedist, { K: 0.1, T: 0.9 });
+});
+
+maybe('эффект складывается с чертежом и виден в сводке', async () => {
+  const lib = await libPromise;
+  const build = lib.defaultBuild(data, 'python');
+
+  const plain = lib.computeStats(data, build);
+  assert.equal(plain.experimental, 0, 'в заводской сборке эффектов нет');
+
+  // «Толстое бронирование» на переборке: брони больше, сопротивлений меньше.
+  const armoured = lib.computeStats(data, {
+    ...build,
+    bulkhead: 2,
+    mods: { BH: { blueprint: 'Armour_HeavyDuty', grade: 5, quality: 1, special: 'special_armour_chunky' } },
+  });
+  const blueprintOnly = lib.computeStats(data, {
+    ...build,
+    bulkhead: 2,
+    mods: { BH: { blueprint: 'Armour_HeavyDuty', grade: 5, quality: 1 } },
+  });
+  assert.equal(armoured.experimental, 1, 'эффект переборки должен попадать в счётчик');
+  assert.equal(armoured.engineered, 1, 'чертёж переборки должен попадать в счётчик');
+  assert.ok(armoured.armour > blueprintOnly.armour, 'толстая броня прочнее');
+  assert.ok(armoured.armourResistances.kinetic < blueprintOnly.armourResistances.kinetic, 'толстая броня хуже держит кинетику');
+
+  // «Повышенная ёмкость» на генераторе щита: щит крепче, энергии нужно больше.
+  const shieldSlot = lib.buildSlots(data, build).find((slot) => slot.module?.grp === 'sg');
+  assert.ok(shieldSlot, 'в заводской Python должен быть генератор щита');
+  const hiCap = lib.computeStats(data, {
+    ...build,
+    mods: { [shieldSlot.key]: { special: 'special_shield_health' } },
+  });
+  assert.ok(hiCap.shield > plain.shield, 'щит должен стать крепче');
+  assert.ok(hiCap.powerDeployed > plain.powerDeployed, 'энергии должно требоваться больше');
+  assert.equal(hiCap.experimental, 1);
+});
+
+maybe('список изменений эффекта показывает проценты в удобную сторону', async () => {
+  const lib = await libPromise;
+
+  const rows = lib.specialFeatures(data, data.specials.special_weapon_rateoffire);
+  const rof = rows.find((row) => row.property === 'rof');
+  assert.ok(rof, 'у «Многосервоприводов» должна быть строка скорострельности');
+  assert.ok(rof.value > 0 && rof.better, 'скорострельность показывается как рост, а не как падение интервала');
+  const power = rows.find((row) => row.property === 'power');
+  assert.ok(power && !power.better, 'рост потребления энергии — это минус');
+
+  // Сопротивления помечены отдельно: их нельзя читать как обычные проценты.
+  const resistive = lib.specialFeatures(data, data.specials.special_shield_resistive);
+  assert.ok(resistive.some((row) => row.kind === 'resistance'), 'сопротивления должны иметь свой тип');
+
+  // Чисто боевой эффект не даёт ни одной числовой строки.
+  assert.deepEqual(lib.specialFeatures(data, data.specials.special_thermal_vent), []);
+
+  // Эффекты предлагаются только тем группам, у которых они есть.
+  const weaponSpecials = lib.specialsForGroup(data, 'mc');
+  assert.ok(weaponSpecials.includes('special_weapon_damage'));
+  assert.ok(!weaponSpecials.includes('special_shield_health'), 'щитовой эффект не должен предлагаться пушке');
+  assert.deepEqual(lib.specialsForGroup(data, 'нет-такой-группы'), []);
+});
+
+// ── 6. Ссылка на сборку ────────────────────────────────────────────────
 
 maybe('сборка переживает кодирование в ссылку', async () => {
   const lib = await libPromise;
@@ -226,7 +377,7 @@ maybe('сборка переживает кодирование в ссылку'
   assert.equal(lib.decodeBuild(''), null);
 });
 
-// ── 6. Дерево инженеров ────────────────────────────────────────────────
+// ── 7. Дерево инженеров ────────────────────────────────────────────────
 
 maybe('дерево инженеров связно и без циклов', async () => {
   const lib = await libPromise;

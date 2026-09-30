@@ -9,9 +9,8 @@
  *
  * Инженерия: чертёж, уровень и «качество прогона». Числа берутся из того же
  * набора, что и у coriolis.io, поэтому сводка меняется ровно так, как в игре.
- * Экспериментальные эффекты показаны справочно — в открытых данных у них есть
- * материалы и описание, но нет числовых модификаторов, и выдумывать их тут
- * нельзя.
+ * Экспериментальный эффект выбирается тем же списком и работает так же
+ * по-настоящему: его поправки видны в карточке эффекта и уже учтены в сводке.
  *
  * Все подписи идут через словарь (`outfitting.*`), названия групп и чертежей —
  * через `src/lib/outfitting/i18n.ts`. Собственные имена модулей из Coriolis
@@ -22,9 +21,11 @@ import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { blueprintsForGroup, effectiveModule, modulesForSlot, moduleRef } from '@/lib/outfitting/calc';
+import { specialsForGroup } from '@/lib/outfitting/specials';
 import { blueprintLabel, moduleLabel } from '@/lib/outfitting/build';
 import { groupName } from '@/lib/outfitting/i18n';
 import type { BuildSlot, OutfittingData, OutfittingModule, OutfittingShip, SlotModification } from '@/lib/outfitting/types';
+import SpecialEffectCard, { specialName } from './SpecialEffectCard';
 import { LABEL, MONO, button, formatters } from './styles';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -99,8 +100,13 @@ export default function ModulePicker({
   const modification = slot.modification ?? {};
   const blueprints = current ? blueprintsForGroup(data, current.grp) : [];
   const activeBlueprint = modification.blueprint ? blueprints.find((entry) => entry.id === modification.blueprint) : null;
-  const specials = current ? data.moduleBlueprints[current.grp]?.specials ?? [] : [];
+  const specials = current ? specialsForGroup(data, current.grp) : [];
   const preview = effectiveModule(data, current, slot.modification);
+
+  // Эффекты в списке — по алфавиту языка интерфейса, иначе порядок случайный.
+  const specialOptions = specials
+    .map((id) => ({ id, name: specialName(t, data.specials[id]) }))
+    .sort((left, right) => left.name.localeCompare(right.name, locale));
 
   const slotKind = slot.section === 'standard'
     ? t('outfitting.picker.standard')
@@ -268,16 +274,17 @@ export default function ModulePicker({
                       style={{ width: '100%', fontSize: 12, fontFamily: MONO, margin: '0 0 6px' }}
                     >
                       <option value="">{t('outfitting.eng.specialNone')}</option>
-                      {specials.map((id) => (
-                        <option key={id} value={id}>{data.specials[id]?.name ?? id}</option>
+                      {specialOptions.map(({ id, name }) => (
+                        <option key={id} value={id}>{name}</option>
                       ))}
                     </select>
                     {modification.special && (
-                      <p style={{ fontSize: 10.5, color: 'var(--muted)', lineHeight: 1.5, margin: '0 0 8px' }}>
-                        {data.specials[modification.special]?.description || t('outfitting.eng.specialNoDesc')}
-                        <br />
-                        <i>{t('outfitting.eng.specialNote')}</i>
-                      </p>
+                      <SpecialEffectCard
+                        data={data}
+                        effect={data.specials[modification.special]}
+                        t={t}
+                        locale={locale}
+                      />
                     )}
                   </>
                 )}

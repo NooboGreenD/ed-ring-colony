@@ -118,6 +118,7 @@ export default function StatsPanel({ stats, shipName }: { stats: BuildStats; shi
         {stats.passengers > 0 && <Row label={t('outfitting.stats.passengers')} value={`${stats.passengers}`} />}
         <Row label={t('outfitting.stats.cost')} value={credits(stats.cost)} accent="var(--orange)" />
         {stats.engineered > 0 && <Row label={t('outfitting.stats.engineered')} value={String(stats.engineered)} accent="var(--green)" />}
+        {stats.experimental > 0 && <Row label={t('outfitting.stats.experimental')} value={String(stats.experimental)} accent="#c9a0ff" />}
       </Block>
     </div>
   );

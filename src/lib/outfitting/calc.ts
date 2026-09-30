@@ -96,7 +96,7 @@ export function massCurveMultiplier(
 }
 
 /** Правило применения свойства (по умолчанию — процентное умножение). */
-function ruleFor(data: OutfittingData, property: string): ModificationRule {
+export function ruleFor(data: OutfittingData, property: string): ModificationRule {
   return data.modifications[property] ?? {
     name: property,
     type: 'percentage',
@@ -105,11 +105,59 @@ function ruleFor(data: OutfittingData, property: string): ModificationRule {
   };
 }
 
-function applyFeature(rule: ModificationRule, base: number, value: number): number {
-  switch (rule.method) {
-    case 'additive': return base + value;
-    case 'overwrite': return value;
-    default: return base * (1 + value);
+/** Сопротивления не складываются напрямую: прибавка идёт от «остатка». */
+export const RESISTANCES = new Set(['kinres', 'thermres', 'explres', 'causres']);
+
+/**
+ * Применить одну поправку (чертежа или эксперимента) к полю модуля.
+ *
+ * Соглашение о числах — как в наборе Coriolis и в игре:
+ *
+ *  * сопротивления — доля *оставшегося* сопротивления: `base + v·(1 − base)`,
+ *    поэтому +8 % к 50 % даёт 54 %, а не 58 %;
+ *  * `hullboost`/`shieldboost` — сами по себе множители «+80 % к корпусу»,
+ *    поэтому поправка умножает множитель целиком: `(1 + base)·(1 + v) − 1`;
+ *  * `rof` хранится как поправка к *интервалу* между выстрелами, а у нас в
+ *    справочнике это поле называется `fireint` — скорострельность растёт,
+ *    когда интервал падает;
+ *  * `damagedist` — не число, а новое распределение урона по типам;
+ *  * остальное — по правилу из `modifications.json`: прибавка, перезапись
+ *    или процент от базового значения.
+ */
+function applyFeature(
+  data: OutfittingData,
+  target: OutfittingModule,
+  property: string,
+  raw: number | Record<string, number> | [number, number],
+): void {
+  if (property === 'damagedist') {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) target.damagedist = { ...raw };
+    return;
+  }
+  const value = Array.isArray(raw) ? raw[1] : raw;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return;
+
+  if (RESISTANCES.has(property)) {
+    const base = Number(target[property] ?? 0);
+    target[property] = base + value * (1 - base);
+    return;
+  }
+  if (property === 'hullboost' || property === 'shieldboost') {
+    const base = Number(target[property] ?? 0);
+    target[property] = (1 + base) * (1 + value) - 1;
+    return;
+  }
+  if (property === 'rof') {
+    const base = Number(target.fireint ?? 0);
+    if (base > 0) target.fireint = base * (1 + value);
+    return;
+  }
+
+  const base = Number(target[property] ?? 0);
+  switch (ruleFor(data, property).method) {
+    case 'additive': target[property] = base + value; break;
+    case 'overwrite': target[property] = value; break;
+    default: target[property] = base * (1 + value); break;
   }
 }
 
@@ -133,21 +181,16 @@ export function effectiveModule(
   const quality = Math.min(1, Math.max(0, modification.quality ?? 1));
   if (grade) {
     for (const [property, range] of Object.entries(grade.features)) {
-      const base = Number(result[property] ?? 0);
       const [min, max] = range;
-      const value = min + (max - min) * quality;
-      const rule = ruleFor(data, property);
-      result[property] = applyFeature(rule, base, value);
+      applyFeature(data, result, property, min + (max - min) * quality);
     }
   }
 
+  // Экспериментальный эффект ложится поверх чертежа — так же, как в игре.
   const special = modification.special ? data.specials[modification.special] : null;
   if (special) {
     for (const [property, raw] of Object.entries(special.features ?? {})) {
-      const value = Array.isArray(raw) ? raw[1] : raw;
-      if (typeof value !== 'number') continue;
-      const base = Number(result[property] ?? 0);
-      result[property] = applyFeature(ruleFor(data, property), base, value);
+      applyFeature(data, result, property, raw);
     }
   }
 
@@ -295,6 +338,8 @@ export interface BuildStats {
   emptySlots: number;
   /** Модулей с инженерными доработками. */
   engineered: number;
+  /** Сколько модулей несут экспериментальный эффект. */
+  experimental: number;
   /** Ошибки сборки кодами — текст подставляет интерфейс на своём языке. */
   warnings: BuildWarning[];
 }
@@ -379,12 +424,13 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
     shield: 0, shieldResistances: { kinetic: 0, thermal: 0, explosive: 0 },
     armour: 0, armourResistances: { kinetic: 0, thermal: 0, explosive: 0, caustic: 0 },
     powerCapacity: 0, powerRetracted: 0, powerDeployed: 0,
-    distributor: { sys: 0, eng: 0, wep: 0 }, masslock: 0, emptySlots: 0, engineered: 0, warnings,
+    distributor: { sys: 0, eng: 0, wep: 0 }, masslock: 0, emptySlots: 0, engineered: 0, experimental: 0, warnings,
   };
   if (!ship) return empty;
 
   const bulkheadRaw = ship.bulkheads[build.bulkhead] ?? ship.bulkheads[0];
-  const bulkhead = effectiveModule(data, bulkheadRaw as unknown as OutfittingModule, build.mods.BH ?? null);
+  const bulkheadMod = build.mods.BH ?? null;
+  const bulkhead = effectiveModule(data, bulkheadRaw as unknown as OutfittingModule, bulkheadMod);
   const views = resolved(data, build);
 
   let mass = ship.properties.hullMass + Number(bulkhead?.mass ?? 0);
@@ -400,7 +446,8 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
   let hullReinforcement = 0;
   let jumpBoost = 0;
   let emptySlots = 0;
-  let engineered = 0;
+  let engineered = bulkheadMod?.blueprint ? 1 : 0;
+  let experimental = bulkheadMod?.special ? 1 : 0;
   const shieldRes = { kinetic: 0, thermal: 0, explosive: 0 };
   const distributor = { sys: 0, eng: 0, wep: 0 };
   let armourRes = {
@@ -420,6 +467,7 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
       continue;
     }
     if (slot.modification?.blueprint) engineered += 1;
+    if (slot.modification?.special) experimental += 1;
     mass += Number(module.mass ?? 0);
     cost += Number(module.cost ?? 0);
     cargo += Number(module.cargo ?? 0);
@@ -522,7 +570,7 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
     armour, armourResistances: armourRes,
     powerCapacity, powerRetracted, powerDeployed,
     distributor, masslock: ship.properties.masslock,
-    emptySlots, engineered, warnings,
+    emptySlots, engineered, experimental, warnings,
   };
 }
 

@@ -11,6 +11,8 @@
  * 3. Плейсхолдеры (`{value}`, `{mass}`) не потерялись при переводе.
  * 4. Названия групп модулей покрывают весь справочник на всех языках.
  * 5. Слова инженерных чертежей переведены на всех языках одинаковым набором.
+ * 6. Экспериментальные эффекты: у каждого вида эффекта, боевого эффекта и
+ *    изменяемой характеристики есть название и описание на всех языках.
  */
 
 import test from 'node:test';
@@ -42,7 +44,7 @@ async function loadLib() {
   const bundle = join(dir, 'lib.mjs');
   writeFileSync(
     entry,
-    "export * from '@/lib/i18n/outfitting';\nexport * from '@/lib/outfitting/i18n';\n",
+    "export * from '@/lib/i18n/outfitting';\nexport * from '@/lib/i18n/outfittingSpecials';\nexport * from '@/lib/outfitting/i18n';\n",
   );
   await esbuild.build({
     entryPoints: [entry],
@@ -156,4 +158,71 @@ maybe('подписи чертежей и модулей собираются н
   assert.match(moduleLabel(data, shieldGenerator, 'ru'), /Генератор щита/);
   assert.match(moduleLabel(data, shieldGenerator, 'en'), /Shield Generator/);
   assert.equal(moduleLabel(data, null, 'ja'), '—');
+});
+
+// ── 6. Экспериментальные эффекты ───────────────────────────────────────
+
+maybe('у эффектов есть названия и описания на всех языках', async () => {
+  const { outfittingSpecialsTranslations } = await libPromise;
+  const reference = Object.keys(outfittingSpecialsTranslations.ru);
+  assert.ok(reference.length > 150, `ключей эффектов должно быть не меньше 150, а их ${reference.length}`);
+
+  for (const locale of LOCALES) {
+    const dict = outfittingSpecialsTranslations[locale];
+    assert.ok(dict, `нет словаря эффектов для языка ${locale}`);
+    const missing = reference.filter((key) => !dict[key] || !String(dict[key]).trim());
+    assert.deepEqual(missing, [], `в ${locale} не переведены ключи: ${missing.join(', ')}`);
+    const extra = Object.keys(dict).filter((key) => !reference.includes(key));
+    assert.deepEqual(extra, [], `в ${locale} лишние ключи: ${extra.join(', ')}`);
+  }
+
+  const russian = outfittingSpecialsTranslations.ru;
+  for (const locale of LOCALES.filter((item) => item !== 'ru')) {
+    const dict = outfittingSpecialsTranslations[locale];
+    for (const [key, value] of Object.entries(russian)) {
+      assert.notEqual(dict[key], value, `${locale}: ключ ${key} не переведён`);
+    }
+  }
+});
+
+maybe('каждый эффект справочника переведён, лишних переводов нет', async () => {
+  const { outfittingSpecialsTranslations } = await libPromise;
+  const russian = outfittingSpecialsTranslations.ru;
+
+  const kinds = new Set();
+  const tags = new Set();
+  const properties = new Set();
+  for (const special of Object.values(data.specials)) {
+    kinds.add(special.kind);
+    if (special.tag) tags.add(special.tag);
+    for (const property of Object.keys(special.features ?? {})) properties.add(property);
+  }
+  assert.ok(kinds.size >= 55, `видов эффектов должно быть не меньше 55, а их ${kinds.size}`);
+
+  for (const kind of kinds) {
+    assert.ok(russian[`outfitting.special.name.${kind}`], `нет названия эффекта ${kind}`);
+    assert.ok(russian[`outfitting.special.desc.${kind}`], `нет описания эффекта ${kind}`);
+  }
+  for (const tag of tags) assert.ok(russian[`outfitting.special.tag.${tag}`], `нет текста боевого эффекта ${tag}`);
+  for (const property of properties) assert.ok(russian[`outfitting.mod.${property}`], `нет названия характеристики ${property}`);
+
+  // Обратная сторона: перевод, который ни к чему не привязан, — мусор.
+  const orphanNames = Object.keys(russian)
+    .filter((key) => key.startsWith('outfitting.special.name.'))
+    .map((key) => key.slice('outfitting.special.name.'.length))
+    .filter((kind) => !kinds.has(kind));
+  assert.deepEqual(orphanNames, [], `переводы без эффекта: ${orphanNames.join(', ')}`);
+
+  const orphanTags = Object.keys(russian)
+    .filter((key) => key.startsWith('outfitting.special.tag.'))
+    .map((key) => key.slice('outfitting.special.tag.'.length))
+    .filter((tag) => !tags.has(tag));
+  assert.deepEqual(orphanTags, [], `боевые эффекты без эффекта: ${orphanTags.join(', ')}`);
+});
+
+maybe('ключи эффектов не конфликтуют с остальным разделом верфи', async () => {
+  const { outfittingTranslations, outfittingSpecialsTranslations } = await libPromise;
+  const base = new Set(Object.keys(outfittingTranslations.ru));
+  const clash = Object.keys(outfittingSpecialsTranslations.ru).filter((key) => base.has(key));
+  assert.deepEqual(clash, [], `ключи задваиваются: ${clash.join(', ')}`);
 });
