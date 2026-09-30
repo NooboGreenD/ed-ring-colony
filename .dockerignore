@@ -2,7 +2,13 @@
 .github
 .next
 node_modules
-uploader
+# Админка собирает релиз Colonial Helper из верхнеуровневых Python-исходников,
+# а Dockerfile переносит /app/uploader в runtime-образ. Сам каталог исключать
+# нельзя: тогда COPY --from=builder падает с «/app/uploader: not found».
+# Тесты и документация серверному издателю не нужны — не возим только их.
+uploader/tests/
+uploader/*.md
+uploader/requirements.txt
 # Spansh dump archive (up to ~6 GiB) must never enter a build context.
 data/spansh/
 supabase/.temp
