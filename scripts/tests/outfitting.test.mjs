@@ -441,3 +441,50 @@ maybe('у инженеров Одиссеи описаны умения, а ус
     }
   }
 });
+
+// ── 5. Распределитель питания («Пипки») и сравнение модулей ───────────
+
+maybe('пипки SYS увеличивают эффективную ёмкость щита, а ENG влияют на скорость', async () => {
+  const lib = await libPromise;
+
+  // 1. SYS сопротивление
+  assert.equal(lib.sysDamageResistance(0), 0);
+  const res4 = lib.sysDamageResistance(4);
+  assert.ok(res4 > 0.55 && res4 <= 0.6, `сопротивление на 4 SYS должно быть ~58-60%, получено ${res4}`);
+
+  const rawShield = 1000;
+  const eff0 = lib.pipEffectiveShield(rawShield, 0);
+  const eff4 = lib.pipEffectiveShield(rawShield, 4);
+  assert.equal(eff0, 1000);
+  assert.ok(eff4 > 2300 && eff4 <= 2500, `эффективный щит на 4 SYS должен быть ~2.4-2.5x, получено ${eff4}`);
+
+  // 2. ENG скорость
+  const baseSpeed = 300;
+  const speed4 = lib.pipAdjustedSpeed(baseSpeed, 0.125, 4);
+  const speed2 = lib.pipAdjustedSpeed(baseSpeed, 0.125, 2);
+  const speed0 = lib.pipAdjustedSpeed(baseSpeed, 0.125, 0);
+  assert.equal(speed4, 300);
+  assert.equal(speed2, 225);
+  assert.equal(speed0, 150);
+
+  // 3. Восстановление
+  assert.equal(lib.pipRechargeRate(4.0, 4), 4.0);
+  assert.equal(lib.pipRechargeRate(4.0, 2), 2.0);
+  assert.equal(lib.pipRechargeRate(4.0, 0), 0.0);
+});
+
+maybe('computeModuleDelta корректно вычисляет разницу характеристик при смене модуля', async () => {
+  const lib = await libPromise;
+  const build = lib.defaultBuild(data, 'sidewinder');
+  const slots = lib.buildSlots(data, build);
+  const fsdSlot = slots.find((s) => s.group === 'fsd');
+  assert.ok(fsdSlot, 'FSD слот Sidewinder');
+
+  // Кандидат: лучший FSD 2A
+  const fsd2A = data.modules.fsd.find((m) => m.class === 2 && m.rating === 'A');
+  assert.ok(fsd2A, 'FSD 2A модуль');
+
+  const delta = lib.computeModuleDelta(data, build, fsdSlot, fsd2A);
+  assert.ok(delta.jumpRangeDelta > 0, 'прыжок должен вырасти с 2A FSD');
+  assert.ok(delta.costDelta > 0, 'цена сборки должна вырасти');
+});

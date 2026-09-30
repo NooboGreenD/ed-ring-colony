@@ -20,9 +20,11 @@
 import type {
   BuildSlot,
   ModificationRule,
+  ModuleComparisonDelta,
   OutfittingData,
   OutfittingModule,
   OutfittingShip,
+  PipState,
   ShipBuild,
   SlotModification,
 } from './types';
@@ -331,8 +333,17 @@ export interface BuildStats {
   powerRetracted: number;
   /** Потребление с развёрнутыми орудиями. */
   powerDeployed: number;
-  /** Ёмкости распределителя. */
-  distributor: { sys: number; eng: number; wep: number };
+  /** Ёмкости и скорости восстановления распределителя. */
+  distributor: {
+    sys: number;
+    eng: number;
+    wep: number;
+    sysRate: number;
+    engRate: number;
+    wepRate: number;
+  };
+  boostEnergy: number;
+  pipSpeed: number;
   masslock: number;
   /** Пустых слотов. */
   emptySlots: number;
@@ -342,6 +353,36 @@ export interface BuildStats {
   experimental: number;
   /** Ошибки сборки кодами — текст подставляет интерфейс на своём языке. */
   warnings: BuildWarning[];
+}
+
+/** Распределение пипок по умолчанию (2-2-2). */
+export const DEFAULT_PIPS: PipState = { sys: 2, eng: 2, wep: 2 };
+
+/** Уменьшение входящего урона щита при SYS пипках (0..60%). */
+export function sysDamageResistance(pips: number): number {
+  if (pips <= 0) return 0;
+  const clamped = Math.min(4, Math.max(0, pips));
+  return 0.6 * Math.pow(clamped / 4, 0.85);
+}
+
+/** Эффективная ёмкость щита с учётом SYS пипок (МДж). */
+export function pipEffectiveShield(shield: number, sysPips: number): number {
+  if (shield <= 0) return 0;
+  const res = sysDamageResistance(sysPips);
+  if (res >= 1) return shield;
+  return shield / (1 - res);
+}
+
+/** Скорость с учётом ENG пипок. */
+export function pipAdjustedSpeed(baseSpeed: number, pipSpeed: number | undefined, engPips: number): number {
+  const factor = pipSpeed ?? 0.125;
+  const pips = Math.min(4, Math.max(0, engPips));
+  return baseSpeed * (1 - (4 - pips) * factor);
+}
+
+/** Восстановление подсистемы распределителя (МВт/с) при заданных пипках. */
+export function pipRechargeRate(baseRate: number, pips: number): number {
+  return (baseRate || 0) * (Math.min(4, Math.max(0, pips)) / 4);
 }
 
 /**
@@ -424,7 +465,9 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
     shield: 0, shieldResistances: { kinetic: 0, thermal: 0, explosive: 0 },
     armour: 0, armourResistances: { kinetic: 0, thermal: 0, explosive: 0, caustic: 0 },
     powerCapacity: 0, powerRetracted: 0, powerDeployed: 0,
-    distributor: { sys: 0, eng: 0, wep: 0 }, masslock: 0, emptySlots: 0, engineered: 0, experimental: 0, warnings,
+    distributor: { sys: 0, eng: 0, wep: 0, sysRate: 0, engRate: 0, wepRate: 0 },
+    boostEnergy: 0, pipSpeed: 0.125,
+    masslock: 0, emptySlots: 0, engineered: 0, experimental: 0, warnings,
   };
   if (!ship) return empty;
 
@@ -449,7 +492,7 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
   let engineered = bulkheadMod?.blueprint ? 1 : 0;
   let experimental = bulkheadMod?.special ? 1 : 0;
   const shieldRes = { kinetic: 0, thermal: 0, explosive: 0 };
-  const distributor = { sys: 0, eng: 0, wep: 0 };
+  const distributor = { sys: 0, eng: 0, wep: 0, sysRate: 0, engRate: 0, wepRate: 0 };
   let armourRes = {
     kinetic: Number(bulkhead?.kinres ?? 0),
     thermal: Number(bulkhead?.thermres ?? 0),
@@ -482,6 +525,9 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
       distributor.sys += Number(module.syscap ?? 0);
       distributor.eng += Number(module.engcap ?? 0);
       distributor.wep += Number(module.wepcap ?? 0);
+      distributor.sysRate += Number(module.sysrate ?? 0);
+      distributor.engRate += Number(module.engrate ?? 0);
+      distributor.wepRate += Number(module.weprate ?? 0);
     }
     if (module.grp === 'fsd') fsd = module;
     if (module.grp === 't') thrusters = module;
@@ -569,8 +615,50 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
     shield, shieldResistances: shieldRes,
     armour, armourResistances: armourRes,
     powerCapacity, powerRetracted, powerDeployed,
-    distributor, masslock: ship.properties.masslock,
+    distributor,
+    boostEnergy: Number(ship.properties.boostEnergy ?? 0),
+    pipSpeed: Number(ship.properties.pipSpeed ?? 0.125),
+    masslock: ship.properties.masslock,
     emptySlots, engineered, experimental, warnings,
+  };
+}
+
+/** Расчёт влияния кандидата-модуля на текущую сборку (сравнение характеристик). */
+export function computeModuleDelta(
+  data: OutfittingData,
+  build: ShipBuild,
+  slot: BuildSlot,
+  candidateModule: OutfittingModule | null,
+): ModuleComparisonDelta {
+  const currentStats = computeStats(data, build);
+  const nextBuild: ShipBuild = {
+    ...build,
+    standard: [...build.standard],
+    hardpoints: [...build.hardpoints],
+    internal: [...build.internal],
+    mods: { ...build.mods },
+  };
+  const nextRef = candidateModule ? moduleRef(candidateModule) : null;
+  nextBuild[slot.section][slot.index] = nextRef;
+  if (!nextRef) delete nextBuild.mods[slot.key];
+
+  const nextStats = computeStats(data, nextBuild);
+
+  return {
+    massDelta: nextStats.unladenMass - currentStats.unladenMass,
+    jumpRangeDelta: nextStats.jumpRange - currentStats.jumpRange,
+    maxJumpRangeDelta: nextStats.maxJumpRange - currentStats.maxJumpRange,
+    ladenJumpRangeDelta: nextStats.ladenJumpRange - currentStats.ladenJumpRange,
+    speedDelta: nextStats.speed - currentStats.speed,
+    boostDelta: nextStats.boost - currentStats.boost,
+    shieldDelta: nextStats.shield - currentStats.shield,
+    armourDelta: nextStats.armour - currentStats.armour,
+    powerDeployedDelta: nextStats.powerDeployed - currentStats.powerDeployed,
+    powerCapacityDelta: nextStats.powerCapacity - currentStats.powerCapacity,
+    costDelta: nextStats.cost - currentStats.cost,
+    cargoDelta: nextStats.cargo - currentStats.cargo,
+    fuelDelta: nextStats.fuel - currentStats.fuel,
+    passengersDelta: nextStats.passengers - currentStats.passengers,
   };
 }
 

@@ -147,6 +147,8 @@ export const IconCircleDot = (p: IconProps) => wrap(<><circle cx="12" cy="12" r=
 export const IconCircleFill = (p: IconProps) => <svg width={p.size ?? 16} height={p.size ?? 16} viewBox="0 0 24 24" fill={p.color ?? defaultColor} style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0 }}><circle cx="12" cy="12" r="8"/></svg>;
 export const IconChevronUp = (p: IconProps) => wrap(<><path d="M18 15l-6-6-6 6"/></>, p);
 export const IconChevronDown = (p: IconProps) => wrap(<><path d="M6 9l6 6 6-6"/></>, p);
+export const IconChevronRight = (p: IconProps) => wrap(<><path d="M9 18l6-6-6-6"/></>, p);
+export const IconChevronLeft = (p: IconProps) => wrap(<><path d="M15 18l-6-6 6-6"/></>, p);
 export const IconGlobe = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></>, p);
 export const IconFlame = (p: IconProps) => wrap(<><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"/></>, p);
 export const IconBell = (p: IconProps) => wrap(<><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></>, p);
@@ -164,6 +166,17 @@ export const IconVolume = (p: IconProps) => wrap(<><polygon points="11 5 6 9 2 9
 export const IconPhone = (p: IconProps) => wrap(<><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></>, p);
 export const IconEye = (p: IconProps) => wrap(<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>, p);
 export const IconHome = (p: IconProps) => wrap(<><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></>, p);
+export const IconSliders = (p: IconProps) => wrap(<><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></>, p);
+export const IconSparkles = (p: IconProps) => wrap(<><path d="M12 3l1.9 5.8a2 2 0 001.3 1.3L21 12l-5.8 1.9a2 2 0 00-1.3 1.3L12 21l-1.9-5.8a2 2 0 00-1.3-1.3L3 12l5.8-1.9a2 2 0 001.3-1.3L12 3z"/><path d="M5 3v4M3 5h4M19 17v4M17 19h4"/></>, p);
+export const IconGrip = (p: IconProps) => wrap(<><circle cx="9" cy="5" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="9" cy="19" r="1.5"/><circle cx="15" cy="5" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="15" cy="19" r="1.5"/></>, p);
+export const IconLayers = (p: IconProps) => wrap(<><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></>, p);
+export const IconCpu = (p: IconProps) => wrap(<><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></>, p);
+export const IconGauge = (p: IconProps) => wrap(<><path d="M12 14l3-3"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></>, p);
+export const IconShieldHalf = (p: IconProps) => wrap(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 2v20"/></>, p);
+export const IconCompass = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></>, p);
+export const IconZap = (p: IconProps) => wrap(<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></>, p);
+export const IconMinus = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/></>, p);
+export const IconCopy = (p: IconProps) => wrap(<><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></>, p);
 
 /* ── Helper: Achievement icon by emoji / id ── */
 export function AchievementIcon({ icon, size = 22, color = "currentColor" }: { icon: string; size?: number; color?: string }) {
