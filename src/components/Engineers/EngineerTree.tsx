@@ -19,6 +19,8 @@ import {
   type EngineerBranch,
 } from '@/lib/engineers/data';
 import { blueprintLabel } from '@/lib/outfitting/build';
+import { groupName as localizedGroupName } from '@/lib/outfitting/i18n';
+import { useI18n } from '@/lib/i18n/I18nContext';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import { LABEL, MONO, PANEL, button } from '@/components/Outfitting/styles';
 
@@ -32,6 +34,8 @@ interface UpgradeRow {
 
 function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
   const { data } = useOutfittingData();
+  // Названия групп и чертежей общие с верфью — показываем их на том же языке.
+  const { locale } = useI18n();
   return useMemo(() => {
     if (!data || !engineer) return [];
     const merged: Record<string, number> = {};
@@ -44,15 +48,19 @@ function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
     for (const [key, grade] of Object.entries(merged)) {
       const [group, blueprint] = key.split(':');
       if (!rows.has(group)) {
-        rows.set(group, { group, groupName: data.groups[group]?.name ?? group.toUpperCase(), blueprints: [] });
+        rows.set(group, {
+          group,
+          groupName: localizedGroupName(locale, group, data.groups[group]?.name ?? group.toUpperCase()),
+          blueprints: [],
+        });
       }
-      rows.get(group)!.blueprints.push({ id: blueprint, label: blueprintLabel(blueprint), grade });
+      rows.get(group)!.blueprints.push({ id: blueprint, label: blueprintLabel(blueprint, locale), grade });
     }
     for (const row of rows.values()) {
       row.blueprints.sort((left, right) => right.grade - left.grade || left.label.localeCompare(right.label));
     }
     return [...rows.values()].sort((left, right) => left.groupName.localeCompare(right.groupName));
-  }, [data, engineer]);
+  }, [data, engineer, locale]);
 }
 
 function engineerMatches(engineer: Engineer, query: string) {

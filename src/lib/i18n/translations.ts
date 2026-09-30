@@ -1,5 +1,8 @@
 import type { Locale } from "./types";
-export const translations: Record<string, Record<string, string>> = {
+import { outfittingTranslations } from "./outfitting";
+
+/** Базовый словарь сайта; раздел верфи подмешивается ниже отдельным файлом. */
+const baseTranslations: Record<string, Record<string, string>> = {
   ru: {
     'nav.home': 'Главная',
     'nav.map': 'Карта кольца',
@@ -3429,6 +3432,17 @@ export const translations: Record<string, Record<string, string>> = {
     'forum.errorSave': '保存エラー',
   },
 };
+
+/**
+ * Итоговый словарь: базовые ключи плюс раздел верфи. Разделы держим в разных
+ * файлах, но `t()` видит их одинаково — по плоскому ключу.
+ */
+export const translations: Record<string, Record<string, string>> = Object.fromEntries(
+  [...new Set([...Object.keys(baseTranslations), ...Object.keys(outfittingTranslations)])].map((locale) => [
+    locale,
+    { ...(baseTranslations[locale] ?? {}), ...(outfittingTranslations[locale] ?? {}) },
+  ]),
+);
 
 export const SUPPORTED_LOCALES: Locale[] = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 

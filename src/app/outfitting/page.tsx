@@ -1,21 +1,19 @@
 import type { Metadata } from 'next';
+import OutfittingHeader from '@/components/Outfitting/OutfittingHeader';
 import OutfittingWorkspace from '@/components/Outfitting/OutfittingWorkspace';
 
+// Метаданные отдаются до того, как станет известен язык браузера, поэтому
+// заголовок двуязычный: так страницу находят и русским, и английским запросом.
 export const metadata: Metadata = {
-  title: 'Верфь — сборка кораблей | ED Ring Colony',
+  title: 'Верфь — сборка кораблей | Outfitting | ED Ring Colony',
   description:
-    'Конструктор сборок кораблей Elite Dangerous: слоты, модули, инженерия, дальность прыжка, щит, броня и баланс энергии. Актуальные цифры из открытого набора Coriolis.',
+    'Конструктор сборок кораблей Elite Dangerous: слоты, модули, инженерия, дальность прыжка, щит, броня и баланс энергии. Актуальные цифры из открытого набора Coriolis. Elite Dangerous ship build planner with full interface translation.',
 };
 
 export default function OutfittingPage() {
   return (
     <main style={{ maxWidth: 1400, margin: '0 auto', padding: '24px 16px 48px' }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Верфь</h1>
-      <p style={{ color: 'var(--muted)', fontSize: 13, marginTop: 0, marginBottom: 16, maxWidth: 820, lineHeight: 1.6 }}>
-        Соберите корабль под задачу: колонизационный грузовик, дальний разведчик или боевой борт. Верфь считает
-        дальность прыжка, скорость, щит, броню и баланс энергии по тем же формулам, что и игра, и учитывает
-        инженерные чертежи. Сборка живёт в адресной строке — ссылку можно отправить в эскадрилью.
-      </p>
+      <OutfittingHeader />
       <OutfittingWorkspace />
     </main>
   );

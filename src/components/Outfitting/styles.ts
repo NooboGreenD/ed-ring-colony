@@ -36,14 +36,38 @@ export function button(active = false, accent = 'var(--orange)'): CSSProperties 
   };
 }
 
-/** Число в русском формате: 12 345,6 */
-export function num(value: number, digits = 1): string {
+/** Разделители групп и дробной части берём из языка интерфейса. */
+const NUMBER_LOCALES: Record<string, string> = {
+  ru: 'ru-RU', en: 'en-GB', de: 'de-DE', it: 'it-IT', ko: 'ko-KR', zh: 'zh-CN', ja: 'ja-JP',
+};
+
+export function numberLocale(locale: string): string {
+  return NUMBER_LOCALES[locale] ?? NUMBER_LOCALES.en;
+}
+
+/** Число в формате языка интерфейса: 12 345,6 / 12,345.6 */
+export function num(value: number, digits = 1, locale = 'ru'): string {
   if (!Number.isFinite(value)) return '—';
-  return value.toLocaleString('ru-RU', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  return value.toLocaleString(numberLocale(locale), { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 /** Кредиты: 142 456 440 CR */
-export function credits(value: number): string {
+export function credits(value: number, locale = 'ru'): string {
   if (!Number.isFinite(value)) return '—';
-  return `${Math.round(value).toLocaleString('ru-RU')} CR`;
+  return `${Math.round(value).toLocaleString(numberLocale(locale))} CR`;
+}
+
+/**
+ * Форматтеры, привязанные к языку: удобнее, чем таскать локаль в каждый
+ * вызов внутри разметки.
+ */
+export function formatters(locale: string) {
+  return {
+    num: (value: number, digits = 1) => num(value, digits, locale),
+    credits: (value: number) => credits(value, locale),
+    date: (value: string | number | Date) => {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString(numberLocale(locale));
+    },
+  };
 }
