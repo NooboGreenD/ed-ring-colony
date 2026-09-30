@@ -360,11 +360,14 @@ bundle, поэтому после изменения обязательна пе
 ```bash
 cd /opt/ed-ring-colony/src
 # Сначала убедитесь, что Kong отвечает именно из web. В ответе health — JSON.
+# Заголовок apikey обязателен: у стокового шлюза Supabase весь /auth/v1/*
+# закрыт плагином key-auth, и без ключа приходит 401 «No API key found in
+# request» — даже когда GoTrue полностью здоров.
 docker compose --env-file .env.production exec web \
-  wget -qO- http://kong:8000/auth/v1/health
+  wget -qO- --header="apikey: $ANON_KEY" http://kong:8000/auth/v1/health
 # Если этот hostname не резолвится, проверьте второй допустимый вариант:
 # docker compose --env-file .env.production exec web \
-#   wget -qO- http://host.docker.internal:8000/auth/v1/health
+#   wget -qO- --header="apikey: $ANON_KEY" http://host.docker.internal:8000/auth/v1/health
 
 docker compose --env-file .env.production build web
 docker compose --env-file .env.production up -d --no-deps web
@@ -386,13 +389,18 @@ docker compose --env-file .env.production up -d --no-deps web
 openssl s_client -connect edringcolony.ru:443 -servername edringcolony.ru -verify_return_error </dev/null
 openssl s_client -connect supabase.edringcolony.ru:443 -servername supabase.edringcolony.ru -verify_return_error </dev/null
 curl -fsS https://edringcolony.ru/api/health
-curl -fsS https://supabase.edringcolony.ru/auth/v1/health
+# Без apikey шлюз Supabase отвечает 401 «No API key found in request» — это
+# НЕ поломка: /auth/v1/* закрыт key-auth. Проверяйте код ответа, а не -f.
+curl -sS -o /dev/null -w '%{http_code}\n' https://supabase.edringcolony.ru/auth/v1/health
+curl -fsS -H "apikey: $ANON_KEY" https://supabase.edringcolony.ru/auth/v1/health
 ```
 
 Обе первые команды должны показать сертификат и `Verify return code: 0 (ok)`.
 `no peer certificate`, `unexpected eof`, сертификат другого имени или Synology
 404 означают проблему на границе сети/DSM (сертификат, назначение текущему
-правилу, DNS, firewall/port-forward), а не ошибку логина или SMTP. Не отключайте
+правилу, DNS, firewall/port-forward), а не ошибку логина или SMTP. `401` на
+`/auth/v1/health` без ключа — нормальный ответ живого шлюза; «нет ответа»
+выглядит иначе: код `000`, таймаут или ошибка TLS. Не отключайте
 проверку TLS в браузере, Uploader или Node ради временной «починки».
 
 ### Email: исправление регистрации и восстановление

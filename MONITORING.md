@@ -401,8 +401,9 @@ bash deploy/start-update-agent.sh --no-migrations  # миграции — тол
   `deploy/apply-smtp.sh` проверяет, что compose-override передаёт SMTP в
   `auth` (иначе ставит его из шаблона `deploy/selfhost/
   supabase-auth.override.yml`, а чужой override без SMTP — честный отказ с
-  подсказкой смёржить вручную), пересоздаёт `auth`, ждёт его
-  `/auth/v1/health`, затем пересоздаёт `web` и проверяет сайт;
+  подсказкой смёржить вручную), пересоздаёт `auth`, **убеждается, что
+  контейнер `auth` поднялся** (см. ниже), затем пересоздаёт `web` и
+  проверяет сайт;
 - «Диагностика» — готовый `/api/admin/email-health`: флаг сайта, доступность
   GoTrue, `mailer_autoconfirm`, `disable_signup` и провайдер email.
 
@@ -421,6 +422,58 @@ docker compose --env-file .env.production --profile monitoring up -d --force-rec
 
 Пока этого не сделано, блок честно пишет «агент не видит .env стека», а
 сохранение ключей отвечает 503 — молча писать в пустоту агент не станет.
+
+### Как проверяется живость `auth` (и почему 401 — это нормально)
+
+Прод-инцидент: применение почты падало через три минуты после успешного
+пересоздания контейнера —
+
+```
+19:47:04 Container supabase-auth Started
+19:50:08 ОШИБКА: auth не ответил за 180с (https://<домен>/api/supabase/auth/v1/health)
+```
+
+Причина не в GoTrue. В стоковом стеке Supabase шлюз (Kong, в свежих сборках
+Envoy) закрывает весь `/auth/v1/*` плагином `key-auth`: открыты только
+`verify`, `callback`, `authorize`, `.well-known/jwks.json` и SAML. Значит
+`GET /auth/v1/health` **без заголовка `apikey`** всегда отвечает `401 {"message":
+"No API key found in request"}` — и когда GoTrue здоров тоже. Скрипт опрашивал
+адрес через `curl -sf`, для которого 401 — ошибка, поэтому честно ждал 180
+секунд и валил задачу. Вдобавок адрес брался публичный
+(`NEXT_PUBLIC_SUPABASE_URL`, то есть `https://<домен>/api/supabase`), а он
+ведёт через DNS, TLS, nginx и контейнер `web` — к отправке писем это
+отношения не имеет, зато ломает проверку (частый случай — hairpin NAT: сервер
+не видит собственный публичный адрес).
+
+Теперь `deploy/apply-smtp.sh` проверяет так:
+
+1. **состояние контейнера** — `docker inspect`: `running` + `healthy`
+   (штатный healthcheck стека сам дергает `wget http://localhost:9999/health`,
+   то есть GoTrue);
+2. если healthcheck в образе не определён — запрос к `/health` **изнутри**
+   контейнера (`docker exec`), без сети, шлюза, TLS и DNS;
+3. публичный адрес — **дополнительно** и уже с `apikey` из `.env` стека;
+   `401/403` считаются ответом шлюза, а не сбоем;
+4. если `auth` действительно не поднялся (`exited`, крэш-луп, `unhealthy`) —
+   в журнал задачи уходят состояние и хвост `docker logs` с настоящей
+   причиной (например, опечатка в `SMTP_HOST`), а не таймаут.
+
+Если контейнер жив, а публичный адрес молчит, задача **не падает**: выводится
+предупреждение с подсказками (сертификат, `SUPABASE_INTERNAL_URL` у `web`,
+hairpin NAT) — на отправку писем это не влияет, GoTrue шлёт их сам.
+
+Полезные ручные команды:
+
+```bash
+docker inspect -f '{{.State.Status}} {{.State.Health.Status}}' supabase-auth
+docker exec supabase-auth wget -qO- http://127.0.0.1:9999/health
+curl -sS -o /dev/null -w '%{http_code}\n' https://<домен>/api/supabase/auth/v1/health   # 401 = шлюз жив
+curl -fsS -H "apikey: $ANON_KEY" https://<домен>/api/supabase/auth/v1/health            # 200 = GoTrue жив
+```
+
+Настройки проверки: `AUTH_TRIES` (по 2с, ожидание контейнера, default 45),
+`AUTH_HTTP_TRIES` (по 4с, публичный адрес, default 15),
+`SUPABASE_AUTH_CONTAINER` (имя контейнера, default `supabase-auth`).
 
 ## Уборка диска после обновления
 
