@@ -484,13 +484,29 @@ jobs:
 
 ```env
 # .env.production
-UPLOADER_STORE_DIR=/data/uploader          # том uploader-store в docker-compose
+UPLOADER_STORE_DIR=/data/uploader
+# Отдельная папка на диске с backup'ами (обычно SDB), не Docker volume.
+UPLOADER_STORE_HOST_DIR=/opt/ed-ring-colony/backups/uploader-releases
 UPLOADER_PUBLISH_TOKEN=<длинная случайная строка>   # им публикует CI
 UPLOADER_SIGN_PUBLIC_KEYS=k202609:<публичный ключ>  # проверка подписи манифеста
 ```
 
-Том `uploader-store:/data/uploader` уже описан в `docker-compose.yml`, а
-правила кэша для `/api/uploader/blob|bundle/` — в `deploy/nginx.conf`.
+`UPLOADER_STORE_HOST_DIR` монтируется в контейнер как `/data/uploader`.
+После каждой публикации в этой папке остаются все manifests, blobs, ZIP,
+базовые EXE, `config.json` и журналы процессов — отдельный релиз можно
+скачать или вернуть даже после пересборки образов и очистки Docker.
+Путь должен находиться на диске с backup'ами (SDB), а не в Docker data-root.
+
+Для старой установки, где релизы ещё лежат в named volume, выполните один
+раз до первого `up -d` после перехода:
+
+```bash
+sudo bash deploy/migrate-uploader-store.sh
+```
+
+Скрипт копирует старый `uploader-store` в новую папку и не удаляет исходный
+volume. Не запускайте `docker compose down -v`, пока миграция не проверена.
+Правила кэша для `/api/uploader/blob|bundle/` — в `deploy/nginx.conf`.
 Каталог переживает пересборку образа: в нём лежат все опубликованные версии,
 включая ту, на которую можно откатиться.
 
@@ -516,7 +532,7 @@ Helper» → «Настроить»**), включая генерацию пар
 
 ```bash
 curl -s https://ваш-домен/api/uploader/manifest | head -c 300   # что в канале
-du -sh /var/lib/docker/volumes/*uploader-store/_data            # сколько занято
+du -sh /opt/ed-ring-colony/backups/uploader-releases         # сколько занято на SDB
 ```
 
 Админка → **Обновления Helper**: список версий, что стоит в каналах и кнопка

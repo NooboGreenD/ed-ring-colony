@@ -90,6 +90,13 @@ for d in "$REPO_ROOT/../backups" "/opt/ed-ring-colony/backups"; do
   ls -lht "$d"/edrc-db-*.dump "$d"/edrc-before-update-*.dump 2>/dev/null | head -n 12 || true
 done
 
+# Релизы Helper не являются Docker-кэшем и не удаляются --wipe. Они лежат
+# на том же диске с backup'ами, но в отдельной папке.
+for d in "$REPO_ROOT/../backups/uploader-releases" "/opt/ed-ring-colony/backups/uploader-releases"; do
+  [ -d "$d" ] || continue
+  say "$d — $(du -sh "$d" 2>/dev/null | cut -f1 || echo '?') (релизы Helper, НЕ удалять автоматически)"
+done
+
 say ""
 if [ "$WIPE" = "1" ]; then
   say "ГОТОВО: кэш-маунты вычищены. Сверьте df выше с состоянием ДО запуска."

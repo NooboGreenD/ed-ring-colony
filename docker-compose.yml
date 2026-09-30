@@ -43,10 +43,10 @@ services:
       PROJECT_REPOSITORY: ${PROJECT_REPOSITORY:-NooboGreenD/ed-ring-colony}
       PROJECT_UPDATE_BRANCH: ${PROJECT_UPDATE_BRANCH:-main}
       PROJECT_DEPLOY_MODE: ${PROJECT_DEPLOY_MODE:-auto}
-      # Пакеты обновлений Colonial Helper лежат на диске сервера, а не в
-      # объектном хранилище: это обычные файлы, адресуемые по sha256, и
-      # отдаются они тем же nginx. Путь внутри контейнера — точка монтирования
-      # тома `uploader-store` ниже.
+      # Пакеты обновлений Colonial Helper лежат на отдельном bind mount,
+      # а не внутри образа: это обычные файлы, адресуемые по sha256, и
+      # отдаются они тем же nginx. Внутри контейнера путь всегда /data/uploader;
+      # на хосте по умолчанию это отдельная папка на диске с backup'ами.
       UPLOADER_STORE_DIR: ${UPLOADER_STORE_DIR:-/data/uploader}
     # Lets a host-run updater (deploy/ed-ring-colony-update.service) be reached
     # without publishing its port; harmless when the agent runs as a container.
@@ -60,11 +60,12 @@ services:
       # a full re-download and the archive survives image rebuilds. Override
       # GALAXY_ARCHIVE_DIR to point the import elsewhere.
       - galaxy-dump:/app/data/spansh
-      # Пакеты кода Colonial Helper: манифесты версий и файлы по sha256.
-      # Том именованный, потому что пересборка образа не должна стирать
-      # опубликованные версии — иначе пилоты останутся без канала обновлений
-      # (и без возможности откатиться на прошлую версию).
-      - uploader-store:/data/uploader
+      # Пакеты кода Colonial Helper: ВСЕ манифесты, blobs, ZIP, EXE,
+      # config.json и журналы релизов лежат на хостовом диске с backup'ами,
+      # в отдельной папке uploader-releases. Образы и docker prune эту историю
+      # не затронут. При переносе со старой установки сначала выполните
+      # deploy/migrate-uploader-store.sh.
+      - ${UPLOADER_STORE_HOST_DIR:-/opt/ed-ring-colony/backups/uploader-releases}:${UPLOADER_STORE_DIR:-/data/uploader}
     # The private monitor network prevents the privileged agent from sharing
     # the default service network with other containers.
     networks:
@@ -267,7 +268,9 @@ volumes:
   update-state:
   # On-disk Spansh dump archive for the in-app galaxy import.
   galaxy-dump:
-  # Опубликованные пакеты кода Colonial Helper (манифесты, blob'ы, архивы).
+  # Старый named volume оставлен только для безопасной миграции существующих
+  # установок. web больше его не монтирует: рабочее хранилище — bind mount
+  # UPLOADER_STORE_HOST_DIR выше. Не удаляйте этот volume до миграции.
   uploader-store:
 
 networks:
