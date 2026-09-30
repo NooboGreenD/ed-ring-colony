@@ -4,6 +4,12 @@ import { join } from 'node:path';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import {
+  cancelHelperReleaseJob,
+  getHelperReleaseJob,
+  getLatestHelperReleaseJob,
+  startHelperReleaseJob,
+} from '@/lib/helperReleaseJobs';
+import {
   CHANNELS,
   createServerRelease,
   saveLauncherBinary,
@@ -49,6 +55,24 @@ async function serverSourceFiles(version: string): Promise<Map<string, Buffer>> 
  * канал. GitHub, Actions и внешний CI в этой цепочке не участвуют.
  * Тем же endpoint можно положить базовый exe прямо на диск сервера.
  */
+export async function GET(request: Request) {
+  const auth = await requireAdmin(request);
+  if ('response' in auth) return auth.response;
+  const url = new URL(request.url);
+  const id = url.searchParams.get('job');
+  const job = id ? await getHelperReleaseJob(id) : await getLatestHelperReleaseJob();
+  if (!job) return NextResponse.json({ ok: true, job: null }, NO_STORE);
+  return NextResponse.json({ ok: true, job }, NO_STORE);
+}
+
+export async function DELETE(request: Request) {
+  const auth = await requireAdmin(request);
+  if ('response' in auth) return auth.response;
+  const id = new URL(request.url).searchParams.get('job') || '';
+  const result = await cancelHelperReleaseJob(id);
+  return NextResponse.json(result, { status: result.ok ? 200 : 404, ...NO_STORE });
+}
+
 export async function POST(request: Request) {
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
@@ -56,6 +80,7 @@ export async function POST(request: Request) {
   try {
     const form = await request.formData();
     const kind = String(form.get('kind') ?? 'bundle');
+    const asyncRequested = String(form.get('async') ?? '') === 'true';
 
     if (kind === 'launcher') {
       const upload = form.get('launcher');
@@ -70,7 +95,16 @@ export async function POST(request: Request) {
       const forwardedProto = request.headers.get('x-forwarded-proto') ?? 'https';
       const origin = forwardedHost ? `${forwardedProto}://${forwardedHost}` : new URL(request.url).origin;
       const url = `${origin}/api/uploader/launcher/${encodeURIComponent(platform)}`;
-      const result = await saveLauncherBinary(platform, version, Buffer.from(await upload.arrayBuffer()), url);
+      const binary = Buffer.from(await upload.arrayBuffer());
+      if (asyncRequested) {
+        try {
+          const job = await startHelperReleaseJob({ kind: 'launcher', platform, version, publicUrl: url, data: binary });
+          return NextResponse.json({ ok: true, job }, { status: 202, ...NO_STORE });
+        } catch (error) {
+          return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'Не удалось поставить задачу в очередь' }, { status: 409, ...NO_STORE });
+        }
+      }
+      const result = await saveLauncherBinary(platform, version, binary, url);
       return NextResponse.json(result, { status: result.ok ? 200 : 400, ...NO_STORE });
     }
 
@@ -101,14 +135,18 @@ export async function POST(request: Request) {
       }
     }
 
-    const result = await createServerRelease({
-      version,
-      channel,
-      notes: String(form.get('notes') ?? ''),
-      minLauncher: String(form.get('minLauncher') ?? '1.0.0'),
-      files,
-      promote: String(form.get('promote') ?? 'true') !== 'false',
-    });
+    const notes = String(form.get('notes') ?? '');
+    const minLauncher = String(form.get('minLauncher') ?? '1.0.0');
+    const promote = String(form.get('promote') ?? 'true') !== 'false';
+    if (asyncRequested) {
+      try {
+        const job = await startHelperReleaseJob({ kind: 'bundle', version, channel, notes, minLauncher, files, promote });
+        return NextResponse.json({ ok: true, job }, { status: 202, ...NO_STORE });
+      } catch (error) {
+        return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'Не удалось поставить задачу в очередь' }, { status: 409, ...NO_STORE });
+      }
+    }
+    const result = await createServerRelease({ version, channel, notes, minLauncher, files, promote });
     return NextResponse.json(result, { status: result.ok ? 200 : 400, ...NO_STORE });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
+import { startHelperReleaseJob } from '@/lib/helperReleaseJobs';
 import {
   CHANNELS,
   type Channel,
@@ -56,11 +57,20 @@ export async function POST(request: Request) {
   const auth = await requireAdmin(request);
   if ('response' in auth) return auth.response;
 
-  const body = (await request.json().catch(() => null)) as { channel?: unknown; version?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { channel?: unknown; version?: unknown; async?: unknown } | null;
   const channel = String(body?.channel ?? '');
   const version = String(body?.version ?? '');
   if (!(CHANNELS as readonly string[]).includes(channel)) {
     return NextResponse.json({ ok: false, error: 'Неизвестный канал' }, { status: 400, ...NO_STORE });
+  }
+
+  if (body?.async === true) {
+    try {
+      const job = await startHelperReleaseJob({ channel: channel as Channel, version, kind: 'promote' });
+      return NextResponse.json({ ok: true, job }, { status: 202, ...NO_STORE });
+    } catch (error) {
+      return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'Не удалось поставить задачу в очередь' }, { status: 409, ...NO_STORE });
+    }
   }
 
   const result = await promoteVersion(channel as Channel, version);
