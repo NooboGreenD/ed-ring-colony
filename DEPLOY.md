@@ -152,7 +152,14 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
   полная уборка (`edrc_trim_build_cache`/`edrc_cleanup_docker_disk`):
   серия сорвавшихся сборок больше не распухает и не замедляет следующую.
   Бюджет кэша — `UPDATE_DOCKER_CACHE_KEEP` (по умолчанию `8g`, см.
-  `MONITORING.md` → «Уборка диска после обновления»);
+  `MONITORING.md` → «Уборка диска после обновления»). Отдельный бюджет
+  держат кэш-МАУНТЫ (`/root/.npm` и `/app/.next/cache`): их не подрезает
+  даже `docker builder prune`, а с Next 16.3 Turbopack по умолчанию пишет
+  персистентный кэш каждой сборки в `.next/cache` — без бюджета каждая
+  переборка съедала по 1–2 ГБ «в никуда» при минимальном видимом кэше.
+  Рычаги: `UPDATE_NEXT_CACHE_KEEP`/`UPDATE_NPM_CACHE_KEEP` (по умолчанию
+  `2g`), разовая диагностика и чистка — `bash deploy/docker-disk-report.sh
+  [--wipe]`;
 - **образы собираются по одному, `web` — последним** (`edrc_build_each`).
   Общий `compose build web jobs monitor-agent update-agent` запускал все
   четыре таргета параллельно: на слабом диске они дрались за I/O, полностью

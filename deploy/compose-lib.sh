@@ -200,6 +200,90 @@ edrc_builder_prune() {
   return 0
 }
 
+# edrc_trim_cache_mounts [режим] — кэш-маунты BuildKit в бюджете.
+#
+# Прод-инцидент «после каждой переборки минус 1–2 ГБ, а кэш сборки минимальный»:
+# RUN --mount=type=cache в Dockerfile web создаёт ПОСТОЯННЫЕ кэши (/root/.npm
+# и /app/.next/cache), которые `docker builder prune` надёжно не подрезает:
+#   • кэш-маунт — ОДНА запись кэша целиком: `--keep-storage` срезает СТАРЕЙШИЕ
+#     записи до бюджета, а кэш-маунт, которого касалась последняя сборка,
+#     всегда «самый свежий» — он остаётся и растёт без предела;
+#   • на части демонов кэш-маунты вообще не показываются в `docker system df`
+#     — место «уходит в никуда», при том что видимый кэш сборки чистится.
+#
+# Начиная с Next 16.3 Turbopack ПИШЕТ персистентный кэш сборки в .next/cache
+# (turbopackFileSystemCacheForBuild=true по умолчанию, см. блог Next.js 16.3):
+# каждая переборка с изменившимися исходниками дописывает туда новые записи,
+# ничего не удаляя, — по гигабайту и больше за прогон.
+#
+# Единственный переносимый способ добраться до кэш-маунта — синтетическая
+# сборка с ТЕМ ЖЕ target: кэш-маунты с одним id (= пути) общие для всех сборок
+# одного BuildKit. Крошечный шаг RUN меряет размер и, если тот выше бюджета,
+# вычищает содержимое (следующая сборка станет «холодной» по этому кэшу —
+# плата за освобожденное место). Лучший effort: недоступный BuildKit/демон —
+# no-op, обновление это никогда не валит.
+#
+# Режимы: auto (бюджеты из UPDATE_NEXT_CACHE_KEEP/UPDATE_NPM_CACHE_KEEP,
+# по умолчанию 2g каждый) · measure (только померить и доложить) ·
+# wipe (вычистить оба, независимо от размера — для тесного диска и отчёта).
+edrc_trim_cache_mounts() {
+  local mode="${1:-auto}"
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  # Кэш-маунты бывают только у BuildKit-сборок: без buildx compose уходит в
+  # запасной Dockerfile без --mount — подрезать нечего.
+  edrc_compose_uses_buildkit || return 0
+  local next_kb npm_kb wipe
+  case "$mode" in
+    measure) next_kb=0; npm_kb=0; wipe=0 ;;
+    wipe)    next_kb=0; npm_kb=0; wipe=1 ;;
+    *)       next_kb="$(edrc_size_to_kb "${UPDATE_NEXT_CACHE_KEEP:-2g}")"
+             npm_kb="$(edrc_size_to_kb "${UPDATE_NPM_CACHE_KEEP:-2g}")"
+             wipe=0 ;;
+  esac
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/edrc-cachetrim.XXXXXX" 2>/dev/null)" || return 0
+  # Скрипт выполняется ВНУТРИ шага сборки (busybox sh Alpine): $1 — каталог
+  # кэш-маунта, EDRC_KEEP_KB — бюджет в КБ (0 = только померить),
+  # EDRC_WIPE=1 — вычистить независимо от размера.
+  cat > "$tmp/edrc-trim.sh" <<'EDRC_TRIM_SH'
+#!/bin/sh
+dir="$1"
+keep="${EDRC_KEEP_KB:-0}"
+kb="$(du -sk "$dir" 2>/dev/null | cut -f1)"
+[ -n "$kb" ] || kb=0
+printf 'кэш-маунт %s: %s КБ (бюджет %s КБ)\n' "$dir" "$kb" "$keep"
+if [ "${EDRC_WIPE:-0}" = "1" ] || { [ "$keep" -gt 0 ] && [ "$kb" -gt "$keep" ]; }; then
+  printf '  вычищаю %s — следующая сборка будет «холодной» по этому кэшу\n' "$dir"
+  find "$dir" -mindepth 1 -delete 2>/dev/null || rm -rf "$dir"/* 2>/dev/null || true
+  kb="$(du -sk "$dir" 2>/dev/null | cut -f1)"
+  [ -n "$kb" ] || kb=0
+  printf '  после очистки: %s КБ\n' "$kb"
+fi
+EDRC_TRIM_SH
+  # node:22-alpine не тянется из сети: это база всех образов стека, она уже
+  # лежит в локальном Docker. Подойдёт любой локальный образ с sh.
+  {
+    printf 'FROM node:22-alpine\n'
+    printf 'COPY edrc-trim.sh /tmp/edrc-trim.sh\n'
+    printf 'RUN --mount=type=cache,target=/app/.next/cache EDRC_KEEP_KB=%s EDRC_WIPE=%s sh /tmp/edrc-trim.sh /app/.next/cache\n' "$next_kb" "$wipe"
+    printf 'RUN --mount=type=cache,target=/root/.npm EDRC_KEEP_KB=%s EDRC_WIPE=%s sh /tmp/edrc-trim.sh /root/.npm\n' "$npm_kb" "$wipe"
+  } > "$tmp/Dockerfile"
+  local -a runner=(docker)
+  # du/удаление на распухшем кэше — это миллионы файлов: не вешаем обновление
+  # из-за застрявшего демона, если timeout доступен.
+  command -v timeout >/dev/null 2>&1 && runner=(timeout "${EDRC_CACHE_TRIM_TIMEOUT:-600}" docker)
+  # Аттестации выключаем и здесь (см. edrc_disable_default_attestations):
+  # лишний поход в Docker Hub в конце даже крошечной сборки умеет ронять её
+  # по дедлайну на нестабильном канале.
+  if ! BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}" \
+       DOCKER_BUILDKIT=1 "${runner[@]}" build --rm -f "$tmp/Dockerfile" "$tmp" 2>/dev/null; then
+    printf '⚠ не удалось проверить кэш-маунты BuildKit (docker build) — пропускаю\n' >&2
+  fi
+  rm -rf "$tmp" 2>/dev/null || true
+  return 0
+}
+
 # edrc_trim_build_cache — ПЕРЕД сборкой: кэш BuildKit в бюджете.
 #
 # Уборка после переключения контейнеров помогает только успешным прогонам;
@@ -216,7 +300,7 @@ edrc_trim_build_cache() {
   docker info >/dev/null 2>&1 || return 0
   local keep="${UPDATE_DOCKER_CACHE_KEEP:-8g}"
   local tight="${UPDATE_DOCKER_CACHE_KEEP_TIGHT:-2g}"
-  local free_kb min_kb
+  local free_kb min_kb mount_mode="auto"
   free_kb="$(edrc_docker_free_kb || true)"
   min_kb="$(edrc_size_to_kb "${UPDATE_DOCKER_MIN_FREE:-4g}")"
   case "$free_kb" in
@@ -226,9 +310,13 @@ edrc_trim_build_cache() {
         printf 'свободно %s МБ — подрезаю кэш BuildKit жёстче обычного (до %s вместо %s)\n' \
           $(( free_kb / 1024 )) "$tight" "$keep"
         keep="$tight"
+        # Кэш-маунты — самый большой «невидимый» потребитель после серии
+        # переборок: при тесном диске вычищаем их целиком, без бюджета.
+        mount_mode="wipe"
       fi
       ;;
   esac
+  edrc_trim_cache_mounts "$mount_mode"
   edrc_builder_prune "$keep"
   return 0
 }
@@ -443,19 +531,33 @@ edrc_build_each() {
 #   • кэш BuildKit. Любое изменение исходников инвалидирует слой COPY,
 #     и сборка оставляет НОВЫЙ кэш npm ci / next build (гигабайты), а кэш
 #     прошлых прогонов никто не удалял — `docker image prune` его не трогает;
+#   • кэш-МАУНТЫ BuildKit (/root/.npm и /app/.next/cache): их не подрезает
+#     даже `docker builder prune` (см. edrc_trim_cache_mounts), а с Next 16.3
+#     Turbopack дописывает в .next/cache персистентный кэш каждой сборки —
+#     это и был источник «по 1–2 ГБ в никуда при минимальном кэше сборки»;
 #   • висячие образы и остановленные контейнеры (чистились и раньше);
 #   • несрезанные слои от --no-cache пересборок.
 #
-# Итоговая таблица docker system df печатается в журнал.
+# Итоговая таблица docker system df и строка df по корню Docker печатаются
+# в журнал.
 edrc_cleanup_docker_disk() {
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
 
   docker container prune -f >/dev/null 2>&1 || true
   docker image prune -f >/dev/null 2>&1 || true
+  # Кэш-маунты (/root/.npm, /app/.next/cache) — отдельный, невидимый для
+  # `docker builder prune` потребитель: с Next 16.3 Turbopack дописывает
+  # туда персистентный кэш КАЖДОЙ сборки. Держим их в собственном бюджете
+  # (UPDATE_NEXT_CACHE_KEEP / UPDATE_NPM_CACHE_KEEP, по умолчанию 2g).
+  edrc_trim_cache_mounts auto || true
   edrc_builder_prune
 
   # Краткий отчёт оператору: что именно занимает диск после уборки.
   docker system df 2>/dev/null | head -n 8 || true
+  local root
+  root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  [ -n "$root" ] || root="/var/lib/docker"
+  df -h "$root" 2>/dev/null | tail -n 1 || true
   return 0
 }
