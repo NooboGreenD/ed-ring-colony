@@ -1339,6 +1339,143 @@ test('apply-smtp.sh: чужой override сохраняется, SMTP подкл
   assert.match(calls, /-f docker-compose\.override\.yml -f docker-compose\.smtp-override\.yml up -d --no-deps --force-recreate auth/, 'оба override применены вместе');
 });
 
+/**
+ * Стенд для apply-smtp.sh с ПРАВДОПОДОБНЫМИ заглушками docker и curl.
+ *
+ * Прод-инцидент, ради которого он появился: у стокового шлюза Supabase
+ * (Kong/Envoy) весь /auth/v1/* закрыт плагином key-auth, поэтому
+ * GET /auth/v1/health без заголовка apikey отвечает 401 «No API key found in
+ * request» ВСЕГДА — и когда GoTrue здоров тоже. Проверка через `curl -sf`
+ * считала это недоступностью, 180 секунд ждала 200 и валила применение почты
+ * сразу после успешного «Container supabase-auth Started».
+ *
+ * Заглушки умеют то же, что и настоящие команды на сервере:
+ *   docker compose ps -q auth  → id контейнера
+ *   docker inspect             → «статус|health|код выхода|перезапусков»
+ *   docker exec … wget         → ответ GoTrue изнутри контейнера
+ *   docker logs                → хвост журнала (с секретом в строке)
+ *   curl -f / curl -w          → провал и код ответа шлюза
+ */
+function smtpStand(name, { authState = 'running|healthy|0|0', authCode = '401', siteCode = '200' } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), name));
+  const supaDir = join(dir, 'supabase');
+  const projectDir = join(dir, 'src');
+  const binDir = join(dir, 'bin');
+  const log = join(dir, 'calls.log');
+  mkdirSync(supaDir, { recursive: true });
+  mkdirSync(join(projectDir, 'deploy', 'selfhost'), { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(log, '');
+  writeFileSync(join(supaDir, 'docker-compose.yml'), 'services:\n  auth:\n    image: supabase/gotrue\n');
+  writeFileSync(join(supaDir, '.env'), [
+    'SMTP_HOST=smtp.example.test', 'SMTP_PORT=587', 'SMTP_USER=no-reply@example.test',
+    'SMTP_PASS=mail-secret', 'SMTP_ADMIN_EMAIL=no-reply@example.test',
+    'ANON_KEY=anon-key-value', 'DISABLE_SIGNUP=true',
+    'API_EXTERNAL_URL=https://edringcolony.ru/api/supabase',
+  ].join('\n'));
+  writeFileSync(join(projectDir, 'docker-compose.yml'), 'services:\n  web:\n    image: web\n');
+  writeFileSync(join(projectDir, '.env.production'), 'PROJECT_REPOSITORY=test\n');
+  copyFileSync(join(ROOT, 'deploy', 'apply-smtp.sh'), join(projectDir, 'deploy', 'apply-smtp.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'compose-lib.sh'), join(projectDir, 'deploy', 'compose-lib.sh'));
+  copyFileSync(join(ROOT, 'deploy', 'selfhost', 'supabase-auth.override.yml'),
+    join(projectDir, 'deploy', 'selfhost', 'supabase-auth.override.yml'));
+
+  writeFileSync(join(binDir, 'docker'), [
+    '#!/usr/bin/env bash',
+    'echo "[docker] $*" >> "$STUB_LOG"',
+    'args="$*"',
+    'case "$args" in',
+    '  "compose version") exit 0 ;;',
+    '  *"ps -q auth") printf "authcid\\n"; exit 0 ;;',
+    `  *"State.Status"*) printf '%s\\n' "${authState}"; exit 0 ;;`,
+    '  *"Config.Env"*) printf "GOTRUE_API_PORT=9999\\nGOTRUE_SMTP_PASS=mail-secret\\n"; exit 0 ;;',
+    '  "exec authcid sh -c"*) printf "/usr/bin/wget\\n"; exit 0 ;;',
+    '  "exec authcid wget"*) exit "${STUB_LOCAL_HEALTH_RC:-0}" ;;',
+    '  "logs --tail"*) printf "%s\\n" \'level=fatal msg="smtp: invalid port" GOTRUE_SMTP_PASS=mail-secret\'; exit 0 ;;',
+    'esac',
+    'exit 0',
+    '',
+  ].join('\n'), { mode: 0o755 });
+
+  writeFileSync(join(binDir, 'curl'), [
+    '#!/usr/bin/env bash',
+    'echo "[curl] $*" >> "$STUB_LOG"',
+    'url="${@: -1}"',
+    'case "$url" in',
+    `  *auth/v1/health) code="${authCode}" ;;`,
+    `  *) code="${siteCode}" ;;`,
+    'esac',
+    'want_code=""',
+    'for a in "$@"; do [ "$a" = "-w" ] && want_code=1; done',
+    'if [ -n "$want_code" ]; then printf "%s" "$code"; exit 0; fi',
+    'case "$code" in 2??|3??) exit 0 ;; *) exit 22 ;; esac',
+    '',
+  ].join('\n'), { mode: 0o755 });
+
+  const run = (extraEnv = {}) => spawnSync('bash', [join(projectDir, 'deploy', 'apply-smtp.sh')], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: binDir + ':/usr/bin:/bin',
+      STUB_LOG: log,
+      SUPABASE_HOST_DIR: supaDir,
+      PROJECT_DIR: projectDir,
+      ENV_FILE: join(projectDir, '.env.production'),
+      AUTH_HEALTH_URL: 'https://edringcolony.ru/api/supabase/auth/v1/health',
+      UPDATE_HEALTH_URL: 'http://127.0.0.1:3000/api/health',
+      PROJECT_DEPLOY_MODE: 'compose',
+      AUTH_TRIES: '3',
+      AUTH_HTTP_TRIES: '2',
+      HEALTH_TRIES: '2',
+      ...extraEnv,
+    },
+  });
+  return { dir, supaDir, projectDir, log, run };
+}
+
+test('apply-smtp.sh: 401 key-auth на /auth/v1/health не валит применение почты', { skip: needsBash }, () => {
+  // Ровно прод-инцидент: auth пересоздан и здоров, шлюз отвечает 401.
+  const stand = smtpStand('edrc-apply-smtp-401-', { authState: 'running|healthy|0|0', authCode: '401' });
+  const started = Date.now();
+  const run = stand.run();
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  assert.ok(Date.now() - started < 60_000, 'проверка не должна ждать 180с ради заведомого 401');
+  assert.match(run.stdout, /контейнер auth работает/, 'живость подтверждена по самому контейнеру');
+  assert.match(run.stdout, /401/, 'код шлюза виден в журнале задачи');
+  assert.match(run.stdout, /key-auth/, 'объяснено, почему 401 — это норма, а не сбой');
+  assert.doesNotMatch(run.stdout, /не ответил за/, 'старого таймаута больше нет');
+  assert.match(run.stdout, /"stage":"done"/, 'задача доходит до «Готово»');
+  // Ключ apikey из .env стека уходит в запрос — иначе 200 от GoTrue не получить.
+  assert.match(readFileSync(stand.log, 'utf8'), /apikey: anon-key-value/, 'публичная проверка идёт с apikey');
+});
+
+test('apply-smtp.sh: 200 через шлюз с apikey — подтверждение снаружи', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-200-', { authState: 'running|healthy|0|0', authCode: '200' });
+  const run = stand.run();
+  assert.equal(run.status, 0, run.stdout + '\n---\n' + run.stderr);
+  assert.match(run.stdout, /auth отвечает и по адресу/, 'успешный ответ шлюза тоже отмечается');
+});
+
+test('apply-smtp.sh: упавший auth — причина и хвост журнала вместо таймаута', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-dead-', { authState: 'exited|none|1|0', authCode: '000' });
+  const run = stand.run();
+  assert.equal(run.status, 1, 'реально упавший контейнер обязан валить задачу');
+  const out = run.stdout + run.stderr;
+  assert.match(out, /код выхода 1/, 'в ошибке — состояние контейнера, а не «не ответил за 180с»');
+  assert.match(out, /smtp: invalid port/, 'показан хвост журнала auth с настоящей причиной');
+  assert.doesNotMatch(out, /mail-secret/, 'пароль SMTP из журнала не утекает в панель');
+  assert.match(out, /"error":"auth не поднялся/, 'панель получает короткую причину в JSON-канале');
+  // Заведомо мёртвый контейнер не должен ещё минуту опрашиваться по HTTP.
+  assert.doesNotMatch(readFileSync(stand.log, 'utf8'), /\[curl\].*auth\/v1\/health/, 'внешняя проверка пропущена');
+});
+
+test('apply-smtp.sh: контейнер не подтверждён и адрес молчит — честный отказ', { skip: needsBash }, () => {
+  const stand = smtpStand('edrc-apply-smtp-silent-', { authState: 'running|starting|0|0', authCode: '000' });
+  const run = stand.run({ STUB_LOCAL_HEALTH_RC: '7' });
+  assert.equal(run.status, 1, 'если auth не ответил ни изнутри, ни снаружи — это ошибка');
+  assert.match(run.stdout + run.stderr, /не подтвердил готовность/, 'сказано, что именно не подтвердилось');
+});
+
 test('smtp обрамление: маршруты за requireAdmin, блок в разделе авторизации, агент видит стек', () => {
   const route = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'route.ts'), 'utf8');
   const applyRoute = readFileSync(join(ROOT, 'src', 'app', 'api', 'admin', 'smtp', 'apply', 'route.ts'), 'utf8');
