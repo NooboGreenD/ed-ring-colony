@@ -20,6 +20,7 @@ import {
 } from '@/lib/engineers/data';
 import { blueprintLabel } from '@/lib/outfitting/build';
 import { groupName as localizedGroupName } from '@/lib/outfitting/i18n';
+import { engineerSearchText, engineerSkills, engineerText } from '@/lib/engineers/i18n';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import { LABEL, MONO, PANEL, button } from '@/components/Outfitting/styles';
@@ -63,20 +64,19 @@ function useUpgrades(engineer: Engineer | null): UpgradeRow[] {
   }, [data, engineer, locale]);
 }
 
-function engineerMatches(engineer: Engineer, query: string) {
+function engineerMatches(engineer: Engineer, query: string, locale: string) {
   if (!query) return true;
-  return [engineer.name, engineer.system, engineer.station, engineer.focus, engineer.discovery]
-    .join(' ')
-    .toLocaleLowerCase('ru')
-    .includes(query);
+  // Ищем и по переводу, и по русскому оригиналу: ссылки и заметки командиров
+  // ходят по эскадрилье на разных языках.
+  return engineerSearchText(locale, engineer).toLocaleLowerCase(locale).includes(query);
 }
 
-function subtreeMatches(engineer: Engineer, branch: EngineerBranch, query: string, hideColonia: boolean): boolean {
+function subtreeMatches(engineer: Engineer, branch: EngineerBranch, query: string, hideColonia: boolean, locale: string): boolean {
   if (hideColonia && engineer.colonia) return false;
-  if (engineerMatches(engineer, query)) return true;
+  if (engineerMatches(engineer, query, locale)) return true;
   return childrenOf(engineer.id, branch)
     .filter((child) => child.from[0] === engineer.id)
-    .some((child) => subtreeMatches(child, branch, query, hideColonia));
+    .some((child) => subtreeMatches(child, branch, query, hideColonia, locale));
 }
 
 function Card({
@@ -92,6 +92,8 @@ function Card({
   onToggle: () => void;
   onCollapse: () => void;
 }) {
+  const { t, locale } = useI18n();
+  const focus = engineerText(locale, engineer, 'focus');
   const accent = unlocked ? 'var(--green)' : available ? 'var(--orange)' : 'var(--line)';
   return (
     <div
@@ -109,9 +111,9 @@ function Card({
           type="button"
           onClick={onCollapse}
           className="eng-card-collapse"
-          aria-label={collapsed ? `Показать ветку ${engineer.name}` : `Скрыть ветку ${engineer.name}`}
+          aria-label={t(collapsed ? 'engineers.card.showBranch' : 'engineers.card.hideBranch', { name: engineer.name })}
           aria-expanded={!collapsed}
-          title={collapsed ? `Показать учеников (${childCount})` : 'Свернуть ветку'}
+          title={collapsed ? t('engineers.card.showChildren', { count: childCount }) : t('engineers.card.collapseBranch')}
         >
           <span className={collapsed ? '' : 'open'}>›</span>
         </button>
@@ -120,20 +122,22 @@ function Card({
         <span className="eng-card-heading">
           <span className="eng-card-name" style={{ color: unlocked ? 'var(--green)' : 'var(--text)' }}>{engineer.name}</span>
           <span className={`eng-status ${unlocked ? 'done' : available ? 'available' : ''}`}>
-            {unlocked ? 'открыт' : available ? 'доступен' : 'закрыт'}
+            {t(unlocked ? 'engineers.status.unlocked' : available ? 'engineers.status.available' : 'engineers.status.locked')}
           </span>
         </span>
         <span className="eng-card-sub">
-          {engineer.system}{engineer.permit ? ' · пермит' : ''}{engineer.colonia ? ' · Колония' : ''}
+          {engineer.system}
+          {engineer.permit ? ` · ${t('engineers.card.permit')}` : ''}
+          {engineer.colonia ? ` · ${t('engineers.card.colonia')}` : ''}
         </span>
-        <span className="eng-card-focus" title={engineer.focus}>{engineer.focus}</span>
+        <span className="eng-card-focus" title={focus}>{focus}</span>
       </button>
       <button
         type="button"
         onClick={onToggle}
         className="eng-card-mark"
-        aria-label={unlocked ? `Отметить ${engineer.name} как не открытого` : `Отметить ${engineer.name} как открытого`}
-        title={unlocked ? 'Отметить как не открытого' : 'Отметить как открытого'}
+        aria-label={t(unlocked ? 'engineers.card.markLocked' : 'engineers.card.markUnlocked', { name: engineer.name })}
+        title={t(unlocked ? 'engineers.card.markLockedShort' : 'engineers.card.markUnlockedShort')}
         style={{ color: unlocked ? 'var(--green)' : 'var(--muted)', borderColor: unlocked ? 'var(--green)' : 'var(--line)' }}
       >
         {unlocked ? '✓' : '+'}
@@ -154,11 +158,12 @@ function Node(props: {
   onToggle: (id: string) => void;
   onCollapse: (id: string) => void;
 }) {
+  const { locale } = useI18n();
   const { engineer, branch, selected, unlocked, collapsed, query, hideColonia, onSelect, onToggle, onCollapse } = props;
   const allChildren = childrenOf(engineer.id, branch)
     .filter((child) => child.from[0] === engineer.id && !(hideColonia && child.colonia));
   const children = query
-    ? allChildren.filter((child) => subtreeMatches(child, branch, query, hideColonia))
+    ? allChildren.filter((child) => subtreeMatches(child, branch, query, hideColonia, locale))
     : allChildren;
   const available = engineer.from.length === 0 || engineer.from.some((parent) => unlocked.has(parent));
   const isCollapsed = !query && collapsed.has(engineer.id);
@@ -186,6 +191,7 @@ function Node(props: {
 }
 
 export default function EngineerTree() {
+  const { t, locale } = useI18n();
   const [branch, setBranch] = useState<EngineerBranch>('ship');
   const [selected, setSelected] = useState<string | null>(null);
   const [unlocked, setUnlocked] = useState<Set<string>>(new Set());
@@ -229,10 +235,10 @@ export default function EngineerTree() {
     });
   }, []);
 
-  const query = search.trim().toLocaleLowerCase('ru');
+  const query = search.trim().toLocaleLowerCase(locale);
   const current = selected ? ENGINEER_BY_ID.get(selected) ?? null : null;
   const upgrades = useUpgrades(current);
-  const roots = rootsOf(branch).filter((engineer) => subtreeMatches(engineer, branch, query, hideColonia));
+  const roots = rootsOf(branch).filter((engineer) => subtreeMatches(engineer, branch, query, hideColonia, locale));
   const branchEngineers = ENGINEERS.filter((engineer) => engineer.branch === branch && !(hideColonia && engineer.colonia));
   const total = branchEngineers.length;
   const done = branchEngineers.filter((engineer) => unlocked.has(engineer.id)).length;
@@ -249,11 +255,11 @@ export default function EngineerTree() {
     <>
       <style>{treeCss}</style>
 
-      <section className="eng-toolbar" aria-label="Управление схемой">
+      <section className="eng-toolbar" aria-label={t('engineers.toolbarLabel')}>
         <div className="eng-toolbar-row">
-          <div className="eng-segmented" aria-label="Ветка инженеров">
-            <button type="button" className={branch === 'ship' ? 'active' : ''} onClick={() => changeBranch('ship')}>корабли</button>
-            <button type="button" className={branch === 'odyssey' ? 'active' : ''} onClick={() => changeBranch('odyssey')}>одиссея</button>
+          <div className="eng-segmented" aria-label={t('engineers.branchLabel')}>
+            <button type="button" className={branch === 'ship' ? 'active' : ''} onClick={() => changeBranch('ship')}>{t('engineers.branch.ship')}</button>
+            <button type="button" className={branch === 'odyssey' ? 'active' : ''} onClick={() => changeBranch('odyssey')}>{t('engineers.branch.odyssey')}</button>
           </div>
           <label className="eng-search">
             <span aria-hidden="true">⌕</span>
@@ -261,26 +267,26 @@ export default function EngineerTree() {
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Инженер, система или специализация…"
-              aria-label="Найти инженера"
+              placeholder={t('engineers.search.placeholder')}
+              aria-label={t('engineers.search.label')}
             />
-            {search && <button type="button" onClick={() => setSearch('')} aria-label="Очистить поиск">×</button>}
+            {search && <button type="button" onClick={() => setSearch('')} aria-label={t('engineers.search.clear')}>×</button>}
           </label>
         </div>
         <div className="eng-toolbar-row eng-toolbar-actions">
           <button type="button" style={button(hideColonia)} onClick={() => setHideColonia((value) => !value)}>
-            {hideColonia ? 'показать колонию' : 'скрыть колонию'}
+            {t(hideColonia ? 'engineers.colonia.show' : 'engineers.colonia.hide')}
           </button>
-          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set())}>развернуть всё</button>
-          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set(parents.map((engineer) => engineer.id)))}>свернуть всё</button>
+          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set())}>{t('engineers.expandAll')}</button>
+          <button type="button" style={button(false)} onClick={() => setCollapsed(new Set(parents.map((engineer) => engineer.id)))}>{t('engineers.collapseAll')}</button>
           {done > 0 && (
             <button type="button" style={button(false, 'var(--red)')} onClick={() => {
               setUnlocked(new Set());
               window.localStorage.removeItem(STORE_KEY);
-            }}>сбросить отметки</button>
+            }}>{t('engineers.resetMarks')}</button>
           )}
-          <div className="eng-progress" title={`${progress}% инженеров открыто`}>
-            <span>открыто {done} из {total}</span>
+          <div className="eng-progress" title={t('engineers.progressTitle', { percent: progress })}>
+            <span>{t('engineers.progress', { done, total })}</span>
             <div><i style={{ width: `${progress}%` }} /></div>
           </div>
         </div>
@@ -307,18 +313,16 @@ export default function EngineerTree() {
               ))}
             </ul>
           ) : (
-            <div className="eng-empty">Ничего не найдено. Попробуйте изменить запрос.</div>
+            <div className="eng-empty">{t('engineers.empty')}</div>
           )}
         </div>
 
         <aside className="eng-details">
           {!current && (
             <div style={PANEL}>
-              <p style={{ ...LABEL, marginTop: 0 }}>как читать схему</p>
+              <p style={{ ...LABEL, marginTop: 0 }}>{t('engineers.help.title')}</p>
               <p style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.7, marginBottom: 0 }}>
-                Схема идёт сверху вниз: вложенные карточки — инженеры, о которых расскажет наставник. Нажмите на
-                стрелку, чтобы свернуть ветку, на карточку — чтобы увидеть условия и чертежи, на «+» — отметить
-                инженера открытым. Поиск автоматически раскрывает подходящие ветки.
+                {t('engineers.help.text')}
               </p>
             </div>
           )}
@@ -327,38 +331,54 @@ export default function EngineerTree() {
             <div style={PANEL}>
               <div className="eng-details-head">
                 <h2>{current.name}</h2>
-                <button type="button" onClick={() => setSelected(null)} aria-label="Закрыть подробности">×</button>
+                <button type="button" onClick={() => setSelected(null)} aria-label={t('engineers.details.close')}>×</button>
               </div>
               <p style={{ fontSize: 11.5, color: 'var(--muted)', fontFamily: MONO, margin: '0 0 10px' }}>
-                {current.station} · {current.system}{current.permit ? ' · нужен пермит' : ''}{current.colonia ? ' · Колония' : ''}
+                {current.station} · {current.system}
+                {current.permit ? ` · ${t('engineers.details.permit')}` : ''}
+                {current.colonia ? ` · ${t('engineers.card.colonia')}` : ''}
               </p>
 
-              <Row title="как узнать">{current.discovery}</Row>
-              {current.meeting && current.meeting !== '—' && <Row title="условие встречи">{current.meeting}</Row>}
-              <Row title="приглашение">{current.unlock}</Row>
-              {current.referral && <Row title="наводка дальше">{current.referral}</Row>}
+              <Row title={t('engineers.row.discovery')}>{engineerText(locale, current, 'discovery')}</Row>
+              {current.meeting && current.meeting !== '—' && (
+                <Row title={t('engineers.row.meeting')}>{engineerText(locale, current, 'meeting')}</Row>
+              )}
+              <Row title={t('engineers.row.unlock')}>{engineerText(locale, current, 'unlock')}</Row>
+              {current.referral && <Row title={t('engineers.row.referral')}>{engineerText(locale, current, 'referral')}</Row>}
 
               {current.from.length > 0 && (
-                <Row title="сначала откройте">
+                <Row title={t('engineers.row.prereq')}>
                   {pathTo(current.id).slice(0, -1).map((parent, index, list) => (
                     <span key={parent.id}>
                       <button type="button" onClick={() => select(parent.id)} className="eng-inline-link">{parent.name}</button>
                       {index < list.length - 1 ? ' → ' : ''}
                     </span>
                   ))}
-                  {current.from.length > 1 && ` (и ещё: ${current.from.slice(1).map((id) => ENGINEER_BY_ID.get(id)?.name ?? id).join(', ')})`}
+                  {current.from.length > 1 && t('engineers.details.alsoFrom', {
+                    names: current.from.slice(1).map((id) => ENGINEER_BY_ID.get(id)?.name ?? id).join(', '),
+                  })}
                 </Row>
               )}
 
-              <p style={{ ...LABEL, margin: '14px 0 6px', color: 'var(--orange)' }}>что улучшает</p>
-              {current.skills && <ul className="eng-skills">{current.skills.map((skill) => <li key={skill}>{skill}</li>)}</ul>}
-              {!current.skills && upgrades.length === 0 && <p style={{ fontSize: 12, color: 'var(--muted)' }}>Загрузка списка чертежей…</p>}
+              <p style={{ ...LABEL, margin: '14px 0 6px', color: 'var(--orange)' }}>{t('engineers.details.upgrades')}</p>
+              {current.skills && (
+                <ul className="eng-skills">
+                  {(engineerSkills(locale, current) ?? []).map((skill) => <li key={skill}>{skill}</li>)}
+                </ul>
+              )}
+              {!current.skills && upgrades.length === 0 && (
+                <p style={{ fontSize: 12, color: 'var(--muted)' }}>{t('engineers.details.loading')}</p>
+              )}
               {upgrades.map((row) => (
                 <div key={row.group} style={{ marginBottom: 8 }}>
                   <div style={{ fontSize: 11.5, color: 'var(--cyan)', fontFamily: MONO, marginBottom: 2 }}>{row.groupName}</div>
                   <div className="eng-blueprints">
                     {row.blueprints.map((blueprint) => (
-                      <span key={blueprint.id} title={`${blueprint.label} — максимум ${blueprint.grade} уровень`} className={blueprint.grade >= 5 ? 'grade-five' : ''}>
+                      <span
+                        key={blueprint.id}
+                        title={t('engineers.blueprint.title', { label: blueprint.label, grade: blueprint.grade })}
+                        className={blueprint.grade >= 5 ? 'grade-five' : ''}
+                      >
                         {blueprint.label} · G{blueprint.grade}
                       </span>
                     ))}
@@ -366,7 +386,7 @@ export default function EngineerTree() {
                 </div>
               ))}
 
-              {current.branch === 'ship' && <p style={{ marginTop: 12, marginBottom: 0 }}><Link href="/outfitting" style={{ fontSize: 12 }}>Собрать корабль с этими улучшениями →</Link></p>}
+              {current.branch === 'ship' && <p style={{ marginTop: 12, marginBottom: 0 }}><Link href="/outfitting" style={{ fontSize: 12 }}>{t('engineers.details.buildLink')}</Link></p>}
             </div>
           )}
         </aside>

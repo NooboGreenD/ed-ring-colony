@@ -1,0 +1,247 @@
+/**
+ * Инженеры по-английски: как узнать, условие встречи, приглашение, наводка
+ * дальше и специализация. Названия товаров, рангов и фракций остаются
+ * английскими — они такие и в игре.
+ */
+
+import type { EngineerTexts } from '../i18n';
+
+export const en: EngineerTexts = {
+  farseer: {
+    discovery: 'Common knowledge — no one needs to introduce her.',
+    meeting: 'Exploration rank Scout or higher.',
+    unlock: 'Hand over 1 unit of Meta Alloys (easiest to buy in Maia).',
+    focus: 'FSD, thrusters, sensors — every explorer’s first stop',
+  },
+  martuuk: {
+    discovery: 'Common knowledge.',
+    meeting: 'Travel at least 300 ly from your starting system.',
+    unlock: 'Hand over 3 units of Soontill Relics.',
+    focus: 'FSD (G5), shields, thrusters',
+  },
+  dweller: {
+    discovery: 'Common knowledge.',
+    meeting: 'Make deals at 5 or more black markets.',
+    unlock: 'Pay 500,000 CR.',
+    focus: 'Power distributor (G5), pulse and beam lasers',
+  },
+  mcquinn: {
+    discovery: 'Common knowledge.',
+    meeting: 'Earn more than 15 bounty vouchers.',
+    unlock: 'Redeem bounty vouchers worth 100,000 CR.',
+    focus: 'Multi-cannons and rail guns (G5)',
+  },
+  ryder: {
+    discovery: 'Public sources.',
+    meeting: 'Cordial or Friendly standing with the Eurybia Blue Mafia.',
+    unlock: 'Hand over 200 units of Landmines.',
+    focus: 'Missiles, torpedoes, early armour and hull reinforcement',
+  },
+  ishmaak: {
+    discovery: 'Referral from Felicity Farseer (grade 3–4).',
+    meeting: 'Earn more than 50 Federal combat bonds.',
+    unlock: 'Redeem Federal combat bonds worth 100,000 CR (sometimes 1,000,000 is required).',
+    focus: 'Mines, mining tools, scanners, sensors',
+  },
+  nemo: {
+    discovery: 'Referral from Elvira Martuuk (grade 3–4).',
+    meeting: 'Get an invitation from the Party of Yoru.',
+    unlock: 'Hand over 25 units of Xihe Companions.',
+    focus: 'Fragment cannons (G5), multi-cannons, plasma',
+  },
+  qwent: {
+    discovery: 'Referral from Elvira Martuuk (grade 3–4).',
+    meeting: 'Get an invitation from Sirius Corporation (system permit).',
+    unlock: 'Hand over 25 units of Modular Terminals.',
+    focus: 'Power plant (G4) and power distributor',
+  },
+  cheung: {
+    discovery: 'Referral from The Dweller (grade 3–4).',
+    meeting: 'Trade at more than 50 markets.',
+    unlock: 'Hand over 200 units of Gold.',
+    focus: 'Shield generators (G5), sensors, detailed surface scanner',
+  },
+  selene: {
+    discovery: 'Referral from Tod "The Blaster" McQuinn (grade 3–4).',
+    meeting: 'Mine at least 500 tonnes of ore.',
+    unlock: 'Hand over 10 units of self-mined Painite.',
+    focus: 'Armour, hull and module reinforcement (G5)',
+  },
+  tani: {
+    discovery: 'Referral from Liz Ryder (grade 3–4).',
+    meeting: 'Imperial rank Outsider or higher.',
+    unlock: 'Hand over 50 units of Kamitra Cigars.',
+    focus: 'Power plant (G5), distributor, sensors',
+  },
+  palin: {
+    discovery: 'Referral from Marco Qwent (grade 3–4).',
+    meeting: 'Travel at least 5,000 ly from your starting system.',
+    unlock: 'Hand over 25 units of Sensor Fragments (Thargoid sensor debris).',
+    focus: 'Thrusters (G5), FSD',
+  },
+  sedesi: {
+    discovery: 'Referral from Marco Qwent (grade 3–4).',
+    meeting: 'Travel at least 5,000 ly from your starting system.',
+    unlock: 'Hand over 25 units of Sensor Fragments.',
+    focus: 'Thrusters (G5), FSD — the “second Palin”, closer to Colonia',
+  },
+  jameson: {
+    discovery: 'Referral from Marco Qwent (grade 3–4).',
+    meeting: 'Combat rank Dangerous or higher.',
+    unlock: 'Hand over 25 units of Kongga Ale.',
+    focus: 'Sensors, scanners, life support, fuel scoop, AFMU',
+  },
+  ramtah: {
+    discovery: 'Referral from Lei Cheung (grade 3–4).',
+    meeting: 'Exploration rank Surveyor or higher.',
+    unlock: 'Hand over 50 units of Classified Scan Databanks.',
+    focus: 'Utilities (chaff, heat sink, point defence), limpet controllers, Guardian weapons',
+  },
+  dekker: {
+    discovery: 'Referral from Juri Ishmaak (grade 3–4).',
+    meeting: 'Friendly with the Federation (plus the Sol permit).',
+    unlock: 'Redeem Federal combat bonds worth 1,000,000 CR (sometimes 10,000,000).',
+    focus: 'FSD interdictor (G4), FSD',
+  },
+  sarge: {
+    discovery: 'Referral from Juri Ishmaak (grade 3–4).',
+    meeting: 'Federal Navy rank Midshipman or higher.',
+    unlock: 'Hand over 50 units of Aberrant Shield Pattern Analysis.',
+    focus: 'Cannons, limpet controllers, rail gun',
+  },
+  vatermann: {
+    discovery: 'Referral from Selene Jean (grade 3–4).',
+    meeting: 'Trade rank Merchant or higher.',
+    unlock: 'Hand over 50 units of Lavian Brandy.',
+    focus: 'Shield boosters (G5), shield generators',
+  },
+  turner: {
+    discovery: 'Referral from Selene Jean (grade 3–4).',
+    meeting: 'Friendly with the Alliance and Allied with Alioth Independents — otherwise no Alioth permit.',
+    unlock: 'Hand over 50 units of Bromellite.',
+    focus: 'Plasma accelerators, sensors, detailed surface scanner, auxiliary modules',
+  },
+  tarquin: {
+    discovery: 'Referral from Hera Tani (grade 3–4).',
+    meeting: 'Combat rank Competent or higher.',
+    unlock: 'Hand over 50 units of Fujin Tea.',
+    focus: 'Every laser (pulse, burst, beam) up to G5',
+  },
+  fortune: {
+    discovery: 'Referral from Hera Tani (grade 3–4).',
+    meeting: 'Friendly with the Empire (Achenar permit).',
+    unlock: 'Hand over 50 units of Decoded Emission Data.',
+    focus: 'Scanners, sensors, limpet controllers',
+  },
+  brandon: {
+    discovery: 'Referral from Elvira Martuuk (grade 3–4).',
+    meeting: 'Get an invitation from the Colonia Council.',
+    unlock: 'Redeem bounty vouchers worth 100,000 CR.',
+    focus: 'Almost everything at once: FSD, thrusters, shields, lasers — Colonia’s all-rounder',
+  },
+  hicks: {
+    discovery: 'Referral from The Dweller (grade 3–4).',
+    meeting: 'Exploration rank Surveyor or higher.',
+    unlock: 'Hand over 10 units of self-mined Osmium.',
+    focus: 'Cannons, fragment cannons, multi-cannons, fuel scoop, refinery, limpets',
+  },
+  olmanova: {
+    discovery: 'Referral from Tod "The Blaster" McQuinn (grade 3–4).',
+    meeting: 'Combat rank Expert or higher.',
+    unlock: 'Hand over 200 units of Progenitor Cells.',
+    focus: 'Armour, reinforcements, utilities, missiles and torpedoes — all defence up to G5',
+  },
+  dorn: {
+    discovery: 'Referral from Liz Ryder (grade 3–4).',
+    meeting: 'Trade rank Dealer or higher.',
+    unlock: 'Hand over 25 units of Occupied Escape Pods.',
+    focus: 'Power plant, distributor, sensors, life support, rail gun, plasma — all up to G5',
+  },
+  navarro: {
+    discovery: 'Common knowledge.',
+    meeting: '—',
+    unlock: 'Complete 10 Restore or Reactivation missions at settlements.',
+    referral: 'Hand over 5 units of Genetic Repair Meds.',
+    focus: 'Maverick suit and combat modifications',
+  },
+  velasquez: {
+    discovery: 'Referral from Jude Navarro.',
+    meeting: '—',
+    unlock: 'Complete 6 Covert theft and Covert heist missions.',
+    referral: 'Hand over 15 Financial Projections.',
+    focus: 'Mobility and stealth',
+  },
+  geiger: {
+    discovery: 'Referral from Terra Velasquez.',
+    meeting: '—',
+    unlock: 'Sell bartenders 20 Biological Sample, Employee Genetic Data and Genetic Research in total.',
+    focus: 'Optics and electronics',
+  },
+  ferrari: {
+    discovery: 'Common knowledge.',
+    meeting: '—',
+    unlock: 'Complete 10 on-foot conflict zones.',
+    referral: 'Hand over 5 Settlement Defence Plans.',
+    focus: 'Artemis suit, mobility',
+  },
+  beck: {
+    discovery: 'Referral from Hero Ferrari.',
+    meeting: '—',
+    unlock: 'Sell bartenders 15 Multimedia Entertainment, Classic Entertainment and Cat Media in total.',
+    referral: 'Hand over 5 Insight Entertainment Suites.',
+    focus: 'Range, optics and gear',
+  },
+  laszlo: {
+    discovery: 'Referral from Wellington Beck.',
+    meeting: '—',
+    unlock: 'Drop your reputation with Sirius Corporation to Unfriendly or lower.',
+    focus: 'Damage and survivability',
+  },
+  domino: {
+    discovery: 'Common knowledge.',
+    meeting: '—',
+    unlock: 'Travel at least 100 ly on Apex shuttles.',
+    referral: 'Hand over 5 doses of Push.',
+    focus: 'Dominator suit, range and accuracy',
+  },
+  fowler: {
+    discovery: 'Referral from Domino Green.',
+    meeting: '—',
+    unlock: 'Sell bartenders 5 Opinion Polls.',
+    referral: 'Hand over 5 Surveillance Equipment.',
+    focus: 'Ammo and shields',
+  },
+  bond: {
+    discovery: 'Referral from Kit Fowler.',
+    meeting: '—',
+    unlock: 'Sell bartenders 5 Smear Campaign Plans.',
+    focus: 'Stealth',
+  },
+  baltanos: {
+    discovery: 'Common knowledge (Colonia).',
+    meeting: '—',
+    unlock: 'Reach Friendly reputation with the Colonia Council.',
+    referral: 'Hand over 10 Faction Associates.',
+    focus: 'Mobility and silence',
+  },
+  bresa: {
+    discovery: 'Common knowledge (Colonia).',
+    meeting: '—',
+    unlock: 'Visit 5 settlements in the Colonia system.',
+    referral: 'Hand over 10 Digital Designs.',
+    focus: 'Ammo and survivability',
+  },
+  dayette: {
+    discovery: 'Common knowledge (Colonia).',
+    meeting: '—',
+    unlock: 'Sell 10 Culinary Recipes or Cocktail Recipes in total to Colonia stations.',
+    referral: 'Hand over 10 Manufacturing Instructions.',
+    focus: 'Range and gear',
+  },
+  yishen: {
+    discovery: 'Referred by all three at once: Baltanos, Eleanor Bresa and Rosa Dayette.',
+    meeting: '—',
+    unlock: 'Complete the referral tasks for Baltanos, Eleanor Bresa and Rosa Dayette.',
+    focus: 'Stealth and precise hits',
+  },
+};

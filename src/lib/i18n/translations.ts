@@ -1,7 +1,8 @@
 import type { Locale } from "./types";
+import { engineersTranslations } from "./engineers";
 import { outfittingTranslations } from "./outfitting";
 
-/** Базовый словарь сайта; раздел верфи подмешивается ниже отдельным файлом. */
+/** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
 const baseTranslations: Record<string, Record<string, string>> = {
   ru: {
     'nav.home': 'Главная',
@@ -3434,13 +3435,21 @@ const baseTranslations: Record<string, Record<string, string>> = {
 };
 
 /**
- * Итоговый словарь: базовые ключи плюс раздел верфи. Разделы держим в разных
- * файлах, но `t()` видит их одинаково — по плоскому ключу.
+ * Итоговый словарь: базовые ключи плюс разделы верфи и инженеров. Разделы
+ * держим в разных файлах, но `t()` видит их одинаково — по плоскому ключу.
  */
+const sectionTranslations = [outfittingTranslations, engineersTranslations];
+
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(
-  [...new Set([...Object.keys(baseTranslations), ...Object.keys(outfittingTranslations)])].map((locale) => [
+  [...new Set([
+    ...Object.keys(baseTranslations),
+    ...sectionTranslations.flatMap((section) => Object.keys(section)),
+  ])].map((locale) => [
     locale,
-    { ...(baseTranslations[locale] ?? {}), ...(outfittingTranslations[locale] ?? {}) },
+    sectionTranslations.reduce(
+      (dictionary, section) => ({ ...dictionary, ...(section[locale] ?? {}) }),
+      { ...(baseTranslations[locale] ?? {}) },
+    ),
   ]),
 );
 
