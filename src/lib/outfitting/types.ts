@@ -198,3 +198,28 @@ export interface BuildSlot {
   module: OutfittingModule | null;
   modification: SlotModification | null;
 }
+
+/** Состояние распределителя питания (пипки: SYS / ENG / WEP, максимум 4 на систему, сумма ≤ 6). */
+export interface PipState {
+  sys: number;
+  eng: number;
+  wep: number;
+}
+
+/** Разница характеристик корабля при установке альтернативного модуля. */
+export interface ModuleComparisonDelta {
+  massDelta: number;
+  jumpRangeDelta: number;
+  maxJumpRangeDelta: number;
+  ladenJumpRangeDelta: number;
+  speedDelta: number;
+  boostDelta: number;
+  shieldDelta: number;
+  armourDelta: number;
+  powerDeployedDelta: number;
+  powerCapacityDelta: number;
+  costDelta: number;
+  cargoDelta: number;
+  fuelDelta: number;
+  passengersDelta: number;
+}

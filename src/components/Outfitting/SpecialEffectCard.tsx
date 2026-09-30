@@ -1,27 +1,20 @@
 'use client';
 
 /**
- * Карточка экспериментального эффекта: название, описание, список изменений.
+ * Карточка экспериментального эффекта:
  *
- * Эффект — это вторая половина инженерии: чертёж поднимает основные цифры, а
- * эффект добавляет к ним свой набор поправок. Поправки реальные, они уже
- * учтены в сводке сборки (`effectiveModule` в `calc.ts`), поэтому здесь важно
- * показать их ровно в том виде, в каком их понимает игрок:
- *
- *  * проценты — со знаком и с цветом «лучше/хуже»;
- *  * сопротивления — с пометкой «от остатка», потому что +8 % к 50 % дают 54 %;
- *  * распределение урона — списком долей по типам;
- *  * эффекты без чисел (сбить захват, перезапустить двигатели) — отдельной
- *    строкой, чтобы не выглядело, будто эффект «ничего не делает».
+ *  - Название и краткое тактическое действие;
+ *  - Список конкретных изменений характеристик (бонусы и штрафы);
+ *  - Компактно сгруппированный список требуемых материалов на прогон.
  */
 
+import React from 'react';
 import { specialFeatures } from '@/lib/outfitting/specials';
 import type { OutfittingData, SpecialEffect } from '@/lib/outfitting/types';
 import { LABEL, MONO, num } from './styles';
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
-/** Локализованное название эффекта (английское из данных — как запасное). */
 export function specialName(t: Translate, effect: SpecialEffect | null | undefined): string {
   if (!effect) return '';
   const key = `outfitting.special.name.${effect.kind}`;
@@ -29,7 +22,6 @@ export function specialName(t: Translate, effect: SpecialEffect | null | undefin
   return translated === key ? effect.name : translated;
 }
 
-/** Локализованное описание эффекта. */
 export function specialDescription(t: Translate, effect: SpecialEffect | null | undefined): string {
   if (!effect) return '';
   const key = `outfitting.special.desc.${effect.kind}`;
@@ -37,7 +29,6 @@ export function specialDescription(t: Translate, effect: SpecialEffect | null | 
   return translated === key ? '' : translated;
 }
 
-/** Знак у процента ставим сами: у отрицательных нулей вид неопрятный. */
 function signed(value: number, digits: number, locale: string): string {
   const rounded = Number(value.toFixed(digits));
   return `${rounded > 0 ? '+' : rounded < 0 ? '−' : ''}${num(Math.abs(rounded), digits, locale)}`;
@@ -61,29 +52,55 @@ export default function SpecialEffectCard({
   const description = specialDescription(t, effect);
 
   return (
-    <div style={{ margin: '0 0 8px' }}>
+    <div
+      style={{
+        background: 'rgba(15, 23, 42, 0.45)',
+        border: '1px solid rgba(201, 160, 255, 0.3)',
+        borderRadius: 4,
+        padding: '8px 10px',
+        margin: '6px 0',
+      }}
+    >
+      {/* Описание / Тактический эффект */}
       {description && (
-        <p style={{ fontSize: 11, color: 'var(--text)', lineHeight: 1.55, margin: '0 0 6px' }}>{description}</p>
+        <p style={{ fontSize: 11, color: '#e2e8f0', lineHeight: 1.45, margin: '0 0 6px' }}>
+          {description}
+        </p>
       )}
 
       {effect.tag && (
-        <p style={{ fontSize: 11, color: '#9fd8ef', lineHeight: 1.5, margin: '0 0 6px' }}>
-          <span style={{ ...LABEL, color: 'var(--muted)', marginRight: 6 }}>{t('outfitting.special.tactical')}</span>
+        <p style={{ fontSize: 10.5, color: '#9fd8ef', lineHeight: 1.4, margin: '0 0 6px' }}>
+          <span style={{ ...LABEL, color: 'var(--muted)', marginRight: 5 }}>
+            {t('outfitting.special.tactical')}:
+          </span>
           {t(`outfitting.special.tag.${effect.tag}`)}
         </p>
       )}
 
+      {/* Что именно изменится */}
       {rows.length > 0 && (
-        <>
-          <div style={{ ...LABEL, marginBottom: 3 }}>{t('outfitting.special.changes')}</div>
-          <ul style={{ listStyle: 'none', margin: '0 0 6px', padding: 0, fontFamily: MONO, fontSize: 11, lineHeight: 1.7 }}>
+        <div style={{ margin: '4px 0 6px' }}>
+          <div style={{ ...LABEL, fontSize: 10, marginBottom: 3, color: '#c9a0ff' }}>
+            {t('outfitting.special.changes')}
+          </div>
+          <ul
+            style={{
+              listStyle: 'none',
+              margin: 0,
+              padding: 0,
+              fontFamily: MONO,
+              fontSize: 11,
+              lineHeight: 1.6,
+            }}
+          >
             {rows.map((row) => (
-              <li key={row.property} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <li key={row.property} style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                 <span style={{ color: 'var(--muted)' }}>{t(`outfitting.mod.${row.property}`)}</span>
-                <span style={{ color: row.better ? 'var(--green)' : 'var(--orange)', whiteSpace: 'nowrap' }}>
-                  {row.kind === 'damagedist' && (row.distribution ?? [])
-                    .map((part) => `${t(`outfitting.dmg.${part.type}`)} ${num(part.share * 100, 0, locale)}%`)
-                    .join(' / ')}
+                <span style={{ color: row.better ? 'var(--green)' : 'var(--orange)', fontWeight: 700, whiteSpace: 'nowrap' }}>
+                  {row.kind === 'damagedist' &&
+                    (row.distribution ?? [])
+                      .map((part) => `${t(`outfitting.dmg.${part.type}`)} ${num(part.share * 100, 0, locale)}%`)
+                      .join(' / ')}
                   {row.kind === 'percent' && `${signed(row.value * 100, 1, locale)} %`}
                   {row.kind === 'resistance' && `${signed(row.value * 100, 1, locale)} %`}
                   {row.kind === 'value' && signed(row.value, 1, locale)}
@@ -91,34 +108,34 @@ export default function SpecialEffectCard({
               </li>
             ))}
           </ul>
-          {rows.some((row) => row.kind === 'resistance') && (
-            <p style={{ fontSize: 10, color: 'var(--muted)', margin: '0 0 6px' }}>
-              {t('outfitting.mod.kinres')}, {t('outfitting.mod.thermres')}, {t('outfitting.mod.explres')} —{' '}
-              {t('outfitting.special.resHint')}
-            </p>
-          )}
-        </>
+        </div>
       )}
 
-      {rows.length === 0 && (
-        <p style={{ fontSize: 10.5, color: 'var(--muted)', lineHeight: 1.5, margin: '0 0 6px' }}>
-          {t('outfitting.special.noNumbers')}
-        </p>
-      )}
-
+      {/* Маленький список требуемых ресурсов на прогон */}
       {!compact && Object.keys(effect.components ?? {}).length > 0 && (
-        <>
-          <div style={{ ...LABEL, marginBottom: 3 }}>{t('outfitting.special.materials')}</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5, marginBottom: 6 }}>
-            {Object.entries(effect.components).map(([name, count]) => `${name} ×${count}`).join(' · ')}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 5, marginTop: 4 }}>
+          <div style={{ ...LABEL, fontSize: 10, marginBottom: 3 }}>
+            {t('outfitting.special.materials')}
           </div>
-        </>
-      )}
-
-      {rows.length > 0 && (
-        <p style={{ fontSize: 10, color: 'var(--muted)', margin: 0 }}>
-          <i>{t('outfitting.special.applied')}</i>
-        </p>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {Object.entries(effect.components).map(([name, count]) => (
+              <span
+                key={name}
+                style={{
+                  fontSize: 10,
+                  fontFamily: MONO,
+                  color: '#cbd5e1',
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(201, 160, 255, 0.25)',
+                  borderRadius: 3,
+                  padding: '2px 5px',
+                }}
+              >
+                {name} <b style={{ color: '#c9a0ff' }}>×{count}</b>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
