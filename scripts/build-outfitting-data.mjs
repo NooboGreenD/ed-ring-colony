@@ -24,7 +24,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public', 'data', 'outfitting.json');
+const EFFECTS = join(ROOT, 'scripts', 'data', 'experimental-effects.json');
 const REPO = 'https://github.com/EDCD/coriolis-data.git';
+
+/** Сопротивления Coriolis хранит в процентных пунктах, у нас везде доли. */
+const RESISTANCES = new Set(['kinres', 'thermres', 'explres', 'causres']);
 
 /** Поля, которые в наш справочник не попадают. */
 const DROP = new Set(['edID', 'eddbID', 'symbol', 'ukDiscript', 'ukName', 'eddbCategory', 'uuid']);
@@ -195,6 +199,64 @@ function collectShips(dir) {
   return ships;
 }
 
+/**
+ * Экспериментальные эффекты: справочник Coriolis знает только их названия, а
+ * числовые поправки лежат отдельно в `modifierActions.json`. Пять эффектов там
+ * отсутствуют, у нескольких цифры устарели — недостающее и уточнения держим в
+ * `scripts/data/experimental-effects.json` (сверено с EDSY). Оттуда же берём
+ * `kind` (ключ перевода) и `tag` (боевой эффект без числового выражения).
+ */
+function buildSpecials(specials, modifierActions) {
+  const overlay = readJson(EFFECTS).effects ?? {};
+  const result = {};
+  for (const [id, special] of Object.entries(specials)) {
+    const curated = overlay[id];
+    if (!curated) throw new Error(`Нет описания эффекта ${id} в scripts/data/experimental-effects.json`);
+    const features = {};
+    for (const [property, value] of Object.entries(modifierActions[id] ?? {})) {
+      features[property] = RESISTANCES.has(property) ? round(value / 100) : value;
+    }
+    // Значения из нашего файла приоритетнее: они сверены с игрой через EDSY.
+    Object.assign(features, curated.features ?? {});
+    const ordered = {};
+    for (const property of Object.keys(features).sort()) ordered[property] = features[property];
+    result[id] = {
+      name: special.name,
+      kind: curated.kind,
+      ...(curated.tag ? { tag: curated.tag } : {}),
+      features: ordered,
+      components: special.components ?? {},
+    };
+  }
+  const missing = Object.keys(overlay).filter((id) => !result[id]);
+  if (missing.length) console.warn(`Лишние эффекты в overlay (нет в coriolis-data): ${missing.join(', ')}`);
+  return result;
+}
+
+/**
+ * Coriolis не перечисляет эффекты у некоторых групп (например, у ракетных
+ * установок их нет вовсе, хотя в игре они есть). Списки для таких групп
+ * держим у себя — они сверены с EDSY.
+ */
+function addMissingSpecialLists(moduleBlueprints, specials) {
+  const extra = readJson(EFFECTS).extraSpecials ?? {};
+  for (const [group, ids] of Object.entries(extra)) {
+    const entry = moduleBlueprints[group];
+    if (!entry) {
+      console.warn(`extraSpecials: нет группы ${group}`);
+      continue;
+    }
+    const known = ids.filter((id) => {
+      if (specials[id]) return true;
+      console.warn(`extraSpecials: нет эффекта ${id}`);
+      return false;
+    });
+    entry.specials = [...new Set([...(entry.specials ?? []), ...known])];
+  }
+}
+
+const round = (value) => Math.round(value * 1e6) / 1e6;
+
 function main() {
   const { dir, temporary } = sourceDir();
   try {
@@ -204,6 +266,7 @@ function main() {
     const moduleBlueprints = readJson(join(dir, 'modifications', 'modules.json'));
     const specials = readJson(join(dir, 'modifications', 'specials.json'));
     const modifications = readJson(join(dir, 'modifications', 'modifications.json'));
+    const modifierActions = readJson(join(dir, 'modifications', 'modifierActions.json'));
 
     // Инженеры в обратную сторону: кто какой чертёж и до какого уровня может.
     const engineers = {};
@@ -229,15 +292,8 @@ function main() {
       trimmedBlueprints[name] = { grades };
     }
 
-    const trimmedSpecials = {};
-    for (const [name, special] of Object.entries(specials)) {
-      trimmedSpecials[name] = {
-        name: special.name,
-        description: special.description ?? '',
-        features: special.features ?? {},
-        components: special.components ?? {},
-      };
-    }
+    const trimmedSpecials = buildSpecials(specials, modifierActions);
+    addMissingSpecialLists(moduleBlueprints, trimmedSpecials);
 
     const payload = {
       version: 1,

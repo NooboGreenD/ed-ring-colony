@@ -1,0 +1,669 @@
+{
+  "_source": [
+    "EDCD/coriolis-data — modifications/modifierActions.json (числовые поправки)",
+    "EDSY (taleden/EDSY) — eddb.js, таблица eddb.expeffect (числовые поправки и боевые эффекты)"
+  ],
+  "_note": [
+    "kind — ключ перевода названия и описания (src/lib/i18n/outfittingSpecials.ts).",
+    "tag — боевой эффект без числового выражения (тот же файл переводов).",
+    "features — доли от базового значения в соглашении Coriolis: rof — поправка к интервалу",
+    "между выстрелами, kinres/thermres/explres/causres — доля оставшегося сопротивления,",
+    "jitter — абсолютные градусы, damagedist — новое распределение урона.",
+    "Сборщик берёт числа из modifierActions.json и перекрывает их значениями отсюда (EDSY).",
+    "extraSpecials — списки эффектов для групп, которых нет в coriolis-data (сверено с EDSY)."
+  ],
+  "extraSpecials": {
+    "mr": [
+      "special_weapon_toughened",
+      "special_weapon_efficient",
+      "special_weapon_lightweight",
+      "special_weapon_damage",
+      "special_weapon_rateoffire",
+      "special_drag_munitions",
+      "special_emissive_munitions",
+      "special_fsd_interrupt",
+      "special_overload_munitions",
+      "special_penetrator_munitions",
+      "special_thermal_cascade"
+    ],
+    "amr": [
+      "special_weapon_toughened",
+      "special_weapon_efficient",
+      "special_weapon_lightweight",
+      "special_weapon_damage",
+      "special_weapon_rateoffire",
+      "special_drag_munitions",
+      "special_emissive_munitions",
+      "special_fsd_interrupt",
+      "special_overload_munitions",
+      "special_penetrator_munitions",
+      "special_thermal_cascade"
+    ]
+  },
+  "effects": {
+    "special_armour_chunky": {
+      "kind": "deepPlating",
+      "features": {
+        "explres": -0.03,
+        "hullboost": 0.08,
+        "kinres": -0.03,
+        "thermres": -0.03
+      }
+    },
+    "special_armour_explosive": {
+      "kind": "layeredPlating",
+      "features": {
+        "explres": 0.08,
+        "hullboost": -0.03
+      }
+    },
+    "special_armour_kinetic": {
+      "kind": "angledPlating",
+      "features": {
+        "hullboost": -0.03,
+        "kinres": 0.08
+      }
+    },
+    "special_armour_thermic": {
+      "kind": "reflectivePlating",
+      "features": {
+        "hullboost": -0.03,
+        "thermres": 0.08
+      }
+    },
+    "special_auto_loader": {
+      "kind": "autoLoader",
+      "tag": "autoReload",
+      "features": {}
+    },
+    "special_blinding_shell": {
+      "kind": "dazzleShell",
+      "tag": "targetSensors",
+      "features": {}
+    },
+    "special_choke_canister": {
+      "kind": "ionDisruption",
+      "tag": "targetThrusterReboot",
+      "features": {}
+    },
+    "special_concordant_sequence": {
+      "kind": "concordantSequence",
+      "tag": "wingShieldRegen",
+      "features": {
+        "thermload": 0.5
+      }
+    },
+    "special_corrosive_shell": {
+      "kind": "corrosiveShell",
+      "tag": "targetHardness",
+      "features": {
+        "ammo": -0.2
+      }
+    },
+    "special_deep_cut_payload": {
+      "kind": "penetratorPayload",
+      "tag": "moduleDamage",
+      "features": {}
+    },
+    "special_dispersal_field": {
+      "kind": "dispersalField",
+      "tag": "targetTracking",
+      "features": {}
+    },
+    "special_distortion_field": {
+      "kind": "inertialImpact",
+      "features": {
+        "damage": 0.5,
+        "damagedist": {
+          "K": 0.5,
+          "T": 0.5
+        },
+        "jitter": 3
+      }
+    },
+    "special_drag_munitions": {
+      "kind": "dragMunitions",
+      "tag": "targetSpeed",
+      "features": {}
+    },
+    "special_emissive_munitions": {
+      "kind": "emissiveMunitions",
+      "tag": "targetSignature",
+      "features": {
+        "thermload": 1
+      }
+    },
+    "special_engine_cooled": {
+      "kind": "thermalSpread",
+      "features": {
+        "mass": 0.05,
+        "thermload": -0.1
+      }
+    },
+    "special_engine_haulage": {
+      "kind": "driveDistributors",
+      "features": {
+        "optmass": 0.1
+      }
+    },
+    "special_engine_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_engine_overloaded": {
+      "kind": "dragDrives",
+      "features": {
+        "optmul": 0.04,
+        "thermload": 0.1
+      }
+    },
+    "special_engine_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_feedback_cascade": {
+      "kind": "feedbackCascade",
+      "tag": "targetShieldCell",
+      "features": {
+        "damage": -0.2
+      }
+    },
+    "special_feedback_cascade_cooled": {
+      "kind": "feedbackCascade",
+      "tag": "targetShieldCell",
+      "features": {
+        "damage": -0.2,
+        "thermload": -0.4
+      }
+    },
+    "special_force_shell": {
+      "kind": "forceShell",
+      "tag": "targetPush",
+      "features": {
+        "shotspeed": -0.166667
+      }
+    },
+    "special_fsd_cooled": {
+      "kind": "thermalSpread",
+      "features": {
+        "thermload": -0.1
+      }
+    },
+    "special_fsd_fuelcapacity": {
+      "kind": "deepCharge",
+      "features": {
+        "maxfuel": 0.1,
+        "power": 0.05
+      }
+    },
+    "special_fsd_heavy": {
+      "kind": "massManager",
+      "features": {
+        "integrity": -0.08,
+        "optmass": 0.04
+      }
+    },
+    "special_fsd_interrupt": {
+      "kind": "fsdInterrupt",
+      "tag": "targetFsdReboot",
+      "features": {
+        "damage": -0.3,
+        "rof": 0.5
+      }
+    },
+    "special_fsd_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_fsd_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.25
+      }
+    },
+    "special_high_yield_shell": {
+      "kind": "highYieldShell",
+      "tag": "moduleDamage",
+      "features": {
+        "damage": -0.35,
+        "damagedist": {
+          "K": 0.5,
+          "E": 0.5
+        },
+        "rof": 0.111111
+      }
+    },
+    "special_hullreinforcement_chunky": {
+      "kind": "deepPlating",
+      "features": {
+        "explres": -0.02,
+        "hullreinforcement": 0.1,
+        "kinres": -0.02,
+        "thermres": -0.02
+      }
+    },
+    "special_hullreinforcement_explosive": {
+      "kind": "layeredPlating",
+      "features": {
+        "explres": 0.02,
+        "hullreinforcement": -0.05
+      }
+    },
+    "special_hullreinforcement_kinetic": {
+      "kind": "angledPlating",
+      "features": {
+        "hullreinforcement": -0.05,
+        "kinres": 0.02
+      }
+    },
+    "special_hullreinforcement_thermic": {
+      "kind": "reflectivePlating",
+      "features": {
+        "hullreinforcement": -0.05,
+        "thermres": 0.02
+      }
+    },
+    "special_incendiary_rounds": {
+      "kind": "incendiaryRounds",
+      "features": {
+        "damagedist": {
+          "K": 0.1,
+          "T": 0.9
+        },
+        "rof": 0.052632,
+        "thermload": 2
+      }
+    },
+    "special_ion_disruptor": {
+      "kind": "ionDisruption",
+      "tag": "targetThrusterReboot",
+      "features": {}
+    },
+    "special_lock_breaker": {
+      "kind": "targetLockBreaker",
+      "tag": "targetLockLost",
+      "features": {}
+    },
+    "special_mass_lock": {
+      "kind": "massLockMunition",
+      "tag": "targetFsdInhibited",
+      "features": {}
+    },
+    "special_mass_lock_munition": {
+      "kind": "massLockMunition",
+      "tag": "targetFsdInhibited",
+      "features": {}
+    },
+    "special_overload_munitions": {
+      "kind": "overloadMunitions",
+      "features": {
+        "damagedist": {
+          "T": 0.5,
+          "E": 0.5
+        }
+      }
+    },
+    "special_penetrator_munitions": {
+      "kind": "penetratorMunitions",
+      "tag": "moduleDamage",
+      "features": {}
+    },
+    "special_penetrator_payload": {
+      "kind": "penetratorPayload",
+      "tag": "moduleDamage",
+      "features": {}
+    },
+    "special_phasing_sequence": {
+      "kind": "phasingSequence",
+      "tag": "shieldBypass",
+      "features": {
+        "damage": -0.1
+      }
+    },
+    "special_plasma_slug": {
+      "kind": "plasmaSlug",
+      "tag": "reloadFromFuel",
+      "features": {
+        "ammo": -1,
+        "damage": -0.1
+      }
+    },
+    "special_plasma_slug_cooled": {
+      "kind": "plasmaSlug",
+      "tag": "reloadFromFuel",
+      "features": {
+        "ammo": -1,
+        "damage": -0.1,
+        "thermload": -0.4
+      }
+    },
+    "special_plasma_slug_pa": {
+      "kind": "plasmaSlug",
+      "tag": "reloadFromFuel",
+      "features": {
+        "ammo": -1,
+        "damage": -0.1
+      }
+    },
+    "special_powerdistributor_capacity": {
+      "kind": "clusterCapacitors",
+      "features": {
+        "engcap": 0.08,
+        "engrate": -0.02,
+        "syscap": 0.08,
+        "sysrate": -0.02,
+        "wepcap": 0.08,
+        "weprate": -0.02
+      }
+    },
+    "special_powerdistributor_efficient": {
+      "kind": "flowControl",
+      "features": {
+        "power": -0.1
+      }
+    },
+    "special_powerdistributor_fast": {
+      "kind": "superConduits",
+      "features": {
+        "engcap": -0.04,
+        "engrate": 0.04,
+        "syscap": -0.04,
+        "sysrate": 0.04,
+        "wepcap": -0.04,
+        "weprate": 0.04
+      }
+    },
+    "special_powerdistributor_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_powerdistributor_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_powerplant_cooled": {
+      "kind": "thermalSpread",
+      "features": {
+        "eff": -0.1
+      }
+    },
+    "special_powerplant_highcharge": {
+      "kind": "monstered",
+      "features": {
+        "mass": 0.1,
+        "pgen": 0.05
+      }
+    },
+    "special_powerplant_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_powerplant_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_radiant_canister": {
+      "kind": "radiantCanister",
+      "tag": "areaHeatSensors",
+      "features": {}
+    },
+    "special_regeneration_sequence": {
+      "kind": "regenerationSequence",
+      "tag": "wingShieldHeal",
+      "features": {
+        "damage": -0.1
+      }
+    },
+    "special_reverberating_cascade": {
+      "kind": "reverberatingCascade",
+      "tag": "targetShieldGen",
+      "features": {}
+    },
+    "special_scramble_spectrum": {
+      "kind": "scrambleSpectrum",
+      "tag": "targetMalfunction",
+      "features": {
+        "rof": 0.111111
+      }
+    },
+    "special_screening_shell": {
+      "kind": "screeningShell",
+      "tag": "antiMunitions",
+      "features": {
+        "reload": -0.5
+      }
+    },
+    "special_shield_efficient": {
+      "kind": "loDraw",
+      "features": {
+        "distdraw": -0.2,
+        "explres": -0.01,
+        "kinres": -0.01,
+        "optmul": -0.02,
+        "power": -0.2,
+        "thermres": -0.01
+      }
+    },
+    "special_shield_health": {
+      "kind": "hiCap",
+      "features": {
+        "distdraw": 0.25,
+        "optmul": 0.06,
+        "power": 0.1
+      }
+    },
+    "special_shield_kinetic": {
+      "kind": "forceBlock",
+      "features": {
+        "kinres": 0.08,
+        "optmul": -0.03
+      }
+    },
+    "special_shield_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_shield_regenerative": {
+      "kind": "fastCharge",
+      "features": {
+        "brokenregen": 0.15,
+        "explres": -0.015,
+        "kinres": -0.015,
+        "regen": 0.15,
+        "thermres": -0.015
+      }
+    },
+    "special_shield_resistive": {
+      "kind": "multiWeave",
+      "features": {
+        "distdraw": 0.25,
+        "explres": 0.03,
+        "kinres": 0.03,
+        "power": 0.1,
+        "thermres": 0.03
+      }
+    },
+    "special_shield_thermic": {
+      "kind": "thermoBlock",
+      "features": {
+        "optmul": -0.03,
+        "thermres": 0.08
+      }
+    },
+    "special_shield_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_shieldbooster_chunky": {
+      "kind": "superCapacitors",
+      "features": {
+        "explres": -0.02,
+        "kinres": -0.02,
+        "shieldboost": 0.05,
+        "thermres": -0.02
+      }
+    },
+    "special_shieldbooster_efficient": {
+      "kind": "flowControl",
+      "features": {
+        "power": -0.1
+      }
+    },
+    "special_shieldbooster_explosive": {
+      "kind": "blastBlock",
+      "features": {
+        "explres": 0.02,
+        "shieldboost": -0.01
+      }
+    },
+    "special_shieldbooster_kinetic": {
+      "kind": "forceBlock",
+      "features": {
+        "kinres": 0.02,
+        "shieldboost": -0.01
+      }
+    },
+    "special_shieldbooster_thermic": {
+      "kind": "thermoBlock",
+      "features": {
+        "shieldboost": -0.01,
+        "thermres": 0.02
+      }
+    },
+    "special_shieldbooster_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_shieldcell_efficient": {
+      "kind": "flowControl",
+      "features": {
+        "power": -0.1
+      }
+    },
+    "special_shieldcell_gradual": {
+      "kind": "recyclingCell",
+      "features": {
+        "duration": 0.1,
+        "shieldreinforcement": -0.05
+      }
+    },
+    "special_shieldcell_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_shieldcell_oversized": {
+      "kind": "bossCells",
+      "features": {
+        "shieldreinforcement": 0.05,
+        "spinup": 0.2
+      }
+    },
+    "special_shieldcell_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    },
+    "special_shiftlock_canister": {
+      "kind": "shiftLockCanister",
+      "tag": "areaFsdReboot",
+      "features": {}
+    },
+    "special_smart_rounds": {
+      "kind": "smartRounds",
+      "tag": "friendlyFire",
+      "features": {}
+    },
+    "special_super_penetrator": {
+      "kind": "superPenetrator",
+      "tag": "moduleDamage",
+      "features": {
+        "reload": 0.5
+      }
+    },
+    "special_super_penetrator_cooled": {
+      "kind": "superPenetrator",
+      "tag": "moduleDamage",
+      "features": {
+        "reload": 0.5,
+        "thermload": -0.4
+      }
+    },
+    "special_thermal_cascade": {
+      "kind": "thermalCascade",
+      "tag": "shieldedTargetHeat",
+      "features": {}
+    },
+    "special_thermal_conduit": {
+      "kind": "thermalConduit",
+      "tag": "damageWithHeat",
+      "features": {}
+    },
+    "special_thermal_vent": {
+      "kind": "thermalVent",
+      "tag": "selfCooling",
+      "features": {}
+    },
+    "special_thermalshock": {
+      "kind": "thermalShock",
+      "tag": "targetHeat",
+      "features": {
+        "damage": -0.1
+      }
+    },
+    "special_weapon_damage": {
+      "kind": "oversized",
+      "features": {
+        "damage": 0.03,
+        "power": 0.05
+      }
+    },
+    "special_weapon_efficient": {
+      "kind": "flowControl",
+      "features": {
+        "power": -0.1
+      }
+    },
+    "special_weapon_lightweight": {
+      "kind": "strippedDown",
+      "features": {
+        "mass": -0.1
+      }
+    },
+    "special_weapon_rateoffire": {
+      "kind": "multiServos",
+      "features": {
+        "power": 0.05,
+        "rof": -0.029126
+      }
+    },
+    "special_weapon_toughened": {
+      "kind": "doubleBraced",
+      "features": {
+        "integrity": 0.15
+      }
+    }
+  }
+}

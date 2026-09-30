@@ -103,20 +103,39 @@ export interface Blueprint {
   grades: Record<string, BlueprintGrade>;
 }
 
-/** Экспериментальный эффект. */
+/**
+ * Экспериментальный эффект.
+ *
+ * `features` — поправки к полям модуля в соглашении Coriolis (см. `calc.ts`,
+ * `applyFeature`): доли от базового значения, кроме `jitter` (абсолютные
+ * градусы разброса) и `damagedist` (новое распределение урона по типам).
+ * Отдельно стоит `rof`: это поправка к *интервалу* между выстрелами, она
+ * применяется к полю `fireint`, поэтому «−2,9 %» интервала — это «+3 %»
+ * скорострельности.
+ *
+ * Названия и описания не хранятся в данных: `kind` — ключ перевода в
+ * `src/lib/i18n/outfittingSpecials.ts` (один и тот же эффект встречается у
+ * разных групп модулей под разными id). `tag` — боевой эффект, который не
+ * выражается числами («цель теряет захват», «перегрев цели»).
+ */
 export interface SpecialEffect {
+  /** Английское название из набора Coriolis — запасной вариант для UI. */
   name: string;
-  description: string;
-  features: Record<string, number | [number, number]>;
+  /** Ключ перевода названия и описания. */
+  kind: string;
+  /** Ключ перевода боевого эффекта без числового выражения. */
+  tag?: string;
+  features: Record<string, number | [number, number] | Record<string, number>>;
   components: Record<string, number>;
 }
 
 /** Как применяется изменение свойства. */
 export interface ModificationRule {
   name: string;
-  type: 'percentage' | 'numeric';
+  type: 'percentage' | 'numeric' | 'object';
   method: 'multiplicative' | 'additive' | 'overwrite';
   higherbetter: boolean;
+  hidden?: boolean;
 }
 
 /** Какие чертежи доступны группе модулей и у каких инженеров. */
