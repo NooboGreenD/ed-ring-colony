@@ -355,6 +355,15 @@ set_env "$SE" UPDATE_AGENT_TOKEN            "$UPDATE_AGENT_TOKEN"
 set_env "$SE" UPDATE_AGENT_URL              "http://update-agent:8092"
 set_env "$SE" PROJECT_HOST_DIR              "$SRC_DIR"
 set_env "$SE" PROJECT_DEPLOY_MODE           "compose"
+# Все релизы Helper храним не в Docker data-root, а рядом с backup'ами.
+# Если путь уже задан в env-файле, сохраняем пользовательский SDB mount.
+UPLOADER_HOST_DIR="${UPLOADER_STORE_HOST_DIR:-}"
+if [ -z "$UPLOADER_HOST_DIR" ] && grep -q '^UPLOADER_STORE_HOST_DIR=' "$SE"; then
+  UPLOADER_HOST_DIR="$(grep '^UPLOADER_STORE_HOST_DIR=' "$SE" | tail -n1 | cut -d= -f2-)"
+fi
+UPLOADER_HOST_DIR="${UPLOADER_HOST_DIR:-/opt/ed-ring-colony/backups/uploader-releases}"
+set_env "$SE" UPLOADER_STORE_HOST_DIR "$UPLOADER_HOST_DIR"
+mkdir -p "$UPLOADER_HOST_DIR"
 if [ "$DO_CRON" != 1 ]; then set_env "$SE" JOBS_ENABLED ""; fi
 # Прямой Postgres для быстрого импорта каталога Spansh и замера размера БД:
 # web и monitor-agent ниже подключаются к сети стека Supabase (compose-lib.sh),
@@ -455,6 +464,7 @@ cat <<EOF
   Supabase Studio: $SUPA_URL  (логин: admin, пароль в $CRED)
   Секреты:         $CRED  (сделайте копию в надёжное место!)
   Бэкапы:          Админка → Бэкапы, раз в неделю вручную (копии в ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}, хранятся 4)
+  Helper-релизы:   $UPLOADER_HOST_DIR (все версии и откаты)
 $( [ "$DO_MONITOR" = 1 ] && echo "  Мониторинг:      Админка → Мониторинг (monitor-agent + update-agent, ключи в $CRED)" \
      || echo "  Мониторинг:      выключен (--no-monitor); включение: bash $SRC_DIR/deploy/start-monitoring.sh && bash $SRC_DIR/deploy/start-update-agent.sh" )
 

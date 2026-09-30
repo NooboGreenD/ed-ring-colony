@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { IconAlert, IconCheckCircle, IconRefresh } from '@/components/Icons';
+import { IconAlert, IconCheckCircle, IconRefresh, IconXCircle } from '@/components/Icons';
+import type { HelperReleaseJob } from '@/types/helperRelease';
 import { authFetch } from '@/lib/supabaseClient';
 
 /**
@@ -48,6 +49,7 @@ interface VersionsResponse {
   store?: StoreInfo;
   channels?: Record<string, { version: string; released_at: string }>;
   versions?: VersionRow[];
+  job?: HelperReleaseJob | null;
 }
 
 const CHANNEL_LABELS: Record<string, string> = {
@@ -66,6 +68,29 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} Б`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
   return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
+}
+
+function formatDuration(milliseconds: number): string {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${seconds} с`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} мин ${String(seconds % 60).padStart(2, '0')} с`;
+}
+
+function jobKindLabel(kind: HelperReleaseJob['kind']): string {
+  if (kind === 'launcher') return 'Базовая сборка EXE';
+  if (kind === 'promote') return 'Переключение канала';
+  return 'Публикация модулей Helper';
+}
+
+function compareVersions(left: string, right: string): number {
+  const a = left.replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  const b = right.replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if ((a[index] ?? 0) !== (b[index] ?? 0)) return (a[index] ?? 0) - (b[index] ?? 0);
+  }
+  return 0;
 }
 
 export default function HelperUpdatesTab() {
@@ -94,6 +119,10 @@ export default function HelperUpdatesTab() {
   const [launcherFile, setLauncherFile] = useState<File | null>(null);
   // Секрет, который показывается ровно один раз (приватный ключ / токен).
   const [secret, setSecret] = useState<{ title: string; value: string; note: string } | null>(null);
+  // Публикация выполняется как серверная задача. Состояние и журнал лежат на
+  // диске, поэтому перезагрузка вкладки не превращает процесс в «видимость».
+  const [releaseJob, setReleaseJob] = useState<HelperReleaseJob | null>(null);
+  const [processLogOpen, setProcessLogOpen] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -109,13 +138,91 @@ export default function HelperUpdatesTab() {
     }
   }, []);
 
+  const loadReleaseJob = useCallback(async (id?: string) => {
+    try {
+      const query = id ? `?job=${encodeURIComponent(id)}` : '';
+      const response = await authFetch(`/api/admin/uploader/release${query}`, { cache: 'no-store' });
+      const data = (await response.json().catch(() => ({}))) as VersionsResponse;
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (data.job) {
+        setReleaseJob(data.job);
+        setProcessLogOpen(true);
+      }
+      return data.job ?? null;
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось получить журнал процесса');
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    void loadReleaseJob();
+  }, [loadReleaseJob, refresh]);
+
+  useEffect(() => {
+    if (!releaseJob?.active) return;
+    const timer = window.setInterval(() => void loadReleaseJob(releaseJob.id), 900);
+    return () => window.clearInterval(timer);
+  }, [loadReleaseJob, releaseJob?.active, releaseJob?.id]);
+
+  useEffect(() => {
+    if (!releaseJob || releaseJob.active) return;
+    if (releaseJob.state === 'succeeded') {
+      setError('');
+      setMessage(releaseJob.kind === 'launcher'
+        ? `ColonialHelper.exe ${releaseJob.version ?? ''} опубликован на сервере`
+        : releaseJob.kind === 'promote'
+          ? `Канал «${CHANNEL_LABELS[releaseJob.channel ?? ''] ?? releaseJob.channel ?? 'Helper'}» переведён на ${releaseJob.version ?? 'версию'}`
+          : `Версия ${releaseJob.version ?? ''} опубликована${releaseJob.channel ? ` в канал «${CHANNEL_LABELS[releaseJob.channel] ?? releaseJob.channel}»` : ''}`);
+      void refresh();
+    } else if (releaseJob.error) {
+      setMessage('');
+      setError(releaseJob.error);
+    }
+  }, [refresh, releaseJob]);
+
+  const cancelRelease = useCallback(async () => {
+    if (!releaseJob?.active) return;
+    if (!window.confirm('Остановить текущий процесс? Уже записанные данные останутся в хранилище, канал не будет переключён.')) return;
+    try {
+      const response = await authFetch(`/api/admin/uploader/release?job=${encodeURIComponent(releaseJob.id)}`, { method: 'DELETE' });
+      const data = (await response.json().catch(() => ({}))) as VersionsResponse;
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (data.job) setReleaseJob(data.job);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось остановить процесс');
+    }
+  }, [releaseJob]);
+
+  const copySecret = useCallback(async () => {
+    if (!secret) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(secret.value);
+      } else {
+        const input = document.createElement('textarea');
+        input.value = secret.value;
+        input.style.position = 'fixed';
+        input.style.opacity = '0';
+        document.body.appendChild(input);
+        input.select();
+        if (!document.execCommand('copy')) throw new Error('copy failed');
+        input.remove();
+      }
+      setMessage('Скопировано в буфер обмена');
+    } catch {
+      setError('Браузер не разрешил доступ к буферу. Скопируйте значение вручную.');
+    }
+  }, [secret]);
 
   const promote = useCallback(async (channel: string, version: string) => {
+    if (releaseJob?.active) {
+      setError('Дождитесь завершения текущей операции Helper');
+      return;
+    }
     const current = channels[channel]?.version ?? '';
-    const back = current && current > version;
+    const back = Boolean(current && compareVersions(current, version) > 0);
     const question = back
       ? `Вернуть канал «${CHANNEL_LABELS[channel] ?? channel}» с ${current} на ${version}?\n\n`
         + 'Пилоты получат её при следующей проверке обновлений как обычное обновление.'
@@ -123,22 +230,24 @@ export default function HelperUpdatesTab() {
     if (!window.confirm(question)) return;
     setBusy(true);
     setMessage('');
+    setError('');
     try {
       const response = await authFetch('/api/admin/uploader/versions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, version }),
+        body: JSON.stringify({ channel, version, async: true }),
       });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setMessage(`Канал «${CHANNEL_LABELS[channel] ?? channel}» переведён на ${version}`);
-      await refresh();
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      setReleaseJob(data.job);
+      setProcessLogOpen(true);
+      setMessage(`Перевод канала «${CHANNEL_LABELS[channel] ?? channel}» запущен — журнал ниже`);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось перевести канал');
     } finally {
       setBusy(false);
     }
-  }, [channels, refresh]);
+  }, [channels, releaseJob]);
 
   interface ConfigResponse {
     ok?: boolean;
@@ -248,6 +357,10 @@ export default function HelperUpdatesTab() {
   }, [configAction, keyId, privateKeyInput]);
 
   const publishRelease = useCallback(async () => {
+    if (releaseJob?.active) {
+      setError('Дождитесь завершения текущей операции Helper');
+      return;
+    }
     if (!releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)) return;
     const action = releasePromote ? 'подготовить и сразу включить' : 'только подготовить';
     if (!window.confirm(`${action} версию ${releaseVersion} для канала «${CHANNEL_LABELS[releaseChannel]}»?`)) return;
@@ -263,6 +376,7 @@ export default function HelperUpdatesTab() {
       form.set('minLauncher', '1.0.0');
       form.set('source', releaseSource);
       form.set('promote', String(releasePromote));
+      form.set('async', 'true');
       const paths: string[] = [];
       for (const file of releaseFiles) {
         form.append('files', file, file.name);
@@ -271,23 +385,26 @@ export default function HelperUpdatesTab() {
       form.set('paths', JSON.stringify(paths));
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setMessage(releasePromote
-        ? `Версия ${releaseVersion} подготовлена и включена в канал «${CHANNEL_LABELS[releaseChannel]}»`
-        : `Версия ${releaseVersion} подготовлена. ZIP доступен в списке версий; канал пока не переключён.`);
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      setReleaseJob(data.job);
+      setProcessLogOpen(true);
+      setMessage(`Процесс подготовки версии ${releaseVersion} запущен — прогресс и лог ниже`);
       setReleaseVersion('');
       setReleaseNotes('');
       setReleaseFiles([]);
-      await refresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось опубликовать версию');
       setMessage('');
     } finally {
       setBusy(false);
     }
-  }, [refresh, releaseChannel, releaseFiles, releaseNotes, releasePromote, releaseSource, releaseVersion]);
+  }, [releaseChannel, releaseFiles, releaseJob, releaseNotes, releasePromote, releaseSource, releaseVersion]);
 
   const publishLauncher = useCallback(async () => {
+    if (releaseJob?.active) {
+      setError('Дождитесь завершения текущей операции Helper');
+      return;
+    }
     if (!launcherFile || !launcherVersion.trim()) return;
     setBusy(true);
     setError('');
@@ -298,19 +415,23 @@ export default function HelperUpdatesTab() {
       form.set('platform', 'win64');
       form.set('version', launcherVersion.trim());
       form.set('launcher', launcherFile, launcherFile.name);
+      form.set('async', 'true');
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      setMessage(`ColonialHelper.exe ${launcherVersion} опубликован на этом сервере`);
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      setReleaseJob(data.job);
+      setProcessLogOpen(true);
+      setMessage(`Загрузка ColonialHelper.exe ${launcherVersion} запущена — журнал ниже`);
       setLauncherFile(null);
-      await refresh();
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось загрузить exe');
       setMessage('');
     } finally {
       setBusy(false);
     }
-  }, [launcherFile, launcherVersion, refresh]);
+  }, [launcherFile, launcherVersion, releaseJob]);
+
+  const releaseBusy = busy || releaseJob?.active === true;
 
   return (
     <div>
@@ -332,6 +453,100 @@ export default function HelperUpdatesTab() {
       {message && (
         <p style={{ color: '#2ecc71', fontSize: 13 }}><IconCheckCircle size={12} /> {message}</p>
       )}
+
+      {releaseJob && (() => {
+        const duration = releaseJob.stats.durationMs > 0
+          ? releaseJob.stats.durationMs
+          : releaseJob.startedAt
+            ? Math.max(0, Date.now() - Date.parse(releaseJob.startedAt))
+            : 0;
+        const stateColor = releaseJob.state === 'succeeded'
+          ? '#2ecc71'
+          : releaseJob.state === 'failed'
+            ? '#e74c3c'
+            : releaseJob.state === 'aborted'
+              ? '#f1c40f'
+              : '#38bdf8';
+        return (
+          <section style={{ background: '#101820', border: `1px solid ${stateColor}`, borderRadius: 10, padding: 16, marginBottom: 16, boxShadow: '0 10px 30px rgba(0,0,0,.16)' }} aria-label="Прогресс и журнал процесса Helper">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ color: '#9ca3af', fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase' }}>Журнал процесса</div>
+                <h3 style={{ margin: '4px 0 3px', color: '#f3f4f6', fontSize: 16 }}>{jobKindLabel(releaseJob.kind)}</h3>
+                <div style={{ color: '#9ca3af', fontSize: 12 }}>
+                  {releaseJob.version ? `Версия ${releaseJob.version}` : 'Операция Helper'}
+                  {releaseJob.channel ? ` · ${CHANNEL_LABELS[releaseJob.channel] ?? releaseJob.channel}` : ''}
+                  {' · '}ID <code>{releaseJob.id.slice(0, 8)}</code>
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ color: stateColor, fontWeight: 700, fontSize: 12 }}>
+                  {releaseJob.state === 'queued' ? 'в очереди' : releaseJob.state === 'running' ? 'выполняется' : releaseJob.state === 'succeeded' ? 'завершено' : releaseJob.state === 'aborted' ? 'остановлено' : 'ошибка'}
+                </span>
+                {releaseJob.active && (
+                  <button className="btn" style={{ fontSize: 11, borderColor: '#e74c3c', color: '#fca5a5' }} onClick={() => void cancelRelease()}>
+                    <IconXCircle size={12} /> Остановить
+                  </button>
+                )}
+                <button className="btn" style={{ fontSize: 11 }} onClick={() => void loadReleaseJob(releaseJob.id)}>
+                  <IconRefresh size={11} /> Обновить лог
+                </button>
+                <button className="btn" style={{ fontSize: 11 }} onClick={() => setProcessLogOpen((open) => !open)}>
+                  {processLogOpen ? 'Скрыть журнал' : 'Показать журнал'}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#d1d5db', fontSize: 12, marginBottom: 5 }}>
+                <span>{releaseJob.stageLabel} · {releaseJob.message || 'обработка…'}</span>
+                <strong style={{ color: stateColor }}>{Math.round(releaseJob.percent)}%</strong>
+              </div>
+              <div role="progressbar" aria-label="Прогресс операции Helper" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(releaseJob.percent)} style={{ height: 10, borderRadius: 999, background: '#26323c', overflow: 'hidden' }}>
+                <div style={{ width: `${Math.max(0, Math.min(100, releaseJob.percent))}%`, height: '100%', background: stateColor, borderRadius: 999, transition: 'width .35s ease' }} />
+              </div>
+            </div>
+
+            {releaseJob.error && (
+              <div style={{ marginTop: 10, color: '#fca5a5', fontSize: 12, background: 'rgba(127,29,29,.25)', borderRadius: 6, padding: '8px 10px' }}>
+                <IconAlert size={12} /> {releaseJob.error}
+              </div>
+            )}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(115px, 1fr))', gap: 8, marginTop: 12 }}>
+              {[
+                ['Файлов', releaseJob.stats.files || '—'],
+                ['Хешировано', releaseJob.stats.hashedFiles ? `${releaseJob.stats.hashedFiles}/${releaseJob.stats.files}` : '—'],
+                ['Объём', formatBytes(releaseJob.stats.totalBytes)],
+                ['Новых blobs', releaseJob.stats.storedBlobs || 0],
+                ['ZIP', formatBytes(releaseJob.stats.archiveBytes)],
+                ['Время', formatDuration(duration)],
+              ].map(([label, value]) => (
+                <div key={label} style={{ background: '#17232d', border: '1px solid #26323c', borderRadius: 7, padding: '8px 9px' }}>
+                  <div style={{ color: '#7f8b96', fontSize: 10, textTransform: 'uppercase' }}>{label}</div>
+                  <div style={{ color: '#e5e7eb', fontSize: 13, fontWeight: 700, marginTop: 3 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {processLogOpen && (
+              <div style={{ marginTop: 12, background: '#081016', border: '1px solid #26323c', borderRadius: 7, overflow: 'hidden' }}>
+                <div style={{ padding: '7px 10px', color: '#7f8b96', fontSize: 11, borderBottom: '1px solid #26323c' }}>
+                  Последние события · {releaseJob.log.length} строк
+                </div>
+                <div role="log" aria-live="polite" style={{ maxHeight: 210, overflowY: 'auto', padding: '6px 10px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 11, lineHeight: 1.65 }}>
+                  {releaseJob.log.length === 0 && <div style={{ color: '#7f8b96' }}>Журнал пока пуст.</div>}
+                  {releaseJob.log.map((entry, index) => (
+                    <div key={`${entry.at}-${index}`} style={{ color: entry.level === 'error' ? '#fca5a5' : entry.level === 'success' ? '#86efac' : entry.level === 'warning' ? '#fde68a' : '#b7c6d1' }}>
+                      <span style={{ color: '#53616d' }}>{new Date(entry.at).toLocaleTimeString('ru-RU')}</span>{' '}{entry.line}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       {store && (
         <div style={{ background: '#1e2124', border: '1px solid #2d3033', borderRadius: 8, padding: 14, marginBottom: 16, fontSize: 13 }}>
@@ -371,7 +586,7 @@ export default function HelperUpdatesTab() {
             <button
               className="btn btn-cyan"
               style={{ fontSize: 12 }}
-              onClick={() => { void navigator.clipboard?.writeText(secret.value); setMessage('Скопировано в буфер обмена'); }}
+              onClick={() => void copySecret()}
             >
               Копировать
             </button>
@@ -557,7 +772,7 @@ export default function HelperUpdatesTab() {
         {busy && <progress style={{ width: '100%', height: 8, marginBottom: 8 }} />}
         <button
           className="btn btn-cyan"
-          disabled={busy || !store?.serverSigningConfigured || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
+          disabled={releaseBusy || !store?.serverSigningConfigured || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
           onClick={() => void publishRelease()}
         >
           {releasePromote ? 'Сформировать ZIP и выпустить обновление' : 'Сформировать ZIP без публикации в канал'}
@@ -572,7 +787,7 @@ export default function HelperUpdatesTab() {
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
             <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
             <input type="file" accept=".exe,application/vnd.microsoft.portable-executable" onChange={(event) => setLauncherFile(event.target.files?.[0] ?? null)} style={{ color: '#9ca3af', fontSize: 12 }} />
-            <button className="btn" disabled={busy || !launcherFile || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить exe на сервер</button>
+            <button className="btn" disabled={releaseBusy || !launcherFile || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить exe на сервер</button>
           </div>
         </div>
       </div>
@@ -634,7 +849,7 @@ export default function HelperUpdatesTab() {
                       <button
                         className="btn btn-cyan"
                         style={{ fontSize: 11, opacity: inStable ? 0.5 : 1 }}
-                        disabled={busy || inStable}
+                        disabled={releaseBusy || inStable}
                         onClick={() => void promote('stable', row.version)}
                       >
                         {inStable ? 'в стабильном' : 'в стабильный'}
@@ -642,7 +857,7 @@ export default function HelperUpdatesTab() {
                       <button
                         className="btn btn-cyan"
                         style={{ fontSize: 11, opacity: inBeta ? 0.5 : 1 }}
-                        disabled={busy || inBeta}
+                        disabled={releaseBusy || inBeta}
                         onClick={() => void promote('beta', row.version)}
                       >
                         {inBeta ? 'в тестовом' : 'в тестовый'}

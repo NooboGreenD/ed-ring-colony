@@ -629,6 +629,8 @@ export interface PublishInput {
   bundleBase64?: string;
   /** Обновлять ли указатель канала (по умолчанию да). */
   promote?: boolean;
+  /** Internal hook used by the admin release job; never comes from JSON. */
+  onProgress?: HelperReleaseProgressHandler;
 }
 
 export interface PublishResult {
@@ -674,10 +676,14 @@ function crc32(data: Buffer): number {
 }
 
 /** Минимальный стандартный ZIP без сторонней зависимости (deflate + UTF-8). */
-async function createZip(files: Map<string, Buffer>): Promise<Buffer> {
+async function createZip(
+  files: Map<string, Buffer>,
+  onFile?: (completed: number, total: number) => void | Promise<void>,
+): Promise<Buffer> {
   const local: Buffer[] = [];
   const central: Buffer[] = [];
   let offset = 0;
+  let completed = 0;
   for (const [path, data] of files) {
     const name = Buffer.from(path, 'utf8');
     const packed = await deflateRawAsync(data, { level: 9 });
@@ -706,6 +712,8 @@ async function createZip(files: Map<string, Buffer>): Promise<Buffer> {
     item.writeUInt32LE(offset, 42);
     central.push(item, name);
     offset += header.length + name.length + packed.length;
+    completed += 1;
+    await onFile?.(completed, files.size);
   }
   const centralSize = central.reduce((sum, item) => sum + item.length, 0);
   const end = Buffer.alloc(22);
@@ -717,6 +725,21 @@ async function createZip(files: Map<string, Buffer>): Promise<Buffer> {
   return Buffer.concat([...local, ...central, end]);
 }
 
+export interface HelperReleaseProgress {
+  stage: 'validate' | 'hash' | 'sign' | 'archive' | 'publish' | 'complete';
+  percent: number;
+  message: string;
+  stats?: Partial<{
+    files: number;
+    totalBytes: number;
+    hashedFiles: number;
+    storedBlobs: number;
+    archiveBytes: number;
+  }>;
+}
+
+export type HelperReleaseProgressHandler = (progress: HelperReleaseProgress) => void | Promise<void>;
+
 export interface ServerReleaseInput {
   version: string;
   channel: Channel;
@@ -724,10 +747,24 @@ export interface ServerReleaseInput {
   minLauncher?: string;
   files: Map<string, Buffer>;
   promote?: boolean;
+  onProgress?: HelperReleaseProgressHandler;
 }
 
 /** Собрать, подписать и опубликовать версию целиком на этом сервере. */
 export async function createServerRelease(input: ServerReleaseInput): Promise<PublishResult> {
+  const report = input.onProgress;
+  const totalInputBytes = [...input.files.values()].reduce((sum, data) => sum + data.length, 0);
+  const progress = async (
+    stage: HelperReleaseProgress['stage'],
+    percent: number,
+    message: string,
+    stats?: HelperReleaseProgress['stats'],
+  ) => report?.({ stage, percent, message, stats });
+
+  await progress('validate', 4, 'Проверяю версию, ключ подписи и состав пакета', {
+    files: input.files.size,
+    totalBytes: totalInputBytes,
+  });
   const version = String(input.version ?? '').trim().replace(/^v/i, '');
   if (!VERSION.test(version)) return { ok: false, error: 'версия должна иметь вид 2.13.1' };
   if ((await readManifest(version)) !== null) return { ok: false, error: `версия ${version} уже существует и неизменяема` };
@@ -758,6 +795,22 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
   }
   if (clean.size > MAX_FILES || total > MAX_BUNDLE_BYTES) return { ok: false, error: 'пакет превышает допустимый размер' };
 
+  await progress('validate', 16, `В пакет войдёт ${clean.size} модулей`, {
+    files: clean.size,
+    totalBytes: total,
+  });
+  const sortedFiles = [...clean.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const manifestFiles: ManifestFile[] = [];
+  for (let index = 0; index < sortedFiles.length; index += 1) {
+    const [path, data] = sortedFiles[index];
+    manifestFiles.push({ path, size: data.length, sha256: createHash('sha256').update(data).digest('hex') });
+    await progress('hash', 20 + ((index + 1) / sortedFiles.length) * 22, `Хеширую модуль ${index + 1} из ${sortedFiles.length}: ${path}`, {
+      files: clean.size,
+      totalBytes: total,
+      hashedFiles: index + 1,
+    });
+  }
+
   const manifest: BundleManifest = {
     schema: MANIFEST_SCHEMA,
     channel: input.channel,
@@ -766,22 +819,40 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     min_launcher: String(input.minLauncher || '1.0.0'),
     released_at: new Date().toISOString(),
     notes: String(input.notes ?? '').slice(0, 20_000),
-    files: [...clean.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({
-      path,
-      size: data.length,
-      sha256: createHash('sha256').update(data).digest('hex'),
-    })),
+    files: manifestFiles,
   };
+  await progress('sign', 48, 'Подписываю манифест серверным ключом', {
+    files: clean.size,
+    totalBytes: total,
+    hashedFiles: clean.size,
+  });
   const signature = cryptoSign(null, canonicalManifestBytes(manifest), privateKeyFromSeed(signing.seed));
   manifest.signature = { alg: 'ed25519', key_id: signing.id, value: signature.toString('base64') };
 
   const archiveFiles = new Map(clean);
   archiveFiles.set('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
-  const archive = await createZip(archiveFiles);
+  await progress('archive', 55, 'Сжимаю ZIP-архив релиза');
+  const archive = await createZip(archiveFiles, async (completed, count) => {
+    await progress('archive', 55 + (completed / count) * 20, `Архивирую файл ${completed} из ${count}`, {
+      files: clean.size,
+      totalBytes: total,
+      hashedFiles: clean.size,
+    });
+  });
   const files = Object.fromEntries([...clean].map(([path, data]) => [path, data.toString('base64')]));
-  return publishBundle({ manifest, files, bundleBase64: archive.toString('base64'), promote: input.promote });
+  return publishBundle({
+    manifest,
+    files,
+    bundleBase64: archive.toString('base64'),
+    promote: input.promote,
+    onProgress: async (event) => progress(event.stage, Math.max(76, event.percent), event.message, {
+      files: clean.size,
+      totalBytes: total,
+      hashedFiles: clean.size,
+      ...event.stats,
+    }),
+  });
 }
-
 /** Опубликовать пакет: разложить файлы по хешам и (по умолчанию) поднять канал. */
 export async function publishBundle(input: PublishInput): Promise<PublishResult> {
   const checked = checkManifest(input.manifest);
@@ -790,12 +861,19 @@ export async function publishBundle(input: PublishInput): Promise<PublishResult>
 
   const signature = verifyManifestSignature(manifest);
   if (!signature.ok) return { ok: false, error: `подпись: ${signature.error}` };
+  await input.onProgress?.({
+    stage: 'publish',
+    percent: 78,
+    message: 'Проверяю подпись и готовлю файлы хранилища',
+    stats: { files: manifest.files.length, totalBytes: manifest.files.reduce((sum, item) => sum + item.size, 0) },
+  });
 
   const files = input.files ?? {};
   const missing: string[] = [];
   let stored = 0;
 
-  for (const item of manifest.files) {
+  for (let index = 0; index < manifest.files.length; index += 1) {
+    const item = manifest.files[index];
     const encoded = files[item.path];
     if (encoded) {
       const data = Buffer.from(encoded, 'base64');
@@ -809,11 +887,17 @@ export async function publishBundle(input: PublishInput): Promise<PublishResult>
         await writeAtomic(blobPath(item.sha256), data);
         stored += 1;
       }
-      continue;
+    } else {
+      // Файла нет в запросе — он должен уже лежать в хранилище. Пустой ответ
+      // здесь означает, что пакет собран из файлов, которых сервер не видел.
+      if (!(await hasBlob(item.sha256))) missing.push(item.path);
     }
-    // Файла нет в запросе — он должен уже лежать в хранилище. Пустой ответ
-    // здесь означает, что пакет собран из файлов, которых сервер не видел.
-    if (!(await hasBlob(item.sha256))) missing.push(item.path);
+    await input.onProgress?.({
+      stage: 'publish',
+      percent: 78 + ((index + 1) / manifest.files.length) * 14,
+      message: `Проверен файл ${index + 1} из ${manifest.files.length}: ${item.path}`,
+      stats: { files: manifest.files.length, totalBytes: manifest.files.reduce((sum, row) => sum + row.size, 0), hashedFiles: index + 1, storedBlobs: stored },
+    });
   }
 
   if (missing.length > 0) {
@@ -825,6 +909,7 @@ export async function publishBundle(input: PublishInput): Promise<PublishResult>
     const archive = Buffer.from(input.bundleBase64, 'base64');
     if (archive.length > MAX_BUNDLE_BYTES) return { ok: false, error: 'архив слишком велик' };
     await writeAtomic(bundlePath(manifest.version), archive);
+    await input.onProgress?.({ stage: 'publish', percent: 94, message: `ZIP сохранён (${archive.length} байт)`, stats: { archiveBytes: archive.length, storedBlobs: stored } });
   }
 
   await writeAtomic(manifestPath(manifest.version), JSON.stringify(manifest, null, 2));
@@ -834,7 +919,9 @@ export async function publishBundle(input: PublishInput): Promise<PublishResult>
       channelPath(manifest.channel),
       JSON.stringify({ version: manifest.version, updated_at: new Date().toISOString() }, null, 2),
     );
+    await input.onProgress?.({ stage: 'publish', percent: 98, message: `Канал «${manifest.channel}» переключён на ${manifest.version}` });
   }
+  await input.onProgress?.({ stage: 'complete', percent: 100, message: 'Релиз опубликован и проверен', stats: { storedBlobs: stored } });
 
   return {
     ok: true,
@@ -864,19 +951,26 @@ export async function saveLauncherBinary(
   version: string,
   data: Buffer,
   publicUrl: string,
+  onProgress?: HelperReleaseProgressHandler,
 ): Promise<PublishResult> {
+  await onProgress?.({ stage: 'validate', percent: 8, message: 'Проверяю версию и заголовок Windows PE', stats: { files: 1, totalBytes: data.length } });
   if (!PLATFORM.test(platform)) return { ok: false, error: 'плохая платформа' };
   if (!VERSION.test(version)) return { ok: false, error: 'плохая версия лаунчера' };
   if (data.length < 1024 || data.length > 128 * 1024 * 1024) return { ok: false, error: 'некорректный размер exe' };
   if (data[0] !== 0x4d || data[1] !== 0x5a) return { ok: false, error: 'файл не похож на Windows PE (нет заголовка MZ)' };
+  await onProgress?.({ stage: 'hash', percent: 36, message: 'Считаю SHA-256 базовой сборки', stats: { files: 1, totalBytes: data.length } });
+  const sha256 = createHash('sha256').update(data).digest('hex');
+  await onProgress?.({ stage: 'publish', percent: 70, message: 'Сохраняю ColonialHelper.exe в хранилище', stats: { files: 1, totalBytes: data.length } });
   await writeAtomic(launcherBinaryPath(platform), data);
-  return saveLauncher({
+  const result = await saveLauncher({
     platform,
     version,
     url: publicUrl,
-    sha256: createHash('sha256').update(data).digest('hex'),
+    sha256,
     size: data.length,
   });
+  await onProgress?.({ stage: result.ok ? 'complete' : 'publish', percent: result.ok ? 100 : 90, message: result.ok ? 'Базовая сборка опубликована' : (result.error || 'Не удалось сохранить метаданные'), stats: { files: 1, totalBytes: data.length } });
+  return result;
 }
 
 /** Сохранить метаданные базовой сборки (exe) для канала обновлений лаунчера. */
