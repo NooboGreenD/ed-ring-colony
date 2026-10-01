@@ -408,7 +408,9 @@ ed-ring-colony/
 по умолчанию `/mnt/sdb/ed-ring-colony/spansh` → `/app/data/spansh`): предыдущий
 дамп удаляется перед загрузкой нового, а архив — после успешного импорта, так
 что ~12 ГиБ пика не превращаются в бесконечный рост. Перенос со старого
-volume: `sudo bash deploy/migrate-galaxy-dump.sh`.
+volume и первичная настройка диска: `sudo bash deploy/migrate-galaxy-dump.sh`
+(скрипт сам находит, куда смонтирован `/dev/sdb1`, и печатает строку для
+`.env.production`).
 
 ```bash
 npm run spansh:import                 # CLI: полный дамп → БД

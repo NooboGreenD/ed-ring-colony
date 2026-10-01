@@ -62,9 +62,11 @@ services:
       # Скачивание возобновляемое, идёт в несколько HTTP Range-соединений,
       # у каждого варианта свой файл; предыдущий дамп удаляется перед
       # загрузкой нового, а архив — после успешного импорта
-      # (GALAXY_ARCHIVE_KEEP=1 отключает). Перенос со старого named volume:
-      # deploy/migrate-galaxy-dump.sh. Путь внутри контейнера можно сменить
-      # через GALAXY_ARCHIVE_DIR.
+      # (GALAXY_ARCHIVE_KEEP=1 отключает). Слева — ПУТЬ монтирования диска,
+      # а не устройство: /dev/sdb1 должен быть смонтирован (findmnt -no TARGET
+      # /dev/sdb1). Настройка диска и перенос со старого named volume:
+      # sudo bash deploy/migrate-galaxy-dump.sh. Путь внутри контейнера
+      # меняется через GALAXY_ARCHIVE_DIR.
       - ${GALAXY_DATA_HOST_DIR:-/mnt/sdb/ed-ring-colony/spansh}:/app/data/spansh
       # Пакеты кода Colonial Helper: ВСЕ манифесты, blobs, ZIP, EXE,
       # config.json и журналы релизов лежат на хостовом диске с backup'ами,
