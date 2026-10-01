@@ -9,13 +9,19 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 /**
- * Ночное обновление каталога всех систем (дамп Spansh выходит раз в сутки).
+ * Ночное обновление каталога всех систем (дампы Spansh выходят раз в сутки).
  *
- * Запрос НЕ ждёт окончания импорта: 6 ГиБ скачиваются и пишутся фоном в
+ * Полный `systems.json.gz` (5.9 ГиБ) качается один раз — дальше задача берёт
+ * ДЕЛЬТУ: `systems_1day.json.gz` (~4 МиБ), а после простоя — недельную,
+ * двухнедельную, месячную или полугодовую. Выбор делает `planGalaxyImport()`
+ * по отметке `dump_generated_at`: качать 5.9 ГиБ каждую ночь физически
+ * невозможно (на тонком канале это неделя, за которую источник обновляется
+ * семь раз), а дельта того же формата накладывается тем же upsert'ом.
+ *
+ * Запрос НЕ ждёт окончания импорта: загрузка и запись идут фоном в
  * веб-процессе, а планировщик получает текущее состояние. Прерванный импорт
- * (перезапуск контейнера) продолжается: дамп скачивается заново — gzip нельзя
- * декодировать с середины, — но уже записанные системы пропускаются по
- * сохранённому смещению в распакованном потоке.
+ * (перезапуск контейнера) продолжается с сохранённой точки — с шарда, если
+ * архив распакован, иначе по смещению в распакованном потоке.
  *
  * Включается добавлением `galaxy-import` в JOBS_ENABLED (см. docker-compose.yml
  * и SPANSH-IMPORT.md); вручную — `node scripts/server-jobs.mjs --once galaxy-import`.
@@ -74,8 +80,10 @@ async function handle() {
   }
 
   try {
-    const started = await startGalaxyImport({ scheduled: true });
+    // `variant: 'auto'` = the cheapest dump that still covers the gap.
+    const started = await startGalaxyImport({ scheduled: true, variant: 'auto' });
     const resumedFrom = started.resumedFrom ?? 0;
+    const resumedShard = started.resumedShard ?? 0;
     return NextResponse.json(
       {
         ok: true,
@@ -83,12 +91,18 @@ async function handle() {
         skipped: !started.started,
         reason:
           started.reason ??
-          (resumedFrom > 0
-            ? `resumed: skipping systems before byte ${resumedFrom} of the decompressed dump`
-            : decision.reason === 'restart'
-              ? 'restarted an interrupted import from the beginning'
-              : 'started'),
+          (resumedShard > 0
+            ? `resumed: skipping ${resumedShard} shards already stored`
+            : resumedFrom > 0
+              ? `resumed: skipping systems before byte ${resumedFrom} of the decompressed dump`
+              : decision.reason === 'restart'
+                ? 'restarted an interrupted import from the beginning'
+                : 'started'),
         resumed_from: resumedFrom,
+        resumed_shard: resumedShard,
+        variant: started.variant ?? null,
+        mode: started.mode ?? null,
+        plan: started.plan ? { variant: started.plan.variant, reason: started.plan.reason, approx_bytes: started.plan.approx_bytes } : null,
         backend: started.state.backend,
         previous_error: state.phase === 'failed' ? state.error : null,
       },

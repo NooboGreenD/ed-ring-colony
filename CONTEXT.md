@@ -557,16 +557,29 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   (`src/lib/galaxyImportJob.ts` → `/api/admin/galaxy`, `/api/cron/galaxy-import`,
   admin tab «Каталог систем») and the CLI `scripts/import-spansh-systems.mjs`.
   The in-app one exists because the standalone image has no `scripts/`. It runs
-  in two phases: (1) download the ~6 GiB `systems.json.gz` to disk —
-  `GALAXY_ARCHIVE_DIR` (default `data/spansh`; the compose `galaxy-dump` volume
-  at `/app/data/spansh`), resumable by HTTP Range with retry/backoff on dropped
-  connections (undici's `terminated`), CRC-verified, state in
-  `galaxy_systems_meta` (key `archive`), downloadable on demand via
-  `{"action":"download"}`; (2) import from that local file (never over the
-  network again), writing in batches (pg or PostgREST), resume point in
-  `galaxy_systems_meta` (key `import`), point cloud uploaded to storage.
+  in two phases: (1) download the dump to disk — `GALAXY_ARCHIVE_DIR` (default
+  `data/spansh`; in compose a bind mount of a separate disk,
+  `GALAXY_DATA_HOST_DIR` → `/app/data/spansh`), in several parallel HTTP Range
+  connections (`GALAXY_DOWNLOAD_SEGMENTS`, per-segment progress in
+  `<file>.parts.json`), with retry/backoff on dropped connections (undici's
+  `terminated`), CRC-verified, state in `galaxy_systems_meta` (key `archive`),
+  downloadable on demand via `{"action":"download"}`; (2) import from that
+  local file (never over the network again), writing in batches (pg or
+  PostgREST), resume point in `galaxy_systems_meta` (key `import`), point cloud
+  uploaded to storage. The full 5.9 GiB file is downloaded ONCE: afterwards
+  `planGalaxyImport()` (`src/lib/galaxyDumpVariants.ts`) picks the cheapest
+  Spansh delta covering the gap since `stats.dump_generated_at`
+  (`systems_1day` ~4 MiB … `systems_6months` ~617 MiB).
+  `GALAXY_IMPORT_MODE=shards` unpacks the archive once into gzipped TSV shards
+  (`src/lib/galaxyShards.ts`) so a resumed import costs O(1) instead of
+  re-parsing 2×10⁸ JSON objects. Disk housekeeping lives in
+  `src/lib/galaxyArchiveStore.ts`: previous archives and stale shards are
+  deleted before a new download, the archive itself after a successful import
+  (`GALAXY_ARCHIVE_KEEP=1`, `GALAXY_SHARDS_KEEP=1` opt out), and a download
+  that cannot fit is refused up front (`GALAXY_DISK_CHECK=0` disables).
   `GALAXY_IMPORT_FILE` pins a hand-placed dump (nothing is downloaded),
-  `GALAXY_IMPORT_URL` points the download at a mirror. See SPANSH-IMPORT.md.
+  `GALAXY_IMPORT_URL`/`GALAXY_DUMP_BASE_URL` point the download at a mirror.
+  See SPANSH-IMPORT.md.
   Atlas star candidates and the route finder prefer this table.
   `/system/[name]` falls back to the catalog when there is no construction row.
   The map layer «Все системы» reads `edgs-v1` from `public/data`, storage bucket
@@ -944,7 +957,16 @@ GALNET_TRANSLATE_LIMIT=10
 
 # Spansh catalog import (in-app + CLI)
 GALAXY_IMPORT_URL=...      # mirror of the nightly dump (default downloads.spansh.co.uk)
-GALAXY_ARCHIVE_DIR=...     # on-disk dump archive dir (default data/spansh; compose: /app/data/spansh)
+GALAXY_DUMP_BASE_URL=...   # mirror of the whole dump directory (full + deltas)
+GALAXY_DOWNLOAD_SEGMENTS=4 # parallel HTTP Range connections (1–16)
+GALAXY_IMPORT_MODE=stream  # stream | shards (shards = unpack once, O(1) resume)
+GALAXY_DATA_HOST_DIR=...   # HOST dir bind-mounted at /app/data/spansh (separate disk, /mnt/sdb/...)
+GALAXY_ARCHIVE_DIR=...     # dir inside the container (default data/spansh)
+GALAXY_SHARDS_DIR=...      # shard dir (default <archive dir>/shards)
+GALAXY_SHARDS_PRUNE=0      # delete each shard right after it is written to the DB
+GALAXY_SHARDS_KEEP=0       # 1 = never auto-delete shards whose archive is gone
+GALAXY_ARCHIVE_KEEP=0      # 1 = keep the archive after a successful import
+GALAXY_DISK_CHECK=1        # 0 = do not refuse a download that does not fit
 GALAXY_IMPORT_FILE=...     # pin a local dump; import reads it, downloads nothing
 
 # External APIs

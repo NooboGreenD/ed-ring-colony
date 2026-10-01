@@ -13,23 +13,57 @@ import { existsSync, rmSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { invalidateGalaxyStatsCache, type GalaxyStats, getGalaxyStats } from './galaxySystemsDb.ts';
+import { catalogIsComplete, invalidateGalaxyStatsCache, type GalaxyStats, getGalaxyStats } from './galaxySystemsDb.ts';
 import {
   POINTS_UPLOAD_LIMIT,
   createPgWriter,
   createSupabaseWriter,
   describeImportBackends,
-  downloadDumpFile,
+  downloadDump,
   formatBytes,
   galaxyArchivePath,
+  galaxyArchivePathForVariant,
+  galaxyDownloadSegments,
   galaxyImportFile,
   galaxyImportUrl,
   postgrestWriteWarning,
   runGalaxyImport,
   type GalaxyImportBackend,
+  type GalaxyImportRunResult,
   type GalaxyImportSnapshot,
   type GalaxyRowWriter,
 } from './galaxyImport.ts';
+import {
+  DUMP_VARIANTS,
+  dumpVariantUrl,
+  formatGap,
+  isDumpVariant,
+  planDumpDownload,
+  variantCoversGap,
+  variantFromUrl,
+  type DumpPlan,
+  type GalaxyDumpVariant,
+} from './galaxyDumpVariants.ts';
+import {
+  galaxyImportMode,
+  getShardStatus,
+  manifestMatchesArchive,
+  readShardManifest,
+  runShardImport,
+  shardsDir,
+  unpackArchiveToShards,
+  type GalaxyShardManifest,
+  type ShardImportSnapshot,
+  type UnpackProgress,
+} from './galaxyShards.ts';
+import {
+  checkDiskSpace,
+  cleanupBeforeDownload,
+  cleanupGalaxyStorage,
+  getGalaxyStorageStatus,
+  releaseArchiveAfterImport,
+  type GalaxyStorageStatus,
+} from './galaxyArchiveStore.ts';
 import { FRESH_MS } from './galaxyImportSchedule.ts';
 import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
 import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
@@ -81,6 +115,22 @@ export interface GalaxyImportState {
   error: string | null;
   /** Consecutive failed attempts of the same import (scheduler backoff). */
   attempts: number;
+  /**
+   * Which Spansh file this pass imports: `full` (5.9 GiB) or one of the
+   * rolling deltas (`1day` … `6months`, 4–650 MiB). After the first full
+   * import every refresh is a delta — see `src/lib/galaxyDumpVariants.ts`.
+   */
+  variant: string | null;
+  /** `stream` = straight from the gzip, `shards` = from the unpacked shards. */
+  mode: 'stream' | 'shards' | null;
+  /** Shards already written to the database (restart point of `shards` mode). */
+  shard_index: number;
+  shards_total: number | null;
+  /**
+   * `Last-Modified` of the imported dump — the moment the catalog is current
+   * as of. The next run picks its delta from this, not from the import time.
+   */
+  dump_generated_at: string | null;
 }
 
 export const EMPTY_IMPORT_STATE: GalaxyImportState = {
@@ -105,6 +155,11 @@ export const EMPTY_IMPORT_STATE: GalaxyImportState = {
   points_error: null,
   error: null,
   attempts: 0,
+  variant: null,
+  mode: null,
+  shard_index: 0,
+  shards_total: null,
+  dump_generated_at: null,
 };
 
 export const ARCHIVE_STATE_KEY = 'archive';
@@ -120,6 +175,12 @@ export interface GalaxyArchiveState {
   downloaded_at: string | null;
   error: string | null;
   updated_at: string | null;
+  /** Which dump this archive is (`full`, `1day`, …). */
+  variant: string | null;
+  /** Parallel HTTP Range connections the last attempt used. */
+  segments: number | null;
+  /** `Last-Modified` of the source file = when Spansh generated the dump. */
+  last_modified: string | null;
 }
 
 export const EMPTY_ARCHIVE_STATE: GalaxyArchiveState = {
@@ -131,6 +192,9 @@ export const EMPTY_ARCHIVE_STATE: GalaxyArchiveState = {
   downloaded_at: null,
   error: null,
   updated_at: null,
+  variant: null,
+  segments: null,
+  last_modified: null,
 };
 
 const ARCHIVE_PHASES: GalaxyArchivePhase[] = ['idle', 'downloading', 'done', 'failed', 'cancelled'];
@@ -147,6 +211,9 @@ export function parseArchiveState(value: unknown): GalaxyArchiveState {
     downloaded_at: str(raw.downloaded_at),
     error: str(raw.error),
     updated_at: str(raw.updated_at),
+    variant: str(raw.variant),
+    segments: nullableNum(raw.segments),
+    last_modified: str(raw.last_modified),
   };
 }
 
@@ -172,9 +239,17 @@ interface LiveDownload {
   log: string[];
 }
 
+interface LiveUnpack {
+  controller: AbortController;
+  progress: UnpackProgress | null;
+  startedAt: number;
+  log: string[];
+}
+
 const runtime = globalThis as typeof globalThis & {
   edrcGalaxyImportRun?: LiveRun | null;
   edrcGalaxyDownloadRun?: LiveDownload | null;
+  edrcGalaxyUnpackRun?: LiveUnpack | null;
 };
 
 function liveRun(): LiveRun | null {
@@ -183,6 +258,10 @@ function liveRun(): LiveRun | null {
 
 function liveDownload(): LiveDownload | null {
   return runtime.edrcGalaxyDownloadRun ?? null;
+}
+
+function liveUnpack(): LiveUnpack | null {
+  return runtime.edrcGalaxyUnpackRun ?? null;
 }
 
 const PHASES: GalaxyImportPhase[] = ['idle', 'running', 'done', 'failed', 'cancelled'];
@@ -229,6 +308,11 @@ export function parseImportState(value: unknown): GalaxyImportState {
     points_error: str(raw.points_error),
     error: str(raw.error),
     attempts: num(raw.attempts),
+    variant: str(raw.variant),
+    mode: raw.mode === 'shards' || raw.mode === 'stream' ? raw.mode : null,
+    shard_index: num(raw.shard_index),
+    shards_total: nullableNum(raw.shards_total),
+    dump_generated_at: str(raw.dump_generated_at),
   };
 }
 
@@ -310,6 +394,15 @@ export async function getGalaxyArchiveStatus(): Promise<{
   };
 }
 
+/** Bytes of a file that may not exist (a resumed download already has some). */
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * The dump archive on disk. An archive is "fresh" while its mtime is younger
  * than `freshMs` — the same window the scheduler uses for "today's catalog".
@@ -331,10 +424,11 @@ export function archiveIsFresh(path: string, now = Date.now(), freshMs = FRESH_M
  * registered (or refused), never when the file is complete. The download is
  * resumable: a dropped connection keeps the bytes on disk and continues.
  */
-export async function startGalaxyDownload(options: { url?: string } = {}): Promise<{
+export async function startGalaxyDownload(options: { url?: string; variant?: GalaxyDumpVariant | 'auto' } = {}): Promise<{
   started: boolean;
   reason?: string;
   state: GalaxyArchiveState;
+  plan?: DumpPlan;
 }> {
   if (liveDownload()) {
     return { started: false, reason: 'Скачивание уже идёт', state: await readArchiveState() };
@@ -343,8 +437,26 @@ export async function startGalaxyDownload(options: { url?: string } = {}): Promi
     return { started: false, reason: 'Импорт уже запущен — скачивание может испортить файл, из которого он читает', state: await readArchiveState() };
   }
 
-  const url = options.url?.trim() || galaxyImportUrl();
-  const dest = galaxyArchivePath();
+  // Which file to fetch: an explicit variant/URL, or the cheapest dump that
+  // still covers the gap since the catalog was last refreshed.
+  const plan = await planGalaxyImport();
+  const variant: GalaxyDumpVariant = isDumpVariant(options.variant)
+    ? options.variant
+    : variantFromUrl(options.url) ?? plan.variant;
+  const url = options.url?.trim() || dumpVariantUrl(variant);
+  const dest = galaxyArchivePathForVariant(variant);
+  const segments = galaxyDownloadSegments();
+
+  // The dumps live on their own disk and the previous one is dead weight the
+  // moment a newer one starts arriving: free it before asking for 6 GiB more.
+  const pending: string[] = [];
+  const note = (line: string) => pending.push(line);
+  cleanupBeforeDownload({ variant, log: note });
+  const space = checkDiskSpace({ variant, have: fileSize(dest) });
+  if (!space.ok) {
+    console.error(`[galaxy-archive] ${space.message}`);
+    return { started: false, reason: space.message ?? 'Недостаточно места на диске', state: await readArchiveState(), plan };
+  }
 
   const controller = new AbortController();
   const run: LiveDownload = { controller, received: 0, total: null, startedAt: Date.now(), log: [] };
@@ -360,14 +472,21 @@ export async function startGalaxyDownload(options: { url?: string } = {}): Promi
     phase: 'downloading',
     source: url,
     path: dest,
+    variant,
+    segments,
     error: null,
   });
 
+  for (const line of pending) log(line);
+  if (!isDumpVariant(options.variant) && !options.url) log(`Выбор дампа: ${plan.reason}`);
+  log(`Скачиваю ${DUMP_VARIANTS[variant].file} (${DUMP_VARIANTS[variant].label}) в ${segments} поток(ов)`);
+
   void (async () => {
     try {
-      const result = await downloadDumpFile({
+      const result = await downloadDump({
         url,
         dest,
+        segments,
         signal: controller.signal,
         retries: Infinity,
         log,
@@ -388,6 +507,9 @@ export async function startGalaxyDownload(options: { url?: string } = {}): Promi
         phase: 'done',
         source: url,
         path: dest,
+        variant,
+        segments: result.segments,
+        last_modified: result.lastModified,
         bytes_done: result.bytes,
         bytes_total: result.total,
         downloaded_at: new Date().toISOString(),
@@ -415,7 +537,7 @@ export async function startGalaxyDownload(options: { url?: string } = {}): Promi
     }
   })();
 
-  return { started: true, state: started };
+  return { started: true, state: started, plan };
 }
 
 /** Stop a running archive download. Bytes already on disk stay (resume point). */
@@ -438,12 +560,17 @@ export async function cancelGalaxyDownload(): Promise<{ cancelled: boolean; stat
  */
 async function ensureArchiveDownload(args: {
   url: string;
+  variant: GalaxyDumpVariant;
   scheduled: boolean;
   fresh: boolean;
   signal: AbortSignal;
   log: (line: string) => void;
-}): Promise<string> {
-  const dest = galaxyArchivePath();
+}): Promise<{ path: string; lastModified: string | null }> {
+  const dest = galaxyArchivePathForVariant(args.variant);
+  const segments = galaxyDownloadSegments();
+  // A delta is only valid while it is today's file: an old `systems_1day`
+  // describes a window the catalog has long since passed.
+  const requireFresh = args.scheduled || args.variant !== 'full';
 
   if (args.fresh) {
     rmSync(dest, { force: true });
@@ -463,27 +590,40 @@ async function ensureArchiveDownload(args: {
   const archState = await readArchiveState().catch(() => ({ ...EMPTY_ARCHIVE_STATE }));
   const complete = archState.phase === 'done' && archState.path === dest;
 
-  if (!args.fresh && complete && existsSync(dest) && (!args.scheduled || archiveIsFresh(dest))) {
+  if (!args.fresh && complete && existsSync(dest) && (!requireFresh || archiveIsFresh(dest))) {
     const stat = statSync(dest);
     args.log(`Архив уже на диске: ${dest} (${formatBytes(stat.size)}) — импорт идёт с диска, без сети`);
-    return dest;
+    return { path: dest, lastModified: archState.last_modified };
   }
 
-  if (complete && existsSync(dest) && args.scheduled && !archiveIsFresh(dest)) {
+  if (complete && existsSync(dest) && requireFresh && !archiveIsFresh(dest)) {
     // The nightly update must fetch today's dump, not re-import yesterday's.
     args.log('Архив на диске старше суток — скачиваю свежий дамп');
     rmSync(dest, { force: true });
   }
 
-  args.log(`Скачиваю дамп на диск: ${args.url} → ${dest}`);
-  await writeArchiveState({ phase: 'downloading', source: args.url, path: dest, error: null }).catch((error) => {
+  // Nothing on this disk is needed once a newer dump starts downloading.
+  cleanupBeforeDownload({ variant: args.variant, log: args.log });
+  const space = checkDiskSpace({ variant: args.variant, have: fileSize(dest) });
+  if (!space.ok) throw new Error(space.message ?? 'Недостаточно места на диске');
+
+  args.log(`Скачиваю дамп на диск: ${args.url} → ${dest} (${segments} поток(ов))`);
+  await writeArchiveState({
+    phase: 'downloading',
+    source: args.url,
+    path: dest,
+    variant: args.variant,
+    segments,
+    error: null,
+  }).catch((error) => {
     args.log(`Не удалось сохранить состояние: ${(error as Error).message}`);
   });
 
   let lastPersist = 0;
-  const result = await downloadDumpFile({
+  const result = await downloadDump({
     url: args.url,
     dest,
+    segments,
     signal: args.signal,
     retries: Infinity,
     log: args.log,
@@ -498,6 +638,9 @@ async function ensureArchiveDownload(args: {
     phase: 'done',
     source: args.url,
     path: dest,
+    variant: args.variant,
+    segments: result.segments,
+    last_modified: result.lastModified,
     bytes_done: result.bytes,
     bytes_total: result.total,
     downloaded_at: new Date().toISOString(),
@@ -506,7 +649,156 @@ async function ensureArchiveDownload(args: {
     args.log(`Не удалось сохранить состояние: ${(error as Error).message}`);
   });
   args.log(`Архив на диске: ${formatBytes(result.bytes)} — импорт идёт с диска`);
-  return dest;
+  return { path: dest, lastModified: result.lastModified };
+}
+
+// ───────────────── what to download next (the plan) ─────────────────
+
+export interface GalaxyImportPlan extends DumpPlan {
+  url: string;
+  /** Where the archive for this variant lives on disk. */
+  archive: string;
+  /** Bytes of that file already on disk (0 = nothing yet). */
+  archive_bytes: number;
+  /** Parallel connections the download would use. */
+  segments: number;
+  /** Published size of the chosen file, for the time estimate. */
+  approx_bytes: number;
+  /** A delta must not rebuild the 36 MB point cloud from 2×10⁸ rows. */
+  skip_points: boolean;
+}
+
+/**
+ * Decide what the next refresh should download — the heart of the "do not
+ * re-download 5.9 GiB" strategy.
+ *
+ * The catalog records when the dump it was built from was generated
+ * (`stats.dump_generated_at`). Everything newer than that is in the deltas, so
+ * a catalog that is a day behind needs 4 MiB, one that is a month behind needs
+ * 88 MiB, and only an empty (or half-year-old) catalog needs the full dump.
+ */
+export async function planGalaxyImport(now = Date.now()): Promise<GalaxyImportPlan> {
+  const stats = await getGalaxyStats().catch(() => null);
+  const extra = (stats as (GalaxyStats & { dump_generated_at?: string | null }) | null) ?? null;
+  const plan = planDumpDownload({
+    catalogComplete: catalogIsComplete(stats),
+    dataAsOf: extra?.dump_generated_at ?? null,
+    importedAt: stats?.imported_at ?? null,
+    now,
+  });
+  const url = dumpVariantUrl(plan.variant);
+  const archive = galaxyArchivePathForVariant(plan.variant);
+  let archiveBytes = 0;
+  try {
+    archiveBytes = statSync(archive).size;
+  } catch {
+    archiveBytes = 0;
+  }
+  return {
+    ...plan,
+    url,
+    archive,
+    archive_bytes: archiveBytes,
+    segments: galaxyDownloadSegments(),
+    approx_bytes: plan.info.approxBytes,
+    skip_points: plan.variant !== 'full',
+  };
+}
+
+// ───────────────── unpack: archive → shards ─────────────────
+
+/**
+ * Unpack the archive into shards in the background (admin action «Распаковать
+ * архив»). Shards make a resumed import O(1) instead of "re-parse 2×10⁸ JSON
+ * objects", and `follow` lets the unpack run while the archive is still
+ * downloading — on a thin line the two phases overlap instead of adding up.
+ */
+export async function startGalaxyUnpack(options: { fresh?: boolean; follow?: boolean } = {}): Promise<{
+  started: boolean;
+  reason?: string;
+  archive?: string;
+}> {
+  if (liveUnpack()) return { started: false, reason: 'Распаковка уже идёт' };
+  if (liveRun()) return { started: false, reason: 'Идёт импорт — дождитесь его окончания' };
+
+  const pinned = galaxyImportFile();
+  const archive = pinned ?? galaxyArchivePathForVariant('full');
+  if (!existsSync(archive)) {
+    return { started: false, reason: `Архива нет на диске (${archive}) — сначала скачайте дамп` };
+  }
+  const downloading = Boolean(liveDownload());
+  if (downloading && options.follow === false) {
+    return { started: false, reason: 'Архив ещё скачивается' };
+  }
+
+  const controller = new AbortController();
+  const run: LiveUnpack = { controller, progress: null, startedAt: Date.now(), log: [] };
+  runtime.edrcGalaxyUnpackRun = run;
+  const log = (line: string) => {
+    run.log.push(line);
+    if (run.log.length > 60) run.log.splice(0, run.log.length - 60);
+    console.error(`[galaxy-unpack] ${line}`);
+  };
+
+  void (async () => {
+    try {
+      log(`Распаковываю ${archive} → ${shardsDir()}`);
+      await unpackArchiveToShards({
+        archive,
+        dir: shardsDir(),
+        source: (await readArchiveState().catch(() => null))?.source ?? archive,
+        fresh: options.fresh === true,
+        signal: controller.signal,
+        log,
+        onProgress: (progress) => {
+          run.progress = progress;
+        },
+        // Keep reading while the downloader is still appending bytes.
+        follow: options.follow === false ? undefined : () => Boolean(liveDownload()),
+      });
+    } catch (error) {
+      log(`ОШИБКА: ${(error as Error)?.message || String(error)}`);
+    } finally {
+      runtime.edrcGalaxyUnpackRun = null;
+    }
+  })();
+
+  return { started: true, archive };
+}
+
+export async function cancelGalaxyUnpack(): Promise<{ cancelled: boolean }> {
+  const run = liveUnpack();
+  if (!run) return { cancelled: false };
+  run.controller.abort();
+  for (let i = 0; i < 40; i++) {
+    await new Promise((done) => setTimeout(done, 250));
+    if (!liveUnpack()) break;
+  }
+  return { cancelled: true };
+}
+
+export interface GalaxyUnpackStatus {
+  dir: string;
+  live: boolean;
+  progress: UnpackProgress | null;
+  manifest: GalaxyShardManifest | null;
+  files: number;
+  bytes: number;
+  log: string[];
+}
+
+export function getGalaxyUnpackStatus(): GalaxyUnpackStatus {
+  const run = liveUnpack();
+  const status = getShardStatus(shardsDir());
+  return {
+    dir: status.dir,
+    live: Boolean(run),
+    progress: run?.progress ?? null,
+    manifest: status.manifest,
+    files: status.files,
+    bytes: status.bytes,
+    log: run ? [...run.log] : [],
+  };
 }
 
 export interface GalaxyImportStatus {
@@ -519,6 +811,12 @@ export interface GalaxyImportStatus {
   backends: ReturnType<typeof describeImportBackends>;
   stats: GalaxyStats | null;
   archive: Awaited<ReturnType<typeof getGalaxyArchiveStatus>> | null;
+  /** Cheapest dump that would bring the catalog up to date right now. */
+  plan: GalaxyImportPlan | null;
+  /** Unpacked shards on disk (the fast resume path). */
+  shards: GalaxyUnpackStatus | null;
+  /** The data disk: free space, archives and shards currently stored on it. */
+  storage: GalaxyStorageStatus | null;
 }
 
 /** Persisted state plus the live counters of a run in this process. */
@@ -541,6 +839,19 @@ export async function getGalaxyImportStatus(): Promise<GalaxyImportStatus> {
     : persisted;
   const stats = await getGalaxyStats().catch(() => null);
   const archive = await getGalaxyArchiveStatus().catch(() => null);
+  const plan = await planGalaxyImport().catch(() => null);
+  let shards: GalaxyUnpackStatus | null = null;
+  try {
+    shards = getGalaxyUnpackStatus();
+  } catch {
+    shards = null;
+  }
+  let storage: GalaxyStorageStatus | null = null;
+  try {
+    storage = getGalaxyStorageStatus();
+  } catch {
+    storage = null;
+  }
   return {
     state,
     live: Boolean(run),
@@ -550,6 +861,9 @@ export async function getGalaxyImportStatus(): Promise<GalaxyImportStatus> {
     backends: describeImportBackends(),
     stats,
     archive,
+    plan,
+    shards,
+    storage,
   };
 }
 
@@ -571,12 +885,30 @@ export interface StartGalaxyImportOptions {
    * FRESH_MS) or re-downloads the dump first.
    */
   scheduled?: boolean;
+  /**
+   * Which Spansh file to import. Default (`auto`) asks `planGalaxyImport()`
+   * for the cheapest dump that still covers the gap — a day-old catalog needs
+   * 4 MiB, not 5.9 GiB.
+   */
+  variant?: GalaxyDumpVariant | 'auto';
+  /**
+   * `stream` reads the gzip archive directly (the historical path);
+   * `shards` unpacks it once into TSV shards and imports those, which makes a
+   * resumed import O(1) instead of re-parsing 2×10⁸ JSON objects.
+   * Default: shards when they already exist (or `GALAXY_IMPORT_MODE=shards`).
+   */
+  mode?: 'stream' | 'shards' | 'auto';
 }
 
 export interface StartGalaxyImportResult {
   started: boolean;
   reason?: string;
   resumedFrom?: number;
+  /** Shards skipped as already imported (shard mode). */
+  resumedShard?: number;
+  variant?: GalaxyDumpVariant;
+  mode?: 'stream' | 'shards';
+  plan?: GalaxyImportPlan;
   state: GalaxyImportState;
 }
 
@@ -776,18 +1108,54 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
   if (liveRun()) {
     return { started: false, reason: 'Импорт уже запущен', state: await readImportState() };
   }
-  const url = options.url?.trim() || galaxyImportUrl();
+  if (liveUnpack()) {
+    return { started: false, reason: 'Идёт распаковка архива в шарды — дождитесь её окончания', state: await readImportState() };
+  }
+
+  // A pinned local file (option or GALAXY_IMPORT_FILE) must exist before the
+  // job registers itself — a typo in the path is a config error, not a
+  // resumable failure.
+  const pinnedFile = options.file?.trim() ? resolve(options.file.trim()) : galaxyImportFile();
+  if (pinnedFile && !existsSync(pinnedFile)) {
+    throw new Error(`Dump file not found: ${pinnedFile}`);
+  }
+
+  // What to import: an explicit choice, the variant implied by an explicit URL
+  // or file, or the cheapest dump that covers the gap (see planGalaxyImport).
+  const plan = await planGalaxyImport();
+  const variant: GalaxyDumpVariant = isDumpVariant(options.variant)
+    ? options.variant
+    : variantFromUrl(options.url) ?? (pinnedFile ? variantFromUrl(pinnedFile) ?? 'full' : plan.variant);
+  const url = options.url?.trim() || dumpVariantUrl(variant);
+  const isDelta = variant !== 'full';
+
+  // Shards: the fast, O(1)-resumable path. Used when they already describe the
+  // archive, or when the operator asked for the mode. A delta is 4–90 MiB —
+  // unpacking it would cost more than streaming it.
+  const shardDir = shardsDir();
+  const manifest = readShardManifest(shardDir);
+  const fullArchive = galaxyArchivePathForVariant('full');
+  const shardsReady = Boolean(manifest?.complete) && manifestMatchesArchive(manifest, pinnedFile ?? fullArchive);
+  const requestedMode = options.mode === 'shards' || options.mode === 'stream' ? options.mode : null;
+  const mode: 'stream' | 'shards' =
+    requestedMode ??
+    (!isDelta && (shardsReady || galaxyImportMode() === 'shards') ? 'shards' : 'stream');
+
   const chosen = pickBackend();
   const connectionString = chosen.connectionString;
   // The preferred backend; `createWriterWithFallback` may downgrade it to
   // PostgREST when the direct connection turns out to be unreachable.
   let backend = chosen.backend;
   const previous = await readImportState();
-  const resumable =
-    !options.fresh &&
-    previous.resume_offset > 0 &&
-    (previous.phase === 'failed' || previous.phase === 'cancelled' || previous.phase === 'running');
-  const resumeFrom = resumable ? previous.resume_offset : 0;
+  // A restart point only means something for the same file in the same mode.
+  const sameRun = (previous.variant ?? 'full') === variant && (previous.mode ?? 'stream') === mode;
+  const interrupted = previous.phase === 'failed' || previous.phase === 'cancelled' || previous.phase === 'running';
+  const resumable = !options.fresh && sameRun && interrupted;
+  const resumeFrom = resumable && mode === 'stream' ? previous.resume_offset : 0;
+  const resumeShard = resumable && mode === 'shards' ? previous.shard_index : 0;
+  // Deltas must not rebuild the cloud: it would mean a full table scan of
+  // 2×10⁸ rows every night for a 4 MiB file. The full import refreshes it.
+  const buildPoints = options.skipPoints === true ? false : options.skipPoints === false ? true : !isDelta;
 
   const controller = new AbortController();
   const run: LiveRun = { controller, snapshot: null, backend, startedAt: Date.now(), log: [] };
@@ -803,12 +1171,16 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     phase: 'running',
     backend,
     source: url,
+    variant,
+    mode,
     started_at: new Date().toISOString(),
     finished_at: null,
     error: null,
     points_error: null,
     bytes_done: 0,
     resume_offset: resumeFrom,
+    shard_index: resumeShard,
+    shards_total: mode === 'shards' ? manifest?.shards.length ?? null : null,
     processed: 0,
     written: 0,
     invalid: 0,
@@ -816,17 +1188,21 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     attempts: options.scheduled && previous.phase === 'failed' ? previous.attempts + 1 : 0,
   });
 
-  // A pinned local file (option or GALAXY_IMPORT_FILE) must exist before the
-  // job registers itself — a typo in the path is a config error, not a
-  // resumable failure.
-  const pinnedFile = options.file?.trim() ? resolve(options.file.trim()) : galaxyImportFile();
-  if (pinnedFile && !existsSync(pinnedFile)) {
-    throw new Error(`Dump file not found: ${pinnedFile}`);
-  }
+  // The catalog is current as of the generation time of the dump it was built
+  // from; a delta that does not reach back that far would leave a hole.
+  const statsBefore = (await getGalaxyStats().catch(() => null)) as
+    | (GalaxyStats & { dump_generated_at?: string | null })
+    | null;
+  const previousDataAsOf = statsBefore?.dump_generated_at ?? null;
 
   void (async () => {
     let writer: GalaxyRowWriter | null = null;
     try {
+      if (!isDumpVariant(options.variant) && !options.url && !pinnedFile) log(`Выбор дампа: ${plan.reason}`);
+      log(
+        `Импорт: ${DUMP_VARIANTS[variant].file} (${DUMP_VARIANTS[variant].label}), ` +
+        `режим ${mode === 'shards' ? 'из шардов' : 'потоком из архива'}`,
+      );
       // PostgREST is the only writer this process can build: warn about the
       // cost now, while the operator can still change the configuration. The
       // `unreachable` variant is logged by `createWriterWithFallback` itself.
@@ -851,42 +1227,132 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
       log(
         resumeFrom > 0
           ? `Режим записи: ${backend}; продолжение — уже записанные системы (до байта ${resumeFrom.toLocaleString()} распакованного дампа) будут пропущены`
-          : `Режим записи: ${backend}`,
+          : resumeShard > 0
+            ? `Режим записи: ${backend}; продолжение с шарда ${resumeShard + 1}`
+            : `Режим записи: ${backend}`,
       );
 
-      // Resolve the dump on disk. A pinned file wins; otherwise the shared
-      // archive is used (downloading it first when missing, or stale on a
-      // scheduled run). The import itself then reads the local file, so a
-      // dropped network connection can no longer kill it or force a re-download.
-      const file = pinnedFile ?? (await ensureArchiveDownload({
-        url,
-        scheduled: options.scheduled === true,
-        fresh: options.fresh === true,
-        signal: controller.signal,
-        log,
-      }));
+      let result: GalaxyImportRunResult;
+      let generatedAt: string | null = null;
+      let shardsDone = resumeShard;
+      let shardsTotal: number | null = null;
+      // The archive this pass read from: deleted once the rows are in the
+      // database (it is a download cache, and the next refresh is a delta).
+      let importedArchive: string | null = null;
 
-      const result = await runGalaxyImport({
-        file,
-        writer,
-        resumeFrom,
-        signal: controller.signal,
-        log,
-        buildPoints: options.skipPoints !== true,
-        onProgress: (snapshot) => {
-          run.snapshot = snapshot;
-          // Persisting every tick is enough to restart without losing much.
-          return writeImportState({
-            bytes_done: snapshot.bytesDone,
-            bytes_total: snapshot.bytesTotal,
-            resume_offset: snapshot.resumeOffset,
-            processed: snapshot.processed,
-            written: snapshot.written,
-            invalid: snapshot.invalid,
-            skipped: snapshot.skipped,
-          }).then(() => undefined);
-        },
-      });
+      if (mode === 'shards') {
+        // Shards may outlive the archive (`prune`): import them directly when
+        // the manifest is complete and the archive is gone.
+        const haveShards = Boolean(readShardManifest(shardDir)?.complete);
+        if (!haveShards) {
+          const archive = pinnedFile
+            ? { path: pinnedFile, lastModified: null }
+            : await ensureArchiveDownload({
+                url,
+                variant,
+                scheduled: options.scheduled === true,
+                fresh: options.fresh === true,
+                signal: controller.signal,
+                log,
+              });
+          generatedAt = archive.lastModified;
+          importedArchive = archive.path;
+          log('Распаковываю архив в шарды (один раз; дальше импорт и возобновление идут по шардам)');
+          await unpackArchiveToShards({
+            archive: archive.path,
+            dir: shardDir,
+            source: url,
+            variant,
+            fresh: options.fresh === true,
+            signal: controller.signal,
+            log,
+          });
+        } else {
+          generatedAt = (await readArchiveState().catch(() => null))?.last_modified ?? null;
+        }
+        const shardRun = await runShardImport({
+          dir: shardDir,
+          writer,
+          fromShard: resumeShard,
+          signal: controller.signal,
+          log,
+          buildPoints,
+          prune: process.env.GALAXY_SHARDS_PRUNE === '1',
+          onProgress: (snapshot: ShardImportSnapshot) => {
+            run.snapshot = {
+              bytesDone: snapshot.bytesDone,
+              bytesTotal: snapshot.bytesTotal,
+              resumeOffset: 0,
+              processed: snapshot.processed,
+              written: snapshot.written,
+              invalid: snapshot.invalid,
+              skipped: snapshot.skipped,
+              rate: snapshot.rate,
+              elapsedMs: snapshot.elapsedMs,
+            };
+            return writeImportState({
+              bytes_done: snapshot.bytesDone,
+              bytes_total: snapshot.bytesTotal,
+              shard_index: snapshot.shardIndex,
+              shards_total: snapshot.shardsTotal,
+              processed: snapshot.processed,
+              written: snapshot.written,
+              skipped: snapshot.skipped,
+            }).then(() => undefined);
+          },
+        });
+        result = shardRun;
+        shardsDone = shardRun.shardsDone;
+        shardsTotal = shardRun.shardsTotal;
+      } else {
+        // Resolve the dump on disk. A pinned file wins; otherwise the shared
+        // archive is used (downloading it first when missing, or stale on a
+        // scheduled run). The import itself then reads the local file, so a
+        // dropped network connection can no longer kill it or force a re-download.
+        const archive = pinnedFile
+          ? { path: pinnedFile, lastModified: null }
+          : await ensureArchiveDownload({
+              url,
+              variant,
+              scheduled: options.scheduled === true,
+              fresh: options.fresh === true,
+              signal: controller.signal,
+              log,
+            });
+        generatedAt = archive.lastModified;
+        importedArchive = archive.path;
+
+        result = await runGalaxyImport({
+          file: archive.path,
+          writer,
+          resumeFrom,
+          signal: controller.signal,
+          log,
+          buildPoints,
+          onProgress: (snapshot) => {
+            run.snapshot = snapshot;
+            // Persisting every tick is enough to restart without losing much.
+            return writeImportState({
+              bytes_done: snapshot.bytesDone,
+              bytes_total: snapshot.bytesTotal,
+              resume_offset: snapshot.resumeOffset,
+              processed: snapshot.processed,
+              written: snapshot.written,
+              invalid: snapshot.invalid,
+              skipped: snapshot.skipped,
+            }).then(() => undefined);
+          },
+        });
+      }
+
+      // Did this delta really reach back to where the catalog stood? If not,
+      // the freshness marker must NOT advance — the next run then picks a
+      // wider file instead of hiding the hole forever.
+      const coverage = variantCoversGap(variant, generatedAt, previousDataAsOf);
+      if (!coverage.ok) {
+        log(`WARNING: ${coverage.reason} — отметка актуальности не сдвигается, следующий запуск возьмёт более широкий дамп`);
+      }
+      const dataAsOf = coverage.ok ? generatedAt ?? new Date().toISOString() : previousDataAsOf;
 
       let pointsUploaded = false;
       let pointsError: string | null = null;
@@ -907,6 +1373,8 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         invalid_records: result.invalid,
         source: url,
         backend,
+        variant,
+        dump_generated_at: dataAsOf,
         points: result.points
           ? {
               count: result.points.count,
@@ -924,6 +1392,9 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         bytes_done: result.bytesDone,
         bytes_total: result.bytesTotal,
         resume_offset: 0,
+        shard_index: 0,
+        shards_total: shardsTotal,
+        dump_generated_at: dataAsOf,
         processed: result.processed,
         written: result.written,
         invalid: result.invalid,
@@ -938,7 +1409,28 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         attempts: 0,
       });
       run.snapshot = null;
-      log('Импорт завершён');
+      log(
+        isDelta
+          ? `Обновление «${DUMP_VARIANTS[variant].label}» применено: ${result.processed.toLocaleString()} систем`
+          : 'Импорт завершён',
+      );
+      if (shardsDone && shardsTotal) log(`Шардов импортировано: ${shardsDone}/${shardsTotal}`);
+
+      // Rows are in Postgres now: the archive has done its job. Keeping it
+      // would cost 5.9 GiB on the data disk until the next cold start, and the
+      // next refresh downloads a few megabytes of delta instead.
+      const released = releaseArchiveAfterImport({ path: importedArchive, log });
+      if (released.kept && released.reason) {
+        log(`Архив оставлен на диске (${released.reason})`);
+      } else if (released.freed > 0) {
+        await writeArchiveState({
+          phase: 'idle',
+          path: null,
+          bytes_done: 0,
+          bytes_total: null,
+          error: null,
+        }).catch(() => undefined);
+      }
       return finalState;
     } catch (error) {
       const cancelled = controller.signal.aborted;
@@ -947,12 +1439,16 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
       const snapshot = run.snapshot;
       run.snapshot = null;
       try {
+        const current = await readImportState();
         return await writeImportState({
           phase: cancelled ? 'cancelled' : 'failed',
           finished_at: new Date().toISOString(),
           bytes_done: snapshot?.bytesDone ?? resumeFrom,
           bytes_total: snapshot?.bytesTotal ?? null,
-          resume_offset: cancelled || !snapshot ? resumeFrom : snapshot.resumeOffset,
+          resume_offset: mode === 'shards' ? 0 : cancelled || !snapshot ? resumeFrom : snapshot.resumeOffset,
+          // In shard mode the restart point is the number of shards already
+          // stored; `writeImportState` has been persisting it all along.
+          shard_index: mode === 'shards' ? current.shard_index : 0,
           processed: snapshot?.processed ?? 0,
           written: snapshot?.written ?? 0,
           invalid: snapshot?.invalid ?? 0,
@@ -969,7 +1465,51 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     }
   })();
 
-  return { started: true, resumedFrom: resumeFrom, state: started };
+  return {
+    started: true,
+    resumedFrom: resumeFrom,
+    resumedShard: resumeShard,
+    variant,
+    mode,
+    plan,
+    state: started,
+  };
+}
+
+/**
+ * «Освободить место» from the admin tab: delete every dump archive that is not
+ * needed to continue (and the shards left over from an archive that is gone).
+ * Refused while a download, unpack or import is using those files.
+ */
+export async function cleanupGalaxyDisk(options: { dropShards?: boolean } = {}): Promise<{
+  cleaned: boolean;
+  reason?: string;
+  freed: number;
+  removed: string[];
+  storage: GalaxyStorageStatus;
+}> {
+  if (liveDownload() || liveUnpack() || liveRun()) {
+    return {
+      cleaned: false,
+      reason: 'Идёт скачивание, распаковка или импорт — очистка может удалить файл из-под них',
+      freed: 0,
+      removed: [],
+      storage: getGalaxyStorageStatus(),
+    };
+  }
+  const pinned = galaxyImportFile();
+  const log = (line: string) => console.error(`[galaxy-archive] ${line}`);
+  // An unfinished import must keep the file it will continue from.
+  const state = await readImportState().catch(() => ({ ...EMPTY_IMPORT_STATE }));
+  const unfinished = state.phase === 'running' || state.phase === 'failed' || state.phase === 'cancelled';
+  const keep = [pinned, unfinished && isDumpVariant(state.variant) ? state.variant : null];
+  const result = cleanupGalaxyStorage({ keep, dropShards: options.dropShards === true, log });
+  return {
+    cleaned: true,
+    freed: result.freed,
+    removed: result.removed.map((item) => item.path),
+    storage: result.storage,
+  };
 }
 
 /** Stop a running import. Rows already written stay (upserts are idempotent). */
@@ -995,9 +1535,18 @@ async function writeCatalogStats(input: {
   invalid_records: number;
   source: string;
   backend: GalaxyImportBackend;
+  /** Which dump produced these numbers (`full` or a delta). */
+  variant?: GalaxyDumpVariant;
+  /**
+   * When the imported dump was generated. This — not `imported_at` — is the
+   * moment the catalog is current as of, and the next run sizes its delta
+   * from it.
+   */
+  dump_generated_at?: string | null;
   points: { count: number; bytes: number; uploaded: boolean; rows: number; stride: number } | null;
 }): Promise<void> {
   const previous = (await metaValue('stats').catch(() => null)) ?? {};
+  const variant = input.variant ?? 'full';
   const value: Record<string, unknown> = {
     ...previous,
     systems_count: input.systems_count,
@@ -1007,7 +1556,12 @@ async function writeCatalogStats(input: {
     source: input.source,
     imported_at: new Date().toISOString(),
     imported_by: `web/${input.backend}`,
-    note: 'Full Spansh systems dump (nightly at https://spansh.co.uk/dumps). Re-run the import to refresh.',
+    dump_variant: variant,
+    dump_generated_at: input.dump_generated_at ?? (previous as Record<string, unknown>).dump_generated_at ?? null,
+    note:
+      variant === 'full'
+        ? 'Full Spansh systems dump (nightly at https://spansh.co.uk/dumps). Deltas (systems_1day…) keep it fresh.'
+        : `Spansh delta ${variant} applied on top of the catalog (https://spansh.co.uk/dumps).`,
   };
   if (input.points?.uploaded) {
     value.points_uploaded = true;

@@ -55,11 +55,19 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      # Pre-downloaded Spansh dump (~6 GiB). The web process downloads it here
-      # (resumable) and imports from disk, so a dropped connection never costs
-      # a full re-download and the archive survives image rebuilds. Override
-      # GALAXY_ARCHIVE_DIR to point the import elsewhere.
-      - galaxy-dump:/app/data/spansh
+      # Дампы Spansh и их распакованные шарды: отдельный диск сервера
+      # (/mnt/sdb по умолчанию), а не системный раздел и не слой образа.
+      # Полный systems.json.gz — 5.9 ГиБ, его шарды — ещё столько же, сырой
+      # systems.json был бы 32+ ГБ (поэтому шарды и хранятся сжатыми).
+      # Скачивание возобновляемое, идёт в несколько HTTP Range-соединений,
+      # у каждого варианта свой файл; предыдущий дамп удаляется перед
+      # загрузкой нового, а архив — после успешного импорта
+      # (GALAXY_ARCHIVE_KEEP=1 отключает). Слева — ПУТЬ монтирования диска,
+      # а не устройство: /dev/sdb1 должен быть смонтирован (findmnt -no TARGET
+      # /dev/sdb1). Настройка диска и перенос со старого named volume:
+      # sudo bash deploy/migrate-galaxy-dump.sh. Путь внутри контейнера
+      # меняется через GALAXY_ARCHIVE_DIR.
+      - ${GALAXY_DATA_HOST_DIR:-/mnt/sdb/ed-ring-colony/spansh}:/app/data/spansh
       # Пакеты кода Colonial Helper: ВСЕ манифесты, blobs, ZIP, EXE,
       # config.json и журналы релизов лежат на хостовом диске с backup'ами,
       # в отдельной папке uploader-releases. Образы и docker prune эту историю
@@ -97,8 +105,11 @@ services:
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env.production and pass --env-file .env.production}
       JOBS_BASE_URL: http://web:3000
       JOBS_STATE_FILE: /data/jobs-state.json
-      # `galaxy-import` (ночной дамп Spansh → galaxy_systems) не входит в
-      # список по умолчанию: добавьте его в JOBS_ENABLED осознанно.
+      # `galaxy-import` (ночное обновление каталога систем) не входит в список
+      # по умолчанию: добавьте его в JOBS_ENABLED осознанно. Ночью задача
+      # качает НЕ полный дамп (5.9 ГиБ), а дельту Spansh, перекрывающую
+      # отставание каталога (systems_1week.json.gz, ~21 МиБ) — полный нужен
+      # один раз при холодном старте. Подробности и альтернативы: SPANSH-IMPORT.md.
       JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate}
       GALNET_FEED_LIMIT: ${GALNET_FEED_LIMIT:-30}
       GALNET_TRANSLATE_LIMIT: ${GALNET_TRANSLATE_LIMIT:-10}
@@ -266,7 +277,9 @@ volumes:
   jobs-state:
   # Lock, progress state and the updater's own log.
   update-state:
-  # On-disk Spansh dump archive for the in-app galaxy import.
+  # Старый named volume с дампами Spansh. web его больше не монтирует:
+  # архивы и шарды живут на отдельном диске (bind mount GALAXY_DATA_HOST_DIR).
+  # Не удаляйте том до переноса — deploy/migrate-galaxy-dump.sh.
   galaxy-dump:
   # Старый named volume оставлен только для безопасной миграции существующих
   # установок. web больше его не монтирует: рабочее хранилище — bind mount

@@ -35,6 +35,61 @@ interface ArchiveState {
   downloaded_at: string | null;
   error: string | null;
   updated_at: string | null;
+  variant?: string | null;
+  segments?: number | null;
+  last_modified?: string | null;
+}
+
+/** Какой дамп нужен прямо сейчас — ответ `planGalaxyImport()`. */
+interface DumpPlan {
+  variant: string;
+  reason: string;
+  approx_bytes: number;
+  segments: number;
+  url: string;
+  archive: string;
+  archive_bytes: number;
+  gapMs: number | null;
+  skip_points: boolean;
+}
+
+interface ShardManifest {
+  rows: number;
+  invalid: number;
+  complete: boolean;
+  completed_at: string | null;
+  rows_per_shard: number;
+  shards: { file: string; rows: number; bytes: number; imported?: boolean }[];
+}
+
+interface ShardStatus {
+  dir: string;
+  live: boolean;
+  progress: { rows: number; shards: number; recordsRead: number } | null;
+  manifest: ShardManifest | null;
+  files: number;
+  bytes: number;
+  log: string[];
+}
+
+/** Диск, на котором живут архивы и шарды (`getGalaxyStorageStatus`). */
+interface StorageStatus {
+  dir: string;
+  shards_dir: string;
+  disk: { path: string; total: number; free: number; used: number } | null;
+  archives: { variant: string; file: string; path: string; bytes: number; mtime: string | null; partial: boolean }[];
+  archives_bytes: number;
+  shards_files: number;
+  shards_bytes: number;
+  total_bytes: number;
+  keep_archive: boolean;
+}
+
+interface VariantInfo {
+  variant: string;
+  file: string;
+  label: string;
+  approx_bytes: number;
 }
 
 interface ArchiveStatus {
@@ -63,6 +118,11 @@ interface Status {
   dump_url: string;
   archive_dir: string;
   archive: ArchiveStatus | null;
+  plan: DumpPlan | null;
+  shards: ShardStatus | null;
+  storage: StorageStatus | null;
+  variants?: VariantInfo[];
+  download_segments?: number;
 }
 
 const POLL_MS = 4000;
@@ -94,6 +154,13 @@ function formatTime(value: string | null | undefined): string {
   if (!value) return '—';
   const at = Date.parse(value);
   return Number.isFinite(at) ? new Date(at).toLocaleString('ru-RU') : value;
+}
+
+/** Подпись варианта дампа («за сутки», «полный дамп»), как её отдал сервер. */
+function variantLabel(status: Status | null, variant: string | null | undefined): string {
+  if (!variant) return 'неизвестно';
+  const info = status?.variants?.find((item) => item.variant === variant);
+  return info ? `${info.label} (${info.file})` : variant;
 }
 
 function phaseLabel(status: Status): { text: string; color: string } {
@@ -132,13 +199,16 @@ export default function GalaxyCatalogTab() {
   // While the import runs in the web process, poll for progress.
   const running = !!status && (status.live || (status.state.phase === 'running' && !status.interrupted));
   const archive = status?.archive ?? null;
+  const shards = status?.shards ?? null;
+  const storage = status?.storage ?? null;
+  const unpackRunning = !!shards?.live;
   const downloadRunning = !!archive && (archive.live || (archive.state.phase === 'downloading' && !archive.interrupted));
   const interruptedDownload = !!archive && archive.state.phase === 'downloading' && !archive.live && archive.interrupted;
   useEffect(() => {
-    if (!running && !downloadRunning) return;
+    if (!running && !downloadRunning && !unpackRunning) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [running, downloadRunning, load]);
+  }, [running, downloadRunning, unpackRunning, load]);
 
   const act = async (action: string, extra: Record<string, unknown> = {}) => {
     setBusy(action);
@@ -156,6 +226,16 @@ export default function GalaxyCatalogTab() {
       else if (action === 'cancel') setMessage(payload?.cancelled ? 'Импорт остановлен' : 'Импорт не выполнялся');
       else if (action === 'cancel-download') setMessage(payload?.cancelled ? 'Скачивание остановлено' : 'Скачивание не выполнялось');
       else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
+      else if (action === 'unpack') setMessage('Распаковка в шарды идёт в фоне. После неё импорт и возобновление читают шарды, а не 6 ГиБ gzip.');
+      else if (action === 'cancel-unpack') setMessage(payload?.cancelled ? 'Распаковка остановлена' : 'Распаковка не выполнялась');
+      else if (action === 'cleanup')
+        setMessage(
+          payload?.cleaned
+            ? payload.freed > 0
+              ? `Освобождено ${formatBytes(payload.freed)} (${(payload.removed ?? []).length} файл(ов))`
+              : 'Удалять нечего — лишних архивов и шардов нет'
+            : payload?.reason || 'Очистка невозможна сейчас',
+        );
       else setMessage('Импорт запущен в фоне. Страницу можно закрыть — процесс продолжится.');
       await load();
     } catch (error) {
@@ -312,6 +392,63 @@ docker compose --env-file .env.production --profile monitoring \\
       </div>
 
       <div style={cardStyle}>
+        <div style={labelStyle}>Что качать сейчас</div>
+        {status?.plan ? (
+          <>
+            <div style={{ fontSize: 14, color: '#e5e7eb', marginBottom: 4 }}>
+              {variantLabel(status, status.plan.variant)} — {formatBytes(status.plan.approx_bytes)}
+              {status.plan.archive_bytes > 0 && (
+                <span style={{ color: '#9ca3af', fontSize: 12 }}> · на диске уже {formatBytes(status.plan.archive_bytes)}</span>
+              )}
+            </div>
+            <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8, lineHeight: 1.6 }}>{status.plan.reason}</div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>План обновления рассчитывается…</div>
+        )}
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+          <button
+            type="button"
+            className="btn btn-cyan"
+            disabled={busy !== null || running || downloadRunning || unpackRunning || backendMissing}
+            onClick={() => void act('start', { variant: 'auto' })}
+            title="Скачать и применить минимальный дамп, который закрывает отставание каталога"
+          >
+            Обновить каталог (авто)
+          </button>
+          {(status?.variants ?? []).map((info) => (
+            <button
+              key={info.variant}
+              type="button"
+              className="btn"
+              disabled={busy !== null || running || downloadRunning || unpackRunning || backendMissing}
+              onClick={() => void act('start', { variant: info.variant })}
+              title={`${info.file} — ${formatBytes(info.approx_bytes)}`}
+            >
+              {info.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Полный <code>systems.json.gz</code> (5.9 ГиБ) нужен <strong>один раз</strong>. Spansh публикует тот же
+          каталог дельтами — <code>systems_1day</code> (~4 МиБ), <code>systems_1week</code> (~21 МиБ),
+          <code> systems_1month</code> (~88 МиБ): формат тот же, запись тем же upsert’ом, поэтому ночное
+          обновление идёт секунды, а не неделю. Дельта не пересобирает облако точек (это полный проход по
+          2×10⁸ строк) — его обновляет полный импорт.
+          {status?.download_segments != null && (
+            <>
+              <br />
+              Скачивание идёт в <strong>{status.download_segments}</strong> параллельных Range-соединений
+              (<code>GALAXY_DOWNLOAD_SEGMENTS</code>): на тонком канале это главный способ сократить 6 ГиБ
+              с недели до часов. Прогресс каждого сегмента лежит рядом с архивом и переживает перезапуск.
+            </>
+          )}
+        </div>
+      </div>
+
+      <div style={cardStyle}>
         <div style={labelStyle}>Архив дампа на диске</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
           <button
@@ -322,6 +459,15 @@ docker compose --env-file .env.production --profile monitoring \\
             title={running ? 'Дождитесь окончания импорта: он читает этот файл' : undefined}
           >
             {interruptedDownload ? 'Продолжить скачивание' : 'Скачать архив'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null || downloadRunning || running}
+            onClick={() => void act('download', { variant: 'full' })}
+            title="Полный systems.json.gz — нужен только для холодного старта"
+          >
+            Скачать полный дамп
           </button>
           <button type="button" className="btn" disabled={busy !== null || !downloadRunning} onClick={() => void act('cancel-download')}>
             Остановить скачивание
@@ -362,8 +508,14 @@ docker compose --env-file .env.production --profile monitoring \\
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Кнопка «Скачать архив» берёт тот файл, который назван выше в «Что качать сейчас» (обычно дельту);
+          «Скачать полный дамп» — всегда 5.9 ГиБ. Каждый вариант лежит в своём файле, поэтому ночная дельта
+          не затирает полный архив, который качался днями.
+          <br />
           Дамп <code>systems.json.gz</code> (~6 ГиБ) хранится в <code>{status?.archive_dir || 'data/spansh'}</code>
-          (в контейнере — томовый volume, переживает пересборку образа). Импорт всегда читает дамп <strong>с диска</strong>:
+          (на сервере это отдельный диск, смонтированный под каталог). Перед загрузкой нового дампа предыдущий
+          удаляется, а после успешного импорта удаляется и сам архив — он больше не нужен, следующее обновление
+          приходит дельтой. Импорт всегда читает дамп <strong>с диска</strong>:
           при обрыве соединения скачивание продолжает с сохранённого байта (HTTP Range), а «Продолжить импорт»
           перечитывает локальный файл и пропускает уже записанные системы — заново скачивать 6 ГиБ не нужно.
           Повреждённый архив определяется проверкой gzip и скачивается заново.
@@ -385,6 +537,153 @@ docker compose --env-file .env.production --profile monitoring \\
             }}
           >
             {archive.log.join('\n')}
+          </pre>
+        )}
+      </div>
+
+      <div style={cardStyle}>
+        <div style={labelStyle}>Диск с данными каталога</div>
+        {storage ? (
+          <>
+            <div style={{ fontSize: 13, marginBottom: 6 }}>
+              <code>{storage.disk?.path || storage.dir}</code>
+              {storage.disk ? (
+                <>
+                  {' '}— свободно{' '}
+                  <strong style={{ color: storage.disk.free < 8 * 1024 ** 3 ? '#e67e22' : '#22c55e' }}>
+                    {formatBytes(storage.disk.free)}
+                  </strong>{' '}
+                  из {formatBytes(storage.disk.total)}
+                </>
+              ) : (
+                <span style={{ color: '#9ca3af' }}> — размер диска недоступен</span>
+              )}
+            </div>
+            {storage.disk && storage.disk.total > 0 && (
+              <div style={{ height: 6, background: '#262a2e', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
+                <div
+                  style={{
+                    width: `${Math.min(100, (storage.disk.used / storage.disk.total) * 100)}%`,
+                    height: '100%',
+                    background: storage.disk.free < 8 * 1024 ** 3 ? '#e67e22' : '#38bdf8',
+                  }}
+                />
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: '#d1d5db', marginBottom: 8 }}>
+              Каталог занимает {formatBytes(storage.total_bytes)}: архивы {formatBytes(storage.archives_bytes)}
+              {storage.archives.length > 0 ? ` (${storage.archives.length} шт.)` : ''}, шарды{' '}
+              {formatBytes(storage.shards_bytes)}
+              {storage.shards_files > 0 ? ` (${storage.shards_files} файл(ов))` : ''}.
+            </div>
+            {storage.archives.length > 0 && (
+              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
+                {storage.archives.map((item) => (
+                  <div key={item.path}>
+                    <code>{item.file}</code> — {formatBytes(item.bytes)}
+                    {item.partial ? ', докачивается' : ''}
+                    {item.mtime ? `, ${formatTime(item.mtime)}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy !== null || running || downloadRunning || unpackRunning}
+                onClick={() => void act('cleanup')}
+                title="Удалить архивы, которые больше не нужны, и шарды без архива"
+              >
+                Освободить место
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy !== null || running || downloadRunning || unpackRunning || storage.shards_files === 0}
+                onClick={() => {
+                  if (window.confirm('Удалить распакованные шарды? Для импорта архив придётся распаковать заново.')) {
+                    void act('cleanup', { drop_shards: true });
+                  }
+                }}
+                title="Удалить и шарды тоже"
+              >
+                Удалить шарды
+              </button>
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>Нет данных о диске.</div>
+        )}
+        <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Архивы и распакованные шарды лежат на отдельном диске сервера (<code>{storage?.dir || status?.archive_dir}</code>,
+          шарды — <code>{storage?.shards_dir || '…/shards'}</code>). Старый дамп удаляется перед загрузкой нового, а архив —
+          после успешного импорта{storage?.keep_archive ? '; сейчас это отключено через GALAXY_ARCHIVE_KEEP=1' : ''}.
+          Загрузка, которой заведомо не хватит места, не стартует: сервер сразу скажет, сколько нужно и сколько есть.
+        </div>
+      </div>
+
+      <div style={cardStyle}>
+        <div style={labelStyle}>Шарды (распакованный архив)</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null || running || unpackRunning}
+            onClick={() => void act('unpack')}
+            title="Прочитать архив один раз и разложить его в сжатые шарды по 2 млн систем"
+          >
+            {shards?.manifest && !shards.manifest.complete ? 'Продолжить распаковку' : 'Распаковать архив в шарды'}
+          </button>
+          <button type="button" className="btn" disabled={busy !== null || !unpackRunning} onClick={() => void act('cancel-unpack')}>
+            Остановить распаковку
+          </button>
+        </div>
+
+        {shards?.manifest ? (
+          <div style={{ fontSize: 13, color: shards.manifest.complete ? '#22c55e' : '#e67e22', marginBottom: 8 }}>
+            {shards.manifest.complete ? 'Готово: ' : 'В процессе: '}
+            {formatCount(shards.manifest.rows)} систем в {shards.manifest.shards.length} шард(ах),
+            {' '}{formatBytes(shards.bytes)} на диске
+            {shards.manifest.completed_at ? `, ${formatTime(shards.manifest.completed_at)}` : ''}
+          </div>
+        ) : (
+          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>Архив ещё не распакован.</div>
+        )}
+
+        {unpackRunning && shards?.progress && (
+          <div style={{ fontSize: 12, color: '#ffd166', marginBottom: 8 }}>
+            Распаковано {formatCount(shards.progress.rows)} систем в {shards.progress.shards} шард(ов)…
+          </div>
+        )}
+
+        <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Gzip нельзя раскодировать с середины, поэтому «Продолжить импорт» перечитывает весь архив, чтобы
+          пропустить уже записанное — это часы процессора на каждом перезапуске. Распаковка делает это один
+          раз: архив превращается в сжатые TSV-шарды по {formatCount(shards?.manifest?.rows_per_shard ?? 2000000)} систем,
+          и дальше возобновление стоит O(1) — импорт просто начинает со следующего файла. Шарды можно
+          переносить по одному (rsync/scp), раздавать зеркалом и удалять по мере импорта
+          (<code>GALAXY_SHARDS_PRUNE=1</code>). Распаковку можно запускать прямо во время скачивания —
+          она дочитывает файл по мере его роста.
+          {shards?.dir ? <><br />Каталог: <code>{shards.dir}</code></> : null}
+        </div>
+
+        {!!shards?.log?.length && (
+          <pre
+            style={{
+              marginTop: 10,
+              maxHeight: 140,
+              overflow: 'auto',
+              background: '#0f1113',
+              border: '1px solid #262a2e',
+              borderRadius: 4,
+              padding: 8,
+              fontSize: 11,
+              color: '#9ca3af',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {shards.log.join('\n')}
           </pre>
         )}
       </div>
@@ -425,6 +724,10 @@ docker compose --env-file .env.production --profile monitoring \\
               {state?.bytes_total ? ` из ${formatBytes(state.bytes_total)}` : ''}
               {state?.written ? `, записано ${formatCount(state.written)} строк` : ''}
               {state?.skipped ? `, пропущено ${formatCount(state.skipped)} уже записанных` : ''}
+              {state?.mode === 'shards' && state?.shards_total
+                ? `, шард ${formatCount(state.shard_index ?? 0)} из ${formatCount(state.shards_total)}`
+                : ''}
+              {state?.variant ? ` · ${variantLabel(status, state.variant)}` : ''}
             </div>
           </div>
         )}

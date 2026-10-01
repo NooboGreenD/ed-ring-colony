@@ -15,7 +15,17 @@
  * a synthetic dump without network or database.
  */
 
-import { createReadStream, createWriteStream, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { open as openFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -45,6 +55,7 @@ import {
   type PgClientLike,
   type PgModule,
 } from './pgModule.ts';
+import { archiveFileNameForVariant, type GalaxyDumpVariant } from './galaxyDumpVariants.ts';
 
 export const SPANSH_DUMP_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
 
@@ -77,6 +88,18 @@ export function galaxyArchiveDir(env: NodeJS.ProcessEnv = process.env): string {
 
 export function galaxyArchivePath(env: NodeJS.ProcessEnv = process.env): string {
   return join(galaxyArchiveDir(env), ARCHIVE_FILE_NAME);
+}
+
+/**
+ * Archive path for one dump variant. Each variant keeps its own file, so the
+ * nightly 4 MiB delta never overwrites the 5.9 GiB full dump that took days to
+ * download.
+ */
+export function galaxyArchivePathForVariant(
+  variant: GalaxyDumpVariant,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return join(galaxyArchiveDir(env), archiveFileNameForVariant(variant));
 }
 
 /**
@@ -368,6 +391,375 @@ export async function downloadDumpFile(
     return { path: dest, bytes: finalSize, total: total ?? finalSize };
   }
 }
+// ─────────────── segmented (parallel) download ───────────────
+//
+// One TCP stream to downloads.spansh.co.uk measured ~10 KB/s from the
+// production server: 5.9 GiB ≈ a week, during which the source regenerates
+// seven times. Per-connection throughput is the limit, not the link — several
+// HTTP Range requests in parallel multiply it. Each segment owns a byte range
+// of ONE preallocated file (positional writes, no temporary copies, no second
+// 6 GiB of disk), its progress lives in a small sidecar JSON, so a restart
+// continues every segment where it stopped.
+
+/** Sidecar file that remembers per-segment progress between attempts. */
+export function segmentStatePath(dest: string): string {
+  return `${dest}.parts.json`;
+}
+
+export interface DumpSegment {
+  start: number;
+  /** Inclusive last byte of the segment. */
+  end: number;
+  /** Bytes already on disk for this segment. */
+  done: number;
+}
+
+export interface DumpSegmentPlan {
+  url: string;
+  total: number;
+  /** `ETag`/`Last-Modified` of the file the parts belong to. */
+  signature: string | null;
+  segments: DumpSegment[];
+}
+
+/** Split `total` bytes into `count` contiguous ranges (the last one takes the remainder). */
+export function planDumpSegments(total: number, count: number): DumpSegment[] {
+  const parts = Math.max(1, Math.min(Math.floor(count) || 1, 32));
+  const size = Math.floor(total / parts);
+  const segments: DumpSegment[] = [];
+  for (let i = 0; i < parts; i++) {
+    const start = i * size;
+    const end = i === parts - 1 ? total - 1 : start + size - 1;
+    if (end < start) continue;
+    segments.push({ start, end, done: 0 });
+  }
+  return segments;
+}
+
+/** How many parallel connections the download may use (`GALAXY_DOWNLOAD_SEGMENTS`). */
+export function galaxyDownloadSegments(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.GALAXY_DOWNLOAD_SEGMENTS);
+  if (!Number.isFinite(raw)) return DEFAULT_DOWNLOAD_SEGMENTS;
+  return Math.max(1, Math.min(16, Math.floor(raw)));
+}
+
+/**
+ * Four is polite (Spansh is one volunteer's server) and already 4× the single
+ * stream; 8–16 helps on very lossy links, 1 restores the old behaviour.
+ */
+export const DEFAULT_DOWNLOAD_SEGMENTS = 4;
+/** Below this, parallelism is pointless: the deltas are 4–90 MiB. */
+export const SEGMENTED_MIN_BYTES = 64 * 1024 * 1024;
+
+export interface DumpProbe {
+  total: number | null;
+  acceptsRanges: boolean;
+  /** Generation time of the dump, used to verify that a delta covers our gap. */
+  lastModified: string | null;
+  etag: string | null;
+}
+
+/**
+ * Ask the server for size + Range support without downloading the body.
+ * HEAD first; servers that dislike HEAD get a one-byte ranged GET.
+ */
+export async function probeDumpSource(
+  url: string,
+  options: { fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+): Promise<DumpProbe> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const read = (response: Response, ranged: boolean): DumpProbe => {
+    const rangeTotal = parseContentRangeTotal(response.headers.get('content-range'));
+    const length = Number(response.headers.get('content-length'));
+    const total = rangeTotal ?? (Number.isFinite(length) && length > 0 && !ranged ? length : null);
+    const acceptsRanges = response.status === 206 || /bytes/i.test(response.headers.get('accept-ranges') || '');
+    return {
+      total,
+      acceptsRanges,
+      lastModified: response.headers.get('last-modified'),
+      etag: response.headers.get('etag'),
+    };
+  };
+
+  try {
+    const head = await fetchImpl(url, { method: 'HEAD', signal: options.signal });
+    await head.body?.cancel().catch(() => undefined);
+    if (head.ok) {
+      const probe = read(head, false);
+      if (probe.total != null) return probe;
+    }
+  } catch {
+    // HEAD is optional: fall through to the ranged GET.
+  }
+
+  const response = await fetchImpl(url, { headers: { Range: 'bytes=0-0' }, signal: options.signal });
+  const probe = read(response, true);
+  await response.body?.cancel().catch(() => undefined);
+  if (!response.ok && response.status !== 206) {
+    throw new Error(`Download failed: HTTP ${response.status} ${response.statusText} (${url})`);
+  }
+  return probe;
+}
+
+/** Thrown when the server cannot serve ranges: the caller falls back to one stream. */
+export class SegmentedDownloadUnsupported extends Error {}
+
+export interface SegmentedDownloadOptions extends DownloadDumpOptions {
+  segments: number;
+  probe?: DumpProbe;
+}
+
+/**
+ * Download one file with N parallel HTTP Range connections into a single
+ * preallocated destination. Resumable: `<dest>.parts.json` holds the per-segment
+ * progress, so an interrupted run (or a restarted container) continues instead
+ * of starting over.
+ */
+export async function downloadDumpSegmented(
+  options: SegmentedDownloadOptions,
+): Promise<{ path: string; bytes: number; total: number; segments: number }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const log = options.log ?? (() => undefined);
+  const sleep = options.sleep ?? defaultSleep;
+  const retries = options.retries ?? 5;
+  const maxStagnant = options.maxStagnantFailures ?? 10;
+  const progressIntervalMs = Math.max(250, options.progressIntervalMs ?? 5_000);
+  const dest = resolve(options.dest);
+  const statePath = segmentStatePath(dest);
+
+  const probe = options.probe ?? (await probeDumpSource(options.url, { fetchImpl, signal: options.signal }));
+  if (!probe.acceptsRanges || !probe.total) {
+    throw new SegmentedDownloadUnsupported(
+      `сервер не поддерживает частичную загрузку (${probe.total ? 'нет Accept-Ranges' : 'неизвестен размер файла'})`,
+    );
+  }
+
+  const total = probe.total;
+  const signature = probe.etag || probe.lastModified || null;
+  mkdirSync(dirname(dest), { recursive: true });
+
+  // Reuse the stored plan only when it describes the same file: a regenerated
+  // dump has a different size/ETag and the old parts are meaningless.
+  let plan: DumpSegmentPlan | null = null;
+  try {
+    const stored = JSON.parse(readFileSync(statePath, 'utf8')) as DumpSegmentPlan;
+    const sameFile =
+      stored &&
+      stored.total === total &&
+      Array.isArray(stored.segments) &&
+      stored.segments.length > 0 &&
+      (!signature || !stored.signature || stored.signature === signature) &&
+      safeSize(dest) >= total;
+    if (sameFile) plan = stored;
+    else if (stored) log('Файл на сервере изменился — скачиваю сегменты заново');
+  } catch {
+    plan = null;
+  }
+
+  if (!plan) {
+    plan = { url: options.url, total, signature, segments: planDumpSegments(total, options.segments) };
+    // Preallocate so every segment can write at its absolute offset.
+    const handle = await openFile(dest, existsSync(dest) ? 'r+' : 'w+');
+    try {
+      await handle.truncate(total);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  const segments = plan.segments;
+  const persist = () => {
+    try {
+      writeFileSync(statePath, JSON.stringify({ ...plan, segments }, null, 1));
+    } catch (error) {
+      log(`Не удалось сохранить прогресс сегментов: ${(error as Error).message}`);
+    }
+  };
+
+  const received = () => segments.reduce((sum, segment) => sum + segment.done, 0);
+  const already = received();
+  log(
+    already > 0
+      ? `Архив: ${options.segments} параллельных соединений, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
+      : `Архив: ${options.segments} параллельных соединений, ${formatBytes(total)}`,
+  );
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  options.signal?.addEventListener('abort', abort, { once: true });
+
+  const handle = await openFile(dest, 'r+');
+  let failures = 0;
+  let lastPersist = Date.now();
+  let lastReport = 0;
+  // Set when the archive (and its plan) were deliberately thrown away: the
+  // error path must not write the sidecar back and resurrect a dead plan.
+  let discarded = false;
+
+  const report = async (force = false) => {
+    const at = Date.now();
+    if (!force && at - lastReport < progressIntervalMs) return;
+    lastReport = at;
+    if (at - lastPersist >= 5_000 || force) {
+      lastPersist = at;
+      persist();
+    }
+    if (!options.onProgress) return;
+    try {
+      await options.onProgress({ received: received(), total, resuming: already > 0, failures });
+    } catch {
+      // A progress sink must never kill the download.
+    }
+  };
+
+  const pump = async (segment: DumpSegment, index: number): Promise<void> => {
+    let stagnant = 0;
+    for (;;) {
+      if (segment.done > segment.end - segment.start) return; // complete
+      if (controller.signal.aborted) throw new Error('Download aborted');
+      const from = segment.start + segment.done;
+      const before = segment.done;
+      try {
+        const response = await fetchImpl(options.url, {
+          headers: { Range: `bytes=${from}-${segment.end}` },
+          signal: controller.signal,
+        });
+        if (response.status === 200) {
+          await response.body?.cancel().catch(() => undefined);
+          throw new SegmentedDownloadUnsupported('сервер проигнорировал заголовок Range');
+        }
+        if (response.status !== 206) {
+          await response.body?.cancel().catch(() => undefined);
+          if (response.status < 500) {
+            throw new Error(`Download failed: HTTP ${response.status} ${response.statusText} (${options.url})`);
+          }
+          throw new Error(`HTTP ${response.status} ${response.statusText}`);
+        }
+        if (!response.body) throw new Error('Dump response has no body');
+        for await (const chunk of Readable.fromWeb(response.body as unknown as WebReadableStream)) {
+          if (controller.signal.aborted) throw new Error('Download aborted');
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+          const room = segment.end - (segment.start + segment.done) + 1;
+          if (room <= 0) break;
+          const slice = buffer.length > room ? buffer.subarray(0, room) : buffer;
+          await handle.write(slice, 0, slice.length, segment.start + segment.done);
+          segment.done += slice.length;
+          await report();
+        }
+        if (segment.done >= segment.end - segment.start + 1) {
+          await report(true);
+          return;
+        }
+        // Clean EOF before the end of the range: treat as a drop and continue.
+        throw new Error('соединение закрылось раньше конца диапазона');
+      } catch (error) {
+        if (error instanceof SegmentedDownloadUnsupported) throw error;
+        if (controller.signal.aborted) throw new Error('Download aborted');
+        failures += 1;
+        stagnant = segment.done > before ? 0 : stagnant + 1;
+        const message = networkErrorMessage(error, 'connection dropped');
+        if (failures > retries || stagnant > maxStagnant) {
+          throw new Error(
+            `Скачивание не удалось после ${failures} обрыва(ов): ${message} ` +
+              `(сегмент ${index + 1}, на диске ${received().toLocaleString()} из ${total.toLocaleString()} байт — повтор продолжит отсюда)`,
+          );
+        }
+        log(`Сегмент ${index + 1}: обрыв на байте ${(segment.start + segment.done).toLocaleString()} (${message}) — продолжаю`);
+        persist();
+        await sleep(DUMP_BACKOFF_MS[Math.min(stagnant, DUMP_BACKOFF_MS.length - 1)]);
+      }
+    }
+  };
+
+  try {
+    await Promise.all(
+      segments.map((segment, index) =>
+        pump(segment, index).catch((error) => {
+          controller.abort();
+          throw error;
+        }),
+      ),
+    );
+    persist();
+    await handle.close();
+
+    const size = safeSize(dest);
+    if (size !== total) throw new Error(`Скачивание не удалось: на диске ${size} байт вместо ${total}`);
+    if (options.verify !== false && dest.toLowerCase().endsWith('.gz')) {
+      try {
+        await verifyGzipFile(dest);
+      } catch (error) {
+        // A failed CRC means some segment wrote garbage: drop the plan so the
+        // retry starts from a clean file instead of patching an unknown hole.
+        discarded = true;
+        rmSync(statePath, { force: true });
+        rmSync(dest, { force: true });
+        throw new Error(`Архив повредился при скачивании (${(error as Error).message}) — файл удалён, запустите скачивание снова`);
+      }
+    }
+    rmSync(statePath, { force: true });
+    log(`Архив на диске: ${size.toLocaleString()} байт (${options.segments} соединений)`);
+    return { path: dest, bytes: size, total, segments: options.segments };
+  } catch (error) {
+    if (!discarded) persist();
+    await handle.close().catch(() => undefined);
+    throw error;
+  } finally {
+    options.signal?.removeEventListener('abort', abort);
+  }
+}
+
+export interface SmartDownloadOptions extends DownloadDumpOptions {
+  /** Parallel connections; default `GALAXY_DOWNLOAD_SEGMENTS` (4). */
+  segments?: number;
+}
+
+export interface SmartDownloadResult {
+  path: string;
+  bytes: number;
+  total: number | null;
+  /** Connections actually used (1 = the plain single-stream path). */
+  segments: number;
+  /** `Last-Modified` of the source, i.e. when the dump was generated. */
+  lastModified: string | null;
+}
+
+/**
+ * Download a dump the fastest way the server allows: N parallel ranges when it
+ * supports them and the file is big enough, one resumable stream otherwise.
+ * Never fails because of parallelism — an unsupported server degrades to the
+ * old path with a line in the log.
+ */
+export async function downloadDump(options: SmartDownloadOptions): Promise<SmartDownloadResult> {
+  const log = options.log ?? (() => undefined);
+  const segments = Math.max(1, Math.floor(options.segments ?? galaxyDownloadSegments()));
+  let probe: DumpProbe | null = null;
+
+  if (segments > 1) {
+    try {
+      probe = await probeDumpSource(options.url, { fetchImpl: options.fetchImpl, signal: options.signal });
+    } catch (error) {
+      log(`Не удалось опросить источник (${(error as Error).message}) — скачиваю одним потоком`);
+    }
+    if (probe?.acceptsRanges && probe.total && probe.total >= SEGMENTED_MIN_BYTES) {
+      try {
+        const result = await downloadDumpSegmented({ ...options, segments, probe });
+        return { ...result, lastModified: probe.lastModified };
+      } catch (error) {
+        if (!(error instanceof SegmentedDownloadUnsupported)) throw error;
+        log(`Параллельная загрузка недоступна (${error.message}) — скачиваю одним потоком`);
+      }
+    } else if (probe && !probe.acceptsRanges) {
+      log('Сервер не поддерживает Range — скачиваю одним потоком');
+    } else if (probe && probe.total && probe.total < SEGMENTED_MIN_BYTES) {
+      log(`Файл небольшой (${formatBytes(probe.total)}) — одного соединения достаточно (одним потоком)`);
+    }
+  }
+
+  const result = await downloadDumpFile(options);
+  return { ...result, segments: 1, lastModified: probe?.lastModified ?? null };
+}
+
 export const GALAXY_TABLE = 'galaxy_systems';
 /** Bucket limit set by migration 20260924000000_galaxy_systems_finish.sql. */
 export const POINTS_UPLOAD_LIMIT = 50 * 1024 * 1024;
@@ -1369,6 +1761,73 @@ function byteCounter(): { stream: Transform; counter: { fed: number } } {
   return { stream, counter };
 }
 
+export interface FinalizePointCloudOptions {
+  writer: GalaxyRowWriter;
+  /** Cloud sampled while streaming, or null when none was built. */
+  streamed: PointsBuilder | null;
+  /** Rows the streamed cloud saw (sampling makes this ≠ `streamed.size`). */
+  pointsSeen: number;
+  systemsCount: number;
+  maxPoints: number;
+  /** The pass covered the whole dump from its first record. */
+  complete: boolean;
+  log: (line: string) => void;
+}
+
+/**
+ * Turn the streamed sample into the cloud for the map — or rebuild it from the
+ * table when the sample cannot represent the catalog.
+ *
+ * Shared by the streaming JSON import and the shard import
+ * (`src/lib/galaxyShards.ts`): both end with the same question, and a second
+ * copy of this rule would quietly publish a partial cloud.
+ */
+export async function finalizePointCloud(
+  options: FinalizePointCloudOptions,
+): Promise<GalaxyImportRunResult['points']> {
+  const { writer, pointsSeen, systemsCount, maxPoints, log } = options;
+  let streamed = options.streamed;
+
+  if (streamed && options.complete && pointsSeen === systemsCount) {
+    return {
+      buffer: Buffer.from(streamed.build()),
+      count: streamed.size,
+      rows: pointsSeen,
+      stride: streamed.sampleStride,
+      rebuiltFromTable: false,
+    };
+  }
+
+  // A resumed pass only saw the tail of the dump, and a pass that collapsed
+  // duplicate names streamed more points than the table holds. Either way
+  // the streamed sample is not the catalog: rebuild it from the table.
+  if (streamed) {
+    log('Rebuilding the point cloud from the table (resumed, duplicate or incomplete pass)');
+    // Release the partial cloud before allocating the full one.
+    streamed = null;
+  } else {
+    log(
+      `Облако точек строится из таблицы: каталог ${systemsCount.toLocaleString()} систем, ` +
+      `в облако идёт равномерная выборка (лимит ${maxPoints.toLocaleString()} точек)`,
+    );
+  }
+  const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024), maxPoints);
+  const read = await writer.readPoints((point) => rebuilt.add(point));
+  if (read !== systemsCount) {
+    throw new Error(`point cloud is truncated: ${read} of ${systemsCount} rows`);
+  }
+  if (rebuilt.sampled) {
+    log(`Облако точек: ${rebuilt.size.toLocaleString()} точек, каждая ${rebuilt.sampleStride}-я система`);
+  }
+  return {
+    buffer: Buffer.from(rebuilt.build()),
+    count: rebuilt.size,
+    rows: read,
+    stride: rebuilt.sampleStride,
+    rebuiltFromTable: true,
+  };
+}
+
 /**
  * Run one import pass. The promise resolves when the dump is exhausted; the
  * caller (job/route) decides what to do with the point cloud.
@@ -1511,47 +1970,20 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
   await writer.retryDeferred();
   const systemsCount = await writer.countRows();
 
-  let points: GalaxyImportRunResult['points'] = null;
-  if (options.buildPoints !== false) {
-    if (streamed && resumeFrom === 0 && pointsSeen === systemsCount) {
-      points = {
-        buffer: Buffer.from(streamed.build()),
-        count: streamed.size,
-        rows: pointsSeen,
-        stride: streamed.sampleStride,
-        rebuiltFromTable: false,
-      };
-    } else {
-      // A resumed pass only saw the tail of the dump, and a pass that collapsed
-      // duplicate names streamed more points than the table holds. Either way
-      // the streamed sample is not the catalog: rebuild it from the table.
-      if (streamed) {
-        log('Rebuilding the point cloud from the table (resumed, duplicate or incomplete pass)');
-        // Release the partial cloud before allocating the full one.
-        streamed = null;
-      } else {
-        log(
-          `Облако точек строится из таблицы: каталог ${systemsCount.toLocaleString()} систем, ` +
-          `в облако идёт равномерная выборка (лимит ${maxPoints.toLocaleString()} точек)`,
-        );
-      }
-      const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024), maxPoints);
-      const read = await writer.readPoints((point) => rebuilt.add(point));
-      if (read !== systemsCount) {
-        throw new Error(`point cloud is truncated: ${read} of ${systemsCount} rows`);
-      }
-      if (rebuilt.sampled) {
-        log(`Облако точек: ${rebuilt.size.toLocaleString()} точек, каждая ${rebuilt.sampleStride}-я система`);
-      }
-      points = {
-        buffer: Buffer.from(rebuilt.build()),
-        count: rebuilt.size,
-        rows: read,
-        stride: rebuilt.sampleStride,
-        rebuiltFromTable: true,
-      };
-    }
-  }
+  const points =
+    options.buildPoints === false
+      ? null
+      : await finalizePointCloud({
+          writer,
+          streamed,
+          pointsSeen,
+          systemsCount,
+          maxPoints,
+          // Only a pass that started at the first record saw the whole dump.
+          complete: resumeFrom === 0,
+          log,
+        });
+  streamed = null;
 
   const durationMs = now() - startedAt;
   // On a full pass the table is exactly this dump, so parsed-minus-rows is the
