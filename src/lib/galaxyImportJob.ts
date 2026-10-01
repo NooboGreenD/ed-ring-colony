@@ -56,6 +56,14 @@ import {
   type ShardImportSnapshot,
   type UnpackProgress,
 } from './galaxyShards.ts';
+import {
+  checkDiskSpace,
+  cleanupBeforeDownload,
+  cleanupGalaxyStorage,
+  getGalaxyStorageStatus,
+  releaseArchiveAfterImport,
+  type GalaxyStorageStatus,
+} from './galaxyArchiveStore.ts';
 import { FRESH_MS } from './galaxyImportSchedule.ts';
 import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
 import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
@@ -386,6 +394,15 @@ export async function getGalaxyArchiveStatus(): Promise<{
   };
 }
 
+/** Bytes of a file that may not exist (a resumed download already has some). */
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * The dump archive on disk. An archive is "fresh" while its mtime is younger
  * than `freshMs` — the same window the scheduler uses for "today's catalog".
@@ -430,6 +447,17 @@ export async function startGalaxyDownload(options: { url?: string; variant?: Gal
   const dest = galaxyArchivePathForVariant(variant);
   const segments = galaxyDownloadSegments();
 
+  // The dumps live on their own disk and the previous one is dead weight the
+  // moment a newer one starts arriving: free it before asking for 6 GiB more.
+  const pending: string[] = [];
+  const note = (line: string) => pending.push(line);
+  cleanupBeforeDownload({ variant, log: note });
+  const space = checkDiskSpace({ variant, have: fileSize(dest) });
+  if (!space.ok) {
+    console.error(`[galaxy-archive] ${space.message}`);
+    return { started: false, reason: space.message ?? 'Недостаточно места на диске', state: await readArchiveState(), plan };
+  }
+
   const controller = new AbortController();
   const run: LiveDownload = { controller, received: 0, total: null, startedAt: Date.now(), log: [] };
   runtime.edrcGalaxyDownloadRun = run;
@@ -449,6 +477,7 @@ export async function startGalaxyDownload(options: { url?: string; variant?: Gal
     error: null,
   });
 
+  for (const line of pending) log(line);
   if (!isDumpVariant(options.variant) && !options.url) log(`Выбор дампа: ${plan.reason}`);
   log(`Скачиваю ${DUMP_VARIANTS[variant].file} (${DUMP_VARIANTS[variant].label}) в ${segments} поток(ов)`);
 
@@ -572,6 +601,11 @@ async function ensureArchiveDownload(args: {
     args.log('Архив на диске старше суток — скачиваю свежий дамп');
     rmSync(dest, { force: true });
   }
+
+  // Nothing on this disk is needed once a newer dump starts downloading.
+  cleanupBeforeDownload({ variant: args.variant, log: args.log });
+  const space = checkDiskSpace({ variant: args.variant, have: fileSize(dest) });
+  if (!space.ok) throw new Error(space.message ?? 'Недостаточно места на диске');
 
   args.log(`Скачиваю дамп на диск: ${args.url} → ${dest} (${segments} поток(ов))`);
   await writeArchiveState({
@@ -781,6 +815,8 @@ export interface GalaxyImportStatus {
   plan: GalaxyImportPlan | null;
   /** Unpacked shards on disk (the fast resume path). */
   shards: GalaxyUnpackStatus | null;
+  /** The data disk: free space, archives and shards currently stored on it. */
+  storage: GalaxyStorageStatus | null;
 }
 
 /** Persisted state plus the live counters of a run in this process. */
@@ -810,6 +846,12 @@ export async function getGalaxyImportStatus(): Promise<GalaxyImportStatus> {
   } catch {
     shards = null;
   }
+  let storage: GalaxyStorageStatus | null = null;
+  try {
+    storage = getGalaxyStorageStatus();
+  } catch {
+    storage = null;
+  }
   return {
     state,
     live: Boolean(run),
@@ -821,6 +863,7 @@ export async function getGalaxyImportStatus(): Promise<GalaxyImportStatus> {
     archive,
     plan,
     shards,
+    storage,
   };
 }
 
@@ -1193,6 +1236,9 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
       let generatedAt: string | null = null;
       let shardsDone = resumeShard;
       let shardsTotal: number | null = null;
+      // The archive this pass read from: deleted once the rows are in the
+      // database (it is a download cache, and the next refresh is a delta).
+      let importedArchive: string | null = null;
 
       if (mode === 'shards') {
         // Shards may outlive the archive (`prune`): import them directly when
@@ -1210,6 +1256,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
                 log,
               });
           generatedAt = archive.lastModified;
+          importedArchive = archive.path;
           log('Распаковываю архив в шарды (один раз; дальше импорт и возобновление идут по шардам)');
           await unpackArchiveToShards({
             archive: archive.path,
@@ -1273,6 +1320,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
               log,
             });
         generatedAt = archive.lastModified;
+        importedArchive = archive.path;
 
         result = await runGalaxyImport({
           file: archive.path,
@@ -1367,6 +1415,22 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
           : 'Импорт завершён',
       );
       if (shardsDone && shardsTotal) log(`Шардов импортировано: ${shardsDone}/${shardsTotal}`);
+
+      // Rows are in Postgres now: the archive has done its job. Keeping it
+      // would cost 5.9 GiB on the data disk until the next cold start, and the
+      // next refresh downloads a few megabytes of delta instead.
+      const released = releaseArchiveAfterImport({ path: importedArchive, log });
+      if (released.kept && released.reason) {
+        log(`Архив оставлен на диске (${released.reason})`);
+      } else if (released.freed > 0) {
+        await writeArchiveState({
+          phase: 'idle',
+          path: null,
+          bytes_done: 0,
+          bytes_total: null,
+          error: null,
+        }).catch(() => undefined);
+      }
       return finalState;
     } catch (error) {
       const cancelled = controller.signal.aborted;
@@ -1409,6 +1473,42 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     mode,
     plan,
     state: started,
+  };
+}
+
+/**
+ * «Освободить место» from the admin tab: delete every dump archive that is not
+ * needed to continue (and the shards left over from an archive that is gone).
+ * Refused while a download, unpack or import is using those files.
+ */
+export async function cleanupGalaxyDisk(options: { dropShards?: boolean } = {}): Promise<{
+  cleaned: boolean;
+  reason?: string;
+  freed: number;
+  removed: string[];
+  storage: GalaxyStorageStatus;
+}> {
+  if (liveDownload() || liveUnpack() || liveRun()) {
+    return {
+      cleaned: false,
+      reason: 'Идёт скачивание, распаковка или импорт — очистка может удалить файл из-под них',
+      freed: 0,
+      removed: [],
+      storage: getGalaxyStorageStatus(),
+    };
+  }
+  const pinned = galaxyImportFile();
+  const log = (line: string) => console.error(`[galaxy-archive] ${line}`);
+  // An unfinished import must keep the file it will continue from.
+  const state = await readImportState().catch(() => ({ ...EMPTY_IMPORT_STATE }));
+  const unfinished = state.phase === 'running' || state.phase === 'failed' || state.phase === 'cancelled';
+  const keep = [pinned, unfinished && isDumpVariant(state.variant) ? state.variant : null];
+  const result = cleanupGalaxyStorage({ keep, dropShards: options.dropShards === true, log });
+  return {
+    cleaned: true,
+    freed: result.freed,
+    removed: result.removed.map((item) => item.path),
+    storage: result.storage,
   };
 }
 

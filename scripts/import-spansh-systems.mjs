@@ -64,6 +64,14 @@ import {
   shardsDir,
   unpackArchiveToShards,
 } from '../src/lib/galaxyShards.ts';
+// Disk housekeeping: the dumps and their shards live on their own disk, and a
+// previous dump is deleted before the next one is fetched (SPANSH-IMPORT.md).
+import {
+  checkDiskSpace,
+  cleanupBeforeDownload,
+  diskUsage,
+  releaseArchiveAfterImport,
+} from '../src/lib/galaxyArchiveStore.ts';
 // Connection diagnostics shared with the in-app import: retries for transient
 // DNS/refused failures and an actionable message for a permanent one.
 import {
@@ -95,6 +103,11 @@ const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
                          O(1) restart afterwards)
   --from-shards          Import the unpacked shards instead of the .gz archive
   --shards-dir <dir>     Where the shards live (default <out>/shards)
+  --keep-archive         Keep the .gz archive after a successful import
+                         (default: delete it — the catalog is in the database
+                         and the next refresh is a small delta; same as
+                         GALAXY_ARCHIVE_KEEP=1). Previous dumps are deleted
+                         before a new one is downloaded either way.
   --file <path>          Use a local .gz/.json dump instead of downloading
   --out <dir>            Download directory (default data/spansh)
   --points-file <path>   Points file for the map layer (default public/data/galaxy-systems-points.bin)
@@ -136,6 +149,7 @@ function parseArgs(argv) {
     unpack: false,
     fromShards: false,
     shardsDir: null,
+    keepArchive: false,
     databaseUrl: null,
     verbose: false,
   };
@@ -157,6 +171,7 @@ function parseArgs(argv) {
       case '--unpack': args.unpack = true; break;
       case '--from-shards': args.fromShards = true; break;
       case '--shards-dir': args.shardsDir = argv[++i]; break;
+      case '--keep-archive': args.keepArchive = true; break;
       case '--skip-download': args.skipDownload = true; break;
       case '--download-only': args.downloadOnly = true; break;
       case '--check-db': args.checkDb = true; break;
@@ -186,7 +201,15 @@ function parseArgs(argv) {
 // Shared with the in-app import (src/lib/galaxyImport.ts): HTTP Range resume,
 // retry on interrupted connections (undici's `terminated`), gzip verification.
 
-async function download(url, dest, log, segments = DEFAULT_SEGMENTS) {
+async function download(url, dest, log, segments = DEFAULT_SEGMENTS, variant = 'full') {
+  // Free the disk before asking for several gibibytes more, and refuse a
+  // transfer that cannot fit instead of dying with ENOSPC hours later.
+  const dir = path.dirname(dest);
+  cleanupBeforeDownload({ variant, dir, shards: path.join(dir, 'shards'), log });
+  const space = checkDiskSpace({ variant, dir, have: fs.existsSync(dest) ? fs.statSync(dest).size : 0 });
+  if (!space.ok) throw new Error(space.message);
+  const free = diskUsage(dir);
+  if (free) log(`Free space on ${free.path}: ${(free.free / 1024 ** 3).toFixed(1)} GiB`);
   const result = await downloadDump({
     url,
     dest,
@@ -412,7 +435,7 @@ async function runImport(args, db, log) {
   if (!args.fromShards) {
     if (!args.file && !args.skipDownload && !fs.existsSync(source)) {
       log(`Downloading ${args.url} → ${source}`);
-      await download(args.url, source, log, args.segments);
+      await download(args.url, source, log, args.segments, args.variant || 'full');
     }
     if (!fs.existsSync(source)) throw new Error(`Dump file not found: ${source}`);
   }
@@ -505,6 +528,13 @@ async function runImport(args, db, log) {
       await db.writeMeta(meta);
     }
     await db.close();
+  }
+
+  // The rows are in the database; the archive is just a download cache and the
+  // next refresh is a delta. `--keep-archive`/`GALAXY_ARCHIVE_KEEP=1` opt out,
+  // and a dry run or a partial `--limit` pass never deletes anything.
+  if (db && !args.dryRun && args.limit === 0 && !args.fromShards && !args.file && !args.keepArchive) {
+    releaseArchiveAfterImport({ path: source, log });
   }
 
   log(`Done in ${((Date.now() - startedAt) / 1000).toFixed(1)} s: ${processed.toLocaleString()} systems processed, ${invalid} invalid, ${db ? db.written.toLocaleString() : 0} rows written`);
@@ -803,7 +833,7 @@ export function runMain(argv) {
     if (args.downloadOnly) {
       const dest = path.join(args.outDir, path.basename(new URL(args.url).pathname) || 'systems.json.gz');
       log(`Download-only: ${args.url} → ${dest} (${args.segments} connection(s))`);
-      await download(args.url, dest, log, args.segments);
+      await download(args.url, dest, log, args.segments, args.variant || 'full');
       log('Import not run (--download-only). The next run reuses this file.');
       return;
     }

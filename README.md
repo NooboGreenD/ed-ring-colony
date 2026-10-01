@@ -404,6 +404,12 @@ ed-ring-colony/
 (`GALAXY_IMPORT_MODE=shards`): архив распаковывается в gzip-TSV файлы, после
 чего перезапуск импорта стоит O(1), а не повторного разбора 6 ГиБ.
 
+Архивы и шарды лежат на отдельном диске сервера (`GALAXY_DATA_HOST_DIR`,
+по умолчанию `/mnt/sdb/ed-ring-colony/spansh` → `/app/data/spansh`): предыдущий
+дамп удаляется перед загрузкой нового, а архив — после успешного импорта, так
+что ~12 ГиБ пика не превращаются в бесконечный рост. Перенос со старого
+volume: `sudo bash deploy/migrate-galaxy-dump.sh`.
+
 ```bash
 npm run spansh:import                 # CLI: полный дамп → БД
 npm run spansh:import -- --variant 1day   # только изменения за сутки

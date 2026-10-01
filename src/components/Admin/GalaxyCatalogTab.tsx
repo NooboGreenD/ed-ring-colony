@@ -72,6 +72,19 @@ interface ShardStatus {
   log: string[];
 }
 
+/** Диск, на котором живут архивы и шарды (`getGalaxyStorageStatus`). */
+interface StorageStatus {
+  dir: string;
+  shards_dir: string;
+  disk: { path: string; total: number; free: number; used: number } | null;
+  archives: { variant: string; file: string; path: string; bytes: number; mtime: string | null; partial: boolean }[];
+  archives_bytes: number;
+  shards_files: number;
+  shards_bytes: number;
+  total_bytes: number;
+  keep_archive: boolean;
+}
+
 interface VariantInfo {
   variant: string;
   file: string;
@@ -107,6 +120,7 @@ interface Status {
   archive: ArchiveStatus | null;
   plan: DumpPlan | null;
   shards: ShardStatus | null;
+  storage: StorageStatus | null;
   variants?: VariantInfo[];
   download_segments?: number;
 }
@@ -186,6 +200,7 @@ export default function GalaxyCatalogTab() {
   const running = !!status && (status.live || (status.state.phase === 'running' && !status.interrupted));
   const archive = status?.archive ?? null;
   const shards = status?.shards ?? null;
+  const storage = status?.storage ?? null;
   const unpackRunning = !!shards?.live;
   const downloadRunning = !!archive && (archive.live || (archive.state.phase === 'downloading' && !archive.interrupted));
   const interruptedDownload = !!archive && archive.state.phase === 'downloading' && !archive.live && archive.interrupted;
@@ -213,6 +228,14 @@ export default function GalaxyCatalogTab() {
       else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
       else if (action === 'unpack') setMessage('Распаковка в шарды идёт в фоне. После неё импорт и возобновление читают шарды, а не 6 ГиБ gzip.');
       else if (action === 'cancel-unpack') setMessage(payload?.cancelled ? 'Распаковка остановлена' : 'Распаковка не выполнялась');
+      else if (action === 'cleanup')
+        setMessage(
+          payload?.cleaned
+            ? payload.freed > 0
+              ? `Освобождено ${formatBytes(payload.freed)} (${(payload.removed ?? []).length} файл(ов))`
+              : 'Удалять нечего — лишних архивов и шардов нет'
+            : payload?.reason || 'Очистка невозможна сейчас',
+        );
       else setMessage('Импорт запущен в фоне. Страницу можно закрыть — процесс продолжится.');
       await load();
     } catch (error) {
@@ -490,7 +513,9 @@ docker compose --env-file .env.production --profile monitoring \\
           не затирает полный архив, который качался днями.
           <br />
           Дамп <code>systems.json.gz</code> (~6 ГиБ) хранится в <code>{status?.archive_dir || 'data/spansh'}</code>
-          (в контейнере — томовый volume, переживает пересборку образа). Импорт всегда читает дамп <strong>с диска</strong>:
+          (на сервере это отдельный диск, смонтированный под каталог). Перед загрузкой нового дампа предыдущий
+          удаляется, а после успешного импорта удаляется и сам архив — он больше не нужен, следующее обновление
+          приходит дельтой. Импорт всегда читает дамп <strong>с диска</strong>:
           при обрыве соединения скачивание продолжает с сохранённого байта (HTTP Range), а «Продолжить импорт»
           перечитывает локальный файл и пропускает уже записанные системы — заново скачивать 6 ГиБ не нужно.
           Повреждённый архив определяется проверкой gzip и скачивается заново.
@@ -514,6 +539,88 @@ docker compose --env-file .env.production --profile monitoring \\
             {archive.log.join('\n')}
           </pre>
         )}
+      </div>
+
+      <div style={cardStyle}>
+        <div style={labelStyle}>Диск с данными каталога</div>
+        {storage ? (
+          <>
+            <div style={{ fontSize: 13, marginBottom: 6 }}>
+              <code>{storage.disk?.path || storage.dir}</code>
+              {storage.disk ? (
+                <>
+                  {' '}— свободно{' '}
+                  <strong style={{ color: storage.disk.free < 8 * 1024 ** 3 ? '#e67e22' : '#22c55e' }}>
+                    {formatBytes(storage.disk.free)}
+                  </strong>{' '}
+                  из {formatBytes(storage.disk.total)}
+                </>
+              ) : (
+                <span style={{ color: '#9ca3af' }}> — размер диска недоступен</span>
+              )}
+            </div>
+            {storage.disk && storage.disk.total > 0 && (
+              <div style={{ height: 6, background: '#262a2e', borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
+                <div
+                  style={{
+                    width: `${Math.min(100, (storage.disk.used / storage.disk.total) * 100)}%`,
+                    height: '100%',
+                    background: storage.disk.free < 8 * 1024 ** 3 ? '#e67e22' : '#38bdf8',
+                  }}
+                />
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: '#d1d5db', marginBottom: 8 }}>
+              Каталог занимает {formatBytes(storage.total_bytes)}: архивы {formatBytes(storage.archives_bytes)}
+              {storage.archives.length > 0 ? ` (${storage.archives.length} шт.)` : ''}, шарды{' '}
+              {formatBytes(storage.shards_bytes)}
+              {storage.shards_files > 0 ? ` (${storage.shards_files} файл(ов))` : ''}.
+            </div>
+            {storage.archives.length > 0 && (
+              <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8 }}>
+                {storage.archives.map((item) => (
+                  <div key={item.path}>
+                    <code>{item.file}</code> — {formatBytes(item.bytes)}
+                    {item.partial ? ', докачивается' : ''}
+                    {item.mtime ? `, ${formatTime(item.mtime)}` : ''}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy !== null || running || downloadRunning || unpackRunning}
+                onClick={() => void act('cleanup')}
+                title="Удалить архивы, которые больше не нужны, и шарды без архива"
+              >
+                Освободить место
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={busy !== null || running || downloadRunning || unpackRunning || storage.shards_files === 0}
+                onClick={() => {
+                  if (window.confirm('Удалить распакованные шарды? Для импорта архив придётся распаковать заново.')) {
+                    void act('cleanup', { drop_shards: true });
+                  }
+                }}
+                title="Удалить и шарды тоже"
+              >
+                Удалить шарды
+              </button>
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 13, color: '#9ca3af', marginBottom: 8 }}>Нет данных о диске.</div>
+        )}
+        <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>
+          Архивы и распакованные шарды лежат на отдельном диске сервера (<code>{storage?.dir || status?.archive_dir}</code>,
+          шарды — <code>{storage?.shards_dir || '…/shards'}</code>). Старый дамп удаляется перед загрузкой нового, а архив —
+          после успешного импорта{storage?.keep_archive ? '; сейчас это отключено через GALAXY_ARCHIVE_KEEP=1' : ''}.
+          Загрузка, которой заведомо не хватит места, не стартует: сервер сразу скажет, сколько нужно и сколько есть.
+        </div>
       </div>
 
       <div style={cardStyle}>

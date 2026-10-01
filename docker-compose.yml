@@ -55,14 +55,17 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      # Pre-downloaded Spansh dumps. The web process downloads them here
-      # (resumable, several HTTP Range connections) and imports from disk, so a
-      # dropped connection never costs a full re-download and the archives
-      # survive image rebuilds. Each variant keeps its own file (systems.json.gz
-      # ~6 GiB for the cold start, systems_1day.json.gz ~4 MiB nightly), and the
-      # optional shards/ subdirectory holds the unpacked archive. Override
-      # GALAXY_ARCHIVE_DIR to point the import elsewhere.
-      - galaxy-dump:/app/data/spansh
+      # Дампы Spansh и их распакованные шарды: отдельный диск сервера
+      # (/mnt/sdb по умолчанию), а не системный раздел и не слой образа.
+      # Полный systems.json.gz — 5.9 ГиБ, его шарды — ещё столько же, сырой
+      # systems.json был бы 32+ ГБ (поэтому шарды и хранятся сжатыми).
+      # Скачивание возобновляемое, идёт в несколько HTTP Range-соединений,
+      # у каждого варианта свой файл; предыдущий дамп удаляется перед
+      # загрузкой нового, а архив — после успешного импорта
+      # (GALAXY_ARCHIVE_KEEP=1 отключает). Перенос со старого named volume:
+      # deploy/migrate-galaxy-dump.sh. Путь внутри контейнера можно сменить
+      # через GALAXY_ARCHIVE_DIR.
+      - ${GALAXY_DATA_HOST_DIR:-/mnt/sdb/ed-ring-colony/spansh}:/app/data/spansh
       # Пакеты кода Colonial Helper: ВСЕ манифесты, blobs, ZIP, EXE,
       # config.json и журналы релизов лежат на хостовом диске с backup'ами,
       # в отдельной папке uploader-releases. Образы и docker prune эту историю
@@ -272,7 +275,9 @@ volumes:
   jobs-state:
   # Lock, progress state and the updater's own log.
   update-state:
-  # On-disk Spansh dump archive for the in-app galaxy import.
+  # Старый named volume с дампами Spansh. web его больше не монтирует:
+  # архивы и шарды живут на отдельном диске (bind mount GALAXY_DATA_HOST_DIR).
+  # Не удаляйте том до переноса — deploy/migrate-galaxy-dump.sh.
   galaxy-dump:
   # Старый named volume оставлен только для безопасной миграции существующих
   # установок. web больше его не монтирует: рабочее хранилище — bind mount

@@ -5,6 +5,7 @@ import { galaxyArchiveDir, galaxyDownloadSegments, galaxyImportUrl } from '@/lib
 import { DUMP_LADDER, DUMP_VARIANTS, dumpBaseUrl, isDumpVariant } from '@/lib/galaxyDumpVariants';
 import {
   cancelGalaxyDownload,
+  cleanupGalaxyDisk,
   cancelGalaxyImport,
   cancelGalaxyUnpack,
   checkGalaxyDbConnection,
@@ -36,6 +37,9 @@ const headers = { 'Cache-Control': 'no-store' };
  *  - `unpack`         — распаковать архив в шарды (быстрое возобновление);
  *  - `cancel-unpack`  — остановить распаковку;
  *  - `plan`           — какой дамп нужен прямо сейчас (без загрузки);
+ *  - `cleanup`        — освободить место: удалить архивы, которые больше не
+ *                       нужны (и шарды без архива); `drop_shards` удаляет и
+ *                       шарды тоже;
  *  - `check-db`       — проверить прямое подключение к Postgres и объяснить
  *                       ошибку (например, «getaddrinfo EAI_AGAIN db»).
  */
@@ -124,6 +128,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, plan }, { headers });
     }
 
+    if (action === 'cleanup') {
+      const result = await cleanupGalaxyDisk({ dropShards: body.drop_shards === true });
+      return NextResponse.json(
+        {
+          success: result.cleaned,
+          cleaned: result.cleaned,
+          reason: result.reason ?? null,
+          freed: result.freed,
+          removed: result.removed,
+          storage: result.storage,
+        },
+        { status: result.cleaned ? 200 : 409, headers },
+      );
+    }
+
     if (action === 'unpack') {
       const result = await startGalaxyUnpack({ fresh: body.fresh === true });
       return NextResponse.json(
@@ -160,7 +179,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan" или "check-db"',
+            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup" или "check-db"',
         },
         { status: 400, headers },
       );
