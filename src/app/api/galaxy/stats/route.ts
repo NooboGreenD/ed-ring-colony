@@ -66,6 +66,10 @@ export async function GET() {
             points_error: state.points_error,
             error: state.error,
             attempts: state.attempts,
+            variant: state.variant,
+            mode: state.mode,
+            shard_index: state.shard_index,
+            shards_total: state.shards_total,
           }
         : null,
     },

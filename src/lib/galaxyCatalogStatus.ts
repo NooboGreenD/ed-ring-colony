@@ -38,6 +38,13 @@ export interface GalaxyCatalogImport {
   points_error: string | null;
   error: string | null;
   attempts: number;
+  /** Which Spansh file the last pass imported: `full` or a delta (`1day`…). */
+  variant?: string | null;
+  /** `stream` (gzip archive) or `shards` (unpacked, O(1) resume). */
+  mode?: 'stream' | 'shards' | null;
+  /** Shards already stored (shard mode). */
+  shard_index?: number;
+  shards_total?: number | null;
 }
 
 export interface GalaxyCatalogStatus {

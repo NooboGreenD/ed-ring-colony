@@ -55,9 +55,12 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      # Pre-downloaded Spansh dump (~6 GiB). The web process downloads it here
-      # (resumable) and imports from disk, so a dropped connection never costs
-      # a full re-download and the archive survives image rebuilds. Override
+      # Pre-downloaded Spansh dumps. The web process downloads them here
+      # (resumable, several HTTP Range connections) and imports from disk, so a
+      # dropped connection never costs a full re-download and the archives
+      # survive image rebuilds. Each variant keeps its own file (systems.json.gz
+      # ~6 GiB for the cold start, systems_1day.json.gz ~4 MiB nightly), and the
+      # optional shards/ subdirectory holds the unpacked archive. Override
       # GALAXY_ARCHIVE_DIR to point the import elsewhere.
       - galaxy-dump:/app/data/spansh
       # Пакеты кода Colonial Helper: ВСЕ манифесты, blobs, ZIP, EXE,
@@ -97,8 +100,11 @@ services:
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env.production and pass --env-file .env.production}
       JOBS_BASE_URL: http://web:3000
       JOBS_STATE_FILE: /data/jobs-state.json
-      # `galaxy-import` (ночной дамп Spansh → galaxy_systems) не входит в
-      # список по умолчанию: добавьте его в JOBS_ENABLED осознанно.
+      # `galaxy-import` (ночное обновление каталога систем) не входит в список
+      # по умолчанию: добавьте его в JOBS_ENABLED осознанно. Ночью задача
+      # качает НЕ полный дамп (5.9 ГиБ), а дельту Spansh, перекрывающую
+      # отставание каталога (systems_1week.json.gz, ~21 МиБ) — полный нужен
+      # один раз при холодном старте. Подробности и альтернативы: SPANSH-IMPORT.md.
       JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate}
       GALNET_FEED_LIMIT: ${GALNET_FEED_LIMIT:-30}
       GALNET_TRANSLATE_LIMIT: ${GALNET_TRANSLATE_LIMIT:-10}

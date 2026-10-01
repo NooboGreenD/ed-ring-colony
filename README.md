@@ -396,13 +396,23 @@ ed-ring-colony/
 (`CRON_SECRET`). Запрос только стартует фоновую загрузку и сразу отвечает;
 прогресс виден в `GET /api/galaxy/stats`, прерванный импорт продолжается.
 
+Полный дамп (`systems.json.gz`, 5.9 ГиБ) нужен **один раз**: дальше импорт
+сам берёт дельту Spansh, перекрывающую отставание каталога
+(`systems_1week.json.gz` ~21 МиБ на суточном цикле, `systems_1month.json.gz`
+~88 МиБ после месяца простоя). Холодный старт ускоряют параллельные Range-соединения
+(`GALAXY_DOWNLOAD_SEGMENTS`, по умолчанию 4) и режим шардов
+(`GALAXY_IMPORT_MODE=shards`): архив распаковывается в gzip-TSV файлы, после
+чего перезапуск импорта стоит O(1), а не повторного разбора 6 ГиБ.
+
 ```bash
-npm run spansh:import     # CLI-вариант: скачать systems.json.gz и загрузить в БД
-npm run spansh:selftest   # офлайн-проверка конвейера (без БД и сети)
+npm run spansh:import                 # CLI: полный дамп → БД
+npm run spansh:import -- --variant 1day   # только изменения за сутки
+npm run spansh:import -- --unpack     # распаковать архив в шарды
+npm run spansh:selftest               # офлайн-проверка конвейера (без БД и сети)
 ```
 
-Подробности и диагностика (почему карта не показывает все системы):
-[SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
+Подробности, альтернативы загрузки и диагностика (почему карта не показывает
+все системы): [SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
 
 ## Galnet Sync
 

@@ -43,12 +43,27 @@ import {
   PG_BATCH_SIZE,
   SUPABASE_BATCH_SIZE,
   deferredRowsFailure,
-  downloadDumpFile,
+  downloadDump,
+  galaxyDownloadSegments,
   pgLiteral,
   postgrestWriteWarning,
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../src/lib/galaxyImport.ts';
+// Delta ladder (systems_1day … systems.json.gz) and the shard pipeline: the
+// two ways not to move 5.9 GiB over a thin line. See SPANSH-IMPORT.md.
+import {
+  DUMP_LADDER,
+  DUMP_VARIANTS,
+  dumpVariantUrl,
+  isDumpVariant,
+} from '../src/lib/galaxyDumpVariants.ts';
+import {
+  readShardManifest,
+  readShardRecords,
+  shardsDir,
+  unpackArchiveToShards,
+} from '../src/lib/galaxyShards.ts';
 // Connection diagnostics shared with the in-app import: retries for transient
 // DNS/refused failures and an actionable message for a permanent one.
 import {
@@ -65,10 +80,21 @@ const REPO_ROOT = path.resolve(new URL('.', import.meta.url).pathname, '..');
 const DEFAULT_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
 const DEFAULT_OUT_DIR = path.join(REPO_ROOT, 'data', 'spansh');
 const DEFAULT_POINTS_FILE = path.join(REPO_ROOT, 'public', 'data', 'galaxy-systems-points.bin');
+const DEFAULT_SEGMENTS = galaxyDownloadSegments();
 
 const USAGE = `Usage: node scripts/import-spansh-systems.mjs [options]
 
   --url <url>            Download source (default ${DEFAULT_URL})
+  --variant <v>          Which Spansh dump to use: ${DUMP_LADDER.join(' | ')}
+                         (full = 5.9 GiB, 1day ≈ 4 MiB, 1month ≈ 88 MiB).
+                         A loaded catalog only ever needs a delta.
+  --segments <n>         Parallel HTTP Range connections (default ${DEFAULT_SEGMENTS},
+                         env GALAXY_DOWNLOAD_SEGMENTS). One thin stream is what
+                         makes 5.9 GiB take a week.
+  --unpack               Unpack the archive into shards and exit (resumable,
+                         O(1) restart afterwards)
+  --from-shards          Import the unpacked shards instead of the .gz archive
+  --shards-dir <dir>     Where the shards live (default <out>/shards)
   --file <path>          Use a local .gz/.json dump instead of downloading
   --out <dir>            Download directory (default data/spansh)
   --points-file <path>   Points file for the map layer (default public/data/galaxy-systems-points.bin)
@@ -105,6 +131,11 @@ function parseArgs(argv) {
     skipDownload: false,
     downloadOnly: false,
     checkDb: false,
+    variant: null,
+    segments: DEFAULT_SEGMENTS,
+    unpack: false,
+    fromShards: false,
+    shardsDir: null,
     databaseUrl: null,
     verbose: false,
   };
@@ -121,6 +152,11 @@ function parseArgs(argv) {
       case '--no-points': args.noPoints = true; break;
       case '--dry-run': args.dryRun = true; break;
       case '--selftest': args.selftest = true; break;
+      case '--variant': args.variant = argv[++i]; break;
+      case '--segments': args.segments = Number(argv[++i]); break;
+      case '--unpack': args.unpack = true; break;
+      case '--from-shards': args.fromShards = true; break;
+      case '--shards-dir': args.shardsDir = argv[++i]; break;
       case '--skip-download': args.skipDownload = true; break;
       case '--download-only': args.downloadOnly = true; break;
       case '--check-db': args.checkDb = true; break;
@@ -133,6 +169,16 @@ function parseArgs(argv) {
         process.exit(2);
     }
   }
+  if (args.variant) {
+    if (!isDumpVariant(args.variant)) {
+      console.error(`Unknown --variant: ${args.variant} (expected ${DUMP_LADDER.join(', ')})\n`);
+      process.exit(2);
+    }
+    // An explicit --url always wins; otherwise the variant picks the file.
+    if (!argv.includes('--url')) args.url = dumpVariantUrl(args.variant);
+  }
+  if (!args.shardsDir) args.shardsDir = path.join(args.outDir, 'shards');
+  if (!Number.isFinite(args.segments) || args.segments < 1) args.segments = 1;
   return args;
 }
 
@@ -140,14 +186,16 @@ function parseArgs(argv) {
 // Shared with the in-app import (src/lib/galaxyImport.ts): HTTP Range resume,
 // retry on interrupted connections (undici's `terminated`), gzip verification.
 
-async function download(url, dest, log) {
-  const result = await downloadDumpFile({
+async function download(url, dest, log, segments = DEFAULT_SEGMENTS) {
+  const result = await downloadDump({
     url,
     dest,
+    segments,
     log,
     onProgress: (info) => log(`  downloaded ${Math.round(info.received / 1024 / 1024)} MB…`),
   });
-  log(`Download complete: ${result.bytes.toLocaleString()} bytes`);
+  log(`Download complete: ${result.bytes.toLocaleString()} bytes (${result.segments} connection(s))`);
+  return result;
 }
 
 // ─────────────────────── DB writers ───────────────────────
@@ -334,17 +382,40 @@ function openDumpStream(file) {
   return raw;
 }
 
+/**
+ * Rows to import: either the gzip archive (parsed on the fly) or the unpacked
+ * shards. `null` means "a record the dump cannot store" and is counted as
+ * invalid by the caller.
+ */
+async function* iterateRows(args, source, log) {
+  if (args.fromShards) {
+    const manifest = readShardManifest(args.shardsDir);
+    if (!manifest) throw new Error(`Shards not found in ${args.shardsDir} — run with --unpack first`);
+    if (!manifest.complete) log('WARNING: the unpack did not finish — importing the shards that exist');
+    log(`Importing ${manifest.shards.length} shard(s) from ${args.shardsDir}`);
+    for (const shard of manifest.shards) {
+      for await (const row of readShardRecords(path.join(args.shardsDir, shard.file))) yield row;
+    }
+    return;
+  }
+  for await (const obj of streamObjects(openDumpStream(source))) {
+    yield toGalaxySystemRow(obj);
+  }
+}
+
 async function runImport(args, db, log) {
   const startedAt = Date.now();
   const source = args.file
     ? path.resolve(args.file)
     : path.join(args.outDir, path.basename(new URL(args.url).pathname) || 'systems.json.gz');
 
-  if (!args.file && !args.skipDownload && !fs.existsSync(source)) {
-    log(`Downloading ${args.url} → ${source}`);
-    await download(args.url, source, log);
+  if (!args.fromShards) {
+    if (!args.file && !args.skipDownload && !fs.existsSync(source)) {
+      log(`Downloading ${args.url} → ${source}`);
+      await download(args.url, source, log, args.segments);
+    }
+    if (!fs.existsSync(source)) throw new Error(`Dump file not found: ${source}`);
   }
-  if (!fs.existsSync(source)) throw new Error(`Dump file not found: ${source}`);
 
   // The catalog is ~2×10⁸ systems: an unsampled cloud would need gigabytes of
   // RAM here and would not fit the 50 MB storage bucket, so the builder samples.
@@ -354,10 +425,9 @@ async function runImport(args, db, log) {
   let invalid = 0;
   let lastLog = 0;
 
-  log(`Parsing ${source}`);
-  for await (const obj of streamObjects(openDumpStream(source))) {
+  log(args.fromShards ? `Importing shards from ${args.shardsDir}` : `Parsing ${source}`);
+  for await (const row of iterateRows(args, source, log)) {
     if (args.limit > 0 && processed >= args.limit) break;
-    const row = toGalaxySystemRow(obj);
     if (!row) { invalid++; continue; }
     processed++;
     if (db) await db.add(row);
@@ -732,9 +802,26 @@ export function runMain(argv) {
     }
     if (args.downloadOnly) {
       const dest = path.join(args.outDir, path.basename(new URL(args.url).pathname) || 'systems.json.gz');
-      log(`Download-only: ${args.url} → ${dest}`);
-      await download(args.url, dest, log);
+      log(`Download-only: ${args.url} → ${dest} (${args.segments} connection(s))`);
+      await download(args.url, dest, log, args.segments);
       log('Import not run (--download-only). The next run reuses this file.');
+      return;
+    }
+    if (args.unpack) {
+      const archive = args.file
+        ? path.resolve(args.file)
+        : path.join(args.outDir, path.basename(new URL(args.url).pathname) || 'systems.json.gz');
+      log(`Unpacking ${archive} → ${args.shardsDir}`);
+      const manifest = await unpackArchiveToShards({
+        archive,
+        dir: args.shardsDir,
+        source: args.file ? archive : args.url,
+        log,
+      });
+      log(
+        `Shards ready: ${manifest.shards.length} file(s), ${manifest.rows.toLocaleString()} systems. ` +
+        'Import them with --from-shards (restart is O(1): it continues at the next shard).',
+      );
       return;
     }
     const db = await resolveDb(args, log);
