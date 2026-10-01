@@ -141,6 +141,14 @@ export default function CapiPage() {
       }
       window.history.replaceState({}, '', window.location.pathname);
     }
+    // Платформа из колбэка: сервер передаёт `audience` потока. Список (авто)
+    // превращаем обратно в «auto», одиночное значение — в выбор селектора.
+    const returnedPlatform = params.get('platform');
+    if (returnedPlatform) {
+      const single = returnedPlatform.split(',')[0]?.trim();
+      const known = PLATFORMS.some((item) => item.id === returnedPlatform);
+      setPlatform(known ? returnedPlatform : (single && PLATFORMS.some((item) => item.id === single) ? single : 'auto'));
+    }
     void fetchProfile();
   }, [fetchProfile]);
 
@@ -293,9 +301,36 @@ export default function CapiPage() {
               <div className="capi-notice capi-notice-error" style={{ marginTop: 12 }}>
                 <strong><IconError size={14} /> Frontier больше не принимает сохранённый токен</strong>
                 <div className="capi-notice-hint">
-                  {binding?.lastError || 'Refresh-токен Frontier живёт не дольше 25 дней.'} Подключите аккаунт заново:
+                  {binding?.lastError || 'Refresh-токен Frontier живёт не дольше 25 дней.'} Подключите аккаунт заново,
+                  выбрав платформу, где куплена игра:
                 </div>
-                <a href={`/api/capi/auth?platform=${binding?.platform || 'auto'}`} className="btn btn-orange" style={{ marginTop: 8 }}>
+                {/*
+                  Выбор платформы и при переподключении. Раньше кнопка молча
+                  подставляла прежнюю платформу привязки: если вход был
+                  frontier-учёткой без игры, «Переподключить» повторял ту же
+                  ошибку до бесконечности.
+                */}
+                <div className="capi-platforms" style={{ marginTop: 8 }}>
+                  {PLATFORMS.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`capi-platform${platform === item.id ? ' capi-platform-active' : ''}`}
+                      onClick={() => setPlatform(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                {binding?.platform && (
+                  <div className="capi-notice-hint" style={{ marginTop: 6 }}>
+                    Прошлый токен был выдан платформой «{binding.platform}».
+                    {binding.platform === 'frontier'
+                      ? ' Если игра куплена в Steam/Epic — выберите её ниже и на странице Frontier войдите кнопкой платформы, а не почтой.'
+                      : ''}
+                  </div>
+                )}
+                <a href={`/api/capi/auth?platform=${platform}`} className="btn btn-orange" style={{ marginTop: 8 }}>
                   Переподключить
                 </a>
               </div>

@@ -378,3 +378,53 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
+    def fetch_capi_tokens(self) -> dict:
+        """Забрать с сайта сохранённую привязку Frontier CAPI этого пилота.
+
+        Сайт обновляет (refresh) токены по расписанию, поэтому его копия —
+        самая свежая. Приложение берёт её, когда собственный токен истёк или
+        отсутствует: без этого пилоту приходилось проходить вход у Frontier
+        заново после каждого долгого перерыва (refresh-токен живёт 25 дней).
+        Возвращает {ok, tokens} или {ok: False, error}.
+        """
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = self._session.get(
+                f"{self.api_base}/capi/token",
+                params={"token": self.token},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok") and data.get("tokens"):
+                return {"ok": True, "tokens": data["tokens"]}
+            # 404 — привязки на сайте нет: это не ошибка, а честное «брать
+            # нечего», поэтому отдельно не расшифровываем.
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def push_capi_tokens(self, tokens: dict) -> dict:
+        """Отправить на сайт свежую привязку Frontier CAPI.
+
+        Один источник правды: если пилот авторизовался в приложении, сайт
+        получает те же токены и дальше продлевает их своим расписанием.
+        Возвращает {ok} или {ok: False, error}.
+        """
+        if not self.token or not tokens:
+            return {"ok": False, "error": "Нет токена или данных"}
+        try:
+            resp = self._session.post(
+                f"{self.api_base}/capi/token",
+                json={"token": self.token, **tokens},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return {"ok": True}
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+

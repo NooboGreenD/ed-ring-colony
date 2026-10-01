@@ -14,5 +14,6 @@ PATH=/usr/local/bin:/usr/bin:/bin
 */30 * * * * flock -n /opt/ed-ring-colony/jobs/progress.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once update-progress
 0 */6 * * * flock -n /opt/ed-ring-colony/jobs/cg.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once cg-check
 30 */6 * * * flock -n /opt/ed-ring-colony/jobs/eddn.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once eddn-cleanup
+40 3 * * * flock -n /opt/ed-ring-colony/jobs/colonisation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once colonisation-cleanup
 20 6 * * * flock -n /opt/ed-ring-colony/jobs/translation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once galnet-sync
 40 */6 * * * flock -n /opt/ed-ring-colony/jobs/translation.lock node --env-file=/opt/ed-ring-colony/.env.production /opt/ed-ring-colony/src/scripts/server-jobs.mjs --once translate

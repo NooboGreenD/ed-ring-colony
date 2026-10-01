@@ -195,6 +195,17 @@ class JournalParserTests(unittest.TestCase):
             )
         self.assertEqual(len(collector.events), sum(len(e) for e in expected) - collector.duplicates)
 
+    def test_construction_snapshots_do_not_carry_the_raw_event(self):
+        """Полная копия события журнала больше не отправляется на сайт.
+
+        `raw_event` дублировал `resources_total` (включая Name_Localised) —
+        из-за него таблица colonisation_events на сайте росла вчетверо быстрее
+        полезного объёма, а трафик загрузки удваивался. Серверу достаточно
+        полей snapshot'а.
+        """
+        for event in extract_construction_events(self.texts[0]) + ConstructionSnapshotCollector().events:
+            self.assertNotIn("raw_event", event)
+
     def test_duplicate_construction_snapshots_are_dropped(self):
         """Одинаковые подряд идущие snapshots стройки отбрасываются."""
         collector = ConstructionSnapshotCollector()

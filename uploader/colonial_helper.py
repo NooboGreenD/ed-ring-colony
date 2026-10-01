@@ -4783,6 +4783,74 @@ class ColonialHelperApp:
             return
         self._capi_fetch_and_upload()
 
+    def _capi_adopt_site_tokens(self) -> bool:
+        """Подтянуть привязку Frontier с сайта, если собственная истекла.
+
+        Refresh-токен Frontier живёт 25 дней, а сайт продлевает свою копию
+        расписанием `capi-sync`. Раньше после долгого перерыва приложение
+        молча теряло привязку, и пилоту приходилось каждый раз проходить вход
+        у Frontier заново («синхронизация постоянно через логин-пароль»).
+        Теперь приложение сначала пробует живые токены сайта.
+        """
+        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            return False
+        result = self.api_client.fetch_capi_tokens()
+        tokens = result.get("tokens") if result.get("ok") else None
+        if not isinstance(tokens, dict):
+            return False
+        access = str(tokens.get("access_token") or "")
+        refresh = str(tokens.get("refresh_token") or "")
+        if not access or not refresh:
+            return False
+        try:
+            expires_in = int(tokens.get("expires_in") or 14400)
+        except (TypeError, ValueError):
+            expires_in = 14400
+        obtained_at = None
+        expires_at_raw = str(tokens.get("expires_at") or "")
+        if expires_at_raw:
+            try:
+                expires_at = datetime.fromisoformat(expires_at_raw.replace("Z", "+00:00"))
+                obtained_at = max(0.0, expires_at.timestamp() - expires_in)
+            except ValueError:
+                obtained_at = None
+        try:
+            self.capi_auth.save({
+                "access_token": access,
+                "refresh_token": refresh,
+                "expires_in": expires_in,
+                "obtained_at": obtained_at or time.time(),
+                "audience": str(tokens.get("platform") or self.capi_auth.audience),
+            })
+        except Exception as exc:
+            self.log(f"Frontier CAPI: не удалось принять привязку с сайта: {exc}", "warn")
+            return False
+        self.log("Frontier CAPI: привязка подтянута с сайта (токены сайта свежее локальных)", "info")
+        return True
+
+    def _capi_push_tokens_to_site(self):
+        """Поделиться свежей привязкой с сайтом (один источник правды).
+
+        Сайт с полученными токенами будет продлевать их сам — и приложению, и
+        сайту хватит одной авторизации вместо двух независимых, умирающих
+        каждые 25 дней.
+        """
+        if not getattr(self, "api_client", None) or not self.api_client.is_connected:
+            return
+        tokens = self.capi_auth.load()
+        if not tokens.get("access_token") or not tokens.get("refresh_token"):
+            return
+        try:
+            self.api_client.push_capi_tokens({
+                "access_token": tokens.get("access_token"),
+                "refresh_token": tokens.get("refresh_token"),
+                "expires_in": tokens.get("expires_in"),
+                "obtained_at": tokens.get("obtained_at"),
+                "audience": tokens.get("audience") or self.capi_auth.audience,
+            })
+        except Exception as exc:
+            self.log(f"Frontier CAPI: не удалось передать привязку на сайт: {exc}", "warn")
+
     def _capi_fetch_and_upload(self):
         """Скачать профиль из CAPI и отправить его на сайт в досье."""
         if not getattr(self, "api_client", None) or not self.api_client.is_connected:
@@ -4790,32 +4858,55 @@ class ColonialHelperApp:
 
         self._capi_set_status("Загружаю досье из Frontier…")
 
+        def verify_once():
+            client = CompanionClient(self.capi_auth)
+            # verify() сам пишет рядом с токенами, подтверждена связь или
+            # нет, и возвращает разобранную причину отказа.
+            return client.verify()
+
         def worker():
             error = None
             hint = ""
             stats: dict = {}
             cmdr = ""
+            result = None
             try:
-                client = CompanionClient(self.capi_auth)
-                # verify() сам пишет рядом с токенами, подтверждена связь или
-                # нет, и возвращает разобранную причину отказа.
-                result = client.verify()
-                stats = result.get("stats") or {}
-                cmdr = str(result.get("cmdr") or "")
-                if not result.get("ok"):
-                    error = str(result.get("error") or "Frontier не отдал профиль")
-                    hint = str(result.get("hint") or "")
+                result = verify_once()
             except CompanionAuthError as exc:
                 error = str(exc)
                 hint = exc.hint
             except Exception as exc:
                 error = f"Сбой загрузки досье: {exc}"
 
+            # Свежий refresh-токен мог не пережить 25-дневный простой Frontier.
+            # Прежде чем просить пилота о повторном входе, пробуем копию
+            # привязки с сайта: сайт продлевает её своим расписанием.
+            if result is not None and not result.get("ok") and result.get("status") in (401, 403, 422):
+                if self._capi_adopt_site_tokens():
+                    try:
+                        result = verify_once()
+                    except CompanionAuthError as exc:
+                        result = None
+                        error = str(exc)
+                        hint = exc.hint
+                    except Exception as exc:
+                        result = None
+                        error = f"Сбой загрузки досье: {exc}"
+            if error is None and result is not None and not result.get("ok"):
+                error = str(result.get("error") or "Frontier не отдал профиль")
+                hint = str(result.get("hint") or "")
+            if result is not None and result.get("ok"):
+                stats = result.get("stats") or {}
+                cmdr = str(result.get("cmdr") or "")
+
             upload_error = None
             if not error and stats:
-                result = self.api_client.upload_pilot_stats(stats, cmdr or None)
-                if not result.get("ok"):
-                    upload_error = result.get("error")
+                # Живые токены есть и профиль получен: делимся ими с сайтом,
+                # чтобы дальше их продлевало расписание сайта.
+                self._capi_push_tokens_to_site()
+                result_upload = self.api_client.upload_pilot_stats(stats, cmdr or None)
+                if not result_upload.get("ok"):
+                    upload_error = result_upload.get("error")
 
             def done():
                 if error:
@@ -4869,7 +4960,6 @@ class ColonialHelperApp:
             bank = ev.get("Bank_Account") or {}
             exp = ev.get("Exploration") or {}
             exo = ev.get("Exobiology") or {}
-            combat = ev.get("Combat") or {}
             if "Current_Wealth" in bank:
                 self._pilot_stats["credits"] = bank["Current_Wealth"]
             if "Planets_Scanned_To_Level_2" in exp:
@@ -4884,8 +4974,15 @@ class ColonialHelperApp:
                 self._pilot_stats["bio_species_count"] = exo["Organic_Species_Encountered"]
             if "Organic_Data_Profits" in exo:
                 self._pilot_stats["bio_value_cr"] = exo["Organic_Data_Profits"]
-            if "Combat_Bond_Profits" in combat:
-                self._pilot_stats["mercenary_coins"] = combat["Combat_Bond_Profits"]
+            # «Монеты наёмников» — валюта Operations (июнь 2026): баланс лежит
+            # в Bank_Account.MercCoins_Current, игра ограничивает его 9999.
+            # Раньше сюда читали Combat.Combat_Bond_Profits — это накопленные
+            # КРЕДИТЫ за боевые облигации (сотни миллионов), и досье показывало
+            # аномальные «943 153 188 монет».
+            if "MercCoins_Current" in bank:
+                self._pilot_stats["mercenary_coins"] = bank["MercCoins_Current"]
+            elif "Mercenary_Coins" in bank:
+                self._pilot_stats["mercenary_coins"] = bank["Mercenary_Coins"]
         self.config["pilot_stats"] = self._pilot_stats
         self._maybe_sync_pilot_stats()
 

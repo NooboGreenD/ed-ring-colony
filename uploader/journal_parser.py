@@ -655,7 +655,13 @@ class ConstructionSnapshotCollector:
 
 
 def _construction_event_from(ev: dict, current_system: str = None) -> Optional[dict]:
-    """Собрать один snapshot стройплощадки из события журнала."""
+    """Собрать один snapshot стройплощадки из события журнала.
+
+    `raw_event` (полная копия события журнала) больше не отправляется: сайт
+    всё нужное берёт из полей выше и `resources_total`, а дублирующий JSON
+    удваивал и трафик, и размер строки в `colonisation_events` — именно из-за
+    него таблица росла вчетверо быстрее полезного объёма.
+    """
     system = ev.get("StarSystem") or current_system
     if not system:
         return None
@@ -670,7 +676,6 @@ def _construction_event_from(ev: dict, current_system: str = None) -> Optional[d
         "construction_id": ev.get("ConstructionID"),
         "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
         "resources_total": resources,
-        "raw_event": ev,
     }
 
 

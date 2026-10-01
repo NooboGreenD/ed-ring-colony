@@ -99,7 +99,7 @@ services:
       JOBS_STATE_FILE: /data/jobs-state.json
       # `galaxy-import` (ночной дамп Spansh → galaxy_systems) не входит в
       # список по умолчанию: добавьте его в JOBS_ENABLED осознанно.
-      JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,galnet-sync,translate}
+      JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate}
       GALNET_FEED_LIMIT: ${GALNET_FEED_LIMIT:-30}
       GALNET_TRANSLATE_LIMIT: ${GALNET_TRANSLATE_LIMIT:-10}
       JOBS_TRANSLATE_PASSES: ${JOBS_TRANSLATE_PASSES:-4}
@@ -141,7 +141,7 @@ services:
       MONITOR_SERVICES: web,jobs,monitor-agent
       # Preserve JOBS_ENABLED semantics: a missing value uses the normal list,
       # an explicitly empty value means no scheduler tasks are enabled.
-      MONITOR_JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,galnet-sync,translate}
+      MONITOR_JOBS_ENABLED: ${JOBS_ENABLED-capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate}
       MONITOR_JOBS_STATE_FILE: /monitor/jobs-state/jobs-state.json
       # Опциональный прямой read-only замер размера БД (pg_database_size).
       # Зеркалируется из DATABASE_URL/SUPABASE_DB_URL скриптом start-monitoring.sh:

@@ -140,6 +140,7 @@ docker compose --env-file .env.production logs --tail=100 jobs
 | `update-progress` | каждые 30 минут | `/api/cron/update-progress` |
 | `cg-check` | 00:00, 06:00, 12:00, 18:00 | `/api/cron/cg-check` |
 | `eddn-cleanup` | 00:30, 06:30, 12:30, 18:30 | `/api/cron/eddn-cleanup` |
+| `colonisation-cleanup` | 03:40 ежедневно (06:40 МСК) | `/api/cron/colonisation-cleanup` |
 | `galnet-sync` | 06:20 ежедневно (09:20 МСК) | `/api/galnet` + очередь переводов |
 | `translate` | 00:40, 06:40, 12:40, 18:40 | `/api/cron/translate` |
 

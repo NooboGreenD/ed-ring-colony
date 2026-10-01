@@ -10,6 +10,7 @@ export const JOBS = [
   { name: 'update-progress', period: 30 * MINUTE, offset: 0, path: '/api/cron/update-progress', timeout: 20 * MINUTE },
   { name: 'cg-check', period: 6 * HOUR, offset: 0, path: '/api/cron/cg-check', timeout: 5 * MINUTE },
   { name: 'eddn-cleanup', period: 6 * HOUR, offset: 30 * MINUTE, path: '/api/cron/eddn-cleanup', timeout: 5 * MINUTE },
+  { name: 'colonisation-cleanup', period: 24 * HOUR, offset: 3 * HOUR + 40 * MINUTE, path: '/api/cron/colonisation-cleanup', timeout: 10 * MINUTE },
   { name: 'galnet-sync', period: 24 * HOUR, offset: 6 * HOUR + 20 * MINUTE, path: '/api/galnet', timeout: 15 * MINUTE },
   { name: 'translate', period: 6 * HOUR, offset: 40 * MINUTE, path: '/api/cron/translate', timeout: 15 * MINUTE },
   // The full Spansh import is deliberately opt-in: it downloads a ~6 GiB dump.

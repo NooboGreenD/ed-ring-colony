@@ -523,7 +523,7 @@ test('телеметрия: Rank и Statistics попадают в pilot_stats',
     line({
       timestamp: '2026-09-14T10:01:00Z',
       event: 'Statistics',
-      Bank_Account: { Current_Wealth: 123456789, General_funds: 123456789 },
+      Bank_Account: { Current_Wealth: 123456789, General_funds: 123456789, MercCoins_Current: 5900 },
       Exobiology: { Organic_Data_Collected: 42, Organic_Species_Encountered: 17, Organic_Data_Profits: 999000 },
     }),
   ].join('\n'));
@@ -533,6 +533,45 @@ test('телеметрия: Rank и Statistics попадают в pilot_stats',
   assert.equal(telemetry.pilotStats.bio_samples_count, 42);
   assert.equal(telemetry.pilotStats.bio_species_count, 17);
   assert.equal(telemetry.pilotStats.bio_value_cr, 999000);
+  // «Монеты наёмников» — баланс Operations из Bank_Account (кап игры 9999),
+  // а не накопленные кредиты за боевые облигации.
+  assert.equal(telemetry.pilotStats.mercenary_coins, 5900);
+});
+
+test('телеметрия: монеты наёмников больше не читаются из Combat_Bond_Profits', () => {
+  // Регрессия «943 153 188 монет»: Combat_Bond_Profits — это кредиты за всю
+  // игру, и досье показывало их как жетоны.
+  const telemetry = parseJournalTelemetry([
+    jump(),
+    line({
+      timestamp: '2026-09-14T10:01:00Z',
+      event: 'Statistics',
+      Bank_Account: { Current_Wealth: 123456789 },
+      Combat: { Combat_Bond_Profits: 943153188 },
+    }),
+  ].join('\n'));
+  assert.equal(telemetry.pilotStats.mercenary_coins, undefined);
+});
+
+test('телеметрия: мусорные «монеты» от старого Helper не попадают в базу', async () => {
+  const writes = { stats: [] };
+  const svc = {
+    from() {
+      return {
+        insert(rows) { writes.stats.push(rows); return { error: null }; },
+        upsert(rows) { writes.stats.push(rows); return { error: null }; },
+        select() { return { eq() { return { data: [], error: null }; }, in() { return { data: [], error: null }; } }; },
+      };
+    },
+  };
+  await persistJournalTelemetry(svc, 'user-1', {
+    pilotStats: { credits: 5, mercenary_coins: 943153188, mercenary_rank: 3 },
+  });
+  const statsRow = writes.stats.flat().find((row) => 'mercenary_coins' in row || 'credits' in row);
+  assert.ok(statsRow, 'pilot_stats не записан вовсе');
+  assert.equal(statsRow.credits, 5);
+  assert.equal(statsRow.mercenary_rank, 3);
+  assert.equal(statsRow.mercenary_coins, undefined, 'мусорные миллионы записаны как жетоны');
 });
 
 test('один проход: доставки и телеметрия собираются вместе через hooks', () => {

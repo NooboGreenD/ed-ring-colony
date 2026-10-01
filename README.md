@@ -42,10 +42,18 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper). Десктопный Colonial Helper авторизуется сам и присылает
   профиль на сайт. Привязка фиксируется сразу после обмена кода на токены, поэтому недоступный CAPI
   (техобслуживание `418`, аккаунт без входа в игру) даёт «привязано, данных пока нет», а не потерю связи;
-  `/account/capi` показывает причину, срок действия токена и диагностику (`/api/capi/status`).
-  Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md)
+  `/account/capi` показывает причину, срок действия токена и диагностику (`/api/capi/status`). При
+  (пере)подключении выбирается платформа магазина (Frontier/Steam/Epic/Xbox/PSN), колбэк сверяет её с
+  фактической платформой токена, а Helper и сайт делят одну привязку через `/api/capi/token` — живой токен
+  продлевается расписанием и не умирает за 25 дней простоя приложения.
+  Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md), выбор платформы и общий токен —
+  [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md)
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
-  правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота
+  правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота. Повторы отсекает
+  `source_hash`, сырые события в базе не хранятся (только маркер типа), история состояний строек подрезается
+  задачей `colonisation-cleanup` (окно `COLONISATION_RETENTION_DAYS`), а «монеты наёмников» читаются из
+  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облиганий —
+  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md)
 - **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
 - **Projects** — Plan and track colonization projects with route optimization
 - **System Architect** — `/architect` (тестовый режим): планировщик застройки системы по образцу инструмента

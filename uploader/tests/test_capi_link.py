@@ -243,6 +243,24 @@ class VerifyLinkTests(unittest.TestCase):
         self.assertIn("Elite Dangerous", state["error"])
         self.assertIn("Steam", state["hint"])
 
+    def test_400_hint_names_the_actual_platform(self):
+        """«Выбрал EGS, а привязка всё равно frontier»: подсказка обязана
+        назвать платформу, которой Frontier выдал токен, и объяснить про
+        оставшуюся сессию на auth.frontierstore.net."""
+
+        def fake_get(url, headers=None, timeout=None):
+            if "/me" in url:
+                return _Resp(200, {"platform": "frontier"})
+            return _Resp(400, None, "Please Visit the store to purchase Elite: Dangerous.")
+
+        with mock.patch.object(companion_api.requests, "get", side_effect=fake_get):
+            result = CompanionClient(self.auth).verify()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["platform"], "frontier")
+        self.assertIn("frontier", result["hint"])
+        self.assertIn("auth.frontierstore.net", result["hint"])
+
     def test_empty_profile_is_not_a_success(self):
         with mock.patch.object(companion_api.requests, "get",
                                side_effect=lambda *a, **k: _Resp(200, {})):
@@ -449,6 +467,61 @@ class AppDossierFlowTests(unittest.TestCase):
         self.assertEqual(keys, {"auto", "frontier", "steam", "epic", "xbox", "psn"})
         for key, _label in self.module.AUDIENCE_LABELS:
             self.assertTrue(normalize_audience(key))
+
+    def test_mercenary_coins_come_from_bank_account_not_combat_bonds(self):
+        """Регрессия «943 153 188 монет»: жетоны Operations — это баланс
+        Bank_Account.MercCoins_Current (кап 9999), а не накопленные кредиты
+        за боевые облигации."""
+        self.app._maybe_sync_pilot_stats = mock.Mock()
+        self.app._update_pilot_stats_from_event({
+            "event": "Statistics",
+            "Bank_Account": {"Current_Wealth": 12345678, "MercCoins_Current": 5900},
+            "Combat": {"Combat_Bond_Profits": 943153188},
+        })
+        self.assertEqual(self.app._pilot_stats["mercenary_coins"], 5900)
+        self.assertEqual(self.app._pilot_stats["credits"], 12345678)
+
+    def test_dead_refresh_adopts_site_tokens_and_retries(self):
+        """Свежий токен умирает за 25 дней: приложение берёт копию с сайта,
+        а не отправляет пилота на повторный вход у Frontier."""
+        calls = {"profile": 0}
+
+        def fake_get(url, headers=None, timeout=None):
+            if "/profile" in url:
+                calls["profile"] += 1
+                if calls["profile"] == 1:
+                    return _Resp(401, None, "UNAUTHORIZED")
+                return _Resp(200, {"commander": {"name": "Hunter", "credits": 10}})
+            raise AssertionError(f"unexpected url: {url}")
+
+        self.app.api.fetch_capi_tokens.return_value = {
+            "ok": True,
+            "tokens": {
+                "access_token": "site-access", "refresh_token": "site-refresh",
+                "expires_in": 14400, "platform": "steam",
+            },
+        }
+        threads = []
+
+        class _Thread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+
+            def start(self):
+                threads.append(self._target)
+                self._target()
+
+        with mock.patch.object(companion_api.requests, "get", side_effect=fake_get), \
+             mock.patch.object(self.module.threading, "Thread", _Thread):
+            self.app._capi_fetch_and_upload()
+
+        # Токены сайта приняты локально и отправлены обратно после успеха.
+        tokens = self.app.capi_auth.load()
+        self.assertEqual(tokens["access_token"], "site-access")
+        self.assertEqual(tokens["refresh_token"], "site-refresh")
+        self.assertEqual(calls["profile"], 2, "повтор после принятия токенов сайта не случился")
+        self.app.api.push_capi_tokens.assert_called_once()
+        self.app.api.upload_pilot_stats.assert_called_once()
 
 
 if __name__ == "__main__":

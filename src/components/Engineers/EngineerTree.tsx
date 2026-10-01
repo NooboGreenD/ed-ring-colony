@@ -437,7 +437,10 @@ const treeCss = `
 .eng-card-focus { font-size: 10.5px; color: var(--muted); line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .eng-card-mark { width: 34px; flex: 0 0 34px; background: none; border: none; border-left: 1px solid var(--line); cursor: pointer; font-size: 15px; margin: 0; padding: 0; border-radius: 0; }
 .eng-card-mark:hover { background: rgba(255,255,255,.04); }
-.eng-details { min-width: 0; position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto; }
+/* Панель деталей «прилипает» НИЖЕ шапки сайта: .topbar — sticky, 52px,
+   z-index 50 (см. globals.css). Раньше top: 12px прятал верх панели под
+   шапкой, и при прокрутке карточка инженера «уезжала» под неё. */
+.eng-details { min-width: 0; position: sticky; top: 64px; max-height: calc(100vh - 76px); overflow-y: auto; z-index: 1; }
 .eng-details-head { display: flex; justify-content: space-between; gap: 10px; align-items: start; }
 .eng-details-head h2 { font-size: 15px; margin: 0 0 2px; }
 .eng-details-head button { border: 0; background: none; color: var(--muted); padding: 0 3px; margin: 0; font-size: 18px; }

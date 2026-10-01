@@ -78,7 +78,12 @@ const REASONS: Record<CapiLinkReason, CapiReasonText> = {
   },
   platform_not_entitled: {
     title: 'Игра не найдена у выбранного аккаунта',
-    hint: 'Если Elite Dangerous куплена в Steam или Epic Games Store (EGS), переподключите аккаунт и на странице Frontier нажмите кнопку Steam или Epic Games. Для покупки в Frontier Store выберите вход Frontier. При выборе «Авто» Frontier предложит все варианты.',
+    hint: 'Frontier выдал токен учётки, за которой не числится Elite Dangerous. '
+      + 'Переподключите аккаунт, выбрав платформу, где куплена игра (Steam или Epic Games Store, EGS). '
+      + 'Важно: на странице входа Frontier нужно нажать кнопку Steam/Epic, а не входить почтой — '
+      + 'если кнопки нет, сначала выйдите из аккаунта на auth.frontierstore.net '
+      + '(или откройте приватное окно браузера): оставшаяся сессия почтой сама подставляет '
+      + 'frontier-учётку вместо выбранной платформы.',
     retryAuth: true,
   },
   capi_maintenance: {

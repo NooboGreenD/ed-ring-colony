@@ -536,6 +536,41 @@ export default function AccountPage() {
       // Тот же набор данных, что отправляет Colonial Helper: иначе досье,
       // собранное браузером, всегда было бы беднее досье игрока с хелпером.
       let telemetryResult = { constructionInserted: 0, constructionDuplicates: 0, snapshotInserted: 0, systemScansInserted: 0, pilotStatsUpdated: false };
+      // Сколько пачек телеметрии не удалось отправить после всех повторов.
+      // Раньше сбой тихо писался в console.warn — пилот видел «загрузка
+      // успешна», а снимки строек и сканы тел пропадали: это и выглядело как
+      // «с сайта логи грузятся не полностью».
+      let telemetryFailedChunks = 0;
+      // Телеметрия с теми же повторами, что и доставки: обрыв сети, 429 и
+      // короткий 5xx у одного запроса не должны стоить всей пачки данных.
+      const postTelemetry = async (payload: Record<string, unknown>): Promise<any | null> => {
+        let lastError: unknown = null;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            const response = await authFetch('/api/logs/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ cmdr, deliveries: [], ...payload }),
+            });
+            const json = await response.json().catch(() => ({}));
+            if (response.ok) return json;
+            lastError = new Error(json.error || t('account.serverError'));
+            if ((response.status === 429 || response.status >= 500) && attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+            return null;
+          } catch (error) {
+            lastError = error;
+            if (attempt < 3) {
+              await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+              continue;
+            }
+          }
+        }
+        console.warn('[Account] telemetry upload failed:', lastError instanceof Error ? lastError.message : lastError);
+        return null;
+      };
       // Состояния стройки после `drain()` — по одному на изменение: сервер
       // всё равно схлопывает повторы по `source_hash`, но лишний трафик и
       // лишние пачки запросов никому не нужны.
@@ -556,38 +591,22 @@ export default function AccountPage() {
             phase: `${t('account.sendingBatch')} ${group.label} ${Math.floor(index / group.size) + 1}`,
             pct: 92,
           });
-          try {
-            const response = await authFetch('/api/logs/import', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ cmdr, deliveries: [], [group.field]: group.items.slice(index, index + group.size) }),
-            });
-            const json = await response.json().catch(() => ({}));
-            if (response.ok && json.telemetry) {
-              telemetryResult.constructionInserted += json.telemetry.constructionInserted ?? 0;
-              telemetryResult.constructionDuplicates += json.telemetry.constructionDuplicates ?? 0;
-              telemetryResult.snapshotInserted += json.telemetry.snapshotInserted ?? 0;
-              telemetryResult.systemScansInserted += json.telemetry.systemScansInserted ?? 0;
-            }
-          } catch (error) {
-            // Телеметрия — приложение к тоннажу: её потеря не должна
-            // выглядел как упавшая загрузка доставок.
-            console.warn('[Account] telemetry upload failed:', (error as Error).message);
+          // Телеметрия — приложение к тоннажу: её потеря не должна выглядел
+          // как упавшая загрузка доставок, но и молчать о ней нельзя.
+          const json = await postTelemetry({ [group.field]: group.items.slice(index, index + group.size) });
+          if (json?.telemetry) {
+            telemetryResult.constructionInserted += json.telemetry.constructionInserted ?? 0;
+            telemetryResult.constructionDuplicates += json.telemetry.constructionDuplicates ?? 0;
+            telemetryResult.snapshotInserted += json.telemetry.snapshotInserted ?? 0;
+            telemetryResult.systemScansInserted += json.telemetry.systemScansInserted ?? 0;
+          } else if (group.items.length > 0) {
+            telemetryFailedChunks += 1;
           }
         }
       }
       if (pilotStats) {
-        try {
-          const response = await authFetch('/api/logs/import', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmdr, deliveries: [], pilotStats }),
-          });
-          const json = await response.json().catch(() => ({}));
-          if (response.ok) telemetryResult.pilotStatsUpdated = Boolean(json.telemetry?.pilotStatsUpdated);
-        } catch (error) {
-          console.warn('[Account] pilot stats upload failed:', (error as Error).message);
-        }
+        const json = await postTelemetry({ pilotStats });
+        if (json) telemetryResult.pilotStatsUpdated = Boolean(json.telemetry?.pilotStatsUpdated);
       }
 
       setSummary({
@@ -601,6 +620,7 @@ export default function AccountPage() {
         parserStats: allStats,
         telemetry: telemetryResult,
         telemetryStats,
+        telemetryFailedChunks,
       });
     } catch (error) {
       console.error('[Account] Journal import failed:', error);
@@ -1079,6 +1099,13 @@ export default function AccountPage() {
                     </>
                   )}
                 </div>
+              )}
+              {summary.telemetryFailedChunks > 0 && (
+                <p style={{ color: '#e74c3c', fontSize: 12, margin: '10px 0 0' }}>
+                  Часть телеметрии ({summary.telemetryFailedChunks} пачек: снимки строек, сканы тел или
+                  статистика пилота) не отправилась после трёх попыток — загрузите журнал ещё раз,
+                  повторы по этим данным безопасны.
+                </p>
               )}
               {summary.deferred > 0 && (
                 <p style={{ color: '#f39c12', fontSize: 12, margin: '10px 0 0' }}>

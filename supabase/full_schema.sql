@@ -11429,3 +11429,79 @@ ALTER TABLE public.squadrons
 COMMENT ON COLUMN public.squadrons.logo_url IS 'Публичный логотип эскадрильи';
 COMMENT ON COLUMN public.squadrons.banner_url IS 'Фоновое изображение шапки эскадрильи';
 COMMENT ON COLUMN public.squadrons.motto IS 'Короткий девиз на публичной странице';
+
+-- ┌────────────────────────────────────────────────────────────────┐
+-- │ MIGRATION: 20261008000000_colonisation_events_slim_retention.sql │
+-- └────────────────────────────────────────────────────────────────┘
+
+-- ─────────────────────────────────────────────────────────────────────────
+-- colonisation_events: маркер вместо сырого события + политика хранения
+-- ─────────────────────────────────────────────────────────────────────────
+--
+-- `raw_event` хранил полную копию события журнала (включая ResourcesRequired
+-- и Name_Localised), дублируя `resources_total` — таблица на ~3 ГБ полезных
+-- состояний вырастала до 12+. Новый код пишет только {"event":"…"}. На живой
+-- базе старые строки худеют миграцией; в свежей схеме колонка сразу
+-- создаётся с комментарием-договором.
+--
+-- `colonisation_events_prune(days)` — политика хранения (вызывается задачей
+-- /api/cron/colonisation-cleanup): удаляет вклады ColonisationContribution
+-- (их никто не читает), состояния старше окна (кроме последнего снимка
+-- площадки — он нужен Raven) и старые снимки construction_depot_snapshots.
+
+COMMENT ON COLUMN public.colonisation_events.raw_event IS
+  'Маркер типа события ({"event":"ColonisationConstructionDepot"}). Полное событие журнала больше не хранится: всё нужное лежит в колонках и resources_total.';
+
+UPDATE public.pilot_stats
+   SET mercenary_coins = 0
+ WHERE mercenary_coins IS NOT NULL
+   AND mercenary_coins > 100000;
+
+CREATE OR REPLACE FUNCTION public.colonisation_events_prune(
+  p_retain_days integer DEFAULT 60
+)
+RETURNS TABLE(deleted_events bigint, deleted_snapshots bigint, deleted_contributions bigint)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  cutoff timestamptz;
+  events_deleted bigint;
+  snapshots_deleted bigint;
+  contributions_deleted bigint;
+BEGIN
+  IF p_retain_days IS NULL OR p_retain_days < 7 THEN
+    cutoff := now() - interval '60 days';
+  ELSE
+    cutoff := now() - make_interval(days => p_retain_days);
+  END IF;
+
+  DELETE FROM public.colonisation_events
+   WHERE coalesce(raw_event->>'event', '') = 'ColonisationContribution';
+  GET DIAGNOSTICS contributions_deleted = ROW_COUNT;
+
+  DELETE FROM public.colonisation_events
+   WHERE event_timestamp < cutoff
+     AND id NOT IN (
+       SELECT latest.id
+         FROM (
+           SELECT DISTINCT ON (user_id, market_id) id
+             FROM public.colonisation_events
+            WHERE market_id IS NOT NULL
+            ORDER BY user_id, market_id, event_timestamp DESC
+         ) AS latest
+     );
+  GET DIAGNOSTICS events_deleted = ROW_COUNT;
+
+  DELETE FROM public.construction_depot_snapshots
+   WHERE snapshot_at < cutoff;
+  GET DIAGNOSTICS snapshots_deleted = ROW_COUNT;
+
+  RETURN QUERY SELECT events_deleted, snapshots_deleted, contributions_deleted;
+END;
+$$;
+
+COMMENT ON FUNCTION public.colonisation_events_prune(integer) IS
+  'Политика хранения colonisation_events: удалить вклады, состояния старше N дней (кроме последнего снимка площадки) и старые снимки прогресса. Вызывается /api/cron/colonisation-cleanup.';
+
+CREATE INDEX IF NOT EXISTS idx_colonisation_events_user_market_time
+  ON public.colonisation_events (user_id, market_id, event_timestamp DESC);
