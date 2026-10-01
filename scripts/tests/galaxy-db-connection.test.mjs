@@ -87,6 +87,21 @@ test('неверный пароль не повторяется и не лечи
   assert.ok(!failure.message.includes('s3cr3t'));
 });
 
+test('клиентский connect-timeout называет занятую базу раньше firewall', () => {
+  // «timeout expired» — это истёкший connectionTimeoutMillis самого клиента.
+  // Хост при этом уже отрезолвился, т.е. сеть и настройки на месте; чаще всего
+  // Postgres просто занят (импорт, pg_dump, диск). Старый текст сразу посылал
+  // оператора проверять firewall, которого никто не трогал.
+  const failure = describePgConnectionError(new Error('timeout expired'), DB_URL);
+  assert.equal(failure.kind, 'timeout');
+  assert.equal(failure.retryable, true, 'занятая база — переходное состояние');
+  assert.match(failure.message, /db:5432/, 'адрес назван');
+  assert.match(failure.message, /заняты|импорт|бэкап/, 'первая гипотеза — нагрузка');
+  assert.match(failure.message, /повторите проверку/, 'есть действие без правки конфига');
+  assert.match(failure.message, /firewall/i, 'стабильная ошибка всё ещё ведёт к firewall/маршруту');
+  assert.ok(!failure.message.includes('s3cr3t'), 'пароль не уходит в интерфейс');
+});
+
 test('строка без URL не ломает диагностику', () => {
   const failure = describePgConnectionError(dnsError(), 'host=db port=5432');
   assert.equal(failure.kind, 'dns');
@@ -391,8 +406,10 @@ test('без DATABASE_URL проверка говорит про PostgREST', asy
   assert.equal(check.backend, null);
 });
 
-test('невидимый хост диагностируется одной попыткой', async () => {
+test('невидимый хост диагностируется быстро, без полного расписания повторов импорта', async () => {
   // Порт 1 на loopback отвечает ECONNREFUSED мгновенно — реальный сокет, без stub.
+  // Попыток две (вторая прощает Postgres, занятый импортом/бэкапом), но обе
+  // мгновенные: мёртвый порт не растягивает проверку на расписание импорта.
   const started = Date.now();
   const check = await checkGalaxyDbConnection({
     env: {

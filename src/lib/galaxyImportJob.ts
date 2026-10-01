@@ -678,8 +678,14 @@ export interface GalaxyDbCheck {
  *
  * The production image contains no `scripts/`, so `--check-db` on the CLI is not
  * available there — and a check from the host would not see what the container
- * sees. This is the accurate answer to «getaddrinfo EAI_AGAIN db»: one attempt,
- * a short timeout, no retries, and the same diagnosis the import itself uses.
+ * sees. This is the accurate answer to «getaddrinfo EAI_AGAIN db»: a short
+ * timeout and the same diagnosis the import itself uses.
+ *
+ * Two attempts, not one: a 5-second one-shot used to report «timeout expired —
+ * похоже на firewall» the moment Postgres was merely busy (a running import,
+ * pg_dump, heavy disk I/O), sending the operator to debug settings nobody had
+ * touched. A dead route still fails both attempts; a momentary stall passes
+ * the second one. DNS/refused failures stay fast — they abort in milliseconds.
  */
 export async function checkGalaxyDbConnection(
   options: { env?: NodeJS.ProcessEnv; connectionTimeoutMillis?: number } = {},
@@ -707,8 +713,9 @@ export async function checkGalaxyDbConnection(
   try {
     const client = await connectPgClient({
       connectionString,
-      attempts: 1,
-      connectionTimeoutMillis: options.connectionTimeoutMillis ?? 5_000,
+      attempts: 2,
+      backoffMs: [2_000],
+      connectionTimeoutMillis: options.connectionTimeoutMillis ?? 10_000,
     });
     try {
       const result = await client.query('SELECT current_database() AS db');
