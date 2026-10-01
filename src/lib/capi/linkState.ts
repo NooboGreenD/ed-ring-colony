@@ -26,6 +26,14 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 export const CAPI_STATE_COOKIE = 'capi_state';
 export const CAPI_PKCE_COOKIE = 'capi_pkce';
 export const CAPI_LINK_COOKIE = 'capi_link';
+/**
+ * Какую платформу (`audience`) пилот выбрал на старте потока. Не секрет —
+ * нужна колбэку для диагностики: Frontier может выдать токен ДРУГОЙ
+ * платформы (например, когда на auth.frontierstore.net осталась сессия
+ * почтой), и без сверки «запрошено/получено» пилот не понимает, почему
+ * «выбрал EGS, а привязка всё равно frontier».
+ */
+export const CAPI_PLATFORM_COOKIE = 'capi_platform';
 
 /** Сколько живёт начатый поток авторизации (сек). Вход у Frontier не быстрый. */
 export const CAPI_FLOW_TTL_SECONDS = 30 * 60;
@@ -152,6 +160,14 @@ export interface CapiRedirectOptions {
   detail?: string | null;
   binding?: string | null;
   cmdr?: string | null;
+  /**
+   * Платформа, которую пилот выбирал при подключении (`auto` тоже
+   * нормализуется в список). Страница подставит её в выбор платформы для
+   * повторного входа.
+   */
+  platform?: string | null;
+  /** Какая платформа реально выдала токен (по `/me`). */
+  actualPlatform?: string | null;
 }
 
 /** Куда вернуть пилота после колбэка, с понятным набором параметров. */
@@ -162,5 +178,7 @@ export function buildCapiRedirect(siteUrl: string, options: CapiRedirectOptions)
   if (options.detail) target.searchParams.set('detail', options.detail.slice(0, 300));
   if (options.binding) target.searchParams.set('binding', options.binding);
   if (options.cmdr) target.searchParams.set('cmdr', options.cmdr);
+  if (options.platform) target.searchParams.set('platform', options.platform);
+  if (options.actualPlatform) target.searchParams.set('actualPlatform', options.actualPlatform);
   return target;
 }

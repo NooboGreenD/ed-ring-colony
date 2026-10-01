@@ -36,7 +36,12 @@ export interface ConstructionSnapshotEvent {
   construction_id: string | null;
   construction_progress: number | null;
   resources_total: ConstructionResourceRow[];
-  raw_event: Record<string, unknown>;
+  /**
+   * Полное событие журнала присылали старые клиенты. Сервер его больше не
+   * хранит (в базе достаточно `resources_total` и колонок), поэтому браузерный
+   * коллектор поле не заполняет; старым Helper'ам это обратно совместимо.
+   */
+  raw_event?: Record<string, unknown>;
 }
 
 export interface SystemScanRow {
@@ -87,6 +92,24 @@ export interface PilotStats {
   bio_species_count?: number;
   bio_value_cr?: number;
   mercenary_coins?: number;
+}
+
+/**
+ * Потолок «монет наёмников» с запасом. Игра (обновление Operations, июнь 2026)
+ * ограничивает баланс жетонов 9999. Всё, что заметно больше, — не жетоны, а
+ * мусор от старых клиентов: те брали `Statistics.Combat.Combat_Bond_Profits`,
+ * то есть накопленные за всю игру кредиты (сотни миллионов). Такое значение в
+ * `pilot_stats` не пишем.
+ */
+export const MERCENARY_COINS_LIMIT = 100_000;
+
+/**
+ * Приемлемо ли значение «монет наёмников» для записи. Отбрасывает данные
+ * старых сборок Colonial Helper, которые путали жетоны с кредитами.
+ */
+export function isPlausibleMercenaryCoins(value: unknown): boolean {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= MERCENARY_COINS_LIMIT;
 }
 
 export interface JournalTelemetryStats {
@@ -233,7 +256,6 @@ export class TelemetryCollector {
         construction_id: rawInteger(line, 'ConstructionID'),
         construction_progress: num(event.ConstructionProgress ?? event.Progress),
         resources_total: resources,
-        raw_event: event,
       };
       // Журнал пишет это событие каждые несколько секунд, пока игрок стоит у
       // площадки: в наборе остаётся только реально изменившееся состояние.
@@ -341,7 +363,6 @@ export class TelemetryCollector {
       const bank = (event.Bank_Account ?? {}) as Record<string, unknown>;
       const exploration = (event.Exploration ?? {}) as Record<string, unknown>;
       const exo = (event.Exobiology ?? {}) as Record<string, unknown>;
-      const combat = (event.Combat ?? {}) as Record<string, unknown>;
       // Имена полей `Statistics` менялись между патчами игры (и у EDMC есть
       // свои синонимы), поэтому для каждого счётчика — список кандидатов.
       const assign = (target: keyof PilotStats, source: Record<string, unknown>, keys: string | string[]) => {
@@ -360,7 +381,12 @@ export class TelemetryCollector {
       assign('bio_samples_count', exo, ['Organic_Data_Count', 'Organic_Data_Collected']);
       assign('bio_species_count', exo, ['Organic_Species_Encountered', 'Total_Species_Encountered']);
       assign('bio_value_cr', exo, ['Organic_Data_Profits', 'Total_Profits']);
-      assign('mercenary_coins', combat, ['Combat_Bond_Profits', 'Bonds_Performance']);
+      // «Монеты наёмников» — валюта обновления Operations (30.06.2026), журнал
+      // пишет её баланс в `Bank_Account.MercCoins_Current` (кап игры — 9999).
+      // Раньше поле брали из `Combat.Combat_Bond_Profits` — это накопленные за
+      // всю игру КРЕДИТЫ за боевые облигации (сотни миллионов), и досье
+      // показывало «943 153 188 монет» у пилота с парой тысяч жетонов.
+      assign('mercenary_coins', bank, ['MercCoins_Current', 'Mercenary_Coins']);
       return;
     }
 
@@ -783,7 +809,12 @@ export async function persistJournalTelemetry(
     ] as const;
     for (const key of numericKeys) {
       const value = typeof source[key] === 'number' ? source[key] : Number(source[key]);
-      if (Number.isFinite(value as number)) row[key] = Math.max(0, Math.trunc(value as number));
+      if (!Number.isFinite(value as number)) continue;
+      // Старые сборки Helper'а присылали в `mercenary_coins` боевые облигации
+      // в кредитах (сотни миллионов). Жетоны в игре ограничены — всё, что
+      // выше потолка, в базу не пишем.
+      if (key === 'mercenary_coins' && !isPlausibleMercenaryCoins(value)) continue;
+      row[key] = Math.max(0, Math.trunc(value as number));
     }
     if (source.exploration_stats && typeof source.exploration_stats === 'object') {
       row.exploration_stats = source.exploration_stats;

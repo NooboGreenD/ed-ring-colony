@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import { createServiceClient, authFromRequest } from '@/lib/supabaseServer';
 import type { ParsedColonisationDepot, ParsedColonisationContribution } from '@/lib/journalParser';
 import {
-  contributionEventRow,
   depotEventRow,
   latestDepotEvents,
   persistColonisationEvents,
@@ -162,11 +161,14 @@ export async function POST(req: Request) {
     }));
     const snapshotCount = await insertSnapshots(svc, snapshots);
 
-    const contributionRows = contributionEvents
-      .map((ev) => contributionEventRow(user.id, ev, importId))
-      .filter((row): row is NonNullable<typeof row> => row !== null);
-    const contributionWrite = await persistColonisationEvents(svc, contributionRows);
-    const insertedContributions = contributionWrite.inserted;
+    // Вклады (`ColonisationContribution`) в `colonisation_events` больше НЕ
+    // пишем. Строку не читает ни один потребитель (тоннаж командира живёт в
+    // `deliveries` с собственным идемпотентным `source_hash`), а множились
+    // они по каждой позиции груза — это была заметная доля роста таблицы
+    // до 12+ ГБ. События по-прежнему считаем и показываем в предпросмотре
+    // страницы журнала, чтобы пилот видел, что парсер их нашёл.
+    const insertedContributions = 0;
+    const skippedContributions = contributionEvents.length;
 
     // Old clients issue a single request without `finalize`; preserve their
     // completed status while a new client explicitly closes the final chunk.
@@ -184,12 +186,14 @@ export async function POST(req: Request) {
       importId,
       insertedDepots,
       insertedContributions,
+      // Вклады не пишутся (см. комментарий выше) — их видно отдельным числом.
+      skippedContributions,
       // Сколько строк оказалось повтором уже сохранённых состояний: раньше
       // такие повторы молча дописывались в таблицу.
       duplicateDepots: depotWrite.duplicates,
-      duplicateContributions: contributionWrite.duplicates,
+      duplicateContributions: 0,
       snapshotCount,
-      totalEvents: insertedDepots + insertedContributions,
+      totalEvents: insertedDepots,
       complete,
     });
   } catch (err) {

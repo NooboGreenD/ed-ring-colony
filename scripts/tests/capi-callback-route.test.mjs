@@ -258,15 +258,15 @@ function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, journal = J
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
 
-function callbackRequest(dir, { state = 'state-123', cookieState = 'state-123', code = 'auth-code' } = {}) {
+function callbackRequest(dir, { state = 'state-123', cookieState = 'state-123', code = 'auth-code', platformCookie = null } = {}) {
   void dir;
   const url = new URL('https://colony.test/api/capi/callback');
   if (code) url.searchParams.set('code', code);
   if (state) url.searchParams.set('state', state);
+  const cookies = [`capi_state=${cookieState}`, 'capi_pkce=verifier%3D', 'sb-access-token=abc'];
+  if (platformCookie) cookies.push(`capi_platform=${platformCookie}`);
   return new Request(url, {
-    headers: cookieState
-      ? { cookie: `capi_state=${cookieState}; capi_pkce=verifier%3D; sb-access-token=abc` }
-      : {},
+    headers: cookieState ? { cookie: cookies.join('; ') } : {},
   });
 }
 
@@ -349,6 +349,29 @@ maybe('400 о неверной платформе оставляет токен,
     assert.equal(mod.db.tables.capi_tokens[0].is_active, false,
       'неверная платформа не должна выглядеть рабочей');
     assert.match(mod.db.tables.capi_tokens[0].last_error, /купленную|CAPI/i);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('400 при выбранном EGS объясняет, что токен выдан платформой frontier', async () => {
+  const { mod, dir } = await buildRoutes();
+  // /me говорит platform: frontier, хотя пилот выбирал epic — на странице
+  // Frontier осталась сессия почтой. Раньше колбэк это скрывал, и пилот по
+  // кругу переподключался «с той же платформой».
+  const frontier = fakeFrontier({ profileStatus: 400 });
+  try {
+    const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
+    const location = new URL(res.headers.get('location'));
+
+    assert.equal(location.searchParams.get('status'), 'partial');
+    assert.equal(location.searchParams.get('reason'), 'platform_not_entitled');
+    assert.equal(location.searchParams.get('platform'), 'epic', 'выбранная платформа возвращается странице');
+    assert.equal(location.searchParams.get('actualPlatform'), 'frontier');
+    assert.match(location.searchParams.get('detail'), /epic/i);
+    assert.match(location.searchParams.get('detail'), /frontier/i);
+    assert.match(location.searchParams.get('detail'), /auth\.frontierstore\.net/);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });

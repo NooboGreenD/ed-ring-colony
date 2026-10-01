@@ -40,9 +40,27 @@ export type ColonisationEventRow = {
   construction_id: string | null;
   construction_progress: number | null;
   resources_total: unknown[];
-  raw_event: Record<string, unknown>;
+  /**
+   * Минимальный маркер события (`{"event":"…"}`). Раньше сюда копировался
+   * весь сырой JSON журнала — вместе с `ResourcesRequired`, который и так
+   * лежит в `resources_total`, и с `Name_Localised` каждого ресурса. Строка
+   * выходила вдвое тяжелее, а колонку `raw_event` не читает никто, кроме
+   * диагностики `raw_event->>'event'` (какой это тип события). Поэтому от
+   * сырой нагрузки отказались: таблица на 3 ГБ «полезных» состояний
+   * раздувалась до 12+ ГБ именно из-за этого дубля.
+   */
+  raw_event: Record<string, unknown> | null;
   source_hash: string;
 };
+
+/**
+ * Слиток сырого события, который реально нужен в базе: только тип события.
+ * Все читатели `raw_event` (maintenance-диагностика, различение вкладов и
+ * снимков) смотрят исключительно на `raw_event->>'event'`.
+ */
+export function slimRawEvent(eventName: string): Record<string, unknown> {
+  return { event: eventName };
+}
 
 /**
  * Версия правил отпечатка. Меняется вместе с содержимым ключа: старые строки
@@ -227,7 +245,6 @@ export function depotEventRow(
     ? 100
     : (event.constructionProgress == null ? null : asNumber(event.constructionProgress));
   const resources = Array.isArray(event.resourcesRequired) ? event.resourcesRequired : [];
-  const rawEvent = event as unknown as Record<string, unknown>;
 
   return {
     user_id: userId,
@@ -239,9 +256,11 @@ export function depotEventRow(
     construction_id: constructionId || null,
     construction_progress: progress == null ? null : Math.min(100, Math.max(0, progress)),
     resources_total: resources,
-    raw_event: rawEvent,
+    raw_event: slimRawEvent(
+      asText((event as unknown as Record<string, unknown>).event) || DEPOT_EVENT,
+    ),
     source_hash: colonisationSourceHash({
-      eventKind: asText((rawEvent as Record<string, unknown>).event) || DEPOT_EVENT,
+      eventKind: asText((event as unknown as Record<string, unknown>).event) || DEPOT_EVENT,
       systemName,
       marketId,
       constructionId,
@@ -272,7 +291,6 @@ export function contributionEventRow(
     providedAmount: amount,
     payment: 0,
   }];
-  const rawEvent = event as unknown as Record<string, unknown>;
 
   return {
     user_id: userId,
@@ -284,7 +302,7 @@ export function contributionEventRow(
     construction_id: null,
     construction_progress: null,
     resources_total: resources,
-    raw_event: rawEvent,
+    raw_event: slimRawEvent('ColonisationContribution'),
     source_hash: colonisationSourceHash({
       eventKind: 'ColonisationContribution',
       systemName,
@@ -318,9 +336,15 @@ export function telemetryConstructionRow(
     event.construction_complete === true || event.ConstructionComplete === true,
   );
   const resources = Array.isArray(event.resources_total) ? event.resources_total : [];
-  const rawEvent = event.raw_event && typeof event.raw_event === 'object'
-    ? event.raw_event as Record<string, unknown>
-    : event;
+  // Старые сборки Helper'а и браузерный загрузчик присылают `raw_event` с
+  // полной копией события журнала. Полезной нагрузки в нём нет (всё нужное
+  // уже разложено по колонкам и `resources_total`), поэтому на запись берём
+  // только маркер типа события — присланное сырье просто игнорируем.
+  const eventName = asText(
+    (event.raw_event && typeof event.raw_event === 'object'
+      ? (event.raw_event as Record<string, unknown>).event
+      : event.event) as unknown,
+  ) || DEPOT_EVENT;
 
   return {
     user_id: userId,
@@ -332,9 +356,9 @@ export function telemetryConstructionRow(
     construction_id: constructionId || null,
     construction_progress: progress,
     resources_total: resources,
-    raw_event: rawEvent,
+    raw_event: slimRawEvent(eventName),
     source_hash: colonisationSourceHash({
-      eventKind: asText(rawEvent.event) || DEPOT_EVENT,
+      eventKind: eventName,
       systemName,
       marketId,
       constructionId,

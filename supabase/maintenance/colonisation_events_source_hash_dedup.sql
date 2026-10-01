@@ -146,7 +146,9 @@ WHERE coalesce(btrim(events.system_name), '') = ''
 ON CONFLICT (id) DO NOTHING;
 
 -- (Необязательно) 1d. Вклад командира: тоннаж и так лежит в `deliveries`,
---     а эти строки никто не читает. Уберите комментарий, если согласны.
+--     а эти строки никто не читает. С 01.10.2026 они больше не пишутся вовсе,
+--     а накопленные удаляет функция colonisation_events_prune() (миграция
+--     20261008000000…) — вручную копировать их не нужно.
 -- INSERT INTO public.colonisation_events_dedup_backup (id, row_data, reason)
 -- SELECT id, to_jsonb(colonisation_events), 'contribution-row'
 -- FROM public.colonisation_events
@@ -204,3 +206,32 @@ ANALYZE public.colonisation_events;
 
 -- Размер таблицы и индексов — чтобы видеть эффект разбора:
 SELECT pg_size_pretty(pg_total_relation_size('public.colonisation_events')) AS total_size;
+
+
+-- ── 4. Худеем и запускаем политику хранения (после миграции 20261008000000) ─
+--
+-- Миграция 20261008000000_colonisation_events_slim_retention.sql:
+--   • заменяет в старых строках raw_event на маркер {"event":"…"} —
+--     полное событие журнала (дубль resources_total + Name_Localised)
+--     больше не хранится;
+--   • создаёт colonisation_events_prune(days): вклады — целиком, состояния
+--     старше окна — кроме последнего снимка площадки, старые снимки
+--     прогресса — тоже вон.
+-- Дальше чистку делает задача /api/cron/colonisation-cleanup (ежедневно).
+
+-- Один прогон вручную (60 дней истории; вернёт число удалённых строк):
+SELECT * FROM public.colonisation_events_prune(60);
+
+-- Освободить место ПОСЛЕ чистки. VACUUM (ANALYZE) не блокирует таблицу, но
+-- файл на диске не сжимает — лишь помечает место пригодным для повторного
+-- использования, т.е. рост ОСТАНОВИТСЯ, а цифра «12 ГБ» — нет:
+VACUUM (ANALYZE) public.colonisation_events;
+VACUUM (ANALYZE) public.construction_depot_snapshots;
+
+-- Сжать файл раз и навсегда можно только VACUUM FULL (эксклюзивная блокировка
+-- таблицы на минуты — только в тихое окно, загрузка журналов в это время
+-- будет ждать) или pg_repack (без длительной блокировки, если установлен):
+-- VACUUM FULL public.colonisation_events;
+-- VACUUM FULL public.construction_depot_snapshots;
+
+SELECT pg_size_pretty(pg_total_relation_size('public.colonisation_events')) AS total_size_after;

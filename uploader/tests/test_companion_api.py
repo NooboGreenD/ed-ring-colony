@@ -260,13 +260,13 @@ class ProfileToStatsTests(unittest.TestCase):
         "rank": {"combat": 5, "trade": 3, "explore": 4, "soldier": 7,
                  "exobiologist": 2, "empire": 1, "federation": 8},
         "statistics": {
-            "bank_account": {"current_wealth": 999},
+            "bank_account": {"current_wealth": 999, "merc_coins_current": 3141},
             "exploration": {"systems_scanned": 1200, "planets_scanned_to_level_3": 300,
                             "first_footfalls": 77, "efficiency_score": 99,
                             "highest_payout": 500000},
             "exobiology": {"organic_data_count": 55, "organic_species_encountered": 18,
                            "organic_data_profits": 12000000},
-            "combat": {"combat_bond_profits": 314159},
+            "combat": {"combat_bond_profits": 943153188},
         },
         "ship": "Type-9 Heavy",
         "ship_name": "Mule",
@@ -282,7 +282,9 @@ class ProfileToStatsTests(unittest.TestCase):
         self.assertEqual(stats["mercenary_rank"], 7)
         self.assertEqual(stats["exobiologist_rank"], 2)
         self.assertEqual(stats["combat_rank"], 5)
-        self.assertEqual(stats["mercenary_coins"], 314159)
+        # Монеты наёмников — баланс Operations из bank_account, а НЕ боевые
+        # облигации в кредитах (combat_bond_profits, 943 млн в фикстуре).
+        self.assertEqual(stats["mercenary_coins"], 3141)
 
     def test_maps_bio_and_exploration(self):
         stats = profile_to_stats(self.PROFILE)

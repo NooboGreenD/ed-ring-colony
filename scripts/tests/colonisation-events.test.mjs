@@ -120,6 +120,27 @@ test('строки без системы или метки времени не �
   assert.equal(telemetryConstructionRow('user-1', telemetryEvent({ timestamp: null })), null);
 });
 
+test('сырое событие журнала не хранится: только маркер типа', () => {
+  // Полная копия события дублировала resources_total (включая
+  // Name_Localised) и раздувала таблицу вчетверо. Читатели raw_event
+  // смотрят только на raw_event->>'event'.
+  const fromHelper = telemetryConstructionRow('user-1', telemetryEvent({
+    raw_event: { event: 'ColonisationConstructionDepot', ResourcesRequired: [{ Name: 'x', Name_Localised: 'икс', RequiredAmount: 1, ProvidedAmount: 1 }] },
+  }));
+  const fromSite = depotEventRow('user-1', parsedDepot());
+  const fromContribution = contributionEventRow('user-1', {
+    timestamp: TIMESTAMP, systemName: 'Delta Velorum', marketId: '3951663874', commodity: 'steel', amount: 10,
+  });
+
+  for (const row of [fromHelper, fromSite, fromContribution]) {
+    assert.ok(row);
+    assert.deepEqual(row.raw_event, { event: row.raw_event.event });
+    assert.ok(JSON.stringify(row.raw_event).length < 120, 'маркер события обязан быть крошечным');
+  }
+  assert.equal(fromHelper.raw_event.event, 'ColonisationConstructionDepot');
+  assert.equal(fromContribution.raw_event.event, 'ColonisationContribution');
+});
+
 test('отпечаток состояния стройки различает изменения ресурсов', () => {
   const base = depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 1 }]);
   const provided = depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 2 }]);

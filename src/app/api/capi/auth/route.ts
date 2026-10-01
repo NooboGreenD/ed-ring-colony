@@ -5,6 +5,7 @@ import { getSiteUrl } from '@/lib/siteUrl';
 import {
   CAPI_FLOW_TTL_SECONDS,
   CAPI_LINK_COOKIE,
+  CAPI_PLATFORM_COOKIE,
   CAPI_PKCE_COOKIE,
   CAPI_STATE_COOKIE,
   buildCapiRedirect,
@@ -92,6 +93,11 @@ export async function GET(req: NextRequest) {
   // Верификатор — одноразовый секрет этого потока: только cookie, никогда не
   // в URL и не в localStorage.
   response.cookies.set(CAPI_PKCE_COOKIE, pkce.verifier, cookieOptions);
+  // Выбранная платформа — не секрет, но и терять её нельзя: колбэк сравнит
+  // «что просили» с тем, что реально выдал Frontier (частый случай —
+  // оставшаяся сессия почтой на auth.frontierstore.net выдаёт frontier-токен
+  // вместо Steam/Epic).
+  response.cookies.set(CAPI_PLATFORM_COOKIE, audience, cookieOptions);
 
   const linkState = signLinkState(user.id);
   if (linkState) response.cookies.set(CAPI_LINK_COOKIE, linkState, cookieOptions);

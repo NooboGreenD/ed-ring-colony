@@ -1153,7 +1153,7 @@ export default function CmdrDossier(props: Props) {
                         label="Монеты наёмников"
                         value={((props.pilotStats?.mercenary_coins ?? 0)).toLocaleString('ru-RU')}
                         color="#f59e0b"
-                        sub="Боевые жетоны"
+                        sub="Жетоны Operations (кап 9999)"
                       />
                     </div>
                   ) : (

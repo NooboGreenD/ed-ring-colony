@@ -4,6 +4,7 @@ import { authFromRequest } from '@/lib/supabaseServer';
 import { maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { createHash } from 'crypto';
 import { assessProfileBinding } from '@/lib/capi/profileBinding';
+import { isPlausibleMercenaryCoins } from '@/lib/journalTelemetry';
 
 export const dynamic = 'force-dynamic';
 
@@ -189,7 +190,12 @@ export async function POST(req: Request) {
 
     if (body.credits != null) statsPayload.credits = Number(body.credits) || 0;
     if (body.arx != null) statsPayload.arx = Number(body.arx) || 0;
-    if (body.mercenary_coins != null) statsPayload.mercenary_coins = Number(body.mercenary_coins) || 0;
+    // Жетоны Operations ограничены игрой (9999). Старые сборки Helper'а
+    // присылали сюда Combat_Bond_Profits — кредиты за боевые облигации, — и
+    // досье показывало сотни миллионов «монет наёмников». Мусор не пишем.
+    if (body.mercenary_coins != null && isPlausibleMercenaryCoins(body.mercenary_coins)) {
+      statsPayload.mercenary_coins = Number(body.mercenary_coins) || 0;
+    }
     if (body.mercenary_rank != null) statsPayload.mercenary_rank = Number(body.mercenary_rank) || 0;
     if (body.exobiologist_rank != null) statsPayload.exobiologist_rank = Number(body.exobiologist_rank) || 0;
     // Боевые/торговые/исследовательские ранги и фракции: приходят из CAPI

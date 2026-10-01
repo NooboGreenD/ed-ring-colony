@@ -11,6 +11,7 @@ import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
 import {
   CAPI_LINK_COOKIE,
+  CAPI_PLATFORM_COOKIE,
   CAPI_PKCE_COOKIE,
   CAPI_STATE_COOKIE,
   buildCapiRedirect,
@@ -47,9 +48,13 @@ export async function GET(req: NextRequest) {
 
   // Ответ всегда чистит cookie потока: они одноразовые, и оставлять
   // верификатор PKCE в браузере незачем.
+  const requestedPlatform = cookies[CAPI_PLATFORM_COOKIE] || null;
   const finish = (options: CapiRedirectOptions) => {
-    const response = NextResponse.redirect(buildCapiRedirect(site, options));
-    for (const name of [CAPI_STATE_COOKIE, CAPI_PKCE_COOKIE, CAPI_LINK_COOKIE]) {
+    const response = NextResponse.redirect(buildCapiRedirect(site, {
+      platform: requestedPlatform,
+      ...options,
+    }));
+    for (const name of [CAPI_STATE_COOKIE, CAPI_PKCE_COOKIE, CAPI_LINK_COOKIE, CAPI_PLATFORM_COOKIE]) {
       response.cookies.set(name, '', { path: '/', maxAge: 0 });
     }
     return response;
@@ -181,12 +186,36 @@ export async function GET(req: NextRequest) {
       // покажет «Переподключить» и сохранит причину для диагностики.
       await markCapiTokenBroken(svc, userId, sync.error || 'Требуется повторная авторизация Frontier');
     }
+    // Диагностика платформы: что просили и что выдал Frontier. Если пилот
+    // выбирал Steam/Epic, а токен оказался frontier-учёткой (на
+    // auth.frontierstore.net осталась сессия почтой), без этой пары
+    // «переподключение с той же платформой» уходило в бесконечный круг.
+    let detail = sync.error;
+    if (sync.needsReauth) {
+      const requested = requestedPlatform || 'frontier,steam,epic';
+      const actual = identity?.platform || null;
+      const parts = [`Запрошена платформа: ${requested}.`, `Токен выдан платформой: ${actual || 'неизвестно'}.`];
+      if (actual && actual === requested) {
+        // Платформа совпала с выбором — этой учётки игра просто нет.
+        parts.push('Выберите платформу, где куплена Elite Dangerous, и подключитесь заново.');
+      } else {
+        // Вошли не той учёткой: на странице Frontier осталась сессия почтой,
+        // и кнопка Steam/Epic не успела сработать.
+        parts.push(
+          'Похоже, вход выполнен другой учётной записью: выйдите из аккаунта на '
+          + 'auth.frontierstore.net (или откройте приватное окно браузера) и пройдите '
+          + 'подключение заново, войдя именно кнопкой Steam/Epic, а не почтой.',
+        );
+      }
+      detail = `${parts.join(' ')} ${sync.error ?? ''}`.trim();
+    }
     return finish({
       status: 'partial',
       reason: sync.needsReauth
         ? 'platform_not_entitled'
         : sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable',
-      detail: sync.error,
+      detail,
+      actualPlatform: identity?.platform ?? null,
       binding: sync.binding.status,
     });
   }

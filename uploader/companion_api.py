@@ -658,13 +658,41 @@ class CompanionClient:
         Именно этим отличается «токен сохранён» от «связь работает»: раньше
         приложение показывало зелёный статус сразу после OAuth, хотя CAPI
         отвечал 400.
+
+        При ошибке «игра не куплена» (HTTP 400) дополнительно спрашиваем
+        `/me`, какой платформой выдан токен. Пилот мог выбрать в приложении
+        EGS, но войти на странице Frontier почтой (или наоборот): без этой
+        проверки подсказка не объясняла, почему «привязка всё равно идёт на
+        основную платформу frontier».
         """
         try:
             profile = self.get_profile()
         except CompanionAuthError as exc:
-            self.auth.mark_failed(str(exc), exc.hint)
-            return {"ok": False, "error": str(exc), "hint": exc.hint,
-                    "status": exc.status, "host": exc.host, "stats": {}, "cmdr": ""}
+            hint = exc.hint
+            platform = None
+            if exc.status == 400:
+                access = str(self.auth.load().get("access_token") or "")
+                if access:
+                    identity = fetch_identity(access) or {}
+                    platform = identity.get("platform") or (identity.get("usr") or {}).get("platform")
+                if platform:
+                    # Ключевая диагностика «выбрал EGS, а привязка всё равно
+                    # frontier»: у Frontier осталась сессия почтой, и вход
+                    # прошёл ею, минуя кнопку платформы.
+                    hint = (
+                        f"{exc.hint}\nFrontier выдал токен платформы «{platform}». "
+                        "Если игра куплена на другой платформе: выйдите из аккаунта "
+                        "на auth.frontierstore.net (или откройте приватное окно "
+                        "браузера) и подключитесь заново, войдя именно кнопкой "
+                        "Steam/Epic, а не почтой."
+                    ) if hint else (
+                        f"Токен выдан платформой «{platform}» — если игра куплена "
+                        "в Steam/Epic, переподключитесь, войдя кнопкой платформы."
+                    )
+            self.auth.mark_failed(str(exc), hint)
+            return {"ok": False, "error": str(exc), "hint": hint,
+                    "status": exc.status, "host": exc.host, "stats": {},
+                    "cmdr": "", "platform": platform}
 
         stats = profile_to_stats(profile)
         cmdr = str(stats.get("cmdr") or "")
@@ -745,7 +773,6 @@ def profile_to_stats(profile: dict) -> dict:
     bank = _dict(stats.get("bank_account"))
     exploration = _dict(stats.get("exploration"))
     exo = _dict(stats.get("exobiology"))
-    combat = _dict(stats.get("combat"))
 
     result: Dict[str, object] = {
         "cmdr": commander.get("name") or None,
@@ -753,8 +780,13 @@ def profile_to_stats(profile: dict) -> dict:
                                   _int_or_none(profile.get("credits")),
                                   _int_or_none(bank.get("current_wealth"))),
         "arx": _int_or_none(profile.get("arx")),
-        "mercenary_coins": _first_present(_int_or_none(profile.get("mercenary_payout")),
-                                          _int_or_none(combat.get("combat_bond_profits"))),
+        # «Монеты наёмников» (Operations, июнь 2026) — баланс, не доход:
+        # журнал хранит его в Bank_Account.MercCoins_Current (кап 9999), CAPI —
+        # в statistics.bank_account.merc_coins_current. Combat_Bond_Profits
+        # сюда больше не читаем: это накопленные кредиты за боевые облигации.
+        "mercenary_coins": _first_present(_int_or_none(bank.get("merc_coins_current")),
+                                          _int_or_none(bank.get("merccoins_current")),
+                                          _int_or_none(profile.get("mercenary_payout"))),
         "mercenary_rank": _int_or_none(ranks.get("soldier")),
         "exobiologist_rank": _int_or_none(ranks.get("exobiologist")),
         "combat_rank": _int_or_none(ranks.get("combat")),
