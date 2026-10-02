@@ -78,6 +78,9 @@ test('staging — UNLOGGED и без индексов: иначе COPY плат�
   assert.match(ddl, /CREATE UNLOGGED TABLE IF NOT EXISTS galaxy_systems_stage/);
   assert.match(ddl, /EXCLUDING INDEXES/);
   assert.match(ddl, /EXCLUDING IDENTITY/);
+  // EXCLUDING IDENTITY не снимает NOT NULL с id, а COPY колонку id не пишет.
+  // ALTER также чинит staging-таблицу, оставшуюся от предыдущего запуска.
+  assert.match(ddl, /ALTER TABLE galaxy_systems_stage ALTER COLUMN id DROP NOT NULL/);
   assert.match(copySql(), /^COPY galaxy_systems_stage \(.+\) FROM STDIN$/);
 });
 
