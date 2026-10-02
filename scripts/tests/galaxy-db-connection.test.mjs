@@ -405,7 +405,9 @@ test('невидимый хост диагностируется одной по
   assert.equal(check.direct.configured, true);
   assert.equal(check.direct.ok, false);
   assert.equal(check.direct.host, '127.0.0.1');
-  assert.match(check.direct.message, /не отвечает/);
+  assert.equal(check.direct.network?.kind, 'tcp-refused');
+  assert.match(check.direct.message, /порт закрыт/);
+  assert.ok(!check.direct.message.includes('timeout expired'), 'точная TCP-проба не маскируется общим таймаутом драйвера');
   assert.ok(!check.direct.message.includes('s3cr3t'), 'пароль не уходит в интерфейс');
   assert.equal(check.postgrest.configured, true, 'импорт может уйти на PostgREST');
   assert.equal(check.backend, 'pg', 'приоритет прямого подключения сохраняется');
@@ -419,7 +421,10 @@ test('нерезолвящийся хост даёт тот же диагноз,
 
   assert.equal(check.direct.ok, false);
   assert.equal(check.direct.host, 'db');
+  assert.equal(check.direct.network?.kind, 'dns-missing');
   assert.match(check.direct.message, /db/);
+  assert.match(check.direct.message, /не резолвится/);
+  assert.doesNotMatch(check.direct.message, /timeout expired|firewall\/маршрут/, 'DNS-ошибка больше не предваряется ложным диагнозом про firewall');
 });
 
 // ─────────── цена PostgREST говорится до начала импорта ───────────

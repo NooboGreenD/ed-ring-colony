@@ -18,37 +18,74 @@
 # ─────────────────────────────────────────────────────────────────────
 
 # edrc_detect_supabase_network [env_file] — имя сети стека Supabase или пусто.
-# Порядок: переменная окружения SUPABASE_NETWORK → сеть живого контейнера
-# supabase-db → первая сеть с «supabase» в имени.
+#
+# Предпочитаем сеть ЖИВОГО `supabase-db`, где контейнер имеет alias `db`.
+# Значение из окружения/env-файла принимается только если оно не противоречит
+# реальному контейнеру. Раньше старое `SUPABASE_NETWORK=supabase_default`
+# безусловно побеждало autodetect: web исправно подключался к существующей, но
+# чужой/старой сети, а `db` внутри него всё равно не резолвился. Ещё одна гонка
+# была у контейнера с несколькими сетями — Go map в `docker inspect` не имеет
+# порядка, и `awk '{print $1}'` иногда выбирал не compose-сеть Supabase.
+#
+# Порядок: сеть supabase-db с alias `db` → другая сеть этого контейнера →
+# проверенное значение SUPABASE_NETWORK → первая сеть с «supabase» в имени.
+# Без доступного Docker проверить значение нельзя, поэтому сохраняется прежнее
+# поведение: явно заданное имя считается источником истины.
+#
 # ВАЖНО: скрипты-потребители работают с `set -euo pipefail`, поэтому все
 # «обычно пустые» команды защищены `|| true`, а переменные читаются с `:-`.
 edrc_detect_supabase_network() {
   local env_file="${1:-}"
-  local from_env="" candidate
-  if [ -n "${SUPABASE_NETWORK:-}" ]; then
-    printf '%s\n' "$SUPABASE_NETWORK"
+  local configured="${SUPABASE_NETWORK:-}" candidate="" db_networks="" alias_networks=""
+
+  if [ -z "$configured" ] && [ -n "$env_file" ] && [ -f "$env_file" ]; then
+    configured="$(grep -E '^SUPABASE_NETWORK=' "$env_file" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
+  fi
+
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    [ -n "$configured" ] && printf '%s\n' "$configured"
     return 0
   fi
-  if [ -n "$env_file" ] && [ -f "$env_file" ]; then
-    from_env="$(grep -E '^SUPABASE_NETWORK=' "$env_file" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
-    if [ -n "$from_env" ]; then
-      printf '%s\n' "$from_env"
-      return 0
+
+  # Docker DNS публикует service alias отдельно для каждой сети. Если
+  # supabase-db подключён к нескольким сетям, нужна именно та, где alias=db.
+  alias_networks="$(docker inspect supabase-db --format '{{range $network, $config := .NetworkSettings.Networks}}{{range $config.Aliases}}{{if eq . "db"}}{{$network}}{{"\n"}}{{end}}{{end}}{{end}}' 2>/dev/null || true)"
+  db_networks="$(docker inspect supabase-db --format '{{range $network, $config := .NetworkSettings.Networks}}{{$network}}{{"\n"}}{{end}}' 2>/dev/null || true)"
+
+  candidate="$(printf '%s\n' "$alias_networks" | sed '/^$/d' | head -n1 || true)"
+  if [ -z "$candidate" ]; then
+    candidate="$(printf '%s\n' "$db_networks" | grep -i 'supabase' | head -n1 || true)"
+  fi
+  if [ -z "$candidate" ]; then
+    candidate="$(printf '%s\n' "$db_networks" | sed '/^$/d' | head -n1 || true)"
+  fi
+
+  # Явное значение остаётся предпочтительным, только когда alias `db`
+  # опубликован именно в этой сети. Если inspect не вернул aliases (старый
+  # Docker/нестандартный контейнер), достаточно обычного членства. При явном
+  # конфликте alias-сеть живой БД важнее старого значения из env.
+  if [ -n "$configured" ] && docker network inspect "$configured" >/dev/null 2>&1; then
+    if printf '%s\n' "$alias_networks" | grep -Fxq "$configured"; then
+      candidate="$configured"
+    elif [ -z "$alias_networks" ] \
+      && { [ -z "$db_networks" ] || printf '%s\n' "$db_networks" | grep -Fxq "$configured"; }; then
+      candidate="$configured"
     fi
   fi
-  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    # Точный источник: сеть, в которой прямо сейчас живёт Postgres Supabase.
-    candidate="$(docker inspect supabase-db --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}' || true)"
-    if [ -n "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-    candidate="$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -i 'supabase' | head -n1 || true)"
-    if [ -n "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
+
+  if [ -n "$candidate" ] && docker network inspect "$candidate" >/dev/null 2>&1; then
+    printf '%s\n' "$candidate"
+    return 0
   fi
+
+  # Нет живого supabase-db (например, он кратко перезапускается): используем
+  # существующую явно заданную сеть, затем осторожный поиск по имени.
+  if [ -n "$configured" ] && docker network inspect "$configured" >/dev/null 2>&1; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  candidate="$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -i 'supabase' | head -n1 || true)"
+  [ -n "$candidate" ] && printf '%s\n' "$candidate"
   return 0
 }
 
@@ -68,6 +105,14 @@ edrc_extra_compose_files() {
   # чтобы несуществующая external-сеть не приводила к падению compose up
   if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     docker network inspect "$network" >/dev/null 2>&1 || return 0
+  fi
+  # compose.supabase-net.yml получает имя через ${SUPABASE_NETWORK}. Autodetect
+  # сам по себе недостаточен: при нестандартном имени сети Compose иначе взял
+  # бы default `supabase_default`, хотя хелпер только что нашёл правильную сеть.
+  # Фиксируем результат в том же env-файле, который все entrypoint'ы передают
+  # через --env-file. Это заодно самовосстанавливает старое/ошибочное значение.
+  if [ -n "$env_file" ] && [ -f "$env_file" ] && [ -w "$env_file" ]; then
+    edrc_persist_env "$env_file" SUPABASE_NETWORK "$network"
   fi
   # Сеть видна — безопасно подключаться к ней как к external.
   printf -- '-f %s' "${override#$repo_root/}"

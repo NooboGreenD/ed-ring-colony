@@ -1071,6 +1071,30 @@ export async function checkGalaxyDbConnection(
   }
 
   const host = pgConnectionTarget(connectionString)?.host ?? null;
+
+  // Resolve DNS and open the TCP socket before handing the URL to `pg`.
+  // node-postgres applies `connectionTimeoutMillis` to the whole connection,
+  // including name resolution, and therefore often turns an EAI_AGAIN for
+  // `db` into the generic `timeout expired`. Showing that generic error first
+  // made operators investigate firewalls even though the name did not exist
+  // in the web container at all. A failed preflight is already conclusive and
+  // must not be followed by a second, slower attempt through the driver.
+  const network = options.probe === false ? null : await probeNetwork(connectionString, options);
+  if (network && network.kind !== 'ok') {
+    return {
+      direct: {
+        configured: true,
+        host,
+        ok: false,
+        message: network.message,
+        database: null,
+        network,
+      },
+      postgrest,
+      backend: backends.backend,
+    };
+  }
+
   try {
     const client = await connectPgClient({
       connectionString,
@@ -1096,15 +1120,15 @@ export async function checkGalaxyDbConnection(
     }
   } catch (error) {
     const detail = isPgConnectionError(error) ? error.failure.message : (error as Error)?.message || String(error);
-    // Сетевой диагноз добавляется только к сетевым отказам: при неверном
-    // пароле лишние рассуждения про docker-сети только путают.
-    const network = options.probe === false ? null : await probeNetwork(connectionString, options);
+    // `network === ok` is useful evidence for an auth/SSL failure, but its
+    // generic "network is fine" sentence must not replace the driver's exact
+    // diagnosis. The UI still receives the structured probe below.
     return {
       direct: {
         configured: true,
         host,
         ok: false,
-        message: network && network.kind !== 'ok' ? `${detail} ${network.message}` : detail,
+        message: detail,
         database: null,
         network,
       },

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -79,7 +79,52 @@ test('supabase network attach: override file and all compose entrypoints stay in
     assert.match(lib, new RegExp(`^${fn}\\(\\)`, 'm'), `${fn} определён в compose-lib.sh`);
   }
   // Скрипты работают с `set -u`: первое чтение переменной — только с дефолтом.
-  assert.match(lib, /\[ -n "\$\{SUPABASE_NETWORK:-\}" \]/, 'первое чтение переменной защищено :-');
+  assert.match(lib, /\$\{SUPABASE_NETWORK:-\}/, 'чтение переменной защищено :-');
+});
+
+test('supabase network autodetect replaces a stale env value with the network that owns alias db', { skip: needsBash }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'edrc-supabase-network-'));
+  const bin = join(dir, 'bin');
+  mkdirSync(join(dir, 'deploy'), { recursive: true });
+  mkdirSync(bin, { recursive: true });
+  copyFileSync(join(repoRoot, 'deploy', 'compose-lib.sh'), join(dir, 'deploy', 'compose-lib.sh'));
+  copyFileSync(join(repoRoot, 'deploy', 'compose.supabase-net.yml'), join(dir, 'deploy', 'compose.supabase-net.yml'));
+  const envFile = join(dir, '.env.production');
+  writeFileSync(envFile, 'SUPABASE_NETWORK=stale_supabase\n');
+
+  // Обе сети существуют: проверка только `docker network inspect` раньше
+  // принимала stale_supabase и подключала web не туда. Источник истины — сеть
+  // живого supabase-db, в которой опубликован service alias `db`.
+  writeFileSync(join(bin, 'docker'), [
+    '#!/usr/bin/env bash',
+    'if [ "$1" = "info" ]; then exit 0; fi',
+    'if [ "$1" = "inspect" ] && [ "$2" = "supabase-db" ]; then',
+    '  printf "real_supabase\\n"',
+    '  exit 0',
+    'fi',
+    'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+    '  case "$3" in real_supabase|stale_supabase) exit 0;; esac',
+    '  exit 1',
+    'fi',
+    'if [ "$1" = "network" ] && [ "$2" = "ls" ]; then printf "real_supabase\\n"; exit 0; fi',
+    'exit 1',
+  ].join('\n') + '\n', { mode: 0o755 });
+
+  const run = spawnSync('bash', ['-c', [
+    'set -euo pipefail',
+    `source "${join(dir, 'deploy', 'compose-lib.sh')}"`,
+    `extra="$(edrc_extra_compose_files "${dir}" "${envFile}")"`,
+    'printf "extra=%s\\n" "$extra"',
+    `printf "network=%s\\n" "$(edrc_detect_supabase_network "${envFile}")"`,
+  ].join('\n')], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, SUPABASE_NETWORK: '' },
+  });
+
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  assert.match(run.stdout, /extra=-f deploy\/compose\.supabase-net\.yml/);
+  assert.match(run.stdout, /network=real_supabase/);
+  assert.equal(envValue(envFile, 'SUPABASE_NETWORK'), 'real_supabase', 'compose --env-file получит точное имя найденной сети');
 });
 
 test('--keys-only inserts fresh distinct secrets and monitoring defaults without docker', { skip: needsBash }, () => {

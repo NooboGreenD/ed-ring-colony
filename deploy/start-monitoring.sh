@@ -22,7 +22,7 @@
 # Использование (из любой директории, на сервере с Docker):
 #   bash deploy/start-monitoring.sh              # ключи + запуск + проверка
 #   bash deploy/start-monitoring.sh --keys-only  # только вставить ключи
-#   bash deploy/start-monitoring.sh --check      # только проверить агент
+#   bash deploy/start-monitoring.sh --check      # проверить агент и прямой Postgres
 #   bash deploy/start-monitoring.sh --no-build   # запуск без пересборки
 #   bash deploy/start-monitoring.sh --stop       # остановить monitor-agent
 #   bash deploy/start-monitoring.sh --env-file /path/to/.env.production
@@ -248,30 +248,73 @@ verify_agent() {
   esac
 }
 
-# Проверяет, что хост Postgres из SUPABASE_DB_URL/DATABASE_URL вообще
-# резолвится из web и monitor-agent. Не фатально: блоки «импорт каталога»
-# и «Диск и размер базы данных» просто скажут «нет прямого подключения»,
-# но администратору лучше узнать причину сразу, а не по панели.
+# Проверяет не только DNS, а настоящее Postgres-рукопожатие + SELECT 1 из обоих
+# процессов. Прежняя проверка считала один успешный dns.lookup доказательством
+# «Postgres доступен», хотя порт мог быть закрыт, пароль неверен или `db`
+# резолвился в посторонний адрес. Результат не фатален: сайт и PostgREST могут
+# работать без прямого подключения, но оператор сразу видит точную причину.
 verify_db_visibility() {
   step "Проверка прямого доступа к Postgres (импорт каталога, размер БД)"
-  local db_url db_host svc
+  local svc result
 
-  db_url="$(env_value "$ENV_FILE" SUPABASE_DB_URL)"
-  [ -n "$db_url" ] || db_url="$(env_value "$ENV_FILE" DATABASE_URL)"
-  [ -n "$db_url" ] || db_url="$(env_value "$ENV_FILE" MONITOR_DB_URL)"
-  if [ -z "$db_url" ]; then
-    say "  ! DB-URL не задан (SUPABASE_DB_URL/DATABASE_URL) — импорт каталога пойдёт через PostgREST, размера БД на панели не будет"
-    return 0
-  fi
-  db_host="$(printf '%s' "$db_url" | sed -E 's#^[a-zA-Z]+://[^@/]*@?([^/:?#]+).*$#\1#')"
   for svc in web monitor-agent; do
-    if "${COMPOSE[@]}" exec -T "$svc" node -e "require('dns').lookup(process.argv[1],e=>process.exit(e?1:0))" "$db_host" >/dev/null 2>&1; then
-      say "  ✓ $svc: хост «$db_host» резолвится — прямой Postgres доступен"
-    else
-      say "  ! $svc: хост «$db_host» НЕ резолвится — SUPABASE_DB_URL даст «getaddrinfo EAI_AGAIN $db_host»"
-      say "    точное имя сети стека Supabase: docker network ls; подключение: bash deploy/start-monitoring.sh"
-      say "    (подключает web и monitor-agent к сети Supabase через deploy/compose.supabase-net.yml)"
-    fi
+    result="$("${COMPOSE[@]}" exec -T "$svc" node -e '
+      const service = process.argv[1];
+      const url = service === "monitor-agent"
+        ? process.env.MONITOR_DB_URL?.trim()
+        : (process.env.DATABASE_URL?.trim() || process.env.SUPABASE_DB_URL?.trim());
+      if (!url) { console.log("unconfigured"); process.exit(0); }
+      const classify = (error) => {
+        const code = String(error?.code || "");
+        const text = String(error?.message || "");
+        if (/EAI_AGAIN|ENOTFOUND|EAI_FAIL|getaddrinfo/i.test(code + " " + text)) return "dns";
+        if (/ECONNREFUSED|ECONNRESET/i.test(code + " " + text)) return "refused";
+        if (/timeout|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH/i.test(code + " " + text)) return "timeout";
+        if (/^28|^3D000|password authentication|pg_hba/i.test(code + " " + text)) return "auth";
+        return "error";
+      };
+      import("pg").then(async (loaded) => {
+        const pg = loaded.Client ? loaded : loaded.default;
+        const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 4000, query_timeout: 4000 });
+        try {
+          await client.connect();
+          await client.query("SELECT 1");
+          console.log("ok");
+        } catch (error) {
+          console.log(classify(error));
+        } finally {
+          await client.end().catch(() => {});
+        }
+      }).catch(() => console.log("module"));
+    ' "$svc" 2>/dev/null | tail -n1 || true)"
+
+    case "$result" in
+      ok)
+        say "  ✓ $svc: подключение к Postgres и SELECT 1 работают"
+        ;;
+      unconfigured)
+        say "  ! $svc: прямой DB-URL не задан"
+        ;;
+      dns)
+        say "  ! $svc: имя хоста БД НЕ резолвится — контейнер не подключён к сети Supabase"
+        say "    сеть: docker inspect supabase-db; исправление: bash deploy/start-monitoring.sh --no-build"
+        ;;
+      refused)
+        say "  ! $svc: хост БД виден, но порт Postgres отклонил соединение"
+        ;;
+      timeout)
+        say "  ! $svc: хост БД резолвится, но TCP/рукопожатие истекло по таймауту"
+        ;;
+      auth)
+        say "  ! $svc: сеть работает, но Postgres отклонил пользователя/пароль/имя базы"
+        ;;
+      module)
+        say "  ! $svc: модуль pg отсутствует в образе — пересоберите сервис"
+        ;;
+      *)
+        say "  ! $svc: проверка Postgres завершилась неизвестной ошибкой"
+        ;;
+    esac
   done
 }
 
@@ -290,6 +333,7 @@ case "$MODE" in
   check)
     require_docker
     verify_agent
+    verify_db_visibility
     ;;
   stop)
     require_docker
