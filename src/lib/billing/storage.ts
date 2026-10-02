@@ -80,8 +80,8 @@ class FileAdapter implements TableAdapter {
 
   private load() {
     try {
-      if (fs.existsSync(DATA_FILE)) {
-        const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
+      if (fs.existsSync(/*turbopackIgnore: true*/ DATA_FILE)) {
+        const parsed = JSON.parse(fs.readFileSync(/*turbopackIgnore: true*/ DATA_FILE, 'utf-8'));
         // v2 layout: { tables: { name: Row[] } }
         if (parsed && parsed.tables && typeof parsed.tables === 'object') {
           this.data = parsed.tables;
