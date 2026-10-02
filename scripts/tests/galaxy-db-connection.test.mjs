@@ -326,6 +326,37 @@ test('успешное прямое подключение не переключ
   assert.equal(supabaseCalls, 0);
 });
 
+test('fullReload (полный дамп) доезжает до фабрики прямого Postgres', async () => {
+  // COPY-писатель по этому флагу снимает поисковые индексы и на НЕпустом
+  // каталоге: полный дамп перезапишет каждую строку, а поддержка GIN/GiST на
+  // каждой пачке растягивала слияние 250 тыс. строк на минуты.
+  const seen = [];
+  await createWriterWithFallback({
+    backend: 'pg',
+    connectionString: DB_URL,
+    truncate: false,
+    supabaseFallback: false,
+    fullReload: true,
+    createPg: async (_url, opts) => {
+      seen.push(opts.fullReload);
+      return fakeWriter('pg');
+    },
+    createSupabase: async () => fakeWriter('supabase'),
+  });
+  await createWriterWithFallback({
+    backend: 'pg',
+    connectionString: DB_URL,
+    truncate: false,
+    supabaseFallback: false,
+    createPg: async (_url, opts) => {
+      seen.push(opts.fullReload);
+      return fakeWriter('pg');
+    },
+    createSupabase: async () => fakeWriter('supabase'),
+  });
+  assert.deepEqual(seen, [true, false], 'флаг передаётся как есть, дельта остаётся false');
+});
+
 test('обычная (не сетевая) ошибка тоже уводит на PostgREST', async () => {
   const log = [];
   const result = await createWriterWithFallback({

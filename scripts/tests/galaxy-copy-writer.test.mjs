@@ -148,6 +148,48 @@ test('писатель создаёт staging и не трогает катал�
   assert.ok(statements.some((sql) => sql.startsWith('CREATE UNLOGGED TABLE')));
   assert.ok(statements.includes(`TRUNCATE ${GALAXY_STAGE_TABLE}`));
   assert.ok(!statements.some((sql) => sql.startsWith('TRUNCATE galaxy_systems ')), '--truncate не запрашивали');
+  // Каталог не пуст (COUNT=7) и это не полный дамп: дельта индексы не трогает.
+  assert.ok(!statements.some((sql) => sql.startsWith('DROP INDEX')), 'дельта не снимает поисковые индексы');
+  await writer.close();
+});
+
+// ─────────────── полный дамп и непустой каталог ───────────────
+//
+// Прод-инцидент: «каталог пуст или неполный — нужен полный дамп» выбрал
+// полный импорт, но писатель снимал индексы только при COUNT(*)=0. Остаток
+// прерванного импорта (7 строк и больше) оставлял GIN/GiST на месте — и
+// «вставка и обновление индексов» шла по 400+ секунд на каждые 250 тыс.
+// строк: ~800 слияний превращали дамп в недели.
+
+test('полный дамп снимает поисковые индексы даже на непустом каталоге и строит их заново', async () => {
+  const { pg, statements, copyFrom } = fakePg();
+  const writer = await createPgCopyWriter(DB_URL, { pg, copyFrom, mergeRows: 1000, fullReload: true, env: {} });
+  const dropped = statements.filter((sql) => sql.startsWith('DROP INDEX IF EXISTS '));
+  assert.equal(dropped.length, 7, 'сняты все семь поисковых индексов');
+  assert.ok(dropped.some((sql) => sql.includes('idx_galaxy_systems_name_trgm')), 'GIN trigram — самый дорогой');
+  assert.ok(dropped.some((sql) => sql.includes('idx_galaxy_systems_coord')), 'GiST cube — второй по цене');
+  // Уникальные индексы держат ON CONFLICT и идемпотентность — их снимать нельзя.
+  assert.ok(!statements.some((sql) => sql.startsWith('DROP INDEX') && sql.includes('uq_galaxy_systems')));
+
+  await writer.analyze();
+  const created = statements.filter((sql) => sql.startsWith('CREATE INDEX IF NOT EXISTS'));
+  assert.equal(created.length, 7, 'все семь индексов построены заново после заливки');
+  assert.ok(statements.some((sql) => sql.startsWith('ANALYZE ')));
+  await writer.close();
+});
+
+test('GALAXY_COPY_DROP_INDEXES=0 возвращает старое поведение (снимать только на пустом каталоге)', async () => {
+  const { pg, statements, copyFrom } = fakePg();
+  const writer = await createPgCopyWriter(DB_URL, {
+    pg,
+    copyFrom,
+    mergeRows: 1000,
+    fullReload: true,
+    env: { GALAXY_COPY_DROP_INDEXES: '0' },
+  });
+  assert.ok(!statements.some((sql) => sql.startsWith('DROP INDEX')), 'аварийный выключатель уважается');
+  await writer.analyze();
+  assert.ok(!statements.some((sql) => sql.startsWith('CREATE INDEX')), 'нечего перестраивать — индексы не снимались');
   await writer.close();
 });
 
