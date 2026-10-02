@@ -524,7 +524,21 @@ if [ "$MODE" = "compose" ]; then
     run_step "сборка образов" compose $COMPOSE_ARGS build --build-arg "RUN_TESTS=$RUN_TESTS" $BUILD_SERVICES
   fi
   report switch 82 "Переключаю контейнеры на новые образы"
-  run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
+  # Переключение идёт через edrc_compose_switch (compose-lib.sh), а не голым
+  # `up -d`. Прод-инцидент: на нагруженном диске web не укладывался в 10-секундный
+  # таймаут остановки, compose успевал уйти в переименование «<id>_src-web-1»
+  # и падал на «Error when allocating new name: Conflict … /src-web-1 is already
+  # in use» — ПОСЛЕ часовой успешной сборки. Хуже того, после срыва на хосте
+  # оставался старый контейнер, который держал ссылку на предыдущий образ web:
+  # `docker image prune` не мог его удалить, и каждая переборка прибавляла на
+  # диск целый образ (1.5–3 ГБ) при «пустых» каталогах проекта.
+  # Хелпер явно останавливает сервисы с большим таймаутом (UPDATE_STOP_TIMEOUT),
+  # снимает остатки прошлых срывов и повторяет переключение, разобрав конфликт.
+  if declare -F edrc_compose_switch >/dev/null 2>&1; then
+    run_step "переключение контейнеров" edrc_compose_switch compose $COMPOSE_ARGS -- $COMPOSE_SERVICES
+  else
+    run_step "переключение контейнеров" compose $COMPOSE_ARGS up -d --no-build $COMPOSE_SERVICES
+  fi
   report switch 85 "Убираю мусор сборки: кэш BuildKit, висячие образы"
   # Каждая пересборка оставляет гигабайты кэша BuildKit (инвалидируется слой
   # COPY — даже при правке в 3 КБ), а кэш прошлых прогонов раньше никто не

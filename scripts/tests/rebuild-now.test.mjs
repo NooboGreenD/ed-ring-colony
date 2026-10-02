@@ -128,7 +128,11 @@ test('rebuild-now: full rebuild still uses --no-cache by default', { skip }, (t)
   const order = imageBuilds(run.calls);
   assert.ok(order[order.length - 1].endsWith(' web'), 'web собирается последним: ' + order.join(' | '));
   assert.match(run.stdout, /ПОЛНАЯ ПЕРЕСБОРКА без кэша/);
-  assert.match(run.calls, /\[docker\].* up -d web jobs\n/);
+  // Переключение идёт через edrc_compose_switch: сначала явная остановка с
+  // длинным таймаутом (иначе compose падал на «name … already in use»),
+  // затем `up -d --no-build` — образы только что собраны этим же скриптом.
+  assert.match(run.calls, /\[docker\].* stop -t \d+ web jobs\n/);
+  assert.match(run.calls, /\[docker\].* up -d --no-build web jobs\n/);
 });
 
 test('rebuild-now: USE_CACHE=1 reuses layers and preserves the Supabase Compose override', { skip }, (t) => {
@@ -139,7 +143,7 @@ test('rebuild-now: USE_CACHE=1 reuses layers and preserves the Supabase Compose 
   assert.match(build, /-f deploy\/compose\.supabase-net\.yml --profile monitoring build jobs$/);
   assert.doesNotMatch(build, /--no-cache/);
   assert.match(run.stdout, /ПЕРЕСБОРКА с кэшем/);
-  assert.match(run.calls, /-f deploy\/compose\.supabase-net\.yml --profile monitoring up -d web jobs/);
+  assert.match(run.calls, /-f deploy\/compose\.supabase-net\.yml --profile monitoring up -d --no-build web jobs/);
   {
     const firstBuild = imageBuilds(run.calls)[0];
     const firstUp = run.calls.split('\n').find((line) => line.includes(' up -d '));
@@ -213,7 +217,7 @@ test('rebuild-now: без BuildKit web собирается по запасно�
   assert.match(legacy, /^RUN npm ci --no-audit --no-fund$/m);
   assert.match(legacy, /^RUN npm run build$/m, 'сборка Next.js идёт, просто без кэш-маунта');
   // up — с тем же списком -f: контейнеры переключаются на собранный образ.
-  assert.match(run.calls, /-f deploy\/compose\.legacy-build\.yml --profile monitoring up -d web jobs/);
+  assert.match(run.calls, /-f deploy\/compose\.legacy-build\.yml --profile monitoring up -d --no-build web jobs/);
   assert.match(run.calls, /\[curl\].*api\/health/);
 });
 
