@@ -1009,7 +1009,7 @@ export async function storeStatus(): Promise<StoreStatus> {
   const root = storeRoot();
   let ready = false;
   try {
-    ready = (await stat(root)).isDirectory();
+    ready = (await stat(/*turbopackIgnore: true*/ root)).isDirectory();
   } catch {
     ready = false;
   }

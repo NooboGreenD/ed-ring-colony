@@ -99,7 +99,7 @@ export function galaxyArchivePathForVariant(
   variant: GalaxyDumpVariant,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return join(galaxyArchiveDir(env), archiveFileNameForVariant(variant));
+  return join(/*turbopackIgnore: true*/ galaxyArchiveDir(env), archiveFileNameForVariant(variant));
 }
 
 /**

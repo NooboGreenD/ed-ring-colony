@@ -39,9 +39,9 @@ import {
   galaxyRowSupersedes,
   type GalaxyImportBackend,
   type GalaxyRowWriter,
-  type GalaxySystemPoint,
-  type GalaxySystemRecord,
 } from './galaxyImport.ts';
+import type { GalaxySystemPoint } from './galaxySystems.ts';
+import type { GalaxySystemRecord } from './galaxySpanshStream.ts';
 import { connectPgClient, loadPg, type PgClientLike, type PgModule } from './pgModule.ts';
 
 void GALAXY_META_TABLE;
