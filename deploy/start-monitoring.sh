@@ -215,9 +215,21 @@ export_build_metadata() {
 start_stack() {
   step "Запуск web + jobs + monitor-agent (профиль monitoring)"
   export_build_metadata
+  local services=(web jobs monitor-agent)
+  # Сторож сети Supabase живёт в update-agent: он раз в минуту переподключает
+  # web/monitor-agent к сети `db`, если их пересоздал чужой `docker compose up`
+  # без deploy/compose.supabase-net.yml (классическое «подключение срабатывает
+  # пару раз и отваливается»). Привилегированный контейнер не поднимаем молча:
+  # только когда апдейтер уже включён — задан UPDATE_AGENT_TOKEN.
+  if [ -n "$(env_value "$ENV_FILE" UPDATE_AGENT_TOKEN)" ]; then
+    services+=(update-agent)
+    say "update-agent включён (UPDATE_AGENT_TOKEN задан) — поднимаю и его: сторож сети Supabase будет чинить потерю имени «db» автоматически"
+  else
+    say "⚠ UPDATE_AGENT_TOKEN пуст — update-agent не запускается, а с ним и сторож сети Supabase; включить: bash deploy/start-update-agent.sh"
+  fi
   local up_args=(up -d)
   [ "$DO_BUILD" = 1 ] && up_args+=(--build)
-  "${COMPOSE[@]}" "${up_args[@]}" web jobs monitor-agent
+  "${COMPOSE[@]}" "${up_args[@]}" "${services[@]}"
 }
 
 # Проверяет ровно тот путь, которым ходит вкладка: web → monitor-agent

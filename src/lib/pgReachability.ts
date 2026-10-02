@@ -57,7 +57,11 @@ export function reachabilityMessage(kind: PgReachabilityKind, host: string, port
       return (
         `Имя «${host}» не резолвится из этого процесса. Оно существует только внутри docker-сети стека Supabase. ` +
         'Подключите web к ней: deploy/compose.supabase-net.yml (SUPABASE_NETWORK, по умолчанию supabase_default) ' +
-        'либо укажите адрес, видимый отсюда (host.docker.internal, 172.17.0.1, IP сервера с опубликованным 5432).'
+        'либо укажите адрес, видимый отсюда (host.docker.internal, 172.17.0.1, IP сервера с опубликованным 5432). ' +
+        'Если это уже делалось и подключение «отваливается» снова — значит, контейнер web пересоздали командой ' +
+        'docker compose up БЕЗ deploy/compose.supabase-net.yml (другой каталог, старый скрипт, ручной запуск). ' +
+        'При запущенном профиле monitoring update-agent сам переподключит web к сети в течение минуты — повторите ' +
+        'проверку; кто пересоздал контейнер, видно в журнале: docker logs <проект>-update-agent-1 | grep "сторож сети".'
       );
     case 'dns-public':
       return (
