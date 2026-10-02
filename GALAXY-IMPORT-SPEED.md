@@ -109,6 +109,20 @@ DNS «db»: 172.18.0.5 · порт 5432: tcp-timeout
 node scripts/import-spansh-systems.mjs --check-db
 ```
 
+**Если в панели всё ещё старый текст** («Похоже на firewall/маршрут» без
+строки `DNS «db»: …`) — контейнер собран до этих правок. Ждать пересборки не
+нужно: есть автономный скрипт без единой зависимости, кроме Node. Его можно
+запустить на хосте, из любого контейнера и на старой сборке:
+
+```bash
+node scripts/check-db-reachability.mjs                         # из DATABASE_URL
+node scripts/check-db-reachability.mjs db:5432 host.docker.internal:5432 172.17.0.1:5432 127.0.0.1:5432
+docker compose exec web node /app/scripts/check-db-reachability.mjs db:5432
+```
+
+Он резолвит имя, открывает сокет и печатает вердикт по каждому адресу —
+сразу видно, какой из вариантов подставить в `DATABASE_URL`.
+
 ### Как починить (по порядку)
 
 **Шаг 1. Подключить `web` к сети стека Supabase** — штатный способ, файл уже
