@@ -33,6 +33,7 @@ import {
   type GalaxyImportSnapshot,
   type GalaxyRowWriter,
 } from './galaxyImport.ts';
+import { createPgCopyWriter, loadCopyFrom } from './galaxyCopyWriter.ts';
 import {
   DUMP_VARIANTS,
   dumpVariantUrl,
@@ -959,8 +960,33 @@ export async function createWriterWithFallback(
   const log = options.log ?? (() => undefined);
   const createPg =
     options.createPg ??
-    ((connectionString, opts) =>
-      createPgWriter(connectionString, { truncate: opts.truncate, log: opts.log, attempts: options.pgAttempts }));
+    (async (connectionString, opts) => {
+      // Быстрый путь: COPY в UNLOGGED staging + merge пачками (см.
+      // galaxyCopyWriter.ts и GALAXY-IMPORT-SPEED.md). Он на порядки быстрее
+      // пачечных INSERT … ON CONFLICT, поэтому выбирается по умолчанию, а
+      // пачечный путь остаётся запасным: нет pg-copy-streams или GALAXY_COPY=0.
+      const copyDisabled = process.env.GALAXY_COPY === '0';
+      if (!copyDisabled && (await loadCopyFrom())) {
+        try {
+          return await createPgCopyWriter(connectionString, {
+            truncate: opts.truncate,
+            log: opts.log,
+            attempts: options.pgAttempts,
+          });
+        } catch (error) {
+          // Падение на подключении должно вести себя как раньше (fallback на
+          // PostgREST), поэтому пробрасывается; падение самого COPY-пути —
+          // повод тихо вернуться к INSERT.
+          if (isPgConnectionError(error)) throw error;
+          opts.log(`WARNING: COPY-путь недоступен (${(error as Error)?.message ?? error}) — пишу пачечными INSERT`);
+        }
+      }
+      return createPgWriter(connectionString, {
+        truncate: opts.truncate,
+        log: opts.log,
+        attempts: options.pgAttempts,
+      });
+    });
   const createSupabase = options.createSupabase ?? (async () => createSupabaseWriter(admin()));
 
   if (options.backend !== 'pg' || !options.connectionString) {
