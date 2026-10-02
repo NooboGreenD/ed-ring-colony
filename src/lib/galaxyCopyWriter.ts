@@ -111,11 +111,21 @@ export function copyLine(row: GalaxySystemRecord): string {
 
 const COLUMN_LIST = GALAXY_ROW_COLUMNS.join(',');
 
-/** DDL приёмника: та же форма строки, никаких индексов и никакого WAL. */
+/**
+ * DDL приёмника: та же форма строки, никаких индексов и никакого WAL.
+ *
+ * `id` намеренно nullable. `LIKE ... EXCLUDING IDENTITY` убирает генератор
+ * identity, но сохраняет у колонки унаследованный `NOT NULL`. Поскольку COPY
+ * перечисляет только колонки дампа (без внутреннего `id`), неизменённая
+ * колонка приводила к `null value in column "id" ... violates not-null
+ * constraint`. ALTER выполняется и для уже созданной staging-таблицы, поэтому
+ * исправление не требует удалять её вручную после неудачного импорта.
+ */
 export function stageDdlSql(): string {
   return (
     `CREATE UNLOGGED TABLE IF NOT EXISTS ${GALAXY_STAGE_TABLE} ` +
-    `(LIKE ${GALAXY_TABLE} INCLUDING DEFAULTS EXCLUDING INDEXES EXCLUDING CONSTRAINTS EXCLUDING IDENTITY)`
+    `(LIKE ${GALAXY_TABLE} INCLUDING DEFAULTS EXCLUDING INDEXES EXCLUDING CONSTRAINTS EXCLUDING IDENTITY); ` +
+    `ALTER TABLE ${GALAXY_STAGE_TABLE} ALTER COLUMN id DROP NOT NULL`
   );
 }
 
@@ -182,6 +192,7 @@ export async function createPgCopyWriter(
   const copyFrom = options.copyFrom ?? (await loadCopyFrom());
   if (!copyFrom) throw new Error('pg-copy-streams не установлен — быстрый COPY-путь недоступен');
   const mergeRows = Math.max(1000, options.mergeRows ?? COPY_MERGE_ROWS);
+  const log = options.log ?? (() => undefined);
 
   const client = (await connectPgClient({
     connectionString,
@@ -204,9 +215,32 @@ export async function createPgCopyWriter(
   await sql(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
   if (options.truncate) await sql(`TRUNCATE ${GALAXY_TABLE} RESTART IDENTITY`);
 
+  // На пустом каталоге это холодная загрузка. Поддерживать семь поисковых
+  // индексов для каждой из ~2×10⁸ строк в сотни раз медленнее, чем построить
+  // их один раз после COPY (первая пачка могла идти 30+ минут). Уникальные
+  // индексы не снимаем: они нужны ON CONFLICT и защите id64/name_lc.
+  const countBefore = await sql(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`);
+  const coldLoad =
+    Number((countBefore as unknown as { rows?: Array<{ n?: unknown }> }).rows?.[0]?.n ?? 0) === 0;
+  if (coldLoad) {
+    log('COPY: пустой каталог — временно снимаю поисковые индексы для быстрой холодной загрузки');
+    for (const index of [
+      'idx_galaxy_systems_name_trgm',
+      'idx_galaxy_systems_coord',
+      'idx_galaxy_systems_x',
+      'idx_galaxy_systems_y',
+      'idx_galaxy_systems_z',
+      'idx_galaxy_systems_star_type',
+      'idx_galaxy_systems_star_giant_class',
+    ]) {
+      await sql(`DROP INDEX IF EXISTS ${index}`);
+    }
+  }
+
   let buffer: GalaxySystemRecord[] = [];
   let staged = 0;
   let written = 0;
+  let connectionClosed = false;
 
   const copyBuffer = async (rows: GalaxySystemRecord[]): Promise<void> => {
     if (rows.length === 0) return;
@@ -233,17 +267,41 @@ export async function createPgCopyWriter(
   /** Слить staging в каталог одной транзакцией и очистить приёмник. */
   const merge = async (): Promise<number> => {
     if (staged === 0) return 0;
-    await sql('BEGIN');
+    const mergeStartedAt = Date.now();
+    const rowsToMerge = staged;
+    let phase = 'подготовка транзакции';
+    log(`COPY: слияние ${rowsToMerge.toLocaleString()} строк staging → ${GALAXY_TABLE} начато`);
+    // INSERT в таблицу с GIN/GiST/btree-индексами на слабом сервере может
+    // несколько минут не возвращать управление. Это нормальная работа одного
+    // SQL-запроса, но без heartbeat панель выглядит зависшей, а written до
+    // COMMIT остаётся нулём.
+    const heartbeat = setInterval(() => {
+      const seconds = Math.max(1, Math.round((Date.now() - mergeStartedAt) / 1000));
+      log(
+        `  COPY: слияние продолжается (${phase}, ${seconds} с); ` +
+          'счётчик «записано» обновится после COMMIT',
+      );
+    }, 15_000);
+    heartbeat.unref?.();
     try {
+      await sql('BEGIN');
       let inserted = 0;
-      for (const statement of mergeStatements()) {
-        const result = await sql(statement);
+      const statements = mergeStatements();
+      const phases = ['дубли по имени', 'дубли по id64', 'переименованные системы', 'вставка и обновление индексов'];
+      for (let index = 0; index < statements.length; index++) {
+        phase = phases[index];
+        const result = await sql(statements[index]);
         inserted = Number(result?.rowCount ?? 0);
       }
+      phase = 'фиксация транзакции';
       await sql(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
       await sql('COMMIT');
       staged = 0;
       written += inserted;
+      log(
+        `COPY: слияние завершено за ${((Date.now() - mergeStartedAt) / 1000).toFixed(1)} с, ` +
+          `${inserted.toLocaleString()} строк записано`,
+      );
       return inserted;
     } catch (error) {
       await sql('ROLLBACK').catch(() => undefined);
@@ -252,6 +310,8 @@ export async function createPgCopyWriter(
       await sql(`TRUNCATE ${GALAXY_STAGE_TABLE}`).catch(() => undefined);
       staged = 0;
       throw error;
+    } finally {
+      clearInterval(heartbeat);
     }
   };
 
@@ -313,10 +373,36 @@ export async function createPgCopyWriter(
       return count;
     },
     async analyze() {
+      if (coldLoad) {
+        log('COPY: данные загружены — восстанавливаю поисковые индексы');
+        const indexes = [
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_x ON ${GALAXY_TABLE} (x)`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_y ON ${GALAXY_TABLE} (y)`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_z ON ${GALAXY_TABLE} (z)`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_star_type ON ${GALAXY_TABLE} (star_type)`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_star_giant_class ON ${GALAXY_TABLE} (star_giant_class)`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_coord ON ${GALAXY_TABLE} USING gist (cube(ARRAY[x, y, z]))`,
+          `CREATE INDEX IF NOT EXISTS idx_galaxy_systems_name_trgm ON ${GALAXY_TABLE} USING gin (name_lc gin_trgm_ops)`,
+        ];
+        for (let index = 0; index < indexes.length; index++) {
+          log(`  COPY: строю индекс ${index + 1}/${indexes.length}`);
+          await sql(indexes[index]);
+        }
+      }
       await sql(`ANALYZE ${GALAXY_TABLE}`);
+    },
+    async cancel() {
+      buffer = [];
+      if (connectionClosed) return;
+      connectionClosed = true;
+      // pg sends a socket close while a query is active; PostgreSQL cancels
+      // that backend and rolls its open transaction back.
+      await client.end().catch(() => undefined);
     },
     async close() {
       buffer = [];
+      if (connectionClosed) return;
+      connectionClosed = true;
       await client.end().catch(() => undefined);
     },
   };

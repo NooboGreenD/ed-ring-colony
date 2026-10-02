@@ -814,6 +814,8 @@ export interface GalaxyRowWriter {
   readPoints(onPoint: (point: GalaxySystemPoint) => void): Promise<number>;
   /** Refresh planner statistics after a bulk load (direct Postgres only). */
   analyze?(): Promise<void>;
+  /** Immediately interrupt an in-flight database query (used by Stop). */
+  cancel?(): Promise<void>;
   close(): Promise<void>;
 }
 

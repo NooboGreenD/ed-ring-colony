@@ -229,6 +229,8 @@ export function archivePercent(state: GalaxyArchiveState): number | null {
 
 interface LiveRun {
   controller: AbortController;
+  /** Current writer, so Stop can cancel a query blocked inside PostgreSQL. */
+  writer: GalaxyRowWriter | null;
   snapshot: GalaxyImportSnapshot | null;
   backend: GalaxyImportBackend;
   startedAt: number;
@@ -1238,7 +1240,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
   const buildPoints = options.skipPoints === true ? false : options.skipPoints === false ? true : !isDelta;
 
   const controller = new AbortController();
-  const run: LiveRun = { controller, snapshot: null, backend, startedAt: Date.now(), log: [] };
+  const run: LiveRun = { controller, writer: null, snapshot: null, backend, startedAt: Date.now(), log: [] };
   runtime.edrcGalaxyImportRun = run;
 
   const log = (line: string) => {
@@ -1297,6 +1299,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         log,
       });
       writer = opened.writer;
+      run.writer = writer;
       if (opened.backend !== backend) {
         // Keep the reported backend honest: the admin tab, `/api/galaxy/stats`
         // and the `imported_by` note all read it.
@@ -1540,6 +1543,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         return null;
       }
     } finally {
+      run.writer = null;
       if (writer) await writer.close().catch(() => undefined);
       runtime.edrcGalaxyImportRun = null;
     }
@@ -1597,6 +1601,11 @@ export async function cancelGalaxyImport(): Promise<{ cancelled: boolean; state:
   const run = liveRun();
   if (!run) return { cancelled: false, state: await readImportState() };
   run.controller.abort();
+  // AbortSignal проверяется между строками, но во время долгого INSERT/COPY
+  // управление находится внутри pg. Закрываем его соединение, чтобы Postgres
+  // немедленно отменил запрос и откатил текущий merge, а кнопка не ждала его
+  // естественного завершения десятки минут.
+  await run.writer?.cancel?.().catch(() => undefined);
   // The background task persists `cancelled`; give it a moment to do so.
   for (let i = 0; i < 40; i++) {
     await new Promise((resolve) => setTimeout(resolve, 250));

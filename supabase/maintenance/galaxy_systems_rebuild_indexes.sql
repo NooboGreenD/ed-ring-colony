@@ -32,6 +32,20 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_coord
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_name_trgm
   ON public.galaxy_systems USING gin (name_lc gin_trgm_ops);
 
+-- Индексы фильтров, которые bulk-load скрипт также снимает. Раньше rebuild
+-- восстанавливал только GiST/GIN, и после штатной холодной загрузки диапазоны
+-- координат и фильтры типов навсегда оставались без индексов.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_x
+  ON public.galaxy_systems (x);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_y
+  ON public.galaxy_systems (y);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_z
+  ON public.galaxy_systems (z);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_star_type
+  ON public.galaxy_systems (star_type);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_galaxy_systems_star_giant_class
+  ON public.galaxy_systems (star_giant_class);
+
 -- Планировщик после 10⁸ вставок обязан пересчитать статистику, иначе
 -- запросы атласа продолжат ходить по плану пустой таблицы.
 ANALYZE public.galaxy_systems;
