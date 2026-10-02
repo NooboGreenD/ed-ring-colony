@@ -33,6 +33,7 @@ import {
   type GalaxyImportSnapshot,
   type GalaxyRowWriter,
 } from './galaxyImport.ts';
+import { createPgCopyWriter, loadCopyFrom } from './galaxyCopyWriter.ts';
 import {
   DUMP_VARIANTS,
   dumpVariantUrl,
@@ -67,6 +68,9 @@ import {
 import { FRESH_MS } from './galaxyImportSchedule.ts';
 import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
 import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
+// «timeout expired» от драйвера не отличает «имя не резолвится» от «не тот
+// адрес» и от «закрытый порт». Разбираем это отдельно — см. pgReachability.ts.
+import { probePgReachability, type PgReachability } from './pgReachability.ts';
 import { createAdminClient } from './supabaseAdmin.ts';
 
 /**
@@ -959,8 +963,33 @@ export async function createWriterWithFallback(
   const log = options.log ?? (() => undefined);
   const createPg =
     options.createPg ??
-    ((connectionString, opts) =>
-      createPgWriter(connectionString, { truncate: opts.truncate, log: opts.log, attempts: options.pgAttempts }));
+    (async (connectionString, opts) => {
+      // Быстрый путь: COPY в UNLOGGED staging + merge пачками (см.
+      // galaxyCopyWriter.ts и GALAXY-IMPORT-SPEED.md). Он на порядки быстрее
+      // пачечных INSERT … ON CONFLICT, поэтому выбирается по умолчанию, а
+      // пачечный путь остаётся запасным: нет pg-copy-streams или GALAXY_COPY=0.
+      const copyDisabled = process.env.GALAXY_COPY === '0';
+      if (!copyDisabled && (await loadCopyFrom())) {
+        try {
+          return await createPgCopyWriter(connectionString, {
+            truncate: opts.truncate,
+            log: opts.log,
+            attempts: options.pgAttempts,
+          });
+        } catch (error) {
+          // Падение на подключении должно вести себя как раньше (fallback на
+          // PostgREST), поэтому пробрасывается; падение самого COPY-пути —
+          // повод тихо вернуться к INSERT.
+          if (isPgConnectionError(error)) throw error;
+          opts.log(`WARNING: COPY-путь недоступен (${(error as Error)?.message ?? error}) — пишу пачечными INSERT`);
+        }
+      }
+      return createPgWriter(connectionString, {
+        truncate: opts.truncate,
+        log: opts.log,
+        attempts: options.pgAttempts,
+      });
+    });
   const createSupabase = options.createSupabase ?? (async () => createSupabaseWriter(admin()));
 
   if (options.backend !== 'pg' || !options.connectionString) {
@@ -999,6 +1028,12 @@ export interface GalaxyDbCheck {
     /** Diagnosis for the operator (why it failed), or what succeeded. */
     message: string;
     database: string | null;
+    /**
+     * Раздельный сетевой диагноз (DNS/TCP) для неудачного подключения:
+     * `timeout expired` от драйвера сам по себе не отличает «имя не
+     * резолвится» от «резолвится не туда» и от «порт закрыт».
+     */
+    network?: PgReachability | null;
   };
   postgrest: { configured: boolean };
   /** The backend the import would pick right now. */
@@ -1014,7 +1049,7 @@ export interface GalaxyDbCheck {
  * a short timeout, no retries, and the same diagnosis the import itself uses.
  */
 export async function checkGalaxyDbConnection(
-  options: { env?: NodeJS.ProcessEnv; connectionTimeoutMillis?: number } = {},
+  options: { env?: NodeJS.ProcessEnv; connectionTimeoutMillis?: number; probe?: boolean } = {},
 ): Promise<GalaxyDbCheck> {
   const env = options.env ?? process.env;
   const backends = describeImportBackends(env);
@@ -1060,17 +1095,38 @@ export async function checkGalaxyDbConnection(
       await client.end().catch(() => undefined);
     }
   } catch (error) {
+    const detail = isPgConnectionError(error) ? error.failure.message : (error as Error)?.message || String(error);
+    // Сетевой диагноз добавляется только к сетевым отказам: при неверном
+    // пароле лишние рассуждения про docker-сети только путают.
+    const network = options.probe === false ? null : await probeNetwork(connectionString, options);
     return {
       direct: {
         configured: true,
         host,
         ok: false,
-        message: isPgConnectionError(error) ? error.failure.message : (error as Error)?.message || String(error),
+        message: network && network.kind !== 'ok' ? `${detail} ${network.message}` : detail,
         database: null,
+        network,
       },
       postgrest,
       backend: backends.backend,
     };
+  }
+}
+
+/** DNS + TCP проба по адресу из строки подключения (ошибки пробы не фатальны). */
+async function probeNetwork(
+  connectionString: string,
+  options: { connectionTimeoutMillis?: number } = {},
+): Promise<PgReachability | null> {
+  const target = pgConnectionTarget(connectionString);
+  if (!target) return null;
+  try {
+    return await probePgReachability(target.host, Number(target.port || 5432), {
+      timeoutMs: options.connectionTimeoutMillis ?? 4_000,
+    });
+  } catch {
+    return null;
   }
 }
 

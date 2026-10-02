@@ -102,7 +102,15 @@ interface ArchiveStatus {
 
 /** `check-db` as the admin API returns it. */
 interface DbCheck {
-  direct: { configured: boolean; host: string | null; ok: boolean; message: string; database: string | null };
+  direct: {
+    configured: boolean;
+    host: string | null;
+    ok: boolean;
+    message: string;
+    database: string | null;
+    /** Раздельный сетевой диагноз: «timeout expired» сам по себе ничего не говорит. */
+    network?: { kind: string; host: string; port: number; addresses: string[]; message: string } | null;
+  };
   postgrest: { configured: boolean };
   backend: 'pg' | 'supabase' | null;
 }
@@ -803,6 +811,16 @@ docker compose --env-file .env.production --profile monitoring \\
         {dbCheck && !dbCheck.direct.ok && (
           <div style={{ fontSize: 12, color: '#ef4444', lineHeight: 1.6, marginBottom: 10, wordBreak: 'break-word' }}>
             {dbCheck.direct.message}
+            {dbCheck.direct.network && (
+              <div style={{ color: '#9ca3af', marginTop: 4 }}>
+                DNS «{dbCheck.direct.network.host}»:{' '}
+                {dbCheck.direct.network.addresses.length
+                  ? dbCheck.direct.network.addresses.join(', ')
+                  : 'имя не резолвится'}
+                {' · '}
+                порт {dbCheck.direct.network.port}: {dbCheck.direct.network.kind}
+              </div>
+            )}
           </div>
         )}
 

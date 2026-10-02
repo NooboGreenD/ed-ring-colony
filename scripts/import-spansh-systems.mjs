@@ -50,8 +50,20 @@ import {
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../src/lib/galaxyImport.ts';
+// Быстрый путь записи: COPY в UNLOGGED staging + merge. См. GALAXY-IMPORT-SPEED.md.
+import {
+  COPY_CHUNK_ROWS,
+  COPY_MERGE_ROWS,
+  GALAXY_STAGE_TABLE,
+  copyLine,
+  copySql,
+  loadCopyFrom,
+  mergeStatements,
+  stageDdlSql,
+} from '../src/lib/galaxyCopyWriter.ts';
 // Delta ladder (systems_1day … systems.json.gz) and the shard pipeline: the
 // two ways not to move 5.9 GiB over a thin line. See SPANSH-IMPORT.md.
+import { probePgReachability } from '../src/lib/pgReachability.ts';
 import {
   DUMP_LADDER,
   DUMP_VARIANTS,
@@ -79,6 +91,7 @@ import {
   describePgConnectionError,
   galaxyDbUrl,
   isPgConnectionError,
+  pgConnectionTarget,
 } from '../src/lib/pgModule.ts';
 
 export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
@@ -163,6 +176,10 @@ function parseArgs(argv) {
       case '--limit': args.limit = Number(argv[++i]); break;
       case '--batch': args.batch = Number(argv[++i]); break;
       case '--truncate': args.truncate = true; break;
+      // Запись через COPY включена по умолчанию; --no-copy возвращает
+      // пачечные INSERT … ON CONFLICT (отладка, экзотический Postgres).
+      case '--no-copy': args.noCopy = true; break;
+      case '--merge-rows': args.mergeRows = Number(argv[++i]); break;
       case '--no-points': args.noPoints = true; break;
       case '--dry-run': args.dryRun = true; break;
       case '--selftest': args.selftest = true; break;
@@ -323,6 +340,122 @@ class PgWriter {
   }
 
   async close() {
+    await this.pool.end();
+  }
+}
+
+/**
+ * Тот же прямой Postgres, но строки уходят через `COPY FROM STDIN` в UNLOGGED
+ * staging-таблицу и сливаются в каталог пачками. На каталоге всей галактики
+ * это главный рычаг скорости: ни парсинга мегабайтных INSERT-ов, ни
+ * `DELETE … WHERE name_lc IN (…) OR id64 IN (…)` (тот самый seq scan по 2×10⁸
+ * строк, из-за которого импорт полз по десяткам систем в секунду).
+ *
+ * SQL и экранирование берутся из src/lib/galaxyCopyWriter.ts — у CLI и у
+ * импорта внутри приложения один источник правды.
+ */
+class PgCopyWriter extends PgWriter {
+  constructor(pool, mergeRows, truncate, log, copyFrom) {
+    super(pool, mergeRows, truncate, log);
+    this.mergeRows = mergeRows;
+    this.copyFrom = copyFrom;
+    this.staged = 0;
+    this.client = null;
+  }
+
+  get deferred() {
+    // Пачка здесь либо вливается целиком, либо падает настоящей ошибкой:
+    // откладывать построчно нечего.
+    return 0;
+  }
+
+  async begin() {
+    // Отдельное соединение на всю заливку: COPY держит поток, а пул max=1.
+    this.client = await this.pool.connect();
+    await this.client.query('SET synchronous_commit = OFF').catch(() => undefined);
+    await this.client.query(stageDdlSql());
+    await this.client.query(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
+    if (this.truncate) {
+      await this.client.query('TRUNCATE galaxy_systems RESTART IDENTITY');
+      this.log('Truncated galaxy_systems');
+    }
+    this.log(`DB write mode: COPY → ${GALAXY_STAGE_TABLE} (merge every ${this.mergeRows} rows)`);
+  }
+
+  async add(row) {
+    this.rows.push(row);
+    if (this.rows.length >= COPY_CHUNK_ROWS) {
+      await this.copyRows();
+      if (this.staged >= this.mergeRows) await this.merge();
+    }
+  }
+
+  async copyRows() {
+    const batch = this.rows;
+    this.rows = [];
+    if (batch.length === 0) return;
+    const stream = this.client.query(this.copyFrom(copySql()));
+    await new Promise((resolve, reject) => {
+      stream.on('error', reject);
+      stream.on('finish', resolve);
+      let text = '';
+      for (let i = 0; i < batch.length; i++) {
+        text += copyLine(batch[i]);
+        if (i % 10_000 === 9_999) { stream.write(text); text = ''; }
+      }
+      if (text) stream.write(text);
+      stream.end();
+    });
+    this.staged += batch.length;
+  }
+
+  async merge() {
+    if (this.staged === 0) return 0;
+    await this.client.query('BEGIN');
+    try {
+      let inserted = 0;
+      for (const statement of mergeStatements()) {
+        const res = await this.client.query(statement);
+        inserted = Number(res.rowCount ?? 0);
+      }
+      await this.client.query(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
+      await this.client.query('COMMIT');
+      this.staged = 0;
+      this.written += inserted;
+      return inserted;
+    } catch (error) {
+      await this.client.query('ROLLBACK').catch(() => undefined);
+      // Приёмник обязан остаться пустым: иначе следующая попытка задвоит пачку.
+      await this.client.query(`TRUNCATE ${GALAXY_STAGE_TABLE}`).catch(() => undefined);
+      this.staged = 0;
+      throw error;
+    }
+  }
+
+  async flush() {
+    await this.copyRows();
+    return this.merge();
+  }
+
+  async retryDeferred() {}
+
+  /**
+   * Пул открыт с `max: 1`, а COPY-клиент держит это единственное соединение,
+   * поэтому COUNT/ANALYZE/мета идут по нему же — иначе `pool.connect()`
+   * повис бы в ожидании самого себя.
+   */
+  async query(sql) {
+    try {
+      const res = await this.client.query(sql);
+      return { error: null, res };
+    } catch (error) {
+      return { error, res: null };
+    }
+  }
+
+  async close() {
+    if (this.client) this.client.release();
+    this.client = null;
     await this.pool.end();
   }
 }
@@ -628,7 +761,19 @@ async function resolveDb(args, log) {
     try {
       const pool = await openPgPool(databaseUrl, log);
       log(`DB mode: pg (${maskUrl(databaseUrl)})`);
-      const writer = new PgWriter(pool, args.batch || PG_BATCH_SIZE, args.truncate, log);
+      const copyFrom = args.noCopy || process.env.GALAXY_COPY === '0' ? null : await loadCopyFrom();
+      if (!copyFrom && !args.noCopy) {
+        log('WARNING: pg-copy-streams не установлен — пишу пачечными INSERT (в разы медленнее). npm i pg-copy-streams');
+      }
+      const writer = copyFrom
+        ? new PgCopyWriter(
+            pool,
+            Number.isFinite(args.mergeRows) && args.mergeRows > 0 ? args.mergeRows : COPY_MERGE_ROWS,
+            args.truncate,
+            log,
+            copyFrom,
+          )
+        : new PgWriter(pool, args.batch || PG_BATCH_SIZE, args.truncate, log);
       await writer.begin();
       return writer;
     } catch (error) {
@@ -681,6 +826,14 @@ async function checkDb(args) {
     } catch (error) {
       ok = false;
       say(`direct Postgres: FAILED — ${pgFailureMessage(error, databaseUrl)}`);
+      // «timeout expired» одинаково звучит и когда имя уводит в чужой адрес,
+      // и когда порт закрыт: спрашиваем DNS и TCP отдельно.
+      const target = pgConnectionTarget(databaseUrl);
+      if (target) {
+        const probe = await probePgReachability(target.host, Number(target.port || 5432));
+        say(`  DNS: ${probe.addresses.length ? probe.addresses.join(', ') : 'имя не резолвится'}`);
+        say(`  сеть: ${probe.message}`);
+      }
     }
   }
 
