@@ -70,6 +70,95 @@ DELETE FROM galaxy_systems WHERE name_lc IN ('sol') OR id64 IN ('10477373803');
 
 ---
 
+## 1a. Частный случай: «db:5432 — timeout expired», PostgREST настроен
+
+Именно это и означает 20/с: импорт идёт по аварийному HTTP-пути, потому что
+прямое подключение не поднимается. Важная деталь — формулировка ошибки:
+
+| ошибка драйвера | что произошло | что делать |
+| --- | --- | --- |
+| `getaddrinfo EAI_AGAIN db` | имя `db` не резолвится | подключить `web` к сети Supabase |
+| **`timeout expired`** | имя **резолвится**, но TCP не доходит | см. ниже |
+
+`timeout expired` при хосте `db` почти всегда значит одно из двух:
+
+1. **`db` увели в сторону.** Контейнера `db` в сети `web` нет, но внешний DNS
+   (поисковый домен провайдера, wildcard) отвечает на короткое имя чужим
+   **публичным** адресом. Соединение честно висит до таймаута — firewall ни
+   при чём, хотя сообщение намекает именно на него.
+2. **Сеть есть, но трафик режут** правила `DOCKER-USER`/ufw, либо контейнер
+   Postgres живёт в другой сети, чем та, где резолвится имя.
+
+Поэтому проверка подключения теперь **отдельно спрашивает DNS и отдельно
+открывает сокет** (`src/lib/pgReachability.ts`) и пишет, во что именно
+разрешилось имя:
+
+```
+DNS «db»: 203.0.113.7 · порт 5432: dns-public
+Имя «db» резолвится в ПУБЛИЧНЫЙ адрес 203.0.113.7 — это не контейнер Supabase…
+```
+
+```
+DNS «db»: 172.18.0.5 · порт 5432: tcp-timeout
+Адрес найден, но порт 5432 не ответил — проверьте сеть контейнеров и DOCKER-USER/ufw.
+```
+
+Это видно и в админке (кнопка «Проверить подключение к БД»), и в CLI:
+
+```bash
+node scripts/import-spansh-systems.mjs --check-db
+```
+
+### Как починить (по порядку)
+
+**Шаг 1. Подключить `web` к сети стека Supabase** — штатный способ, файл уже
+есть в репозитории:
+
+```bash
+docker network ls | grep -i supabase          # точное имя сети
+echo 'SUPABASE_NETWORK=supabase_default' >> .env.production
+docker compose --env-file .env.production --profile monitoring \
+  -f docker-compose.yml -f deploy/compose.supabase-net.yml up -d
+docker network inspect supabase_default --format '{{range .Containers}}{{.Name}} {{end}}'
+# в списке должны быть и supabase-db, и ed-ring-colony-web
+```
+
+Затем `DATABASE_URL=postgresql://postgres:ПАРОЛЬ@db:5432/postgres`
+(пароль — `POSTGRES_PASSWORD` из `/opt/supabase/.env`).
+
+**Шаг 2. Если сеть подключить нельзя** — адресуйте Postgres так, как его
+видит контейнер. У `web` уже проброшен `host.docker.internal`:
+
+```bash
+# на хосте: убедиться, что порт слушается
+ss -ltnp | grep 5432
+# в .env.production
+DATABASE_URL=postgresql://postgres:ПАРОЛЬ@host.docker.internal:5432/postgres
+# либо IP docker-моста: 172.17.0.1
+```
+
+Проверка изнутри контейнера (три команды, которые сразу всё показывают):
+
+```bash
+docker compose exec web getent hosts db
+docker compose exec web sh -c 'nc -zv db 5432 || true'
+docker compose exec web sh -c 'nc -zv host.docker.internal 5432 || true'
+```
+
+**Шаг 3. Самый быстрый обход для разовой заливки** — не чинить сеть
+контейнера вовсе, а запустить импорт **на хосте**, рядом с базой:
+
+```bash
+cd /opt/ed-ring-colony/src
+DATABASE_URL=postgresql://postgres:ПАРОЛЬ@127.0.0.1:5432/postgres \
+  node scripts/import-spansh-systems.mjs --from-shards
+```
+
+Каталог один на всех — неважно, какой процесс его наполняет.
+
+> Пока прямое подключение не поднято, **не запускайте полную заливку**: путь
+> PostgREST физически не способен залить 2×10⁸ строк.
+
 ## 2. Что именно тормозило (по убыванию вклада)
 
 ### 2.1. Путь PostgREST вместо прямого Postgres — ×100…×1000

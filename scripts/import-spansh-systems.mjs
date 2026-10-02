@@ -63,6 +63,7 @@ import {
 } from '../src/lib/galaxyCopyWriter.ts';
 // Delta ladder (systems_1day … systems.json.gz) and the shard pipeline: the
 // two ways not to move 5.9 GiB over a thin line. See SPANSH-IMPORT.md.
+import { probePgReachability } from '../src/lib/pgReachability.ts';
 import {
   DUMP_LADDER,
   DUMP_VARIANTS,
@@ -90,6 +91,7 @@ import {
   describePgConnectionError,
   galaxyDbUrl,
   isPgConnectionError,
+  pgConnectionTarget,
 } from '../src/lib/pgModule.ts';
 
 export { streamObjects, toGalaxySystemRow, JsonArrayObjects };
@@ -824,6 +826,14 @@ async function checkDb(args) {
     } catch (error) {
       ok = false;
       say(`direct Postgres: FAILED — ${pgFailureMessage(error, databaseUrl)}`);
+      // «timeout expired» одинаково звучит и когда имя уводит в чужой адрес,
+      // и когда порт закрыт: спрашиваем DNS и TCP отдельно.
+      const target = pgConnectionTarget(databaseUrl);
+      if (target) {
+        const probe = await probePgReachability(target.host, Number(target.port || 5432));
+        say(`  DNS: ${probe.addresses.length ? probe.addresses.join(', ') : 'имя не резолвится'}`);
+        say(`  сеть: ${probe.message}`);
+      }
     }
   }
 
