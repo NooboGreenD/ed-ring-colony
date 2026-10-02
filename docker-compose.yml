@@ -223,6 +223,21 @@ services:
       DOCKER_CONFIG: /state/.docker
       # pg_dump/pg_restore inside the updater talk to the self-hosted stack.
       SUPABASE_CONTAINER: ${SUPABASE_CONTAINER:-supabase-db}
+      # Сторож сети Supabase: раз в минуту агент проверяет, что web и
+      # monitor-agent подключены к docker-сети, где контейнер supabase-db
+      # публикует alias `db`, и переподключает отвалившиеся контейнеры на
+      # лету (`docker network connect`, без пересоздания). Это страховка от
+      # ЛЮБОГО `docker compose up` без deploy/compose.supabase-net.yml
+      # (другой каталог, старый скрипт, ручная команда): раньше такой up
+      # молча отцеплял web от сети, и «Проверить подключение к БД» снова
+      # показывал «имя db не резолвится» до следующего start-monitoring.sh.
+      # Каждый ремонт попадает в журнал агента вместе с compose-проектом
+      # контейнера — по нему видно, откуда пришёл «чужой» up.
+      # 0 — выключить; SUPABASE_NETWORK — подсказка на случай, когда
+      # supabase-db в момент проверки перезапускается.
+      SUPABASE_NETWORK: ${SUPABASE_NETWORK:-}
+      SUPABASE_NET_WATCH_SECONDS: ${SUPABASE_NET_WATCH_SECONDS:-60}
+      SUPABASE_NET_WATCH_SERVICES: ${SUPABASE_NET_WATCH_SERVICES:-web,monitor-agent}
       # Manual weekly database backup (Админка → Бэкапы): where the dumps go
       # and how many of them to keep. Four weekly copies ≈ one month.
       UPDATE_BACKUP_DIR: ${UPDATE_BACKUP_DIR:-/opt/ed-ring-colony/backups}

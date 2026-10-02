@@ -73,7 +73,7 @@
  * restart because it is mirrored into `$UPDATE_STATE_DIR/update-state.json`.
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { appendFileSync, accessSync, chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, constants as fsConstants } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, join, resolve } from 'node:path';
@@ -1019,6 +1019,267 @@ export function createUpdateServer({ config = updateAgentConfig(), manager = cre
   });
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Сторож сети Supabase: лечит «прямой Postgres (db) недоступен» на лету.
+ *
+ * Имя `db` существует только внутри docker-сети стека Supabase, поэтому web
+ * и monitor-agent подключаются к ней override-файлом
+ * deploy/compose.supabase-net.yml. Проблема прода: ЛЮБОЙ `docker compose up`
+ * без этого файла (запуск из другого каталога, старый скрипт, ручная
+ * команда) молча пересоздаёт web уже БЕЗ сети Supabase — и «Проверить
+ * подключение к БД» снова показывает «имя db не резолвится», хотя минуту
+ * назад всё работало. Скрипты репозитория передают override сами, но
+ * застраховаться от чужого up невозможно — можно только чинить последствия.
+ *
+ * Этот сторож живёт в update-agent (единственный контейнер с rw-сокетом
+ * Docker) и раз в SUPABASE_NET_WATCH_SECONDS (по умолчанию 60) проверяет,
+ * что контейнеры сервисов web и monitor-agent подключены к сети, в которой
+ * контейнер supabase-db публикует alias `db`. Отвалившийся контейнер
+ * переподключается на лету командой `docker network connect` — без
+ * пересоздания, резолвинг восстанавливается немедленно. Каждый ремонт
+ * пишется в журнал агента вместе с именем compose-проекта контейнера:
+ * если web принадлежит другому проекту, чем апдейтер, это и есть источник
+ * «постоянно отваливается» — стек поднимают из двух разных каталогов.
+ *
+ * Настройка (environment):
+ *   SUPABASE_NET_WATCH_SECONDS   период проверки, 0 — выключить (default 60)
+ *   SUPABASE_NET_WATCH_SERVICES  список compose-сервисов (default web,monitor-agent)
+ *   SUPABASE_NETWORK             подсказка имени сети (как у compose-override)
+ *   SUPABASE_CONTAINER           контейнер Postgres стека (default supabase-db)
+ *
+ * В systemd-режиме (docker недоступен) сторож отключает себя сам одной
+ * строкой в журнале и больше ресурсов не тратит.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export function supabaseNetWatchdogConfig(env = process.env) {
+  const rawSeconds = (env.SUPABASE_NET_WATCH_SECONDS ?? '').toString().trim();
+  const seconds = rawSeconds === '' ? 60 : Number(rawSeconds);
+  const services = (env.SUPABASE_NET_WATCH_SERVICES || 'web,monitor-agent')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const periodValid = Number.isFinite(seconds) && seconds > 0;
+  return {
+    enabled: periodValid && services.length > 0,
+    // Нижняя граница 15 с: чаще дёргать Docker-демон незачем, а нулевая
+    // пауза превратила бы опечатку в busy-loop по сокету.
+    intervalMs: periodValid ? Math.min(3_600, Math.max(15, seconds)) * 1_000 : 0,
+    networkHint: (env.SUPABASE_NETWORK || '').trim(),
+    dbContainer: (env.SUPABASE_CONTAINER || '').trim() || 'supabase-db',
+    services,
+  };
+}
+
+/**
+ * Выбрать сеть, в которой `db` реально резолвится.
+ *
+ * `networks` — объект `.NetworkSettings.Networks` контейнера supabase-db.
+ * Порядок тот же, что у deploy/compose-lib.sh: сеть с alias `db` → явная
+ * подсказка (если она среди сетей контейнера) → сеть с «supabase» в имени →
+ * первая сеть. Подключение к сети БЕЗ alias `db` выглядело бы успешным, но
+ * имя всё равно не резолвилось бы — поэтому alias важнее подсказки.
+ */
+export function pickSupabaseNetwork(networks, hint = '') {
+  if (!networks || typeof networks !== 'object') return '';
+  const names = Object.keys(networks);
+  if (names.length === 0) return '';
+  const aliasNets = names.filter((name) => {
+    const aliases = networks[name]?.Aliases;
+    return Array.isArray(aliases) && aliases.includes('db');
+  });
+  if (hint && aliasNets.includes(hint)) return hint;
+  if (aliasNets.length > 0) return aliasNets[0];
+  if (hint && names.includes(hint)) return hint;
+  return names.find((name) => /supabase/i.test(name)) ?? names[0];
+}
+
+/** Docker CLI без shell: аргументы передаются списком, вывод — строкой. */
+function runDockerCli(args, { timeoutMs = 10_000 } = {}) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile('docker', args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        error.stderr = (stderr ?? '').toString();
+        rejectPromise(error);
+      } else {
+        resolvePromise((stdout ?? '').toString());
+      }
+    });
+  });
+}
+
+export function createSupabaseNetworkWatchdog({
+  config = supabaseNetWatchdogConfig(),
+  docker = runDockerCli,
+  log = (line) => console.log(line),
+  isBusy = () => false,
+  selfContainerId = (process.env.HOSTNAME || '').trim(),
+} = {}) {
+  let timer = null;
+  let running = false;
+  let disabled = false;
+  let ownProject = null; // null — ещё не определяли; '' — определить не удалось
+  const noted = new Set();
+
+  const sayOnce = (key, line) => {
+    if (noted.has(key)) return;
+    noted.add(key);
+    log(line);
+  };
+  const forget = (key) => noted.delete(key);
+  const dockerMissing = (error) => error?.code === 'ENOENT';
+  const disable = (reason) => {
+    disabled = true;
+    sayOnce('disabled', `сторож сети Supabase отключён: ${reason}`);
+  };
+
+  async function detectOwnProject() {
+    if (!selfContainerId) return '';
+    try {
+      const raw = await docker(['inspect', '--format', '{{index .Config.Labels "com.docker.compose.project"}}', selfContainerId]);
+      return raw.trim();
+    } catch {
+      return '';
+    }
+  }
+
+  async function findNetwork() {
+    try {
+      const raw = await docker(['inspect', '--format', '{{json .NetworkSettings.Networks}}', config.dbContainer]);
+      const networks = JSON.parse(raw.trim() || 'null');
+      const picked = pickSupabaseNetwork(networks, config.networkHint);
+      if (picked) {
+        forget('no-db');
+        return picked;
+      }
+    } catch (error) {
+      if (dockerMissing(error)) {
+        disable('docker CLI недоступен (systemd-установка без Docker?)');
+        return '';
+      }
+    }
+    // supabase-db не найден (или кратко перезапускается): последний шанс —
+    // явно заданная сеть, если она существует.
+    if (config.networkHint) {
+      try {
+        await docker(['network', 'inspect', '--format', '{{.Name}}', config.networkHint]);
+        forget('no-db');
+        return config.networkHint;
+      } catch (error) {
+        if (dockerMissing(error)) {
+          disable('docker CLI недоступен (systemd-установка без Docker?)');
+          return '';
+        }
+      }
+    }
+    sayOnce(
+      'no-db',
+      `сторож сети Supabase: контейнер «${config.dbContainer}» не найден` +
+        `${config.networkHint ? ` и сеть «${config.networkHint}» недоступна` : ''} — проверка пропускается до его появления`,
+    );
+    return '';
+  }
+
+  /** Одна проверка. Возвращает сводку — на ней строятся тесты. */
+  async function tick() {
+    const summary = { skipped: false, network: null, checked: 0, repaired: [], failed: [] };
+    if (!config.enabled || disabled || running || isBusy()) {
+      summary.skipped = true;
+      return summary;
+    }
+    running = true;
+    try {
+      const network = await findNetwork();
+      if (!network) return summary;
+      summary.network = network;
+      if (ownProject === null) ownProject = await detectOwnProject();
+
+      for (const service of config.services) {
+        let ids = [];
+        try {
+          const raw = await docker(['ps', '--filter', `label=com.docker.compose.service=${service}`, '--format', '{{.ID}}']);
+          ids = raw.split(/\s+/).filter(Boolean);
+        } catch (error) {
+          if (dockerMissing(error)) {
+            disable('docker CLI недоступен (systemd-установка без Docker?)');
+            return summary;
+          }
+          continue;
+        }
+        for (const id of ids) {
+          let info = null;
+          try {
+            info = JSON.parse(await docker(['inspect', id]))?.[0] ?? null;
+          } catch {
+            continue; // контейнер успел исчезнуть между ps и inspect
+          }
+          if (!info || info.State?.Running !== true) continue;
+          summary.checked += 1;
+          const attached = Object.keys(info.NetworkSettings?.Networks ?? {});
+          if (attached.includes(network)) continue;
+          const name = (info.Name || '').replace(/^\//, '') || id;
+          const project = info.Config?.Labels?.['com.docker.compose.project'] ?? '';
+          try {
+            await docker(['network', 'connect', network, id]);
+          } catch (error) {
+            // Гонка «уже подключили» — не ошибка; остальное говорим один раз
+            // на контейнер, чтобы не зашумлять журнал каждую минуту.
+            if (!/already exists in network/i.test(`${error?.message ?? ''} ${error?.stderr ?? ''}`)) {
+              summary.failed.push({ id, name, service });
+              sayOnce(
+                `fail-${id}-${network}`,
+                `⚠ сторож сети Supabase: не удалось подключить ${name} к сети «${network}»: ${String(error?.stderr || error?.message || error).trim()}`,
+              );
+              continue;
+            }
+          }
+          forget(`fail-${id}-${network}`);
+          summary.repaired.push({ id, name, service, project });
+          log(
+            `⚠ сторож сети Supabase: контейнер ${name} (сервис ${service}${project ? `, проект «${project}»` : ''}) ` +
+              `работал БЕЗ сети «${network}» — переподключил, имя «db» снова резолвится. ` +
+              `Значит, недавно выполнялся docker compose up без deploy/compose.supabase-net.yml ` +
+              `(контейнер создан ${info.Created ?? 'н/д'}); запускайте стек штатными скриптами из одного каталога.`,
+          );
+          if (project && ownProject && project !== ownProject) {
+            log(
+              `⚠ сторож сети Supabase: ${name} принадлежит compose-проекту «${project}», а апдейтер — «${ownProject}». ` +
+                `Похоже, стек поднимали из двух разных каталогов — у каждого свой набор контейнеров, и сеть будет теряться при каждом up. ` +
+                `Оставьте один каталог (обычно /opt/ed-ring-colony/src) и уберите дубль.`,
+            );
+          }
+        }
+      }
+      return summary;
+    } finally {
+      running = false;
+    }
+  }
+
+  function start() {
+    if (!config.enabled || timer) return;
+    const safeTick = () => {
+      tick().catch((error) => {
+        sayOnce('tick-error', `⚠ сторож сети Supabase: проверка упала (${error?.message ?? error}) — продолжу по расписанию`);
+      });
+    };
+    // Первая проверка почти сразу: чинит сеть и после перезапуска агента,
+    // не дожидаясь целого интервала.
+    const kickoff = setTimeout(safeTick, 3_000);
+    kickoff.unref?.();
+    timer = setInterval(safeTick, config.intervalMs);
+    timer.unref?.();
+  }
+
+  function stop() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  return { start, stop, tick };
+}
+
 export function startUpdateAgent(env = process.env) {
   const config = updateAgentConfig(env);
   if (config.requiresToken && !config.token) {
@@ -1027,10 +1288,22 @@ export function startUpdateAgent(env = process.env) {
     return null;
   }
   mkdirSync(config.stateDir, { recursive: true });
-  const server = createUpdateServer({ config });
+  const manager = createUpdateManager(config);
+  const server = createUpdateServer({ config, manager });
   server.listen(config.port, config.host, () => {
     console.log(`update-agent listening on ${config.host}:${config.port}`);
   });
+  // Самовосстановление сети Supabase: чужой `docker compose up` без
+  // deploy/compose.supabase-net.yml больше не оставляет сайт без прямого
+  // Postgres до следующего запуска start-monitoring.sh. Во время обновления
+  // (isBusy) проверка пропускается: переключением контейнеров занимается
+  // сам update-project.sh с правильным набором compose-файлов.
+  const watchdog = createSupabaseNetworkWatchdog({
+    config: supabaseNetWatchdogConfig(env),
+    isBusy: () => manager.isBusy(),
+  });
+  watchdog.start();
+  server.on('close', () => watchdog.stop());
   return server;
 }
 

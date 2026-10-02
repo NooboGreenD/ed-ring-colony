@@ -175,6 +175,18 @@ export interface PgCopyWriterOptions {
   attempts?: number;
   log?: (line: string) => void;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Полный дамп: будет перезаписан ВЕСЬ каталог. Тяжёлые поисковые индексы
+   * тогда выгоднее снять и построить заново после заливки, даже когда каталог
+   * не пуст (остаток прерванного импорта). Прод-инцидент: «каталог пуст или
+   * неполный — нужен полный дамп» выбрал полный импорт, но писатель снимал
+   * индексы только при COUNT(*)=0 — и каждое слияние 250 тыс. строк минутами
+   * обновляло GIN (trgm) и GiST (cube); ~800 слияний на дамп превращались в
+   * недели. GALAXY_COPY_DROP_INDEXES=0 возвращает старое поведение.
+   */
+  fullReload?: boolean;
+  /** Инъекция окружения для тестов (`GALAXY_COPY_DROP_INDEXES`). */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -215,15 +227,31 @@ export async function createPgCopyWriter(
   await sql(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
   if (options.truncate) await sql(`TRUNCATE ${GALAXY_TABLE} RESTART IDENTITY`);
 
-  // На пустом каталоге это холодная загрузка. Поддерживать семь поисковых
-  // индексов для каждой из ~2×10⁸ строк в сотни раз медленнее, чем построить
-  // их один раз после COPY (первая пачка могла идти 30+ минут). Уникальные
-  // индексы не снимаем: они нужны ON CONFLICT и защите id64/name_lc.
+  // Холодная загрузка. Поддерживать семь поисковых индексов для каждой из
+  // ~2×10⁸ строк в сотни раз медленнее, чем построить их один раз после COPY
+  // (первая пачка могла идти 30+ минут). Уникальные индексы не снимаем: они
+  // нужны ON CONFLICT и защите id64/name_lc.
+  //
+  // «Холодная» — это не только COUNT(*)=0. Полный дамп перезаписывает весь
+  // каталог, поэтому остаток прерванного импорта (каталог «неполный») — тоже
+  // холодная загрузка: иначе индексы остаются, слияние каждой пачки идёт
+  // минутами («вставка и обновление индексов, 420 с…»), и полный дамп не
+  // заканчивается никогда. GALAXY_COPY_DROP_INDEXES=0 — аварийный выключатель.
   const countBefore = await sql(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`);
-  const coldLoad =
-    Number((countBefore as unknown as { rows?: Array<{ n?: unknown }> }).rows?.[0]?.n ?? 0) === 0;
+  const existingRows = Number(
+    (countBefore as unknown as { rows?: Array<{ n?: unknown }> }).rows?.[0]?.n ?? 0,
+  );
+  const env = options.env ?? process.env;
+  const dropDisabled = (env.GALAXY_COPY_DROP_INDEXES ?? '').toString().trim() === '0';
+  const coldLoad = existingRows === 0 || (options.fullReload === true && !dropDisabled);
   if (coldLoad) {
-    log('COPY: пустой каталог — временно снимаю поисковые индексы для быстрой холодной загрузки');
+    log(
+      existingRows === 0
+        ? 'COPY: пустой каталог — временно снимаю поисковые индексы для быстрой холодной загрузки'
+        : `COPY: полный дамп перезапишет каталог (сейчас ${existingRows.toLocaleString()} строк) — ` +
+            'временно снимаю поисковые индексы: с ними каждое слияние обновляет GIN/GiST и идёт минутами. ' +
+            'Индексы будут построены заново после заливки (GALAXY_COPY_DROP_INDEXES=0 отключает)',
+    );
     for (const index of [
       'idx_galaxy_systems_name_trgm',
       'idx_galaxy_systems_coord',

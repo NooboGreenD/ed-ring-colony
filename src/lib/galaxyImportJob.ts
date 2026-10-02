@@ -944,8 +944,18 @@ export interface CreateWriterOptions {
    * so an unreachable host does not cost the whole backoff schedule).
    */
   pgAttempts?: number;
+  /**
+   * Полный дамп (variant=full): COPY-писатель снимает поисковые индексы и на
+   * НЕпустом каталоге — полный дамп всё равно перезапишет каждую строку, а
+   * поддержка GIN/GiST на каждой пачке растягивала слияние 250 тыс. строк на
+   * минуты (и весь дамп — на недели). См. PgCopyWriterOptions.fullReload.
+   */
+  fullReload?: boolean;
   /** Injectable factories — the tests drive this without a database. */
-  createPg?: (connectionString: string, options: { truncate: boolean; log: (line: string) => void }) => Promise<GalaxyRowWriter>;
+  createPg?: (
+    connectionString: string,
+    options: { truncate: boolean; log: (line: string) => void; fullReload?: boolean },
+  ) => Promise<GalaxyRowWriter>;
   createSupabase?: () => Promise<GalaxyRowWriter>;
 }
 
@@ -977,6 +987,7 @@ export async function createWriterWithFallback(
             truncate: opts.truncate,
             log: opts.log,
             attempts: options.pgAttempts,
+            fullReload: opts.fullReload === true,
           });
         } catch (error) {
           // Падение на подключении должно вести себя как раньше (fallback на
@@ -1002,7 +1013,14 @@ export async function createWriterWithFallback(
   }
 
   try {
-    return { writer: await createPg(options.connectionString, { truncate: options.truncate, log }), backend: 'pg' };
+    return {
+      writer: await createPg(options.connectionString, {
+        truncate: options.truncate,
+        log,
+        fullReload: options.fullReload === true,
+      }),
+      backend: 'pg',
+    };
   } catch (error) {
     const detail = isPgConnectionError(error)
       ? error.failure.message
@@ -1296,6 +1314,11 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         connectionString,
         truncate: options.truncate === true,
         supabaseFallback: describeImportBackends().supabase,
+        // Полный дамп перезапишет каждую строку каталога: COPY-писатель
+        // снимает поисковые индексы и на непустом каталоге (остаток
+        // прерванного импорта), иначе каждое слияние 250 тыс. строк минутами
+        // обновляет GIN/GiST. Дельты индексы не трогают.
+        fullReload: !isDelta,
         log,
       });
       writer = opened.writer;
