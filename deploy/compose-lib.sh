@@ -525,6 +525,203 @@ edrc_build_each() {
   return 0
 }
 
+# ── Переключение контейнеров: конфликт имени и его цена в гигабайтах ──
+#
+# Прод-инцидент (журнал обновления):
+#   Container src-web-1 Stopping
+#   Container 548bf7698162_src-web-1 Recreate
+#   Error response from daemon: Error when allocating new name: Conflict.
+#   The container name "/src-web-1" is already in use by container "548bf76…"
+#   Container src-web-1 Error Error while Stopping
+#
+# Что произошло. `compose up -d` пересоздаёт контейнер в три приёма:
+# остановить старый → переименовать его в «<id>_<имя>» → создать новый под
+# освободившимся именем. У docker stop есть таймаут (по умолчанию 10 с).
+# На нагруженном диске web не успевает завершиться, compose уходит в
+# переименование/создание, пока демон ещё «Stopping», rename не доводится
+# до конца — и создание нового контейнера падает на занятом имени.
+# Обновление обрывается кодом 1 УЖЕ ПОСЛЕ успешной часовой сборки.
+#
+# Почему от этого тает диск. После срыва на хосте остаётся СТАРЫЙ контейнер
+# (часто под именем «<id>_src-web-1»), и он держит ссылку на СТАРЫЙ образ.
+# Поэтому `docker image prune -f` не может удалить предыдущий src-web:
+# образ не «висячий», он используется контейнером. Каждая такая переборка
+# добавляет на диск полный новый образ (у этого проекта ~1.5–3 ГБ) плюс
+# свежие записи кэша BuildKit — и ни один каталог проекта при этом не
+# «толстеет»: всё лежит в /var/lib/docker/overlay2 отдельными слоями.
+# Отсюда и «5–10 ГБ за проход, а папок таких нет».
+#
+# Лечение (ниже): переключать контейнеры с ЯВНЫМ длинным стопом, подчищать
+# остатки прошлых срывов, распознавать конфликт имени и повторять переключение,
+# сняв конфликтующий контейнер.
+
+# edrc_compose_stop_timeout — сколько ждать корректного завершения (сек).
+edrc_compose_stop_timeout() {
+  local t="${UPDATE_STOP_TIMEOUT:-120}"
+  case "$t" in
+    ''|*[!0-9]*) t=120 ;;
+  esac
+  printf '%s\n' "$t"
+}
+
+# edrc_stale_switch_containers — контейнеры-остатки переименования compose.
+#
+# Compose переименовывает заменяемый контейнер в «<12 hex>_<исходное имя>».
+# В норме такой контейнер живёт секунды и удаляется; после сорвавшегося
+# переключения он остаётся навсегда — вместе со слоем записи и ссылкой на
+# старый образ. Признак надёжный: обычные имена compose так не выглядят.
+edrc_stale_switch_containers() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps -a --format '{{.Names}}' 2>/dev/null \
+    | grep -E '^[0-9a-f]{8,64}_.+' || true
+}
+
+# edrc_remove_stale_containers [--force] — снять остатки прошлых переключений.
+#
+# Без --force удаляются только ОСТАНОВЛЕННЫЕ остатки: запущенный остаток —
+# это сайт, который сейчас обслуживает пользователей (новый контейнер не
+# создался), и в фоновой уборке его трогать нельзя. С --force (перед самим
+# переключением, когда контейнер всё равно будет пересоздан) снимаются и
+# работающие.
+edrc_remove_stale_containers() {
+  local force=0
+  [ "${1:-}" = "--force" ] && force=1
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  local names name state removed=0
+  names="$(edrc_stale_switch_containers)"
+  [ -n "$names" ] || return 0
+  for name in $names; do
+    state="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null || echo false)"
+    if [ "$state" = "true" ] && [ "$force" != "1" ]; then
+      printf '⚠ остаток прошлого переключения %s ещё работает — сниму его при следующем переключении\n' "$name"
+      continue
+    fi
+    printf 'убираю остаток прошлого переключения: %s (он держал старый образ и мешал освободить диск)\n' "$name"
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    removed=$((removed + 1))
+  done
+  [ "$removed" -gt 0 ] && printf 'снято остатков переключения: %s\n' "$removed"
+  return 0
+}
+
+# edrc_resolve_name_conflicts FILE — снять контейнеры из ошибки «name … in use».
+#
+# Из строки демона достаём и имя («/src-web-1»), и id занявшего контейнера:
+# в разных версиях Docker остаётся то одно, то другое, поэтому снимаем оба.
+edrc_resolve_name_conflicts() {
+  local log="${1:-}"
+  [ -n "$log" ] && [ -f "$log" ] || return 0
+  command -v docker >/dev/null 2>&1 || return 0
+  local tokens token fixed=0
+  # sed: срезать всё ДО первой кавычки (жадное .*" съело бы и само значение),
+  # затем закрывающую кавычку и ведущий слэш docker-имени («/src-web-1»).
+  tokens="$(grep -aoE 'container name "/[^"]+"|by container "[0-9a-f]{8,64}"' "$log" 2>/dev/null \
+    | sed -e 's/^[^"]*"//' -e 's/"$//' -e 's#^/##' | sort -u || true)"
+  [ -n "$tokens" ] || return 1
+  for token in $tokens; do
+    docker inspect "$token" >/dev/null 2>&1 || continue
+    printf 'конфликт имени контейнера: снимаю %s\n' "$token"
+    docker rm -f "$token" >/dev/null 2>&1 || true
+    fixed=$((fixed + 1))
+  done
+  [ "$fixed" -gt 0 ] || return 1
+  return 0
+}
+
+# edrc_compose_switch compose <аргументы compose> -- сервис… — переключение,
+# которое не ломается о гонку «Stopping ↔ Recreate».
+#
+# Порядок:
+#   1. снять остатки прошлых срывов (иначе имя занято ещё до старта);
+#   2. ЯВНО остановить сервисы с большим таймаутом (UPDATE_STOP_TIMEOUT,
+#      по умолчанию 120 с вместо десяти секунд по умолчанию у compose) —
+#      когда контейнер уже остановлен, гонки переименования не существует;
+#   3. выполнить `up -d --no-build …` как раньше;
+#   4. если он всё-таки упал по конфликту имени/«Error while Stopping» —
+#      снять конфликтующий контейнер и повторить (UPDATE_SWITCH_RETRIES,
+#      по умолчанию 2 повтора).
+#
+# Вывод compose идёт и в журнал (как прежде), и в файл — по нему распознаётся
+# конфликт. Любая другая ошибка возвращается вызывающему без изменений.
+edrc_compose_switch() {
+  local -a prefix=() services=()
+  local seen=0 arg
+  for arg in "$@"; do
+    if [ "$seen" = 0 ] && [ "$arg" = "--" ]; then seen=1; continue; fi
+    if [ "$seen" = 0 ]; then prefix+=("$arg"); else services+=("$arg"); fi
+  done
+  local retries="${UPDATE_SWITCH_RETRIES:-2}"
+  case "$retries" in
+    ''|*[!0-9]*) retries=2 ;;
+  esac
+  local stop_timeout log attempt=1 code=0
+  stop_timeout="$(edrc_compose_stop_timeout)"
+
+  edrc_remove_stale_containers --force || true
+
+  if [ "${#services[@]}" -gt 0 ] && [ "${UPDATE_PRESTOP:-1}" = "1" ]; then
+    printf 'останавливаю сервисы перед переключением (таймаут %s с): %s\n' "$stop_timeout" "${services[*]}"
+    "${prefix[@]}" stop -t "$stop_timeout" "${services[@]}" 2>&1 || \
+      printf '⚠ штатная остановка не удалась — продолжаю, конфликт имени будет разобран отдельно\n'
+  fi
+
+  log="$(mktemp "${TMPDIR:-/tmp}/edrc-switch.XXXXXX" 2>/dev/null || echo "/tmp/edrc-switch.log")"
+  # errexit снимаем на время шага и возвращаем как было: падение compose здесь
+  # разбирается, а не обрывает вызывающий скрипт. `|| true` после конвейера для
+  # этого НЕ годится — PIPESTATUS тогда относится к `true`, и сорвавшееся
+  # переключение выглядело бы успешным.
+  local errexit_was=0
+  case "$-" in *e*) errexit_was=1 ;; esac
+  while :; do
+    code=0
+    set +e
+    "${prefix[@]}" up -d --no-build "${services[@]}" 2>&1 | tee "$log"
+    code="${PIPESTATUS[0]}"
+    [ "$errexit_was" = "1" ] && set -e
+    if [ "$code" = "0" ]; then
+      rm -f "$log" 2>/dev/null || true
+      # Остатки переименования после УСПЕШНОГО переключения — чистый мусор:
+      # пока они есть, старый образ нельзя удалить, и диск не возвращается.
+      edrc_remove_stale_containers --force || true
+      return 0
+    fi
+    if [ "$attempt" -gt "$retries" ]; then break; fi
+    if grep -qaiE 'already in use|Error when allocating new name|Error while Stopping|Conflict' "$log" 2>/dev/null; then
+      printf '⚠ переключение сорвалось конфликтом имени контейнера (попытка %s) — разбираю и повторяю\n' "$attempt"
+      edrc_resolve_name_conflicts "$log" || true
+      edrc_remove_stale_containers --force || true
+      sleep "${UPDATE_SWITCH_RETRY_DELAY:-5}" || true
+      attempt=$((attempt + 1))
+      continue
+    fi
+    break
+  done
+  rm -f "$log" 2>/dev/null || true
+  return "$code"
+}
+
+# edrc_prune_anonymous_volumes — удалить ТОЛЬКО безымянные тома-сироты.
+#
+# `docker volume prune -f` сносит все неиспользуемые тома, включая именованные
+# (galaxy-dump и uploader-store этого проекта специально оставлены для
+# миграций — их терять нельзя). Поэтому удаляются лишь анонимные тома
+# (имя — 64 hex-символа): их плодит каждое пересоздание контейнера с
+# VOLUME-каталогом, и в `du` по проекту они не видны — лежат в
+# /var/lib/docker/volumes.
+edrc_prune_anonymous_volumes() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker info >/dev/null 2>&1 || return 0
+  local vols v removed=0
+  vols="$(docker volume ls -qf dangling=true 2>/dev/null | grep -E '^[0-9a-f]{64}$' || true)"
+  [ -n "$vols" ] || return 0
+  for v in $vols; do
+    docker volume rm "$v" >/dev/null 2>&1 && removed=$((removed + 1)) || true
+  done
+  [ "$removed" -gt 0 ] && printf 'удалено анонимных томов-сирот: %s\n' "$removed"
+  return 0
+}
+
 # edrc_cleanup_docker_disk [cache_keep] — ПОСЛЕ сборки: убрать то, что копит каждая сборка.
 #
 # Источник «диск тает после каждого обновления, даже при правке в 3 КБ»:
@@ -544,8 +741,17 @@ edrc_cleanup_docker_disk() {
   command -v docker >/dev/null 2>&1 || return 0
   docker info >/dev/null 2>&1 || return 0
 
+  # Остатки сорвавшихся переключений («<id>_src-web-1») удаляем ПЕРВЫМИ:
+  # пока такой контейнер существует, он ссылается на предыдущий образ web,
+  # и `docker image prune` не может его забрать — именно так на диске
+  # накапливались полные образы по 1.5–3 ГБ за проход при «пустых» папках.
+  # Работающий остаток (сайт сейчас живёт на нём) не трогаем: его снимет
+  # следующее переключение.
+  edrc_remove_stale_containers || true
   docker container prune -f >/dev/null 2>&1 || true
   docker image prune -f >/dev/null 2>&1 || true
+  # Анонимные тома-сироты: невидимы в du по проекту, растут с пересозданиями.
+  edrc_prune_anonymous_volumes || true
   # Кэш-маунты (/root/.npm, /app/.next/cache) — отдельный, невидимый для
   # `docker builder prune` потребитель: с Next 16.3 Turbopack дописывает
   # туда персистентный кэш КАЖДОЙ сборки. Держим их в собственном бюджете

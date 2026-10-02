@@ -158,8 +158,20 @@ sudo bash deploy/start-update-agent.sh   # = npm run update:enable
   персистентный кэш каждой сборки в `.next/cache` — без бюджета каждая
   переборка съедала по 1–2 ГБ «в никуда» при минимальном видимом кэше.
   Рычаги: `UPDATE_NEXT_CACHE_KEEP`/`UPDATE_NPM_CACHE_KEEP` (по умолчанию
-  `2g`), разовая диагностика и чистка — `bash deploy/docker-disk-report.sh
+  `2g`), разовая диагностика и чистка — `sudo bash deploy/docker-disk-report.sh
   [--wipe]`;
+- **переключение контейнеров защищено от конфликта имени**
+  (`edrc_compose_switch`). На нагруженном диске web не укладывался в
+  10-секундный таймаут остановки, compose уходил в переименование
+  («`Container 548bf7698162_src-web-1 Recreate`») и падал на
+  «`Error when allocating new name: Conflict. The container name
+  "/src-web-1" is already in use`» — уже ПОСЛЕ часовой успешной сборки.
+  Хуже того, оставшийся контейнер держал предыдущий образ web, и
+  `docker image prune` не возвращал его 1.5–3 ГБ: диск таял каждую
+  переборку при «пустых» каталогах. Теперь сервисы останавливаются явно
+  (`UPDATE_STOP_TIMEOUT`, 120 с), остатки прошлых срывов снимаются, а
+  конфликт разбирается с повтором (`UPDATE_SWITCH_RETRIES`). Разбор —
+  `DISK-LEAK-CONTAINER-CONFLICT-FIX.md`;
 - **образы собираются по одному, `web` — последним** (`edrc_build_each`).
   Общий `compose build web jobs monitor-agent update-agent` запускал все
   четыре таргета параллельно: на слабом диске они дрались за I/O, полностью

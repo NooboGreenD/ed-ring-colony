@@ -242,8 +242,17 @@ fi
 
 # ── 6. переключение ─────────────────────────────────────────────────
 say "▶ переключаю контейнеры"
+# Та же защита, что у кнопки «Обновить сейчас»: явная остановка с длинным
+# таймаутом, снятие остатков прошлых срывов и разбор «Error when allocating
+# new name: Conflict … /src-web-1 is already in use» с повтором. Без неё
+# медленно останавливающийся web ронял переключение уже ПОСЛЕ сборки и
+# оставлял на диске контейнер-остаток, державший предыдущий образ.
 # shellcheck disable=SC2086
-compose_base up -d $COMPOSE_SERVICES
+if declare -F edrc_compose_switch >/dev/null 2>&1; then
+  edrc_compose_switch compose_base -- $COMPOSE_SERVICES
+else
+  compose_base up -d $COMPOSE_SERVICES
+fi
 # Полная пересборка (--no-cache) особенно быстро копит кэш BuildKit и висячие
 # образы: убираем всё, кроме свежего кэша в бюджете UPDATE_DOCKER_CACHE_KEEP.
 if declare -F edrc_cleanup_docker_disk >/dev/null 2>&1; then
