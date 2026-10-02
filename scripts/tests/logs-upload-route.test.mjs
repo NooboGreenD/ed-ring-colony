@@ -32,8 +32,10 @@ const maybe = esbuild ? test : test.skip;
 
 // Роут создаёт сервисный клиент до разбора тела и бросает исключение без
 // этих переменных, не доходя до валидации.
-process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://example.supabase.co';
-process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'service-role-key';
+// Заглушки ставим принудительно: `??=` оставил бы «настоящие» значения из
+// build-args web-образа (ENV шага `npm test` в docker build) — тест не герметичен.
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
 
 async function buildRoute(route = 'upload') {
   const dir = mkdtempSync(join(ROOT, '.tmp-upload-route-'));

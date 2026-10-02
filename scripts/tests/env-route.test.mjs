@@ -9,6 +9,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +43,12 @@ async function buildClient() {
   return { mod, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-maybe('клиент + агент: чтение, маскировка, запись, удаление, применение ключей', async (t) => {
+/**
+ * Поднимает агент + клиента на выделенном порту. Клиент читает настройки из
+ * окружения, как web-контейнер в compose, поэтому UPDATE_AGENT_URL/TOKEN
+ * подменяются на время теста и восстанавливаются в t.after.
+ */
+async function bootAgent(t) {
   const { mod, cleanup } = await buildClient();
   const dir = mkdtempSync(join(ROOT, '.tmp-env-agent-'));
   const envFile = join(dir, '.env.production');
@@ -74,7 +80,6 @@ maybe('клиент + агент: чтение, маскировка, запис
     server.listen(0, '127.0.0.1', () => resolve(server.address().port));
   });
 
-  // Клиент читает настройки из окружения, как web-контейнер в compose.
   const prevUrl = process.env.UPDATE_AGENT_URL;
   const prevToken = process.env.UPDATE_AGENT_TOKEN;
   process.env.UPDATE_AGENT_URL = `http://127.0.0.1:${port}`;
@@ -88,6 +93,11 @@ maybe('клиент + агент: чтение, маскировка, запис
     cleanup();
     rmSync(dir, { recursive: true, force: true });
   });
+  return { mod, manager, envFile };
+}
+
+maybe('клиент + агент: чтение, маскировка, запись и удаление ключей', async (t) => {
+  const { mod, envFile } = await bootAgent(t);
 
   const initial = await mod.listEnvKeys();
   assert.equal(initial.ok, true);
@@ -108,6 +118,21 @@ maybe('клиент + агент: чтение, маскировка, запис
   assert.equal(row.masked.includes('test-key-value-123'), false, 'маска не содержит значения');
   assert.match(row.masked, /-123/, 'маска заканчивается хвостом значения');
 
+  const removed = await mod.deleteEnvKey('YANDEX_TRANSLATE_API_KEY');
+  assert.equal(removed.ok, true);
+  assert.equal(readFileSync(envFile, 'utf8').includes('YANDEX_TRANSLATE_API_KEY'), false, 'ключ стёрт из файла');
+});
+
+// Применение ключей — фоновый job, и агент запускает apply-env.sh через
+// `spawn('bash', …)`. В web-образе на шаге `npm test` (node:22-alpine) bash
+// нет — как и остальные shell-тесты, пропускаем, а не валяем сборку.
+const hasBash = spawnSync('bash', ['--version'], { encoding: 'utf8' }).status === 0;
+const maybeShell = hasBash ? maybe : test.skip;
+
+maybeShell('клиент + агент: применение ключей — фоновый job по протоколу', async (t) => {
+  const { mod, manager } = await bootAgent(t);
+  assert.equal((await mod.saveEnvKey('YANDEX_TRANSLATE_API_KEY', 'test-key-value-123')).ok, true);
+
   const applied = await mod.applyEnvKeys('web');
   assert.equal(applied.ok, true);
   assert.equal(applied.status, 202, 'применение — фоновый job');
@@ -122,8 +147,4 @@ maybe('клиент + агент: чтение, маскировка, запис
   assert.equal(done.state, 'succeeded', 'stub apply-env.sh дошёл до конца');
   assert.equal(done.kind, 'env');
   assert.equal(done.percent, 100);
-
-  const removed = await mod.deleteEnvKey('YANDEX_TRANSLATE_API_KEY');
-  assert.equal(removed.ok, true);
-  assert.equal(readFileSync(envFile, 'utf8').includes('YANDEX_TRANSLATE_API_KEY'), false, 'ключ стёрт из файла');
 });

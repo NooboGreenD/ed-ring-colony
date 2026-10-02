@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +28,29 @@ if (esbuild) {
 
 test.after(() => rmSync(work, { recursive: true, force: true }));
 
+/**
+ * Имена записей ZIP по центральному каталогу — независимая от писальщика
+ * проверка структуры архива (EOCD → записи PK\x01\x02), без python3.
+ */
+function zipEntryNames(archive) {
+  const EOCD = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
+  const eocd = archive.lastIndexOf(EOCD);
+  assert.ok(eocd >= 0, 'в архиве есть End of Central Directory');
+  const count = archive.readUInt16LE(eocd + 10);
+  const centralOffset = archive.readUInt32LE(eocd + 16);
+  const names = [];
+  let cursor = centralOffset;
+  for (let index = 0; index < count; index += 1) {
+    assert.equal(archive.readUInt32LE(cursor), 0x02014b50, `central directory entry #${index} подписан PK\x01\x02`);
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    names.push(archive.toString('utf8', cursor + 46, cursor + 46 + nameLength));
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  return names;
+}
+
 maybe('сервер сам подписывает и собирает рабочий ZIP без CI/GitHub', async () => {
   const key = store.generateSignKey('server-test');
   assert.equal((await store.storeSignKey(key)).ok, true);
@@ -52,11 +74,10 @@ maybe('сервер сам подписывает и собирает рабоч
   assert.deepEqual(manifest.files.map((item) => item.path), ['colonial_helper.py', 'overlay.py']);
 
   const archive = await store.readBundleArchive('8.1.0');
-  const zipPath = join(work, 'release.zip');
-  writeFileSync(zipPath, archive);
-  const names = JSON.parse(execFileSync('python3', ['-c',
-    'import json,sys,zipfile; print(json.dumps(zipfile.ZipFile(sys.argv[1]).namelist()))', zipPath],
-  { encoding: 'utf8' }));
+  // Состав архива проверяем по центральному каталогу ZIP на чистом Node:
+  // раньше здесь звали python3-модуль zipfile, но в web-образе на шаге
+  // `npm test` (node:22-alpine) python3 нет — тест валил docker build.
+  const names = zipEntryNames(archive);
   assert.deepEqual(names.sort(), ['colonial_helper.py', 'manifest.json', 'overlay.py']);
 
   const duplicate = await store.createServerRelease({ version: '8.1.0', channel: 'stable', files });

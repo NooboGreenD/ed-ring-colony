@@ -26,9 +26,14 @@ try {
 }
 const maybe = esbuild ? test : test.skip;
 
-process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://supabase.colony.test';
-process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'service-role-key';
-process.env.NEXT_PUBLIC_SITE_URL ??= 'https://colony.test';
+// Заглушки окружения ставим принудительно, а не через `??=`: на шаге
+// `npm test` внутри `docker build` web-образа эти переменные УЖЕ есть в ENV
+// (build-args из .env приходят раньше тестового слоя). С `??=` «настоящее»
+// значение останется, маршрут соберёт публичный адрес аватара с боевого
+// хоста — и тест перестанет быть герметичным.
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://supabase.colony.test';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+process.env.NEXT_PUBLIC_SITE_URL = 'https://colony.test';
 
 const NEXT_SERVER_STUB = `
 // NextResponse — класс: маршрут отдачи картинки создаёт ответ через new.
