@@ -45,6 +45,11 @@ const helpers = await bundle('src/lib/emailAuth.ts', 'helpers');
 const originalFetch = globalThis.fetch;
 after(() => { globalThis.fetch = originalFetch; });
 function reset() {
+  // SUPABASE_INTERNAL_URL (внутренний адрес Kong) прилетает в окружение шага
+  // `npm test` из build-args web-образа. getServerSupabaseUrl() предпочитает
+  // его публичному адресу, и запрос настроек auth уходил бы не на заглушку
+  // (стаб fetch ниже ждёт именно публичный URL) — вычищаем принудительно.
+  delete process.env.SUPABASE_INTERNAL_URL;
   Object.assign(process.env, { NEXT_PUBLIC_SITE_URL: 'https://edringcolony.ru',
     NEXT_PUBLIC_SUPABASE_URL: 'https://supabase.edringcolony.ru', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'test-anon',
     SUPABASE_SERVICE_ROLE_KEY: secret, AUTH_EMAIL_ENABLED: 'true' });

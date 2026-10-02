@@ -73,7 +73,19 @@ ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
 # тесты в экстренном случае — например, когда сборка уже упирается в
 # таймаут апдейтера. По умолчанию проверки обязательны.
 ARG RUN_TESTS=1
-RUN if [ "$RUN_TESTS" = "1" ]; then npm test; else echo "RUN_TESTS=0 — тесты пропущены"; fi
+# Тесты обязаны быть герметичными: их stub-значения окружения не должны
+# зависеть от того, что передано в build-args. Переменные выше становятся
+# ENV этого слоя ещё ДО `npm test`, и «настоящие» значения из .env.production
+# меняли поведение route handlers (адрес Storage у аватаров, внутренний
+# Kong у email-auth) — сборка валилась на зелёном локально наборе. Следующему
+# слою `next build` эти переменные по-прежнему нужны, поэтому вычищаем их
+# только вокруг тестовой команды. Добавили новый NEXT_PUBLIC_*/служебный
+# build-arg — допишите его сюда же.
+RUN if [ "$RUN_TESTS" = "1" ]; then \
+      env -u NEXT_PUBLIC_SUPABASE_URL -u NEXT_PUBLIC_SUPABASE_ANON_KEY \
+          -u NEXT_PUBLIC_SITE_URL -u NEXT_PUBLIC_VAPID_PUBLIC_KEY \
+          -u SUPABASE_INTERNAL_URL npm test; \
+    else echo "RUN_TESTS=0 — тесты пропущены"; fi
 # Отдельный слой: повторная сборка после падения самих тестов не пересчитывает
 # тестовый слой, а падение сборки видно отдельно от падения проверок.
 # Инкрементальный кэш Next.js (.next/cache) живёт между сборками: без маунта

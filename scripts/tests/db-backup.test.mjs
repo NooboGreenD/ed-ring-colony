@@ -140,6 +140,11 @@ test('backup stages: словарь этапов копии — подмноже
 
 /* ── 2. HTTP-агент: /backup ─────────────────────────────────────────── */
 
+// Агент запускает скрипты через `spawn('bash', …)` — в web-образе на шаге
+// `npm test` (node:22-alpine) bash нет, и без гейта эти тесты падали с
+// «spawn bash ENOENT» вместо проверки одиночности/отмены. Продакшн-образ
+// update-agent ставит bash явно; здесь честно пропускаем, как §3 ниже.
+
 test('backup http: без токена копию не сделать', async (t) => {
   const config = testConfig();
   writeFakeBackupScript(config);
@@ -151,7 +156,7 @@ test('backup http: без токена копию не сделать', async (t
   assert.equal(denied.status, 401);
 });
 
-test('backup http: запуск, одиночность, окружение скрипта и отмена', async (t) => {
+test('backup http: запуск, одиночность, окружение скрипта и отмена', { skip: needsBash }, async (t) => {
   const config = testConfig();
   const envFile = join(config.projectDir, 'env.txt');
   writeFakeBackupScript(config);
@@ -190,7 +195,7 @@ test('backup http: запуск, одиночность, окружение ск
   assert.match(readFileSync(envFile, 'utf8'), /BACKUP_FULL=1/, 'full=true включает каталог систем');
 });
 
-test('backup http: ошибка скрипта видна админу, а отмена снимает задачу', async (t) => {
+test('backup http: ошибка скрипта видна админу, а отмена снимает задачу', { skip: needsBash }, async (t) => {
   const config = testConfig();
   writeFakeBackupScript(config, { fail: true });
   const manager = createUpdateManager(config);

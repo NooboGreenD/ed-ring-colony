@@ -33,10 +33,12 @@ try {
 }
 const maybe = esbuild ? test : test.skip;
 
-process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://example.supabase.co';
-process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'service-role-key';
-process.env.NEXT_PUBLIC_SITE_URL ??= 'https://colony.test';
-process.env.FRONTIER_REDIRECT_URI ??= 'https://colony.test/api/capi/callback';
+// Заглушки ставим принудительно: `??=` оставил бы «настоящие» значения из
+// build-args web-образа (ENV шага `npm test` в docker build) — тест не герметичен.
+process.env.NEXT_PUBLIC_SUPABASE_URL = 'https://example.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-role-key';
+process.env.NEXT_PUBLIC_SITE_URL = 'https://colony.test';
+process.env.FRONTIER_REDIRECT_URI = 'https://colony.test/api/capi/callback';
 
 /** Минимальный NextResponse/NextRequest: нужны redirect и cookies. */
 const NEXT_SERVER_STUB = `
