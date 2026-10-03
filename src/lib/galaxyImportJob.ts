@@ -1349,7 +1349,15 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
       if (mode === 'shards') {
         // Shards may outlive the archive (`prune`): import them directly when
         // the manifest is complete and the archive is gone.
-        const haveShards = Boolean(readShardManifest(shardDir)?.complete);
+        // A shard directory is not interchangeable between dump variants.
+        // In particular, a leftover delta manifest must not be accepted when
+        // the plan selected the full dump for an empty/partial catalogue: the
+        // old code then logged "systems.json.gz, shards" and consumed the
+        // wrong (or incomplete) shard set, leaving the run apparently idle.
+        // Validate it against the archive that this pass is meant to read.
+        const shardManifest = readShardManifest(shardDir);
+        const shardArchive = pinnedFile ?? galaxyArchivePathForVariant(variant);
+        const haveShards = Boolean(shardManifest?.complete && manifestMatchesArchive(shardManifest, shardArchive));
         if (!haveShards) {
           const archive = pinnedFile
             ? { path: pinnedFile, lastModified: null }
