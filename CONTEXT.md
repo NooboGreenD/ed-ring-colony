@@ -446,7 +446,7 @@ Applied via `npx supabase db push`.
 
 | Страница | Что делает | Данные |
 |----------|------------|--------|
-| `/outfitting` | Конструктор сборок кораблей (аналог coriolis.io): слоты, модули, переборки, инженерия, сводка, ссылка `?b=<код>`, сохранения в `localStorage` | `public/data/outfitting.json` (`fetch`, `cache: force-cache`) |
+| `/outfitting` | Конструктор сборок кораблей (аналог coriolis.io): слоты, модули, переборки, инженерия, вкладки сводка/атака/защита/графики, управление кораблём (форсаж, пипки, груз, топливо), подсказки по модулям, копирование модуля между совместимыми ячейками, обмен сборками с Coriolis/EDSY (SLEF), снаряжение за Merc Coin, ссылка `?b=<код>`, сохранения в `localStorage` | `public/data/outfitting.json` (`fetch`, `cache: force-cache`) |
 | `/engineers` | Дерево разблокировки инженеров, `?engineer=<id или имя>` | `lib/engineers/data.ts` + тот же `outfitting.json` для списка чертежей |
 
 Справочник пересобирается из открытого набора EDCD:
@@ -460,9 +460,40 @@ node scripts/build-outfitting-data.mjs /tmp/coriolis-data   # → public/data/ou
 для двигателей и генераторов щита, формула прыжка
 `(optmass / масса) * (топливо / fuelmul)^(1/fuelpower)`, модификации
 `multiplicative` / `additive` / `overwrite` с ползунком качества прогона.
-Экспериментальные эффекты показываются справочно: в открытых данных у них нет
-числовых модификаторов, поэтому в сводке они не учитываются — так и написано в
-интерфейсе. Тесты — `scripts/tests/outfitting.test.mjs`.
+Экспериментальные эффекты применяются наравне с чертежами: числовые
+модификаторы лежат в `scripts/data/experimental-effects.json` и сверены с EDSY.
+
+Боевая аналитика вынесена в `lib/outfitting/analysis.ts` — чистые функции без
+React и без строк интерфейса, повторяющие модель coriolis.io:
+
+* `rof = burst / (((burst - 1) / burstrof) + fireint)`, `dps = damage * roundspershot * rof`,
+  `sdps = clip * damagePerShot / (clip / rof + reload)`, `eps`/`hps` из `distdraw`/`thermload`;
+  урон раскладывается по `damagedist` (`A/K/T/E`);
+* бустеры щита перемножаются, затем демпфируются `mul < 0.7 → 0.7 - (0.7 - mul) / 2`,
+  сверху накладывается `sysDamageResistance(pips.sys)`; «эффективный запас» —
+  среднее по кинетике, термике и взрыву, как в coriolis;
+* кривые для графиков (`cargoCurve`, `fuelCurve`, `engPipCurve`, `sysPipCurve`,
+  `costBreakdown`, `powerBreakdown`) считаются там же, а рисует их свой SVG
+  (`components/Outfitting/Charts.tsx`), без графических библиотек.
+
+Обмен сборками — `lib/outfitting/exchange.ts` поверх `lib/outfitting/fdnames.ts`
+(в справочнике нет поля `symbol`, поэтому имена Frontier собираются и
+разбираются по правилам именования). Наружу отдаются ссылка Coriolis
+(`<версия><переборка><id слотов>`, по 2 символа на слот) и SLEF — формат, который
+читают EDSY, Inara и Coriolis; внутрь принимаются ссылки Coriolis, свои ссылки
+`?b=`, SLEF и сырое событие `Loadout` из журнала. Чего не хватает в данных
+(номера чертежей Coriolis, ссылки EDSY собственного формата) — честно
+помечается предупреждением в окне обмена.
+
+Снаряжение за Merc Coin (обновление 4.4.0.0) описано в
+`lib/outfitting/merccoin.ts`: 15 позиций, цены по данным сообщества, у части
+модулей цена неизвестна — так и подписано.
+
+Тесты — `scripts/tests/outfitting.test.mjs` (справочник и формулы),
+`outfitting-analysis.test.mjs` (боевая аналитика, обмен, Merc Coin),
+`outfitting-i18n.test.mjs` (семь языков) и `outfitting-ui.test.mjs`
+(вкладки, фильтр отображения, подсказка, копирование, управление кораблём,
+окно обмена — в jsdom).
 
 ---
 

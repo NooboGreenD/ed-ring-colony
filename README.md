@@ -81,8 +81,22 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   радиус, скорость и буст, щит с сопротивлениями, броню, баланс энергии по приоритетам, ёмкости
   распределителя, трюм, пассажирские места и стоимость. Сборка кодируется в ссылку `?b=<код>` и сохраняется
   в браузере.
+  Боковая панель разбита на четыре вкладки, как в coriolis.io: **сводка**, **атака** (DPS и SDPS по типам
+  урона, расход энергии и тепла, пробитие, дальности, время непрерывного огня из ёмкости WEP),
+  **защита** (щит с бустерами и ячейками, восстановление, эффективный запас с учётом пипок, броня,
+  усиление модулей) и **графики** (прыжок от груза и топлива, скорость от пипок ENG, эффективный щит
+  от пипок SYS, стоимость и энергобаланс по разделам — рисуются своим SVG, без библиотек).
+  Под пипками — блок **управления кораблём**: форсаж, выпущенные орудия, груз и топливо ползунками,
+  так что все цифры пересчитываются для реальной загрузки. Строки слотов умеют показывать
+  массу / энергию / характеристики / цену одним переключателем, при наведении показывают подсказку
+  с полным набором параметров модуля (изменённое инженерией подсвечено), а модуль можно не только
+  перетащить, но и **скопировать** в любую совместимую ячейку. Сборку можно **обменять** с внешними
+  сервисами: экспорт в ссылку Coriolis и в SLEF (его читают EDSY, Inara и Coriolis), импорт из ссылок
+  Coriolis, своих ссылок и SLEF/journal `Loadout` (`lib/outfitting/exchange.ts`). Отдельный блок
+  перечисляет снаряжение за **Merc Coin** из обновления 4.4.0.0.
   Движок — `lib/outfitting/` (формулы игры: кривая массы двигателей и щитов, формула прыжка, применение
-  модификаций multiplicative/additive/overwrite), данные — `public/data/outfitting.json`,
+  модификаций multiplicative/additive/overwrite, боевая аналитика в `analysis.ts`),
+  данные — `public/data/outfitting.json`,
   собирается `scripts/build-outfitting-data.mjs` из открытого набора [EDCD/coriolis-data](https://github.com/EDCD/coriolis-data).
   Все 60 экспериментальных эффектов (91 запись справочника) применяются к характеристикам модуля наравне
   с чертежами: проценты, сопротивления «от остатка», интервал вместо скорострельности, распределение урона.
@@ -255,7 +269,8 @@ ed-ring-colony/
       GalaxyMap/            # 3D map components
       SystemMap/            # System orrery: SystemOrrery3D + body rail (/system/[name])
       Architect/            # System architect planner UI (/architect): workspace, picker, summary, share/progress/sourcing panels
-      Outfitting/           # Ship builder UI (/outfitting): workspace, module picker, stats panel
+      Outfitting/           # Ship builder UI (/outfitting): workspace, module picker, stats panel (summary/offence/defence/charts),
+                            #   ship control (boost + pips + load), module tooltip, SVG charts, EDSY/Coriolis exchange, Merc Coin list
       Engineers/            # Engineer unlock tree (/engineers)
       Forum/                # Forum components
       Wiki/                 # Wiki components
@@ -282,7 +297,8 @@ ed-ring-colony/
       systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
       orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
       architect/            # System buildout planner: catalogue, rules engine, plan store, progress matcher, sourcing
-      outfitting/           # Ship builder: data contracts, game formulas (calc), builds & share links, data loader
+      outfitting/           # Ship builder: data contracts, game formulas (calc), combat analysis, module specs,
+                            #   builds & share links, FD symbol names, EDSY/Coriolis/SLEF exchange, Merc Coin catalogue, data loader
       engineers/            # Engineer unlock tree data (requirements, referrals, links to blueprints)
     types/
       monitor.ts            # ServerMonitorSnapshot types

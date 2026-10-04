@@ -1,6 +1,7 @@
 import type { Locale } from "./types";
 import { engineersTranslations } from "./engineers";
 import { outfittingTranslations } from "./outfitting";
+import { outfittingAnalysisTranslations } from "./outfittingAnalysis";
 import { outfittingSpecialsTranslations } from "./outfittingSpecials";
 
 /** Базовый словарь сайта; большие разделы подмешиваются ниже отдельными файлами. */
@@ -3439,7 +3440,12 @@ const baseTranslations: Record<string, Record<string, string>> = {
  * Итоговый словарь: базовые ключи плюс разделы верфи и инженеров. Разделы
  * держим в разных файлах, но `t()` видит их одинаково — по плоскому ключу.
  */
-const sectionTranslations = [outfittingTranslations, outfittingSpecialsTranslations, engineersTranslations];
+const sectionTranslations = [
+  outfittingTranslations,
+  outfittingAnalysisTranslations,
+  outfittingSpecialsTranslations,
+  engineersTranslations,
+];
 
 export const translations: Record<string, Record<string, string>> = Object.fromEntries(
   [...new Set([

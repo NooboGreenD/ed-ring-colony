@@ -98,7 +98,8 @@ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 | Topbar | 50 | `.topbar` |
 | Overlay | 55 | `.mobile-overlay` |
 | Drawer | 60 | `.sidebar-drawer` |
-| Dropdown | 80 | `.user-menu-drop` |
+| Tooltip | 70 | Hover card (`Outfitting/ModuleTooltip`) |
+| Dropdown / Modal | 80 | `.user-menu-drop`, outfitting module picker and exchange dialogs |
 
 ---
 
@@ -253,6 +254,45 @@ font-size: 11px;
 color: #6b7280;
 font-family: ui-monospace;
 ```
+
+### 5.9 Hover tooltip (Outfitting/ModuleTooltip)
+
+Карточка с параметрами модуля под курсором: фиксированное позиционирование от
+координат мыши, переворот влево/вверх у краёв окна, `pointer-events: none`,
+чтобы не перехватывать наведение.
+
+```tsx
+position: 'fixed', pointerEvents: 'none', zIndex: 70,
+width: 290, maxHeight: 340, overflowY: 'auto',
+background: 'rgba(8,12,18,0.97)',
+border: '1px solid var(--orange)', borderRadius: 3,
+padding: '8px 10px',
+boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
+```
+
+Значения, изменённые инженерией, подсвечиваются относительно заводских:
+`var(--green)` — стало лучше, `#f0b37e` — стало хуже, остальное `var(--text)`.
+Числа и единицы — моноширинным (`MONO` из `components/Outfitting/styles.ts`),
+заголовок 12.5px/700, подзаголовок 10.5px `var(--muted)`.
+
+### 5.10 Charts (Outfitting/Charts)
+
+Графики рисуются **своим SVG** — графических библиотек в проекте нет и быть не
+должно. Компоненты: `LineChart` (несколько серий, сетка, пунктирный маркер
+текущего состояния), `BarChart` (горизонтальные доли), `ChartBlock`
+(заголовок + легенда).
+
+```tsx
+/* Сетка */            stroke="var(--line)"   strokeWidth={1}
+/* Маркер «сейчас» */  stroke="var(--orange)" strokeWidth={1} strokeDasharray="3 3" opacity={0.7}
+/* Серия */            fill="none" strokeWidth={1.6} strokeLinejoin="round"
+/* Подписи осей */     fontSize={8.5} fill="var(--muted)" fontFamily={MONO}
+/* Легенда */          fontSize: 10, color: 'var(--muted)'
+```
+
+Цвет серии задаёт вызывающая сторона и берёт его из акцентов интерфейса:
+`#f59e0b` — скорость, `#f43f5e` — буст и опасность, `#38bdf8` — щит,
+`#c9a0ff` — инженерия, `#f0b37e` — ухудшение.
 
 ---
 

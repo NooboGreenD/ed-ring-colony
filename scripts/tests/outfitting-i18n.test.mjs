@@ -13,6 +13,9 @@
  * 5. Слова инженерных чертежей переведены на всех языках одинаковым набором.
  * 6. Экспериментальные эффекты: у каждого вида эффекта, боевого эффекта и
  *    изменяемой характеристики есть название и описание на всех языках.
+ * 7. Словарь расширенной верфи (вкладки атаки и защиты, графики, обмен
+ *    сборками, Merc Coin) заполнен так же строго и не пересекается с
+ *    остальными словарями раздела.
  */
 
 import test from 'node:test';
@@ -44,7 +47,13 @@ async function loadLib() {
   const bundle = join(dir, 'lib.mjs');
   writeFileSync(
     entry,
-    "export * from '@/lib/i18n/outfitting';\nexport * from '@/lib/i18n/outfittingSpecials';\nexport * from '@/lib/outfitting/i18n';\n",
+    [
+      "export * from '@/lib/i18n/outfitting';",
+      "export * from '@/lib/i18n/outfittingAnalysis';",
+      "export * from '@/lib/i18n/outfittingSpecials';",
+      "export * from '@/lib/outfitting/i18n';",
+      '',
+    ].join('\n'),
   );
   await esbuild.build({
     entryPoints: [entry],
@@ -224,5 +233,54 @@ maybe('ключи эффектов не конфликтуют с остальн
   const { outfittingTranslations, outfittingSpecialsTranslations } = await libPromise;
   const base = new Set(Object.keys(outfittingTranslations.ru));
   const clash = Object.keys(outfittingSpecialsTranslations.ru).filter((key) => base.has(key));
+  assert.deepEqual(clash, [], `ключи задваиваются: ${clash.join(', ')}`);
+});
+
+// ── 7. Расширенная верфь: вкладки, графики, обмен, Merc Coin ───────────
+
+/** Названия форматов и обозначения валют одинаковы во всех языках. */
+const ANALYSIS_SAME_AS_RU_OK = new Set([
+  'outfitting.merc.badge',
+  'outfitting.merc.coins',
+  'outfitting.exchange.slef',
+  'outfitting.control.boost',
+  'outfitting.chart.boostLine',
+]);
+
+maybe('словарь расширенной верфи заполнен на всех языках', async () => {
+  const { outfittingAnalysisTranslations } = await libPromise;
+  const reference = Object.keys(outfittingAnalysisTranslations.ru);
+  assert.ok(reference.length > 80, `ключей должно быть не меньше 80, а их ${reference.length}`);
+
+  for (const locale of LOCALES) {
+    const dict = outfittingAnalysisTranslations[locale];
+    assert.ok(dict, `нет словаря для языка ${locale}`);
+    const missing = reference.filter((key) => !dict[key] || !String(dict[key]).trim());
+    assert.deepEqual(missing, [], `в ${locale} не переведены ключи: ${missing.join(', ')}`);
+    const extra = Object.keys(dict).filter((key) => !reference.includes(key));
+    assert.deepEqual(extra, [], `в ${locale} лишние ключи: ${extra.join(', ')}`);
+  }
+
+  const russian = outfittingAnalysisTranslations.ru;
+  for (const locale of LOCALES.filter((item) => item !== 'ru')) {
+    const dict = outfittingAnalysisTranslations[locale];
+    for (const [key, value] of Object.entries(russian)) {
+      if (!ANALYSIS_SAME_AS_RU_OK.has(key)) {
+        assert.notEqual(dict[key], value, `${locale}: ключ ${key} не переведён`);
+      }
+      const placeholders = [...value.matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
+      const translated = [...String(dict[key]).matchAll(/\{(\w+)\}/g)].map((match) => match[1]).sort();
+      assert.deepEqual(translated, placeholders, `${locale}: ключ ${key} потерял подстановки`);
+    }
+  }
+});
+
+maybe('словари раздела верфи не перекрывают друг друга', async () => {
+  const { outfittingTranslations, outfittingAnalysisTranslations, outfittingSpecialsTranslations } = await libPromise;
+  const others = new Set([
+    ...Object.keys(outfittingTranslations.ru),
+    ...Object.keys(outfittingSpecialsTranslations.ru),
+  ]);
+  const clash = Object.keys(outfittingAnalysisTranslations.ru).filter((key) => others.has(key));
   assert.deepEqual(clash, [], `ключи задваиваются: ${clash.join(', ')}`);
 });
