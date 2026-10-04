@@ -263,12 +263,19 @@ font-family: ui-monospace;
 
 ```tsx
 position: 'fixed', pointerEvents: 'none', zIndex: 70,
-width: 290, maxHeight: 340, overflowY: 'auto',
+width: 290 * columns + 14 * (columns - 1),
 background: 'rgba(8,12,18,0.97)',
 border: '1px solid var(--orange)', borderRadius: 3,
 padding: '8px 10px',
 boxShadow: '0 10px 30px rgba(0,0,0,0.6)',
 ```
+
+**Прокрутки внутри подсказки нет и быть не должно**: курсор на неё не
+наводится, прокрутить её нечем. Карточка показывает текст целиком, а
+положение считается по факту (`useLayoutEffect` + `offsetHeight`) и
+прижимается к окну. Если параметров столько, что по высоте они не лезут,
+раскладка переходит на 2–3 колонки (`columnCount`, `break-inside: avoid`),
+а не обрезается.
 
 Значения, изменённые инженерией, подсвечиваются относительно заводских:
 `var(--green)` — стало лучше, `#f0b37e` — стало хуже, остальное `var(--text)`.

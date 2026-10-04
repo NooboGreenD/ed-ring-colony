@@ -207,8 +207,10 @@ maybe('наведение на слот открывает подсказку с
   try {
     assert.equal(ui.document.querySelector('[role="tooltip"]'), null, 'без наведения подсказки нет');
 
-    const row = [...ui.document.querySelectorAll('div[draggable="true"]')][0];
-    assert.ok(row, 'в сборке есть занятые слоты');
+    // Берём орудие: у него есть параметры всех четырёх разделов сразу.
+    const row = [...ui.document.querySelectorAll('div[draggable="true"]')]
+      .find((node) => /лазер/i.test(node.textContent || ''));
+    assert.ok(row, 'в сборке есть орудие');
     await ui.act(async () => {
       row.dispatchEvent(new ui.dom.window.MouseEvent('mouseover', {
         bubbles: true,
@@ -224,6 +226,18 @@ maybe('наведение на слот открывает подсказку с
     const tip = tooltip.textContent || '';
     assert.match(tip, /Масса/, 'в подсказке есть масса');
     assert.match(tip, /ЛКМ/, 'и напоминание про управление');
+
+    // Прокрутки внутри подсказки быть не должно: курсор на неё не наводится.
+    assert.equal(tooltip.style.overflowY, '', 'у подсказки нет своей прокрутки');
+    assert.equal(tooltip.style.maxHeight, '', 'и нет ограничения по высоте');
+    assert.equal(tooltip.style.pointerEvents, 'none', 'подсказка не перехватывает курсор');
+    assert.equal(tooltip.style.position, 'fixed', 'подсказка висит поверх страницы');
+
+    // Показан весь набор параметров модуля, а не часть.
+    assert.match(tip, /Урон/, 'характеристики');
+    assert.match(tip, /Потребление/, 'энергия');
+    assert.match(tip, /Прочность/, 'прочность');
+    assert.match(tip, /Цена/, 'цена');
 
     await ui.act(async () => {
       row.dispatchEvent(new ui.dom.window.MouseEvent('mouseout', {
@@ -368,6 +382,49 @@ maybe('блок Merc Coin раскрывается и объясняет неп�
     assert.match(text, /Чертёж инженера/);
     assert.match(text, /цена неизвестна/, 'неизвестные цены показаны честно');
     assert.match(text, /данным сообщества/, 'источник списка назван');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+maybe('список модулей показывает все параметры, у орудий — расчётный DPS', async () => {
+  const ui = await mountWorkspace();
+  try {
+    // Открываем окно выбора для орудийного пилона.
+    const weaponRow = [...ui.document.querySelectorAll('div[draggable="true"]')]
+      .find((node) => /лазер/i.test(node.textContent || ''));
+    assert.ok(weaponRow, 'орудие на месте');
+    const body = [...weaponRow.querySelectorAll('div')]
+      .find((node) => (node.getAttribute('style') || '').includes('flex: 1'));
+    await ui.act(async () => {
+      body.dispatchEvent(new ui.dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    await ui.flush(60);
+
+    const dialog = ui.document.querySelector('[role="dialog"]');
+    assert.ok(dialog, 'окно выбора модуля открылось');
+
+    // Строка списка: название, цена и все параметры из справочника.
+    const row = [...dialog.querySelectorAll('button')]
+      .find((node) => /Импульсный лазер|Pulse Laser/i.test(node.textContent || '')
+        && /Масса/.test(node.textContent || ''));
+    assert.ok(row, 'в списке есть строка импульсного лазера с параметрами');
+
+    const rowText = row.textContent || '';
+    assert.match(rowText, /Урон в секунду/, 'расчётный DPS прямо в строке');
+    assert.match(rowText, /Расход WEP/, 'и расход конденсатора');
+    assert.match(rowText, /Масса/, 'масса');
+    assert.match(rowText, /Потребление/, 'потребление энергии');
+    assert.match(rowText, /Пробитие/, 'пробитие');
+    assert.match(rowText, /Дальность/, 'дальность');
+
+    // Правая панель: полный набор по разделам, а не выборка из десяти полей.
+    const panel = dialog.textContent || '';
+    assert.match(panel, /ХАРАКТЕРИСТИКИ/i, 'раздел характеристик');
+    assert.match(panel, /ЭНЕРГИЯ/i, 'раздел энергии');
+    assert.match(panel, /Начало спада/, 'редкое поле тоже показано');
+    assert.match(panel, /Урон по модулям/, 'и урон по модулям');
+    assert.match(panel, /Влияние на сборку|Сравнение/i, 'сравнение со сборкой осталось');
   } finally {
     await ui.cleanup();
   }

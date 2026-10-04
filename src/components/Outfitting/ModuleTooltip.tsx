@@ -10,9 +10,14 @@
  *
  * Позиционирование фиксированное (`position: fixed`) и привязано к курсору,
  * чтобы карточка не обрезалась внутри прокручиваемых панелей.
+ *
+ * Прокрутки внутри карточки нет сознательно: курсор на подсказку не наводится
+ * (`pointer-events: none`), прокрутить её нечем, поэтому текст должен
+ * помещаться целиком. Если параметров столько, что в окно по высоте они не
+ * лезут, карточка раскладывается в несколько колонок, а не обрезается.
  */
 
-import React from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
 import { groupName, mountName } from '@/lib/outfitting/i18n';
 import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
@@ -24,6 +29,35 @@ import { specialName } from './SpecialEffectCard';
 import { MONO, formatters } from './styles';
 
 const SECTION_ORDER: SpecSection[] = ['perf', 'mass', 'power', 'price'];
+
+/** Ширина одной колонки параметров. */
+const COLUMN_WIDTH = 290;
+const COLUMN_GAP = 14;
+/** Отступ от края окна. */
+const EDGE = 8;
+
+interface Placement {
+  left: number;
+  top: number;
+}
+
+/**
+ * Куда поставить карточку: вправо-вниз от курсора, а если не влезает —
+ * влево и/или выше, но всегда целиком в окне.
+ */
+function place(
+  anchor: { x: number; y: number },
+  width: number,
+  height: number,
+  viewportWidth: number,
+  viewportHeight: number,
+): Placement {
+  const left = anchor.x + width + 24 > viewportWidth
+    ? Math.max(EDGE, anchor.x - width - 16)
+    : anchor.x + 16;
+  const top = Math.max(EDGE, Math.min(anchor.y - 40, viewportHeight - height - EDGE));
+  return { left, top };
+}
 
 interface ModuleTooltipProps {
   data: OutfittingData;
@@ -55,23 +89,37 @@ export default function ModuleTooltip({
     .map((section) => ({ section, items: values.filter((value) => value.section === section) }))
     .filter((entry) => entry.items.length > 0);
 
-  // Карточка всегда остаётся в окне: вправо/вниз, если места хватает.
+  // Сколько колонок нужно, чтобы карточка влезла в окно по высоте.
+  // Оценка с запасом: лучше разложить в две колонки чуть раньше, чем
+  // обнаружить нехватку места уже после отрисовки.
   const viewportWidth = typeof window === 'undefined' ? 1280 : window.innerWidth;
   const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight;
-  const width = 290;
-  const left = anchor.x + width + 24 > viewportWidth ? Math.max(8, anchor.x - width - 16) : anchor.x + 16;
-  const top = Math.min(Math.max(8, anchor.y - 40), Math.max(8, viewportHeight - 360));
+  const estimatedHeight = 90 + grouped.length * 18 + values.length * 16 + 30;
+  const available = Math.max(200, viewportHeight - 2 * EDGE);
+  const columns = Math.min(3, Math.max(1, Math.ceil(estimatedHeight / available)));
+  const width = COLUMN_WIDTH * columns + COLUMN_GAP * (columns - 1);
+
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const [placement, setPlacement] = useState<Placement>(() =>
+    place(anchor, width, estimatedHeight, viewportWidth, viewportHeight));
+
+  // Оценка нужна только для первого кадра: дальше считаем по факту.
+  useLayoutEffect(() => {
+    const node = cardRef.current;
+    if (!node || typeof window === 'undefined') return;
+    const next = place(anchor, node.offsetWidth, node.offsetHeight, window.innerWidth, window.innerHeight);
+    setPlacement((previous) => (previous.left === next.left && previous.top === next.top ? previous : next));
+  }, [anchor.x, anchor.y, anchor, width, module.id, module.grp, values.length]);
 
   return (
     <div
+      ref={cardRef}
       role="tooltip"
       style={{
         position: 'fixed',
-        left,
-        top,
+        left: placement.left,
+        top: placement.top,
         width,
-        maxHeight: 340,
-        overflowY: 'auto',
         zIndex: 70,
         background: 'rgba(8,12,18,0.97)',
         border: '1px solid var(--orange)',
@@ -128,8 +176,9 @@ export default function ModuleTooltip({
       {grouped.length === 0 ? (
         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>{t('outfitting.tip.noData')}</div>
       ) : (
-        grouped.map((entry) => (
-          <div key={entry.section} style={{ marginTop: 6 }}>
+        <div style={{ columnCount: columns, columnGap: COLUMN_GAP }}>
+          {grouped.map((entry) => (
+          <div key={entry.section} style={{ marginTop: 6, breakInside: 'avoid' }}>
             <div
               style={{
                 fontSize: 9.5,
@@ -171,7 +220,8 @@ export default function ModuleTooltip({
               );
             })}
           </div>
-        ))
+          ))}
+        </div>
       )}
 
       <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--muted)', lineHeight: 1.4 }}>

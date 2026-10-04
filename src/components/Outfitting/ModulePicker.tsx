@@ -4,10 +4,12 @@
  * Окно выбора и инженерии модуля (EDSY-style 3-панельный интерфейс):
  *
  *  - Левая панель: фильтры (поиск, класс, рейтинг, крепление, категории модулей);
- *  - Центральная панель: упрощённый список модулей, сгруппированный по типам,
- *    с кратким и чистым отображением (класс, рейтинг, название, стоимость);
- *  - Правая панель: детальные параметры выбранного модуля, прямое сравнение
- *    с текущим модулем и влиянием на сборку (масса, прыжок, скорость, щиты, энергия),
+ *  - Центральная панель: список модулей, сгруппированный по типам. В строке —
+ *    класс, рейтинг, название, цена и все параметры модуля из справочника:
+ *    выбирать по одному названию неудобно, а раскрывать каждый модуль ради
+ *    двух чисел — тем более;
+ *  - Правая панель: полный набор параметров выбранного модуля (ничего не
+ *    выкинуто) и отдельно — влияние на сборку (масса, прыжок, скорость, щиты, энергия),
  *    а также вкладка инженерии без лишних ползунков со 100% финальным эффектом
  *    и компактными списками необходимых материалов.
  */
@@ -23,6 +25,8 @@ import {
   moduleRef,
 } from '@/lib/outfitting/calc';
 import { specialsForGroup } from '@/lib/outfitting/specials';
+import { isWeapon, weaponMetrics } from '@/lib/outfitting/analysis';
+import { moduleSpecValues, specName, type SpecSection, type SpecValue } from '@/lib/outfitting/specs';
 import { blueprintLabel, moduleLabel } from '@/lib/outfitting/build';
 import { groupName } from '@/lib/outfitting/i18n';
 import type {
@@ -82,6 +86,144 @@ function mountLabel(mount?: string): string {
   if (mount === 'G') return 'Gimbal';
   if (mount === 'T') return 'Turret';
   return '';
+}
+
+/** Порядок разделов параметров — тот же, что во всплывающей подсказке. */
+const SECTION_ORDER: SpecSection[] = ['perf', 'mass', 'power', 'price'];
+
+/** Пара «подпись — значение» одним куском, чтобы не разрывалась при переносе. */
+function SpecChip({ label, value, color }: { label: string; value: string; color?: string }) {
+  return (
+    <span style={{ whiteSpace: 'nowrap' }}>
+      <span style={{ opacity: 0.65 }}>{label}</span>{' '}
+      <span style={{ color: color ?? 'var(--text)' }}>{value}</span>
+    </span>
+  );
+}
+
+/**
+ * Строка параметров модуля под его названием в списке.
+ *
+ * Показываем всё, что знает справочник, а у орудий сверху — расчётные DPS,
+ * EPS и урон на единицу энергии: в данных их нет, а сравнивают орудия именно
+ * по ним.
+ */
+function ModuleSpecLine({
+  data,
+  module,
+  locale,
+  num,
+  t,
+}: {
+  data: OutfittingData;
+  module: OutfittingModule;
+  locale: string;
+  num: (value: number, digits?: number) => string;
+  t: (key: string) => string;
+}) {
+  // Сначала то, чем модули группы отличаются друг от друга (характеристики),
+  // и только потом общие масса, энергия и деньги — порядок как в подсказке.
+  const values = moduleSpecValues(module as unknown as Record<string, unknown>, locale, num)
+    .filter((value) => value.key !== 'cost')
+    .slice()
+    .sort((a, b) => SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section));
+  const weapon = isWeapon(data, module) ? weaponMetrics(module) : null;
+  if (!weapon && values.length === 0) return null;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '1px 10px',
+        paddingLeft: 40,
+        fontFamily: MONO,
+        fontSize: 9.5,
+        lineHeight: 1.5,
+        color: 'var(--muted)',
+      }}
+    >
+      {weapon && (
+        <>
+          <SpecChip label={t('outfitting.off.dps')} value={num(weapon.dps, 1)} color="#f43f5e" />
+          <SpecChip label={t('outfitting.off.sdps')} value={num(weapon.sdps, 1)} />
+          <SpecChip label={t('outfitting.off.eps')} value={num(weapon.eps, 2)} />
+          <SpecChip label={t('outfitting.off.hps')} value={num(weapon.hps, 2)} />
+          <SpecChip label={t('outfitting.off.dpe')} value={num(weapon.dpe, 1)} />
+        </>
+      )}
+      {values.map((value) => (
+        <SpecChip key={value.key} label={specName(locale, value.key)} value={value.display} />
+      ))}
+    </div>
+  );
+}
+
+/** Таблица параметров по разделам — правая панель окна выбора. */
+function SpecSections({ values, locale, t }: {
+  values: SpecValue[];
+  locale: string;
+  t: (key: string) => string;
+}) {
+  const grouped = SECTION_ORDER
+    .map((section) => ({ section, items: values.filter((value) => value.section === section) }))
+    .filter((entry) => entry.items.length > 0);
+
+  if (grouped.length === 0) {
+    return <div style={{ fontSize: 11, color: 'var(--muted)' }}>{t('outfitting.tip.noData')}</div>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {grouped.map((entry) => (
+        <div key={entry.section}>
+          <div
+            style={{
+              fontFamily: MONO,
+              fontSize: 9.5,
+              letterSpacing: 1.5,
+              textTransform: 'uppercase',
+              color: 'var(--orange)',
+              marginBottom: 3,
+            }}
+          >
+            {t(`outfitting.view.${entry.section}`)}
+          </div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 4,
+              fontSize: 11,
+              fontFamily: MONO,
+            }}
+          >
+            {entry.items.map((value) => (
+              <div
+                key={value.key}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  gap: 6,
+                  background: 'rgba(255,255,255,0.03)',
+                  padding: '3px 6px',
+                  borderRadius: 2,
+                }}
+              >
+                <span
+                  title={specName(locale, value.key)}
+                  style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                >
+                  {specName(locale, value.key)}
+                </span>
+                <span style={{ whiteSpace: 'nowrap' }}>{value.display}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function ModulePicker({
@@ -173,6 +315,19 @@ export default function ModulePicker({
   }, [filteredModules, data, locale]);
 
   // Расчёт дельты влияния выбранного кандидата
+  // Полный список параметров выбранного модуля и его боевая выжимка.
+  const inspectedSpecs = useMemo(
+    () => (inspectedModule
+      ? moduleSpecValues(inspectedModule as unknown as Record<string, unknown>, locale, num)
+      : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inspectedModule, locale],
+  );
+  const inspectedWeapon = useMemo(
+    () => (inspectedModule && isWeapon(data, inspectedModule) ? weaponMetrics(inspectedModule) : null),
+    [data, inspectedModule],
+  );
+
   const delta = useMemo(() => {
     if (!inspectedModule) return null;
     return computeModuleDelta(data, build, slot, inspectedModule);
@@ -709,7 +864,7 @@ export default function ModulePicker({
                   </span>
                 </div>
 
-                {/* Список модулей в группе: ТОЛЬКО НАИМЕНОВАНИЕ И БЕЙДЖИ */}
+                {/* Список модулей в группе: название, цена и все параметры */}
                 <div>
                   {grp.modules.map((module) => {
                     const isInspected =
@@ -725,8 +880,8 @@ export default function ModulePicker({
                         onDoubleClick={() => handleInstall(module)}
                         style={{
                           display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
+                          flexDirection: 'column',
+                          alignItems: 'stretch',
                           width: '100%',
                           textAlign: 'left',
                           margin: 0,
@@ -742,9 +897,18 @@ export default function ModulePicker({
                           cursor: 'pointer',
                           color: 'var(--text)',
                           transition: 'background 0.1s ease',
-                          gap: 10,
+                          gap: 3,
                         }}
                       >
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                            width: '100%',
+                          }}
+                        >
                         {/* Левая часть: бейдж класса/рейтинга + название */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
                           <span
@@ -799,6 +963,10 @@ export default function ModulePicker({
                             {credits(Number(module.cost ?? 0))}
                           </span>
                         </div>
+                        </div>
+
+                        {/* Все параметры модуля прямо в строке */}
+                        <ModuleSpecLine data={data} module={module} locale={locale} num={num} t={t} />
                       </button>
                     );
                   })}
@@ -932,95 +1100,57 @@ export default function ModulePicker({
                         </div>
                       </div>
 
-                      {/* Ключевые параметры модуля */}
+                      {/* Все параметры модуля из справочника */}
                       <div>
                         <div style={{ ...LABEL, fontSize: 10.5, marginBottom: 5 }}>
                           {t('outfitting.picker.tab.specs')}
                         </div>
-                        <div
-                          style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(2, 1fr)',
-                            gap: 4,
-                            fontSize: 11,
-                            fontFamily: MONO,
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                            <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.mass')}</span>
-                            <span>{num(Number(inspectedModule.mass ?? 0), 1)} т</span>
+
+                        {inspectedWeapon && (
+                          <div
+                            style={{
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                              gap: 4,
+                              fontSize: 11,
+                              fontFamily: MONO,
+                              marginBottom: 8,
+                            }}
+                          >
+                            {([
+                              [t('outfitting.off.dps'), num(inspectedWeapon.dps, 1), '#f43f5e'],
+                              [t('outfitting.off.sdps'), num(inspectedWeapon.sdps, 1), undefined],
+                              [t('outfitting.off.eps'), num(inspectedWeapon.eps, 2), undefined],
+                              [t('outfitting.off.hps'), num(inspectedWeapon.hps, 2), undefined],
+                              [t('outfitting.off.dpe'), num(inspectedWeapon.dpe, 1), undefined],
+                              [t('outfitting.off.rof'), `${num(inspectedWeapon.rof, 2)}/s`, undefined],
+                            ] as [string, string, string | undefined][]).map(([label, value, color]) => (
+                              <div
+                                key={label}
+                                style={{
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  gap: 6,
+                                  background: 'rgba(244,63,94,0.07)',
+                                  padding: '3px 6px',
+                                  borderRadius: 2,
+                                }}
+                              >
+                                <span
+                                  title={label}
+                                  style={{ color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                >
+                                  {label}
+                                </span>
+                                <span style={{ whiteSpace: 'nowrap', color: color ?? 'var(--text)', fontWeight: color ? 700 : 400 }}>
+                                  {value}
+                                </span>
+                              </div>
+                            ))}
                           </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                            <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.power')}</span>
-                            <span>{num(Number(inspectedModule.power ?? 0), 2)} МВт</span>
-                          </div>
-                          {inspectedModule.integrity !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.preview.integrity', { value: '' }).trim()}</span>
-                              <span>{String(inspectedModule.integrity)}</span>
-                            </div>
-                          )}
-                          {inspectedModule.pgen !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.powerPlant')}</span>
-                              <span style={{ color: 'var(--green)' }}>+{num(Number(inspectedModule.pgen), 2)} МВт</span>
-                            </div>
-                          )}
-                          {inspectedModule.optmass !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.preview.optmass', { value: '' }).trim()}</span>
-                              <span>{num(Number(inspectedModule.optmass), 0)} т</span>
-                            </div>
-                          )}
-                          {inspectedModule.maxfuel !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>Макс. топливо</span>
-                              <span>{num(Number(inspectedModule.maxfuel), 2)} т</span>
-                            </div>
-                          )}
-                          {inspectedModule.dps !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.picker.dps')}</span>
-                              <span style={{ color: '#f43f5e', fontWeight: 700 }}>{num(Number(inspectedModule.dps), 1)}</span>
-                            </div>
-                          )}
-                          {inspectedModule.damage !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>Урон</span>
-                              <span>{num(Number(inspectedModule.damage), 1)}</span>
-                            </div>
-                          )}
-                          {inspectedModule.thermaload !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.picker.thermalLoad')}</span>
-                              <span>{num(Number(inspectedModule.thermaload), 1)}/s</span>
-                            </div>
-                          )}
-                          {inspectedModule.cargo !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.cargo')}</span>
-                              <span style={{ color: '#38bdf8' }}>+{String(inspectedModule.cargo)} т</span>
-                            </div>
-                          )}
-                          {inspectedModule.fuel !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.fuel')}</span>
-                              <span style={{ color: '#38bdf8' }}>+{String(inspectedModule.fuel)} т</span>
-                            </div>
-                          )}
-                          {inspectedModule.shieldboost !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.shield')}</span>
-                              <span style={{ color: 'var(--cyan)' }}>+{num(Number(inspectedModule.shieldboost) * 100, 0)}%</span>
-                            </div>
-                          )}
-                          {inspectedModule.hullreinforcement !== undefined && (
-                            <div style={{ display: 'flex', justifyContent: 'space-between', background: 'rgba(255,255,255,0.03)', padding: '3px 6px', borderRadius: 2 }}>
-                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.stats.armour')}</span>
-                              <span style={{ color: 'var(--green)' }}>+{String(inspectedModule.hullreinforcement)}</span>
-                            </div>
-                          )}
-                        </div>
+                        )}
+
+                        <SpecSections values={inspectedSpecs} locale={locale} t={t} />
                       </div>
 
                       {/* ── ВЛИЯНИЕ НА СБОРКУ КОРАБЛЯ (СРАВНЕНИЕ) ── */}
