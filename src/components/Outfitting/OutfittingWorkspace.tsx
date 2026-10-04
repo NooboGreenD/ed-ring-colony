@@ -18,6 +18,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { authFetch } from '@/lib/supabaseClient';
 import {
   DEFAULT_PIPS,
   buildSlots,
@@ -470,7 +471,7 @@ export default function OutfittingWorkspace() {
     },
   ];
 
-  const saveBuild = () => {
+  const saveBuild = async () => {
     const name = window.prompt(
       t('outfitting.prompt.name'),
       build.name || t('outfitting.defaultName', { ship: ship.properties.name }),
@@ -486,6 +487,11 @@ export default function OutfittingWorkspace() {
     const next = [entry, ...readSaved()].slice(0, 40);
     window.localStorage.setItem(STORE_KEY, JSON.stringify(next));
     setSaved(next);
+    const response = await authFetch('/api/outfitting/builds', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, ship: entry.ship, code: entry.code }),
+    });
+    if (!response.ok && response.status !== 401) setNotice('Не удалось сохранить сборку в профиль.');
     setBuild({ ...build, name });
     setNotice(t('outfitting.notice.saved'));
   };

@@ -177,6 +177,7 @@ export default function UserMenu() {
       {open && (
         <div className="user-menu-drop">
           <Link href="/account" className="user-menu-item" onClick={() => setOpen(false)}>{t('account.profile')}</Link>
+          <Link href="/account?tab=builds" className="user-menu-item" onClick={() => setOpen(false)}>Мои сборки</Link>
           {mySquadron && (
             <Link href={`/squadrons/${mySquadron.id}`} className="user-menu-item" onClick={() => setOpen(false)}>
               <span>{mySquadron.tag ? `[${mySquadron.tag}] ` : ""}{mySquadron.name}</span>
