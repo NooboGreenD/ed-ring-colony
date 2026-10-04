@@ -138,8 +138,23 @@ export function copySql(): string {
  *
  * 1–2. Схлопнуть дубли внутри пачки по `name_lc` и по `id64` — иначе
  *      `ON CONFLICT DO UPDATE` упадёт на 21000 («cannot affect row a second
- *      time»), а второй уникальный индекс — на 23505. Это hash-self-join по
- *      UNLOGGED-таблице без индексов: дёшево.
+ *      time»), а второй уникальный индекс — на 23505.
+ *
+ *      Раньше это был `DELETE … USING себя же … WHERE a.ctid < b.ctid AND
+ *      a.name_lc = b.name_lc` (hash-self-join). На прод-данных это несколько
+ *      раз вставало на часы ровно на стыках шардов — даже когда в самой
+ *      пачке не было ни одного настоящего дубля (count(*)=1 по каждому
+ *      name_lc) и `work_mem` был поднят до 512MB: воспроизводимо,
+ *      CPU-bound, без локов и I/O. Причину на уровне конкретных байт так и
+ *      не нашли (видимо, редкая деградация плана/сравнения текста на
+ *      конкретных строках), а гонять в проде угадайку больше нельзя — нужен
+ *      способ с гарантированной, а не «обычно хорошей» сложностью.
+ *
+ *      `row_number() OVER (PARTITION BY … ORDER BY ctid)` — это сортировка,
+ *      а не джойн-сам-на-себя: O(n log n) гарантированно, без шанса на
+ *      комбинаторный взрыв независимо от того, что именно не так с
+ *      данными на стыке. Семантика (оставить первую по `ctid` строку в
+ *      каждой группе) та же самая.
  * 3.   Убрать из каталога строки, которые займут `id64` под другим именем
  *      (система переименована). Это `DELETE … USING` по уникальному индексу
  *      `uq_galaxy_systems_id64` — без списков литералов и без `OR`.
@@ -149,11 +164,14 @@ export function mergeStatements(): string[] {
   const updates = GALAXY_ROW_COLUMNS.filter((column) => column !== 'name_lc')
     .map((column) => `${column} = EXCLUDED.${column}`)
     .join(', ');
+  const dedupBy = (column: string): string =>
+    `DELETE FROM ${GALAXY_STAGE_TABLE} a USING (` +
+    `SELECT ctid, row_number() OVER (PARTITION BY ${column} ORDER BY ctid) AS rn ` +
+    `FROM ${GALAXY_STAGE_TABLE}) b ` +
+    `WHERE a.ctid = b.ctid AND b.rn > 1`;
   return [
-    `DELETE FROM ${GALAXY_STAGE_TABLE} a USING ${GALAXY_STAGE_TABLE} b ` +
-      `WHERE a.ctid < b.ctid AND a.name_lc = b.name_lc`,
-    `DELETE FROM ${GALAXY_STAGE_TABLE} a USING ${GALAXY_STAGE_TABLE} b ` +
-      `WHERE a.ctid < b.ctid AND a.id64 = b.id64`,
+    dedupBy('name_lc'),
+    dedupBy('id64'),
     `DELETE FROM ${GALAXY_TABLE} g USING ${GALAXY_STAGE_TABLE} s ` +
       `WHERE g.id64 = s.id64 AND g.name_lc <> s.name_lc`,
     `INSERT INTO ${GALAXY_TABLE} (${COLUMN_LIST}) SELECT ${COLUMN_LIST} FROM ${GALAXY_STAGE_TABLE} ` +
@@ -223,6 +241,15 @@ export async function createPgCopyWriter(
   // Массовая заливка не обязана fsync-ать WAL на каждый commit: импорт
   // идемпотентен и возобновляем, а synchronous_commit стоит ~2× времени.
   await sql('SET synchronous_commit = OFF').catch(() => undefined);
+  // Слияние делает hash-self-join staging-таблицы на 250к строк («дубли по
+  // имени» / «дубли по id64» в mergeStatements()). При дефолтном work_mem=4MB
+  // хэш-таблица на такую пачку не помещается в память: planner уходит в
+  // multi-batch hash join с сбросом партиций во временные файлы на диск —
+  // внешне это выглядит как «слияние зависло», хотя backend активно грузит
+  // CPU (не ждёт ни лок, ни I/O). 256MB с запасом хватает на пачку любого
+  // ожидаемого размера и расходуется только этим одним соединением на время
+  // всего импорта — другие (простаивающие) сессии Supabase не затронуты.
+  await sql("SET work_mem = '256MB'").catch(() => undefined);
   await sql(stageDdlSql());
   await sql(`TRUNCATE ${GALAXY_STAGE_TABLE}`);
   if (options.truncate) await sql(`TRUNCATE ${GALAXY_TABLE} RESTART IDENTITY`);
@@ -313,6 +340,13 @@ export async function createPgCopyWriter(
     heartbeat.unref?.();
     try {
       await sql('BEGIN');
+      // Страховка «на всякий случай»: обычное слияние 250к строк — секунды.
+      // Если какой-то шаг (по любой, даже неизвестной нам причине) уйдёт в
+      // аномальное выполнение, запрос обрывается сам за 2 минуты вместо
+      // того, чтобы висеть часами незаметно. ROLLBACK ниже в catch всё
+      // равно нужен (SET LOCAL живёт только до конца транзакции), а пачка
+      // безопасно повторяется: импорт идемпотентен.
+      await sql("SET LOCAL statement_timeout = '120s'");
       let inserted = 0;
       const statements = mergeStatements();
       const phases = ['дубли по имени', 'дубли по id64', 'переименованные системы', 'вставка и обновление индексов'];
