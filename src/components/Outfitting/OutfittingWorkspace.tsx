@@ -3,10 +3,15 @@
 /**
  * Верфь: сборка корабля (EDSY / Coriolis style) с расширенным функционалом:
  *
- *  - Интерактивный кликабельный распределитель питания («Пипки» SYS/ENG/WEP);
+ *  - Интерактивный кликабельный распределитель питания («Пипки» SYS/ENG/WEP)
+ *    вместе с блоком «Управление кораблём»: форсаж, выпуск орудий, загрузка;
  *  - Быстрое снятие модуля правой кнопкой мыши (ПКМ);
- *  - Drag & Drop перетаскивание модулей между подходящими ячейками слотов;
- *  - Упрощённый интерфейс с богатыми HUD-иконками и сниженным визуальным шумом;
+ *  - Drag & Drop перетаскивание модулей между подходящими ячейками слотов
+ *    и копирование модуля в совместимый слот (кнопка или Alt + перетаскивание);
+ *  - Переключатель того, что показывать в строке слота: масса, энергия,
+ *    характеристики или цена;
+ *  - Подсказка с полным набором параметров модуля при наведении;
+ *  - Обмен сборками с coriolis.io, EDSY и игрой (SLEF);
  *  - 3-панельное окно выбора и детальной инженерии модулей с живым сравнением дельты.
  */
 
@@ -28,6 +33,8 @@ import {
   strippedBuild,
 } from '@/lib/outfitting/build';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
+import { mercEntryFor } from '@/lib/outfitting/merccoin';
+import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
 import type {
   BuildSlot,
   OutfittingData,
@@ -37,7 +44,11 @@ import type {
   SlotModification,
 } from '@/lib/outfitting/types';
 import ArmourEngineering from './ArmourEngineering';
+import ExchangePanel from './ExchangePanel';
+import MercCoinPanel from './MercCoinPanel';
 import ModulePicker from './ModulePicker';
+import ModuleTooltip from './ModuleTooltip';
+import { defaultShipControl, type ShipControlState } from './ShipControl';
 import { specialName } from './SpecialEffectCard';
 import StatsPanel from './StatsPanel';
 import {
@@ -47,6 +58,7 @@ import {
   IconCopy,
   IconCpu,
   IconCrosshair,
+  IconExternalLink,
   IconGrip,
   IconLayers,
   IconLink,
@@ -148,6 +160,47 @@ function canSwapSlots(
   return true;
 }
 
+/**
+ * Что показывать в строке слота: одно название или ещё и раздел параметров —
+ * масса, энергия, характеристики или цена.
+ */
+type ViewMode = SpecSection | 'name';
+const VIEW_MODES: ViewMode[] = ['name', 'mass', 'power', 'perf', 'price'];
+
+/**
+ * Строка параметров под названием модуля.
+ *
+ * Полей у модуля бывает три десятка, поэтому переключатель «показывать»
+ * выбирает раздел — но внутри раздела показываем всё, ничего не пряча:
+ * строка переносится по словам, а полный набор по всем разделам сразу
+ * виден в подсказке при наведении. Режим `name` не показывает ничего:
+ * список сборки в одну строку на слот, цифры — в подсказке.
+ */
+function SlotMetrics({
+  module,
+  view,
+  locale,
+  num,
+}: {
+  module: OutfittingModule;
+  view: ViewMode;
+  locale: string;
+  num: (value: number, digits?: number) => string;
+}) {
+  if (view === 'name') return null;
+  const values = moduleSpecValues(module as unknown as Record<string, unknown>, locale, num, [view]);
+  if (values.length === 0) return null;
+  return (
+    <>
+      {values.map((value) => (
+        <span key={value.key}>
+          <span style={{ opacity: 0.7 }}>{specName(locale, value.key)}</span> {value.display}
+        </span>
+      ))}
+    </>
+  );
+}
+
 /** Заголовок раздела слотов с HUD-иконкой */
 function SectionTitle({
   icon,
@@ -183,6 +236,22 @@ export default function OutfittingWorkspace() {
   const [dragSourceKey, setDragSourceKey] = useState<string | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
 
+  // Что показывать в строке слота и что сейчас под курсором
+  const [view, setView] = useState<ViewMode>('mass');
+  const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
+
+  // Копирование модуля в другую ячейку и обмен сборками
+  const [copySourceKey, setCopySourceKey] = useState<string | null>(null);
+  const [exchangeOpen, setExchangeOpen] = useState(false);
+
+  // Состояние полёта: форсаж, выпущенные орудия, груз и остаток топлива
+  const [control, setControl] = useState<ShipControlState>({
+    boost: false,
+    deployed: false,
+    cargo: 0,
+    fuel: Number.POSITIVE_INFINITY,
+  });
+
   useEffect(() => setSaved(readSaved()), []);
 
   // Первая загрузка: сборка из ссылки, иначе заводская Sidewinder
@@ -209,6 +278,24 @@ export default function OutfittingWorkspace() {
   const ship = data && build ? data.ships[build.ship] : null;
   const slots = useMemo(() => (data && build ? buildSlots(data, build) : []), [data, build]);
   const stats = useMemo(() => (data && build ? computeStats(data, build) : null), [data, build]);
+
+  // Новый корпус — новая загрузка: бак полный, трюм пустой.
+  useEffect(() => {
+    setControl((previous) => ({ ...previous, cargo: 0, fuel: Number.POSITIVE_INFINITY }));
+  }, [build?.ship]);
+
+  // Esc отменяет начатое копирование модуля.
+  useEffect(() => {
+    if (!copySourceKey) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setCopySourceKey(null);
+        setNotice(t('outfitting.copy.cancel'));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [copySourceKey, t]);
 
   const setSlotModule = useCallback((slot: BuildSlot, ref: string | null) => {
     setBuild((previous) => {
@@ -277,6 +364,37 @@ export default function OutfittingWorkspace() {
     [data, slots, t],
   );
 
+  // Копирование модуля в другую совместимую ячейку
+  const handleCopySlot = useCallback(
+    (sourceKey: string, targetKey: string) => {
+      if (!data) return;
+      const sourceSlot = slots.find((slot) => slot.key === sourceKey);
+      const targetSlot = slots.find((slot) => slot.key === targetKey);
+      if (!sourceSlot?.module || !targetSlot || sourceKey === targetKey) return;
+      if (!isSlotCompatibleWithModule(data, targetSlot, sourceSlot.module)) return;
+
+      setBuild((previous) => {
+        if (!previous) return previous;
+        const next: ShipBuild = {
+          ...previous,
+          standard: [...previous.standard],
+          hardpoints: [...previous.hardpoints],
+          internal: [...previous.internal],
+          mods: { ...previous.mods },
+        };
+        next[targetSlot.section][targetSlot.index] = previous[sourceSlot.section][sourceSlot.index];
+        const sourceMod = previous.mods[sourceSlot.key];
+        if (sourceMod) next.mods[targetSlot.key] = { ...sourceMod };
+        else delete next.mods[targetSlot.key];
+        return next;
+      });
+
+      setCopySourceKey(null);
+      setNotice(t('outfitting.copy.done'));
+    },
+    [data, slots, t],
+  );
+
   // Правый клик по слоту: быстрое удаление модуля
   const handleSlotContextMenu = useCallback(
     (e: React.MouseEvent, slot: BuildSlot) => {
@@ -314,6 +432,7 @@ export default function OutfittingWorkspace() {
   }
 
   const activeSlot = picker ? slots.find((slot) => slot.key === picker) ?? null : null;
+  const hoverSlot = hover ? slots.find((slot) => slot.key === hover.key) ?? null : null;
   const sections: {
     key: string;
     icon: React.ReactNode;
@@ -469,6 +588,15 @@ export default function OutfittingWorkspace() {
               <IconSave size={12} />
               {t('outfitting.btnSave')}
             </button>
+
+            <button
+              type="button"
+              style={{ ...button(exchangeOpen), display: 'flex', alignItems: 'center', gap: 4 }}
+              onClick={() => setExchangeOpen(true)}
+            >
+              <IconExternalLink size={12} />
+              {t('outfitting.exchange.btn')}
+            </button>
           </div>
 
           {/* Параметры корпуса */}
@@ -561,6 +689,45 @@ export default function OutfittingWorkspace() {
           )}
         </div>
 
+        {/* ── Что показывать в строке слота ─────────────────────────────── */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            flexWrap: 'wrap',
+            marginTop: 12,
+          }}
+        >
+          <span style={{ ...LABEL, marginBottom: 0 }}>{t('outfitting.view.title')}</span>
+          {VIEW_MODES.map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setView(mode)}
+              aria-pressed={view === mode}
+              style={{ ...button(view === mode), padding: '3px 8px', fontSize: 10.5 }}
+            >
+              {t(`outfitting.view.${mode}`)}
+            </button>
+          ))}
+          {copySourceKey && (
+            <span
+              style={{
+                marginLeft: 'auto',
+                fontSize: 10.5,
+                color: 'var(--green)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+            >
+              <IconCopy size={11} color="var(--green)" />
+              {t('outfitting.copy.target')}
+            </span>
+          )}
+        </div>
+
         {/* ── Секции слотов ──────────────────────────────────────────────── */}
         {sections
           .filter((section) => section.items.length > 0)
@@ -582,16 +749,35 @@ export default function OutfittingWorkspace() {
                   const sourceSlot = dragSourceKey ? slots.find((s) => s.key === dragSourceKey) : null;
                   const isValidDrop = sourceSlot ? canSwapSlots(data, sourceSlot, slot) : false;
 
+                  // Режим копирования: подсвечиваем ячейки, куда модуль влезет.
+                  const copySlot = copySourceKey ? slots.find((s) => s.key === copySourceKey) : null;
+                  const isCopySource = copySourceKey === slot.key;
+                  const isCopyTarget = Boolean(
+                    copySlot?.module
+                    && !isCopySource
+                    && isSlotCompatibleWithModule(data, slot, copySlot.module),
+                  );
+                  const merc = module ? mercEntryFor(module.grp, module.id) : null;
+
+                  const openOrCopy = () => {
+                    if (copySourceKey && isCopyTarget) handleCopySlot(copySourceKey, slot.key);
+                    else if (copySourceKey) setCopySourceKey(null);
+                    else setPicker(slot.key);
+                  };
+
                   return (
                     <div
                       key={slot.key}
                       draggable={Boolean(module)}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('text/plain', slot.key);
+                        e.dataTransfer.effectAllowed = 'copyMove';
                         setDragSourceKey(slot.key);
+                        setHover(null);
                       }}
                       onDragOver={(e) => {
                         e.preventDefault();
+                        e.dataTransfer.dropEffect = e.altKey ? 'copy' : 'move';
                         if (dragOverKey !== slot.key) {
                           setDragOverKey(slot.key);
                         }
@@ -603,7 +789,9 @@ export default function OutfittingWorkspace() {
                         e.preventDefault();
                         const sourceKey = e.dataTransfer.getData('text/plain') || dragSourceKey;
                         if (sourceKey) {
-                          handleSwapSlots(sourceKey, slot.key);
+                          // Alt при отпускании — копировать, обычное перетаскивание — поменять местами.
+                          if (e.altKey) handleCopySlot(sourceKey, slot.key);
+                          else handleSwapSlots(sourceKey, slot.key);
                         }
                         setDragSourceKey(null);
                         setDragOverKey(null);
@@ -612,8 +800,19 @@ export default function OutfittingWorkspace() {
                         setDragSourceKey(null);
                         setDragOverKey(null);
                       }}
+                      onMouseEnter={(e) => {
+                        if (module && !dragSourceKey) setHover({ key: slot.key, x: e.clientX, y: e.clientY });
+                      }}
+                      onMouseMove={(e) => {
+                        if (module && !dragSourceKey && hover?.key === slot.key) {
+                          setHover({ key: slot.key, x: e.clientX, y: e.clientY });
+                        }
+                      }}
+                      onMouseLeave={() => {
+                        setHover((previous) => (previous?.key === slot.key ? null : previous));
+                      }}
                       onContextMenu={(e) => handleSlotContextMenu(e, slot)}
-                      title="ЛКМ: изменить модуль · ПКМ: убрать модуль · Зажать: перетащить"
+                      title={t('outfitting.tip.hint')}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
@@ -621,21 +820,25 @@ export default function OutfittingWorkspace() {
                         borderBottom: '1px solid var(--line)',
                         padding: '6px 10px',
                         cursor: 'pointer',
-                        background: isDraggingThis
+                        background: isDraggingThis || isCopySource
                           ? 'rgba(230,126,34,0.15)'
                           : isDragTarget
                             ? isValidDrop
                               ? 'rgba(46,204,113,0.15)'
                               : 'rgba(231,76,60,0.15)'
-                            : 'transparent',
+                            : isCopyTarget
+                              ? 'rgba(46,204,113,0.08)'
+                              : 'transparent',
                         borderLeft: `3px solid ${
                           isDragTarget
                             ? isValidDrop
                               ? 'var(--green)'
                               : 'var(--red)'
-                            : module
-                              ? rCol
-                              : 'transparent'
+                            : isCopyTarget
+                              ? 'var(--green)'
+                              : module
+                                ? rCol
+                                : 'transparent'
                         }`,
                         transition: 'background 0.12s ease',
                       }}
@@ -677,7 +880,7 @@ export default function OutfittingWorkspace() {
 
                       {/* Центральная часть: клик открывает ModulePicker */}
                       <div
-                        onClick={() => setPicker(slot.key)}
+                        onClick={openOrCopy}
                         style={{
                           flex: 1,
                           minWidth: 0,
@@ -711,6 +914,18 @@ export default function OutfittingWorkspace() {
                           >
                             {module ? moduleLabel(data, module, locale) : t('outfitting.emptySlot')}
                           </span>
+                          {merc && (
+                            <span
+                              title={
+                                merc.coins
+                                  ? t('outfitting.merc.coins', { value: merc.coins })
+                                  : t('outfitting.merc.unknown')
+                              }
+                              style={{ display: 'flex', alignItems: 'center', color: '#fbbf24' }}
+                            >
+                              <IconCoins size={11} color="#fbbf24" />
+                            </span>
+                          )}
                         </div>
 
                         {/* Мелкие метрики под модулем */}
@@ -724,12 +939,8 @@ export default function OutfittingWorkspace() {
                           }}
                         >
                           {effective && (
-                            <span>{t('outfitting.unit.t', { value: num(Number(effective.mass ?? 0), 1) })}</span>
+                            <SlotMetrics module={effective} view={view} locale={locale} num={num} />
                           )}
-                          {effective && Number(effective.power ?? 0) > 0 && (
-                            <span>{t('outfitting.unit.mw', { value: num(Number(effective.power), 2) })}</span>
-                          )}
-                          {module && <span>{credits(Number(module.cost ?? 0))}</span>}
                           {modification?.blueprint && (
                             <span style={{ color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 3 }}>
                               <IconWrench size={10} color="var(--green)" />
@@ -747,6 +958,30 @@ export default function OutfittingWorkspace() {
 
                       {/* Быстрые действия: очистить слот / открыть */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {module && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCopySourceKey(isCopySource ? null : slot.key);
+                              setNotice(isCopySource ? t('outfitting.copy.cancel') : t('outfitting.copy.target'));
+                            }}
+                            title={t('outfitting.copy.start')}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: isCopySource ? 'var(--green)' : 'var(--muted)',
+                              cursor: 'pointer',
+                              padding: 4,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              borderRadius: 3,
+                            }}
+                          >
+                            <IconCopy size={13} color={isCopySource ? 'var(--green)' : undefined} />
+                          </button>
+                        )}
                         {module && (
                           <button
                             type="button"
@@ -771,7 +1006,7 @@ export default function OutfittingWorkspace() {
                           </button>
                         )}
                         <span
-                          onClick={() => setPicker(slot.key)}
+                          onClick={openOrCopy}
                           style={{ color: 'var(--muted)', fontSize: 13, cursor: 'pointer' }}
                         >
                           <IconChevronRight size={14} />
@@ -828,6 +1063,9 @@ export default function OutfittingWorkspace() {
           </>
         )}
 
+        {/* ── Что продаётся за Merc Coin ─────────────────────────────────── */}
+        <MercCoinPanel data={data} />
+
         {/* Подвал раздела */}
         <p style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 12, lineHeight: 1.6 }}>
           {t('outfitting.source.prefix')}{' '}
@@ -842,12 +1080,41 @@ export default function OutfittingWorkspace() {
       {/* ── Правая сводка и распределитель питания ────────────────────── */}
       <div style={{ flex: '0 1 330px', minWidth: 280 }}>
         <StatsPanel
+          data={data}
+          build={build}
           stats={stats}
           shipName={build.name || ship.properties.name}
           pips={pips}
           onPipsChange={setPips}
+          control={{
+            ...control,
+            cargo: Math.min(control.cargo, stats.cargo),
+            fuel: Math.min(control.fuel, stats.fuel),
+          }}
+          onControlChange={setControl}
         />
       </div>
+
+      {/* ── Подсказка с полными параметрами модуля ───────────────────── */}
+      {hoverSlot?.module && (
+        <ModuleTooltip
+          data={data}
+          module={hoverSlot.module}
+          effective={effectiveModule(data, hoverSlot.module, hoverSlot.modification)}
+          modification={hoverSlot.modification}
+          anchor={{ x: hover!.x, y: hover!.y }}
+        />
+      )}
+
+      {/* ── Обмен сборками с coriolis.io, EDSY и игрой ────────────────── */}
+      {exchangeOpen && (
+        <ExchangePanel
+          data={data}
+          build={build}
+          onImport={(next) => setBuild(next)}
+          onClose={() => setExchangeOpen(false)}
+        />
+      )}
 
       {/* ── Окно выбора и инженерии модуля ────────────────────────────── */}
       {activeSlot && (
