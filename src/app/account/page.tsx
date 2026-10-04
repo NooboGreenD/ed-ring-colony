@@ -36,7 +36,7 @@ import {
 
 
 type Progress = { current: number; total: number; phase: string; pct: number };
-type Tab = "profile" | "squadron" | "journals" | "tokens" | "premium";
+type Tab = "profile" | "squadron" | "journals" | "tokens" | "premium" | "builds";
 
 /**
  * Подписи получателей груза в сводке импорта. Ключи — `delivery_kind` из
@@ -94,6 +94,11 @@ export default function AccountPage() {
   const [capiLinked, setCapiLinked] = useState(false);
   // Конфиденциальность досье: что видят другие командиры на странице /cmdr/…
   const [privacy, setPrivacy] = useState<PrivacySettings>({ ...DEFAULT_PRIVACY });
+  const [myBuilds, setMyBuilds] = useState<any[]>([]);
+  const loadBuilds = async () => {
+    const response = await authFetch('/api/outfitting/builds', { cache: 'no-store' });
+    if (response.ok) setMyBuilds((await response.json()).builds ?? []);
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -163,6 +168,7 @@ export default function AccountPage() {
     const qTab = new URLSearchParams(window.location.search).get('tab');
     if (qTab === 'tokens') setTab('tokens');
     if (qTab === 'premium') setTab('premium');
+    if (qTab === 'builds') { setTab('builds'); void loadBuilds(); }
     load();
   }, []);
 
@@ -785,6 +791,7 @@ export default function AccountPage() {
         <button className={tab === "journals" ? "tab tab-active" : "tab"} onClick={() => setTab("journals")}>{t('account.tabJournals')}</button>
         <button className={tab === "tokens" ? "tab tab-active" : "tab"} onClick={() => { setTab("tokens"); loadTokens(); }}>{t('account.tabTokens')}</button>
         <button className={tab === "premium" ? "tab tab-active" : "tab"} onClick={() => setTab("premium")} style={{ borderColor: tab === "premium" ? undefined : "rgba(230,126,34,0.4)", color: tab === "premium" ? undefined : "var(--orange)" }}>{t('account.tabPremium') || 'Премиум и покупки'}</button>
+        <button className={tab === "builds" ? "tab tab-active" : "tab"} onClick={() => { setTab("builds"); void loadBuilds(); }}>Мои сборки</button>
       </div>
 
       {tab === "profile" && (
@@ -1159,6 +1166,17 @@ export default function AccountPage() {
       )}
 
       {tab === "premium" && <AccountPremiumPanel />}
+      {tab === "builds" && (
+        <section className="card" style={{ marginTop: 16 }}>
+          <h2>Мои сборки</h2>
+          <p style={{ color: 'var(--muted)' }}>Сохранённые сборки кораблей, привязанные к вашему досье пилота.</p>
+          {myBuilds.length === 0 ? <p>Сохранённых сборок пока нет.</p> : (
+            <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th>Название</th><th>Корабль</th><th>Сохранена</th></tr></thead><tbody>
+              {myBuilds.map((build) => <tr key={build.id}><td>{build.name}</td><td>{build.ship}</td><td>{new Date(build.created_at).toLocaleString()}</td></tr>)}
+            </tbody></table></div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

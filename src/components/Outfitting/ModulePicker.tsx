@@ -53,6 +53,7 @@ import {
   IconSearch,
   IconShield,
   IconSliders,
+  IconStar,
   IconSparkles,
   IconTrash,
   IconWrench,
@@ -178,6 +179,23 @@ export default function ModulePicker({
   const [selectedRating, setSelectedRating] = useState<string>('all');
   const [selectedMount, setSelectedMount] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<'specs' | 'eng'>('specs');
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem('edring-outfitting-module-favorites');
+      if (raw) setFavorites(JSON.parse(raw));
+    } catch { /* приватный режим или повреждённое значение */ }
+  }, []);
+
+  const toggleFavorite = (ref: string) => {
+    setFavorites((previous) => {
+      const next = previous.includes(ref) ? previous.filter((item) => item !== ref) : [...previous, ref];
+      try { window.localStorage.setItem('edring-outfitting-module-favorites', JSON.stringify(next)); } catch { /* storage unavailable */ }
+      return next;
+    });
+  };
 
   // Модуль под курсором в списке — для всплывающей подсказки.
   const [hover, setHover] = useState<{ ref: string; x: number; y: number } | null>(null);
@@ -211,6 +229,7 @@ export default function ModulePicker({
   const filteredModules = useMemo(() => {
     const q = query.trim().toLowerCase();
     return available.filter((module) => {
+      if (favoritesOnly && !favorites.includes(moduleRef(module))) return false;
       if (selectedGroup !== 'all' && module.grp !== selectedGroup) return false;
       if (selectedClass !== 'all' && module.class !== selectedClass) return false;
       if (selectedRating !== 'all' && module.rating !== selectedRating) return false;
@@ -222,7 +241,7 @@ export default function ModulePicker({
       }
       return true;
     });
-  }, [available, selectedGroup, selectedClass, selectedRating, selectedMount, query, data, locale]);
+  }, [available, selectedGroup, selectedClass, selectedRating, selectedMount, query, data, locale, favoritesOnly, favorites]);
 
   // Группировка списка модулей по типам
   const groupedModules = useMemo(() => {
@@ -277,14 +296,22 @@ export default function ModulePicker({
   const targetForEng = current || inspectedModule;
   const modification = slot.modification ?? {};
   const blueprints = useMemo(
-    () => (targetForEng ? blueprintsForGroup(data, targetForEng.grp) : []),
+    () => {
+      if (!targetForEng) return [];
+      const pre = targetForEng.preEngineered as { reengineerable?: boolean; canApplyExperimental?: boolean } | undefined;
+      return pre?.reengineerable === false ? [] : blueprintsForGroup(data, targetForEng.grp);
+    },
     [data, targetForEng],
   );
   const activeBlueprint = modification.blueprint
     ? blueprints.find((b) => b.id === modification.blueprint)
     : null;
   const specials = useMemo(
-    () => (targetForEng ? specialsForGroup(data, targetForEng.grp) : []),
+    () => {
+      if (!targetForEng) return [];
+      const pre = targetForEng.preEngineered as { canApplyExperimental?: boolean } | undefined;
+      return pre?.canApplyExperimental === false ? [] : specialsForGroup(data, targetForEng.grp);
+    },
     [data, targetForEng],
   );
 
@@ -531,6 +558,15 @@ export default function ModulePicker({
                 </span>
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={() => setFavoritesOnly((value) => !value)}
+              style={{ ...button(favoritesOnly), justifyContent: 'flex-start', gap: 6, color: favoritesOnly ? '#fbbf24' : 'var(--muted)' }}
+            >
+              <IconStar size={13} color={favoritesOnly ? '#fbbf24' : 'var(--muted)'} />
+              Избранные модули ({favorites.length})
+            </button>
 
             {/* Фильтр по классу */}
             <div>
@@ -1210,6 +1246,15 @@ export default function ModulePicker({
                           </div>
                         </div>
                       )}
+
+                      <button
+                        type="button"
+                        onClick={() => toggleFavorite(moduleRef(inspectedModule))}
+                        style={{ ...button(false), justifyContent: 'center', gap: 6, color: favorites.includes(moduleRef(inspectedModule)) ? '#fbbf24' : 'var(--muted)' }}
+                      >
+                        <IconStar size={14} color={favorites.includes(moduleRef(inspectedModule)) ? '#fbbf24' : 'var(--muted)'} />
+                        {favorites.includes(moduleRef(inspectedModule)) ? 'В избранном' : 'Добавить в избранное'}
+                      </button>
 
                       {/* Кнопка установки модуля */}
                       <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>

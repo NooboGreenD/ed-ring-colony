@@ -175,12 +175,36 @@ export function effectiveModule(
   modification: SlotModification | null | undefined,
 ): OutfittingModule | null {
   if (!module) return null;
-  if (!modification?.blueprint && !modification?.special) return module;
+  // Coriolis marks these as pre-engineered. Their factory engineering is part
+  // of the module, not a user modification: apply it first and never replace
+  // it with the blueprint selected in the build.
+  const pre = module.preEngineered as unknown as {
+    reengineerable?: boolean;
+    blueprints?: string[];
+    grade?: number;
+    canApplyExperimental?: boolean;
+  } | undefined;
+  const factoryBlueprints = pre?.blueprints ?? [];
+  const userBlueprint = pre?.reengineerable === false ? undefined : modification?.blueprint;
+  const special = modification?.special && (!pre || pre.canApplyExperimental !== false)
+    ? modification.special
+    : undefined;
+  if (!userBlueprint && !special && factoryBlueprints.length === 0) return module;
   const result: OutfittingModule = { ...module };
 
-  const blueprint = modification.blueprint ? data.blueprints[modification.blueprint] : null;
-  const grade = blueprint?.grades?.[String(modification.grade ?? 1)];
-  const quality = Math.min(1, Math.max(0, modification.quality ?? 1));
+  const applyBlueprint = (id: string, gradeNumber: number) => {
+    const grade = data.blueprints[id]?.grades?.[String(gradeNumber)];
+    if (!grade) return;
+    for (const [property, range] of Object.entries(grade.features)) {
+      const [min, max] = range;
+      applyFeature(data, result, property, max);
+    }
+  };
+  for (const id of factoryBlueprints) applyBlueprint(id, pre?.grade ?? 1);
+
+  const blueprint = userBlueprint ? data.blueprints[userBlueprint] : null;
+  const grade = blueprint?.grades?.[String(modification?.grade ?? 1)];
+  const quality = Math.min(1, Math.max(0, modification?.quality ?? 1));
   if (grade) {
     for (const [property, range] of Object.entries(grade.features)) {
       const [min, max] = range;
@@ -189,9 +213,9 @@ export function effectiveModule(
   }
 
   // Экспериментальный эффект ложится поверх чертежа — так же, как в игре.
-  const special = modification.special ? data.specials[modification.special] : null;
-  if (special) {
-    for (const [property, raw] of Object.entries(special.features ?? {})) {
+  const specialEffect = special ? data.specials[special] : null;
+  if (specialEffect) {
+    for (const [property, raw] of Object.entries(specialEffect.features ?? {})) {
       applyFeature(data, result, property, raw);
     }
   }

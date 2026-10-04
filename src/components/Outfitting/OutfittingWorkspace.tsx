@@ -18,6 +18,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@/lib/i18n/I18nContext';
+import { authFetch } from '@/lib/supabaseClient';
 import {
   DEFAULT_PIPS,
   buildSlots,
@@ -470,7 +471,7 @@ export default function OutfittingWorkspace() {
     },
   ];
 
-  const saveBuild = () => {
+  const saveBuild = async () => {
     const name = window.prompt(
       t('outfitting.prompt.name'),
       build.name || t('outfitting.defaultName', { ship: ship.properties.name }),
@@ -486,6 +487,11 @@ export default function OutfittingWorkspace() {
     const next = [entry, ...readSaved()].slice(0, 40);
     window.localStorage.setItem(STORE_KEY, JSON.stringify(next));
     setSaved(next);
+    const response = await authFetch('/api/outfitting/builds', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, ship: entry.ship, code: entry.code }),
+    });
+    if (!response.ok && response.status !== 401) setNotice('Не удалось сохранить сборку в профиль.');
     setBuild({ ...build, name });
     setNotice(t('outfitting.notice.saved'));
   };
@@ -621,28 +627,42 @@ export default function OutfittingWorkspace() {
             <span>{t('outfitting.hullCost', { value: credits(ship.properties.hullCost) })}</span>
           </div>
 
-          {/* Переборки корпуса */}
-          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
-            {ship.bulkheads.map((bulkhead, index) => (
-              <button
-                key={bulkhead.id}
-                type="button"
-                style={{
-                  ...button(build.bulkhead === index),
-                  fontSize: 11,
-                  fontFamily: MONO,
-                  padding: '3px 8px',
-                }}
-                title={t('outfitting.bulkheadTitle', {
-                  mass: bulkhead.mass,
-                  boost: (1 + bulkhead.hullboost).toFixed(2),
-                  cost: credits(bulkhead.cost),
-                })}
-                onClick={() => setBuild({ ...build, bulkhead: index })}
-              >
-                {bulkhead.name}
-              </button>
-            ))}
+          {/* Переборки корпуса — в том же виде, что и модули */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6, marginTop: 8 }}>
+            {ship.bulkheads.map((bulkhead, index) => {
+              const selected = build.bulkhead === index;
+              return (
+                <button
+                  key={bulkhead.id}
+                  type="button"
+                  title={t('outfitting.bulkheadTitle', {
+                    mass: bulkhead.mass,
+                    boost: (1 + bulkhead.hullboost).toFixed(2),
+                    cost: credits(bulkhead.cost),
+                  })}
+                  onClick={() => setBuild({ ...build, bulkhead: index })}
+                  style={{
+                    display: 'flex', flexDirection: 'column', gap: 4, textAlign: 'left',
+                    padding: '8px 10px', borderRadius: 4, cursor: 'pointer',
+                    border: selected ? '1px solid var(--orange)' : '1px solid var(--line)',
+                    background: selected ? 'rgba(230,126,34,0.14)' : 'rgba(15,23,42,0.45)',
+                    color: 'var(--text)',
+                  }}
+                >
+                  <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontFamily: MONO, fontSize: 11.5, fontWeight: 700 }}>
+                    <span>{bulkhead.name}</span><span style={{ color: selected ? 'var(--orange)' : 'var(--muted)' }}>{selected ? '✓' : ''}</span>
+                  </span>
+                  <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: 'var(--muted)', fontFamily: MONO, fontSize: 10 }}>
+                    <span>Масса {num(bulkhead.mass, 0)} т</span>
+                    <span>Броня +{(bulkhead.hullboost * 100).toFixed(0)}%</span>
+                    <span>K {num(bulkhead.kinres * 100, 0)}%</span>
+                    <span>T {num(bulkhead.thermres * 100, 0)}%</span>
+                    <span>E {num(bulkhead.explres * 100, 0)}%</span>
+                  </span>
+                  <span style={{ color: 'var(--orange)', fontFamily: MONO, fontSize: 10 }}>{credits(bulkhead.cost)}</span>
+                </button>
+              );
+            })}
           </div>
 
           {/* Инженерия переборок */}
