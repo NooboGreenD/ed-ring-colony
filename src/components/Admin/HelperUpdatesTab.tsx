@@ -400,6 +400,34 @@ export default function HelperUpdatesTab() {
     }
   }, [releaseChannel, releaseFiles, releaseJob, releaseNotes, releasePromote, releaseSource, releaseVersion]);
 
+  const downloadLauncherBuildKit = useCallback(async () => {
+    if (!launcherVersion.trim()) return;
+    setBusy(true);
+    setError('');
+    setMessage('Подготавливаю комплект первой Windows-сборки…');
+    try {
+      const response = await authFetch(`/api/admin/uploader/build-kit?version=${encodeURIComponent(launcherVersion.trim())}`, { cache: 'no-store' });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `ColonialHelper-build-${launcherVersion.trim().replace(/^v/i, '')}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1_000);
+      setMessage('Комплект скачан. Распакуйте его на Windows и запустите BUILD-WINDOWS.bat, затем загрузите готовый EXE ниже.');
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось подготовить комплект сборки');
+      setMessage('');
+    } finally {
+      setBusy(false);
+    }
+  }, [launcherVersion]);
+
   const publishLauncher = useCallback(async () => {
     if (releaseJob?.active) {
       setError('Дождитесь завершения текущей операции Helper');
@@ -782,12 +810,19 @@ export default function HelperUpdatesTab() {
         <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
           <strong>Базовая сборка ColonialHelper.exe</strong>
           <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px' }}>
-            Загружается редко, при изменении Python/зависимостей. Файл хранится здесь же и скачивается с вашего домена.
+            Первичный EXE скачивается пилотом один раз, после чего получает небольшие пакетные обновления.
+            Сервер Linux готовит комплект с актуальным кодом и ключами, а сам Windows EXE собирается на доверенной Windows-машине.
           </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 9 }}>
+            <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label="Версия базовой сборки" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
+            <button className="btn btn-cyan" disabled={releaseBusy || !launcherVersion.trim() || !store?.serverSigningConfigured} onClick={() => void downloadLauncherBuildKit()}>
+              Создать первичный EXE — скачать комплект
+            </button>
+            <span style={{ color: '#6b7280', fontSize: 11 }}>В ZIP: BUILD-WINDOWS.bat и инструкция</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingTop: 9, borderTop: '1px dashed #2d3033' }}>
             <input type="file" accept=".exe,application/vnd.microsoft.portable-executable" onChange={(event) => setLauncherFile(event.target.files?.[0] ?? null)} style={{ color: '#9ca3af', fontSize: 12 }} />
-            <button className="btn" disabled={releaseBusy || !launcherFile || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить exe на сервер</button>
+            <button className="btn" disabled={releaseBusy || !launcherFile || !launcherVersion.trim()} onClick={() => void publishLauncher()}>Загрузить готовый EXE на сервер</button>
           </div>
         </div>
       </div>

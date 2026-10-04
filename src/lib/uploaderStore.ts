@@ -665,6 +665,13 @@ function privateKeyFromSeed(seed: Buffer) {
   return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
 }
 
+/** Публичная часть всех доверенных ключей для подготовки базовой сборки. */
+export function trustedPublicKeys(): Record<string, string> {
+  return Object.fromEntries(
+    [...trustedKeys().entries()].map(([id, key]) => [id, key.toString('base64')]),
+  );
+}
+
 /** CRC32 нужен только контейнеру ZIP; целостность кода защищает SHA-256 манифеста. */
 function crc32(data: Buffer): number {
   let crc = 0xffffffff;
@@ -676,7 +683,7 @@ function crc32(data: Buffer): number {
 }
 
 /** Минимальный стандартный ZIP без сторонней зависимости (deflate + UTF-8). */
-async function createZip(
+export async function createZip(
   files: Map<string, Buffer>,
   onFile?: (completed: number, total: number) => void | Promise<void>,
 ): Promise<Buffer> {
