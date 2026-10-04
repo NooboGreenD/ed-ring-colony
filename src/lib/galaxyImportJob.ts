@@ -1267,6 +1267,22 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
     console.error(`[galaxy-import] ${line}`);
   };
 
+  // Прод-инцидент: после аварийного сброса (OOM/ребут VM) импорт стартовал с
+  // шарда 1, хотя `shard_index` в galaxy_systems_meta указывал на десятки
+  // пройденных шардов — без объяснения причины в логе, потому что ветки
+  // "продолжение с шарда N" молчат, если `resumable` оказался false. Здесь
+  // фиксируем явную причину (несовпадение фазы/варианта/режима), чтобы при
+  // следующем сбросе не гадать по обрывкам логов.
+  if (!resumable && ((previous.shard_index ?? 0) > 0 || (previous.resume_offset ?? 0) > 0)) {
+    log(
+      `WARNING: не продолжаю с прошлого прогресса (был шард ${previous.shard_index ?? 0}` +
+        `${previous.resume_offset ? `, смещение ${previous.resume_offset.toLocaleString()}` : ''}) — ` +
+        `предыдущее состояние: phase=${previous.phase}, variant=${previous.variant ?? 'full'}, mode=${previous.mode ?? 'stream'}; ` +
+        `сейчас: variant=${variant}, mode=${mode}${options.fresh ? ', запрошен фреш-старт (fresh)' : ''}. ` +
+        'Дамп будет перечитан с начала.',
+    );
+  }
+
   const started = await writeImportState({
     phase: 'running',
     backend,
