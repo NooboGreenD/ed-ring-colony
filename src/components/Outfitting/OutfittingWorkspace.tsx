@@ -160,8 +160,12 @@ function canSwapSlots(
   return true;
 }
 
-/** Что показывать в строке слота: масса, энергия, характеристики или цена. */
-const VIEW_MODES: SpecSection[] = ['mass', 'power', 'perf', 'price'];
+/**
+ * Что показывать в строке слота: одно название или ещё и раздел параметров —
+ * масса, энергия, характеристики или цена.
+ */
+type ViewMode = SpecSection | 'name';
+const VIEW_MODES: ViewMode[] = ['name', 'mass', 'power', 'perf', 'price'];
 
 /**
  * Строка параметров под названием модуля.
@@ -169,7 +173,8 @@ const VIEW_MODES: SpecSection[] = ['mass', 'power', 'perf', 'price'];
  * Полей у модуля бывает три десятка, поэтому переключатель «показывать»
  * выбирает раздел — но внутри раздела показываем всё, ничего не пряча:
  * строка переносится по словам, а полный набор по всем разделам сразу
- * виден в подсказке при наведении.
+ * виден в подсказке при наведении. Режим `name` не показывает ничего:
+ * список сборки в одну строку на слот, цифры — в подсказке.
  */
 function SlotMetrics({
   module,
@@ -178,10 +183,11 @@ function SlotMetrics({
   num,
 }: {
   module: OutfittingModule;
-  view: SpecSection;
+  view: ViewMode;
   locale: string;
   num: (value: number, digits?: number) => string;
 }) {
+  if (view === 'name') return null;
   const values = moduleSpecValues(module as unknown as Record<string, unknown>, locale, num, [view]);
   if (values.length === 0) return null;
   return (
@@ -231,7 +237,7 @@ export default function OutfittingWorkspace() {
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
 
   // Что показывать в строке слота и что сейчас под курсором
-  const [view, setView] = useState<SpecSection>('mass');
+  const [view, setView] = useState<ViewMode>('mass');
   const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null);
 
   // Копирование модуля в другую ячейку и обмен сборками

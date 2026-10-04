@@ -185,6 +185,13 @@ maybe('переключатель «Показывать» меняет стро
   try {
     assert.match(ui.text(), /Показывать/);
 
+    // Режим «только названия» убирает цифры из строк, но не сами слоты.
+    const slotList = ui.document.querySelector('div[draggable="true"]').parentElement;
+    assert.match(slotList.textContent || '', /Прочность/, 'по умолчанию в строке есть масса с прочностью');
+    await ui.click(ui.buttonsBy(/^Только названия$/)[0]);
+    assert.match(slotList.textContent || '', /Реактор|Двигател/i, 'слоты на месте');
+    assert.doesNotMatch(slotList.textContent || '', /Прочность/, 'параметры убраны');
+
     await ui.click(ui.buttonsBy(/^Масса$/)[0]);
     assert.match(ui.text(), /Масса/, 'масса подписана в строке слота');
 

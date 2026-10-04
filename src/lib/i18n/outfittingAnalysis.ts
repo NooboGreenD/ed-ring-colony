@@ -82,6 +82,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': 'Распределителю не хватает заряда на форсаж',
 
     'outfitting.view.title': 'Показывать',
+    'outfitting.view.name': 'Только названия',
     'outfitting.view.mass': 'Масса',
     'outfitting.view.power': 'Энергия',
     'outfitting.view.perf': 'Характеристики',
@@ -199,6 +200,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': 'The distributor cannot supply a boost',
 
     'outfitting.view.title': 'Show',
+    'outfitting.view.name': 'Names only',
     'outfitting.view.mass': 'Mass',
     'outfitting.view.power': 'Power',
     'outfitting.view.perf': 'Performance',
@@ -316,6 +318,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': 'Der Verteiler liefert zu wenig für einen Boost',
 
     'outfitting.view.title': 'Anzeigen',
+    'outfitting.view.name': 'Nur Namen',
     'outfitting.view.mass': 'Masse',
     'outfitting.view.power': 'Energie',
     'outfitting.view.perf': 'Leistung',
@@ -433,6 +436,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': 'Il distributore non basta per la spinta',
 
     'outfitting.view.title': 'Mostra',
+    'outfitting.view.name': 'Solo nomi',
     'outfitting.view.mass': 'Massa',
     'outfitting.view.power': 'Energia',
     'outfitting.view.perf': 'Prestazioni',
@@ -550,6 +554,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': '분배기 출력이 부스트에 모자랍니다',
 
     'outfitting.view.title': '표시 항목',
+    'outfitting.view.name': '이름만',
     'outfitting.view.mass': '질량',
     'outfitting.view.power': '전력',
     'outfitting.view.perf': '성능',
@@ -667,6 +672,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': '分配器电量不足以加速',
 
     'outfitting.view.title': '显示',
+    'outfitting.view.name': '仅名称',
     'outfitting.view.mass': '质量',
     'outfitting.view.power': '电力',
     'outfitting.view.perf': '性能',
@@ -784,6 +790,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.control.noBoost': 'ディストリビューターの出力がブーストに足りません',
 
     'outfitting.view.title': '表示',
+    'outfitting.view.name': '名前のみ',
     'outfitting.view.mass': '質量',
     'outfitting.view.power': '電力',
     'outfitting.view.perf': '性能',
