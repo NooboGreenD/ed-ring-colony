@@ -387,7 +387,7 @@ maybe('блок Merc Coin раскрывается и объясняет неп�
   }
 });
 
-maybe('список модулей показывает все параметры, у орудий — расчётный DPS', async () => {
+maybe('в списке модулей только название, параметры — в подсказке', async () => {
   const ui = await mountWorkspace();
   try {
     // Открываем окно выбора для орудийного пилона.
@@ -404,21 +404,49 @@ maybe('список модулей показывает все параметр�
     const dialog = ui.document.querySelector('[role="dialog"]');
     assert.ok(dialog, 'окно выбора модуля открылось');
 
-    // Строка списка: название, цена и все параметры из справочника.
+    // Строка списка: класс с рейтингом, название и цена — и ничего больше.
     const row = [...dialog.querySelectorAll('button')]
       .find((node) => /Импульсный лазер|Pulse Laser/i.test(node.textContent || '')
-        && /Масса/.test(node.textContent || ''));
-    assert.ok(row, 'в списке есть строка импульсного лазера с параметрами');
-
+        && node.getAttribute('title') === 'ЛКМ — показать параметры · двойной клик — установить');
+    assert.ok(row, 'в списке есть строка импульсного лазера');
     const rowText = row.textContent || '';
-    assert.match(rowText, /Урон в секунду/, 'расчётный DPS прямо в строке');
-    assert.match(rowText, /Расход WEP/, 'и расход конденсатора');
-    assert.match(rowText, /Масса/, 'масса');
-    assert.match(rowText, /Потребление/, 'потребление энергии');
-    assert.match(rowText, /Пробитие/, 'пробитие');
-    assert.match(rowText, /Дальность/, 'дальность');
+    assert.doesNotMatch(rowText, /Масса/, 'параметры под названием не выводятся');
+    assert.doesNotMatch(rowText, /Урон в секунду/, 'и DPS тоже');
+    assert.match(rowText, /CR/, 'цена осталась');
 
-    // Правая панель: полный набор по разделам, а не выборка из десяти полей.
+    // Наведение на строку — та же карточка, что и на слотах основного окна.
+    assert.equal(dialog.querySelector('[role="tooltip"]'), null, 'без наведения подсказки нет');
+    await ui.act(async () => {
+      row.dispatchEvent(new ui.dom.window.MouseEvent('mouseover', {
+        bubbles: true,
+        clientX: 300,
+        clientY: 240,
+        relatedTarget: null,
+      }));
+    });
+    await ui.flush();
+
+    const tooltip = ui.document.querySelector('[role="tooltip"]');
+    assert.ok(tooltip, 'подсказка появилась');
+    const tip = tooltip.textContent || '';
+    assert.match(tip, /Урон/, 'характеристики');
+    assert.match(tip, /Масса/, 'масса');
+    assert.match(tip, /Потребление/, 'энергия');
+    assert.match(tip, /Цена/, 'цена');
+    assert.match(tip, /двойной клик/, 'подпись про установку модуля');
+    assert.equal(tooltip.style.overflowY, '', 'прокрутки внутри нет');
+    assert.equal(tooltip.style.maxHeight, '', 'и ограничения по высоте тоже');
+
+    await ui.act(async () => {
+      row.dispatchEvent(new ui.dom.window.MouseEvent('mouseout', {
+        bubbles: true,
+        relatedTarget: ui.document.body,
+      }));
+    });
+    await ui.flush();
+    assert.equal(ui.document.querySelector('[role="tooltip"]'), null, 'подсказка убралась');
+
+    // Правая панель: полный набор по разделам плюс сравнение со сборкой.
     const panel = dialog.textContent || '';
     assert.match(panel, /ХАРАКТЕРИСТИКИ/i, 'раздел характеристик');
     assert.match(panel, /ЭНЕРГИЯ/i, 'раздел энергии');

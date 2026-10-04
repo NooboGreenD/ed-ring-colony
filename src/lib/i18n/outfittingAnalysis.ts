@@ -88,6 +88,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': 'Цена',
 
     'outfitting.tip.hint': 'ЛКМ — выбрать · ПКМ — убрать · тянуть — поменять местами',
+    'outfitting.tip.pick': 'ЛКМ — показать параметры · двойной клик — установить',
     'outfitting.tip.noData': 'Числовых параметров нет',
     'outfitting.tip.more': 'и ещё {value}',
 
@@ -204,6 +205,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': 'Price',
 
     'outfitting.tip.hint': 'Left click to pick, right click to remove, drag to swap',
+    'outfitting.tip.pick': 'Left click to inspect, double click to install',
     'outfitting.tip.noData': 'No numeric parameters',
     'outfitting.tip.more': 'and {value} more',
 
@@ -320,6 +322,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': 'Preis',
 
     'outfitting.tip.hint': 'Links wählen, rechts entfernen, ziehen zum Tauschen',
+    'outfitting.tip.pick': 'Linksklick zeigt die Werte, Doppelklick baut ein',
     'outfitting.tip.noData': 'Keine Zahlenwerte',
     'outfitting.tip.more': 'und {value} weitere',
 
@@ -436,6 +439,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': 'Prezzo',
 
     'outfitting.tip.hint': 'Clic sinistro sceglie, destro rimuove, trascina per scambiare',
+    'outfitting.tip.pick': 'Clic sinistro per i dettagli, doppio clic per installare',
     'outfitting.tip.noData': 'Nessun valore numerico',
     'outfitting.tip.more': 'e altri {value}',
 
@@ -552,6 +556,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': '가격',
 
     'outfitting.tip.hint': '좌클릭 선택, 우클릭 제거, 끌어서 교체',
+    'outfitting.tip.pick': '왼쪽 클릭: 제원 보기 · 더블 클릭: 장착',
     'outfitting.tip.noData': '수치 항목이 없습니다',
     'outfitting.tip.more': '외 {value}개',
 
@@ -668,6 +673,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': '价格',
 
     'outfitting.tip.hint': '左键选择，右键卸下，拖动交换',
+    'outfitting.tip.pick': '左键查看参数 · 双击安装',
     'outfitting.tip.noData': '没有数值参数',
     'outfitting.tip.more': '还有 {value} 项',
 
@@ -784,6 +790,7 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.price': '価格',
 
     'outfitting.tip.hint': '左クリックで選択、右クリックで取り外し、ドラッグで入れ替え',
+    'outfitting.tip.pick': '左クリックで詳細 · ダブルクリックで装備',
     'outfitting.tip.noData': '数値項目がありません',
     'outfitting.tip.more': 'ほか {value} 件',
 

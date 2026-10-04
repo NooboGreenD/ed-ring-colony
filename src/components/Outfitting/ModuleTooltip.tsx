@@ -68,6 +68,8 @@ interface ModuleTooltipProps {
   modification: SlotModification | null;
   /** Координаты курсора в окне. */
   anchor: { x: number; y: number };
+  /** Нижняя строка-напоминание: у слотов и у списка модулей она разная. */
+  hint?: string;
 }
 
 export default function ModuleTooltip({
@@ -76,6 +78,7 @@ export default function ModuleTooltip({
   effective,
   modification,
   anchor,
+  hint,
 }: ModuleTooltipProps) {
   const { t, locale } = useI18n();
   const { num } = formatters(locale);
@@ -225,7 +228,7 @@ export default function ModuleTooltip({
       )}
 
       <div style={{ marginTop: 6, fontSize: 9.5, color: 'var(--muted)', lineHeight: 1.4 }}>
-        {t('outfitting.tip.hint')}
+        {hint ?? t('outfitting.tip.hint')}
       </div>
     </div>
   );

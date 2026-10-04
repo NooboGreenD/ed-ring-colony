@@ -5,9 +5,9 @@
  *
  *  - Левая панель: фильтры (поиск, класс, рейтинг, крепление, категории модулей);
  *  - Центральная панель: список модулей, сгруппированный по типам. В строке —
- *    класс, рейтинг, название, цена и все параметры модуля из справочника:
- *    выбирать по одному названию неудобно, а раскрывать каждый модуль ради
- *    двух чисел — тем более;
+ *    только класс, рейтинг, название и цена, чтобы список оставался списком;
+ *    все параметры модуля показывает всплывающая подсказка при наведении —
+ *    та же самая, что и на слотах основного окна верфи;
  *  - Правая панель: полный набор параметров выбранного модуля (ничего не
  *    выкинуто) и отдельно — влияние на сборку (масса, прыжок, скорость, щиты, энергия),
  *    а также вкладка инженерии без лишних ползунков со 100% финальным эффектом
@@ -38,6 +38,7 @@ import type {
   SlotModification,
 } from '@/lib/outfitting/types';
 import SpecialEffectCard, { specialName } from './SpecialEffectCard';
+import ModuleTooltip from './ModuleTooltip';
 import {
   IconCheck,
   IconCheckCircle,
@@ -90,74 +91,6 @@ function mountLabel(mount?: string): string {
 
 /** Порядок разделов параметров — тот же, что во всплывающей подсказке. */
 const SECTION_ORDER: SpecSection[] = ['perf', 'mass', 'power', 'price'];
-
-/** Пара «подпись — значение» одним куском, чтобы не разрывалась при переносе. */
-function SpecChip({ label, value, color }: { label: string; value: string; color?: string }) {
-  return (
-    <span style={{ whiteSpace: 'nowrap' }}>
-      <span style={{ opacity: 0.65 }}>{label}</span>{' '}
-      <span style={{ color: color ?? 'var(--text)' }}>{value}</span>
-    </span>
-  );
-}
-
-/**
- * Строка параметров модуля под его названием в списке.
- *
- * Показываем всё, что знает справочник, а у орудий сверху — расчётные DPS,
- * EPS и урон на единицу энергии: в данных их нет, а сравнивают орудия именно
- * по ним.
- */
-function ModuleSpecLine({
-  data,
-  module,
-  locale,
-  num,
-  t,
-}: {
-  data: OutfittingData;
-  module: OutfittingModule;
-  locale: string;
-  num: (value: number, digits?: number) => string;
-  t: (key: string) => string;
-}) {
-  // Сначала то, чем модули группы отличаются друг от друга (характеристики),
-  // и только потом общие масса, энергия и деньги — порядок как в подсказке.
-  const values = moduleSpecValues(module as unknown as Record<string, unknown>, locale, num)
-    .filter((value) => value.key !== 'cost')
-    .slice()
-    .sort((a, b) => SECTION_ORDER.indexOf(a.section) - SECTION_ORDER.indexOf(b.section));
-  const weapon = isWeapon(data, module) ? weaponMetrics(module) : null;
-  if (!weapon && values.length === 0) return null;
-
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexWrap: 'wrap',
-        gap: '1px 10px',
-        paddingLeft: 40,
-        fontFamily: MONO,
-        fontSize: 9.5,
-        lineHeight: 1.5,
-        color: 'var(--muted)',
-      }}
-    >
-      {weapon && (
-        <>
-          <SpecChip label={t('outfitting.off.dps')} value={num(weapon.dps, 1)} color="#f43f5e" />
-          <SpecChip label={t('outfitting.off.sdps')} value={num(weapon.sdps, 1)} />
-          <SpecChip label={t('outfitting.off.eps')} value={num(weapon.eps, 2)} />
-          <SpecChip label={t('outfitting.off.hps')} value={num(weapon.hps, 2)} />
-          <SpecChip label={t('outfitting.off.dpe')} value={num(weapon.dpe, 1)} />
-        </>
-      )}
-      {values.map((value) => (
-        <SpecChip key={value.key} label={specName(locale, value.key)} value={value.display} />
-      ))}
-    </div>
-  );
-}
 
 /** Таблица параметров по разделам — правая панель окна выбора. */
 function SpecSections({ values, locale, t }: {
@@ -246,6 +179,9 @@ export default function ModulePicker({
   const [selectedMount, setSelectedMount] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<'specs' | 'eng'>('specs');
 
+  // Модуль под курсором в списке — для всплывающей подсказки.
+  const [hover, setHover] = useState<{ ref: string; x: number; y: number } | null>(null);
+
   // Доступные для слота модули
   const available = useMemo(() => modulesForSlot(data, ship, slot), [data, ship, slot]);
 
@@ -322,6 +258,10 @@ export default function ModulePicker({
       : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [inspectedModule, locale],
+  );
+  const hoveredModule = useMemo(
+    () => (hover ? available.find((module) => moduleRef(module) === hover.ref) ?? null : null),
+    [available, hover],
   );
   const inspectedWeapon = useMemo(
     () => (inspectedModule && isWeapon(data, inspectedModule) ? weaponMetrics(inspectedModule) : null),
@@ -864,7 +804,7 @@ export default function ModulePicker({
                   </span>
                 </div>
 
-                {/* Список модулей в группе: название, цена и все параметры */}
+                {/* Список модулей в группе: название и цена, параметры — в подсказке */}
                 <div>
                   {grp.modules.map((module) => {
                     const isInspected =
@@ -878,10 +818,20 @@ export default function ModulePicker({
                         type="button"
                         onClick={() => setInspectedModule(module)}
                         onDoubleClick={() => handleInstall(module)}
+                        onMouseEnter={(e) => setHover({ ref: moduleRef(module), x: e.clientX, y: e.clientY })}
+                        onMouseMove={(e) => {
+                          setHover((previous) => (previous?.ref === moduleRef(module)
+                            ? { ref: previous.ref, x: e.clientX, y: e.clientY }
+                            : previous));
+                        }}
+                        onMouseLeave={() => {
+                          setHover((previous) => (previous?.ref === moduleRef(module) ? null : previous));
+                        }}
+                        title={t('outfitting.tip.pick')}
                         style={{
                           display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'stretch',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
                           width: '100%',
                           textAlign: 'left',
                           margin: 0,
@@ -897,18 +847,9 @@ export default function ModulePicker({
                           cursor: 'pointer',
                           color: 'var(--text)',
                           transition: 'background 0.1s ease',
-                          gap: 3,
+                          gap: 10,
                         }}
                       >
-                        <div
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            gap: 10,
-                            width: '100%',
-                          }}
-                        >
                         {/* Левая часть: бейдж класса/рейтинга + название */}
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
                           <span
@@ -963,10 +904,6 @@ export default function ModulePicker({
                             {credits(Number(module.cost ?? 0))}
                           </span>
                         </div>
-                        </div>
-
-                        {/* Все параметры модуля прямо в строке */}
-                        <ModuleSpecLine data={data} module={module} locale={locale} num={num} t={t} />
                       </button>
                     );
                   })}
@@ -1555,6 +1492,18 @@ export default function ModulePicker({
           </div>
         </div>
       </div>
+
+      {/* Параметры модуля под курсором — та же карточка, что и в основном окне */}
+      {hoveredModule && hover && (
+        <ModuleTooltip
+          data={data}
+          module={hoveredModule}
+          effective={null}
+          modification={null}
+          anchor={{ x: hover.x, y: hover.y }}
+          hint={t('outfitting.tip.pick')}
+        />
+      )}
     </div>
   );
 }
