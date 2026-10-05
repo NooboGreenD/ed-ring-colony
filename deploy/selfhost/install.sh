@@ -266,6 +266,19 @@ server {
         proxy_set_header Connection "upgrade";
     }
     client_max_body_size 25m;
+    # Админка → «Публикация Helper»: готовый ColonialHelper.exe (22–35 МиБ)
+    # грузится прямо на сервер — без этого location nginx отвечает 413.
+    location = /api/admin/uploader/release {
+        client_max_body_size 150m;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
     location /_next/static/ {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host \$host;

@@ -61,6 +61,22 @@ export const COPY_CHUNK_ROWS = 50_000;
  */
 export const COPY_MERGE_ROWS = 250_000;
 
+/**
+ * Страховочный таймаут одного SQL-шага слияния staging → каталог, секунды.
+ *
+ * Нормальное слияние 250 тыс. строк занимает секунды, но на слабом сервере с
+ * живыми поисковыми индексами (GIN/GiST) один шаг честно работает дольше
+ * прежнего лимита в 120 с — импорт падал на ровном месте. Поэтому базовый
+ * запас — 900 с; переопределяется `GALAXY_COPY_MERGE_TIMEOUT_S` (0 или значение
+ * меньше секунды возвращают умолчание).
+ */
+export const COPY_MERGE_TIMEOUT_S = 900;
+
+export function mergeTimeoutSeconds(env: NodeJS.ProcessEnv): number {
+  const parsed = Number.parseInt(String(env.GALAXY_COPY_MERGE_TIMEOUT_S ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : COPY_MERGE_TIMEOUT_S;
+}
+
 type PgCopyClient = PgClientLike & {
   query(query: unknown): Promise<unknown>;
 };
@@ -203,7 +219,7 @@ export interface PgCopyWriterOptions {
    * недели. GALAXY_COPY_DROP_INDEXES=0 возвращает старое поведение.
    */
   fullReload?: boolean;
-  /** Инъекция окружения для тестов (`GALAXY_COPY_DROP_INDEXES`). */
+  /** Инъекция окружения для тестов (`GALAXY_COPY_DROP_INDEXES`, `GALAXY_COPY_MERGE_TIMEOUT_S`). */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -269,6 +285,7 @@ export async function createPgCopyWriter(
     (countBefore as unknown as { rows?: Array<{ n?: unknown }> }).rows?.[0]?.n ?? 0,
   );
   const env = options.env ?? process.env;
+  const mergeTimeout = mergeTimeoutSeconds(env);
   const dropDisabled = (env.GALAXY_COPY_DROP_INDEXES ?? '').toString().trim() === '0';
   const coldLoad = existingRows === 0 || (options.fullReload === true && !dropDisabled);
   if (coldLoad) {
@@ -340,13 +357,15 @@ export async function createPgCopyWriter(
     heartbeat.unref?.();
     try {
       await sql('BEGIN');
-      // Страховка «на всякий случай»: обычное слияние 250к строк — секунды.
-      // Если какой-то шаг (по любой, даже неизвестной нам причине) уйдёт в
-      // аномальное выполнение, запрос обрывается сам за 2 минуты вместо
-      // того, чтобы висеть часами незаметно. ROLLBACK ниже в catch всё
-      // равно нужен (SET LOCAL живёт только до конца транзакции), а пачка
+      // Страховка «на всякий случай»: обычное слияние 250к строк — секунды,
+      // но на слабом сервере с живыми индексами один шаг может идти заметно
+      // дольше. Если запрос (по любой, даже неизвестной нам причине) уйдёт в
+      // аномальное выполнение, он обрывается сам за mergeTimeoutSeconds
+      // (по умолчанию 15 минут, GALAXY_COPY_MERGE_TIMEOUT_S) вместо того,
+      // чтобы висеть часами незаметно. ROLLBACK ниже в catch всё равно
+      // нужен (SET LOCAL живёт только до конца транзакции), а пачка
       // безопасно повторяется: импорт идемпотентен.
-      await sql("SET LOCAL statement_timeout = '120s'");
+      await sql(`SET LOCAL statement_timeout = '${mergeTimeout}s'`);
       let inserted = 0;
       const statements = mergeStatements();
       const phases = ['дубли по имени', 'дубли по id64', 'переименованные системы', 'вставка и обновление индексов'];
