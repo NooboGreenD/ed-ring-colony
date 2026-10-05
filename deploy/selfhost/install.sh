@@ -269,7 +269,8 @@ server {
     # Админка → «Публикация Helper»: готовый ColonialHelper.exe (22–35 МиБ)
     # грузится прямо на сервер — без этого location nginx отвечает 413.
     location = /api/admin/uploader/release {
-        client_max_body_size 150m;
+        # Keep headroom for future release binaries; this endpoint accepts at least 150 MiB.
+        client_max_body_size 200m;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
         proxy_set_header Host              \$host;
