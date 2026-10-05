@@ -293,8 +293,9 @@ sudo nginx -t && sudo systemctl reload nginx
 Проверка: `http://ваш-домен` в браузере — сайт должен открыться (пока по HTTP).
 
 В конфиге уже учтены особенности проекта: таймаут 310 с для долгого роута
-поиска маршрута, `client_max_body_size 25m` для загрузки журналов пилотов,
-кэширование `/_next/static/`.
+поиска маршрута, `client_max_body_size 25m` для загрузки журналов пилотов
+(и 150m для `/api/admin/uploader/release` — загрузка базового EXE Helper
+из админки, иначе 413), кэширование `/_next/static/`.
 
 ## Шаг 7. HTTPS (Let's Encrypt)
 

@@ -5,12 +5,14 @@ import { Writable } from 'node:stream';
 
 import {
   COPY_CHUNK_ROWS,
+  COPY_MERGE_TIMEOUT_S,
   GALAXY_STAGE_TABLE,
   copyLine,
   copySql,
   copyValue,
   createPgCopyWriter,
   mergeStatements,
+  mergeTimeoutSeconds,
   stageDdlSql,
 } from '../../src/lib/galaxyCopyWriter.ts';
 import { GALAXY_ROW_COLUMNS } from '../../src/lib/galaxyImport.ts';
@@ -86,8 +88,14 @@ test('staging — UNLOGGED и без индексов: иначе COPY плат�
 
 test('merge снимает дубли по обоим уникальным ключам ДО вставки', () => {
   const [byName, byId, purge, insert] = mergeStatements();
-  assert.match(byName, /DELETE FROM galaxy_systems_stage a USING galaxy_systems_stage b .*a\.name_lc = b\.name_lc/);
-  assert.match(byId, /DELETE FROM galaxy_systems_stage a USING galaxy_systems_stage b .*a\.id64 = b\.id64/);
+  // Дедуп — row_number() по ключу, а не hash-self-join «a.ctid < b.ctid»:
+  // последний на стыках шардов воспроизводимо зависал часами на CPU
+  // (см. комментарий над mergeStatements в galaxyCopyWriter.ts).
+  assert.match(byName, /row_number\(\) OVER \(PARTITION BY name_lc ORDER BY ctid\)/);
+  assert.match(byId, /row_number\(\) OVER \(PARTITION BY id64 ORDER BY ctid\)/);
+  for (const dedup of [byName, byId]) {
+    assert.match(dedup, /DELETE FROM galaxy_systems_stage a USING .*b WHERE a\.ctid = b\.ctid AND b\.rn > 1/);
+  }
   // Переименованная система занимает id64 под другим именем: её надо убрать,
   // но join по индексу, а не «WHERE name_lc IN (…) OR id64 IN (…)».
   assert.match(purge, /DELETE FROM galaxy_systems g USING galaxy_systems_stage s WHERE g\.id64 = s\.id64 AND g\.name_lc <> s\.name_lc/);
@@ -238,6 +246,45 @@ test('упавший merge откатывается и всё равно ост�
   const second = await writer.flush();
   assert.equal(second, 0);
   await writer.close();
+});
+
+// ─────────────── страховка слияния от зависания ───────────────
+//
+// Прод-наблюдение: на слабом сервере с живыми поисковыми индексами один шаг
+// merge честно работал дольше прежних 120 с, и импорт каталога падал на
+// statement_timeout. Запас поднят до 15 минут и вынесен в окружение.
+
+test('merge ограничен statement_timeout с запасом под медленный сервер', async () => {
+  const { pg, statements, copyFrom } = fakePg();
+  const writer = await createPgCopyWriter(DB_URL, { pg, copyFrom, mergeRows: 1000, env: {} });
+  await writer.add(row());
+  await writer.flush();
+  assert.ok(
+    statements.includes(`SET LOCAL statement_timeout = '${COPY_MERGE_TIMEOUT_S}s'`),
+    `умолчание — ${COPY_MERGE_TIMEOUT_S} с, а не прежние 120`,
+  );
+  await writer.close();
+});
+
+test('GALAXY_COPY_MERGE_TIMEOUT_S переопределяет страховку слияния', async () => {
+  const { pg, statements, copyFrom } = fakePg();
+  const writer = await createPgCopyWriter(DB_URL, {
+    pg,
+    copyFrom,
+    mergeRows: 1000,
+    env: { GALAXY_COPY_MERGE_TIMEOUT_S: '800' },
+  });
+  await writer.add(row());
+  await writer.flush();
+  assert.ok(statements.includes("SET LOCAL statement_timeout = '800s'"));
+  await writer.close();
+});
+
+test('некорректный GALAXY_COPY_MERGE_TIMEOUT_S возвращает умолчание', () => {
+  assert.equal(mergeTimeoutSeconds({}), COPY_MERGE_TIMEOUT_S);
+  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '0' }), COPY_MERGE_TIMEOUT_S);
+  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: 'abc' }), COPY_MERGE_TIMEOUT_S);
+  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '1000' }), 1000);
 });
 
 test('пачка уходит в COPY сама, без flush, и копится в staging до порога merge', async () => {

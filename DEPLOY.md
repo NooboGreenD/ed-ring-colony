@@ -345,7 +345,8 @@ sudo certbot --nginx -d ваш-домен
 
 В конфиге уже учтены: таймаут 310 с для долгого роута
 `/api/atlas/ring-route` (`maxDuration = 300`), `client_max_body_size 25m`
-для загрузки журналов, кэш `/_next/static/`.
+для загрузки журналов (и 150m для `/api/admin/uploader/release` — базовый
+EXE Helper из админки, иначе 413), кэш `/_next/static/`.
 
 ## 7. Крон-задачи
 

@@ -84,6 +84,19 @@ function jobKindLabel(kind: HelperReleaseJob['kind']): string {
   return 'Публикация модулей Helper';
 }
 
+/**
+ * Прокси отвечает на слишком большой запрос HTML-страницей 413 — JSON там
+ * нет, поэтому объясняем причину сами, иначе админ видит голый «HTTP 413».
+ */
+function describeUploadHttpError(status: number): string {
+  if (status === 413) {
+    return 'HTTP 413 — файл не прошёл лимит прокси (client_max_body_size). '
+      + 'Для /api/admin/uploader/release он должен быть не меньше 150m: '
+      + 'обновите nginx-конфиг по deploy/selfhost/nginx-selfhost.conf и перезагрузите nginx.';
+  }
+  return `HTTP ${status}`;
+}
+
 function compareVersions(left: string, right: string): number {
   const a = left.replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
   const b = right.replace(/^v/i, '').split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
@@ -385,7 +398,7 @@ export default function HelperUpdatesTab() {
       form.set('paths', JSON.stringify(paths));
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || describeUploadHttpError(response.status));
       setReleaseJob(data.job);
       setProcessLogOpen(true);
       setMessage(`Процесс подготовки версии ${releaseVersion} запущен — прогресс и лог ниже`);
@@ -446,7 +459,7 @@ export default function HelperUpdatesTab() {
       form.set('async', 'true');
       const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
       const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || `HTTP ${response.status}`);
+      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || describeUploadHttpError(response.status));
       setReleaseJob(data.job);
       setProcessLogOpen(true);
       setMessage(`Загрузка ColonialHelper.exe ${launcherVersion} запущена — журнал ниже`);
