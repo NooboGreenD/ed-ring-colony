@@ -178,29 +178,60 @@ export function effectiveModule(
   // Coriolis marks these as pre-engineered. Their factory engineering is part
   // of the module, not a user modification: apply it first and never replace
   // it with the blueprint selected in the build.
-  const pre = module.preEngineered as unknown as {
-    reengineerable?: boolean;
-    blueprints?: string[];
-    grade?: number;
-    canApplyExperimental?: boolean;
-  } | undefined;
+  const pre = module.preEngineered;
   const factoryBlueprints = pre?.blueprints ?? [];
+  const factoryFeatures = pre?.features ?? {};
+  const factorySpecials = (pre?.experimentalEffects ?? []).filter(Boolean);
   const userBlueprint = pre?.reengineerable === false ? undefined : modification?.blueprint;
-  const special = modification?.special && (!pre || pre.canApplyExperimental !== false)
+  const special = modification?.special && pre?.canApplyExperimental !== false
     ? modification.special
     : undefined;
-  if (!userBlueprint && !special && factoryBlueprints.length === 0) return module;
+  if (
+    !userBlueprint &&
+    !special &&
+    factoryBlueprints.length === 0 &&
+    Object.keys(factoryFeatures).length === 0 &&
+    factorySpecials.length === 0
+  ) {
+    return module;
+  }
   const result: OutfittingModule = { ...module };
 
   const applyBlueprint = (id: string, gradeNumber: number) => {
     const grade = data.blueprints[id]?.grades?.[String(gradeNumber)];
     if (!grade) return;
     for (const [property, range] of Object.entries(grade.features)) {
+      // Время загрузки у заводских FSD уже итоговое (2 с у V1), а в наборе
+      // Coriolis базовые 10 с не хранятся вовсе: либо не трогаем готовое
+      // значение, либо считаем от официальной базы.
+      if (property === 'boot') {
+        if (module.boot != null) continue;
+        const base = module.grp === 'fsd' ? 10 : null;
+        if (base == null) continue;
+        result.boot = base * (1 + range[1]);
+        continue;
+      }
       const [min, max] = range;
       applyFeature(data, result, property, max);
     }
   };
   for (const id of factoryBlueprints) applyBlueprint(id, pre?.grade ?? 1);
+
+  // Правки, для которых в наборе нет чертежа (MercGear обновления
+  // «Operations»): те же правила, что и у чертежей, но без уровней.
+  for (const [property, value] of Object.entries(factoryFeatures)) {
+    applyFeature(data, result, property, value);
+  }
+
+  // Заводские экспериментальные эффекты — часть модуля: их нельзя снять и
+  // именно они дают эффекты вроде Phasing Sequence у Rapid Phase Multi-Cannon.
+  for (const id of factorySpecials) {
+    const effect = data.specials[id];
+    if (!effect) continue;
+    for (const [property, raw] of Object.entries(effect.features ?? {})) {
+      applyFeature(data, result, property, raw);
+    }
+  }
 
   const blueprint = userBlueprint ? data.blueprints[userBlueprint] : null;
   const grade = blueprint?.grades?.[String(modification?.grade ?? 1)];

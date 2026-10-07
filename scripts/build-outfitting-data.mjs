@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'public', 'data', 'outfitting.json');
 const EFFECTS = join(ROOT, 'scripts', 'data', 'experimental-effects.json');
+const FACTORY = join(ROOT, 'scripts', 'data', 'factory-modules.json');
 const REPO = 'https://github.com/EDCD/coriolis-data.git';
 
 /** Сопротивления Coriolis хранит в процентных пунктах, у нас везде доли. */
@@ -257,6 +258,77 @@ function addMissingSpecialLists(moduleBlueprints, specials) {
 
 const round = (value) => Math.round(value * 1e6) / 1e6;
 
+/**
+ * Заводская настройка и MercGear (`scripts/data/factory-modules.json`).
+ *
+ *  * `fixes` правит уже существующие `preEngineered`-блоки Coriolis (у четырёх
+ *    модулей там стоит уровень 1, хотя их же описание говорит про 5);
+ *  * `mercRefs` помечает модули, которые продаются ещё и за Merc Coin: флаг
+ *    `merc`, официальное английское имя и цена в жетонах, если она известна;
+ *  * `modules` добавляет MercGear, которого в Coriolis нет: модуль собирается
+ *    из стокового (`base`) и получает заводской `preEngineered`-блок.
+ */
+function applyFactory(modules, blueprints, modifications) {
+  const file = readJson(FACTORY);
+  const byRef = (ref) => {
+    const [group, id] = String(ref).split(':');
+    return (modules[group] ?? []).find((module) => module.id === id) ?? null;
+  };
+
+  for (const [ref, patch] of Object.entries(file.fixes ?? {})) {
+    const module = byRef(ref);
+    if (!module?.preEngineered) throw new Error(`factory-modules: нет preEngineered у ${ref}`);
+    const { note, ...fields } = patch;
+    module.preEngineered = { ...module.preEngineered, ...fields };
+    if (note) module.factoryNote = note;
+  }
+
+  for (const [ref, meta] of Object.entries(file.mercRefs ?? {})) {
+    const module = byRef(ref);
+    if (!module) throw new Error(`factory-modules: нет модуля ${ref}`);
+    module.merc = true;
+    if (meta.name) {
+      module.sourceName = module.name;
+      module.name = meta.name;
+    }
+    if (typeof meta.coins === 'number') module.coins = meta.coins;
+  }
+
+  for (const entry of file.modules ?? []) {
+    const list = modules[entry.group] ?? (modules[entry.group] = []);
+    if (list.some((module) => module.id === entry.id)) {
+      throw new Error(`factory-modules: id ${entry.group}:${entry.id} уже занят`);
+    }
+    const base = list.find((module) => module.id === entry.base);
+    if (!base) throw new Error(`factory-modules: нет базового модуля ${entry.group}:${entry.base}`);
+    const pre = entry.preEngineered ?? {};
+    for (const id of pre.blueprints ?? []) {
+      if (!blueprints[id]) throw new Error(`factory-modules: нет чертежа ${id} (${entry.name})`);
+    }
+    for (const property of Object.keys(pre.features ?? {})) {
+      if (!modifications[property]) throw new Error(`factory-modules: нет правила для поля ${property} (${entry.name})`);
+    }
+    const module = {
+      ...base,
+      id: entry.id,
+      name: entry.name,
+      // MercGear покупается за жетоны, а не за кредиты: цена в справочнике
+      // не хранится (в FDev ID её нет), поэтому 0 — «смотри Merc Coin».
+      cost: 0,
+      merc: true,
+      preEngineered: { ...pre },
+      sourceName: base.name ?? base.id,
+    };
+    if (typeof entry.coins === 'number') module.coins = entry.coins;
+    list.push(module);
+  }
+
+  for (const list of Object.values(modules)) {
+    list.sort((left, right) => (left.class - right.class) || String(left.rating).localeCompare(String(right.rating)));
+  }
+  return modules;
+}
+
 function main() {
   const { dir, temporary } = sourceDir();
   try {
@@ -294,6 +366,7 @@ function main() {
 
     const trimmedSpecials = buildSpecials(specials, modifierActions);
     addMissingSpecialLists(moduleBlueprints, trimmedSpecials);
+    applyFactory(modules, trimmedBlueprints, modifications);
 
     const payload = {
       version: 1,

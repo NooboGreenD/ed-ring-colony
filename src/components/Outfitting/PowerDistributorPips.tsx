@@ -1,15 +1,17 @@
 'use client';
 
 /**
- * Интерактивный распределитель питания («Пипки» / Power Distributor Pips).
+ * Распределитель питания — один компактный блок вместо трёх плиток.
  *
- * Управляет распределением энергии силовой установки между тремя системами:
- *  - SYS (Системы): сопротивление входящему урону щита (до −58.5% урона / ×2.41 эффективной ёмкости)
- *    и скорость восстановления конденсатора систем;
- *  - ENG (Двигатели): текущая маршевая скорость (от 50% до 100% максимальной) и перезарядка буста;
- *  - WEP (Оружие): скорость подзарядки оружейного конденсатора и теплоотвод.
+ * В игре это шесть пипок, разложенных по трём подсистемам: SYS (щит и
+ * восстановление систем), ENG (скорость и перезарядка буста), WEP (заряд
+ * орудий). Здесь три строки в одной рамке: слева название и шкала на четыре
+ * деления (каждое делится на половину), справа — что именно даёт текущее
+ * распределение. Никакая цифра не потеряна: сопротивление SYS и эффективный
+ * щит, скорость по ENG с интервалом буста, ёмкость и перезарядка WEP.
  *
- * Всего доступно 6 пипок (максимум по 4 на систему).
+ * Всего доступно 6 пипок (максимум по 4 на подсистему), пресеты — те же
+ * шесть раскладов, что и раньше.
  */
 
 import React, { useCallback } from 'react';
@@ -37,8 +39,26 @@ interface PowerDistributorPipsProps {
   stats: BuildStats;
   pips: PipState;
   onChange: (next: PipState) => void;
+  /** Старый флаг: размеры блока в правой сводке. */
   compact?: boolean;
 }
+
+type PipKey = 'sys' | 'eng' | 'wep';
+
+const COLORS: Record<PipKey, string> = {
+  sys: '#38bdf8',
+  eng: '#f59e0b',
+  wep: '#f43f5e',
+};
+
+const PRESETS: { sys: number; eng: number; wep: number; key: string }[] = [
+  { sys: 2, eng: 2, wep: 2, key: 'balanced' },
+  { sys: 4, eng: 2, wep: 0, key: 'defend' },
+  { sys: 4, eng: 0, wep: 2, key: 'combat' },
+  { sys: 0, eng: 4, wep: 2, key: 'escape' },
+  { sys: 2, eng: 4, wep: 0, key: 'agile' },
+  { sys: 0, eng: 2, wep: 4, key: 'attack' },
+];
 
 export default function PowerDistributorPips({
   stats,
@@ -49,9 +69,9 @@ export default function PowerDistributorPips({
   const { t, locale } = useI18n();
   const { num } = formatters(locale);
 
-  // Умное перераспределение: сумма пипок не превышает 6
+  // Умное перераспределение: сумма пипок не превышает 6.
   const setSystemPips = useCallback(
-    (system: 'sys' | 'eng' | 'wep', targetVal: number) => {
+    (system: PipKey, targetVal: number) => {
       const val = Math.max(0, Math.min(4, Math.round(targetVal * 2) / 2));
       const others = (['sys', 'eng', 'wep'] as const).filter((k) => k !== system);
       let remaining = 6 - val;
@@ -87,161 +107,166 @@ export default function PowerDistributorPips({
     [pips, onChange],
   );
 
-  const applyPreset = useCallback(
-    (sys: number, eng: number, wep: number) => {
-      onChange({ sys, eng, wep });
-    },
-    [onChange],
-  );
-
-  // Живые вычисления влияния
-  const currentSpeed = pipAdjustedSpeed(stats.speed, stats.pipSpeed, pips.eng);
   const sysResistancePct = sysDamageResistance(pips.sys) * 100;
   const effectiveShieldVal = pipEffectiveShield(stats.shield, pips.sys);
   const sysRate = pipRechargeRate(stats.distributor.sysRate, pips.sys);
   const engRate = pipRechargeRate(stats.distributor.engRate, pips.eng);
   const wepRate = pipRechargeRate(stats.distributor.wepRate, pips.wep);
-
-  // Интервал между бустами
+  const currentSpeed = pipAdjustedSpeed(stats.speed, stats.pipSpeed, pips.eng);
   const boostInterval =
-    stats.boostEnergy > 0 && engRate > 0
-      ? (stats.boostEnergy / engRate).toFixed(1)
-      : null;
+    stats.boostEnergy > 0 && engRate > 0 ? `${(stats.boostEnergy / engRate).toFixed(1)}` : null;
 
-  const renderPipBar = (
-    system: 'sys' | 'eng' | 'wep',
+  const mj = t('outfitting.unit.mj', { value: '' }).trim();
+  const ms = t('outfitting.unit.ms', { value: '' }).trim();
+
+  /** Одна строка подсистемы: подпись, шкала, значение и влияние. */
+  const row = (
+    system: PipKey,
     label: string,
-    value: number,
-    color: string,
-    glowColor: string,
     icon: React.ReactNode,
-    subText: React.ReactNode,
+    effects: React.ReactNode,
   ) => {
+    const value = pips[system];
+    const color = COLORS[system];
     return (
       <div
+        key={system}
         style={{
-          background: 'rgba(15, 23, 42, 0.45)',
-          border: `1px solid ${value > 0 ? color + '40' : 'var(--line)'}`,
-          borderRadius: 4,
-          padding: '6px 8px',
           display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
+          alignItems: 'center',
+          gap: compact ? 6 : 8,
+          padding: '3px 0',
+          flexWrap: 'wrap',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <span style={{ color }}>{icon}</span>
-            <span style={{ fontFamily: MONO, fontWeight: 700, fontSize: 11.5, color: '#e2e8f0', letterSpacing: 0.5 }}>
-              {label}
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-            <button
-              type="button"
-              onClick={() => setSystemPips(system, value - 0.5)}
-              disabled={value <= 0}
-              title="-0.5"
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--line)',
-                color: value <= 0 ? 'var(--muted)' : 'var(--text)',
-                borderRadius: 2,
-                width: 18,
-                height: 18,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: value <= 0 ? 'not-allowed' : 'pointer',
-                padding: 0,
-              }}
-            >
-              <IconMinus size={10} />
-            </button>
-            <span
-              style={{
-                fontFamily: MONO,
-                fontSize: 12,
-                fontWeight: 700,
-                color,
-                minWidth: 26,
-                textAlign: 'center',
-              }}
-            >
-              {value.toFixed(1)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setSystemPips(system, value + 0.5)}
-              disabled={value >= 4}
-              title="+0.5"
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--line)',
-                color: value >= 4 ? 'var(--muted)' : 'var(--text)',
-                borderRadius: 2,
-                width: 18,
-                height: 18,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: value >= 4 ? 'not-allowed' : 'pointer',
-                padding: 0,
-              }}
-            >
-              <IconPlus size={10} />
-            </button>
-          </div>
-        </div>
-
-        {/* 4 сегмента шкалы пипок (каждый сегмент делим на 2 половинки) */}
-        <div
+        <span
           style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: 3,
-            margin: '2px 0',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            minWidth: 46,
+            color,
+            fontFamily: MONO,
+            fontWeight: 700,
+            fontSize: 11,
+            letterSpacing: 0.5,
+          }}
+          title={label}
+        >
+          {icon}
+          {label}
+        </span>
+
+        <span style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <button
+            type="button"
+            onClick={() => setSystemPips(system, value - 0.5)}
+            disabled={value <= 0}
+            title="−0.5"
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--line)',
+              color: value <= 0 ? 'var(--muted)' : 'var(--text)',
+              borderRadius: 2,
+              width: 16,
+              height: 16,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: value <= 0 ? 'not-allowed' : 'pointer',
+              padding: 0,
+            }}
+          >
+            <IconMinus size={9} />
+          </button>
+
+          <span style={{ display: 'flex', gap: 2, width: 84 }}>
+            {[1, 2, 3, 4].map((barIndex) => {
+              const fillLevel = Math.max(0, Math.min(1, value - (barIndex - 1)));
+              const isFull = fillLevel >= 1;
+              const isHalf = fillLevel >= 0.5 && fillLevel < 1;
+              return (
+                <span
+                  key={barIndex}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSystemPips(system, value === barIndex ? barIndex - 1 : barIndex)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSystemPips(system, value === barIndex ? barIndex - 1 : barIndex);
+                    }
+                  }}
+                  title={`${label}: ${barIndex}`}
+                  style={{
+                    flex: 1,
+                    height: 9,
+                    background: isFull
+                      ? color
+                      : isHalf
+                        ? `linear-gradient(to right, ${color} 50%, rgba(255,255,255,0.06) 50%)`
+                        : 'rgba(255,255,255,0.06)',
+                    border: `1px solid ${fillLevel > 0 ? color : 'var(--line)'}`,
+                    borderRadius: 2,
+                    cursor: 'pointer',
+                    boxShadow: fillLevel > 0 ? `0 0 6px ${color}66` : 'none',
+                  }}
+                />
+              );
+            })}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => setSystemPips(system, value + 0.5)}
+            disabled={value >= 4}
+            title="+0.5"
+            style={{
+              background: 'transparent',
+              border: '1px solid var(--line)',
+              color: value >= 4 ? 'var(--muted)' : 'var(--text)',
+              borderRadius: 2,
+              width: 16,
+              height: 16,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: value >= 4 ? 'not-allowed' : 'pointer',
+              padding: 0,
+            }}
+          >
+            <IconPlus size={9} />
+          </button>
+
+          <span
+            style={{
+              fontFamily: MONO,
+              fontSize: 11.5,
+              fontWeight: 700,
+              color,
+              minWidth: 24,
+              textAlign: 'right',
+            }}
+          >
+            {value.toFixed(1)}
+          </span>
+        </span>
+
+        <span
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: compact ? 6 : 10,
+            fontSize: 10,
+            color: 'var(--muted)',
+            fontFamily: MONO,
+            lineHeight: 1.4,
+            flex: '1 1 140px',
+            minWidth: 0,
           }}
         >
-          {[1, 2, 3, 4].map((barIndex) => {
-            const fillLevel = Math.max(0, Math.min(1, value - (barIndex - 1)));
-            const isFull = fillLevel >= 1;
-            const isHalf = fillLevel >= 0.5 && fillLevel < 1;
-
-            return (
-              <div
-                key={barIndex}
-                onClick={() => {
-                  if (value === barIndex) {
-                    setSystemPips(system, barIndex - 1);
-                  } else {
-                    setSystemPips(system, barIndex);
-                  }
-                }}
-                style={{
-                  height: 10,
-                  background: isFull
-                    ? color
-                    : isHalf
-                      ? `linear-gradient(to right, ${color} 50%, rgba(255,255,255,0.06) 50%)`
-                      : 'rgba(255,255,255,0.06)',
-                  border: `1px solid ${fillLevel > 0 ? color : 'var(--line)'}`,
-                  borderRadius: 2,
-                  cursor: 'pointer',
-                  boxShadow: fillLevel > 0 ? `0 0 6px ${glowColor}` : 'none',
-                  transition: 'all 0.15s ease',
-                }}
-                title={`${label}: ${barIndex}`}
-              />
-            );
-          })}
-        </div>
-
-        {/* Текст влияния */}
-        <div style={{ fontSize: 10, color: 'var(--muted)', fontFamily: MONO, lineHeight: 1.3 }}>
-          {subText}
-        </div>
+          {effects}
+        </span>
       </div>
     );
   };
@@ -252,27 +277,26 @@ export default function PowerDistributorPips({
         background: 'var(--panel)',
         border: '1px solid var(--line)',
         borderRadius: 4,
-        padding: compact ? '8px 10px' : '10px 12px',
-        marginBottom: 10,
+        padding: compact ? '7px 9px' : '9px 11px',
+        marginBottom: 8,
       }}
     >
-      {/* Шапка распределителя */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          marginBottom: 8,
           gap: 8,
           flexWrap: 'wrap',
+          marginBottom: 4,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <IconSliders size={14} color="var(--orange)" />
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <IconSliders size={13} color="var(--orange)" />
           <span
             style={{
               fontFamily: MONO,
-              fontSize: 11,
+              fontSize: 10.5,
               fontWeight: 700,
               letterSpacing: 1,
               color: 'var(--orange)',
@@ -281,199 +305,94 @@ export default function PowerDistributorPips({
           >
             {t('outfitting.pips.title')}
           </span>
-        </div>
+        </span>
 
-        {/* Быстрые пресеты */}
-        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            onClick={() => applyPreset(2, 2, 2)}
-            title={t('outfitting.pips.preset.balanced')}
-            style={{
-              background: pips.sys === 2 && pips.eng === 2 && pips.wep === 2 ? 'rgba(230,126,34,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 2 && pips.eng === 2 && pips.wep === 2 ? 'var(--orange)' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 3,
-            }}
-          >
-            <IconRefreshCw size={9} /> 2/2/2
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset(4, 2, 0)}
-            title={t('outfitting.pips.preset.defend')}
-            style={{
-              background: pips.sys === 4 && pips.eng === 2 && pips.wep === 0 ? 'rgba(56,189,248,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 4 && pips.eng === 2 && pips.wep === 0 ? '#38bdf8' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-            }}
-          >
-            4/2/0
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset(4, 0, 2)}
-            title={t('outfitting.pips.preset.combat')}
-            style={{
-              background: pips.sys === 4 && pips.eng === 0 && pips.wep === 2 ? 'rgba(56,189,248,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 4 && pips.eng === 0 && pips.wep === 2 ? '#38bdf8' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-            }}
-          >
-            4/0/2
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset(0, 4, 2)}
-            title={t('outfitting.pips.preset.escape')}
-            style={{
-              background: pips.sys === 0 && pips.eng === 4 && pips.wep === 2 ? 'rgba(245,158,11,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 0 && pips.eng === 4 && pips.wep === 2 ? '#f59e0b' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-            }}
-          >
-            0/4/2
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset(2, 4, 0)}
-            title={t('outfitting.pips.preset.agile')}
-            style={{
-              background: pips.sys === 2 && pips.eng === 4 && pips.wep === 0 ? 'rgba(245,158,11,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 2 && pips.eng === 4 && pips.wep === 0 ? '#f59e0b' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-            }}
-          >
-            2/4/0
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset(0, 2, 4)}
-            title={t('outfitting.pips.preset.attack')}
-            style={{
-              background: pips.sys === 0 && pips.eng === 2 && pips.wep === 4 ? 'rgba(244,63,94,0.18)' : 'transparent',
-              border: `1px solid ${pips.sys === 0 && pips.eng === 2 && pips.wep === 4 ? '#f43f5e' : 'var(--line)'}`,
-              color: 'var(--text)',
-              fontSize: 9.5,
-              fontFamily: MONO,
-              padding: '2px 5px',
-              borderRadius: 2,
-              cursor: 'pointer',
-            }}
-          >
-            0/2/4
-          </button>
-        </div>
+        <span style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+          {PRESETS.map((preset) => {
+            const active = pips.sys === preset.sys && pips.eng === preset.eng && pips.wep === preset.wep;
+            return (
+              <button
+                key={preset.key}
+                type="button"
+                onClick={() => onChange({ sys: preset.sys, eng: preset.eng, wep: preset.wep })}
+                title={t(`outfitting.pips.preset.${preset.key}`)}
+                style={{
+                  background: active ? 'rgba(230,126,34,0.18)' : 'transparent',
+                  border: `1px solid ${active ? 'var(--orange)' : 'var(--line)'}`,
+                  color: active ? 'var(--orange)' : 'var(--text)',
+                  fontSize: 9.5,
+                  fontFamily: MONO,
+                  padding: '1px 5px',
+                  borderRadius: 2,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 3,
+                }}
+              >
+                {preset.key === 'balanced' && <IconRefreshCw size={9} />}
+                {preset.sys}/{preset.eng}/{preset.wep}
+              </button>
+            );
+          })}
+        </span>
       </div>
 
-      {/* 3 Колонки подсистем */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
-          gap: 6,
-        }}
-      >
-        {/* SYS */}
-        {renderPipBar(
+      <div style={{ display: 'flex', flexDirection: 'column', borderTop: '1px solid var(--line)', paddingTop: 3 }}>
+        {row(
           'sys',
           t('outfitting.pips.sys'),
-          pips.sys,
-          '#38bdf8',
-          'rgba(56,189,248,0.4)',
-          <IconShield size={13} color="#38bdf8" />,
+          <IconShield size={12} color={COLORS.sys} />,
           <>
-            <div>
+            <span>
               {t('outfitting.pips.resistance')}:{' '}
-              <span style={{ color: pips.sys > 0 ? '#38bdf8' : 'var(--text)', fontWeight: 700 }}>
-                +{sysResistancePct.toFixed(1)}%
-              </span>
-            </div>
+              <b style={{ color: pips.sys > 0 ? COLORS.sys : 'var(--text)' }}>+{sysResistancePct.toFixed(1)}%</b>
+            </span>
             {stats.shield > 0 && (
-              <div>
+              <span>
                 {t('outfitting.pips.effShield')}:{' '}
-                <span style={{ color: '#38bdf8', fontWeight: 700 }}>
-                  {num(effectiveShieldVal, 0)} {t('outfitting.unit.mj', { value: '' }).trim()}
-                </span>
-              </div>
+                <b style={{ color: COLORS.sys }}>{num(effectiveShieldVal, 0)} {mj}</b>
+              </span>
             )}
-            <div>
-              {t('outfitting.pips.recharge')}: +{sysRate.toFixed(2)} MW/s
-            </div>
+            <span>
+              {t('outfitting.pips.recharge')}: <b style={{ color: COLORS.sys }}>+{sysRate.toFixed(2)} MW/s</b>
+            </span>
           </>,
         )}
 
-        {/* ENG */}
-        {renderPipBar(
+        {row(
           'eng',
           t('outfitting.pips.eng'),
-          pips.eng,
-          '#f59e0b',
-          'rgba(245,158,11,0.4)',
-          <IconGauge size={13} color="#f59e0b" />,
+          <IconGauge size={12} color={COLORS.eng} />,
           <>
-            <div>
+            <span>
               {t('outfitting.pips.effSpeed')}:{' '}
-              <span style={{ color: '#f59e0b', fontWeight: 700 }}>
-                {num(currentSpeed, 0)} {t('outfitting.unit.ms', { value: '' }).trim()}
-              </span>
-            </div>
+              <b style={{ color: COLORS.eng }}>{num(currentSpeed, 0)} {ms}</b>
+            </span>
             {boostInterval && (
-              <div>
-                {t('outfitting.pips.boostInterval')}: ~{boostInterval}s
-              </div>
+              <span>
+                {t('outfitting.pips.boostInterval')}: <b style={{ color: COLORS.eng }}>~{boostInterval}s</b>
+              </span>
             )}
-            <div>
-              {t('outfitting.pips.recharge')}: +{engRate.toFixed(2)} MW/s
-            </div>
+            <span>
+              {t('outfitting.pips.recharge')}: <b style={{ color: COLORS.eng }}>+{engRate.toFixed(2)} MW/s</b>
+            </span>
           </>,
         )}
 
-        {/* WEP */}
-        {renderPipBar(
+        {row(
           'wep',
           t('outfitting.pips.wep'),
-          pips.wep,
-          '#f43f5e',
-          'rgba(244,63,94,0.4)',
-          <IconZap size={13} color="#f43f5e" />,
+          <IconZap size={12} color={COLORS.wep} />,
           <>
-            <div>
-              {t('outfitting.stats.distributor')}: {num(stats.distributor.wep, 1)} MJ
-            </div>
-            <div>
+            <span>
+              {t('outfitting.stats.distributor')}:{' '}
+              <b style={{ color: 'var(--text)' }}>{num(stats.distributor.wep, 1)} {mj}</b>
+            </span>
+            <span>
               {t('outfitting.pips.recharge')}:{' '}
-              <span style={{ color: pips.wep > 0 ? '#f43f5e' : 'var(--text)', fontWeight: 700 }}>
-                +{wepRate.toFixed(2)} MW/s
-              </span>
-            </div>
+              <b style={{ color: pips.wep > 0 ? COLORS.wep : 'var(--text)' }}>+{wepRate.toFixed(2)} MW/s</b>
+            </span>
           </>,
         )}
       </div>

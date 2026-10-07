@@ -22,6 +22,7 @@ import { useI18n } from '@/lib/i18n/I18nContext';
 import { groupName, mountName } from '@/lib/outfitting/i18n';
 import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
 import { mercEntryFor } from '@/lib/outfitting/merccoin';
+import { ORIGIN_COLORS, moduleOrigins, originLabelKey } from '@/lib/outfitting/origins';
 import { blueprintLabel } from '@/lib/outfitting/build';
 import type { OutfittingData, OutfittingModule, SlotModification } from '@/lib/outfitting/types';
 import { IconCoins, IconSparkles, IconWrench } from '@/components/Icons';
@@ -87,6 +88,8 @@ export default function ModuleTooltip({
   const values = moduleSpecValues(source, locale, num);
   const base = module as unknown as Record<string, unknown>;
   const merc = mercEntryFor(module.grp, module.id);
+  const origins = moduleOrigins(module);
+  const factory = module.preEngineered ?? null;
 
   const grouped = SECTION_ORDER
     .map((section) => ({ section, items: values.filter((value) => value.section === section) }))
@@ -142,6 +145,50 @@ export default function ModuleTooltip({
         {' · '}
         {groupName(locale, module.grp)}
       </div>
+
+      {origins.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+          {origins.map((origin) => (
+            <span
+              key={origin}
+              style={{
+                fontFamily: MONO,
+                fontSize: 9.5,
+                lineHeight: 1.5,
+                color: ORIGIN_COLORS[origin],
+                background: `${ORIGIN_COLORS[origin]}18`,
+                border: `1px solid ${ORIGIN_COLORS[origin]}66`,
+                borderRadius: 2,
+                padding: '0 4px',
+              }}
+            >
+              {t(originLabelKey(origin))}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {factory && (
+        <div style={{ marginTop: 4, fontSize: 10, color: '#c9a0ff', lineHeight: 1.45 }}>
+          {t('outfitting.factory.badge')}
+          {factory.approx ? ` · ${t('outfitting.factory.approx')}` : ''}
+          {(factory.blueprints ?? []).length > 0 && (
+            <>
+              {' · '}
+              {t('outfitting.factory.blueprints')}:{' '}
+              {(factory.blueprints ?? [])
+                .map((id) => `${blueprintLabel(id, locale)} G${factory.grade ?? 1}`)
+                .join(' + ')}
+            </>
+          )}
+          {(factory.experimentalEffects ?? []).filter(Boolean).length > 0 && (
+            <>
+              {' · '}
+              {t('outfitting.factory.experimental')}
+            </>
+          )}
+        </div>
+      )}
 
       {(modification?.blueprint || modification?.special) && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>

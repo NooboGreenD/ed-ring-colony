@@ -2,17 +2,23 @@
  * MercGear: модули и чертежи за Merc Coin (обновление «Operations»).
  *
  * Merc Coin — валюта за операции: её тратят у обычных продавцов в верфи и у
- * инженеров. В наборе Coriolis цена в жетонах не хранится (там только
- * кредиты, а у предзаряженных модулей стоит `cost: 0`), поэтому список
- * собран вручную по патчноутам Frontier и сводкам сообщества.
+ * инженеров. За жетоны продаётся две разные вещи, и их нельзя путать:
  *
- * `ref` указывает на модуль справочника (`группа:id`) — по нему верфь ставит
- * значок «за Merc Coin» в списках, в подсказке и в сводке сборки. Если
- * модуля в наборе данных ещё нет, запись всё равно показывается в справке
+ *  * готовые модули (предзаряженные орудия, реакторы, грузовые отсеки…) —
+ *    их ставят в слоты, как обычные модули;
+ *  * рецепты чертежей (Thermal Plasma Conversion, Scoop Rate Enhanced) —
+ *    их применяет инженер, поэтому в списке они лежат отдельным видом
+ *    `kind: 'blueprint'` и не ссылаются на модуль.
+ *
+ * В наборе Coriolis цены в жетонах не хранятся (там только кредиты, а у
+ * предзаряженных модулей стоит `cost: 0`), поэтому список собран вручную по
+ * патчноутам Frontier и сводкам сообщества. Официальное название модуля —
+ * из патчноута; внутренние коды — из EDCD/FDevIDs (`mercgear`) и EDCD/EDDI.
+ *
+ * `ref` или `refs` указывают на модуль справочника (`группа:id`) — по ним
+ * верфь ставит значок «за Merc Coin» в списках, в подсказке и в смете сборки.
+ * Если модуля в наборе данных ещё нет, запись всё равно показывается в справке
  * раздела — так видно, что из MercGear уже можно поставить, а что нет.
- *
- * Цены в жетонах известны не для всего: там, где сообщество их ещё не
- * подтвердило, поле `coins` не заполнено, и интерфейс показывает прочерк.
  */
 
 export type MercKind = 'hardpoint' | 'core' | 'internal' | 'blueprint';
@@ -22,6 +28,8 @@ export interface MercCoinEntry {
   kind: MercKind;
   /** Ссылка на модуль справочника: `группа:id`. */
   ref?: string;
+  /** Ссылки для модулей, которые бывают нескольких классов. */
+  refs?: string[];
   /** Группа модулей, к которой относится чертёж (для `kind: 'blueprint'`). */
   groups?: string[];
   /** Английское название из патчноутов — оно же в игре. */
@@ -71,7 +79,9 @@ export const MERC_COIN_ITEMS: MercCoinEntry[] = [
   {
     id: 'double_screaming_frag',
     kind: 'hardpoint',
+    refs: ['fc:MA', 'fc:MB'],
     name: 'Double Screaming Fragment Cannon',
+    sizes: '1E, 3C',
   },
   {
     id: 'long_range_mining_laser',
@@ -104,19 +114,32 @@ export const MERC_COIN_ITEMS: MercCoinEntry[] = [
   {
     id: 'lockdown_seeker',
     kind: 'hardpoint',
+    refs: ['mr:MA', 'mr:MB'],
     name: 'Lockdown Seeker Missile Rack',
+    sizes: '2B, 3A',
+  },
+  {
+    id: 'high_yield_enzyme',
+    kind: 'hardpoint',
+    ref: 'tbem:5Z',
+    name: 'High-Yield Enzyme Missile Rack',
+    sizes: '2B',
   },
 
   // ── Предзаряженные основные модули ──
   {
     id: 'support_focused_pd',
     kind: 'core',
+    refs: ['pd:M1', 'pd:M2', 'pd:M3', 'pd:M4', 'pd:M5'],
     name: 'Support Focused Power Distributor',
+    sizes: '3A, 3D, 4A, 4D, 6A',
   },
   {
     id: 'balanced_pd',
     kind: 'core',
+    ref: 'pd:M6',
     name: 'Balanced Power Distributor',
+    sizes: '5A',
   },
 
   // ── Предзаряженные внутренние модули ──
@@ -149,16 +172,19 @@ export const MERC_COIN_ITEMS: MercCoinEntry[] = [
   },
   {
     id: 'heavy_duty_mrp',
-    kind: 'blueprint',
-    groups: ['mrp'],
+    kind: 'internal',
+    ref: 'mrp:MA',
     name: 'Heavy Duty Module Reinforcement Package',
+    sizes: '5D',
     upgrade: { 2: 5, 3: 5, 4: 10, 5: 25 },
   },
 ];
 
 const BY_REF = new Map<string, MercCoinEntry>();
 for (const entry of MERC_COIN_ITEMS) {
-  if (entry.ref) BY_REF.set(entry.ref, entry);
+  for (const ref of [entry.ref, ...(entry.refs ?? [])]) {
+    if (ref) BY_REF.set(ref, entry);
+  }
 }
 
 /** MercGear-запись для модуля сборки, если он покупается за Merc Coin. */
@@ -167,9 +193,25 @@ export function mercEntryForRef(ref: string | null | undefined): MercCoinEntry |
   return BY_REF.get(ref) ?? null;
 }
 
+/**
+ * Рецепты чертежей, которые инженер продаёт за Merc Coin и которые подходят
+ * группе модуля. Для лазеров это Thermal Plasma Conversion, для
+ * топливозаборников — Scoop Rate Enhanced.
+ */
+export function mercBlueprintsForGroup(group: string): MercCoinEntry[] {
+  return MERC_COIN_ITEMS.filter(
+    (entry) => entry.kind === 'blueprint' && (entry.groups ?? []).includes(group),
+  );
+}
+
 /** MercGear-запись по группе и id модуля. */
 export function mercEntryFor(group: string, id: string): MercCoinEntry | null {
   return BY_REF.get(`${group}:${id}`) ?? null;
+}
+
+/** Все ссылки записи на модули справочника. */
+export function mercRefsOf(entry: MercCoinEntry): string[] {
+  return [entry.ref, ...(entry.refs ?? [])].filter((ref): ref is string => Boolean(ref));
 }
 
 /** Сколько жетонов стоит собранный корабль (учитываются только MercGear). */

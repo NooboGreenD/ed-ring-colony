@@ -96,6 +96,7 @@ export const MODULE_SPECS: SpecDef[] = [
   { key: 'rate', section: 'perf', unit: 'kg/s', digits: 2, higherBetter: true },
   { key: 'jumpboost', section: 'perf', unit: 'ly', digits: 2, higherBetter: true },
 
+  { key: 'hullboost', section: 'perf', percent: true, digits: 0, higherBetter: true },
   { key: 'shieldboost', section: 'perf', percent: true, digits: 1, higherBetter: true },
   { key: 'shieldaddition', section: 'perf', unit: 'MJ', digits: 0, higherBetter: true },
   { key: 'shieldreinforcement', section: 'perf', unit: 'MJ/s', digits: 1, higherBetter: true },
@@ -158,6 +159,7 @@ const SPEC_NAMES: Record<string, Record<string, string>> = {
     fuel: 'Ёмкость бака', cargo: 'Трюм', passengers: 'Пассажиры', bins: 'Бункеры',
     bays: 'Ангары', rebuildsperbay: 'Сборок на ангар', rate: 'Скорость набора',
     jumpboost: 'Прибавка к прыжку',
+    hullboost: 'Бонус к броне',
     shieldboost: 'Усиление щита', shieldaddition: 'Прибавка щита',
     shieldreinforcement: 'Восстановление щита', hullreinforcement: 'Усиление корпуса',
     protection: 'Защита модулей', regen: 'Регенерация', brokenregen: 'Регенерация после сбоя',
@@ -190,6 +192,7 @@ const SPEC_NAMES: Record<string, Record<string, string>> = {
     fuel: 'Fuel capacity', cargo: 'Cargo', passengers: 'Passengers', bins: 'Bins',
     bays: 'Bays', rebuildsperbay: 'Rebuilds per bay', rate: 'Refuel rate',
     jumpboost: 'Jump boost',
+    hullboost: 'Hull boost',
     shieldboost: 'Shield boost', shieldaddition: 'Shield addition',
     shieldreinforcement: 'Shield reinforcement', hullreinforcement: 'Hull reinforcement',
     protection: 'Module protection', regen: 'Regeneration', brokenregen: 'Broken regeneration',

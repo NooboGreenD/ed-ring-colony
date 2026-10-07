@@ -109,6 +109,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': 'Список собран по патчноутам Frontier и данным сообщества: часть цен ещё не подтверждена.',
     'outfitting.merc.note.dss': 'Такой же модуль бесплатно выдаёт технический брокер.',
     'outfitting.merc.note.absent': 'Этого модуля ещё нет в справочнике — поставить в сборку нельзя.',
+    'outfitting.merc.group.modules': 'Модули',
+    'outfitting.merc.group.blueprints': 'Рецепты чертежей',
+    'outfitting.merc.recipe': 'Этот чертёж продаётся за Merc Coin',
 
     'outfitting.exchange.btn': 'Обмен',
     'outfitting.exchange.title': 'Обмен сборками',
@@ -227,6 +230,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': 'Compiled from Frontier patch notes and community reports: some prices are still unconfirmed.',
     'outfitting.merc.note.dss': 'A tech broker hands out the same module for free.',
     'outfitting.merc.note.absent': 'Not in the module database yet, so it cannot be fitted here.',
+    'outfitting.merc.group.modules': 'Modules',
+    'outfitting.merc.group.blueprints': 'Blueprint recipes',
+    'outfitting.merc.recipe': 'This blueprint is sold for Merc Coin',
 
     'outfitting.exchange.btn': 'Exchange',
     'outfitting.exchange.title': 'Build exchange',
@@ -345,6 +351,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': 'Zusammengetragen aus Patchnotes und Spielerberichten: manche Preise sind unbestätigt.',
     'outfitting.merc.note.dss': 'Ein Technikhändler gibt dasselbe Modul kostenlos heraus.',
     'outfitting.merc.note.absent': 'Noch nicht in der Moduldatenbank, daher hier nicht einbaubar.',
+    'outfitting.merc.group.modules': 'Module',
+    'outfitting.merc.group.blueprints': 'Bauplan-Rezepte',
+    'outfitting.merc.recipe': 'Dieser Bauplan wird für Merc Coin verkauft',
 
     'outfitting.exchange.btn': 'Austausch',
     'outfitting.exchange.title': 'Aufbauten austauschen',
@@ -463,6 +472,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': 'Raccolto dalle note di patch e dai rapporti dei giocatori: alcuni prezzi non sono confermati.',
     'outfitting.merc.note.dss': 'Un intermediario tecnico consegna lo stesso modulo gratis.',
     'outfitting.merc.note.absent': 'Non è ancora nel database dei moduli, quindi non si può montare.',
+    'outfitting.merc.group.modules': 'Moduli',
+    'outfitting.merc.group.blueprints': 'Ricette dei progetti',
+    'outfitting.merc.recipe': 'Questo progetto si acquista con Merc Coin',
 
     'outfitting.exchange.btn': 'Scambio',
     'outfitting.exchange.title': 'Scambio di assetti',
@@ -581,6 +593,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': '패치 노트와 커뮤니티 제보를 모은 목록입니다. 일부 가격은 아직 확정되지 않았습니다.',
     'outfitting.merc.note.dss': '같은 모듈을 테크 브로커가 무료로 제공합니다.',
     'outfitting.merc.note.absent': '아직 모듈 데이터에 없어 장착할 수 없습니다.',
+    'outfitting.merc.group.modules': '모듈',
+    'outfitting.merc.group.blueprints': '설계도 레시피',
+    'outfitting.merc.recipe': '이 설계도는 Merc Coin으로 구매합니다',
 
     'outfitting.exchange.btn': '내보내기',
     'outfitting.exchange.title': '구성 주고받기',
@@ -699,6 +714,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': '依据官方更新说明与玩家反馈整理，部分价格尚未确认。',
     'outfitting.merc.note.dss': '技术经纪人会免费提供同样的模块。',
     'outfitting.merc.note.absent': '模块库中尚无此项，暂时无法装配。',
+    'outfitting.merc.group.modules': '模块',
+    'outfitting.merc.group.blueprints': '蓝图配方',
+    'outfitting.merc.recipe': '此蓝图需用 Merc Coin 购买',
 
     'outfitting.exchange.btn': '互导',
     'outfitting.exchange.title': '配置互导',
@@ -817,6 +835,9 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.merc.note': 'パッチノートと有志の報告をまとめたものです。未確定の価格が残っています。',
     'outfitting.merc.note.dss': '同じモジュールをテックブローカーが無償で提供します。',
     'outfitting.merc.note.absent': 'モジュール辞書に未収録のため装備できません。',
+    'outfitting.merc.group.modules': 'モジュール',
+    'outfitting.merc.group.blueprints': 'ブループリント設計図',
+    'outfitting.merc.recipe': 'このブループリントは Merc Coin で購入できます',
 
     'outfitting.exchange.btn': '受け渡し',
     'outfitting.exchange.title': 'ビルドの受け渡し',

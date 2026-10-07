@@ -27,7 +27,10 @@ import {
   galaxyImportFile,
   galaxyImportUrl,
   postgrestWriteWarning,
+  readPointsFromPg,
+  readPointsFromSupabase,
   runGalaxyImport,
+  type PointCloud,
   type GalaxyImportBackend,
   type GalaxyImportRunResult,
   type GalaxyImportSnapshot,
@@ -66,7 +69,7 @@ import {
   type GalaxyStorageStatus,
 } from './galaxyArchiveStore.ts';
 import { FRESH_MS } from './galaxyImportSchedule.ts';
-import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT } from './galaxySystems.ts';
+import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT, galaxyPointsMax } from './galaxySystems.ts';
 import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
 // «timeout expired» от драйвера не отличает «имя не резолвится» от «не тот
 // адрес» и от «закрытый порт». Разбираем это отдельно — см. pgReachability.ts.
@@ -1198,6 +1201,179 @@ async function uploadPoints(buffer: Buffer, log: (line: string) => void): Promis
     log(`WARNING: загрузка файла точек не удалась: ${message}`);
     return { uploaded: false, error: message };
   }
+}
+
+/**
+ * Сборка облака точек для слоя карты — отдельно от импорта.
+ *
+ * Полный дамп строит файл сам, дельта — нет (иначе каждую ночь пришлось бы
+ * перечитывать 2×10⁸ строк), а карта без файла показывает только то, что
+ * успела собрать на лету. Поэтому облако можно пересобрать из уже
+ * импортированной таблицы: по прямому подключению к Postgres или через
+ * PostgREST, с той же выборкой (`galaxyPointsMax`), что и при импорте.
+ *
+ * Работа идёт фоном: 10⁸ строк читаются минутами, запрос столько не живёт.
+ */
+export interface GalaxyPointsBuildState {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  /** Итог последней сборки: `null` — ещё не запускали. */
+  ok: boolean | null;
+  error: string | null;
+  backend: GalaxyImportBackend | null;
+  count: number | null;
+  bytes: number | null;
+  rows: number | null;
+  stride: number | null;
+  uploaded: boolean;
+  /** Последние строки журнала — панель показывает их как есть. */
+  log: string[];
+}
+
+const POINTS_BUILD_LOG_LIMIT = 60;
+
+let pointsBuild: GalaxyPointsBuildState = {
+  running: false,
+  started_at: null,
+  finished_at: null,
+  ok: null,
+  error: null,
+  backend: null,
+  count: null,
+  bytes: null,
+  rows: null,
+  stride: null,
+  uploaded: false,
+  log: [],
+};
+
+/** Состояние последней (или идущей) сборки облака точек. */
+export function getGalaxyPointsBuildState(): GalaxyPointsBuildState {
+  return { ...pointsBuild, log: [...pointsBuild.log] };
+}
+
+/** Дописывает только точки в статистику каталога, не трогая остальные поля. */
+async function writePointsStats(points: {
+  count: number;
+  bytes: number;
+  rows: number;
+  stride: number;
+  uploaded: boolean;
+}): Promise<void> {
+  const previous = (await metaValue('stats').catch(() => null)) ?? {};
+  const value: Record<string, unknown> = { ...previous };
+  if (points.uploaded) {
+    value.points_uploaded = true;
+    value.points_count = points.count;
+    value.points_bytes = points.bytes;
+    value.points_rows = points.rows;
+    value.points_stride = points.stride;
+    value.points_sampled = points.stride > 1;
+  }
+  value.points_built_at = new Date().toISOString();
+  const { error } = await admin()
+    .from('galaxy_systems_meta')
+    .upsert({ key: 'stats', value }, { onConflict: 'key' });
+  if (error) throw new Error(`galaxy_systems_meta stats write failed: ${error.message}`);
+  invalidateGalaxyStatsCache();
+}
+
+/**
+ * Пересобрать облако точек из таблицы каталога и положить его в хранилище.
+ * Экспортируется для админского действия `build-points`.
+ */
+export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildState> {
+  if (pointsBuild.running) return getGalaxyPointsBuildState();
+  const log = (line: string) => {
+    pointsBuild.log.push(line);
+    if (pointsBuild.log.length > POINTS_BUILD_LOG_LIMIT) pointsBuild.log.shift();
+    console.log(`[galaxy-points] ${line}`);
+  };
+  pointsBuild = {
+    running: true,
+    started_at: new Date().toISOString(),
+    finished_at: null,
+    ok: null,
+    error: null,
+    backend: null,
+    count: null,
+    bytes: null,
+    rows: null,
+    stride: null,
+    uploaded: false,
+    log: [],
+  };
+
+  const chosen = pickBackend();
+  let backend = chosen.backend;
+  const maxPoints = Math.max(0, galaxyPointsMax());
+  log(`сборка облака точек: предел ${maxPoints || 'без предела'}, бэкенд ${backend}`);
+
+  try {
+    let cloud: PointCloud | null = null;
+    if (chosen.connectionString) {
+      try {
+        cloud = await readPointsFromPg(chosen.connectionString, { maxPoints });
+        log('облако прочитано по прямому подключению к Postgres');
+      } catch (error) {
+        const message = (error as Error)?.message ?? String(error);
+        if (!isPgConnectionError(error)) throw error;
+        log(`прямое подключение не сработало (${message}) — читаю через PostgREST`);
+      }
+    }
+    if (!cloud) {
+      backend = 'supabase';
+      cloud = await readPointsFromSupabase(admin(), { maxPoints });
+      log('облако прочитано через PostgREST');
+    }
+    pointsBuild.backend = backend;
+    pointsBuild.count = cloud.count;
+    pointsBuild.bytes = cloud.buffer.length;
+    pointsBuild.rows = cloud.rows;
+    pointsBuild.stride = cloud.stride;
+    log(
+      `точек ${cloud.count.toLocaleString()} из ${cloud.rows.toLocaleString()} строк`
+      + (cloud.stride > 1 ? ` (шаг ${cloud.stride})` : '')
+      + `, файл ${formatBytes(cloud.buffer.length)}`,
+    );
+
+    const upload = await uploadPoints(cloud.buffer, log);
+    pointsBuild.uploaded = upload.uploaded;
+    if (!upload.uploaded) pointsBuild.error = upload.error;
+
+    await writePointsStats({
+      count: cloud.count,
+      bytes: cloud.buffer.length,
+      rows: cloud.rows,
+      stride: cloud.stride,
+      uploaded: upload.uploaded,
+    });
+    pointsBuild.ok = upload.uploaded;
+    pointsBuild.finished_at = new Date().toISOString();
+    pointsBuild.running = false;
+    return getGalaxyPointsBuildState();
+  } catch (error) {
+    const message = (error as Error)?.message ?? String(error);
+    log(`ОШИБКА: ${message}`);
+    pointsBuild.ok = false;
+    pointsBuild.error = message;
+    pointsBuild.finished_at = new Date().toISOString();
+    pointsBuild.running = false;
+    return getGalaxyPointsBuildState();
+  }
+}
+
+/** Запустить сборку в фоне: админский запрос не должен ждать таблицу. */
+export async function startGalaxyPointsBuild(): Promise<{ started: boolean; reason?: string; state: GalaxyPointsBuildState }> {
+  if (pointsBuild.running) {
+    return { started: false, reason: 'Сборка облака точек уже идёт', state: getGalaxyPointsBuildState() };
+  }
+  if (liveRun()) {
+    return { started: false, reason: 'Идёт импорт каталога — дождитесь его окончания', state: getGalaxyPointsBuildState() };
+  }
+  void buildGalaxyPointsFromCatalog();
+  return { started: true, state: getGalaxyPointsBuildState() };
 }
 
 /**

@@ -8,9 +8,48 @@
  */
 
 /** Значение любого поля модуля: числа, строки и распределение урона. */
-export type ModuleValue = number | string | boolean | Record<string, number>;
+export type ModuleValue = number | string | boolean | PreEngineered | Record<string, number>;
 
 /** Модуль верфи: id, класс, рейтинг и всё, что о нём знает игра. */
+/**
+ * Заводская настройка модуля (pre-engineered).
+ *
+ * Такие модули продаются уже модифицированными: чертёж и его уровень менять
+ * нельзя, поэтому инженерия к ним не применяется. Экспериментальный эффект
+ * иногда разрешён — это отдельное поле, а не «свободный» чертёж.
+ */
+export interface PreEngineered {
+  /** Модуль нельзя переделать у инженера: выбор чертежа недоступен. */
+  reengineerable?: boolean;
+  /** Уровень заводской прокачки менять нельзя. */
+  gradeChangeable?: boolean;
+  /** Чертёж(и), с которыми модуль выходит с завода. */
+  blueprints?: string[];
+  /** Уровень заводской прокачки (обычно 5). */
+  grade?: number;
+  /** Разрешён ли экспериментальный эффект поверх заводской настройки. */
+  canApplyExperimental?: boolean;
+  /** Заводские экспериментальные эффекты, уже наложенные на модуль. */
+  experimentalEffects?: string[];
+  /**
+   * Правки, для которых в наборе нет подходящего чертежа (например, у
+   * MercGear из обновления «Operations»). Формат тот же, что у `features`
+   * чертежа: поле → доля изменения.
+   */
+  features?: Record<string, number>;
+  /**
+   * Числа собраны по официальному описанию обновления, а не выгружены из
+   * игры: интерфейс помечает такие модули знаком «≈».
+   */
+  approx?: boolean;
+  /** Внутренний идентификатор рецепта Frontier — для справки и сверки. */
+  recipe?: string;
+  /** Английское описание из набора данных или патчноута. */
+  description?: string;
+  /** Особые условия получения (например, `CG` — награда за общинную цель). */
+  availability?: string;
+}
+
 export interface OutfittingModule {
   id: string;
   grp: string;
@@ -29,6 +68,14 @@ export interface OutfittingModule {
   info?: string;
   /** Powerplay-модуль: доступен только за лояльность фракции. */
   pp?: string;
+  /** Заводская настройка: чертежи, уровень и разрешённая эксперименталка. */
+  preEngineered?: PreEngineered;
+  /** Модуль продаётся за Merc Coin (валюта операций). */
+  merc?: boolean;
+  /** Цена в жетонах, если она известна. */
+  coins?: number;
+  /** Имя из набора данных до замены на официальное игровое. */
+  sourceName?: string;
   [key: string]: ModuleValue | undefined;
 }
 
