@@ -10,9 +10,11 @@ import {
   cancelGalaxyUnpack,
   checkGalaxyDbConnection,
   getGalaxyImportStatus,
+  getGalaxyPointsBuildState,
   planGalaxyImport,
   startGalaxyDownload,
   startGalaxyImport,
+  startGalaxyPointsBuild,
   startGalaxyUnpack,
 } from '@/lib/galaxyImportJob';
 
@@ -41,7 +43,10 @@ const headers = { 'Cache-Control': 'no-store' };
  *                       нужны (и шарды без архива); `drop_shards` удаляет и
  *                       шарды тоже;
  *  - `check-db`       — проверить прямое подключение к Postgres и объяснить
- *                       ошибку (например, «getaddrinfo EAI_AGAIN db»).
+ *                       ошибку (например, «getaddrinfo EAI_AGAIN db»);
+ *  - `build-points`   — пересобрать облако точек для слоя карты из уже
+ *                       импортированной таблицы и положить его в хранилище.
+ *                       Идёт фоном; прогресс — в `points_build` статуса.
  */
 export async function GET(req: Request) {
   try {
@@ -63,6 +68,7 @@ export async function GET(req: Request) {
           approx_bytes: DUMP_VARIANTS[variant].approxBytes,
         })),
         ...status,
+        points_build: getGalaxyPointsBuildState(),
       },
       { headers },
     );
@@ -161,6 +167,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: true, check }, { headers });
     }
 
+    if (action === 'build-points') {
+      const result = await startGalaxyPointsBuild();
+      return NextResponse.json(
+        { success: result.started, started: result.started, reason: result.reason ?? null, points_build: result.state },
+        { status: result.started ? 202 : 409, headers },
+      );
+    }
+
     if (action === 'download') {
       const result = await startGalaxyDownload({ url: requestedUrl, variant: requestedVariant });
       return NextResponse.json(
@@ -179,7 +193,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup" или "check-db"',
+            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup", "check-db" или "build-points"',
         },
         { status: 400, headers },
       );

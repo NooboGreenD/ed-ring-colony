@@ -29,6 +29,14 @@ import { isWeapon, weaponMetrics } from '@/lib/outfitting/analysis';
 import { moduleSpecValues, specName, type SpecSection, type SpecValue } from '@/lib/outfitting/specs';
 import { blueprintLabel, moduleLabel } from '@/lib/outfitting/build';
 import { groupName } from '@/lib/outfitting/i18n';
+import { mercBlueprintsForGroup } from '@/lib/outfitting/merccoin';
+import {
+  ORIGIN_COLORS,
+  moduleOrigins,
+  originColor,
+  originLabelKey,
+  type ModuleOrigin,
+} from '@/lib/outfitting/origins';
 import type {
   BuildSlot,
   OutfittingData,
@@ -43,6 +51,7 @@ import {
   IconCheck,
   IconCheckCircle,
   IconChevronRight,
+  IconCoins,
   IconCompass,
   IconCrosshair,
   IconGauge,
@@ -88,6 +97,92 @@ function mountLabel(mount?: string): string {
   if (mount === 'G') return 'Gimbal';
   if (mount === 'T') return 'Turret';
   return '';
+}
+
+/**
+ * Значки происхождения модуля: жетоны, Стражи, анти-ксено. Показываются и в
+ * списке (это и просили — «цвета прямо в основном списке»), и в карточке
+ * выбранного модуля, и в подсказке.
+ */
+function OriginBadges({
+  origins,
+  t,
+  size = 9.5,
+}: {
+  origins: ModuleOrigin[];
+  t: (key: string) => string;
+  size?: number;
+}) {
+  if (origins.length === 0) return null;
+  return (
+    <>
+      {origins.map((origin) => (
+        <span
+          key={origin}
+          title={t(originLabelKey(origin))}
+          style={{
+            fontFamily: MONO,
+            fontSize: size,
+            lineHeight: 1.5,
+            color: ORIGIN_COLORS[origin],
+            background: `${ORIGIN_COLORS[origin]}18`,
+            border: `1px solid ${ORIGIN_COLORS[origin]}66`,
+            borderRadius: 2,
+            padding: '0 4px',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {t(originLabelKey(origin))}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** Метка заводской настройки: такие модули нельзя пересобрать у инженера. */
+function FactoryBadge({
+  module,
+  t,
+  locale,
+  size = 9.5,
+}: {
+  module: OutfittingModule;
+  t: (key: string, params?: Record<string, string | number>) => string;
+  locale: string;
+  size?: number;
+}) {
+  const pre = module.preEngineered;
+  if (!pre) return null;
+  const title = [
+    t('outfitting.factory.badge'),
+    pre.approx ? t('outfitting.factory.approx') : '',
+    (pre.blueprints ?? []).length
+      ? `${t('outfitting.factory.blueprints')}: ${(pre.blueprints ?? [])
+        .map((id) => `${blueprintLabel(id, locale)} G${pre.grade ?? 1}`)
+        .join(' + ')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return (
+    <span
+      title={title}
+      style={{
+        fontFamily: MONO,
+        fontSize: size,
+        lineHeight: 1.5,
+        color: '#c9a0ff',
+        background: 'rgba(201,160,255,0.12)',
+        border: '1px solid rgba(201,160,255,0.5)',
+        borderRadius: 2,
+        padding: '0 4px',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {pre.approx ? '≈ ' : ''}
+      {t('outfitting.factory.badge')}
+    </span>
+  );
 }
 
 /** Порядок разделов параметров — тот же, что во всплывающей подсказке. */
@@ -313,6 +408,17 @@ export default function ModulePicker({
       return pre?.canApplyExperimental === false ? [] : specialsForGroup(data, targetForEng.grp);
     },
     [data, targetForEng],
+  );
+
+  // Заводская настройка: чертежи производителя и «есть ли что инженерить».
+  const factoryPre = targetForEng?.preEngineered ?? null;
+  const factoryLocked = factoryPre?.reengineerable === false;
+  const showEngTab = blueprints.length > 0 || specials.length > 0;
+  const inspectedOrigins = useMemo(() => moduleOrigins(inspectedModule), [inspectedModule]);
+  // Рецепты инженера, которые продаются за Merc Coin и подходят этой группе.
+  const mercRecipes = useMemo(
+    () => mercBlueprintsForGroup(targetForEng?.grp ?? ''),
+    [targetForEng],
   );
 
   const specialOptions = useMemo(
@@ -847,6 +953,8 @@ export default function ModulePicker({
                       inspectedModule?.id === module.id && inspectedModule?.grp === module.grp;
                     const isInstalled = current?.id === module.id && current?.grp === module.grp;
                     const rCol = ratingColor(module.rating);
+                    const origins = moduleOrigins(module);
+                    const oCol = originColor(origins);
 
                     return (
                       <button
@@ -876,10 +984,14 @@ export default function ModulePicker({
                             ? 'rgba(230,126,34,0.14)'
                             : isInstalled
                               ? 'rgba(46,204,113,0.06)'
-                              : 'transparent',
+                              : oCol
+                                ? `${oCol}12`
+                                : 'transparent',
                           border: 'none',
                           borderBottom: '1px solid rgba(255,255,255,0.04)',
-                          borderLeft: `3px solid ${isInspected ? 'var(--orange)' : isInstalled ? 'var(--green)' : 'transparent'}`,
+                          borderLeft: `3px solid ${
+                            isInspected ? 'var(--orange)' : isInstalled ? 'var(--green)' : oCol ?? 'transparent'
+                          }`,
                           cursor: 'pointer',
                           color: 'var(--text)',
                           transition: 'background 0.1s ease',
@@ -918,6 +1030,8 @@ export default function ModulePicker({
                           >
                             {moduleLabel(data, module, locale)}
                           </span>
+                          <OriginBadges origins={origins} t={t} />
+                          <FactoryBadge module={module} t={t} locale={locale} />
                         </div>
 
                         {/* Правая часть: бейдж установки / цена */}
@@ -991,6 +1105,7 @@ export default function ModulePicker({
                 {t('outfitting.picker.tab.specs')}
               </button>
 
+              {showEngTab && (
               <button
                 type="button"
                 onClick={() => setActiveTab('eng')}
@@ -1011,8 +1126,8 @@ export default function ModulePicker({
                   gap: 6,
                 }}
               >
-                <IconWrench size={13} />
-                {t('outfitting.picker.tab.eng')}
+                {blueprints.length > 0 ? <IconWrench size={13} /> : <IconSparkles size={13} />}
+                {blueprints.length > 0 ? t('outfitting.picker.tab.eng') : t('outfitting.eng.special')}
                 {modification.blueprint && (
                   <span
                     style={{
@@ -1028,6 +1143,7 @@ export default function ModulePicker({
                   </span>
                 )}
               </button>
+              )}
             </div>
 
             {/* Содержимое вкладки */}
@@ -1071,6 +1187,26 @@ export default function ModulePicker({
                           {inspectedModule.mount ? ` · ${mountLabel(inspectedModule.mount)}` : ''}
                           {inspectedModule.pp ? ` · Powerplay: ${inspectedModule.pp}` : ''}
                         </div>
+
+                        {(inspectedOrigins.length > 0 || inspectedModule.preEngineered) && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 6 }}>
+                            <OriginBadges origins={inspectedOrigins} t={t} size={10} />
+                            <FactoryBadge module={inspectedModule} t={t} locale={locale} size={10} />
+                          </div>
+                        )}
+
+                        {inspectedModule.preEngineered?.description && (
+                          <div style={{ fontSize: 10.5, color: '#c9a0ff', marginTop: 5, lineHeight: 1.45 }}>
+                            {inspectedModule.preEngineered.description}
+                          </div>
+                        )}
+                        {inspectedModule.preEngineered?.availability && (
+                          <div style={{ fontSize: 10.5, color: '#f0b37e', marginTop: 3 }}>
+                            {t('outfitting.factory.availability', {
+                              value: inspectedModule.preEngineered.availability ?? '',
+                            })}
+                          </div>
+                        )}
                       </div>
 
                       {/* Все параметры модуля из справочника */}
@@ -1310,14 +1446,79 @@ export default function ModulePicker({
               )}
 
               {/* ── ВКЛАДКА ИНЖЕНЕРИИ (БЕЗ ПОЛЗУНКОВ КАЧЕСТВА) ── */}
-              {activeTab === 'eng' && (
+              {activeTab === 'eng' && showEngTab && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {!targetForEng ? (
                     <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>{t('outfitting.eng.pickFirst')}</p>
-                  ) : blueprints.length === 0 ? (
-                    <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>{t('outfitting.eng.none')}</p>
                   ) : (
                     <>
+                      {/* Что именно поставил производитель. */}
+                      {factoryPre && (
+                        <div
+                          style={{
+                            background: 'rgba(201,160,255,0.08)',
+                            border: '1px solid rgba(201,160,255,0.35)',
+                            borderRadius: 4,
+                            padding: '8px 10px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 4,
+                          }}
+                        >
+                          <div style={{ ...LABEL, fontSize: 10, marginBottom: 0, color: '#c9a0ff' }}>
+                            {t('outfitting.factory.badge')}
+                            {factoryPre.approx ? ` · ${t('outfitting.factory.approx')}` : ''}
+                          </div>
+                          {(factoryPre.blueprints ?? []).length > 0 && (
+                            <div style={{ fontSize: 11, fontFamily: MONO }}>
+                              <span style={{ color: 'var(--muted)' }}>{t('outfitting.factory.blueprints')}: </span>
+                              {(factoryPre.blueprints ?? [])
+                                .map((id) => `${blueprintLabel(id, locale)} G${factoryPre.grade ?? 1}`)
+                                .join(' + ')}
+                            </div>
+                          )}
+                          {(factoryPre.experimentalEffects ?? []).filter(Boolean).length > 0 && (
+                            <div style={{ fontSize: 11, fontFamily: MONO, color: '#c9a0ff' }}>
+                              {t('outfitting.factory.experimental')}:{' '}
+                              {(factoryPre.experimentalEffects ?? [])
+                                .filter(Boolean)
+                                .map((id) => specialName(t, data.specials[id]) || id)
+                                .join(', ')}
+                            </div>
+                          )}
+                          {factoryLocked && (
+                            <div style={{ fontSize: 10.5, color: '#f0b37e', lineHeight: 1.4 }}>
+                              {t('outfitting.factory.fixed')}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {mercRecipes.length > 0 && (
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            fontSize: 10.5,
+                            color: '#fbbf24',
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          <IconCoins size={12} color="#fbbf24" />
+                          {t('outfitting.merc.recipe')}:{' '}
+                          {mercRecipes
+                            .map((entry) =>
+                              entry.coins
+                                ? `${entry.name} (${t('outfitting.merc.coins', { value: entry.coins })})`
+                                : entry.name,
+                            )
+                            .join(', ')}
+                        </div>
+                      )}
+
+                      {blueprints.length > 0 && (
+                      <>
                       {/* Выбор чертежа */}
                       <div>
                         <div style={{ ...LABEL, fontSize: 10.5, marginBottom: 4 }}>
@@ -1472,6 +1673,8 @@ export default function ModulePicker({
                           </div>
                         </>
                       )}
+                      </>
+                      )}
 
                       {/* Экспериментальный эффект */}
                       {specials.length > 0 && (
@@ -1511,6 +1714,10 @@ export default function ModulePicker({
                             />
                           )}
                         </div>
+                      )}
+
+                      {blueprints.length === 0 && specials.length === 0 && !factoryPre && (
+                        <p style={{ fontSize: 11.5, color: 'var(--muted)' }}>{t('outfitting.eng.none')}</p>
                       )}
 
                       {/* Сброс инженерии */}

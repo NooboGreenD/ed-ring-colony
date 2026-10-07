@@ -60,7 +60,29 @@ export default function MercCoinPanel({ data }: { data: OutfittingData }) {
 
       {open && (
         <div style={{ borderTop: '1px solid var(--line)' }}>
-          {MERC_COIN_ITEMS.map((entry) => {
+          {([
+            { key: 'modules', label: t('outfitting.merc.group.modules') },
+            { key: 'blueprints', label: t('outfitting.merc.group.blueprints') },
+          ] as const).map((section) => {
+            const items = MERC_COIN_ITEMS.filter((entry) =>
+              section.key === 'blueprints' ? entry.kind === 'blueprint' : entry.kind !== 'blueprint',
+            );
+            if (items.length === 0) return null;
+            return (
+              <div key={section.key}>
+                <div
+                  style={{
+                    ...LABEL,
+                    marginBottom: 0,
+                    padding: '6px 12px 4px',
+                    color: 'var(--muted)',
+                    background: 'rgba(255,255,255,0.02)',
+                    borderBottom: '1px solid var(--line)',
+                  }}
+                >
+                  {section.label}
+                </div>
+                {items.map((entry) => {
             const absent = !entry.ref && entry.kind !== 'blueprint';
             const upgrade = entry.upgrade
               ? ([2, 3, 4, 5] as const)
@@ -119,6 +141,9 @@ export default function MercCoinPanel({ data }: { data: OutfittingData }) {
                     ? t('outfitting.merc.coins', { value: entry.coins })
                     : t('outfitting.merc.unknown')}
                 </div>
+              </div>
+            );
+                })}
               </div>
             );
           })}

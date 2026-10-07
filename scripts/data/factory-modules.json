@@ -1,0 +1,234 @@
+{
+  "_comment": [
+    "Заводская настройка модулей и MercGear — то, чего нет в EDCD/coriolis-data.",
+    "",
+    "Источники:",
+    " * обновление 4.4 «Operations» (июнь 2026) и официальный список MercGear:",
+    "   https://www.elitedangerous.com/news/updates/4-4-0-0",
+    " * официальные FDev ID (категория mercgear) — EDCD/FDevIDs/outfitting.csv;",
+    " * номера чертежей и уровней — EDCD/EDDI (Blueprint.cs, BlueprintTemplate.cs);",
+    " * названия чертежей и их цифры — EDCD/coriolis-data (modifications/blueprints.json).",
+    "",
+    "`fixes` — правки уже существующих preEngineered-блоков Coriolis. У четырёх",
+    "модулей там стоит уровень 1, хотя их же описание говорит «Grade 5»; у Shard",
+    "Cannon (Long Range) в списке экспериментальных эффектов пустая строка.",
+    "",
+    "`mercRefs` — модуль уже есть в Coriolis, но продаётся ещё и за Merc Coin:",
+    "официальное английское имя из патчноута, флаг `merc` и цена в жетонах, если",
+    "её подтвердило сообщество.",
+    "",
+    "`modules` — MercGear, которого в наборе нет вовсе: модуль собирается из",
+    "стокового (`base`) и получает заводской `preEngineered`. Support Focused",
+    "Power Distributor собирается один в один из двух официальных чертежей",
+    "(Priority Systems + Priority Engines) — их эффект дословно совпадает с",
+    "описанием; остальным выставлены `features` по описанию патчноута и флаг",
+    "`approx`, потому что Frontier числа не публикует. Интерфейс помечает такие",
+    "модули знаком «≈» и показывает, что это оценка по описанию обновления."
+  ],
+
+  "fixes": {
+    "ss:5V": { "grade": 5, "note": "Expanded Probe Radius — уровень 5, а не 1" },
+    "tbem:5Z": { "grade": 5, "note": "High Capacity — уровень 5, а не 1" },
+    "mr:6B": { "grade": 5, "note": "High Capacity + Rapid Fire — уровень 5, а не 1" },
+    "mc:6D": { "grade": 5, "note": "High Capacity + Rapid Fire — уровень 5, а не 1" },
+    "gsc:6K": { "experimentalEffects": [], "note": "пустая строка в списке эффектов" }
+  },
+
+  "mercRefs": {
+    "rg:6C": { "name": "Enduring Feedback Rail Gun" },
+    "abl:6A": { "name": "Far-Reaching Abrasion Blaster" },
+    "ml:5Y": { "name": "Long Range Mining Laser" },
+    "mc:6D": { "name": "Rapid Phase Multi-Cannon" },
+    "mr:5X": { "name": "Lightweight Thermal Seeker Missile Rack" },
+    "mr:6B": { "name": "Drag Seeker Missile Rack" },
+    "tbem:5Z": { "name": "High-Yield Enzyme Missile Rack" },
+    "cr:7X": { "name": "Extended Cargo Rack", "coins": 550 },
+    "cr:7Y": { "name": "Extended Cargo Rack", "coins": 550 },
+    "ss:5V": { "name": "Long Range Detailed Surface Scanner", "coins": 350 }
+  },
+
+  "modules": [
+    {
+      "group": "pd",
+      "id": "M1",
+      "base": "da",
+      "name": "Support Focused Power Distributor",
+      "coins": null,
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "blueprints": ["PowerDistributor_PrioritySystems", "PowerDistributor_PriorityEngines"],
+        "grade": 5,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorSupportFocused",
+        "description": "Increased engine and systems capacity and charge rate at the cost of reduced weapons capacity charge rate."
+      }
+    },
+    {
+      "group": "pd",
+      "id": "M2",
+      "base": "dd",
+      "name": "Support Focused Power Distributor",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "blueprints": ["PowerDistributor_PrioritySystems", "PowerDistributor_PriorityEngines"],
+        "grade": 5,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorSupportFocused",
+        "description": "Increased engine and systems capacity and charge rate at the cost of reduced weapons capacity charge rate."
+      }
+    },
+    {
+      "group": "pd",
+      "id": "M3",
+      "base": "df",
+      "name": "Support Focused Power Distributor",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "blueprints": ["PowerDistributor_PrioritySystems", "PowerDistributor_PriorityEngines"],
+        "grade": 5,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorSupportFocused",
+        "description": "Increased engine and systems capacity and charge rate at the cost of reduced weapons capacity charge rate."
+      }
+    },
+    {
+      "group": "pd",
+      "id": "M4",
+      "base": "di",
+      "name": "Support Focused Power Distributor",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "blueprints": ["PowerDistributor_PrioritySystems", "PowerDistributor_PriorityEngines"],
+        "grade": 5,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorSupportFocused",
+        "description": "Increased engine and systems capacity and charge rate at the cost of reduced weapons capacity charge rate."
+      }
+    },
+    {
+      "group": "pd",
+      "id": "M5",
+      "base": "dp",
+      "name": "Support Focused Power Distributor",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "blueprints": ["PowerDistributor_PrioritySystems", "PowerDistributor_PriorityEngines"],
+        "grade": 5,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorSupportFocused",
+        "description": "Increased engine and systems capacity and charge rate at the cost of reduced weapons capacity charge rate."
+      }
+    },
+    {
+      "group": "pd",
+      "id": "M6",
+      "base": "dk",
+      "name": "Balanced Power Distributor",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": {
+          "syscap": 0.1, "engcap": 0.1, "wepcap": 0.1,
+          "sysrate": 0.1, "engrate": 0.1, "weprate": 0.1,
+          "power": -0.05, "mass": 0.05, "integrity": -0.1
+        },
+        "approx": true,
+        "canApplyExperimental": true,
+        "recipe": "PowerDistributorBalanced",
+        "description": "Moderate distributor rate and charge increase and reduced power draw by increasing mass and reducing integrity."
+      }
+    },
+    {
+      "group": "mrp",
+      "id": "MA",
+      "base": "m9",
+      "name": "Heavy Duty Module Reinforcement Package",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": { "protection": 0.25, "mass": 0.2 },
+        "approx": true,
+        "canApplyExperimental": false,
+        "recipe": "ModuleReinforcementHeavyDuty",
+        "description": "Increased module protection at the cost of increased mass."
+      }
+    },
+    {
+      "group": "fc",
+      "id": "MA",
+      "base": "20",
+      "name": "Double Screaming Fragment Cannon",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": {
+          "ammo": 0.5, "clip": 0.5, "reload": -0.3,
+          "range": -0.1, "rof": 0.15, "mass": 0.15, "power": 0.1
+        },
+        "approx": true,
+        "canApplyExperimental": true,
+        "recipe": "FragmentCannonDoubleScreaming",
+        "description": "Increased ammo capacity, clip size, burst size and reduced reload time at the cost of reduced maximum range, rate of fire and increased mass and power draw."
+      }
+    },
+    {
+      "group": "fc",
+      "id": "MB",
+      "base": "1t",
+      "name": "Double Screaming Fragment Cannon",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": {
+          "ammo": 0.5, "clip": 0.5, "reload": -0.3,
+          "range": -0.1, "rof": 0.15, "mass": 0.15, "power": 0.1
+        },
+        "approx": true,
+        "canApplyExperimental": true,
+        "recipe": "FragmentCannonDoubleScreaming",
+        "description": "Increased ammo capacity, clip size, burst size and reduced reload time at the cost of reduced maximum range, rate of fire and increased mass and power draw."
+      }
+    },
+    {
+      "group": "mr",
+      "id": "MA",
+      "base": "2g",
+      "name": "Lockdown Seeker Missile Rack",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": {
+          "ammo": 0.5, "clip": 0.5, "integrity": 0.3, "thermload": -0.3,
+          "power": 0.2, "mass": 0.2, "rof": 0.2, "damage": -0.15
+        },
+        "approx": true,
+        "canApplyExperimental": true,
+        "recipe": "SeekerMissileRackLockdown",
+        "description": "Increased ammo capacity, clip size, integrity and reduced thermal load at the cost of increased power draw and mass and reduced rate of fire and damage."
+      }
+    },
+    {
+      "group": "mr",
+      "id": "MB",
+      "base": "yJ",
+      "name": "Lockdown Seeker Missile Rack",
+      "preEngineered": {
+        "reengineerable": false,
+        "gradeChangeable": false,
+        "features": {
+          "ammo": 0.5, "clip": 0.5, "integrity": 0.3, "thermload": -0.3,
+          "power": 0.2, "mass": 0.2, "rof": 0.2, "damage": -0.15
+        },
+        "approx": true,
+        "canApplyExperimental": true,
+        "recipe": "SeekerMissileRackLockdown",
+        "description": "Increased ammo capacity, clip size, integrity and reduced thermal load at the cost of increased power draw and mass and reduced rate of fire and damage."
+      }
+    }
+  ]
+}

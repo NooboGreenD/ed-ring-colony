@@ -80,6 +80,9 @@ const SAME_AS_RU_OK = new Set([
   'outfitting.hl.pgen',
   'outfitting.hl.rate',
   'outfitting.hl.distributor',
+  // Название валюты и аббревиатура режима — имена собственные, они не переводятся.
+  'outfitting.origin.merc',
+  'outfitting.origin.ax',
 ]);
 
 maybe('в каждом языке есть все ключи раздела верфи', async () => {

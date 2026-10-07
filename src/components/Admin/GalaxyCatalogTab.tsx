@@ -115,6 +115,22 @@ interface DbCheck {
   backend: 'pg' | 'supabase' | null;
 }
 
+/** Состояние фоновой сборки облака точек (`build-points`). */
+interface PointsBuildState {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  ok: boolean | null;
+  error: string | null;
+  backend: 'pg' | 'supabase' | null;
+  count: number | null;
+  bytes: number | null;
+  rows: number | null;
+  stride: number | null;
+  uploaded: boolean;
+  log: string[];
+}
+
 interface Status {
   state: GalaxyCatalogImport;
   live: boolean;
@@ -131,6 +147,7 @@ interface Status {
   storage: StorageStatus | null;
   variants?: VariantInfo[];
   download_segments?: number;
+  points_build?: PointsBuildState;
 }
 
 const POLL_MS = 4000;
@@ -210,13 +227,15 @@ export default function GalaxyCatalogTab() {
   const shards = status?.shards ?? null;
   const storage = status?.storage ?? null;
   const unpackRunning = !!shards?.live;
+  const pointsBuild = status?.points_build ?? null;
+  const pointsBuildRunning = !!pointsBuild?.running;
   const downloadRunning = !!archive && (archive.live || (archive.state.phase === 'downloading' && !archive.interrupted));
   const interruptedDownload = !!archive && archive.state.phase === 'downloading' && !archive.live && archive.interrupted;
   useEffect(() => {
-    if (!running && !downloadRunning && !unpackRunning) return;
+    if (!running && !downloadRunning && !unpackRunning && !pointsBuildRunning) return;
     const timer = window.setInterval(() => void load(), POLL_MS);
     return () => window.clearInterval(timer);
-  }, [running, downloadRunning, unpackRunning, load]);
+  }, [running, downloadRunning, unpackRunning, pointsBuildRunning, load]);
 
   const act = async (action: string, extra: Record<string, unknown> = {}) => {
     setBusy(action);
@@ -236,6 +255,12 @@ export default function GalaxyCatalogTab() {
       else if (action === 'download') setMessage('Архив скачивается в фоне. Страницу можно закрыть — скачивание продолжится, а при обрыве подхватит с сохранённого байта.');
       else if (action === 'unpack') setMessage('Распаковка в шарды идёт в фоне. После неё импорт и возобновление читают шарды, а не 6 ГиБ gzip.');
       else if (action === 'cancel-unpack') setMessage(payload?.cancelled ? 'Распаковка остановлена' : 'Распаковка не выполнялась');
+      else if (action === 'build-points')
+        setMessage(
+          payload?.started
+            ? 'Сборка облака точек идёт в фоне: таблица читается целиком, это может занять несколько минут. Страницу можно закрыть — процесс продолжится.'
+            : payload?.reason || 'Сборка облака уже идёт',
+        );
       else if (action === 'cleanup')
         setMessage(
           payload?.cleaned
@@ -822,6 +847,60 @@ docker compose --env-file .env.production --profile monitoring \\
               </div>
             )}
           </div>
+        )}
+
+        <div style={{ ...labelStyle, marginTop: 4 }}>Облако точек для карты</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+          <button
+            type="button"
+            className="btn"
+            disabled={busy !== null || pointsBuildRunning || running || backendMissing}
+            title="Прочитать таблицу каталога целиком и собрать файл, из которого слой «Все системы» рисует карту"
+            onClick={() => void act('build-points')}
+          >
+            {pointsBuildRunning ? 'Сборка облака идёт…' : 'Собрать облако точек из таблицы'}
+          </button>
+          <span style={{ fontSize: 12, color: '#9ca3af' }}>
+            {status?.stats?.points_uploaded
+              ? `в хранилище: ${formatCount(status.stats.points_count)} точек${status.stats.points_bytes ? `, ${formatBytes(status.stats.points_bytes)}` : ''}`
+              : 'файла в хранилище нет — слой карты соберёт его сам при первом включении (это медленнее)'}
+          </span>
+        </div>
+        {pointsBuild && (pointsBuild.ok !== null || pointsBuild.running) && (
+          <div
+            style={{
+              fontSize: 12,
+              marginBottom: 8,
+              color: pointsBuild.running ? '#ffd166' : pointsBuild.error ? '#ef4444' : '#22c55e',
+            }}
+          >
+            {pointsBuild.running
+              ? 'Читаю таблицу каталога и собираю облако точек — это может занять несколько минут…'
+              : pointsBuild.ok
+                ? `Облако собрано и загружено: ${formatCount(pointsBuild.count)} точек из ${formatCount(pointsBuild.rows)} строк`
+                  + `${pointsBuild.stride && pointsBuild.stride > 1 ? ` (шаг ${formatCount(pointsBuild.stride)})` : ''}`
+                  + `${pointsBuild.bytes ? `, файл ${formatBytes(pointsBuild.bytes)}` : ''} · ${formatTime(pointsBuild.finished_at)}`
+                : `Облако точек собрать не удалось: ${pointsBuild.error ?? 'неизвестная ошибка'}`}
+          </div>
+        )}
+        {pointsBuild && pointsBuild.log.length > 0 && (
+          <details style={{ marginBottom: 10 }}>
+            <summary style={{ fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
+              Журнал сборки облака ({pointsBuild.log.length})
+            </summary>
+            <pre
+              style={{
+                fontSize: 11,
+                color: '#9ca3af',
+                whiteSpace: 'pre-wrap',
+                margin: '6px 0 0',
+                maxHeight: 180,
+                overflowY: 'auto',
+              }}
+            >
+              {pointsBuild.log.join('\n')}
+            </pre>
+          </details>
         )}
 
         <div style={{ fontSize: 12, color: '#9ca3af', lineHeight: 1.6 }}>

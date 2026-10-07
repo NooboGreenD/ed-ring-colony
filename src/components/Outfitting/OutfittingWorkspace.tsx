@@ -34,6 +34,7 @@ import {
   strippedBuild,
 } from '@/lib/outfitting/build';
 import { useOutfittingData } from '@/lib/outfitting/useOutfittingData';
+import { bulkheadName } from '@/lib/outfitting/i18n';
 import { mercEntryFor } from '@/lib/outfitting/merccoin';
 import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
 import type {
@@ -44,7 +45,7 @@ import type {
   ShipBuild,
   SlotModification,
 } from '@/lib/outfitting/types';
-import ArmourEngineering from './ArmourEngineering';
+import BulkheadPicker from './BulkheadPicker';
 import ExchangePanel from './ExchangePanel';
 import MercCoinPanel from './MercCoinPanel';
 import ModulePicker from './ModulePicker';
@@ -244,6 +245,7 @@ export default function OutfittingWorkspace() {
   // Копирование модуля в другую ячейку и обмен сборками
   const [copySourceKey, setCopySourceKey] = useState<string | null>(null);
   const [exchangeOpen, setExchangeOpen] = useState(false);
+  const [bulkheadOpen, setBulkheadOpen] = useState(false);
 
   // Состояние полёта: форсаж, выпущенные орудия, груз и остаток топлива
   const [control, setControl] = useState<ShipControlState>({
@@ -433,6 +435,11 @@ export default function OutfittingWorkspace() {
   }
 
   const activeSlot = picker ? slots.find((slot) => slot.key === picker) ?? null : null;
+  const installedBulkhead = ship.bulkheads[build.bulkhead] ?? ship.bulkheads[0] ?? null;
+  const bulkheadMod = build.mods.BH ?? null;
+  const bulkheadEffective = installedBulkhead
+    ? effectiveModule(data, installedBulkhead as unknown as OutfittingModule, bulkheadMod)
+    : null;
   const hoverSlot = hover ? slots.find((slot) => slot.key === hover.key) ?? null : null;
   const sections: {
     key: string;
@@ -627,61 +634,6 @@ export default function OutfittingWorkspace() {
             <span>{t('outfitting.hullCost', { value: credits(ship.properties.hullCost) })}</span>
           </div>
 
-          {/* Переборки корпуса — в том же виде, что и модули */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 6, marginTop: 8 }}>
-            {ship.bulkheads.map((bulkhead, index) => {
-              const selected = build.bulkhead === index;
-              return (
-                <button
-                  key={bulkhead.id}
-                  type="button"
-                  title={t('outfitting.bulkheadTitle', {
-                    mass: bulkhead.mass,
-                    boost: (1 + bulkhead.hullboost).toFixed(2),
-                    cost: credits(bulkhead.cost),
-                  })}
-                  onClick={() => setBuild({ ...build, bulkhead: index })}
-                  style={{
-                    display: 'flex', flexDirection: 'column', gap: 4, textAlign: 'left',
-                    padding: '8px 10px', borderRadius: 4, cursor: 'pointer',
-                    border: selected ? '1px solid var(--orange)' : '1px solid var(--line)',
-                    background: selected ? 'rgba(230,126,34,0.14)' : 'rgba(15,23,42,0.45)',
-                    color: 'var(--text)',
-                  }}
-                >
-                  <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontFamily: MONO, fontSize: 11.5, fontWeight: 700 }}>
-                    <span>{bulkhead.name}</span><span style={{ color: selected ? 'var(--orange)' : 'var(--muted)' }}>{selected ? '✓' : ''}</span>
-                  </span>
-                  <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8, color: 'var(--muted)', fontFamily: MONO, fontSize: 10 }}>
-                    <span>Масса {num(bulkhead.mass, 0)} т</span>
-                    <span>Броня +{(bulkhead.hullboost * 100).toFixed(0)}%</span>
-                    <span>K {num(bulkhead.kinres * 100, 0)}%</span>
-                    <span>T {num(bulkhead.thermres * 100, 0)}%</span>
-                    <span>E {num(bulkhead.explres * 100, 0)}%</span>
-                  </span>
-                  <span style={{ color: 'var(--orange)', fontFamily: MONO, fontSize: 10 }}>{credits(bulkhead.cost)}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Инженерия переборок */}
-          <ArmourEngineering
-            data={data}
-            modification={build.mods.BH ?? null}
-            onModify={(next) =>
-              setBuild((previous) => {
-                if (!previous) return previous;
-                const mods = { ...previous.mods };
-                if (next) mods.BH = next;
-                else delete mods.BH;
-                return { ...previous, mods };
-              })
-            }
-            t={t}
-            locale={locale}
-          />
-
           {notice && (
             <div
               style={{
@@ -758,6 +710,93 @@ export default function OutfittingWorkspace() {
               </SectionTitle>
 
               <div style={{ ...PANEL, padding: 0, overflow: 'hidden' }}>
+                {/* Переборка — первый слот «Основных модулей»: та же строка,
+                    что и у модулей, только выбирается отдельным окном. */}
+                {section.key === 'core' && installedBulkhead && (
+                  <button
+                    type="button"
+                    onClick={() => setBulkheadOpen(true)}
+                    title={t('outfitting.bulkhead.intro')}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      width: '100%',
+                      textAlign: 'left',
+                      margin: 0,
+                      border: 'none',
+                      borderBottom: '1px solid var(--line)',
+                      borderLeft: '3px solid var(--orange)',
+                      background: 'transparent',
+                      color: 'var(--text)',
+                      cursor: 'pointer',
+                      padding: '6px 10px',
+                    }}
+                  >
+                    <span style={{ color: 'var(--orange)', display: 'flex', alignItems: 'center' }}>
+                      <IconShield size={14} />
+                    </span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ fontFamily: MONO, fontSize: 10, color: 'var(--orange)', letterSpacing: 0.5 }}>
+                          {t('outfitting.bulkhead.title')}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: MONO,
+                            fontSize: 12.5,
+                            color: '#f8fafc',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {bulkheadName(locale, installedBulkhead.name)}
+                        </span>
+                      </span>
+
+                      <span
+                        style={{
+                          display: 'flex',
+                          gap: 10,
+                          flexWrap: 'wrap',
+                          fontSize: 10.5,
+                          color: 'var(--muted)',
+                        }}
+                      >
+                        {bulkheadEffective && (
+                          <SlotMetrics module={bulkheadEffective} view={view} locale={locale} num={num} />
+                        )}
+                        {bulkheadMod?.blueprint && (
+                          <span style={{ color: 'var(--green)', display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <IconWrench size={10} color="var(--green)" />
+                            {blueprintLabel(bulkheadMod.blueprint, locale)} G{bulkheadMod.grade ?? 1}
+                          </span>
+                        )}
+                        {bulkheadMod?.special && (
+                          <span style={{ color: '#c9a0ff', display: 'flex', alignItems: 'center', gap: 3 }}>
+                            <IconSparkles size={10} color="#c9a0ff" />
+                            {specialName(t, data.specials[bulkheadMod.special]) || bulkheadMod.special}
+                          </span>
+                        )}
+                      </span>
+                    </span>
+
+                    <span style={{ color: 'var(--orange)', fontFamily: MONO, fontSize: 10, whiteSpace: 'nowrap' }}>
+                      {credits(installedBulkhead.cost)}
+                    </span>
+                    <IconChevronRight size={14} />
+                  </button>
+                )}
+
                 {section.items.map((slot) => {
                   const module = slot.module;
                   const effective = effectiveModule(data, module, slot.modification);
@@ -1123,6 +1162,29 @@ export default function OutfittingWorkspace() {
           effective={effectiveModule(data, hoverSlot.module, hoverSlot.modification)}
           modification={hoverSlot.modification}
           anchor={{ x: hover!.x, y: hover!.y }}
+        />
+      )}
+
+      {/* ── Окно выбора переборки корпуса ─────────────────────────────── */}
+      {bulkheadOpen && (
+        <BulkheadPicker
+          data={data}
+          ship={ship}
+          bulkhead={build.bulkhead}
+          modification={bulkheadMod}
+          onPick={(index) =>
+            setBuild((previous) => (previous ? { ...previous, bulkhead: index } : previous))
+          }
+          onModify={(next) =>
+            setBuild((previous) => {
+              if (!previous) return previous;
+              const mods = { ...previous.mods };
+              if (next) mods.BH = next;
+              else delete mods.BH;
+              return { ...previous, mods };
+            })
+          }
+          onClose={() => setBulkheadOpen(false)}
         />
       )}
 

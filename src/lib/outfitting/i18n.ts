@@ -12,6 +12,90 @@
  * голый идентификатор вроде `gsrp`.
  */
 
+/**
+ * Названия переборок (брони корпуса) по языкам.
+ *
+ * В справочнике Coriolis они лежат английскими строками у каждого корабля;
+ * в игре это обычные названия материалов, поэтому их несложно перевести.
+ * Ключ — английское имя, приведённое к нижнему регистру (`Mk II Ablative
+ * Reinforced` → `mk_ii_ablative_reinforced`).
+ */
+export const BULKHEAD_NAMES: Record<string, Record<string, string>> = {
+  ru: {
+    lightweight_alloy: 'Лёгкий сплав',
+    reinforced_alloy: 'Усиленный сплав',
+    military_grade_composite: 'Композит военного класса',
+    mirrored_surface_composite: 'Зеркальный композит',
+    reactive_surface_composite: 'Реактивный композит',
+    mk_ii_ablative_lightweight: 'Mk II: абляционный лёгкий',
+    mk_ii_ablative_reinforced: 'Mk II: абляционный усиленный',
+    mk_ii_ablative_military_grade: 'Mk II: абляционный военный',
+    mk_ii_ablative_mirrored: 'Mk II: абляционный зеркальный',
+    mk_ii_ablative_reactive: 'Mk II: абляционный реактивный',
+  },
+  en: {},
+  de: {
+    lightweight_alloy: 'Leichte Legierung',
+    reinforced_alloy: 'Verstärkte Legierung',
+    military_grade_composite: 'Militärkomposit',
+    mirrored_surface_composite: 'Spiegelkomposit',
+    reactive_surface_composite: 'Reaktivkomposit',
+    mk_ii_ablative_lightweight: 'Mk II: ablativer Leichtbau',
+    mk_ii_ablative_reinforced: 'Mk II: ablativer Verbund',
+    mk_ii_ablative_military_grade: 'Mk II: ablativer Militärverbund',
+    mk_ii_ablative_mirrored: 'Mk II: ablativer Spiegelverbund',
+    mk_ii_ablative_reactive: 'Mk II: ablativer Reaktivverbund',
+  },
+  it: {
+    lightweight_alloy: 'Lega leggera',
+    reinforced_alloy: 'Lega rinforzata',
+    military_grade_composite: 'Composito militare',
+    mirrored_surface_composite: 'Composito a specchio',
+    reactive_surface_composite: 'Composito reattivo',
+    mk_ii_ablative_lightweight: 'Mk II: ablativo leggero',
+    mk_ii_ablative_reinforced: 'Mk II: ablativo rinforzato',
+    mk_ii_ablative_military_grade: 'Mk II: ablativo militare',
+    mk_ii_ablative_mirrored: 'Mk II: ablativo a specchio',
+    mk_ii_ablative_reactive: 'Mk II: ablativo reattivo',
+  },
+  ko: {
+    lightweight_alloy: '경량 합금',
+    reinforced_alloy: '강화 합금',
+    military_grade_composite: '군용 복합 장갑',
+    mirrored_surface_composite: '반사 복합 장갑',
+    reactive_surface_composite: '반응 복합 장갑',
+    mk_ii_ablative_lightweight: 'Mk II 경량 내열 장갑',
+    mk_ii_ablative_reinforced: 'Mk II 강화 내열 장갑',
+    mk_ii_ablative_military_grade: 'Mk II 군용 내열 장갑',
+    mk_ii_ablative_mirrored: 'Mk II 반사 내열 장갑',
+    mk_ii_ablative_reactive: 'Mk II 반응 내열 장갑',
+  },
+  zh: {
+    lightweight_alloy: '轻质合金',
+    reinforced_alloy: '强化合金',
+    military_grade_composite: '军用复合装甲',
+    mirrored_surface_composite: '镜面复合装甲',
+    reactive_surface_composite: '反应复合装甲',
+    mk_ii_ablative_lightweight: 'Mk II 烧蚀轻质装甲',
+    mk_ii_ablative_reinforced: 'Mk II 烧蚀强化装甲',
+    mk_ii_ablative_military_grade: 'Mk II 烧蚀军用装甲',
+    mk_ii_ablative_mirrored: 'Mk II 烧蚀镜面装甲',
+    mk_ii_ablative_reactive: 'Mk II 烧蚀反应装甲',
+  },
+  ja: {
+    lightweight_alloy: '軽量合金',
+    reinforced_alloy: '強化合金',
+    military_grade_composite: '軍用複合装甲',
+    mirrored_surface_composite: 'ミラー複合装甲',
+    reactive_surface_composite: 'リアクティブ複合装甲',
+    mk_ii_ablative_lightweight: 'Mk II アブレーティブ軽量装甲',
+    mk_ii_ablative_reinforced: 'Mk II アブレーティブ強化装甲',
+    mk_ii_ablative_military_grade: 'Mk II アブレーティブ軍用装甲',
+    mk_ii_ablative_mirrored: 'Mk II アブレーティブミラー装甲',
+    mk_ii_ablative_reactive: 'Mk II アブレーティブリアクティブ装甲',
+  },
+};
+
 /** Названия групп модулей по языкам: id группы → человеческое название. */
 export const GROUP_NAMES: Record<string, Record<string, string>> = {
   ru: {
@@ -404,6 +488,13 @@ export const MOUNT_NAMES: Record<string, Record<string, string>> = {
 /** Язык без перевода откатывается на английский, затем на русский. */
 function pick(table: Record<string, Record<string, string>>, locale: string, key: string): string | undefined {
   return table[locale]?.[key] ?? table.en?.[key] ?? table.ru?.[key];
+}
+
+/** Название переборки на языке интерфейса (незнакомую оставляем как есть). */
+export function bulkheadName(locale: string, name: string | undefined | null): string {
+  if (!name) return '—';
+  const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return BULKHEAD_NAMES[locale]?.[key] ?? BULKHEAD_NAMES.en[key] ?? name;
 }
 
 /** Название группы модулей на языке интерфейса. */
