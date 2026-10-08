@@ -114,11 +114,13 @@ export function AllSystemsPoints({ data, positions, visibleMask }: AllSystemsPoi
         <bufferAttribute attach="attributes-color" args={[colors, 3]} />
         <bufferAttribute attach="attributes-starClass" args={[data.starTypes, 1]} />
       </bufferGeometry>
+      {/* ShaderMaterial injects the `color` attribute only when vertexColors is enabled. */}
       <shaderMaterial
         ref={materialRef}
         vertexShader={POINT_VERTEX}
         fragmentShader={POINT_FRAGMENT}
         uniforms={{ uMask: { value: visibleMask } }}
+        vertexColors
         transparent
         depthWrite={false}
         fog={false}

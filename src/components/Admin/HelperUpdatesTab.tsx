@@ -90,9 +90,11 @@ function jobKindLabel(kind: HelperReleaseJob['kind']): string {
  */
 function describeUploadHttpError(status: number): string {
   if (status === 413) {
-    return 'HTTP 413 — файл не прошёл лимит прокси (client_max_body_size). '
-      + 'Для /api/admin/uploader/release он должен быть не меньше 150m: '
-      + 'обновите nginx-конфиг по deploy/selfhost/nginx-selfhost.conf и перезагрузите nginx.';
+    return 'HTTP 413 — один из прокси отклонил тело загрузки. Для /api/admin/uploader/release '
+      + 'конфиги проекта задают 200m; глобальные 25m могут быть меньше файла 25,2 МиБ с multipart-обёрткой. '
+      + 'Проверьте, что активный HTTPS server-блок содержит нужный location: '
+      + '`sudo nginx -T | grep -n -A8 -B3 \'location = /api/admin/uploader/release\'`, '
+      + 'затем `sudo nginx -t && sudo systemctl reload nginx`. Если там уже 200m, проверьте внешний proxy/CDN.';
   }
   return `HTTP ${status}`;
 }
