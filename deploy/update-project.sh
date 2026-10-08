@@ -169,6 +169,64 @@ run_step() { # run_step "что делаем" команда...
   rm -f "$log" 2>/dev/null || true
 }
 
+# Сжать вывод git в одну безопасную для progress-протокола строку. До этого
+# `git stash` полностью скрывался через >/dev/null 2>&1, и админ видел только
+# «код 1», хотя настоящая причина обычно была на следующей строке (index.lock,
+# права, read-only filesystem или конкретный конфликт).
+git_reason() {
+  tr '\n\r\t' '   ' < "$1" 2>/dev/null \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | cut -c1-120
+}
+
+git_dirty_summary() {
+  git status --short 2>/dev/null \
+    | head -n 8 \
+    | tr '\n\r\t' '   ' \
+    | cut -c1-160 || true
+}
+
+stash_local_changes() {
+  local message="$1" log code reason dirty
+  log="$(mktemp "${TMPDIR:-/tmp}/edrc-stash.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-stash-error.log")"
+  # Не подавляем stderr: при ошибке рабочее дерево должно остаться нетронутым,
+  # а оператору нужен реальный текст Git, чтобы исправить именно причину, а
+  # не угадывать её по бесполезному «git stash не удался».
+  if git stash push --include-untracked -m "$message" >"$log" 2>&1; then
+    rm -f "$log" 2>/dev/null || true
+    return 0
+  else
+    code=$?
+  fi
+  reason="$(git_reason "$log")"
+  dirty="$(git_dirty_summary)"
+  rm -f "$log" 2>/dev/null || true
+  [ -n "$reason" ] || reason="команда не сообщила причину"
+  # Сначала сообщаем о сохранности дерева, затем причину: поле error панели
+  # ограничено 200 символами и не должно отрезать главное действие оператора.
+  die "git stash не удался (код $code): локальные изменения не тронуты; причина: $reason${dirty:+; статус: $dirty}. Разберите вручную: git status --short; git diff; повторите обновление"
+}
+
+restore_local_changes() {
+  local log code reason dirty
+  log="$(mktemp "${TMPDIR:-/tmp}/edrc-stash-pop.XXXXXX" 2>/dev/null || echo "$STATE_DIR/last-stash-pop-error.log")"
+  if git stash pop --index >"$log" 2>&1; then
+    rm -f "$log" 2>/dev/null || true
+    return 0
+  else
+    code=$?
+  fi
+  reason="$(git_reason "$log")"
+  dirty="$(git_dirty_summary)"
+  rm -f "$log" 2>/dev/null || true
+  [ -n "$reason" ] || reason="команда не сообщила причину"
+  # После конфликта pop нельзя продолжать миграции и сборку: иначе в прод
+  # может попасть рабочее дерево с конфликтными маркерами. Stash намеренно
+  # остаётся в списке для ручного разбора. Важная инструкция стоит ДО причины:
+  # поле error панели ограничено 200 символами.
+  die "git stash pop не удался (код $code): изменения остались в stash — git stash list; сначала разберите конфликт вручную; причина: $reason${dirty:+; дерево: $dirty}"
+}
+
 # ── 0. блокировка: два параллельных обновления испортят продов ───────
 report prepare 5 "Проверяю блокировки и репозиторий"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
@@ -270,12 +328,13 @@ NEW_SHA="$CURRENT_SHA"
 if [ "$BEHIND" != "0" ]; then
   # Спрятать правки нужно ровно здесь, а не в начале: до проверок мы рабочим
   # деревом не распоряжаемся, и при сбое stash не должен оставаться занятым.
+  # Используем --include-untracked вместо короткого -u: полный вызов проще
+  # распознать в журнале ручной диагностики.
   STASHED=0
   if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
     say "⚠ в рабочем дереве есть незакоммиченные изменения — прячу их в stash и верну после обновления"
     report compare 37 "Сохраняю локальные изменения (git stash)"
-    git stash push -u -m "edrc-update-$(date -u +%Y%m%dT%H%M%SZ)" >/dev/null 2>&1 \
-      || die "git stash не удался — разберите изменения вручную"
+    stash_local_changes "edrc-update-$(date -u +%Y%m%dT%H%M%SZ)"
     STASHED=1
   fi
   git merge --ff-only "$REMOTE_NAME/$BRANCH" >/dev/null 2>&1 \
@@ -284,8 +343,7 @@ if [ "$BEHIND" != "0" ]; then
   if [ "$STASHED" = "1" ]; then
     # Возвращаем сразу после перемотки: сборка и миграции должны видеть те же
     # файлы, что админ видел до обновления.
-    git stash pop --index >/dev/null 2>&1 \
-      || say "⚠ git stash pop требует ручного разбора — ваши изменения остались в stash (git stash list)"
+    restore_local_changes
   fi
   say "исходники: ${CURRENT_SHA:0:12} → ${NEW_SHA:0:12}"
 else
