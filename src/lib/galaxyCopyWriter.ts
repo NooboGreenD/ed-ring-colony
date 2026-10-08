@@ -37,6 +37,7 @@ import {
   GALAXY_ROW_COLUMNS,
   GALAXY_TABLE,
   galaxyRowSupersedes,
+  pointsSampleSql,
   type GalaxyImportBackend,
   type GalaxyRowWriter,
 } from './galaxyImport.ts';
@@ -435,6 +436,13 @@ export async function createPgCopyWriter(
     return merge();
   };
 
+  const countTableRows = async (): Promise<number> => {
+    const result = (await sql(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`)) as {
+      rows?: Array<Record<string, unknown>>;
+    };
+    return Number(result.rows?.[0]?.n ?? 0);
+  };
+
   return {
     backend: 'pg' as GalaxyImportBackend,
     get written() {
@@ -457,14 +465,12 @@ export async function createPgCopyWriter(
       // Нечего повторять: см. комментарий про `deferred` выше.
     },
     async countRows() {
-      const result = (await sql(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`)) as {
-        rows?: Array<Record<string, unknown>>;
-      };
-      return Number(result.rows?.[0]?.n ?? 0);
+      return await countTableRows();
     },
-    async readPoints(onPoint) {
+    async readPoints(onPoint, options) {
+      const stride = Math.max(1, Math.floor(options?.stride ?? 1));
       let count = 0;
-      await streamQuery(`SELECT id64, x, y, z, star_type FROM ${GALAXY_TABLE} ORDER BY id`, (row) => {
+      await streamQuery(pointsSampleSql(GALAXY_TABLE, stride), (row) => {
         count++;
         onPoint({
           x: Number(row.x),
@@ -475,6 +481,21 @@ export async function createPgCopyWriter(
         });
       });
       return count;
+    },
+    // COPY-режим читает каталог тем же прямым подключением: выборку считает
+    // Postgres, по сети едут только оставшиеся точки.
+    async supportsSampledRead() {
+      return true;
+    },
+    async estimateRows() {
+      const result = (await sql(
+        `SELECT (SELECT reltuples::bigint FROM pg_class WHERE oid = '${GALAXY_TABLE}'::regclass) AS est`,
+      )) as { rows?: Array<Record<string, unknown>> };
+      const est = Number(result.rows?.[0]?.est ?? 0);
+      if (Number.isFinite(est) && est > 0) return Math.floor(est);
+      // Свежая таблица после COPY без ANALYZE имеет reltuples = 0: тогда
+      // считаем честно, иначе выборка стала бы «читать все 2·10⁸ строк».
+      return await countTableRows();
     },
     async analyze() {
       if (coldLoad) {

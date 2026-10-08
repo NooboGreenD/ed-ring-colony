@@ -14,7 +14,27 @@ import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import { loadAllSystemsData } from './AllSystemsPoints';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
-import { STAR_CLASS_COLORS, STAR_CLASS_LABELS, STAR_CLASS_LIST, type AllSystemsData } from '@/lib/galaxySystems';
+import {
+  POINTS_BYTES_PER_POINT,
+  POINTS_HEADER_SIZE,
+  STAR_CLASS_COLORS,
+  STAR_CLASS_LABELS,
+  STAR_CLASS_LIST,
+  type AllSystemsData,
+} from '@/lib/galaxySystems';
+
+/**
+ * Слой показывает столько точек, сколько позволил лимит бакета при сборке, —
+ * поэтому размер и количество в подписи берутся из загруженного файла, а не
+ * из константы в коде (раньше здесь стояло «~35 МБ», и оно расходилось).
+ */
+function formatPointCount(count: number): string {
+  return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(2)} млн` : `${Math.round(count / 1000)}k`;
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
 
 const GalaxyScene = dynamic(
   () => import('./GalaxyScene').then((module) => module.GalaxyScene),
@@ -172,8 +192,12 @@ export default function GalaxyMap({
     done: true,
   });
   const compactMap = showOnlyMainRoute;
+  const allSystemsNote = allSystemsData
+    ? `${formatPointCount(allSystemsData.count)} точек, файл ${formatMegabytes(POINTS_HEADER_SIZE + allSystemsData.count * POINTS_BYTES_PER_POINT)}`
+    : 'размер облака определяет лимит хранилища';
 
-  // Ленивая загрузка облака точек (~36 МБ). Сначала спрашиваем статус каталога:
+  // Ленивая загрузка облака точек (размер = лимит бакета ∩ бюджет файла).
+  // Сначала спрашиваем статус каталога:
   // пока таблица пуста или идёт импорт, тянуть бинарник бессмысленно — вместо
   // 404 в консоли показываем, что именно происходит и где это исправить.
   useEffect(() => {
@@ -633,9 +657,12 @@ export default function GalaxyMap({
             <input type="checkbox" checked={showKnownSystems} onChange={(event) => setShowKnownSystems(event.target.checked)} />
             Маршрут и хабы ({routeMarkerSystems.length + uniqueHubs.length})
           </label>
-          <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title="Экспериментально: известные системы галактики (Spansh). Каталог — ~2×10⁸ систем, в слое показана равномерная выборка; первое включение скачивает ~35 МБ.">
+          <label style={{ fontSize: 11, color: '#ffd166', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }} title={
+              `Экспериментально: известные системы галактики (Spansh). Каталог — ~2×10⁸ систем, `
+              + `в слое показана равномерная выборка: ${allSystemsNote}. Первое включение скачивает весь файл.`
+            }>
             <input type="checkbox" checked={showAllSystems} onChange={(event) => setShowAllSystems(event.target.checked)} />
-            Все системы{allSystemsData ? ` (${(allSystemsData.count / 1000).toFixed(0)}k)` : ''} ⚗
+            Все системы{allSystemsData ? ` (${formatPointCount(allSystemsData.count)})` : ''} ⚗
           </label>
           {showAllSystems && allSystemsData && (
             <div style={{ paddingLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>

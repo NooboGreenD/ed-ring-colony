@@ -188,21 +188,63 @@ export const POINTS_BYTES_PER_POINT = 29;
  *
  * The catalog is not 1.3M systems — Spansh's `systems.json.gz` (5.9 GiB) holds
  * the whole explored galaxy, ~2×10⁸ systems (EDAstro counts 203.6M). One point
- * per system would be ~5.5 GiB in this format: it would not fit the 50 MB
- * `galaxy-data` bucket, and three.js could not raycast it anyway. The cloud is
- * therefore a uniform sample: {@link PointsBuilder} keeps every `stride`-th
- * system and the sample size is reported in `galaxy_systems_meta`.
+ * per system would be ~5.5 GiB in this format, so the cloud is a uniform
+ * sample: {@link PointsBuilder} keeps every `stride`-th system and the sample
+ * size is reported in `galaxy_systems_meta`.
  *
- * 1.2M points ≈ 35 MB — inside the bucket limit and renderable.
+ * The number below is the largest cloud that survives every step of the way,
+ * measured rather than guessed (2026-10-08, `galaxy-points-scale.test.mjs`
+ * pins the arithmetic):
+ *
+ *  - **transfer** — one file per browser, immutable, so it is downloaded once
+ *    and cached: `2,000,000 × 29 B + 12 B` = 58 МБ;
+ *  - **tab memory** — the file is kept as an `ArrayBuffer` and the layer adds
+ *    map-frame positions (12 B/pt) and colors (12 B/pt) on top, plus the
+ *    picking grid (≈14 B/pt, `galaxyPointsPick.ts`): ≈ 67 B/pt ≈ 135 МБ;
+ *  - **GPU** — one draw call of N point sprites; a few million is free, the
+ *    vertex buffers duplicate 25 B/pt;
+ *  - **bucket** — `galaxy-data` accepts 64 МБ (migration
+ *    `20261009000000_galaxy_points_scale.sql`) and the build clamps itself to
+ *    whatever the bucket actually allows, so a deployment that never ran the
+ *    migration still publishes (1.81M points at the old 50 МБ limit) instead of
+ *    failing with a 413.
+ *
+ * `POINTS_FILE_BUDGET` is the hard ceiling of that list: raising
+ * `GALAXY_POINTS_MAX` above it is refused, because the next consumer is a phone
+ * on a mobile connection.
  */
-export const POINTS_MAX_DEFAULT = 1_200_000;
+export const POINTS_MAX_DEFAULT = 2_000_000;
 
-/** `GALAXY_POINTS_MAX` overrides the cloud size; `0` disables sampling. */
+/** Largest cloud we are willing to hand a browser (bytes of `edgs-v1`). */
+export const POINTS_FILE_BUDGET = 60 * 1024 * 1024;
+
+/** Points fitting in `bytes` of the `edgs-v1` format (0 when nothing fits). */
+export function pointsForBytes(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes <= POINTS_HEADER_SIZE) return 0;
+  return Math.max(0, Math.floor((bytes - POINTS_HEADER_SIZE) / POINTS_BYTES_PER_POINT));
+}
+
+/** Bytes of the `edgs-v1` file holding `count` points. */
+export function bytesForPoints(count: number): number {
+  return POINTS_HEADER_SIZE + Math.max(0, count) * POINTS_BYTES_PER_POINT;
+}
+
+/** Absolute ceiling implied by {@link POINTS_FILE_BUDGET}. */
+export const POINTS_MAX_LIMIT = pointsForBytes(POINTS_FILE_BUDGET);
+
+/**
+ * `GALAXY_POINTS_MAX` overrides the cloud size; `0` disables sampling
+ * (one point per system — do not do that on a 2×10⁸ catalog).
+ * Values above {@link POINTS_MAX_LIMIT} are clamped, not rejected: a typo in
+ * `.env` must not turn the map layer into a 600 МБ download.
+ */
 export function galaxyPointsMax(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.GALAXY_POINTS_MAX?.trim();
   if (!raw) return POINTS_MAX_DEFAULT;
   const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : POINTS_MAX_DEFAULT;
+  if (!Number.isFinite(value) || value < 0) return POINTS_MAX_DEFAULT;
+  if (value === 0) return 0;
+  return Math.min(POINTS_MAX_LIMIT, Math.floor(value));
 }
 
 /** Stride that keeps at most `max` points out of `total` rows (1 = keep all). */
@@ -237,10 +279,21 @@ export interface GalaxySystemPoint {
  * Incremental builder: feed rows in `ORDER BY id` without holding them all.
  * Grows on demand.
  *
- * `maxPoints > 0` bounds memory for a full-galaxy catalog: when the buffer is
- * full the builder drops every second stored point and doubles `sampleStride`,
- * so the result is a uniform sample of everything seen — not the first N
- * systems, which the dump order would cluster in one part of the galaxy.
+ * `maxPoints > 0` bounds memory for a full-galaxy catalog. The builder then
+ * keeps a **uniform** sample instead of the first N systems (dump order
+ * clusters, so "the first N" would light up one corner of the galaxy): rows are
+ * accepted every `stride`-th, and when the buffer is full the stride doubles and
+ * every second stored point is dropped. Halving an "every `stride`-th" sample
+ * gives exactly an "every `2·stride`-th" one, so the sample stays uniform over
+ * everything seen so far, at any size of the source table.
+ *
+ * Doubling only keeps up while the stream is unknown; it converges to
+ * `stride ≈ seen/maxPoints`, i.e. to between a half and a full buffer of
+ * points. When the caller already knows how many rows the table holds it passes
+ * that `stride` to the constructor and feeds only the sampled rows
+ * ({@link addSampled}) — then the cloud fills the buffer exactly and the
+ * database skips the other rows itself (a `mod(id, stride)` read of 2·10⁸ rows
+ * costs minutes, a full read of them costs an hour).
  */
 export class PointsBuilder {
   private positions: Float32Array;
@@ -248,32 +301,56 @@ export class PointsBuilder {
   private id64Hi: Uint32Array;
   private id64Lo: Uint32Array;
   private count = 0;
-  private stride = 1;
+  /** Source rows offered to the builder (stored or skipped). */
+  private seen = 0;
+  /** Every `stride`-th source row is stored. */
+  private stride: number;
+  /** Points the typed arrays can hold right now (grows to `maxPoints`). */
+  private capacity: number;
 
   /** Point cap; 0 keeps one point per system. Not a parameter property: Node's
    *  type stripping (how the tests and the CLI load these modules) rejects them. */
   private readonly maxPoints: number;
 
-  constructor(initialCapacity = 1_000_000, maxPoints = 0) {
+  constructor(initialCapacity = 1_000_000, maxPoints = 0, stride = 1) {
     this.maxPoints = maxPoints;
-    const capacity = maxPoints > 0 ? Math.min(initialCapacity, maxPoints) : initialCapacity;
-    this.positions = new Float32Array(Math.max(1, capacity) * 3);
-    this.starTypes = new Uint8Array(Math.max(1, capacity));
-    this.id64Hi = new Uint32Array(Math.max(1, capacity));
-    this.id64Lo = new Uint32Array(Math.max(1, capacity));
+    // The cap bounds the cloud; the allocation only has to be big enough for
+    // what the caller expects and then grows. Sizing the buffer at
+    // `initialCapacity` alone was the bug that made the admin log report
+    // "969,102 точек" for a 2,000,000-point ceiling: the buffer overflowed and
+    // thinned long before the catalog was exhausted.
+    this.stride = Number.isFinite(stride) && stride > 1 ? Math.floor(stride) : 1;
+    this.capacity = Math.max(1, Math.floor(maxPoints > 0 ? Math.min(initialCapacity, maxPoints) : initialCapacity));
+    this.positions = new Float32Array(this.capacity * 3);
+    this.starTypes = new Uint8Array(this.capacity);
+    this.id64Hi = new Uint32Array(this.capacity);
+    this.id64Lo = new Uint32Array(this.capacity);
   }
 
   get size(): number {
     return this.count;
   }
 
-  /** How many source rows each stored point represents (1 = no sampling). */
+  /** Source rows fed to the builder (with a sampled read: the table's rows). */
+  get sourceRows(): number {
+    return this.seen;
+  }
+
+  /**
+   * Source rows per stored point (1 = no sampling).
+   *
+   * The honest ratio of what was read to what survived — never the internal
+   * doubling counter, which on a 2·10⁸-row table would be reported as
+   * "one point per 3.5e100 rows" (that was the old behaviour: the admin log
+   * showed a float in exponential notation instead of a step).
+   */
   get sampleStride(): number {
-    return this.stride;
+    if (this.count <= 0) return this.stride;
+    return Math.max(1, Math.round(this.seen / this.count));
   }
 
   get sampled(): boolean {
-    return this.stride > 1;
+    return this.seen > this.count;
   }
 
   /** Drop every second stored point; amortised O(n) over the whole stream. */
@@ -290,28 +367,42 @@ export class PointsBuilder {
       this.id64Lo[i] = this.id64Lo[from];
     }
     this.count = keep;
+    // Skipped rows and kept ones must stay in step, or the sample stops being
+    // uniform (halving "every k-th row" is exactly "every 2k-th row").
     this.stride *= 2;
   }
 
-  private grow(): void {
-    const capacity = Math.max(this.positions.length / 3 * 2, 1_000_000);
-    const next = new Float32Array(capacity * 3);
-    next.set(this.positions.subarray(0, this.count * 3));
-    this.positions = next;
-    const starTypes = new Uint8Array(capacity);
+  private resize(capacity: number): void {
+    const next = Math.max(capacity, this.count + 1);
+    const positions = new Float32Array(next * 3);
+    positions.set(this.positions.subarray(0, this.count * 3));
+    this.positions = positions;
+    const starTypes = new Uint8Array(next);
     starTypes.set(this.starTypes.subarray(0, this.count));
     this.starTypes = starTypes;
-    const hi = new Uint32Array(capacity);
+    const hi = new Uint32Array(next);
     hi.set(this.id64Hi.subarray(0, this.count));
     this.id64Hi = hi;
-    const lo = new Uint32Array(capacity);
+    const lo = new Uint32Array(next);
     lo.set(this.id64Lo.subarray(0, this.count));
     this.id64Lo = lo;
+    this.capacity = next;
   }
 
-  add(row: GalaxySystemPoint): void {
-    if (this.maxPoints > 0 && this.count >= this.maxPoints) this.compact();
-    else if (this.count >= this.positions.length / 3) this.grow();
+  /** Buffer full: grow towards the cap, thin only when the cap is reached. */
+  private makeRoom(): void {
+    if (this.maxPoints > 0 && this.capacity < this.maxPoints) {
+      this.resize(Math.min(this.maxPoints, Math.max(this.capacity * 2, 1_000_000)));
+      return;
+    }
+    if (this.maxPoints > 0) {
+      this.compact();
+      return;
+    }
+    this.resize(Math.max(this.capacity * 2, 1_000_000));
+  }
+
+  private store(row: GalaxySystemPoint): void {
     const i = this.count++;
     this.positions[i * 3] = row.x;
     this.positions[i * 3 + 1] = row.y;
@@ -326,6 +417,30 @@ export class PointsBuilder {
     const U32_MASK = BigInt(4294967295);
     this.id64Hi[i] = Number((value >> BigInt(32)) & U32_MASK);
     this.id64Lo[i] = Number(value & U32_MASK);
+  }
+
+  /**
+   * One row of the source table, in table order.
+   *
+   * @returns true when the row was stored (false = skipped by the sampling).
+   */
+  add(row: GalaxySystemPoint): boolean {
+    const at = this.seen++;
+    if (this.maxPoints > 0 && this.stride > 1 && at % this.stride !== 0) return false;
+    if (this.count >= this.capacity) this.makeRoom();
+    this.store(row);
+    return true;
+  }
+
+  /**
+   * One row of an already sampled read (the database applied the stride).
+   * `seen` advances by the stride, so {@link sampleStride} and the row count
+   * still describe the whole table, not the sample.
+   */
+  addSampled(row: GalaxySystemPoint): void {
+    this.seen += this.stride;
+    if (this.count >= this.capacity) this.makeRoom();
+    this.store(row);
   }
 
   build(): ArrayBuffer {
