@@ -376,7 +376,7 @@ ed-ring-colony/
 - `GET /api/galaxy/systems/search?q=…` — Поиск по всем системам галактики
 - `GET /api/galaxy/systems/by-name?name=…` — Система по имени
 - `GET /api/galaxy/systems/:id64` — Система по Spansh ID64
-- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты (503 + подсказка, пока каталог пуст)
+- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты: кэш на диске данных → storage → сборка из таблицы (503 + подсказка, пока каталог пуст)
 - `GET|POST /api/admin/galaxy` — Импорт каталога из админки (роль `admin`)
 - `GET|POST /api/cron/galaxy-import` — Импорт каталога по `CRON_SECRET`
 

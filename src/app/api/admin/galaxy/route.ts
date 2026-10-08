@@ -11,10 +11,13 @@ import {
   checkGalaxyDbConnection,
   getGalaxyImportStatus,
   getGalaxyPointsBuildState,
+  pointsCacheStatus,
+  resolvePointsBudget,
   planGalaxyImport,
   startGalaxyDownload,
   startGalaxyImport,
   startGalaxyPointsBuild,
+  startGalaxyPointsPublish,
   startGalaxyUnpack,
 } from '@/lib/galaxyImportJob';
 
@@ -47,12 +50,22 @@ const headers = { 'Cache-Control': 'no-store' };
  *  - `build-points`   — пересобрать облако точек для слоя карты из уже
  *                       импортированной таблицы и положить его в хранилище.
  *                       Идёт фоном; прогресс — в `points_build` статуса.
+ *                       Необязательный `max_points` — потолок количества (см.
+ *                       `galaxyPointsMax`: берётся минимум из него, лимита
+ *                       файла и лимита бакета);
+ *  - `publish-points` — залить в хранилище уже собранный файл из локального
+ *                       кэша, перечитывать таблицу не нужно. Это ответ на
+ *                       разовый сбой storage («Service Unavailable»): облако
+ *                       уже лежит на диске данных, карта его отдаёт.
  */
 export async function GET(req: Request) {
   try {
     const auth = await requireAdmin(req);
     if ('response' in auth) return auth.response;
     const status = await getGalaxyImportStatus();
+    // Один запрос к метаданным на весь ответ панели: из чего сейчас состоит
+    // потолок облака точек (лимит бакета или бюджет файла).
+    const budget = await resolvePointsBudget().catch(() => null);
     return NextResponse.json(
       {
         success: true,
@@ -69,6 +82,19 @@ export async function GET(req: Request) {
         })),
         ...status,
         points_build: getGalaxyPointsBuildState(),
+        // Облако, которого ещё нет в storage, но уже лежит на диске данных:
+        // панель показывает это отдельно, а не как «сборка не удалась».
+        points_cache: pointsCacheStatus(),
+        // Сколько точек позволит текущий лимит бакета — чтобы поле «максимум»
+        // в форме не выглядело произвольным.
+        points_budget: budget
+          ? {
+              max_points: budget.maxPoints,
+              budget_bytes: budget.budgetBytes,
+              bucket_bytes: budget.bucketBytes,
+              limited_by_budget: budget.limitedByBudget,
+            }
+          : null,
       },
       { headers },
     );
@@ -168,7 +194,20 @@ export async function POST(req: Request) {
     }
 
     if (action === 'build-points') {
-      const result = await startGalaxyPointsBuild();
+      // Потолок количества принимает только положительное число; всё остальное
+      // — «как настроено» (GALAXY_POINTS_MAX или лимит файла/бакета).
+      const maxPoints = Number(body.max_points);
+      const result = await startGalaxyPointsBuild({
+        maxPoints: Number.isFinite(maxPoints) && maxPoints > 0 ? Math.floor(maxPoints) : undefined,
+      });
+      return NextResponse.json(
+        { success: result.started, started: result.started, reason: result.reason ?? null, points_build: result.state },
+        { status: result.started ? 202 : 409, headers },
+      );
+    }
+
+    if (action === 'publish-points') {
+      const result = await startGalaxyPointsPublish();
       return NextResponse.json(
         { success: result.started, started: result.started, reason: result.reason ?? null, points_build: result.state },
         { status: result.started ? 202 : 409, headers },
@@ -193,7 +232,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error:
-            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup", "check-db" или "build-points"',
+            'Ожидается action: "start", "cancel", "download", "cancel-download", "unpack", "cancel-unpack", "plan", "cleanup", "check-db", "build-points" или "publish-points"',
         },
         { status: 400, headers },
       );

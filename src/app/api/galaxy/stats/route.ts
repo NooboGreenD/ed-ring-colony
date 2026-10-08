@@ -39,6 +39,12 @@ export async function GET() {
         uploaded: pointsUploaded,
         count: stats?.points_count ?? null,
         bytes: stats?.points_bytes ?? null,
+        /** Source rows per point in the published cloud (1 = every system). */
+        stride: stats?.points_stride ?? null,
+        /** True when the cloud is a uniform sample of the catalog. */
+        sampled: stats?.points_sampled === true,
+        /** Where the file lives: storage (all processes) or the data disk only. */
+        published: stats?.points_published ?? null,
       },
       import: status && state
         ? {
@@ -63,6 +69,7 @@ export async function GET() {
             points_count: state.points_count,
             points_bytes: state.points_bytes,
             points_uploaded: state.points_uploaded,
+            points_published: state.points_published,
             points_error: state.points_error,
             error: state.error,
             attempts: state.attempts,

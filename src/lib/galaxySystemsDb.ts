@@ -42,6 +42,19 @@ export interface GalaxyStats {
   points_stride?: number | null;
   /** True when the cloud is a sample, not the whole catalog. */
   points_sampled?: boolean;
+  /**
+   * Where the cloud itself was published: `storage` (the bucket, canonical),
+   * `disk` (the data directory — the map can be served, other containers not
+   * necessarily) or `none` (nowhere: the build failed outright). Missing on
+   * stats written before this existed.
+   */
+  points_published?: {
+    target?: 'storage' | 'disk' | 'none';
+    uploaded?: boolean;
+    path?: string | null;
+    at?: string;
+    error?: string | null;
+  } | null;
   /** True when the last import used --limit and must not replace live EDSM scans. */
   partial?: boolean;
 }
@@ -77,6 +90,7 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
       points_count?: number;
       points_stride?: number;
       points_sampled?: boolean;
+      points_published?: GalaxyStats['points_published'];
       partial?: boolean;
     } | null;
     if (v && typeof v.systems_count === 'number') {
@@ -89,6 +103,7 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
         points_count: typeof v.points_count === 'number' ? v.points_count : null,
         points_stride: typeof v.points_stride === 'number' ? v.points_stride : null,
         points_sampled: v.points_sampled === true,
+        points_published: v.points_published ?? null,
         partial: v.partial === true,
       };
     }
@@ -104,7 +119,9 @@ export async function getGalaxyStats(): Promise<GalaxyStats | null> {
  * every process prefers it over a local file or a fresh table scan. Merged into
  * the existing stats document: an import must not lose the catalog counters.
  */
-export async function markPointsUploaded(points: { count: number; bytes: number }): Promise<void> {
+export async function markPointsUploaded(
+  points: { count: number; bytes: number; path?: string | null; error?: string | null },
+): Promise<void> {
   const { data } = await supabaseAdmin
     .from('galaxy_systems_meta')
     .select('value')
@@ -117,6 +134,18 @@ export async function markPointsUploaded(points: { count: number; bytes: number 
     points_uploaded: true,
     points_count: points.count,
     points_bytes: points.bytes,
+    // Where the file came from and when, so the admin panel can say "published
+    // 4 h ago from the cache" instead of implying a fresh Storage upload.
+    points_published: {
+      ...(previous.points_published && typeof previous.points_published === 'object'
+        ? (previous.points_published as Record<string, unknown>)
+        : {}),
+      target: 'storage',
+      uploaded: true,
+      path: points.path ?? null,
+      at: new Date().toISOString(),
+      error: points.error ?? null,
+    },
   };
   const { error } = await supabaseAdmin
     .from('galaxy_systems_meta')

@@ -210,6 +210,11 @@ set_env "$E" SITE_URL                 "$SITE_URL"
 set_env "$E" API_EXTERNAL_URL         "$SUPA_URL"
 set_env "$E" SUPABASE_PUBLIC_URL      "$SUPA_URL"
 set_env "$E" ADDITIONAL_REDIRECT_URLS "$SITE_URL/api/auth/callback,$SITE_URL/auth/email"
+# Global Storage cap. The effective limit is min(FILE_SIZE_LIMIT, bucket
+# file_size_limit): the map point cloud lives in `galaxy-data` and may be up
+# to 64 MiB, so the default 52428800 (50 MiB) would reject it with a
+# permanent 413 — and a size refusal is deliberately never retried.
+set_env "$E" FILE_SIZE_LIMIT           "73400320"
 # Production email ownership must be verified. Finish SMTP/templates before
 # enabling new signups; see POST-MIGRATION.md (never auto-confirm mailboxes).
 set_env "$E" ENABLE_EMAIL_AUTOCONFIRM "false"
@@ -323,7 +328,8 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 3600s;
     }
-    client_max_body_size 50m;
+    # Загрузки в Storage через Kong: вложения и PUT облака точек карты (до 64 МиБ).
+    client_max_body_size 80m;
 }
 EOF
 fi

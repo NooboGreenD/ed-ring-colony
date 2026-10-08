@@ -46,10 +46,12 @@ import {
   downloadDump,
   galaxyDownloadSegments,
   pgLiteral,
+  pointsFileLimit,
   postgrestWriteWarning,
   writeGalaxyRowsPg,
   writeGalaxyRowsSupabase,
 } from '../src/lib/galaxyImport.ts';
+import { uploadPointsToStorage } from '../src/lib/galaxyPointsPublish.ts';
 // Быстрый путь записи: COPY в UNLOGGED staging + merge. См. GALAXY-IMPORT-SPEED.md.
 import {
   COPY_CHUNK_ROWS,
@@ -257,6 +259,19 @@ class PgWriter {
 
   get deferred() {
     return this.deferredState.deferred.length;
+  }
+
+  /** `file_size_limit` of the points bucket (null when unknown). */
+  async bucketLimit() {
+    try {
+      const { rows } = await this.pool.query(
+        `SELECT file_size_limit FROM storage.buckets WHERE id = '${POINTS_STORAGE_BUCKET}'`,
+      );
+      const raw = Number(rows?.[0]?.file_size_limit);
+      return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+    } catch {
+      return null;
+    }
   }
 
   async begin() {
@@ -480,6 +495,19 @@ class SupabaseWriter {
     return this.deferredState.deferred.length;
   }
 
+  /** `file_size_limit` of the points bucket (null when unknown). */
+  async bucketLimit() {
+    try {
+      const { rows } = await this.pool.query(
+        `SELECT file_size_limit FROM storage.buckets WHERE id = '${POINTS_STORAGE_BUCKET}'`,
+      );
+      const raw = Number(rows?.[0]?.file_size_limit);
+      return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
   async begin() {
     this.log('Note: --truncate is not supported in supabase-js mode (run it via a direct DB session)');
   }
@@ -634,7 +662,7 @@ async function runImport(args, db, log) {
     if (args.limit > 0) {
       log('Partial import: not uploading the points file (it would replace the full cloud)');
     } else if (!args.dryRun) {
-      pointsUploaded = await uploadPoints(args.pointsFile, log);
+      pointsUploaded = await uploadPoints(args.pointsFile, log, await bucketLimitBytes(db));
     }
   }
 
@@ -680,7 +708,19 @@ async function runImport(args, db, log) {
   return { processed, invalid, points: pointsInfo };
 }
 
-async function uploadPoints(filePath, log) {
+/** The ceiling of this run: the real bucket limit when we could read it. */
+async function bucketLimitBytes(db) {
+  if (!db || typeof db.bucketLimit !== 'function') return null;
+  return await db.bucketLimit().catch(() => null);
+}
+
+/**
+ * Upload the cloud with the shared `upload` wrapper: transient storage answers
+ * (503 while the container restarts) are retried, a size refusal is not — and
+ * the size that is refused is the bucket's own limit, not a number copied into
+ * this script.
+ */
+async function uploadPoints(filePath, log, bucketBytes = null) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -688,21 +728,19 @@ async function uploadPoints(filePath, log) {
     return false;
   }
   const bytes = fs.readFileSync(filePath);
-  if (bytes.length > 50 * 1024 * 1024) {
-    log(`WARNING: points file is ${bytes.length} bytes, over the 50 MB bucket limit — not uploaded`);
-    return false;
-  }
+  const limitBytes = pointsFileLimit(process.env, bucketBytes);
   const { createClient } = await import('@supabase/supabase-js');
   const client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-  const { error } = await client.storage.from(POINTS_STORAGE_BUCKET).upload(POINTS_STORAGE_OBJECT, bytes, {
-    contentType: 'application/octet-stream',
-    upsert: true,
-  });
-  if (error) {
-    log(`WARNING: points upload failed: ${error.message}`);
+  const result = await uploadPointsToStorage(bytes, { admin: client, limitBytes });
+  if (!result.uploaded) {
+    log(`WARNING: points upload failed after ${result.attempts} attempt(s): ${result.error}`);
+    log('The file stays on disk — /api/galaxy/all-systems serves it from public/data or GALAXY_POINTS_DIR');
     return false;
   }
-  log(`Points file uploaded to storage ${POINTS_STORAGE_BUCKET}/${POINTS_STORAGE_OBJECT}`);
+  log(
+    `Points file uploaded to storage ${POINTS_STORAGE_BUCKET}/${POINTS_STORAGE_OBJECT}` +
+      (result.attempts > 1 ? ` (after ${result.attempts} attempts)` : ''),
+  );
   return true;
 }
 

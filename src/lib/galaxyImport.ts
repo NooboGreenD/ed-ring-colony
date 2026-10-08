@@ -34,10 +34,15 @@ import { createGunzip } from 'node:zlib';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
+  POINTS_FILE_BUDGET,
+  POINTS_HEADER_SIZE,
   PointsBuilder,
   POINTS_STORAGE_BUCKET,
   POINTS_STORAGE_OBJECT,
+  bytesForPoints,
   galaxyPointsMax,
+  pointSampleStride,
+  pointsForBytes,
   type GalaxySystemPoint,
   type StarClass,
 } from './galaxySystems.ts';
@@ -761,8 +766,103 @@ export async function downloadDump(options: SmartDownloadOptions): Promise<Smart
 }
 
 export const GALAXY_TABLE = 'galaxy_systems';
-/** Bucket limit set by migration 20260924000000_galaxy_systems_finish.sql. */
-export const POINTS_UPLOAD_LIMIT = 50 * 1024 * 1024;
+/**
+ * Default `file_size_limit` of the `galaxy-data` bucket, i.e. how big a point
+ * cloud may be (migration 20261009000000_galaxy_points_scale.sql raised it from
+ * 50 MiB; the 50 MiB of `20260924000000_galaxy_systems_finish.sql` is still the
+ * number on a database that has not been migrated, and the build finds that out
+ * rather than assuming it — see `readPointsBucketLimit`).
+ */
+export const POINTS_UPLOAD_LIMIT = 64 * 1024 * 1024;
+/**
+ * `file_size_limit` of a `galaxy-data` bucket as created by
+ * 20260924000000_galaxy_systems_finish.sql. Assumed when nobody could tell us
+ * the real one (a PostgREST-only web process cannot read `storage.buckets`),
+ * because building a cloud bigger than the bucket ends in a rejected upload and
+ * a map with no points.
+ */
+export const POINTS_BUCKET_LIMIT_ASSUMED = 50 * 1024 * 1024;
+
+/**
+ * The ceiling a cloud must respect: the smaller of the bucket limit and the
+ * budget we are willing to hand a browser (`POINTS_FILE_BUDGET`).
+ */
+export function pointsFileLimit(env: NodeJS.ProcessEnv = process.env, bucketBytes?: number | null): number {
+  const raw = Number(env.GALAXY_POINTS_BUCKET_BYTES?.trim());
+  const bucket = Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : Math.max(0, Math.floor(bucketBytes ?? POINTS_BUCKET_LIMIT_ASSUMED));
+  return Math.max(0, Math.min(bucket || POINTS_BUCKET_LIMIT_ASSUMED, POINTS_FILE_BUDGET));
+}
+
+export interface PointCloudPlan {
+  /** Points to keep (`0` = one per system, no sampling at all). */
+  maxPoints: number;
+  /** Bytes the file may occupy (bucket limit ∩ browser budget). */
+  budgetBytes: number;
+  /** Rows per point of the sampled read (1 = every system is a point). */
+  stride: number;
+  /** Points fitting into {@link budgetBytes} — the ceiling itself. */
+  ceilingPoints: number;
+  /** True when the bucket/budget, not `GALAXY_POINTS_MAX`, set the size. */
+  limitedByBudget: boolean;
+}
+
+/**
+ * How big the cloud may be — decided from what is actually available rather
+ * than from a constant copied into the code.
+ *
+ * The wanted cap (`GALAXY_POINTS_MAX`) is clamped to the file budget, and when
+ * the catalog is small enough the sampling is switched off entirely: an
+ * operator who imported a million systems gets a million points, not a thinned
+ * preview of them. The stride is then what the database applies to its own
+ * read, so a 2·10⁸-row catalog costs one sampled pass instead of a full one.
+ */
+export function planPointCloud(
+  totalRows: number,
+  options: { maxPoints?: number; budgetBytes?: number } = {},
+): PointCloudPlan {
+  const budgetBytes = Math.max(POINTS_HEADER_SIZE, Math.floor(options.budgetBytes ?? pointsFileLimit()));
+  const ceilingPoints = pointsForBytes(budgetBytes);
+  const wanted = Math.max(0, Math.floor(options.maxPoints ?? galaxyPointsMax()));
+  const maxPoints = wanted === 0 ? 0 : Math.max(1, Math.min(wanted, ceilingPoints));
+  const rows = Number.isFinite(totalRows) && totalRows > 0 ? Math.floor(totalRows) : 0;
+  return {
+    maxPoints,
+    budgetBytes,
+    ceilingPoints,
+    stride: pointSampleStride(rows, maxPoints),
+    limitedByBudget: wanted > ceilingPoints,
+  };
+}
+
+/**
+ * Real `file_size_limit` of the `galaxy-data` bucket, so the build fills the
+ * bucket it has instead of failing with a 413 against the one it got.
+ * `null` = unknown (no direct Postgres, or a database without the schema).
+ */
+export async function readPointsBucketLimit(connectionString: string, pg?: PgModule): Promise<number | null> {
+  let client: PgClientLike | null = null;
+  try {
+    client = await connectPgClient({
+      connectionString,
+      pg: pg ?? (await loadPg()),
+      attempts: 1,
+      connectionTimeoutMillis: 10_000,
+      statementTimeoutMs: 10_000,
+    });
+    const result = await client.query(
+      `SELECT file_size_limit FROM storage.buckets WHERE id = '${POINTS_STORAGE_BUCKET}'`,
+    );
+    const raw = Number(result.rows?.[0]?.file_size_limit);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null;
+  } catch {
+    return null;
+  } finally {
+    await client?.end().catch(() => undefined);
+  }
+}
+
 export const GALAXY_META_TABLE = 'galaxy_systems_meta';
 
 /** Rows per statement. 2000 × 13 columns stays far below any parameter/size cap. */
@@ -810,8 +910,30 @@ export interface GalaxyRowWriter {
   retryDeferred(): Promise<void>;
   /** Authoritative row count of `galaxy_systems`. */
   countRows(): Promise<number>;
-  /** Read the whole table back as map points, `ORDER BY id`. */
-  readPoints(onPoint: (point: GalaxySystemPoint) => void): Promise<number>;
+  /**
+   * Read the table back as map points, `ORDER BY id`.
+   *
+   * `stride > 1` asks the reader to hand over every `stride`-th row only — the
+   * point cloud is a uniform sample of the catalog, and reading 2·10⁸ rows to
+   * keep 2·10⁶ of them is what made a rebuild take an hour. A reader applies
+   * the stride only when it says it can ({@link supportsSampledRead});
+   * otherwise the caller skips the rows itself. Both paths are correct, they
+   * only differ in how many rows cross the wire.
+   *
+   * @returns rows handed to the callback (not necessarily rows of the table).
+   */
+  readPoints(onPoint: (point: GalaxySystemPoint) => void, options?: { stride?: number }): Promise<number>;
+  /**
+   * Whether {@link readPoints} applies a sampling stride inside the database.
+   * Absent or false = "I hand over every row; sample on your side".
+   */
+  supportsSampledRead?(stride: number): Promise<boolean>;
+  /**
+   * Row count good enough to size a sample (direct Postgres: `reltuples`, so a
+   * cold map does not wait on `COUNT(*)` over 2·10⁸ rows). `countRows()` stays
+   * the authoritative one, used whenever the number is published.
+   */
+  estimateRows?(): Promise<number>;
   /** Refresh planner statistics after a bulk load (direct Postgres only). */
   analyze?(): Promise<void>;
   /** Immediately interrupt an in-flight database query (used by Stop). */
@@ -819,7 +941,25 @@ export interface GalaxyRowWriter {
   close(): Promise<void>;
 }
 
+/**
+ * Uniform sample of the catalog as SQL: every `stride`-th row, in table order.
+ *
+ * `id` is the serial primary key, so `mod(id, k)` is a deterministic,
+ * reproducible sample — two builds of the same table agree byte for byte, and
+ * the Postgres planner walks the primary key instead of shipping 2·10⁸ rows to
+ * Node, which is what a rebuild used to cost. The stride is a number this file
+ * computed (`Math.floor` of a division), never user input, so it is written
+ * into the statement instead of being parameterised: the streaming
+ * `pg.Query(text)` the writer uses has no placeholders.
+ */
+export function pointsSampleSql(table: string, stride: number): string {
+  const k = Number.isFinite(stride) ? Math.max(1, Math.floor(stride)) : 1;
+  const where = k > 1 ? `WHERE mod(id, ${k}) = 0` : '';
+  return `SELECT id64, x, y, z, star_type FROM ${table} ${where} ORDER BY id`.replace(/\s+/g, ' ').trim();
+}
+
 export function pgLiteral(value: unknown): string {
+
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -1465,6 +1605,11 @@ export async function createPgWriter(
     return count;
   };
 
+  const countTableRows = async (): Promise<number> => {
+    const result = await client.query(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`);
+    return Number(result.rows?.[0]?.n ?? 0);
+  };
+
   return {
     backend: 'pg',
     get written() {
@@ -1492,12 +1637,12 @@ export async function createPgWriter(
       if (deferredState.deferred.length > 0) throw deferredRowsFailure(deferredState.deferred);
     },
     async countRows() {
-      const result = await client.query(`SELECT COUNT(*)::bigint AS n FROM ${GALAXY_TABLE}`);
-      return Number(result.rows[0]?.n ?? 0);
+      return await countTableRows();
     },
-    async readPoints(onPoint) {
+    async readPoints(onPoint, options) {
+      const stride = Math.max(1, Math.floor(options?.stride ?? 1));
       let count = 0;
-      await streamQuery(`SELECT id64, x, y, z, star_type FROM ${GALAXY_TABLE} ORDER BY id`, (row) => {
+      await streamQuery(pointsSampleSql(GALAXY_TABLE, stride), (row) => {
         count++;
         onPoint({
           x: Number(row.x),
@@ -1508,6 +1653,21 @@ export async function createPgWriter(
         });
       });
       return count;
+    },
+    // The sample runs in Postgres: a rebuild reads the points it keeps and
+    // nothing else.
+    async supportsSampledRead() {
+      return true;
+    },
+    async estimateRows() {
+      // `reltuples` is what ANALYZE left behind (the import ANALYZEs after
+      // every pass); ±few % only changes the sample step, never the cap.
+      const result = await client.query(
+        `SELECT (SELECT reltuples::bigint FROM pg_class WHERE oid = '${GALAXY_TABLE}'::regclass) AS est`,
+      );
+      const est = Number(result.rows?.[0]?.est ?? 0);
+      if (Number.isFinite(est) && est > 0) return Math.floor(est);
+      return await countTableRows();
     },
     async analyze() {
       // After 10⁸ upserts the planner's row estimates are stale: without this
@@ -1550,6 +1710,68 @@ export function createSupabaseWriter(
     return count;
   };
 
+  type PointsPageRow = { id: number; id64: string; x: number; y: number; z: number; star_type: string | null };
+
+  const pointOf = (row: PointsPageRow): GalaxySystemPoint => ({
+    x: Number(row.x),
+    y: Number(row.y),
+    z: Number(row.z),
+    id64: String(row.id64 ?? ''),
+    starType: starTypeOf(row.star_type),
+  });
+
+  const countTableRows = async (): Promise<number> => {
+    const { count, error } = await client
+      .from(GALAXY_TABLE)
+      .select('id', { count: 'exact', head: true });
+    if (error) throw new Error(`count failed: ${error.message}`);
+    return Number(count ?? written);
+  };
+
+  /**
+   * `galaxy_points_sample` (migration 20261009000000_galaxy_points_scale.sql)
+   * does `mod(id, stride)` inside Postgres. Without it a PostgREST-only install
+   * has to page through every row of the catalog — 40,000 requests for the whole
+   * galaxy — so the probe is cached, and any answer other than "the function is
+   * there" falls back to the plain scan rather than failing the build.
+   */
+  let sampledRead: boolean | null = null;
+  const sampledReadWorks = async (): Promise<boolean> => {
+    if (sampledRead !== null) return sampledRead;
+    try {
+      const { error } = await client.rpc(POINTS_SAMPLE_RPC, { after_id: 0, stride: 1, lim: 1 });
+      sampledRead = !error;
+    } catch {
+      sampledRead = false;
+    }
+    return sampledRead;
+  };
+
+  const readSampledPoints = async (
+    onPoint: (point: GalaxySystemPoint) => void,
+    stride: number,
+  ): Promise<number> => {
+    let count = 0;
+    let lastId = 0;
+    for (;;) {
+      const { data, error } = await client.rpc(POINTS_SAMPLE_RPC, {
+        after_id: lastId,
+        stride,
+        lim: POINTS_PAGE_SIZE,
+      });
+      if (error) throw new Error(`points sample page after id ${lastId} failed: ${error.message}`);
+      const pageRows = (data ?? []) as PointsPageRow[];
+      if (pageRows.length === 0) break;
+      for (const row of pageRows) {
+        count++;
+        onPoint(pointOf(row));
+      }
+      lastId = Number(pageRows[pageRows.length - 1].id);
+      if (pageRows.length < POINTS_PAGE_SIZE) break;
+    }
+    return count;
+  };
+
   return {
     backend: 'supabase',
     get written() {
@@ -1577,16 +1799,21 @@ export function createSupabaseWriter(
       if (deferredState.deferred.length > 0) throw deferredRowsFailure(deferredState.deferred);
     },
     async countRows() {
-      const { count, error } = await client
-        .from(GALAXY_TABLE)
-        .select('id', { count: 'exact', head: true });
-      if (error) throw new Error(`count failed: ${error.message}`);
-      return Number(count ?? written);
+      return await countTableRows();
     },
-    async readPoints(onPoint) {
+    async estimateRows() {
+      // PostgREST has no cheap row estimate: the head count is what there is.
+      return await countTableRows();
+    },
+    async supportsSampledRead(stride: number) {
+      return stride > 1 && (await sampledReadWorks());
+    },
+    async readPoints(onPoint, options) {
+      const stride = Math.max(1, Math.floor(options?.stride ?? 1));
+      if (stride > 1 && (await sampledReadWorks())) return await readSampledPoints(onPoint, stride);
       let count = 0;
       let lastId = 0;
-      let pageSize = 5000;
+      let pageSize = POINTS_PAGE_SIZE;
       for (;;) {
         const { data, error } = await client
           .from(GALAXY_TABLE)
@@ -1595,17 +1822,11 @@ export function createSupabaseWriter(
           .order('id', { ascending: true })
           .limit(pageSize);
         if (error) throw new Error(`points page after id ${lastId} failed: ${error.message}`);
-        const pageRows = (data ?? []) as Array<{ id: number; id64: string; x: number; y: number; z: number; star_type: string | null }>;
+        const pageRows = (data ?? []) as PointsPageRow[];
         if (pageRows.length === 0) break;
         for (const row of pageRows) {
           count++;
-          onPoint({
-            x: Number(row.x),
-            y: Number(row.y),
-            z: Number(row.z),
-            id64: String(row.id64 ?? ''),
-            starType: starTypeOf(row.star_type),
-          });
+          onPoint(pointOf(row));
         }
         lastId = Number(pageRows[pageRows.length - 1].id);
         if (pageRows.length < pageSize) {
@@ -1630,16 +1851,33 @@ export interface PointCloud {
   rows: number;
   /** Source rows per stored point (1 = the cloud is complete). */
   stride: number;
+  /** Points that were allowed (the cap the build actually respected). */
+  maxPoints: number;
+  /** True when the cloud had to sample the catalog. */
+  sampled: boolean;
 }
+
+/** PostgREST page size of a point-cloud read. */
+const POINTS_PAGE_SIZE = 5000;
+/** SQL function that samples `galaxy_systems` inside the database. */
+const POINTS_SAMPLE_RPC = 'galaxy_points_sample';
 
 /** Point cloud straight from Postgres (used when no file/storage object exists). */
 export async function readPointsFromPg(
   connectionString: string,
-  options: { pg?: PgModule; maxPoints?: number } = {},
+  options: {
+    pg?: PgModule;
+    /** Wanted cap (default `galaxyPointsMax()`; `0` disables sampling). */
+    maxPoints?: number;
+    /** File-size ceiling: the bucket limit ∩ the browser budget. */
+    budgetBytes?: number;
+    /** Row count to size the sample from (queried when absent). */
+    totalRows?: number;
+  } = {},
 ): Promise<PointCloud> {
   const writer = await createPgWriter(connectionString, { pg: options.pg });
   try {
-    return await collectPoints(writer, options.maxPoints ?? galaxyPointsMax());
+    return await collectPoints(writer, options);
   } finally {
     await writer.close();
   }
@@ -1648,7 +1886,7 @@ export async function readPointsFromPg(
 /** Point cloud over PostgREST, keyset-paged and verified against COUNT(*). */
 export async function readPointsFromSupabase(
   client: SupabaseClient,
-  options: { maxPoints?: number } = {},
+  options: { maxPoints?: number; budgetBytes?: number } = {},
 ): Promise<PointCloud> {
   const writer = createSupabaseWriter(client);
   const { count: total, error } = await client
@@ -1657,22 +1895,60 @@ export async function readPointsFromSupabase(
   if (error) throw new Error(`count failed: ${error.message}`);
   const expected = Number(total ?? 0);
   if (expected === 0) throw new Error(`${GALAXY_TABLE} is empty`);
-  const cloud = await collectPoints(writer, options.maxPoints ?? galaxyPointsMax());
+  const cloud = await collectPoints(writer, { ...options, totalRows: expected });
   // The old chunked builder was silently truncated by the API row cap. Refuse
   // to serve a partial cloud instead: the map would look complete but lie.
-  // Sampling is fine — every row was still read, only some were kept.
+  // Sampling is fine — every row was still read (or skipped by SQL), only some
+  // were kept.
   if (cloud.rows < expected) {
     throw new Error(`point cloud is truncated: ${cloud.rows} of ${expected} rows`);
   }
   return cloud;
 }
 
-async function collectPoints(writer: GalaxyRowWriter, maxPoints: number): Promise<PointCloud> {
-  const builder = new PointsBuilder(POINTS_CAPACITY, maxPoints);
-  const rows = await writer.readPoints((point) => builder.add(point));
+/**
+ * Read (sampled, when the reader can) and pack the cloud.
+ *
+ * The stride comes from the row count, so a catalog that fits into the cap is
+ * copied whole and a 2·10⁸-row one is thinned evenly — and the number reported
+ * as "шаг" is rows-per-point, never an internal counter.
+ */
+async function collectPoints(
+  writer: GalaxyRowWriter,
+  options: { maxPoints?: number; budgetBytes?: number; totalRows?: number } = {},
+): Promise<PointCloud> {
+  const known = Number.isFinite(options.totalRows) && (options.totalRows ?? 0) > 0
+    ? Math.floor(options.totalRows as number)
+    : await (writer.estimateRows ? writer.estimateRows() : writer.countRows());
+  const plan = planPointCloud(known, { maxPoints: options.maxPoints, budgetBytes: options.budgetBytes });
+  const builder = new PointsBuilder(POINTS_CAPACITY, plan.maxPoints, plan.stride);
+  // Two ways to sample, and the builder must know which one ran: the database
+  // (rows arrive already thinned, `addSampled` counts the skipped ones) or the
+  // caller (`add` sees every row and applies the stride itself).
+  const inSql = plan.stride > 1 && (await writer.supportsSampledRead?.(plan.stride)) === true;
+  const read = await writer.readPoints(
+    inSql ? (point) => builder.addSampled(point) : (point) => builder.add(point),
+    { stride: inSql ? plan.stride : 1 },
+  );
   if (builder.size === 0) throw new Error('no rows to build the point cloud from');
-  return { buffer: Buffer.from(builder.build()), count: builder.size, rows, stride: builder.sampleStride };
+  // An unsampled read that came back short is a truncated catalog (a row cap
+  // somewhere in the middle), and the map would silently show a partial galaxy.
+  // A sampled read cannot be checked this way: it is short by design.
+  if (!inSql && known > 0 && read < known) {
+    throw new Error(`point cloud is truncated: ${read} of ${known} rows`);
+  }
+  return {
+    buffer: Buffer.from(builder.build()),
+    count: builder.size,
+    // Rows the catalog holds. A sampled read only saw the sample, so the
+    // caller's count is the answer; an unsampled read counted them itself.
+    rows: inSql ? Math.max(known, builder.sourceRows) : read,
+    stride: builder.sampleStride,
+    maxPoints: plan.maxPoints,
+    sampled: builder.sampled,
+  };
 }
+
 
 // ────────────────────────── the pipeline ──────────────────────────
 
@@ -1771,6 +2047,11 @@ export interface FinalizePointCloudOptions {
   pointsSeen: number;
   systemsCount: number;
   maxPoints: number;
+  /**
+   * File ceiling for a rebuild from the table (bucket limit ∩ browser budget).
+   * Default `pointsFileLimit()`.
+   */
+  budgetBytes?: number;
   /** The pass covered the whole dump from its first record. */
   complete: boolean;
   log: (line: string) => void;
@@ -1813,19 +2094,21 @@ export async function finalizePointCloud(
       `в облако идёт равномерная выборка (лимит ${maxPoints.toLocaleString()} точек)`,
     );
   }
-  const rebuilt = new PointsBuilder(Math.max(systemsCount, 1024), maxPoints);
-  const read = await writer.readPoints((point) => rebuilt.add(point));
-  if (read !== systemsCount) {
-    throw new Error(`point cloud is truncated: ${read} of ${systemsCount} rows`);
-  }
-  if (rebuilt.sampled) {
-    log(`Облако точек: ${rebuilt.size.toLocaleString()} точек, каждая ${rebuilt.sampleStride}-я система`);
+  // Same code path as a standalone rebuild: the sample is taken by the database
+  // (`mod(id, stride)`), so a full-galaxy catalog costs one sampled read instead
+  // of streaming 2·10⁸ rows through Node, and `stride` stays a real number.
+  const cloud = await collectPoints(writer, { maxPoints, totalRows: systemsCount, budgetBytes: options.budgetBytes });
+  if (cloud.sampled) {
+    log(
+      `Облако точек: ${cloud.count.toLocaleString()} точек из ${cloud.rows.toLocaleString()} строк ` +
+      `(каждая ${cloud.stride}-я система)`,
+    );
   }
   return {
-    buffer: Buffer.from(rebuilt.build()),
-    count: rebuilt.size,
-    rows: read,
-    stride: rebuilt.sampleStride,
+    buffer: cloud.buffer,
+    count: cloud.count,
+    rows: cloud.rows,
+    stride: cloud.stride,
     rebuiltFromTable: true,
   };
 }

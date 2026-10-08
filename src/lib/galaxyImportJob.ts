@@ -13,9 +13,14 @@ import { existsSync, rmSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { catalogIsComplete, invalidateGalaxyStatsCache, type GalaxyStats, getGalaxyStats } from './galaxySystemsDb.ts';
 import {
-  POINTS_UPLOAD_LIMIT,
+  catalogIsComplete,
+  invalidateGalaxyStatsCache,
+  markPointsUploaded,
+  type GalaxyStats,
+  getGalaxyStats,
+} from './galaxySystemsDb.ts';
+import {
   createPgWriter,
   createSupabaseWriter,
   describeImportBackends,
@@ -26,7 +31,9 @@ import {
   galaxyDownloadSegments,
   galaxyImportFile,
   galaxyImportUrl,
+  pointsFileLimit,
   postgrestWriteWarning,
+  readPointsBucketLimit,
   readPointsFromPg,
   readPointsFromSupabase,
   runGalaxyImport,
@@ -69,7 +76,20 @@ import {
   type GalaxyStorageStatus,
 } from './galaxyArchiveStore.ts';
 import { FRESH_MS } from './galaxyImportSchedule.ts';
-import { POINTS_STORAGE_BUCKET, POINTS_STORAGE_OBJECT, galaxyPointsMax } from './galaxySystems.ts';
+import {
+  POINTS_BYTES_PER_POINT,
+  POINTS_HEADER_SIZE,
+  galaxyPointsMax,
+  pointsForBytes,
+} from './galaxySystems.ts';
+import {
+  pointsCacheDir,
+  pointsCacheInfo,
+  publishPointCloud,
+  readPointsCache,
+  type PointsPublishResult,
+  type PointsTarget,
+} from './galaxyPointsPublish.ts';
 import { connectPgClient, galaxyDbUrl, isPgConnectionError, pgConnectionTarget } from './pgModule.ts';
 // «timeout expired» от драйвера не отличает «имя не резолвится» от «не тот
 // адрес» и от «закрытый порт». Разбираем это отдельно — см. pgReachability.ts.
@@ -118,6 +138,8 @@ export interface GalaxyImportState {
   /** Source rows per point in the uploaded cloud (null/1 = complete cloud). */
   points_stride: number | null;
   points_uploaded: boolean;
+  /** `storage` — в бакете, `disk` — только на диске данных, `none` — нигде. */
+  points_published: PointsTarget | null;
   points_error: string | null;
   error: string | null;
   /** Consecutive failed attempts of the same import (scheduler backoff). */
@@ -159,6 +181,7 @@ export const EMPTY_IMPORT_STATE: GalaxyImportState = {
   points_bytes: null,
   points_stride: null,
   points_uploaded: false,
+  points_published: null,
   points_error: null,
   error: null,
   attempts: 0,
@@ -290,6 +313,12 @@ function nullableNum(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** Куда опубликовано облако; старое состояние без этого поля = «в бакете». */
+function readPointsTarget(value: unknown, uploaded = false): PointsTarget | null {
+  if (value === 'storage' || value === 'disk' || value === 'none') return value;
+  return uploaded ? 'storage' : value == null ? null : 'none';
+}
+
 /** Persisted JSON is untrusted input: anything missing falls back to a default. */
 export function parseImportState(value: unknown): GalaxyImportState {
   const raw = (value && typeof value === 'object' ? value : {}) as Partial<Record<keyof GalaxyImportState, unknown>>;
@@ -314,6 +343,7 @@ export function parseImportState(value: unknown): GalaxyImportState {
     points_bytes: nullableNum(raw.points_bytes),
     points_stride: nullableNum(raw.points_stride),
     points_uploaded: raw.points_uploaded === true,
+    points_published: readPointsTarget(raw.points_published, raw.points_uploaded === true),
     points_error: str(raw.points_error),
     error: str(raw.error),
     attempts: num(raw.attempts),
@@ -1177,43 +1207,77 @@ async function probeNetwork(
   }
 }
 
-async function uploadPoints(buffer: Buffer, log: (line: string) => void): Promise<{ uploaded: boolean; error: string | null }> {
-  if (buffer.length > POINTS_UPLOAD_LIMIT) {
-    const message = `файл точек ${formatBytes(buffer.length)} больше лимита бакета ${formatBytes(POINTS_UPLOAD_LIMIT)}`;
-    log(`WARNING: ${message} — не загружен`);
-    return { uploaded: false, error: message };
-  }
-  try {
-    const { error } = await admin().storage
-      .from(POINTS_STORAGE_BUCKET)
-      .upload(POINTS_STORAGE_OBJECT, new Uint8Array(buffer), {
-        contentType: 'application/octet-stream',
-        upsert: true,
-      });
-    if (error) {
-      log(`WARNING: загрузка файла точек не удалась: ${error.message}`);
-      return { uploaded: false, error: error.message };
-    }
-    log(`Файл точек загружен в storage ${POINTS_STORAGE_BUCKET}/${POINTS_STORAGE_OBJECT}`);
-    return { uploaded: true, error: null };
-  } catch (error) {
-    const message = (error as Error)?.message || 'unknown storage error';
-    log(`WARNING: загрузка файла точек не удалась: ${message}`);
-    return { uploaded: false, error: message };
-  }
+/**
+ * Сколько байт и точек нам доступно. Кэшируется на процесс: `file_size_limit`
+ * бакета меняется миграцией, а не во время сборки.
+ */
+interface PointsBudget {
+  /** Предельный размер файла: лимит бакета ∩ бюджет браузера. */
+  budgetBytes: number;
+  /** Реальный лимит `galaxy-data` (null — не удалось прочитать). */
+  bucketBytes: number | null;
+  /** Точки, которые в этот бюджет помещаются (0 = выборка выключена). */
+  maxPoints: number;
+  /** Лимит бакета нас связал? (иначе работает GALAXY_POINTS_MAX) */
+  limitedByBudget: boolean;
+}
+
+let pointsBudget: PointsBudget | null = null;
+
+export async function resolvePointsBudget(env: NodeJS.ProcessEnv = process.env): Promise<PointsBudget> {
+  if (pointsBudget) return pointsBudget;
+  const connectionString = galaxyDbUrl(env);
+  // PostgREST-режим не видит таблицу storage: берём консервативный лимит
+  // старой миграции, чтобы сборка не кончалась отказом бакета.
+  const bucketBytes = connectionString ? await readPointsBucketLimit(connectionString) : null;
+  const budgetBytes = pointsFileLimit(env, bucketBytes);
+  const wanted = galaxyPointsMax(env);
+  const ceiling = pointsForBytes(budgetBytes);
+  pointsBudget = {
+    budgetBytes,
+    bucketBytes,
+    maxPoints: wanted === 0 ? 0 : Math.max(1, Math.min(wanted, ceiling)),
+    limitedByBudget: wanted > ceiling,
+  };
+  return pointsBudget;
+}
+
+/** Только для тестов: следующая сборка узнает лимит заново. */
+export function resetPointsBudget(): void {
+  pointsBudget = null;
 }
 
 /**
- * Сборка облака точек для слоя карты — отдельно от импорта.
+ * Публикация облака: файл кладётся на диск данных, затем в storage с
+ * повторами. Возвращает и то, и другое — «облако не собрано» и «облако есть,
+ * но storage его не принял» для админки и для карты это разные истории.
+ */
+async function publishPoints(
+  buffer: Buffer,
+  log: (line: string) => void,
+  meta: Record<string, unknown> = {},
+): Promise<PointsPublishResult> {
+  const budget = await resolvePointsBudget();
+  return await publishPointCloud(buffer, {
+    admin: admin(),
+    log,
+    limitBytes: budget.budgetBytes,
+    meta: { bytes: buffer.length, ...meta },
+  });
+}
+
+/**
+ * Сборка облака точек для карты — отдельно от импорта.
  *
  * Полный дамп строит файл сам, дельта — нет (иначе каждую ночь пришлось бы
  * перечитывать 2×10⁸ строк), а карта без файла показывает только то, что
  * успела собрать на лету. Поэтому облако можно пересобрать из уже
  * импортированной таблицы: по прямому подключению к Postgres или через
- * PostgREST, с той же выборкой (`galaxyPointsMax`), что и при импорте.
+ * PostgREST, с тем же пределом размера, что и при импорте.
  *
  * Работа идёт фоном: 10⁸ строк читаются минутами, запрос столько не живёт.
  */
+
 export interface GalaxyPointsBuildState {
   running: boolean;
   started_at: string | null;
@@ -1227,72 +1291,30 @@ export interface GalaxyPointsBuildState {
   rows: number | null;
   stride: number | null;
   uploaded: boolean;
+  /** Где облако лежит сейчас: `storage` — канонично, `disk` — только кэш. */
+  published: PointsTarget | null;
+  /** Путь локального кэша, когда файл записан туда. */
+  path: string | null;
+  /** Попыток загрузки в storage (1 = повезло с первой). */
+  attempts: number;
+  /** Предел точек, который сборка соблюла (0 = без выборки). */
+  max_points: number | null;
+  /** Бюджет файла: лимит бакета ∩ бюджет браузера. */
+  budget_bytes: number | null;
+  /** `file_size_limit` бакета `galaxy-data` (null — узнать не удалось). */
+  bucket_bytes: number | null;
+  /** Сколько точек вообще влезает в бюджет — потолок текущей конфигурации. */
+  ceiling_points: number | null;
   /** Последние строки журнала — панель показывает их как есть. */
   log: string[];
 }
 
 const POINTS_BUILD_LOG_LIMIT = 60;
 
-let pointsBuild: GalaxyPointsBuildState = {
-  running: false,
-  started_at: null,
-  finished_at: null,
-  ok: null,
-  error: null,
-  backend: null,
-  count: null,
-  bytes: null,
-  rows: null,
-  stride: null,
-  uploaded: false,
-  log: [],
-};
-
-/** Состояние последней (или идущей) сборки облака точек. */
-export function getGalaxyPointsBuildState(): GalaxyPointsBuildState {
-  return { ...pointsBuild, log: [...pointsBuild.log] };
-}
-
-/** Дописывает только точки в статистику каталога, не трогая остальные поля. */
-async function writePointsStats(points: {
-  count: number;
-  bytes: number;
-  rows: number;
-  stride: number;
-  uploaded: boolean;
-}): Promise<void> {
-  const previous = (await metaValue('stats').catch(() => null)) ?? {};
-  const value: Record<string, unknown> = { ...previous };
-  if (points.uploaded) {
-    value.points_uploaded = true;
-    value.points_count = points.count;
-    value.points_bytes = points.bytes;
-    value.points_rows = points.rows;
-    value.points_stride = points.stride;
-    value.points_sampled = points.stride > 1;
-  }
-  value.points_built_at = new Date().toISOString();
-  const { error } = await admin()
-    .from('galaxy_systems_meta')
-    .upsert({ key: 'stats', value }, { onConflict: 'key' });
-  if (error) throw new Error(`galaxy_systems_meta stats write failed: ${error.message}`);
-  invalidateGalaxyStatsCache();
-}
-
-/**
- * Пересобрать облако точек из таблицы каталога и положить его в хранилище.
- * Экспортируется для админского действия `build-points`.
- */
-export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildState> {
-  if (pointsBuild.running) return getGalaxyPointsBuildState();
-  const log = (line: string) => {
-    pointsBuild.log.push(line);
-    if (pointsBuild.log.length > POINTS_BUILD_LOG_LIMIT) pointsBuild.log.shift();
-    console.log(`[galaxy-points] ${line}`);
-  };
-  pointsBuild = {
-    running: true,
-    started_at: new Date().toISOString(),
+function emptyPointsBuild(): GalaxyPointsBuildState {
+  return {
+    running: false,
+    started_at: null,
     finished_at: null,
     ok: null,
     error: null,
@@ -1302,19 +1324,109 @@ export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildS
     rows: null,
     stride: null,
     uploaded: false,
+    published: null,
+    path: null,
+    attempts: 0,
+    max_points: null,
+    budget_bytes: null,
+    bucket_bytes: null,
+    ceiling_points: null,
     log: [],
+  };
+}
+
+let pointsBuild: GalaxyPointsBuildState = emptyPointsBuild();
+
+/** Состояние последней (или идущей) сборки облака точек. */
+export function getGalaxyPointsBuildState(): GalaxyPointsBuildState {
+  return { ...pointsBuild, log: [...pointsBuild.log] };
+}
+
+/**
+ * Дописывает точки в статистику каталога, не трогая остальные поля.
+ *
+ * Геометрия облака (`count`/`rows`/`stride`) пишется всегда, а не только после
+ * успешной заливки: число точек — факт о таблице, а «видит ли его карта» —
+ * факт о хранилище. Раньше при 503 не писалось ничего, и слой карты оставался
+ * с нулевыми счётчиками, хотя облако было собрано.
+ */
+async function writePointsStats(points: {
+  count: number;
+  bytes: number;
+  rows: number;
+  stride: number;
+  uploaded: boolean;
+  published: PointsTarget;
+}): Promise<void> {
+  const previous = (await metaValue('stats').catch(() => null)) ?? {};
+  const value: Record<string, unknown> = { ...previous };
+  value.points_count = points.count;
+  value.points_bytes = points.bytes;
+  value.points_rows = points.rows;
+  value.points_stride = points.stride;
+  value.points_sampled = points.stride > 1;
+  value.points_uploaded = points.uploaded;
+  value.points_published = points.published;
+  value.points_built_at = new Date().toISOString();
+  const { error } = await admin()
+    .from('galaxy_systems_meta')
+    .upsert({ key: 'stats', value }, { onConflict: 'key' });
+  if (error) throw new Error(`galaxy_systems_meta stats write failed: ${error.message}`);
+  invalidateGalaxyStatsCache();
+}
+
+/**
+ * Пересобрать облако точек из таблицы каталога и опубликовать его.
+ * Экспортируется для админского действия `build-points`.
+ *
+ * Размер предела считается сам: `GALAXY_POINTS_MAX` ограничивается фактическим
+ * `file_size_limit` бакета и бюджетом браузера, поэтому сборка выдаёт
+ * максимально возможное облако — и на базе с лимитом 50 МБ, и на базе после
+ * миграции, и на установке без прямого Postgres.
+ */
+export async function buildGalaxyPointsFromCatalog(
+  options: { maxPoints?: number } = {},
+): Promise<GalaxyPointsBuildState> {
+  if (pointsBuild.running) return getGalaxyPointsBuildState();
+  const log = (line: string) => {
+    pointsBuild.log.push(line);
+    if (pointsBuild.log.length > POINTS_BUILD_LOG_LIMIT) pointsBuild.log.shift();
+    console.log(`[galaxy-points] ${line}`);
+  };
+  pointsBuild = {
+    ...emptyPointsBuild(),
+    running: true,
+    started_at: new Date().toISOString(),
   };
 
   const chosen = pickBackend();
   let backend = chosen.backend;
-  const maxPoints = Math.max(0, galaxyPointsMax());
-  log(`сборка облака точек: предел ${maxPoints || 'без предела'}, бэкенд ${backend}`);
+  let cloud: PointCloud | null = null;
 
   try {
-    let cloud: PointCloud | null = null;
+    const budget = await resolvePointsBudget();
+    const ceiling = pointsForBytes(budget.budgetBytes);
+    const requested = Number.isFinite(options.maxPoints) ? Math.floor(options.maxPoints as number) : null;
+    // Просьба панели — желание, бюджет — физика: берём меньшее.
+    const maxPoints = requested == null
+      ? budget.maxPoints
+      : requested === 0 ? 0 : Math.max(1, Math.min(requested, ceiling));
+    pointsBuild.budget_bytes = budget.budgetBytes;
+    pointsBuild.bucket_bytes = budget.bucketBytes;
+    pointsBuild.ceiling_points = ceiling;
+    pointsBuild.max_points = maxPoints;
+    log(
+      `сборка облака точек: предел ${(maxPoints || ceiling).toLocaleString()} точек, бэкенд ${backend}, `
+      + `файл до ${formatBytes(budget.budgetBytes)}`
+      + (budget.bucketBytes
+        ? ` (лимит бакета galaxy-data ${formatBytes(budget.bucketBytes)})`
+        : ' (лимит бакета неизвестен — считаю от 50 МБ)')
+      + (budget.limitedByBudget && maxPoints < galaxyPointsMax() ? ', GALAXY_POINTS_MAX урезан лимитом' : ''),
+    );
+
     if (chosen.connectionString) {
       try {
-        cloud = await readPointsFromPg(chosen.connectionString, { maxPoints });
+        cloud = await readPointsFromPg(chosen.connectionString, { maxPoints, budgetBytes: budget.budgetBytes });
         log('облако прочитано по прямому подключению к Postgres');
       } catch (error) {
         const message = (error as Error)?.message ?? String(error);
@@ -1324,9 +1436,10 @@ export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildS
     }
     if (!cloud) {
       backend = 'supabase';
-      cloud = await readPointsFromSupabase(admin(), { maxPoints });
+      cloud = await readPointsFromSupabase(admin(), { maxPoints, budgetBytes: budget.budgetBytes });
       log('облако прочитано через PostgREST');
     }
+
     pointsBuild.backend = backend;
     pointsBuild.count = cloud.count;
     pointsBuild.bytes = cloud.buffer.length;
@@ -1334,22 +1447,40 @@ export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildS
     pointsBuild.stride = cloud.stride;
     log(
       `точек ${cloud.count.toLocaleString()} из ${cloud.rows.toLocaleString()} строк`
-      + (cloud.stride > 1 ? ` (шаг ${cloud.stride})` : '')
+      + (cloud.stride > 1 ? ` (шаг ${cloud.stride.toLocaleString()})` : ' — каждая система')
       + `, файл ${formatBytes(cloud.buffer.length)}`,
     );
 
-    const upload = await uploadPoints(cloud.buffer, log);
-    pointsBuild.uploaded = upload.uploaded;
-    if (!upload.uploaded) pointsBuild.error = upload.error;
-
-    await writePointsStats({
-      count: cloud.count,
-      bytes: cloud.buffer.length,
+    const publish = await publishPoints(cloud.buffer, log, {
       rows: cloud.rows,
       stride: cloud.stride,
-      uploaded: upload.uploaded,
+      source: 'build-points',
     });
-    pointsBuild.ok = upload.uploaded;
+    pointsBuild.uploaded = publish.uploaded;
+    pointsBuild.published = publish.target;
+    pointsBuild.path = publish.path;
+    pointsBuild.attempts = publish.attempts;
+    pointsBuild.error = publish.error;
+
+    try {
+      await writePointsStats({
+        count: cloud.count,
+        bytes: cloud.buffer.length,
+        rows: cloud.rows,
+        stride: cloud.stride,
+        uploaded: publish.uploaded,
+        published: publish.target,
+      });
+    } catch (error) {
+      // Статистика — последнее, что может не сработать, и она не отменяет
+      // опубликованное облако: карта читает файл, а не этот документ.
+      log(`WARNING: статистику записать не удалось: ${(error as Error)?.message ?? error}`);
+    }
+
+    if (!publish.uploaded && publish.target === 'disk') {
+      log('облако лежит на диске данных — карта отдаёт его оттуда; в storage зальёт его «Повторить загрузку»');
+    }
+    pointsBuild.ok = publish.target !== 'none';
     pointsBuild.finished_at = new Date().toISOString();
     pointsBuild.running = false;
     return getGalaxyPointsBuildState();
@@ -1364,16 +1495,100 @@ export async function buildGalaxyPointsFromCatalog(): Promise<GalaxyPointsBuildS
   }
 }
 
+/**
+ * Залить в storage уже собранный файл из локального кэша, не перечитывая
+ * таблицу. Дешёвый ответ на «Service Unavailable»: облако есть, опубликовать
+ * его — одна операция вместо минутного чтения каталога.
+ */
+export async function publishGalaxyPointsFromCache(): Promise<GalaxyPointsBuildState> {
+  const log = (line: string) => {
+    pointsBuild.log.push(line);
+    if (pointsBuild.log.length > POINTS_BUILD_LOG_LIMIT) pointsBuild.log.shift();
+    console.log(`[galaxy-points] ${line}`);
+  };
+  const cached = readPointsCache();
+  if (!cached) {
+    pointsBuild.error = 'файла точек в локальном кэше нет — сначала соберите облако';
+    pointsBuild.published = pointsBuild.published ?? 'none';
+    return getGalaxyPointsBuildState();
+  }
+  log(`повторная загрузка файла точек из кэша (${formatBytes(cached.buffer.length)})`);
+  const publish = await publishPoints(cached.buffer, log, { source: 'publish-cache' });
+  pointsBuild.uploaded = publish.uploaded;
+  pointsBuild.published = publish.target;
+  pointsBuild.path = publish.path;
+  pointsBuild.attempts = publish.attempts;
+  pointsBuild.error = publish.error;
+  pointsBuild.bytes = cached.buffer.length;
+  pointsBuild.ok = publish.uploaded || publish.target === 'disk';
+  pointsBuild.finished_at = new Date().toISOString();
+  if (publish.uploaded) {
+    await markPointsUploaded({ count: pointsFileCount(cached.buffer), bytes: cached.buffer.length })
+      .catch((error) => log(`WARNING: статистику записать не удалось: ${(error as Error)?.message ?? error}`));
+  }
+  return getGalaxyPointsBuildState();
+}
+
+/** Число точек из заголовка `edgs-v1` (0 — файл не читается). */
+function pointsFileCount(buffer: Buffer): number {
+  if (buffer.length < POINTS_HEADER_SIZE + POINTS_BYTES_PER_POINT) return 0;
+  const count = buffer.readUInt32LE(8);
+  return POINTS_HEADER_SIZE + count * POINTS_BYTES_PER_POINT <= buffer.length ? count : 0;
+}
+
 /** Запустить сборку в фоне: админский запрос не должен ждать таблицу. */
-export async function startGalaxyPointsBuild(): Promise<{ started: boolean; reason?: string; state: GalaxyPointsBuildState }> {
+export async function startGalaxyPointsBuild(
+  options: { maxPoints?: number } = {},
+): Promise<{ started: boolean; reason?: string; state: GalaxyPointsBuildState }> {
   if (pointsBuild.running) {
     return { started: false, reason: 'Сборка облака точек уже идёт', state: getGalaxyPointsBuildState() };
   }
   if (liveRun()) {
     return { started: false, reason: 'Идёт импорт каталога — дождитесь его окончания', state: getGalaxyPointsBuildState() };
   }
-  void buildGalaxyPointsFromCatalog();
+  void buildGalaxyPointsFromCatalog(options);
   return { started: true, state: getGalaxyPointsBuildState() };
+}
+
+/** «Повторить загрузку»: файл уже лежит на диске данных, нужен только storage. */
+export async function startGalaxyPointsPublish(): Promise<{ started: boolean; reason?: string; state: GalaxyPointsBuildState }> {
+  if (pointsBuild.running) {
+    return { started: false, reason: 'Сборка облака точек уже идёт', state: getGalaxyPointsBuildState() };
+  }
+  if (!pointsCacheInfo()) {
+    return {
+      started: false,
+      reason: 'Локального файла точек нет — соберите облако из таблицы',
+      state: getGalaxyPointsBuildState(),
+    };
+  }
+  const state = await publishGalaxyPointsFromCache();
+  return { started: state.published === 'storage', reason: state.error ?? undefined, state };
+}
+
+/**
+ * Что лежит в локальном кэше облаков (панель админки). Читается только
+ * заголовок файла: статус опрашивается каждые несколько секунд, а облако —
+ * десятки мегабайт.
+ */
+export function pointsCacheStatus(env: NodeJS.ProcessEnv = process.env): {
+  dir: string;
+  exists: boolean;
+  bytes: number | null;
+  count: number | null;
+  mtime_ms: number | null;
+  valid: boolean;
+} {
+  const dir = pointsCacheDir(env);
+  const info = pointsCacheInfo(dir);
+  return {
+    dir,
+    exists: !!info,
+    bytes: info?.bytes ?? null,
+    count: info?.count ?? null,
+    mtime_ms: info?.mtimeMs ?? null,
+    valid: info?.valid === true,
+  };
 }
 
 /**
@@ -1432,6 +1647,11 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
   // Deltas must not rebuild the cloud: it would mean a full table scan of
   // 2×10⁸ rows every night for a 4 MiB file. The full import refreshes it.
   const buildPoints = options.skipPoints === true ? false : options.skipPoints === false ? true : !isDelta;
+  // Потолок облака берётся из лимита бакета, а не из константы в коде: импорт
+  // не должен строить файл, который хранилище не примет (именно так выглядит
+  // «облако собрать не удалось» после нескольких часов чтения дампа).
+  const pointsBudget = buildPoints ? await resolvePointsBudget() : null;
+  const maxPoints = pointsBudget?.maxPoints;
 
   const controller = new AbortController();
   const run: LiveRun = { controller, writer: null, snapshot: null, backend, startedAt: Date.now(), log: [] };
@@ -1583,6 +1803,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
           signal: controller.signal,
           log,
           buildPoints,
+          maxPoints,
           prune: process.env.GALAXY_SHARDS_PRUNE === '1',
           onProgress: (snapshot: ShardImportSnapshot) => {
             run.snapshot = {
@@ -1635,6 +1856,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
           signal: controller.signal,
           log,
           buildPoints,
+          maxPoints,
           onProgress: (snapshot) => {
             run.snapshot = snapshot;
             // Persisting every tick is enough to restart without losing much.
@@ -1661,11 +1883,20 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
       const dataAsOf = coverage.ok ? generatedAt ?? new Date().toISOString() : previousDataAsOf;
 
       let pointsUploaded = false;
+      let pointsPublished: PointsTarget = 'none';
       let pointsError: string | null = null;
       if (result.points) {
-        const upload = await uploadPoints(result.points.buffer, log);
-        pointsUploaded = upload.uploaded;
-        pointsError = upload.error;
+        const publish = await publishPoints(result.points.buffer, log, {
+          rows: result.points.rows,
+          stride: result.points.stride,
+          source: `import/${variant}`,
+        });
+        pointsUploaded = publish.uploaded;
+        pointsPublished = publish.target;
+        pointsError = publish.error;
+        if (!publish.uploaded && publish.target === 'disk') {
+          log('облако точек записано на диск данных — карта отдаёт его и без storage; `Повторить загрузку` допишет его в бакет');
+        }
       }
 
       if (writer.analyze) {
@@ -1686,6 +1917,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
               count: result.points.count,
               bytes: result.points.buffer.length,
               uploaded: pointsUploaded,
+              published: pointsPublished,
               rows: result.points.rows,
               stride: result.points.stride,
             }
@@ -1710,6 +1942,7 @@ export async function startGalaxyImport(options: StartGalaxyImportOptions = {}):
         points_bytes: result.points ? result.points.buffer.length : null,
         points_stride: result.points?.stride ?? null,
         points_uploaded: pointsUploaded,
+        points_published: pointsPublished,
         points_error: pointsError,
         error: null,
         attempts: 0,
@@ -1855,7 +2088,7 @@ async function writeCatalogStats(input: {
    * from it.
    */
   dump_generated_at?: string | null;
-  points: { count: number; bytes: number; uploaded: boolean; rows: number; stride: number } | null;
+  points: { count: number; bytes: number; uploaded: boolean; rows: number; stride: number; published?: PointsTarget } | null;
 }): Promise<void> {
   const previous = (await metaValue('stats').catch(() => null)) ?? {};
   const variant = input.variant ?? 'full';
@@ -1875,15 +2108,19 @@ async function writeCatalogStats(input: {
         ? 'Full Spansh systems dump (nightly at https://spansh.co.uk/dumps). Deltas (systems_1day…) keep it fresh.'
         : `Spansh delta ${variant} applied on top of the catalog (https://spansh.co.uk/dumps).`,
   };
-  if (input.points?.uploaded) {
-    value.points_uploaded = true;
+  if (input.points) {
+    // Геометрия облака пишется всегда: «облако не влезло/не залилось» — это
+    // проблема хранилища, а не тайна о содержимом таблицы.
     value.points_count = input.points.count;
     value.points_bytes = input.points.bytes;
     // The cloud is a uniform sample of the catalog (~2×10⁸ systems do not fit
-    // the 50 MB bucket): say so, so the map layer is not read as complete.
+    // one file): say so, so the map layer is not read as complete.
     value.points_rows = input.points.rows;
     value.points_stride = input.points.stride;
     value.points_sampled = input.points.stride > 1;
+    value.points_uploaded = input.points.uploaded;
+    value.points_published = input.points.published ?? (input.points.uploaded ? 'storage' : 'none');
+    value.points_built_at = new Date().toISOString();
   }
   const { error } = await admin()
     .from('galaxy_systems_meta')

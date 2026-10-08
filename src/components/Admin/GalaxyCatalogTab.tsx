@@ -23,6 +23,15 @@ interface CatalogStats {
   points_uploaded?: boolean;
   points_bytes?: number | null;
   points_count?: number | null;
+  points_stride?: number | null;
+  points_sampled?: boolean;
+  points_published?: {
+    target?: 'storage' | 'disk' | 'none';
+    uploaded?: boolean;
+    path?: string | null;
+    at?: string;
+    error?: string | null;
+  } | null;
   partial?: boolean;
 }
 
@@ -128,6 +137,20 @@ interface PointsBuildState {
   rows: number | null;
   stride: number | null;
   uploaded: boolean;
+  /** Где облако сейчас: `storage` — канонично, `disk` — только кэш данных. */
+  published?: 'storage' | 'disk' | 'none' | null;
+  /** Путь локального кэша, когда файл записан туда. */
+  path?: string | null;
+  /** Попыток загрузки в storage (1 = повезло с первой). */
+  attempts?: number;
+  /** Потолок точек, который сборка соблюла. */
+  max_points?: number | null;
+  /** Бюджет файла: лимит бакета ∩ бюджет браузера. */
+  budget_bytes?: number | null;
+  /** `file_size_limit` бакета galaxy-data (null — узнать не удалось). */
+  bucket_bytes?: number | null;
+  /** Сколько точек влезает в бюджет при текущих лимитах. */
+  ceiling_points?: number | null;
   log: string[];
 }
 
@@ -148,6 +171,34 @@ interface Status {
   variants?: VariantInfo[];
   download_segments?: number;
   points_build?: PointsBuildState;
+  points_cache?: PointsCacheInfo | null;
+  points_budget?: PointsBudget | null;
+}
+
+/** Что лежит в локальном кэше облаков (`GALAXY_POINTS_DIR`). */
+interface PointsCacheInfo {
+  dir: string;
+  exists: boolean;
+  bytes: number | null;
+  count: number | null;
+  mtime_ms: number | null;
+  valid: boolean;
+}
+
+/** Из чего состоит потолок облака точек прямо сейчас. */
+interface PointsBudget {
+  max_points: number;
+  budget_bytes: number;
+  bucket_bytes: number | null;
+  limited_by_budget: boolean;
+}
+
+/** Пустое поле = «столько, сколько позволяет лимит»; число парсится мягко. */
+function maxPointsPayload(value: string): Record<string, unknown> {
+  const raw = value.replace(/\s|\u00a0|_/g, '');
+  if (!raw) return {};
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? { max_points: Math.floor(parsed) } : {};
 }
 
 const POLL_MS = 4000;
@@ -204,6 +255,9 @@ export default function GalaxyCatalogTab() {
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
   const [dbCheck, setDbCheck] = useState<DbCheck | null>(null);
+  // Потолок количества точек для «Собрать облако»: пусто = столько, сколько
+  // позволяет текущий лимит бакета (см. points_budget в статусе).
+  const [pointsMax, setPointsMax] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -229,6 +283,13 @@ export default function GalaxyCatalogTab() {
   const unpackRunning = !!shards?.live;
   const pointsBuild = status?.points_build ?? null;
   const pointsBuildRunning = !!pointsBuild?.running;
+  const pointsCache = status?.points_cache ?? null;
+  const pointsBudget = status?.points_budget ?? null;
+  const pointsInStorage = status?.stats?.points_uploaded === true;
+  // «Собрать облако» уже положило файл на диск данных, а storage его не принял:
+  // повторить заливание дёшево и не трогает таблицу.
+  const pointsOnDisk = pointsCache?.exists === true && pointsCache.valid !== false;
+  const canRepublishPoints = pointsOnDisk && (!pointsInStorage || pointsBuild?.published === 'disk');
   const downloadRunning = !!archive && (archive.live || (archive.state.phase === 'downloading' && !archive.interrupted));
   const interruptedDownload = !!archive && archive.state.phase === 'downloading' && !archive.live && archive.interrupted;
   useEffect(() => {
@@ -260,6 +321,12 @@ export default function GalaxyCatalogTab() {
           payload?.started
             ? 'Сборка облака точек идёт в фоне: таблица читается целиком, это может занять несколько минут. Страницу можно закрыть — процесс продолжится.'
             : payload?.reason || 'Сборка облака уже идёт',
+        );
+      else if (action === 'publish-points')
+        setMessage(
+          payload?.started
+            ? 'Файл точек из локального кэша загружается в storage — таблицу перечитывать не нужно, это секунды.'
+            : payload?.reason || 'Загрузку сейчас повторить нельзя',
         );
       else if (action === 'cleanup')
         setMessage(
@@ -410,10 +477,17 @@ docker compose --env-file .env.production --profile monitoring \\
           </div>
           <div>
             <div style={labelStyle}>Облако точек</div>
-            <div style={{ fontSize: 13, color: status?.stats?.points_uploaded ? '#22c55e' : '#e67e22' }}>
-              {status?.stats?.points_uploaded
+            <div
+              style={{
+                fontSize: 13,
+                color: pointsInStorage ? '#22c55e' : pointsOnDisk ? '#e67e22' : '#9ca3af',
+              }}
+            >
+              {pointsInStorage
                 ? `${formatCount(status?.stats?.points_count)} точек, ${formatBytes(status?.stats?.points_bytes)} в storage`
-                : 'не загружено в storage'}
+                : pointsOnDisk
+                  ? `${formatCount(pointsCache?.count ?? null)} точек на диске данных — в storage не залито`
+                  : 'не собрано'}
             </div>
           </div>
         </div>
@@ -853,33 +927,82 @@ docker compose --env-file .env.production --profile monitoring \\
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
           <button
             type="button"
-            className="btn"
+            className="btn btn-cyan"
             disabled={busy !== null || pointsBuildRunning || running || backendMissing}
-            title="Прочитать таблицу каталога целиком и собрать файл, из которого слой «Все системы» рисует карту"
-            onClick={() => void act('build-points')}
+            title="Прочитать таблицу каталога и собрать файл, из которого слой «Все системы» рисует карту. Если систем больше потолка, строки берутся с равномерным шагом прямо в запросе — лишние байты не читаются."
+            onClick={() => void act('build-points', maxPointsPayload(pointsMax))}
           >
             {pointsBuildRunning ? 'Сборка облака идёт…' : 'Собрать облако точек из таблицы'}
           </button>
-          <span style={{ fontSize: 12, color: '#9ca3af' }}>
-            {status?.stats?.points_uploaded
-              ? `в хранилище: ${formatCount(status.stats.points_count)} точек${status.stats.points_bytes ? `, ${formatBytes(status.stats.points_bytes)}` : ''}`
-              : 'файла в хранилище нет — слой карты соберёт его сам при первом включении (это медленнее)'}
-          </span>
+          {canRepublishPoints && (
+            <button
+              type="button"
+              className="btn"
+              disabled={busy !== null || pointsBuildRunning}
+              title="Облако уже лежит в каталоге данных — нужен только bucket galaxy-data. Файл перечитывается с диска, таблица не трогается."
+              onClick={() => void act('publish-points')}
+            >
+              {busy === 'publish-points' ? 'Загружаю в storage…' : 'Повторить загрузку в storage'}
+            </button>
+          )}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af' }}>
+            максимум точек
+            <input
+              type="text"
+              inputMode="numeric"
+              value={pointsMax}
+              onChange={(event) => setPointsMax(event.target.value)}
+              placeholder={pointsBudget ? String(pointsBudget.max_points) : 'по лимиту'}
+              style={{
+                width: 120,
+                background: '#0f1113',
+                border: '1px solid #323538',
+                borderRadius: 4,
+                color: '#e5e7eb',
+                padding: '4px 6px',
+                fontSize: 12,
+              }}
+            />
+          </label>
+        </div>
+        <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: 8, lineHeight: 1.6 }}>
+          {pointsInStorage
+            ? `в хранилище: ${formatCount(status?.stats?.points_count ?? null)} точек${status?.stats?.points_bytes ? `, ${formatBytes(status.stats.points_bytes)}` : ''}${status?.stats?.points_stride && status.stats.points_stride > 1 ? `, шаг ${formatCount(status.stats.points_stride)} строк на точку` : ''}`
+            : pointsOnDisk
+              ? `в хранилище файла нет — облако лежит в ${pointsCache?.dir} и отдаётся с него; другие процессы (и пересобранный контейнер) его не увидят`
+              : 'файла нет ни в хранилище, ни на диске — слой карты соберёт его сам при первом включении (это медленнее)'}
+          {pointsBudget && (
+            <>
+              {' · '}потолок {formatCount(pointsBudget.max_points)} точек ({formatBytes(pointsBudget.budget_bytes)})
+              {pointsBudget.bucket_bytes != null &&
+                `, лимит бакета galaxy-data ${formatBytes(pointsBudget.bucket_bytes)}`}
+            </>
+          )}
         </div>
         {pointsBuild && (pointsBuild.ok !== null || pointsBuild.running) && (
           <div
             style={{
               fontSize: 12,
               marginBottom: 8,
-              color: pointsBuild.running ? '#ffd166' : pointsBuild.error ? '#ef4444' : '#22c55e',
+              lineHeight: 1.6,
+              color: pointsBuild.running
+                ? '#ffd166'
+                : pointsBuild.published === 'storage' || pointsBuild.ok === true
+                  ? pointsBuild.uploaded
+                    ? '#22c55e'
+                    : '#e67e22'
+                  : '#ef4444',
             }}
           >
             {pointsBuild.running
               ? 'Читаю таблицу каталога и собираю облако точек — это может занять несколько минут…'
               : pointsBuild.ok
-                ? `Облако собрано и загружено: ${formatCount(pointsBuild.count)} точек из ${formatCount(pointsBuild.rows)} строк`
+                ? `${pointsBuild.published === 'storage' ? 'Облако собрано и загружено' : 'Облако собрано и записано в локальный кэш'}: ${formatCount(pointsBuild.count)} точек из ${formatCount(pointsBuild.rows)} строк`
                   + `${pointsBuild.stride && pointsBuild.stride > 1 ? ` (шаг ${formatCount(pointsBuild.stride)})` : ''}`
                   + `${pointsBuild.bytes ? `, файл ${formatBytes(pointsBuild.bytes)}` : ''} · ${formatTime(pointsBuild.finished_at)}`
+                  + (pointsBuild.published !== 'storage' && pointsBuild.error
+                    ? `. storage не принял файл: ${pointsBuild.error} — кнопка «Повторить загрузку в storage» пробует снова, таблицу перечитывать не нужно`
+                    : '')
                 : `Облако точек собрать не удалось: ${pointsBuild.error ?? 'неизвестная ошибка'}`}
           </div>
         )}
@@ -913,8 +1036,9 @@ docker compose --env-file .env.production --profile monitoring \\
           Повторы одной системы в дампе (то же имя или тот же id64 в одной пачке) схлопываются в одну строку —
           иначе Postgres обрывает upsert ошибкой «cannot affect row a second time». Пачки, не уложившиеся в
           statement timeout базы, автоматически делятся пополам и повторяются. После завершения файл точек
-          (~36 МБ) загружается в бакет <code>galaxy-data</code>, и слой «Все системы» на карте начинает
-          работать. Счётчики каталога ниже могут отставать на минуту — их отдаёт кэш.
+          загружается в бакет <code>galaxy-data</code> (а всегда — в каталог данных, поэтому сбой хранилища
+          больше не означает «облака нет»), и слой «Все системы» на карте начинает работать. Счётчики
+          каталога ниже могут отставать на минуту — их отдаёт кэш.
         </div>
 
         {!!status?.log?.length && (
