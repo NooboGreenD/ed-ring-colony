@@ -310,6 +310,56 @@ test('первое обновление: перемотка, применени�
   }
 });
 
+test('ошибка git stash возвращает причину и не трогает рабочее дерево', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ 'CHANGELOG.md': '# release\n' });
+    writeFileSync(join(ctx.src, 'local-admin-change.txt'), 'непушенная правка\n');
+
+    // Имитируем типичный сбой на сервере (например, stale index.lock или
+    // read-only .git): старый скрипт скрывал stderr и оставлял админу только
+    // бесполезное «git stash не удался — код 1».
+    stub(ctx.bin, 'git', [
+      'if [ "${STUB_FAIL_STASH:-0}" = "1" ] && [ "$1" = "stash" ] && [ "$2" = "push" ]; then',
+      '  echo "fatal: simulated index.lock failure" >&2',
+      '  exit 1',
+      'fi',
+      'exec /usr/bin/git "$@"',
+    ].join('\n'));
+
+    const before = ctx.git(ctx.src, 'rev-parse', 'HEAD');
+    const run = ctx.run({ STUB_FAIL_STASH: '1' });
+    assert.notEqual(run.status, 0);
+    assert.match(run.stdout, /git stash не удался \(код 1\)/);
+    assert.match(run.stdout, /simulated index\.lock failure/);
+    assert.match(run.stdout, /локальные изменения не тронуты/);
+    assert.match(run.stdout, /local-admin-change\.txt/);
+    assert.equal(ctx.git(ctx.src, 'rev-parse', 'HEAD'), before, 'при ошибке stash ветка не перематывается');
+    assert.equal(readFileSync(join(ctx.src, 'local-admin-change.txt'), 'utf8'), 'непушенная правка\n');
+    assert.equal(ctx.git(ctx.src, 'stash', 'list'), '', 'неуспешный stash не должен оставлять запись');
+    assert.equal(readFileSync(ctx.log, 'utf8').includes(' build '), false, 'сборка не начинается после ошибки stash');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
+test('конфликт восстановления stash останавливает обновление до сборки', { skip }, () => {
+  const ctx = setup();
+  try {
+    ctx.release({ '.env.production': 'PROJECT_REPOSITORY=test\\nREMOTE=updated\\n' });
+    writeFileSync(join(ctx.src, '.env.production'), 'PROJECT_REPOSITORY=test\\nLOCAL=must-resolve\\n');
+
+    const run = ctx.run();
+    assert.notEqual(run.status, 0);
+    assert.match(run.stdout, /git stash pop не удался/);
+    assert.match(run.stdout, /изменения остались в stash/);
+    assert.notEqual(ctx.git(ctx.src, 'stash', 'list'), '', 'конфликтный stash должен остаться для ручного разбора');
+    assert.equal(readFileSync(ctx.log, 'utf8').includes(' build '), false, 'конфликт нельзя отправлять в сборку');
+  } finally {
+    ctx.cleanup();
+  }
+});
+
 test('без BuildKit: web собирается по запасному Dockerfile без кэш-маунтов', { skip }, () => {
   const ctx = setup();
   try {
