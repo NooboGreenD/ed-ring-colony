@@ -248,20 +248,27 @@ test('упавший merge откатывается и всё равно ост�
   await writer.close();
 });
 
-// ─────────────── страховка слияния от зависания ───────────────
+// ─────────────── лимит времени на слияние ───────────────
 //
-// Прод-наблюдение: на слабом сервере с живыми поисковыми индексами один шаг
-// merge честно работал дольше прежних 120 с, и импорт каталога падал на
-// statement_timeout. Запас поднят до 15 минут и вынесен в окружение.
+// Прод-наблюдение: слияние JOIN'ит пачку со ВСЕМ каталогом и обновляет живые
+// GIN/GiST-индексы, поэтому после загрузки полного дампа (2×10⁸ строк) шаг
+// честно работает десятки минут. Прежние лимиты 120 с и 900 с рвали ровно его:
+// обновление каталога недельным архивом (дельта индексы не снимает) падало на
+// statement_timeout, пачка откатывалась, импорт считался упавшим. Умолчание
+// теперь — без лимита; страховку включает GALAXY_COPY_MERGE_TIMEOUT_S.
 
-test('merge ограничен statement_timeout с запасом под медленный сервер', async () => {
+test('слияние по умолчанию идёт без statement_timeout', async () => {
   const { pg, statements, copyFrom } = fakePg();
   const writer = await createPgCopyWriter(DB_URL, { pg, copyFrom, mergeRows: 1000, env: {} });
   await writer.add(row());
   await writer.flush();
   assert.ok(
-    statements.includes(`SET LOCAL statement_timeout = '${COPY_MERGE_TIMEOUT_S}s'`),
-    `умолчание — ${COPY_MERGE_TIMEOUT_S} с, а не прежние 120`,
+    statements.includes('SET LOCAL statement_timeout = 0'),
+    'умолчание — без лимита (0), а не прежние 900 с',
+  );
+  assert.ok(
+    !statements.some((sql) => /statement_timeout = '/.test(sql)),
+    'лимит не подставляется в виде интервала, когда он отключён',
   );
   await writer.close();
 });
@@ -280,11 +287,38 @@ test('GALAXY_COPY_MERGE_TIMEOUT_S переопределяет страховк�
   await writer.close();
 });
 
-test('некорректный GALAXY_COPY_MERGE_TIMEOUT_S возвращает умолчание', () => {
+test('умолчание — без лимита; некорректный GALAXY_COPY_MERGE_TIMEOUT_S его не включает', () => {
+  assert.equal(COPY_MERGE_TIMEOUT_S, 0, 'умолчание — 0, то есть без ограничения');
   assert.equal(mergeTimeoutSeconds({}), COPY_MERGE_TIMEOUT_S);
-  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '0' }), COPY_MERGE_TIMEOUT_S);
+  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '0' }), 0);
   assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: 'abc' }), COPY_MERGE_TIMEOUT_S);
+  assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '-5' }), COPY_MERGE_TIMEOUT_S);
   assert.equal(mergeTimeoutSeconds({ GALAXY_COPY_MERGE_TIMEOUT_S: '1000' }), 1000);
+});
+
+test('писатель сообщает в журнал, есть ли лимит на слияние', async () => {
+  const { pg, copyFrom } = fakePg();
+  const lines = [];
+  const writer = await createPgCopyWriter(DB_URL, { pg, copyFrom, mergeRows: 1000, env: {}, log: (line) => lines.push(line) });
+  assert.ok(
+    lines.some((line) => line.includes('без лимита по времени')),
+    'без GALAXY_COPY_MERGE_TIMEOUT_S журнал говорит, что лимита нет',
+  );
+  await writer.close();
+
+  const capped = [];
+  const cappedWriter = await createPgCopyWriter(DB_URL, {
+    pg,
+    copyFrom,
+    mergeRows: 1000,
+    env: { GALAXY_COPY_MERGE_TIMEOUT_S: '1800' },
+    log: (line) => capped.push(line),
+  });
+  assert.ok(
+    capped.some((line) => line.includes('1800 с')),
+    'с заданным лимитом журнал называет его величину',
+  );
+  await cappedWriter.close();
 });
 
 test('пачка уходит в COPY сама, без flush, и копится в staging до порога merge', async () => {

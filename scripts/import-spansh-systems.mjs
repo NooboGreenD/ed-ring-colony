@@ -413,6 +413,12 @@ class PgCopyWriter extends PgWriter {
     if (this.staged === 0) return 0;
     await this.client.query('BEGIN');
     try {
+      // На загруженном каталоге (дельта поверх полного дампа) слияние JOIN'ит
+      // пачку со всей таблицей и обновляет живые GIN/GiST-индексы: шаг честно
+      // работает десятки минут. Лимит здесь оборвал бы честную работу и
+      // откатил пачку (см. COPY_MERGE_TIMEOUT_S в galaxyCopyWriter.ts), поэтому
+      // серверный/ролевой statement_timeout на эту транзакцию снимается.
+      await this.client.query('SET LOCAL statement_timeout = 0');
       let inserted = 0;
       for (const statement of mergeStatements()) {
         const res = await this.client.query(statement);
