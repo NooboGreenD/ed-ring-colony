@@ -349,6 +349,25 @@ sudo ufw delete allow 8000/tcp
 
 Проверка: сайт открывается по `http://ВАШ_IP` (или `https://ваш-домен`).
 
+### Если загрузка ColonialHelper.exe отвечает HTTP 413
+
+Файлы проекта задают `client_max_body_size 200m` для
+`/api/admin/uploader/release`. Глобальные `25m` меньше файла 25,2 МиБ, не считая
+multipart-обёртки, поэтому для него должен сработать отдельный location.
+Проверьте **активный** Nginx-блок, который принимает HTTPS:
+
+```bash
+sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+У Nginx `location` действует только внутри своего `server {}`. Если TLS
+завершается в отдельном `server { listen 443 ssl; }`, скопируйте туда
+`location = /api/admin/uploader/release` из
+`deploy/selfhost/nginx-selfhost.conf` (или `deploy/nginx.conf`). Если активный
+HTTPS-блок уже показывает `200m`, а 413 остаётся, запрос ограничивает другой
+reverse proxy/CDN перед этим Nginx.
+
 ---
 
 ## 5. Крон-задачи

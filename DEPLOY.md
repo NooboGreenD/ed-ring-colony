@@ -345,8 +345,21 @@ sudo certbot --nginx -d ваш-домен
 
 В конфиге уже учтены: таймаут 310 с для долгого роута
 `/api/atlas/ring-route` (`maxDuration = 300`), `client_max_body_size 25m`
-для загрузки журналов (и 150m для `/api/admin/uploader/release` — базовый
-EXE Helper из админки, иначе 413), кэш `/_next/static/`.
+для загрузки журналов (и 200m для `/api/admin/uploader/release` — базовый
+EXE Helper из админки, иначе 413), кэш `/_next/static/`. Размер 25,2 МиБ
+близок к глобальному лимиту 25m и с multipart-обёрткой его превышает. Поэтому
+должен сработать отдельный location. Если HTTPS обслуживает отдельный
+`server { listen 443 ssl; }`,
+скопируйте его туда: nginx применяет locations только внутри выбранного
+server-блока. Проверьте активную конфигурацию и примените её:
+
+```bash
+sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Если активный HTTPS-блок уже показывает `200m`, а 413 остаётся, проверьте
+лимит внешнего reverse proxy/CDN перед nginx.
 
 ## 7. Крон-задачи
 

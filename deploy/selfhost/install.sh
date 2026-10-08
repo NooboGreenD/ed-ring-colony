@@ -272,7 +272,9 @@ server {
     }
     client_max_body_size 25m;
     # Админка → «Публикация Helper»: готовый ColonialHelper.exe (22–35 МиБ)
-    # грузится прямо на сервер — без этого location nginx отвечает 413.
+    # грузится прямо на сервер — без этого location nginx отвечает 413. Если
+    # TLS завершается в отдельном server (listen 443), продублируйте location
+    # в HTTPS-блоке: nginx не наследует locations между server-блоками.
     location = /api/admin/uploader/release {
         # Keep headroom for future release binaries; this endpoint accepts at least 150 MiB.
         client_max_body_size 200m;

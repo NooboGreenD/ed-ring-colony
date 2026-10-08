@@ -86,6 +86,65 @@ test('production galaxy map mounts the actual React 19 / R3F renderer with WebGL
 });
 
 
+test('all-systems points shader compiles with its color attribute', async ({ page }) => {
+  const shaderErrors: string[] = [];
+  const pageErrors: string[] = [];
+  page.on('console', message => {
+    if (message.type() === 'error' && /shader error|webglprogram|invalid_operation|no valid shader/i.test(message.text())) {
+      shaderErrors.push(message.text());
+    }
+  });
+  page.on('pageerror', error => pageErrors.push(error.message));
+
+  const count = 2;
+  const cloud = Buffer.alloc(12 + count * 29);
+  cloud.write('EDGS', 0, 4, 'ascii');
+  cloud[4] = 1;
+  cloud.writeUInt32LE(count, 8);
+  // Two points on the map origin (Sgr A*) exercise the color + class attributes.
+  for (let i = 0; i < count; i += 1) {
+    cloud.writeFloatLE(25.21875 + i, 12 + i * 12);
+    cloud.writeFloatLE(-20.90625, 16 + i * 12);
+    cloud.writeFloatLE(25899.96875, 20 + i * 12);
+  }
+  const idHi = 12 + count * 12;
+  const idLo = idHi + count * 4;
+  const classes = idLo + count * 4;
+  for (let i = 0; i < count; i += 1) {
+    cloud.writeUInt32LE(1000 + i, idLo + i * 4);
+    cloud[classes + i] = 4; // G-class
+  }
+
+  await page.route('**/api/galaxy/stats', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      ready: true,
+      systems_count: 2,
+      points: { available: true, uploaded: false, count, bytes: cloud.length, stride: 1, sampled: false, published: 'disk' },
+      import: null,
+    }),
+  }));
+  await page.route('**/api/galaxy/all-systems', route => route.fulfill({
+    status: 200,
+    contentType: 'application/octet-stream',
+    body: cloud,
+  }));
+
+  await page.goto('/map');
+  await expect(page.locator('canvas')).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('checkbox', { name: /Все системы/ }).check();
+  // The class-filter buttons only appear after the binary is parsed and passed to R3F.
+  await expect(page.getByRole('button', { name: 'Редкие' })).toBeVisible({ timeout: 15_000 });
+  await page.locator('canvas').evaluate(canvas => new Promise<void>(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  }));
+  await page.waitForTimeout(250);
+  expect(shaderErrors).toEqual([]);
+  expect(pageErrors).toEqual([]);
+});
+
+
 test('stored non-default language does not cause hydration errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
