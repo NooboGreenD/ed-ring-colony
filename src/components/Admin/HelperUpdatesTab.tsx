@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { IconAlert, IconCheckCircle, IconRefresh, IconXCircle } from '@/components/Icons';
 import type { HelperReleaseJob } from '@/types/helperRelease';
+import { uploadLauncherInChunks } from '@/lib/launcherChunkUpload';
 import { authFetch } from '@/lib/supabaseClient';
 
 /**
@@ -90,13 +91,7 @@ function jobKindLabel(kind: HelperReleaseJob['kind']): string {
  */
 function describeUploadHttpError(status: number): string {
   if (status === 413) {
-    return 'HTTP 413 — один из прокси отклонил тело загрузки. Для /api/admin/uploader/release '
-      + 'конфиги проекта задают 200m; глобальные 25m могут быть меньше файла 25,2 МиБ с multipart-обёрткой. '
-      + 'На сервере: `bash deploy/selfhost/check-release-upload-limit.sh https://домен-сайта` — он проверит каждый '
-      + 'server-блок, который проксирует сайт, error.log и реальное тело запроса. Вручную: '
-      + '`sudo nginx -T | grep -n -A8 -B3 \'location = /api/admin/uploader/release\'`, '
-      + 'затем `sudo nginx -t && sudo systemctl reload nginx`. Если там уже 200m, а в error.log нет '
-      + '«client intended to send too large body» — ограничитель стоит перед nginx (proxy/CDN).';
+    return 'HTTP 413 — прокси отклонил тело запроса до приложения.';
   }
   return `HTTP ${status}`;
 }
@@ -453,20 +448,24 @@ export default function HelperUpdatesTab() {
     if (!launcherFile || !launcherVersion.trim()) return;
     setBusy(true);
     setError('');
-    setMessage('Загрузка базовой сборки на сервер…');
+    setMessage('Подготавливаю фрагменты ColonialHelper.exe…');
     try {
-      const form = new FormData();
-      form.set('kind', 'launcher');
-      form.set('platform', 'win64');
-      form.set('version', launcherVersion.trim());
-      form.set('launcher', launcherFile, launcherFile.name);
-      form.set('async', 'true');
-      const response = await authFetch('/api/admin/uploader/release', { method: 'POST', body: form });
-      const data = (await response.json().catch(() => ({}))) as VersionsResponse;
-      if (!response.ok || !data.ok || !data.job) throw new Error(data.error || describeUploadHttpError(response.status));
-      setReleaseJob(data.job);
+      const job = await uploadLauncherInChunks({
+        file: launcherFile,
+        platform: 'win64',
+        version: launcherVersion.trim(),
+        fetcher: authFetch,
+        onProgress: (uploadedBytes, totalBytes, completedChunks, totalChunks) => {
+          const percent = totalBytes > 0 ? Math.round((uploadedBytes / totalBytes) * 100) : 0;
+          setMessage(`Загрузка ColonialHelper.exe: ${formatBytes(uploadedBytes)} / ${formatBytes(totalBytes)} (${percent}%, часть ${completedChunks}/${totalChunks})`);
+        },
+        onRetry: (nextChunkSize) => {
+          setMessage(`Прокси отклонил крупную часть; автоматически уменьшаю размер до ${formatBytes(nextChunkSize)} и продолжаю…`);
+        },
+      });
+      setReleaseJob(job);
       setProcessLogOpen(true);
-      setMessage(`Загрузка ColonialHelper.exe ${launcherVersion} запущена — журнал ниже`);
+      setMessage(`Загрузка ColonialHelper.exe ${launcherVersion} принята сервером — журнал ниже`);
       setLauncherFile(null);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : 'Не удалось загрузить exe');
@@ -829,6 +828,7 @@ export default function HelperUpdatesTab() {
           <p style={{ color: '#9ca3af', fontSize: 12, margin: '4px 0 8px' }}>
             Первичный EXE скачивается пилотом один раз, после чего получает небольшие пакетные обновления.
             Сервер Linux готовит комплект с актуальным кодом и ключами, а сам Windows EXE собирается на доверенной Windows-машине.
+            При публикации EXE передаётся частями до 4 МиБ; при 413 размер уменьшается автоматически.
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 9 }}>
             <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label="Версия базовой сборки" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />

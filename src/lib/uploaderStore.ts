@@ -35,6 +35,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { deflateRaw, gzip } from 'node:zlib';
 
+import { MAX_LAUNCHER_UPLOAD_BYTES } from './launcherUploadProtocol';
+
 const gzipAsync = promisify(gzip);
 const deflateRawAsync = promisify(deflateRaw);
 
@@ -55,6 +57,15 @@ const VERSION = /^\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]{1,40})?$/;
 const MEMBER = /^[0-9A-Za-z._-]+(?:\/[0-9A-Za-z._-]+)*$/;
 const ALLOWED_SUFFIX = ['.py', '.json', '.txt', '.md', '.ico', '.png', '.csv'];
 const PLATFORM = /^[a-z0-9_-]{2,20}$/;
+
+export function isValidLauncherPlatform(value: string): boolean {
+  return PLATFORM.test(value);
+}
+
+export function isValidLauncherVersion(value: string): boolean {
+  return VERSION.test(value);
+}
+
 /** Идентификатор ключа подписи: короткий, без запятых и двоеточий (формат `id:base64`). */
 const KEY_ID = /^[0-9A-Za-z._-]{1,40}$/;
 
@@ -961,9 +972,9 @@ export async function saveLauncherBinary(
   onProgress?: HelperReleaseProgressHandler,
 ): Promise<PublishResult> {
   await onProgress?.({ stage: 'validate', percent: 8, message: 'Проверяю версию и заголовок Windows PE', stats: { files: 1, totalBytes: data.length } });
-  if (!PLATFORM.test(platform)) return { ok: false, error: 'плохая платформа' };
-  if (!VERSION.test(version)) return { ok: false, error: 'плохая версия лаунчера' };
-  if (data.length < 1024 || data.length > 128 * 1024 * 1024) return { ok: false, error: 'некорректный размер exe' };
+  if (!isValidLauncherPlatform(platform)) return { ok: false, error: 'плохая платформа' };
+  if (!isValidLauncherVersion(version)) return { ok: false, error: 'плохая версия лаунчера' };
+  if (data.length < 1024 || data.length > MAX_LAUNCHER_UPLOAD_BYTES) return { ok: false, error: 'некорректный размер exe' };
   if (data[0] !== 0x4d || data[1] !== 0x5a) return { ok: false, error: 'файл не похож на Windows PE (нет заголовка MZ)' };
   await onProgress?.({ stage: 'hash', percent: 36, message: 'Считаю SHA-256 базовой сборки', stats: { files: 1, totalBytes: data.length } });
   const sha256 = createHash('sha256').update(data).digest('hex');

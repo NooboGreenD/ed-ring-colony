@@ -351,49 +351,33 @@ sudo ufw delete allow 8000/tcp
 
 ### Если загрузка ColonialHelper.exe отвечает HTTP 413
 
-Файлы проекта задают `client_max_body_size 200m` для
-`/api/admin/uploader/release`. Глобальные `25m` меньше файла 25,2 МиБ, не считая
-multipart-обёртки, поэтому для него должен сработать отдельный location.
+Актуальная админка отправляет EXE raw-частями до 4 МиБ и собирает файл на
+сервере. Если прокси возвращает 413, интерфейс автоматически уменьшает часть
+до 2, затем до 1 МиБ и повторяет загрузку. Поэтому прокси не получает файл
+25,2 МиБ целиком; стандартный лимит проекта `25m` достаточен. Незавершённые
+части хранятся в `UPLOADER_STORE_DIR` и автоматически удаляются через 6 часов.
+Лимит `200m` в nginx оставлен для старой админки и других клиентов, которые
+загружают EXE одним multipart-запросом.
 
-Проверить всё сразу можно скриптом из репозитория — он только читает, ничего не
-меняет и не перезапускает nginx:
+Диагностический скрипт проверяет активные server-блоки nginx, error.log и
+реальное тело минимальной части 1 МиБ, которую использует последний автоповтор:
 
 ```bash
 cd /opt/ed-ring-colony/src
 bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
 ```
 
-Для каждого `server`-блока активной конфигурации, который проксирует сайт на
-`:3000`, скрипт показывает лимит уровня `server` и лимит
-`location = /api/admin/uploader/release`, ищет строки
-`client intended to send too large body` в `error.log` и отдельным запросом
-проверяет, доезжает ли тело 27 МиБ до приложения: `401/403` — прокси пропустили
-(отказ уже у приложения, это хорошо), `413` — корпус срезали до сайта. Код
-возврата `1` означает, что ограничитель найден.
+`401/403` на контрольном запросе означает, что 1-МиБ тело дошло до приложения,
+а ответ остановила ожидаемая авторизация. `413` означает, что активный nginx
+или внешний proxy/CDN ограничивает даже минимальную часть. Для каждого HTTPS
+`server {}` эффективный лимит должен быть не меньше 1 МиБ; конфигурация проекта
+задаёт 200m для точного location. Nginx не наследует `location` между блоками,
+поэтому при необходимости держите этот location и в `listen 443 ssl`.
 
-То же руками:
-
-```bash
-sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
-sudo grep -c 'client intended to send too large body' /var/log/nginx/error.log
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-У Nginx `location` действует только внутри своего `server {}`. Если TLS
-завершается в отдельном `server { listen 443 ssl; }`, скопируйте туда
-`location = /api/admin/uploader/release` из
-`deploy/selfhost/nginx-selfhost.conf` (или `deploy/nginx.conf`). Строка
-`client intended to send too large body` в `error.log` — доказательство, что
-отказал именно этот nginx; если её нет, а 413 есть, ограничивает другой
-reverse proxy/CDN перед этим Nginx (Synology Application Portal, Cloudflare,
-Kong для Supabase — см. [GALAXY-POINTS-PUBLISH-FIX.md](GALAXY-POINTS-PUBLISH-FIX.md)).
-
-Поднять лимит снаружи не удаётся? Базовую сборку можно положить в хранилище
-мимо HTTP-загрузки: exe в `launcher/win64.exe` и рядом `launcher/win64.json`
-с полями `platform`, `version`, `url` (https), `sha256`, `size` — том
-`UPLOADER_STORE_DIR`, в Docker это `/data/uploader` внутри контейнера `web`.
-Приложение читает оба файла как обычные результаты публикации, но проверьте
-`sha256` и `size`: лаунчер сверяет хеш при обновлении.
+Строка `client intended to send too large body` в `/var/log/nginx/error.log`
+показывает, что запрос отклонил именно nginx. Если её нет, а зонд вернул 413,
+ограничитель расположен перед ним (например, Synology Application Portal,
+Cloudflare или другой reverse proxy).
 
 ---
 

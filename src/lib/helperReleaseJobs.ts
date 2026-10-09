@@ -83,7 +83,7 @@ function safeLine(value: unknown): string {
   return String(value ?? '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').trim().slice(0, 240);
 }
 
-function initialState(input: HelperReleaseInput): HelperReleaseJob {
+function initialState(input: HelperReleaseInput, id: string = randomUUID()): HelperReleaseJob {
   const createdAt = now();
   const stats = emptyStats();
   if (input.kind === 'bundle') {
@@ -94,7 +94,7 @@ function initialState(input: HelperReleaseInput): HelperReleaseJob {
     stats.totalBytes = input.data.length;
   }
   return {
-    id: randomUUID(),
+    id,
     kind: input.kind,
     state: 'queued',
     active: true,
@@ -257,13 +257,22 @@ async function latestFromDisk(): Promise<HelperReleaseJob | null> {
   return jobs[0] ?? null;
 }
 
-export async function startHelperReleaseJob(input: HelperReleaseInput): Promise<HelperReleaseJob> {
+export async function startHelperReleaseJob(input: HelperReleaseInput, requestedId?: string): Promise<HelperReleaseJob> {
+  const id = requestedId ?? randomUUID();
+  if (!JOB_ID.test(id)) throw new Error('Неверный идентификатор задачи Helper');
+
+  // Chunked launcher upload completion may be retried after the HTTP response
+  // was lost. Its upload UUID is the idempotency key, so never enqueue the
+  // same publication twice.
+  const existing = await readJob(id);
+  if (existing) return existing;
+
   if (activeJobId) throw new Error('Другая операция Helper уже выполняется');
   const latest = await latestFromDisk();
   if (latest?.active && Date.now() - Date.parse(latest.updatedAt) < 30 * 60_000) {
     throw new Error('Другая операция Helper уже выполняется');
   }
-  const state = initialState(input);
+  const state = initialState(input, id);
   runtimeJobs.set(state.id, { state, cancelRequested: false });
   await persist(state);
   void run(state.id, input);

@@ -343,33 +343,25 @@ sudo apt-get install -y certbot python3-certbot-nginx
 sudo certbot --nginx -d ваш-домен
 ```
 
-В конфиге уже учтены: таймаут 310 с для долгого роута
-`/api/atlas/ring-route` (`maxDuration = 300`), `client_max_body_size 25m`
-для загрузки журналов (и 200m для `/api/admin/uploader/release` — базовый
-EXE Helper из админки, иначе 413), кэш `/_next/static/`. Размер 25,2 МиБ
-близок к глобальному лимиту 25m и с multipart-обёрткой его превышает. Поэтому
-должен сработать отдельный location. Если HTTPS обслуживает отдельный
-`server { listen 443 ssl; }`,
-скопируйте его туда: nginx применяет locations только внутри выбранного
-server-блока. Проверьте активную конфигурацию и примените её:
+В конфиге учтены таймаут 310 с для долгого роута `/api/atlas/ring-route`,
+`client_max_body_size 25m` для журналов и `200m` для
+`/api/admin/uploader/release` (совместимость со старой админкой и цельными
+multipart-запросами), а также кэш `/_next/static/`. Актуальная админка отправляет
+базовый EXE raw-частями до 4 МиБ и автоматически снижает размер до 1 МиБ при
+413, поэтому полный файл 25,2 МиБ не пересекает proxy одним запросом.
 
-```bash
-sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
-sudo nginx -t && sudo systemctl reload nginx
-```
-
-Или сразу диагностический скрипт проекта (только читает: обходит все
-`server`-блоки, которые проксируют сайт, сверяется с `error.log` и зондирует
-цепочку прокси телом 27 МиБ):
+Если HTTPS обслуживает отдельный `server { listen 443 ssl; }`, точный location
+нужно продублировать туда для старой админки: nginx не наследует locations
+между server-блоками. Проверка проекта обходит все блоки, смотрит `error.log`
+и зондирует цепочку минимальной частью 1 МиБ:
 
 ```bash
 bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
 ```
 
-Если активный HTTPS-блок уже показывает `200m`, а 413 остаётся, проверьте
-лимит внешнего reverse proxy/CDN перед nginx: в этом случае в
-`/var/log/nginx/error.log` тихо — строк `client intended to send too large body`
-в нём нет, значит отказал не этот nginx.
+Если зонд всё равно получает 413, внешний reverse proxy/CDN ограничивает тело
+меньше 1 МиБ; строка `client intended to send too large body` в
+`/var/log/nginx/error.log` указывает на сам nginx.
 
 ## 7. Крон-задачи
 
