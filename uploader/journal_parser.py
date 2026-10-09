@@ -1,6 +1,7 @@
 """Парсер журналов Elite Dangerous."""
 import hashlib as _hashlib
 import json as _std_json
+import re
 from typing import List, Dict, Any, Optional, Tuple
 
 # Классификация станции («это стройплощадка?») живёт в `colonisation`: там же
@@ -594,8 +595,8 @@ class ConstructionSnapshotCollector:
 
     Здесь остаются только те snapshots, у которых реально изменилось состояние
     стройки: система, MarketID, ConstructionID, прогресс, имя или объёмы
-    ресурсов. Остальное — шум, который сервер всё равно схлопывает upsert'ом
-    по (user, timestamp, system, construction_id).
+    ресурсов. Остальное — шум: сервер хранит одну строку на площадку и не
+    меняет её более старым состоянием (`colonisation_sites_write`).
     """
 
     def __init__(self):
@@ -654,20 +655,67 @@ class ConstructionSnapshotCollector:
             self.events = list(events) + self.events
 
 
+_STRICT_NUMBER = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+def _strict_number(value):
+    """Число из поля журнала или None. Пустая строка, текст, null и bool — не число."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value if value == value and value not in (float("inf"), float("-inf")) else None
+    if isinstance(value, str) and _STRICT_NUMBER.match(value.strip()):
+        return float(value.strip()) if "." in value else int(value.strip())
+    return None
+
+
+
+def compact_construction_resources(resources) -> list:
+    """Компактный список ресурсов стройки для отправки на сайт.
+
+    Остаются `Name`, `Name_Localised` (если есть), `RequiredAmount` и
+    `ProvidedAmount` — ровно то, что хранит `colonisation_sites` и читает
+    обогащение Raven. `Payment` и прочие поля журнала в сеть не уходят: они
+    удваивали и трафик, и размер строки в базе. Элементы без имени или без
+    числовых сумм отбрасываются, список сортируется по имени — так же, как
+    это делает серверная функция `colonisation_compact_resources`.
+    """
+    if not isinstance(resources, list):
+        return []
+    out = []
+    for item in resources:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("Name")
+        name = "" if name is None else str(name)
+        required = _strict_number(item.get("RequiredAmount"))
+        provided = _strict_number(item.get("ProvidedAmount"))
+        if not name or required is None or provided is None:
+            continue
+        row = {
+            "Name": name,
+            "RequiredAmount": max(0, required),
+            "ProvidedAmount": max(0, provided),
+        }
+        localised = str(item.get("Name_Localised") or "").strip()
+        if localised:
+            row["Name_Localised"] = localised
+        out.append(row)
+    out.sort(key=lambda row: row["Name"])
+    return out
+
+
 def _construction_event_from(ev: dict, current_system: str = None) -> Optional[dict]:
     """Собрать один snapshot стройплощадки из события журнала.
 
-    `raw_event` (полная копия события журнала) больше не отправляется: сайт
-    всё нужное берёт из полей выше и `resources_total`, а дублирующий JSON
-    удваивал и трафик, и размер строки в `colonisation_events` — именно из-за
-    него таблица росла вчетверо быстрее полезного объёма.
+    Полное событие журнала (`raw_event`) не отправляется: сайту нужны поля
+    ниже и компактный список ресурсов. Раньше туда уходил полный
+    `ResourcesRequired` с `Payment` и дублирующим JSON; на сервере из этого
+    выросли 12+ ГБ таблицы колонизации. См. COLONISATION-SITES-REWORK.md.
     """
     system = ev.get("StarSystem") or current_system
     if not system:
         return None
-    resources = ev.get("ResourcesRequired")
-    if not isinstance(resources, list):
-        resources = []
     return {
         "timestamp": ev.get("timestamp"),
         "system_name": str(system),
@@ -675,7 +723,7 @@ def _construction_event_from(ev: dict, current_system: str = None) -> Optional[d
         "construction_name": ev.get("ConstructionName") or ev.get("Name"),
         "construction_id": ev.get("ConstructionID"),
         "construction_progress": ev.get("ConstructionProgress", ev.get("Progress")),
-        "resources_total": resources,
+        "resources_total": compact_construction_resources(ev.get("ResourcesRequired")),
     }
 
 

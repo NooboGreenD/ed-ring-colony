@@ -125,6 +125,7 @@ from system_map import (
     map_summary,
 )
 from edsm_api import EDSMAPI
+from eddn_api import EddnClient
 from inara_api import InaraAPI
 from ship_tracker import ShipTracker
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
@@ -334,6 +335,12 @@ class ColonialHelperApp:
             self.config.get("edsm_commander_name", ""),
             app_version=VERSION,
         )
+        # EDDN: публикация исследовательских событий (данные для Spansh). Выключено
+        # по умолчанию: публикация открытая и необратимая — см. eddn_api.py.
+        self.eddn_api = EddnClient(
+            enabled=bool(self.config.get("eddn_enabled", False)),
+            app_version=VERSION,
+        )
         self.inara_api = InaraAPI(
             self.config.get("inara_api_key", ""),
             self.config.get("inara_commander_name", ""),
@@ -355,6 +362,7 @@ class ColonialHelperApp:
             edsm_api=self.edsm_api,
             inara_api=self.inara_api,
             raven_api=self.raven_api,
+            eddn_api=self.eddn_api,
             logger=lambda message: self.root.after(0, lambda m=message: self.log(m, "info")),
             # Историю (первичную загрузку) во внешние сервисы не отправляем,
             # если пользователь это явно не включил в настройках.
@@ -846,6 +854,27 @@ class ColonialHelperApp:
         self.edsm_status_label = tb.Label(frame, text="EDSM: включён" if self.edsm_api.enabled else "EDSM: не настроен", foreground=COLOR_MUTED)
         self.edsm_status_label.pack(anchor=W, pady=(5, 0))
 
+        # EDDN → Spansh. Публикация открытая, поэтому включается только явно.
+        tb.Separator(frame).pack(fill=X, pady=(14, 8))
+        tb.Label(frame, text="EDDN → Spansh", font=("Segoe UI", 10, "bold")).pack(anchor=W)
+        tb.Label(
+            frame,
+            text=("Исследовательские события журнала (Location, FSDJump, CarrierJump, Scan, "
+                  "SAASignalsFound, Docked) уходят в открытую ленту EDDN, из которой берёт данные Spansh. "
+                  "Публикация необратима и видна всем. Колонизация, вклады и грузы сюда не попадают."),
+            foreground=COLOR_MUTED,
+            wraplength=720,
+            justify="left",
+        ).pack(anchor=W, pady=(2, 4))
+        self.eddn_enabled_var = tb.BooleanVar(value=self.eddn_api.enabled)
+        tb.Checkbutton(
+            frame,
+            text="Публиковать исследовательские события в EDDN",
+            variable=self.eddn_enabled_var,
+            command=self._save_eddn_setting,
+            bootstyle="success-round-toggle",
+        ).pack(anchor=W)
+
         tb.Separator(frame, orient=HORIZONTAL).pack(fill=X, pady=20)
         tb.Label(frame, text="Inara API", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(frame, text="Необязательно: отправка навигации, стыковок, сканирования и грузовых событий в Inara.", foreground=COLOR_MUTED).pack(anchor=W)
@@ -867,6 +896,13 @@ class ColonialHelperApp:
         self.config["inara_commander_name"] = self.inara_api.commander_name
         self.save_config()
         self.inara_status_label.config(text="Inara: включена" if self.inara_api.enabled else "Inara: не настроена")
+
+    def _save_eddn_setting(self):
+        enabled = bool(self.eddn_enabled_var.get())
+        self.eddn_api.set_enabled(enabled)
+        self.config["eddn_enabled"] = enabled
+        self.save_config()
+        self.log(f"EDDN: публикация {'включена' if enabled else 'выключена'}", "info")
 
     def _save_edsm_settings(self):
         self.edsm_api.set_credentials(self.edsm_key_entry.get(), self.edsm_name_entry.get())

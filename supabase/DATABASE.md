@@ -13,7 +13,8 @@ Postgres) и для приведения существующей базы в с
 | `migrations/2025…-2026…_*.sql` | Инкрементальные миграции (wiki, support, CAPI, галнет-переводы, приватность досье и т.д.) |
 | `migrations/20260920000000_site_content_translations.sql` | Переводы site_content (раньше жила неучтённой в `migrations/` в корне репо) |
 | `maintenance/create_delivery_source_hash_unique_index_concurrently.sql` | Уникальный индекс deliveries.source_hash. `CREATE INDEX CONCURRENTLY` — выполняется **отдельно, вне транзакции** |
-| `maintenance/colonisation_events_source_hash_dedup.sql` | Разбор накопленных дублей `colonisation_events` (префлайт → копия лишних строк → удаление) и уникальный индекс по `(user_id, source_hash)`. Тоже **отдельно, вне транзакции**, в тихое окно |
+| `maintenance/colonisation_events_source_hash_dedup.sql` | **УСТАРЕЛО** — заменён `colonisation_sites_cutover.sql`: старая схема с ключом `source_hash` больше не используется. Не запускать |
+| `maintenance/colonisation_sites_cutover.sql` | Перенос последнего состояния каждой площадки из старой `colonisation_events` в `colonisation_sites`, проверка полноты, переименование старой таблицы; её **удаление** — отдельным шагом (освобождает ~12 ГБ). Запускать вручную после обновления. См. [COLONISATION-SITES-REWORK.md](../COLONISATION-SITES-REWORK.md) |
 | `maintenance/galaxy_systems_bulk_load.sql` | Снять GIN/GiST-индексы `galaxy_systems` **перед холодной заливкой каталога** (поддержка индексов на лету — главный тормоз вставки 2×10⁸ строк). `DROP INDEX CONCURRENTLY` — вне транзакции |
 | `maintenance/galaxy_systems_rebuild_indexes.sql` | Парный файл: вернуть `idx_galaxy_systems_coord` и `idx_galaxy_systems_name_trgm` после заливки + `ANALYZE`. См. [GALAXY-IMPORT-SPEED.md](../GALAXY-IMPORT-SPEED.md) |
 | `route_systems.sql`, `add_site_content_translations.sql` | Исторические разовые скрипты; их содержимое уже покрыто миграциями, оставлены для справки |
@@ -46,7 +47,8 @@ RLS-политик. Файл идемпотентен: на живой прод�
 3. Отдельно (вне транзакции) выполните maintenance-индексы:
    ```bash
    psql "$SUPABASE_DB_URL" -f supabase/maintenance/create_delivery_source_hash_unique_index_concurrently.sql
-   psql "$SUPABASE_DB_URL" -f supabase/maintenance/colonisation_events_source_hash_dedup.sql
+   (на новой установке перенос площадок не нужен: миграция `20261009010000_colonisation_sites.sql`
+   сама удаляет пустую старую таблицу `colonisation_events`)
    ```
 4. Проверьте Storage-бакеты: `avatars`, `news-covers`,
    `support-attachments` (первые создаются миграциями; если прав не

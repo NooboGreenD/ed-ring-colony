@@ -5,20 +5,19 @@ import { createServiceClient } from '@/lib/supabaseServer';
 export const dynamic = 'force-dynamic';
 
 /**
- * Политика хранения `colonisation_events` (и снимков прогресса).
+ * Чистка журнальных данных по колонизации.
  *
- * Таблица — «история наблюдений» строек, и без чистки она росла бесконечно
- * (12+ ГБ при полезных ~3). Сама чистка — функция
- * `public.colonisation_events_prune(days)` в миграции
- * `20261008000000_colonisation_events_slim_retention.sql`:
- *
- *   • вклады `ColonisationContribution` не читает никто — удаляются целиком;
- *   • состояния старше окна (по умолчанию 60 дней) удаляются, КРОМЕ
- *     последнего снимка каждой площадки — его читает обогащение Raven;
- *   • снимки `construction_depot_snapshots` старше окна удаляются.
+ * Состояния площадок (`colonisation_sites`) не чистятся: там одна строка на
+ * площадку, и её читает обогащение Raven. Чистятся снимки прогресса
+ * (`construction_depot_snapshots`) старше окна — функция
+ * `public.colonisation_retention_prune(days)` из миграции
+ * `20261009010000_colonisation_sites.sql`.
  *
  * Окно настраивается `COLONISATION_RETENTION_DAYS` (минимум 7 — защита от
  * опечатки в окружении, которая стёрла бы живую историю).
+ *
+ * Ответ сообщает, осталась ли старая таблица `colonisation_events`: если да,
+ * её надо перенести и удалить через `supabase/maintenance/colonisation_sites_cutover.sql`.
  */
 function retentionDays(): number {
   const parsed = Number(process.env.COLONISATION_RETENTION_DAYS);
@@ -30,27 +29,26 @@ async function handle() {
   const svc = createServiceClient();
   const retainDays = retentionDays();
 
-  const { data, error } = await svc.rpc('colonisation_events_prune', {
+  const { data, error } = await svc.rpc('colonisation_retention_prune', {
     p_retain_days: retainDays,
   });
 
   if (error) {
-    // Функция появляется миграцией 20261008000000…: пока её нет, задача
+    // Функция появляется миграцией 20261009010000…: пока её нет, задача
     // честно падает и видно почему, а не «тихо ничего не делает».
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
   const row = (Array.isArray(data) ? data[0] : data) as
-    | { deleted_events?: number; deleted_snapshots?: number; deleted_contributions?: number }
+    | { deleted_snapshots?: number; legacy_events_present?: boolean }
     | null;
 
   return NextResponse.json({
     retainDays,
     deleted: {
-      events: Number(row?.deleted_events ?? 0),
       snapshots: Number(row?.deleted_snapshots ?? 0),
-      contributions: Number(row?.deleted_contributions ?? 0),
     },
+    legacyEventsPresent: Boolean(row?.legacy_events_present),
   });
 }
 

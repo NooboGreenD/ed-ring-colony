@@ -13,9 +13,10 @@
  */
 
 import {
-  persistColonisationEvents,
-  telemetryConstructionRow,
-  type ColonisationEventRow,
+  persistColonisationSites,
+  siteRowFromTelemetry,
+  snapshotRowsForChangedSites,
+  type ColonisationSiteRow,
 } from './colonisationEvents.ts';
 import { signalsFromList } from './bodySignals.ts';
 
@@ -556,6 +557,8 @@ export interface JournalTelemetryOutcome {
 
 type DbClient = {
   from: (table: string) => any;
+  /** Запись состояний площадок идёт RPC `colonisation_sites_write`. */
+  rpc: (fn: string, args: Record<string, unknown>) => any;
 };
 
 const CONSTRUCTION_BATCH = 100;
@@ -644,46 +647,27 @@ export async function persistJournalTelemetry(
 
   if (events.length > 0) {
     const rows = events
-      .map((event) => telemetryConstructionRow(userId, event))
-      .filter((row): row is ColonisationEventRow => row !== null);
+      .map((event) => siteRowFromTelemetry(userId, event))
+      .filter((row): row is ColonisationSiteRow => row !== null);
     if (rows.length < events.length) {
-      // Событие без системы или метки времени записать нельзя: раньше такая
-      // строка уходила в базу с пустым именем системы (в CAPI-окне система
-      // неизвестна) либо с текущим временем вместо журнального, и каждый
-      // повтор загрузки добавлял новую «запись» об одном и том же событии.
-      warnings.push(`construction events: ${events.length - rows.length} без системы/метки времени пропущено`);
+      // Событие без системы, метки времени или MarketID записать нельзя: площадка
+      // в базе ищется по MarketID, а подставленное «сейчас» вместо журнального
+      // времени превращало бы повтор загрузки в новое состояние.
+      warnings.push(`construction events: ${events.length - rows.length} без системы/метки времени/MarketID пропущено`);
     }
 
-    const write = await persistColonisationEvents(svc, rows);
-    outcome.constructionInserted += write.inserted;
-    outcome.constructionDuplicates += write.duplicates;
+    const write = await persistColonisationSites(svc, rows);
+    outcome.constructionInserted += write.changed;
+    outcome.constructionDuplicates += write.unchanged + write.stale;
     warnings.push(...write.warnings);
 
-    // Снимок прогресса строится только по реально записанным состояниям:
-    // журнал пишет `ColonisationConstructionDepot` каждые несколько секунд,
-    // и повтор уже сохранённого состояния не должен добавлять строку ещё и в
-    // `construction_depot_snapshots`.
-    const stored = rows.filter((row) => write.insertedHashes.has(row.source_hash));
+    // Снимок прогресса — только по площадкам, чьё состояние реально изменилось
+    // (новая площадка или другой прогресс/набор ресурсов). Журнал пишет
+    // `ColonisationConstructionDepot` каждые несколько секунд, и повтор
+    // сохранённого состояния не должен добавлять строку в историю графиков.
+    // Держим по одному снимку на конструкцию в этом запросе.
+    const snapshots = snapshotRowsForChangedSites(rows, write.changedMarkets);
 
-    // Отдельный снимок состояния стройки — источник прогресса для карты и
-    // страницы системы. Держим по одному на конструкцию в этом запросе.
-    const latest = new Map<string, ColonisationEventRow>();
-    for (const row of stored) {
-      const key = `${row.system_name.toLowerCase()}\u0000${row.construction_id ?? row.construction_name ?? ''}`;
-      const previous = latest.get(key);
-      if (!previous || Date.parse(String(row.event_timestamp)) > Date.parse(String(previous.event_timestamp))) {
-        latest.set(key, row);
-      }
-    }
-    const snapshots = Array.from(latest.values()).map((row) => ({
-      system_name: row.system_name,
-      construction_id: row.construction_id,
-      construction_name: row.construction_name,
-      progress: row.construction_progress,
-      resources_total: row.resources_total,
-      snapshot_at: row.event_timestamp,
-      source: 'journal',
-    }));
     // Повторный импорт того же журнала не должен удваивать историю.
     // Уникального ограничения в схеме нет (только `id SERIAL PRIMARY KEY`),
     // поэтому сверяемся с уже записанными снимками сами: ключ — конструкция и

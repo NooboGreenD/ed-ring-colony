@@ -5,14 +5,19 @@ import {
   type RavenSystemV2,
 } from '@/lib/ravenColonial';
 
-type DepotEventRow = {
+/** Площадок в одном запросе: короткий `in.(…)` вместо запроса на каждую. */
+const MARKET_LOOKUP_CHUNK = 200;
+
+type SiteRow = {
+  market_id: number | string;
   resources_total: unknown;
 };
 
 /**
- * Enrich a live Raven response with the latest depot snapshots imported from
- * Elite journals. Only the public construction state (MarketID, timestamp,
- * and commodity totals) is read; no commander or raw journal data is exposed.
+ * Enrich a live Raven response with the latest depot state of each site, as
+ * imported from Elite journals (`colonisation_sites`: одна строка на площадку).
+ * Only the public construction state (MarketID and commodity totals) is read;
+ * no commander or raw journal data is exposed.
  *
  * A journal snapshot supplies each commodity's original requirement, while
  * Raven supplies the live outstanding amount. The pure merger derives the
@@ -32,32 +37,25 @@ export async function enrichRavenSystemWithJournalSnapshots(
 
   try {
     const supabase = createServiceClient();
-    // Elite MarketIDs are 64-bit numbers. Querying each ID lets us retain the
-    // original string key instead of round-tripping a BIGINT through JSON and
-    // potentially losing precision in JavaScript.
-    const snapshots = await Promise.all(
-      marketIds.map(async (marketId): Promise<RavenDepotSnapshot | null> => {
-        const { data, error } = await supabase
-          .from('colonisation_events')
-          .select('resources_total')
-          .eq('market_id', marketId)
-          // Contribution events do not contain a complete depot resource list.
-          .not('construction_id', 'is', null)
-          .order('event_timestamp', { ascending: false })
-          .limit(1);
+    const snapshots: RavenDepotSnapshot[] = [];
+    for (let index = 0; index < marketIds.length; index += MARKET_LOOKUP_CHUNK) {
+      const chunk = marketIds.slice(index, index + MARKET_LOOKUP_CHUNK);
+      // MarketID — 64-битное число, но реальные значения Elite далеко ниже 2^53,
+      // поэтому их безопасно сверять строкой после JSON-разбора.
+      const { data, error } = await supabase
+        .from('colonisation_sites')
+        .select('market_id, resources_total')
+        .in('market_id', chunk);
+      if (error) throw new Error(error.message);
+      for (const row of (data ?? []) as SiteRow[]) {
+        snapshots.push({
+          marketId: String(row.market_id),
+          resources: row.resources_total,
+        } satisfies RavenDepotSnapshot);
+      }
+    }
 
-        if (error || !data?.[0]) return null;
-        return {
-          marketId,
-          resources: (data[0] as DepotEventRow).resources_total,
-        } satisfies RavenDepotSnapshot;
-      }),
-    );
-
-    return enrichRavenSystemWithDepotSnapshots(
-      system,
-      snapshots.filter((snapshot): snapshot is RavenDepotSnapshot => snapshot !== null),
-    );
+    return enrichRavenSystemWithDepotSnapshots(system, snapshots);
   } catch {
     // Raven data remains useful when journal storage is unavailable or this
     // deployment intentionally has no service-role key.

@@ -1,40 +1,35 @@
 /**
- * Запись в `colonisation_events` — устойчивый ключ состояния стройки.
+ * Запись состояний стройплощадок в `colonisation_sites` (src/lib/colonisationEvents.ts).
  *
- * Таблицу кормят три клиента: браузерный загрузчик журнала, десктопный
- * Colonial Helper и синхронизация CAPI. Раньше каждый путь строил строки сам и
- * вставлял их своим способом, поэтому одни и те же события журнала попадали в
- * базу по несколько раз:
- *
- *   * `ColonisationContribution` пишется с пустым `construction_id`, а
- *     уникальный ключ схемы в PostgreSQL NULL'ы не сравнивает — ограничение
- *     такие строки не останавливало;
- *   * `ColonisationConstructionDepot` повторяется в журнале каждые несколько
- *     секунд с новой меткой времени, поэтому «ключ схемы + timestamp» считает
- *     повтором только полную копию строки, а не то же состояние стройки.
- *
- * Здесь закреплены: одинаковый отпечаток одного состояния из разных клиентов,
- * отсев повторов (в том числе внутри пачки) и поведение, пока миграция
- * `source_hash` не приехала на прод.
+ * Таблица хранит одну строку на площадку — текущее состояние. Здесь закреплено:
+ * одно состояние из разных клиентов даёт одну и ту же строку, лишние поля журнала
+ * (Payment, сырое событие, вклады) в базу не попадают, повторы и устаревшие
+ * состояния не меняют площадку, а снимки прогресса пишутся только при реальном
+ * изменении. Отдельно — контракт миграции и maintenance-скрипта: права на
+ * функции и правило «новее побеждает», без которых код выше работает неверно.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
-  collapseRowsByHash,
-  colonisationSourceHash,
-  contributionEventRow,
-  depotEventRow,
+  SITE_WRITE_BATCH,
+  compactResources,
   depotStateFingerprint,
   latestDepotEvents,
-  persistColonisationEvents,
-  resetColonisationWriteMode,
-  telemetryConstructionRow,
+  persistColonisationSites,
+  progressPercent,
+  siteRowFromDepot,
+  siteRowFromTelemetry,
+  snapshotRowsForChangedSites,
 } from '../../src/lib/colonisationEvents.ts';
 
+const ROOT = new URL('../..', import.meta.url).pathname;
 const TIMESTAMP = '2026-09-14T10:00:00Z';
+const USER = 'user-1';
 
-/** Строка в формате Colonial Helper'а / браузерной телеметрии. */
+/** Строка в формате Colonial Helper'а / браузерной телеметрии (доля прогресса). */
 const telemetryEvent = (overrides = {}) => ({
   timestamp: TIMESTAMP,
   system_name: 'Delta Velorum',
@@ -43,13 +38,13 @@ const telemetryEvent = (overrides = {}) => ({
   construction_name: 'A 1',
   construction_progress: 0.5,
   resources_total: [
-    { Name: '$steel_name;', Name_Localised: 'Steel', RequiredAmount: 5000, ProvidedAmount: 1200 },
+    { Name: '$steel_name;', Name_Localised: 'Steel', RequiredAmount: 5000, ProvidedAmount: 1200, Payment: 900 },
   ],
-  raw_event: { timestamp: TIMESTAMP, event: 'ColonisationConstructionDepot' },
+  raw_event: { timestamp: TIMESTAMP, event: 'ColonisationConstructionDepot', Big: 'x'.repeat(50) },
   ...overrides,
 });
 
-/** То же событие после парсера сайта (`parseColonisationEvents`): проценты. */
+/** Тот же объект после парсера сайта (`parseColonisationEvents`): проценты, camelCase. */
 const parsedDepot = (overrides = {}) => ({
   timestamp: TIMESTAMP,
   systemName: 'Delta Velorum',
@@ -58,316 +53,248 @@ const parsedDepot = (overrides = {}) => ({
   constructionId: '1',
   constructionProgress: 50,
   resourcesRequired: [
-    { name: '$steel_name;', nameLocalised: 'Сталь', requiredAmount: 5000, providedAmount: 1200, payment: 0 },
+    { name: '$steel_name;', nameLocalised: 'Сталь', requiredAmount: 5000, providedAmount: 1200, payment: 900 },
   ],
   ...overrides,
 });
 
-/* ── отпечаток ── */
+/* ── построение строк ── */
 
-test('одно состояние стройки из разных клиентов даёт один отпечаток', () => {
-  const fromHelper = telemetryConstructionRow('user-1', telemetryEvent());
-  const fromSite = depotEventRow('user-1', parsedDepot());
+test('одно состояние стройки из разных клиентов даёт одну и ту же строку площадки', () => {
+  const fromHelper = siteRowFromTelemetry(USER, telemetryEvent());
+  const fromSite = siteRowFromDepot(USER, parsedDepot());
 
   assert.ok(fromHelper && fromSite);
-  assert.equal(fromHelper.source_hash, fromSite.source_hash,
-    'строки одного события разошлись по отпечаткам: в таблице появятся дубли');
-  // И в колонках они тоже обязаны совпасть — по ним считают прогресс проекта.
-  assert.equal(fromHelper.construction_progress, fromSite.construction_progress);
   assert.equal(fromHelper.market_id, fromSite.market_id);
   assert.equal(fromHelper.construction_id, fromSite.construction_id);
+  assert.equal(fromHelper.construction_progress, fromSite.construction_progress,
+    'доля журнала и проценты парсера дали разный прогресс');
+  // Название для показа зависит от языка клиента; состояние (имя и суммы) — нет.
+  const state = (rows) => rows.map(({ Name_Localised: _localised, ...rest }) => rest);
+  assert.deepEqual(state(fromHelper.resources_total), state(fromSite.resources_total));
 });
 
-test('локальный язык журнала не влияет на отпечаток', () => {
-  const english = telemetryConstructionRow('user-1', telemetryEvent());
-  const russian = telemetryConstructionRow('user-1', telemetryEvent({
-    resources_total: [
-      { Name: '$steel_name;', Name_Localised: 'Сталь', RequiredAmount: 5000, ProvidedAmount: 1200 },
-    ],
-  }));
-
-  assert.equal(english.source_hash, russian.source_hash,
-    'перевод названия ресурса создал «новое» состояние стройки');
+test('строка площадки содержит только нужные поля — без сырого события и служебных ключей', () => {
+  const row = siteRowFromTelemetry(USER, telemetryEvent());
+  assert.deepEqual(Object.keys(row).sort(), [
+    'construction_id', 'construction_name', 'construction_progress', 'event_timestamp',
+    'market_id', 'resources_total', 'system_name', 'user_id',
+  ]);
+  assert.equal(row.event_timestamp, '2026-09-14T10:00:00.000Z', 'метка времени не нормализована');
+  assert.equal(typeof row.market_id, 'string', 'MarketID должен уходить строкой (64-битный)');
 });
 
-test('состояние стройки не зависит от метки времени, а вклад командира — зависит', () => {
-  const first = telemetryConstructionRow('user-1', telemetryEvent());
-  const later = telemetryConstructionRow('user-1', telemetryEvent({ timestamp: '2026-09-14T10:00:05Z' }));
-  assert.equal(first.source_hash, later.source_hash, 'неизменившееся состояние снова считается новым');
+test('Payment не хранится, Name_Localised — только если есть', () => {
+  const row = siteRowFromTelemetry(USER, telemetryEvent());
+  assert.deepEqual(row.resources_total, [
+    { Name: '$steel_name;', Name_Localised: 'Steel', RequiredAmount: 5000, ProvidedAmount: 1200 },
+  ]);
 
-  const changed = telemetryConstructionRow('user-1', telemetryEvent({ construction_progress: 0.52 }));
-  assert.notEqual(first.source_hash, changed.source_hash, 'изменение прогресса потеряно');
-
-  const contribution = (timestamp, amount) => contributionEventRow('user-1', {
-    timestamp,
-    systemName: 'Delta Velorum',
-    marketId: '3951663874',
-    commodity: 'steel',
-    amount,
-  });
-
-  // Вклад — отдельный факт: два одинаковых вклада в разное время не повторы.
-  assert.notEqual(contribution(TIMESTAMP, 100).source_hash, contribution('2026-09-14T10:05:00Z', 100).source_hash);
-  // А повторная отправка той же строки журнала — повтор.
-  assert.equal(contribution(TIMESTAMP, 100).source_hash, contribution(TIMESTAMP, 100).source_hash);
-  assert.notEqual(contribution(TIMESTAMP, 100).source_hash, contribution(TIMESTAMP, 250).source_hash);
+  const bare = compactResources([{ Name: 'a', RequiredAmount: 1, ProvidedAmount: 0, Payment: 3 }]);
+  assert.deepEqual(bare, [{ Name: 'a', RequiredAmount: 1, ProvidedAmount: 0 }]);
 });
 
-test('строки без системы или метки времени не строятся', () => {
-  assert.equal(depotEventRow('user-1', parsedDepot({ systemName: '' })), null);
-  assert.equal(depotEventRow('user-1', parsedDepot({ timestamp: '' })), null);
-  assert.equal(telemetryConstructionRow('user-1', telemetryEvent({ system_name: '  ' })), null);
-  assert.equal(telemetryConstructionRow('user-1', telemetryEvent({ timestamp: null })), null);
+test('компактный список сортируется и отбрасывает мусор', () => {
+  const out = compactResources([
+    { Name: 'zeta', RequiredAmount: 1, ProvidedAmount: 0 },
+    null,
+    'text',
+    { Name: '', RequiredAmount: 1, ProvidedAmount: 0 },
+    { Name: 'no-provided', RequiredAmount: 1 },
+    { Name: 'text-amount', RequiredAmount: 'abc', ProvidedAmount: 1 },
+    { Name: 'null-amount', RequiredAmount: null, ProvidedAmount: 1 },
+    { Name: 'empty-amount', RequiredAmount: '', ProvidedAmount: 1 },
+    { Name: 'alpha', RequiredAmount: -4, ProvidedAmount: '2' },
+  ]);
+  assert.deepEqual(out, [
+    { Name: 'alpha', RequiredAmount: 0, ProvidedAmount: 2 },
+    { Name: 'zeta', RequiredAmount: 1, ProvidedAmount: 0 },
+  ]);
+  assert.deepEqual(compactResources('не массив'), []);
 });
 
-test('сырое событие журнала не хранится: только маркер типа', () => {
-  // Полная копия события дублировала resources_total (включая
-  // Name_Localised) и раздувала таблицу вчетверо. Читатели raw_event
-  // смотрят только на raw_event->>'event'.
-  const fromHelper = telemetryConstructionRow('user-1', telemetryEvent({
-    raw_event: { event: 'ColonisationConstructionDepot', ResourcesRequired: [{ Name: 'x', Name_Localised: 'икс', RequiredAmount: 1, ProvidedAmount: 1 }] },
-  }));
-  const fromSite = depotEventRow('user-1', parsedDepot());
-  const fromContribution = contributionEventRow('user-1', {
-    timestamp: TIMESTAMP, systemName: 'Delta Velorum', marketId: '3951663874', commodity: 'steel', amount: 10,
-  });
-
-  for (const row of [fromHelper, fromSite, fromContribution]) {
-    assert.ok(row);
-    assert.deepEqual(row.raw_event, { event: row.raw_event.event });
-    assert.ok(JSON.stringify(row.raw_event).length < 120, 'маркер события обязан быть крошечным');
-  }
-  assert.equal(fromHelper.raw_event.event, 'ColonisationConstructionDepot');
-  assert.equal(fromContribution.raw_event.event, 'ColonisationContribution');
+test('строки без системы, метки времени или MarketID не строятся', () => {
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ systemName: '' })), null);
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ timestamp: '' })), null);
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ timestamp: 'не дата' })), null);
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ marketId: null })), null);
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ marketId: '0' })), null);
+  assert.equal(siteRowFromTelemetry(USER, telemetryEvent({ system_name: '  ' })), null);
+  assert.equal(siteRowFromTelemetry(USER, telemetryEvent({ timestamp: null })), null);
+  assert.equal(siteRowFromTelemetry(USER, telemetryEvent({ market_id: null })), null);
 });
 
-test('отпечаток состояния стройки различает изменения ресурсов', () => {
+test('прогресс: доля журнала переводится в проценты один раз, а проценты парсера — не переводятся снова', () => {
+  assert.equal(progressPercent(0.5), 50, 'доля журнала');
+  assert.equal(progressPercent(50), 50, 'уже проценты');
+  assert.equal(progressPercent(0.5, true), 100, 'завершённая стройка');
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ constructionProgress: 0.5 })).construction_progress, 0.5,
+    'парсер сайта уже отдал проценты: повторный перевод исказил бы 0,5 % в 50 %');
+  assert.equal(siteRowFromDepot(USER, parsedDepot({ constructionComplete: true })).construction_progress, 100);
+  assert.equal(siteRowFromTelemetry(USER, telemetryEvent({ construction_progress: 0.123456 })).construction_progress, 12.35,
+    'прогресс округляется до сотых, как NUMERIC(5,2)');
+});
+
+/* ── отпечаток и «что изменилось» ── */
+
+test('локальный язык журнала и цена не меняют состояние стройки', () => {
+  const english = depotStateFingerprint(50, [{ name: 'steel', nameLocalised: 'Steel', requiredAmount: 5, providedAmount: 1, payment: 1 }]);
+  const russian = depotStateFingerprint(50, [{ name: 'steel', nameLocalised: 'Сталь', requiredAmount: 5, providedAmount: 1, payment: 999 }]);
+  assert.equal(english, russian);
+});
+
+test('отпечаток состояния различает прогресс и поставки', () => {
   const base = depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 1 }]);
-  const provided = depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 2 }]);
-  const required = depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 20, providedAmount: 1 }]);
-  assert.notEqual(base, provided);
-  assert.notEqual(base, required);
+  assert.notEqual(base, depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 2 }]));
+  assert.notEqual(base, depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 20, providedAmount: 1 }]));
+  assert.notEqual(base, depotStateFingerprint(51, [{ name: 'steel', requiredAmount: 10, providedAmount: 1 }]));
   assert.equal(base, depotStateFingerprint(50, [{ name: 'steel', requiredAmount: 10, providedAmount: 1 }]));
 });
 
-test('повторы внутри пачки схлопываются до обращения к базе', () => {
+test('снимки пишутся только по изменившимся площадкам, по одному на стройку', () => {
   const rows = [
-    telemetryConstructionRow('user-1', telemetryEvent()),
-    telemetryConstructionRow('user-1', telemetryEvent({ timestamp: '2026-09-14T10:00:05Z' })),
-    telemetryConstructionRow('user-1', telemetryEvent({ construction_progress: 0.9 })),
-  ].filter(Boolean);
-
-  const collapsed = collapseRowsByHash(rows);
-  assert.equal(collapsed.rows.length, 2);
-  assert.equal(collapsed.duplicates, 1);
+    siteRowFromDepot(USER, parsedDepot({ constructionId: '7', constructionProgress: 10, timestamp: '2026-09-14T10:00:00Z' })),
+    siteRowFromDepot(USER, parsedDepot({ constructionId: '7', constructionProgress: 30, timestamp: '2026-09-14T10:05:00Z' })),
+    siteRowFromDepot(USER, parsedDepot({ marketId: '555', constructionId: '8', constructionProgress: 90, timestamp: '2026-09-14T10:00:00Z' })),
+  ];
+  const snapshots = snapshotRowsForChangedSites(rows, new Set(['3951663874']));
+  assert.equal(snapshots.length, 1, 'не изменившаяся площадка попала в снимки');
+  assert.equal(snapshots[0].progress, 30, 'в снимке не самое новое состояние стройки');
+  assert.equal(snapshots[0].source, 'journal');
+  assert.equal(snapshots[0].snapshot_at, '2026-09-14T10:05:00.000Z');
 });
 
 test('latestDepotEvents оставляет последнее состояние каждой стройки', () => {
   const events = [
-    { timestamp: '2026-09-14T10:00:00Z', systemName: 'Delta Velorum', constructionId: 1, constructionProgress: 10 },
-    { timestamp: '2026-09-14T11:00:00Z', systemName: 'Delta Velorum', constructionId: 1, constructionProgress: 20 },
-    { timestamp: '2026-09-14T10:30:00Z', systemName: 'Delta Velorum', constructionId: 2, constructionProgress: 5 },
-    { timestamp: '2026-09-14T10:30:00Z', systemName: 'Sol', constructionId: 1, constructionProgress: 7 },
+    { systemName: 'A', constructionId: '1', timestamp: '2026-09-14T10:00:00Z', tag: 'old' },
+    { systemName: 'a', constructionId: '1', timestamp: '2026-09-14T10:09:00Z', tag: 'new' },
+    { systemName: 'A', constructionId: '2', timestamp: '2026-09-14T10:01:00Z', tag: 'other' },
   ];
-
   const latest = latestDepotEvents(events);
-  assert.equal(latest.length, 3);
-  assert.equal(latest.find((event) => event.constructionId === 1 && event.systemName === 'Delta Velorum').constructionProgress, 20);
+  assert.deepEqual(latest.map((event) => event.tag).sort(), ['new', 'other']);
 });
 
-/* ── запись ── */
+/* ── запись через RPC ── */
 
-/**
- * Мок базы с уникальным ключом `(user_id, source_hash)`: повторная строка не
- * пишется и не возвращается (как `ON CONFLICT DO NOTHING ... RETURNING id`).
- */
-function hashIndexClient() {
-  const written = [];
-  const hashes = new Set();
+/** Мок RPC `colonisation_sites_write` — только вызовы и ответ, без логики базы. */
+function rpcClient(respond = (rows) => rows.map((row) => ({ market_id: row.market_id, changed: true }))) {
+  const calls = [];
   return {
-    written,
-    client: {
-      from: () => ({
-        upsert: (rows) => ({
-          select: async () => {
-            const fresh = rows.filter((row) => !hashes.has(row.source_hash));
-            for (const row of fresh) hashes.add(row.source_hash);
-            written.push(...fresh);
-            return {
-              data: fresh.map((row, index) => ({ id: index + 1, source_hash: row.source_hash })),
-              error: null,
-            };
-          },
-        }),
-      }),
+    calls,
+    rpc: async (fn, args) => {
+      calls.push({ fn, rows: args.p_rows });
+      return { data: respond(args.p_rows), error: null };
     },
   };
 }
 
-test('повторное состояние не пишется второй раз', async () => {
-  resetColonisationWriteMode();
-  const { client, written } = hashIndexClient();
-
-  const first = await persistColonisationEvents(client, [telemetryConstructionRow('user-1', telemetryEvent())]);
-  const second = await persistColonisationEvents(client, [
-    telemetryConstructionRow('user-1', telemetryEvent({ timestamp: '2026-09-14T10:00:05Z' })),
-  ]);
-
-  assert.equal(first.inserted, 1);
-  assert.equal(first.duplicates, 0);
-  assert.equal(second.inserted, 0, 'неизменившееся состояние стройки записано повторно');
-  assert.equal(second.duplicates, 1, 'повтор не учтён в счётчике');
-  assert.equal(written.length, 1);
-  assert.equal(second.warnings.length, 0);
-});
-
-test('до миграции строки пишутся прежним путём, а не теряются', async () => {
-  // Колонки `source_hash` на сервере ещё нет: первая же пачка получает 42703,
-  // и запись обязана продолжиться без неё (rolling deploy).
-  resetColonisationWriteMode();
-  const written = [];
-  const client = {
-    from: () => ({
-      upsert: (rows) => ({
-        select: async () => {
-          if (rows.some((row) => 'source_hash' in row)) {
-            return { data: null, error: { code: '42703', message: 'column "source_hash" does not exist' } };
-          }
-          written.push(...rows);
-          return { data: rows.map((_row, index) => ({ id: index + 1 })), error: null };
-        },
-      }),
-    }),
-  };
-
-  const outcome = await persistColonisationEvents(client, [
-    telemetryConstructionRow('user-1', telemetryEvent()),
-    telemetryConstructionRow('user-1', telemetryEvent({ construction_progress: 0.9 })),
-  ]);
-
-  assert.equal(written.length, 2, 'строки не записаны без колонки source_hash');
-  assert.equal(outcome.inserted, 2);
-  assert.ok(outcome.warnings.some((w) => /source_hash/.test(w)), 'деградация записи не видна в warnings');
-});
-
-test('когда колонка есть, а индекса нет — пишется только недостающее', async () => {
-  resetColonisationWriteMode();
-  const existing = telemetryConstructionRow('user-1', telemetryEvent());
-  const rows = [];   // «таблица»: там уже лежит одна строка
-  const inserted = [];
-
-  const conflict = (candidate) => rows.some((row) =>
-    row.user_id === candidate.user_id && row.source_hash === candidate.source_hash);
-
-  const client = {
-    from: () => ({
-      select: () => {
-        const filters = { userId: null, hashes: [] };
-        const api = {
-          eq: (column, value) => { if (column === 'user_id') filters.userId = value; return api; },
-          not: () => api,
-          in: (column, values) => { if (column === 'source_hash') filters.hashes = values; return api; },
-          then: (resolve) => resolve({
-            data: rows.filter((row) => row.user_id === filters.userId && filters.hashes.includes(row.source_hash)),
-            error: null,
-          }),
-        };
-        return api;
-      },
-      // Вставка без конфликтного ключа — путь «колонка есть, индекса нет»:
-      // строки, которые уже лежат в таблице, туда не должны попадать вовсе
-      // (их отфильтровала сверка выше), остальные вставляются.
-      insert: (payload) => ({
-        select: async () => {
-          const fresh = payload.filter((row) => !conflict(row));
-          for (const row of fresh) rows.push(row);
-          inserted.push(...fresh);
-          return { data: fresh.map((_row, index) => ({ id: index + 1, source_hash: _row.source_hash })), error: null };
-        },
-      }),
-      upsert: (payload, options) => ({
-        select: async () => {
-          if (options.onConflict === 'user_id,source_hash') {
-            return {
-              data: null,
-              error: {
-                code: '42P10',
-                message: 'there is no unique or exclusion constraint matching the ON CONFLICT specification',
-              },
-            };
-          }
-          const fresh = payload.filter((row) => !conflict(row));
-          for (const row of fresh) rows.push(row);
-          inserted.push(...fresh);
-          return { data: fresh.map((_row, index) => ({ id: index + 1, source_hash: _row.source_hash })), error: null };
-        },
-      }),
-    }),
-  };
-
-  rows.push({ ...existing });
-
-  const outcome = await persistColonisationEvents(client, [
-    telemetryConstructionRow('user-1', telemetryEvent()),
-    telemetryConstructionRow('user-1', telemetryEvent({ construction_progress: 0.9 })),
-  ]);
-
-  assert.equal(inserted.length, 1, 'записано то, что уже было в таблице');
-  assert.equal(outcome.inserted, 1);
-  assert.equal(outcome.duplicates, 1);
-  assert.ok(outcome.warnings.some((w) => /без source_hash/.test(w)), 'режим без индекса не виден в warnings');
-});
-
-test('таймаут базы делит пачку, а не теряет её', async () => {
-  resetColonisationWriteMode();
-  const written = [];
-  const client = {
-    from: () => ({
-      upsert: (rows) => ({
-        select: async () => {
-          if (rows.length > 2) {
-            return { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } };
-          }
-          written.push(...rows);
-          return { data: rows.map((row, index) => ({ id: index + 1, source_hash: row.source_hash })), error: null };
-        },
-      }),
-    }),
-  };
-
-  const rows = Array.from({ length: 6 }, (_unused, index) => telemetryConstructionRow('user-1', telemetryEvent({
-    construction_id: index + 1,
-    construction_progress: 0.1 * (index + 1),
+test('запись идёт через RPC пачками по SITE_WRITE_BATCH и считает изменившиеся состояния', async () => {
+  const rows = Array.from({ length: 250 }, (_, index) => siteRowFromDepot(USER, parsedDepot({
+    marketId: String(1000 + index),
+  })));
+  const client = rpcClient((batch) => batch.map((row, index) => ({
+    market_id: row.market_id,
+    changed: index % 2 === 0,
   })));
 
-  const outcome = await persistColonisationEvents(client, rows);
-  assert.equal(outcome.inserted, 6, 'часть строк потеряна при таймауте');
-  assert.equal(written.length, 6);
-  assert.equal(outcome.warnings.length, 0);
+  const outcome = await persistColonisationSites(client, rows);
+
+  assert.equal(SITE_WRITE_BATCH, 100);
+  assert.deepEqual(client.calls.map((call) => call.rows.length), [100, 100, 50]);
+  assert.ok(client.calls.every((call) => call.fn === 'colonisation_sites_write'));
+  assert.equal(outcome.changed + outcome.unchanged, 250);
+  assert.equal(outcome.changed, 125);
+  assert.equal(outcome.changedMarkets.size, 125);
+  assert.equal(outcome.failed, 0);
 });
 
-test('ошибка записи попадает в warnings, а не роняет импорт', async () => {
-  resetColonisationWriteMode();
-  const client = {
-    from: () => ({
-      upsert: () => ({ select: async () => ({ data: null, error: { message: 'permission denied' } }) }),
-    }),
+test('в базу уходят только нужные поля: без Payment, сырого события и источника', async () => {
+  const client = rpcClient();
+  await persistColonisationSites(client, [siteRowFromTelemetry(USER, telemetryEvent())]);
+  const sent = JSON.stringify(client.calls[0].rows);
+  assert.ok(!sent.includes('Payment'), 'Payment ушёл в базу');
+  assert.ok(!sent.includes('raw_event'), 'сырое событие ушло в базу');
+  assert.ok(!sent.includes('source_hash'), 'служебный ключ старой схемы ушёл в базу');
+});
+
+test('повтор состояния не засчитывается как изменение', async () => {
+  const client = rpcClient((rows) => rows.map((row) => ({ market_id: row.market_id, changed: false })));
+  const outcome = await persistColonisationSites(client, [siteRowFromTelemetry(USER, telemetryEvent())]);
+  assert.equal(outcome.changed, 0);
+  assert.equal(outcome.unchanged, 1);
+  assert.equal(outcome.changedMarkets.size, 0);
+});
+
+test('таймаут базы делит пачку пополам, а не теряет её', async () => {
+  const rows = Array.from({ length: 4 }, (_, index) => siteRowFromDepot(USER, parsedDepot({ marketId: String(2000 + index) })));
+  const calls = [];
+  const svc = {
+    rpc: async (_fn, args) => {
+      calls.push(args.p_rows.length);
+      if (args.p_rows.length > 2) return { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } };
+      return { data: args.p_rows.map((row) => ({ market_id: row.market_id, changed: true })), error: null };
+    },
   };
-
-  const outcome = await persistColonisationEvents(client, [telemetryConstructionRow('user-1', telemetryEvent())]);
-  assert.equal(outcome.inserted, 0);
-  assert.equal(outcome.warnings.length, 1);
-  assert.match(outcome.warnings[0], /permission denied/);
+  const outcome = await persistColonisationSites(svc, rows);
+  assert.deepEqual(calls, [4, 2, 2], 'пачка не разделилась на половины');
+  assert.equal(outcome.changed, 4);
+  assert.equal(outcome.failed, 0);
+  assert.deepEqual(outcome.warnings, []);
 });
 
-test('отпечаток версионирован: смена формулы видна в самом ключе', () => {
-  const hash = colonisationSourceHash({
-    eventKind: 'ColonisationConstructionDepot',
-    systemName: 'Delta Velorum',
-    marketId: 1,
-    constructionId: 2,
-    progress: 50,
-    resources: [],
-  });
-  assert.match(hash, /^colony-v\d+-/);
+test('ошибка записи попадает в warnings и не бросается наружу', async () => {
+  const svc = {
+    rpc: async () => ({ data: null, error: { code: '42883', message: 'function colonisation_sites_write does not exist' } }),
+  };
+  const outcome = await persistColonisationSites(svc, [siteRowFromTelemetry(USER, telemetryEvent())]);
+  assert.equal(outcome.changed, 0);
+  assert.equal(outcome.failed, 1, 'неуспешная строка не учтена как потерянная');
+  assert.ok(outcome.warnings.some((w) => /does not exist/.test(w)), 'ошибка не видна в warnings');
+});
+
+test('пустой набор ничего не отправляет', async () => {
+  const client = rpcClient();
+  const outcome = await persistColonisationSites(client, []);
+  assert.equal(client.calls.length, 0);
+  assert.equal(outcome.changed, 0);
+});
+
+/* ── контракт SQL: то, без чего код выше работает неверно ── */
+
+const migration = readFileSync(
+  join(ROOT, 'supabase', 'migrations', '20261009010000_colonisation_sites.sql'), 'utf8');
+const cutover = readFileSync(
+  join(ROOT, 'supabase', 'maintenance', 'colonisation_sites_cutover.sql'), 'utf8');
+
+test('миграция закрывает функции записи и чистки от клиентов (anon/authenticated)', () => {
+  for (const fn of [
+    'colonisation_sites_write(jsonb)',
+    'colonisation_retention_prune(integer)',
+    'colonisation_compact_resources(jsonb)',
+    'colonisation_resources_state(jsonb)',
+  ]) {
+    const name = fn.replace(/\(.*/, '');
+    assert.match(migration, new RegExp(`REVOKE ALL ON FUNCTION public\\.${name}\\(.*FROM PUBLIC, anon, authenticated`),
+      `${fn}: EXECUTE не закрыт от клиентов`);
+    assert.match(migration, new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${name}\\(.*TO service_role`),
+      `${fn}: service_role не получил EXECUTE`);
+  }
+  assert.match(migration, /REVOKE ALL ON public\.colonisation_sites FROM anon, authenticated/);
+});
+
+test('запись «новее побеждает»: строка обновляется только при более новой метке времени', () => {
+  assert.match(migration, /ON CONFLICT \(market_id\) DO UPDATE SET/);
+  assert.match(migration, /WHERE EXCLUDED\.event_timestamp > s\.event_timestamp/);
+  // изменение состояния считается без локализации: иначе смена языка даёт снимок
+  assert.match(migration, /colonisation_resources_state\(b\.resources_total\)\s+IS DISTINCT FROM/);
+});
+
+test('перенос исключает вклады и пустые площадки и проверяет полноту до переименования', () => {
+  assert.match(cutover, /ColonisationContribution/);
+  assert.match(cutover, /WHERE EXCLUDED\.event_timestamp > s\.event_timestamp/);
+  const check = cutover.indexOf('перенос неполный');
+  const rename = cutover.indexOf('RENAME TO colonisation_events_legacy');
+  assert.ok(check > 0 && rename > check, 'переименование стоит раньше проверки полноты');
+  // DROP — только закомментирован: удаление не должно выполняться без ручного решения.
+  assert.match(cutover, /^-- DROP TABLE IF EXISTS public\.colonisation_events_legacy;/m);
 });

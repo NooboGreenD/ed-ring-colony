@@ -2,10 +2,11 @@ import { NextResponse } from 'next/server';
 import { createServiceClient, authFromRequest } from '@/lib/supabaseServer';
 import type { ParsedColonisationDepot, ParsedColonisationContribution } from '@/lib/journalParser';
 import {
-  depotEventRow,
-  latestDepotEvents,
-  persistColonisationEvents,
-  type ColonisationEventRow,
+  persistColonisationSites,
+  siteRowFromDepot,
+  snapshotRowsForChangedSites,
+  type ColonisationSiteRow,
+  type DepotSnapshotRow,
 } from '@/lib/colonisationEvents';
 
 const JOURNAL_DATABASE_BATCH_SIZE = 100;
@@ -48,7 +49,7 @@ function boundedNumber(value: unknown, fallback: number): number {
 
 async function insertSnapshots(
   svc: ReturnType<typeof createServiceClient>,
-  rows: Record<string, unknown>[],
+  rows: DepotSnapshotRow[],
 ): Promise<number> {
   let inserted = 0;
   for (const batch of batches(rows)) {
@@ -127,46 +128,27 @@ export async function POST(req: Request) {
       importId = importRecord.id;
     }
 
-    // Строки строятся общим модулем: тот же `source_hash`, что у браузерного
-    // телеметрийного загрузчика и Colonial Helper'а. Без него повторный импорт
-    // того же файла добавлял дубли (`ColonisationContribution` пишется с пустым
-    // `construction_id`, а уникальный ключ схемы в PostgreSQL NULL'ы не
-    // сравнивает — ограничение такие строки не останавливало).
-    const depotRows: ColonisationEventRow[] = [];
-    const depotSources: ParsedColonisationDepot[] = [];
+    // Состояния площадок строятся общим модулем — тем же, что у браузерного
+    // загрузчика, Colonial Helper'а и CAPI. Одна строка на площадку (ключ —
+    // MarketID), повтор того же состояния базе не нужен.
+    const depotRows: ColonisationSiteRow[] = [];
     for (const ev of depotEvents) {
-      const row = depotEventRow(user.id, ev, importId);
-      if (!row) continue;
-      depotRows.push(row);
-      depotSources.push(ev);
+      const row = siteRowFromDepot(user.id, ev);
+      if (row) depotRows.push(row);
     }
-    const depotWrite = await persistColonisationEvents(svc, depotRows);
-    const insertedDepots = depotWrite.inserted;
+    const depotWrite = await persistColonisationSites(svc, depotRows);
+    const insertedDepots = depotWrite.changed;
 
-    // Снимок прогресса — только по реально записанным состояниям: повторная
+    // Снимок прогресса — только по площадкам, чьё состояние изменилось: повторная
     // отправка того же состояния не должна добавлять строку в историю графиков.
-    // Keep one snapshot per construction in this request. The browser now
-    // sends bounded requests, so a large log no longer forms one huge INSERT.
-    const storedEvents = depotSources.filter(
-      (_ev, index) => depotWrite.insertedHashes.has(depotRows[index].source_hash),
-    );
-    const snapshots = latestDepotEvents(storedEvents).map((ev) => ({
-      system_name: ev.systemName,
-      construction_id: ev.constructionId,
-      construction_name: ev.constructionName,
-      progress: ev.constructionProgress,
-      resources_total: ev.resourcesRequired,
-      snapshot_at: ev.timestamp,
-      source: 'journal',
-    }));
+    const snapshots = snapshotRowsForChangedSites(depotRows, depotWrite.changedMarkets);
     const snapshotCount = await insertSnapshots(svc, snapshots);
 
-    // Вклады (`ColonisationContribution`) в `colonisation_events` больше НЕ
-    // пишем. Строку не читает ни один потребитель (тоннаж командира живёт в
-    // `deliveries` с собственным идемпотентным `source_hash`), а множились
-    // они по каждой позиции груза — это была заметная доля роста таблицы
-    // до 12+ ГБ. События по-прежнему считаем и показываем в предпросмотре
-    // страницы журнала, чтобы пилот видел, что парсер их нашёл.
+    // Вклады (`ColonisationContribution`) в базу больше НЕ пишем. Строку не читает
+    // ни один потребитель (тоннаж командира живёт в `deliveries` с собственным
+    // идемпотентным `source_hash`), а множились они по каждой позиции груза —
+    // это была заметная доля роста таблицы до 12+ ГБ. События по-прежнему
+    // считаем и показываем в предпросмотре страницы журнала.
     const insertedContributions = 0;
     const skippedContributions = contributionEvents.length;
 
@@ -188,9 +170,8 @@ export async function POST(req: Request) {
       insertedContributions,
       // Вклады не пишутся (см. комментарий выше) — их видно отдельным числом.
       skippedContributions,
-      // Сколько строк оказалось повтором уже сохранённых состояний: раньше
-      // такие повторы молча дописывались в таблицу.
-      duplicateDepots: depotWrite.duplicates,
+      // Сколько площадок уже знали в этом состоянии (или строка устарела).
+      duplicateDepots: depotWrite.unchanged + depotWrite.stale,
       duplicateContributions: 0,
       snapshotCount,
       totalEvents: insertedDepots,

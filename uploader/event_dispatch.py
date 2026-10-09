@@ -47,6 +47,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from eddn_api import EDDN_EVENTS, EddnContext
+
 # Какие события журнала уходят в EDSM (навигация и сканирование).
 # CarrierJump и Undocked добавлены: без них на EDSM рвётся цепочка
 # «прыгнул — пристыковался — отстыковался», а перелёты авианосца не
@@ -290,10 +292,14 @@ class ThirdPartyDispatcher:
         max_queue: int = 2000,
         workers: int = 2,
         backfill_enabled: bool = False,
+        eddn_api=None,
     ):
         self.edsm_api = edsm_api
         self.inara_api = inara_api
         self.raven_api = raven_api
+        self.eddn_api = eddn_api
+        # Контекст журнала для EDDN (версия игры, командир, последняя локация).
+        self.eddn_context = EddnContext()
         self.logger = logger
         self.backfill_enabled = bool(backfill_enabled)
         self.max_queue = max(1, int(max_queue))
@@ -306,7 +312,7 @@ class ThirdPartyDispatcher:
         self._started = False
 
         # Дедупликация: ключи уже отправленных событий по каждому сервису.
-        self._seen = {"edsm": set(), "inara": set(), "raven": set()}
+        self._seen = {"edsm": set(), "inara": set(), "raven": set(), "eddn": set()}
 
         # Статистика для UI/лога.
         self.stats = {
@@ -316,6 +322,7 @@ class ThirdPartyDispatcher:
             "dropped": 0,            # очередь переполнена — событие выброшено
             "skipped_backfill": 0,   # историческое событие, внешние API не нужны
             "duplicate": 0,
+            "eddn_skipped": 0,      # событие не годится для EDDN (см. eddn_api.py)
         }
 
         # Опциональный колбэк: on_result(service, ok, message)
@@ -327,7 +334,7 @@ class ThirdPartyDispatcher:
 
         # Сколько раз подряд сервис не принял событие. Нужно, чтобы одна
         # недоступность EDSM не превратилась в тысячи одинаковых строк в логе.
-        self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0}
+        self._fail_streak = {"edsm": 0, "inara": 0, "raven": 0, "eddn": 0}
         # Последнее отправленное состояние потребности по marketId: depot-
         # события приходят пачками, а Raven не любит бессмысленные ProjectUpdate.
         self._raven_supply_state: dict = {}
@@ -503,6 +510,9 @@ class ThirdPartyDispatcher:
         """
         if not isinstance(event, dict):
             return True
+        # Контекст EDDN ведём и по историческим событиям: локация и версия игры
+        # нужны для сверки, даже если сама отправка сейчас не идёт.
+        self.eddn_context.observe(event)
         if not live and not self.backfill_enabled:
             self.stats["skipped_backfill"] += 1
             return True
@@ -530,6 +540,8 @@ class ThirdPartyDispatcher:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
             results.append(self._submit_raven(event, event_name, station_type))
+        if self._eddn_enabled() and event_name in EDDN_EVENTS:
+            results.append(self._submit_eddn(event, event_name))
         # ProjectUpdate потребности шлём только за живыми событиями: при
         # пакетном разборе истории depot-события дублируются из каждого файла,
         # а тестовые прогонки журнала не должны делать лишних запросов.
@@ -548,6 +560,26 @@ class ThirdPartyDispatcher:
 
     def _raven_enabled(self) -> bool:
         return bool(self.raven_api is not None and getattr(self.raven_api, "is_connected", False))
+
+    def _eddn_enabled(self) -> bool:
+        return bool(self.eddn_api is not None and getattr(self.eddn_api, "enabled", False))
+
+    def _submit_eddn(self, event: dict, event_name: str) -> str:
+        """EDDN получает только то, что принимает схема journal/1 (см. eddn_api.py)."""
+        key = (
+            event.get("timestamp", ""),
+            event_name,
+            event.get("SystemAddress", ""),
+            event.get("BodyID", ""),
+        )
+        if self._remember_seen("eddn", key):
+            return _SKIPPED
+        message = self.eddn_context.build(event, software_version=self.eddn_api.software_version)
+        if message is None:
+            # Нет live-версии, командира или сверяемой локации — лучше промолчать.
+            self.stats["eddn_skipped"] += 1
+            return _SKIPPED
+        return self._enqueue("eddn", {"message": message})
 
     # -- постановка в очередь по сервисам ----------------------------------
     def _submit_edsm(self, event: dict, event_name: str) -> str:
@@ -805,6 +837,8 @@ class ThirdPartyDispatcher:
                     self._do_inara(payload)
                 elif service == "raven":
                     self._do_raven(payload)
+                elif service == "eddn":
+                    self._do_eddn(payload)
             except Exception as exc:  # воркер не должен умирать из-за одного события
                 self.stats["failed"] += 1
                 self._log(f"Ошибка отправки в {service}: {exc}")
@@ -821,6 +855,17 @@ class ThirdPartyDispatcher:
         else:
             self.stats["failed"] += 1
             self._notify_failure("edsm", str(result.get("error") or "EDSM отклонил событие"))
+
+    def _do_eddn(self, payload: dict):
+        if not self._eddn_enabled():
+            return
+        result = self.eddn_api.submit(payload["message"]) or {}
+        if result.get("ok"):
+            self.stats["sent"] += 1
+            self._notify_success("eddn")
+        else:
+            self.stats["failed"] += 1
+            self._notify_failure("eddn", str(result.get("error") or "EDDN отклонил сообщение"))
 
     def _do_inara(self, payload: dict):
         if not self._inara_enabled():
