@@ -1,104 +1,70 @@
 /**
- * Единственная точка записи строк в `colonisation_events`.
+ * Единственная точка записи состояний стройплощадок в `colonisation_sites`.
  *
- * Таблицу кормят три клиента с разными форматами: браузерный загрузчик
- * (`/api/logs/import`, парсер `journalParser.ts` + `journalTelemetry.ts`),
- * десктопный Colonial Helper (`/api/logs/upload`) и синхронизация CAPI
- * (`/api/capi/sync`, `/api/cron/capi-sync`). Раньше каждый путь строил строки
- * сам и вставлял их своим способом, поэтому одинаковые события журнала
- * попадали в базу по несколько раз:
+ * Таблица хранит ТЕКУЩЕЕ состояние каждой площадки (ключ — MarketID), а не
+ * журнал событий. Читает её одно место — обогащение Raven Colonial, и ему нужна
+ * только последняя известная картина площадки. Раньше все четыре пути записи
+ * (браузерный загрузчик, Colonial Helper, страница журнала, CAPI) клали строку
+ * на каждое событие `ColonisationConstructionDepot` и на каждого командира
+ * отдельно, с полным `ResourcesRequired` (с `Payment` и `Name_Localised`) и
+ * служебными полями. Отсюда 12+ ГБ при ~3 ГБ логов. См. COLONISATION-SITES-REWORK.md.
  *
- * * уникальный ключ схемы (`user_id, event_timestamp, system_name,
- *   construction_id`) не работает, когда `construction_id` пуст — в PostgreSQL
- *   NULL не равен NULL, и строка проходит мимо ограничения (так вели себя
- *   все `ColonisationContribution` и события без `ConstructionID`);
- * * повторная отправка того же состояния стройки с новой меткой времени
- *   (живой watcher Helper'а пишет такое каждые 5 секунд) не является
- *   дубликатом по этому ключу и оседала в таблице отдельной строкой;
- * * голый `insert()` без проверки ошибки (CAPI) молча терял всю пачку на
- *   первом же конфликте либо добавлял строки с пустым именем системы.
+ * Запись идёт через RPC `colonisation_sites_write` (миграция
+ * 20261009010000_colonisation_sites.sql): в базе побеждает состояние с более
+ * новой меткой времени журнала, поэтому повторная загрузка того же журнала и
+ * параллельные пачки Helper'а не плодят строк. Список ресурсов сжимается уже
+ * здесь (`compactResources`) и ещё раз на сервере — старые клиенты присылают
+ * полный `ResourcesRequired`, и таблица остаётся лёгкой и при них.
  *
- * Здесь для каждой строки считается `source_hash` — устойчивый ключ
- * состояния стройки (для остальных событий — ключ самого события). Запись
- * идёт upsert'ом по `(user_id, source_hash)`; до тех пор, пока миграция и
- * частичный уникальный индекс не приехали на прод, работает тот же путь, что
- * и раньше (см. `persistColonisationEvents`).
- *
- * Модуль импортируется и клиентским кодом (браузерный парсер берёт
- * `journalTelemetry.ts`), поэтому здесь нет ни `node:crypto`, ни обращений к
- * окружению: отпечаток считается той же чистой JS-функцией, что и
- * `source_hash` доставок в `journalParser.ts`.
+ * Модуль импортируется клиентским кодом (браузерный парсер берёт
+ * `journalTelemetry.ts`), поэтому здесь нет node-модулей и обращений к окружению.
  */
 
-export type ColonisationEventRow = {
-  user_id: string;
-  journal_import_id?: number | null;
-  event_timestamp: string;
-  system_name: string;
-  market_id: string | null;
-  construction_name: string | null;
-  construction_id: string | null;
-  construction_progress: number | null;
-  resources_total: unknown[];
-  /**
-   * Минимальный маркер события (`{"event":"…"}`). Раньше сюда копировался
-   * весь сырой JSON журнала — вместе с `ResourcesRequired`, который и так
-   * лежит в `resources_total`, и с `Name_Localised` каждого ресурса. Строка
-   * выходила вдвое тяжелее, а колонку `raw_event` не читает никто, кроме
-   * диагностики `raw_event->>'event'` (какой это тип события). Поэтому от
-   * сырой нагрузки отказались: таблица на 3 ГБ «полезных» состояний
-   * раздувалась до 12+ ГБ именно из-за этого дубля.
-   */
-  raw_event: Record<string, unknown> | null;
-  source_hash: string;
-};
-
-/**
- * Слиток сырого события, который реально нужен в базе: только тип события.
- * Все читатели `raw_event` (maintenance-диагностика, различение вкладов и
- * снимков) смотрят исключительно на `raw_event->>'event'`.
- */
-export function slimRawEvent(eventName: string): Record<string, unknown> {
-  return { event: eventName };
+/** Ресурс стройки в компактном виде — ровно то, что хранится и читается. */
+export interface CompactResource {
+  Name: string;
+  Name_Localised?: string;
+  RequiredAmount: number;
+  ProvidedAmount: number;
 }
 
 /**
- * Версия правил отпечатка. Меняется вместе с содержимым ключа: старые строки
- * остаются со своими ключами, новые события получают новые — поэтому правку
- * формулы видно по тем же диагностическим запросам, что и обычные повторы.
+ * Строка `colonisation_sites`. `market_id` — текст: MarketID 64-битный, а
+ * JSON-число может потерять точность. `construction_progress` — проценты.
  */
-export const COLONISATION_HASH_VERSION = 'colony-v1';
+export interface ColonisationSiteRow {
+  market_id: string;
+  system_name: string;
+  construction_id: string | null;
+  construction_name: string | null;
+  construction_progress: number | null;
+  resources_total: CompactResource[];
+  event_timestamp: string;
+  user_id: string;
+}
 
-/** Ключ состояния стройки: меняется только когда меняется сама стройка. */
-const DEPOT_EVENT = 'ColonisationConstructionDepot';
-
-export interface ColonisationStateInput {
-  eventKind: string;
-  systemName: string;
+export interface DepotEventLike {
+  timestamp?: string | null;
+  systemName?: string | null;
   marketId?: string | number | null;
-  constructionId?: string | number | null;
   constructionName?: string | null;
-  /** Прогресс в процентах (0..100) — журнал пишет долю, парсеры домножают. */
-  progress?: number | string | null;
-  resources?: unknown;
-  eventTimestamp?: string | null;
+  constructionId?: string | number | null;
+  /** Уже в процентах: так отдаёт `parseColonisationEvents`. */
+  constructionProgress?: number | null;
+  constructionComplete?: boolean;
+  resourcesRequired?: unknown;
 }
 
 type DbError = { code?: string; message?: string };
-type DbResult = { data?: unknown; error?: DbError | null };
-type DbLike = { from: (table: string) => any };
+type RpcResult = { data?: unknown; error?: DbError | null };
+/** Минимум от клиента Supabase: нужен только `rpc`. */
+type SiteWriter = { rpc: (fn: string, args: Record<string, unknown>) => any };
 
-/** FNV-1a по двум регистрам — тот же приём, что у `fingerprint()` парсера. */
-function fingerprint(value: string): string {
-  let first = 0x811c9dc5;
-  let second = 0x9e3779b9;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    first = Math.imul(first ^ code, 0x01000193);
-    second = Math.imul(second ^ code, 0x85ebca6b);
-  }
-  return `${(first >>> 0).toString(36)}${(second >>> 0).toString(36)}`;
-}
+/** Пачка для одного RPC: тот же порядок, что у прежней записи журнала. */
+export const SITE_WRITE_BATCH = 100;
+
+
+/* ─────────────────────────── разбор значений ─────────────────────────── */
 
 export function asText(value: unknown): string {
   return value == null ? '' : String(value).trim();
@@ -126,6 +92,16 @@ function asNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/**
+ * Строгое число для списка ресурсов: `null`, пустая строка и текст не дают 0.
+ * Та же проверка стоит в SQL-функции `colonisation_compact_resources`.
+ */
+function strictNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value.trim())) return Number(value.trim());
+  return null;
+}
+
 /** Прогресс: журнал отдаёт долю (0.42), старые интеграции — проценты (42). */
 export function progressPercent(value: unknown, complete = false): number | null {
   if (complete) return 100;
@@ -134,254 +110,132 @@ export function progressPercent(value: unknown, complete = false): number | null
   return Math.min(100, raw <= 1 ? raw * 100 : raw);
 }
 
+/** Прогресс в колонке NUMERIC(5,2): разницу мельче сотой база всё равно не сохранит. */
+function roundProgress(percent: number): number {
+  return Math.round(Math.min(100, Math.max(0, percent)) * 100) / 100;
+}
+
 function progressKey(value: unknown): string {
   const percent = asNumber(value);
   if (percent == null || percent < 0) return '';
-  // Колонка — NUMERIC(5,2): разницу мельче второго знака база всё равно не
-  // сохранит, а отдельной строкой она была бы мусором.
-  return Math.min(100, percent).toFixed(2);
-}
-
-function timestampKey(value: unknown): string {
-  const text = asText(value);
-  if (!text) return '';
-  const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : text;
+  return roundProgress(percent).toFixed(2);
 }
 
 /**
- * Слепок списка ресурсов. Локальные названия (`Name_Localised`) в него не
- * входят: журнал переводится на язык клиента, и один и тот же ресурс в русской
- * и английской версиях дал бы разные ключи — то есть «дубликаты» строки на
- * ровном месте. Порядок ресурсов тоже не важен: сортируем.
+ * Компактный список ресурсов: `Name`, `Name_Localised` (если есть),
+ * `RequiredAmount`, `ProvidedAmount`. `Payment` и прочие поля журнала не
+ * хранятся. Элементы без имени или без числовых сумм отбрасываются. Список
+ * сортируется по имени, чтобы один и тот же набор в другом порядке не выглядел
+ * как изменение. Принимает и PascalCase журнала, и camelCase парсера сайта.
  */
-function resourcesFingerprint(resources: unknown): string {
-  if (!Array.isArray(resources)) return '';
-  const rows = resources
-    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
-    .map((item) => {
-      const name = asText(item.Name ?? item.name).toLowerCase();
-      const required = asNumber(item.RequiredAmount ?? item.requiredAmount) ?? 0;
-      const provided = asNumber(item.ProvidedAmount ?? item.providedAmount) ?? 0;
-      const payment = asNumber(item.Payment ?? item.payment) ?? 0;
-      return `${name}:${required}:${provided}:${payment}`;
-    })
-    .sort();
-  return rows.join('~');
+export function compactResources(resources: unknown): CompactResource[] {
+  if (!Array.isArray(resources)) return [];
+  const out: CompactResource[] = [];
+  for (const item of resources) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const nameValue = record.Name ?? record.name;
+    const name = nameValue == null ? '' : String(nameValue);
+    const required = strictNumber(record.RequiredAmount ?? record.requiredAmount);
+    const provided = strictNumber(record.ProvidedAmount ?? record.providedAmount);
+    if (!name || required == null || provided == null) continue;
+    const localised = asText(record.Name_Localised ?? record.nameLocalised);
+    out.push({
+      Name: name,
+      ...(localised ? { Name_Localised: localised } : {}),
+      RequiredAmount: Math.max(0, required),
+      ProvidedAmount: Math.max(0, provided),
+    });
+  }
+  return out.sort((a, b) => (a.Name < b.Name ? -1 : a.Name > b.Name ? 1 : 0));
 }
 
 /**
- * Устойчивый ключ состояния для `source_hash`.
- *
- * Для `ColonisationConstructionDepot` метка времени в ключ **не** входит:
- * журнал пишет это событие каждые несколько секунд, пока игрок стоит у
- * площадки, а состояние при этом не меняется. Именно такие строки и
- * заполняли таблицу: одинаковое состояние, разные `timestamp`.
- *
- * Для остальных событий (например, `ColonisationContribution`) метка времени
- * входит в ключ: там каждая запись — отдельный факт, а не снимок состояния.
+ * Отпечаток состояния стройки — для «ничего не изменилось». Учитывает прогресс
+ * и суммы по именам; локализация и `Payment` в него не входят: смена языка
+ * журнала или цены не означает нового состояния площадки.
  */
-export function colonisationStateKey(input: ColonisationStateInput): string {
-  const kind = asText(input.eventKind);
-  const isDepot = kind === DEPOT_EVENT;
-  return [
-    kind,
-    asText(input.systemName).toLowerCase(),
-    asId(input.marketId),
-    asId(input.constructionId),
-    asText(input.constructionName).toLowerCase(),
-    progressKey(input.progress),
-    resourcesFingerprint(input.resources),
-    isDepot ? '' : timestampKey(input.eventTimestamp),
-  ].join('\u0000');
-}
-
-export function colonisationSourceHash(input: ColonisationStateInput): string {
-  return `${COLONISATION_HASH_VERSION}-${fingerprint(colonisationStateKey(input))}`;
+export function depotStateFingerprint(progress: unknown, resources: unknown): string {
+  const state = compactResources(resources)
+    .map((row) => `${row.Name.toLowerCase()}:${row.RequiredAmount}:${row.ProvidedAmount}`)
+    .sort()
+    .join('~');
+  return `${progressKey(progress)}\u0000${state}`;
 }
 
 /* ─────────────────────────── построение строк ─────────────────────────── */
 
-export interface DepotEventLike {
-  timestamp?: string | null;
-  systemName?: string | null;
-  marketId?: string | number | null;
-  constructionName?: string | null;
-  constructionId?: string | number | null;
-  constructionProgress?: number | null;
-  constructionComplete?: boolean;
-  resourcesRequired?: unknown;
-}
-
-export interface ContributionEventLike {
-  timestamp?: string | null;
-  systemName?: string | null;
-  marketId?: string | number | null;
-  commodity?: string | null;
-  amount?: number | null;
+/** ISO-метка времени журнала или `null`, если её нельзя разобрать. */
+function journalTimestamp(value: unknown): string | null {
+  const text = asText(value);
+  if (!text) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 /**
- * Строка `ColonisationConstructionDepot` из парсера сайта или CAPI.
- *
- * Возвращает `null`, если в событии нет системы или метки времени: такая
- * строка бесполезна (карта и Raven ищут её по MarketID), а подстановка
- * `now()` вместо отсутствующей метки делала из одной и той же записи новую
- * строку при каждом повторе загрузки.
+ * Строка площадки из события `ColonisationConstructionDepot` парсера сайта или
+ * CAPI (страница журнала, синхронизация). `null`, если нет системы, метки
+ * времени или MarketID: такая строка бесполезна — Raven ищет площадку по
+ * MarketID, а подставленное «сейчас» вместо журнального времени превращало бы
+ * повтор загрузки в «новое» состояние.
  */
-export function depotEventRow(
-  userId: string,
-  event: DepotEventLike,
-  journalImportId?: number | null,
-): ColonisationEventRow | null {
+export function siteRowFromDepot(userId: string, event: DepotEventLike): ColonisationSiteRow | null {
   const systemName = asText(event.systemName).slice(0, 250);
-  const timestamp = asText(event.timestamp);
-  if (!systemName || !timestamp) return null;
-
+  const timestamp = journalTimestamp(event.timestamp);
   const marketId = asId(event.marketId);
-  const constructionId = asId(event.constructionId);
-  const constructionName = asText(event.constructionName).slice(0, 500) || null;
+  if (!systemName || !timestamp || !marketId || marketId === '0') return null;
+
   const progress = event.constructionComplete === true
     ? 100
-    : (event.constructionProgress == null ? null : asNumber(event.constructionProgress));
-  const resources = Array.isArray(event.resourcesRequired) ? event.resourcesRequired : [];
+    : asNumber(event.constructionProgress);
 
   return {
-    user_id: userId,
-    journal_import_id: journalImportId ?? null,
-    event_timestamp: timestamp,
+    market_id: marketId,
     system_name: systemName,
-    market_id: marketId || null,
-    construction_name: constructionName,
-    construction_id: constructionId || null,
-    construction_progress: progress == null ? null : Math.min(100, Math.max(0, progress)),
-    resources_total: resources,
-    raw_event: slimRawEvent(
-      asText((event as unknown as Record<string, unknown>).event) || DEPOT_EVENT,
-    ),
-    source_hash: colonisationSourceHash({
-      eventKind: asText((event as unknown as Record<string, unknown>).event) || DEPOT_EVENT,
-      systemName,
-      marketId,
-      constructionId,
-      constructionName,
-      progress,
-      resources,
-      eventTimestamp: timestamp,
-    }),
-  };
-}
-
-/** Строка `ColonisationContribution` из парсера сайта (страница журнала). */
-export function contributionEventRow(
-  userId: string,
-  event: ContributionEventLike,
-  journalImportId?: number | null,
-): ColonisationEventRow | null {
-  const systemName = asText(event.systemName).slice(0, 250);
-  const timestamp = asText(event.timestamp);
-  if (!systemName || !timestamp) return null;
-
-  const marketId = asId(event.marketId);
-  const commodity = asText(event.commodity);
-  const amount = asNumber(event.amount) ?? 0;
-  const resources = [{
-    name: commodity,
-    requiredAmount: 0,
-    providedAmount: amount,
-    payment: 0,
-  }];
-
-  return {
-    user_id: userId,
-    journal_import_id: journalImportId ?? null,
+    construction_id: asId(event.constructionId) || null,
+    construction_name: asText(event.constructionName).slice(0, 500) || null,
+    construction_progress: progress == null ? null : roundProgress(progress),
+    resources_total: compactResources(event.resourcesRequired),
     event_timestamp: timestamp,
-    system_name: systemName,
-    market_id: marketId || null,
-    construction_name: null,
-    construction_id: null,
-    construction_progress: null,
-    resources_total: resources,
-    raw_event: slimRawEvent('ColonisationContribution'),
-    source_hash: colonisationSourceHash({
-      eventKind: 'ColonisationContribution',
-      systemName,
-      marketId,
-      constructionId: '',
-      constructionName: '',
-      progress: null,
-      resources,
-      eventTimestamp: timestamp,
-    }),
+    user_id: userId,
   };
 }
 
 /**
- * Строка телеметрии — формат, который присылают браузерный загрузчик и
- * Colonial Helper (`constructionEvents`/`construction_events`).
+ * Строка площадки из телеметрии — формат, который присылают браузерный
+ * загрузчик и Colonial Helper (`constructionEvents` / `construction_events`).
+ * Прогресс там — доля журнала, её переводим в проценты.
  */
-export function telemetryConstructionRow(
-  userId: string,
-  event: Record<string, unknown>,
-): ColonisationEventRow | null {
+export function siteRowFromTelemetry(userId: string, event: Record<string, unknown>): ColonisationSiteRow | null {
   const systemName = asText(event.system_name ?? event.systemName).slice(0, 250);
-  const timestamp = asText(event.timestamp);
-  if (!systemName || !timestamp) return null;
+  const timestamp = journalTimestamp(event.timestamp);
+  const marketId = asId(event.market_id ?? event.marketId);
+  if (!systemName || !timestamp || !marketId || marketId === '0') return null;
 
-  const marketId = asId(event.market_id);
-  const constructionId = asId(event.construction_id);
-  const constructionName = asText(event.construction_name).slice(0, 500) || null;
   const progress = progressPercent(
     event.construction_progress ?? event.ConstructionProgress ?? event.Progress,
     event.construction_complete === true || event.ConstructionComplete === true,
   );
-  const resources = Array.isArray(event.resources_total) ? event.resources_total : [];
-  // Старые сборки Helper'а и браузерный загрузчик присылают `raw_event` с
-  // полной копией события журнала. Полезной нагрузки в нём нет (всё нужное
-  // уже разложено по колонкам и `resources_total`), поэтому на запись берём
-  // только маркер типа события — присланное сырье просто игнорируем.
-  const eventName = asText(
-    (event.raw_event && typeof event.raw_event === 'object'
-      ? (event.raw_event as Record<string, unknown>).event
-      : event.event) as unknown,
-  ) || DEPOT_EVENT;
 
   return {
-    user_id: userId,
-    journal_import_id: null,
-    event_timestamp: timestamp,
+    market_id: marketId,
     system_name: systemName,
-    market_id: marketId || null,
-    construction_name: constructionName,
-    construction_id: constructionId || null,
-    construction_progress: progress,
-    resources_total: resources,
-    raw_event: slimRawEvent(eventName),
-    source_hash: colonisationSourceHash({
-      eventKind: eventName,
-      systemName,
-      marketId,
-      constructionId,
-      constructionName,
-      progress,
-      resources,
-      eventTimestamp: timestamp,
-    }),
+    construction_id: asId(event.construction_id ?? event.constructionId) || null,
+    construction_name: asText(event.construction_name ?? event.constructionName).slice(0, 500) || null,
+    construction_progress: progress == null ? null : roundProgress(progress),
+    resources_total: compactResources(event.resources_total ?? event.resourcesRequired),
+    event_timestamp: timestamp,
+    user_id: userId,
   };
-}
-
-/** Отпечаток состояния площадки без системы и ID — для проверки «не изменилось». */
-export function depotStateFingerprint(progress: unknown, resources: unknown): string {
-  return `${progressKey(progress)}\u0000${resourcesFingerprint(resources)}`;
 }
 
 /**
  * Последнее состояние каждой стройки из набора событий.
  *
- * Нужно там, где по событиям обновляют прогресс проекта
- * (`updateProjectProgress`): окно CAPI на каждом синке отдаёт одни и те же
- * события, а запись прогресса на каждое из них плодит снимки и обновления
- * `commodity_needs` по кругу.
+ * Нужно там, где по событиям обновляют прогресс проекта (`updateProjectProgress`):
+ * окно CAPI на каждом синке отдаёт одни и те же события, а запись прогресса на
+ * каждое из них плодит снимки и обновления `commodity_needs` по кругу.
  */
 export function latestDepotEvents<
   T extends { timestamp?: string | null; systemName?: string | null; constructionId?: string | number | null },
@@ -397,36 +251,63 @@ export function latestDepotEvents<
   return Array.from(latest.values());
 }
 
-/* ──────────────────────────── запись в базу ──────────────────────────── */
+/* ──────────────────────────── снимки прогресса ──────────────────────────── */
 
-export interface ColonisationWriteOutcome {
-  inserted: number;
-  duplicates: number;
-  /**
-   * Отпечатки строк, которые действительно записались. По ним вызывающий код
-   * понимает, для каких событий стоит писать снимок прогресса: повторно
-   * присланное состояние стройки не должно попадать ещё и в
-   * `construction_depot_snapshots`.
-   */
-  insertedHashes: Set<string>;
-  warnings: string[];
+export interface DepotSnapshotRow {
+  system_name: string;
+  construction_id: string | null;
+  construction_name: string | null;
+  progress: number | null;
+  resources_total: CompactResource[];
+  snapshot_at: string;
+  source: 'journal';
 }
 
-const WRITE_BATCH = 100;
-const HASH_LOOKUP_CHUNK = 100;
-
-type SourceHashMode = 'unknown' | 'unique-index' | 'no-column' | 'column-without-index';
-
 /**
- * Режим записи запоминается на процесс: колонка `source_hash` появляется
- * миграцией, а API может уехать на прод раньше неё. Тогда пишем как раньше —
- * по ключу схемы, — и загрузка журнала не падает целиком.
+ * Снимки для `construction_depot_snapshots`: по одному на стройку и только по
+ * тем площадкам, у которых состояние действительно изменилось (`changedMarkets`
+ * из `persistColonisationSites`). Повтор уже сохранённого состояния в историю
+ * прогресса не попадает. Из нескольких строк одной стройки берётся самая
+ * поздняя; при равной метке — последняя в пачке, как и в базе.
  */
-let sourceHashMode: SourceHashMode = 'unknown';
+export function snapshotRowsForChangedSites(
+  rows: ColonisationSiteRow[],
+  changedMarkets: ReadonlySet<string>,
+): DepotSnapshotRow[] {
+  const latest = new Map<string, ColonisationSiteRow>();
+  for (const row of rows) {
+    if (!changedMarkets.has(row.market_id)) continue;
+    const key = `${row.system_name.toLowerCase()}\u0000${row.construction_id ?? row.construction_name ?? ''}`;
+    const previous = latest.get(key);
+    if (!previous || Date.parse(row.event_timestamp) >= Date.parse(previous.event_timestamp)) {
+      latest.set(key, row);
+    }
+  }
+  return Array.from(latest.values()).map((row) => ({
+    system_name: row.system_name,
+    construction_id: row.construction_id,
+    construction_name: row.construction_name,
+    progress: row.construction_progress,
+    resources_total: row.resources_total,
+    snapshot_at: row.event_timestamp,
+    source: 'journal' as const,
+  }));
+}
 
-/** Только для тестов: сбросить запомненный режим записи. */
-export function resetColonisationWriteMode(): void {
-  sourceHashMode = 'unknown';
+/* ──────────────────────────── запись в базу ──────────────────────────── */
+
+export interface ColonisationSiteWriteOutcome {
+  /** Новых или изменившихся состояний площадок (новая площадка тоже сюда). */
+  changed: number;
+  /** Состояние прежнее: обновились разве что метка времени и командир. */
+  unchanged: number;
+  /** Строк не понадобилось: старше сохранённого состояния или повтор внутри пачки. */
+  stale: number;
+  /** Строк, которые не записались из-за ошибки базы. */
+  failed: number;
+  /** MarketID площадок, у которых изменилось состояние — по ним снимки прогресса. */
+  changedMarkets: Set<string>;
+  warnings: string[];
 }
 
 function isStatementTimeout(error: DbError): boolean {
@@ -434,221 +315,70 @@ function isStatementTimeout(error: DbError): boolean {
   return /canceling statement due to statement timeout|statement timeout/i.test(error.message || '');
 }
 
-function isMissingSourceHash(error: DbError): boolean {
-  return (
-    error.code === '42703'
-    || error.code === 'PGRST204'
-    || /source_hash.*(?:does not exist|could not find)|could not find.*source_hash/i.test(error.message || '')
-  );
-}
-
-function isMissingConflictTarget(error: DbError): boolean {
-  return error.code === '42P10'
-    || /no unique or exclusion constraint|there is no unique or exclusion constraint/i.test(error.message || '');
-}
-
-/** Схлопнуть повторы внутри одной пачки — до обращения к базе. */
-export function collapseRowsByHash(rows: ColonisationEventRow[]): {
-  rows: ColonisationEventRow[];
-  duplicates: number;
-} {
-  const unique = new Map<string, ColonisationEventRow>();
-  let duplicates = 0;
-  for (const row of rows) {
-    if (unique.has(row.source_hash)) {
-      duplicates += 1;
-      continue;
-    }
-    unique.set(row.source_hash, row);
-  }
-  return { rows: Array.from(unique.values()), duplicates };
-}
-
-async function writeBatch(
-  svc: DbLike,
-  rows: ColonisationEventRow[],
-  mode: SourceHashMode,
-): Promise<{ written: Array<Record<string, unknown>>; error: DbError | null }> {
-  const table = svc.from('colonisation_events');
-
-  if (mode === 'no-column') {
-    // Колонки на сервере ещё нет: пишем прежним ключом схемы. Из полезной
-    // нагрузки `source_hash` убираем — иначе PostgREST отвергнет все строки.
-    const payload = rows.map(({ source_hash: _sourceHash, ...rest }) => rest);
-    const result: DbResult = await table
-      .upsert(payload, {
-        onConflict: 'user_id,event_timestamp,system_name,construction_id',
-        ignoreDuplicates: true,
-      })
-      .select('id');
-    return { written: (result.data as Array<Record<string, unknown>>) ?? [], error: result.error ?? null };
-  }
-
-  if (mode === 'column-without-index') {
-    // Уникального индекса ещё нет, поэтому `ON CONFLICT (user_id,
-    // source_hash)` базе незнаком: пишем обычной вставкой то, чего в таблице
-    // нет (сверку делает `fetchExistingHashes`).
-    const result: DbResult = await table.insert(rows).select('id, source_hash');
-    return { written: (result.data as Array<Record<string, unknown>>) ?? [], error: result.error ?? null };
-  }
-
-  const result: DbResult = await table
-    .upsert(rows, { onConflict: 'user_id,source_hash', ignoreDuplicates: true })
-    .select('id, source_hash');
-  return { written: (result.data as Array<Record<string, unknown>>) ?? [], error: result.error ?? null };
-}
-
 /**
- * Записать пачку, при `statement_timeout` деля её пополам: тот же приём, что
- * для сканов тел (`upsertWithinStatementTimeout`), — большая пачка с тяжёлым
- * JSON не успевает за отведённое PostgREST время.
+ * Записать пачку; при таймауте базы делить её пополам — тот же приём, что для
+ * сканов тел: большая пачка с тяжёлым JSON не успевает за отведённое время.
  */
-async function writeBatchWithSplit(
-  svc: DbLike,
-  rows: ColonisationEventRow[],
-  mode: SourceHashMode,
-): Promise<{ written: Array<Record<string, unknown>>; error: DbError | null }> {
-  const result = await writeBatch(svc, rows, mode);
-  if (!result.error) return result;
-  if (!isStatementTimeout(result.error) || rows.length <= 1) return { written: [], error: result.error };
+async function writeSiteBatch(
+  svc: SiteWriter,
+  rows: ColonisationSiteRow[],
+): Promise<{ data: Array<{ market_id: string; changed: boolean }>; error: DbError | null }> {
+  const result = (await svc.rpc('colonisation_sites_write', { p_rows: rows })) as RpcResult;
+  if (!result.error) {
+    const data = Array.isArray(result.data) ? result.data as Array<{ market_id: string; changed: boolean }> : [];
+    return { data, error: null };
+  }
+  if (!isStatementTimeout(result.error) || rows.length <= 1) {
+    return { data: [], error: result.error };
+  }
   const middle = Math.floor(rows.length / 2);
-  const left = await writeBatchWithSplit(svc, rows.slice(0, middle), mode);
-  const right = await writeBatchWithSplit(svc, rows.slice(middle), mode);
-  return { written: [...left.written, ...right.written], error: right.error ?? left.error ?? null };
-}
-
-/** Есть ли уже такие отпечатки в базе (путь без уникального индекса). */
-async function fetchExistingHashes(
-  svc: DbLike,
-  userId: string,
-  hashes: string[],
-): Promise<Set<string>> {
-  const known = new Set<string>();
-  for (let index = 0; index < hashes.length; index += HASH_LOOKUP_CHUNK) {
-    const chunk = hashes.slice(index, index + HASH_LOOKUP_CHUNK);
-    // `IS NOT NULL` не косметика: индекс частичный (`WHERE source_hash IS NOT
-    // NULL`), и планировщик применит его, только если предикат выводится из
-    // запроса (та же тонкость, что у `deliveries`).
-    const { data, error } = await svc
-      .from('colonisation_events')
-      .select('source_hash')
-      .eq('user_id', userId)
-      .not('source_hash', 'is', null)
-      .in('source_hash', chunk);
-    if (error) throw Object.assign(new Error(error.message || 'select source_hash failed'), { code: error.code });
-    for (const row of (data as Array<{ source_hash?: string | null }> | null) ?? []) {
-      if (row?.source_hash) known.add(row.source_hash);
-    }
-  }
-  return known;
+  const left = await writeSiteBatch(svc, rows.slice(0, middle));
+  const right = await writeSiteBatch(svc, rows.slice(middle));
+  return { data: [...left.data, ...right.data], error: right.error ?? left.error ?? null };
 }
 
 /**
- * Записать события стройки, не создавая повторов.
+ * Записать состояния площадок, не создавая повторов.
  *
- * Возвращает число реально записанных строк (а не отправленных), количество
- * отброшенных повторов и предупреждения. Ошибки базы не бросаются наружу:
- * загрузчик журнала собирает их в `warnings`, как и раньше, — потеря
- * телеметрии не должна рушить импорт доставок.
+ * Возвращает число новых/изменившихся состояний, повторы, устаревшие строки и
+ * площадки, у которых состояние изменилось (для снимков прогресса).
+ * Ошибки базы не бросаются наружу: загрузчик журнала собирает их в `warnings`,
+ * и потеря телеметрии не должна рушить импорт доставок.
  */
-export async function persistColonisationEvents(
-  svc: DbLike,
-  incoming: ColonisationEventRow[],
+export async function persistColonisationSites(
+  svc: SiteWriter,
+  rows: ColonisationSiteRow[],
   options: { batchSize?: number } = {},
-): Promise<ColonisationWriteOutcome> {
-  const outcome: ColonisationWriteOutcome = {
-    inserted: 0,
-    duplicates: 0,
-    insertedHashes: new Set<string>(),
+): Promise<ColonisationSiteWriteOutcome> {
+  const outcome: ColonisationSiteWriteOutcome = {
+    changed: 0,
+    unchanged: 0,
+    stale: 0,
+    failed: 0,
+    changedMarkets: new Set<string>(),
     warnings: [],
   };
-
-  const collapsed = collapseRowsByHash(incoming);
-  outcome.duplicates += collapsed.duplicates;
-  const rows = collapsed.rows;
   if (rows.length === 0) return outcome;
 
-  const batchSize = Math.max(1, options.batchSize ?? WRITE_BATCH);
-  let mode: SourceHashMode = sourceHashMode === 'unknown' ? 'unique-index' : sourceHashMode;
-  let degraded = false;
-  let index = 0;
-
-  while (index < rows.length) {
+  const batchSize = Math.max(1, options.batchSize ?? SITE_WRITE_BATCH);
+  for (let index = 0; index < rows.length; index += batchSize) {
     const batch = rows.slice(index, index + batchSize);
-
-    // Колонка есть, уникального индекса ещё нет: сверяемся с записанным и
-    // добавляем только отсутствующее. Каждый запрос ограничен пачкой, поэтому
-    // путь безопасен и на больших журналах.
-    if (mode === 'column-without-index') {
-      index += batch.length;
-      try {
-        const existing = await fetchExistingHashes(svc, batch[0].user_id, batch.map((row) => row.source_hash));
-        outcome.duplicates += existing.size;
-        const missing = batch.filter((row) => !existing.has(row.source_hash));
-        if (missing.length === 0) continue;
-        const write = await writeBatchWithSplit(svc, missing, mode);
-        if (write.error) {
-          outcome.warnings.push(`colonisation events: ${write.error.message || 'write failed'}`);
-          continue;
-        }
-        outcome.inserted += write.written.length;
-        for (const row of write.written) {
-          if (typeof row?.source_hash === 'string') outcome.insertedHashes.add(row.source_hash);
-        }
-      } catch (error) {
-        outcome.warnings.push(`colonisation events: ${(error as Error).message}`);
-      }
-      continue;
-    }
-
-    const result = await writeBatchWithSplit(svc, batch, mode);
-
-    if (result.error && mode === 'unique-index') {
-      // Первая же пачка показывает, что именно недоступно на этом сервере:
-      // колонки нет вовсе (падает сам insert) или нет уникального индекса
-      // (конфликтный ключ неизвестен базе). Пачка при этом не записалась —
-      // повторяем её тем путём, который здесь работает.
-      if (isMissingSourceHash(result.error)) {
-        mode = 'no-column';
-      } else if (isMissingConflictTarget(result.error)) {
-        mode = 'column-without-index';
+    const { data, error } = await writeSiteBatch(svc, batch);
+    for (const item of data) {
+      if (item.changed) {
+        outcome.changed += 1;
+        outcome.changedMarkets.add(String(item.market_id));
       } else {
-        outcome.warnings.push(`colonisation events: ${result.error.message || 'write failed'}`);
-        index += batch.length;
-        continue;
+        outcome.unchanged += 1;
       }
-      sourceHashMode = mode;
-      degraded = true;
-      continue;
     }
-
-    if (result.error) {
-      outcome.warnings.push(`colonisation events: ${result.error.message || 'write failed'}`);
-      index += batch.length;
-      continue;
-    }
-
-    outcome.inserted += result.written.length;
-    outcome.duplicates += Math.max(0, batch.length - result.written.length);
-    if (mode === 'no-column') {
-      // Схема без `source_hash`: ответ приходит без отпечатков, поэтому
-      // считаем записанными все строки пачки — иначе по ним не построятся
-      // снимки прогресса. Различать вставленные и отброшенные строки здесь
-      // нечем, но и повторов этот путь не создаёт: ключ схемы остался прежним.
-      for (const row of batch) outcome.insertedHashes.add(row.source_hash);
+    const rest = batch.length - data.length;
+    if (error) {
+      outcome.failed += rest;
+      outcome.warnings.push(`colonisation sites: ${error.message || 'write failed'}`);
     } else {
-      for (const row of result.written) {
-        if (typeof row?.source_hash === 'string') outcome.insertedHashes.add(row.source_hash);
-      }
+      outcome.stale += rest;
     }
-    index += batch.length;
   }
-
-  if (degraded) {
-    outcome.warnings.push(
-      'colonisation events: запись идёт без source_hash — примените миграцию и уникальный индекс',
-    );
-  }
-
   return outcome;
 }

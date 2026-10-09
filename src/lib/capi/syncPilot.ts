@@ -20,10 +20,10 @@ import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
 import { syncMemberLocation } from './locationSync.ts';
 import { parseColonisationEvents } from '@/lib/journalParser';
 import {
-  depotEventRow,
   latestDepotEvents,
-  persistColonisationEvents,
-  type ColonisationEventRow,
+  persistColonisationSites,
+  siteRowFromDepot,
+  type ColonisationSiteRow,
 } from '@/lib/colonisationEvents';
 import { updateProjectProgress } from '@/lib/projects/autoProgress';
 
@@ -197,13 +197,13 @@ export async function syncCapiPilot(
       if (journal.text) {
         const events = parseColonisationEvents(journal.text);
         const rows = events.depotEvents
-          .map((ev) => depotEventRow(userId, ev))
-          .filter((row): row is ColonisationEventRow => row !== null);
+          .map((ev) => siteRowFromDepot(userId, ev))
+          .filter((row): row is ColonisationSiteRow => row !== null);
 
-        const write = await persistColonisationEvents(svc, rows);
+        const write = await persistColonisationSites(svc, rows);
         warnings.push(...write.warnings);
-        result.eventsImported = write.inserted;
-        result.eventsDuplicate = write.duplicates;
+        result.eventsImported = write.changed;
+        result.eventsDuplicate = write.unchanged + write.stale;
         result.eventsSkipped = events.depotEvents.length - rows.length;
 
         // Прогресс проекта — по последнему состоянию каждой стройки: окно

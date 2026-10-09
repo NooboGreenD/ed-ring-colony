@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════
 
 import { createServiceClient } from '@/lib/supabaseServer';
-import { depotStateFingerprint } from '@/lib/colonisationEvents';
+import { compactResources, depotStateFingerprint } from '@/lib/colonisationEvents';
 
 export interface ConstructionResource {
   name: string;
@@ -47,7 +47,8 @@ export async function updateProjectProgress(
     await svc.from('construction_depot_snapshots').insert({
       system_name: systemName,
       progress,
-      resources_total: resources,
+      // Снимку нужны суммы и имена; Payment и локализация в историю не пишутся.
+      resources_total: compactResources(resources),
       snapshot_at: new Date().toISOString(),
       source,
     });

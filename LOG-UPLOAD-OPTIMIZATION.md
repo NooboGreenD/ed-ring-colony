@@ -1,3 +1,8 @@
+> **Обновление 09.10.2026.** Описанная ниже схема (`colonisation_events`, ключ `source_hash`,
+> `colonisation_events_prune`, вклады в таблице) заменена. Текущее состояние каждой площадки —
+> таблица `colonisation_sites` (одна строка на MarketID), снимки прогресса — `construction_depot_snapshots`.
+> Причины и порядок переноса — в [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md).
+
 # `colonisation_events`: почему 3 ГБ превратились в 12+ и что изменено
 
 Дата: 2026-10-01. Продолжение [COLONISATION-EVENTS-AUDIT.md](COLONISATION-EVENTS-AUDIT.md)

@@ -34,6 +34,7 @@ from journal_parser import (
     extract_construction_events,
     ConstructionSnapshotCollector,
     PARSER_VERSION,
+    compact_construction_resources,
 )
 
 
@@ -205,6 +206,54 @@ class JournalParserTests(unittest.TestCase):
         """
         for event in extract_construction_events(self.texts[0]) + ConstructionSnapshotCollector().events:
             self.assertNotIn("raw_event", event)
+
+    def test_construction_snapshots_carry_only_compact_resources(self):
+        """`resources_total` уходит на сайт компактным: без Payment, с Name_Localised.
+
+        Полный ResourcesRequired с `Payment` серверу не нужен (`colonisation_sites`
+        хранит имя, локализацию и суммы), а на каждый ресурс приходилось лишних
+        ~120 байт JSON — именно они и раздували таблицу колонизации.
+        """
+        line = json.dumps({
+            "timestamp": _ts(datetime(2026, 10, 1, 10, 0, 0)),
+            "event": "ColonisationConstructionDepot",
+            "MarketID": 3951663874, "ConstructionID": 1, "StarSystem": SYSTEMS[0],
+            "ConstructionProgress": 0.42,
+            "ResourcesRequired": [
+                {"Name": "$steel_name;", "Name_Localised": "Steel",
+                 "RequiredAmount": 5000, "ProvidedAmount": 1200, "Payment": 900},
+                {"Name": "$aluminium_name;",
+                 "RequiredAmount": 300, "ProvidedAmount": 0, "Payment": 1500},
+            ],
+        })
+        event = extract_construction_events(line + "\n")[0]
+
+        self.assertEqual(event["resources_total"], [
+            {"Name": "$aluminium_name;", "RequiredAmount": 300, "ProvidedAmount": 0},
+            {"Name": "$steel_name;", "Name_Localised": "Steel",
+             "RequiredAmount": 5000, "ProvidedAmount": 1200},
+        ])
+        self.assertNotIn("Payment", json.dumps(event["resources_total"]))
+
+    def test_compact_resources_drops_unusable_entries(self):
+        """Мусор в списке ресурсов не уходит на сайт и не ломает остальные."""
+        resources = [
+            {"Name": "zeta", "RequiredAmount": 1, "ProvidedAmount": 0},
+            None,
+            "text",
+            {"Name": "", "RequiredAmount": 1, "ProvidedAmount": 0},
+            {"Name": "no-provided", "RequiredAmount": 1},
+            {"Name": "empty-amount", "RequiredAmount": "", "ProvidedAmount": 1},
+            {"Name": "bool-amount", "RequiredAmount": True, "ProvidedAmount": 1},
+            {"Name": "spaced", "RequiredAmount": " 3 ", "ProvidedAmount": "2"},
+            {"Name": "negative", "RequiredAmount": -4, "ProvidedAmount": 1},
+        ]
+        self.assertEqual(compact_construction_resources(resources), [
+            {"Name": "negative", "RequiredAmount": 0, "ProvidedAmount": 1},
+            {"Name": "spaced", "RequiredAmount": 3, "ProvidedAmount": 2},
+            {"Name": "zeta", "RequiredAmount": 1, "ProvidedAmount": 0},
+        ])
+        self.assertEqual(compact_construction_resources("не список"), [])
 
     def test_duplicate_construction_snapshots_are_dropped(self):
         """Одинаковые подряд идущие snapshots стройки отбрасываются."""

@@ -49,11 +49,12 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md), выбор платформы и общий токен —
   [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md)
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
-  правилам и в одни и те же таблицы: доставки, snapshots строек, сканы тел, сводка пилота. Повторы отсекает
-  `source_hash`, сырые события в базе не хранятся (только маркер типа), история состояний строек подрезается
-  задачей `colonisation-cleanup` (окно `COLONISATION_RETENTION_DAYS`), а «монеты наёмников» читаются из
-  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облиганий —
-  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md)
+  правилам и в одни и те же таблицы: доставки, состояния стройплощадок, снимки прогресса, сканы тел, сводка пилота.
+  Повторы доставок отсекает `source_hash`. Состояние каждой стройплощадки хранится одной строкой (`colonisation_sites`,
+  ключ — MarketID), в Uploader и на сайт уходят только нужные поля, а снимки прогресса подрезает задача
+  `colonisation-cleanup` (окно `COLONISATION_RETENTION_DAYS`). «Монеты наёмников» читаются из
+  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облигаций —
+  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md), [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md)
 - **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
 - **Projects** — Plan and track colonization projects with route optimization
 - **System Architect** — `/architect` (тестовый режим): планировщик застройки системы по образцу инструмента
