@@ -358,8 +358,18 @@ sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+Или сразу диагностический скрипт проекта (только читает: обходит все
+`server`-блоки, которые проксируют сайт, сверяется с `error.log` и зондирует
+цепочку прокси телом 27 МиБ):
+
+```bash
+bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
+```
+
 Если активный HTTPS-блок уже показывает `200m`, а 413 остаётся, проверьте
-лимит внешнего reverse proxy/CDN перед nginx.
+лимит внешнего reverse proxy/CDN перед nginx: в этом случае в
+`/var/log/nginx/error.log` тихо — строк `client intended to send too large body`
+в нём нет, значит отказал не этот nginx.
 
 ## 7. Крон-задачи
 

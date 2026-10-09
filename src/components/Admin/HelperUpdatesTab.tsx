@@ -92,9 +92,11 @@ function describeUploadHttpError(status: number): string {
   if (status === 413) {
     return 'HTTP 413 — один из прокси отклонил тело загрузки. Для /api/admin/uploader/release '
       + 'конфиги проекта задают 200m; глобальные 25m могут быть меньше файла 25,2 МиБ с multipart-обёрткой. '
-      + 'Проверьте, что активный HTTPS server-блок содержит нужный location: '
+      + 'На сервере: `bash deploy/selfhost/check-release-upload-limit.sh https://домен-сайта` — он проверит каждый '
+      + 'server-блок, который проксирует сайт, error.log и реальное тело запроса. Вручную: '
       + '`sudo nginx -T | grep -n -A8 -B3 \'location = /api/admin/uploader/release\'`, '
-      + 'затем `sudo nginx -t && sudo systemctl reload nginx`. Если там уже 200m, проверьте внешний proxy/CDN.';
+      + 'затем `sudo nginx -t && sudo systemctl reload nginx`. Если там уже 200m, а в error.log нет '
+      + '«client intended to send too large body» — ограничитель стоит перед nginx (proxy/CDN).';
   }
   return `HTTP ${status}`;
 }

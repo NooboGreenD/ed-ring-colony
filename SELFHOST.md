@@ -354,19 +354,46 @@ sudo ufw delete allow 8000/tcp
 Файлы проекта задают `client_max_body_size 200m` для
 `/api/admin/uploader/release`. Глобальные `25m` меньше файла 25,2 МиБ, не считая
 multipart-обёртки, поэтому для него должен сработать отдельный location.
-Проверьте **активный** Nginx-блок, который принимает HTTPS:
+
+Проверить всё сразу можно скриптом из репозитория — он только читает, ничего не
+меняет и не перезапускает nginx:
+
+```bash
+cd /opt/ed-ring-colony/src
+bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
+```
+
+Для каждого `server`-блока активной конфигурации, который проксирует сайт на
+`:3000`, скрипт показывает лимит уровня `server` и лимит
+`location = /api/admin/uploader/release`, ищет строки
+`client intended to send too large body` в `error.log` и отдельным запросом
+проверяет, доезжает ли тело 27 МиБ до приложения: `401/403` — прокси пропустили
+(отказ уже у приложения, это хорошо), `413` — корпус срезали до сайта. Код
+возврата `1` означает, что ограничитель найден.
+
+То же руками:
 
 ```bash
 sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
+sudo grep -c 'client intended to send too large body' /var/log/nginx/error.log
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 У Nginx `location` действует только внутри своего `server {}`. Если TLS
 завершается в отдельном `server { listen 443 ssl; }`, скопируйте туда
 `location = /api/admin/uploader/release` из
-`deploy/selfhost/nginx-selfhost.conf` (или `deploy/nginx.conf`). Если активный
-HTTPS-блок уже показывает `200m`, а 413 остаётся, запрос ограничивает другой
-reverse proxy/CDN перед этим Nginx.
+`deploy/selfhost/nginx-selfhost.conf` (или `deploy/nginx.conf`). Строка
+`client intended to send too large body` в `error.log` — доказательство, что
+отказал именно этот nginx; если её нет, а 413 есть, ограничивает другой
+reverse proxy/CDN перед этим Nginx (Synology Application Portal, Cloudflare,
+Kong для Supabase — см. [GALAXY-POINTS-PUBLISH-FIX.md](GALAXY-POINTS-PUBLISH-FIX.md)).
+
+Поднять лимит снаружи не удаётся? Базовую сборку можно положить в хранилище
+мимо HTTP-загрузки: exe в `launcher/win64.exe` и рядом `launcher/win64.json`
+с полями `platform`, `version`, `url` (https), `sha256`, `size` — том
+`UPLOADER_STORE_DIR`, в Docker это `/data/uploader` внутри контейнера `web`.
+Приложение читает оба файла как обычные результаты публикации, но проверьте
+`sha256` и `size`: лаунчер сверяет хеш при обновлении.
 
 ---
 

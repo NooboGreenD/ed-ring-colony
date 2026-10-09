@@ -276,7 +276,9 @@ server {
     # TLS завершается в отдельном server (listen 443), продублируйте location
     # в HTTPS-блоке: nginx не наследует locations между server-блоками.
     location = /api/admin/uploader/release {
-        # Keep headroom for future release binaries; this endpoint accepts at least 150 MiB.
+        # 200m - с запасом перекрывает и exe (22-35 МиБ), и multipart-обёртку.
+        # Приложение само отклоняет базовую сборку крупнее 128 МиБ, поэтому
+        # лимит location обязан быть выше: иначе 413 отвечает nginx, а не сайт.
         client_max_body_size 200m;
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;

@@ -294,8 +294,20 @@ sudo nginx -t && sudo systemctl reload nginx
 
 В конфиге уже учтены особенности проекта: таймаут 310 с для долгого роута
 поиска маршрута, `client_max_body_size 25m` для загрузки журналов пилотов
-(и 150m для `/api/admin/uploader/release` — загрузка базового EXE Helper
+(и `200m` для `/api/admin/uploader/release` — загрузка базового EXE Helper
 из админки, иначе 413), кэширование `/_next/static/`.
+
+Базовая сборка весит около 25,2 МиБ, то есть больше глобальных `25m` ещё до
+multipart-обёртки, — спасает именно отдельный `location`. Он действует только
+внутри своего `server {}`, поэтому при TLS в отдельном блоке (`listen 443 ssl`)
+его нужно продублировать туда. Проверить активную конфигурацию:
+
+```bash
+sudo nginx -T 2>&1 | grep -n -A8 -B3 'location = /api/admin/uploader/release'
+bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
+```
+
+Подробный разбор 413 и внешних прокси — [SELFHOST.md](SELFHOST.md#если-загрузка-colonialhelperexe-отвечает-http-413).
 
 ## Шаг 7. HTTPS (Let's Encrypt)
 
