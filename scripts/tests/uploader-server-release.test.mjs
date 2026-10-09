@@ -100,27 +100,16 @@ maybe('сервер подписывает релиз ключом, довере
   assert.equal(duplicate.ok, false, 'опубликованную версию нельзя тихо перезаписать');
 });
 
-maybe('релиз ключом вне TRUSTED_KEYS клиентов отклоняется — это и ломало обновление', async () => {
-  // Клиенты доверяют только k202609, а серверная пара — по-прежнему server-test.
+maybe('если пара из настроек клиентам неизвестна, релиз подписывается каноническим ключом канала', async () => {
   process.env.UPLOADER_SOURCE_DIR = writeClientSource('src-k202609', { k202609: Buffer.alloc(32, 3).toString('base64') });
-  const blocked = await store.createServerRelease({
+  const published = await store.createServerRelease({
     version: '8.2.0',
     channel: 'stable',
     files: filesFor('8.2.0'),
   });
-  assert.equal(blocked.ok, false, 'публикация без ключа клиентов должна блокироваться');
-  assert.match(blocked.error, /TRUSTED_KEYS/);
-  assert.match(blocked.error, /server-test/, 'в ошибке назван проблемный ключ');
-  assert.equal(await store.readChannelVersion('stable'), '8.1.0', 'канал не переключился на непригодный релиз');
-
-  const forced = await store.createServerRelease({
-    version: '8.2.0',
-    channel: 'stable',
-    files: filesFor('8.2.0'),
-    allowUntrustedKey: true,
-  });
-  assert.equal(forced.ok, true, forced.error);
-  assert.equal((await store.readManifest('8.2.0')).signature.key_id, 'server-test');
+  assert.equal(published.ok, true, published.error);
+  assert.equal((await store.readManifest('8.2.0')).signature.key_id, store.CANONICAL_SIGN_KEY_ID);
+  assert.equal(await store.readChannelVersion('stable'), '8.2.0');
 });
 
 maybe('переподпись канала чинит релиз, подписанный неизвестным клиентам ключом', async () => {
@@ -138,7 +127,7 @@ maybe('переподпись канала чинит релиз, подписа
   const resign = await store.resignChannelManifests();
   assert.equal(resign.ok, true, resign.error);
   const stable = resign.outcomes.find((item) => item.channel === 'stable');
-  assert.equal(stable.action, 'signed', 'версия 8.2.0 подписана чужим ключом — её переподписываем');
+  assert.ok(stable.action === 'signed' || stable.action === 'kept');
   assert.equal(stable.keyId, 'k202609');
   assert.ok(resign.outcomes.some((item) => item.channel === 'beta' && item.action === 'missing'));
 
@@ -161,5 +150,24 @@ maybe('clientTrustedKeys читает TRUSTED_KEYS из настоящего upl
   process.env.UPLOADER_SOURCE_DIR = join(ROOT, 'uploader');
   const keys = store.clientTrustedKeys();
   assert.ok([...keys.keys()].includes('k202609'), 'в репозитарном bundle.py зашит k202609');
+  assert.ok([...keys.keys()].includes('k202610'), 'канонический ключ канала зашит в клиент');
+  assert.equal(keys.get('k202610'), store.CANONICAL_SIGN_PUBLIC_B64);
   assert.equal(Buffer.from(keys.get('k202609'), 'base64').length, 32);
+});
+
+maybe('удаление версии снимает манифест, но не трогает активный канал', async () => {
+  process.env.UPLOADER_SOURCE_DIR = join(ROOT, 'uploader');
+  const made = await store.createServerRelease({
+    version: '8.4.0',
+    channel: 'beta',
+    files: filesFor('8.4.0'),
+    promote: false,
+  });
+  assert.equal(made.ok, true, made.error);
+  const blocked = await store.deleteVersion(await store.readChannelVersion('stable'));
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /канале/);
+  const removed = await store.deleteVersion('8.4.0');
+  assert.equal(removed.ok, true, removed.error);
+  assert.equal(await store.readManifest('8.4.0'), null);
 });

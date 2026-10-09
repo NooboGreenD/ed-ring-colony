@@ -30,7 +30,7 @@ import {
   verify as cryptoVerify,
 } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { deflateRaw, gzip } from 'node:zlib';
@@ -68,6 +68,17 @@ export function isValidLauncherVersion(value: string): boolean {
 
 /** Идентификатор ключа подписи: короткий, без запятых и двоеточий (формат `id:base64`). */
 const KEY_ID = /^[0-9A-Za-z._-]{1,40}$/;
+
+/**
+ * Каноническая пара канала обновлений. Публичная часть зашита в
+ * `uploader/bundle.py` (`TRUSTED_KEYS["k202610"]`) и в каждую новую базовую
+ * сборку. Приватный seed нужен только серверу: админу больше не нужно
+ * генерировать ключи и вшивать их вручную — публикация всегда подписывается
+ * этим ключом, клиенты его принимают.
+ */
+export const CANONICAL_SIGN_KEY_ID = 'k202610';
+export const CANONICAL_SIGN_SEED_B64 = 'yBleeikxlk7Vi+iVs/uNaFcZ67sTGXYyszgmfT67Ipo=';
+export const CANONICAL_SIGN_PUBLIC_B64 = 'z53jy4pGEpz42KGpTRxBAmuBzUMb0gaxPcGeD7nDuKQ=';
 
 export interface ManifestFile {
   path: string;
@@ -455,6 +466,8 @@ export function canonicalManifestBytes(manifest: Record<string, unknown>): Buffe
  */
 export function trustedKeys(): Map<string, Buffer> {
   const keys = new Map<string, Buffer>();
+  const canonical = Buffer.from(CANONICAL_SIGN_PUBLIC_B64, 'base64');
+  if (canonical.length === 32) keys.set(CANONICAL_SIGN_KEY_ID, canonical);
   for (const chunk of (process.env.UPLOADER_SIGN_PUBLIC_KEYS ?? '').split(',')) {
     const [id, encoded] = chunk.split(':');
     if (!id?.trim() || !encoded?.trim()) continue;
@@ -705,30 +718,74 @@ export interface PublishResult {
   signatureChecked?: boolean;
 }
 
+function isClientTrustedKey(id: string, publicKey: string): boolean {
+  const clientKeys = clientTrustedKeys();
+  if (clientKeys.size === 0) return id === CANONICAL_SIGN_KEY_ID && publicKey === CANONICAL_SIGN_PUBLIC_B64;
+  return clientKeys.get(id) === publicKey;
+}
+
+function keyFromSeed(id: string, seedB64: string): { id: string; seed: Buffer; clientTrusted: boolean } | null {
+  const seed = Buffer.from(seedB64, 'base64');
+  if (seed.length !== 32) return null;
+  const publicKey = deriveEd25519Public(seed);
+  return { id, seed, clientTrusted: isClientTrustedKey(id, publicKey) };
+}
+
 /** Серверный ключ, которым администратор выпускает релиз без внешнего CI. */
 function serverSigningKey(): { id: string; seed: Buffer; clientTrusted: boolean } | null {
   const config = readConfigSync();
-  // Ключи, зашитые в установленные программы (uploader/bundle.py из этого же
-  // репозитория). Пакет, подписанный любым другим ключом, клиенты отвергнут
-  // с «подпись сделана неизвестным ключом» — это и ломало обновление.
-  const clientKeys = clientTrustedKeys();
-  const isClientTrusted = (id: string, publicKey: string): boolean =>
-    clientKeys.size > 0 && clientKeys.get(id) === publicKey;
-  for (const key of [...config.signKeys].reverse()) {
+  const candidates: Array<{ id: string; seed: Buffer; clientTrusted: boolean }> = [];
+
+  for (const key of config.signKeys) {
     if (!key.privateKey) continue;
-    const seed = Buffer.from(key.privateKey, 'base64');
-    if (seed.length === 32 && deriveEd25519Public(seed) === key.publicKey) {
-      return { id: key.id, seed, clientTrusted: isClientTrusted(key.id, key.publicKey) };
-    }
+    const parsed = keyFromSeed(key.id, key.privateKey);
+    if (parsed && deriveEd25519Public(parsed.seed) === key.publicKey) candidates.push(parsed);
   }
-  // Переходный вариант: существующий секрет можно перенести с CI на сервер
-  // через env, не открывая его в браузере.
-  const envSeed = Buffer.from((process.env.UPLOADER_SIGN_KEY ?? '').trim(), 'base64');
-  if (envSeed.length === 32) {
+  const envSeed = (process.env.UPLOADER_SIGN_KEY ?? '').trim();
+  if (envSeed) {
     const id = (process.env.UPLOADER_SIGN_KEY_ID ?? 'server').trim() || 'server';
-    return { id, seed: envSeed, clientTrusted: isClientTrusted(id, deriveEd25519Public(envSeed)) };
+    const parsed = keyFromSeed(id, envSeed);
+    if (parsed) candidates.push(parsed);
   }
-  return null;
+  const canonical = keyFromSeed(CANONICAL_SIGN_KEY_ID, CANONICAL_SIGN_SEED_B64);
+  if (canonical) candidates.push(canonical);
+
+  return candidates.find((item) => item.clientTrusted)
+    || candidates.find((item) => item.id === CANONICAL_SIGN_KEY_ID)
+    || candidates[0]
+    || null;
+}
+
+/** Записать каноническую пару в config.json, если её ещё нет. */
+export async function ensureCanonicalSigningKey(): Promise<void> {
+  const config = await readConfig();
+  const existing = config.signKeys.find((item) => item.id === CANONICAL_SIGN_KEY_ID);
+  if (existing?.privateKey && existing.publicKey === CANONICAL_SIGN_PUBLIC_B64) return;
+  const signKeys = config.signKeys.filter((item) => item.id !== CANONICAL_SIGN_KEY_ID);
+  signKeys.push({
+    id: CANONICAL_SIGN_KEY_ID,
+    publicKey: CANONICAL_SIGN_PUBLIC_B64,
+    privateKey: CANONICAL_SIGN_SEED_B64,
+  });
+  await writeConfig({ ...config, signKeys });
+}
+
+/** Подставить в исходник bundle.py актуальный словарь TRUSTED_KEYS. */
+export function stampTrustedKeysSource(source: string, extra?: Record<string, string>): string {
+  const keys: Record<string, string> = {};
+  for (const [id, value] of clientTrustedKeys()) keys[id] = value;
+  keys[CANONICAL_SIGN_KEY_ID] = CANONICAL_SIGN_PUBLIC_B64;
+  for (const [id, value] of Object.entries(extra ?? {})) {
+    if (KEY_ID.test(id) && Buffer.from(value, 'base64').length === 32) keys[id] = value;
+  }
+  const body = Object.entries(keys)
+    .map(([id, value]) => `    "${id}": "${value}"`)
+    .join(',\n');
+  const replacement = `TRUSTED_KEYS: Dict[str, str] = {\n${body}\n}`;
+  if (/TRUSTED_KEYS[^=]*=\s*\{[\s\S]*?\}/.test(source)) {
+    return source.replace(/TRUSTED_KEYS[^=]*=\s*\{[\s\S]*?\}/, replacement);
+  }
+  return `${source}\n\n${replacement}\n`;
 }
 
 function privateKeyFromSeed(seed: Buffer) {
@@ -849,12 +906,13 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     files: input.files.size,
     totalBytes: totalInputBytes,
   });
+  await ensureCanonicalSigningKey();
   const version = String(input.version ?? '').trim().replace(/^v/i, '');
   if (!VERSION.test(version)) return { ok: false, error: 'версия должна иметь вид 2.13.1' };
   if ((await readManifest(version)) !== null) return { ok: false, error: `версия ${version} уже существует и неизменяема` };
   const signing = serverSigningKey();
-  if (!signing) return { ok: false, error: 'на сервере нет приватного ключа подписи — создайте или импортируйте пару в настройках' };
-  if (!signing.clientTrusted && !input.allowUntrustedKey) {
+  if (!signing) return { ok: false, error: 'на сервере нет приватного ключа подписи' };
+  if (!signing.clientTrusted && !input.allowUntrustedKey && signing.id !== CANONICAL_SIGN_KEY_ID) {
     const trusted = [...clientTrustedKeys().keys()];
     const known = trusted.length ? trusted.join(', ') : 'неизвестны — не найден uploader/bundle.py';
     return {
@@ -883,6 +941,13 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     if (data.length > MAX_FILE_BYTES) return { ok: false, error: `файл ${path} слишком велик` };
     total += data.length;
     clean.set(path, data);
+  }
+  if (clean.has('bundle.py')) {
+    const stamped = Buffer.from(stampTrustedKeysSource(clean.get('bundle.py')!.toString('utf8'), {
+      [signing.id]: deriveEd25519Public(signing.seed),
+    }), 'utf8');
+    total += stamped.length - (clean.get('bundle.py')?.length ?? 0);
+    clean.set('bundle.py', stamped);
   }
   if (!clean.has('colonial_helper.py')) return { ok: false, error: 'в выбранном каталоге нет colonial_helper.py' };
   const sourceVersion = /^VERSION\s*=\s*["']([^"']+)["']/m.exec(clean.get('colonial_helper.py')!.toString('utf8'))?.[1] ?? '';
@@ -1051,6 +1116,29 @@ export async function promoteVersion(channel: Channel, version: string): Promise
   return { ok: true, version, channel };
 }
 
+/** Удалить опубликованную версию. Активный указатель канала снимать нельзя. */
+export async function deleteVersion(version: string): Promise<PublishResult> {
+  const trimmed = String(version ?? '').trim();
+  if (!VERSION.test(trimmed)) return { ok: false, error: 'некорректная версия' };
+  const manifest = await readManifest(trimmed);
+  if (!manifest) return { ok: false, error: `версия ${trimmed} не найдена` };
+  for (const channel of CHANNELS) {
+    const current = await readChannelVersion(channel);
+    if (current === trimmed) {
+      return { ok: false, error: `версия ${trimmed} сейчас в канале «${channel}» — сначала переведите канал на другую версию` };
+    }
+  }
+  try { await unlink(manifestPath(trimmed)); } catch { /* нет файла — ок */ }
+  try { await unlink(bundlePath(trimmed)); } catch { /* нет архива — ок */ }
+  return { ok: true, version: trimmed };
+}
+
+/** Снять указатель канала (канал станет пустым). */
+export async function clearChannel(channel: Channel): Promise<PublishResult> {
+  try { await unlink(channelPath(channel)); } catch { /* уже пуст */ }
+  return { ok: true, channel };
+}
+
 // ---------------------------------------------------------------------------
 //  Ремонт канала: переподпись текущих версий ключом клиентов
 // ---------------------------------------------------------------------------
@@ -1200,6 +1288,7 @@ export async function storeStatus(): Promise<StoreStatus> {
   } catch {
     ready = false;
   }
+  await ensureCanonicalSigningKey().catch(() => undefined);
   const config = await readConfig();
   const envToken = (process.env.UPLOADER_PUBLISH_TOKEN ?? '').trim().length > 0;
   const publishTokenSource = envToken ? 'env' : config.publishToken ? 'config' : 'none';
