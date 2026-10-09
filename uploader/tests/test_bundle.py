@@ -118,6 +118,14 @@ class ManifestValidationTests(unittest.TestCase):
         manifest["signature"]["key_id"] = "someone-else"
         self.assertIn("неизвестным ключом", bundle.verify_manifest(manifest, self.keys))
 
+    def test_unknown_key_message_names_trusted_ids(self):
+        """Пилот и админ видят, каким ключом подписан канал и чему верит сборка."""
+        manifest = self.build()
+        manifest["signature"]["key_id"] = "k999999-ab"
+        problem = bundle.verify_manifest(manifest, self.keys)
+        self.assertIn("k999999-ab", problem, "в ошибке назван чужой ключ")
+        self.assertIn("test", problem, "и перечислены доверенные ключи сборки")
+
     def test_unsigned_manifest_is_rejected(self):
         manifest = bundle.build_manifest(self.source, version="1.0.0")
         self.assertIn("не подписан", bundle.verify_manifest(manifest, self.keys))

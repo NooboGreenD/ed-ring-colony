@@ -385,10 +385,11 @@ bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
    Redirect URI → `https://ваш-домен/api/capi/callback`; и обязательно
    `FRONTIER_REDIRECT_URI` в `.env.production`.
 4. **Десктопный uploader / Colonial Helper**: адрес сайта и канал обновлений
-   зашиты в программе (`uploader/site_config.py`, `bundle_updater.py`). При
-   смене домена правку кода развозит workflow `build-bundle.yml` (пакет кода,
-   ~30 с), а EXE пересобирается только при смене рантайма — `build-exe.yml`
-   (см. раздел 12).
+   зашиты в программе (`uploader/site_config.py`, `bundle_updater.py`).
+   Обновления кода публикуются с самого сервера — «Админка → Обновления
+   Helper» (см. [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md));
+   GitHub Actions для этого не нужны. EXE пересобирается вручную только при
+   смене рантайма.
 5. Push-подписки браузеров привязаны к домену — пользователи переподпишутся
    автоматически при первом заходе на новый домен (sw.js отдаётся с него же).
 

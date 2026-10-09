@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactElement } from 'react';
 
 import { IconAlert, IconCheckCircle, IconRefresh, IconXCircle } from '@/components/Icons';
 import type { HelperReleaseJob } from '@/types/helperRelease';
@@ -24,6 +24,7 @@ interface VersionRow {
   bytes: number;
   min_launcher: string;
   signed: boolean;
+  signed_key: string;
 }
 
 interface SignKeyConfig {
@@ -42,6 +43,11 @@ interface StoreInfo {
   envKeyIds: string[];
   configKeys: SignKeyConfig[];
   serverSigningConfigured: boolean;
+  /** Ключ следующего релиза и доверие ему со стороны установленных программ. */
+  serverSigningKeyId: string;
+  serverSigningClientTrusted: boolean;
+  /** Ключи, зашитые в TRUSTED_KEYS установленных программ. */
+  clientTrustedKeys: Record<string, string>;
 }
 
 interface VersionsResponse {
@@ -55,7 +61,7 @@ interface VersionsResponse {
 
 const CHANNEL_LABELS: Record<string, string> = {
   stable: 'Стабильный',
-  beta: 'Тестовый (arena/**)',
+  beta: 'Бета (сервер проекта)',
 };
 
 function formatDate(value: string): string {
@@ -83,6 +89,21 @@ function jobKindLabel(kind: HelperReleaseJob['kind']): string {
   if (kind === 'launcher') return 'Базовая сборка EXE';
   if (kind === 'promote') return 'Переключение канала';
   return 'Публикация модулей Helper';
+}
+
+/**
+ * Зашит ли ключ в TRUSTED_KEYS установленных программ: подписанные им
+ * версии пилоты примут. Для ключей из config.json сверяется и публичный
+ * ключ — ID может совпадать, а пара быть другой (ротация с тем же именем).
+ */
+function clientTrustBadge(store: StoreInfo, id: string, publicKey = ''): ReactElement {
+  const known = Object.keys(store.clientTrustedKeys ?? {}).length > 0;
+  const trusted = publicKey
+    ? store.clientTrustedKeys?.[id] === publicKey
+    : Boolean(store.clientTrustedKeys?.[id]);
+  if (trusted) return <span style={{ color: '#2ecc71' }}>принимают</span>;
+  if (!known) return <span style={{ color: '#9ca3af' }}>неизвестно</span>;
+  return <span style={{ color: '#fca5a5' }}>отвергнут</span>;
 }
 
 /**
@@ -126,6 +147,10 @@ export default function HelperUpdatesTab() {
   const [releaseNotes, setReleaseNotes] = useState('');
   const [releaseSource, setReleaseSource] = useState<'server' | 'upload'>('server');
   const [releasePromote, setReleasePromote] = useState(true);
+  // Осознанный выпуск ключом, которого нет в TRUSTED_KEYS клиентов: без
+  // галочки сервер такую публикацию отвергнет — иначе пилоты массово
+  // остаются на старой версии с «канал недоступен».
+  const [allowUntrustedRelease, setAllowUntrustedRelease] = useState(false);
   const [releaseFiles, setReleaseFiles] = useState<File[]>([]);
   const [launcherVersion, setLauncherVersion] = useState('1.0.0');
   const [launcherFile, setLauncherFile] = useState<File | null>(null);
@@ -135,6 +160,10 @@ export default function HelperUpdatesTab() {
   // диске, поэтому перезагрузка вкладки не превращает процесс в «видимость».
   const [releaseJob, setReleaseJob] = useState<HelperReleaseJob | null>(null);
   const [processLogOpen, setProcessLogOpen] = useState(true);
+
+  // Ключ подписи не входит в TRUSTED_KEYS установленных программ: публикация
+  // требует осознанной отметки, а панель предлагает починить канал.
+  const untrustedSigning = Boolean(store?.serverSigningConfigured && !store.serverSigningClientTrusted);
 
   const refresh = useCallback(async () => {
     try {
@@ -267,6 +296,7 @@ export default function HelperUpdatesTab() {
     store?: StoreInfo;
     generated?: { id: string; publicKey: string; privateKey: string };
     generatedToken?: string;
+    resign?: Array<{ channel: string; version: string; action: string; keyId: string }>;
   }
 
   const configAction = useCallback(async (
@@ -329,6 +359,25 @@ export default function HelperUpdatesTab() {
     await configAction({ action: 'removeKey', id }, `Ключ «${id}» удалён`);
   }, [configAction]);
 
+  const resignChannels = useCallback(async () => {
+    if (!window.confirm(
+      'Переподписать текущие версии каналов ключом, доверенным установленными программами?\n\n'
+      + 'Состав версий не меняется — заменяется только подпись в манифесте. '
+      + 'Пилоты смогут обновляться сразу после переподписи.',
+    )) return;
+    const data = await configAction({ action: 'resignChannel' }, 'Каналы переподписаны');
+    const outcomes = data?.resign ?? [];
+    if (outcomes.length) {
+      setMessage('Переподписано: ' + outcomes
+        .map((item) => item.action === 'signed'
+          ? `${item.channel} → ${item.version} (ключ ${item.keyId})`
+          : item.action === 'kept'
+            ? `${item.channel} → ${item.version} (уже верна)`
+            : `${item.channel}: версии нет`)
+        .join('; '));
+    }
+  }, [configAction]);
+
   const saveToken = useCallback(async () => {
     const data = await configAction(
       { action: 'setPublishToken', token: tokenInput.trim() },
@@ -374,6 +423,7 @@ export default function HelperUpdatesTab() {
       return;
     }
     if (!releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)) return;
+    if (untrustedSigning && !allowUntrustedRelease) return;
     const action = releasePromote ? 'подготовить и сразу включить' : 'только подготовить';
     if (!window.confirm(`${action} версию ${releaseVersion} для канала «${CHANNEL_LABELS[releaseChannel]}»?`)) return;
     setBusy(true);
@@ -389,6 +439,7 @@ export default function HelperUpdatesTab() {
       form.set('source', releaseSource);
       form.set('promote', String(releasePromote));
       form.set('async', 'true');
+      if (untrustedSigning && allowUntrustedRelease) form.set('allowUntrustedKey', 'true');
       const paths: string[] = [];
       for (const file of releaseFiles) {
         form.append('files', file, file.name);
@@ -410,7 +461,7 @@ export default function HelperUpdatesTab() {
     } finally {
       setBusy(false);
     }
-  }, [releaseChannel, releaseFiles, releaseJob, releaseNotes, releasePromote, releaseSource, releaseVersion]);
+  }, [allowUntrustedRelease, releaseChannel, releaseFiles, releaseJob, releaseNotes, releasePromote, releaseSource, releaseVersion, untrustedSigning]);
 
   const downloadLauncherBuildKit = useCallback(async () => {
     if (!launcherVersion.trim()) return;
@@ -599,20 +650,42 @@ export default function HelperUpdatesTab() {
               <div style={{ color: '#9ca3af' }}>Хранилище: <code>{store.root}</code> — {store.ready ? 'готово' : 'каталога ещё нет (появится при первой публикации)'}</div>
               <div style={{ color: store.serverSigningConfigured ? '#2ecc71' : '#f1c40f' }}>
                 Серверная подпись: {store.serverSigningConfigured
-                  ? 'готова — релизы можно выпускать из этой панели'
+                  ? `готова — следующий релиз подпишет ключ «${store.serverSigningKeyId}»`
                   : 'НЕ настроена — создайте или импортируйте приватный ключ'}
               </div>
+              {store.serverSigningConfigured && (
+                <div style={{ color: store.serverSigningClientTrusted ? '#2ecc71' : '#fca5a5' }}>
+                  {store.serverSigningClientTrusted
+                    ? 'Ключ входит в TRUSTED_KEYS установленных программ — пилоты примут подпись.'
+                    : 'Ключа НЕТ в TRUSTED_KEYS установленных программ: пилоты увидят «канал недоступен: подпись сделана неизвестным ключом» и не смогут обновиться.'}
+                </div>
+              )}
               <div style={{ color: store.keyIds.length ? '#9ca3af' : '#f1c40f' }}>
                 Ключи подписи: {store.keyIds.length ? store.keyIds.join(', ') : 'не настроены'}
+                {Object.keys(store.clientTrustedKeys ?? {}).length > 0
+                  && ` · зашитые в программы: ${Object.keys(store.clientTrustedKeys).join(', ')}`}
               </div>
             </div>
-            <button
-              className="btn btn-cyan"
-              style={{ fontSize: 12, whiteSpace: 'nowrap' }}
-              onClick={() => setShowConfig((value) => !value)}
-            >
-              {showConfig ? 'Скрыть настройку' : 'Настроить'}
-            </button>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+              <button
+                className="btn btn-cyan"
+                style={{ fontSize: 12, whiteSpace: 'nowrap' }}
+                onClick={() => setShowConfig((value) => !value)}
+              >
+                {showConfig ? 'Скрыть настройку' : 'Настроить'}
+              </button>
+              {store.serverSigningConfigured && !store.serverSigningClientTrusted && (
+                <button
+                  className="btn"
+                  style={{ fontSize: 12, whiteSpace: 'nowrap', borderColor: '#e67e22', color: '#e67e22' }}
+                  disabled={busy}
+                  onClick={() => void resignChannels()}
+                  title="Переподписать текущие версии каналов доверенным ключом — обновления заработают без новой публикации"
+                >
+                  Починить канал: переподписать
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -666,6 +739,7 @@ export default function HelperUpdatesTab() {
                     <th style={{ padding: '4px 6px' }}>ID</th>
                     <th style={{ padding: '4px 6px' }}>Публичный ключ</th>
                     <th style={{ padding: '4px 6px' }}>Источник</th>
+                    <th style={{ padding: '4px 6px' }}>Клиенты</th>
                     <th style={{ padding: '4px 6px' }} />
                   </tr>
                 </thead>
@@ -675,6 +749,7 @@ export default function HelperUpdatesTab() {
                       <td style={{ padding: '4px 6px', fontFamily: 'ui-monospace, monospace' }}>{id}</td>
                       <td style={{ padding: '4px 6px', color: '#6b7280' }}>скрыт (в окружении)</td>
                       <td style={{ padding: '4px 6px' }}>из окружения</td>
+                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, id)}</td>
                       <td style={{ padding: '4px 6px' }} />
                     </tr>
                   ))}
@@ -687,6 +762,7 @@ export default function HelperUpdatesTab() {
                       <td style={{ padding: '4px 6px' }}>
                         {key.hasPrivate ? <span style={{ color: '#2ecc71' }}>серверная пара</span> : 'только публичный'}
                       </td>
+                      <td style={{ padding: '4px 6px' }}>{clientTrustBadge(store, key.id, key.publicKey)}</td>
                       <td style={{ padding: '4px 6px' }}>
                         <button className="btn" style={{ fontSize: 11 }} disabled={busy} onClick={() => void removeKey(key.id)}>
                           Удалить
@@ -816,12 +892,29 @@ export default function HelperUpdatesTab() {
         {busy && <progress style={{ width: '100%', height: 8, marginBottom: 8 }} />}
         <button
           className="btn btn-cyan"
-          disabled={releaseBusy || !store?.serverSigningConfigured || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
+          disabled={releaseBusy || !store?.serverSigningConfigured || (untrustedSigning && !allowUntrustedRelease) || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
           onClick={() => void publishRelease()}
         >
           {releasePromote ? 'Сформировать ZIP и выпустить обновление' : 'Сформировать ZIP без публикации в канал'}
         </button>
         {!store?.serverSigningConfigured && <span style={{ color: '#f1c40f', fontSize: 12, marginLeft: 10 }}>Сначала настройте серверную пару ключей.</span>}
+        {untrustedSigning && (
+          <div style={{ borderTop: '1px dashed #e67e22', marginTop: 12, paddingTop: 10, color: '#fca5a5', fontSize: 12, lineHeight: 1.6 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={allowUntrustedRelease}
+                onChange={(event) => setAllowUntrustedRelease(event.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                Подписать ключом «{store?.serverSigningKeyId}», которого нет в TRUSTED_KEYS установленных программ.
+                Пилоты не смогут обновиться, пока не получат базовую сборку с зашитым публичным ключом.
+                Отметьте, только если именно это и планируется (ротация ключа).
+              </span>
+            </label>
+          </div>
+        )}
 
         <div style={{ borderTop: '1px solid #2d3033', marginTop: 16, paddingTop: 12 }}>
           <strong>Базовая сборка ColonialHelper.exe</strong>
@@ -877,6 +970,7 @@ export default function HelperUpdatesTab() {
               {versions.map((row) => {
                 const inStable = channels.stable?.version === row.version;
                 const inBeta = channels.beta?.version === row.version;
+                const keyTrusted = Boolean(row.signed_key && store?.clientTrustedKeys?.[row.signed_key]);
                 return (
                   <tr key={row.version} style={{ borderTop: '1px solid #2d3033' }}>
                     <td style={{ padding: '6px 8px', fontFamily: 'ui-monospace, monospace' }}>{row.version}</td>
@@ -884,8 +978,9 @@ export default function HelperUpdatesTab() {
                     <td style={{ padding: '6px 8px', color: '#9ca3af' }}>{formatDate(row.released_at)}</td>
                     <td style={{ padding: '6px 8px' }}>{row.files}</td>
                     <td style={{ padding: '6px 8px' }}>{formatBytes(row.bytes)}</td>
-                    <td style={{ padding: '6px 8px', color: row.signed ? '#2ecc71' : '#e74c3c' }}>
-                      {row.signed ? 'есть' : 'нет'}
+                    <td style={{ padding: '6px 8px', color: row.signed ? (keyTrusted ? '#2ecc71' : '#e67e22') : '#e74c3c' }}
+                      title={row.signed ? `подпись: ${row.signed_key || '?'}` : 'манифест без подписи'}>
+                      {row.signed ? (row.signed_key || 'есть') : 'нет'}
                     </td>
                     <td style={{ padding: '6px 8px' }}>
                       <a

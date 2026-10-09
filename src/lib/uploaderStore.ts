@@ -29,7 +29,7 @@ import {
   timingSafeEqual,
   verify as cryptoVerify,
 } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { chmod, mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -246,6 +246,57 @@ export function deriveEd25519Public(seed: Buffer): string {
   const priv = createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
   const jwk = createPublicKey(priv).export({ format: 'jwk' }) as { x?: string };
   return Buffer.from(String(jwk.x ?? ''), 'base64url').toString('base64');
+}
+
+// ---------------------------------------------------------------------------
+//  Ключи, зашитые в установленные программы (uploader/bundle.py)
+// ---------------------------------------------------------------------------
+/**
+ * Клиент исполняет скачанный код, поэтому ставит только пакеты, подписанные
+ * ключом из `TRUSTED_KEYS` его сборки (`uploader/bundle.py`). Сервер обязан
+ * подписывать релизы таким ключом — иначе пилоты видят «канал недоступен:
+ * подпись сделана неизвестным ключом» и навсегда остаются на старой версии.
+ *
+ * Источник истины — сам `uploader/bundle.py` из этого же репозитория: именно
+ * он попадает в лаунчер (exe) и в каждый пакет кода. Файл едет в web-образе
+ * (`/app/uploader`), поэтому читаем его в рантайме и кэшируем по mtime.
+ * Пока файл прочитать не удалось, список пуст: публикация не блокируется
+ * (проверку подписи клиент всё равно делает сам), но панель честно покажет,
+ * что доверие клиентов «неизвестно».
+ */
+const CLIENT_TRUSTED_CACHE: { path: string; mtimeMs: number; keys: Map<string, string> } = {
+  path: '', mtimeMs: -1, keys: new Map(),
+};
+
+export function uploaderSourceDir(): string {
+  const configured = process.env.UPLOADER_SOURCE_DIR?.trim();
+  return configured || join(process.cwd(), 'uploader');
+}
+
+export function clientTrustedKeys(): Map<string, string> {
+  const path = join(uploaderSourceDir(), 'bundle.py');
+  try {
+    const mtimeMs = statSync(path).mtimeMs;
+    if (CLIENT_TRUSTED_CACHE.path === path && CLIENT_TRUSTED_CACHE.mtimeMs === mtimeMs) {
+      return CLIENT_TRUSTED_CACHE.keys;
+    }
+    const source = readFileSync(path, 'utf8');
+    const keys = new Map<string, string>();
+    // Словарь может быть и однострочным, и перенесённым по строкам: [\s\S].
+    const block = /TRUSTED_KEYS[^=]*=\s*(\{[\s\S]*?\})/.exec(source)?.[1] ?? '';
+    for (const match of block.matchAll(/["']([0-9A-Za-z._-]+)["']\s*:\s*["']([A-Za-z0-9+/=]+)["']/g)) {
+      const raw = Buffer.from(match[2], 'base64');
+      if (raw.length === 32) keys.set(match[1], Buffer.from(match[2], 'base64').toString('base64'));
+    }
+    CLIENT_TRUSTED_CACHE.path = path;
+    CLIENT_TRUSTED_CACHE.mtimeMs = mtimeMs;
+    CLIENT_TRUSTED_CACHE.keys = keys;
+    return keys;
+  } catch {
+    // Файла нет (нестандартная установка) — отдаём последнюю удачную версию
+    // кэша, а при первом неудачном чтении — пустую карту.
+    return CLIENT_TRUSTED_CACHE.path === path ? CLIENT_TRUSTED_CACHE.keys : new Map();
+  }
 }
 
 export interface GeneratedSignKey {
@@ -655,18 +706,27 @@ export interface PublishResult {
 }
 
 /** Серверный ключ, которым администратор выпускает релиз без внешнего CI. */
-function serverSigningKey(): { id: string; seed: Buffer } | null {
+function serverSigningKey(): { id: string; seed: Buffer; clientTrusted: boolean } | null {
   const config = readConfigSync();
+  // Ключи, зашитые в установленные программы (uploader/bundle.py из этого же
+  // репозитория). Пакет, подписанный любым другим ключом, клиенты отвергнут
+  // с «подпись сделана неизвестным ключом» — это и ломало обновление.
+  const clientKeys = clientTrustedKeys();
+  const isClientTrusted = (id: string, publicKey: string): boolean =>
+    clientKeys.size > 0 && clientKeys.get(id) === publicKey;
   for (const key of [...config.signKeys].reverse()) {
     if (!key.privateKey) continue;
     const seed = Buffer.from(key.privateKey, 'base64');
-    if (seed.length === 32 && deriveEd25519Public(seed) === key.publicKey) return { id: key.id, seed };
+    if (seed.length === 32 && deriveEd25519Public(seed) === key.publicKey) {
+      return { id: key.id, seed, clientTrusted: isClientTrusted(key.id, key.publicKey) };
+    }
   }
   // Переходный вариант: существующий секрет можно перенести с CI на сервер
   // через env, не открывая его в браузере.
   const envSeed = Buffer.from((process.env.UPLOADER_SIGN_KEY ?? '').trim(), 'base64');
   if (envSeed.length === 32) {
-    return { id: (process.env.UPLOADER_SIGN_KEY_ID ?? 'server').trim() || 'server', seed: envSeed };
+    const id = (process.env.UPLOADER_SIGN_KEY_ID ?? 'server').trim() || 'server';
+    return { id, seed: envSeed, clientTrusted: isClientTrusted(id, deriveEd25519Public(envSeed)) };
   }
   return null;
 }
@@ -765,6 +825,12 @@ export interface ServerReleaseInput {
   minLauncher?: string;
   files: Map<string, Buffer>;
   promote?: boolean;
+  /**
+   * Осознанный выпуск ключом, которого НЕТ в TRUSTED_KEYS установленных
+   * программ. По умолчанию такая публикация отвергается: пилоты не смогут
+   * обновиться, пока не получат базовую сборку с зашитым публичным ключом.
+   */
+  allowUntrustedKey?: boolean;
   onProgress?: HelperReleaseProgressHandler;
 }
 
@@ -788,6 +854,18 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
   if ((await readManifest(version)) !== null) return { ok: false, error: `версия ${version} уже существует и неизменяема` };
   const signing = serverSigningKey();
   if (!signing) return { ok: false, error: 'на сервере нет приватного ключа подписи — создайте или импортируйте пару в настройках' };
+  if (!signing.clientTrusted && !input.allowUntrustedKey) {
+    const trusted = [...clientTrustedKeys().keys()];
+    const known = trusted.length ? trusted.join(', ') : 'неизвестны — не найден uploader/bundle.py';
+    return {
+      ok: false,
+      error: 'установленные программы не примут эту подпись: ключ ' + signing.id
+        + ' не входит в TRUSTED_KEYS их сборок (доверенные ID: ' + known
+        + '). Импортируйте приватный seed доверенного ключа в настройках '
+        + 'канала либо выпустите базовую сборку с новым публичным ключом; '
+        + 'выпустить всё равно можно осознанной отметкой в форме публикации.',
+    };
+  }
 
   const clean = new Map<string, Buffer>();
   let total = 0;
@@ -839,11 +917,21 @@ export async function createServerRelease(input: ServerReleaseInput): Promise<Pu
     notes: String(input.notes ?? '').slice(0, 20_000),
     files: manifestFiles,
   };
-  await progress('sign', 48, 'Подписываю манифест серверным ключом', {
-    files: clean.size,
-    totalBytes: total,
-    hashedFiles: clean.size,
-  });
+  if (signing.clientTrusted) {
+    await progress('sign', 48, `Подписываю манифест серверным ключом ${signing.id} (доверен установленным программам)`, {
+      files: clean.size,
+      totalBytes: total,
+      hashedFiles: clean.size,
+    });
+  } else {
+    // Сюда попадаем только при явном allowUntrustedKey: предупреждение должно
+    // остаться в журнале задачи, чтобы выпуск новым ключом не был случайным.
+    await progress('sign', 48, `ВНИМАНИЕ: подписываю ключом ${signing.id}, которого нет в TRUSTED_KEYS установленных программ, — они смогут обновиться только после новой базовой сборки`, {
+      files: clean.size,
+      totalBytes: total,
+      hashedFiles: clean.size,
+    });
+  }
   const signature = cryptoSign(null, canonicalManifestBytes(manifest), privateKeyFromSeed(signing.seed));
   manifest.signature = { alg: 'ed25519', key_id: signing.id, value: signature.toString('base64') };
 
@@ -963,6 +1051,81 @@ export async function promoteVersion(channel: Channel, version: string): Promise
   return { ok: true, version, channel };
 }
 
+// ---------------------------------------------------------------------------
+//  Ремонт канала: переподпись текущих версий ключом клиентов
+// ---------------------------------------------------------------------------
+export interface ResignChannelOutcome {
+  channel: string;
+  version: string;
+  /** signed — переподписано; kept — подпись уже верна; missing — версии нет. */
+  action: 'signed' | 'kept' | 'missing';
+  keyId: string;
+}
+
+export interface ResignChannelsResult {
+  ok: boolean;
+  error?: string;
+  outcomes: ResignChannelOutcome[];
+}
+
+/**
+ * Переподписать манифесты, на которые указывают каналы, ключом, который
+ * установленным программам знаком по TRUSTED_KEYS.
+ *
+ * Лечит канал, опубликованный чужим ключом: именно тогда пилоты видят
+ * «канал недоступен: подпись сделана неизвестным ключом» и не могут
+ * обновиться. Состав файлов версии не меняется — заменяется только блок
+ * signature, поэтому это безопасно при неизменяемости версий.
+ */
+export async function resignChannelManifests(
+  channels: readonly Channel[] = CHANNELS,
+): Promise<ResignChannelsResult> {
+  const outcomes: ResignChannelOutcome[] = [];
+  const signing = serverSigningKey();
+  const clientKeys = clientTrustedKeys();
+  if (!signing || !signing.clientTrusted) {
+    const trusted = [...clientKeys.keys()];
+    return {
+      ok: false,
+      error: 'на сервере нет приватного ключа, доверенного установленным программам'
+        + (trusted.length ? ` (доверенные ID: ${trusted.join(', ')}). Импортируйте его приватный seed в настройках канала`
+          : ' — не найден uploader/bundle.py с TRUSTED_KEYS'),
+      outcomes,
+    };
+  }
+
+  for (const channel of channels) {
+    const version = await readChannelVersion(channel);
+    if (!version) {
+      outcomes.push({ channel, version: '', action: 'missing', keyId: signing.id });
+      continue;
+    }
+    const manifest = await readManifest(version);
+    if (!manifest) {
+      outcomes.push({ channel, version, action: 'missing', keyId: signing.id });
+      continue;
+    }
+    const keyId = String(manifest.signature?.key_id ?? '');
+    const integrity = verifyManifestSignature(manifest);
+    // Подпись трогаем только если она не от доверенного клиентами ключа
+    // либо не сходится вовсе: переподписывать исправное не нужно.
+    if (integrity.ok && keyId && clientKeys.has(keyId)) {
+      outcomes.push({ channel, version, action: 'kept', keyId });
+      continue;
+    }
+    const { signature: _dropped, ...payload } = manifest;
+    const value = cryptoSign(null, canonicalManifestBytes(payload as Record<string, unknown>), privateKeyFromSeed(signing.seed));
+    const resigned = { ...payload, signature: { alg: 'ed25519', key_id: signing.id, value: value.toString('base64') } };
+    const verification = verifyManifestSignature(resigned);
+    if (!verification.ok) {
+      return { ok: false, error: `переподписанная версия ${version} не прошла проверку: ${verification.error ?? '?'}`, outcomes };
+    }
+    await writeAtomic(manifestPath(version), JSON.stringify(resigned, null, 2));
+    outcomes.push({ channel, version, action: 'signed', keyId: signing.id });
+  }
+  return { ok: true, outcomes };
+}
+
 /** Сохранить exe непосредственно на сервере и его проверяемые метаданные. */
 export async function saveLauncherBinary(
   platform: string,
@@ -1021,6 +1184,12 @@ export interface StoreStatus {
   configKeys: Array<SignKeyConfig & { hasPrivate: boolean }>;
   /** Сервер способен сам подписывать релизы, без GitHub Actions/CI. */
   serverSigningConfigured: boolean;
+  /** Каким ключом сервер подпишет следующий релиз ('' — подписи нет). */
+  serverSigningKeyId: string;
+  /** Входит ли этот ключ в TRUSTED_KEYS установленных программ. */
+  serverSigningClientTrusted: boolean;
+  /** Ключи, зашитые в установленные программы (публичная информация). */
+  clientTrustedKeys: Record<string, string>;
 }
 
 export async function storeStatus(): Promise<StoreStatus> {
@@ -1034,6 +1203,7 @@ export async function storeStatus(): Promise<StoreStatus> {
   const config = await readConfig();
   const envToken = (process.env.UPLOADER_PUBLISH_TOKEN ?? '').trim().length > 0;
   const publishTokenSource = envToken ? 'env' : config.publishToken ? 'config' : 'none';
+  const signing = serverSigningKey();
   return {
     root,
     ready,
@@ -1049,6 +1219,9 @@ export async function storeStatus(): Promise<StoreStatus> {
       publicKey,
       hasPrivate: Boolean(privateKey),
     })),
-    serverSigningConfigured: serverSigningKey() !== null,
+    serverSigningConfigured: signing !== null,
+    serverSigningKeyId: signing?.id ?? '',
+    serverSigningClientTrusted: signing?.clientTrusted ?? false,
+    clientTrustedKeys: Object.fromEntries(clientTrustedKeys()),
   };
 }
