@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { requireAdmin } from '@/lib/billing/auth';
-import { createZip, trustedPublicKeys } from '@/lib/uploaderStore';
+import { createZip, embedTrustedKeys, trustedPublicKeys } from '@/lib/uploaderStore';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,15 +45,7 @@ export async function GET(request: Request) {
       if (!entry.isFile() || !INCLUDED_SUFFIXES.has(suffix(entry.name))) continue;
       let data = await readFile(join(root, entry.name));
       if (entry.name === 'bundle.py') {
-        const source = data.toString('utf8');
-        if (!/^TRUSTED_KEYS:\s*Dict\[str, str\]\s*=\s*\{.*\}\s*$/m.test(source)) {
-          throw new Error('Не удалось встроить ключи: в bundle.py не найден TRUSTED_KEYS');
-        }
-        const pythonKeys = JSON.stringify(keys, null, 2);
-        data = Buffer.from(source.replace(
-          /^TRUSTED_KEYS:\s*Dict\[str, str\]\s*=\s*\{.*\}\s*$/m,
-          `TRUSTED_KEYS: Dict[str, str] = ${pythonKeys}`,
-        ), 'utf8');
+        data = Buffer.from(embedTrustedKeys(data.toString('utf8'), keys), 'utf8');
       } else if (entry.name === 'launcher.py') {
         const source = data.toString('utf8');
         data = Buffer.from(source.replace(

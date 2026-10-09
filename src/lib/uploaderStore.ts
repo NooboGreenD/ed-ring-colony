@@ -788,6 +788,27 @@ export function stampTrustedKeysSource(source: string, extra?: Record<string, st
   return `${source}\n\n${replacement}\n`;
 }
 
+/**
+ * Весь словарь `TRUSTED_KEYS = {...}` в bundle.py — однострочный или перенесённый
+ * по строкам (актуальный bundle.py многострочный, с комментариями). В словаре
+ * нет `}` ни в значениях (base64), ни в комментариях, поэтому первая `}` после
+ * `{` закрывает его.
+ */
+const TRUSTED_KEYS_BLOCK_RE = /^TRUSTED_KEYS\b[^=\n]*=\s*\{[^}]*\}/m;
+
+/**
+ * Встроить публичные ключи в исходник bundle.py для комплекта первой сборки.
+ * Заменяется весь словарь, а не одна строка: прежняя регулярка понимала только
+ * однострочный словарь, поэтому для многострочного bundle.py комплект не собирался.
+ */
+export function embedTrustedKeys(source: string, keys: Record<string, string>): string {
+  if (!TRUSTED_KEYS_BLOCK_RE.test(source)) {
+    throw new Error('Не удалось встроить ключи: в bundle.py не найден TRUSTED_KEYS');
+  }
+  const literal = JSON.stringify(keys, null, 2);
+  return source.replace(TRUSTED_KEYS_BLOCK_RE, () => `TRUSTED_KEYS: Dict[str, str] = ${literal}`);
+}
+
 function privateKeyFromSeed(seed: Buffer) {
   const der = Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), seed]);
   return createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
