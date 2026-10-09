@@ -324,15 +324,16 @@ export async function POST(request: Request) {
     const notes = String(form.get('notes') ?? '');
     const minLauncher = String(form.get('minLauncher') ?? '1.0.0');
     const promote = String(form.get('promote') ?? 'true') !== 'false';
+    const allowUntrustedKey = String(form.get('allowUntrustedKey') ?? '') === 'true';
     if (asyncRequested) {
       try {
-        const job = await startHelperReleaseJob({ kind: 'bundle', version, channel, notes, minLauncher, files, promote });
+        const job = await startHelperReleaseJob({ kind: 'bundle', version, channel, notes, minLauncher, files, promote, allowUntrustedKey });
         return NextResponse.json({ ok: true, job }, { status: 202, ...NO_STORE });
       } catch (error) {
         return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : 'Не удалось поставить задачу в очередь' }, { status: 409, ...NO_STORE });
       }
     }
-    const result = await createServerRelease({ version, channel, notes, minLauncher, files, promote });
+    const result = await createServerRelease({ version, channel, notes, minLauncher, files, promote, allowUntrustedKey });
     return NextResponse.json(result, { status: result.ok ? 200 : 400, ...NO_STORE });
   } catch (error) {
     return jsonError(error, 'Публикация не выполнена');

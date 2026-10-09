@@ -143,7 +143,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.13.2"
+VERSION = "2.13.3"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -463,10 +463,11 @@ class ColonialHelperApp:
     # ============================================================
     #  Шапка
     # ============================================================
-    #: Каналы автономного сервера: stable либо самый свежий stable/beta.
+    #: Каналы автономного сервера проекта. Оба указателя живут на
+    #: edringcolony.ru; GitHub в обновлениях не участвует.
     UPDATE_CHANNEL_LABELS = {
-        "stable": "Только стабильные (main)",
-        "all": "Все сборки (включая arena)",
+        "stable": "Стабильные релизы (сервер проекта)",
+        "all": "Все сборки: стабильные и бета",
     }
 
     def _build_header(self):
@@ -506,7 +507,7 @@ class ColonialHelperApp:
         self.update_channel_combo = tb.Combobox(
             update_frame,
             textvariable=self.update_channel_var,
-            width=26,
+            width=34,
             state="readonly",
             values=[text for text in self.UPDATE_CHANNEL_LABELS.values()],
         )
@@ -6708,7 +6709,10 @@ class ColonialHelperApp:
         self._update_busy = True
         channel = self._update_channel_value()
         self._set_update_ui(True, hint="проверка обновлений…", button_text="Проверяю…")
-        self.log("Проверяю обновления…", "info")
+        # Источник показываем прямо в логе: обновления всегда идут через
+        # сервер проекта, и пилот это видит, а не вспоминает догадки.
+        self.log(f"Проверяю обновления… (сервер проекта: "
+                 f"{bundle_updater.update_base()})", "info")
 
         def worker():
             result = self._check_update_sources(channel)
@@ -6741,7 +6745,9 @@ class ColonialHelperApp:
 
         if not result.get("ok"):
             message = str(result.get("error") or "сервер не вернул манифест")
-            self._set_update_ui(False, hint=f"канал недоступен: {message[:36]}")
+            # Не обрезаем до пары слов: в сообщении о подписи ключевое —
+            # каким ключом сервер подписал канал и чему верит эта сборка.
+            self._set_update_ui(False, hint=f"канал недоступен: {message[:80]}")
             if manual:
                 self.log(f"Обновления не проверены: {message}", "warn")
             return

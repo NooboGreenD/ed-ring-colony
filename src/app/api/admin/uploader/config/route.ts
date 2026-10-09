@@ -6,6 +6,7 @@ import {
   generateSignKey,
   importSignKey,
   removeSignKey,
+  resignChannelManifests,
   setPublishToken,
   storeSignKey,
   storeStatus,
@@ -81,6 +82,17 @@ export async function POST(request: Request) {
 
     case 'importPrivateKey':
       return done(await importSignKey(String(body?.id ?? ''), String(body?.privateKey ?? '')));
+
+    case 'resignChannel': {
+      // Ремонт канала: переподписать текущие версии ключом, доверенным
+      // установленными программами. Состав версий не меняется — только
+      // блок signature в манифесте.
+      const resign = await resignChannelManifests();
+      if (!resign.ok) {
+        return NextResponse.json({ ok: false, error: resign.error }, { status: 400, ...NO_STORE });
+      }
+      return done({ ok: true }, { resign: resign.outcomes });
+    }
 
     case 'setPublishToken':
       return done(await setPublishToken(String(body?.token ?? '')));

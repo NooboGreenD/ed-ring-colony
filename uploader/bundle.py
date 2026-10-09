@@ -392,7 +392,12 @@ def verify_manifest(manifest: Any, keys: Optional[Dict[str, str]] = None,
                 "подписи (см. build_bundle.py --keygen)")
     public = available.get(key_id)
     if public is None:
-        return f"подпись сделана неизвестным ключом {key_id!r}"
+        # Подсказка с идентификаторами своих ключей экономит один круг
+        # «а что вообще случилось»: админ сразу видит, каким ключом сервер
+        # подписал канал и чего не хватает этой сборке.
+        known = ", ".join(sorted(available)) or "нет"
+        return (f"подпись сделана неизвестным ключом {key_id!r} "
+                f"(эта сборка доверяет: {known})")
     try:
         raw = base64.b64decode(str(signature.get("value") or ""), validate=True)
     except Exception:

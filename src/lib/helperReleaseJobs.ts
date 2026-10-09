@@ -41,6 +41,8 @@ export type HelperReleaseInput =
       minLauncher: string;
       files: Map<string, Buffer>;
       promote: boolean;
+      /** Осознанный выпуск ключом, которого нет в TRUSTED_KEYS клиентов. */
+      allowUntrustedKey?: boolean;
     }
   | {
       kind: 'launcher';

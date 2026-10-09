@@ -46,6 +46,9 @@ export async function GET(request: Request) {
           : 0,
         min_launcher: String(manifest?.min_launcher ?? ''),
         signed: Boolean(manifest?.signature),
+        // Каким ключом подписана версия: панель предупреждает, когда канал
+        // указывает на пакет, подписанный неизвестным клиентам ключом.
+        signed_key: String(manifest?.signature?.key_id ?? ''),
       };
     }),
   );

@@ -17,9 +17,12 @@
     # для сборки exe: разложить пакет туда, откуда его заберёт PyInstaller
     python uploader/build_bundle.py --out dist/bundle --embed build/app_bundle
 
-Приватный ключ живёт только в секретах CI (`UPLOADER_SIGN_KEY`), публичный —
-в `bundle.TRUSTED_KEYS` внутри сборки. Без ключа скрипт честно откажется
-подписывать: неподписанный пакет клиент всё равно не поставит.
+Обновления публикуются на сервере проекта (Админка → Обновления Helper);
+этот скрипт — запасной путь публикации через `--publish` и инструмент
+первичной настройки ключей. Приватный ключ живёт в `config.json` хранилища
+сервера (или в `UPLOADER_SIGN_KEY`), публичный — в `bundle.TRUSTED_KEYS`
+внутри сборки. Без ключа скрипт честно откажется подписывать: неподписанный
+пакет клиент всё равно не поставит.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import urllib.error
@@ -41,9 +45,11 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import bundle  # noqa: E402
-import updater  # noqa: E402  (переиспользуем чтение VERSION и ченджлога)
 
 #: Что в пакет не попадает: инструменты сборки и сам лаунчер (он внутри exe).
+#: `updater.py` держим в списке и для старых каталогов, где он ещё лежит:
+#: обновления теперь идут только через сервер проекта, и модуль GitHub API
+#: в пакет пилоту не нужен.
 EXCLUDE = {"build_exe.py", "build_bundle.py", "launcher.py", "updater.py"}
 
 #: Переменные окружения для CI.
@@ -58,6 +64,43 @@ def channel_for_branch(branch: str) -> str:
     return "stable" if name in ("", "main", "master") else "beta"
 
 
+#: VERSION в colonial_helper.py читаем литералом, не импортом: модуль тянет
+#: за собой tkinter, а сборщику нужен только номер.
+_VERSION_RE = re.compile(r'^VERSION\s*=\s*["\']([^"\']+)["\']', re.MULTILINE)
+
+#: Заголовок свежего раздела ченджлога: «# Раунд 69 — 2.13.2: …».
+_ROUND_RE = re.compile(r"^# Раунд\b.*$", re.MULTILINE)
+
+#: Сколько строк ченджлога попадает в заметки релиза.
+NOTES_MAX_LINES = 60
+
+
+def current_version(path: Path) -> str:
+    """Версия программы из `colonial_helper.VERSION` (литерал, без импорта)."""
+    try:
+        match = _VERSION_RE.search(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    return match.group(1) if match else ""
+
+
+def latest_changelog(changes_path: Path, max_lines: int = NOTES_MAX_LINES) -> str:
+    """Свежий раздел `CHANGES.md` — «небольшой ченджлог» для заметок релиза."""
+    try:
+        text = changes_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    starts = [m.start() for m in _ROUND_RE.finditer(text)]
+    if not starts:
+        return text.strip()[:4000]
+    begin = starts[0]
+    end = starts[1] if len(starts) > 1 else len(text)
+    lines = text[begin:end].strip().splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + ["…", "", "Полная история — `uploader/CHANGES.md`."]
+    return "\n".join(lines).strip()
+
+
 def bundle_files(source: Path) -> List[str]:
     """Модули программы: все `*.py` каталога, кроме инструментов сборки."""
     return sorted(p.name for p in source.glob("*.py") if p.name not in EXCLUDE)
@@ -66,7 +109,7 @@ def bundle_files(source: Path) -> List[str]:
 def bundle_version(source: Path, override: str = "") -> str:
     if override:
         return override.strip().lstrip("vV")
-    version = updater.current_version(source / "colonial_helper.py")
+    version = current_version(source / "colonial_helper.py")
     if not version:
         raise SystemExit("Не удалось прочитать VERSION из colonial_helper.py")
     return version
@@ -100,14 +143,16 @@ def keygen() -> int:
     print(f"ПУБЛИЧНЫЙ ключ:  {public_b64}")
     print("=" * 70)
     print("Что сделать:")
-    print(f"  1) GitHub → Settings → Secrets → Actions:")
-    print(f"       {KEY_ENV}    = приватный ключ (никуда больше не копировать)")
-    print(f"       {KEY_ID_ENV} = {key_id}")
+    print("  1) приватный ключ — на сервер проекта (Админка → Обновления")
+    print("     Helper → «Импортировать приватный ключ») либо в окружение")
+    print(f"       {KEY_ENV} / {KEY_ID_ENV}:")
     print( "  2) uploader/bundle.py → TRUSTED_KEYS:")
     print(f'       TRUSTED_KEYS = {{"{key_id}": "{public_b64}"}}')
     print( "  3) пересобрать exe: публичный ключ должен попасть в лаунчер.")
-    print("Приватный ключ нигде не хранится: потеряете — сгенерируйте новый и")
-    print("выпустите новую базовую сборку с новым публичным ключом.")
+    print("Канал обновлений живёт на сервере проекта, GitHub для обновлений")
+    print("не используется. Приватный ключ нигде не хранится: потеряете —")
+    print("сгенерируйте новый и выпустите новую базовую сборку с новым")
+    print("публичным ключом.")
     return 0
 
 
@@ -326,7 +371,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         except OSError as exc:
             print(f"Не удалось прочитать {args.notes_file}: {exc}", file=sys.stderr)
     if not notes:
-        notes = updater.latest_changelog(source / "CHANGES.md")
+        notes = latest_changelog(source / "CHANGES.md")
 
     secret = read_secret(args.key)
     key_id = args.key_id or os.environ.get(KEY_ID_ENV, "") or "dev"
