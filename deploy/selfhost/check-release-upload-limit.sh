@@ -5,13 +5,14 @@
 #
 # Только чтение: конфиг не правится, nginx не перезапускается, файлы на диске
 # не создаются. Аргументом можно передать публичный адрес сайта — тогда скрипт
-# дополнительно отправит на /api/admin/uploader/release заведомо «неудобный»
-# пустой корпус (27 МиБ, без cookie) и посмотрит, кто именно его отрежет.
+# дополнительно отправит на /api/admin/uploader/release raw-тело 1 МиБ —
+# минимальный размер части, до которого интерфейс автоматически уменьшает
+# запрос после 413. multipart и cookie не используются.
 #
-# Почему корпус 27 МиБ: базовая сборка весит ~25,2 МиБ, глобальный лимит
-# проекта — 25m (26 214 400 байт), а отдельный location выдаёт 200m. Значит
-# запрос размером 27 МиБ отвечает «той самой» границей: 413 = кто-то режет,
-# 401/403 = прокси пропустили тело до приложения (там его отвергнет авторизация).
+# Новый интерфейс не отправляет 25,2-МиБ EXE одним запросом: сначала идут
+# части по 4 МиБ, а при отказе размер автоматически снижается до 2 и 1 МиБ.
+# Здесь проверяется минимальная поддерживаемая часть: 413 означает, что даже
+# адаптивная загрузка не пройдёт; 401/403 — запрос дошёл до авторизации.
 #
 # Переменные окружения для разбора сохранённого вывода (без root):
 #   CHECK_NGINX_T_OUTPUT=/path/nginx-T.txt   читать конфиг из файла
@@ -20,7 +21,7 @@ set -euo pipefail
 
 URL="${1:-}"
 TARGET_PATH="/api/admin/uploader/release"
-PROBE_BYTES=$((27 * 1024 * 1024))
+PROBE_BYTES=$((1 * 1024 * 1024))
 NGINX_T_OUTPUT="${CHECK_NGINX_T_OUTPUT:-}"
 NGINX_ERROR_LOG="${CHECK_NGINX_ERROR_LOG:-/var/log/nginx/error.log}"
 
@@ -129,21 +130,25 @@ else
     note "    server_name:   ${name:-—}"
     note "    server-level:  client_max_body_size $( [ "$srule" = "-1" ] && echo "не задан (nginx ограничивает 1m по умолчанию)" || echo "≈${srule} MiB")"
     if [ "$lrule" = "-1" ]; then
-      note "    location:      отсутствует"
-      bad "в этом блоке нет location = $TARGET_PATH → 413 вернёт nginx ещё до приложения"
+      note "    location:      отсутствует (адаптивные raw-части — от 1 до 4 МиБ)"
+      effective="$srule"
+      [ "$effective" = "-1" ] && effective=1
+      if [ "$effective" -ge 1 ]; then
+        pass "эффективный server-level лимит ≈${effective} MiB — хватает на минимальную часть 1 МиБ"
+      else
+        bad "эффективный лимит ≈${effective} MiB меньше минимальной части 1 МиБ — nginx вернёт 413"
+      fi
     else
       note "    location:      client_max_body_size ≈${lrule} MiB"
-      if [ "$lrule" -ge 200 ]; then
-        pass "location разрешает ≈${lrule} MiB — хватает на exe 25,2 МиБ и multipart-обёртку"
-      elif [ "$lrule" -le 26 ]; then
-        bad "location разрешает только ≈${lrule} MiB — базовая сборка 25,2 МиБ не пройдёт"
+      if [ "$lrule" -ge 1 ]; then
+        pass "location пропускает минимальную raw-часть 1 МиБ (обычный размер — до 4 МиБ)"
       else
-        hint "location разрешает ≈${lrule} MiB — ниже проектных 200m, проверьте смысл правки"
+        bad "location разрешает ≈${lrule} MiB — меньше минимальной части 1 МиБ"
       fi
       if [ "$srule" != "-1" ] && [ "$srule" -lt "$lrule" ]; then
         note "    (лимит location перекрывает server-level ≈${srule} MiB — так и должно быть)"
       elif [ "$srule" = "-1" ]; then
-        hint "пока location не сработал (другой server-блок, другой Host), лимит будет 1m"
+        hint "без location будет действовать nginx default 1m"
       fi
     fi
     note ""
@@ -157,7 +162,7 @@ note ""
 if [ -f "$NGINX_ERROR_LOG" ] || as_root test -f "$NGINX_ERROR_LOG" 2>/dev/null; then
   large="$(as_root tail -n 2000 "$NGINX_ERROR_LOG" 2>/dev/null | grep -c 'client intended to send too large body' || true)"
   if [ "${large:-0}" != "0" ]; then
-    bad "nginx сам отклонял запросы по размеру ($large раз): location не применяется к запросу"
+    bad "nginx сам отклонял запросы по размеру ($large раз): эффективный лимит ниже тела запроса"
     as_root tail -n 2000 "$NGINX_ERROR_LOG" 2>/dev/null | grep 'client intended to send too large body' | tail -n 2 | sed 's/^/         /' || true
   else
     pass "строк «client intended to send too large body» нет → 413 выдал не этот nginx"
@@ -169,7 +174,7 @@ note ""
 
 # ── 3. реальный зонд (только если передан адрес сайта) ──────────────────────
 if [ -n "$URL" ]; then
-  note "Зонд $URL$TARGET_PATH телом $((PROBE_BYTES / 1024 / 1024)) МиБ (без авторизации, корпус — нули)"
+  note "Зонд $URL$TARGET_PATH телом $((PROBE_BYTES / 1024 / 1024)) МиБ (одна raw-часть, без авторизации)"
   note ""
   if ! command -v curl >/dev/null 2>&1; then
     hint "curl не найден — пропускаю зонд"
@@ -180,13 +185,15 @@ if [ -n "$URL" ]; then
     server_hdr="$(printf '%s\n' "$hdrs" | grep -i '^server:' | tail -n 1 || true)"
     note "  заголовок Server у ближайшего прокси: ${server_hdr:-не представлен}"
     code="$(head -c "$PROBE_BYTES" /dev/zero | curl -sS -o /dev/null -w '%{http_code}' -X POST \
-      -H 'Content-Type: application/octet-stream' -H 'Expect:' \
+      -H 'Content-Type: application/octet-stream' -H 'X-Helper-Upload-Action: chunk' \
+      -H 'X-Helper-Upload-Id: 00000000-0000-4000-8000-000000000000' \
+      -H 'X-Helper-Chunk-Index: 0' -H 'Expect:' \
       --data-binary @- "$base$TARGET_PATH" 2>/dev/null || echo '000')"
     case "$code" in
-      413) bad "получен 413 на теле $((PROBE_BYTES / 1024 / 1024)) МиБ → лимит стоит до location (или перед nginx)" ;;
+      413) bad "получен 413 на минимальную raw-часть 1 МиБ → adaptive upload тоже не пройдёт" ;;
       000) hint "запрос не дошёл (сеть/TLS/адрес) — проверьте URL" ;;
       404|405) hint "код $code: путь не совпал с приложением; location = … срабатывает только на точный путь без слэша" ;;
-      *) pass "код $code: тело в $((PROBE_BYTES / 1024 / 1024)) МиБ прокси пропустили (401/403 — отказ приложения, это хорошо)" ;;
+      *) pass "код $code: минимальная raw-часть 1 МиБ прошла прокси (401/403 — ожидаемый отказ авторизации)" ;;
     esac
     note ""
   fi
@@ -198,11 +205,9 @@ fi
 
 # ── 4. что делать ───────────────────────────────────────────────────────────
 note "Применение и проверка"
-note "  1) правьте ТОТ server-блок, который принимает HTTPS (listen 443 ssl):"
-note "     локации не наследуются между server-блоками;"
-note "     готовый location — в deploy/nginx.conf или deploy/selfhost/nginx-selfhost.conf"
-note "  2) sudo nginx -t && sudo systemctl reload nginx"
-note "  3) если там уже 200m, а 413 остаётся — ограничивает внешний прокси/CDN"
+note "  1) актуальная админка отправляет raw-части до 4 МиБ и уменьшает их до 1 МиБ при 413"
+note "  2) 200m location оставлен для старых клиентов с цельным multipart-запросом"
+note "  3) если зонд части 1 МиБ получил 413, лимит входного proxy/CDN ниже минимума адаптации"
 note "     (Synology Application Portal, Cloudflare, Kong: см. GALAXY-POINTS-PUBLISH-FIX.md)"
 note ""
 printf 'итоги: %s ok, %s предупреждений, %s проблем\n' "$ok" "$warn" "$fail"

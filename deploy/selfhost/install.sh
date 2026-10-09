@@ -271,12 +271,12 @@ server {
         proxy_set_header Connection "upgrade";
     }
     client_max_body_size 25m;
-    # Админка → «Публикация Helper»: готовый ColonialHelper.exe (22–35 МиБ)
-    # грузится прямо на сервер — без этого location nginx отвечает 413. Если
-    # TLS завершается в отдельном server (listen 443), продублируйте location
-    # в HTTPS-блоке: nginx не наследует locations между server-блоками.
+    # Старая админка загружала ColonialHelper.exe (22–35 МиБ) одним multipart.
+    # Текущая отправляет raw-части до 4 МиБ и при 413 уменьшает их до 1 МиБ;
+    # 200m оставлен для обратной совместимости. TLS-location нужно дублировать
+    # в отдельный HTTPS server: nginx не наследует locations между блоками.
     location = /api/admin/uploader/release {
-        # 200m - с запасом перекрывает и exe (22-35 МиБ), и multipart-обёртку.
+        # 200m перекрывает EXE старых клиентов (22–35 МиБ) и multipart-обёртку.
         # Приложение само отклоняет базовую сборку крупнее 128 МиБ, поэтому
         # лимит location обязан быть выше: иначе 413 отвечает nginx, а не сайт.
         client_max_body_size 200m;

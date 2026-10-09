@@ -90,17 +90,17 @@ test('every site-facing server block in the templates carries the release locati
   }
 });
 
-test('nginx headroom stays above the app-side exe cap so only the app can refuse a build', () => {
+test('4 MiB raw chunks fit common proxy limits and remain below the application EXE cap', () => {
   const store = read('src/lib/uploaderStore.ts');
-  const cap = Number(store.match(/data\.length\s*>\s*(\d+)\s*\*\s*1024\s*\*\s*1024/)?.[1]);
-  assert.ok(Number.isFinite(cap) && cap > 0, 'saveLauncherBinary declares an explicit MiB cap for the exe');
-  for (const file of nginxConfigs) {
-    const location = read(file).match(RELEASE_LOCATION)[1];
-    assert.ok(
-      maxBodySizeMib(location) > cap,
-      `${file} must not be the limiter: it allows ${maxBodySizeMib(location)} MiB while the app allows ${cap} MiB`,
-    );
-  }
+  const protocol = read('src/lib/launcherUploadProtocol.ts');
+  const chunkMiB = Number(protocol.match(/LAUNCHER_UPLOAD_CHUNK_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/)?.[1]);
+  const minimumChunkMiB = Number(protocol.match(/MIN_LAUNCHER_UPLOAD_CHUNK_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/)?.[1]);
+  const capMiB = Number(protocol.match(/MAX_LAUNCHER_UPLOAD_BYTES\s*=\s*(\d+)\s*\*\s*1024\s*\*\s*1024/)?.[1]);
+  assert.equal(chunkMiB, 4, 'each initial request stays below common 4.5 MiB ingress limits');
+  assert.equal(minimumChunkMiB, 1, 'the client falls back to the nginx default 1 MiB limit');
+  assert.equal(capMiB, 128, 'the complete EXE retains the existing 128 MiB application cap');
+  assert.match(store, /data\.length\s*>\s*MAX_LAUNCHER_UPLOAD_BYTES/);
+  assert.ok(chunkMiB < capMiB);
 });
 
 test('templates keep the "duplicate it into the HTTPS server block" warning', () => {
@@ -110,7 +110,7 @@ test('templates keep the "duplicate it into the HTTPS server block" warning', ()
   }
 });
 
-test('docs name the real limit and the verification commands, never a stale number', () => {
+test('docs describe chunked EXE upload and diagnose limits below one part', () => {
   for (const file of docs) {
     const source = read(file);
     assert.doesNotMatch(
@@ -119,33 +119,20 @@ test('docs name the real limit and the verification commands, never a stale numb
       `${file} still documents a 150m limit for the release endpoint`,
     );
     if (!source.includes(RELEASE_PATH)) continue;
-    assert.match(source, /nginx -T/, `${file} tells the admin to inspect the active config`);
-    assert.match(source, /systemctl reload nginx/, `${file} tells the admin to reload nginx`);
+    assert.match(source, /4 МиБ/, `${file} documents the request chunk size`);
+    assert.match(source, /check-release-upload-limit\.sh/, `${file} names the project diagnostic`);
     assert.match(source, /CDN|внешн/i, `${file} mentions the outer proxy/CDN case`);
   }
 });
 
-test('the checker reports both a healthy config and a missing HTTPS location', { skip: process.platform === 'win32' }, () => {
+test('the checker accepts a 25m fallback and flags a server limit below one raw chunk', { skip: process.platform === 'win32' }, () => {
   const script = join(repoRoot.pathname, 'deploy/selfhost/check-release-upload-limit.sh');
   assert.equal(spawnSync('bash', ['-n', script]).status, 0, 'the checker parses as bash');
 
   const dir = mkdtempSync(join(tmpdir(), 'release-limit-'));
-  const header = `# configuration file /etc/nginx/sites-enabled/ed-ring-colony:
-`;
-  const location = `    location = ${RELEASE_PATH} {
-        client_max_body_size 200m;
-        proxy_pass http://127.0.0.1:3000;
-    }
-`;
-  const siteBlock = (listen) => `server {
-    listen ${listen};
-    server_name edringcolony.ru;
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-    }
-    client_max_body_size 25m;
-${location}}
-`;
+  const header = `# configuration file /etc/nginx/sites-enabled/ed-ring-colony:\n`;
+  const location = `    location = ${RELEASE_PATH} {\n        client_max_body_size 200m;\n        proxy_pass http://127.0.0.1:3000;\n    }\n`;
+  const siteBlock = (listen, limit = '25m') => `server {\n    listen ${listen};\n    server_name edringcolony.ru;\n    location / {\n        proxy_pass http://127.0.0.1:3000;\n    }\n    client_max_body_size ${limit};\n${location}}\n`;
   const errorLog = join(dir, 'error.log');
   writeFileSync(errorLog, '');
 
@@ -160,22 +147,18 @@ ${location}}
 
   const good = run('good', siteBlock('80') + siteBlock('443 ssl'));
   assert.equal(good.status, 0, good.stdout + good.stderr);
-  assert.match(good.stdout, /location разрешает ≈200 MiB/);
+  assert.match(good.stdout, /location пропускает минимальную raw-часть 1 МиБ/);
 
-  const broken = run('broken', siteBlock('80') + `server {
-    listen 443 ssl;
-    server_name edringcolony.ru;
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-    }
-    client_max_body_size 25m;
-}
-`);
-  assert.equal(broken.status, 1, 'a TLS server block without the location must fail the check');
-  assert.match(broken.stdout, /нет location = \/api\/admin\/uploader\/release/);
+  const fallback = run('fallback', siteBlock('80') + `server {\n    listen 443 ssl;\n    server_name edringcolony.ru;\n    location / {\n        proxy_pass http://127.0.0.1:3000;\n    }\n    client_max_body_size 25m;\n}\n`);
+  assert.equal(fallback.status, 0, 'the chunked upload works with the documented 25m server fallback');
+  assert.match(fallback.stdout, /server-level лимит ≈25 MiB/);
 
-  writeFileSync(errorLog, 'client intended to send too large body: 26422067 bytes\n');
+  const tooSmall = run('too-small', siteBlock('80') + `server {\n    listen 443 ssl;\n    server_name edringcolony.ru;\n    location / {\n        proxy_pass http://127.0.0.1:3000;\n    }\n    client_max_body_size 512k;\n}\n`);
+  assert.equal(tooSmall.status, 1, 'a TLS server block capped below the 1 MiB fallback must fail');
+  assert.match(tooSmall.stdout, /эффективный лимит ≈0 MiB меньше минимальной части 1 МиБ/);
+
+  writeFileSync(errorLog, 'client intended to send too large body: 4194304 bytes\n');
   const logged = run('logged', siteBlock('80'));
   assert.match(logged.stdout, /nginx сам отклонял запросы по размеру \(1 раз\)/);
-  assert.match(logged.stdout, /26422067 bytes/);
+  assert.match(logged.stdout, /4194304 bytes/);
 });
