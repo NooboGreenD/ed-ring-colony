@@ -6,6 +6,7 @@ import {
   CHANNELS,
   type Channel,
   channelState,
+  deleteVersion,
   listVersions,
   promoteVersion,
   readManifest,
@@ -77,5 +78,15 @@ export async function POST(request: Request) {
   }
 
   const result = await promoteVersion(channel as Channel, version);
+  return NextResponse.json(result, { status: result.ok ? 200 : 400, ...NO_STORE });
+}
+
+export async function DELETE(request: Request) {
+  const auth = await requireAdmin(request);
+  if ('response' in auth) return auth.response;
+
+  const body = (await request.json().catch(() => null)) as { version?: unknown } | null;
+  const version = String(body?.version ?? '');
+  const result = await deleteVersion(version);
   return NextResponse.json(result, { status: result.ok ? 200 : 400, ...NO_STORE });
 }

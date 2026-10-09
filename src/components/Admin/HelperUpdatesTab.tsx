@@ -290,6 +290,32 @@ export default function HelperUpdatesTab() {
     }
   }, [channels, releaseJob]);
 
+  const removeVersion = useCallback(async (version: string) => {
+    if (releaseJob?.active) {
+      setError('Дождитесь завершения текущей операции Helper');
+      return;
+    }
+    if (!window.confirm(`Удалить версию ${version} с сервера?\n\nКанал на неё указывать не должен. Файлы манифеста и ZIP будут стёрты.`)) return;
+    setBusy(true);
+    setMessage('');
+    setError('');
+    try {
+      const response = await authFetch('/api/admin/uploader/versions', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version }),
+      });
+      const data = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      setMessage(`Версия ${version} удалена`);
+      await refresh();
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : 'Не удалось удалить версию');
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh, releaseJob]);
+
   interface ConfigResponse {
     ok?: boolean;
     error?: string;
@@ -849,8 +875,9 @@ export default function HelperUpdatesTab() {
         <h3 style={{ margin: '0 0 6px', color: '#e67e22' }}>Опубликовать новую версию на сервере</h3>
         <p style={{ color: '#9ca3af', fontSize: 12, lineHeight: 1.6, marginTop: 0 }}>
           В обычном режиме сервер сам берёт актуальный Helper из своей установки, подставляет номер
-          версии, считает SHA-256, подписывает манифест и формирует готовый ZIP. Загружать файлы или
-          запускать сборочные скрипты вручную не требуется. Версия после создания неизменяема.
+          версии, считает SHA-256, подписывает манифест каноническим ключом канала (тот же, что зашит
+          в программу) и формирует готовый ZIP. Генерировать ключи вручную не нужно. Версию можно
+          удалить из таблицы, если она не стоит в канале.
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: '140px 190px minmax(240px, 1fr)', gap: 8, marginBottom: 8 }}>
           <input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="2.13.1" style={{ background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
@@ -892,12 +919,12 @@ export default function HelperUpdatesTab() {
         {busy && <progress style={{ width: '100%', height: 8, marginBottom: 8 }} />}
         <button
           className="btn btn-cyan"
-          disabled={releaseBusy || !store?.serverSigningConfigured || (untrustedSigning && !allowUntrustedRelease) || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
+          disabled={releaseBusy || (untrustedSigning && !allowUntrustedRelease) || !releaseVersion.trim() || (releaseSource === 'upload' && releaseFiles.length === 0)}
           onClick={() => void publishRelease()}
         >
           {releasePromote ? 'Сформировать ZIP и выпустить обновление' : 'Сформировать ZIP без публикации в канал'}
         </button>
-        {!store?.serverSigningConfigured && <span style={{ color: '#f1c40f', fontSize: 12, marginLeft: 10 }}>Сначала настройте серверную пару ключей.</span>}
+        {!store?.serverSigningConfigured && <span style={{ color: '#9ca3af', fontSize: 12, marginLeft: 10 }}>Ключ канала подставится автоматически при публикации.</span>}
         {untrustedSigning && (
           <div style={{ borderTop: '1px dashed #e67e22', marginTop: 12, paddingTop: 10, color: '#fca5a5', fontSize: 12, lineHeight: 1.6 }}>
             <label style={{ display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' }}>
@@ -925,7 +952,7 @@ export default function HelperUpdatesTab() {
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 9 }}>
             <input value={launcherVersion} onChange={(event) => setLauncherVersion(event.target.value)} placeholder="1.0.0" aria-label="Версия базовой сборки" style={{ width: 120, background: '#0c0c0c', border: '1px solid #2d3033', borderRadius: 6, padding: '7px 8px', color: '#e5e7eb' }} />
-            <button className="btn btn-cyan" disabled={releaseBusy || !launcherVersion.trim() || !store?.serverSigningConfigured} onClick={() => void downloadLauncherBuildKit()}>
+            <button className="btn btn-cyan" disabled={releaseBusy || !launcherVersion.trim()} onClick={() => void downloadLauncherBuildKit()}>
               Создать первичный EXE — скачать комплект
             </button>
             <span style={{ color: '#6b7280', fontSize: 11 }}>В ZIP: BUILD-WINDOWS.bat и инструкция</span>
@@ -964,6 +991,7 @@ export default function HelperUpdatesTab() {
                 <th style={{ padding: '6px 8px' }}>Подпись</th>
                 <th style={{ padding: '6px 8px' }}>Файл скачивания</th>
                 <th style={{ padding: '6px 8px' }}>Перевести канал</th>
+                <th style={{ padding: '6px 8px' }} />
               </tr>
             </thead>
             <tbody>
@@ -1008,6 +1036,17 @@ export default function HelperUpdatesTab() {
                         onClick={() => void promote('beta', row.version)}
                       >
                         {inBeta ? 'в тестовом' : 'в тестовый'}
+                      </button>
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>
+                      <button
+                        className="btn"
+                        style={{ fontSize: 11, color: '#fca5a5' }}
+                        disabled={releaseBusy || inStable || inBeta}
+                        title={inStable || inBeta ? 'Сначала уберите версию из канала' : 'Удалить версию'}
+                        onClick={() => void removeVersion(row.version)}
+                      >
+                        Удалить
                       </button>
                     </td>
                   </tr>
