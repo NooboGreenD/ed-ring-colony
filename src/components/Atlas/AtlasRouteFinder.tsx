@@ -1,8 +1,11 @@
-"use client";
+'use client';
 
-import { useState, useCallback } from "react";
-import { Toaster, toast } from "@/components/ui/Toaster";
-import type { RoutePoint } from "@/components/GalaxyMap/useGalaxyData";
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
+import { toast } from '@/components/ui/Toaster';
+import { IconArrowRight, IconCopy, IconDownload, IconRefresh, IconSearch, IconX } from '@/components/Icons';
+import { copyText, downloadCsv, formatCoordinates, formatDistanceLy, routeToCsvRows } from '@/lib/atlas';
+import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
 
 interface ApiRoutePoint {
   name: string;
@@ -73,64 +76,95 @@ type SearchPhase =
   | { stage: 'done'; message: string };
 
 const PHASES: { stage: Exclude<SearchPhase['stage'], 'idle'>; message: string; delay: number }[] = [
-  { stage: 'coords', message: 'Получение координат систем из EDSM...', delay: 700 },
-  { stage: 'scan', message: 'Сканирование систем вдоль маршрута...', delay: 1200 },
-  { stage: 'astar', message: 'Построение оптимального маршрута (A*)...', delay: 900 },
-  { stage: 'done', message: 'Финализация результатов...', delay: 500 },
+  { stage: 'coords', message: 'Получение координат систем из EDSM…', delay: 700 },
+  { stage: 'scan', message: 'Сканирование систем вдоль маршрута…', delay: 1200 },
+  { stage: 'astar', message: 'Построение оптимального маршрута (A*)…', delay: 900 },
+  { stage: 'done', message: 'Финализация результатов…', delay: 500 },
 ];
 
+const MAX_JUMPS_IN_LIST = 400;
+
 function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms} мс`;
+  if (!Number.isFinite(ms)) return '—';
+  if (ms < 1000) return `${Math.round(ms)} мс`;
   return `${(ms / 1000).toFixed(1)} с`;
 }
 
 export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
-  const [fromSystem, setFromSystem] = useState("");
-  const [toSystem, setToSystem] = useState("");
+  const [fromSystem, setFromSystem] = useState('');
+  const [toSystem, setToSystem] = useState('');
   const [maxJump, setMaxJump] = useState(14.99);
   const [radius, setRadius] = useState(30);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<RouteResult | null>(null);
   const [phase, setPhase] = useState<SearchPhase>({ stage: 'idle' });
+  const [routeFilter, setRouteFilter] = useState('');
+  const [showDetails, setShowDetails] = useState(false);
+  const phaseTimers = useRef<number[]>([]);
+
+  // Таймеры фаз раньше продолжали жить после размонтирования и дёргали setState.
+  const clearPhaseTimers = useCallback(() => {
+    phaseTimers.current.forEach((timer) => window.clearTimeout(timer));
+    phaseTimers.current = [];
+  }, []);
+
+  useEffect(() => clearPhaseTimers, [clearPhaseTimers]);
 
   const animatePhases = useCallback((startedAt: number) => {
-    let i = 0;
+    clearPhaseTimers();
     const percentages = [8, 35, 72, 92];
-    const run = () => {
-      if (i >= PHASES.length) return;
-      const p = PHASES[i];
-      setPhase({ stage: p.stage, message: p.message, current: i + 1, total: PHASES.length - 1 } as SearchPhase);
-      onProgress?.({ active: true, stage: p.stage, percent: percentages[i], message: p.message, elapsedMs: Date.now() - startedAt });
-      i++;
-      setTimeout(run, p.delay);
-    };
-    run();
-  }, [onProgress]);
+    let elapsed = 0;
+    PHASES.forEach((item, index) => {
+      elapsed += item.delay;
+      const timer = window.setTimeout(() => {
+        setPhase({ stage: item.stage, message: item.message, current: index + 1, total: PHASES.length - 1 } as SearchPhase);
+        onProgress?.({
+          active: true,
+          stage: item.stage,
+          percent: percentages[index],
+          message: item.message,
+          elapsedMs: Date.now() - startedAt,
+        });
+      }, elapsed);
+      phaseTimers.current.push(timer);
+    });
+  }, [clearPhaseTimers, onProgress]);
 
   const findRoute = useCallback(async () => {
     if (!fromSystem.trim() || !toSystem.trim()) {
-      toast("Укажите обе системы", "error");
+      toast('Укажите обе системы', 'error');
+      return;
+    }
+    if (fromSystem.trim().toLowerCase() === toSystem.trim().toLowerCase()) {
+      toast('Точка А и точка Б совпадают', 'error');
       return;
     }
     const startedAt = Date.now();
-    let progressTimer: number | null = null;
     setLoading(true);
     setResult(null);
-    setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM...' });
-    onProgress?.({ active: true, stage: 'coords', percent: 4, message: 'Получение координат систем из EDSM...', elapsedMs: 0 });
+    setRouteFilter('');
+    setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM…' });
+    onProgress?.({ active: true, stage: 'coords', percent: 4, message: 'Получение координат систем из EDSM…', elapsedMs: 0 });
     animatePhases(startedAt);
-    // The route endpoint performs the EDSM scan in one request. Keep the map
-    // informed while it is running, then replace this estimate with the exact
-    // server-side count returned in `process`.
-    progressTimer = window.setInterval(() => {
+    // Эндпоинт считает маршрут одним запросом: пока он работает, показываем
+    // оценку прогресса, а после ответа подставляем точные цифры из `process`.
+    const progressTimer = window.setInterval(() => {
       const elapsedMs = Date.now() - startedAt;
       const estimatedScanned = Math.max(1, Math.floor(elapsedMs / 180));
-      onProgress?.({ active: true, stage: 'scan', percent: Math.min(88, 35 + Math.floor(estimatedScanned / 10)), message: 'Перебор систем EDSM вдоль трассы...', elapsedMs, systemsScanned: estimatedScanned });
+      onProgress?.({
+        active: true,
+        stage: 'scan',
+        percent: Math.min(88, 35 + Math.floor(estimatedScanned / 10)),
+        message: 'Перебор систем EDSM вдоль трассы…',
+        elapsedMs,
+        systemsScanned: estimatedScanned,
+      });
     }, 400);
+
     try {
-      const res = await fetch("/api/atlas/route-finder", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const res = await fetch('/api/atlas/route-finder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           from_system: fromSystem.trim(),
           to_system: toSystem.trim(),
@@ -143,175 +177,183 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
       try {
         data = responseText ? JSON.parse(responseText) : {};
       } catch {
-        throw new Error(`Сервер вернул некорректный ответ (${res.status}). Уменьшите радиус или повторите поиск.`);
+        throw new Error(`Сервер вернул некорректный ответ (${res.status}). Уменьшите радиус сканирования или повторите поиск.`);
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `Маршрут не найден (HTTP ${res.status})`);
+      }
+      if (!Array.isArray(data.route) || data.route.length === 0) {
+        throw new Error('Сервис вернул пустой маршрут — попробуйте увеличить радиус сканирования');
       }
       setPhase({ stage: 'done', message: 'Готово!' });
-      if (!res.ok) {
-        onProgress?.({ active: false, stage: 'idle', percent: 0, message: data.error || 'Маршрут не найден', elapsedMs: Date.now() - startedAt });
-        toast(data.error || "Маршрут не найден", "error");
-        setLoading(false);
-        setPhase({ stage: 'idle' });
-        return;
-      }
       setResult(data);
       onProgress?.({
         active: false,
         stage: 'done',
         percent: 100,
-        message: data.process?.synthetic_waypoints ? 'Маршрут готов, добавлены триангулированные точки' : 'Маршрут построен',
+        message: data.process?.synthetic_waypoints ? 'Маршрут готов, в него добавлены расчётные точки' : 'Маршрут построен',
         elapsedMs: Date.now() - startedAt,
         systemsScanned: data.process?.systems_scanned,
         systemsUsed: data.process?.systems_used,
       });
-      const mappedRoute: RoutePoint[] = data.route.map((rp: ApiRoutePoint, i: number) => ({
-        id: -(i + 1),
-        system_name: rp.name,
-        sort_order: i,
+      const mappedRoute: RoutePoint[] = data.route.map((point: ApiRoutePoint, index: number) => ({
+        id: -(index + 1),
+        system_name: point.name,
+        sort_order: index,
         status: 'planned' as const,
-        x: rp.x,
-        y: rp.y,
-        z: rp.z,
+        x: point.x,
+        y: point.y,
+        z: point.z,
       }));
       onRouteFound(mappedRoute);
-      toast(`Маршрут найден: ${data.summary.total_jumps} прыжков`, "success");
+      toast(`Маршрут найден: ${data.summary.total_jumps} прыжков`, 'success');
     } catch (err: any) {
       onProgress?.({ active: false, stage: 'idle', percent: 0, message: err.message || 'Ошибка поиска', elapsedMs: Date.now() - startedAt });
-      toast(err.message || "Ошибка поиска", "error");
+      toast(err.message || 'Ошибка поиска', 'error');
     } finally {
-      if (progressTimer != null) window.clearInterval(progressTimer);
+      window.clearInterval(progressTimer);
+      clearPhaseTimers();
       setLoading(false);
-      setTimeout(() => setPhase({ stage: 'idle' }), 800);
+      setPhase({ stage: 'idle' });
     }
-  }, [fromSystem, toSystem, maxJump, radius, onRouteFound, onProgress, animatePhases]);
+  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onProgress, onRouteFound, radius, toSystem]);
 
-  const downloadCsv = useCallback(() => {
+  const downloadRoute = useCallback(() => {
     if (!result?.route?.length) return;
-    const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-    const lines = [
-      ['Порядок', 'Система', 'X', 'Y', 'Z', 'Прыжок от предыдущей, св.л.'].map(escape).join(';'),
-      ...result.route.map((point, index) => [
-        index + 1,
-        point.name,
-        point.x.toFixed(6), point.y.toFixed(6), point.z.toFixed(6),
-        index === 0 ? '' : result.jumps[index - 1]?.distance?.toFixed(2) || '',
-      ].map(escape).join(';')),
-    ];
-    const blob = new Blob([`\\ufeff${lines.join('\\n')}`], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `route-${fromSystem.trim()}-${toSystem.trim()}.csv`.replace(/[^\\w.-]+/g, '_');
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsv(
+      `route-${fromSystem}-${toSystem}`,
+      routeToCsvRows(result.route.map((point) => ({ ...point, source: result.summary.synthetic_waypoints ? 'synthetic' : undefined }))),
+    );
   }, [fromSystem, result, toSystem]);
 
-  const radiusLabel = `${radius} св.г. (сфера EDSM)`;
+  const copyRoute = useCallback(async () => {
+    if (!result?.route?.length) return;
+    const text = result.route
+      .map((point, index) => {
+        const jump = index > 0 ? result.jumps[index - 1]?.distance : null;
+        return `${index + 1}. ${point.name} (${formatCoordinates(point, 2)})${jump ? ` — ${jump} св.л.` : ''}`;
+      })
+      .join('\n');
+    const ok = await copyText(text);
+    toast(ok ? 'Маршрут скопирован в буфер' : 'Буфер обмена недоступен', ok ? 'success' : 'error');
+  }, [result]);
+
+  const swapSystems = () => {
+    setFromSystem(toSystem);
+    setToSystem(fromSystem);
+    setResult(null);
+  };
+
+  const filteredRoute = useMemo(() => {
+    if (!result) return [];
+    const q = routeFilter.trim().toLowerCase();
+    if (!q) return result.route.slice(0, MAX_JUMPS_IN_LIST);
+    return result.route
+      .filter((point) => point.name.toLowerCase().includes(q))
+      .slice(0, MAX_JUMPS_IN_LIST);
+  }, [result, routeFilter]);
+
+  const histogramMax = useMemo(
+    () => (result?.process?.systems_per_scan?.length ? Math.max(...result.process.systems_per_scan) : 0),
+    [result],
+  );
+
+  const phaseIndex = PHASES.findIndex((item) => item.stage === phase.stage);
 
   return (
     <div className="atlas-route-finder">
-      <Toaster />
-
       <div className="atlas-search-panel">
         <h3>Поиск маршрута колонизации</h3>
         <p className="atlas-route-desc">
-          Найдите оптимальный маршрут между двумя системами с учётом максимального радиуса прыжка.
-          Используется алгоритм A* с данными EDSM. Для больших расстояний (&gt;100 св.г.) автоматически
-          переключается на режим cube-systems с перекрытием сканирования.
+          Оптимальный маршрут между двумя системами с шагом не больше максимального прыжка.
+          Расчёт идёт по алгоритму A* на данных EDSM; для длинных трасс автоматически включается
+          режим кубов с перекрытием сканирования.
         </p>
 
-        <div className="atlas-search-field">
-          <label>Точка А (откуда)</label>
-          <input
-            type="text"
-            placeholder="например, Sol"
-            value={fromSystem}
-            onChange={(e) => setFromSystem(e.target.value)}
-          />
+        <SystemSearchInput
+          label="Точка А (откуда)"
+          value={fromSystem}
+          onChange={setFromSystem}
+          placeholder="например, Sol"
+        />
+        <div className="atlas-swap-row">
+          <button type="button" className="atlas-link-btn" onClick={swapSystems} disabled={!fromSystem && !toSystem}>
+            <IconRefresh size={12} /> Поменять точки местами
+          </button>
         </div>
-
-        <div className="atlas-search-field">
-          <label>Точка Б (куда)</label>
-          <input
-            type="text"
-            placeholder="например, Colonia"
-            value={toSystem}
-            onChange={(e) => setToSystem(e.target.value)}
-          />
-        </div>
+        <SystemSearchInput
+          label="Точка Б (куда)"
+          value={toSystem}
+          onChange={setToSystem}
+          onSubmit={() => {
+            if (fromSystem.trim() && toSystem.trim()) void findRoute();
+          }}
+          placeholder="например, Colonia"
+        />
 
         <div className="atlas-two-col">
           <div className="atlas-search-field">
-            <label>Макс. прыжок: {maxJump.toFixed(2)} св.г. (лимит 14,99 для колонизации)</label>
+            <label htmlFor="atlas-max-jump">
+              Макс. прыжок: <strong>{maxJump.toFixed(2)} св.л.</strong>
+            </label>
             <input
+              id="atlas-max-jump"
               type="range"
               min={5}
               max={14.99}
               step={0.01}
               value={maxJump}
-              onChange={(e) => setMaxJump(Number(e.target.value))}
+              onChange={(event) => setMaxJump(Number(event.target.value))}
             />
-          </div>
-          <div className="atlas-search-field">
-            <label>Радиус сканирования: {radiusLabel}</label>
-            <input
-              type="range"
-              min={10}
-              max={100}
-              step={5}
-              value={radius}
-              onChange={(e) => setRadius(Number(e.target.value))}
-            />
-            <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
-              Поиск систем в сфере вокруг трассы маршрута. Максимум: 100 св.л.
-            </div>
+            <div className="atlas-range-scale"><span>5</span><span>14,99 (лимит колонизации)</span></div>
           </div>
         </div>
 
+        <div className="atlas-search-field">
+          <label htmlFor="atlas-radius">
+            Радиус сканирования: <strong>{radius} св.л.</strong>
+          </label>
+          <input
+            id="atlas-radius"
+            type="range"
+            min={10}
+            max={100}
+            step={5}
+            value={radius}
+            onChange={(event) => setRadius(Number(event.target.value))}
+          />
+          <div className="atlas-range-scale"><span>10</span><span>100 (максимум EDSM)</span></div>
+        </div>
+
         <button
+          type="button"
           onClick={findRoute}
           disabled={loading || !fromSystem.trim() || !toSystem.trim()}
           className="atlas-scan-btn"
         >
-          {loading ? "Поиск..." : "Найти маршрут"}
+          {loading ? 'Поиск…' : 'Найти маршрут'}
         </button>
 
-        {/* Прогресс поиска */}
         {loading && phase.stage !== 'idle' && (
-          <div style={{ marginTop: 16, background: '#25282b', border: '1px solid #3a3d40', borderRadius: 8, padding: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <div style={{
-                width: 16, height: 16,
-                border: '2px solid #3a3d40',
-                borderTop: '2px solid #e67e22',
-                borderRadius: '50%',
-                animation: 'spin 1s linear infinite',
-              }} />
-              <span style={{ fontSize: 13, color: '#eeeeee' }}>{phase.message}</span>
+          <div className="atlas-progress" aria-live="polite">
+            <div className="atlas-progress-head">
+              <span className="atlas-progress-live">
+                <span className="atlas-spinner" /> {phase.message}
+              </span>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {PHASES.map((p, idx) => {
-                const currentIdx = PHASES.findIndex(pp => pp.stage === phase.stage);
-                const isDone = idx < currentIdx;
-                const isActive = idx === currentIdx;
+            <div className="atlas-phase-row">
+              {PHASES.map((item, index) => {
+                const isDone = index < phaseIndex;
+                const isActive = index === phaseIndex;
                 return (
-                  <div key={p.stage} style={{ flex: 1 }}>
-                    <div style={{
-                      height: 4,
-                      borderRadius: 2,
-                      background: isDone ? '#22c55e' : isActive ? '#e67e22' : '#3a3d40',
-                      transition: 'background 0.3s ease',
-                    }} />
-                    <div style={{
-                      fontSize: 10,
-                      marginTop: 4,
-                      textAlign: 'center',
-                      color: isDone ? '#22c55e' : isActive ? '#e67e22' : '#6b7280',
-                    }}>
-                      {p.stage === 'coords' && 'Координаты'}
-                      {p.stage === 'scan' && 'Сканирование'}
-                      {p.stage === 'astar' && 'A*'}
-                      {p.stage === 'done' && 'Готово'}
-                    </div>
+                  <div key={item.stage} className="atlas-phase">
+                    <div className={`atlas-phase-bar${isDone ? ' done' : isActive ? ' active' : ''}`} />
+                    <span className={`atlas-phase-label${isDone ? ' done' : isActive ? ' active' : ''}`}>
+                      {item.stage === 'coords' && 'Координаты'}
+                      {item.stage === 'scan' && 'Сканирование'}
+                      {item.stage === 'astar' && 'A*'}
+                      {item.stage === 'done' && 'Готово'}
+                    </span>
                   </div>
                 );
               })}
@@ -322,165 +364,131 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
 
       {result && (
         <div className="atlas-section">
-          <h4>Результат</h4>
-          <div className="atlas-route-summary">
-            <div className="stat-box" style={{ padding: 10 }}>
-              <div className="num">{result.summary.total_jumps}</div>
-              <div className="lbl">Прыжков</div>
-            </div>
-            <div className="stat-box" style={{ padding: 10 }}>
-              <div className="num">{result.summary.total_distance}</div>
-              <div className="lbl">Св.годов</div>
-            </div>
-            <div className="stat-box" style={{ padding: 10 }}>
-              <div className="num">{result.summary.max_jump}</div>
-              <div className="lbl">Макс. прыжок</div>
-            </div>
-            <div className="stat-box" style={{ padding: 10 }}>
-              <div className="num">{result.summary.avg_jump}</div>
-              <div className="lbl">Средний</div>
+          <div className="atlas-section-head">
+            <h4>Результат</h4>
+            <div className="atlas-section-actions">
+              <button type="button" className="atlas-icon-btn" title="Скопировать маршрут текстом" onClick={() => void copyRoute()}>
+                <IconCopy size={12} />
+              </button>
+              <button type="button" className="atlas-icon-btn" title="Скачать CSV" onClick={downloadRoute}>
+                <IconDownload size={12} />
+              </button>
             </div>
           </div>
-          <button onClick={downloadCsv} className="atlas-scan-btn" style={{ marginTop: 12, width: '100%' }}>
-            Скачать маршрут CSV
-          </button>
+
+          <div className="atlas-route-summary">
+            <div className="stat-box"><div className="num">{result.summary.total_jumps}</div><div className="lbl">Прыжков</div></div>
+            <div className="stat-box"><div className="num">{result.summary.total_distance}</div><div className="lbl">Св. лет</div></div>
+            <div className="stat-box"><div className="num">{result.summary.max_jump}</div><div className="lbl">Макс. прыжок</div></div>
+            <div className="stat-box"><div className="num">{result.summary.avg_jump}</div><div className="lbl">Средний</div></div>
+          </div>
+
           {result.summary.synthetic_waypoints && (
-            <div style={{ marginTop: 8, color: '#fbbf24', fontSize: 12 }}>
-              Часть точек триангулирована: EDSM не вернул подходящие известные системы.
-            </div>
+            <p className="atlas-warning">
+              Часть точек рассчитана: EDSM не отдал подходящие известные системы вдоль трассы.
+            </p>
           )}
 
-          {/* Детали процесса поиска */}
-          {result.process && (
-            <div style={{ marginTop: 12, background: '#1e2124', border: '1px solid #2d3033', borderRadius: 6, padding: 12 }}>
-              <h4 style={{ fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', color: '#9ca3af', margin: '0 0 10px 0' }}>
-                Детали поиска
-              </h4>
+          <div className="atlas-section-head">
+            <h4>Маршрут</h4>
+            <div className="atlas-inline-search compact">
+              <IconSearch size={12} />
+              <input
+                type="search"
+                value={routeFilter}
+                onChange={(event) => setRouteFilter(event.target.value)}
+                placeholder="Найти систему"
+                aria-label="Фильтр маршрута"
+              />
+              {routeFilter && (
+                <button type="button" onClick={() => setRouteFilter('')} aria-label="Очистить фильтр">
+                  <IconX size={11} />
+                </button>
+              )}
+            </div>
+          </div>
 
-              {/* Стратегия и время */}
-              <div style={{ display: 'flex', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
-                <span style={{ fontSize: 11, padding: '3px 10px', background: '#2d3033', borderRadius: 4, color: '#e67e22' }}>
-                  {result.process.strategy === 'cube-systems' ? 'Кубы EDSM' : 'Сферы EDSM'}
-                </span>
-                <span style={{ fontSize: 11, padding: '3px 10px', background: '#2d3033', borderRadius: 4, color: '#60a5fa' }}>
-                  {formatDuration(result.process.elapsed_ms)}
-                </span>
-                <span style={{ fontSize: 11, padding: '3px 10px', background: '#2d3033', borderRadius: 4, color: '#9ca3af' }}>
-                  {result.process.api_requests} API-запросов
-                </span>
+          <p className="atlas-list-counter">
+            Точек: {result.route.length}
+            {routeFilter ? ` · найдено ${filteredRoute.length}` : ''}
+            {!routeFilter && result.route.length > MAX_JUMPS_IN_LIST ? ` · показаны первые ${MAX_JUMPS_IN_LIST}` : ''}
+          </p>
+
+          <div className="atlas-route-list">
+            {filteredRoute.length === 0 && <p className="atlas-muted">В маршруте нет систем по этому фильтру.</p>}
+            {filteredRoute.map((point, index) => (
+              <div key={`${point.name}-${index}`} className="route-row">
+                <span className="route-idx">{index + 1}</span>
+                <span className="route-name">{point.name}</span>
+                <span className="route-coords">{formatCoordinates(point)}</span>
+              </div>
+            ))}
+          </div>
+
+          <button type="button" className="atlas-secondary-btn" onClick={() => setShowDetails((current) => !current)}>
+            {showDetails ? 'Скрыть детали расчёта' : 'Показать детали расчёта'}
+          </button>
+
+          {showDetails && result.process && (
+            <div className="atlas-details-box">
+              <div className="atlas-tag-row">
+                <span className="atlas-tag orange">{result.process.strategy === 'cube-systems' ? 'Кубы EDSM' : 'Сферы EDSM'}</span>
+                <span className="atlas-tag blue">{formatDuration(result.process.elapsed_ms)}</span>
+                <span className="atlas-tag">{result.process.api_requests} API-запросов</span>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: 12 }}>
-                <div style={{ color: '#9ca3af' }}>Прямое расстояние:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.direct_distance.toLocaleString('ru')} св.г.</div>
-
-                <div style={{ color: '#9ca3af' }}>Точек сканирования:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.scan_points} / {result.process.estimated_steps}</div>
-
-                <div style={{ color: '#9ca3af' }}>Шаг сканирования:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>~{result.process.actual_step.toLocaleString('ru')} св.г.</div>
-
-                <div style={{ color: '#9ca3af' }}>Систем просканировано:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.systems_scanned.toLocaleString('ru')}</div>
-
-                <div style={{ color: '#9ca3af' }}>Узлов в графе:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.graph_nodes.toLocaleString('ru')}</div>
-
-                <div style={{ color: '#9ca3af' }}>Рёбер в графе:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.graph_edges.toLocaleString('ru')}</div>
-
-                <div style={{ color: '#9ca3af' }}>Радиус сканирования:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.radius_around_path.toLocaleString('ru')} св.г.</div>
-
-                <div style={{ color: '#9ca3af' }}>Макс. прыжок:</div>
-                <div style={{ color: '#eeeeee', textAlign: 'right' }}>{result.process.max_jump} св.г.</div>
+              <div className="atlas-stat-grid">
+                <div>Прямое расстояние</div><div>{formatDistanceLy(result.process.direct_distance, 0)}</div>
+                <div>Точек сканирования</div><div>{result.process.scan_points} / {result.process.estimated_steps}</div>
+                <div>Шаг сканирования</div><div>~{Math.round(result.process.actual_step).toLocaleString('ru-RU')} св.л.</div>
+                <div>Систем просканировано</div><div>{result.process.systems_scanned.toLocaleString('ru-RU')}</div>
+                <div>Узлов в графе</div><div>{result.process.graph_nodes.toLocaleString('ru-RU')}</div>
+                <div>Рёбер в графе</div><div>{result.process.graph_edges.toLocaleString('ru-RU')}</div>
+                <div>Радиус сканирования</div><div>{result.process.radius_around_path.toLocaleString('ru-RU')} св.л.</div>
+                <div>Макс. прыжок</div><div>{result.process.max_jump} св.л.</div>
               </div>
 
-              {/* Гистограмма систем по точкам сканирования */}
-              {result.process.systems_per_scan.length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 6 }}>Систем найдено по точкам сканирования</div>
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 40 }}>
-                    {result.process.systems_per_scan.map((count, i) => {
-                      const max = Math.max(...result.process!.systems_per_scan);
-                      const h = max > 0 ? (count / max) * 100 : 0;
-                      return (
-                        <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                          <div
-                            style={{
-                              width: '100%',
-                              height: `${h}%`,
-                              background: count > 0 ? '#e67e22' : '#3a3d40',
-                              borderRadius: '2px 2px 0 0',
-                              minHeight: count > 0 ? 2 : 1,
-                              transition: 'height 0.3s ease',
-                            }}
-                            title={`Точка ${i + 1}: ${count} систем`}
-                          />
-                        </div>
-                      );
-                    })}
+              {result.process.systems_per_scan.length > 0 && histogramMax > 0 && (
+                <div className="atlas-histogram">
+                  <div className="atlas-histogram-title">Систем найдено по точкам сканирования</div>
+                  <div className="atlas-histogram-bars">
+                    {result.process.systems_per_scan.map((count, index) => (
+                      <div
+                        key={index}
+                        className="atlas-histogram-bar"
+                        style={{
+                          height: `${Math.max(2, (count / histogramMax) * 100)}%`,
+                          background: count > 0 ? '#e67e22' : '#3a3d40',
+                        }}
+                        title={`Точка ${index + 1}: ${count} систем`}
+                      />
+                    ))}
                   </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 9, color: '#4b5563', marginTop: 2 }}>
-                    <span>Начало</span>
-                    <span>Конец</span>
-                  </div>
+                  <div className="atlas-histogram-axis"><span>Начало</span><span>Конец</span></div>
                 </div>
               )}
 
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid #2d3033', fontSize: 11, color: '#6b7280' }}>
-                {result.process.from_system} &#8594; {result.process.to_system}
-                <span style={{ marginLeft: 8, color: '#4b5563' }}>|</span>
-                <span style={{ marginLeft: 8 }}>A* алгоритм</span>
-                <span style={{ marginLeft: 8, color: '#4b5563' }}>|</span>
-                <span style={{ marginLeft: 8 }}>EDSM API</span>
+              <div className="atlas-details-footer">
+                {result.process.from_system} <IconArrowRight size={11} /> {result.process.to_system} · A* · EDSM API
               </div>
             </div>
           )}
 
-          <div style={{ marginTop: 12 }}>
-            <h4 style={{ fontSize: 12, marginBottom: 8 }}>Маршрут</h4>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {result.route.map((rp, i) => (
-                <div key={i} className="route-row" style={{ padding: "6px 8px" }}>
-                  <span className="route-idx">{i + 1}</span>
-                  <span className="route-name">{rp.name}</span>
-                  <span className="route-coords">
-                    {rp.x.toFixed(1)}, {rp.y.toFixed(1)}, {rp.z.toFixed(1)}
-                  </span>
+          <h4>Прыжки</h4>
+          <div className="atlas-jump-list">
+            {result.jumps.slice(0, MAX_JUMPS_IN_LIST).map((jump, index) => {
+              const color = jump.distance <= 15 ? '#22c55e' : jump.distance <= 25 ? '#e67e22' : '#e74c3c';
+              return (
+                <div key={`${jump.from}-${jump.to}-${index}`} className="route-row" style={{ borderLeft: `3px solid ${color}` }}>
+                  <span className="route-idx">{index + 1}</span>
+                  <span className="route-name">{jump.from} → {jump.to}</span>
+                  <span className="route-coords" style={{ color, fontWeight: 600 }}>{jump.distance} св.л.</span>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <h4 style={{ fontSize: 12, marginBottom: 8 }}>Прыжки</h4>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {result.jumps.map((j, i) => (
-                <div
-                  key={i}
-                  className="route-row"
-                  style={{
-                    padding: "6px 8px",
-                    borderLeft: `3px solid ${j.distance <= 15 ? "#22c55e" : j.distance <= 25 ? "#e67e22" : "#e74c3c"}`,
-                  }}
-                >
-                  <span className="route-idx">{i + 1}</span>
-                  <span className="route-name" style={{ flex: 1 }}>
-                    {j.from} &#8594; {j.to}
-                  </span>
-                  <span
-                    className="route-coords"
-                    style={{
-                      color: j.distance <= 15 ? "#22c55e" : j.distance <= 25 ? "#e67e22" : "#e74c3c",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {j.distance} св.г.
-                  </span>
-                </div>
-              ))}
-            </div>
+              );
+            })}
+            {result.jumps.length > MAX_JUMPS_IN_LIST && (
+              <p className="atlas-muted">Показаны первые {MAX_JUMPS_IN_LIST} прыжков из {result.jumps.length} — полный список есть в CSV.</p>
+            )}
           </div>
         </div>
       )}

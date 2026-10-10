@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import ProjectCard from "@/components/Projects/ProjectCard";
-import { Toaster, toast } from "@/components/ui/Toaster";
+import { toast } from "@/components/ui/Toaster";
 import type { Project } from "@/types/project";
 
 type Filter = "all" | "active" | "paused" | "completed" | "archived";
@@ -106,8 +106,6 @@ export default function ProjectsPage() {
 
   return (
     <main className="card" style={{ width: "100%" }}>
-      <Toaster />
-
       {/* Header */}
       <div
         style={{

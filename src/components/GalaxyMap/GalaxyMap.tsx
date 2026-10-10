@@ -14,6 +14,7 @@ import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import { loadAllSystemsData } from './AllSystemsPoints';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
+import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import {
   POINTS_BYTES_PER_POINT,
   POINTS_HEADER_SIZE,
@@ -113,6 +114,27 @@ type GalaxyPick = {
   source?: 'spansh' | 'edsm';
 };
 
+/**
+ * Подсказки приходят из общего хука Atlas (каталог Spansh → EDSM). Поля вроде
+ * `id64` там строковые, а карте нужен собственный строгий тип GalaxyPick.
+ */
+function suggestionToPick(system: SystemSuggestion): GalaxyPick {
+  return {
+    id64: system.id64 ?? '',
+    name: system.name,
+    x: system.x ?? 0,
+    y: system.y ?? 0,
+    z: system.z ?? 0,
+    main_star: system.main_star ?? null,
+    star_type: system.star_type ?? '',
+    star_giant_class: null,
+    needs_permit: system.needs_permit ?? null,
+    distance_from_sols: system.distance_from_sols ?? null,
+    distance_from_sgra: system.distance_from_sgra ?? null,
+    source: system.source === 'catalog' ? 'spansh' : 'edsm',
+  };
+}
+
 const ALL_CLASS_MASK = (1 << STAR_CLASS_LIST.length) - 1;
 const EXOTIC_CLASSES = new Set([
   'brown_dwarf', 'neutron', 'black_hole', 'white_dwarf', 'wolf_rayet',
@@ -156,6 +178,13 @@ export default function GalaxyMap({
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
   const [systemSearch, setSystemSearch] = useState('');
+  // Подсказки систем — общий хук Atlas: кэш, отмена устаревших запросов и
+  // откат на EDSM, если каталог пуст. Раньше у карты был свой дубликат fetch.
+  const { suggestions: systemSuggestions } = useSystemAutocomplete(systemSearch, { limit: 8 });
+  const suggestions = useMemo<GalaxyPick[]>(
+    () => systemSuggestions.map(suggestionToPick),
+    [systemSuggestions],
+  );
   const [systemSearchLoading, setSystemSearchLoading] = useState(false);
   const [systemSearchError, setSystemSearchError] = useState('');
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
@@ -183,7 +212,6 @@ export default function GalaxyMap({
   const [allSystemsInfo, setAllSystemsInfo] = useState('');
   const [galaxyPick, setGalaxyPick] = useState<GalaxyPick | null>(null);
   const [classMask, setClassMask] = useState(ALL_CLASS_MASK);
-  const [suggestions, setSuggestions] = useState<GalaxyPick[]>([]);
   const [suggestOpen, setSuggestOpen] = useState(false);
   const [suggestIndex, setSuggestIndex] = useState(0);
   const [statusFilters, setStatusFilters] = useState<StatusFilters>({
@@ -240,30 +268,11 @@ export default function GalaxyMap({
     };
   }, [showAllSystems, allSystemsData]);
 
+
   useEffect(() => {
-    const query = systemSearch.trim();
-    if (query.length < 2) {
-      setSuggestions([]);
-      setSuggestOpen(false);
-      return;
-    }
-    const ctrl = new AbortController();
-    const timer = window.setTimeout(() => {
-      fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}&limit=8`, { signal: ctrl.signal })
-        .then((response) => response.json())
-        .then((data) => {
-          const rows = Array.isArray(data?.results) ? data.results as GalaxyPick[] : [];
-          setSuggestions(rows);
-          setSuggestIndex(0);
-          setSuggestOpen(rows.length > 0);
-        })
-        .catch(() => undefined);
-    }, 180);
-    return () => {
-      window.clearTimeout(timer);
-      ctrl.abort();
-    };
-  }, [systemSearch]);
+    setSuggestIndex(0);
+    setSuggestOpen(suggestions.length > 0);
+  }, [suggestions]);
 
   useEffect(() => {
     const loadHubs = async () => {
@@ -626,7 +635,9 @@ export default function GalaxyMap({
                     style={{ display: 'block', width: '100%', textAlign: 'left', background: index === suggestIndex ? 'rgba(230,126,34,0.16)' : 'transparent', border: 'none', color: '#eeeeee', padding: '6px 8px', cursor: 'pointer', fontSize: 11 }}
                   >
                     <div>{hit.name}</div>
-                    <div style={{ color: '#9ca3af', fontSize: 10 }}>{hit.main_star || STAR_CLASS_LABELS[hit.star_type as keyof typeof STAR_CLASS_LABELS] || hit.star_type}</div>
+                    <div style={{ color: '#9ca3af', fontSize: 10 }}>
+                      {hit.main_star || STAR_CLASS_LABELS[hit.star_type as keyof typeof STAR_CLASS_LABELS] || hit.star_type || (hit.source === 'edsm' ? 'EDSM' : '—')}
+                    </div>
                   </button>
                 ))}
               </div>

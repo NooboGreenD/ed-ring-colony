@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase, authFetch } from "@/lib/supabaseClient";
-import { Toaster, toast } from "@/components/ui/Toaster";
+import { toast } from "@/components/ui/Toaster";
 import { useRouter } from "next/navigation";
 import {
   ED_POWERS,
@@ -229,7 +229,6 @@ export default function SquadronsListPage() {
 
   return (
     <main className="card" style={{ width: "100%" }}>
-      <Toaster />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
         <div>
           <div className="kicker">Реестр эскадрилий</div>

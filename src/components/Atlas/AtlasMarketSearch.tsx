@@ -1,17 +1,24 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from '@/components/ui/Toaster';
-import { IconXCircle, IconMapPin, IconPackage, IconSave, IconStore, IconCoins, IconRocket } from '@/components/Icons';
-
-const COMMODITIES = [
-  'Aluminium','Ceramic Composites','CMM Composite','Computer Components',
-  'Copper','Food Cartridges','Fruit and Vegetables','Insulating Membrane',
-  'Liquid oxygen','Medical Diagnostic Equipment','Non-Lethal Weapons',
-  'Polymers','Power Generators','Semiconductors','Steel','Superconductors',
-  'Titanium','Water','Water Purifiers','Structural Regulators',
-  'Building Fabricators','Thermal Cooling Units',
-];
+import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
+import {
+  IconAlert,
+  IconCoins,
+  IconCrosshair,
+  IconDownload,
+  IconMapPin,
+  IconPackage,
+  IconRocket,
+  IconSave,
+  IconSearch,
+  IconStore,
+  IconX,
+  IconXCircle,
+} from '@/components/Icons';
+import { downloadCsv } from '@/lib/atlas';
+import { BUILD_COMMODITIES as COMMODITIES, resolveCommodity } from '@/lib/commodities';
 
 const MAX_RADIUS = 500;
 
@@ -49,6 +56,7 @@ interface SearchProgress {
   scanned: number;
   found: number;
   current: string;
+  startedAt: number;
 }
 
 interface ScanLogEntry {
@@ -84,6 +92,17 @@ interface AtlasMarketSearchProps {
   onMarketResults?: (results: MapMarketResult[]) => void;
 }
 
+function formatRemaining(progress: SearchProgress): string {
+  if (progress.scanned <= 0) return '';
+  const elapsed = Date.now() - progress.startedAt;
+  const perSystem = elapsed / progress.scanned;
+  const remaining = Math.max(0, progress.total - progress.scanned) * perSystem;
+  if (remaining <= 0) return 'завершается…';
+  const seconds = Math.round(remaining / 1000);
+  if (seconds < 60) return `~${seconds} с`;
+  return `~${Math.round(seconds / 60)} мин`;
+}
+
 export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onScanUpdate, onMarketResults }: AtlasMarketSearchProps) {
   const [refSystem, setRefSystem] = useState(initialSystem || 'Sol');
   const [commodity, setCommodity] = useState('Steel');
@@ -94,9 +113,17 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<SearchProgress | null>(null);
   const [scanLog, setScanLog] = useState<ScanLogEntry[]>([]);
+  const [resultFilter, setResultFilter] = useState('');
+  const [resultSort, setResultSort] = useState<'distance' | 'stock' | 'price'>('distance');
+  const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<number | null>(null);
   const startAbortRef = useRef<AbortController | null>(null);
   const scanGenerationRef = useRef(0);
+
+  // Система из ?system= приходит позже первого рендера (родитель читает URL).
+  useEffect(() => {
+    if (initialSystem) setRefSystem(initialSystem);
+  }, [initialSystem]);
 
   const clearPolling = useCallback(() => {
     if (intervalRef.current != null) {
@@ -106,8 +133,8 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
   }, []);
 
   const stopSearch = useCallback(() => {
-    // Invalidate callbacks already waiting on /step or /start before clearing
-    // their timer. This prevents a stopped/old scan from repainting the map.
+    // Останавливаем опрос и обесцениваем ответы уже запущенных /step-запросов,
+    // чтобы остановленное сканирование не дорисовало маркеры на карте.
     scanGenerationRef.current += 1;
     startAbortRef.current?.abort();
     startAbortRef.current = null;
@@ -126,12 +153,18 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
 
   const handleSearch = async () => {
     stopSearch();
+    if (!refSystem.trim()) {
+      setError('Укажите систему отсчёта');
+      return;
+    }
     const generation = scanGenerationRef.current;
     const searchMode = mode;
+    setError(null);
     setSingleResults([]);
     setBuildResults([]);
     setScanLog([]);
     setProgress(null);
+    setResultFilter('');
     onScanStart?.();
     setLoading(true);
 
@@ -144,15 +177,15 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
-          ref_system: refSystem,
+          ref_system: refSystem.trim(),
           radius,
           mode: searchMode,
-          commodity: searchMode === 'single' ? commodity : undefined,
+          commodity: searchMode === 'single' ? resolveCommodity(commodity) : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (scanGenerationRef.current !== generation) return;
-      if (!res.ok) throw new Error(data.error || 'Failed to start search');
+      if (!res.ok) throw new Error(data.error || 'Не удалось запустить сканирование');
 
       const rawScanSystems = Array.isArray(data.systems_list) ? data.systems_list : [];
       const scanSystems: Array<{ name: string; distance: number; x: number; y: number; z: number }> = [];
@@ -184,6 +217,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         scanned: 0,
         found: 0,
         current: '',
+        startedAt: Date.now(),
       });
 
       let requestInFlight = false;
@@ -205,15 +239,16 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           });
           const stepData = await stepRes.json().catch(() => ({}));
           if (scanGenerationRef.current !== generation) return;
-          if (!stepRes.ok) throw new Error(stepData.error || 'Search step failed');
+          if (!stepRes.ok) throw new Error(stepData.error || 'Шаг сканирования не выполнен');
 
           if (stepData.progress) {
-            setProgress({
+            setProgress((current) => ({
               total: Number(stepData.progress.total) || scanSystems.length,
               scanned: Number(stepData.progress.scanned) || 0,
               found: Number(stepData.progress.found) || 0,
               current: String(stepData.progress.current || ''),
-            });
+              startedAt: current?.startedAt ?? Date.now(),
+            }));
           }
 
           if (Array.isArray(stepData.scan_log)) {
@@ -247,9 +282,8 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
               const key = systemName.toLowerCase();
               if (!key || uniqueSystems.has(key)) continue;
               const system = coordinatesBySystem.get(key);
-              // A result without a known position remains in the textual list,
-              // but is rejected by the map marker layer instead of appearing
-              // as a false stack at the galactic origin.
+              // Результат без координат остаётся в списке, но не попадает на карту:
+              // иначе маркеры собирались бы в ложный столб в центре галактики.
               uniqueSystems.set(key, {
                 system_name: systemName,
                 distance: Number.isFinite(Number(row.distance)) ? Number(row.distance) : 0,
@@ -265,18 +299,19 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
             else setSingleResults(results);
             finishCurrentSearch();
             toast(
-              `Поиск завершён! Найдено ${results.length} станций`,
+              `Сканирование завершено: найдено станций ${results.length}`,
               results.length > 0 ? 'success' : 'info',
             );
           } else if (stepData.status === 'error') {
             finishCurrentSearch();
-            throw new Error(stepData.error || 'Search failed');
+            throw new Error(stepData.error || 'Сканирование прервано ошибкой');
           }
-        } catch (error) {
+        } catch (pollError) {
           if (scanGenerationRef.current === generation) {
             finishCurrentSearch();
-            console.error('Market-search polling error:', error);
-            toast(error instanceof Error ? error.message : 'Ошибка сканирования', 'error');
+            const message = pollError instanceof Error ? pollError.message : 'Ошибка сканирования';
+            setError(message);
+            toast(message, 'error');
           }
         } finally {
           requestInFlight = false;
@@ -285,216 +320,179 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
 
       intervalRef.current = window.setInterval(() => { void poll(); }, 2000);
       void poll();
-    } catch (error) {
-      if (scanGenerationRef.current !== generation || (error instanceof DOMException && error.name === 'AbortError')) return;
-      console.error('Market-search start error:', error);
-      toast(error instanceof Error ? error.message : 'Не удалось начать поиск', 'error');
+    } catch (startError) {
+      if (scanGenerationRef.current !== generation || (startError instanceof DOMException && startError.name === 'AbortError')) return;
+      const message = startError instanceof Error ? startError.message : 'Не удалось начать поиск';
+      setError(message);
+      toast(message, 'error');
       clearPolling();
       if (startAbortRef.current === controller) startAbortRef.current = null;
       setLoading(false);
     }
   };
 
-  const percent =
-    progress && progress.total > 0
-      ? Math.round((progress.scanned / progress.total) * 100)
-      : 0;
+  const percent = progress && progress.total > 0 ? Math.round((progress.scanned / progress.total) * 100) : 0;
+
+  const filterText = resultFilter.trim().toLowerCase();
+
+  const visibleSingleResults = useMemo(() => {
+    const rows = singleResults.filter((row) => {
+      if (!filterText) return true;
+      return row.station_name.toLowerCase().includes(filterText)
+        || row.system_name.toLowerCase().includes(filterText)
+        || row.landing_pad?.toLowerCase().includes(filterText);
+    });
+    return [...rows].sort((a, b) => {
+      if (resultSort === 'stock') return (b.stock || 0) - (a.stock || 0);
+      if (resultSort === 'price') return (b.sell_price || 0) - (a.sell_price || 0);
+      return (a.distance || 0) - (b.distance || 0);
+    });
+  }, [filterText, resultSort, singleResults]);
+
+  const visibleBuildResults = useMemo(() => {
+    const rows = buildResults.filter((row) => {
+      if (!filterText) return true;
+      return row.station_name.toLowerCase().includes(filterText)
+        || row.system_name.toLowerCase().includes(filterText);
+    });
+    return [...rows].sort((a, b) => {
+      if (resultSort === 'price') return (b.commodities_found || 0) - (a.commodities_found || 0);
+      if (resultSort === 'stock') return (b.commodities_total || 0) - (a.commodities_total || 0);
+      return (a.distance || 0) - (b.distance || 0);
+    });
+  }, [buildResults, filterText, resultSort]);
+
+  const exportResults = () => {
+    if (mode === 'single') {
+      downloadCsv(`market-${refSystem}-${commodity}`, [
+        ['Станция', 'Система', 'Расстояние, св.л.', 'Товар', 'Продажа, CR', 'Запас', 'Спрос', 'Площадка'],
+        ...visibleSingleResults.map((row) => [
+          row.station_name, row.system_name, row.distance?.toFixed(1) ?? '',
+          row.commodity || commodity, row.sell_price ?? '', row.stock ?? '', row.demand ?? '', row.landing_pad ?? '',
+        ]),
+      ]);
+      return;
+    }
+    downloadCsv(`market-build-${refSystem}`, [
+      ['Станция', 'Система', 'Расстояние, св.л.', 'Товаров найдено', 'Всего товаров', 'Товары'],
+      ...visibleBuildResults.map((row) => [
+        row.station_name, row.system_name, row.distance?.toFixed(1) ?? '',
+        row.commodities_found, row.commodities_total,
+        row.commodities.map((item) => `${item.name}: ${item.stock}`).join(', '),
+      ]),
+    ]);
+  };
+
+  const hasResults = mode === 'build' ? buildResults.length > 0 : singleResults.length > 0;
 
   return (
     <div className="atlas-section">
       <h4>Поиск товаров для стройки</h4>
 
-      <div className="atlas-search-field">
-        <label>Reference System</label>
-        <input
-          value={refSystem}
-          onChange={(e) => setRefSystem(e.target.value)}
-          placeholder="Sol"
-        />
-      </div>
+      <SystemSearchInput
+        label="Система отсчёта"
+        value={refSystem}
+        onChange={setRefSystem}
+        placeholder="Sol"
+      />
 
       <div className="atlas-search-field">
-        <label>Режим поиска</label>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <span className="atlas-field-label-row"><span>Режим поиска</span></span>
+        <div className="atlas-segmented" role="group" aria-label="Режим поиска">
           <button
+            type="button"
+            className={mode === 'single' ? 'active' : ''}
+            aria-pressed={mode === 'single'}
             onClick={() => setMode('single')}
-            style={{
-              flex: 1,
-              padding: '6px 12px',
-              borderRadius: 4,
-              border: '1px solid var(--border)',
-              background: mode === 'single' ? '#e67e22' : 'transparent',
-              color: mode === 'single' ? '#fff' : 'inherit',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
           >
             Один товар
           </button>
           <button
+            type="button"
+            className={mode === 'build' ? 'active' : ''}
+            aria-pressed={mode === 'build'}
             onClick={() => setMode('build')}
-            style={{
-              flex: 1,
-              padding: '6px 12px',
-              borderRadius: 4,
-              border: '1px solid var(--border)',
-              background: mode === 'build' ? '#e67e22' : 'transparent',
-              color: mode === 'build' ? '#fff' : 'inherit',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
           >
-            Все для стройки
+            Всё для стройки
           </button>
         </div>
       </div>
 
       {mode === 'single' && (
         <div className="atlas-search-field">
-          <label>Товар</label>
-          <select
+          <label htmlFor="atlas-commodity">Товар</label>
+          <input
+            id="atlas-commodity"
+            list="atlas-commodities"
             value={commodity}
-            onChange={(e) => setCommodity(e.target.value)}
-            style={{ width: '100%' }}
-          >
-            {COMMODITIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+            onChange={(event) => setCommodity(event.target.value)}
+            placeholder="Начните вводить название"
+          />
+          <datalist id="atlas-commodities">
+            {COMMODITIES.map((item) => <option key={item} value={item} />)}
+          </datalist>
         </div>
       )}
 
       <div className="atlas-search-field">
-        <label>Радиус поиска: {radius} св.лет</label>
+        <label htmlFor="atlas-market-radius">
+          Радиус поиска: <strong>{radius} св.л.</strong>
+        </label>
         <input
+          id="atlas-market-radius"
           type="range"
           min={10}
           max={MAX_RADIUS}
           step={10}
           value={radius}
-          onChange={(e) => setRadius(Number(e.target.value))}
+          onChange={(event) => setRadius(Number(event.target.value))}
         />
+        <div className="atlas-range-scale"><span>10</span><span>{MAX_RADIUS}</span></div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+      <div className="atlas-button-row">
         <button
+          type="button"
           onClick={handleSearch}
-          disabled={loading || !refSystem.trim()}
+          disabled={loading || !refSystem.trim() || (mode === 'single' && !commodity.trim())}
           className="atlas-scan-btn"
-          style={{ flex: 1 }}
         >
-          {loading
-            ? 'Сканирование...'
-            : mode === 'build'
-            ? 'Найти все товары'
-            : 'Найти товары'}
+          {loading ? 'Сканирование…' : mode === 'build' ? 'Найти все товары' : 'Найти товары'}
         </button>
-        {loading && (
-          <button
-            onClick={stopSearch}
-            style={{
-              padding: '6px 16px',
-              borderRadius: 4,
-              border: '1px solid #e74c3c',
-              background: '#1a1c1e',
-              color: '#e74c3c',
-              cursor: 'pointer',
-              fontSize: 12,
-            }}
-          >
-            Стоп
-          </button>
-        )}
+        {loading && <button type="button" className="atlas-stop-btn" onClick={stopSearch}>Стоп</button>}
       </div>
+
+      {error && (
+        <p className="atlas-inline-error" role="alert">
+          <IconAlert size={12} /> {error}
+        </p>
+      )}
 
       {loading && progress && (
-        <div style={{ marginTop: 16 }}>
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 6,
-            }}
-          >
-            <span style={{ fontSize: 12, color: '#e67e22', fontWeight: 600 }}>
-              {progress.current
-                ? `Сканирую: ${progress.current}`
-                : 'Подготовка...'}
+        <div className="atlas-progress" aria-live="polite">
+          <div className="atlas-progress-head">
+            <span className="atlas-progress-live">
+              {progress.current ? <>Сканирую: {progress.current}</> : 'Подготовка…'}
             </span>
-            <span style={{ fontSize: 11, color: '#9ca3af' }}>
-              {progress.scanned} / {progress.total} систем ({percent}%) ·{' '}
-              {progress.found} станций
-            </span>
+            <span>{progress.scanned} / {progress.total} ({percent}%) · {progress.found} станций · осталось {formatRemaining(progress)}</span>
           </div>
-          <div
-            style={{
-              width: '100%',
-              height: 8,
-              background: '#1a1c1e',
-              borderRadius: 4,
-              overflow: 'hidden',
-              border: '1px solid #2d2f33',
-            }}
-          >
-            <div
-              style={{
-                height: '100%',
-                width: `${percent}%`,
-                background: 'linear-gradient(90deg, #e67e22, #f39c12)',
-                borderRadius: 4,
-                transition: 'width 0.5s ease',
-                minWidth: 4,
-              }}
-            />
-          </div>
+          <div className="atlas-progress-bar"><div style={{ width: `${percent}%` }} /></div>
 
-          <div
-            style={{
-              marginTop: 8,
-              padding: 8,
-              background: '#0d0f11',
-              borderRadius: 4,
-              maxHeight: 160,
-              overflowY: 'auto',
-              fontSize: 11,
-              fontFamily: 'ui-monospace, monospace',
-              lineHeight: 1.6,
-            }}
-          >
-            {scanLog.length === 0 && (
-              <div style={{ color: '#666' }}>Ожидание сканирования...</div>
-            )}
-            {scanLog.map((entry, i) => (
-              <div
-                key={i}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  opacity: i === scanLog.length - 1 ? 1 : 0.5,
-                  color:
-                    entry.status === 'cached'
-                      ? '#7ee787'
-                      : entry.status === 'has_market'
-                      ? '#e67e22'
-                      : '#666',
-                }}
-              >
-                <span>
-                  {entry.status === 'cached' && <IconSave size={10} /> + ' '}
-                  {entry.status === 'has_market' && <IconStore size={10} /> + ' '}
-                  {entry.status === 'no_market' && <IconXCircle size={10} /> + ' '}
-                  {entry.system}
-                  {entry.status === 'has_market' && ` (${entry.stations} станций)`}
+          <div className="atlas-scan-log">
+            {scanLog.length === 0 && <div className="atlas-muted">Ожидание данных сканирования…</div>}
+            {scanLog.map((entry, index) => (
+              <div key={`${entry.system}-${index}`} className={`atlas-scan-log-row ${entry.status}`}>
+                <span className="system">
+                  {entry.status === 'cached' && <IconSave size={10} />}
+                  {entry.status === 'has_market' && <IconStore size={10} />}
+                  {entry.status === 'no_market' && <IconXCircle size={10} />}
+                  <span>{entry.system}</span>
+                  {entry.status === 'has_market' && typeof entry.stations === 'number' && (
+                    <span className="stations">({entry.stations} станций)</span>
+                  )}
                 </span>
-                <span style={{ color: '#666', fontSize: 10 }}>
-                  {entry.status === 'cached'
-                    ? 'из кэша'
-                    : entry.status === 'has_market'
-                    ? 'рынок найден'
-                    : 'нет рынка'}
+                <span className="status">
+                  {entry.status === 'cached' ? 'из кэша' : entry.status === 'has_market' ? 'рынок найден' : 'нет рынка'}
                 </span>
               </div>
             ))}
@@ -502,162 +500,111 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         </div>
       )}
 
-      {mode === 'build' && buildResults.length > 0 && !loading && (
-        <div style={{ marginTop: 16 }}>
-          <div
-            style={{
-              fontSize: 13,
-              fontWeight: 600,
-              marginBottom: 8,
-              color: '#e67e22',
-            }}
-          >
-            Станции с товарами для стройки ({buildResults.length})
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              maxHeight: 500,
-              overflowY: 'auto',
-            }}
-          >
-            {buildResults.map((r, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: 12,
-                  background: '#1a1c1e',
-                  borderRadius: 6,
-                  fontSize: 12,
-                  borderLeft: '3px solid #e67e22',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, fontSize: 13 }}>
-                    {r.station_name}{' '}
-                    <span style={{ color: '#9ca3af', fontWeight: 400 }}>
-                      @ {r.system_name}
-                    </span>
-                  </div>
-                  <div
-                    style={{ fontSize: 11, color: '#00bcd4', fontWeight: 600 }}
-                  >
-                    {r.commodities_found}/{r.commodities_total} товаров
-                  </div>
-                </div>
-                <div
-                  style={{ color: '#9ca3af', marginTop: 4, fontSize: 11 }}
-                >
-                  <IconMapPin size={10} /> {r.distance.toFixed(1)} св.лет · <IconRocket size={10} /> {r.landing_pad} ·{' '}
-                  {r.station_type}
-                </div>
-                <div
-                  style={{
-                    marginTop: 8,
-                    display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: 6,
-                  }}
-                >
-                  {r.commodities.map((c) => (
-                    <div
-                      key={c.name}
-                      style={{
-                        padding: '3px 8px',
-                        background: '#0d1f0d',
-                        border: '1px solid #2d5a2d',
-                        borderRadius: 3,
-                        fontSize: 11,
-                        color: '#7ee787',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 4,
-                      }}
-                    >
-                      <span style={{ fontWeight: 600 }}>{c.name}</span>
-                      <span style={{ color: '#9ca3af' }}>
-                        {c.stock.toLocaleString('ru')} шт.
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {mode === 'single' && singleResults.length > 0 && !loading && (
-        <div
-          style={{
-            marginTop: 12,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-            maxHeight: 400,
-            overflowY: 'auto',
-          }}
-        >
-          {singleResults.map((r, i) => (
-            <div
-              key={i}
-              style={{
-                padding: 10,
-                background: '#1a1c1e',
-                borderRadius: 4,
-                fontSize: 12,
-                borderLeft: '3px solid #e67e22',
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 13 }}>
-                {r.station_name}{' '}
-                <span style={{ color: '#9ca3af', fontWeight: 400 }}>
-                  @ {r.system_name}
-                </span>
-              </div>
-              <div
-                style={{
-                  color: 'var(--muted)',
-                  marginTop: 4,
-                  display: 'flex',
-                  gap: 12,
-                  flexWrap: 'wrap',
-                }}
-              >
-                <span><IconPackage size={10} /> {r.stock?.toLocaleString('ru') || '?'} шт.</span>
-                <span><IconCoins size={10} /> {r.sell_price?.toLocaleString('ru') || '?'} CR</span>
-                <span><IconMapPin size={10} /> {r.distance?.toFixed(1) || '?'} св.лет</span>
-                <span><IconRocket size={10} /> Площадка: {r.landing_pad}</span>
-              </div>
+      {hasResults && !loading && (
+        <>
+          <div className="atlas-section-head">
+            <h4>
+              {mode === 'build'
+                ? `Станции с товарами (${buildResults.length})`
+                : `Станции с товаром (${singleResults.length})`}
+            </h4>
+            <div className="atlas-section-actions">
+              <button type="button" className="atlas-icon-btn" title="Экспорт результатов в CSV" onClick={exportResults}>
+                <IconDownload size={12} />
+              </button>
             </div>
-          ))}
-        </div>
+          </div>
+
+          <div className="atlas-list-toolbar-row">
+            <div className="atlas-inline-search">
+              <IconSearch size={12} />
+              <input
+                type="search"
+                value={resultFilter}
+                onChange={(event) => setResultFilter(event.target.value)}
+                placeholder="Фильтр: станция, система"
+                aria-label="Фильтр результатов"
+              />
+              {resultFilter && (
+                <button type="button" onClick={() => setResultFilter('')} aria-label="Очистить фильтр">
+                  <IconX size={11} />
+                </button>
+              )}
+            </div>
+            <select
+              value={resultSort}
+              onChange={(event) => setResultSort(event.target.value as 'distance' | 'stock' | 'price')}
+              aria-label="Сортировка результатов"
+            >
+              <option value="distance">Ближе к системе</option>
+              <option value="stock">Больше запаса</option>
+              <option value="price">{mode === 'build' ? 'Больше товаров' : 'Выгоднее цена'}</option>
+            </select>
+          </div>
+
+          {mode === 'build' ? (
+            <div className="atlas-result-list">
+              {visibleBuildResults.length === 0 && <p className="atlas-muted">По фильтру станций не найдено.</p>}
+              {visibleBuildResults.map((row, index) => (
+                <article key={`${row.station_name}-${index}`} className="atlas-station-card">
+                  <header>
+                    <span className="station">{row.station_name}</span>
+                    <span className="system">@ {row.system_name}</span>
+                    <span className="badge">{row.commodities_found}/{row.commodities_total} товаров</span>
+                  </header>
+                  <div className="meta">
+                    <span><IconMapPin size={10} /> {row.distance.toFixed(1)} св.л.</span>
+                    <span><IconRocket size={10} /> {row.landing_pad}</span>
+                    <span>{row.station_type}</span>
+                  </div>
+                  <div className="commodities">
+                    {row.commodities.map((item) => (
+                      <span key={item.name} className="commodity">
+                        <strong>{item.name}</strong>
+                        <span>{item.stock.toLocaleString('ru-RU')} шт.</span>
+                        {item.sell_price ? <span>{item.sell_price.toLocaleString('ru-RU')} CR</span> : null}
+                      </span>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="atlas-result-list">
+              {visibleSingleResults.length === 0 && <p className="atlas-muted">По фильтру станций не найдено.</p>}
+              {visibleSingleResults.map((row, index) => (
+                <article key={`${row.station_name}-${index}`} className="atlas-station-card compact">
+                  <header>
+                    <span className="station">{row.station_name}</span>
+                    <span className="system">@ {row.system_name}</span>
+                  </header>
+                  <div className="meta">
+                    <span><IconPackage size={10} /> {row.stock?.toLocaleString('ru-RU') ?? '?'} шт.</span>
+                    <span><IconCoins size={10} /> {row.sell_price?.toLocaleString('ru-RU') ?? '?'} CR</span>
+                    <span><IconMapPin size={10} /> {row.distance?.toFixed(1) ?? '?'} св.л.</span>
+                    <span><IconRocket size={10} /> {row.landing_pad}</span>
+                    {row.demand ? <span>спрос: {row.demand.toLocaleString('ru-RU')}</span> : null}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {((mode === 'build' && buildResults.length === 0) ||
-        (mode === 'single' && singleResults.length === 0)) &&
-        !loading && (
-          <div
-            style={{
-              marginTop: 12,
-              fontSize: 12,
-              color: '#9ca3af',
-              textAlign: 'center',
-            }}
-          >
-            {mode === 'build'
-              ? 'Нажмите «Найти все товары» для поиска станций с товарами для стройки'
-              : 'Нажмите «Найти товары» для поиска станций'}
-          </div>
-        )}
+      {!loading && !hasResults && (
+        <p className="atlas-muted">
+          {mode === 'build'
+            ? 'Нажмите «Найти все товары», чтобы собрать станции с ресурсами для строительства.'
+            : 'Нажмите «Найти товары», чтобы найти станции с выбранным товаром.'}
+        </p>
+      )}
+
+      {!loading && scanLog.length > 0 && !hasResults && (
+        <p className="atlas-muted">
+          <IconCrosshair size={11} /> Сканирование завершено без подходящих станций — увеличьте радиус или смените товар.
+        </p>
+      )}
     </div>
   );
 }

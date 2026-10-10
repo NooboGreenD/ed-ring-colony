@@ -1,1 +1,356 @@
-'use client' ; import Link from 'next/link' ; import { usePathname } from 'next/navigation' ; import { useState } from 'react' ; import { IconPlane } from '@/components/Icons' ; import { useI18n } from '@/lib/i18n/I18nContext' ; import LanguageSwitcher from '@/components/LanguageSwitcher' ; export default function Sidebar() { const { t } = useI18n() ; const [open , setOpen] = useState(false) ; const pathname = usePathname() ; const navItems = [ { href : '/' , label : t('nav.home') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z'/><polyline points='9 22 9 12 15 12 15 22'/></svg> ) } , { href : '/map' , label : t('nav.map') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><circle cx='12' cy='12' r='10'/><line x1='2' y1='12' x2='22' y2='12'/><path d='M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z'/></svg> ) } , { href : '/news' , label : t('nav.news') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z'/><polyline points='22,6 12,13 2,6'/></svg> ) } , { href : '/galnet' , label : t('nav.galnet') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><circle cx='12' cy='12' r='4'/><path d='M12 2v2'/><path d='M12 20v2'/><path d='M4.93 4.93l1.41 1.41'/><path d='M17.66 17.66l1.41 1.41'/><path d='M2 12h2'/><path d='M20 12h2'/><path d='M6.34 17.66l-1.41 1.41'/><path d='M19.07 4.93l-1.41 1.41'/></svg> ) } , { href : '/forum' , label : t('nav.forum') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z'/></svg> ) } , { href : '/wiki' , label : t('nav.wiki') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M4 19.5A2.5 2.5 0 016.5 17H20'/><path d='M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z'/></svg> ) } , { href : '/leaderboard' , label : t('nav.leaderboard') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M6 9H4.5a2.5 2.5 0 010-5H6'/><path d='M18 9h1.5a2.5 2.5 0 000-5H18'/><path d='M4 22h16'/><path d='M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22'/><path d='M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22'/><path d='M18 2H6v7a6 6 0 0012 0V2z'/></svg> ) } , { href : '/systems' , label : t('nav.systems') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><polygon points='12 2 2 7 12 12 22 7 12 2'/><polyline points='2 17 12 22 22 17'/><polyline points='2 12 12 17 22 12'/></svg> ) } , { href : '/cmdrs' , label : t('nav.cmdrs') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2'/><circle cx='9' cy='7' r='4'/><path d='M23 21v-2a4 4 0 00-3-3.87'/><path d='M16 3.13a4 4 0 010 7.75'/></svg> ) } , { href : '/squadrons' , label : t('nav.squadrons') , icon : <IconPlane size={20} className='sidebar-icon' /> } , { href : '/projects' , label : t('nav.projects') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z'/></svg> ) } , { href : '/architect' , label : t('nav.architect') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><rect x='3' y='3' width='18' height='18' rx='1'/><path d='M3 9h18'/><path d='M9 21V9'/></svg> ) } , { href : '/outfitting' , label : t('nav.outfitting') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><path d='M12 2c2.5 2.6 4 6.2 4 10v4l3 3v2l-4-1.5h-6L5 21v-2l3-3v-4c0-3.8 1.5-7.4 4-10z'/><circle cx='12' cy='9' r='1.6'/></svg> ) } , { href : '/engineers' , label : t('nav.engineers') , icon : ( <svg viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' className='sidebar-icon'><circle cx='12' cy='12' r='3'/><path d='M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.7 1.7 0 008.9 19a1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1A1.7 1.7 0 004.6 8.9a1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z'/></svg> ) } , ] ; function NavLinks({ onClick } : { onClick? : () => void }) { return ( <> {navItems.map((item) => { const isActive = pathname === item.href || pathname.startsWith(item.href + '/') ; return ( <Link key={item.href} href={item.href} className={`sidebar-item ${isActive ? 'active' : ''}`} onClick={onClick}> {item.icon} {item.label} </Link> ) ; })} </> ) ; } return ( <> {/* Desktop sidebar */} <aside className='sidebar' style={{ display : 'flex' , flexDirection : 'column' , justifyContent : 'space-between' }}> <div> <NavLinks /> </div> <div style={{ padding : '12px 16px' , borderTop : '1px solid var(--line)' }}> <LanguageSwitcher /> </div> </aside> {/* Mobile hamburger */} <button className='hamburger' onClick={() => setOpen(!open)} aria-label='Menu'> <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2'> {open ? ( <> <line x1='18' y1='6' x2='6' y2='18' /> <line x1='6' y1='6' x2='18' y2='18' /> </> ) : ( <> <line x1='3' y1='6' x2='21' y2='6' /> <line x1='3' y1='12' x2='21' y2='12' /> <line x1='3' y1='18' x2='21' y2='18' /> </> )} </svg> </button> {/* Mobile overlay */} {open && <div className='mobile-overlay open' onClick={() => setOpen(false)} />} {/* Mobile drawer */} <div className={`sidebar-drawer${open ? ' open' : ''}`}> <NavLinks onClick={() => setOpen(false)} /> <div style={{ padding : '12px 16px' , borderTop : '1px solid var(--line)' , marginTop : 'auto' }}> <LanguageSwitcher /> </div> </div> </> ) ; }
+'use client';
+
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
+import { useI18n } from '@/lib/i18n/I18nContext';
+import {
+  IconAtlas,
+  IconBuilding,
+  IconChevronDown,
+  IconGear,
+  IconGlobe,
+  IconHomeSystem,
+  IconLeaderboard,
+  IconMap,
+  IconMessage,
+  IconNote,
+  IconPlane,
+  IconProfile,
+  IconProjects,
+  IconRadio,
+  IconSearch,
+  IconHeadphones,
+  IconStore,
+  IconUsers,
+  IconWiki,
+  IconWrench,
+} from '@/components/Icons';
+import type { TranslationKey } from '@/lib/i18n/types';
+
+/**
+ * Пункт меню. `translation` — ключ словаря; новые разделы обязаны иметь перевод
+ * во всех локалях (см. scripts/tests/menu-i18n.test.mjs).
+ */
+interface NavItem {
+  href: string;
+  translation: TranslationKey;
+  icon: React.ReactNode;
+  /** Подпункты выводятся с отступом под родителем; подпись — тоже ключ словаря. */
+  children?: { href: string; labelKey: TranslationKey }[];
+}
+
+interface NavGroup {
+  id: string;
+  titleKey: TranslationKey;
+  items: NavItem[];
+}
+
+const iconSize = 18;
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    id: 'navigation',
+    titleKey: 'nav.group.navigation',
+    items: [
+      { href: '/', translation: 'nav.home', icon: <IconHomeSystem size={iconSize} className="sidebar-icon" /> },
+      { href: '/map', translation: 'nav.map', icon: <IconMap size={iconSize} className="sidebar-icon" /> },
+      {
+        href: '/atlas',
+        translation: 'nav.atlas',
+        icon: <IconAtlas size={iconSize} className="sidebar-icon" />,
+        children: [{ href: '/atlas/sector', labelKey: 'nav.sectors' }],
+      },
+      { href: '/systems', translation: 'nav.systems', icon: <IconGlobe size={iconSize} className="sidebar-icon" /> },
+      { href: '/cmdrs', translation: 'nav.cmdrs', icon: <IconUsers size={iconSize} className="sidebar-icon" /> },
+      { href: '/leaderboard', translation: 'nav.leaderboard', icon: <IconLeaderboard size={iconSize} className="sidebar-icon" /> },
+    ],
+  },
+  {
+    id: 'community',
+    titleKey: 'nav.group.community',
+    items: [
+      { href: '/squadrons', translation: 'nav.squadrons', icon: <IconPlane size={iconSize} className="sidebar-icon" /> },
+      { href: '/projects', translation: 'nav.projects', icon: <IconProjects size={iconSize} className="sidebar-icon" /> },
+      { href: '/news', translation: 'nav.news', icon: <IconNote size={iconSize} className="sidebar-icon" /> },
+      { href: '/galnet', translation: 'nav.galnet', icon: <IconRadio size={iconSize} className="sidebar-icon" /> },
+      { href: '/forum', translation: 'nav.forum', icon: <IconMessage size={iconSize} className="sidebar-icon" /> },
+      { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={iconSize} className="sidebar-icon" /> },
+    ],
+  },
+  {
+    id: 'tools',
+    titleKey: 'nav.group.tools',
+    items: [
+      { href: '/architect', translation: 'nav.architect', icon: <IconBuilding size={iconSize} className="sidebar-icon" /> },
+      { href: '/outfitting', translation: 'nav.outfitting', icon: <IconWrench size={iconSize} className="sidebar-icon" /> },
+      { href: '/engineers', translation: 'nav.engineers', icon: <IconGear size={iconSize} className="sidebar-icon" /> },
+    ],
+  },
+  {
+    id: 'help',
+    titleKey: 'nav.group.help',
+    items: [
+      { href: '/support', translation: 'nav.support', icon: <IconHeadphones size={iconSize} className="sidebar-icon" /> },
+      { href: '/premium-shop', translation: 'nav.shop', icon: <IconStore size={iconSize} className="sidebar-icon" /> },
+      { href: '/account', translation: 'nav.account', icon: <IconProfile size={iconSize} className="sidebar-icon" /> },
+    ],
+  },
+];
+
+const COLLAPSED_STORAGE_KEY = 'ed-ring-sidebar-collapsed';
+
+/** Активен ли пункт: точное совпадение или вложенный маршрут. */
+export function isNavItemActive(pathname: string, href: string): boolean {
+  if (href === '/') return pathname === '/';
+  return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function readCollapsedGroups(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(COLLAPSED_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function NavContent({
+  pathname,
+  query,
+  collapsed,
+  onNavigate,
+  onToggleGroup,
+}: {
+  pathname: string;
+  query: string;
+  collapsed: string[];
+  onNavigate?: () => void;
+  onToggleGroup: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  const normalizedQuery = query.trim().toLowerCase();
+
+  // Пункт считается найденным и по своему названию, и по подписи подпункта:
+  // так запрос «секторы» находит Atlas, даже когда раздел свёрнут.
+  const itemMatches = useCallback(
+    (item: NavItem) =>
+      t(item.translation).toLowerCase().includes(normalizedQuery) ||
+      Boolean(item.children?.some((child) => t(child.labelKey).toLowerCase().includes(normalizedQuery))),
+    [normalizedQuery, t],
+  );
+
+  const visibleGroups = useMemo(() => {
+    if (!normalizedQuery) return NAV_GROUPS;
+    return NAV_GROUPS.map((group) => ({
+      ...group,
+      items: group.items.filter(itemMatches),
+    })).filter((group) => group.items.length > 0);
+  }, [normalizedQuery, itemMatches]);
+
+  if (visibleGroups.length === 0) {
+    return <p className="sidebar-empty">{t('nav.empty')}</p>;
+  }
+
+  return (
+    <>
+      {visibleGroups.map((group) => {
+        const isCollapsed = collapsed.includes(group.id) && !normalizedQuery;
+        return (
+          <div className="sidebar-group" key={group.id}>
+            <button
+              type="button"
+              className={`sidebar-group-title${isCollapsed ? ' collapsed' : ''}`}
+              onClick={() => onToggleGroup(group.id)}
+              aria-expanded={!isCollapsed}
+            >
+              <span>{t(group.titleKey)}</span>
+              <IconChevronDown size={12} />
+            </button>
+            {!isCollapsed && (
+              <div className="sidebar-group-items">
+                {group.items.map((item) => {
+                  const isActive = isNavItemActive(pathname, item.href);
+                  const childMatches = Boolean(normalizedQuery)
+                    && Boolean(item.children?.some((child) => t(child.labelKey).toLowerCase().includes(normalizedQuery)));
+                  return (
+                    <div key={item.href}>
+                      <Link
+                        href={item.href}
+                        className={`sidebar-item${isActive ? ' active' : ''}`}
+                        onClick={onNavigate}
+                        aria-current={isActive ? 'page' : undefined}
+                      >
+                        {item.icon}
+                        {t(item.translation)}
+                      </Link>
+                      {item.children && (isActive || childMatches) && (
+                        <div className="sidebar-subitems">
+                          {item.children.map((child) => {
+                            const childActive = isNavItemActive(pathname, child.href);
+                            return (
+                              <Link
+                                key={child.href}
+                                href={child.href}
+                                className={`sidebar-subitem${childActive ? ' active' : ''}`}
+                                onClick={onNavigate}
+                                aria-current={childActive ? 'page' : undefined}
+                              >
+                                {t(child.labelKey)}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+export default function Sidebar() {
+  const { t } = useI18n();
+  const pathname = usePathname();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [collapsed, setCollapsed] = useState<string[]>([]);
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+
+  // Настройка «свёрнутые разделы» — персональная, переживает перезагрузку.
+  useEffect(() => {
+    setCollapsed(readCollapsedGroups());
+  }, []);
+
+  // Мобильное меню: Escape, блокировка прокрутки и фокус внутри панели.
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKeyDown);
+    drawerRef.current?.focus();
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  // Переход по ссылке закрывает drawer, чтобы карта не оставалась под оверлеем.
+  useEffect(() => {
+    setOpen(false);
+    setQuery('');
+  }, [pathname]);
+
+  const toggleGroup = useCallback((id: string) => {
+    setCollapsed((current) => {
+      const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+      try {
+        window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Приватный режим: настройка просто не сохранится.
+      }
+      return next;
+    });
+  }, []);
+
+  const closeDrawer = useCallback(() => setOpen(false), []);
+
+  return (
+    <>
+      {/* Desktop sidebar */}
+      <aside className="sidebar" aria-label={t('nav.menu')}>
+        <div className="sidebar-search">
+          <IconSearch size={14} className="sidebar-search-icon" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('nav.filter')}
+            aria-label={t('nav.filter')}
+          />
+          {query && (
+            <button type="button" className="sidebar-search-clear" onClick={() => setQuery('')} aria-label="×">
+              ×
+            </button>
+          )}
+        </div>
+        <nav className="sidebar-nav">
+          <NavContent pathname={pathname} query={query} collapsed={collapsed} onToggleGroup={toggleGroup} />
+        </nav>
+        <div className="sidebar-footer">
+          <LanguageSwitcher />
+        </div>
+      </aside>
+
+      {/* Mobile hamburger */}
+      <button
+        className="hamburger"
+        onClick={() => setOpen((current) => !current)}
+        aria-label={open ? t('nav.closeMenu') : t('nav.menu')}
+        aria-expanded={open}
+        aria-controls="sidebar-drawer"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+          {open ? (
+            <>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </>
+          ) : (
+            <>
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </>
+          )}
+        </svg>
+      </button>
+
+      <div className={`mobile-overlay${open ? ' open' : ''}`} onClick={closeDrawer} aria-hidden="true" />
+
+      <div
+        id="sidebar-drawer"
+        ref={drawerRef}
+        className={`sidebar-drawer${open ? ' open' : ''}`}
+        role="dialog"
+        aria-modal={open}
+        aria-label={t('nav.menu')}
+        tabIndex={-1}
+      >
+        <div className="sidebar-search">
+          <IconSearch size={14} className="sidebar-search-icon" />
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={t('nav.filter')}
+            aria-label={t('nav.filter')}
+          />
+        </div>
+        <nav className="sidebar-nav">
+          <NavContent
+            pathname={pathname}
+            query={query}
+            collapsed={collapsed}
+            onNavigate={closeDrawer}
+            onToggleGroup={toggleGroup}
+          />
+        </nav>
+        <div className="sidebar-footer">
+          <LanguageSwitcher />
+        </div>
+      </div>
+    </>
+  );
+}
