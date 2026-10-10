@@ -8,7 +8,7 @@ import {
   frontierRedirectUri,
 } from '@/lib/capi/oauth';
 import { capiSession } from '@/lib/capi/session';
-import { CapiError, describeCapiError, needsCapiRelink } from '@/lib/capi/client';
+import { diagnoseCapiFailure } from '@/lib/capi/failure';
 import { isBlankProfile } from '@/lib/capi/profile';
 
 export const dynamic = 'force-dynamic';
@@ -101,8 +101,9 @@ export async function GET(req: Request) {
 
   let live: Record<string, unknown> | null = null;
   if (probe && token) {
+    let session: Awaited<ReturnType<typeof capiSession>> | undefined;
     try {
-      const session = await capiSession(svc, user.id, token);
+      session = await capiSession(svc, user.id, token);
       const fresh = await session.run((client) => client.getProfile());
       live = {
         ok: true,
@@ -115,13 +116,8 @@ export async function GET(req: Request) {
         blank: isBlankProfile(fresh),
       };
     } catch (err) {
-      live = {
-        ok: false,
-        status: err instanceof CapiError ? err.status : null,
-        kind: err instanceof CapiError ? err.kind : 'unknown',
-        needsReauth: needsCapiRelink(err),
-        message: describeCapiError(err),
-      };
+      const { error, httpStatus, errorKind, ...failure } = await diagnoseCapiFailure(err, session?.token ?? token.access_token);
+      live = { ok: false, ...failure, status: httpStatus, kind: errorKind, message: error };
     }
   }
 

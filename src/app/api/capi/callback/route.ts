@@ -173,49 +173,22 @@ export async function GET(req: NextRequest) {
     refresh_token: tokens.refresh_token,
     expires_at: new Date(now.getTime() + tokens.expires_in * 1000).toISOString(),
     cmdr_name: null,
-  });
+  }, { requestedPlatform, identity });
 
   for (const warning of sync.warnings) console.warn('[CAPI Callback]', warning);
 
   if (!sync.ok) {
     console.error('[CAPI Callback] first sync failed:', sync.error);
     if (sync.needsReauth) {
-      // OAuth уже выдал токен, но CAPI подтвердил, что выбранная учётка не
-      // владеет игрой (частый случай: игра куплена в Steam/EGS, а вошли
-      // кнопкой Frontier). Не оставляем такую привязку зелёной: страница
-      // покажет «Переподключить» и сохранит причину для диагностики.
+      // Только отозванный токен или подтверждённое несовпадение платформ.
+      // Отказ CAPI в правах после правильного входа через EGS не рвёт OAuth.
       await markCapiTokenBroken(svc, userId, sync.error || 'Требуется повторная авторизация Frontier');
-    }
-    // Диагностика платформы: что просили и что выдал Frontier. Если пилот
-    // выбирал Steam/Epic, а токен оказался frontier-учёткой (на
-    // auth.frontierstore.net осталась сессия почтой), без этой пары
-    // «переподключение с той же платформой» уходило в бесконечный круг.
-    let detail = sync.error;
-    if (sync.needsReauth) {
-      const requested = requestedPlatform || 'frontier,steam,epic';
-      const actual = identity?.platform || null;
-      const parts = [`Запрошена платформа: ${requested}.`, `Токен выдан платформой: ${actual || 'неизвестно'}.`];
-      if (actual && actual === requested) {
-        // Платформа совпала с выбором — этой учётки игра просто нет.
-        parts.push('Выберите платформу, где куплена Elite Dangerous, и подключитесь заново.');
-      } else {
-        // Вошли не той учёткой: на странице Frontier осталась сессия почтой,
-        // и кнопка Steam/Epic не успела сработать.
-        parts.push(
-          'Похоже, вход выполнен другой учётной записью: выйдите из аккаунта на '
-          + 'auth.frontierstore.net (или откройте приватное окно браузера) и пройдите '
-          + 'подключение заново, войдя именно кнопкой Steam/Epic, а не почтой.',
-        );
-      }
-      detail = `${parts.join(' ')} ${sync.error ?? ''}`.trim();
     }
     return finish({
       status: 'partial',
-      reason: sync.needsReauth
-        ? 'platform_not_entitled'
-        : sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable',
-      detail,
-      actualPlatform: identity?.platform ?? null,
+      reason: sync.reason ?? (sync.profileSaved ? 'profile_save_failed' : 'profile_unavailable'),
+      detail: sync.detail || sync.error,
+      actualPlatform: sync.platform ?? identity?.platform ?? null,
       binding: sync.binding.status,
     });
   }

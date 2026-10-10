@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { IconCheck, IconError, IconSync, IconWaiting } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
 import { capiReasonText, describeJournalStatus } from '@/lib/capi/messages';
+import { platformSelection } from '@/lib/capi/platform';
 
 interface CapiProfileData {
   cmdr_name: string | null;
@@ -145,9 +146,7 @@ export default function CapiPage() {
     // превращаем обратно в «auto», одиночное значение — в выбор селектора.
     const returnedPlatform = params.get('platform');
     if (returnedPlatform) {
-      const single = returnedPlatform.split(',')[0]?.trim();
-      const known = PLATFORMS.some((item) => item.id === returnedPlatform);
-      setPlatform(known ? returnedPlatform : (single && PLATFORMS.some((item) => item.id === single) ? single : 'auto'));
+      setPlatform(platformSelection(returnedPlatform));
     }
     void fetchProfile();
   }, [fetchProfile]);
@@ -155,6 +154,7 @@ export default function CapiPage() {
   async function handleSync() {
     setSyncing(true);
     setError(null);
+    setNotice(null);
     setSyncReport(null);
     try {
       const res = await authFetch('/api/capi/sync', { method: 'POST' });
@@ -172,6 +172,7 @@ export default function CapiPage() {
         setError(data.needsReauth
           ? `${data.error || 'Frontier отклонил токен'} — подключите аккаунт заново.`
           : data.error || 'Синхронизация не удалась');
+        await fetchProfile();
         if (Array.isArray(data.warnings) && data.warnings.length) {
           setSyncReport({ cmdrName: null, journalStatus: 'error', eventsImported: 0, eventsDuplicate: 0, warnings: data.warnings });
         }
@@ -222,6 +223,7 @@ export default function CapiPage() {
   // повторно в такой ситуации — вводить пилота в заблуждение.
   const linked = Boolean(binding?.linked);
   const needsReauth = linked && binding?.tokenActive === false;
+  const hasCapiError = linked && !needsReauth && Boolean(binding?.lastError);
   const profileEmpty = linked && (!profile || (profile.credits === null && !profile.current_system));
 
   return (
@@ -256,7 +258,8 @@ export default function CapiPage() {
           <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 16 }}>
             Выберите, как вы входите в Elite Dangerous — диалог Frontier покажет именно этот способ входа.
             Если не уверены, оставьте «Определить автоматически»: Frontier сам предложит Steam, Epic или вход почтой.
-            Ошибка «Please Visit the store to purchase Elite: Dangerous» после входа означает, что выбрана не та платформа.
+            Ответ «Please Visit the store to purchase Elite: Dangerous» означает отказ CAPI в проверке прав на игру,
+            но сам по себе не доказывает, что выбрана не та платформа.
           </p>
           <div className="capi-platforms">
             {PLATFORMS.map((item) => (
@@ -276,9 +279,9 @@ export default function CapiPage() {
         <>
           <div className="card" style={{ marginBottom: 20 }}>
             <div className="capi-head">
-              <div className={needsReauth ? 'capi-status-broken' : 'capi-status-connected'}>
-                <span className="capi-dot" style={{ background: needsReauth ? 'var(--red)' : 'var(--green)' }} />
-                {needsReauth ? 'Требуется повторная авторизация' : 'Подключено'}
+              <div className={needsReauth ? 'capi-status-broken' : hasCapiError ? 'capi-status-pending' : 'capi-status-connected'}>
+                <span className="capi-dot" style={{ background: needsReauth ? 'var(--red)' : hasCapiError ? 'var(--orange)' : 'var(--green)' }} />
+                {needsReauth ? 'Требуется повторная авторизация' : hasCapiError ? 'Авторизация сохранена, CAPI недоступен' : 'Подключено'}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <button className="btn btn-cyan" onClick={handleSync} disabled={syncing}>
@@ -336,7 +339,17 @@ export default function CapiPage() {
               </div>
             )}
 
-            {profileEmpty && !needsReauth && (
+            {hasCapiError && (
+              <div className="capi-notice capi-notice-partial" style={{ marginTop: 12 }}>
+                <strong><IconWaiting size={14} /> Ошибка получения данных CAPI, не потеря авторизации</strong>
+                <div className="capi-notice-hint">{binding?.lastError}</div>
+                <div className="capi-notice-hint">
+                  Сохранённые токены не удалены. Можно повторить синхронизацию и открыть диагностику без нового входа.
+                </div>
+              </div>
+            )}
+
+            {profileEmpty && !needsReauth && !hasCapiError && (
               <div className="capi-notice capi-notice-partial" style={{ marginTop: 12 }}>
                 <strong><IconWaiting size={14} /> Привязка есть, данных пока нет</strong>
                 <div className="capi-notice-hint">
@@ -438,6 +451,8 @@ export default function CapiPage() {
               <p style={{ color: 'var(--muted)', fontSize: 11, marginTop: 8 }}>
                 `config.redirectMatchesSite: false` — адрес возврата не совпадает с сайтом;
                 `live.kind: maintenance` — Companion API временно недоступен;
+                `live.reason: entitlement_unavailable` — OAuth сохранён, CAPI не подтвердил права на игру;
+                `live.platform` — подтверждённая платформа, `live.detail` — ответ Frontier;
                 `stored.looksEmpty: true` — профиль сохранён пустым, нужна синхронизация после входа в игру.
               </p>
             </div>

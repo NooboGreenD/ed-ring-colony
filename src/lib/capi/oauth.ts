@@ -49,6 +49,9 @@ import { createHash, randomBytes } from 'crypto';
 // ничего не знает (см. scripts/tests/capi-pkce.test.mjs).
 import { getSiteUrl } from '../siteUrl.ts';
 import { capiUserAgent } from './client.ts';
+import { normalizeAudience, normalizePlatform } from './platform.ts';
+export { DEFAULT_AUDIENCE, FRONTIER_AUDIENCES, normalizeAudience } from './platform.ts';
+export type { FrontierAudience } from './platform.ts';
 
 const FRONTIER_AUTH_URL = 'https://auth.frontierstore.net/auth';
 const FRONTIER_TOKEN_URL = 'https://auth.frontierstore.net/token';
@@ -112,47 +115,6 @@ export function frontierRedirectUri(): string {
     // об этом человеческим языком.
     return '';
   }
-}
-
-/**
- * Платформы аккаунта (`audience`). Значения — из документации Frontier
- * (hosting.zaonce.net/docs/oauth2/instructions.html); `epic` там не описан,
- * но принимается и используется EDMC, поэтому оставлен.
- *
- * Значение по умолчанию — список `frontier,steam,epic`, ровно как в EDMC.
- * Это важнее, чем кажется: с одним лишь `audience=frontier` пилот, купивший
- * игру в Steam или Epic, получает токен учётки магазина frontierstore.net,
- * за которой игры нет. OAuth при этом проходит полностью, `/me` отвечает —
- * и только CAPI возвращает `400 Please Visit the store to purchase Elite:
- * Dangerous`. Снаружи это выглядит как «подключилось, но не работает».
- */
-export const FRONTIER_AUDIENCES = ['frontier', 'steam', 'epic', 'xbox', 'psn'] as const;
-export type FrontierAudience = (typeof FRONTIER_AUDIENCES)[number];
-
-/** Список платформ по умолчанию — тот же, что запрашивает EDMC. */
-export const DEFAULT_AUDIENCE = 'frontier,steam,epic';
-
-/**
- * Нормализовать выбор платформы. Пусто, `auto` и `all` → список EDMC;
- * список через запятую чистится от неизвестных значений и дублей.
- */
-export function normalizeAudience(value: unknown): string {
-  const raw = String(value ?? '').trim().toLowerCase();
-  if (!raw || raw === 'auto' || raw === 'all' || raw === 'any') return DEFAULT_AUDIENCE;
-
-  const known = new Set<string>(FRONTIER_AUDIENCES);
-  const aliases: Record<string, string> = {
-    egs: 'epic',
-    epicgames: 'epic',
-    'epic-games': 'epic',
-    frontierstore: 'frontier',
-  };
-  const kept = raw
-    .split(/[,\s]+/)
-    .map((part) => aliases[part.trim()] || part.trim())
-    .filter((part) => known.has(part));
-
-  return [...new Set(kept)].join(',') || DEFAULT_AUDIENCE;
 }
 
 /* ── PKCE ─────────────────────────────────────────────────────────── */
@@ -367,27 +329,24 @@ export async function refreshAccessToken(
 export async function decodeFrontierToken(
   accessToken: string,
 ): Promise<{ ok: boolean; status: number; payload: Record<string, unknown> | null }> {
-  const res = await fetch(FRONTIER_DECODE_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Accept: 'application/json',
-      'User-Agent': capiUserAgent(),
-    },
-    body: new URLSearchParams({ token: accessToken }),
-  });
-
-  let payload: Record<string, unknown> | null = null;
   try {
-    const parsed = await res.json();
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      payload = parsed as Record<string, unknown>;
-    }
+    // /decode, как в EDMC, — GET с Bearer, не POST с токеном в форме.
+    const res = await fetch(FRONTIER_DECODE_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+        'User-Agent': capiUserAgent(),
+      },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10_000),
+    });
+    const parsed: unknown = await res.json();
+    const payload = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown> : null;
+    return { ok: res.ok, status: res.status, payload };
   } catch {
-    payload = null;
+    return { ok: false, status: 0, payload: null };
   }
-
-  return { ok: res.ok, status: res.status, payload };
 }
 
 /**
@@ -406,6 +365,24 @@ export interface FrontierIdentity {
   platform: string | null;
 }
 
+/** Оба формата Frontier: плоский /me и { usr: … } из /decode. */
+export function parseFrontierIdentity(data: unknown): FrontierIdentity | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const root = data as Record<string, unknown>;
+  const user = root.usr && typeof root.usr === 'object' && !Array.isArray(root.usr)
+    ? root.usr as Record<string, unknown> : root;
+  const id = user.customer_id ?? user.customerId;
+  const frontierId = (typeof id === 'string' || typeof id === 'number') && String(id).trim()
+    ? String(id).trim() : null;
+  const platform = normalizePlatform(user.platform) ?? normalizePlatform(root.platform);
+  if (!frontierId && !platform) return null;
+  return {
+    frontierId,
+    email: typeof user.email === 'string' ? user.email : null,
+    platform,
+  };
+}
+
 /**
  * Узнать владельца токена через `GET /me`.
  *
@@ -416,6 +393,7 @@ export interface FrontierIdentity {
  * привязку она рвать не должна.
  */
 export async function fetchFrontierIdentity(accessToken: string): Promise<FrontierIdentity | null> {
+  let identity: FrontierIdentity | null = null;
   try {
     const res = await fetch(FRONTIER_ME_URL, {
       headers: {
@@ -426,21 +404,20 @@ export async function fetchFrontierIdentity(accessToken: string): Promise<Fronti
       cache: 'no-store',
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const user = (data && typeof data === 'object' && 'usr' in data
-      ? (data as { usr: Record<string, unknown> }).usr
-      : data) as Record<string, unknown> | null;
-    if (!user || typeof user !== 'object') return null;
-
-    const id = user.customer_id ?? user.customerId ?? null;
-    return {
-      frontierId: id === null || id === undefined ? null : String(id),
-      email: typeof user.email === 'string' ? user.email : null,
-      platform: typeof user.platform === 'string' ? user.platform : null,
-    };
+    if (res.ok) identity = parseFrontierIdentity(await res.json());
   } catch {
-    return null;
+    // /me может быть недоступен или отдавать только customer_id.
   }
+  if (identity?.frontierId && identity.platform) return identity;
+
+  const decoded = await decodeFrontierToken(accessToken);
+  const fallback = decoded.ok ? parseFrontierIdentity(decoded.payload) : null;
+  if (!fallback) return identity;
+  // Не смешиваем данные разных владельцев даже при неожиданном ответе Frontier.
+  if (identity?.frontierId && fallback.frontierId && identity.frontierId !== fallback.frontierId) return identity;
+  return {
+    frontierId: identity?.frontierId ?? fallback.frontierId,
+    email: identity?.email ?? fallback.email,
+    platform: identity?.platform ?? fallback.platform,
+  };
 }

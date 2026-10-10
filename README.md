@@ -48,7 +48,9 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   продлевается расписанием и не умирает за 25 дней простоя приложения. Refresh-токен одноразовый: параллельные
   синки не ломают друг друга (сериализация + сверка строки), сайт не принимает от Helper'а устаревшую копию
   токенов, а `GET /api/capi/token` продлевает access-токен сам. Пилоты Legacy-галактики читаются с
-  `legacy-companion.orerve.net`.
+  `legacy-companion.orerve.net`. Отказ CAPI в правах (`400`) после подтверждённого входа через EGS/Steam
+  сохраняет OAuth: переподключение предлагается только при реальном несовпадении платформ или отзыве токена,
+  а обычный Bad Request не выдаётся за отсутствие игры — [CAPI-ENTITLEMENT-FIX.md](CAPI-ENTITLEMENT-FIX.md).
   Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md), выбор платформы и общий токен —
   [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md), стабильность всех видов подключения и защита
   источника сводки пилота — [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)

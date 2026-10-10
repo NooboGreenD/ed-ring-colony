@@ -113,17 +113,19 @@ class UserAgentTests(unittest.TestCase):
 
 
 class CapiErrorDescriptionTests(unittest.TestCase):
-    def test_400_about_purchase_explains_the_wrong_account(self):
+    def test_400_about_purchase_explains_the_capi_entitlement_failure(self):
         message, hint = describe_capi_error(
             400, "Please Visit the store to purchase Elite: Dangerous.", "/profile")
-        self.assertIn("не видит купленную Elite Dangerous", message)
+        self.assertIn("не подтвердил доступ к Elite Dangerous", message)
         self.assertIn("Steam", hint)
         self.assertIn("Epic", hint)
 
-    def test_plain_400_mentions_platform_and_the_epic_bug(self):
+    def test_plain_400_does_not_claim_that_the_game_was_not_purchased(self):
         message, hint = describe_capi_error(400, "", "/profile")
         self.assertIn("400", message)
         self.assertIn("Epic", hint)
+        self.assertNotIn("куплен", message)
+        self.assertNotIn("переподключ", hint)
 
     def test_known_statuses_are_translated(self):
         self.assertIn("техобслуживании", describe_capi_error(418)[0])
@@ -167,7 +169,7 @@ class CapiRequestTests(unittest.TestCase):
         self.assertEqual(exc.endpoint, "/profile")
         self.assertIn("Elite Dangerous", str(exc))
         self.assertIn("Steam", exc.hint)
-        self.assertTrue(exc.needs_relink)
+        self.assertFalse(exc.needs_relink, "CAPI 400 не отзывает авторизацию OAuth")
 
     def test_400_on_live_falls_back_to_the_legacy_galaxy(self):
         hosts = []
@@ -195,7 +197,7 @@ class CapiRequestTests(unittest.TestCase):
                 CompanionClient(self.auth).get_profile()
 
         self.assertEqual(ctx.exception.host, CAPI_BASE)
-        self.assertIn("не видит купленную", str(ctx.exception))
+        self.assertIn("не подтвердил доступ", str(ctx.exception))
 
     def test_maintenance_is_not_a_broken_link(self):
         with mock.patch.object(companion_api.requests, "get",
@@ -248,6 +250,8 @@ class VerifyLinkTests(unittest.TestCase):
         назвать платформу, которой Frontier выдал токен, и объяснить про
         оставшуюся сессию на auth.frontierstore.net."""
 
+        self.auth.audience = "epic"
+
         def fake_get(url, headers=None, timeout=None):
             if "/me" in url:
                 return _Resp(200, {"platform": "frontier"})
@@ -260,6 +264,96 @@ class VerifyLinkTests(unittest.TestCase):
         self.assertEqual(result["platform"], "frontier")
         self.assertIn("frontier", result["hint"])
         self.assertIn("auth.frontierstore.net", result["hint"])
+        self.assertEqual(result["reason"], "platform_not_entitled")
+        self.assertTrue(result["needsReauth"])
+
+    def test_correct_epic_or_steam_keeps_authorization_and_does_not_blame_email_login(self):
+        for platform in ("epic", "steam", "frontier"):
+            with self.subTest(platform=platform):
+                self.auth.audience = platform
+                self.auth.update(audience=platform, refresh_token="refresh-kept")
+
+                def fake_get(url, headers=None, timeout=None):
+                    if url == companion_api.ME_URL:
+                        return _Resp(200, {"usr": {"customer_id": 777, "platform": platform}})
+                    return _Resp(400, None, "Please Visit the store to purchase Elite: Dangerous.")
+
+                with mock.patch.object(companion_api.requests, "get", side_effect=fake_get), \
+                     mock.patch.object(companion_api.requests, "post") as post:
+                    result = CompanionClient(self.auth).verify()
+
+                self.assertFalse(result["ok"], "нет ложного зелёного статуса")
+                self.assertFalse(result["needsReauth"])
+                self.assertEqual(result["reason"], "entitlement_unavailable")
+                self.assertEqual(result["platform"], platform)
+                self.assertIn("Авторизация сохранена", result["hint"])
+                self.assertNotRegex(result["hint"], r"войдите кнопкой|выйдите из|переподключ")
+                self.assertEqual(self.auth.load()["refresh_token"], "refresh-kept")
+                self.assertEqual(self.auth.status()["platform"], platform)
+                post.assert_not_called()
+
+    def test_generic_400_does_not_check_platform_or_claim_game_ownership(self):
+        urls = []
+
+        def fake_get(url, **kwargs):
+            urls.append(url)
+            return _Resp(400, None, "Bad Request: invalid query")
+
+        with mock.patch.object(companion_api.requests, "get", side_effect=fake_get):
+            result = CompanionClient(self.auth).verify()
+        self.assertEqual(result["reason"], "profile_unavailable")
+        self.assertFalse(result["needsReauth"])
+        self.assertEqual(result["kind"], "server")
+        self.assertIn("invalid query", result["detail"])
+        self.assertNotIn("Elite Dangerous", result["error"])
+        self.assertTrue(all("/profile" in url for url in urls))
+
+    def test_decode_fallback_confirms_epic_when_me_is_incomplete(self):
+        self.auth.update(audience="epic")
+        calls = []
+
+        def fake_get(url, headers=None, timeout=None):
+            calls.append((url, headers))
+            if url == companion_api.ME_URL:
+                return _Resp(200, {"customer_id": 777})
+            if url == companion_api.DECODE_URL:
+                return _Resp(200, {"usr": {"customer_id": 777, "platform": "EGS"}})
+            return _Resp(400, None, "Please Visit the store to purchase Elite: Dangerous.")
+
+        with mock.patch.object(companion_api.requests, "get", side_effect=fake_get):
+            result = CompanionClient(self.auth).verify()
+        self.assertEqual(result["platform"], "epic")
+        self.assertFalse(result["needsReauth"])
+        self.assertEqual(result["reason"], "entitlement_unavailable")
+        decode_calls = [headers for url, headers in calls if url == companion_api.DECODE_URL]
+        self.assertEqual(decode_calls[0]["Authorization"], "Bearer tok")
+
+    def test_unknown_platform_does_not_prove_wrong_login(self):
+        self.auth.update(audience="epic")
+        with mock.patch.object(companion_api.requests, "get", return_value=_Resp(
+                400, None, "Please Visit the store to purchase Elite: Dangerous.")):
+            result = CompanionClient(self.auth).verify()
+        self.assertEqual(result["reason"], "entitlement_unavailable")
+        self.assertFalse(result["needsReauth"])
+        self.assertIsNone(result["platform"])
+        self.assertIn("не доказательство", result["hint"])
+
+    def test_retry_after_entitlement_failure_works_with_the_same_tokens(self):
+        self.auth.update(audience="epic", refresh_token="refresh-kept")
+        with mock.patch.object(companion_api.requests, "get", return_value=_Resp(
+                400, None, "Please Visit the store to purchase Elite: Dangerous.")):
+            failed = CompanionClient(self.auth).verify()
+        self.assertFalse(failed["ok"])
+        with mock.patch.object(companion_api.requests, "get", return_value=_Resp(
+                200, {"commander": {"name": "Hunter", "credits": 42}})), \
+             mock.patch.object(companion_api.requests, "post") as post:
+            success = CompanionClient(self.auth).verify()
+        self.assertTrue(success["ok"])
+        self.assertEqual(self.auth.load()["access_token"], "tok")
+        self.assertEqual(self.auth.load()["refresh_token"], "refresh-kept")
+        self.assertEqual(self.auth.status()["reason"], "")
+        self.assertEqual(self.auth.status()["error"], "")
+        post.assert_not_called()
 
     def test_empty_profile_is_not_a_success(self):
         with mock.patch.object(companion_api.requests, "get",
@@ -480,6 +574,35 @@ class AppDossierFlowTests(unittest.TestCase):
         })
         self.assertEqual(self.app._pilot_stats["mercenary_coins"], 5900)
         self.assertEqual(self.app._pilot_stats["credits"], 12345678)
+
+    def test_pending_entitlement_is_shared_with_the_site_without_uploading_empty_stats(self):
+        self.app.capi_auth.update(audience="epic", refresh_token="refresh-kept")
+        self._run_fetch(_Resp(400, None, "Please Visit the store to purchase Elite: Dangerous."))
+        self.app.api.push_capi_tokens.assert_called_once()
+        payload = self.app.api.push_capi_tokens.call_args.args[0]
+        self.assertEqual(payload["audience"], "epic")
+        self.assertEqual(payload["refresh_token"], "refresh-kept")
+        self.app.api.upload_pilot_stats.assert_not_called()
+        text = self.app._capi_set_status.call_args.args[0]
+        self.assertIn("Авторизация сохранена", text)
+        self.assertNotIn("войдите кнопкой", text)
+
+    def test_epic_selection_is_not_silently_replaced_by_frontier_site_tokens(self):
+        self.app.capi_auth.audience = "epic"
+        self.app.api.fetch_capi_tokens.return_value = {"ok": True, "tokens": {
+            "access_token": "site-frontier", "refresh_token": "site-refresh", "platform": "frontier"}}
+        self.assertFalse(self.app._capi_adopt_site_tokens())
+        self.assertEqual(self.app.capi_auth.load()["access_token"], "tok")
+        self.assertEqual(self.app.capi_auth.audience, "epic")
+
+    def test_site_tokens_keep_selected_audience_separate_from_confirmed_platform(self):
+        self.app.capi_auth.audience = DEFAULT_AUDIENCE
+        self.app.api.fetch_capi_tokens.return_value = {"ok": True, "tokens": {
+            "access_token": "site-epic", "refresh_token": "site-refresh", "platform": "epic"}}
+        self.assertTrue(self.app._capi_adopt_site_tokens())
+        tokens = self.app.capi_auth.load()
+        self.assertEqual(tokens["audience"], DEFAULT_AUDIENCE)
+        self.assertEqual(tokens["platform"], "epic")
 
     def test_dead_refresh_adopts_site_tokens_and_retries(self):
         """Свежий токен умирает за 25 дней: приложение берёт копию с сайта,

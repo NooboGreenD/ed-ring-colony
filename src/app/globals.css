@@ -4481,6 +4481,7 @@ html[data-hud-effect="glow"]::before {
 }
 
 .capi-status-connected,
+.capi-status-pending,
 .capi-status-broken {
   display: inline-flex;
   align-items: center;
@@ -4492,6 +4493,7 @@ html[data-hud-effect="glow"]::before {
 }
 
 .capi-status-connected { color: var(--green); }
+.capi-status-pending { color: var(--orange); }
 .capi-status-broken { color: var(--red); }
 
 .capi-dot {

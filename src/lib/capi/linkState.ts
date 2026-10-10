@@ -149,6 +149,8 @@ export type CapiLinkReason =
   | 'profile_empty'
   | 'profile_save_failed'
   | 'platform_not_entitled'
+  | 'entitlement_unavailable'
+  | 'token_rejected'
   | 'capi_maintenance'
   | 'already_linked_elsewhere'
   | 'unknown';

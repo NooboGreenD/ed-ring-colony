@@ -12,6 +12,7 @@
 // реально нужно сделать.
 
 import type { CapiLinkReason } from './linkState.ts';
+import { ENTITLEMENT_RECOVERY_HINT } from './entitlement.ts';
 
 export interface CapiReasonText {
   title: string;
@@ -77,13 +78,20 @@ const REASONS: Record<CapiLinkReason, CapiReasonText> = {
     retryAuth: false,
   },
   platform_not_entitled: {
-    title: 'Игра не найдена у выбранного аккаунта',
-    hint: 'Frontier выдал токен учётки, за которой не числится Elite Dangerous. '
-      + 'Переподключите аккаунт, выбрав платформу, где куплена игра (Steam или Epic Games Store, EGS). '
-      + 'Важно: на странице входа Frontier нужно нажать кнопку Steam/Epic, а не входить почтой — '
-      + 'если кнопки нет, сначала выйдите из аккаунта на auth.frontierstore.net '
-      + '(или откройте приватное окно браузера): оставшаяся сессия почтой сама подставляет '
-      + 'frontier-учётку вместо выбранной платформы.',
+    title: 'Платформа токена не совпала с выбранной',
+    hint: 'Frontier подтвердил другую платформу токена. Выйдите из аккаунта на auth.frontierstore.net '
+      + '(или начните подключение в приватном окне) и выберите способ входа своей платформы. '
+      + 'Для Steam/Epic используйте кнопку магазина, а не почту.',
+    retryAuth: true,
+  },
+  entitlement_unavailable: {
+    title: 'Авторизация сохранена, но CAPI не подтвердил доступ к игре',
+    hint: ENTITLEMENT_RECOVERY_HINT,
+    retryAuth: false,
+  },
+  token_rejected: {
+    title: 'Frontier отклонил сохранённый токен',
+    hint: 'Доступ отозван или refresh-токен истёк. Подключите аккаунт заново. Это ошибка авторизации, а не отсутствие купленной игры.',
     retryAuth: true,
   },
   capi_maintenance: {

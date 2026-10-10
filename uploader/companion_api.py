@@ -65,6 +65,7 @@ import hashlib
 import http.server
 import json
 import os
+import re
 import secrets
 import socket
 import threading
@@ -147,6 +148,14 @@ def capi_user_agent(version: str = "") -> str:
     return f"EDCD-ColonialHelper-{cleaned or '1.0'}"
 
 
+def normalize_platform(value) -> Optional[str]:
+    """Только подтверждённая одиночная платформа, неизвестное остаётся None."""
+    raw = str(value or "").strip().lower()
+    platform = {"egs": "epic", "epicgames": "epic", "epic-games": "epic",
+                "epic games store": "epic", "frontierstore": "frontier"}.get(raw, raw)
+    return platform if platform in KNOWN_AUDIENCES else None
+
+
 def normalize_audience(value) -> str:
     """Нормализовать выбор платформы в параметр `audience`.
 
@@ -155,6 +164,9 @@ def normalize_audience(value) -> str:
     отбрасываются, порядок и дубли — чистятся.
     """
     raw = str(value or "").strip().lower()
+    single = normalize_platform(raw)
+    if single:
+        return single
     if not raw or raw in ("auto", "all", "any"):
         return DEFAULT_AUDIENCE
     aliases = {
@@ -251,64 +263,89 @@ class CompanionAuthError(Exception):
     """Ошибка авторизации или запроса к CAPI.
 
     Помимо текста несёт разобранную причину: HTTP-код, эндпоинт и `hint` —
-    что пилоту делать. UI показывает `hint` отдельной строкой, иначе человек
-    видит только «HTTP 400» и не понимает, что выбрал не ту платформу.
+    что пилоту делать. UI показывает `hint` отдельно: HTTP 400 сам по себе
+    не доказывает отсутствие игры или неверный выбор платформы.
     """
 
     def __init__(self, message: str, status: int = 0, endpoint: str = "",
-                 hint: str = "", detail: str = "", host: str = ""):
+                 hint: str = "", detail: str = "", host: str = "", kind: str = ""):
         super().__init__(message)
         self.status = int(status or 0)
         self.endpoint = str(endpoint or "")
         self.hint = str(hint or "")
-        self.detail = str(detail or "")
+        self.detail = str(detail or "")[:300]
         self.host = str(host or "")
+        self.kind = kind or ("no_entitlement" if self.status == 400
+                             and self.endpoint != "/token" and is_no_entitlement_response(detail)
+                             else "unauthorized" if self.status in (401, 403, 422) else "server")
 
     @property
     def needs_relink(self) -> bool:
         """Нужна ли повторная авторизация (а не «подождать и повторить»)."""
-        return self.status in (400, 401, 403, 422)
+        # CAPI 400 не означает отозванный OAuth, даже если проверка прав не прошла.
+        return self.status in (401, 403, 422) or (self.endpoint == "/token" and self.status == 400)
 
 
-#: Фразы Frontier в теле ответа 400, означающие «этот аккаунт не владеет игрой».
-_NO_GAME_MARKERS = ("purchase", "not own", "no game", "store to purchase")
-
-#: Подсказка про платформу — самая частая причина 400.
-_WRONG_PLATFORM_HINT = (
-    "Скорее всего, вход выполнен не той учётной записью. Если игра куплена в "
-    "Steam или Epic Games Store (EGS), нажмите «Отключить», выберите свою "
-    "платформу в списке и подключитесь заново — на странице Frontier нужно "
-    "войти кнопкой Steam/Epic, "
-    "а не почтой. Проверить связку можно на user.frontierstore.net → Linked "
-    "Thirdparty Accounts."
+NO_ENTITLEMENT_MESSAGE = "CAPI Frontier не подтвердил доступ к Elite Dangerous"
+ENTITLEMENT_RECOVERY_HINT = (
+    "Авторизация сохранена — повторять вход по кругу не нужно. Запустите Elite Dangerous "
+    "из магазина, где куплена игра (Steam или Epic Games Store, EGS), загрузите командира "
+    "и повторите «Обновить досье». Проверьте связь магазина с Frontier на "
+    "user.frontierstore.net → Linked Thirdparty Accounts. Если отказ сохраняется, "
+    "обратитесь в поддержку Frontier."
 )
+
+
+def is_no_entitlement_response(body: str) -> bool:
+    """Обычный Bad Request и ошибка покупки — не одно и то же."""
+    return bool(re.search(
+        r"\b(?:no|missing)[_\s-]entitlement\b"
+        r"|(?:purchase|not own|no game)[\s\S]{0,100}elite\s*:?\s*dangerous"
+        r"|elite\s*:?\s*dangerous[\s\S]{0,100}(?:not owned|not purchased)",
+        str(body or ""), re.IGNORECASE))
+
+
+def assess_capi_entitlement(requested_platform, actual_platform) -> dict:
+    """Повторный вход нужен только при доказанном несовпадении платформ."""
+    actual = normalize_platform(actual_platform)
+    requested = normalize_audience(requested_platform) if requested_platform else None
+    mismatch = bool(actual and requested and actual not in requested.split(","))
+    if mismatch:
+        return {
+            "reason": "platform_not_entitled", "needsReauth": True, "platform": actual,
+            "hint": f"Запрошена платформа: {requested}. Frontier выдал токен платформы «{actual}». "
+                    "Выйдите из аккаунта на auth.frontierstore.net (или откройте ссылку "
+                    "подключения в приватном окне) "
+                    + ("и войдите кнопкой выбранного магазина Steam/Epic, а не почтой."
+                       if normalize_platform(requested) in ("steam", "epic") else
+                       "и выберите способ входа, соответствующий платформе покупки игры."),
+        }
+    return {
+        "reason": "entitlement_unavailable", "needsReauth": False, "platform": actual,
+        "hint": (f"Frontier подтвердил платформу «{actual}». " if actual else
+                 "Frontier не сообщил платформу токена — это не доказательство входа почтой. ")
+                + ENTITLEMENT_RECOVERY_HINT,
+    }
 
 
 def describe_capi_error(status: int, body: str = "", endpoint: str = "") -> Tuple[str, str]:
     """HTTP-код и тело ответа CAPI → (сообщение, подсказка).
 
-    Отдельный разбор нужен потому, что «HTTP 400» у Frontier значит вовсе не
-    «кривой запрос»: чаще всего это токен аккаунта, за которым не числится
-    Elite Dangerous.
+    Для HTTP 400 различаем отказ в правах на игру и обычный Bad Request
+    по телу ответа. Ни один из них сам по себе не требует нового OAuth;
+    выбранную платформу нужно сверять с подтверждённой Frontier.
     """
     text = str(body or "").strip()
-    lowered = text.lower()
     where = f" ({endpoint})" if endpoint else ""
 
     if status == 400:
-        if any(marker in lowered for marker in _NO_GAME_MARKERS):
-            return (
-                "Frontier не видит купленную Elite Dangerous у этого аккаунта "
-                f"(HTTP 400{where})",
-                _WRONG_PLATFORM_HINT,
-            )
+        if is_no_entitlement_response(text):
+            return (f"{NO_ENTITLEMENT_MESSAGE} (HTTP 400{where})", ENTITLEMENT_RECOVERY_HINT)
         return (
-            f"Companion API отклонил запрос: HTTP 400{where}",
-            _WRONG_PLATFORM_HINT
-            + " Если аккаунт привязан к Epic, у Frontier есть известный сбой: "
-              "CAPI отвечает 400 несколько дней после привязки "
-              "(issues.frontierstore.net/issue-detail/21258) — помогает вход в "
-              "игру и повторная авторизация позже.",
+            f"Companion API отклонил запрос: HTTP 400{where}" + (f": {text[:300]}" if text else ""),
+            "Этот ответ сам по себе не означает отсутствие игры или неверный вход через Epic/Steam. "
+            "Авторизация сохранена — повторите запрос позже; при повторении передайте "
+            "код и ответ CAPI в поддержку.",
         )
     if status in (401, 403):
         return (
@@ -398,25 +435,28 @@ class CompanionAuth:
     def mark_verified(self, cmdr: str = "", host: str = "") -> None:
         """Записать, что CAPI реально ответил (привязка не «фиктивная»)."""
         self.update(verified_at=time.time(), verified_cmdr=str(cmdr or ""),
-                    verified_host=str(host or ""), last_error="", last_hint="")
+                    verified_host=str(host or ""), last_error="", last_hint="",
+                    last_reason="", last_status=200, last_detail="")
 
-    def mark_failed(self, error: str, hint: str = "") -> None:
-        """Записать, почему проверка связи не прошла."""
+    def mark_failed(self, error: str, hint: str = "", **diagnostics) -> None:
+        """Записать отказ CAPI, не удаляя рабочую пару OAuth."""
         self.update(last_error=str(error or ""), last_hint=str(hint or ""),
-                    last_error_at=time.time())
+                    last_error_at=time.time(), **diagnostics)
 
     def status(self) -> dict:
         """Состояние привязки для UI: есть ли токен и подтверждён ли он."""
         tokens = self.load()
         return {
             "linked": bool(tokens.get("access_token")),
-            "verified": bool(tokens.get("verified_at")),
+            "verified": bool(tokens.get("verified_at")) and not tokens.get("last_error"),
             "verified_at": float(tokens.get("verified_at") or 0),
             "cmdr": str(tokens.get("verified_cmdr") or ""),
             "authorized_at": float(tokens.get("obtained_at") or tokens.get("saved_at") or 0),
             "audience": str(tokens.get("audience") or self.audience),
             "error": str(tokens.get("last_error") or ""),
             "hint": str(tokens.get("last_hint") or ""),
+            "platform": normalize_platform(tokens.get("platform")),
+            "reason": str(tokens.get("last_reason") or ""),
         }
 
     # -- авторизация ------------------------------------------------------
@@ -621,7 +661,7 @@ class CompanionClient:
                         hint="Ответ Frontier не разобрать — вероятно, идёт обслуживание.",
                     ) from exc
 
-            body = str(getattr(resp, "text", "") or "")[:300]
+            body = str(getattr(resp, "text", "") or "").replace(token, "[redacted]")
 
             # Legacy-галактика живёт на другом хосте. Если Live отвечает 400/404,
             # пробуем Legacy — для пилота, оставшегося в Horizons 3.8, это
@@ -634,7 +674,8 @@ class CompanionClient:
 
             message, hint = describe_capi_error(status, body, endpoint)
             raise CompanionAuthError(message, status=status, endpoint=endpoint,
-                                     hint=hint, detail=body, host=base)
+                                     hint=hint, detail=body, host=base,
+                                     kind="no_entitlement" if status == 400 and is_no_entitlement_response(body) else "")
 
         raise CompanionAuthError("CAPI: не удалось получить данные", endpoint=endpoint)
 
@@ -659,40 +700,31 @@ class CompanionClient:
         приложение показывало зелёный статус сразу после OAuth, хотя CAPI
         отвечал 400.
 
-        При ошибке «игра не куплена» (HTTP 400) дополнительно спрашиваем
-        `/me`, какой платформой выдан токен. Пилот мог выбрать в приложении
-        EGS, но войти на странице Frontier почтой (или наоборот): без этой
-        проверки подсказка не объясняла, почему «привязка всё равно идёт на
-        основную платформу frontier».
+        При отказе в правах спрашиваем /me (с fallback на /decode).
+        Если выбор EGS подтверждён Frontier, не просим повторять тот же вход:
+        OAuth рабочий, а CAPI пока не подтвердил права на игру.
         """
         try:
             profile = self.get_profile()
         except CompanionAuthError as exc:
             hint = exc.hint
-            platform = None
-            if exc.status == 400:
-                access = str(self.auth.load().get("access_token") or "")
-                if access:
-                    identity = fetch_identity(access) or {}
-                    platform = identity.get("platform") or (identity.get("usr") or {}).get("platform")
-                if platform:
-                    # Ключевая диагностика «выбрал EGS, а привязка всё равно
-                    # frontier»: у Frontier осталась сессия почтой, и вход
-                    # прошёл ею, минуя кнопку платформы.
-                    hint = (
-                        f"{exc.hint}\nFrontier выдал токен платформы «{platform}». "
-                        "Если игра куплена на другой платформе: выйдите из аккаунта "
-                        "на auth.frontierstore.net (или откройте приватное окно "
-                        "браузера) и подключитесь заново, войдя именно кнопкой "
-                        "Steam/Epic, а не почтой."
-                    ) if hint else (
-                        f"Токен выдан платформой «{platform}» — если игра куплена "
-                        "в Steam/Epic, переподключитесь, войдя кнопкой платформы."
-                    )
-            self.auth.mark_failed(str(exc), hint)
+            platform = normalize_platform(self.auth.load().get("platform"))
+            reason = "token_rejected" if exc.needs_relink else "profile_unavailable"
+            needs_reauth = exc.needs_relink
+            if exc.kind == "no_entitlement":
+                tokens = self.auth.load()
+                access = str(tokens.get("access_token") or "")
+                identity = fetch_identity(access) if access else {}
+                advice = assess_capi_entitlement(tokens.get("audience") or self.auth.audience,
+                                                identity.get("platform"))
+                hint, platform = advice["hint"], advice["platform"]
+                reason, needs_reauth = advice["reason"], advice["needsReauth"]
+            self.auth.mark_failed(str(exc), hint, last_reason=reason, last_status=exc.status,
+                                  platform=platform, last_detail=exc.detail)
             return {"ok": False, "error": str(exc), "hint": hint,
                     "status": exc.status, "host": exc.host, "stats": {},
-                    "cmdr": "", "platform": platform}
+                    "cmdr": "", "platform": platform, "reason": reason,
+                    "needsReauth": needs_reauth, "kind": exc.kind, "detail": exc.detail}
 
         stats = profile_to_stats(profile)
         cmdr = str(stats.get("cmdr") or "")
@@ -842,39 +874,54 @@ def profile_to_stats(profile: dict) -> dict:
 
 
 def decode_token(access_token: str) -> dict:
-    """Расшифровать access-токен на сервере Frontier (`/decode`).
-
-    Полезно для проверки «чей это токен» без собственной регистрации клиента:
-    Frontier сверяет срок и возвращает Frontier ID/e-mail владельца.
-    """
+    """Расшифровать токен на сервере Frontier: GET /decode с Bearer, как в EDMC."""
     if requests is None:
-        raise CompanionAuthError("Нет библиотеки requests: pip install requests")
+        return {}
     try:
-        resp = requests.post(DECODE_URL, data={"token": access_token},
-                             headers={"User-Agent": capi_user_agent()}, timeout=30)
-        return resp.json() if resp.status_code == 200 else {}
+        resp = requests.get(DECODE_URL,
+                            headers={"Authorization": f"Bearer {access_token}",
+                                     "Accept": "application/json",
+                                     "User-Agent": capi_user_agent()}, timeout=30)
+        data = resp.json() if resp.status_code == 200 else {}
+        return data if isinstance(data, dict) else {}
     except (requests.RequestException, ValueError):
         return {}
 
 
-def fetch_identity(access_token: str) -> dict:
-    """Кто владелец токена (`/me`): платформа, e-mail, имя.
+def parse_identity(data) -> dict:
+    """Нормализовать /me и {usr: …} из /decode, не подставляя выбранную платформу."""
+    if not isinstance(data, dict):
+        return {}
+    user = data["usr"] if isinstance(data.get("usr"), dict) else data
+    raw_id = user.get("customer_id", user.get("customerId"))
+    frontier_id = str(raw_id).strip() if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool) else None
+    platform = normalize_platform(user.get("platform")) or normalize_platform(data.get("platform"))
+    if not frontier_id and not platform:
+        return {}
+    return {"customer_id": frontier_id or None, "platform": platform,
+            "email": user.get("email") if isinstance(user.get("email"), str) else None}
 
-    Нужен для диагностики «фиктивной» привязки: если CAPI отвечает 400, а
-    `/me` показывает `platform: frontier` у пилота со Steam — видно, что вход
-    выполнен не той учёткой.
-    """
+
+def fetch_identity(access_token: str) -> dict:
+    """Проверенная платформа; /decode — запасной путь, если /me неполон."""
     if requests is None:
         return {}
+    identity = {}
     try:
         resp = requests.get(ME_URL,
                             headers={"Authorization": f"Bearer {access_token}",
                                      "Accept": "application/json",
-                                     "User-Agent": capi_user_agent()},
-                            timeout=30)
-        if int(getattr(resp, "status_code", 0) or 0) != 200:
-            return {}
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
+                                     "User-Agent": capi_user_agent()}, timeout=30)
+        if int(getattr(resp, "status_code", 0) or 0) == 200:
+            identity = parse_identity(resp.json())
     except (requests.RequestException, ValueError):
-        return {}
+        pass
+    if identity.get("customer_id") and identity.get("platform"):
+        return identity
+    fallback = parse_identity(decode_token(access_token))
+    if not fallback:
+        return identity
+    if (identity.get("customer_id") and fallback.get("customer_id")
+            and identity["customer_id"] != fallback["customer_id"]):
+        return identity
+    return {key: identity.get(key) or fallback.get(key) for key in ("customer_id", "platform", "email")}

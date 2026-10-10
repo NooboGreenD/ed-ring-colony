@@ -179,7 +179,8 @@ const PROFILE_JSON = {
   ships: { 4: { id: 4, name: 'Python', shipName: 'Mule' } },
 };
 
-function fakeFrontier({ platform = 'frontier', customerId = '777', refresh = null } = {}) {
+function fakeFrontier({ platform = 'frontier', customerId = '777', refresh = null, profileStatus = 200,
+  profileError = 'Please Visit the store to purchase Elite: Dangerous.' } = {}) {
   const calls = [];
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -194,7 +195,9 @@ function fakeFrontier({ platform = 'frontier', customerId = '777', refresh = nul
       return new Response(JSON.stringify({ customer_id: customerId, email: 'cmdr@example.test', platform }), { status: 200 });
     }
     if (url.includes('/profile')) {
-      return new Response(JSON.stringify(PROFILE_JSON), { status: 200 });
+      return profileStatus === 200
+        ? new Response(JSON.stringify(PROFILE_JSON), { status: 200 })
+        : new Response(profileError, { status: profileStatus });
     }
     return new Response('{}', { status: 200 });
   };
@@ -441,6 +444,108 @@ maybe('GET/POST: без авторизации — 401', async () => {
       refresh_token: 'helper-refresh-token-0123456789',
     });
     assert.equal(post.status, 401);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const FRESH_HELPER_PAIR = {
+  token: HELPER_TOKEN,
+  access_token: 'helper-access-token-0123456789',
+  refresh_token: 'helper-refresh-token-0123456789',
+  audience: 'epic',
+  expires_in: 14400,
+};
+
+maybe('POST: правильный EGS при отказе CAPI сохраняется и доступен Helper через GET', async () => {
+  const { mod, dir } = await buildRoute();
+  const frontier = fakeFrontier({ platform: 'epic', profileStatus: 400 });
+  try {
+    seedApiToken(mod);
+    const res = await postTokens(mod, { ...FRESH_HELPER_PAIR, obtained_at: Date.now() / 1000 });
+    const json = await res.json();
+    assert.equal(res.status, 200, 'OAuth сохранён, профиль пока недоступен');
+    assert.equal(json.synced, false);
+    assert.equal(json.needsReauth, false);
+    assert.equal(json.reason, 'entitlement_unavailable');
+    assert.equal(json.platform, 'epic');
+    assert.equal(json.status, 400);
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+    const get = await mod.token.GET(new Request(`https://colony.test/api/capi/token?token=${HELPER_TOKEN}`));
+    assert.equal(get.status, 200);
+    assert.equal((await get.json()).tokens.access_token, FRESH_HELPER_PAIR.access_token);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST: фактический Frontier вместо выбранного Epic не становится зелёной привязкой', async () => {
+  const { mod, dir } = await buildRoute();
+  const frontier = fakeFrontier({ platform: 'frontier', profileStatus: 400 });
+  try {
+    seedApiToken(mod);
+    const res = await postTokens(mod, { ...FRESH_HELPER_PAIR, obtained_at: Date.now() / 1000 });
+    const json = await res.json();
+    assert.equal(json.synced, false);
+    assert.equal(json.needsReauth, true);
+    assert.equal(json.reason, 'platform_not_entitled');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, false);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST: выбранный audience не подставляется вместо неизвестной платформы токена', async () => {
+  const { mod, dir } = await buildRoute();
+  const frontier = fakeFrontier({ platform: null, profileStatus: 400 });
+  try {
+    seedApiToken(mod);
+    const res = await postTokens(mod, { ...FRESH_HELPER_PAIR, obtained_at: Date.now() / 1000 });
+    const json = await res.json();
+    assert.equal(json.reason, 'entitlement_unavailable');
+    assert.equal(json.needsReauth, false);
+    assert.equal(json.platform, null);
+    assert.equal(mod.db.tables.capi_tokens[0].platform, null);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST: смена Frontier → EGS у того же customer_id не блокируется сравнением expiry', async () => {
+  const { mod, dir } = await buildRoute();
+  const frontier = fakeFrontier({ platform: 'epic' });
+  try {
+    seedApiToken(mod);
+    seedBinding(mod, { expiresAt: new Date(Date.now() + 3 * HOUR).toISOString() });
+    const res = await postTokens(mod, { ...FRESH_HELPER_PAIR, expires_in: 3600, obtained_at: Date.now() / 1000 });
+    const json = await res.json();
+    assert.equal(json.stale, undefined);
+    assert.equal(json.synced, true);
+    assert.equal(mod.db.tables.capi_tokens[0].platform, 'epic');
+    assert.equal(mod.db.tables.capi_tokens[0].access_token, FRESH_HELPER_PAIR.access_token);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('POST: новая авторизация восстанавливает неактивную привязку даже при коротком TTL', async () => {
+  const { mod, dir } = await buildRoute();
+  const frontier = fakeFrontier({ platform: 'epic' });
+  try {
+    seedApiToken(mod);
+    seedBinding(mod, { expiresAt: new Date(Date.now() + 3 * HOUR).toISOString(), active: false });
+    mod.db.tables.capi_tokens[0].platform = 'epic';
+    const res = await postTokens(mod, { ...FRESH_HELPER_PAIR, expires_in: 3600, obtained_at: Date.now() / 1000 });
+    const json = await res.json();
+    assert.equal(json.stale, undefined);
+    assert.equal(json.synced, true);
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+    assert.equal(mod.db.tables.capi_tokens[0].access_token, FRESH_HELPER_PAIR.access_token);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });

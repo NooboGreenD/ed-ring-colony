@@ -6,7 +6,7 @@ import { authFromRequest } from '@/lib/supabaseServer';
 import { fetchFrontierIdentity } from '@/lib/capi/oauth';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
 import { capiSession } from '@/lib/capi/session';
-import { syncCapiPilot } from '@/lib/capi/syncPilot';
+import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -182,7 +182,7 @@ export async function POST(req: Request) {
     // она проходит.
     const { data: existing } = await svc
       .from('capi_tokens')
-      .select('expires_at, frontier_id')
+      .select('expires_at, frontier_id, platform, is_active')
       .eq('user_id', userId)
       .maybeSingle();
     if (existing?.expires_at) {
@@ -190,7 +190,12 @@ export async function POST(req: Request) {
       const sameAccount = !existing.frontier_id
         || !identity?.frontierId
         || existing.frontier_id === identity.frontierId;
-      if (sameAccount && Number.isFinite(existingExpiry) && existingExpiry >= expiresAtMs) {
+      // У того же customer_id Frontier- и Epic-токены не взаимозаменяемы.
+      // Не называем новую авторизацию EGS «старой» из-за более короткого TTL,
+      // и не блокируем восстановление ранее ошибочно отключённой привязки.
+      const samePlatform = !existing.platform || !identity?.platform || existing.platform === identity.platform;
+      if (sameAccount && samePlatform && existing.is_active !== false
+        && Number.isFinite(existingExpiry) && existingExpiry >= expiresAtMs) {
         return NextResponse.json({ ok: true, synced: false, stale: true, reason: 'site_tokens_newer' });
       }
     }
@@ -207,8 +212,8 @@ export async function POST(req: Request) {
         frontier_id: identity?.frontierId ?? null,
         scope: 'auth capi',
         is_active: true,
-        platform: identity?.platform
-          ?? (typeof body.audience === 'string' && body.audience.trim() ? body.audience.trim() : null),
+        // Не подменяем фактическую платформу выбором пользователя.
+        platform: identity?.platform ?? null,
         linked_at: now.toISOString(),
         last_error: null,
         last_error_at: null,
@@ -228,20 +233,37 @@ export async function POST(req: Request) {
     // событий колонизации и так не бывает (source_hash).
     let cmdrName: string | null = null;
     let synced = false;
+    let failure: Record<string, unknown> = {};
     try {
       const sync = await syncCapiPilot(svc, userId, {
         access_token: accessToken,
         refresh_token: refreshToken,
         expires_at: new Date(expiresAtMs).toISOString(),
-      }, { skipJournal: true });
+      }, {
+        skipJournal: true,
+        identity,
+        requestedPlatform: typeof body.audience === 'string' ? body.audience : null,
+      });
       cmdrName = sync.cmdrName;
       synced = sync.ok;
+      if (!sync.ok) {
+        failure = {
+          error: sync.error,
+          needsReauth: sync.needsReauth,
+          reason: sync.reason,
+          status: sync.httpStatus,
+          kind: sync.errorKind,
+          platform: sync.platform,
+          detail: sync.detail,
+        };
+        if (sync.needsReauth) await markCapiTokenBroken(svc, userId, sync.error || 'Frontier отклонил токен');
+      }
       for (const item of sync.warnings) console.warn('[CAPI Token POST]', item);
     } catch (syncError) {
       console.warn('[CAPI Token POST] first sync skipped:', (syncError as Error).message);
     }
 
-    return NextResponse.json({ ok: true, synced, cmdr: cmdrName });
+    return NextResponse.json({ ok: true, synced, cmdr: cmdrName, ...failure });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed';
     console.error('[CAPI Token POST]', message);
