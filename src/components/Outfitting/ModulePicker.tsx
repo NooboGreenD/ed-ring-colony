@@ -28,7 +28,7 @@ import { specialsForGroup } from '@/lib/outfitting/specials';
 import { isWeapon, weaponMetrics } from '@/lib/outfitting/analysis';
 import { moduleSpecValues, specName, type SpecSection, type SpecValue } from '@/lib/outfitting/specs';
 import { blueprintLabel, moduleLabel } from '@/lib/outfitting/build';
-import { groupName } from '@/lib/outfitting/i18n';
+import { catalogGroupName } from '@/lib/outfitting/i18n';
 import { mercBlueprintsForGroup } from '@/lib/outfitting/merccoin';
 import {
   ORIGIN_COLORS,
@@ -314,7 +314,7 @@ export default function ModulePicker({
     return [...map.entries()]
       .map(([grp, count]) => ({
         id: grp,
-        name: groupName(locale, grp, data.groups[grp]?.name),
+        name: catalogGroupName(data, locale, grp),
         count,
       }))
       .sort((a, b) => a.name.localeCompare(b.name, locale));
@@ -331,7 +331,7 @@ export default function ModulePicker({
       if (selectedMount !== 'all' && module.mount !== selectedMount) return false;
       if (q) {
         const label = moduleLabel(data, module, locale).toLowerCase();
-        const grp = groupName(locale, module.grp, data.groups[module.grp]?.name).toLowerCase();
+        const grp = catalogGroupName(data, locale, module.grp).toLowerCase();
         if (!label.includes(q) && !grp.includes(q)) return false;
       }
       return true;
@@ -342,7 +342,7 @@ export default function ModulePicker({
   const groupedModules = useMemo(() => {
     const map = new Map<string, { groupNameText: string; modules: OutfittingModule[] }>();
     for (const module of filteredModules) {
-      const gName = groupName(locale, module.grp, data.groups[module.grp]?.name);
+      const gName = catalogGroupName(data, locale, module.grp);
       if (!map.has(module.grp)) {
         map.set(module.grp, { groupNameText: gName, modules: [] });
       }
@@ -1183,7 +1183,7 @@ export default function ModulePicker({
                         </div>
 
                         <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
-                          {groupName(locale, inspectedModule.grp, data.groups[inspectedModule.grp]?.name)}
+                          {catalogGroupName(data, locale, inspectedModule.grp)}
                           {inspectedModule.mount ? ` · ${mountLabel(inspectedModule.mount)}` : ''}
                           {inspectedModule.pp ? ` · Powerplay: ${inspectedModule.pp}` : ''}
                         </div>

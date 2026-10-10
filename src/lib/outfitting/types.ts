@@ -8,7 +8,7 @@
  */
 
 /** Значение любого поля модуля: числа, строки и распределение урона. */
-export type ModuleValue = number | string | boolean | PreEngineered | Record<string, number>;
+export type ModuleValue = number | string | boolean | PreEngineered | Record<string, number | boolean>;
 
 /** Модуль верфи: id, класс, рейтинг и всё, что о нём знает игра. */
 /**
@@ -91,6 +91,8 @@ export interface Bulkhead {
   thermres: number;
   explres: number;
   causres?: number;
+  /** Архивная броня недоступна для новой установки; индекс старых сборок сохраняется. */
+  archived?: boolean;
 }
 
 /** Слот внутреннего отсека: обычный (число) или особый (военный, посадочный). */
@@ -198,7 +200,9 @@ export interface OutfittingData {
   version: number;
   generatedAt: string;
   source: string;
-  groups: Record<string, { name: string; short?: string; category: 'core' | 'internal' | 'hardpoint' | 'utility' }>;
+  /** Версия административных изменений (исходный справочник остаётся version=1). */
+  catalogRevision?: number;
+  groups: Record<string, { name: string; short?: string; customName?: boolean; category: 'core' | 'internal' | 'hardpoint' | 'utility' }>;
   ships: Record<string, OutfittingShip>;
   modules: Record<string, OutfittingModule[]>;
   blueprints: Record<string, Blueprint>;

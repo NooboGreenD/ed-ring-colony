@@ -1,5 +1,9 @@
 "use client";
 import { useEffect, useState, useRef, useCallback } from "react";
+import dynamic from "next/dynamic";
+import AdminNavigation, { ADMIN_ONLY_TABS, isAdminTab, type AdminTab } from "@/components/Admin/AdminNavigation";
+import adminStyles from "@/components/Admin/AdminShell.module.css";
+
 import { supabase } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { DEFAULT_FOOTER, buildSiteContentPayload } from "@/lib/siteFooter";
@@ -11,12 +15,10 @@ import AuthProvidersTab from "@/components/Admin/AuthProvidersTab";
 import GalaxyCatalogTab from "@/components/Admin/GalaxyCatalogTab";
 import BackupTab from "@/components/Admin/BackupTab";
 import {
-  IconSatellite,
   IconTrash,
   IconMapPin,
   IconBolt,
   IconExternalLink,
-  IconHeadphones,
   IconGlobe,
   IconClock,
   IconSearch
@@ -26,7 +28,7 @@ import SupportAdmin from "@/components/Support/SupportAdmin";
 import BillingDashboard from "@/components/Admin/BillingDashboard";
 import ServerMonitorTab from "@/components/Admin/ServerMonitorTab";
 import HelperUpdatesTab from "@/components/Admin/HelperUpdatesTab";
-import { IconCoins, IconDatabase, IconLock, IconPackage } from "@/components/Icons";
+const OutfittingAdmin = dynamic(() => import("@/components/Admin/OutfittingAdmin"), { loading: () => <p role="status">Загрузка управления верфью…</p> });
 
 const LANGS = ['ru', 'en', 'de', 'it', 'ko', 'zh', 'ja'];
 const LOCALE_FLAGS: Record<string, string> = { ru: '🇷🇺', en: '🇬🇧', de: '🇩🇪', it: '🇮🇹', ko: '🇰🇷', zh: '🇨🇳', ja: '🇯🇵' };
@@ -74,7 +76,13 @@ function LangInputs({ label, values, onChange, textarea = false, placeholder }: 
 export default function AdminPage() {
   const { t } = useI18n();
   const [role, setRole] = useState<string | null>(null);
-  const [tab, setTab] = useState<'content' | 'manage' | 'route' | 'forum' | 'news' | 'hubs' | 'sync' | 'comments' | 'support' | 'billing' | 'monitor' | 'auth' | 'galaxy' | 'backup' | 'helper'>('billing');
+  const [tab, setTab] = useState<AdminTab>('billing');
+  const selectTab = (next: AdminTab) => {
+    setTab(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', next);
+    window.history.pushState(null, '', url);
+  };
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
@@ -128,12 +136,7 @@ export default function AdminPage() {
       } else {
         // In local development / preview environment without Supabase backend credentials,
         // provide dev admin preview access so the admin dashboard and billing suite can be inspected.
-        const isDev = typeof window !== 'undefined' && (
-          window.location.hostname.includes('e2b.app') ||
-          window.location.hostname === 'localhost' ||
-          window.location.hostname === '127.0.0.1' ||
-          process.env.NODE_ENV !== 'production'
-        );
+        const isDev = process.env.NODE_ENV !== 'production' && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
         if (isDev) {
           setRole('admin');
           setMe({ id: 'preview-user-guest', cmdr_name: 'CMDR Admin (Preview)', role: 'admin' });
@@ -171,22 +174,28 @@ export default function AdminPage() {
         setFooterInaraLangs(pick('footer_inara'));
       }
     } catch {
-      // Fallback for offline/preview
-      setRole('admin');
-      setMe({ id: 'preview-user-guest', cmdr_name: 'CMDR Admin (Preview)', role: 'admin' });
+      // A network/auth failure must never grant production admin access.
+      if (process.env.NODE_ENV !== 'production' && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+        setRole('admin');
+        setMe({ id: 'preview-user-guest', cmdr_name: 'CMDR Admin (Preview)', role: 'admin' });
+      } else setRole('guest');
     }
   };
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const searchParams = new URLSearchParams(window.location.search);
-      const initialTab = searchParams.get('tab');
-      if (initialTab && ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'backup'].includes(initialTab)) {
-        setTab(initialTab as any);
-      }
-    }
-    load();
+    const readTab = () => {
+      const initialTab = new URLSearchParams(window.location.search).get('tab');
+      setTab(isAdminTab(initialTab) ? initialTab : 'billing');
+    };
+    readTab();
+    void load();
+    window.addEventListener('popstate', readTab);
+    return () => window.removeEventListener('popstate', readTab);
   }, []);
+
+  useEffect(() => {
+    if (role && role !== 'admin' && ADMIN_ONLY_TABS.includes(tab)) setTab('billing');
+  }, [role, tab]);
 
   // Перевод через Yandex: сохраняется индексация полей (пустые строки не
   // выкидываются — иначе переводы съезжали на соседние поля), язык оригинала
@@ -240,9 +249,9 @@ export default function AdminPage() {
     }
   }, [t, translateOverwrite]);
 
-  if (role === null) return <main className="card"><p>{t('common.loading')}</p></main>;
+  if (role === null) return <section className="card"><p>{t('common.loading')}</p></section>;
   if (!['admin', 'moderator', 'support_manager'].includes(role))
-    return <main className="card"><p>{t('admin.accessDenied')}</p></main>;
+    return <section className="card"><p>{t('admin.accessDenied')}</p></section>;
 
   // Переводы лежат в колонках `<field>_<lang>`, но читатели (и старая схема БД)
   // смотрят базовую колонку. Пишем и то, и другое: русская колонка становится
@@ -530,29 +539,16 @@ export default function AdminPage() {
   });
 
   return (
-    <main className="card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12, marginBottom: 8 }}>
-        <h1 style={{ margin: 0 }}>{t('admin.title')}</h1>
-        <a href="/m-admin" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', border: '1px solid #e67e22', color: '#e67e22', borderRadius: 2, textDecoration: 'none', fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase' }}>📱 Мобильная админка / Android</a>
-      </div>
-      <div className="tabs">
-        <button className={tab === 'content' ? 'tab tab-active' : 'tab'} onClick={() => setTab('content')}>{t('admin.content')}</button>
-        <button className={tab === 'news' ? 'tab tab-active' : 'tab'} onClick={() => setTab('news')}>{t('admin.news')}</button>
-        <button className={tab === 'manage' ? 'tab tab-active' : 'tab'} onClick={() => setTab('manage')}>{t('admin.manage')}</button>
-        <button className={tab === 'hubs' ? 'tab tab-active' : 'tab'} onClick={() => setTab('hubs')}>{t('admin.hubs')}</button>
-        <button className={tab === 'route' ? 'tab tab-active' : 'tab'} onClick={() => setTab('route')}>{t('admin.route')}</button>
-        <button className={tab === 'sync' ? 'tab tab-active' : 'tab'} onClick={() => setTab('sync')}><IconSatellite size={12} color="#e67e22" /> RavenColonial</button>
-        <button className={tab === 'forum' ? 'tab tab-active' : 'tab'} onClick={() => setTab('forum')}>{t('admin.forum')}</button>
-        <button className={tab === 'comments' ? 'tab tab-active' : 'tab'} onClick={() => setTab('comments')}>{t('admin.comments')}</button>
-        <button className={tab === 'support' ? 'tab tab-active' : 'tab'} onClick={() => setTab('support')}><IconHeadphones size={14} /> {t('admin.support') || 'Техподдержка'}</button>
-        <button className={tab === 'billing' ? 'tab tab-active' : 'tab'} onClick={() => setTab('billing')}><IconCoins size={12} color="#e67e22" /> {t('admin.billing') || 'Биллинг и статистика'}</button>
-        {role === 'admin' && <button className={tab === 'monitor' ? 'tab tab-active' : 'tab'} onClick={() => setTab('monitor')}><IconSatellite size={12} color="#38bdf8" /> Мониторинг</button>}
-        {role === 'admin' && <button className={tab === 'galaxy' ? 'tab tab-active' : 'tab'} onClick={() => setTab('galaxy')} title="Полный каталог систем Spansh: импорт, облако точек для карты"><IconGlobe size={12} color="#e67e22" /> Каталог систем</button>}
-        {role === 'admin' && <button className={tab === 'backup' ? 'tab tab-active' : 'tab'} onClick={() => setTab('backup')} title="Резервная копия базы: раз в неделю, вручную"><IconDatabase size={12} color="#e67e22" /> Бэкапы</button>}
-        {role === 'admin' && <button className={tab === 'auth' ? 'tab tab-active' : 'tab'} onClick={() => setTab('auth')}><IconLock size={12} color="#e67e22" /> Авторизация</button>}
-        {role === 'admin' && <button className={tab === 'helper' ? 'tab tab-active' : 'tab'} onClick={() => setTab('helper')} title="Канал обновлений Colonial Helper: версии и откат"><IconPackage size={12} color="#e67e22" /> Обновления Helper</button>}
-      </div>
-
+    <section className={`card ${adminStyles.shell}`} aria-label="Админ-панель">
+      <header className={adminStyles.header}>
+        <div className={adminStyles.heading}><span>ED Ring Colony / Control center</span><h1>{t('admin.title')}</h1></div>
+        <div className={adminStyles.headerActions}>
+          <div className={adminStyles.actor}><strong>{me?.cmdr_name || 'CMDR'}</strong><small>{role === 'admin' ? 'Администратор' : role === 'moderator' ? 'Модератор' : 'Поддержка'}</small></div>
+          <a href="/m-admin" className={adminStyles.mobileLink}><IconExternalLink size={14} /> Мобильная панель / Android</a>
+        </div>
+      </header>
+      <AdminNavigation tab={tab} role={role} onSelect={selectTab} />
+      <div className={adminStyles.content}>
       {tab === 'content' && (
         <div>
           <h2>{t('admin.manifestTitle')}</h2>
@@ -560,14 +556,14 @@ export default function AdminPage() {
           <LangInputs label={t('admin.title1Label')} values={title1Langs} onChange={(l, v) => setTitle1Langs((p) => ({ ...p, [l]: v }))} />
           <LangInputs label={t('admin.title2Label')} values={title2Langs} onChange={(l, v) => setTitle2Langs((p) => ({ ...p, [l]: v }))} />
           <LangInputs label={t('admin.manifestLabel')} values={manifestLangs} onChange={(l, v) => setManifestLangs((p) => ({ ...p, [l]: v }))} textarea />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={saveContent}>{t('admin.saveManifest')}</button>
+          <div className={adminStyles.legacyActions}>
+            <button className={adminStyles.primaryAction} onClick={saveContent}>{t('admin.saveManifest')}</button>
             <button
               disabled={translating}
               onClick={() => translateFields([kickerLangs, title1Langs, title2Langs, manifestLangs], [setKickerLangs, setTitle1Langs, setTitle2Langs, setManifestLangs])}
-              style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.4)', color: '#a78bfa' }}
+              className={adminStyles.secondaryAction}
             >
-              {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
+              {translating ? t('admin.translating') : <><IconGlobe size={14} /> {t('admin.translateWithYandex')}</>}
             </button>
 <label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
               <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
@@ -582,14 +578,14 @@ export default function AdminPage() {
           <LangInputs label={t('admin.discordLabel')} values={footerDiscordLangs} onChange={(l, v) => setFooterDiscordLangs((p) => ({ ...p, [l]: v }))} placeholder="https://discord.gg/..." />
           <LangInputs label={t('admin.edsmLabel')} values={footerEdsmLangs} onChange={(l, v) => setFooterEdsmLangs((p) => ({ ...p, [l]: v }))} placeholder="https://www.edsm.net/" />
           <LangInputs label={t('admin.inaraLabel')} values={footerInaraLangs} onChange={(l, v) => setFooterInaraLangs((p) => ({ ...p, [l]: v }))} placeholder="https://inara.cz/" />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <button onClick={saveFooter}>{t('admin.saveFooter')}</button>
+          <div className={adminStyles.legacyActions}>
+            <button className={adminStyles.primaryAction} onClick={saveFooter}>{t('admin.saveFooter')}</button>
             <button
               disabled={translating}
               onClick={() => translateFields([footerCopyrightLangs, footerDiscordLangs, footerEdsmLangs, footerInaraLangs], [setFooterCopyrightLangs, setFooterDiscordLangs, setFooterEdsmLangs, setFooterInaraLangs])}
-              style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.4)', color: '#a78bfa' }}
+              className={adminStyles.secondaryAction}
             >
-              {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
+              {translating ? t('admin.translating') : <><IconGlobe size={14} /> {t('admin.translateWithYandex')}</>}
             </button>
 <label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
               <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
@@ -633,15 +629,15 @@ export default function AdminPage() {
               {t('admin.currentCoverHint')} <a href="#" onClick={(e) => { e.preventDefault(); setCurrentCover(null); }} style={{ color: '#e67e22' }}>{t('admin.removeCover')}</a>
             </span>
           )}<br />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-            <button disabled={busy} onClick={saveNews}>{busy ? t('admin.saving') : editingId ? t('admin.saveChanges') : t('admin.publishNews')}</button>
+          <div className={adminStyles.legacyActions}>
+            <button className={adminStyles.primaryAction} disabled={busy} onClick={saveNews}>{busy ? t('admin.saving') : editingId ? t('admin.saveChanges') : t('admin.publishNews')}</button>
             {editingId && <button onClick={resetNewsForm}>{t('admin.cancelEdit')}</button>}
             <button
               disabled={translating || busy}
               onClick={() => translateFields([newsTitleLangs, newsBodyLangs], [setNewsTitleLangs, setNewsBodyLangs])}
-              style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.4)', color: '#a78bfa' }}
+              className={adminStyles.secondaryAction}
             >
-              {translating ? t('admin.translating') : <IconGlobe size={14} /> + ' ' + t('admin.translateWithYandex')}
+              {translating ? t('admin.translating') : <><IconGlobe size={14} /> {t('admin.translateWithYandex')}</>}
             </button>
 <label title={t('admin.translateOverwrite')} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#9ca3af', cursor: 'pointer' }}>
               <input type="checkbox" checked={translateOverwrite} onChange={(e) => setTranslateOverwrite(e.target.checked)} style={{ width: 14, height: 14, accentColor: '#e67e22', minWidth: 0, minHeight: 0 }} />
@@ -656,9 +652,9 @@ export default function AdminPage() {
               <div className="news-date">{new Date(n.published_at).toLocaleString('ru-RU')}{n.author?.cmdr_name ? ' · ' + n.author.cmdr_name : ''}</div>
               <h3>{n.title}</h3>
               <div className="news-body"><MarkdownRenderer content={n.body} /></div>
-              <div style={{ marginTop: 10 }}>
+              <div className={adminStyles.legacyActions}>
                 <button onClick={() => startEdit(n)}>{t('admin.editBtn')}</button>
-                <button onClick={() => removeNews(n.id)}>{t('admin.deleteBtn')}</button>
+                <button className={adminStyles.dangerAction} onClick={() => removeNews(n.id)}>{t('admin.deleteBtn')}</button>
               </div>
             </article>
           ))}
@@ -690,7 +686,7 @@ export default function AdminPage() {
             <input placeholder={t('admin.hubNamePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} style={{ width: 200 }} />
             <input placeholder={t('admin.systemPlaceholder')} value={system} onChange={(e) => setSystem(e.target.value)} style={{ width: 200 }} />
             <input type="number" placeholder={t('admin.orderPlaceholder')} value={order} onChange={(e) => setOrder(+e.target.value)} style={{ width: 90 }} />
-            <button onClick={addHub}>{t('admin.addHub')}</button>
+            <button className={adminStyles.primaryAction} onClick={addHub}>{t('admin.addHub')}</button>
           </div>
           <div className="table-scroll">
             <table>
@@ -716,7 +712,7 @@ export default function AdminPage() {
                       </select>
                     </td>
                     <td>{h.x != null ? `${h.x.toFixed(1)} / ${h.y.toFixed(1)} / ${h.z.toFixed(1)}` : '—'}</td>
-                    <td><button onClick={() => removeHub(h.id)} style={{ fontSize: 11, background: "#e74c3c" }}>{t('admin.deleteBtn')}</button></td>
+                    <td><button className={adminStyles.dangerAction} onClick={() => removeHub(h.id)}>{t('admin.deleteBtn')}</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -735,17 +731,17 @@ export default function AdminPage() {
           <button disabled={routeBusy} onClick={addRouteSystems}>{routeBusy ? t('admin.saving') : t('admin.addToRoute')}</button>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12, marginBottom: 12 }}>
             <button disabled={routeBusy} onClick={resolveRouteCoords} style={{ fontSize: 12 }}>
-              {routeBusy ? <IconClock size={14} /> + ' ' + t('common.loading') : <IconMapPin size={14} /> + ' ' + t('admin.loadCoords')}
+              {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconMapPin size={14} /> {t('admin.loadCoords')}</>}
             </button>
             <button disabled={routeBusy} onClick={syncRouteProgress} style={{ fontSize: 12 }}>
-              {routeBusy ? <IconClock size={14} /> + ' ' + t('common.loading') : <IconBolt size={14} /> + ' ' + t('admin.syncProgress')}
+              {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconBolt size={14} /> {t('admin.syncProgress')}</>}
             </button>
-            <button disabled={routeBusy} onClick={() => setTab('sync')} style={{ fontSize: 12, background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.4)', color: '#a78bfa' }}>
+            <button disabled={routeBusy} onClick={() => selectTab('sync')} className={adminStyles.secondaryAction}>
               <IconSearch size={14} /> {t('admin.extendedSync')}
             </button>
             {role === 'admin' && (
-              <button disabled={routeBusy} onClick={deleteAllRouteSystems} style={{ marginLeft: 'auto', background: '#e74c3c', fontSize: 12 }}>
-                {routeBusy ? <IconClock size={14} /> + ' ' + t('common.loading') : <IconTrash size={14} /> + ' ' + t('admin.deleteRoute')}
+              <button disabled={routeBusy} onClick={deleteAllRouteSystems} className={adminStyles.dangerAction} style={{ marginLeft: 'auto' }}>
+                {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconTrash size={14} /> {t('admin.deleteRoute')}</>}
               </button>
             )}
           </div>
@@ -787,7 +783,7 @@ export default function AdminPage() {
                     <input type="number" min={0} max={100} value={r.progress ?? 0} onChange={(e) => updateRoutePointProgress(r.id, +e.target.value)} style={{ width: 60 }} />
                   </td>
                   <td>{r.x != null ? `${r.x.toFixed(1)} / ${r.y.toFixed(1)} / ${r.z.toFixed(1)}` : '—'}</td>
-                  <td><button onClick={() => removeRouteSystem(r.id)}>{t('admin.deleteBtn')}</button></td>
+                  <td><button className={adminStyles.dangerAction} onClick={() => removeRouteSystem(r.id)}>{t('admin.deleteBtn')}</button></td>
                 </tr>
               ))}</tbody>
             </table>
@@ -815,6 +811,8 @@ export default function AdminPage() {
       {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
       {tab === 'helper' && role === 'admin' && <HelperUpdatesTab />}
-    </main>
+      {tab === 'outfitting' && role === 'admin' && <OutfittingAdmin />}
+      </div>
+    </section>
   );
 }

@@ -148,6 +148,7 @@ export default function BulkheadPicker({
             }}
           >
             {ship.bulkheads.map((entry, index) => {
+              if (entry.archived) return null;
               const isActive = index === bulkhead;
               return (
                 <button

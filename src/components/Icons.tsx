@@ -131,6 +131,8 @@ export const IconClock = (p: IconProps) => wrap(<><circle cx="12" cy="12" r="10"
 /* База данных и диск — используются в Админка → Мониторинг */
 export const IconDatabase = (p: IconProps) => wrap(<><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></>, p);
 export const IconHardDrive = (p: IconProps) => wrap(<><path d="M3 13l2.4-6.2A2 2 0 017.3 5.5h9.4a2 2 0 011.9 1.3L21 13"/><path d="M3 13h18v4a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M7 17h.01M11 17h.01"/></>, p);
+export const IconEdit = (p: IconProps) => wrap(<><path d="M16 3a2.1 2.1 0 013 3L8 17l-4 1 1-4z"/><path d="M14 5l3 3M12 21H3v-9"/></>, p);
+export const IconDownload = (p: IconProps) => wrap(<><path d="M12 3v12M7 10l5 5 5-5M4 16v5h16v-5"/></>, p);
 export const IconSave = (p: IconProps) => wrap(<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8"/></>, p);
 export const IconStore = (p: IconProps) => wrap(<><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/></>, p);
 export const IconCoins = (p: IconProps) => wrap(<><circle cx="8" cy="8" r="6"/><path d="M18 8a6 6 0 010 12"/><path d="M22 8a6 6 0 010 12"/></>, p);

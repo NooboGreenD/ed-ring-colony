@@ -117,6 +117,11 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   связи «кто о ком рассказывает», условие встречи, плата за приглашение, отметки пройденного (в браузере)
   и полный список чертежей каждого инженера с максимальным уровнем — те же данные, что и у верфи,
   поэтому страницы не расходятся (`/outfitting` ↔ `/engineers?engineer=<id>`)
+- **Управление верфью** — `/admin?tab=outfitting`: добавление, редактирование всех полей и заводской инженерии,
+  переименование, копирование, массовое удаление и восстановление модулей; группы и корабельная броня,
+  фильтры, экспорт JSON и журнал действий. Правки хранятся отдельно от игрового справочника в Supabase,
+  исходные ID и индексы архивной брони сохраняются. Админ-панель получила сгруппированную навигацию и
+  адаптивные кнопки/формы в HUD-стиле сайта. Развёртывание и правила — [OUTFITTING-ADMIN.md](OUTFITTING-ADMIN.md).
 - **Forum** — Community discussions with markdown support, reactions, search, and moderation
 - **Wiki** — Full wiki system with categories, tags, revisions, favorites, and colonization guides
 - **Galnet** — Automatic sync of Frontier's Galnet news
