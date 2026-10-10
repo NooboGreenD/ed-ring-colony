@@ -8,7 +8,7 @@
  */
 
 import { STANDARD_GROUPS, findModule, moduleRef } from './calc';
-import { blueprintPrefix, blueprintWord, groupName, mountName } from './i18n';
+import { blueprintPrefix, blueprintWord, catalogGroupName, groupName, mountName } from './i18n';
 import type { OutfittingData, OutfittingModule, ShipBuild } from './types';
 
 /** Группы модулей по разделам — нужны для разбора заводской комплектации. */
@@ -158,7 +158,7 @@ export function moduleLabel(data: OutfittingData, module: OutfittingModule | nul
   if (!module) return '—';
   // Название группы берём из словаря интерфейса, а не из справочника: файл
   // данных собран один раз и только по-русски.
-  const group = groupName(locale, module.grp, data.groups[module.grp]?.name);
+  const group = catalogGroupName(data, locale, module.grp);
   // Имя модуля из Coriolis иногда просто повторяет название группы
   // («Shield Generator») — тогда показываем переведённое название группы, а не
   // английский дубль. Настоящие собственные имена («Advanced Docking

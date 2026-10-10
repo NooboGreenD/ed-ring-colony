@@ -80,6 +80,8 @@ public/data/*
 # Пакеты обновлений Colonial Helper при локальном запуске сервера
 # (на боевом сервере это том /data/uploader).
 data/uploader/
+# Локальные правки справочника верфи (production хранит их в Supabase).
+data/outfitting/
 # Сборочные артефакты пакета: манифест, архив версии, встроенная копия.
 uploader/dist/
 uploader/build/

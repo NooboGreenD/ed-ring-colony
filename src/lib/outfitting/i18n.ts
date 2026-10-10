@@ -1,3 +1,5 @@
+import type { OutfittingData } from './types';
+
 /**
  * Локализация справочника верфи.
  *
@@ -500,6 +502,12 @@ export function bulkheadName(locale: string, name: string | undefined | null): s
 /** Название группы модулей на языке интерфейса. */
 export function groupName(locale: string, id: string, fallback?: string): string {
   return pick(GROUP_NAMES, locale, id) ?? fallback ?? id;
+}
+
+/** Административное переименование имеет приоритет над игровым словарём. */
+export function catalogGroupName(data: OutfittingData, locale: string, id: string): string {
+  const group = data.groups[id];
+  return group?.customName ? group.name : groupName(locale, id, group?.name);
 }
 
 /** Слово чертежа; неизвестное просто разбиваем по заглавным буквам. */

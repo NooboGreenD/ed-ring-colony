@@ -14,7 +14,7 @@
 
 import React, { useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
-import { groupName } from '@/lib/outfitting/i18n';
+import { catalogGroupName } from '@/lib/outfitting/i18n';
 import { MERC_COIN_ITEMS, type MercCoinEntry } from '@/lib/outfitting/merccoin';
 import type { OutfittingData } from '@/lib/outfitting/types';
 import { IconChevronDown, IconChevronRight, IconCoins } from '@/components/Icons';
@@ -24,7 +24,7 @@ function groupLabel(data: OutfittingData, locale: string, entry: MercCoinEntry):
   const group = entry.ref ? entry.ref.split(':')[0] : entry.groups?.[0];
   if (!group) return '';
   if (!data.groups[group]) return group;
-  return groupName(locale, group);
+  return catalogGroupName(data, locale, group);
 }
 
 export default function MercCoinPanel({ data }: { data: OutfittingData }) {

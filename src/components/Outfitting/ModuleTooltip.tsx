@@ -19,7 +19,7 @@
 
 import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useI18n } from '@/lib/i18n/I18nContext';
-import { groupName, mountName } from '@/lib/outfitting/i18n';
+import { catalogGroupName, mountName } from '@/lib/outfitting/i18n';
 import { moduleSpecValues, specName, type SpecSection } from '@/lib/outfitting/specs';
 import { mercEntryFor } from '@/lib/outfitting/merccoin';
 import { ORIGIN_COLORS, moduleOrigins, originLabelKey } from '@/lib/outfitting/origins';
@@ -136,14 +136,14 @@ export default function ModuleTooltip({
       }}
     >
       <div style={{ fontSize: 12.5, fontWeight: 700, color: '#f8fafc', lineHeight: 1.3 }}>
-        {module.name || groupName(locale, module.grp)}
+        {module.name || catalogGroupName(data, locale, module.grp)}
       </div>
       <div style={{ fontSize: 10.5, color: 'var(--muted)', fontFamily: MONO, marginTop: 1 }}>
         {module.class}
         {module.rating}
         {module.mount ? ` · ${mountName(locale, module.mount)}` : ''}
         {' · '}
-        {groupName(locale, module.grp)}
+        {catalogGroupName(data, locale, module.grp)}
       </div>
 
       {origins.length > 0 && (

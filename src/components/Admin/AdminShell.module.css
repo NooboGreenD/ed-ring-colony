@@ -1,0 +1,47 @@
+.shell { min-width: 0; border-radius: 2px; padding: 22px; }
+.header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding-bottom: 20px; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+.heading > span { display: block; color: var(--muted); font: 10px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 2px; margin-bottom: 6px; }
+.heading h1 { font-size: 22px; letter-spacing: 2px; margin: 0; }
+.headerActions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.actor { display: flex; flex-direction: column; gap: 4px; border-left: 2px solid var(--orange); padding-left: 10px; }
+.actor strong { font: 11px ui-monospace, monospace; }
+.actor small { color: var(--muted); font-size: 10px; }
+.mobileLink { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); color: var(--muted); border-radius: 2px; font: 10px ui-monospace, monospace; letter-spacing: 1px; text-transform: uppercase; }
+.mobileLink:hover { border-color: var(--orange); color: var(--orange); background: color-mix(in srgb, var(--orange) 6%, transparent); }
+.navigation { margin-bottom: 26px; }
+.groupNavigation { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.groupButton, .activeGroup, .tabButton, .activeTab { margin: 0; display: inline-flex; align-items: center; gap: 8px; border-radius: 2px; font: 11px ui-monospace, monospace; letter-spacing: 1px; text-transform: uppercase; min-height: 38px; padding: 10px 12px; text-align: left; }
+.groupButton, .activeGroup { min-width: 0; border: 1px solid var(--line); color: var(--muted); background: var(--bg); }
+.groupButton span, .activeGroup span { flex: 1; }
+.groupButton small, .activeGroup small { font-size: 10px; opacity: .65; }
+.activeGroup { border-color: var(--orange); color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, var(--bg)); }
+.groupButton:hover { background: var(--panel-hover); color: var(--text); }
+.tabNavigation { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); padding: 14px 0; }
+.tabButton, .activeTab { background: transparent; border: 1px solid var(--line); color: var(--muted); padding: 7px 12px; }
+.activeTab { border-color: var(--orange); color: var(--orange); }
+.tabButton:hover { background: var(--panel-hover); color: var(--text); }
+.navigation button:focus-visible, .mobileLink:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.content { min-width: 0; }
+.content > div > h2 { font-size: 18px; color: var(--orange); margin-bottom: 18px; }
+.legacyActions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.legacyActions button { margin: 0; min-height: 36px; display: inline-flex; align-items: center; gap: 6px; }
+.primaryAction { border-color: var(--orange); background: var(--orange); color: var(--bg); }
+.primaryAction:hover { background: var(--orange-hover); }
+.secondaryAction { border-color: var(--cyan); color: var(--cyan); background: transparent; }
+.secondaryAction:hover { background: color-mix(in srgb, var(--cyan) 8%, transparent); }
+.dangerAction { border-color: var(--red); color: var(--red); background: transparent; }
+.dangerAction:hover { background: color-mix(in srgb, var(--red) 8%, transparent); }
+@media (max-width: 1050px) {
+  .groupNavigation { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .shell { padding: 14px; }
+  .heading h1 { font-size: 18px; }
+  .header { padding-bottom: 14px; gap: 12px; }
+  .headerActions { gap: 10px; }
+  .groupNavigation { gap: 6px; }
+  .groupButton, .activeGroup { padding: 10px 8px; gap: 6px; font-size: 10px; letter-spacing: 0; }
+  .tabNavigation { gap: 6px; padding: 12px 0; }
+  .tabButton, .activeTab { font-size: 10px; letter-spacing: 0; padding: 7px 9px; }
+  .navigation { margin-bottom: 20px; }
+}

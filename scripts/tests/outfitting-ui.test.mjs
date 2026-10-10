@@ -54,6 +54,7 @@ async function mountWorkspace() {
   const entry = join(dir, 'entry.tsx');
   const bundle = join(dir, 'bundle.mjs');
   writeFileSync(join(dir, 'next-link.jsx'), NEXT_LINK_STUB);
+  writeFileSync(join(dir, 'auth-fetch.mjs'), 'export const authFetch = (...args) => globalThis.fetch(...args);');
   writeFileSync(
     entry,
     [
@@ -73,6 +74,7 @@ async function mountWorkspace() {
     external: ['react', 'react-dom', 'react-dom/client'],
     alias: {
       'next/link': join(dir, 'next-link.jsx'),
+      '@/lib/supabaseClient': join(dir, 'auth-fetch.mjs'),
       '@': join(ROOT, 'src'),
     },
     loader: { '.tsx': 'tsx', '.ts': 'ts' },
@@ -81,7 +83,7 @@ async function mountWorkspace() {
 
   const previousFetch = global.fetch;
   global.fetch = async (url) => {
-    if (String(url).includes('/data/outfitting.json')) {
+    if (String(url).includes('/api/outfitting/catalog')) {
       return { ok: true, status: 200, json: async () => outfittingData };
     }
     return { ok: true, status: 200, json: async () => ({}) };
@@ -140,6 +142,7 @@ async function mountWorkspace() {
 
   const cleanup = async () => {
     await act(async () => { root.unmount(); });
+    dom.window.close();
     global.fetch = previousFetch;
     for (const [key, value] of Object.entries(previous)) global[key] = value;
     rmSync(dir, { recursive: true, force: true });
