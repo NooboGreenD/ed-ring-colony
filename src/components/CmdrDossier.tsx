@@ -33,6 +33,16 @@ import {
 } from '@/components/Icons';
 import { useFriends } from '@/hooks/useFriends';
 
+/**
+ * Название ранга по его номеру. `null`/`undefined` — «нет данных» и показывается
+ * как «—»: прежний `?? 0` превращал отсутствующий ранг в настоящий нулевой
+ * («Harmless», «Defenceless»), что выглядело как реальный результат.
+ */
+function rankName(list: string[], value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return list[value] ?? '—';
+}
+
 const RANK_NAMES = ['Harmless','Mostly Harmless','Novice','Competent','Expert','Master','Dangerous','Deadly','Elite'];
 const EMPIRE_RANKS = ['None','Outsider','Serf','Master','Squire','Knight','Lord','Baron','Viscount','Count','Earl','Marquis','Duke','Prince','King'];
 const FED_RANKS = ['None','Recruit','Cadet','Midshipman','Petty Officer','Chief Petty Officer','Warrant Officer','Ensign','Lieutenant','Lt. Commander','Post Commander','Post Captain','Rear Admiral','Vice Admiral','Admiral'];
@@ -1023,32 +1033,32 @@ export default function CmdrDossier(props: Props) {
                 >
                   <StatCard
                     label="Combat"
-                    value={RANK_NAMES[props.capiProfile.combat_rank ?? 0] ?? '—'}
+                    value={rankName(RANK_NAMES, props.capiProfile.combat_rank)}
                     color="#e74c3c"
                   />
                   <StatCard
                     label="Trade"
-                    value={RANK_NAMES[props.capiProfile.trade_rank ?? 0] ?? '—'}
+                    value={rankName(RANK_NAMES, props.capiProfile.trade_rank)}
                     color="#f39c12"
                   />
                   <StatCard
                     label="Explore"
-                    value={RANK_NAMES[props.capiProfile.explore_rank ?? 0] ?? '—'}
+                    value={rankName(RANK_NAMES, props.capiProfile.explore_rank)}
                     color="#3b82f6"
                   />
                   <StatCard
                     label="Empire"
-                    value={EMPIRE_RANKS[props.capiProfile.empire_rank ?? 0] ?? '—'}
+                    value={rankName(EMPIRE_RANKS, props.capiProfile.empire_rank)}
                     color="#a855f7"
                   />
                   <StatCard
                     label="Federation"
-                    value={FED_RANKS[props.capiProfile.federation_rank ?? 0] ?? '—'}
+                    value={rankName(FED_RANKS, props.capiProfile.federation_rank)}
                     color="#3b82f6"
                   />
                   <StatCard
                     label="CQC"
-                    value={RANK_NAMES[props.capiProfile.cqc_rank ?? 0] ?? '—'}
+                    value={rankName(RANK_NAMES, props.capiProfile.cqc_rank)}
                     color="#06b6d4"
                   />
                   <StatCard

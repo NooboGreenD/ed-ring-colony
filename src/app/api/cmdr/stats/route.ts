@@ -5,6 +5,8 @@ import { maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { createHash } from 'crypto';
 import { assessProfileBinding } from '@/lib/capi/profileBinding';
 import { isPlausibleMercenaryCoins } from '@/lib/journalTelemetry';
+import { mergePilotStats } from '@/lib/pilotDossier';
+import { upsertResilient, updateResilient, schemaWarning } from '@/lib/capi/persist';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,53 +48,15 @@ export async function GET(req: Request) {
       .select('id', { count: 'exact', head: true })
       .ilike('first_mapped_by', cmdr);
 
-    const merged = {
-      cmdr_name: cmdr,
-      credits: pilotStats?.credits ?? capiProfile?.credits ?? 0,
-      arx: pilotStats?.arx ?? capiProfile?.arx ?? 0,
-      mercenary_coins: pilotStats?.mercenary_coins ?? capiProfile?.mercenary_coins ?? 0,
-      mercenary_rank: pilotStats?.mercenary_rank ?? capiProfile?.mercenary_rank ?? 0,
-      exobiologist_rank: pilotStats?.exobiologist_rank ?? capiProfile?.exobiologist_rank ?? 0,
-      combat_rank: pilotStats?.combat_rank ?? capiProfile?.combat_rank ?? 0,
-      trade_rank: pilotStats?.trade_rank ?? capiProfile?.trade_rank ?? 0,
-      explore_rank: pilotStats?.explore_rank ?? capiProfile?.explore_rank ?? 0,
-      empire_rank: pilotStats?.empire_rank ?? capiProfile?.empire_rank ?? 0,
-      federation_rank: pilotStats?.federation_rank ?? capiProfile?.federation_rank ?? 0,
-      current_ship: pilotStats?.current_ship || capiProfile?.current_ship || null,
-      current_system: pilotStats?.current_system || capiProfile?.current_system || null,
-      current_station: pilotStats?.current_station || capiProfile?.current_station || null,
-      first_discoveries_count: Math.max(
-        pilotStats?.first_discoveries_count ?? 0,
-        capiProfile?.first_discoveries_count ?? 0,
-        firstDiscoveriesCount ?? 0,
-      ),
-      first_mapped_count: Math.max(
-        pilotStats?.first_mapped_count ?? 0,
-        capiProfile?.first_mapped_count ?? 0,
-        firstMappedCount ?? 0,
-      ),
-      first_footfalls_count: Math.max(
-        pilotStats?.first_footfalls_count ?? 0,
-        capiProfile?.first_footfalls_count ?? 0,
-      ),
-      bio_samples_count: Math.max(
-        pilotStats?.bio_samples_count ?? 0,
-        capiProfile?.bio_samples_count ?? 0,
-      ),
-      bio_species_count: Math.max(
-        pilotStats?.bio_species_count ?? 0,
-        capiProfile?.bio_species_count ?? 0,
-      ),
-      bio_value_cr: Math.max(
-        pilotStats?.bio_value_cr ?? 0,
-        capiProfile?.bio_value_cr ?? 0,
-      ),
-      exploration_stats: {
-        ...(capiProfile?.exploration_stats || {}),
-        ...(pilotStats?.exploration_stats || {}),
-      },
-      last_updated: pilotStats?.last_updated || capiProfile?.last_updated || null,
-    };
+    // Одно слияние на двоих с страницей досье: `/cmdr/[name]` и этот
+    // эндпоинт обязаны показывать одинаковые числа из одних и тех же таблиц.
+    const merged = mergePilotStats({
+      pilotStats,
+      capiProfile,
+      cmdrName: cmdr,
+      firstDiscoveredCount: firstDiscoveriesCount,
+      firstMappedCount: firstMappedCount,
+    });
 
     // Конфиденциальность: этот эндпоинт публичный, а данные в нём личные.
     // Без фильтрации любой мог снять баланс, ранги и текущее положение
@@ -144,6 +108,9 @@ export async function POST(req: Request) {
 
     let userId: string | null = null;
     let cmdrName = (body.cmdr || body.cmdr_name || '').trim();
+    // Источник данных: API-токен — программа (Colonial Helper), сессия —
+    // сайт. От источника зависит приоритет записи (см. ниже).
+    let source: 'helper' | 'web' = 'web';
 
     // Аутентификация: через токен helper'а или веб-сессию
     if (body.token) {
@@ -156,6 +123,7 @@ export async function POST(req: Request) {
 
       if (apiToken && !apiToken.is_revoked) {
         userId = apiToken.user_id;
+        source = 'helper';
       }
     }
 
@@ -218,24 +186,78 @@ export async function POST(req: Request) {
     if (body.exploration_stats != null && typeof body.exploration_stats === 'object') {
       statsPayload.exploration_stats = body.exploration_stats;
     }
+    // Источник последней записи — чтобы данные программы не перетирали
+    // данные, загруженные через сайт (см. ниже).
+    statsPayload.stats_source = source;
+    statsPayload.stats_source_at = new Date().toISOString();
 
-    // 1. Запись в pilot_stats
-    await supabaseAdmin
-      .from('pilot_stats')
-      .upsert(statsPayload, { onConflict: 'user_id' });
+    // Защита источника: если строку статистики последней записала загрузка
+    // журналов НА САЙТЕ, программа (Colonial Helper) её не перетирает.
+    // Раньше побеждал последний записавший, и досье «прыгало» между двумя
+    // парсерами в зависимости от того, что успело отработать.
+    let statsSkipped: string | null = null;
+    if (source === 'helper') {
+      const { data: existingStats } = await supabaseAdmin
+        .from('pilot_stats')
+        .select('stats_source')
+        .eq('user_id', userId)
+        .maybeSingle();
+      if (existingStats?.stats_source === 'web') {
+        statsSkipped = 'web_source';
+      }
+    }
 
-    // 2. Также обновляем capi_profiles, если запись есть. Имя CAPI не
-    // перезаписываем значением из site profile: иначе конфликт имён исчезал бы
-    // только потому, что Uploader прислал очередную статистику.
-    const { user_id: _statsUserId, cmdr_name: _statsCmdrName, ...capiStatsPayload } = statsPayload;
-    await supabaseAdmin
-      .from('capi_profiles')
-      .update(capiStatsPayload)
-      .eq('user_id', userId);
+    if (!statsSkipped) {
+      // 1. Запись в pilot_stats. Upsert устойчив к отставшей схеме: на базе
+      // без миграции 20261010000000 колонки stats_source* отбрасываются с
+      // предупреждением, а не роняют всю запись.
+      const statsWrite = await upsertResilient(supabaseAdmin, 'pilot_stats', statsPayload, {
+        onConflict: 'user_id',
+      });
+      const statsSchemaWarning = schemaWarning('pilot_stats', statsWrite.droppedColumns);
+      if (statsSchemaWarning) console.warn('[cmdr/stats]', statsSchemaWarning);
+      if (!statsWrite.ok) {
+        // Раньше ошибка upsert молча игнорировалась и отвечали ok:true —
+        // программа не знала, что сводка не дошла. Честно говорим о сбое.
+        console.error('[cmdr/stats] pilot_stats write:', statsWrite.error?.message);
+        return NextResponse.json({
+          error: `pilot_stats write failed: ${statsWrite.error?.message ?? 'unknown error'}`,
+          binding: {
+            status: binding.status,
+            displayName: binding.displayName,
+            nameMismatch: binding.nameMismatch,
+          },
+        }, { status: 502 });
+      }
+
+      // 2. Также обновляем capi_profiles, если запись есть. Имя CAPI не
+      // перезаписываем значением из site profile: иначе конфликт имён исчезал бы
+      // только потому, что Uploader прислал очередную статистику. Поля
+      // источника (stats_source*) в capi_profiles не нужны — они отбрасываются.
+      const {
+        user_id: _statsUserId,
+        cmdr_name: _statsCmdrName,
+        stats_source: _statsSource,
+        stats_source_at: _statsSourceAt,
+        ...capiStatsPayload
+      } = statsPayload;
+      const capiWrite = await updateResilient(supabaseAdmin, 'capi_profiles', capiStatsPayload, {
+        column: 'user_id',
+        value: userId,
+      });
+      if (!capiWrite.ok) {
+        console.warn('[cmdr/stats] capi_profiles update:', capiWrite.error?.message);
+      }
+    }
 
     return NextResponse.json({
       ok: true,
-      stats: statsPayload,
+      stats: statsSkipped ? null : statsPayload,
+      // machine-readable причина, если запись защищена источником
+      pilotStatsSkipped: statsSkipped,
+      ...(statsSkipped
+        ? { warning: 'Статистика пилота не записана: приоритет у данных, загруженных через сайт. Повторная загрузка журналов на сайте снимает защиту.' }
+        : {}),
       binding: {
         status: binding.status,
         displayName: binding.displayName,

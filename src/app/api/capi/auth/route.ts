@@ -38,7 +38,13 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const site = getSiteUrl();
 
-  const { user } = await authFromRequest(req);
+  let user: Awaited<ReturnType<typeof authFromRequest>>['user'] = null;
+  try {
+    ({ user } = await authFromRequest(req));
+  } catch {
+    // Сбой чтения сессии не должен заканчиваться белой страницей 500.
+    user = null;
+  }
   if (!user) {
     // Привязывать некому: честно говорим об этом вместо «успешного» круга
     // по страницам Frontier, который ничего не сохранит.

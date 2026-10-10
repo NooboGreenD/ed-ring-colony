@@ -19,6 +19,24 @@ import {
   type ColonisationSiteRow,
 } from './colonisationEvents.ts';
 import { signalsFromList } from './bodySignals.ts';
+import { upsertResilient, schemaWarning } from './capi/persist.ts';
+
+/**
+ * Источник загрузки журналов:
+ *
+ *   • `'web'`    — загрузка через сайт в браузере (`/api/logs/import`, сессия);
+ *   • `'helper'` — десктопная программа Colonial Helper (`/api/logs/upload`,
+ *                  API-токен; тот же `/api/logs/import` с токеном).
+ *
+ * Источник сохраняется в `pilot_stats.stats_source` (миграция
+ * 20261010000000): данные программы не перетирают данные, загруженные
+ * через сайт, — см. `persistJournalTelemetry`.
+ */
+export type PilotStatsSource = 'web' | 'helper';
+
+export interface PersistTelemetryOptions {
+  source?: PilotStatsSource;
+}
 
 export interface ConstructionResourceRow {
   Name?: string;
@@ -552,6 +570,12 @@ export interface JournalTelemetryOutcome {
   snapshotDuplicates: number;
   systemScansInserted: number;
   pilotStatsUpdated: boolean;
+  /**
+   * Почему сводка пилота не записана. `'web_source'` — строка `pilot_stats`
+   * защищена: последним её записала загрузка журналов на сайте, и данные
+   * программы (Colonial Helper) не имеют права её перетереть.
+   */
+  pilotStatsSkipped: 'web_source' | null;
   warnings: string[];
 }
 
@@ -630,6 +654,7 @@ export async function persistJournalTelemetry(
   userId: string,
   payload: JournalTelemetryPayload,
   cmdrName?: string | null,
+  options: PersistTelemetryOptions = {},
 ): Promise<JournalTelemetryOutcome> {
   const warnings: string[] = [];
   const outcome: JournalTelemetryOutcome = {
@@ -639,6 +664,7 @@ export async function persistJournalTelemetry(
     snapshotDuplicates: 0,
     systemScansInserted: 0,
     pilotStatsUpdated: false,
+    pilotStatsSkipped: null,
     warnings,
   };
 
@@ -781,6 +807,21 @@ export async function persistJournalTelemetry(
   const stats = payload.pilotStats;
   if (stats && typeof stats === 'object' && !Array.isArray(stats)) {
     const source = stats as Record<string, unknown>;
+    const statsSource = options.source ?? null;
+
+    // Защита источника: строка статистики, которую последней записала
+    // загрузка журналов на САЙТЕ, не перетирается данными программы
+    // (Colonial Helper). Иначе досье «прыгало» бы между двумя парсерами.
+    if (statsSource === 'helper' && (await readStatsSource(svc, userId)) === 'web') {
+      outcome.pilotStatsSkipped = 'web_source';
+      warnings.push(
+        'Сводка пилота не записана: строка защищена загрузкой журналов на сайте — '
+        + 'данные программы не перетирают данные сайта. Загрузите журналы через сайт, '
+        + 'чтобы разрешить обновление от программы.',
+      );
+      return outcome;
+    }
+
     const row: Record<string, unknown> = {
       user_id: userId,
       cmdr_name: cmdrName || null,
@@ -803,15 +844,45 @@ export async function persistJournalTelemetry(
     if (source.exploration_stats && typeof source.exploration_stats === 'object') {
       row.exploration_stats = source.exploration_stats;
     }
-    if (Object.keys(row).length > 3) {
-      try {
-        await svc.from('pilot_stats').upsert(row, { onConflict: 'user_id' });
+    // Источник последней записи — для защиты от перетирания (см. выше).
+    if (statsSource) {
+      row.stats_source = statsSource;
+      row.stats_source_at = new Date().toISOString();
+    }
+    const hasData = numericKeys.some((key) => key in row) || 'exploration_stats' in row;
+    if (hasData) {
+      // Upsert устойчив к отставшей схеме: колонки stats_source* существуют
+      // с миграции 20261010000000, на старой базе они отбрасываются с
+      // предупреждением, а не роняют запись статистики целиком.
+      const write = await upsertResilient(svc, 'pilot_stats', row, { onConflict: 'user_id' });
+      if (write.ok) {
         outcome.pilotStatsUpdated = true;
-      } catch (error) {
-        warnings.push(`pilot stats: ${(error as Error).message}`);
+      } else {
+        warnings.push(`pilot stats: ${write.error?.message ?? 'unknown error'}`);
       }
+      const statsSchemaWarning = schemaWarning('pilot_stats', write.droppedColumns);
+      if (statsSchemaWarning) warnings.push(statsSchemaWarning);
     }
   }
 
   return outcome;
+}
+
+/**
+ * Последний источник строки `pilot_stats`. Сбой чтения (в том числе старая
+ * схема без колонки `stats_source`) не считается защитой — запись программы
+ * при отставшей миграциях работает как раньше, без сюрпризов.
+ */
+async function readStatsSource(svc: DbClient, userId: string): Promise<string | null> {
+  try {
+    const { data, error } = await svc
+      .from('pilot_stats')
+      .select('stats_source')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return typeof data?.stats_source === 'string' ? data.stats_source : null;
+  } catch {
+    return null;
+  }
 }

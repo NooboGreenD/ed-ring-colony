@@ -204,9 +204,42 @@ export class CapiClient {
     }
   }
 
-  /** Профиль в нормализованной форме — именно его пишет сайт в базу. */
+  /**
+   * Профиль в нормализованной форме — именно его пишет сайт в базу.
+   *
+   * Пилот, оставшийся в Legacy-галактике (Horizons 3.8), на Live-хосте не
+   * существует: Frontier отвечает 400/404, хотя у аккаунта всё в порядке.
+   * Данные живут на `legacy-companion.orerve.net` — как у Colonial Helper,
+   * пробуем его один раз, и если ответил — следующие запросы этой сессии
+   * (журнал в том числе) идут на тот же хост.
+   *
+   * Важно: при неудаче пробрасывается ИСХОДНАЯ ошибка Live-хоста. Ответ
+   * 400 от Live — это часто «не та платформа аккаунта» (нужен перепривяз),
+   * и подмена его ошибкой Legacy запутала бы диагностику.
+   */
   async getProfile(): Promise<CapiProfile> {
-    return normalizeCapiProfile(await this.fetchJson('/profile'));
+    try {
+      return normalizeCapiProfile(await this.fetchJson('/profile'));
+    } catch (err) {
+      if (
+        err instanceof CapiError
+        && (err.status === 400 || err.status === 404)
+        && this.base !== CAPI_LEGACY_BASE
+      ) {
+        try {
+          const legacy = new CapiClient(this.accessToken, {
+            base: CAPI_LEGACY_BASE,
+            timeoutMs: this.timeoutMs,
+          });
+          const profile = normalizeCapiProfile(await legacy.fetchJson('/profile'));
+          this.base = CAPI_LEGACY_BASE;
+          return profile;
+        } catch {
+          // Legacy тоже отказал — наружу уходит исходная ошибка (см. выше).
+        }
+      }
+      throw err;
+    }
   }
 
   /** Сырой ответ `/profile` — для диагностики и отладки привязки. */

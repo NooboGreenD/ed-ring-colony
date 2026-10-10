@@ -221,6 +221,11 @@ export function capiProfileRow(
  * Пишем только то, что действительно пришло из CAPI: `undefined`-поля
  * выбрасываются, чтобы синк не затирал нулями статистику, загруженную из
  * журналов (Colonial Helper шлёт её тем же upsert'ом).
+ *
+ * `stats_source: 'capi'` помечает источник: синхронизация CAPI — живые
+ * данные от Frontier, она обновляет досье независимо от того, кто последним
+ * грузил журналы. Защита от перетирания действует только на запись от
+ * программы (см. `persistJournalTelemetry` и `/api/cmdr/stats`).
  */
 export function pilotStatsRow(
   userId: string,
@@ -231,6 +236,8 @@ export function pilotStatsRow(
   const row: Record<string, unknown> = {
     user_id: userId,
     last_updated: now.toISOString(),
+    stats_source: 'capi',
+    stats_source_at: now.toISOString(),
   };
 
   const cmdrName = profile.cmdrName ?? options.cmdrNameFallback ?? null;

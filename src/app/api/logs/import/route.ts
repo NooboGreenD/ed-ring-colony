@@ -67,6 +67,10 @@ export async function POST(req: Request) {
     // 1. API token (для Colonial Helper)
     // 2. Bearer token из Supabase session (для браузерной загрузки)
     let userId: string | null = null;
+    // Источник загрузки: сессия — сайт, API-токен — программа. От него
+    // зависит приоритет сводки пилота (данные программы не перетирают
+    // данные, загруженные через сайт).
+    let source: 'web' | 'helper' = 'web';
 
     const authHeader = req.headers.get('authorization') || '';
     const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
@@ -92,6 +96,7 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: 'Invalid or revoked token' }, { status: 401 });
       }
       userId = apiToken.user_id;
+      source = 'helper';
       // Обновляем last_used_at для API token. Do not make a successful upload
       // fail only because this non-critical bookkeeping update is delayed.
       void svc.from('api_tokens').update({ last_used_at: new Date().toISOString() }).eq('token_hash', tokenHash);
@@ -134,7 +139,7 @@ export async function POST(req: Request) {
         constructionEvents: body.constructionEvents ?? body.construction_events,
         systemScans: body.systemScans ?? body.system_scans ?? body.scans,
         pilotStats: body.pilotStats ?? body.pilot_stats,
-      }, cmdr || null);
+      }, cmdr || null, { source });
     } catch (telemetryError) {
       // Доставки уже сохранены — телеметрия не имеет права превращать
       // успешный импорт в ошибку 500.
