@@ -170,9 +170,26 @@ class RavenColonialApiTests(unittest.TestCase):
         self.assertEqual(call["headers"]["rcc-key"], "test-key")
         # None-поля не должны уезжать на сервер: PATCH-подобный merge ломается
         # от явных null'ов.
+        # Игровой токен приводится к коду справочника Raven (no_truss): иначе
+        # страница проекта на сайте падает на незнакомом buildType.
         self.assertEqual(call["json"], {"systemName": "Sol", "buildName": "Alpha",
-                                        "buildType": "Coriolis", "marketId": 123,
+                                        "buildType": "no_truss", "marketId": 123,
                                         "systemAddress": 456})
+
+    def test_create_project_rejects_unknown_build_type(self):
+        """Незнакомый buildType не уходит в Raven: страница проекта упадёт на сайте."""
+        result = self.api.create_project({
+            "buildName": "Alpha", "marketId": 1, "systemAddress": 2,
+            "buildType": "Что-то своё",
+        })
+        self.assertFalse(result["ok"])
+        self.assertIn("Неизвестный тип постройки", result["error"])
+        self.assertEqual(self.calls, [])
+
+    def test_update_project_normalizes_build_type(self):
+        result = self.api.update_project("abc-123", {"buildType": "Orbis Starport"})
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.calls[0]["json"], {"buildType": "apollo"})
 
     def test_create_project_requires_api_fields(self):
         """Обязательные поля ProjectCreate — marketId, systemAddress, buildName.

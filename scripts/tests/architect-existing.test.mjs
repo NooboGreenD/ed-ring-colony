@@ -5,7 +5,7 @@ import {
   installationFromStationType,
   parseExistingStructures,
 } from '../../src/lib/architect/existing.ts';
-import { addSite, createPlan, evaluatePlan } from '../../src/lib/architect/planner.ts';
+import { addSite, createPlan, evaluatePlan, parsePlan } from '../../src/lib/architect/planner.ts';
 
 const SYSTEM = 'Architest';
 
@@ -88,4 +88,77 @@ test('после применения факта очки тиров счита�
   const withFact = evaluatePlan(adoptExisting(createPlan(SYSTEM), structures).plan, []);
   assert.notDeepEqual(withFact.tierPoints, empty.tierPoints, 'существующая застройка меняет бюджет очков');
   assert.ok(withFact.haulTons > 0, 'перенесённые постройки дают тоннаж');
+});
+
+// ---------------------------------------------------------------------------
+// Синхронизации не должны плодить дубли: одна постройка Raven — одна запись плана.
+// ---------------------------------------------------------------------------
+
+function ravenSite(overrides) {
+  return {
+    buildId: 'b-default',
+    name: 'Постройка',
+    buildType: 'vulcan',
+    bodyName: `${SYSTEM} 2`,
+    status: 'build',
+    progress: 40,
+    ...overrides,
+  };
+}
+
+test('повторная синхронизация не создаёт дублей и не растит план', () => {
+  const source = { system: SYSTEM, sites: [ravenSite({ buildId: 'b-1' }), ravenSite({ buildId: 'b-2', buildType: 'plutus', bodyName: `${SYSTEM} 3` })] };
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  const first = adoptExisting(plan, parseExistingStructures(source));
+  assert.equal(first.plan.sites.length, 2);
+  const second = adoptExisting(first.plan, parseExistingStructures(source));
+  const third = adoptExisting(second.plan, parseExistingStructures(source));
+  assert.equal(third.plan.sites.length, 2, 'три синхронизации — те же две постройки');
+  assert.equal(third.added.length, 0, 'при повторе ничего не добавляется');
+  assert.deepEqual(third.plan.sites.map((s) => s.ravenBuildId).sort(), ['b-1', 'b-2'], 'связи с Raven сохранены');
+});
+
+test('переименование тела в источнике не создаёт дубль: постройка узнаётся по buildId', () => {
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  plan = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-7', bodyName: `${SYSTEM} 2` })] })).plan;
+  const renamed = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-7', bodyName: `${SYSTEM} 5` })] }));
+  assert.equal(renamed.plan.sites.length, 1, 'дубля нет');
+  assert.equal(renamed.plan.sites[0].bodyName, `${SYSTEM} 5`, 'тело обновлено на новое');
+  assert.equal(renamed.plan.sites[0].ravenBuildId, 'b-7');
+});
+
+test('две разные постройки одного типа на одном теле — две записи, не одна', () => {
+  const source = {
+    system: SYSTEM,
+    sites: [
+      ravenSite({ buildId: 'b-10', buildType: 'vulcan', bodyName: `${SYSTEM} 2` }),
+      ravenSite({ buildId: 'b-11', buildType: 'vulcan', bodyName: `${SYSTEM} 2` }),
+    ],
+  };
+  const result = adoptExisting(createPlan(SYSTEM, 'CMDR Tester'), parseExistingStructures(source));
+  assert.equal(result.plan.sites.length, 2, 'обе площадки перенесены');
+  assert.deepEqual(result.plan.sites.map((s) => s.ravenBuildId).sort(), ['b-10', 'b-11']);
+});
+
+test('запись плана без связи с Raven берётся по типу и телу, а не дублируется', () => {
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  plan = addSite(plan, `${SYSTEM} 2`, 'vulcan'); // записана вручную, связи с Raven ещё нет
+  const result = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-20' })] }));
+  assert.equal(result.plan.sites.length, 1, 'вручную добавленная постройка получила связь, дубля нет');
+  assert.equal(result.plan.sites[0].ravenBuildId, 'b-20');
+});
+
+test('запись, связанная с другой постройкой Raven, не перезаписывается', () => {
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  plan = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-30' })] })).plan;
+  const result = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-31' })] }));
+  assert.equal(result.plan.sites.length, 2, 'новая площадка Raven — отдельная запись');
+  assert.deepEqual(result.plan.sites.map((s) => s.ravenBuildId).sort(), ['b-30', 'b-31']);
+});
+
+test('связь с Raven переживает сохранение и импорт плана', () => {
+  let plan = createPlan(SYSTEM, 'CMDR Tester');
+  plan = adoptExisting(plan, parseExistingStructures({ system: SYSTEM, sites: [ravenSite({ buildId: 'b-40' })] })).plan;
+  const parsed = parsePlan(JSON.parse(JSON.stringify(plan)));
+  assert.equal(parsed.plan.sites[0].ravenBuildId, 'b-40', 'при импорте связь не теряется');
 });

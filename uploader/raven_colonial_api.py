@@ -18,6 +18,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+from colony_build_types import normalize_build_type
+
 # Адрес сайта Raven Colonial. Страница проекта открывается как
 # `https://ravencolonial.com/#build={buildId}` — так же её открывает сам
 # SrvSurvey после создания проекта.
@@ -681,12 +683,36 @@ class RavenColonialAPI:
                 "error": "Не заполнены обязательные поля: " + ", ".join(missing),
             }
         body = {key: value for key, value in project.items() if value is not None}
+        error = self._prepare_build_type(body)
+        if error:
+            return {"ok": False, "data": None, "status": 0, "error": error}
         return self._request("PUT", "/project/", json_body=body)
 
     def update_project(self, build_id: str, fields: dict) -> dict:
         """PATCH /api/project/{buildId} — изменить поля (слияние, не замена)."""
         body = {key: value for key, value in fields.items() if value is not None}
+        error = self._prepare_build_type(body)
+        if error:
+            return {"ok": False, "data": None, "status": 0, "error": error}
         return self._request("PATCH", f"/project/{self._esc(build_id)}", json_body=body)
+
+    @staticmethod
+    def _prepare_build_type(body: dict) -> str:
+        """Проверить `buildType` до отправки; вернуть текст ошибки или пустую строку.
+
+        Незнакомый код Raven не может открыть страницу проекта (падение
+        `buildClass` на сайте), поэтому его не отправляем. Известные алиасы
+        (игровые токены, «Orbis Starport») приводим к коду справочника.
+        """
+        if "buildType" not in body:
+            return ""
+        raw = body.get("buildType")
+        code = normalize_build_type(raw)
+        if code is None:
+            return (f"Неизвестный тип постройки «{raw}»: выберите его из списка. "
+                    "Иначе страница проекта на Raven Colonial не откроется.")
+        body["buildType"] = code
+        return ""
 
     def mark_complete(self, build_id: str) -> dict:
         """POST /api/project/{buildId}/complete — отметить завершённым (необратимо)."""
