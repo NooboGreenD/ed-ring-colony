@@ -14,6 +14,8 @@
 
 import { capiSession, type CapiTokenRow, type RefreshFn } from './session.ts';
 import { CapiError, describeCapiError, needsCapiRelink } from './client.ts';
+import { diagnoseCapiFailure, type CapiFailure } from './failure.ts';
+import type { FrontierIdentity } from './oauth.ts';
 import { assessProfileBinding, type ProfileBindingStatus } from './profileBinding.ts';
 import { capiProfileRow, isBlankProfile, pilotStatsRow } from './profile.ts';
 import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
@@ -29,7 +31,7 @@ import { updateProjectProgress } from '@/lib/projects/autoProgress';
 
 export type JournalStatus = 'ok' | 'empty' | 'partial' | 'error' | 'skipped';
 
-export interface CapiSyncResult {
+export interface CapiSyncResult extends Partial<Omit<CapiFailure, 'error' | 'needsReauth'>> {
   ok: boolean;
   cmdrName: string | null;
   profileSaved: boolean;
@@ -55,6 +57,9 @@ export interface SyncOptions {
   /** Подмена обновления токена в тестах. */
   refreshFn?: RefreshFn;
   now?: Date;
+  requestedPlatform?: string | null;
+  /** Уже проверенная Frontier платформа, не выбор пользователя в селекторе. */
+  identity?: FrontierIdentity | null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -94,8 +99,7 @@ export async function syncCapiPilot(
   try {
     session = await capiSession(svc, userId, tokenRow, options.refreshFn);
   } catch (err) {
-    result.error = err instanceof Error ? err.message : String(err);
-    result.needsReauth = true;
+    Object.assign(result, await diagnoseCapiFailure(err, tokenRow.access_token, options));
     return result;
   }
 
@@ -103,11 +107,21 @@ export async function syncCapiPilot(
   try {
     profile = await session.run((client) => client.getProfile());
   } catch (err) {
-    result.error = describeCapiError(err);
-    // 400 no_entitlement означает не «временный CAPI-сбой», а токен,
-    // полученный через неправильную кнопку магазина. Помечаем привязку для
-    // переподключения, чтобы пилоту не приходилось сначала искать «Отвязать».
-    result.needsReauth = needsCapiRelink(err);
+    // Если run() успел сменить пару, проверенная до него identity относится
+    // к старому токену. Для отказа в правах сверяем именно текущую пару.
+    const diagnosticOptions = session.token === tokenRow.access_token ? options : { ...options, identity: undefined };
+    const failure = await diagnoseCapiFailure(err, session.token, diagnosticOptions);
+    Object.assign(result, failure);
+    // Ошибка профиля не уничтожает действующий OAuth. Сохраняем причину для
+    // UI; при no_entitlement без доказанного несовпадения даём повторить
+    // запрос, в том числе восстанавливая старый ложный is_active=false.
+    const failedWrite = await updateResilient(svc, 'capi_tokens', {
+      last_error: failure.error.slice(0, 500),
+      last_error_at: now.toISOString(),
+      ...(failure.platform ? { platform: failure.platform } : {}),
+      ...(failure.reason === 'entitlement_unavailable' ? { is_active: true } : {}),
+    }, { column: 'user_id', value: userId });
+    if (!failedWrite.ok) warnings.push('Не удалось сохранить диагностику CAPI');
     return result;
   }
 
@@ -237,6 +251,7 @@ export async function syncCapiPilot(
       cmdr_name: cmdrName,
       is_active: true,
       last_error: null,
+      last_error_at: null,
     },
     { column: 'user_id', value: userId },
   );

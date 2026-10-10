@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { capiReasonText } from '../../src/lib/capi/messages.ts';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -177,6 +178,7 @@ async function buildRoutes() {
   writeFileSync(join(dir, 'next-server.mjs'), NEXT_SERVER_STUB);
   writeFileSync(join(dir, 'supabase.mjs'), SUPABASE_STUB);
   writeFileSync(join(dir, 'progress.mjs'), PROGRESS_STUB);
+  writeFileSync(join(dir, 'cron.mjs'), 'export const runCronTask = async (_req, _name, action) => action();');
 
   const entry = join(dir, 'entry.ts');
   writeFileSync(
@@ -184,6 +186,9 @@ async function buildRoutes() {
     "export * as callback from '@/app/api/capi/callback/route';\n"
     + "export * as sync from '@/app/api/capi/sync/route';\n"
     + "export * as profile from '@/app/api/capi/profile/route';\n"
+    + "export * as status from '@/app/api/capi/status/route';\n"
+    + "export * as auth from '@/app/api/capi/auth/route';\n"
+    + "export * as cron from '@/app/api/cron/capi-sync/route';\n"
     + "export { db, reset } from './supabase.mjs';\n"
     + "export { progressCalls } from './progress.mjs';\n",
   );
@@ -199,6 +204,7 @@ async function buildRoutes() {
       'next/server': join(dir, 'next-server.mjs'),
       '@/lib/supabaseServer': join(dir, 'supabase.mjs'),
       '@/lib/projects/autoProgress': join(dir, 'progress.mjs'),
+      '@/lib/cronAuth': join(dir, 'cron.mjs'),
       '@': join(ROOT, 'src'),
     },
     loader: { '.ts': 'ts', '.tsx': 'tsx' },
@@ -229,7 +235,9 @@ const JOURNAL_NDJSON = [
 ].join('\n');
 
 /** Подменяет сеть: сервер токенов Frontier + CAPI. */
-function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, journal = JOURNAL_NDJSON, journalStatus = 200 } = {}) {
+function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, profileError = 'error',
+  journal = JOURNAL_NDJSON, journalStatus = 200, platform = 'frontier',
+  meStatus = 200, decodedIdentity = null, refreshStatus = 200 } = {}) {
   const calls = [];
   const original = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
@@ -237,18 +245,24 @@ function fakeFrontier({ profile = PROFILE_JSON, profileStatus = 200, journal = J
     calls.push({ url, body: init?.body ? String(init.body) : null });
 
     if (url.includes('auth.frontierstore.net/token')) {
+      if (new URLSearchParams(String(init?.body)).get('grant_type') === 'refresh_token' && refreshStatus !== 200) {
+        return new Response('{"error":"invalid_grant"}', { status: refreshStatus });
+      }
       return new Response(JSON.stringify({
         access_token: 'access-1', refresh_token: 'refresh-1', expires_in: 14400, token_type: 'Bearer',
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (url.includes('auth.frontierstore.net/me')) {
-      return new Response(JSON.stringify({ customer_id: 777, email: 'cmdr@example.test', platform: 'frontier' }), { status: 200 });
+      return new Response(JSON.stringify({ customer_id: 777, email: 'cmdr@example.test', platform }), { status: meStatus });
+    }
+    if (url.includes('auth.frontierstore.net/decode')) {
+      return new Response(JSON.stringify(decodedIdentity || {}), { status: decodedIdentity ? 200 : 503 });
     }
     // Тело у 204 запрещено конструктором Response — как и у настоящего CAPI.
     if (url.includes('/profile')) {
       return profileStatus === 200
         ? new Response(JSON.stringify(profile), { status: 200 })
-        : new Response(profileStatus === 204 ? null : 'error', { status: profileStatus });
+        : new Response(profileStatus === 204 ? null : profileError, { status: profileStatus });
     }
     if (url.includes('/journal')) {
       return journalStatus === 200
@@ -339,18 +353,18 @@ maybe('CAPI на техобслуживании (418) не отменяет пр
   }
 });
 
-maybe('400 о неверной платформе оставляет токен, но предлагает переподключение', async () => {
+maybe('400 о покупке при подтверждённом несовпадении платформ требует переподключения', async () => {
   const { mod, dir } = await buildRoutes();
-  const frontier = fakeFrontier({ profileStatus: 400 });
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Please Visit the store to purchase Elite: Dangerous.' });
   try {
-    const res = await mod.callback.GET(callbackRequest(dir));
+    const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
     const location = new URL(res.headers.get('location'));
 
     assert.equal(location.searchParams.get('status'), 'partial');
     assert.equal(location.searchParams.get('reason'), 'platform_not_entitled');
     assert.equal(mod.db.tables.capi_tokens[0].is_active, false,
       'неверная платформа не должна выглядеть рабочей');
-    assert.match(mod.db.tables.capi_tokens[0].last_error, /купленную|CAPI/i);
+    assert.match(mod.db.tables.capi_tokens[0].last_error, /не подтвердил|CAPI/i);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
@@ -362,7 +376,7 @@ maybe('400 при выбранном EGS объясняет, что токен �
   // /me говорит platform: frontier, хотя пилот выбирал epic — на странице
   // Frontier осталась сессия почтой. Раньше колбэк это скрывал, и пилот по
   // кругу переподключался «с той же платформой».
-  const frontier = fakeFrontier({ profileStatus: 400 });
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Please Visit the store to purchase Elite: Dangerous.' });
   try {
     const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
     const location = new URL(res.headers.get('location'));
@@ -373,7 +387,7 @@ maybe('400 при выбранном EGS объясняет, что токен �
     assert.equal(location.searchParams.get('actualPlatform'), 'frontier');
     assert.match(location.searchParams.get('detail'), /epic/i);
     assert.match(location.searchParams.get('detail'), /frontier/i);
-    assert.match(location.searchParams.get('detail'), /auth\.frontierstore\.net/);
+    assert.match(capiReasonText(location.searchParams.get('reason')).hint, /auth\.frontierstore\.net/);
   } finally {
     frontier.restore();
     rmSync(dir, { recursive: true, force: true });
@@ -483,6 +497,184 @@ maybe('привязка видна интерфейсу даже без стро
     assert.equal(body.binding.accessExpired, true);
     assert.equal(body.binding.capiName, 'Nova');
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const PURCHASE_ERROR = 'Please Visit the store to purchase Elite: Dangerous.';
+
+for (const platform of ['epic', 'steam', 'frontier']) {
+  maybe(`колбэк: ${platform} подтверждён, CAPI 400 не отключает OAuth`, async () => {
+    const { mod, dir } = await buildRoutes();
+    const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, platform });
+    try {
+      const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: platform }));
+      const location = new URL(res.headers.get('location'));
+      assert.equal(location.searchParams.get('status'), 'partial');
+      assert.equal(location.searchParams.get('reason'), 'entitlement_unavailable');
+      assert.equal(location.searchParams.get('actualPlatform'), platform);
+      assert.match(location.searchParams.get('detail'), /HTTP 400/);
+      assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+      assert.equal(mod.db.tables.capi_tokens[0].refresh_token, 'refresh-1');
+      assert.match(mod.db.tables.capi_tokens[0].last_error, /Авторизация сохранена/);
+      assert.doesNotMatch(mod.db.tables.capi_tokens[0].last_error, /войдите кнопкой|выйдите из|переподключ/i);
+      assert.equal(mod.db.tables.capi_profiles, undefined, 'нет ложного успешного профиля');
+      assert.equal(frontier.calls.filter((c) => c.url.includes('/token')).length, 1, '400 не запускает refresh');
+    } finally {
+      frontier.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+maybe('колбэк: обычный Bad Request не превращается в «игра не куплена»', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: 'Bad Request: invalid query', platform: 'epic' });
+  try {
+    const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
+    const location = new URL(res.headers.get('location'));
+    assert.equal(location.searchParams.get('reason'), 'profile_unavailable');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+    assert.match(location.searchParams.get('detail'), /invalid query/);
+    assert.doesNotMatch(mod.db.tables.capi_tokens[0].last_error, /куплен|Steam\/Epic/);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('колбэк: неизвестная платформа не объявляется неверной, /decode может подтвердить EGS', async () => {
+  for (const decodedIdentity of [null, { usr: { customer_id: 777, platform: 'epic' } }]) {
+    const { mod, dir } = await buildRoutes();
+    const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR,
+      platform: null, meStatus: 503, decodedIdentity });
+    try {
+      const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
+      const location = new URL(res.headers.get('location'));
+      assert.equal(location.searchParams.get('reason'), 'entitlement_unavailable');
+      assert.equal(location.searchParams.get('actualPlatform'), decodedIdentity ? 'epic' : null);
+      assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+      if (!decodedIdentity) assert.match(mod.db.tables.capi_tokens[0].last_error, /не доказательство/);
+    } finally {
+      frontier.restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+maybe('отозванный refresh даёт token_rejected, а не сообщение об отсутствии игры', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 401, refreshStatus: 400, platform: 'epic' });
+  try {
+    const res = await mod.callback.GET(callbackRequest(dir, { platformCookie: 'epic' }));
+    const location = new URL(res.headers.get('location'));
+    assert.equal(location.searchParams.get('reason'), 'token_rejected');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, false);
+    assert.doesNotMatch(mod.db.tables.capi_tokens[0].last_error, /куплен|игр/);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('ручной синк восстанавливает старый ложный is_active=false и повторяется без нового OAuth', async () => {
+  const { mod, dir } = await buildRoutes();
+  let frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, platform: 'epic' });
+  mod.db.tables.capi_tokens = [{ user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
+    expires_at: new Date(Date.now() + 3600_000).toISOString(), platform: 'epic', is_active: false }];
+  try {
+    const res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    const json = await res.json();
+    assert.equal(res.status, 502, 'не 401: сессия Frontier не отозвана');
+    assert.equal(json.needsReauth, false);
+    assert.equal(json.reason, 'entitlement_unavailable');
+    assert.equal(json.kind, 'no_entitlement');
+    assert.equal(json.status, 400);
+    assert.equal(json.platform, 'epic');
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+    assert.match(json.detail, /purchase Elite/);
+    frontier.restore();
+    frontier = fakeFrontier({ platform: 'epic' });
+    const retry = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    assert.equal(retry.status, 200);
+    assert.equal(mod.db.tables.capi_tokens[0].last_error, null);
+    assert.equal(mod.db.tables.capi_tokens[0].last_error_at, null);
+    assert.equal(mod.db.tables.capi_tokens[0].access_token, 'access-1');
+    assert.equal(frontier.calls.some((c) => c.url.includes('/token')), false);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('диагностика показывает подтверждённый EGS и ответ CAPI без секретов', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, platform: 'epic' });
+  mod.db.tables.capi_tokens = [{ user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
+    expires_at: new Date(Date.now() + 3600_000).toISOString(), platform: 'epic', is_active: true }];
+  try {
+    const res = await mod.status.GET(new Request('https://colony.test/api/capi/status?probe=1'));
+    const json = await res.json();
+    assert.equal(json.live.reason, 'entitlement_unavailable');
+    assert.equal(json.live.needsReauth, false);
+    assert.equal(json.live.platform, 'epic');
+    assert.equal(json.live.status, 400);
+    assert.equal(json.live.host, 'https://companion.orerve.net');
+    assert.match(json.live.detail, /purchase Elite/);
+    assert.doesNotMatch(JSON.stringify(json), /access-1|refresh-1/);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('выбранный EGS доходит до auth audience и cookie без замены на Frontier', async () => {
+  const { mod, dir } = await buildRoutes();
+  try {
+    const req = new Request('https://colony.test/api/capi/auth?platform=egs');
+    req.nextUrl = new URL(req.url);
+    const res = await mod.auth.GET(req);
+    assert.equal(new URL(res.headers.get('location')).searchParams.get('audience'), 'epic');
+    assert.equal(res.cookies.get('capi_platform').value, 'epic');
+    assert.ok(res.cookies.get('capi_pkce').value);
+    assert.ok(res.cookies.get('capi_link').value);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('cron: правильная платформа + отказ в правах не отключает дальнейшую синхронизацию', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, platform: 'epic' });
+  mod.db.tables.capi_tokens = [{ user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
+    expires_at: new Date(Date.now() + 3600_000).toISOString(), platform: 'epic', is_active: true }];
+  try {
+    const res = await mod.cron.GET(new Request('https://colony.test/api/cron/capi-sync'));
+    const json = await res.json();
+    assert.equal(json.failed, 1);
+    assert.equal(json.needsReauth, 0);
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+    assert.match(mod.db.tables.capi_tokens[0].last_error, /Авторизация сохранена/);
+  } finally {
+    frontier.restore();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+maybe('неизвестная платформа не оставляет старое ложное требование авторизации после синка', async () => {
+  const { mod, dir } = await buildRoutes();
+  const frontier = fakeFrontier({ profileStatus: 400, profileError: PURCHASE_ERROR, meStatus: 503 });
+  mod.db.tables.capi_tokens = [{ user_id: 'user-1', access_token: 'access-1', refresh_token: 'refresh-1',
+    expires_at: new Date(Date.now() + 3600_000).toISOString(), is_active: false }];
+  try {
+    const res = await mod.sync.POST(new Request('https://colony.test/api/capi/sync', { method: 'POST' }));
+    const json = await res.json();
+    assert.equal(json.needsReauth, false);
+    assert.equal(json.reason, 'entitlement_unavailable');
+    assert.equal(json.platform, null);
+    assert.equal(mod.db.tables.capi_tokens[0].is_active, true);
+  } finally {
+    frontier.restore();
     rmSync(dir, { recursive: true, force: true });
   }
 });

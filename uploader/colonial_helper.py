@@ -75,7 +75,7 @@ from api_client import ApiClient
 from site_config import normalize_site_url, saved_connection
 from companion_api import (AUDIENCE_LABELS, CompanionAuth, CompanionAuthError,
                            CompanionClient, normalize_audience, profile_to_stats,
-                           set_app_version as set_capi_app_version)
+                           set_app_version as set_capi_app_version, normalize_platform)
 from journal_parser import (
     parse_file,          # noqa: F401 — оставлен как публичный API парсера
     parse_journal,       # noqa: F401
@@ -143,7 +143,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.13.3"
+VERSION = "2.13.4"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -4733,8 +4733,9 @@ class ColonialHelperApp:
         """Показать в UI состояние привязки Frontier.
 
         Важно различать «токен сохранён» и «связь работает»: OAuth может
-        пройти успешно, а CAPI — отвечать 400, если игра куплена не на той
-        платформе. Поэтому зелёный статус даём только после ответа CAPI.
+        пройти успешно, а CAPI — отказать в правах даже после правильного
+        входа через EGS. Зелёный статус даём только после ответа CAPI,
+        но отказ в правах не уничтожает рабочую авторизацию.
         """
         try:
             state = self.capi_auth.status()
@@ -4839,6 +4840,12 @@ class ColonialHelperApp:
         refresh = str(tokens.get("refresh_token") or "")
         if not access or not refresh:
             return False
+        actual_platform = normalize_platform(tokens.get("platform"))
+        requested = self.capi_auth.audience
+        if actual_platform and actual_platform not in requested.split(","):
+            self.log(f"Frontier CAPI: токены сайта выданы платформой «{actual_platform}», "
+                     f"а в Helper выбрана «{requested}» — локальная привязка не заменена", "warn")
+            return False
         try:
             expires_in = int(tokens.get("expires_in") or 14400)
         except (TypeError, ValueError):
@@ -4857,7 +4864,8 @@ class ColonialHelperApp:
                 "refresh_token": refresh,
                 "expires_in": expires_in,
                 "obtained_at": obtained_at or time.time(),
-                "audience": str(tokens.get("platform") or self.capi_auth.audience),
+                "audience": requested,
+                "platform": actual_platform,
             })
         except Exception as exc:
             self.log(f"Frontier CAPI: не удалось принять привязку с сайта: {exc}", "warn")
@@ -4932,6 +4940,11 @@ class ColonialHelperApp:
                     except Exception as exc:
                         result = None
                         error = f"Сбой загрузки досье: {exc}"
+            if result is not None and result.get("reason") == "entitlement_unavailable":
+                # OAuth получен правильной платформой, но CAPI пока не видит
+                # права на игру. Сайт тоже сохраняет эту пару и может продлевать
+                # её, не заставляя пилота проходить две авторизации заново.
+                self._capi_push_tokens_to_site()
             if error is None and result is not None and not result.get("ok"):
                 error = str(result.get("error") or "Frontier не отдал профиль")
                 hint = str(result.get("hint") or "")

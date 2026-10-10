@@ -50,6 +50,13 @@ export async function POST(req: Request) {
       {
         error: result.error || 'Синхронизация не удалась',
         needsReauth: result.needsReauth,
+        reason: result.reason,
+        kind: result.errorKind,
+        status: result.httpStatus,
+        endpoint: result.endpoint,
+        host: result.host,
+        platform: result.platform,
+        detail: result.detail,
         warnings: result.warnings,
       },
       { status: result.needsReauth ? 401 : 502 },

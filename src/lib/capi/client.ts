@@ -27,6 +27,7 @@ import type {
 } from '@/types/capi';
 import { normalizeCapiProfile } from './profile.ts';
 import { parseCapiJournal, journalPath } from './journal.ts';
+import { ENTITLEMENT_RECOVERY_HINT, NO_ENTITLEMENT_MESSAGE, isNoEntitlementResponse } from './entitlement.ts';
 
 const CAPI_BASE = 'https://companion.orerve.net';
 /** Данные Legacy-галактики живут на отдельном хосте (Odyssey Update 14). */
@@ -53,28 +54,22 @@ export type CapiErrorKind =
   | 'network'
   | 'malformed';
 
-/**
- * Подсказка для самой частой и самой непонятной ошибки CAPI.
- *
- * `400` у Frontier означает не «кривой запрос», а «за этим аккаунтом игры
- * нет»: тело ответа — `Please Visit the store to purchase Elite: Dangerous`.
- * Так отвечают, когда токен выдан учётке магазина frontierstore.net, а игра
- * куплена в Steam или Epic (и при известном сбое Frontier с Epic-привязками,
- * issues.frontierstore.net/issue-detail/21258).
- */
-export const NO_ENTITLEMENT_HINT =
-  'Frontier не видит купленную Elite Dangerous у этого аккаунта. '
-  + 'Переподключите аккаунт, выбрав платформу, где куплена игра '
-  + '(Steam или Epic Games Store, EGS), — на странице входа Frontier нужно '
-  + 'нажать кнопку Steam/Epic, а не входить почтой.';
+/** Отказ проверки прав на игру — не доказательство неверного OAuth-входа. */
+export const NO_ENTITLEMENT_HINT = `${NO_ENTITLEMENT_MESSAGE}. ${ENTITLEMENT_RECOVERY_HINT}`;
 
 /** Ошибка обращения к CAPI с разобранной причиной. */
 export class CapiError extends Error {
   readonly kind: CapiErrorKind;
   readonly status: number;
   readonly endpoint: string;
+  /** Короткий ответ Frontier, без токена; нужен для честной диагностики 400. */
+  readonly detail: string;
+  readonly host: string | null;
 
-  constructor(kind: CapiErrorKind, endpoint: string, status: number, message?: string) {
+  constructor(
+    kind: CapiErrorKind, endpoint: string, status: number, message?: string,
+    diagnostics: { detail?: string; host?: string } = {},
+  ) {
     // Сообщение 'UNAUTHORIZED' сохранено дословно: на него смотрит
     // `CapiSession.run()` и тесты, написанные до появления этого класса.
     super(kind === 'unauthorized' ? 'UNAUTHORIZED' : (message || `CAPI ${endpoint}: ${status}`));
@@ -82,6 +77,8 @@ export class CapiError extends Error {
     this.kind = kind;
     this.status = status;
     this.endpoint = endpoint;
+    this.detail = diagnostics.detail || '';
+    this.host = diagnostics.host || null;
   }
 }
 
@@ -91,17 +88,9 @@ export function isUnauthorizedError(err: unknown): boolean {
   return err instanceof Error && err.message === 'UNAUTHORIZED';
 }
 
-/**
- * Ошибка entitlement требует другого входа, а не повторного запроса.
- *
- * Frontier может принять OAuth-токен, но выдать его для Frontier Store,
- * когда игра фактически куплена в Steam или Epic Games Store. Тогда `/me`
- * работает, а CAPI отвечает 400. Нельзя оставлять такую привязку активной:
- * интерфейс должен предложить повторный вход с правильной кнопкой платформы.
- */
+/** Сам по себе no_entitlement не требует нового OAuth: сначала сверяется платформа. */
 export function needsCapiRelink(err: unknown): boolean {
-  return isUnauthorizedError(err)
-    || (err instanceof CapiError && err.kind === 'no_entitlement');
+  return isUnauthorizedError(err);
 }
 
 /** Человеческое объяснение — его показываем пилоту, а не «CAPI /profile: 418». */
@@ -119,7 +108,8 @@ export function describeCapiError(err: unknown): string {
       case 'rate_limited':
         return 'Frontier ограничил частоту запросов, попробуйте через минуту';
       case 'server':
-        return `Companion API Frontier ответил ошибкой ${err.status}`;
+        return `Companion API Frontier ответил ошибкой ${err.status}`
+          + (err.detail ? `: ${err.detail}` : '');
       case 'malformed':
         return 'Companion API Frontier вернул нечитаемый ответ';
       case 'network':
@@ -171,9 +161,13 @@ export class CapiClient {
       throw new CapiError('unauthorized', endpoint, res.status);
     }
     if (res.status === 400) {
-      // Не 'server': повторять бессмысленно, пилоту нужно переподключить
-      // аккаунт нужной платформы.
-      throw new CapiError('no_entitlement', endpoint, 400);
+      // У 400 бывают разные причины. Даже сообщение о покупке не доказывает,
+      // что пилот вошёл почтой вместо EGS: CAPI и OAuth — разные проверки.
+      const body = await res.text().catch(() => '');
+      const safeBody = this.accessToken ? body.split(this.accessToken).join('[redacted]') : body;
+      const detail = safeBody.replace(/\s+/g, ' ').trim().slice(0, 300);
+      throw new CapiError(isNoEntitlementResponse(body) ? 'no_entitlement' : 'server', endpoint, 400,
+        undefined, { detail, host: this.base });
     }
     if (res.status === 418) {
       throw new CapiError('maintenance', endpoint, 418);
@@ -185,7 +179,7 @@ export class CapiClient {
       return { status: 204, body: '', partial: false };
     }
     if (!res.ok) {
-      throw new CapiError('server', endpoint, res.status);
+      throw new CapiError('server', endpoint, res.status, undefined, { host: this.base });
     }
 
     return { status: res.status, body: await res.text(), partial: res.status === 206 };
@@ -214,8 +208,8 @@ export class CapiClient {
    * (журнал в том числе) идут на тот же хост.
    *
    * Важно: при неудаче пробрасывается ИСХОДНАЯ ошибка Live-хоста. Ответ
-   * 400 от Live — это часто «не та платформа аккаунта» (нужен перепривяз),
-   * и подмена его ошибкой Legacy запутала бы диагностику.
+   * Отказ Live не доказывает неверный OAuth-вход. Сохраняем его код и тело,
+   * чтобы вызывающий код мог проверить платформу, не обрывая привязку вслепую.
    */
   async getProfile(): Promise<CapiProfile> {
     try {

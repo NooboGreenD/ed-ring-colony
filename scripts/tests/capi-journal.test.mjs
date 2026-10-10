@@ -151,10 +151,9 @@ test('запрос уходит с Bearer-токеном и корректным
 });
 
 /* ──────────────────────────────────────────────────────────────────────────
-   HTTP 400 от CAPI — это не «кривой запрос», а «за аккаунтом нет игры»:
-   токен выдан учётке магазина Frontier, тогда как игра куплена в Steam или
-   Epic. Пилот в этот момент видел «HTTP 400» и считал привязку сломанной
-   без единой подсказки, что делать.
+   Только сообщение о покупке в теле 400 распознаётся как no_entitlement.
+   Оно не доказывает неверную платформу OAuth: выбранный Epic может быть
+   подтверждён Frontier, а CAPI — всё ещё не видеть права на игру.
    ────────────────────────────────────────────────────────────────────────── */
 
 test('400 распознаётся как «аккаунт без Elite Dangerous», а не как сбой сервера', async () => {
@@ -164,11 +163,11 @@ test('400 распознаётся как «аккаунт без Elite Dangerou
       await assert.rejects(() => new CapiClient('token').getProfile(), (err) => {
         assert.equal(err.kind, 'no_entitlement');
         assert.equal(err.status, 400);
-        // Повторять запрос бессмысленно, обновлять токен — тоже.
+        // Обновление токена не лечит права на игру, но авторизацию нельзя рвать вслепую.
         assert.equal(isUnauthorizedError(err), false);
-        assert.equal(needsCapiRelink(err), true, 'неверная платформа требует переподключения');
+        assert.equal(needsCapiRelink(err), false, 'отказ CAPI в правах не отзывает OAuth без проверки платформы');
         const text = describeCapiError(err);
-        assert.match(text, /не видит купленную Elite Dangerous/);
+        assert.match(text, /не подтвердил доступ к Elite Dangerous/);
         assert.match(text, /Steam/);
         assert.match(text, /Epic/);
         return true;

@@ -8,8 +8,8 @@
  * сессии (журнал).
  *
  * При отказе обоих хостов наружу уходит ИСХОДНАЯ ошибка Live — 400 от Live
- * часто означает «не та платформа аккаунта» (нужна перепривязка), и подмена
- * её ошибкой Legacy запутала бы диагностику.
+ * может означать отказ в правах, а не неверный OAuth-вход. Подмена его
+ * ошибкой Legacy запутала бы диагностику.
  */
 
 import test from 'node:test';
@@ -79,7 +79,7 @@ test('Live 404 → тоже fallback на Legacy', async () => {
   }
 });
 
-test('оба хоста отказали — наружу уходит исходная ошибка Live (нужна перепривязка)', async () => {
+test('оба хоста отказали — наружу уходит исходная ошибка Live, не ошибка Legacy', async () => {
   const net = stubFetch((url) => {
     if (url.includes('/profile')) {
       return jsonResponse({ message: 'Please Visit the store to purchase Elite: Dangerous' }, 400);
