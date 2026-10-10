@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import regionPack from '@/lib/galacticRegions.json';
 import {
@@ -92,6 +92,12 @@ export default function GalacticSectorsIndexPage() {
     });
   }, []);
 
+  const categoryCounts = useMemo(() => {
+    const counts = { all: sectors.length, sol: 0, core: 0, arms: 0, rim: 0 };
+    for (const sector of sectors) counts[sector.category] += 1;
+    return counts;
+  }, [sectors]);
+
   // Filtered & Sorted sectors
   const filteredSectors = useMemo(() => {
     let result = sectors.filter((s) => {
@@ -121,6 +127,24 @@ export default function GalacticSectorsIndexPage() {
 
     return result;
   }, [sectors, search, filterCategory, sortBy]);
+
+  const searchRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+      if (event.key === '/' && !typing) {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === 'Escape' && typing && target === searchRef.current) {
+        setSearch('');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   return (
     <div className="sector-container">
@@ -188,10 +212,12 @@ export default function GalacticSectorsIndexPage() {
           {/* Search box */}
           <div style={{ position: 'relative', minWidth: 260, flex: '1 1 300px' }}>
             <input
-              type="text"
+              ref={searchRef}
+              type="search"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Поиск по названию или номеру (напр. Orion, 18, Core)..."
+              placeholder="Поиск по названию или номеру (Orion, 18, Core) — клавиша /"
+              aria-label="Поиск секторов галактики"
               style={{ width: '100%', margin: 0, paddingLeft: 36 }}
             />
             <span style={{ position: 'absolute', left: 12, top: 12, color: 'var(--muted)' }}>
@@ -244,43 +270,65 @@ export default function GalacticSectorsIndexPage() {
             className={`filter-pill ${filterCategory === 'all' ? 'active' : ''}`}
             onClick={() => setFilterCategory('all')}
           >
-            Все секторы <span className="count">42</span>
+            Все секторы <span className="count">{categoryCounts.all}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'sol' ? 'active' : ''}`}
             onClick={() => setFilterCategory('sol')}
           >
-            Около Sol (&lt; 15k LY)
+            Около Sol (&lt; 15k LY) <span className="count">{categoryCounts.sol}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'core' ? 'active' : ''}`}
             onClick={() => setFilterCategory('core')}
           >
-            Галактическое Ядро
+            Галактическое Ядро <span className="count">{categoryCounts.core}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'arms' ? 'active' : ''}`}
             onClick={() => setFilterCategory('arms')}
           >
-            Спиральные рукава
+            Спиральные рукава <span className="count">{categoryCounts.arms}</span>
           </button>
           <button
             type="button"
             className={`filter-pill ${filterCategory === 'rim' ? 'active' : ''}`}
             onClick={() => setFilterCategory('rim')}
           >
-            Внешний Рубеж (&gt; 45k LY)
+            Внешний Рубеж (&gt; 45k LY) <span className="count">{categoryCounts.rim}</span>
           </button>
         </div>
       </div>
 
       {/* ── Results Count ── */}
-      <div style={{ marginBottom: 14, fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted)', letterSpacing: 1, textTransform: 'uppercase' }}>
-        НАЙДЕНО СЕКТОРОВ: <span style={{ color: 'var(--orange)', fontWeight: 'bold' }}>{filteredSectors.length}</span> ИЗ 42
+      <div
+        aria-live="polite"
+        style={{ marginBottom: 14, fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--muted)', letterSpacing: 1, textTransform: 'uppercase' }}
+      >
+        НАЙДЕНО СЕКТОРОВ: <span style={{ color: 'var(--orange)', fontWeight: 'bold' }}>{filteredSectors.length}</span> ИЗ {sectors.length}
       </div>
+
+      {filteredSectors.length === 0 && (
+        <div className="card" style={{ padding: 28, textAlign: 'center' }} role="status">
+          <p style={{ color: 'var(--text)', fontSize: 14, marginBottom: 6 }}>Секторы не найдены</p>
+          <p className="atlas-muted" style={{ marginBottom: 14 }}>
+            Запрос «{search.trim()}» не совпал ни с названием, ни с номером сектора.
+          </p>
+          <button
+            type="button"
+            className="btn btn-orange"
+            onClick={() => {
+              setSearch('');
+              setFilterCategory('all');
+            }}
+          >
+            Сбросить фильтры
+          </button>
+        </div>
+      )}
 
       {/* ── Sectors Grid ── */}
       <div className="sector-catalog-grid">

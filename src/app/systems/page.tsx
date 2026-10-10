@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { Toaster, toast } from '@/components/ui/Toaster';
+import { toast } from '@/components/ui/Toaster';
 import { IconRocket, IconRingPlanet, IconGlobe, IconChevronUp, IconChevronDown, IconSearch, IconCheck, IconMapPin, IconSun, IconLock, IconExternalLink } from '@/components/Icons';
 
 type Resource = {
@@ -584,19 +584,14 @@ export default function SystemsPage() {
   }, [searchQuery]);
 
   const loadSystemDetail = useCallback(async (name: string) => {
-    console.log('[SystemDetail] Loading:', name);
     setDetailLoading(true);
     setSelectedSystem(null);
     try {
       const url = `/api/edsm/system?name=${encodeURIComponent(name)}`;
-      console.log('[SystemDetail] Fetch:', url);
       const res = await fetch(url);
-      console.log('[SystemDetail] Response status:', res.status);
       const data = await res.json();
-      console.log('[SystemDetail] Response data keys:', data ? Object.keys(data) : 'null');
       if (!res.ok) {
         const msg = data.error || `Ошибка загрузки системы (HTTP ${res.status})`;
-        console.error('[SystemDetail] API error:', msg);
         toast(msg, 'error');
         // Fallback: show basic info from search results
         const basic = searchResults.find((s) => s.name === name);
@@ -620,9 +615,7 @@ export default function SystemsPage() {
         return;
       }
       setSelectedSystem(data);
-      console.log('[SystemDetail] Loaded successfully:', data.name);
     } catch (err: any) {
-      console.error('[SystemDetail] Fetch error:', err);
       toast(err.message || 'Ошибка загрузки', 'error');
       // Fallback: show basic info from search results
       const basic = searchResults.find((s) => s.name === name);
@@ -654,7 +647,6 @@ export default function SystemsPage() {
 
   return (
     <main className="card" style={{ width: "100%" }}>
-      <Toaster />
       <h1>Прогресс систем</h1>
       <p style={{ color: '#9ca3af', fontSize: 14 }}>
         Данные строительства подтягиваются с{' '}
