@@ -15,6 +15,7 @@ import SiteEditor from '@/components/Architect/SiteEditor';
 import SiteTable from '@/components/Architect/SiteTable';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
 import SyncPanel from '@/components/Architect/SyncPanel';
+import RavenCreatePanel from '@/components/Architect/RavenCreatePanel';
 import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
 import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
 import { SIGNAL_META, activeSignalKinds } from '@/lib/bodySignals';
@@ -47,6 +48,7 @@ import {
   placementCheck,
   planToStructures,
   predictSurfaceSlots,
+  linkSiteToRaven,
   removeSite,
   serializePlan,
   setOrbitalSlots,
@@ -1000,6 +1002,16 @@ export default function ArchitectWorkspace() {
               loading={loading}
               onRefresh={() => void loadSystem(systemName)}
             />
+            {plan && (
+              <RavenCreatePanel
+                system={systemName}
+                plan={plan}
+                bodiesByName={bodiesByName}
+                onLinked={(siteId, buildId) => setPlan((current) => (
+                  current ? linkSiteToRaven(current, siteId, buildId) : current
+                ))}
+              />
+            )}
             <ProgressPanel
               systemName={systemName}
               report={progress}

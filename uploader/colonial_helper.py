@@ -131,6 +131,8 @@ from ship_tracker import ShipTracker
 from event_dispatch import (ThirdPartyDispatcher, canonical_commodity,
                           normalize_commodity)
 from raven_colonial_api import RavenColonialAPI, project_url
+from colony_build_types import (BUILD_TYPES, BUILD_TYPE_CODES, build_type_label,
+                                normalize_build_type)
 # Пакетное обновление кода: программа запускается лаунчером (ColonialHelper.exe),
 # а её модули лежат отдельным пакетом и обновляются пофайлово с нашего сервера.
 # При запуске из исходников этих модулей может не быть — это нормально.
@@ -1723,22 +1725,21 @@ class ColonialHelperApp:
         self.colony_fields = {}
         self.colony_entries = {}
 
-        def add_field(key: str, label: str, row: int, column: int, values: tuple = ()):
-            """Пара «подпись + поле» в сетке формы. `*` в подписи — поле обязательное."""
+        def add_field(key: str, label: str, row: int, column: int, values=None):
+            """Пара «подпись + поле» в сетке формы. `*` в подписи — поле обязательное.
+
+            `values` (даже пустой кортеж) делает поле выпадающим списком.
+            """
             tb.Label(form, text=label, width=18, anchor=W).grid(
                 row=row, column=column * 2, sticky=W, pady=2, padx=(0 if column == 0 else 14, 4))
             var = tk.StringVar(value="")
             self.colony_fields[key] = var
-            if values:
-                entry = tb.Combobox(form, textvariable=var, width=26, values=values)
+            if values is not None:
+                entry = tb.Combobox(form, textvariable=var, width=26, values=tuple(values))
             else:
                 entry = tb.Entry(form, textvariable=var, width=28)
             entry.grid(row=row, column=column * 2 + 1, sticky=W, pady=2)
             self.colony_entries[key] = entry
-            if key == "buildType":
-                # Подсказки берём из своих проектов и планов системы — список
-                # всегда актуальный и не зависит от захардкоженных данных.
-                self.colony_build_type_entry = entry
             return entry
 
         # Обязательные поля Raven Colonial (схема ProjectCreate) помечены *.
@@ -1746,10 +1747,21 @@ class ColonialHelperApp:
         add_field("marketId", "Market ID *", 0, 1)
         add_field("systemAddress", "System address *", 1, 0)
         add_field("buildName", "Название *", 1, 1)
-        add_field("buildType", "Тип постройки", 2, 0)
+        # Тип постройки — только из справочника Raven (неизвестный код валит
+        # страницу проекта на сайте), поэтому поле не редактируется вручную.
+        add_field("buildType", "Тип постройки *", 2, 0,
+                  values=[build_type_label(code) for code, _ru, _en in BUILD_TYPES])
+        self.colony_entries["buildType"].configure(state="readonly")
         add_field("maxNeed", "maxNeed (всего)", 2, 1)
-        add_field("bodyName", "Тело", 3, 0)
-        add_field("bodyNum", "Номер тела", 3, 1)
+        # Тело — из тел системы (журнал и сканы). Список обновляется при открытии.
+        add_field("bodyName", "Тело", 3, 0, values=())
+        self.colony_body_entry = self.colony_entries["bodyName"]
+        self.colony_body_entry.configure(postcommand=self._colony_refresh_body_choices)
+        self.colony_body_entry.bind("<<ComboboxSelected>>", lambda _e: self._colony_sync_body_num())
+        self.colony_body_entry.bind("<FocusOut>", lambda _e: self._colony_sync_body_num())
+        # Номер тела — это BodyID из журнала (номер тела в системе). Заполняется
+        # сам по выбранному телу; руками менять не нужно.
+        add_field("bodyNum", "BodyID тела (авто)", 3, 1)
         add_field("architectName", "Архитектор", 4, 0)
         add_field("discordLink", "Discord-ссылка", 4, 1)
 
@@ -1959,13 +1971,10 @@ class ColonialHelperApp:
 
     def _fill_colony_tree(self, projects: list, primary_id: str = ""):
         self.colony_tree.delete(*self.colony_tree.get_children())
-        build_types = []
         for project in projects:
             build_id = str(project.get("buildId", "") or "")
             is_primary = bool(primary_id and build_id and build_id == primary_id)
             build_type = str(project.get("buildType", "") or "")
-            if build_type and build_type not in build_types:
-                build_types.append(build_type)
             self.colony_tree.insert(
                 "", END,
                 values=(
@@ -1977,9 +1986,6 @@ class ColonialHelperApp:
                     build_id,
                 ),
             )
-        # Типы построек подсказываем из уже существующих проектов —
-        # так список всегда актуальный и не зависит от захардкоженных данных.
-        self._colony_add_build_type_hints(build_types)
         self._colony_projects_cache = {p.get("buildId"): p for p in projects}
         # Основной проект Raven — он же источник списка материалов в оверлее.
         self._sync_colony_primary_project(primary_id)
@@ -2016,21 +2022,53 @@ class ColonialHelperApp:
         if current_id and cache and current_id not in cache:
             self.colony_primary_project = {}
 
-    def _colony_add_build_type_hints(self, build_types):
-        """Добавить подсказки типов постройки в combobox (без повторов)."""
-        entry = getattr(self, "colony_build_type_entry", None)
+    def _colony_build_type_code(self) -> str:
+        """Код Raven из поля «Тип постройки»: выбран из списка или введён кодом."""
+        raw = (self.colony_fields["buildType"].get() or "").strip()
+        if not raw:
+            return ""
+        if raw in BUILD_TYPE_CODES:
+            return raw
+        for code in BUILD_TYPE_CODES:
+            if build_type_label(code) == raw:
+                return code
+        return normalize_build_type(raw) or ""
+
+    def _colony_body_choices(self) -> dict:
+        """Тела системы формы: {имя тела: BodyID}, из журнала и сканов.
+
+        BodyID — номер тела в системе (как в журнале и у Raven): по нему Raven
+        ставит проект на нужное тело. Порядок — звезда, планеты, луны.
+        """
+        system = (self.colony_fields["systemName"].get() or "").strip()
+        try:
+            snapshot = self.system_map.snapshot(system)
+        except Exception:
+            return {}
+        choices = {}
+        for body in getattr(snapshot, "bodies", []) or []:
+            if body.name and body.name not in choices:
+                choices[body.name] = body.body_id
+        return choices
+
+    def _colony_refresh_body_choices(self):
+        """Список тел для выпадающего меню «Тело» (вызывается при раскрытии)."""
+        entry = getattr(self, "colony_body_entry", None)
         if entry is None:
             return
         try:
-            current = list(entry.cget("values") or ())
+            entry.configure(values=list(self._colony_body_choices()))
         except Exception:
-            current = []
-        merged = list(current) + [str(t) for t in (build_types or []) if t and str(t) not in current]
-        if merged != current:
-            try:
-                entry.config(values=merged)
-            except Exception:
-                pass
+            pass
+
+    def _colony_sync_body_num(self):
+        """BodyID подставляем по выбранному телу; неизвестное тело не трогаем."""
+        name = (self.colony_fields["bodyName"].get() or "").strip()
+        if not name:
+            return
+        body_id = self._colony_body_choices().get(name)
+        if body_id is not None:
+            self.colony_fields["bodyNum"].set(str(int(body_id)))
 
     # ---------- Колонизатор: действия ----------
     def _current_site_market(self):
@@ -2392,9 +2430,6 @@ class ColonialHelperApp:
             self.colony_site_plan_combo.config(values=tuple(labels))
         except Exception:
             pass
-        # Типы построек из планов системы — самые точные подсказки: это ровно
-        # те коды, которые Raven Colonial ожидает в buildType.
-        self._colony_add_build_type_hints([plan.get("buildType") for plan in plans])
         if plans:
             self.log(
                 f"Raven Colonial: в системе {system} запланировано площадок — {len(plans)}", "info")
@@ -2450,8 +2485,13 @@ class ColonialHelperApp:
             return
         plan = self._colony_site_plans[index - 1]
         self._colony_selected_site_id = plan["id"]
-        if plan.get("buildType") and not self.colony_fields["buildType"].get().strip():
-            self.colony_fields["buildType"].set(plan["buildType"])
+        if plan.get("buildType") and not self._colony_build_type_code():
+            code = normalize_build_type(plan["buildType"])
+            if code:
+                self.colony_fields["buildType"].set(build_type_label(code))
+            else:
+                self.log(f"Тип «{plan['buildType']}» из плана Raven не входит в справочник — "
+                         "выберите тип вручную.", "warn")
         if plan.get("bodyName") and not self.colony_fields["bodyName"].get().strip():
             self.colony_fields["bodyName"].set(plan["bodyName"])
         if plan.get("bodyNum") not in (None, "") and not self.colony_fields["bodyNum"].get().strip():
@@ -2556,6 +2596,14 @@ class ColonialHelperApp:
             self.colony_status.config(text=f"Не заполнены обязательные поля: {', '.join(missing)}")
             return
 
+        build_code = self._colony_build_type_code()
+        if not build_code:
+            self.log("Выберите тип постройки из списка: только такие коды открываются "
+                     "на Raven Colonial.", "warn")
+            self.colony_status.config(text="Не выбран тип постройки")
+            return
+        self._colony_sync_body_num()
+
         def as_int(key: str) -> Optional[int]:
             raw = self.colony_fields[key].get().strip()
             if not raw:
@@ -2586,7 +2634,7 @@ class ColonialHelperApp:
         project = build_project_draft(
             site,
             build_name=build_name,
-            build_type=self.colony_fields["buildType"].get().strip(),
+            build_type=build_code,
             architect_name=self.colony_fields["architectName"].get().strip(),
             discord_link=self.colony_fields["discordLink"].get().strip(),
             notes=self.colony_fields["notes"].get().strip(),
@@ -2654,10 +2702,6 @@ class ColonialHelperApp:
                     f"{result['link_error']}", "warn",
                 )
             self.colony_status.config(text=f"Проект создан, buildId: {build_id or '—'}")
-            # Запоминаем недавно использованные типы постройки: официальный
-            # справочник кодов Raven не публикует, а свои значения команда
-            # вводит из раза в раз одни и те же.
-            self._remember_colony_build_type(self.colony_fields["buildType"].get().strip())
             if build_id and open_page:
                 self._colony_open_url(project_url(build_id), f"Проект {name}")
             if cmdr:
@@ -2666,16 +2710,6 @@ class ColonialHelperApp:
             error = result.get("error") or "неизвестная ошибка"
             self.colony_status.config(text=f"Создать проект не удалось: {error}")
             self.log(f"Raven Colonial: проект не создан — {error}", "error")
-
-    def _remember_colony_build_type(self, build_type: str):
-        build_type = (build_type or "").strip()
-        if not build_type:
-            return
-        recent = [item for item in self.config.get("colony_build_types_recent", []) if item != build_type]
-        recent.insert(0, build_type)
-        self.config["colony_build_types_recent"] = recent[:10]
-        self._colony_add_build_type_hints([build_type])
-        self.save_config()
 
 
     # ============================================================

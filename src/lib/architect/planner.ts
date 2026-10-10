@@ -519,6 +519,19 @@ export function addSite(
   return touched({ ...plan, sites });
 }
 
+/**
+ * Связать запись плана с постройкой Raven Colonial (`buildId`).
+ * Пустой id ничего не меняет.
+ */
+export function linkSiteToRaven(plan: ArchitectPlan, siteId: string, buildId: string): ArchitectPlan {
+  const id = String(buildId ?? '').trim().slice(0, 80);
+  if (!id) return plan;
+  return touched({
+    ...plan,
+    sites: plan.sites.map((site) => (site.id === siteId ? { ...site, ravenBuildId: id } : site)),
+  });
+}
+
 export function removeSite(plan: ArchitectPlan, siteId: string): ArchitectPlan {
   return touched({ ...plan, sites: plan.sites.filter((site) => site.id !== siteId) });
 }
@@ -935,6 +948,7 @@ export function parsePlan(raw: unknown): { plan: ArchitectPlan | null; error?: s
       status: SITE_STATUSES.includes(status as PlannedSiteStatus) ? (status as PlannedSiteStatus) : 'plan',
       primary: primary && canBePrimary(installationId) ? true : undefined,
       note: str(site.note) ? str(site.note).slice(0, 300) : undefined,
+      ravenBuildId: str(site.ravenBuildId).slice(0, 80) || undefined,
     });
   }
 

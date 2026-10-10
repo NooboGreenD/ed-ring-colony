@@ -18,7 +18,7 @@
  */
 
 import { buildBodyIndex, normalizeBodyKey, resolveBodyName, type BodyIndex, type BodyMatchKind } from './bodyNames.ts';
-import { addSite, getInstallation, setSitePrimary, setSiteStatus, updateSite } from './planner.ts';
+import { addSite, getInstallation, linkSiteToRaven, setSitePrimary, setSiteStatus, updateSite } from './planner.ts';
 import { normalizeBuildType } from './progress.ts';
 import type { ArchitectBody, ArchitectPlan, PlannedSiteStatus } from './types.ts';
 
@@ -51,6 +51,12 @@ export interface ExistingStructure {
   /** Источник пометил постройку основным портом системы. */
   primary: boolean;
   source: ExistingSource;
+  /**
+   * Id постройки в Raven Colonial (`buildId`, либо `id` записи сайта).
+   * По нему запись плана узнаёт свою постройку при каждой синхронизации.
+   * Для станций EDSM — null: у них такого id нет.
+   */
+  buildId?: string | null;
 }
 
 /**
@@ -82,6 +88,11 @@ export const EDSM_STATION_TYPES: Record<string, string> = {
   'odysseysettlement': 'consus',
   'settlement': 'consus',
 };
+
+/** Строка из поля ответа: строка или число; всё остальное — пусто. */
+function str(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+}
 
 function cleanKey(value: unknown): string {
   return String(value ?? '').replace(/[^a-z0-9]+/gi, '').toLowerCase();
@@ -193,13 +204,19 @@ export function parseExistingStructures(
       named.length >= 3 && entry.installationId ? `station:${named}` : '',
     ].filter(Boolean);
 
-    const hit = keys.map((key) => byDedupe.get(key)).find(Boolean);
+    // Две разные постройки Raven (разные buildId) не схлопываются, даже если
+    // совпали тело и тип: это две площадки, а не повтор одной.
+    const hit = keys
+      .map((key) => byDedupe.get(key))
+      .find((candidate): candidate is ExistingStructure => candidate !== undefined
+        && !(candidate.buildId && entry.buildId && candidate.buildId !== entry.buildId));
     if (hit) {
       // Raven точнее EDSM: дополняем его запись тем, чего у него не было.
       if (hit.source === 'edsm' && entry.source === 'raven') {
         Object.assign(hit, entry, {
           bodyName: entry.bodyName ?? hit.bodyName,
           bodyMatch: entry.bodyName ? entry.bodyMatch : hit.bodyMatch,
+          buildId: entry.buildId ?? hit.buildId ?? null,
         });
       } else if (!hit.bodyName && entry.bodyName) {
         hit.bodyName = entry.bodyName;
@@ -235,6 +252,7 @@ export function parseExistingStructures(
       progress,
       primary: isPrimaryToken(rawType, site),
       source: 'raven',
+      buildId: str(site.buildId) || str(site.id) || null,
     });
   });
 
@@ -261,6 +279,7 @@ export function parseExistingStructures(
       progress: 100,
       primary: false,
       source: 'edsm',
+      buildId: null,
     });
   });
 
@@ -354,14 +373,26 @@ export function adoptExisting(
     }
 
     const targetBody = bodyKey(structure.bodyName);
-    const existing = next.sites.find(
-      (site) => site.installationId === installationId && bodyKey(site.bodyName) === targetBody,
+    // 1) Связь по id Raven: та же постройка узнаётся, даже если тело или
+    //    название в источнике поменялись.
+    // 2) Иначе — та же постройка на том же теле. Запись, связанную с другой
+    //    постройкой Raven, не трогаем: это другая площадка.
+    const linked = structure.buildId
+      ? next.sites.find((site) => site.ravenBuildId === structure.buildId)
+      : undefined;
+    const existing = linked ?? next.sites.find(
+      (site) => site.installationId === installationId
+        && bodyKey(site.bodyName) === targetBody
+        && !(site.ravenBuildId && structure.buildId && site.ravenBuildId !== structure.buildId),
     );
     if (existing) {
       if (existing.status !== structure.status) next = setSiteStatus(next, existing.id, structure.status);
       // Тело могло быть записано коротким именем — чиним на каноническое.
       if (structure.bodyName && existing.bodyName !== structure.bodyName) {
         next = updateSite(next, existing.id, { bodyName: structure.bodyName });
+      }
+      if (structure.buildId && existing.ravenBuildId !== structure.buildId) {
+        next = linkSiteToRaven(next, existing.id, structure.buildId);
       }
       updated.push(structure);
       touchedSiteIds.push(existing.id);
@@ -377,6 +408,9 @@ export function adoptExisting(
       note: `из факта: ${structure.name}`,
     });
     const createdId = next.sites[next.sites.length - 1]?.id;
+    if (createdId && structure.buildId) {
+      next = linkSiteToRaven(next, createdId, structure.buildId);
+    }
     if (createdId) {
       touchedSiteIds.push(createdId);
       if (structure.primary) primaryStructure = { siteId: createdId, structure };

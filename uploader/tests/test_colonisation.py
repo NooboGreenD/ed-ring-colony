@@ -412,6 +412,7 @@ class ColonyTabIntegrationTests(unittest.TestCase):
         self._dock_at_site()
         self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
         self.app.colony_fields["marketId"].set("999999")   # командир поправил руками
+        self.app.colony_fields["buildType"].set("hestia")  # тип выбран из справочника
 
         captured = {}
         self.app.raven_api.create_project = lambda project: captured.update(project=project) or {
@@ -424,6 +425,37 @@ class ColonyTabIntegrationTests(unittest.TestCase):
 
         self.assertNotIn("colonisationConstructionDepot", captured["project"])
         self.assertEqual(captured["project"]["marketId"], 999999)
+
+    def test_body_list_comes_from_system_and_fills_body_id(self):
+        """Тело выбирается из тел системы, BodyID подставляется сам (руками не нужен)."""
+        from system_map import MapBody
+
+        self.app.system_map._bodies["Sol"] = {
+            "Sol A": MapBody(name="Sol A", system="Sol", body_id=0),
+            "Sol 3": MapBody(name="Sol 3", system="Sol", body_id=3),
+        }
+        self.app.colony_fields["systemName"].set("Sol")
+        self.assertEqual(self.app._colony_body_choices(), {"Sol A": 0, "Sol 3": 3})
+        self.app.colony_fields["bodyName"].set("Sol 3")
+        self.app._colony_sync_body_num()
+        self.assertEqual(self.app.colony_fields["bodyNum"].get(), "3")
+
+    def test_build_type_comes_from_reference_list(self):
+        from colony_build_types import build_type_label
+
+        self.app.colony_fields["buildType"].set(build_type_label("zeus"))
+        self.assertEqual(self.app._colony_build_type_code(), "zeus")
+        self.app.colony_fields["buildType"].set("свободный текст")
+        self.assertEqual(self.app._colony_build_type_code(), "")
+
+    def test_create_is_blocked_without_build_type(self):
+        self._dock_at_site()
+        self.app._colony_autofill_from_site(self.app.construction.site, auto=True)
+        self.app.colony_fields["buildType"].set("")
+        self.app.raven_api.create_project = mock.MagicMock()
+        with self._run_threads_inline():
+            self.app._on_colony_create()
+        self.app.raven_api.create_project.assert_not_called()
 
     def test_create_is_blocked_without_required_fields(self):
         self.app.raven_api.create_project = mock.MagicMock()
