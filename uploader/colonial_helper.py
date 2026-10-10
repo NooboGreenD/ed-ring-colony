@@ -4918,7 +4918,10 @@ class ColonialHelperApp:
             # Свежий refresh-токен мог не пережить 25-дневный простой Frontier.
             # Прежде чем просить пилота о повторном входе, пробуем копию
             # привязки с сайта: сайт продлевает её своим расписанием.
-            if result is not None and not result.get("ok") and result.get("status") in (401, 403, 422):
+            # Status 0 — локальная авторизация уже не даёт токена (refresh
+            # истёк или отозван): сайт мог продлить СВОЮ пару, пока
+            # приложение стояло, — тогда подхватываем её вместо ошибки.
+            if result is not None and not result.get("ok") and result.get("status") in (0, 401, 403, 422):
                 if self._capi_adopt_site_tokens():
                     try:
                         result = verify_once()
@@ -4937,6 +4940,7 @@ class ColonialHelperApp:
                 cmdr = str(result.get("cmdr") or "")
 
             upload_error = None
+            upload_note = None
             if not error and stats:
                 # Живые токены есть и профиль получен: делимся ими с сайтом,
                 # чтобы дальше их продлевало расписание сайта.
@@ -4944,6 +4948,13 @@ class ColonialHelperApp:
                 result_upload = self.api_client.upload_pilot_stats(stats, cmdr or None)
                 if not result_upload.get("ok"):
                     upload_error = result_upload.get("error")
+                elif result_upload.get("pilotStatsSkipped") == "web_source":
+                    # Не ошибка: сайт хранит сводку, загруженную через браузер,
+                    # и программа не имеет права её перетереть.
+                    upload_note = result_upload.get("warning") or (
+                        "сводка пилота не записана — приоритет у данных, "
+                        "загруженных через сайт"
+                    )
 
             def done():
                 if error:
@@ -4958,6 +4969,11 @@ class ColonialHelperApp:
                 if upload_error:
                     self._capi_set_status("Данные получены, но не отправлены на сайт", ok=False)
                     self.log(f"Досье из CAPI получено, загрузка на сайт не удалась: {upload_error}", "warn")
+                    return
+                if upload_note:
+                    self._capi_set_status(
+                        f"Досье из Frontier получено ({cmdr or 'пилот'}); {upload_note}", ok=True)
+                    self.log(f"Сводка пилота от программы не записана: {upload_note}", "warn")
                     return
                 self._capi_set_status(
                     f"Досье обновлено из Frontier{f' ({cmdr})' if cmdr else ''}", ok=True)

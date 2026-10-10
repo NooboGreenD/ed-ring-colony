@@ -116,11 +116,13 @@ export async function POST(req: Request) {
     // заново без всякого толку.
     let telemetry = null;
     try {
+      // Этот роут — только для программы (Colonial Helper, API-токен):
+      // её сводка пилота не перетирает данные, загруженные через сайт.
       telemetry = await persistJournalTelemetry(svc, userId, {
         constructionEvents: body.construction_events ?? body.constructionEvents,
         systemScans: body.system_scans ?? body.systemScans ?? body.scans,
         pilotStats: body.pilot_stats ?? body.pilotStats,
-      }, cmdr || null);
+      }, cmdr || null, { source: 'helper' });
       for (const warning of telemetry.warnings) {
         console.warn('[logs/upload]', warning);
       }
@@ -134,6 +136,8 @@ export async function POST(req: Request) {
       constructionDuplicates: telemetry?.constructionDuplicates ?? 0,
       snapshotInserted: telemetry?.snapshotInserted ?? 0,
       pilotStatsUpdated: telemetry?.pilotStatsUpdated ?? false,
+      // 'web_source' — сводка пилота защищена загрузкой журналов на сайте
+      pilotStatsSkipped: telemetry?.pilotStatsSkipped ?? null,
       systemScansInserted: telemetry?.systemScansInserted ?? 0,
     });
   } catch (error) {

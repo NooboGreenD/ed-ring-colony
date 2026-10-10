@@ -45,16 +45,22 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   `/account/capi` показывает причину, срок действия токена и диагностику (`/api/capi/status`). При
   (пере)подключении выбирается платформа магазина (Frontier/Steam/Epic/Xbox/PSN), колбэк сверяет её с
   фактической платформой токена, а Helper и сайт делят одну привязку через `/api/capi/token` — живой токен
-  продлевается расписанием и не умирает за 25 дней простоя приложения.
+  продлевается расписанием и не умирает за 25 дней простоя приложения. Refresh-токен одноразовый: параллельные
+  синки не ломают друг друга (сериализация + сверка строки), сайт не принимает от Helper'а устаревшую копию
+  токенов, а `GET /api/capi/token` продлевает access-токен сам. Пилоты Legacy-галактики читаются с
+  `legacy-companion.orerve.net`.
   Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md), выбор платформы и общий токен —
-  [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md)
+  [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md), стабильность всех видов подключения и защита
+  источника сводки пилота — [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
 - **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
   правилам и в одни и те же таблицы: доставки, состояния стройплощадок, снимки прогресса, сканы тел, сводка пилота.
   Повторы доставок отсекает `source_hash`. Состояние каждой стройплощадки хранится одной строкой (`colonisation_sites`,
   ключ — MarketID), в Uploader и на сайт уходят только нужные поля, а снимки прогресса подрезает задача
   `colonisation-cleanup` (окно `COLONISATION_RETENTION_DAYS`). «Монеты наёмников» читаются из
-  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облигаций —
-  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md), [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md)
+  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облигаций. У сводки пилота (`pilot_stats`)
+  хранится источник последней записи (`stats_source`: сайт / программа / CAPI): данные программы не перетирают
+  данные с логов, загруженных через сайт —
+  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md), [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md), [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
 - **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
 - **Projects** — Plan and track colonization projects with route optimization
 - **System Architect** — `/architect` (тестовый режим): планировщик застройки системы по образцу инструмента

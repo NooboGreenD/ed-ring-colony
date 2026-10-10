@@ -5,6 +5,7 @@ import { createHash } from 'crypto';
 import { authFromRequest } from '@/lib/supabaseServer';
 import { fetchFrontierIdentity } from '@/lib/capi/oauth';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
+import { capiSession } from '@/lib/capi/session';
 import { syncCapiPilot } from '@/lib/capi/syncPilot';
 
 export const dynamic = 'force-dynamic';
@@ -91,12 +92,26 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, error: 'No active CAPI binding' }, { status: 404 });
     }
 
+    // Access-токен мог истечь: продлеваем его сами (сессия устойчива к
+    // параллельным обновлениям), чтобы Helper получил ЖИВОЙ токен. Иначе
+    // приложение обновляло бы токен своим refresh'ем — refresh-токен
+    // одноразовый, и расход его приложением убил бы копию сайта до
+    // ближайшего синка по расписанию.
+    let { access_token: accessToken, refresh_token: refreshToken, expires_at: expiresAt } = token;
+    try {
+      const session = await capiSession(svc, userId, token);
+      ({ access_token: accessToken, refresh_token: refreshToken, expires_at: expiresAt } = session.tokens);
+    } catch (sessionError) {
+      // Не смертельно: отдадим ту пару, что есть — Helper обновит её сам.
+      console.warn('[CAPI Token GET] proactive refresh skipped:', (sessionError as Error).message);
+    }
+
     return NextResponse.json({
       ok: true,
       tokens: {
-        access_token: token.access_token,
-        refresh_token: token.refresh_token,
-        expires_at: token.expires_at,
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        expires_at: expiresAt,
         platform: token.platform,
         cmdr_name: token.cmdr_name,
       },
@@ -156,6 +171,27 @@ export async function POST(req: Request) {
         .maybeSingle();
       if (clash?.user_id) {
         return NextResponse.json({ error: 'already_linked_elsewhere' }, { status: 409 });
+      }
+    }
+
+    // Helper мог прислать СТАРУЮ копию пары токенов: сайт уже продлил свою
+    // (refresh-токен одноразовый — свежая пара сайта делает присланную
+    // мёртвой). Перезапись свежей пары старой ломает продление по
+    // расписанию, поэтому принимаем только более свежую пару того же
+    // аккаунта Frontier. Перепривязка другого аккаунта — всегда свежая пара,
+    // она проходит.
+    const { data: existing } = await svc
+      .from('capi_tokens')
+      .select('expires_at, frontier_id')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (existing?.expires_at) {
+      const existingExpiry = Date.parse(existing.expires_at);
+      const sameAccount = !existing.frontier_id
+        || !identity?.frontierId
+        || existing.frontier_id === identity.frontierId;
+      if (sameAccount && Number.isFinite(existingExpiry) && existingExpiry >= expiresAtMs) {
+        return NextResponse.json({ ok: true, synced: false, stale: true, reason: 'site_tokens_newer' });
       }
     }
 

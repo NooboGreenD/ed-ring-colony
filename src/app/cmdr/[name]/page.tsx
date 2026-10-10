@@ -4,6 +4,7 @@ import { fetchRavenColonialData } from '@/lib/ravenColonial';
 import { summarizeCargo } from '@/lib/dossierCargo';
 import { maskCapiProfile, maskPilotStats, privacyForViewer } from '@/lib/privacy';
 import { assessProfileBinding } from '@/lib/capi/profileBinding';
+import { mergePilotStats } from '@/lib/pilotDossier';
 import CmdrDossier from '@/components/CmdrDossier';
 import { IconSquadron, IconLeaderboard } from '@/components/Icons';
 import { CmdrProfileHeader, CmdrProfileName } from '@/components/Cosmetics/CmdrProfileCosmetics';
@@ -106,58 +107,38 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
     ? rawCapiProfile
     : null;
 
-  const pilotStats = {
-    credits: pilotStatsRow?.credits ?? capiProfile?.credits ?? 0,
-    arx: pilotStatsRow?.arx ?? capiProfile?.arx ?? 0,
-    mercenary_coins: pilotStatsRow?.mercenary_coins ?? capiProfile?.mercenary_coins ?? 0,
-    mercenary_rank: pilotStatsRow?.mercenary_rank ?? capiProfile?.mercenary_rank ?? 0,
-    exobiologist_rank: pilotStatsRow?.exobiologist_rank ?? capiProfile?.exobiologist_rank ?? 0,
-    combat_rank: capiProfile?.combat_rank ?? 0,
-    trade_rank: capiProfile?.trade_rank ?? 0,
-    explore_rank: capiProfile?.explore_rank ?? 0,
-    empire_rank: capiProfile?.empire_rank ?? 0,
-    federation_rank: capiProfile?.federation_rank ?? 0,
-    current_ship: capiProfile?.current_ship ?? null,
-    current_system: capiProfile?.current_system ?? null,
-    current_station: capiProfile?.current_station ?? null,
-    first_discoveries_count: Math.max(
-      pilotStatsRow?.first_discoveries_count ?? 0,
-      capiProfile?.first_discoveries_count ?? 0,
-      firstDiscoveredCount ?? 0,
-    ),
-    first_mapped_count: Math.max(
-      pilotStatsRow?.first_mapped_count ?? 0,
-      capiProfile?.first_mapped_count ?? 0,
-      firstMappedCount ?? 0,
-    ),
-    first_footfalls_count: Math.max(
-      pilotStatsRow?.first_footfalls_count ?? 0,
-      capiProfile?.first_footfalls_count ?? 0,
-    ),
-    bio_samples_count: Math.max(
-      pilotStatsRow?.bio_samples_count ?? 0,
-      capiProfile?.bio_samples_count ?? 0,
-    ),
-    bio_species_count: Math.max(
-      pilotStatsRow?.bio_species_count ?? 0,
-      capiProfile?.bio_species_count ?? 0,
-    ),
-    bio_value_cr: Math.max(
-      pilotStatsRow?.bio_value_cr ?? 0,
-      capiProfile?.bio_value_cr ?? 0,
-    ),
-    exploration_stats: {
-      ...(capiProfile?.exploration_stats || {}),
-      ...(pilotStatsRow?.exploration_stats || {}),
-    },
-    last_updated: pilotStatsRow?.last_updated || capiProfile?.last_updated || null,
-  };
+  // Без привязки CAPI на сайте те же параметры приносит Colonial Helper со
+  // своей CAPI-авторизацией (в `pilot_stats`). Показываем их в том же блоке
+  // «Frontier CAPI»: для пилота источник данных — всё равно Frontier.
+  const capiView = capiProfile ?? (pilotStatsRow ? {
+    cmdr_name: pilotStatsRow.cmdr_name ?? null,
+    credits: pilotStatsRow.credits ?? null,
+    combat_rank: pilotStatsRow.combat_rank ?? null,
+    trade_rank: pilotStatsRow.trade_rank ?? null,
+    explore_rank: pilotStatsRow.explore_rank ?? null,
+    empire_rank: pilotStatsRow.empire_rank ?? null,
+    federation_rank: pilotStatsRow.federation_rank ?? null,
+    current_ship: pilotStatsRow.current_ship ?? null,
+    current_system: pilotStatsRow.current_system ?? null,
+    current_station: pilotStatsRow.current_station ?? null,
+    last_updated: pilotStatsRow.last_updated ?? null,
+  } : null);
+
+  // Одно слияние с `/api/cmdr/stats`: ранги и текущее положение раньше
+  // брались только из capi_profiles, хотя Colonial Helper приносит их и в
+  // pilot_stats — у пилота без привязки CAPI на сайте досье показывало «—».
+  const pilotStats = mergePilotStats({
+    pilotStats: pilotStatsRow,
+    capiProfile,
+    firstDiscoveredCount: firstDiscoveredCount,
+    firstMappedCount: firstMappedCount,
+  });
 
   // Конфиденциальность: что командир разрешил показывать другим. Владелец на
   // своей странице видит всё, поэтому фильтрация учитывает текущего зрителя.
   const privacy = privacyForViewer(profile?.privacy_settings, currentUserId, profileId);
   const publicPilotStats = maskPilotStats(pilotStats, privacy);
-  const publicCapiProfile = maskCapiProfile(capiProfile, privacy);
+  const publicCapiProfile = maskCapiProfile(capiView, privacy);
   const cargoIsPublic = privacy.cargo;
   const deliveriesArePublic = privacy.deliveries;
 
