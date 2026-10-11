@@ -1,3 +1,4 @@
 export { default } from "./GalaxyMap";
 export { GalaxyScene } from "./GalaxyScene";
-export { NebulaClouds } from "./NebulaClouds";
+export { NebulaField } from "./NebulaField";
+export { NebulaCard } from "./NebulaCard";
