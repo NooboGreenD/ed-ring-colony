@@ -13,6 +13,9 @@ import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/syste
 import type { MarketResult } from './MarketResultMarkers';
 import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
 import { loadAllSystemsData } from './AllSystemsPoints';
+import { NebulaCard } from './NebulaCard';
+import { NEBULA_KIND_ORDER, NEBULA_KIND_SHORT, NEBULA_KIND_UI_COLOR } from './NebulaField';
+import { GALAXY_NEBULAE, NEBULA_KIND_LABELS, type GalaxyNebula, type NebulaKind } from '@/lib/galaxyNebulae';
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import {
@@ -203,6 +206,9 @@ export default function GalaxyMap({
   const [showRegionLabels, setShowRegionLabels] = useState(true);
   const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
   const [showNebulae, setShowNebulae] = useState(true);
+  const [showNebulaLabels, setShowNebulaLabels] = useState(true);
+  const [nebulaKinds, setNebulaKinds] = useState<NebulaKind[]>(NEBULA_KIND_ORDER);
+  const [selectedNebula, setSelectedNebula] = useState<GalaxyNebula | null>(null);
   const [showRingZone, setShowRingZone] = useState(true);
   // Экспериментальный слой «все системы» (данные: Spansh-дамп в БД).
   const [showAllSystems, setShowAllSystems] = useState(false);
@@ -418,6 +424,7 @@ export default function GalaxyMap({
   }, [pilots, compactMap, showPilots]);
 
   const handleSelectHub = useCallback((hub: Hub | null) => {
+    setSelectedNebula(null);
     setSelectedHub(hub);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
@@ -427,6 +434,7 @@ export default function GalaxyMap({
   }, []);
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
+    setSelectedNebula(null);
     setSelectedRouteSystem(point);
     setSelectedHub(null);
     setSelectedAtlasCandidate(null);
@@ -436,6 +444,7 @@ export default function GalaxyMap({
   }, []);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
+    setSelectedNebula(null);
     setSelectedAtlasCandidate(candidate);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -445,6 +454,7 @@ export default function GalaxyMap({
   }, []);
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
+    setSelectedNebula(null);
     setSelectedPilot(pilot);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -522,7 +532,26 @@ export default function GalaxyMap({
     finally { setSystemSearchLoading(false); }
   }, [handleSelectHub, handleSelectRouteSystem, openGalaxy, systemSearch, uniqueHubs, uniqueRouteSystems]);
 
+  // Туманность — такой же объект карты, как хаб или пилот: выбор подсвечивает
+  // её, ведёт камеру и показывает карточку.
+  const handleSelectNebula = useCallback((nebula: GalaxyNebula | null) => {
+    setSelectedNebula(nebula);
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    setGalaxyPick(null);
+    if (nebula) setFocusTarget(eliteToThreeCentered(nebula));
+  }, []);
+
+  const toggleNebulaKind = useCallback((kind: NebulaKind) => {
+    setNebulaKinds((current) =>
+      current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
+    );
+  }, []);
+
   const handleClearSelection = useCallback(() => {
+    setSelectedNebula(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
@@ -725,11 +754,50 @@ export default function GalaxyMap({
               <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
                 <label style={{ fontSize: 11, color: '#d8e8ff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionLabels} onChange={(event) => setShowRegionLabels(event.target.checked)} /> Имена секторов</label>
                 <label style={{ fontSize: 11, color: '#ff9a3d', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRegionBoundaries} onChange={(event) => setShowRegionBoundaries(event.target.checked)} /> Границы секторов</label>
-                <label style={{ fontSize: 11, color: '#b48cff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showNebulae} onChange={(event) => setShowNebulae(event.target.checked)} /> Туманности</label>
                 <label style={{ fontSize: 11, color: '#e67e22', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}><input type="checkbox" checked={showRingZone} onChange={(event) => setShowRingZone(event.target.checked)} /> Оранжевый пояс</label>
               </div>
             </>
           )}
+          <div style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
+            <label style={{ fontSize: 11, color: '#b48cff', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+              <input type="checkbox" checked={showNebulae} onChange={(event) => setShowNebulae(event.target.checked)} />
+              Туманности ({GALAXY_NEBULAE.length})
+            </label>
+            {showNebulae && (
+              <div style={{ paddingLeft: 22, display: 'flex', flexWrap: 'wrap', gap: 3, alignItems: 'center', marginTop: 4 }}>
+                {NEBULA_KIND_ORDER.map((kind) => {
+                  const on = nebulaKinds.includes(kind);
+                  return (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => toggleNebulaKind(kind)}
+                      title={NEBULA_KIND_LABELS[kind]}
+                      style={{
+                        fontSize: 9,
+                        color: on ? NEBULA_KIND_UI_COLOR[kind] : '#6b7280',
+                        background: on ? `${NEBULA_KIND_UI_COLOR[kind]}1f` : 'transparent',
+                        border: `1px solid ${on ? `${NEBULA_KIND_UI_COLOR[kind]}66` : '#3a3d40'}`,
+                        borderRadius: 3,
+                        padding: '1px 5px',
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      {NEBULA_KIND_SHORT[kind]}
+                    </button>
+                  );
+                })}
+                <label style={{ fontSize: 10, color: '#9ca3af', display: 'flex', alignItems: 'center', gap: 3, cursor: 'pointer', marginLeft: 2 }}>
+                  <input type="checkbox" checked={showNebulaLabels} onChange={(event) => setShowNebulaLabels(event.target.checked)} />
+                  подписи
+                </label>
+              </div>
+            )}
+            <div style={{ fontSize: 9, color: '#6b7280', paddingLeft: 22, marginTop: 3, lineHeight: 1.3 }}>
+              координаты и размеры — из игры; клик по названию открывает карточку объекта
+            </div>
+          </div>
         </div>
 
         <div style={{ borderTop: '1px solid #2d2f33', paddingTop: 8, marginBottom: 8, pointerEvents: 'auto' }}>
@@ -793,6 +861,14 @@ export default function GalaxyMap({
             <a href={`https://inara.cz/elite/starsystem/?search=${encodeURIComponent(galaxyPick.name)}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: '#9ca3af', textDecoration: 'none' }}>Inara</a>
           </div>
         </div>
+      )}
+
+      {selectedNebula && !galaxyPick && (
+        <NebulaCard
+          nebula={selectedNebula}
+          onFocus={(nebula) => setFocusTarget(eliteToThreeCentered(nebula))}
+          onClose={() => setSelectedNebula(null)}
+        />
       )}
 
       {selected && !galaxyPick && (
@@ -871,6 +947,10 @@ export default function GalaxyMap({
             showRegionLabels={showRegionLabels}
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}
+            nebulaKinds={nebulaKinds}
+            showNebulaLabels={showNebulaLabels}
+            selectedNebulaName={selectedNebula?.name ?? null}
+            onSelectNebula={handleSelectNebula}
             showRingZone={showRingZone}
             allSystemsData={allSystemsData}
             showAllSystems={showAllSystems && !!allSystemsData}

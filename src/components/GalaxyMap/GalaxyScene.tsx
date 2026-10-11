@@ -5,8 +5,7 @@ import { OrbitControls } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { GalaxyBackground } from './GalaxyBackground';
-import { NebulaClouds } from './NebulaClouds';
-import { GalaxyNebulaSprites } from './GalaxyNebulaSprites';
+import { NebulaField } from './NebulaField';
 import { RingZone } from './RingZone';
 import { LandmarkMarkers } from './LandmarkMarkers';
 import { GalaxyRegionMarkers } from './GalaxyRegionMarkers';
@@ -23,6 +22,7 @@ import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions } fr
 import type { Pilot } from './PilotMarkers';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import type { AllSystemsData } from '@/lib/galaxySystems';
+import type { GalaxyNebula, NebulaKind } from '@/lib/galaxyNebulae';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 
@@ -75,6 +75,11 @@ interface GalaxySceneProps {
   showRegionLabels?: boolean;
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
+  /** Типы туманностей, которые остаются на карте. */
+  nebulaKinds?: NebulaKind[];
+  showNebulaLabels?: boolean;
+  selectedNebulaName?: string | null;
+  onSelectNebula?: (nebula: GalaxyNebula | null) => void;
   showRingZone?: boolean;
   /** Experimental layer: every known system in the galaxy (Spansh dump). */
   allSystemsData?: AllSystemsData | null;
@@ -113,6 +118,10 @@ export function GalaxyScene({
   showRegionLabels = true,
   showRegionBoundaries = true,
   showNebulae = true,
+  nebulaKinds,
+  showNebulaLabels = true,
+  selectedNebulaName = null,
+  onSelectNebula,
   showRingZone = true,
   allSystemsData = null,
   showAllSystems = false,
@@ -210,8 +219,14 @@ export function GalaxyScene({
       <fog attach="fog" args={['#000000', 40000, 140000]} />
 
       <GalaxyBackground />
-      <NebulaClouds />
-      {showNebulae && <GalaxyNebulaSprites />}
+      {showNebulae && (
+        <NebulaField
+          showLabels={showNebulaLabels}
+          visibleKinds={nebulaKinds}
+          selectedName={selectedNebulaName}
+          onSelect={onSelectNebula}
+        />
+      )}
       {showRingZone && <RingZone />}
       <LandmarkMarkers onSelect={onSelectRouteSystem} />
       <GalacticRegions />
