@@ -27,6 +27,9 @@ import {
   DARK_OPACITY,
   EMISSIVE_ADDITIVE,
   EMISSIVE_OPACITY,
+  SCREEN_FADE_CURVE,
+  SCREEN_FADE_FLOOR,
+  SCREEN_MIN_PIXELS,
   TARGET_PEAK,
   buildNebulaBuckets,
   buildPuffAtlasData,
@@ -130,18 +133,20 @@ function drawBucket(target, mask, bucket, opacity, centerX, centerZ, scale, widt
     const cx = (bucket.centers[i * 3] - centerX) * scale + width / 2;
     const cz = (bucket.centers[i * 3 + 2] - centerZ) * scale + height / 2;
     const radius = (bucket.sizes[i] / 2) * scale;
-    // Как в шейдере: облако не должно пропадать при отдалении — держим
-    // минимальный экранный радиус и приглушаем такие «далёкие» клубы.
-    const MIN_PIXELS = 3.5;
-    const DISTANT_FADE_CURVE = 1.5;
-    const DISTANT_FADE_FLOOR = 0.03;
+    // Те же константы, что в шейдре карты: облако не пропадает при отдалении —
+    // держим минимальный экранный радиус и приглушаем «далёкие» клубы.
+    const MIN_PIXELS = SCREEN_MIN_PIXELS;
+    const DISTANT_FADE_CURVE = SCREEN_FADE_CURVE;
+    const DISTANT_FADE_FLOOR = SCREEN_FADE_FLOOR;
     let puffScale = 1;
     let distant = 1;
-    if (radius < MIN_PIXELS) {
-      puffScale = MIN_PIXELS / Math.max(radius, 0.0001);
+    // pixels — диаметр клуба в пикселях, как `iSize * uPixelScale / depth` в шейдере.
+    const pixels = radius * 2;
+    if (pixels < MIN_PIXELS) {
+      puffScale = MIN_PIXELS / Math.max(pixels, 0.0001);
       distant = Math.max(
         DISTANT_FADE_FLOOR,
-        Math.min(1, Math.pow(Math.max(0, radius) / MIN_PIXELS, DISTANT_FADE_CURVE)),
+        Math.min(1, Math.pow(Math.max(0, pixels) / MIN_PIXELS, DISTANT_FADE_CURVE)),
       );
     }
     const drawRadius = radius * puffScale;
@@ -319,6 +324,8 @@ function writeSheet(tiles, title) {
 if (!only) {
   const views = [
     { title: 'galaxy', centerX: 0, centerZ: 0, span: 100000 },
+    // Охват дефолтной камеры карты: высота 2*35000*tan(22.5°) ≈ 29000 св. лет.
+    { title: 'map', centerX: 0, centerZ: 0, span: 29000 },
     { title: 'bubble', centerX: project({ x: 0, y: 0, z: 0 }).x, centerZ: project({ x: 0, y: 0, z: 0 }).z, span: 6000 },
     // Центр кадра — сама туманность: Sol в системе координат карты смещён
     // относительно Sgr A*, и промах «на глаз» уводит кадр мимо объекта.

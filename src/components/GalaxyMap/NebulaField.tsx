@@ -33,6 +33,9 @@ import {
   DARK_OPACITY,
   EMISSIVE_ADDITIVE,
   EMISSIVE_OPACITY,
+  SCREEN_FADE_CURVE,
+  SCREEN_FADE_FLOOR,
+  SCREEN_MIN_PIXELS,
   buildNebulaBuckets,
   buildPuffAtlasData,
   type PuffBucket,
@@ -46,20 +49,6 @@ import {
 } from '@/lib/galaxyNebulae';
 
 const CORE_OPACITY = 0.3;
-
-/**
- * Минимальный экранный размер облака в пикселях. На карте галактики туманности
- * видны и при полностью отдалённой камере — слабыми цветными дымками. Без этого
- * ограничения в масштабе всей Галактики от них не остаётся ни пикселя.
- */
-const MIN_PIXELS = 7;
-/**
- * Как гаснет облако, раздутое до минимального размера. Показатель >1 keeps
- * суммарный свет примерно постоянным: иначе на дальнем плане сотни раздутых
- * клубов накладываются друг на друга и карта превращается в цветное пятно.
- */
-const DISTANT_FADE_CURVE = 1.5;
-const DISTANT_FADE_FLOOR = 0.03;
 
 /** Короткие названия и цвета для фильтров в панели карты. */
 export const NEBULA_KIND_SHORT: Record<NebulaKind, string> = {
@@ -162,18 +151,21 @@ const VERTEX_SHADER = /* glsl */ `
     float pixels = iSize * uPixelScale / viewDepth;
     float boost = max(1.0, uMinPixels / max(pixels, 0.0001));
     float distant = clamp(pow(clamp(pixels / uMinPixels, 0.0, 1.0), uDistantCurve), uDistantFloor, 1.0);
-    iSize *= boost;
+    // Атрибуты в GLSL только для чтения — раздутый размер живёт в локальной
+    // переменной. Запись в атрибут не компилируется, и тогда слой туманностей
+    // не рисуется вовсе (подписи при этом остаются, чем и выглядит поломка).
+    float puffSize = iSize * boost;
     // Билборд строится в видовых координатах, как у THREE.Sprite: так он
     // остаётся развёрнутым к камере при любом ракурсе — в том числе при
     // взгляде строго сверху, где базис «мирового верха» вырождается.
     float s = sin(iRot);
     float c = cos(iRot);
-    vec2 corner = position.xy * iSize;
+    vec2 corner = position.xy * puffSize;
     vec2 rotated = vec2(corner.x * c - corner.y * s, corner.x * s + corner.y * c);
     mv.xy += rotated;
 
     // Внутри облака туманность растворяется: иначе один клуб засветил бы экран.
-    float nearFade = smoothstep(iSize * 0.35, iSize * 1.5, length(mv.xyz));
+    float nearFade = smoothstep(puffSize * 0.35, puffSize * 1.5, length(mv.xyz));
 
     vColor = iColor;
     vAlpha = iAlpha * nearFade * distant;
@@ -211,9 +203,9 @@ function createPuffMaterial(texture: THREE.Texture, opacity: number, blending: T
       uMap: { value: texture },
       uOpacity: { value: opacity },
       uPixelScale: { value: 800 },
-      uMinPixels: { value: MIN_PIXELS },
-      uDistantCurve: { value: DISTANT_FADE_CURVE },
-      uDistantFloor: { value: DISTANT_FADE_FLOOR },
+      uMinPixels: { value: SCREEN_MIN_PIXELS },
+      uDistantCurve: { value: SCREEN_FADE_CURVE },
+      uDistantFloor: { value: SCREEN_FADE_FLOOR },
     },
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,

@@ -29,8 +29,8 @@ export const DARK_OPACITY = 1;         // общий множитель плот
  * планетарная туманность из полусотни мелких клубов выглядит как «скопление
  * точек», поэтому у компактных объектов клубы крупные и их немного.
  */
-export const PUFF_SIZE_MIN = 0.18;
-export const PUFF_SIZE_MAX = 0.58;
+export const PUFF_SIZE_MIN = 0.28;
+export const PUFF_SIZE_MAX = 0.8;
 export const PUFF_SIZE_TARGET = 28;    // число клубов, при котором доля диаметра = 0.34
 export const PUFF_SIZE_JITTER = 0.22;  // разброс размера клубов вокруг базового
 /**
@@ -39,7 +39,7 @@ export const PUFF_SIZE_JITTER = 0.22;  // разброс размера клуб
  * но не превращаются в россыпь точек, потому что их вес мал и они привязаны
  * к родительскому клубу.
  */
-export const DETAIL_CHANCE = 0.55;     // доля клубов со спутником
+export const DETAIL_CHANCE = 0.4;      // доля клубов со спутником
 export const DETAIL_SIZE = 0.42;       // размер спутника от родительского клуба
 export const DETAIL_WEIGHT = 0.3;      // вес спутника относительно родителя
 /**
@@ -76,6 +76,22 @@ export const ALPHA_MAX = 0.9;          // выше — клуб превраща
  * Значение использует и нормировка яркости, поэтому менять его безопасно.
  */
 export const ATLAS_PEAK = 0.62;
+/** Спад альфы клуба от центра к краю. Мягче единицы-квадрата: широкие «плечи»
+ * перекрываются и дают сплошной газ вместо россыпи круглых пятен. */
+export const PUFF_FALLOFF = 1.4;
+
+/**
+ * Экранные константы слоя — общие для шейдера (`NebulaField.tsx`) и превью
+ * (`scripts/preview-nebulae.mjs`), чтобы картинка превью совпадала с картой.
+ * MIN_PIXELS — минимальный экранный размер клуба: туманность не исчезает при
+ * отдалении камеры, а остаётся мягкой цветной дымкой на весь диск Галактики.
+ * FADE_* — как приглушается раздутое до минимума облако: показатель <2 держит
+ * суммарный свет, а пол (а не 0.03, как было раньше) не гасит дымку в ноль —
+ * с нулевым полом на масштабе всей Галактики туманности не было видно вовсе.
+ */
+export const SCREEN_MIN_PIXELS = 10;
+export const SCREEN_FADE_CURVE = 1.2;
+export const SCREEN_FADE_FLOOR = 0.16;
 
 /**
  * Целевая яркость ядра облака. Для светящихся туманностей это линейный свет в
@@ -326,7 +342,7 @@ export function buildPuffAtlasData(): { size: number; tileCount: number; alpha: 
         const u = (x + 0.5) / tile - 0.5;
         const v = (y + 0.5) / tile - 0.5;
         const r = Math.min(1, Math.hypot(u, v) * 2);
-        const base = Math.pow(Math.max(0, 1 - r), 2.1);
+        const base = Math.pow(Math.max(0, 1 - r), PUFF_FALLOFF);
         let fbm = 0;
         let amp = 0.55;
         let f = freq;
@@ -376,6 +392,9 @@ export function buildNebulaPuffs(
   const isDark = nebula.kind === 'dark';
   const count = puffCountFor(nebula);
   const shape = nebula.shape ?? 'cloud';
+  // Отношение осей из каталога (MinAx/MajAx): 1 — круглое облако, 0.25 — сильная
+  // вытянутость. Ограничиваем снизу, чтобы облако не вырождалось в линию.
+  const ratio = nebula.ratio != null ? Math.max(0.25, Math.min(1, nebula.ratio)) : null;
   const anchors = [center, ...extraCenters];
   // У каждого лепестка (Сердце и Душа) — своя плотность клубов: иначе составная
   // туманность получается вдвое бледнее одиночной.
@@ -399,7 +418,7 @@ export function buildNebulaPuffs(
   // мельче каждый — иначе облако превращается в стопку круглых пятен.
   const puffFraction = Math.max(
     PUFF_SIZE_MIN,
-    Math.min(PUFF_SIZE_MAX, 0.55 * Math.sqrt(PUFF_SIZE_TARGET / count)),
+    Math.min(PUFF_SIZE_MAX, 0.75 * Math.sqrt(PUFF_SIZE_TARGET / count)),
   );
 
   // Клубы этой туманности собираем отдельно: альфа считается после раскладки,
@@ -453,10 +472,16 @@ export function buildNebulaPuffs(
     const t = Math.pow(rng(), shape === 'silhouette' ? 0.75 : 0.55);
     const r = t * radius;
     const angle = rng() * Math.PI * 2;
-    const stretch = shape === 'elongated' ? 1.9 : 1;
+    // Без данных OpenNGC вытянутость задаётся вручную (1.9); с реальным b/a
+    // ручное растяжение отключается, чтобы не умножать вытянутость дважды.
+    const stretch = shape === 'elongated' && ratio == null ? 1.9 : 1;
+    // Реальное сжатие облака: отношение осей b/a из OpenNGC (MinAx/MajAx)
+    // сплющивает раскладку в эллипс — Калифорния и Орёл вытянуты, как на небе,
+    // а не «случайным комком». Дуги и нити вернулись выше своими правилами.
+    const minor = ratio ?? 1;
     const x = Math.cos(angle) * r * stretch;
     const y = (rng() - 0.5) * radius * (nebula.kind === 'planetary' ? 0.34 : 0.62);
-    const z = Math.sin(angle) * r;
+    const z = Math.sin(angle) * r * minor;
 
     const sample = noise(x * 0.012, y * 0.012, z * 0.012);
     const core = Math.max(0, 1 - t);
@@ -521,9 +546,9 @@ export function buildNebulaPuffs(
     x: center.x,
     y: center.y,
     z: center.z,
-    size: nebula.size * 1.15,
+    size: nebula.size * 1.25,
     rgb: isDark ? baseRgb : mixWhite(baseRgb, DOME_WHITE_MIX),
-    weight: 0.22,
+    weight: 0.34,
   });
   bucket.rotations.push(0);
   bucket.tiles.push(0);
@@ -559,7 +584,7 @@ function flushNebula(
       const distance = Math.hypot(anchor.x - puff.x, anchor.y - puff.y, anchor.z - puff.z);
       if (distance >= radius) continue;
       // Пик текстуры клуба и его вклад в самый яркий канал цвета.
-      const tex = ATLAS_PEAK * Math.pow(1 - distance / radius, 2.1);
+      const tex = ATLAS_PEAK * Math.pow(1 - distance / radius, PUFF_FALLOFF);
       const color = isDark ? 1 : Math.max(puff.rgb[0], puff.rgb[1], puff.rgb[2]);
       sum += puff.weight * tex * Math.max(0.05, color);
     }
