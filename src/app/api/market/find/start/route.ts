@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
+import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
+import { boxAround, listCachedSystemsInBox, saveCachedSystems } from '@/lib/atlasSystemCache';
 
 export const dynamic = 'force-dynamic';
 
@@ -94,6 +96,30 @@ function dist3d(a: EDSMCoords, b: EDSMCoords): number {
   return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+/** Координаты опорной системы: каталог проекта → кэш Atlas → EDSM. */
+async function resolveRefCoords(systemName: string): Promise<EDSMCoords | null> {
+  try {
+    const row = await findSystemByName(systemName);
+    if (row) return { x: row.x, y: row.y, z: row.z };
+  } catch (error: any) {
+    console.error('[Market Start] каталог не ответил по системе:', error?.message);
+  }
+  try {
+    const svc = createServiceClient();
+    const { data } = await svc
+      .from('atlas_system_cache')
+      .select('x,y,z')
+      .eq('name_lc', systemName.trim().toLowerCase().replace(/\s+/g, ' '))
+      .maybeSingle();
+    if (data && Number.isFinite(Number(data.x))) {
+      return { x: Number(data.x), y: Number(data.y), z: Number(data.z) };
+    }
+  } catch {
+    // Кэша может не быть — идём в EDSM.
+  }
+  return getSystemCoords(systemName);
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -102,7 +128,52 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'ref_system is required' }, { status: 400 });
     }
 
-    const rawSystems = await getSystemsInRange(ref_system, radius);
+    /*
+     * Источники идут по приоритету «проект → кэш → сеть»:
+     *   1. каталог Spansh в БД проекта — миллионы систем без обращения к EDSM;
+     *   2. кэш Atlas — то, что нашли прошлые поиски;
+     *   3. EDSM sphere/cube — только когда локальных данных нет.
+     * Раньше старт всегда ходил в EDSM, поэтому сканирование 500 систем
+     * начиналось с ожидания сети, а при её сбое поиск вообще не запускался.
+     */
+    let source = 'edsm';
+    let rawSystems: EDSMSystem[] = [];
+    const refCoords = await resolveRefCoords(ref_system);
+
+    if (refCoords) {
+      try {
+        const stats = await getGalaxyStats();
+        if (catalogIsComplete(stats)) {
+          const rows = await findSystemsInCube({
+            x: refCoords.x, y: refCoords.y, z: refCoords.z, half: radius, limit: 5000,
+          });
+          for (const row of rows) {
+            const distance = dist3d(refCoords, row);
+            if (distance <= radius) {
+              rawSystems.push({ name: row.name, coords: { x: row.x, y: row.y, z: row.z }, distance });
+            }
+          }
+          if (rawSystems.length > 0) source = 'catalog';
+        }
+      } catch (error: any) {
+        console.error('[Market Start] каталог недоступен:', error?.message);
+      }
+
+      if (rawSystems.length === 0) {
+        const cached = await listCachedSystemsInBox(boxAround(refCoords, radius), 5000).catch(() => []);
+        for (const row of cached) {
+          const distance = dist3d(refCoords, row);
+          if (distance <= radius) {
+            rawSystems.push({ name: row.name, coords: { x: row.x, y: row.y, z: row.z }, distance });
+          }
+        }
+        if (rawSystems.length > 0) source = 'cache';
+      }
+    }
+
+    if (rawSystems.length === 0) {
+      rawSystems = await getSystemsInRange(ref_system, radius);
+    }
 
     if (rawSystems.length === 0) {
       return NextResponse.json(
@@ -143,6 +214,11 @@ export async function POST(request: Request) {
 
     const svc = createServiceClient();
 
+    // Список систем — в кэш Atlas: следующий поиск в этом районе не пойдёт в EDSM.
+    void saveCachedSystems(
+      inSphere.map((system) => ({ name: system.name, x: system.x, y: system.y, z: system.z, source })),
+    ).catch(() => 0);
+
     const { data: job, error } = await svc
       .from('market_search_jobs')
       .insert({
@@ -171,6 +247,7 @@ export async function POST(request: Request) {
       total_systems: inSphere.length,
       status: 'pending',
       systems_list: inSphere,
+      source,
     });
   } catch (e: any) {
     console.error('[Market Start] Error:', e);

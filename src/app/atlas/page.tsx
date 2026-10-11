@@ -10,7 +10,7 @@ import { AtlasSearchPanel } from '@/components/Atlas/AtlasSearchPanel';
 import { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';
 import { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';
 import { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';
-import AtlasRouteFinder, { type RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
+import AtlasRouteFinder from '@/components/Atlas/AtlasRouteFinder';
 import AtlasMarketSearch from '@/components/Atlas/AtlasMarketSearch';
 import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
 import { toast } from '@/components/ui/Toaster';
@@ -27,6 +27,13 @@ import {
 } from '@/components/Icons';
 import type { AtlasCandidate, AtlasFavorite, AtlasSearchSession, WorldType } from '@/types/atlas';
 import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
+import {
+  finishAtlasSearchProgress,
+  publishAtlasSearchPoints,
+  publishAtlasSearchProgress,
+  startAtlasSearchProgress,
+  type AtlasSearchPoint,
+} from '@/lib/atlasSearchProgress';
 import { countByWorldType, downloadCsv, favoriteKey, filterCandidates, formatCoordinates, worldTypeLabel } from '@/lib/atlas';
 
 const GalaxyMap = dynamic(() => import('@/components/GalaxyMap'), {
@@ -85,7 +92,14 @@ function AtlasPageInner() {
   const [selectedCandidate, setSelectedCandidate] = useState<AtlasCandidate | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>('all');
   const [isSearching, setIsSearching] = useState(false);
-  const [candidateSearchProgress, setCandidateSearchProgress] = useState({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'idle' });
+  const [candidateSearchProgress, setCandidateSearchProgress] = useState<{
+    elapsedMs: number;
+    phase: string;
+    found: number;
+    status: string;
+    serverPercent?: number;
+    serverMessage?: string;
+  }>({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'idle' });
   const [candidateSearchStartedAt, setCandidateSearchStartedAt] = useState<number | null>(null);
   const [candidateTotal, setCandidateTotal] = useState<number | null>(null);
   const [candidatesLoadingMore, setCandidatesLoadingMore] = useState(false);
@@ -97,9 +111,6 @@ function AtlasPageInner() {
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [squadronRoutePoints, setSquadronRoutePoints] = useState<RoutePoint[]>([]);
   const [routeFinderPoints, setRouteFinderPoints] = useState<RoutePoint[]>([]);
-  const [routeSearchProgress, setRouteSearchProgress] = useState<RouteSearchProgress>({
-    active: false, stage: 'idle', percent: 0, message: '', elapsedMs: 0,
-  });
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [routeFilter, setRouteFilter] = useState('');
   const [marketScanSystems, setMarketScanSystems] = useState<Array<{ system_name: string; x?: number; y?: number; z?: number; status: string }>>([]);
@@ -287,8 +298,20 @@ function AtlasPageInner() {
     setCandidateTotal(null);
     setIsSearching(true);
     setCandidateSearchStartedAt(Date.now());
-    setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'pending' });
+    setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'pending', serverPercent: 0 });
     stopPolling();
+    // Новый поиск полностью вытесняет прошлый: точки и счётчики не смешиваются.
+    startAtlasSearchProgress({
+      kind: 'world',
+      title: 'ПОИСК МИРОВ ATLAS',
+      stage: 'coords',
+      percent: 2,
+      message: `Определяем координаты системы ${params.reference_system}`,
+      cube: null,
+      beam: null,
+      counters: { 'Система отсчёта': params.reference_system },
+      summary: '',
+    });
 
     try {
       const res = await fetch('/api/atlas/search', {
@@ -305,12 +328,14 @@ function AtlasPageInner() {
         setIsSearching(false);
         setCandidateSearchStartedAt(null);
         setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
+        finishAtlasSearchProgress({ message });
         return;
       }
       if (!json.session_id) {
         toast('Сервер не вернул идентификатор поиска', 'error');
         setIsSearching(false);
         setCandidateSearchStartedAt(null);
+        finishAtlasSearchProgress({ message: 'Сервер не вернул идентификатор поиска' });
         return;
       }
 
@@ -322,6 +347,21 @@ function AtlasPageInner() {
         world_types: params.world_types,
       });
 
+      // Куб поиска и опорная точка — на карту: сразу видно, где идёт работа.
+      const reference = json.reference || null;
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'world',
+        stage: 'catalog',
+        percent: 5,
+        message: `Поиск вокруг ${params.reference_system}`,
+        cube: reference
+          ? { cx: reference.x, cy: reference.y, cz: reference.z, half: params.cube_size_ly / 2 }
+          : null,
+        beam: reference ? { x: reference.x, y: reference.y, z: reference.z, label: params.reference_system } : null,
+      });
+
+      const startedAt = Date.now();
       let attempts = 0;
       let failures = 0;
       pollRef.current = window.setInterval(async () => {
@@ -331,6 +371,7 @@ function AtlasPageInner() {
           setIsSearching(false);
           setCandidateSearchStartedAt(null);
           setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Таймаут' }));
+          finishAtlasSearchProgress({ message: 'Поиск идёт слишком долго — откройте историю позже' });
           toast('Поиск идёт слишком долго — откройте историю позже', 'error');
           return;
         }
@@ -338,11 +379,64 @@ function AtlasPageInner() {
           const check = await fetch(`/api/atlas/search?session_id=${encodeURIComponent(json.session_id)}`);
           const data = await check.json().catch(() => ({}));
           failures = 0;
+          const serverProgress = (data.progress || {}) as {
+            stage?: string;
+            percent?: number;
+            message?: string;
+            found?: number;
+            batch?: Array<Record<string, unknown>>;
+            stats?: Record<string, number>;
+          };
+          const foundNow = Number(data.session?.total_found || serverProgress.found || 0);
+          const serverPercent = typeof serverProgress.percent === 'number'
+            ? serverProgress.percent
+            : Math.min(95, Math.round(((Date.now() - startedAt) / 60_000) * 90));
+
           setCandidateSearchProgress((current) => ({
             ...current,
-            found: Number(data.session?.total_found || 0),
+            found: foundNow,
             status: data.session?.status || current.status,
+            serverPercent,
+            serverMessage: typeof serverProgress.message === 'string' && serverProgress.message
+              ? serverProgress.message
+              : current.serverMessage,
           }));
+
+          // Процесс поиска рисуем на карте: этап, куб, луч и найденные точки.
+          if (Array.isArray(serverProgress.batch) && serverProgress.batch.length > 0) {
+            const points: AtlasSearchPoint[] = serverProgress.batch
+              .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.y)) && Number.isFinite(Number(point?.z)))
+              .map((point) => {
+                const name = String(point.name || '');
+                const bodyName = String(point.body_name || '');
+                return {
+                  name,
+                  x: Number(point.x),
+                  y: Number(point.y),
+                  z: Number(point.z),
+                  kind: 'found' as const,
+                  label: bodyName && bodyName !== name
+                    ? `${worldTypeLabel(String(point.world_type) as WorldType)} — ${bodyName}`
+                    : worldTypeLabel(String(point.world_type) as WorldType),
+                };
+              });
+            publishAtlasSearchPoints(points);
+          }
+          publishAtlasSearchProgress({
+            active: true,
+            kind: 'world',
+            title: 'ПОИСК МИРОВ ATLAS',
+            stage: typeof serverProgress.stage === 'string' ? serverProgress.stage : 'scan',
+            percent: serverPercent,
+            message: typeof serverProgress.message === 'string' && serverProgress.message
+              ? serverProgress.message
+              : 'Поиск миров',
+            counters: {
+              'Найдено': foundNow,
+              ...(serverProgress.stats || {}),
+            },
+          });
+
           if (data.session?.status === 'completed') {
             stopPolling();
             try {
@@ -352,14 +446,25 @@ function AtlasPageInner() {
             }
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
-            setCandidateSearchProgress((current) => ({ ...current, status: 'completed', phase: 'Готово' }));
-            toast(`Найдено объектов: ${Number(data.total_candidates || 0).toLocaleString('ru-RU')}`, 'success');
+            setCandidateSearchProgress((current) => ({ ...current, status: 'completed', phase: 'Готово', serverPercent: 100 }));
+            const total = Number(data.total_candidates || 0);
+            finishAtlasSearchProgress({
+              stage: 'completed',
+              percent: 100,
+              message: `Поиск завершён: ${total.toLocaleString('ru-RU')} объектов`,
+              summary: 'Найденное сохранено в базе проекта — повторный поиск в этом районе пойдёт быстрее.',
+              beam: null,
+              counters: { 'Найдено': total },
+            });
+            toast(`Найдено объектов: ${total.toLocaleString('ru-RU')}`, 'success');
           } else if (data.session?.status === 'failed') {
             stopPolling();
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
             setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
-            toast(data.session.error_message || 'Поиск завершился ошибкой', 'error');
+            const message = data.session.error_message || 'Поиск завершился ошибкой';
+            finishAtlasSearchProgress({ message });
+            toast(message, 'error');
           }
         } catch {
           failures += 1;
@@ -369,6 +474,7 @@ function AtlasPageInner() {
             setIsSearching(false);
             setCandidateSearchStartedAt(null);
             setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Связь потеряна' }));
+            finishAtlasSearchProgress({ message: 'Не удалось получить результат поиска' });
             toast('Не удалось получить результат поиска', 'error');
           }
         }
@@ -378,6 +484,7 @@ function AtlasPageInner() {
       setIsSearching(false);
       setCandidateSearchStartedAt(null);
       setCandidateSearchProgress((current) => ({ ...current, status: 'failed', phase: 'Ошибка' }));
+      finishAtlasSearchProgress({ message: err?.message || 'Ошибка поиска' });
     }
   }, [collectCandidates, recordSearch, setCandidates, stopPolling]);
 
@@ -735,7 +842,7 @@ function AtlasPageInner() {
           )}
 
           {activeTab === 'route-finder' && (
-            <AtlasRouteFinder onRouteFound={handleRouteFound} onProgress={setRouteSearchProgress} />
+            <AtlasRouteFinder onRouteFound={handleRouteFound} />
           )}
 
           {activeTab === 'ring-route' && (
@@ -771,7 +878,6 @@ function AtlasPageInner() {
           squadronRouteSystems={allRoutePoints}
           noMarketSystems={noMarketSystems}
           marketResults={marketResults}
-          routeSearchProgress={routeSearchProgress}
         />
       </div>
     </div>

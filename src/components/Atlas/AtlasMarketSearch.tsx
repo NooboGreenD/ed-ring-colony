@@ -4,6 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from '@/components/ui/Toaster';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import {
+  finishAtlasSearchProgress,
+  publishAtlasSearchPoints,
+  publishAtlasSearchProgress,
+  startAtlasSearchProgress,
+} from '@/lib/atlasSearchProgress';
+import {
   IconAlert,
   IconCoins,
   IconCrosshair,
@@ -132,7 +138,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
     }
   }, []);
 
-  const stopSearch = useCallback(() => {
+  const stopSearch = useCallback((options: { silent?: boolean } = {}) => {
     // Останавливаем опрос и обесцениваем ответы уже запущенных /step-запросов,
     // чтобы остановленное сканирование не дорисовало маркеры на карте.
     scanGenerationRef.current += 1;
@@ -140,6 +146,9 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
     startAbortRef.current = null;
     clearPolling();
     setLoading(false);
+    if (!options.silent) {
+      finishAtlasSearchProgress({ message: 'Сканирование остановлено пользователем' });
+    }
   }, [clearPolling]);
 
   useEffect(() => {
@@ -152,7 +161,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
   }, [clearPolling]);
 
   const handleSearch = async () => {
-    stopSearch();
+    stopSearch({ silent: true });
     if (!refSystem.trim()) {
       setError('Укажите систему отсчёта');
       return;
@@ -167,6 +176,14 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
     setResultFilter('');
     onScanStart?.();
     setLoading(true);
+    startAtlasSearchProgress({
+      kind: 'market',
+      title: mode === 'build' ? 'ПОИСК СТАНЦИЙ ДЛЯ СТРОЙКИ' : 'ПОИСК РЫНКА ATLAS',
+      stage: 'coords',
+      percent: 2,
+      message: `Определяем системы вокруг ${refSystem.trim()}`,
+      counters: { 'Система': refSystem.trim(), 'Радиус': `${radius} св.л.` },
+    });
 
     const controller = new AbortController();
     startAbortRef.current = controller;
@@ -220,6 +237,29 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         startedAt: Date.now(),
       });
 
+      // Системы, которые предстоит просканировать, показываем на карте сразу:
+      // пользователь видит область поиска, а не пустой экран.
+      const scanCenter = scanSystems.find((system) => system.distance === 0) || scanSystems[0];
+      publishAtlasSearchPoints(
+        scanSystems.slice(0, 1500).map((system) => ({
+          name: system.name,
+          x: system.x,
+          y: system.y,
+          z: system.z,
+          kind: 'scanned' as const,
+          label: 'В очереди на сканирование',
+        })),
+      );
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'market',
+        stage: 'scan',
+        percent: 3,
+        message: `Сканируем ${scanSystems.length} систем вокруг ${refSystem.trim()}`,
+        beam: scanCenter ? { x: scanCenter.x, y: scanCenter.y, z: scanCenter.z, label: refSystem.trim() } : null,
+        counters: { 'Систем в очереди': scanSystems.length },
+      });
+
       let requestInFlight = false;
       const finishCurrentSearch = () => {
         if (scanGenerationRef.current !== generation) return;
@@ -242,13 +282,51 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           if (!stepRes.ok) throw new Error(stepData.error || 'Шаг сканирования не выполнен');
 
           if (stepData.progress) {
+            const scanned = Number(stepData.progress.scanned) || 0;
+            const total = Number(stepData.progress.total) || scanSystems.length;
+            const found = Number(stepData.progress.found) || 0;
+            const currentSystem = String(stepData.progress.current || '');
             setProgress((current) => ({
-              total: Number(stepData.progress.total) || scanSystems.length,
-              scanned: Number(stepData.progress.scanned) || 0,
-              found: Number(stepData.progress.found) || 0,
-              current: String(stepData.progress.current || ''),
+              total,
+              scanned,
+              found,
+              current: currentSystem,
               startedAt: current?.startedAt ?? Date.now(),
             }));
+
+            // Курсор сканирования на карте + счётчики прогресса.
+            const beamSystem = coordinatesBySystem.get(currentSystem.trim().replace(/\s+/g, ' ').toLowerCase());
+            const scanLogEntries: unknown[] = Array.isArray(stepData.scan_log) ? stepData.scan_log : [];
+            const explored = scanLogEntries
+              .filter((entry): entry is ScanLogEntry => !!entry && typeof entry === 'object' && typeof (entry as ScanLogEntry).system === 'string')
+              .slice(-40)
+              .flatMap((entry) => {
+                const system = coordinatesBySystem.get(entry.system.trim().replace(/\s+/g, ' ').toLowerCase());
+                if (!system) return [];
+                return [{
+                  name: entry.system,
+                  x: system.x,
+                  y: system.y,
+                  z: system.z,
+                  kind: (entry.status === 'has_market' ? 'station' : 'no-market') as 'station' | 'no-market',
+                  label: entry.status === 'has_market' ? 'Есть рынок' : 'Рынка нет',
+                }];
+              });
+            if (explored.length > 0) publishAtlasSearchPoints(explored);
+            publishAtlasSearchProgress({
+              active: true,
+              kind: 'market',
+              stage: 'scan',
+              percent: total > 0 ? Math.round((scanned / total) * 100) : 0,
+              message: currentSystem ? `Сканируем: ${currentSystem}` : 'Сканирование систем',
+              beam: beamSystem
+                ? { x: beamSystem.x, y: beamSystem.y, z: beamSystem.z, label: currentSystem }
+                : null,
+              counters: {
+                'Проверено': `${scanned}/${total}`,
+                'Станций найдено': found,
+              },
+            });
           }
 
           if (Array.isArray(stepData.scan_log)) {
@@ -295,6 +373,28 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
               });
             }
             onMarketResults?.(Array.from(uniqueSystems.values()));
+            publishAtlasSearchPoints(Array.from(uniqueSystems.values()).flatMap((system) => (
+              Number.isFinite(system.x) && Number.isFinite(system.y) && Number.isFinite(system.z)
+                ? [{
+                  name: system.system_name,
+                  x: Number(system.x),
+                  y: Number(system.y),
+                  z: Number(system.z),
+                  kind: 'station' as const,
+                  label: system.station_name ? `Станция: ${system.station_name}` : 'Найдена станция',
+                }]
+                : []
+            )));
+            finishAtlasSearchProgress({
+              stage: 'done',
+              percent: 100,
+              message: `Сканирование завершено: станций найдено ${results.length}`,
+              summary: searchMode === 'build'
+                ? 'Найденные станции сохранены в кэш рынка проекта — повторный поиск пойдёт быстрее.'
+                : 'Результаты сохранены в кэше проекта.',
+              beam: null,
+              counters: { 'Станций найдено': results.length },
+            });
             if (searchMode === 'build') setBuildResults(results);
             else setSingleResults(results);
             finishCurrentSearch();
@@ -311,6 +411,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
             finishCurrentSearch();
             const message = pollError instanceof Error ? pollError.message : 'Ошибка сканирования';
             setError(message);
+            finishAtlasSearchProgress({ stage: 'failed', message });
             toast(message, 'error');
           }
         } finally {
@@ -324,6 +425,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
       if (scanGenerationRef.current !== generation || (startError instanceof DOMException && startError.name === 'AbortError')) return;
       const message = startError instanceof Error ? startError.message : 'Не удалось начать поиск';
       setError(message);
+      finishAtlasSearchProgress({ stage: 'failed', message, percent: 0 });
       toast(message, 'error');
       clearPolling();
       if (startAbortRef.current === controller) startAbortRef.current = null;
@@ -459,7 +561,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         >
           {loading ? 'Сканирование…' : mode === 'build' ? 'Найти все товары' : 'Найти товары'}
         </button>
-        {loading && <button type="button" className="atlas-stop-btn" onClick={stopSearch}>Стоп</button>}
+        {loading && <button type="button" className="atlas-stop-btn" onClick={() => stopSearch()}>Стоп</button>}
       </div>
 
       {error && (

@@ -6,6 +6,12 @@ import { toast } from '@/components/ui/Toaster';
 import { IconArrowRight, IconCopy, IconDownload, IconRefresh, IconSearch, IconX } from '@/components/Icons';
 import { copyText, downloadCsv, formatCoordinates, formatDistanceLy, routeToCsvRows } from '@/lib/atlas';
 import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
+import {
+  finishAtlasSearchProgress,
+  publishAtlasSearchPoints,
+  publishAtlasSearchProgress,
+  startAtlasSearchProgress,
+} from '@/lib/atlasSearchProgress';
 
 interface ApiRoutePoint {
   name: string;
@@ -24,6 +30,9 @@ interface SearchProcess {
   from_system: string;
   to_system: string;
   direct_distance: number;
+  cache_hits?: number;
+  scan_centers?: Array<{ x: number; y: number; z: number }>;
+  sample_systems?: ApiRoutePoint[];
   max_jump: number;
   radius_around_path: number;
   scan_points: number;
@@ -53,19 +62,8 @@ interface RouteResult {
   process?: SearchProcess;
 }
 
-export interface RouteSearchProgress {
-  active: boolean;
-  stage: 'idle' | 'coords' | 'scan' | 'astar' | 'done';
-  percent: number;
-  message: string;
-  elapsedMs: number;
-  systemsScanned?: number;
-  systemsUsed?: number;
-}
-
 interface Props {
   onRouteFound: (route: RoutePoint[]) => void;
-  onProgress?: (progress: RouteSearchProgress) => void;
 }
 
 type SearchPhase =
@@ -90,7 +88,7 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)} с`;
 }
 
-export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
+export default function AtlasRouteFinder({ onRouteFound }: Props) {
   const [fromSystem, setFromSystem] = useState('');
   const [toSystem, setToSystem] = useState('');
   const [maxJump, setMaxJump] = useState(14.99);
@@ -118,8 +116,10 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
       elapsed += item.delay;
       const timer = window.setTimeout(() => {
         setPhase({ stage: item.stage, message: item.message, current: index + 1, total: PHASES.length - 1 } as SearchPhase);
-        onProgress?.({
+        publishAtlasSearchProgress({
           active: true,
+          kind: 'route',
+          title: 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
           stage: item.stage,
           percent: percentages[index],
           message: item.message,
@@ -128,7 +128,31 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
       }, elapsed);
       phaseTimers.current.push(timer);
     });
-  }, [clearPhaseTimers, onProgress]);
+  }, [clearPhaseTimers]);
+
+  /**
+   * Координаты точки маршрута для карты: сначала локальный каталог проекта,
+   * только затем EDSM. Ответ кэшируется в замыкании — обе точки нужны лишь
+   * один раз за поиск.
+   */
+  const resolvePointForMap = useCallback(async (name: string) => {
+    const query = name.trim();
+    if (!query) return null;
+    try {
+      const res = await fetch(`/api/galaxy/systems/search?q=${encodeURIComponent(query)}&limit=5`);
+      const data = await res.json().catch(() => ({}));
+      const rows: Array<Record<string, unknown>> = Array.isArray(data?.results) ? data.results : [];
+      const exact = rows.find((row) => String(row.name || '').toLowerCase() === query.toLowerCase());
+      const row = exact || rows[0];
+      const x = Number(row?.x);
+      const y = Number(row?.y);
+      const z = Number(row?.z);
+      if (!row || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+      return { name: String(row.name || query), x, y, z };
+    } catch {
+      return null;
+    }
+  }, []);
 
   const findRoute = useCallback(async () => {
     if (!fromSystem.trim() || !toSystem.trim()) {
@@ -144,20 +168,55 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
     setResult(null);
     setRouteFilter('');
     setPhase({ stage: 'coords', message: 'Получение координат систем из EDSM…' });
-    onProgress?.({ active: true, stage: 'coords', percent: 4, message: 'Получение координат систем из EDSM…', elapsedMs: 0 });
+    startAtlasSearchProgress({
+      kind: 'route',
+      title: 'ПОИСК МАРШРУТА КОЛОНИЗАЦИИ',
+      stage: 'coords',
+      percent: 4,
+      message: `Определяем координаты ${fromSystem.trim()} и ${toSystem.trim()}`,
+      counters: { 'Точка А': fromSystem.trim(), 'Точка Б': toSystem.trim() },
+    });
     animatePhases(startedAt);
+
+    // Коридор A→B на карте: даже до ответа сервера видно, где именно идёт поиск.
+    const points = [await resolvePointForMap(fromSystem), await resolvePointForMap(toSystem)];
+    const corridor = points[0] && points[1]
+      ? { from: points[0], to: points[1], radius }
+      : null;
+    if (corridor) {
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'route',
+        corridor,
+        beam: { ...corridor.from, label: fromSystem.trim() },
+        message: `Сканируем коридор ${fromSystem.trim()} → ${toSystem.trim()}`,
+      });
+    }
+
     // Эндпоинт считает маршрут одним запросом: пока он работает, показываем
-    // оценку прогресса, а после ответа подставляем точные цифры из `process`.
+    // оценку прогресса и ведём луч сканирования вдоль коридора, а после ответа
+    // подставляем точные цифры из `process`.
     const progressTimer = window.setInterval(() => {
       const elapsedMs = Date.now() - startedAt;
       const estimatedScanned = Math.max(1, Math.floor(elapsedMs / 180));
-      onProgress?.({
+      const percent = Math.min(88, 35 + Math.floor(estimatedScanned / 10));
+      const beam = corridor && points[0] && points[1]
+        ? {
+          x: points[0].x + (points[1].x - points[0].x) * Math.min(1, elapsedMs / 6000),
+          y: points[0].y + (points[1].y - points[0].y) * Math.min(1, elapsedMs / 6000),
+          z: points[0].z + (points[1].z - points[0].z) * Math.min(1, elapsedMs / 6000),
+          label: 'сканирование',
+        }
+        : null;
+      publishAtlasSearchProgress({
         active: true,
+        kind: 'route',
         stage: 'scan',
-        percent: Math.min(88, 35 + Math.floor(estimatedScanned / 10)),
-        message: 'Перебор систем EDSM вдоль трассы…',
+        percent,
+        message: 'Перебор систем вдоль трассы…',
         elapsedMs,
-        systemsScanned: estimatedScanned,
+        beam,
+        counters: { 'Систем проверено': estimatedScanned },
       });
     }, 400);
 
@@ -187,15 +246,6 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
       }
       setPhase({ stage: 'done', message: 'Готово!' });
       setResult(data);
-      onProgress?.({
-        active: false,
-        stage: 'done',
-        percent: 100,
-        message: data.process?.synthetic_waypoints ? 'Маршрут готов, в него добавлены расчётные точки' : 'Маршрут построен',
-        elapsedMs: Date.now() - startedAt,
-        systemsScanned: data.process?.systems_scanned,
-        systemsUsed: data.process?.systems_used,
-      });
       const mappedRoute: RoutePoint[] = data.route.map((point: ApiRoutePoint, index: number) => ({
         id: -(index + 1),
         system_name: point.name,
@@ -206,9 +256,41 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
         z: point.z,
       }));
       onRouteFound(mappedRoute);
+
+      // Итог поиска — на карту: найденные системы, маршрут и опорные точки сканов.
+      const sample = Array.isArray(data.process?.sample_systems) ? data.process.sample_systems : [];
+      publishAtlasSearchPoints([
+        ...sample.slice(0, 1200).map((point: ApiRoutePoint) => ({ ...point, kind: 'system' as const })),
+        ...data.route.slice(0, 1500).map((point: ApiRoutePoint) => ({ ...point, kind: 'found' as const })),
+      ]);
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'route',
+        stage: 'done',
+        percent: 100,
+        message: data.summary.synthetic_waypoints ? 'Маршрут готов, в него добавлены расчётные точки' : 'Маршрут построен',
+        elapsedMs: Date.now() - startedAt,
+        path: data.route.map((point: ApiRoutePoint) => ({ ...point, kind: 'system' as const })),
+        beam: null,
+        summary: `Прыжков ${data.summary.total_jumps} · систем в маршруте ${data.summary.total_systems} · найдено систем ${data.process?.systems_scanned ?? sample.length}`,
+        counters: {
+          'Прыжков': data.summary.total_jumps,
+          'Систем проверено': data.process?.systems_scanned ?? 0,
+          'Из кэша проекта': data.process?.cache_hits ?? 0,
+        },
+      });
+      finishAtlasSearchProgress({ active: false });
       toast(`Маршрут найден: ${data.summary.total_jumps} прыжков`, 'success');
     } catch (err: any) {
-      onProgress?.({ active: false, stage: 'idle', percent: 0, message: err.message || 'Ошибка поиска', elapsedMs: Date.now() - startedAt });
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'route',
+        stage: 'failed',
+        percent: 0,
+        message: err.message || 'Ошибка поиска',
+        elapsedMs: Date.now() - startedAt,
+      });
+      finishAtlasSearchProgress({ message: err.message || 'Ошибка поиска' });
       toast(err.message || 'Ошибка поиска', 'error');
     } finally {
       window.clearInterval(progressTimer);
@@ -216,7 +298,7 @@ export default function AtlasRouteFinder({ onRouteFound, onProgress }: Props) {
       setLoading(false);
       setPhase({ stage: 'idle' });
     }
-  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onProgress, onRouteFound, radius, toSystem]);
+  }, [animatePhases, clearPhaseTimers, fromSystem, maxJump, onRouteFound, radius, resolvePointForMap, toSystem]);
 
   const downloadRoute = useCallback(() => {
     if (!result?.route?.length) return;

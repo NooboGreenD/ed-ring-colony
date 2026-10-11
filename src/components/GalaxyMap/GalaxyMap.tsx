@@ -11,7 +11,7 @@ import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
-import type { RouteSearchProgress } from '@/components/Atlas/AtlasRouteFinder';
+import { useAtlasSearchProgress } from '@/hooks/useAtlasSearchProgress';
 import { loadAllSystemsData } from './AllSystemsPoints';
 import { NebulaCard } from './NebulaCard';
 import { NEBULA_KIND_ORDER, NEBULA_KIND_SHORT, NEBULA_KIND_UI_COLOR } from './NebulaField';
@@ -164,7 +164,6 @@ export interface GalaxyMapProps {
   showOnlyMainRoute?: boolean;
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
   marketResults?: MarketResult[];
-  routeSearchProgress?: RouteSearchProgress;
 }
 
 export default function GalaxyMap({
@@ -173,8 +172,10 @@ export default function GalaxyMap({
   showOnlyMainRoute = false,
   noMarketSystems = [],
   marketResults = [],
-  routeSearchProgress,
 }: GalaxyMapProps) {
+  // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
+  // общего канала: карта показывает сам процесс, а не только результат.
+  const searchProgress = useAtlasSearchProgress();
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
   const [pilots, setPilots] = useState<any[]>([]);
@@ -605,21 +606,38 @@ export default function GalaxyMap({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
-      {routeSearchProgress?.active && (
-        <div style={{ position: 'absolute', top: 14, left: 14, zIndex: 12, width: 290, padding: 12, borderRadius: 8, background: 'rgba(13,15,17,0.92)', border: '1px solid rgba(230,126,34,0.55)', boxShadow: '0 8px 24px rgba(0,0,0,0.35)', pointerEvents: 'none' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, color: '#eeeeee', fontSize: 12, fontWeight: 700 }}>
-            <span>ПОИСК МАРШРУТА</span><span style={{ color: '#e67e22' }}>{routeSearchProgress.percent}%</span>
+      {searchProgress.active && (
+        <div className="map-search-hud">
+          <div className="map-search-hud-head">
+            <span>{searchProgress.title || 'ПОИСК ATLAS'}</span>
+            <span className="map-search-hud-percent">{Math.round(searchProgress.percent)}%</span>
           </div>
-          <div style={{ height: 6, margin: '9px 0 8px', borderRadius: 4, background: '#323538', overflow: 'hidden' }}>
-            <div style={{ width: `${routeSearchProgress.percent}%`, height: '100%', background: 'linear-gradient(90deg,#e67e22,#22c55e)', transition: 'width .35s ease' }} />
+          <div className="map-search-hud-bar">
+            <div style={{ width: `${Math.min(100, Math.max(0, searchProgress.percent))}%` }} />
           </div>
-          <div style={{ color: '#d1d5db', fontSize: 11 }}>{routeSearchProgress.message}</div>
-          <div style={{ display: 'flex', gap: 10, marginTop: 7, color: '#9ca3af', fontSize: 10, flexWrap: 'wrap' }}>
-            <span>Этап: {routeSearchProgress.stage}</span>
-            <span>{(routeSearchProgress.elapsedMs / 1000).toFixed(1)} с</span>
-            {routeSearchProgress.systemsScanned != null && <span>Проверено: {routeSearchProgress.systemsScanned.toLocaleString('ru-RU')}</span>}
+          <div className="map-search-hud-message">{searchProgress.message}</div>
+          {searchProgress.summary && <div className="map-search-hud-summary">{searchProgress.summary}</div>}
+          <div className="map-search-hud-counters">
+            <span>{searchProgress.finished ? 'Поиск завершён' : `Этап: ${searchProgress.stage}`}</span>
+            <span>{(searchProgress.elapsedMs / 1000).toFixed(1)} с</span>
+            {Object.entries(searchProgress.counters).map(([label, value]) => (
+              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString('ru-RU') : value}</span>
+            ))}
           </div>
-          <div style={{ marginTop: 8, color: '#6b7280', fontSize: 10 }}>Карта обновится после получения координат EDSM</div>
+          <div className="map-search-hud-hint">
+            {searchProgress.finished
+              ? 'Результат останется на карте 30 секунд'
+              : 'Процесс поиска отображается на карте: точки появляются по мере нахождения'}
+          </div>
+        </div>
+      )}
+      {searchProgress.active && (
+        <div className="map-search-legend">
+          <span><i style={{ background: '#e67e22' }} /> Опорные точки поиска</span>
+          <span><i style={{ background: '#8bc34a' }} /> Найденные системы</span>
+          <span><i style={{ background: '#4dd0e1' }} /> Кандидаты</span>
+          <span><i style={{ background: '#9ca3af' }} /> Расчётные (триангуляция)</span>
+          <span><i style={{ background: '#ffd166' }} /> Точка сканирования</span>
         </div>
       )}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'none' }}>
@@ -968,6 +986,7 @@ export default function GalaxyMap({
             selectedPilotId={selectedPilot?.user_id ?? null}
             focusTarget={focusTarget}
             resetCamera={resetCamera}
+            searchProgress={searchProgress}
           />
         </Suspense>
       </Canvas>

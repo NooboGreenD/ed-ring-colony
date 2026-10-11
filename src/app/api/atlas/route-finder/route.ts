@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from '@/lib/galaxySystemsDb';
+import { boxAround, listCachedSystemsInBox, saveCachedSystems } from '@/lib/atlasSystemCache';
 
 const MAX_RETRIES = 3;
 const MAX_JUMP = 15;
@@ -194,8 +195,12 @@ export async function POST(req: Request) {
     }
 
     const allSystems = new Map<string, { name: string; x: number; y: number; z: number }>();
+    // Центры сканирования и найденные системы отдаём клиенту: по ним 3D-карта
+    // рисует коридор поиска и появляющиеся точки, пока идёт расчёт.
+    const scanCenters: { x: number; y: number; z: number }[] = [];
     let scanPoints = 0;
     let apiRequests = 0;
+    let cacheHits = 0;
     let systemsPerScan: number[] = [];
 
     for (let i = 0; i <= steps; i++) {
@@ -206,6 +211,7 @@ export async function POST(req: Request) {
         z: fromCoords.z + (toCoords.z - fromCoords.z) * t,
       };
 
+      scanCenters.push(point);
       let systemsBatch: { name: string; x: number; y: number; z: number }[] = [];
       let usedCatalog = false;
       if (catalogReady) {
@@ -219,6 +225,18 @@ export async function POST(req: Request) {
         } catch (err: any) {
           console.error('[RouteFinder] catalog cube:', err?.message);
           catalogReady = false;
+        }
+      }
+      // Кэш Atlas: то, что уже нашли прошлые поиски. Дешевле EDSM и работает,
+      // даже когда каталог Spansh в базу ещё не залит.
+      if (!usedCatalog) {
+        const cached = await listCachedSystemsInBox(boxAround(point, effectiveRadius), 1200).catch(() => []);
+        const inRadius = cached.filter((sys) => dist(sys, point) <= effectiveRadius);
+        if (inRadius.length > 0) {
+          systemsBatch = inRadius.map((sys) => ({ name: sys.name, x: sys.x, y: sys.y, z: sys.z }));
+          usedCatalog = true;
+          cacheHits += inRadius.length;
+          scanPoints++;
         }
       }
       if (!usedCatalog && useCube) {
@@ -244,6 +262,12 @@ export async function POST(req: Request) {
     allSystems.delete(from_system);
     allSystems.delete(to_system);
     const systems = Array.from(allSystems.values());
+
+    // Найденное сохраняем в БД проекта: повторный поиск по этому же коридору
+    // обойдётся без EDSM.
+    void saveCachedSystems(
+      systems.map((system) => ({ ...system, source: catalogReady ? 'catalog' : 'edsm' })),
+    ).catch(() => 0);
     // A 100 ly sphere can contain many thousands of systems. Keep the
     // catalogue scan complete, but bound the graph to the systems nearest the
     // straight corridor so A* does not build an O(n²) graph over the entire
@@ -353,6 +377,13 @@ export async function POST(req: Request) {
         elapsed_ms: elapsedMs,
         strategy: catalogReady ? 'galaxy-catalog' : useCube ? 'cube-systems' : 'sphere-systems',
         systems_per_scan: systemsPerScan,
+        cache_hits: cacheHits,
+        scan_centers: scanCenters,
+        // Точки для карты: поиск может занять десятки секунд, и без выборки
+        // найденных систем процесс выглядел бы как «ничего не происходит».
+        sample_systems: [...graphSystems]
+          .sort((a, b) => distanceToCorridor(a) - distanceToCorridor(b))
+          .slice(0, 800),
       },
     });
   } catch (err: any) {

@@ -47,7 +47,19 @@ interface SearchDraft {
 interface AtlasSearchPanelProps {
   onSearch: (params: SearchDraft) => void;
   loading?: boolean;
-  progress?: { elapsedMs: number; phase: string; found: number; status: string };
+  /**
+   * Прогресс поиска. Оценка по таймеру остаётся как запасной вариант, но когда
+   * сервер отдаёт реальный этап (`progress` сессии), показываем именно его —
+   * поиск идёт в фоне, и выдуманный процент вводил в заблуждение.
+   */
+  progress?: {
+    elapsedMs: number;
+    phase: string;
+    found: number;
+    status: string;
+    serverPercent?: number;
+    serverMessage?: string;
+  };
 }
 
 export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPanelProps) {
@@ -109,7 +121,9 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
   };
 
   const progressPercent = loading && progress
-    ? Math.min(96, 12 + (progress.elapsedMs / 45_000) * 70)
+    ? (Number.isFinite(progress.serverPercent)
+      ? Math.max(1, Math.min(99, Number(progress.serverPercent)))
+      : Math.min(96, 12 + (progress.elapsedMs / 45_000) * 70))
     : 0;
 
   return (
@@ -231,8 +245,8 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
       {loading && progress && (
         <div className="atlas-progress" aria-live="polite">
           <div className="atlas-progress-head">
-            <span>ATLAS SEARCH · {progress.phase}</span>
-            <span>{(progress.elapsedMs / 1000).toFixed(1)} с</span>
+            <span>ATLAS SEARCH · {progress.serverMessage || progress.phase}</span>
+            <span>{Math.round(progressPercent)}% · {(progress.elapsedMs / 1000).toFixed(1)} с</span>
           </div>
           <div className="atlas-progress-bar">
             <div style={{ width: `${progressPercent}%` }} />
@@ -240,7 +254,9 @@ export function AtlasSearchPanel({ onSearch, loading, progress }: AtlasSearchPan
           <div className="atlas-progress-meta">
             Найдено кандидатов: <strong>{progress.found.toLocaleString('ru-RU')}</strong>
           </div>
-          <div className="atlas-progress-steps">Spansh/EDSM → фильтрация → проверка координат → сохранение результатов</div>
+          <div className="atlas-progress-steps">
+            Каталог Spansh → кэш тел → EDSM/Spansh → сохранение. Ход поиска виден на 3D-карте.
+          </div>
         </div>
       )}
 
