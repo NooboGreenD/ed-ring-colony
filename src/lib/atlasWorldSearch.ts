@@ -528,12 +528,6 @@ export async function runWorldSearch(context: WorldSearchContext): Promise<{ can
         const distanceToArrival = Number(body.distance_to_arrival) || 0;
         const estimatedValue = Number(body.estimated_scan_value || body.estimated_mapping_value) || 0;
 
-        // Фильтры Spansh проверяем и на нашей стороне: неизвестное поле он
-        // молча игнорирует, а пользователь ждёт именно то, что выбрал.
-        if (params.require_landable && body.is_landable === false) continue;
-        if ((params.max_distance_to_arrival || 0) > 0 && distanceToArrival > (params.max_distance_to_arrival || 0)) continue;
-        if ((params.min_estimated_value || 0) > 0 && estimatedValue < (params.min_estimated_value || 0)) continue;
-
         const direct = systemMap.get(bodyName);
         if (!direct) continue;
         const coords = direct;
@@ -541,7 +535,8 @@ export async function runWorldSearch(context: WorldSearchContext): Promise<{ can
         if (distance > halfCube) continue;
 
         let worldType: WorldType | null = null;
-        if (batchSpec.targetTypes.includes('terraformable') && isTerraformable(body as any)) worldType = 'terraformable';
+        const terraformableBatch = batchSpec.targetTypes.includes('terraformable');
+        if (terraformableBatch && isTerraformable(body as any)) worldType = 'terraformable';
         if (!worldType) {
           const mapped = mapSpanshSubtypeToWorldType(body.subtype || '') as WorldType | null;
           if (mapped && batchSpec.targetTypes.includes(mapped)) worldType = mapped;
@@ -555,6 +550,14 @@ export async function runWorldSearch(context: WorldSearchContext): Promise<{ can
           worldType = 'rocky_bio';
         }
         if (!worldType) worldType = batchSpec.targetTypes[0];
+
+        // Фильтры, которые Spansh может проигнорировать (неизвестный ключ он
+        // молча пропускает), проверяем сами: пользователь должен получить
+        // именно то, что выбрал.
+        if (params.require_landable && body.is_landable === false) continue;
+        if (params.max_distance_to_arrival && distanceToArrival > params.max_distance_to_arrival) continue;
+        if (params.min_estimated_value && estimatedValue < params.min_estimated_value) continue;
+        if (terraformableBatch && batchSpec.targetTypes.length === 1 && !isTerraformable(body as any)) continue;
 
         const kept = pushCandidate({
           system_name: coords.systemName,

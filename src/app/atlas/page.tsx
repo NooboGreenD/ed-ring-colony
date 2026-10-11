@@ -300,8 +300,8 @@ function AtlasPageInner() {
     setCandidateSearchStartedAt(Date.now());
     setCandidateSearchProgress({ elapsedMs: 0, phase: 'Подготовка', found: 0, status: 'pending', serverPercent: 0 });
     stopPolling();
-    publishAtlasSearchProgress({
-      active: true,
+    // Новый поиск полностью вытесняет прошлый: точки и счётчики не смешиваются.
+    startAtlasSearchProgress({
       kind: 'world',
       title: 'ПОИСК МИРОВ ATLAS',
       stage: 'coords',
