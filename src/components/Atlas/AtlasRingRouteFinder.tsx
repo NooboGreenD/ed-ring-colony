@@ -5,6 +5,13 @@ import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { toast } from '@/components/ui/Toaster';
 import { IconCopy, IconDownload, IconSearch, IconX } from '@/components/Icons';
 import { copyText, downloadCsv, formatCoordinates, routeToCsvRows } from '@/lib/atlas';
+import {
+  finishAtlasSearchProgress,
+  publishAtlasSearchProgress,
+  publishAtlasSearchPoints,
+  startAtlasSearchProgress,
+  type AtlasSearchPoint,
+} from '@/lib/atlasSearchProgress';
 import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
 
 interface Props {
@@ -19,45 +26,82 @@ interface RingPoint {
   source?: string;
 }
 
-interface RingResult {
-  route: RingPoint[];
-  center?: { name?: string; x: number; y: number; z: number };
-  ring_radius: number;
-  search_radius: number;
-  max_jump: number;
-  discovered_count: number;
-  synthetic_count: number;
-  anchors: Array<{ name: string }>;
+interface RingAnchor extends RingPoint {
+  deviation?: number;
+  found?: number;
+  usedRadius?: number;
 }
 
-interface RingProgress {
+interface RingStats {
+  realAnchors: number;
+  triangulatedAnchors: number;
+  systemsFound: number;
+  systemsSaved: number;
+  catalogHits: number;
+  cacheHits: number;
+  edsmRequests: number;
+  spanshRequests: number;
+  reusedFromNeighbours: number;
+}
+
+interface RingResult {
+  sessionId?: string;
+  start?: string;
+  route: RingPoint[];
+  center: RingPoint;
+  ringRadius: number;
+  searchRadius: number;
+  anchors: RingPoint[];
+  totals: {
+    points: number;
+    realPoints: number;
+    syntheticPoints: number;
+    anchors: number;
+    triangulatedAnchors: number;
+    discovered: number;
+    deviationAvg: number;
+    deviationMax: number;
+  };
+  stats: RingStats;
+}
+
+interface SessionView {
+  session_id: string;
+  start_system: string;
+  ring_radius: number;
+  search_radius: number;
+  sectors: number;
+  sectors_done: number;
+  status: string;
+  center: { x: number; y: number; z: number };
+}
+
+interface ProgressView {
   percent: number;
   stage: string;
   message: string;
-  sector: number;
   sectors: number;
-  found: number;
-  cached: boolean;
-  deviation: number;
-  point: number;
-  total: number;
-  replacements: number;
+  sectorsDone: number;
+  realAnchors: number;
+  triangulatedAnchors: number;
+  systemsFound: number;
+  systemsSaved: number;
 }
 
-const EMPTY_PROGRESS: RingProgress = {
-  percent: 0, stage: '', message: '', sector: 0, sectors: 0,
-  found: 0, cached: false, deviation: 0, point: 0, total: 0, replacements: 0,
+const EMPTY_PROGRESS: ProgressView = {
+  percent: 0,
+  stage: 'idle',
+  message: '',
+  sectors: 0,
+  sectorsDone: 0,
+  realAnchors: 0,
+  triangulatedAnchors: 0,
+  systemsFound: 0,
+  systemsSaved: 0,
 };
 
-/** Разбор NDJSON-потока прогресса: одна битая строка не роняет весь маршрут. */
-function parsePacket(line: string): { event: string; data: any } | null {
-  if (!line.trim()) return null;
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
-}
+const MAX_STEP_RETRIES = 4;
+const ROUTE_SAMPLE_LIMIT = 3000;
 
 export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const [startSystem, setStartSystem] = useState('Sol');
@@ -65,127 +109,319 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const [searchRadius, setSearchRadius] = useState(500);
   const [loading, setLoading] = useState(false);
   const [refining, setRefining] = useState(false);
-  const [progress, setProgress] = useState<RingProgress>(EMPTY_PROGRESS);
+  const [progress, setProgress] = useState<ProgressView>(EMPTY_PROGRESS);
   const [result, setResult] = useState<RingResult | null>(null);
   const [routeFilter, setRouteFilter] = useState('');
+  const [resumable, setResumable] = useState<{ sessionId: string; sectorsDone: number; sectors: number } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const sessionRef = useRef<string | null>(null);
+  const lastSessionRef = useRef<{ sessionId: string; sectorsDone: number; sectors: number } | null>(null);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setLoading(false);
     setRefining(false);
+    finishAtlasSearchProgress({ message: 'Поиск остановлен пользователем' });
     toast('Поиск остановлен', 'info');
   }, []);
 
-  const runStream = useCallback(async (
-    url: string,
-    body: unknown,
-    onResult: (data: any) => void,
-    failureMessage: string,
+  /** Публикация прогресса на карту: контур кольца, луч, опоры и найденные системы. */
+  const publishToMap = useCallback((
+    session: SessionView | null,
+    patch: {
+      percent: number;
+      stage: string;
+      message: string;
+      anchors?: RingAnchor[];
+      found?: RingPoint[];
+      beam?: { x: number; y: number; z: number } | null;
+      stats?: RingStats;
+    },
   ) => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
+    if (session) {
+      publishAtlasSearchProgress({
+        active: true,
+        kind: 'ring',
+        title: 'ПОИСК ГАЛАКТИЧЕСКОГО КОЛЬЦА',
+        stage: patch.stage,
+        percent: patch.percent,
+        message: patch.message,
+        ring: { cx: session.center.x, cy: session.center.y, cz: session.center.z, radius: session.ring_radius },
+        beam: patch.beam || null,
+        counters: {
+          'Сегмент': `${patch.percent > 0 ? session.sectors_done : 0}/${session.sectors}`,
+          'Реальных опор': patch.stats?.realAnchors ?? 0,
+          'Расчётных опор': patch.stats?.triangulatedAnchors ?? 0,
+          'Систем найдено': patch.stats?.systemsFound ?? 0,
+        },
+      });
+    }
+    const points: AtlasSearchPoint[] = [];
+    for (const anchor of patch.anchors || []) {
+      points.push({
+        name: anchor.name,
+        x: anchor.x,
+        y: anchor.y,
+        z: anchor.z,
+        kind: anchor.source === 'triangulated' ? 'triangulated' : 'anchor',
+        label: `Опорная точка (отклонение ${Number(anchor.deviation || 0).toFixed(1)} св.л.)`,
+      });
+    }
+    for (const system of patch.found || []) {
+      points.push({
+        name: system.name,
+        x: system.x,
+        y: system.y,
+        z: system.z,
+        kind: 'system',
+        label: `Источник: ${system.source || 'каталог'}`,
+      });
+    }
+    if (points.length > 0) publishAtlasSearchPoints(points);
+  }, []);
 
-    const res = await fetch(url, {
+  const applyResult = useCallback((payload: RingResult) => {
+    setResult(payload);
+    const mapped: RoutePoint[] = payload.route.map((point, index) => ({
+      id: -(index + 1),
+      system_name: point.name,
+      x: point.x,
+      y: point.y,
+      z: point.z,
+      sort_order: index,
+      status: 'planned',
+      isHub: false,
+    }));
+    onRouteFound(mapped);
+
+    // Маршрут на карте: прореживаем линию и отдельно показываем расчётные точки.
+    const stride = Math.max(1, Math.ceil(payload.route.length / ROUTE_SAMPLE_LIMIT));
+    const path = payload.route
+      .filter((_, index) => index % stride === 0)
+      .map((point) => ({ name: point.name, x: point.x, y: point.y, z: point.z, kind: 'system' as const }));
+    const synthetic = payload.route
+      .filter((point) => point.source === 'triangulated')
+      .slice(0, 1500)
+      .map((point) => ({ name: point.name, x: point.x, y: point.y, z: point.z, kind: 'triangulated' as const }));
+    publishAtlasSearchProgress({ path, beam: null });
+    if (synthetic.length > 0) publishAtlasSearchPoints(synthetic);
+  }, [onRouteFound]);
+
+  /** Запрос шага сессии + запоминание идентификатора для возобновления. */
+  const postRing = useCallback(async (body: Record<string, unknown>, controller: AbortController) => {
+    const res = await fetch('/api/atlas/ring-route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    if (!res.ok || !res.body) {
-      const details = await res.json().catch(() => ({}));
-      throw new Error(details.error || failureMessage);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `Сервер не смог обработать шаг поиска (HTTP ${res.status})`);
     }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let data: unknown = null;
-    let streamError: string | null = null;
-
-    const handlePacket = (line: string) => {
-      const packet = parsePacket(line);
-      if (!packet) return;
-      if (packet.event === 'progress') setProgress((current) => ({ ...current, ...packet.data }));
-      if (packet.event === 'error') streamError = packet.data?.message || failureMessage;
-      if (packet.event === 'result') data = packet.data;
-    };
-
-    while (true) {
-      const chunk = await reader.read();
-      buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) handlePacket(line);
-      if (chunk.done) break;
+    if (data.session?.session_id) {
+      sessionRef.current = data.session.session_id;
+      lastSessionRef.current = {
+        sessionId: data.session.session_id,
+        sectorsDone: Number(data.session.sectors_done) || 0,
+        sectors: Number(data.session.sectors) || 0,
+      };
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) handlePacket(buffer);
-
-    if (streamError) throw new Error(streamError);
-    if (!data) throw new Error(failureMessage);
-    onResult(data);
+    return data as { session: SessionView; step?: any; completed?: boolean };
   }, []);
 
-  const search = async () => {
-    if (!startSystem.trim()) return;
+  const postRingFinalize = useCallback(async (sessionId: string, controller: AbortController) => {
+    const res = await fetch('/api/atlas/ring-route/finalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+      signal: controller.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Не удалось собрать маршрут кольца');
+    return data as { result: RingResult };
+  }, []);
+
+  const runSearch = useCallback(async (resumeSessionId?: string) => {
+    if (!resumeSessionId && !startSystem.trim()) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     setResult(null);
     setRouteFilter('');
-    setProgress({ ...EMPTY_PROGRESS, stage: 'start', message: 'Запуск поиска кольцевого маршрута' });
+    setResumable(null);
+    setProgress({ ...EMPTY_PROGRESS, stage: 'coords', message: resumeSessionId ? 'Продолжаем поиск с сохранённого места' : 'Получение координат начальной системы и Sagittarius A*' });
+    startAtlasSearchProgress({
+      kind: 'ring',
+      title: 'ПОИСК ГАЛАКТИЧЕСКОГО КОЛЬЦА',
+      stage: 'coords',
+      percent: 0,
+      message: resumeSessionId ? 'Продолжаем поиск с сохранённого места' : 'Получение координат начальной системы и Sagittarius A*',
+      counters: {},
+    });
+
     try {
-      await runStream(
-        '/api/atlas/ring-route',
-        { start_system: startSystem, ring_radius: ringRadius, search_radius: searchRadius },
-        (completed: RingResult) => {
-          const mapped: RoutePoint[] = completed.route.map((point, index) => ({
-            id: -(index + 1), system_name: point.name, x: point.x, y: point.y, z: point.z,
-            sort_order: index, status: 'planned', isHub: false,
-          }));
-          setResult(completed);
-          onRouteFound(mapped);
-          toast(`Кольцо построено: ${completed.route.length} точек`, 'success');
+      let session: SessionView | null = null;
+      let step = await postRing({
+        session_id: resumeSessionId,
+        start_system: resumeSessionId ? undefined : startSystem.trim(),
+        ring_radius: ringRadius,
+        search_radius: searchRadius,
+      }, controller);
+      session = step.session;
+
+      // Шаги идут один за другим: каждый запрос короткий, поэтому соединение не
+      // рвётся даже на кольце радиусом 45 000 св.л. Если шаг не прошёл из-за
+      // сети — повторяем его, а не начинаем всё заново.
+      let retries = 0;
+      while (true) {
+        const anchors = (step.step?.anchors || []) as RingAnchor[];
+        const found = (step.step?.found || []) as RingPoint[];
+        const stats = step.step?.stats as RingStats | undefined;
+        session = step.session;
+
+        setProgress({
+          percent: step.step?.progress?.percent ?? 0,
+          stage: step.step?.progress?.stage || 'scan',
+          message: step.step?.progress?.message || 'Перебор сегментов кольца',
+          sectors: step.session.sectors,
+          sectorsDone: step.session.sectors_done,
+          realAnchors: stats?.realAnchors ?? 0,
+          triangulatedAnchors: stats?.triangulatedAnchors ?? 0,
+          systemsFound: stats?.systemsFound ?? 0,
+          systemsSaved: stats?.systemsSaved ?? 0,
+        });
+
+        publishToMap(step.session, {
+          percent: step.step?.progress?.percent ?? 0,
+          stage: step.step?.progress?.stage || 'scan',
+          message: step.step?.progress?.message || 'Перебор сегментов кольца',
+          anchors,
+          found,
+          beam: step.step?.beam || null,
+          stats,
+        });
+
+        if (step.step?.done) break;
+
+        try {
+          step = await postRing({ session_id: session.session_id }, controller);
+          retries = 0;
+        } catch (error) {
+          if (controller.signal.aborted) throw error;
+          retries++;
+          if (retries > MAX_STEP_RETRIES) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 400 * retries));
+          // Повторяем тот же шаг: сессия уже сохранена на сервере.
+          step = await postRing({ session_id: session.session_id }, controller);
+        }
+      }
+
+      publishAtlasSearchProgress({
+        stage: 'route',
+        percent: 99,
+        message: 'Сегменты пройдены: соединение опорных точек реальными системами',
+      });
+
+      const finalized = await postRingFinalize(session!.session_id, controller);
+      applyResult(finalized.result);
+      const totals = finalized.result.totals;
+      setProgress((current) => ({
+        ...current,
+        percent: 100,
+        stage: 'done',
+        message: `Кольцо собрано: ${totals.points} точек, расчётных ${totals.syntheticPoints}`,
+      }));
+      finishAtlasSearchProgress({
+        stage: 'done',
+        percent: 100,
+        message: `Кольцо собрано: ${totals.points} точек`,
+        summary: `Реальных точек ${totals.realPoints.toLocaleString('ru-RU')} · расчётных ${totals.syntheticPoints.toLocaleString('ru-RU')} · в кэш сохранено ${finalized.result.stats.systemsSaved.toLocaleString('ru-RU')} систем`,
+        counters: {
+          'Точек маршрута': totals.points,
+          'Расчётных точек': totals.syntheticPoints,
+          'Опорных систем': totals.anchors,
         },
-        'Не удалось запустить поиск кольца',
+      });
+      toast(
+        `Кольцо построено: ${totals.points} точек, расчётных ${totals.syntheticPoints}`,
+        'success',
       );
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
-      toast(error instanceof Error ? error.message : 'Ошибка поиска кольца', 'error');
+      const message = error instanceof Error ? error.message : 'Ошибка поиска кольца';
+      // Сессия остаётся на сервере: пользователь продолжит поиск одной кнопкой.
+      const last = lastSessionRef.current;
+      if (last) setResumable({ sessionId: last.sessionId, sectorsDone: last.sectorsDone, sectors: last.sectors });
+      finishAtlasSearchProgress({ message: `Поиск прерван: ${message}` });
+      toast(message, 'error');
     } finally {
       abortRef.current = null;
       setLoading(false);
     }
-  };
+  }, [applyResult, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem]);
 
-  const refine = async () => {
+  const search = useCallback(() => {
+    sessionRef.current = null;
+    void runSearch();
+  }, [runSearch]);
+
+  const resume = useCallback(() => {
+    const session = resumable?.sessionId || sessionRef.current;
+    if (!session) return;
+    void runSearch(session);
+  }, [resumable, runSearch]);
+
+  const refine = useCallback(async () => {
     if (!result || refining) return;
     setRefining(true);
-    setProgress({ ...EMPTY_PROGRESS, stage: 'refine', message: 'Подготовка уточнения маршрута', total: result.route.length - 2 });
+    publishAtlasSearchProgress({
+      active: true,
+      kind: 'ring',
+      title: 'УТОЧНЕНИЕ КОЛЬЦА',
+      stage: 'refine',
+      percent: 5,
+      message: 'Ищем реальные системы для расчётных точек',
+    });
     try {
-      await runStream(
-        '/api/atlas/ring-route/refine',
-        { route: result.route, center: result.center || { x: 25.21875, y: -20.90625, z: 25899.96875 }, ring_radius: result.ring_radius },
-        (refined: { route: RingPoint[]; replacements?: number }) => {
-          const mapped: RoutePoint[] = refined.route.map((point, index) => ({
-            id: -(index + 1), system_name: point.name, x: point.x, y: point.y, z: point.z,
-            sort_order: index, status: 'planned', isHub: false,
-          }));
-          setResult({ ...result, route: refined.route });
-          onRouteFound(mapped);
-          toast(`Маршрут уточнён: заменено ${refined.replacements ?? 0} точек`, 'success');
+      const res = await fetch('/api/atlas/ring-route/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          route: result.route,
+          center: result.center || { x: 25.21875, y: -20.90625, z: 25899.96875 },
+          ring_radius: result.ringRadius,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Не удалось уточнить маршрут');
+      const refined: RingResult = {
+        ...result,
+        route: data.route,
+        totals: {
+          ...result.totals,
+          points: data.route.length,
+          realPoints: data.real_points,
+          syntheticPoints: data.synthetic_points,
         },
-        'Не удалось запустить уточнение маршрута',
-      );
+      };
+      applyResult(refined);
+      publishAtlasSearchProgress({ percent: 100, stage: 'done' });
+      finishAtlasSearchProgress({
+        message: `Уточнение завершено: заменено ${data.replacements} точек`,
+        summary: `Осталось расчётных точек: ${data.synthetic_points}`,
+      });
+      toast(`Маршрут уточнён: заменено ${data.replacements} точек`, 'success');
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
+      finishAtlasSearchProgress({ message: 'Уточнение прервано' });
       toast(error instanceof Error ? error.message : 'Ошибка уточнения маршрута', 'error');
     } finally {
-      abortRef.current = null;
       setRefining(false);
     }
-  };
+  }, [applyResult, refining, result]);
 
   const exportRingCsv = () => {
     if (!result) return;
@@ -193,7 +429,7 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
       `galactic-ring-${startSystem}`,
       routeToCsvRows(result.route.map((point) => ({
         ...point,
-        source: point.source === 'triangulated' ? 'triangulated' : 'edsm',
+        source: point.source === 'triangulated' ? 'triangulated' : point.source || 'catalog',
       }))),
     );
   };
@@ -207,27 +443,32 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
 
   const filteredRoute = useMemo(() => {
     if (!result) return [];
-    const q = routeFilter.trim().toLowerCase();
-    if (!q) return result.route;
-    return result.route.filter((point) => point.name.toLowerCase().includes(q));
+    const query = routeFilter.trim().toLowerCase();
+    if (!query) return result.route;
+    return result.route.filter((point) => point.name.toLowerCase().includes(query));
   }, [result, routeFilter]);
 
   const busy = loading || refining;
+  const syntheticShare = result && result.totals.points > 0
+    ? Math.round((result.totals.syntheticPoints / result.totals.points) * 100)
+    : 0;
 
   return (
     <div className="atlas-route-finder">
       <div className="atlas-search-panel">
         <h3>Галактическое кольцо колонизации</h3>
         <p className="atlas-route-desc">
-          Замкнутый маршрут вокруг Sagittarius A*. Допустимы переходы от 1 до 14,99 св.л.;
-          реальные системы EDSM служат опорными точками, а разрывы заполняются расчётными узлами.
+          Замкнутый маршрут вокруг Sagittarius A* с шагом до 14,99 св.л. Опорные точки берутся из
+          каталога Spansh в базе проекта, кэша Atlas и только затем из EDSM/Spansh. Разрывы
+          закрываются реальными системами; расчётные точки остаются, лишь если рядом систем нет.
+          Поиск идёт шагами, поэтому его можно продолжить после обрыва связи.
         </p>
 
         <SystemSearchInput
           label="Начальная система"
           value={startSystem}
           onChange={setStartSystem}
-          onSubmit={() => { if (startSystem.trim() && !busy) void search(); }}
+          onSubmit={() => { if (startSystem.trim() && !busy) search(); }}
           placeholder="Sol"
         />
 
@@ -243,6 +484,7 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
             step={100}
             value={ringRadius}
             onChange={(event) => setRingRadius(Number(event.target.value))}
+            disabled={busy}
           />
           <div className="atlas-range-scale"><span>100</span><span>45 000</span></div>
         </div>
@@ -259,6 +501,7 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
             step={50}
             value={searchRadius}
             onChange={(event) => setSearchRadius(Number(event.target.value))}
+            disabled={busy}
           />
           <div className="atlas-range-scale"><span>50</span><span>3000</span></div>
         </div>
@@ -281,12 +524,27 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
             <div className="atlas-progress-bar">
               <div style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }} />
             </div>
-            {progress.sectors > 0 && (
-              <div className="atlas-progress-meta">
-                Сегмент {progress.sector} из {progress.sectors} · найдено в сегменте: {progress.found} ·
-                {' '}{progress.cached ? 'кэш' : 'EDSM с задержкой'} · отклонение: {progress.deviation.toFixed(1)} св.л.
-              </div>
-            )}
+            <div className="atlas-progress-meta">
+              Сегмент {progress.sectorsDone} из {progress.sectors} · реальных опор: {progress.realAnchors} ·
+              {' '}расчётных: {progress.triangulatedAnchors} · найдено систем: {progress.systemsFound}
+            </div>
+            <p className="atlas-muted">
+              Ход поиска виден на 3D-карте: кольцо, луч текущего сегмента и найденные системы. Найденное
+              сразу сохраняется в базу проекта — повторный поиск в этом районе пойдёт быстрее.
+            </p>
+          </div>
+        )}
+
+        {resumable && !busy && (
+          <div className="atlas-resume-box">
+            <p>
+              Поиск прерван на сегменте {resumable.sectorsDone} из {resumable.sectors}.
+              Прогресс сохранён на сервере.
+            </p>
+            <div className="atlas-button-row">
+              <button type="button" className="atlas-secondary-btn" onClick={resume}>Продолжить с этого места</button>
+              <button type="button" className="atlas-link-btn" onClick={search}>Начать заново</button>
+            </div>
           </div>
         )}
       </div>
@@ -306,20 +564,32 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
           </div>
 
           <div className="atlas-route-summary">
-            <div className="stat-box"><div className="num">{result.route.length}</div><div className="lbl">Точек маршрута</div></div>
-            <div className="stat-box"><div className="num">{Math.max(0, result.anchors.length - 1)}</div><div className="lbl">Опорных систем</div></div>
-            <div className="stat-box"><div className="num">{result.discovered_count}</div><div className="lbl">Найдено EDSM</div></div>
-            <div className="stat-box"><div className="num">{result.synthetic_count}</div><div className="lbl">Расчётных точек</div></div>
+            <div className="stat-box"><div className="num">{result.totals.points.toLocaleString('ru-RU')}</div><div className="lbl">Точек маршрута</div></div>
+            <div className="stat-box"><div className="num">{result.totals.anchors}</div><div className="lbl">Опорных систем</div></div>
+            <div className="stat-box"><div className="num">{result.totals.realPoints.toLocaleString('ru-RU')}</div><div className="lbl">Реальных точек</div></div>
+            <div className="stat-box"><div className="num">{result.totals.syntheticPoints.toLocaleString('ru-RU')}</div><div className="lbl">Расчётных ({syntheticShare}%)</div></div>
           </div>
 
-          <button type="button" className="atlas-secondary-btn" onClick={refine} disabled={busy}>
-            {refining ? `Уточнение маршрута: ${Math.round(progress.percent)}%` : 'Уточнить маршрут по известным системам'}
+          <div className="atlas-details-box">
+            <div className="atlas-stat-grid">
+              <div>Расчётных опор</div><div>{result.totals.triangulatedAnchors} из {result.totals.anchors}</div>
+              <div>Среднее отклонение</div><div>{result.totals.deviationAvg} св.л.</div>
+              <div>Максимальное отклонение</div><div>{result.totals.deviationMax} св.л.</div>
+              <div>Систем из каталога Spansh</div><div>{result.stats.catalogHits.toLocaleString('ru-RU')}</div>
+              <div>Систем из кэша Atlas</div><div>{result.stats.cacheHits.toLocaleString('ru-RU')}</div>
+              <div>Запросов к EDSM</div><div>{result.stats.edsmRequests.toLocaleString('ru-RU')}</div>
+              <div>Запросов к Spansh</div><div>{result.stats.spanshRequests.toLocaleString('ru-RU')}</div>
+              <div>Сохранено в кэш проекта</div><div>{result.stats.systemsSaved.toLocaleString('ru-RU')}</div>
+            </div>
+          </div>
+
+          <button type="button" className="atlas-secondary-btn" onClick={() => void refine()} disabled={busy || result.totals.syntheticPoints === 0}>
+            {refining
+              ? `Уточнение маршрута: ${Math.round(progress.percent)}%`
+              : result.totals.syntheticPoints === 0
+                ? 'Расчётных точек нет — уточнять нечего'
+                : 'Заменить расчётные точки реальными системами'}
           </button>
-          {refining && (
-            <p className="atlas-muted">
-              {progress.message} · проверено точек: {progress.point} из {progress.total} · заменено: {progress.replacements}
-            </p>
-          )}
 
           <div className="atlas-section-head">
             <h4>Точки кольца</h4>
@@ -339,13 +609,16 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
               )}
             </div>
           </div>
-          <p className="atlas-list-counter">Показано {filteredRoute.length} из {result.route.length}</p>
+          <p className="atlas-list-counter">Показано {Math.min(300, filteredRoute.length)} из {filteredRoute.length}</p>
           <div className="atlas-route-list">
             {filteredRoute.length === 0 && <p className="atlas-muted">Точек по фильтру нет.</p>}
             {filteredRoute.slice(0, 300).map((point, index) => (
               <div key={`${point.name}-${index}`} className="route-row">
                 <span className="route-idx">{index + 1}</span>
-                <span className="route-name">{point.name}</span>
+                <span className="route-name">
+                  {point.name}
+                  {point.source === 'triangulated' && <span className="atlas-tag">расчётная</span>}
+                </span>
                 <span className="route-coords">{formatCoordinates(point)}</span>
               </div>
             ))}

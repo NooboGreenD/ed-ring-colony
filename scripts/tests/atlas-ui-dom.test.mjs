@@ -404,18 +404,23 @@ test('меню: Atlas на месте, фильтр ищет пункты, drawe
     const links = Array.from(ui.document.querySelectorAll('a.sidebar-item'));
     const hrefs = links.map((link) => link.getAttribute('href'));
     assert.ok(hrefs.includes('/atlas'), `Atlas отсутствует в боковом меню: ${hrefs.join(', ')}`);
-    assert.ok(hrefs.includes('/support'), 'раздел поддержки доступен из меню');
+    assert.ok(hrefs.includes('/systems'), 'раздел систем доступен из меню');
     assert.ok(ui.document.querySelectorAll('.sidebar-group-title').length >= 3, 'пункты сгруппированы по разделам');
+    // Магазин, поддержка и личный кабинет переехали в меню пользователя.
+    for (const personal of ['/support', '/premium-shop', '/account']) {
+      assert.ok(!hrefs.includes(personal), `${personal} не должен дублироваться в боковом меню`);
+    }
 
     const atlasLink = links.find((link) => link.getAttribute('href') === '/atlas');
     assert.equal(atlasLink.getAttribute('aria-current'), 'page', 'активный раздел подсвечен');
     assert.ok(ui.document.querySelector('.sidebar-subitem'), 'у активного раздела показаны подпункты');
+    assert.ok(ui.document.querySelector('.sidebar-group-title.active'), 'группа с активным разделом подсвечена');
 
     const filterInput = ui.document.querySelector('.sidebar-search input');
-    await ui.typeInto(filterInput, 'магазин');
+    await ui.typeInto(filterInput, 'вики');
     // Меню рендерится дважды (боковая панель и drawer), поэтому сравниваем набор.
     const visible = Array.from(ui.document.querySelectorAll('a.sidebar-item')).map((link) => link.getAttribute('href'));
-    assert.deepEqual([...new Set(visible)], ['/premium-shop'], 'фильтр оставил только «Магазин»');
+    assert.deepEqual([...new Set(visible)], ['/wiki'], 'фильтр оставил только «Вики»');
     await ui.typeInto(filterInput, 'абракадабра');
     assert.match(ui.text(), /Ничего не найдено/);
 

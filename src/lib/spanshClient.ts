@@ -32,6 +32,88 @@ export async function spanshNearest(coords: SpanshNearestOptions): Promise<Spans
   return data.system;
 }
 
+export interface SpanshSystemsNearOptions {
+  referenceSystem: string;
+  /** Радиус от опорной системы, св.л. */
+  maxDistance: number;
+  size?: number;
+  timeoutMs?: number;
+}
+
+export interface SpanshSystemStub {
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+  /** Расстояние до опорной системы, св.л. */
+  distance: number;
+}
+
+/**
+ * Системы Spansh в радиусе от опорной системы.
+ *
+ * Документации на поисковые эндпоинты у Spansh нет: тело запроса снято с
+ * живого клиента (`POST /api/systems/search` — `filters.distance` со строками
+ * границ, сортировка по расстоянию, `reference_system`, `size`, `page`).
+ * В ответ приходят полные документы систем (тела и станции внутри), поэтому
+ * читаем из них только имя и координаты и не запрашиваем больше сотни записей.
+ *
+ * Функция никогда не бросает исключение: поиск, который её вызвал, продолжается
+ * на других источниках.
+ */
+export async function spanshSystemsNear(options: SpanshSystemsNearOptions): Promise<SpanshSystemStub[]> {
+  const size = Math.max(1, Math.min(options.size ?? 100, 100));
+  const payload = {
+    filters: {
+      distance: {
+        min: '0',
+        max: String(Math.max(0, Math.round(options.maxDistance))),
+      },
+    },
+    sort: [{ distance: { direction: 'asc' } }],
+    size,
+    page: 0,
+    reference_system: options.referenceSystem,
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
+  try {
+    const res = await fetch(`${SPANSH_BASE}/systems/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.ok) return [];
+    const data = await res.json().catch(() => null);
+    const entries = Array.isArray(data?.results) ? data.results : [];
+    return entries.flatMap((entry: any): SpanshSystemStub[] => {
+      // Запись поиска оборачивает систему в `record`, но у части эндпоинтов
+      // поля лежат на верхнем уровне — поддерживаем оба варианта.
+      const record = entry?.record ?? entry;
+      const name = String(record?.name || '');
+      const coords = record?.coords ?? record;
+      const x = Number(coords?.x);
+      const y = Number(coords?.y);
+      const z = Number(coords?.z);
+      if (!name || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return [];
+      const distance = Number(entry?.distance ?? record?.distance);
+      return [{
+        name,
+        x,
+        y,
+        z,
+        distance: Number.isFinite(distance) ? distance : 0,
+      }];
+    });
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function spanshBodiesSearch(options: SpanshBodiesSearchOptions): Promise<SpanshBodiesSearchResult> {
   const payload: Record<string, unknown> = {
     filters: options.filters || {},

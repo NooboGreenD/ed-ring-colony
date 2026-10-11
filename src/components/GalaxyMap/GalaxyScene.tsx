@@ -19,12 +19,14 @@ import { PilotMarkers } from './PilotMarkers';
 import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
 import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions } from './AllSystemsPoints';
+import { SearchProgressLayer } from './SearchProgressLayer';
 import type { Pilot } from './PilotMarkers';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import type { AllSystemsData } from '@/lib/galaxySystems';
 import type { GalaxyNebula, NebulaKind } from '@/lib/galaxyNebulae';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
+import type { AtlasSearchProgress } from '@/lib/atlasSearchProgress';
 
 function DataWatcher({
   routeLinePoints,
@@ -98,6 +100,8 @@ interface GalaxySceneProps {
   selectedPilotId?: string | null;
   focusTarget?: THREE.Vector3 | null;
   resetCamera?: number;
+  /** Прогресс активного поиска Atlas: рисуется поверх остальных слоёв. */
+  searchProgress?: AtlasSearchProgress | null;
 }
 
 export function GalaxyScene({
@@ -139,6 +143,7 @@ export function GalaxyScene({
   selectedPilotId,
   focusTarget,
   resetCamera,
+  searchProgress = null,
 }: GalaxySceneProps) {
   const controlsRef = useRef<any>(null);
   const { camera, invalidate } = useThree();
@@ -275,6 +280,7 @@ export function GalaxyScene({
       )}
       {showMarketResults && <MarketResultMarkers systems={marketResults} />}
       {showNoMarketSystems && <NoMarketMarkers systems={noMarketSystems} />}
+      {searchProgress && <SearchProgressLayer progress={searchProgress} />}
     </>
   );
 }

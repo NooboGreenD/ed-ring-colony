@@ -31,6 +31,12 @@ export type TranslationKey =
   | 'nav.group.community'
   | 'nav.group.tools'
   | 'nav.group.help'
+  // Секции меню пользователя (топбар). Персональные разделы живут там, а не в
+  // боковой навигации: см. комментарий в Sidebar.tsx.
+  | 'account.group.profile'
+  | 'account.group.services'
+  | 'account.group.staff'
+  | 'account.myBuilds'
   | 'nav.filter'
   | 'nav.empty'
   | 'nav.menu'

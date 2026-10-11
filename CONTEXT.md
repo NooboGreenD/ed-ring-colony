@@ -401,7 +401,10 @@ Applied via `npx supabase db push`.
 | `/api/admin/billing/stats` | GET | Staff | Billing telemetry + live counters (pilots, systems, tonnage) — period 7d/30d/90d/1y/all |
 | `/api/status` | GET | None | Public liveness: ok, system online/update, update {active,percent,stage} — polled by SiteStatusBar + future Android FCM |
 | `/api/leaderboard` | GET | None | Player stats |
-| `/api/atlas/search` | GET | None | System search |
+| `/api/atlas/search` | POST/GET | None | World search: POST creates the session and runs it in the background, GET returns `session.progress` (stage, percent, last found points) + candidates |
+| `/api/atlas/ring-route` | POST/GET | None | Galactic ring: step-by-step sessions (`session_id` to continue), GET returns the session state |
+| `/api/atlas/ring-route/finalize` | POST | None | Assembles the closed ring route from the finished session |
+| `/api/atlas/ring-route/refine` | POST | None | Replaces triangulated ring points with real systems |
 | `/api/atlas/route-finder` | GET | Auth | Route planning |
 | `/api/atlas/favorites` | GET | Auth | Atlas favorites |
 | `/api/edsm/system` | GET | None | EDSM proxy |
@@ -532,7 +535,9 @@ React и без строк интерфейса, повторяющие моде
 | WikiSidebar | `components/Wiki/WikiSidebar.tsx` | Server | Wiki navigation |
 | AtlasSearchPanel | `components/Atlas/AtlasSearchPanel.tsx` | Client | Atlas search |
 | AtlasFavorites | `components/Atlas/AtlasFavorites.tsx` | Client | Atlas favorites |
-| AtlasRouteFinder | `components/Atlas/AtlasRouteFinder.tsx` | Client | Route finder |
+| AtlasRouteFinder | `components/Atlas/AtlasRouteFinder.tsx` | Client | Route finder; publishes corridor/beam/results to the shared search-progress channel |
+| AtlasRingRouteFinder | `components/Atlas/AtlasRingRouteFinder.tsx` | Client | Galactic ring: step loop, resume after a broken connection, refine, CSV |
+| SearchProgressLayer | `components/GalaxyMap/SearchProgressLayer.tsx` | Client | 3D layer of any Atlas search: ring, corridor, cube, path, points, scan beam |
 | AtlasCandidateList | `components/Atlas/AtlasCandidateList.tsx` | Client | Candidate systems |
 | CommentSection | `components/Comments/CommentSection.tsx` | Client | Comments |
 | FriendsPanel | `components/FriendsPanel.tsx` | Client | Friend list |
@@ -618,6 +623,12 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `galaxy-data`, Postgres or paged PostgREST, and asks `/api/galaxy/stats` first
   so an empty catalog is a message, not a 404; it does not raycast the cloud.
   Migration `20260924000000_galaxy_systems_finish.sql`.
+  Atlas searchers write everything they find back into the project DB
+  (`atlas_system_cache`, `atlas_body_cache`, ring sessions) — repeat searches in
+  the same area never touch EDSM/Spansh again. Search progress is shared with the
+  3D map through `src/lib/atlasSearchProgress.ts`
+  (`useAtlasSearchProgress`). Migration `20261011000000_atlas_search_caches.sql`,
+  details in ATLAS-SEARCH-REWORK.md.
 
 ### 8.5 Raven Colonial
 - Sync API: `/api/ravencolonial/sync`

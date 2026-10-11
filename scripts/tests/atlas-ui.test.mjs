@@ -180,11 +180,26 @@ test('Меню: Atlas доступен с любого устройства, с�
   const sidebar = read('src/components/Sidebar.tsx');
   const mobileNav = read('src/components/MobileNav.tsx');
 
-  await t.test('боковое меню содержит Atlas и больше не теряет разделы', () => {
+  await t.test('боковое меню содержит Atlas и разделы навигации', () => {
     assert.ok(sidebar.includes("href: '/atlas'"), 'в боковом меню нет пункта Atlas');
-    for (const href of ['/atlas', '/systems', '/projects', '/support', '/premium-shop', '/account']) {
+    for (const href of ['/atlas', '/map', '/systems', '/projects', '/wiki', '/architect']) {
       assert.ok(sidebar.includes(`href: '${href}'`), `в меню нет пункта ${href}`);
     }
+  });
+
+  await t.test('персональные разделы живут в меню пользователя, а не в навигации', () => {
+    // Магазин, поддержка и личный кабинет убраны из бокового меню: это
+    // персональные сервисы, и дублировать их в навигации по разделам не нужно.
+    const userMenu = read('src/components/UserMenu.tsx');
+    for (const href of ['/support', '/premium-shop', '/account']) {
+      assert.ok(!sidebar.includes(`href: '${href}'`), `пункт ${href} остался в боковом меню`);
+      assert.ok(userMenu.includes(`href="${href}"`), `пункт ${href} отсутствует в меню пользователя`);
+      const page = `src/app${href}/page.tsx`;
+      assert.ok(fs.existsSync(path.join(ROOT, page)), `нет страницы для пункта меню ${href} (${page})`);
+    }
+    // Меню пользователя должно оставаться доступным с клавиатуры.
+    assert.ok(userMenu.includes('role="menuitem"'), 'пункты меню пользователя без role=menuitem');
+    assert.ok(userMenu.includes('ArrowDown') && userMenu.includes('ArrowUp'), 'в меню пользователя нет навигации стрелками');
   });
 
   await t.test('нижняя мобильная навигация использует переводы и активный пункт', () => {

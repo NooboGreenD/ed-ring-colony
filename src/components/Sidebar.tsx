@@ -17,12 +17,9 @@ import {
   IconMessage,
   IconNote,
   IconPlane,
-  IconProfile,
   IconProjects,
   IconRadio,
   IconSearch,
-  IconHeadphones,
-  IconStore,
   IconUsers,
   IconWiki,
   IconWrench,
@@ -49,19 +46,28 @@ interface NavGroup {
 
 const iconSize = 18;
 
+/**
+ * Порядок разделов = порядок, в котором ими пользуются: сначала атлас и карта
+ * (ядро проекта), потом справочники, затем сообщество и инструменты.
+ *
+ * «Магазин», «Поддержка» и «Личный кабинет» отсюда убраны намеренно: это
+ * персональные сервисы, и они живут в меню пользователя в топбаре. Дублировать
+ * их в навигации по разделам значило занимать место и путать, куда идти.
+ * Регрессию стережёт scripts/tests/atlas-ui.test.mjs.
+ */
 const NAV_GROUPS: NavGroup[] = [
   {
     id: 'navigation',
     titleKey: 'nav.group.navigation',
     items: [
       { href: '/', translation: 'nav.home', icon: <IconHomeSystem size={iconSize} className="sidebar-icon" /> },
-      { href: '/map', translation: 'nav.map', icon: <IconMap size={iconSize} className="sidebar-icon" /> },
       {
         href: '/atlas',
         translation: 'nav.atlas',
         icon: <IconAtlas size={iconSize} className="sidebar-icon" />,
         children: [{ href: '/atlas/sector', labelKey: 'nav.sectors' }],
       },
+      { href: '/map', translation: 'nav.map', icon: <IconMap size={iconSize} className="sidebar-icon" /> },
       { href: '/systems', translation: 'nav.systems', icon: <IconGlobe size={iconSize} className="sidebar-icon" /> },
       { href: '/cmdrs', translation: 'nav.cmdrs', icon: <IconUsers size={iconSize} className="sidebar-icon" /> },
       { href: '/leaderboard', translation: 'nav.leaderboard', icon: <IconLeaderboard size={iconSize} className="sidebar-icon" /> },
@@ -73,10 +79,10 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/squadrons', translation: 'nav.squadrons', icon: <IconPlane size={iconSize} className="sidebar-icon" /> },
       { href: '/projects', translation: 'nav.projects', icon: <IconProjects size={iconSize} className="sidebar-icon" /> },
+      { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={iconSize} className="sidebar-icon" /> },
+      { href: '/forum', translation: 'nav.forum', icon: <IconMessage size={iconSize} className="sidebar-icon" /> },
       { href: '/news', translation: 'nav.news', icon: <IconNote size={iconSize} className="sidebar-icon" /> },
       { href: '/galnet', translation: 'nav.galnet', icon: <IconRadio size={iconSize} className="sidebar-icon" /> },
-      { href: '/forum', translation: 'nav.forum', icon: <IconMessage size={iconSize} className="sidebar-icon" /> },
-      { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={iconSize} className="sidebar-icon" /> },
     ],
   },
   {
@@ -86,15 +92,6 @@ const NAV_GROUPS: NavGroup[] = [
       { href: '/architect', translation: 'nav.architect', icon: <IconBuilding size={iconSize} className="sidebar-icon" /> },
       { href: '/outfitting', translation: 'nav.outfitting', icon: <IconWrench size={iconSize} className="sidebar-icon" /> },
       { href: '/engineers', translation: 'nav.engineers', icon: <IconGear size={iconSize} className="sidebar-icon" /> },
-    ],
-  },
-  {
-    id: 'help',
-    titleKey: 'nav.group.help',
-    items: [
-      { href: '/support', translation: 'nav.support', icon: <IconHeadphones size={iconSize} className="sidebar-icon" /> },
-      { href: '/premium-shop', translation: 'nav.shop', icon: <IconStore size={iconSize} className="sidebar-icon" /> },
-      { href: '/account', translation: 'nav.account', icon: <IconProfile size={iconSize} className="sidebar-icon" /> },
     ],
   },
 ];
@@ -107,6 +104,17 @@ export function isNavItemActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+/** Группа, внутри которой находится открытый раздел (для авто-разворота). */
+export function activeNavGroupId(pathname: string): string | null {
+  for (const group of NAV_GROUPS) {
+    for (const item of group.items) {
+      if (isNavItemActive(pathname, item.href)) return group.id;
+      if (item.children?.some((child) => isNavItemActive(pathname, child.href))) return group.id;
+    }
+  }
+  return null;
+}
+
 function readCollapsedGroups(): string[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -115,6 +123,14 @@ function readCollapsedGroups(): string[] {
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
   } catch {
     return [];
+  }
+}
+
+function persistCollapsedGroups(groups: string[]) {
+  try {
+    window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(groups));
+  } catch {
+    // Приватный режим: настройка просто не сохранится.
   }
 }
 
@@ -159,45 +175,52 @@ function NavContent({
     <>
       {visibleGroups.map((group) => {
         const isCollapsed = collapsed.includes(group.id) && !normalizedQuery;
+        const groupHasActive = group.items.some((item) =>
+          isNavItemActive(pathname, item.href)
+          || Boolean(item.children?.some((child) => isNavItemActive(pathname, child.href))));
         return (
           <div className="sidebar-group" key={group.id}>
             <button
               type="button"
-              className={`sidebar-group-title${isCollapsed ? ' collapsed' : ''}`}
+              className={`sidebar-group-title${isCollapsed ? ' collapsed' : ''}${groupHasActive ? ' active' : ''}`}
               onClick={() => onToggleGroup(group.id)}
               aria-expanded={!isCollapsed}
             >
               <span>{t(group.titleKey)}</span>
-              <IconChevronDown size={12} />
+              <span className="sidebar-group-meta">
+                {isCollapsed && groupHasActive && <span className="sidebar-group-dot" aria-hidden="true" />}
+                <IconChevronDown size={12} />
+              </span>
             </button>
             {!isCollapsed && (
               <div className="sidebar-group-items">
                 {group.items.map((item) => {
                   const isActive = isNavItemActive(pathname, item.href);
+                  const childActive = Boolean(item.children?.some((child) => isNavItemActive(pathname, child.href)));
                   const childMatches = Boolean(normalizedQuery)
                     && Boolean(item.children?.some((child) => t(child.labelKey).toLowerCase().includes(normalizedQuery)));
                   return (
                     <div key={item.href}>
                       <Link
                         href={item.href}
-                        className={`sidebar-item${isActive ? ' active' : ''}`}
+                        className={`sidebar-item${isActive || (childActive && !isActive) ? ' active' : ''}${childActive && !isActive ? ' sidebar-item-parent-active' : ''}`}
                         onClick={onNavigate}
                         aria-current={isActive ? 'page' : undefined}
                       >
                         {item.icon}
                         {t(item.translation)}
                       </Link>
-                      {item.children && (isActive || childMatches) && (
+                      {item.children && (isActive || childActive || childMatches) && (
                         <div className="sidebar-subitems">
                           {item.children.map((child) => {
-                            const childActive = isNavItemActive(pathname, child.href);
+                            const childIsActive = isNavItemActive(pathname, child.href);
                             return (
                               <Link
                                 key={child.href}
                                 href={child.href}
-                                className={`sidebar-subitem${childActive ? ' active' : ''}`}
+                                className={`sidebar-subitem${childIsActive ? ' active' : ''}`}
                                 onClick={onNavigate}
-                                aria-current={childActive ? 'page' : undefined}
+                                aria-current={childIsActive ? 'page' : undefined}
                               >
                                 {t(child.labelKey)}
                               </Link>
@@ -224,11 +247,26 @@ export default function Sidebar() {
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<string[]>([]);
   const drawerRef = useRef<HTMLDivElement | null>(null);
+  const desktopSearchRef = useRef<HTMLInputElement | null>(null);
+  const drawerSearchRef = useRef<HTMLInputElement | null>(null);
 
   // Настройка «свёрнутые разделы» — персональная, переживает перезагрузку.
   useEffect(() => {
     setCollapsed(readCollapsedGroups());
   }, []);
+
+  // Свёрнутая группа не должна прятать раздел, который сейчас открыт: раньше
+  // переход по прямой ссылке оставлял активный пункт внутри закрытой группы.
+  useEffect(() => {
+    const groupId = activeNavGroupId(pathname);
+    if (!groupId) return;
+    setCollapsed((current) => {
+      if (!current.includes(groupId)) return current;
+      const next = current.filter((id) => id !== groupId);
+      persistCollapsedGroups(next);
+      return next;
+    });
+  }, [pathname]);
 
   // Мобильное меню: Escape, блокировка прокрутки и фокус внутри панели.
   useEffect(() => {
@@ -246,6 +284,33 @@ export default function Sidebar() {
     };
   }, [open]);
 
+  // Быстрый доступ к фильтру меню: Ctrl/⌘+K из любого места страницы и «/» —
+  // когда фокус не в поле ввода.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = Boolean(target && (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable));
+      const isShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
+      if (isShortcut) {
+        event.preventDefault();
+        setOpen(true);
+        window.requestAnimationFrame(() => {
+          (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
+        });
+        return;
+      }
+      if (event.key === '/' && !typing) {
+        event.preventDefault();
+        setOpen(true);
+        window.requestAnimationFrame(() => {
+          (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
+        });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   // Переход по ссылке закрывает drawer, чтобы карта не оставалась под оверлеем.
   useEffect(() => {
     setOpen(false);
@@ -255,36 +320,45 @@ export default function Sidebar() {
   const toggleGroup = useCallback((id: string) => {
     setCollapsed((current) => {
       const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
-      try {
-        window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(next));
-      } catch {
-        // Приватный режим: настройка просто не сохранится.
-      }
+      persistCollapsedGroups(next);
       return next;
     });
   }, []);
 
   const closeDrawer = useCallback(() => setOpen(false), []);
 
+  const searchField = (ref: React.RefObject<HTMLInputElement | null>) => (
+    <div className="sidebar-search">
+      <IconSearch size={14} className="sidebar-search-icon" />
+      <input
+        ref={ref}
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.stopPropagation();
+            setQuery('');
+          }
+        }}
+        placeholder={t('nav.filter')}
+        aria-label={t('nav.filter')}
+      />
+      {query ? (
+        <button type="button" className="sidebar-search-clear" onClick={() => setQuery('')} aria-label="×">
+          ×
+        </button>
+      ) : (
+        <kbd className="sidebar-search-hint" aria-hidden="true">Ctrl K</kbd>
+      )}
+    </div>
+  );
+
   return (
     <>
       {/* Desktop sidebar */}
       <aside className="sidebar" aria-label={t('nav.menu')}>
-        <div className="sidebar-search">
-          <IconSearch size={14} className="sidebar-search-icon" />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('nav.filter')}
-            aria-label={t('nav.filter')}
-          />
-          {query && (
-            <button type="button" className="sidebar-search-clear" onClick={() => setQuery('')} aria-label="×">
-              ×
-            </button>
-          )}
-        </div>
+        {searchField(desktopSearchRef)}
         <nav className="sidebar-nav">
           <NavContent pathname={pathname} query={query} collapsed={collapsed} onToggleGroup={toggleGroup} />
         </nav>
@@ -328,16 +402,7 @@ export default function Sidebar() {
         aria-label={t('nav.menu')}
         tabIndex={-1}
       >
-        <div className="sidebar-search">
-          <IconSearch size={14} className="sidebar-search-icon" />
-          <input
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t('nav.filter')}
-            aria-label={t('nav.filter')}
-          />
-        </div>
+        {searchField(drawerSearchRef)}
         <nav className="sidebar-nav">
           <NavContent
             pathname={pathname}
