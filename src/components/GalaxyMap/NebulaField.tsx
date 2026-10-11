@@ -10,9 +10,11 @@
  * полупрозрачную дымку, которая видна на карте в самой игре.
  *
  * Что даёт «игровой» вид:
- *  - клубы большие (0.17–0.37 диаметра облака) — читаются как газ, не как точки;
- *  - яркость копится аддитивно, но с малой альфой на клуб: облако светится
- *    слабее звёзд и не выжигает карту;
+ *  - клубы крупные и мягкие — читаются как газ, не как точки;
+ *  - облако рисуется «дымкой» (обычное смешивание, как в игре): оно и светит,
+ *    и заслоняет звёзды за собой, поэтому рядом с ним видна плотность, а не
+ *    свечение поверх звёздного поля (аддитивный режим доступен через
+ *    EMISSIVE_ADDITIVE в @/lib/nebulaClouds — им собран второй вариант превью);
  *  - силуэт задаётся шумом и типом объекта (дуга Петли Барнарда, нити Вуали,
  *    силуэт Конской головы, яркое ядро планетарных туманностей);
  *  - тёмные туманности не светятся, а гасят звёзды за собой;
@@ -29,6 +31,7 @@ import * as THREE from 'three';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import {
   DARK_OPACITY,
+  EMISSIVE_ADDITIVE,
   EMISSIVE_OPACITY,
   buildNebulaBuckets,
   buildPuffAtlasData,
@@ -256,7 +259,11 @@ export function NebulaField({
 
   const texture = useMemo(() => createPuffTexture(), []);
   const emissiveMaterial = useMemo(
-    () => createPuffMaterial(texture, EMISSIVE_OPACITY, THREE.AdditiveBlending),
+    () => createPuffMaterial(
+      texture,
+      EMISSIVE_OPACITY,
+      EMISSIVE_ADDITIVE ? THREE.AdditiveBlending : THREE.NormalBlending,
+    ),
     [texture],
   );
   const darkMaterial = useMemo(

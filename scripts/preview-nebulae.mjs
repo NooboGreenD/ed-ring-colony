@@ -25,7 +25,9 @@ import { fileURLToPath } from 'node:url';
 import { GALAXY_NEBULAE } from '../src/lib/galaxyNebulae.ts';
 import {
   DARK_OPACITY,
+  EMISSIVE_ADDITIVE,
   EMISSIVE_OPACITY,
+  TARGET_PEAK,
   buildNebulaBuckets,
   buildPuffAtlasData,
 } from '../src/lib/nebulaClouds.ts';
@@ -42,6 +44,8 @@ const project = (nebula) => ({
 });
 
 const args = process.argv.slice(2);
+/** Светящийся газ: «дымка» (как на карте) или аддитивное свечение — для сравнения. */
+const additiveGas = args.includes('--additive') ? true : EMISSIVE_ADDITIVE;
 const argOf = (name, fallback) => {
   const index = args.indexOf(name);
   return index >= 0 ? Number(args[index + 1]) : fallback;
@@ -104,7 +108,8 @@ const ATLAS = buildPuffAtlasData();
  */
 let bucketCache = null;
 function getBuckets(nebulae) {
-  const key = nebulae.length === GALAXY_NEBULAE.length ? 'all' : nebulae.map((n) => n.name).join('|');
+  const key = `${additiveGas ? 'add' : 'veil'}:`
+    + (nebulae.length === GALAXY_NEBULAE.length ? 'all' : nebulae.map((n) => n.name).join('|'));
   if (!bucketCache || bucketCache.key !== key) {
     bucketCache = {
       key,
@@ -112,13 +117,14 @@ function getBuckets(nebulae) {
         nebulae,
         new Set(['emission', 'reflection', 'cluster', 'planetary', 'remnant', 'dark']),
         project,
+        additiveGas,
       ),
     };
   }
   return bucketCache.value;
 }
 
-function drawBucket(target, mask, bucket, opacity, centerX, centerZ, scale, width, height, additive) {
+function drawBucket(target, mask, bucket, opacity, centerX, centerZ, scale, width, height, mode) {
   const puffs = bucket.sizes.length;
   for (let i = 0; i < puffs; i++) {
     const cx = (bucket.centers[i * 3] - centerX) * scale + width / 2;
@@ -175,11 +181,21 @@ function drawBucket(target, mask, bucket, opacity, centerX, centerZ, scale, widt
         if (a < 0.0025) continue;
 
         const pixel = py * width + px;
-        const index = pixel * 3;
-        if (additive) {
+        // Буфер газа — RGBA: premultiplied свет + плотность, поэтому шаг 4.
+        const index = pixel * 4;
+        if (mode === 'add') {
           target[index] += r * a;
           target[index + 1] += g * a;
           target[index + 2] += b * a;
+        } else if (mode === 'veil') {
+          // «Дымка»: облако непрозрачно для звёзд ровно настолько, насколько
+          // плотное; накапливаем premultiplied-цвет и суммарную плотность.
+          const k = target[index + 3];
+          const over = a * (1 - k);
+          target[index] += r * over;
+          target[index + 1] += g * over;
+          target[index + 2] += b * over;
+          target[index + 3] = k + over;
         } else {
           // mask — плотность затемнения, одна компонента на пиксель.
           mask[pixel] = 1 - (1 - mask[pixel]) * (1 - a);
@@ -197,12 +213,17 @@ function render({
   const scale = WIDTH / span; // пикселей на световой год
   const pixels = WIDTH * height;
 
-  // Слой газа: свет (additive) и плотность (затемнение).
-  const gas = new Float32Array(pixels * 3);
+  // Слой газа: у «дымки» — premultiplied свет в RGB и плотность в альфе;
+  // при аддитивном режиме альфа не используется.
+  const gas = new Float32Array(pixels * 4);
   const darkMask = new Float32Array(pixels);
   const { emissive, dark } = getBuckets(nebulae);
-  drawBucket(gas, darkMask, dark, DARK_OPACITY, centerX, centerZ, scale, WIDTH, height, false);
-  drawBucket(gas, darkMask, emissive, EMISSIVE_OPACITY, centerX, centerZ, scale, WIDTH, height, true);
+  drawBucket(gas, darkMask, dark, DARK_OPACITY, centerX, centerZ, scale, WIDTH, height, 'dark');
+  drawBucket(
+    gas, darkMask, emissive, EMISSIVE_OPACITY,
+    centerX, centerZ, scale, WIDTH, height,
+    additiveGas ? 'add' : 'veil',
+  );
 
   // Звёзды каталожного облака — фон, по которому видно работу тёмных туманностей.
   const rgb = new Float32Array(pixels * 3);
@@ -236,9 +257,12 @@ function render({
   for (let i = 0; i < pixels; i++) {
     const dim = 1 - darkMask[i];
     if (darkMask[i] > darkPeak) darkPeak = darkMask[i];
+    // «Дымка» закрывает звёзды пропорционально своей плотности.
+    const cover = additiveGas ? 0 : gas[i * 4 + 3];
     for (let c = 0; c < 3; c++) {
-      const value = rgb[i * 3 + c] * dim + gas[i * 3 + c];
-      if (gas[i * 3 + c] > gasPeak) gasPeak = gas[i * 3 + c];
+      const light = gas[i * 4 + c];
+      const value = rgb[i * 3 + c] * dim * (1 - cover) + light;
+      if (light > gasPeak) gasPeak = light;
       encoded[i * 3 + c] = toSrgb(value);
     }
   }
@@ -330,7 +354,7 @@ const list = only
 
 console.log(only
   ? `\nЯркость «${only}»:`
-  : '\nПиковая яркость облаков (линейная; цель 0.30…0.60 для газа, 0.4…0.85 для тёмных):');
+  : '\nПиковая яркость облаков: факт против цели для своего типа (линейная):');
 for (const nebula of list) {
   const center = project(nebula);
   const span = Math.max(300, nebula.size * 3.2);
@@ -340,11 +364,13 @@ for (const nebula of list) {
     nebulae: [nebula], drawStars: false, quiet: true, writeFile: Boolean(only),
   });
   const value = nebula.kind === 'dark' ? stats.darkPeak : stats.gasPeak;
-  const low = nebula.kind === 'dark' ? 0.4 : 0.3;
-  const high = nebula.kind === 'dark' ? 0.85 : 0.6;
-  const flag = value < low || value > high ? '!' : ' ';
+  // Цель у каждого типа своя (TARGET_PEAK): яркая эмиссионная туманность и
+  // слабое отражение не могут сравниваться по одному порогу.
+  const target = TARGET_PEAK[nebula.kind] ?? 0.3;
+  const flag = value < target * 0.92 ? '!' : ' ';
   console.log(
-    ` ${flag} ${nebula.name.padEnd(30)} ${value.toFixed(3)}  (${nebula.kind}, ${nebula.size} св. лет)`,
+    ` ${flag} ${nebula.name.padEnd(30)} ${value.toFixed(3)} / цель ${target.toFixed(2)}`
+    + `  (${nebula.kind}, ${nebula.size} св. лет)`,
   );
 }
 if (only) {

@@ -16,6 +16,13 @@ import type { GalaxyNebula, NebulaKind } from './galaxyNebulae';
 /* ── Яркость и размеры: главные ручки внешнего вида ─────────────────────── */
 
 export const EMISSIVE_OPACITY = 1;    // общий множитель света облаков (0…1)
+/**
+ * Как рисуется светящийся газ. `true` — аддитивно: облако только добавляет свет
+ * и звёзды за ним просвечивают. `false` — «дымка»: облако само полупрозрачное
+ * (обычное смешивание), звёзды за ним тускнеют, как в игре. Второй режим даёт
+ * плотный объём вместо свечения, поэтому именно он используется на карте.
+ */
+export const EMISSIVE_ADDITIVE = false;
 export const DARK_OPACITY = 1;         // общий множитель плотности тёмных облаков
 /**
  * Размер клуба (доля диаметра облака) зависит от их числа: маленькая
@@ -26,7 +33,25 @@ export const PUFF_SIZE_MIN = 0.18;
 export const PUFF_SIZE_MAX = 0.58;
 export const PUFF_SIZE_TARGET = 28;    // число клубов, при котором доля диаметра = 0.34
 export const PUFF_SIZE_JITTER = 0.22;  // разброс размера клубов вокруг базового
-export const MAX_PUFFS = 340;          // клубов на одну туманность
+/**
+ * Мелкий спутник у части клубов. На близком плане облако из одних только
+ * крупных «шариков» выглядит ватным; спутники добавляют волокнистую структуру,
+ * но не превращаются в россыпь точек, потому что их вес мал и они привязаны
+ * к родительскому клубу.
+ */
+export const DETAIL_CHANCE = 0.55;     // доля клубов со спутником
+export const DETAIL_SIZE = 0.42;       // размер спутника от родительского клуба
+export const DETAIL_WEIGHT = 0.3;      // вес спутника относительно родителя
+/**
+ * Крупномасштабная неоднородность: облако не должно быть ровным комком. Шум по
+ * положению клуба делает светлые «сгустки» и тёмные «просветы», а часть клубов
+ * в самых разреженных местах вообще убирается.
+ */
+export const STRUCTURE_SCALE = 0.02;   // обратная длина волны сгустков (1/св. год)
+export const STRUCTURE_MIN = 0.35;     // во сколько раз слабеет клуб в просвете
+export const STRUCTURE_SPAN = 1.35;    // насколько клуб сильнее в сгустке
+export const STRUCTURE_HOLE = 0.22;    // ниже этого шума клуб не ставим вовсе
+export const MAX_PUFFS = 340;          // базовых клубов на одну туманность (со спутниками — до ~1.6×)
 export const PUFFS_PER_LY = 1 / 7;     // добавка клубов на световой год диаметра
 export const HALO_MIN_SIZE = 160;      // с какого диаметра добавляется гало
 export const HALO_ALPHA_SCALE = 0.18;  // гало намеренно тусклее обычных клубов
@@ -341,9 +366,11 @@ export function buildNebulaPuffs(
   center: Vec3,
   extraCenters: Vec3[],
   bucket: PuffBucket,
+  emissiveAdditive: boolean = EMISSIVE_ADDITIVE,
 ): void {
   const rng = mulberry32(hashString(nebula.name));
   const noise = makeValueNoise(hashString(`${nebula.name}:shape`));
+  const structure = makeValueNoise(hashString(`${nebula.name}:structure`));
   const baseRgb = gameToneRgb(hexToRgb(nebula.color), nebula.kind);
   const radius = nebula.size / 2;
   const isDark = nebula.kind === 'dark';
@@ -379,7 +406,7 @@ export function buildNebulaPuffs(
   // когда известно, сколько газа реально накрывает центр облака.
   const pending: Array<{ x: number; y: number; z: number; size: number; rgb: [number, number, number]; weight: number }> = [];
 
-  const emit = (x: number, y: number, z: number, core: number) => {
+  const emit = (x: number, y: number, z: number, core: number, sizeScale = 1, weightScale = 1) => {
     const rgb = shiftRgb(
       baseRgb,
       (rng() - 0.5) * 0.03,
@@ -388,9 +415,10 @@ export function buildNebulaPuffs(
     );
     pending.push({
       x, y, z,
-      size: nebula.size * puffFraction * (1 - PUFF_SIZE_JITTER / 2 + rng() * PUFF_SIZE_JITTER),
+      size: nebula.size * puffFraction * sizeScale
+        * (1 - PUFF_SIZE_JITTER / 2 + rng() * PUFF_SIZE_JITTER),
       rgb,
-      weight: (0.55 + rng() * 0.75) * (0.6 + core * CORE_WEIGHT * 1.07),
+      weight: (0.55 + rng() * 0.75) * (0.6 + core * CORE_WEIGHT * 1.07) * weightScale,
     });
     // Поворот и плитка атласа не зависят от альфы — берём их сразу.
     bucket.rotations.push(rng() * Math.PI * 2);
@@ -441,7 +469,30 @@ export function buildNebulaPuffs(
     for (let i = 0; i < perAnchor; i++) {
       const placed = place();
       if (!placed) continue;
-      emit(anchor.x + placed.x, anchor.y + placed.y, anchor.z + placed.z, placed.core);
+      // Сгустки и просветы по всей туманности: без этого облако — ровный комок.
+      const grain = structure(
+        (anchor.x + placed.x) * STRUCTURE_SCALE,
+        (anchor.y + placed.y) * STRUCTURE_SCALE,
+        (anchor.z + placed.z) * STRUCTURE_SCALE,
+      );
+      if (grain < STRUCTURE_HOLE) continue;
+      const weightScale = STRUCTURE_MIN + STRUCTURE_SPAN * Math.min(1, grain);
+      emit(
+        anchor.x + placed.x, anchor.y + placed.y, anchor.z + placed.z,
+        placed.core, 1, weightScale,
+      );
+      // Спутник рядом с родителем: та же логика раскладки, но мельче и тише.
+      if (rng() < DETAIL_CHANCE) {
+        const spread = nebula.size * puffFraction * 0.35;
+        emit(
+          anchor.x + placed.x + (rng() - 0.5) * spread,
+          anchor.y + placed.y + (rng() - 0.5) * spread * 0.6,
+          anchor.z + placed.z + (rng() - 0.5) * spread,
+          placed.core,
+          DETAIL_SIZE,
+          DETAIL_WEIGHT * weightScale,
+        );
+      }
     }
 
     // Разреженное гало: крупные туманности видно и на дальнем плане карты.
@@ -477,7 +528,7 @@ export function buildNebulaPuffs(
   bucket.rotations.push(0);
   bucket.tiles.push(0);
 
-  flushNebula(nebula, pending, bucket);
+  flushNebula(nebula, pending, bucket, emissiveAdditive);
 }
 
 /**
@@ -493,6 +544,7 @@ function flushNebula(
   nebula: GalaxyNebula,
   pending: Array<{ x: number; y: number; z: number; size: number; rgb: [number, number, number]; weight: number }>,
   bucket: PuffBucket,
+  emissiveAdditive: boolean,
 ): void {
   const isDark = nebula.kind === 'dark';
   const target = TARGET_PEAK[nebula.kind] ?? 0.4;
@@ -514,7 +566,8 @@ function flushNebula(
     if (sum > peak) peak = sum;
   }
 
-  const scale = alphaScaleFor(Math.max(1e-6, peak), !isDark, target);
+  const additive = isDark ? false : emissiveAdditive;
+  const scale = alphaScaleFor(Math.max(1e-6, peak), additive, target);
   const opacity = isDark ? DARK_OPACITY : EMISSIVE_OPACITY;
 
   for (const puff of pending) {
@@ -532,6 +585,7 @@ export function buildNebulaBuckets(
   nebulae: GalaxyNebula[],
   allowedKinds: Set<string>,
   project: (nebula: GalaxyNebula) => Vec3,
+  emissiveAdditive: boolean = EMISSIVE_ADDITIVE,
 ): { emissive: PuffBucket; dark: PuffBucket } {
   const emissive = emptyPuffBucket();
   const dark = emptyPuffBucket();
@@ -540,7 +594,13 @@ export function buildNebulaBuckets(
     if (!allowedKinds.has(nebula.kind)) continue;
     const center = project(nebula);
     const extra = (nebula.lobes ?? []).map((lobe) => project({ ...nebula, x: lobe.x, y: lobe.y, z: lobe.z }));
-    buildNebulaPuffs(nebula, center, extra, nebula.kind === 'dark' ? dark : emissive);
+    buildNebulaPuffs(
+      nebula,
+      center,
+      extra,
+      nebula.kind === 'dark' ? dark : emissive,
+      emissiveAdditive,
+    );
   }
 
   return { emissive, dark };

@@ -13,6 +13,8 @@ import {
   ALPHA_MIN,
   ATLAS_PEAK,
   MAX_PUFFS,
+  DETAIL_SIZE,
+  EMISSIVE_ADDITIVE,
   TONE_SATURATION,
   alphaScaleFor,
   buildNebulaBuckets,
@@ -311,4 +313,52 @@ test('игровой тон: цвет туманности приглушает�
   const dark = gameToneRgb([0.02, 0.01, 0.008], 'dark');
   assert.ok(Math.max(...dark) < 0.06, `тёмное облако посветлело до ${Math.max(...dark).toFixed(3)}`);
   assert.ok(mixWhite([0.5, 0.2, 0.2], 1)[2] > 0.9, 'mixWhite(…, 1) обязан давать прохладный белый');
+});
+
+test('структура облака: спутники клубов и предел числа инстансов', () => {
+  const orion = nebulaByName('Orion Nebula');
+  const bucket = emptyPuffBucket();
+  buildNebulaPuffs(orion, { x: 0, y: 0, z: 0 }, [], bucket);
+
+  const sizes = [...bucket.sizes].sort((a, b) => a - b);
+  const median = sizes[Math.floor(sizes.length / 2)];
+  // Часть клубов — мелкие спутники крупных: без них облако на близком плане
+  // выглядит ватным комком, но и в россыпь точек превращаться не должно.
+  assert.ok(
+    sizes[0] < median * 0.6,
+    `самый мелкий клуб ${sizes[0].toFixed(1)} против медианы ${median.toFixed(1)}: спутников нет`,
+  );
+  assert.ok(
+    sizes[0] >= orion.size * 0.18 * DETAIL_SIZE * 0.5,
+    `спутник слишком мелкий (${sizes[0].toFixed(1)} св. лет) — снова точки`,
+  );
+
+  // Вся сцена рисуется одним instanced-мешем: облаков много, но их суммарное
+  // число должно оставаться в разумных для карты пределах.
+  const project = (nebula) => ({ x: nebula.x, y: nebula.y, z: nebula.z });
+  const { emissive, dark } = buildNebulaBuckets(
+    GALAXY_NEBULAE,
+    new Set(['emission', 'reflection', 'cluster', 'planetary', 'remnant', 'dark']),
+    project,
+  );
+  const total = emissive.sizes.length + dark.sizes.length;
+  assert.ok(total > 3000 && total < 30000, `всего клубов на карте ${total}`);
+});
+
+test('режим отрисовки газа: «дымка» включена по умолчанию', () => {
+  // Аддитивный газ светится поверх звёзд и читается как свечение, а не как
+  // облако. По умолчанию облако рисуется обычным смешиванием (EMISSIVE_ADDITIVE
+  // = false), как на карте в игре; альтернативный режим остаётся только для
+  // сравнения в превью.
+  assert.equal(EMISSIVE_ADDITIVE, false);
+
+  const orion = nebulaByName('Orion Nebula');
+  const project = (nebula) => ({ x: nebula.x, y: nebula.y, z: nebula.z });
+  const veil = buildNebulaBuckets([orion], new Set(['emission']), project, false);
+  const glow = buildNebulaBuckets([orion], new Set(['emission']), project, true);
+  const avg = (values) => values.reduce((sum, v) => sum + v, 0) / values.length;
+  assert.ok(
+    avg(veil.emissive.alphas) > avg(glow.emissive.alphas),
+    'дымке нужны более плотные клубы, иначе облако исчезает вместе со звёздами',
+  );
 });
