@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { validateNebulaShaders } from '../check-nebula-shaders.mjs';
+
 import {
   GALAXY_NEBULAE,
   MAJOR_NEBULAE,
@@ -15,6 +17,9 @@ import {
   MAX_PUFFS,
   DETAIL_SIZE,
   EMISSIVE_ADDITIVE,
+  SCREEN_FADE_CURVE,
+  SCREEN_FADE_FLOOR,
+  SCREEN_MIN_PIXELS,
   TONE_SATURATION,
   alphaScaleFor,
   buildNebulaBuckets,
@@ -343,6 +348,81 @@ test('структура облака: спутники клубов и пред
   );
   const total = emissive.sizes.length + dark.sizes.length;
   assert.ok(total > 3000 && total < 30000, `всего клубов на карте ${total}`);
+});
+
+test('дальний план: облака остаются видимой дымкой, а не исчезают', () => {
+  // Дефолтная камера карты: 35 000 св. лет над плоскостью, fov 45, высота 800px.
+  // Пиксельный диаметр клуба 60 св. лет: pixels = size * (h / (2 tan(fov/2))) / depth.
+  const pixelScale = 800 / (2 * Math.tan(((45 * Math.PI) / 180) / 2));
+  const pixels = (60 * pixelScale) / 35000;
+  const distant = Math.max(
+    SCREEN_FADE_FLOOR,
+    Math.min(1, Math.pow(Math.min(1, pixels / SCREEN_MIN_PIXELS), SCREEN_FADE_CURVE)),
+  );
+  assert.ok(pixels < SCREEN_MIN_PIXELS, 'клуб на дальнем плане меньше минимума — работает раздувание');
+  // С околонулевым полом (0.03) дымка на масштабе Галактики не отличима от фона;
+  // слой обязан держать заметную долю яркости и при полностью отдалённой камере.
+  assert.ok(distant >= 0.1, `дымка гаснет до ${distant.toFixed(3)} — туманность исчезнет с карты`);
+});
+
+test('реальная форма: сжатие облака следует отношению осей из OpenNGC', () => {
+  // Собственные числа ковариации раскладки: вытянутость не зависит от поворота.
+  const elongation = (name) => {
+    const nebula = nebulaByName(name);
+    assert.ok(nebula, `${name} нет в каталоге`);
+    const bucket = emptyPuffBucket();
+    buildNebulaPuffs(nebula, project(nebula), [], bucket);
+    const xs = [];
+    const zs = [];
+    for (let i = 0; i < bucket.sizes.length; i++) {
+      xs.push(bucket.centers[i * 3]);
+      zs.push(bucket.centers[i * 3 + 2]);
+    }
+    const meanX = xs.reduce((s, v) => s + v, 0) / xs.length;
+    const meanZ = zs.reduce((s, v) => s + v, 0) / zs.length;
+    let xx = 0;
+    let zz = 0;
+    let xz = 0;
+    for (let i = 0; i < xs.length; i++) {
+      xx += (xs[i] - meanX) ** 2;
+      zz += (zs[i] - meanZ) ** 2;
+      xz += (xs[i] - meanX) * (zs[i] - meanZ);
+    }
+    const trace = xx + zz;
+    const root = Math.sqrt(Math.max(0, (trace / 2) ** 2 - (xx * zz - xz * xz)));
+    return (trace / 2 + root) / Math.max(1e-6, trace / 2 - root);
+  };
+  // Шумовая структура даёт комковатость до ~2.5 у круглых облаков, поэтому
+  // пороги разделены с запасом: вытянутые по каталогу ложатся эллипсом 3+ ,
+  // круглые (b/a = 1) остаются комком.
+  // Орёл: b/a = 0.21 в OpenNGC — облако обязано лечь вытянутым эллипсом.
+  assert.ok(elongation('Eagle Nebula') > 2.8, `Орёл не вытянут (${elongation('Eagle Nebula').toFixed(2)})`);
+  // Эта Киля: b/a = 1.0 — круглое облако, без паразитной вытянутости.
+  assert.ok(elongation('Eta Carinae') < 2.5, `Эта Киля вытянута (${elongation('Eta Carinae').toFixed(2)})`);
+});
+
+test('шейдеры слоя компилируются glslang: иначе карта молча теряет облака', async (t) => {
+  // Поломка «подписи есть, а газа нет» — это некомпилирующийся ShaderMaterial:
+  // three логирует ошибку в консоль и рисует пустоту. CPU-превью и раскладка
+  // клубов её не видят, поэтому прогоняем текст шейдеров через настоящий
+  // компилятор ESSL (тот же фронтенд, что валидирует шейдеры в драйвере).
+  let result;
+  try {
+    result = await validateNebulaShaders();
+  } catch (error) {
+    if (error.code === 'ERR_MODULE_NOT_FOUND') {
+      t.skip('glslang-wasm-validator не установлен');
+      return;
+    }
+    throw error;
+  }
+  const errors = result.diagnostics.filter((d) => d.severity === 'error');
+  assert.equal(
+    errors.length,
+    0,
+    `ошибки компиляции шейдеров:\n${errors.map((d) => `  ${d.stage} ${d.line ?? '-'}: ${d.message}`).join('\n')}`,
+  );
+  assert.equal(result.status, 'pass');
 });
 
 test('режим отрисовки газа: «дымка» включена по умолчанию', () => {
