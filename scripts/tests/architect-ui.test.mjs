@@ -9,11 +9,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { bundleFile } from './helpers/bundle.mjs';
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const ENTRY = "export { default as ArchitectWorkspace } from '@/components/Architect/ArchitectWorkspace';\n";
 
 const NEXT_DYNAMIC_STUB = `
 import * as React from 'react';
@@ -47,31 +45,14 @@ function fixtureBodies() {
  * Так проверяются панели прогресса, публикации и «где купить» без Supabase.
  */
 async function renderArchitect(options = {}) {
-  const esbuild = await import('esbuild');
   const { JSDOM } = await import('jsdom');
 
-  const dir = mkdtempSync(join(ROOT, '.tmp-architect-ui-'));
-  const entry = join(dir, 'entry.tsx');
-  const bundle = join(dir, 'bundle.mjs');
-  writeFileSync(join(dir, 'next-dynamic.ts'), NEXT_DYNAMIC_STUB);
-  writeFileSync(join(dir, 'next-link.tsx'), NEXT_LINK_STUB);
-  writeFileSync(entry, "export { default as ArchitectWorkspace } from '@/components/Architect/ArchitectWorkspace';\n");
-
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
+  // Сборка берётся из общего кэша: каждый рендер в этом файле собирал ту же
+  // самую страницу заново, и 25 проверок стоили больше десяти секунд.
+  const bundle = await bundleFile({
+    entrySource: ENTRY,
+    stubs: { 'next/dynamic': NEXT_DYNAMIC_STUB, 'next/link': NEXT_LINK_STUB },
     external: ['react', 'react-dom', 'react-dom/client'],
-    alias: {
-      'next/dynamic': join(dir, 'next-dynamic.ts'),
-      'next/link': join(dir, 'next-link.tsx'),
-      '@': join(ROOT, 'src'),
-    },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
   });
 
   const fetchCalls = [];
@@ -188,7 +169,6 @@ async function renderArchitect(options = {}) {
       if (key === 'navigator') Object.defineProperty(global, 'navigator', { value, configurable: true });
       else global[key] = value;
     }
-    rmSync(dir, { recursive: true, force: true });
   };
 
   return { dom, document, text, click, typeInto, buttons, buttonByText, cardButton, rowButton, pickerRow, flush, cleanup, fetchCalls };

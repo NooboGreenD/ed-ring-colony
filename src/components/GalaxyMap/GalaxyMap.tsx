@@ -11,7 +11,8 @@ import type { AtlasCandidate } from '@/types/atlas';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
 import type { MarketResult } from './MarketResultMarkers';
-import { useAtlasSearchProgress } from '@/hooks/useAtlasSearchProgress';
+import { useAtlasSearchProgress, useAtlasSearchResult } from '@/hooks/useAtlasSearchProgress';
+import { clearAtlasSearchResult } from '@/lib/atlasSearchProgress';
 import { loadAllSystemsData } from './AllSystemsPoints';
 import { NebulaCard } from './NebulaCard';
 import { NEBULA_KIND_ORDER, NEBULA_KIND_SHORT, NEBULA_KIND_UI_COLOR } from './NebulaField';
@@ -176,6 +177,10 @@ export default function GalaxyMap({
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
   // общего канала: карта показывает сам процесс, а не только результат.
   const searchProgress = useAtlasSearchProgress();
+  // Итог поиска закреплён отдельно: кольцо/маршрут остаются на карте после
+  // того, как оверлей прогресса погас, пока пользователь их не уберёт.
+  const searchResult = useAtlasSearchResult();
+  const showSearchResult = searchResult != null && !searchProgress.active;
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
   const [pilots, setPilots] = useState<any[]>([]);
@@ -626,18 +631,46 @@ export default function GalaxyMap({
           </div>
           <div className="map-search-hud-hint">
             {searchProgress.finished
-              ? 'Результат останется на карте 30 секунд'
+              ? 'Результат остаётся на карте — убрать можно кнопкой «Убрать с карты»'
               : 'Процесс поиска отображается на карте: точки появляются по мере нахождения'}
           </div>
         </div>
       )}
-      {searchProgress.active && (
+      {showSearchResult && searchResult && (
+        <div className="map-search-hud map-search-hud-result">
+          <div className="map-search-hud-head">
+            <span>{searchResult.title || 'РЕЗУЛЬТАТ ПОИСКА ATLAS'}</span>
+            <button
+              type="button"
+              className="map-search-hud-close"
+              onClick={() => clearAtlasSearchResult()}
+              aria-label="Убрать результат поиска с карты"
+              title="Убрать результат поиска с карты"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="map-search-hud-message">{searchResult.message}</div>
+          {searchResult.summary && <div className="map-search-hud-summary">{searchResult.summary}</div>}
+          <div className="map-search-hud-counters">
+            {Object.entries(searchResult.counters).map(([label, value]) => (
+              <span key={label}>{label}: {typeof value === 'number' ? value.toLocaleString('ru-RU') : value}</span>
+            ))}
+          </div>
+          <div className="map-search-hud-hint">
+            {searchResult.points.length > 0
+              ? `На карте: ${searchResult.points.length.toLocaleString('ru-RU')} точек`
+              : 'На карте: контур и маршрут'}
+          </div>
+        </div>
+      )}
+      {(searchProgress.active || showSearchResult) && (
         <div className="map-search-legend">
           <span><i style={{ background: '#e67e22' }} /> Опорные точки поиска</span>
           <span><i style={{ background: '#8bc34a' }} /> Найденные системы</span>
           <span><i style={{ background: '#4dd0e1' }} /> Кандидаты</span>
           <span><i style={{ background: '#9ca3af' }} /> Расчётные (триангуляция)</span>
-          <span><i style={{ background: '#ffd166' }} /> Точка сканирования</span>
+          {searchProgress.active && <span><i style={{ background: '#ffd166' }} /> Точка сканирования</span>}
         </div>
       )}
       <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'none' }}>
@@ -987,6 +1020,7 @@ export default function GalaxyMap({
             focusTarget={focusTarget}
             resetCamera={resetCamera}
             searchProgress={searchProgress}
+            searchResult={showSearchResult ? searchResult : null}
           />
         </Suspense>
       </Canvas>

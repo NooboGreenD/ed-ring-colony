@@ -87,6 +87,7 @@ export interface AtlasSearchProgress {
 }
 
 const EVENT_NAME = 'atlas-search-progress';
+const RESULT_EVENT_NAME = 'atlas-search-result';
 
 export const EMPTY_ATLAS_SEARCH_PROGRESS: AtlasSearchProgress = {
   active: false,
@@ -133,6 +134,48 @@ export function publishAtlasSearchProgress(patch: Partial<AtlasSearchProgress>):
 const RESULT_LINGER_MS = 30_000;
 let lingerTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * «Закреплённый» итог поиска.
+ *
+ * Оверлей прогресса живёт только 30 секунд после финиша, а найденное кольцо
+ * или маршрут должны оставаться на карте, пока пользователь их не уберёт:
+ * иначе карта гасла ровно в тот момент, когда результат был готов. Итог
+ * хранится отдельно от живого прогресса, поэтому новый поиск не мешает
+ * смотреть на предыдущий, а карта рисует его без анимаций.
+ */
+let pinned: AtlasSearchProgress | null = null;
+
+function dispatchResult(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<AtlasSearchProgress | null>(RESULT_EVENT_NAME, { detail: pinned }));
+  }
+}
+
+/** Зафиксирует итог поиска на карте (вызывается автоматически при завершении). */
+export function pinAtlasSearchProgress(progress: AtlasSearchProgress = current): AtlasSearchProgress | null {
+  pinned = { ...progress, finished: true };
+  dispatchResult();
+  return pinned;
+}
+
+/** Убрать закреплённый результат с карты. */
+export function clearAtlasSearchResult(): void {
+  if (pinned == null) return;
+  pinned = null;
+  dispatchResult();
+}
+
+export function readAtlasSearchResult(): AtlasSearchProgress | null {
+  return pinned;
+}
+
+export function subscribeAtlasSearchResult(listener: (result: AtlasSearchProgress | null) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const handler = (event: Event) => listener((event as CustomEvent<AtlasSearchProgress | null>).detail);
+  window.addEventListener(RESULT_EVENT_NAME, handler);
+  return () => window.removeEventListener(RESULT_EVENT_NAME, handler);
+}
+
 function clearLingerTimer(): void {
   if (lingerTimer != null) {
     clearTimeout(lingerTimer);
@@ -144,6 +187,12 @@ function clearLingerTimer(): void {
 export function startAtlasSearchProgress(init: Pick<AtlasSearchProgress, 'kind'> & Partial<AtlasSearchProgress>): AtlasSearchProgress {
   clearLingerTimer();
   current = { ...EMPTY_ATLAS_SEARCH_PROGRESS, active: true, ...init, counters: init.counters || {} };
+  // Новый поиск начинается «с чистого листа»: старый закреплённый итог
+  // убираем, чтобы на карте не смешивались два результата.
+  if (pinned != null) {
+    pinned = null;
+    dispatchResult();
+  }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent<AtlasSearchProgress>(EVENT_NAME, { detail: current }));
   }
@@ -153,10 +202,11 @@ export function startAtlasSearchProgress(init: Pick<AtlasSearchProgress, 'kind'>
 /**
  * Поиск завершён (успешно или с ошибкой). Оверлей и точки остаются на карте
  * ещё 30 секунд: сначала пользователь видит итог, и только потом карта
- * возвращается в обычный вид.
+ * возвращается в обычный вид. Сам итог закрепляется и живёт на карте дальше.
  */
 export function finishAtlasSearchProgress(patch: Partial<AtlasSearchProgress> = {}): AtlasSearchProgress {
   const state = publishAtlasSearchProgress({ percent: 100, ...patch, active: true, finished: true });
+  pinAtlasSearchProgress(state);
   clearLingerTimer();
   if (typeof window !== 'undefined') {
     lingerTimer = setTimeout(() => {
@@ -170,6 +220,8 @@ export function finishAtlasSearchProgress(patch: Partial<AtlasSearchProgress> = 
 export function resetAtlasSearchProgress(): void {
   clearLingerTimer();
   current = EMPTY_ATLAS_SEARCH_PROGRESS;
+  pinned = null;
+  dispatchResult();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent<AtlasSearchProgress>(EVENT_NAME, { detail: current }));
   }

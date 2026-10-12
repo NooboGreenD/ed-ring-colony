@@ -10,11 +10,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { bundleFile } from './helpers/bundle.mjs';
 
 let esbuild = null;
 try {
@@ -58,34 +54,25 @@ function makeQuery() {
 export const supabaseAdmin = { from: () => makeQuery() };
 `;
 
+// Сборка маршрута одна на файл и лежит в общем кэше (helpers/bundle.mjs):
+// раньше каждый из шести тестов заново паковал `src`.
+const ENTRY = "export * as route from '@/app/api/atlas/system-bodies/route';\n"
+  + "export { db, reset } from '@/lib/supabaseAdmin';\n";
+
 async function buildRoute() {
-  const dir = mkdtempSync(join(ROOT, '.tmp-system-bodies-route-'));
-  writeFileSync(join(dir, 'next-server.mjs'), NEXT_SERVER_STUB);
-  writeFileSync(join(dir, 'supabase.mjs'), SUPABASE_STUB);
-  const entry = join(dir, 'entry.ts');
-  writeFileSync(
-    entry,
-    "export * as route from '@/app/api/atlas/system-bodies/route';\n"
-    + "export { db, reset } from './supabase.mjs';\n",
-  );
-  const bundle = join(dir, 'bundle.mjs');
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    alias: {
-      'next/server': join(dir, 'next-server.mjs'),
-      '@/lib/supabaseAdmin': join(dir, 'supabase.mjs'),
-      '@': join(ROOT, 'src'),
+  const bundle = await bundleFile({
+    entrySource: ENTRY,
+    stubs: {
+      'next/server': NEXT_SERVER_STUB,
+      '@/lib/supabaseAdmin': SUPABASE_STUB,
+      // `findSystemByName` идёт в Postgres: без заглушки тест ждал таймаута
+      // соединения (~7 с) на каждом прогоне, хотя проверяет не базу систем.
+      '@/lib/galaxySystemsDb': 'export async function findSystemByName() { return null; }',
     },
-    loader: { '.ts': 'ts', '.tsx': 'tsx' },
-    logLevel: 'silent',
   });
   const mod = await import(bundle);
   mod.reset();
-  return { mod, dir };
+  return { mod };
 }
 
 function dbBodyRow(overrides = {}) {
@@ -129,8 +116,7 @@ function dbBodyRow(overrides = {}) {
 
 test('/api/atlas/system-bodies?compare=1 сверяет базу и EDSM: сигналы из базы сохраняются, пробелы дополняются из EDSM', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [dbBodyRow()];
 
@@ -189,8 +175,7 @@ test('/api/atlas/system-bodies?compare=1 сверяет базу и EDSM: сиг
 
 test('/api/atlas/system-bodies?compare=1 без данных ни в базе, ни в EDSM честно отвечает source: none', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [];
   const previousFetch = global.fetch;
@@ -206,8 +191,7 @@ test('/api/atlas/system-bodies?compare=1 без данных ни в базе, �
 
 test('без ?compare=1 поведение прежнее: непустая база возвращается без обращения к EDSM', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [dbBodyRow()];
   const previousFetch = global.fetch;
@@ -224,8 +208,7 @@ test('без ?compare=1 поведение прежнее: непустая ба
 
 test('/api/atlas/system-bodies?compare=1 добавляет Spansh третьим источником и отчитывается о нём', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [dbBodyRow()];
 
@@ -295,8 +278,7 @@ test('/api/atlas/system-bodies?compare=1 добавляет Spansh третьи�
 
 test('/api/atlas/system-bodies?compare=1 переживает недоступность Spansh и честно это показывает', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [dbBodyRow()];
   const previousFetch = global.fetch;
@@ -321,8 +303,7 @@ test('/api/atlas/system-bodies?compare=1 переживает недоступн
 
 test('/api/atlas/system-bodies?compare=1&spansh=0 не ходит в Spansh', async (t) => {
   if (!esbuild) return t.skip('esbuild недоступен');
-  const { mod, dir } = await buildRoute();
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const { mod } = await buildRoute();
 
   mod.db.rows = [dbBodyRow()];
   const calls = [];
