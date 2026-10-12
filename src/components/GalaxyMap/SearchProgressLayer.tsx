@@ -238,7 +238,59 @@ function CentralPulse({ position, color }: { position: THREE.Vector3; color: str
   return <ScanMarker position={position} color={color} />;
 }
 
-export function SearchProgressLayer({ progress }: { progress: AtlasSearchProgress }) {
+/**
+ * Закреплённый итог поиска: контур кольца, линия маршрута и найденные точки.
+ *
+ * Рисуется без анимаций и без луча: поиск уже закончился, а результат должен
+ * оставаться на карте, пока пользователь его не уберёт. Раньше слой исчезал
+ * вместе с оверлеем прогресса, и найденное кольцо пропадало с карты через
+ * 30 секунд после сборки маршрута.
+ */
+function ResultGeometry({ result }: { result: AtlasSearchProgress }) {
+  return (
+    <group>
+      {result.ring && <RingOutline ring={result.ring} />}
+      {result.corridor && <CorridorGuide corridor={result.corridor} />}
+      {result.cube && <CubeGuide cube={result.cube} />}
+      <ProgressPoints points={result.points} />
+      {result.path.length > 1 && <PathGuide path={result.path} />}
+    </group>
+  );
+}
+
+/** Контур кольца без вращающегося луча и пульса — для готового результата. */
+function RingOutline({ ring }: { ring: NonNullable<AtlasSearchProgress['ring']> }) {
+  const center = useMemo(() => toVector({ x: ring.cx, y: ring.cy, z: ring.cz }), [ring.cx, ring.cy, ring.cz]);
+  const ringPoints = useMemo(() => {
+    const SEGMENTS = 256;
+    const points: [number, number, number][] = [];
+    for (let index = 0; index <= SEGMENTS; index++) {
+      const angle = (index / SEGMENTS) * Math.PI * 2;
+      points.push([
+        center.x + Math.cos(angle) * ring.radius,
+        center.y,
+        center.z + Math.sin(angle) * ring.radius,
+      ]);
+    }
+    return points;
+  }, [center, ring.radius]);
+
+  return (
+    <group>
+      <Line points={ringPoints} color={PROGRESS_ORANGE} lineWidth={1.2} transparent opacity={0.4} />
+      <ScanMarker position={center} color={PROGRESS_ORANGE} />
+    </group>
+  );
+}
+
+export function SearchProgressLayer({
+  progress,
+  result = null,
+}: {
+  progress: AtlasSearchProgress;
+  /** Итог последнего поиска: остаётся на карте после того, как оверлей погас. */
+  result?: AtlasSearchProgress | null;
+}) {
   const { invalidate } = useThree();
   const active = progress.active;
 
@@ -248,18 +300,23 @@ export function SearchProgressLayer({ progress }: { progress: AtlasSearchProgres
     if (active) invalidate();
   });
 
-  if (!active) return null;
+  // Пока идёт поиск, показываем живой процесс; как только он закончился —
+  // закреплённый итог, чтобы найденное не исчезало вместе с оверлеем.
+  if (active) {
+    return (
+      <group>
+        {progress.ring && <RingGuide ring={progress.ring} percent={progress.percent} />}
+        {progress.corridor && <CorridorGuide corridor={progress.corridor} />}
+        {progress.cube && <CubeGuide cube={progress.cube} />}
+        <ProgressPoints points={progress.points} />
+        {progress.path.length > 1 && <PathGuide path={progress.path} />}
+        {progress.beam && <ScanBeam beam={progress.beam} />}
+      </group>
+    );
+  }
 
-  return (
-    <group>
-      {progress.ring && <RingGuide ring={progress.ring} percent={progress.percent} />}
-      {progress.corridor && <CorridorGuide corridor={progress.corridor} />}
-      {progress.cube && <CubeGuide cube={progress.cube} />}
-      <ProgressPoints points={progress.points} />
-      {progress.path.length > 1 && <PathGuide path={progress.path} />}
-      {progress.beam && <ScanBeam beam={progress.beam} />}
-    </group>
-  );
+  if (result) return <ResultGeometry result={result} />;
+  return null;
 }
 
 /** Позиция в мировых координатах three для точки каталога (для тестов/отладки). */

@@ -74,6 +74,65 @@ test('Atlas: карта умеет рисовать прогресс любог�
   }
 });
 
+test('Atlas: найденное кольцо остаётся на карте после завершения поиска', () => {
+  const channel = read('src/lib/atlasSearchProgress.ts');
+  const hook = read('src/hooks/useAtlasSearchProgress.ts');
+  const map = read('src/components/GalaxyMap/GalaxyMap.tsx');
+  const scene = read('src/components/GalaxyMap/GalaxyScene.tsx');
+  const layer = read('src/components/GalaxyMap/SearchProgressLayer.tsx');
+
+  // Оверлей прогресса живёт 30 секунд после финиша: без закреплённого итога
+  // найденное кольцо исчезало с карты ровно в момент готовности маршрута.
+  assert.ok(channel.includes('pinAtlasSearchProgress'), 'итог поиска не закрепляется');
+  assert.ok(channel.includes('clearAtlasSearchResult'), 'закреплённый итог нельзя убрать');
+  assert.ok(
+    channel.indexOf('pinAtlasSearchProgress(state)') > channel.indexOf('export function finishAtlasSearchProgress'),
+    'завершение поиска не закрепляет итог автоматически',
+  );
+  assert.ok(hook.includes('useAtlasSearchResult'), 'нет подписки на закреплённый итог');
+  assert.ok(map.includes('useAtlasSearchResult'), 'карта не читает закреплённый итог');
+  assert.ok(map.includes('clearAtlasSearchResult'), 'на карте нет кнопки «убрать результат»');
+  assert.ok(scene.includes('searchResult'), 'итог не передаётся в сцену');
+  assert.ok(layer.includes('ResultGeometry'), 'слой не рисует закреплённый результат');
+  assert.ok(
+    layer.includes('if (result) return <ResultGeometry result={result} />'),
+    'после завершения слой должен показывать итог, а не пустоту',
+  );
+});
+
+test('Atlas: длинный маршрут кольца не ломает слой маркеров карты', () => {
+  const markers = read('src/components/GalaxyMap/RouteMarkers.tsx');
+
+  // Кольцо — это 5–15 тысяч точек, а маркер — группа мешей с подписью:
+  // по компоненту на точку вкладка зависала ещё до первого кадра.
+  assert.ok(markers.includes('DENSE_ROUTE_LIMIT'), 'у маркеров нет порога плотности');
+  assert.ok(markers.includes('DenseRoutePoints'), 'длинные маршруты не рисуются одним облаком точек');
+  assert.ok(markers.includes('THREE.PointsMaterial'), 'облако точек не собирается одной геометрией');
+  assert.ok(
+    markers.includes('{(hovered || isSelected) && ('),
+    'подпись должна строиться только для видимой точки, а не для каждой',
+  );
+});
+
+test('Atlas: кольцо можно сохранить в проект эскадрильи и выгрузить в CSV', () => {
+  const saveRoute = read('src/app/api/atlas/ring-route/save/route.ts');
+  const ring = read('src/components/Atlas/AtlasRingRouteFinder.tsx');
+  const page = read('src/app/atlas/page.tsx');
+
+  assert.ok(saveRoute.includes("from('project_systems')"), 'сохранение не пишет системы проекта');
+  assert.ok(saveRoute.includes('x: Number(point.x)'), 'системы кольца сохраняются без координат');
+  assert.ok(saveRoute.includes("['leader', 'officer']"), 'сохранение не проверяет роль в проекте');
+  assert.ok(saveRoute.includes('triangulated'), 'расчётные точки не отсеиваются');
+  assert.ok(saveRoute.includes('INSERT_BATCH'), 'тысячи строк вставляются одним запросом');
+  assert.ok(saveRoute.includes('loadRingRoute'), 'маршрут не читается из сессии');
+
+  assert.ok(ring.includes('/api/atlas/ring-route/save'), 'панель кольца не сохраняет маршрут в проект');
+  assert.ok(ring.includes('Скачать CSV'), 'выгрузка CSV спрятана: у кнопки нет подписи');
+  assert.ok(ring.includes('Копировать текстом'), 'копирование маршрута не подписано');
+  assert.ok(ring.includes('ring-save-project'), 'в панели кольца нет выбора проекта');
+  assert.ok(page.includes('projects={projects}'), 'страница не передаёт проекты в поиск кольца');
+});
+
 test('Atlas: найденное сохраняется в базе проекта для ускорения повторных поисков', () => {
   const migration = read('supabase/migrations/20261011000000_atlas_search_caches.sql');
   const snapshot = read('supabase/full_schema.sql');

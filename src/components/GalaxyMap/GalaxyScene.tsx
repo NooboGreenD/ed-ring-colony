@@ -102,6 +102,11 @@ interface GalaxySceneProps {
   resetCamera?: number;
   /** Прогресс активного поиска Atlas: рисуется поверх остальных слоёв. */
   searchProgress?: AtlasSearchProgress | null;
+  /**
+   * Закреплённый итог поиска: остаётся на карте после завершения, пока
+   * пользователь не уберёт его (см. lib/atlasSearchProgress).
+   */
+  searchResult?: AtlasSearchProgress | null;
 }
 
 export function GalaxyScene({
@@ -144,6 +149,7 @@ export function GalaxyScene({
   focusTarget,
   resetCamera,
   searchProgress = null,
+  searchResult = null,
 }: GalaxySceneProps) {
   const controlsRef = useRef<any>(null);
   const { camera, invalidate } = useThree();
@@ -280,7 +286,7 @@ export function GalaxyScene({
       )}
       {showMarketResults && <MarketResultMarkers systems={marketResults} />}
       {showNoMarketSystems && <NoMarketMarkers systems={noMarketSystems} />}
-      {searchProgress && <SearchProgressLayer progress={searchProgress} />}
+      {searchProgress && <SearchProgressLayer progress={searchProgress} result={searchResult} />}
     </>
   );
 }

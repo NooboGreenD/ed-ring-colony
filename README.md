@@ -128,7 +128,12 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 - **Wiki** — Full wiki system with categories, tags, revisions, favorites, and colonization guides
 - **Galnet** — Automatic sync of Frontier's Galnet news
 - **Leaderboard** — Player statistics and achievements
-- **Atlas** — System search, favorites, route finder, and candidate lists
+- **Atlas** — System search, favorites, route finder, and candidate lists.
+  Поиск галактического кольца идёт шагами с продолжением после обрыва связи,
+  найденное кольцо остаётся на 3D-карте (контур, опорные точки, маршрут) до
+  явной уборки, а маршрут сохраняется в проект эскадрильи вместе с координатами
+  или выгружается в CSV — [ATLAS-SEARCH-REWORK.md](ATLAS-SEARCH-REWORK.md),
+  [ATLAS-RING-RESULT-FIX.md](ATLAS-RING-RESULT-FIX.md)
 - **Notifications** — Real-time in-app and push notifications (web-push)
 - **Direct Chat** — Peer-to-peer messaging between players
 - **Friends** — Friend list with online status
@@ -214,6 +219,19 @@ RAVEN_API_BASE=https://ravencolonial...
 pnpm dev        # localhost:3000
 pnpm build      # Production build
 ```
+
+### Тесты
+
+```bash
+npm run test:quick    # быстрый контур: без jsdom-рендеров и shell-интеграций (~16 с, 1003 проверки)
+npm test              # весь набор (~50 с, 1223 проверки)
+npm run test:list     # какие файлы есть и к какому контуру они относятся
+node scripts/run-tests.mjs atlas ring    # только файлы про Atlas и кольцо
+```
+
+Набор гоняется параллельно по файлам (`scripts/run-tests.mjs`), сборки esbuild
+для тестов кэшируются в `.cache/test-bundles`. Подробности и история ускорения —
+[TEST-SUITE-SPEED.md](TEST-SUITE-SPEED.md).
 
 ## Database Setup
 

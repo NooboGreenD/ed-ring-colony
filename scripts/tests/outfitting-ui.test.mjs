@@ -17,11 +17,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { bundleFile, TEST_ROOT as ROOT } from './helpers/bundle.mjs';
 
 let esbuild = null;
 try {
@@ -40,45 +38,23 @@ export default function Link(props) {
 
 const outfittingData = JSON.parse(readFileSync(join(ROOT, 'public', 'data', 'outfitting.json'), 'utf8'));
 
-// Страховка: если монтирование упадёт на полпути, временные каталоги всё равно уберутся.
-const tempDirs = [];
-process.on('exit', () => {
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-});
+const ENTRY = [
+  "export { default as OutfittingWorkspace } from '@/components/Outfitting/OutfittingWorkspace';",
+  "export { I18nProvider } from '@/lib/i18n/I18nContext';",
+  '',
+].join('\n');
 
 async function mountWorkspace() {
   const { JSDOM } = await import('jsdom');
 
-  const dir = mkdtempSync(join(ROOT, '.tmp-outfitting-ui-'));
-  tempDirs.push(dir);
-  const entry = join(dir, 'entry.tsx');
-  const bundle = join(dir, 'bundle.mjs');
-  writeFileSync(join(dir, 'next-link.jsx'), NEXT_LINK_STUB);
-  writeFileSync(join(dir, 'auth-fetch.mjs'), 'export const authFetch = (...args) => globalThis.fetch(...args);');
-  writeFileSync(
-    entry,
-    [
-      "export { default as OutfittingWorkspace } from '@/components/Outfitting/OutfittingWorkspace';",
-      "export { I18nProvider } from '@/lib/i18n/I18nContext';",
-      '',
-    ].join('\n'),
-  );
-
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
-    external: ['react', 'react-dom', 'react-dom/client'],
-    alias: {
-      'next/link': join(dir, 'next-link.jsx'),
-      '@/lib/supabaseClient': join(dir, 'auth-fetch.mjs'),
-      '@': join(ROOT, 'src'),
+  // Одна кэшированная сборка на весь файл вместо перекомпиляции на каждом тесте.
+  const bundle = await bundleFile({
+    entrySource: ENTRY,
+    stubs: {
+      'next/link': NEXT_LINK_STUB,
+      '@/lib/supabaseClient': 'export const authFetch = (...args) => globalThis.fetch(...args);',
     },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
+    external: ['react', 'react-dom', 'react-dom/client'],
   });
 
   const previousFetch = global.fetch;
@@ -145,7 +121,6 @@ async function mountWorkspace() {
     dom.window.close();
     global.fetch = previousFetch;
     for (const [key, value] of Object.entries(previous)) global[key] = value;
-    rmSync(dir, { recursive: true, force: true });
   };
 
   return { dom, document: dom.window.document, text, buttonsBy, click, flush, cleanup, act, React };

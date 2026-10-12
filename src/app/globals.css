@@ -6064,6 +6064,35 @@ html[data-hud-effect="glow"]::before {
     font-size: 10px;
   }
 
+  /* Закреплённый итог поиска: рамка спокойнее (поиск уже закончен), но
+     результат остаётся на карте и его можно убрать одной кнопкой. */
+  .map-search-hud-result {
+    border-color: rgba(34, 197, 94, 0.45);
+    pointer-events: auto;
+  }
+
+  .map-search-hud-result .map-search-hud-head {
+    color: #22c55e;
+  }
+
+  .map-search-hud-close {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    border: 1px solid #3a3d40;
+    background: rgba(30, 41, 59, 0.8);
+    color: #9ca3af;
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .map-search-hud-close:hover {
+    color: #eeeeee;
+    border-color: #e74c3c;
+  }
+
   /* Легенда слоя поиска на карте. */
   .map-search-legend {
     position: absolute;
@@ -6324,6 +6353,29 @@ html[data-hud-effect="glow"]::before {
     background: #1e2124;
     border: 1px solid #2d3033;
     border-radius: 6px;
+  }
+
+  /* Блок сохранения найденного кольца: проект эскадрильи, CSV и копия текстом.
+     Кнопки здесь подписаны словами, а не только иконками — раньше выгрузка
+     пряталась за маленькой пиктограммой в заголовке результата. */
+  .atlas-save-box h4 {
+    margin-bottom: 6px;
+    color: #eeeeee;
+    font-size: 13px;
+  }
+
+  .atlas-save-box .atlas-project-select {
+    margin: 10px 0 8px;
+  }
+
+  .atlas-save-box .atlas-button-row {
+    margin-top: 10px;
+  }
+
+  .atlas-save-summary {
+    margin-top: 8px;
+    color: #22c55e;
+    font-size: 11px;
   }
 
   .atlas-tag-row {

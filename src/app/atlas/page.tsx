@@ -246,6 +246,14 @@ function AtlasPageInner() {
     setRouteFilter('');
   }, []);
 
+  /**
+   * Кольцо сохранено в проект: если этот проект уже открыт на карте,
+   * перечитываем его системы, чтобы сохранённый маршрут появился сразу.
+   */
+  const handleRingSaved = useCallback((projectId: number) => {
+    if (selectedProject === projectId) void loadProjectSystems(projectId);
+  }, [loadProjectSystems, selectedProject]);
+
   const handleRouteFound = useCallback((route: RoutePoint[], tab: AtlasTab = 'route-finder') => {
     setRouteFinderPoints(route);
     selectTab(tab);
@@ -846,7 +854,11 @@ function AtlasPageInner() {
           )}
 
           {activeTab === 'ring-route' && (
-            <AtlasRingRouteFinder onRouteFound={(route) => handleRouteFound(route, 'ring-route')} />
+            <AtlasRingRouteFinder
+              onRouteFound={(route) => handleRouteFound(route, 'ring-route')}
+              projects={projects}
+              onSavedToProject={handleRingSaved}
+            />
           )}
 
           {activeTab === 'market' && (

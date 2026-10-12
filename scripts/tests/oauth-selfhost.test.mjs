@@ -1,18 +1,17 @@
-import test, { after } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { build } from 'esbuild';
+import { importBundle } from './helpers/bundle.mjs';
 import { createOAuthFlow, readOAuthFlow, OAUTH_FLOW_COOKIE, OAUTH_FLOW_TTL } from '../../src/lib/oauthFlow.ts';
 import { getSiteUrl } from '../../src/lib/siteUrl.ts';
 import { enabledOAuthProviders, oauthErrorMessage, canUnlinkOAuthIdentity } from '../../src/lib/oauthProviders.ts';
 
 const key = 'test-service-key-not-a-production-secret';
-const root = process.cwd();
-const dir = mkdtempSync(join(tmpdir(), 'edrc-auth-'));
-after(() => rmSync(dir, { recursive: true, force: true }));
-writeFileSync(join(dir, 'next.mjs'), `
+
+// Заглушки Next/Supabase: сборка и подмена идут через общий кэш
+// (`scripts/tests/helpers/bundle.mjs`), поэтому повторный прогон не
+// перепаковывает одни и те же маршруты заново.
+const STUBS = {
+  'next/server': `
 export class NextResponse extends Response {
   cookies = new Map();
   constructor(body, init) {
@@ -28,26 +27,31 @@ export class NextResponse extends Response {
   static redirect(url, status = 302) { return new NextResponse(null, { status, headers: { Location: String(url) } }); }
   static json(body, init) { return new NextResponse(JSON.stringify(body), { ...init, headers: { 'Content-Type': 'application/json' } }); }
 }
-`);
-writeFileSync(join(dir, 'ssr.mjs'), `export function createServerClient(url, key, options) {
+`,
+  '@supabase/ssr': `export function createServerClient(url, key, options) {
   globalThis.__authTest.cookieOptions = options.cookies;
   globalThis.__authTest.clients++;
   return globalThis.__authTest.client;
-}`);
-writeFileSync(join(dir, 'server.mjs'), `export function createClient() { return globalThis.__authTest.client; }`);
-writeFileSync(join(dir, 'headers.mjs'), `export function cookies() { return globalThis.__authTest.cookieStore; }`);
+}`,
+  '@/lib/supabaseServer': `export function createClient() { return globalThis.__authTest.client; }`,
+  'next/headers': `export function cookies() { return globalThis.__authTest.cookieStore; }`,
+  // Настройки провайдеров и признак техработ читаются из базы. В тесте сети нет,
+  // и реальный запрос уходил в таймаут (~7 с на каждый вызов): подменяем их
+  // заглушками, чтобы проверки входа не зависели от доступности Supabase.
+  '@/lib/authProviders/settings': `export async function visibleGotrueProviders(list) { return list; }
+export async function resolveVkSettings() { return { enabled: false }; }
+export async function resolveYandexSettings() { return { enabled: false }; }`,
+  '@/lib/maintenanceEdge': `export async function readMaintenanceCached() { return { active: false }; }`,
+};
 
-async function bundle(entry, name) {
-  const outfile = join(dir, `${name}.mjs`);
-  await build({ entryPoints: [join(root, entry)], outfile, bundle: true, format: 'esm', platform: 'node', logLevel: 'silent',
-    alias: { 'next/server': join(dir, 'next.mjs'), '@supabase/ssr': join(dir, 'ssr.mjs'),
-      'next/headers': join(dir, 'headers.mjs'), '@/lib/supabaseServer': join(dir, 'server.mjs'), '@': join(root, 'src') } });
-  return import(outfile);
-}
-const callback = await bundle('src/app/api/auth/callback/route.ts', 'callback');
-const legacyCallback = await bundle('src/app/auth/callback/route.ts', 'legacy-callback');
-const actions = await bundle('src/app/login/actions.ts', 'actions');
-const middleware = await bundle('src/proxy.ts', 'proxy');
+const bundle = (entry) => importBundle({ entry, stubs: STUBS });
+
+const [callback, legacyCallback, actions, middleware] = await Promise.all([
+  bundle('src/app/api/auth/callback/route.ts'),
+  bundle('src/app/auth/callback/route.ts'),
+  bundle('src/app/login/actions.ts'),
+  bundle('src/proxy.ts'),
+]);
 
 function reset({ before = { id: 'pilot-a' }, afterUser, exchangeError = false, duplicateProfile = true } = {}) {
   process.env.NEXT_PUBLIC_SITE_URL = 'https://edringcolony.ru';

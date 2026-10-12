@@ -7,6 +7,7 @@ import { toast } from '@/components/ui/Toaster';
 import { IconCopy, IconDownload, IconSearch, IconX } from '@/components/Icons';
 import { copyText, downloadCsv, formatCoordinates, routeToCsvRows } from '@/lib/atlas';
 import {
+  clearAtlasSearchResult,
   finishAtlasSearchProgress,
   publishAtlasSearchProgress,
   publishAtlasSearchPoints,
@@ -15,8 +16,19 @@ import {
 } from '@/lib/atlasSearchProgress';
 import type { RoutePoint } from '@/components/GalaxyMap/useGalaxyData';
 
+/** Проект эскадрильи, в который можно сохранить кольцо. */
+export interface RingProjectOption {
+  id: number;
+  name: string;
+  squadron_name?: string;
+}
+
 interface Props {
   onRouteFound: (route: RoutePoint[]) => void;
+  /** Проекты для сохранения маршрута: приходят со страницы Atlas. */
+  projects?: RingProjectOption[];
+  /** Вызывается после сохранения: страница может показать маршрут проекта. */
+  onSavedToProject?: (projectId: number, added: number) => void;
 }
 
 interface RingPoint {
@@ -133,7 +145,7 @@ const ROUTE_SAMPLE_LIMIT = 3000;
 const RING_RADIUS_RANGE = { min: 100, max: 45000, step: 100 } as const;
 const SEARCH_RADIUS_RANGE = { min: 50, max: 3000, step: 50 } as const;
 
-export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
+export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSavedToProject }: Props) {
   const [startSystem, setStartSystem] = useState('Sol');
   const [ringRadius, setRingRadius] = useState(23000);
   const [searchRadius, setSearchRadius] = useState(500);
@@ -143,6 +155,11 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const [result, setResult] = useState<RingResult | null>(null);
   const [routeFilter, setRouteFilter] = useState('');
   const [resumable, setResumable] = useState<{ sessionId: string; sectorsDone: number; sectors: number } | null>(null);
+  // Сохранение результата: проект эскадрильи, состояние запроса и итог.
+  const [saveProjectId, setSaveProjectId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [includeSynthetic, setIncludeSynthetic] = useState(false);
+  const [saveSummary, setSaveSummary] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
   const lastSessionRef = useRef<{ sessionId: string; sectorsDone: number; sectors: number } | null>(null);
@@ -286,6 +303,7 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
     setResult(null);
     setRouteFilter('');
     setResumable(null);
+    setSaveSummary('');
     setProgress({ ...EMPTY_PROGRESS, stage: 'coords', message: resumeSessionId ? 'Продолжаем поиск с сохранённого места' : 'Получение координат начальной системы и Sagittarius A*' });
     startAtlasSearchProgress({
       kind: 'ring',
@@ -459,13 +477,63 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const exportRingCsv = () => {
     if (!result) return;
     downloadCsv(
-      `galactic-ring-${startSystem}`,
+      `galactic-ring-${result.start || startSystem}`,
       routeToCsvRows(result.route.map((point) => ({
         ...point,
         source: point.source === 'triangulated' ? 'triangulated' : point.source || 'catalog',
       }))),
     );
+    toast('CSV кольца сохранён в загрузки', 'success');
   };
+
+  /** Сохранение кольца в проект эскадрильи (системы уходят с координатами). */
+  const saveToProject = useCallback(async () => {
+    if (!result || saving) return;
+    const projectId = Number(saveProjectId);
+    if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+      toast('Выберите проект для сохранения кольца', 'info');
+      return;
+    }
+    setSaving(true);
+    setSaveSummary('');
+    try {
+      // Сервер берёт маршрут из сессии, если она есть: тело запроса остаётся
+      // маленьким даже на кольце из десяти тысяч точек.
+      const response = await fetch('/api/atlas/ring-route/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: projectId,
+          session_id: result.sessionId,
+          ring_radius: result.ringRadius,
+          include_synthetic: includeSynthetic,
+          route: result.sessionId
+            ? undefined
+            : result.route.map((point) => ({
+              name: point.name,
+              x: point.x,
+              y: point.y,
+              z: point.z,
+              source: point.source,
+            })),
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Не удалось сохранить кольцо в проект');
+      const summary = `В проект добавлено систем: ${data.added.toLocaleString('ru-RU')}`
+        + (data.skipped_duplicate ? `, уже было: ${data.skipped_duplicate.toLocaleString('ru-RU')}` : '')
+        + (data.skipped_synthetic ? `, расчётных точек пропущено: ${data.skipped_synthetic.toLocaleString('ru-RU')}` : '');
+      setSaveSummary(summary);
+      toast(summary, 'success');
+      onSavedToProject?.(projectId, Number(data.added) || 0);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Ошибка сохранения кольца';
+      setSaveSummary('');
+      toast(message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  }, [includeSynthetic, onSavedToProject, result, saveProjectId, saving]);
 
   const copyRoute = async () => {
     if (!result) return;
@@ -616,6 +684,71 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
                 ? 'Расчётных точек нет — уточнять нечего'
                 : 'Заменить расчётные точки реальными системами'}
           </button>
+
+          {/* Сохранение и экспорт: маршрут кольца — это тысячи систем, поэтому
+              его нужно уметь либо передать эскадрилье, либо выгрузить файлом. */}
+          <div className="atlas-details-box atlas-save-box">
+            <h4>Сохранить найденное кольцо</h4>
+            <p className="atlas-muted">
+              Кольцо остаётся на 3D-карте, пока вы его не уберёте (кнопка «✕» в рамке результата
+              слева сверху). Ниже — сохранение в проект эскадрильи и выгрузка файлом.
+            </p>
+
+            <div className="atlas-project-select">
+              <label htmlFor="ring-save-project">Проект:</label>
+              <select
+                id="ring-save-project"
+                value={saveProjectId}
+                onChange={(event) => setSaveProjectId(event.target.value)}
+                disabled={saving}
+              >
+                <option value="">{projects.length > 0 ? 'Выберите проект' : 'Проектов нет'}</option>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.squadron_name ? `[${project.squadron_name}] ` : ''}
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <label className="atlas-checkbox-row">
+              <input
+                type="checkbox"
+                checked={includeSynthetic}
+                onChange={(event) => setIncludeSynthetic(event.target.checked)}
+                disabled={saving}
+              />
+              Сохранять и расчётные точки (их {result.totals.syntheticPoints.toLocaleString('ru-RU')})
+            </label>
+
+            <div className="atlas-button-row">
+              <button
+                type="button"
+                className="atlas-scan-btn"
+                onClick={() => void saveToProject()}
+                disabled={saving || !saveProjectId}
+              >
+                {saving ? 'Сохраняем…' : 'Сохранить в проект'}
+              </button>
+              <button type="button" className="atlas-secondary-btn" onClick={exportRingCsv}>
+                <IconDownload size={12} /> Скачать CSV
+              </button>
+              <button type="button" className="atlas-secondary-btn" onClick={() => void copyRoute()}>
+                <IconCopy size={12} /> Копировать текстом
+              </button>
+              <button type="button" className="atlas-link-btn" onClick={() => clearAtlasSearchResult()}>
+                Убрать с карты
+              </button>
+            </div>
+
+            {saveSummary && <p className="atlas-save-summary">{saveSummary}</p>}
+            <p className="atlas-muted">
+              В проект системы уходят вместе с координатами и порядком облёта; расчётные точки
+              по умолчанию пропускаются — это вычисленные координаты, а не системы.
+              {projects.length === 0 && ' Список проектов пуст: создайте проект на странице «Проекты».'}
+            </p>
+          </div>
 
           <div className="atlas-section-head">
             <h4>Точки кольца</h4>

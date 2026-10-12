@@ -530,6 +530,47 @@ export async function loadRingSession(sessionId: string): Promise<RingPlan | nul
   return rowToPlan(row, { ...start, source: 'start' });
 }
 
+/** Итог сессии кольца: маршрут и параметры без повторного поиска. */
+export interface RingSessionRoute {
+  sessionId: string;
+  start: string;
+  center: XYZ;
+  ringRadius: number;
+  searchRadius: number;
+  route: RingPoint[];
+  anchors: RingAnchor[];
+  status: RingPlan['status'];
+}
+
+/**
+ * Сохранённый маршрут готовой сессии.
+ *
+ * Отдельно от `loadRingSession`: здесь не нужно разрешать координаты стартовой
+ * системы (это сетевой/БД-запрос), а сам маршрут читается прямо из строки
+ * сессии — так сохранение кольца в проект не гоняет клиента с телом на 10 000
+ * точек и не пересчитывает кольцо заново.
+ */
+export async function loadRingRoute(sessionId: string): Promise<RingSessionRoute | null> {
+  const { data, error } = await supabaseAdmin
+    .from('atlas_ring_sessions')
+    .select('id,start_system,center,ring_radius,search_radius,route,anchors,status')
+    .eq('id', sessionId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const row = data as unknown as SessionRow & { route: unknown };
+  const route = Array.isArray(row.route) ? (row.route as RingPoint[]) : [];
+  return {
+    sessionId: row.id,
+    start: row.start_system,
+    center: { x: Number(row.center.x), y: Number(row.center.y), z: Number(row.center.z) },
+    ringRadius: Number(row.ring_radius),
+    searchRadius: Number(row.search_radius),
+    route,
+    anchors: Array.isArray(row.anchors) ? row.anchors : [],
+    status: row.status,
+  };
+}
+
 /** Создание новой сессии: координаты, базис, число сегментов. */
 export async function planRingSession(
   config: { startSystem: string; ringRadius?: number; searchRadius?: number },

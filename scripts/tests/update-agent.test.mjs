@@ -1471,7 +1471,9 @@ test('apply-smtp.sh: упавший auth — причина и хвост жур
 
 test('apply-smtp.sh: контейнер не подтверждён и адрес молчит — честный отказ', { skip: needsBash }, () => {
   const stand = smtpStand('edrc-apply-smtp-silent-', { authState: 'running|starting|0|0', authCode: '000' });
-  const run = stand.run({ STUB_LOCAL_HEALTH_RC: '7' });
+  // Число попыток сокращаем до одной: путь отказа проверяется тот же, но тест
+  // не проводит восемь секунд в рабочих паузах скрипта (2с и 4с между попытками).
+  const run = stand.run({ STUB_LOCAL_HEALTH_RC: '7', AUTH_TRIES: '1', AUTH_HTTP_TRIES: '1' });
   assert.equal(run.status, 1, 'если auth не ответил ни изнутри, ни снаружи — это ошибка');
   assert.match(run.stdout + run.stderr, /не подтвердил готовность/, 'сказано, что именно не подтвердилось');
 });

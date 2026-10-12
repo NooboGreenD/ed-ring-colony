@@ -15,11 +15,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+import { bundleFile } from './helpers/bundle.mjs';
 
 // Заглушка <Link> обязана пробрасывать aria-атрибуты: именно по aria-current
 // проверяется подсветка активного раздела меню.
@@ -68,43 +64,31 @@ const NEXT_DYNAMIC_STUB = `
 export default function dynamic() { return function DynamicStub() { return null; }; }
 `;
 
+const ENTRY = [
+  "export { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';",
+  "export { AtlasProvider, useAtlas } from '@/components/Atlas/AtlasContext';",
+  "export { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';",
+  "export { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';",
+  "export { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';",
+  "export { default as Sidebar } from '@/components/Sidebar';",
+  "export { I18nProvider } from '@/lib/i18n/I18nContext';",
+  "export { default as AtlasPage } from '@/app/atlas/page';",
+  "export { resetAtlasSearchProgress, readAtlasSearchResult } from '@/lib/atlasSearchProgress';",
+].join('\n');
+
 async function renderAtlas(ui, options = {}) {
-  const esbuild = await import('esbuild');
   const { JSDOM } = await import('jsdom');
 
-  const dir = mkdtempSync(join(ROOT, '.tmp-atlas-ui-'));
-  writeFileSync(join(dir, 'next-link.tsx'), NEXT_LINK_STUB);
-  writeFileSync(join(dir, 'next-navigation.ts'), NEXT_NAV_STUB);
-  writeFileSync(join(dir, 'next-dynamic.ts'), NEXT_DYNAMIC_STUB);
-  const entry = join(dir, 'entry.tsx');
-  writeFileSync(entry, [
-    "export { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';",
-    "export { AtlasProvider, useAtlas } from '@/components/Atlas/AtlasContext';",
-    "export { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';",
-    "export { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';",
-    "export { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';",
-    "export { default as Sidebar } from '@/components/Sidebar';",
-    "export { I18nProvider } from '@/lib/i18n/I18nContext';",
-    "export { default as AtlasPage } from '@/app/atlas/page';",
-  ].join('\n'));
-
-  const bundle = join(dir, 'bundle.mjs');
-  await esbuild.build({
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'node',
-    outfile: bundle,
-    jsx: 'automatic',
-    external: ['react', 'react-dom', 'react-dom/client'],
-    alias: {
-      'next/link': join(dir, 'next-link.tsx'),
-      'next/navigation': join(dir, 'next-navigation.ts'),
-      'next/dynamic': join(dir, 'next-dynamic.ts'),
-      '@': join(ROOT, 'src'),
+  // Сборка страницы Atlas одна на весь файл и лежит в общем кэше: раньше каждый
+  // из 16 рендеров заново паковал половину `src`.
+  const bundle = await bundleFile({
+    entrySource: ENTRY,
+    stubs: {
+      'next/link': NEXT_LINK_STUB,
+      'next/navigation': NEXT_NAV_STUB,
+      'next/dynamic': NEXT_DYNAMIC_STUB,
     },
-    loader: { '.tsx': 'tsx', '.ts': 'ts' },
-    logLevel: 'silent',
+    external: ['react', 'react-dom', 'react-dom/client'],
   });
 
   const calls = [];
@@ -136,12 +120,18 @@ async function renderAtlas(ui, options = {}) {
     getComputedStyle: global.getComputedStyle,
     requestAnimationFrame: global.requestAnimationFrame,
     cancelAnimationFrame: global.cancelAnimationFrame,
+    Event: global.Event,
+    CustomEvent: global.CustomEvent,
   };
   global.window = dom.window;
   global.document = dom.window.document;
   global.HTMLElement = dom.window.HTMLElement;
   global.Element = dom.window.Element;
   global.Node = dom.window.Node;
+  // События обязаны быть из того же окна: канал прогресса Atlas шлёт
+  // CustomEvent в window, и «родное» событие Node jsdom не принимает.
+  global.Event = dom.window.Event;
+  global.CustomEvent = dom.window.CustomEvent;
   global.localStorage = dom.window.localStorage;
   global.IS_REACT_ACT_ENVIRONMENT = true;
   global.getComputedStyle = dom.window.getComputedStyle;
@@ -202,7 +192,6 @@ async function renderAtlas(ui, options = {}) {
       else if (value === undefined) delete global[key];
       else global[key] = value;
     }
-    rmSync(dir, { recursive: true, force: true });
   };
 
   return {
@@ -483,6 +472,158 @@ test('страница Atlas: вкладки, панель поиска и пе�
     assert.match(ui.text(), /Маршрут проекта/);
     assert.match(ui.text(), /Тестовая стройка|Выберите проект/);
   } finally {
+    await ui.cleanup();
+  }
+});
+
+/* ── Галактическое кольцо: результат, сохранение в проект и выгрузка ── */
+
+const RING_SESSION = {
+  session_id: 'ring-1',
+  start_system: 'Sol',
+  ring_radius: 23000,
+  search_radius: 500,
+  sectors: 3,
+  sectors_done: 3,
+  status: 'scanning',
+  center: { x: 25.21875, y: -20.90625, z: 25899.96875 },
+};
+
+const RING_STATS = {
+  realAnchors: 3,
+  triangulatedAnchors: 0,
+  systemsFound: 12,
+  systemsSaved: 12,
+  catalogHits: 12,
+  cacheHits: 0,
+  edsmRequests: 0,
+  spanshRequests: 0,
+  reusedFromNeighbours: 0,
+};
+
+const RING_RESULT = {
+  sessionId: 'ring-1',
+  start: 'Sol',
+  route: [
+    { name: 'Sol', x: 0, y: 0, z: 0, source: 'start' },
+    { name: 'Alpha Centauri', x: 3.03, y: -0.09, z: 3.16, source: 'catalog' },
+    { name: 'RING TRIANGULATED 4', x: 100, y: 0, z: 100, source: 'triangulated' },
+  ],
+  center: RING_SESSION.center,
+  ringRadius: 23000,
+  searchRadius: 500,
+  anchors: [{ name: 'Anchor A', x: 23025, y: 0, z: 10, source: 'catalog' }],
+  totals: {
+    points: 3,
+    realPoints: 2,
+    syntheticPoints: 1,
+    anchors: 3,
+    triangulatedAnchors: 0,
+    discovered: 12,
+    deviationAvg: 2.5,
+    deviationMax: 8,
+  },
+  stats: RING_STATS,
+};
+
+test('кольцо: результат виден в панели, сохраняется в проект и выгружается в CSV', async () => {
+  const saveRequests = [];
+  const ui = await renderAtlas(null, {
+    api: (target, init) => {
+      if (target.includes('/api/projects')) {
+        return { body: { projects: [{ id: 3, name: 'Тестовая стройка', squadron_name: 'TEST', color: '#e67e22', description: null }] } };
+      }
+      if (target.includes('/api/atlas/ring-route/finalize')) return { body: { result: RING_RESULT } };
+      if (target.includes('/api/atlas/ring-route/save')) {
+        saveRequests.push(JSON.parse(init.body));
+        return { body: { ok: true, added: 2, total_points: 3, skipped_duplicate: 0, skipped_synthetic: 1 } };
+      }
+      if (target.includes('/api/atlas/ring-route')) {
+        return {
+          body: {
+            completed: false,
+            session: RING_SESSION,
+            step: {
+              session_id: 'ring-1',
+              sectors: 3,
+              sectors_done: 3,
+              processed: 3,
+              done: true,
+              progress: { percent: 98, stage: 'scan', message: 'Сегменты пройдены' },
+              anchors: [{ name: 'Anchor A', x: 23025, y: 0, z: 10, source: 'catalog', deviation: 1.2 }],
+              found: [{ name: 'Found A', x: 23010, y: 0, z: 12, source: 'catalog' }],
+              beam: null,
+              stats: RING_STATS,
+            },
+          },
+        };
+      }
+      if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) {
+        return { status: 401, body: { error: 'Unauthorized' } };
+      }
+      return { body: {} };
+    },
+  });
+  const buttonByText = (label) => Array.from(ui.document.querySelectorAll('button'))
+    .find((button) => (button.textContent || '').includes(label)) || null;
+  try {
+    await ui.render(ui.React.createElement(ui.mod.AtlasPage));
+    const ringTab = Array.from(ui.document.querySelectorAll('[role="tab"]'))
+      .find((tab) => (tab.textContent || '').includes('Кольцо'));
+    await ui.click(ringTab);
+
+    const build = buttonByText('Построить галактическое кольцо');
+    assert.ok(build, 'кнопка запуска поиска кольца есть');
+    await ui.click(build);
+    await ui.flush(40);
+
+    // Итог закреплён в канале прогресса: именно его рисует 3D-карта после
+    // того, как оверлей поиска погаснет.
+    const pinned = ui.mod.readAtlasSearchResult();
+    assert.ok(pinned, 'результат кольца закреплён для карты');
+    assert.equal(pinned.kind, 'ring');
+    assert.equal(pinned.ring.radius, 23000, 'контур кольца передаётся на карту');
+    assert.equal(pinned.path.length, 3, 'маршрут кольца передаётся на карту');
+    assert.ok(
+      pinned.points.some((point) => point.kind === 'anchor'),
+      'опорные точки остаются на карте',
+    );
+
+    assert.match(ui.text(), /Результат кольцевого маршрута/, 'панель результата отрисована');
+    assert.match(ui.text(), /Точки кольца/, 'список точек кольца показан');
+    assert.match(ui.text(), /Сохранить найденное кольцо/, 'блок сохранения на месте');
+
+    // Кнопки подписаны словами: выгрузка не должна прятаться за иконкой.
+    for (const label of ['Скачать CSV', 'Копировать текстом', 'Сохранить в проект', 'Убрать с карты']) {
+      assert.ok(buttonByText(label), `нет кнопки «${label}»`);
+    }
+
+    const select = ui.document.querySelector('#ring-save-project');
+    assert.ok(select, 'выбор проекта для сохранения есть');
+    assert.match(select.textContent || '', /\[TEST\] Тестовая стройка/, 'проект показан с тегом эскадрильи');
+
+    const saveButton = buttonByText('Сохранить в проект');
+    assert.equal(saveButton.disabled, true, 'без выбранного проекта сохранение закрыто');
+
+    await ui.act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(ui.dom.window.HTMLSelectElement.prototype, 'value')?.set;
+      setter?.call(select, '3');
+      select.dispatchEvent(new ui.dom.window.Event('change', { bubbles: true }));
+    });
+    await ui.flush(10);
+
+    await ui.click(buttonByText('Сохранить в проект'));
+    await ui.flush(30);
+
+    assert.equal(saveRequests.length, 1, 'сохранение отправило один запрос');
+    assert.equal(saveRequests[0].project_id, 3);
+    assert.equal(saveRequests[0].session_id, 'ring-1', 'маршрут берётся из сессии, а не телом на тысячи точек');
+    assert.equal(saveRequests[0].include_synthetic, false, 'расчётные точки по умолчанию не сохраняются');
+    assert.match(ui.text(), /В проект добавлено систем: 2/, 'итог сохранения показан пилоту');
+    assert.match(ui.text(), /расчётных точек пропущено: 1/);
+  } finally {
+    // Оверлей результата живёт 30 секунд: убираем таймер, чтобы файл не ждал его.
+    ui.mod.resetAtlasSearchProgress();
     await ui.cleanup();
   }
 });
