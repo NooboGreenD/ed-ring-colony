@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
+import { RangeNumberField } from '@/components/Atlas/RangeNumberField';
 import { toast } from '@/components/ui/Toaster';
 import { IconCopy, IconDownload, IconSearch, IconX } from '@/components/Icons';
 import { copyText, downloadCsv, formatCoordinates, routeToCsvRows } from '@/lib/atlas';
@@ -44,6 +45,22 @@ interface RingStats {
   reusedFromNeighbours: number;
 }
 
+interface RingValidation {
+  maxJump: number;
+  jumpViolations: number;
+  anchorSpacingMin: number;
+  anchorSpacingMax: number;
+  anchorSpacingAvg: number;
+  anchorSpacingViolations: number;
+  anchorSpacingOutside: number;
+  anchorDeviationMax: number;
+  anchorDeviationAvg: number;
+  routeDeviationMax: number;
+  deviationViolations: number;
+  startOffset: number;
+  withinSpec: boolean;
+}
+
 interface RingResult {
   sessionId?: string;
   start?: string;
@@ -62,8 +79,19 @@ interface RingResult {
     deviationAvg: number;
     deviationMax: number;
   };
+  validation?: RingValidation;
   stats: RingStats;
 }
+
+/** Требования к кольцу — те же числа, что в atlasRingSearch.ts. */
+const RING_LIMITS = {
+  jump: 14.99,
+  spacingMin: 480,
+  spacingMax: 490,
+  spacingLimit: 500,
+  deviation: 100,
+  deviationPreferred: 50,
+} as const;
 
 interface SessionView {
   session_id: string;
@@ -102,6 +130,8 @@ const EMPTY_PROGRESS: ProgressView = {
 
 const MAX_STEP_RETRIES = 4;
 const ROUTE_SAMPLE_LIMIT = 3000;
+const RING_RADIUS_RANGE = { min: 100, max: 45000, step: 100 } as const;
+const SEARCH_RADIUS_RANGE = { min: 50, max: 3000, step: 50 } as const;
 
 export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
   const [startSystem, setStartSystem] = useState('Sol');
@@ -218,6 +248,9 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      if (res.status === 504 || res.status === 502 || res.status === 503) {
+        throw new Error(`Сервер не ответил вовремя (HTTP ${res.status}). Шаг будет повторён`);
+      }
       throw new Error(data.error || `Сервер не смог обработать шаг поиска (HTTP ${res.status})`);
     }
     if (data.session?.session_id) {
@@ -458,10 +491,11 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
       <div className="atlas-search-panel">
         <h3>Галактическое кольцо колонизации</h3>
         <p className="atlas-route-desc">
-          Замкнутый маршрут вокруг Sagittarius A* с шагом до 14,99 св.л. Опорные точки берутся из
-          каталога Spansh в базе проекта, кэша Atlas и только затем из EDSM/Spansh. Разрывы
-          закрываются реальными системами; расчётные точки остаются, лишь если рядом систем нет.
-          Поиск идёт шагами, поэтому его можно продолжить после обрыва связи.
+          Замкнутый маршрут вокруг Sagittarius A*. Требования к результату: прыжок между соседними
+          системами не больше 14,99 св.л.; опорные точки через 480–490 св.л. (не больше 500);
+          отклонение от оси кольца до 50 св.л. (допуск 100). Опоры берутся из каталога Spansh в базе
+          проекта и кэша Atlas; разрывы закрываются реальными системами, расчётные точки остаются,
+          лишь если рядом систем нет. Поиск идёт шагами и продолжается после обрыва связи.
         </p>
 
         <SystemSearchInput
@@ -472,39 +506,29 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
           placeholder="Sol"
         />
 
-        <div className="atlas-search-field">
-          <label htmlFor="ring-radius">
-            Удаление от центра: <strong>{ringRadius.toLocaleString('ru-RU')} св.л.</strong>
-          </label>
-          <input
-            id="ring-radius"
-            type="range"
-            min={100}
-            max={45000}
-            step={100}
-            value={ringRadius}
-            onChange={(event) => setRingRadius(Number(event.target.value))}
-            disabled={busy}
-          />
-          <div className="atlas-range-scale"><span>100</span><span>45 000</span></div>
-        </div>
+        <RangeNumberField
+          id="ring-radius"
+          label="Удаление от центра"
+          min={RING_RADIUS_RANGE.min}
+          max={RING_RADIUS_RANGE.max}
+          step={RING_RADIUS_RANGE.step}
+          value={ringRadius}
+          onChange={setRingRadius}
+          disabled={busy}
+          hint="Радиус окружности кольца от Sagittarius A*. Число опорных точек считается от длины окружности."
+        />
 
-        <div className="atlas-search-field">
-          <label htmlFor="ring-search-radius">
-            Радиус поиска известных систем: <strong>{searchRadius.toLocaleString('ru-RU')} св.л.</strong>
-          </label>
-          <input
-            id="ring-search-radius"
-            type="range"
-            min={50}
-            max={3000}
-            step={50}
-            value={searchRadius}
-            onChange={(event) => setSearchRadius(Number(event.target.value))}
-            disabled={busy}
-          />
-          <div className="atlas-range-scale"><span>50</span><span>3000</span></div>
-        </div>
+        <RangeNumberField
+          id="ring-search-radius"
+          label="Радиус поиска известных систем"
+          min={SEARCH_RADIUS_RANGE.min}
+          max={SEARCH_RADIUS_RANGE.max}
+          step={SEARCH_RADIUS_RANGE.step}
+          value={searchRadius}
+          onChange={setSearchRadius}
+          disabled={busy}
+          hint="Окно, в котором ищется опорная система вокруг каждой точки кольца. Больше окно — больше вариантов, но медленнее шаг."
+        />
 
         <div className="atlas-button-row">
           <button type="button" className="atlas-scan-btn" onClick={search} disabled={busy || !startSystem.trim()}>
@@ -583,6 +607,8 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
             </div>
           </div>
 
+          {result.validation && <RingValidationPanel validation={result.validation} />}
+
           <button type="button" className="atlas-secondary-btn" onClick={() => void refine()} disabled={busy || result.totals.syntheticPoints === 0}>
             {refining
               ? `Уточнение маршрута: ${Math.round(progress.percent)}%`
@@ -625,6 +651,48 @@ export default function AtlasRingRouteFinder({ onRouteFound }: Props) {
             {filteredRoute.length > 300 && <p className="atlas-muted">Показаны первые 300 точек — полный список в CSV.</p>}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/** Проверка результата по требованиям кольца: что выполнено и что вышло за пределы. */
+function RingValidationPanel({ validation: v }: { validation: RingValidation }) {
+  const row = (ok: boolean, title: string, detail: string) => (
+    <div className={`atlas-check-row ${ok ? 'ok' : 'fail'}`}>
+      <span aria-hidden>{ok ? '✓' : '✗'}</span>
+      <span>
+        <strong>{title}</strong> — {detail}
+      </span>
+    </div>
+  );
+  const spacingOk = v.anchorSpacingViolations === 0;
+  return (
+    <div className="atlas-details-box atlas-validation" aria-label="Проверка требований кольца">
+      <h4>Проверка требований</h4>
+      {row(
+        v.jumpViolations === 0,
+        `Прыжок не больше ${RING_LIMITS.jump} св.л.`,
+        `максимальный ${v.maxJump.toFixed(2)} св.л.${v.jumpViolations ? `, нарушений: ${v.jumpViolations}` : ''}`,
+      )}
+      {row(
+        spacingOk,
+        `Опоры через ${RING_LIMITS.spacingMin}–${RING_LIMITS.spacingMax} св.л. (не больше ${RING_LIMITS.spacingLimit})`,
+        `от ${v.anchorSpacingMin} до ${v.anchorSpacingMax} св.л., среднее ${v.anchorSpacingAvg}`
+          + (v.anchorSpacingOutside ? `; вне ${RING_LIMITS.spacingMin}–${RING_LIMITS.spacingMax}: ${v.anchorSpacingOutside}` : ''),
+      )}
+      {row(
+        v.anchorDeviationMax <= RING_LIMITS.deviation && v.deviationViolations === 0,
+        `Отклонение от оси до ${RING_LIMITS.deviation} св.л.`,
+        `опоры: макс. ${v.anchorDeviationMax}, среднее ${v.anchorDeviationAvg}; `
+          + `точки маршрута: макс. ${v.routeDeviationMax}`
+          + (v.anchorDeviationMax <= RING_LIMITS.deviationPreferred ? '' : `; опоры выше ${RING_LIMITS.deviationPreferred} св.л. — допуск`),
+      )}
+      {v.startOffset > RING_LIMITS.deviation && (
+        <p className="atlas-muted">
+          Стартовая система на {v.startOffset.toLocaleString('ru-RU')} св.л. от окружности кольца:
+          подход к ней и возврат идут отдельным участком и в проверку отклонения не входят.
+        </p>
       )}
     </div>
   );

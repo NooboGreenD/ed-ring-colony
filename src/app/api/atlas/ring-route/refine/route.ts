@@ -15,6 +15,8 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 120;
 
 const MAX_JUMP = 14.99;
+/** Допуск отклонения от окружности кольца (св.л.): совпадает с atlasRingSearch. */
+const ANCHOR_DEVIATION_LIMIT = 100;
 const DEFAULT_REFINE_RADIUS = 30;
 const MAX_EDSM_REQUESTS = 30;
 /** Бюджет времени уточнения: длинное кольцо нельзя считать минутами. */
@@ -22,9 +24,13 @@ const REFINE_TIME_BUDGET_MS = 45_000;
 const EDSM_TIMEOUT_MS = 6000;
 const UA = 'ED-Ring-Colony/1.0 (ring-refinement)';
 
-type Point = { name: string; x: number; y: number; z: number; source?: string };
+type Point = { name: string; x: number; y: number; z: number; source?: string; isAnchor?: boolean };
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+/** Перпендикулярное отклонение от окружности кольца (как в atlasRingSearch). */
+const deviationFrom = (point: Point, center: Point, ringRadius: number) =>
+  Math.hypot(Math.hypot(point.x - center.x, point.z - center.z) - ringRadius, point.y - center.y);
 
 async function edsmNear(point: Point, radius: number): Promise<Point[]> {
   const url = new URL('https://www.edsm.net/api-v1/cube-systems');
@@ -100,7 +106,9 @@ export async function POST(req: Request) {
       const current = result[index];
       const previous = result[index - 1];
       const next = result[index + 1];
-      const currentError = Math.abs(dist(current, center) - ringRadius);
+      // Опорные точки не трогаем: замена сдвинула бы шаг 480–490 между опорами.
+      if (current.isAnchor) continue;
+      const currentError = deviationFrom(current, center, ringRadius);
       const isSynthetic = current.source === 'triangulated' || current.name.startsWith('RING TRIANGULATED');
 
       const candidates: Point[] = [];
@@ -131,10 +139,11 @@ export async function POST(req: Request) {
       const better = candidates
         .filter((item) => !used.has(item.name.toLowerCase())
           && dist(item, previous) <= MAX_JUMP
-          && dist(item, next) <= MAX_JUMP)
-        .sort((left, right) => Math.abs(dist(left, center) - ringRadius) - Math.abs(dist(right, center) - ringRadius))[0];
+          && dist(item, next) <= MAX_JUMP
+          && deviationFrom(item, center, ringRadius) <= ANCHOR_DEVIATION_LIMIT)
+        .sort((left, right) => deviationFrom(left, center, ringRadius) - deviationFrom(right, center, ringRadius))[0];
 
-      const candidateError = better ? Math.abs(dist(better, center) - ringRadius) : Number.POSITIVE_INFINITY;
+      const candidateError = better ? deviationFrom(better, center, ringRadius) : Number.POSITIVE_INFINITY;
       const improves = Boolean(better)
         && (isSynthetic || candidateError + 0.01 < currentError);
       if (better && improves) {

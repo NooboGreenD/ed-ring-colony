@@ -59,6 +59,8 @@ export interface CachedBody {
 const PAGE_SIZE = 1000;
 /** Сколько страниц максимум вычитываем за один вызов. */
 const MAX_PAGES = 40;
+/** Для запасного пути поиска ближайших систем: страниц коробки не больше. */
+const FALLBACK_MAX_PAGES = 3;
 
 // Таблица может отсутствовать (миграция ещё не применена). Чтобы не долбить
 // БД одинаковыми ошибками на каждый сегмент поиска, помним это на пять минут.
@@ -68,7 +70,7 @@ let bodiesUnavailableUntil = 0;
 
 function isMissingRelation(error: { code?: string; message?: string } | null | undefined): boolean {
   if (!error) return false;
-  if (error.code === '42P01' || error.code === 'PGRST205' || error.code === 'PGRST202') return true;
+  if (error.code === '42P01' || error.code === '42883' || error.code === 'PGRST205' || error.code === 'PGRST202') return true;
   return /does not exist|not find the table|schema cache/i.test(error.message || '');
 }
 
@@ -123,22 +125,64 @@ export async function listCachedSystemsInBox(box: Box, limit = 20_000): Promise<
   return rows;
 }
 
+/**
+ * Ближайшие системы кэша в сфере радиуса `radius`, по возрастанию расстояния.
+ *
+ * Основной путь — RPC `atlas_system_cache_near` (миграция 20261012000000): один
+ * запрос по GiST-индексу, без листания коробки. Если функции ещё нет, падаем на
+ * прежнюю выборку коробки, но не больше `FALLBACK_MAX_PAGES` страниц: раньше при
+ * большом радиусе здесь уходили десятки последовательных запросов, и шаг кольца
+ * не укладывался в таймаут шлюза.
+ */
 export async function listCachedSystemsNear(
   point: { x: number; y: number; z: number },
   radius: number,
   limit = 800,
 ): Promise<CachedSystem[]> {
-  const rows = await listCachedSystemsInBox(boxAround(point, radius), Math.max(limit, PAGE_SIZE));
+  if (Date.now() < systemsUnavailableUntil) return [];
+  const cap = Math.max(1, Math.min(limit, 2000));
   const radiusSquared = radius * radius;
-  return rows
+  const byDistance = (rows: CachedSystem[]) => rows
     .map((row) => ({
       row,
       distanceSquared: (row.x - point.x) ** 2 + (row.y - point.y) ** 2 + (row.z - point.z) ** 2,
     }))
     .filter((entry) => entry.distanceSquared <= radiusSquared)
     .sort((left, right) => left.distanceSquared - right.distanceSquared)
-    .slice(0, limit)
+    .slice(0, cap)
     .map((entry) => entry.row);
+
+  try {
+    const { data, error } = await supabaseAdmin.rpc('atlas_system_cache_near', {
+      cx: point.x,
+      cy: point.y,
+      cz: point.z,
+      half: radius,
+      lim: cap * 2,
+    });
+    if (!error && Array.isArray(data)) {
+      const rows: CachedSystem[] = [];
+      for (const row of data as Array<{ system_name: string; x: number; y: number; z: number; id64: string | null; source: string | null }>) {
+        const x = Number(row.x);
+        const y = Number(row.y);
+        const z = Number(row.z);
+        if (!row.system_name || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+        rows.push({ name: row.system_name, x, y, z, id64: row.id64, source: row.source || 'cache' });
+      }
+      return byDistance(rows);
+    }
+    if (error && !isMissingRelation(error)) {
+      console.warn('[atlas cache] поиск ближайших систем не удался:', error.message);
+      return [];
+    }
+  } catch (error: any) {
+    console.warn('[atlas cache] поиск ближайших систем прерван:', error?.message || error);
+    return [];
+  }
+
+  // RPC нет (миграция не применена): ограниченная выборка коробки.
+  const rows = await listCachedSystemsInBox(boxAround(point, radius), Math.min(FALLBACK_MAX_PAGES * PAGE_SIZE, Math.max(cap, PAGE_SIZE)));
+  return byDistance(rows);
 }
 
 /**

@@ -2620,6 +2620,52 @@
     accent-color: var(--orange);
   }
 
+  /* Ползунок и поле ввода с клавиатуры — один параметр, две строки ввода. */
+  .atlas-search-field .atlas-range-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .atlas-search-field .atlas-range-row input[type="range"] {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .atlas-search-field .atlas-range-row input.atlas-range-number {
+    flex: 0 0 116px;
+    width: 116px;
+    padding: 6px 8px;
+    font-family: ui-monospace, monospace;
+    text-align: right;
+  }
+
+  .atlas-range-hint {
+    margin: 4px 0 0;
+    font-size: 12px;
+  }
+
+  .atlas-validation h4 {
+    margin: 0 0 8px;
+  }
+
+  .atlas-check-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 13px;
+    line-height: 1.4;
+    margin-bottom: 6px;
+  }
+
+  .atlas-check-row.ok > span:first-child {
+    color: #6fcf7f;
+  }
+
+  .atlas-check-row.fail > span:first-child {
+    color: #ff6b6b;
+  }
+
   .atlas-type-grid {
     display: flex;
     flex-wrap: wrap;

@@ -2,89 +2,115 @@
  * Построение Галактического кольца колонизации — пошагово и с опорой на
  * существующие системы.
  *
- * Что было не так раньше:
- *   • поиск шёл одним длинным запросом и обращался к EDSM в каждом из 360
- *     сегментов; к 3–4-му сегменту соединение с браузером рвалось, и
- *     пользователь видел «network error» без результата;
- *   • приоритет отдавался сети, а не локальному каталогу Spansh, который уже
- *     лежит в БД проекта;
- *   • разрывы закрывались расчётными точками (триангуляцией) даже когда рядом
- *     были реальные системы.
+ * Требования к результату (проверяются в `validateRingRoute`, видны в ответе):
+ *   • расстояние между соседними системами маршрута — не больше 14,99 св.л.;
+ *   • опорные точки кольца — через 480–490 св.л. (жёсткий предел 500 св.л.);
+ *   • отклонение опорной точки от окружности кольца — до 50 св.л. (допуск 100).
+ *     Отклонение — перпендикулярное расстояние до окружности, а не расстояние
+ *     до расчётной точки сегмента: вдоль кольца опора сдвигается свободно,
+ *     важно лишь то, насколько она ушла от «оси» кольца.
+ *
+ * Почему поиск раньше падал по таймауту (504) и не стартовал при больших радиусах:
+ *   • кэш систем листался постранично (до 40 последовательных запросов на сегмент),
+ *     и чем больше радиус поиска, тем дольше шёл шаг;
+ *   • сетевые запросы EDSM/Spansh шли последовательно внутри сегмента, а бюджет
+ *     времени проверялся только между сегментами — первый сегмент мог висеть минутами;
+ *   • коридор моста между опорами был равен радиусу поиска (до 3000 св.л.), пул
+ *     систем разрастался до десятков тысяч, а финализация перебирала его на каждом шаге.
  *
  * Как устроено теперь:
- *   1. Сессия строится шагами (`step`): один HTTP-запрос обрабатывает пачку
- *      сегментов и сразу отдаёт прогресс. Обрыв связи больше не теряет работу —
- *      прогресс лежит в `atlas_ring_sessions` и поиск продолжается с того же
- *      места (в том числе после перезагрузки страницы).
- *   2. Источники по приоритету: каталог Spansh в БД (`galaxy_systems`) →
- *      кэш систем Atlas (`atlas_system_cache`) → EDSM → Spansh API. Внешние
- *      запросы идут только туда, где локальных данных нет, и ограничены
- *      бюджетом на сессию.
- *   3. Опорной точкой сегмента становится ближайшая реальная система; если в
- *      радиусе никого нет, радиус расширяется, и только потом ставится
- *      расчётная точка.
- *   4. Промежутки между опорными точками закрываются цепочкой реальных систем
- *      (жадный проход по каталогу и кэшу в коридоре маршрута). Триангуляция —
- *      последнее средство, когда систем в коридоре нет физически.
- *   5. Всё найденное сохраняется в БД проекта, поэтому повторный поиск в том же
- *      районе идёт без внешних API.
+ *   1. Шаг сегментов ограничен по времени: все внешние и БД-вызовы имеют таймаут,
+ *      а сетевые источники не трогаем, если каталог проекта полон.
+ *   2. Число сегментов — от окружности и шага 490 св.л.; опора выбирается среди
+ *      реальных систем с отклонением ≤ 100 и шагом 480–490 от предыдущей опоры.
+ *      Если подходящих систем нет — расчётная опора на окружности нужного шага.
+ *   3. Финализация: пул систем берётся по каждому сегменту отдельно (пачками,
+ *      параллельно), коридор фиксирован допуском отклонения, а не радиусом поиска.
+ *   4. Итоговый маршрут проверяется по всем трём требованиям и отдаёт статистику.
  */
 
 // Явные расширения нужны для `node --test`.
 import { supabaseAdmin } from './supabaseAdmin.ts';
 import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from './galaxySystemsDb.ts';
-import { boxAround, listCachedSystemsInBox, listCachedSystemsNear, saveCachedSystems, type CachedSystem } from './atlasSystemCache.ts';
+import { listCachedSystemsNear, saveCachedSystems, type CachedSystem } from './atlasSystemCache.ts';
 import { spanshNearest as spanshNearestApi, spanshSearch, spanshSystemsNear } from './spanshClient.ts';
 import { normalizeSystemName } from './galaxySystems.ts';
 
 export const MIN_RING_RADIUS = 100;
 export const MAX_RING_RADIUS = 45_000;
+export const DEFAULT_RING_RADIUS = 23_000;
+export const MIN_SEARCH_RADIUS = 50;
 export const MAX_SEARCH_RADIUS = 3_000;
-export const MAX_JUMP = 14.99;
+export const DEFAULT_SEARCH_RADIUS = 500;
 
-/** Границы сегментов кольца: слишком мало — рваная форма, слишком много — долго. */
-const MIN_SECTORS = 24;
+/** Максимальный прыжок между соседними системами маршрута, св.л. */
+export const MAX_JUMP = 14.99;
+/** Шаг опорных точек: планируем 480–490, жёсткий предел 500 св.л. */
+export const ANCHOR_SPACING_MIN = 480;
+export const ANCHOR_SPACING_TARGET = 485;
+export const ANCHOR_SPACING_MAX = 490;
+export const ANCHOR_SPACING_LIMIT = 500;
+/** Отклонение от окружности кольца: предпочтительно до 50, допуск до 100 св.л. */
+export const ANCHOR_DEVIATION_PREFERRED = 50;
+export const ANCHOR_DEVIATION_LIMIT = 100;
+/** Коридор моста между опорами совпадает с допуском отклонения от кольца. */
+export const ROUTE_CORRIDOR = ANCHOR_DEVIATION_LIMIT;
+/** Шаг расчётной точки чуть короче прыжка: запас на округление координат. */
+const SYNTHETIC_STEP = MAX_JUMP - 0.005;
+
+/** Число сегментов: окружность / предельный шаг опор. */
+const MIN_SECTORS = 3;
 const MAX_SECTORS = 720;
 
 /** Сколько сегментов обрабатывает один шаг (запрос). */
 export const DEFAULT_STEP_SECTORS = 24;
 const MAX_STEP_SECTORS = 60;
 
-/** Бюджет времени одного шага: шаг обязан уложиться в ответ HTTP. */
-const STEP_TIME_BUDGET_MS = 25_000;
+/**
+ * Бюджет времени одного шага. Шаг обязан уложиться в ответ HTTP с запасом:
+ * все вызовы внутри проверяют дедлайн, а не только переход между сегментами.
+ */
+const STEP_TIME_BUDGET_MS = 20_000;
+/** Таймаут одного обращения к БД: зависший запрос не должен держать шаг. */
+const DB_TIMEOUT_MS = 8_000;
+/** Бюджет времени сборки маршрута (ниже таймаута роута в 120 с). */
+const FINALIZE_TIME_BUDGET_MS = 60_000;
+const FINALIZE_CONCURRENCY = 6;
 
-/** Бюджеты внешних запросов на один шаг/сессию. */
+/** Бюджеты внешних запросов на один шаг. */
 const EDSM_BUDGET_PER_STEP = 16;
 const EDSM_TIMEOUT_MS = 6000;
-const EDSM_CONCURRENCY = 4;
 const SPANSH_BUDGET_PER_STEP = 4;
 const SPANSH_TIMEOUT_MS = 5000;
 
-/** Максимум систем, которые тянем из кэша вокруг одной опорной точки. */
+/** Максимум систем, которые берём вокруг одной опорной точки. */
 const SECTOR_CACHE_LIMIT = 600;
+/** Пул систем одного сегмента маршрута (ближайшие к середине отрезка). */
+const SEGMENT_POOL_LIMIT = 2000;
 /** Сколько точек сегмента отдаём клиенту для отрисовки на карте. */
 const STEP_FOUND_SAMPLE = 400;
-/** Предел строк, которые вычитываем из кэша при сборке маршрута. */
-const FINALIZE_POOL_LIMIT = 40_000;
-/** Бюджет дополнительных запросов к каталогу на сборке маршрута. */
-const FINALIZE_CATALOG_BUDGET = 90;
 
 const EDSM_UA = 'ED-Ring-Colony/1.0 (galactic-ring-route)';
 
 export type RingSource = 'catalog' | 'cache' | 'edsm' | 'spansh' | 'triangulated' | 'start';
 
-export interface RingPoint {
-  name: string;
+export interface XYZ {
   x: number;
   y: number;
   z: number;
+}
+
+export interface RingPoint extends XYZ {
+  name: string;
   source?: RingSource;
+  /** Опорная точка кольца (а не промежуточная система моста). */
+  isAnchor?: boolean;
 }
 
 export interface RingAnchor extends RingPoint {
-  /** Насколько опорная точка удалена от идеальной точки кольца. */
+  /** Перпендикулярное отклонение от окружности кольца, св.л. */
   deviation: number;
-  target: { x: number; y: number; z: number };
+  target: XYZ;
   /** Сколько реальных систем нашлось в окне сегмента. */
   found: number;
   /** Радиус, на котором нашлась опора (может быть больше запрошенного). */
@@ -133,8 +159,29 @@ export interface RingStepResult {
   /** Найденные по ходу системы (выборка для карты). */
   found: RingPoint[];
   /** Точка текущего сканирования. */
-  beam: { x: number; y: number; z: number } | null;
+  beam: XYZ | null;
   stats: RingStats;
+}
+
+/** Результат проверки маршрута относительно требований к кольцу. */
+export interface RingValidation {
+  maxJump: number;
+  jumpViolations: number;
+  anchorSpacingMin: number;
+  anchorSpacingMax: number;
+  anchorSpacingAvg: number;
+  /** Опоры дальше жёсткого предела 500 св.л. — нарушение. */
+  anchorSpacingViolations: number;
+  /** Опоры вне целевого диапазона 480–490 св.л. — допустимо, но учитываем. */
+  anchorSpacingOutside: number;
+  anchorDeviationMax: number;
+  anchorDeviationAvg: number;
+  /** Точки маршрута вдоль кольца (без подхода к старту) — максимальное отклонение. */
+  routeDeviationMax: number;
+  deviationViolations: number;
+  /** На сколько старт вне окружности кольца: подход к нему выходит за допуск. */
+  startOffset: number;
+  withinSpec: boolean;
 }
 
 export interface RingResult {
@@ -155,6 +202,7 @@ export interface RingResult {
     deviationAvg: number;
     deviationMax: number;
   };
+  validation: RingValidation;
   stats: RingStats;
 }
 
@@ -175,35 +223,62 @@ const EMPTY_STATS: RingStats = {
   bridgeCatalogRequests: 0,
 };
 
-export function distance3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+export function distance3(a: XYZ, b: XYZ): number {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 /**
- * Число сегментов: шаг между соседними опорными точками примерно равен радиусу
- * поиска, поэтому окна перекрываются и одна система может закрыть два сегмента.
+ * Число сегментов. Шаг между соседними опорами не больше 490 св.л.: при
+ * таком числе сегментов дуга между опорами попадает в диапазон 480–490 для
+ * любого кольца, кроме очень маленьких (там опор мало по определению).
  */
-export function computeSectorCount(ringRadius: number, searchRadius: number): number {
+export function computeSectorCount(ringRadius: number): number {
   const circumference = 2 * Math.PI * ringRadius;
-  const spacing = Math.max(30, searchRadius);
-  const raw = Math.ceil(circumference / spacing);
-  return Math.max(MIN_SECTORS, Math.min(MAX_SECTORS, raw));
+  // Допустимые числа сегментов: шаг (дуга) не больше 490 — это нижняя граница
+  // числа сегментов. Если среди них есть такие, что шаг попадает в 480–490,
+  // берём ближайший к 485. Для малых колец такого числа может не быть: тогда
+  // остаётся минимум, гарантирующий предел 490 (меньший шаг — не нарушение).
+  const low = Math.ceil(circumference / ANCHOR_SPACING_MAX);
+  const high = Math.floor(circumference / ANCHOR_SPACING_MIN);
+  let count = low;
+  if (low <= high) {
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let candidate = low; candidate <= high; candidate++) {
+      const distance = Math.abs(circumference / candidate - ANCHOR_SPACING_TARGET);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        count = candidate;
+      }
+    }
+  }
+  return Math.max(MIN_SECTORS, Math.min(MAX_SECTORS, count));
+}
+
+/** Точка окружности кольца по углу (базис: направление на старт от центра). */
+export function ringPointAtAngle(
+  center: XYZ,
+  basis: { ux: number; uz: number },
+  ringRadius: number,
+  angle: number,
+): XYZ {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  return {
+    x: center.x + ringRadius * (basis.ux * cos - basis.uz * sin),
+    y: center.y,
+    z: center.z + ringRadius * (basis.uz * cos + basis.ux * sin),
+  };
 }
 
 /** Точка на кольце для сегмента: базис строится от начальной системы к центру. */
 export function ringTarget(
-  center: { x: number; y: number; z: number },
+  center: XYZ,
   basis: { ux: number; uz: number },
   ringRadius: number,
   sectorIndex: number,
   sectors: number,
-): { x: number; y: number; z: number } {
-  const angle = (2 * Math.PI * sectorIndex) / sectors;
-  return {
-    x: center.x + ringRadius * (basis.ux * Math.cos(angle) - basis.uz * Math.sin(angle)),
-    y: center.y,
-    z: center.z + ringRadius * (basis.uz * Math.cos(angle) + basis.ux * Math.sin(angle)),
-  };
+): XYZ {
+  return ringPointAtAngle(center, basis, ringRadius, (2 * Math.PI * sectorIndex) / sectors);
 }
 
 export function ringBasis(start: { x: number; z: number }, center: { x: number; z: number }): { ux: number; uz: number } {
@@ -213,12 +288,49 @@ export function ringBasis(start: { x: number; z: number }, center: { x: number; 
   return { ux: vx / length, uz: vz / length };
 }
 
+/**
+ * Перпендикулярное отклонение точки от окружности кольца: горизонтальное
+ * расстояние до центра минус радиус, объединённое с отступом по высоте.
+ */
+export function ringDeviation(point: XYZ, center: XYZ, ringRadius: number): number {
+  const horizontal = Math.hypot(point.x - center.x, point.z - center.z);
+  return Math.hypot(horizontal - ringRadius, point.y - center.y);
+}
+
+/**
+ * Точка окружности, отстоящая от `from` ровно на `distance`, ближайшая к углу
+ * `angle`. Нужна расчётной опоре, чтобы шаг от предыдущей опоры остался в норме,
+ * даже если предыдущая реальная опора ушла от окружности. null — если такой точки нет.
+ */
+export function ringPointAtDistance(
+  center: XYZ,
+  basis: { ux: number; uz: number },
+  ringRadius: number,
+  from: XYZ,
+  angle: number,
+  distance: number,
+): XYZ | null {
+  const dx = from.x - center.x;
+  const dz = from.z - center.z;
+  const h = from.y - center.y;
+  // Проекции на базис окружности: e1 = (ux, uz), e2 = (-uz, ux).
+  const a = dx * basis.ux + dz * basis.uz;
+  const b = -dx * basis.uz + dz * basis.ux;
+  const m = Math.hypot(a, b);
+  if (m < 1e-9 || ringRadius <= 0) return null;
+  const k = (ringRadius * ringRadius + m * m + h * h - distance * distance) / (2 * ringRadius * m);
+  if (k < -1 || k > 1) return null;
+  const phi = Math.atan2(b, a);
+  const delta = Math.acos(k);
+  const normalise = (value: number) => Math.atan2(Math.sin(value), Math.cos(value));
+  const first = phi + delta;
+  const second = phi - delta;
+  const theta = Math.abs(normalise(first - angle)) <= Math.abs(normalise(second - angle)) ? first : second;
+  return ringPointAtAngle(center, basis, ringRadius, theta);
+}
+
 /** Расстояние от точки до отрезка — коридор маршрута на кольце. */
-export function distanceToSegment(
-  point: { x: number; y: number; z: number },
-  a: { x: number; y: number; z: number },
-  b: { x: number; y: number; z: number },
-): number {
+export function distanceToSegment(point: XYZ, a: XYZ, b: XYZ): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const dz = b.z - a.z;
@@ -227,6 +339,35 @@ export function distanceToSegment(
     ? 0
     : Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy + (point.z - a.z) * dz) / lengthSquared));
   return Math.hypot(point.x - (a.x + dx * t), point.y - (a.y + dy * t), point.z - (a.z + dz * t));
+}
+
+/** Не даём одному зависшему вызову держать шаг: по таймауту отдаём запасное значение. */
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Параллельная обработка с ограничением числа одновременных задач. */
+async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      out[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
 /* ─────────────────────────── Внешние источники ─────────────────────────── */
@@ -252,13 +393,13 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init: RequestIni
   }
 }
 
-/** Координаты одной системы: каталог → кэш Atlas → EDSM → Spansh. */
+/** Координаты одной системы: каталог → кэш Atlas → Spansh → EDSM. */
 export async function resolveRingSystem(name: string): Promise<RingPoint | null> {
   const clean = String(name || '').trim().replace(/\s+/g, ' ');
   if (!clean) return null;
 
   try {
-    const row = await findSystemByName(clean);
+    const row = await withTimeout(findSystemByName(clean), DB_TIMEOUT_MS, null);
     if (row) return { name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' };
   } catch (error: any) {
     console.warn('[ring] каталожный поиск системы не удался:', error?.message);
@@ -303,7 +444,7 @@ export async function resolveRingSystem(name: string): Promise<RingPoint | null>
 }
 
 /** Системы вокруг точки по EDSM (последний сетевой резерв). */
-async function edsmSystemsNear(point: { x: number; y: number; z: number }, radius: number): Promise<RingPoint[]> {
+async function edsmSystemsNear(point: XYZ, radius: number): Promise<RingPoint[]> {
   const size = Math.min(Math.max(radius * 2, 40), 200);
   const url = new URL('https://www.edsm.net/api-v1/cube-systems');
   url.searchParams.set('x', String(point.x));
@@ -328,11 +469,8 @@ async function edsmSystemsNear(point: { x: number; y: number; z: number }, radiu
   });
 }
 
-/**
- * Ближайшая известная Spansh система к координатам (точечный запрос /nearest).
- * Транспорт и таймаут — в общем клиенте Spansh.
- */
-async function spanshNearestSystem(point: { x: number; y: number; z: number }): Promise<RingPoint | null> {
+/** Ближайшая известная Spansh система к координатам (точечный запрос /nearest). */
+async function spanshNearestSystem(point: XYZ): Promise<RingPoint | null> {
   try {
     const system = await spanshNearestApi(point);
     const x = Number(system?.x);
@@ -354,7 +492,7 @@ interface SessionRow {
   search_radius: number;
   sectors: number;
   sectors_done: number;
-  center: { x: number; y: number; z: number };
+  center: XYZ;
   basis: { ux: number; uz: number };
   anchors: RingAnchor[];
   discovered: number;
@@ -400,8 +538,8 @@ export async function planRingSession(
   const startName = String(config.startSystem || '').trim();
   if (!startName) throw new Error('Не указана начальная система кольца');
 
-  const ringRadius = Math.min(MAX_RING_RADIUS, Math.max(MIN_RING_RADIUS, Number(config.ringRadius) || 23_000));
-  const searchRadius = Math.min(MAX_SEARCH_RADIUS, Math.max(50, Number(config.searchRadius) || 500));
+  const ringRadius = Math.min(MAX_RING_RADIUS, Math.max(MIN_RING_RADIUS, Number(config.ringRadius) || DEFAULT_RING_RADIUS));
+  const searchRadius = Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, Number(config.searchRadius) || DEFAULT_SEARCH_RADIUS));
 
   const [start, center] = await Promise.all([
     resolveRingSystem(startName),
@@ -411,7 +549,7 @@ export async function planRingSession(
   if (!center) throw new Error('Не удалось получить координаты Sagittarius A*');
 
   const basis = ringBasis(start, center);
-  const sectors = computeSectorCount(ringRadius, searchRadius);
+  const sectors = computeSectorCount(ringRadius);
 
   const stats: RingStats = { ...EMPTY_STATS, sectors, systemsFound: 0 };
   const { data, error } = await supabaseAdmin
@@ -459,6 +597,14 @@ export async function planRingSession(
 
 /* ─────────────────────────── Обработка шага ─────────────────────────── */
 
+interface PickOptions {
+  catalogReady: boolean;
+  budget: RingBudget;
+  memoryPool: Map<string, RingPoint>;
+  /** Время, после которого сетевые источники больше не вызываются. */
+  deadline: number;
+}
+
 interface SectorResolution {
   systems: RingPoint[];
   catalogHits: number;
@@ -469,14 +615,11 @@ interface SectorResolution {
 }
 
 /**
- * Системы вокруг точки сегмента. Локальные источники — каталог Spansh и кэш
- * Atlas — всегда первые: они бесплатны и мгновенны.
+ * Системы вокруг точки сегмента. Порядок: уже найденные в этом шаге → каталог
+ * проекта → кэш Atlas → сеть. Сеть трогаем только если каталог не полон и
+ * локальные источники пусты: полный каталог уже содержит всё, что знает Spansh.
  */
-async function resolveSectorSystems(
-  target: { x: number; y: number; z: number },
-  radius: number,
-  options: { catalogReady: boolean; budget: RingBudget; memoryPool: Map<string, RingPoint> },
-): Promise<SectorResolution> {
+async function resolveSectorSystems(target: XYZ, radius: number, options: PickOptions): Promise<SectorResolution> {
   const resolution: SectorResolution = {
     systems: [],
     catalogHits: 0,
@@ -501,32 +644,42 @@ async function resolveSectorSystems(
     }
   }
 
-  // 2. Каталог Spansh (ночной дамп) — самый полный и быстрый источник.
-  if (options.catalogReady) {
-    try {
-      const rows = await findSystemsInCube({ x: target.x, y: target.y, z: target.z, half: radius * 1.2, limit: 400 });
-      for (const row of rows) {
-        if (distance3(row, target) <= radius) {
-          push({ name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
-          resolution.catalogHits++;
-        }
+  // 2. Каталог Spansh в БД проекта — самый полный и быстрый источник.
+  if (options.catalogReady && Date.now() < options.deadline) {
+    const rows = await withTimeout(
+      findSystemsInCube({ x: target.x, y: target.y, z: target.z, half: radius, limit: SECTOR_CACHE_LIMIT })
+        .catch((error: any) => {
+          console.warn('[ring] каталог недоступен для сегмента:', error?.message);
+          return [] as Array<{ name: string; x: number; y: number; z: number }>;
+        }),
+      DB_TIMEOUT_MS,
+      [] as Array<{ name: string; x: number; y: number; z: number }>,
+    );
+    for (const row of rows) {
+      if (distance3(row, target) <= radius) {
+        push({ name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
+        resolution.catalogHits++;
       }
-    } catch (error: any) {
-      console.warn('[ring] каталог недоступен для сегмента:', error?.message);
     }
   }
 
-  // 3. Кэш Atlas (в том числе наполненный прошлыми поисками).
-  if (resolution.systems.length === 0) {
-    const cached = await listCachedSystemsNear(target, radius, SECTOR_CACHE_LIMIT).catch(() => [] as CachedSystem[]);
+  // 3. Кэш Atlas (ближайшие через индекс куба) — если каталог ничего не дал.
+  if (byName.size === 0 && Date.now() < options.deadline) {
+    const cached = await withTimeout(
+      listCachedSystemsNear(target, radius, SECTOR_CACHE_LIMIT).catch(() => [] as CachedSystem[]),
+      DB_TIMEOUT_MS,
+      [] as CachedSystem[],
+    );
     for (const row of cached) {
       push({ name: row.name, x: row.x, y: row.y, z: row.z, source: 'cache' });
       resolution.cacheHits++;
     }
   }
 
-  // 4. EDSM — только если локальные источники пусты и есть бюджет.
-  if (resolution.systems.length === 0 && options.budget.edsm > 0) {
+  const networkAllowed = !options.catalogReady && byName.size === 0 && Date.now() < options.deadline;
+
+  // 4. EDSM — только без полного каталога и при пустых локальных источниках.
+  if (networkAllowed && options.budget.edsm > 0) {
     options.budget.edsm--;
     const systems = await edsmSystemsNear(target, radius);
     resolution.edsmRequests++;
@@ -535,28 +688,30 @@ async function resolveSectorSystems(
     }
   }
 
-  // 5. Spansh API — последний сетевой резерв. Сначала ищем системы в радиусе
-  //    от уже известной опорной системы (поиск по расстоянию), и только если
-  //    такой опоры нет — спрашиваем ближайшую систему к самим координатам.
-  if (resolution.systems.length === 0 && options.budget.spansh > 0) {
-    const reference = resolution.systems[0] || options.memoryPool.values().next().value || null;
+  // 5. Spansh API — последний сетевой резерв, в пределах дедлайна шага.
+  if (networkAllowed && byName.size === 0 && options.budget.spansh > 0 && Date.now() < options.deadline) {
+    const reference = options.memoryPool.values().next().value || null;
     if (reference) {
       options.budget.spansh--;
-      const near = await spanshSystemsNear({
-        referenceSystem: reference.name,
-        maxDistance: radius,
-        size: Math.min(100, SECTOR_CACHE_LIMIT),
-        timeoutMs: SPANSH_TIMEOUT_MS,
-      });
+      const near = await withTimeout(
+        spanshSystemsNear({
+          referenceSystem: reference.name,
+          maxDistance: radius,
+          size: Math.min(100, SECTOR_CACHE_LIMIT),
+          timeoutMs: SPANSH_TIMEOUT_MS,
+        }).catch(() => [] as Awaited<ReturnType<typeof spanshSystemsNear>>),
+        SPANSH_TIMEOUT_MS + 1000,
+        [] as Awaited<ReturnType<typeof spanshSystemsNear>>,
+      );
       resolution.spanshRequests++;
       for (const system of near) {
         if (distance3(system, target) <= radius) push({ ...system, source: 'spansh' });
       }
     }
   }
-  if (resolution.systems.length === 0 && options.budget.spansh > 0) {
+  if (networkAllowed && byName.size === 0 && options.budget.spansh > 0 && Date.now() < options.deadline) {
     options.budget.spansh--;
-    const nearest = await spanshNearestSystem(target);
+    const nearest = await withTimeout(spanshNearestSystem(target), SPANSH_TIMEOUT_MS + 1000, null);
     resolution.spanshRequests++;
     if (nearest && distance3(nearest, target) <= radius) push(nearest);
   }
@@ -565,28 +720,106 @@ async function resolveSectorSystems(
   return resolution;
 }
 
+/** Геометрия сегмента, нужная для выбора опоры. */
+interface AnchorGeometry {
+  target: XYZ;
+  /** Угол сегмента на окружности (нужен расчётной опоре). */
+  angle: number;
+  center: XYZ;
+  basis: { ux: number; uz: number };
+  ringRadius: number;
+  searchRadius: number;
+  /** Предыдущая опора кольца (не старт): от неё считается шаг 480–490. */
+  previous: XYZ | null;
+  usedNames: Set<string>;
+}
+
+export interface AnchorCandidate {
+  system: RingPoint;
+  deviation: number;
+  spacing: number | null;
+  /** 0 — лучший вариант (отклонение ≤ 50 и шаг 480–490); выше — хуже. */
+  tier: number;
+  score: number;
+}
+
 /**
- * Выбор опорной точки сегмента: ближайшая свободная реальная система, при
- * отсутствии — расширение радиуса, и только в самом конце триангуляция.
+ * Выбор опоры среди реальных систем сегмента. Жёсткие отсечки: отклонение от
+ * окружности не больше 100 и шаг от предыдущей опоры не больше 500. Внутри
+ * допустимых — приоритет: отклонение ≤ 50 и шаг 480–490, затем близость к цели.
  */
-async function pickAnchor(
-  target: { x: number; y: number; z: number },
-  radius: number,
-  usedNames: Set<string>,
-  options: { catalogReady: boolean; budget: RingBudget; memoryPool: Map<string, RingPoint> },
-): Promise<{ anchor: RingAnchor; systems: RingPoint[]; catalogHits: number; cacheHits: number; reused: number }> {
-  let lastFound = 0;
+export function chooseAnchor(input: {
+  target: XYZ;
+  center: XYZ;
+  ringRadius: number;
+  previous: XYZ | null;
+  candidates: RingPoint[];
+  used: Set<string>;
+}): AnchorCandidate | null {
+  let best: AnchorCandidate | null = null;
+  for (const system of input.candidates) {
+    const key = system.name.toLowerCase();
+    if (input.used.has(key)) continue;
+    const deviation = ringDeviation(system, input.center, input.ringRadius);
+    if (deviation > ANCHOR_DEVIATION_LIMIT) continue;
+    const spacing = input.previous ? distance3(system, input.previous) : null;
+    if (spacing !== null && (spacing > ANCHOR_SPACING_LIMIT || spacing < 1)) continue;
+    const spacingOk = spacing === null || (spacing >= ANCHOR_SPACING_MIN && spacing <= ANCHOR_SPACING_MAX);
+    const tier = (deviation > ANCHOR_DEVIATION_PREFERRED ? 1 : 0) + (spacingOk ? 0 : 2);
+    // Внутри класса — шаг ближе к 485 св.л., затем близость к цели сегмента.
+    const spacingPenalty = spacing === null ? 0 : Math.abs(spacing - ANCHOR_SPACING_TARGET) * 1000;
+    const score = tier * 1e7 + spacingPenalty + distance3(system, input.target);
+    if (!best || score < best.score) best = { system, deviation, spacing, tier, score };
+  }
+  return best;
+}
+
+/** Расчётная опора: точка на окружности; если шаг от предыдущей опоры вне 480–490 — корректируем. */
+function triangulatedAnchorPosition(geometry: AnchorGeometry): XYZ {
+  const { target, previous } = geometry;
+  if (previous) {
+    const spacing = distance3(previous, target);
+    if (spacing < ANCHOR_SPACING_MIN || spacing > ANCHOR_SPACING_MAX) {
+      const onCircle = ringPointAtDistance(
+        geometry.center,
+        geometry.basis,
+        geometry.ringRadius,
+        previous,
+        geometry.angle,
+        ANCHOR_SPACING_TARGET,
+      );
+      if (onCircle) return onCircle;
+    }
+  }
+  return { x: target.x, y: target.y, z: target.z };
+}
+
+interface PickedAnchor {
+  anchor: RingAnchor;
+  systems: RingPoint[];
+  catalogHits: number;
+  cacheHits: number;
+  reused: number;
+}
+
+/**
+ * Выбор опорной точки сегмента. Окно поиска расширяется (×2, ×4), но только
+ * пока не найдена опора лучшего класса; при неудаче — расчётная опора.
+ */
+async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promise<PickedAnchor> {
+  const base = geometry.searchRadius;
+  const radii = [...new Set([base, Math.max(base, Math.min(base * 2, 1200)), Math.max(base, Math.min(base * 4, 2400))])];
+
   let catalogHits = 0;
   let cacheHits = 0;
   let reused = 0;
+  let lastFound = 0;
+  let usedRadius = base;
+  let best: { choice: AnchorCandidate; found: number; radius: number } | null = null;
   const collected = new Map<string, RingPoint>();
-  // Расширяем окно: сначала поисковый радиус, затем в 2 и 4 раза (но не больше
-  // 2400 св.л., иначе опора уедет слишком далеко от кольца).
-  const radii = [radius, Math.min(radius * 2, 1200), Math.min(radius * 4, 2400)]
-    .filter((value, index, list) => list.indexOf(value) === index);
 
   for (const currentRadius of radii) {
-    const resolution = await resolveSectorSystems(target, currentRadius, options);
+    const resolution = await resolveSectorSystems(geometry.target, currentRadius, options);
     catalogHits += resolution.catalogHits;
     cacheHits += resolution.cacheHits;
     reused += resolution.reusedFromNeighbours;
@@ -596,50 +829,61 @@ async function pickAnchor(
       options.memoryPool.set(system.name.toLowerCase(), system);
     }
 
-    const free = resolution.systems
-      .filter((system) => !usedNames.has(system.name.toLowerCase()))
-      .sort((left, right) => distance3(left, target) - distance3(right, target));
-    if (free.length > 0) {
-      const chosen = free[0];
-      usedNames.add(chosen.name.toLowerCase());
-      return {
-        anchor: {
-          name: chosen.name,
-          x: chosen.x,
-          y: chosen.y,
-          z: chosen.z,
-          source: chosen.source,
-          deviation: distance3(chosen, target),
-          target,
-          found: resolution.systems.length,
-          usedRadius: currentRadius,
-        },
-        systems: Array.from(collected.values()),
-        catalogHits,
-        cacheHits,
-        reused,
-      };
+    const choice = chooseAnchor({
+      target: geometry.target,
+      center: geometry.center,
+      ringRadius: geometry.ringRadius,
+      previous: geometry.previous,
+      candidates: resolution.systems,
+      used: geometry.usedNames,
+    });
+    if (choice && (!best || choice.score < best.choice.score)) {
+      best = { choice, found: resolution.systems.length, radius: currentRadius };
     }
-    if (resolution.systems.length > 0) {
-      // Все найденные системы уже заняты соседними сегментами: дальше расширять
-      // смысла нет — это тот случай, когда реальной опоры рядом действительно нет.
-      break;
-    }
+    if (best && best.choice.tier === 0) break;
+    if (Date.now() > options.deadline) break;
   }
 
+  const systems = Array.from(collected.values());
+  if (best) {
+    const { system, deviation } = best.choice;
+    geometry.usedNames.add(system.name.toLowerCase());
+    usedRadius = best.radius;
+    return {
+      anchor: {
+        name: system.name,
+        x: system.x,
+        y: system.y,
+        z: system.z,
+        source: system.source,
+        isAnchor: true,
+        deviation,
+        target: geometry.target,
+        found: best.found,
+        usedRadius,
+      },
+      systems,
+      catalogHits,
+      cacheHits,
+      reused,
+    };
+  }
+
+  const position = triangulatedAnchorPosition(geometry);
   return {
     anchor: {
-      name: `RING TRIANGULATED ${Math.round(target.x)}:${Math.round(target.z)}`,
-      x: target.x,
-      y: target.y,
-      z: target.z,
+      name: `RING TRIANGULATED ${Math.round(position.x)}:${Math.round(position.z)}`,
+      x: position.x,
+      y: position.y,
+      z: position.z,
       source: 'triangulated',
-      deviation: 0,
-      target,
+      isAnchor: true,
+      deviation: ringDeviation(position, geometry.center, geometry.ringRadius),
+      target: geometry.target,
       found: lastFound,
-      usedRadius: radius,
+      usedRadius,
     },
-    systems: Array.from(collected.values()),
+    systems,
     catalogHits,
     cacheHits,
     reused,
@@ -665,24 +909,33 @@ export async function stepRingSession(
   const memoryPool = new Map<string, RingPoint>();
   const foundSample: RingPoint[] = [];
   const newAnchors: RingAnchor[] = [];
-  let beam: { x: number; y: number; z: number } | null = null;
+  let beam: XYZ | null = null;
 
   const catalogReady = await isCatalogReady();
   const budget: RingBudget = { edsm: EDSM_BUDGET_PER_STEP, spansh: SPANSH_BUDGET_PER_STEP };
   const startedAt = Date.now();
+  const deadline = startedAt + STEP_TIME_BUDGET_MS;
   let processedTo = from;
 
   for (let sector = from; sector < to; sector++) {
-    // Шаг не должен превращаться в минуты ожидания: если бюджет времени вышел,
-    // возвращаем то, что успели, и клиент просто запросит следующий шаг.
-    if (processedTo > from && Date.now() - startedAt > STEP_TIME_BUDGET_MS) break;
+    // Шаг не должен превращаться в минуты ожидания: при выходе из бюджета времени
+    // возвращаем то, что успели; клиент запросит следующий шаг.
+    if (processedTo > from && Date.now() > deadline) break;
     const target = ringTarget(session.center, session.basis, session.ringRadius, sector, session.sectors);
     beam = target;
+    const previousAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
     const picked = await pickAnchor(
-      target,
-      session.searchRadius,
-      usedNames,
-      { catalogReady, budget, memoryPool },
+      {
+        target,
+        angle: (2 * Math.PI * sector) / session.sectors,
+        center: session.center,
+        basis: session.basis,
+        ringRadius: session.ringRadius,
+        searchRadius: session.searchRadius,
+        previous: previousAnchor ? { x: previousAnchor.x, y: previousAnchor.y, z: previousAnchor.z } : null,
+        usedNames,
+      },
+      { catalogReady, budget, memoryPool, deadline },
     );
     stats.catalogHits += picked.catalogHits;
     stats.cacheHits += picked.cacheHits;
@@ -703,18 +956,20 @@ export async function stepRingSession(
   stats.spanshRequests += SPANSH_BUDGET_PER_STEP - budget.spansh;
   stats.systemsFound += memoryPool.size;
 
-  // Найденные системы кладём в кэш проекта: следующий поиск обойдётся без сети.
-  const toSave: RingPoint[] = [
-    ...memoryPool.values(),
-    ...newAnchors.filter((anchor) => anchor.source !== 'triangulated'),
-  ];
-  const saved = await saveCachedSystems(toSave.map((point) => ({
-    name: point.name,
-    x: point.x,
-    y: point.y,
-    z: point.z,
-    source: point.source || 'cache',
-  }))).catch(() => 0);
+  // В кэш сохраняем только то, что пришло из сети: каталог и кэш уже содержат
+  // свои системы, а повторная запись тысяч строк за шаг не нужна.
+  const toSave = Array.from(memoryPool.values()).filter((point) => point.source === 'edsm' || point.source === 'spansh');
+  const saved = await withTimeout(
+    saveCachedSystems(toSave.map((point) => ({
+      name: point.name,
+      x: point.x,
+      y: point.y,
+      z: point.z,
+      source: point.source || 'cache',
+    }))).catch(() => 0),
+    DB_TIMEOUT_MS,
+    0,
+  );
   stats.systemsSaved += saved;
 
   const done = reached >= session.sectors;
@@ -750,7 +1005,7 @@ async function isCatalogReady(): Promise<boolean> {
   if (catalogReadyCache && Date.now() - catalogReadyCache.at < 5 * 60_000) return catalogReadyCache.value;
   let value = false;
   try {
-    const stats = await getGalaxyStats();
+    const stats = await withTimeout(getGalaxyStats(), DB_TIMEOUT_MS, null);
     value = catalogIsComplete(stats);
   } catch {
     value = false;
@@ -768,10 +1023,10 @@ export function invalidateRingCatalogCache(): void {
 
 interface BridgeContext {
   maxJump: number;
+  /** Допуск отклонения от прямой между опорами (св.л.). */
   corridor: number;
-  catalogReady: boolean;
-  catalogBudget: number;
-  systemsFound: number;
+  /** Шаг расчётной точки (≤ maxJump). */
+  syntheticStep: number;
   /** Сквозная нумерация расчётных точек: имена должны быть уникальны. */
   syntheticCounter: { next: () => number };
 }
@@ -779,7 +1034,7 @@ interface BridgeContext {
 /**
  * Цепочка реальных систем от `from` до `to`. Жадный проход: на каждом шаге
  * берём достижимую систему, которая сильнее всего приближает к цели и не
- * выходит из коридора маршрута. Триангуляция — если такой системы нет.
+ * выходит из коридора маршрута. Расчётная точка — только если такой нет.
  */
 function bridgeSegment(
   from: RingPoint,
@@ -789,9 +1044,8 @@ function bridgeSegment(
   context: BridgeContext,
 ): RingPoint[] {
   const points: RingPoint[] = [];
-  let current = from;
+  let current: RingPoint = from;
   let guard = 0;
-  const corridor = Math.max(context.corridor, context.maxJump);
 
   while (distance3(current, to) > context.maxJump && guard++ < 4000) {
     const remaining = distance3(current, to);
@@ -807,7 +1061,7 @@ function bridgeSegment(
       const toGoal = distance3(candidate, to);
       if (toGoal >= remaining - 0.5) continue;
       const lateral = distanceToSegment(candidate, from, to);
-      if (lateral > corridor) continue;
+      if (lateral > context.corridor) continue;
       if (toGoal < bestRemaining - 0.5 || (toGoal <= bestRemaining + 0.5 && lateral < bestLateral)) {
         best = candidate;
         bestRemaining = toGoal;
@@ -822,36 +1076,22 @@ function bridgeSegment(
       continue;
     }
 
-    // Расчётная точка: идём по прямой на один максимальный прыжок.
-    const ratio = context.maxJump / remaining;
+    // Расчётная точка. Остаток между `syntheticStep` и `2·syntheticStep` делим
+    // пополам, чтобы последний прыжок не получился крошечным.
+    const hop = remaining > 2 * context.syntheticStep ? context.syntheticStep : remaining / 2;
+    const ratio = hop / remaining;
     const synthetic: RingPoint = {
-      name: `RING TRIANGULATED ${context.syntheticCounter.next()} `,
+      name: `RING TRIANGULATED ${context.syntheticCounter.next()}`,
       x: current.x + (to.x - current.x) * ratio,
       y: current.y + (to.y - current.y) * ratio,
       z: current.z + (to.z - current.z) * ratio,
       source: 'triangulated',
     };
-    synthetic.name = synthetic.name.trim();
     points.push(synthetic);
     current = synthetic;
   }
 
   return points;
-}
-
-/**
- * Бюджет внешних запросов, общий на шаг поиска. Передаётся объектом намеренно:
- * вызовы внутри шага вычитают израсходованное, и лимит реально ограничивает
- * сеть, а не только выглядит как ограничение.
- */
-export interface RingBudget {
-  edsm: number;
-  spansh: number;
-}
-
-export interface BridgeOptions {
-  maxJump?: number;
-  corridor?: number;
 }
 
 /**
@@ -865,71 +1105,130 @@ export function bridgeWithSystems(
   from: RingPoint,
   to: RingPoint,
   pool: RingPoint[],
-  options: BridgeOptions = {},
+  options: { maxJump?: number; corridor?: number; syntheticStep?: number } = {},
 ): RingPoint[] {
   let counter = 0;
+  const maxJump = options.maxJump ?? MAX_JUMP;
   return bridgeSegment(from, to, pool, new Set([from.name.toLowerCase()]), {
-    maxJump: options.maxJump ?? MAX_JUMP,
-    corridor: options.corridor ?? 60,
-    catalogReady: false,
-    catalogBudget: 0,
-    systemsFound: 0,
+    maxJump,
+    corridor: options.corridor ?? ROUTE_CORRIDOR,
+    syntheticStep: options.syntheticStep ?? Math.min(maxJump, SYNTHETIC_STEP),
     syntheticCounter: { next: () => ++counter },
   });
 }
 
 /**
- * Кандидаты для моста: системы из кэша/каталога в коридоре вокруг отрезка.
- * Каталог опрашиваем точечно и с бюджетом — только когда кэша не хватает.
+ * Пул систем для одного сегмента: каталог (ближайшие к середине отрезка) и
+ * кэш. Пул ограничен коридором и допуском отклонения, поэтому его размер не
+ * зависит от радиуса поиска.
  */
-async function collectBridgePool(
-  from: RingPoint,
-  to: RingPoint,
-  cached: RingPoint[],
-  context: BridgeContext,
+async function collectSegmentPool(
+  from: XYZ,
+  to: XYZ,
+  options: { catalogReady: boolean; deadline: number; center: XYZ; ringRadius: number; approach: boolean },
 ): Promise<RingPoint[]> {
   const length = distance3(from, to);
-  const corridor = Math.max(context.corridor, context.maxJump) * 2;
   const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2 };
-  const reach = length / 2 + corridor;
+  const half = length / 2 + ROUTE_CORRIDOR + 1;
+  const byName = new Map<string, RingPoint>();
 
-  let pool = cached.filter((system) => distanceToSegment(system, from, to) <= corridor);
-
-  if (context.catalogReady && context.catalogBudget > 0) {
-    // Дополнительно спрашиваем каталог, если в коридоре мало систем: именно это
-    // позволяет заменить триангуляцию реальными системами.
-    const samples = Math.max(1, Math.min(3, Math.ceil(length / Math.max(context.corridor, 50))));
-    const byName = new Map(pool.map((system) => [system.name.toLowerCase(), system]));
-    for (let index = 0; index < samples; index++) {
-      if (context.catalogBudget <= 0) break;
-      const t = samples === 1 ? 0.5 : (index + 0.5) / samples;
-      const sample = {
-        x: from.x + (to.x - from.x) * t,
-        y: from.y + (to.y - from.y) * t,
-        z: from.z + (to.z - from.z) * t,
-      };
-      context.catalogBudget--;
-      try {
-        const rows = await findSystemsInCube({
-          ...sample,
-          half: Math.min(Math.max(reach / samples, context.maxJump * 4), 800),
-          limit: 400,
-        });
-        context.systemsFound += rows.length;
-        for (const row of rows) {
-          if (distanceToSegment(row, from, to) > corridor) continue;
-          byName.set(row.name.toLowerCase(), { name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
-        }
-      } catch (error: any) {
-        console.warn('[ring] каталог не ответил при сборке моста:', error?.message);
-        break;
-      }
-    }
-    pool = Array.from(byName.values());
+  if (options.catalogReady && Date.now() < options.deadline) {
+    const rows = await withTimeout(
+      findSystemsInCube({ ...mid, half, limit: SEGMENT_POOL_LIMIT }).catch(() => [] as Array<{ name: string; x: number; y: number; z: number }>),
+      DB_TIMEOUT_MS,
+      [] as Array<{ name: string; x: number; y: number; z: number }>,
+    );
+    for (const row of rows) byName.set(row.name.toLowerCase(), { name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
   }
 
-  // Отсекаем далёкие системы: дальний хвост только замедляет перебор.
-  return pool.filter((system) => distance3(system, mid) <= reach + context.maxJump * 2);
+  const cached = await withTimeout(
+    listCachedSystemsNear(mid, half, SEGMENT_POOL_LIMIT).catch(() => [] as CachedSystem[]),
+    DB_TIMEOUT_MS,
+    [] as CachedSystem[],
+  );
+  for (const row of cached) {
+    const key = row.name.toLowerCase();
+    if (!byName.has(key)) byName.set(key, { name: row.name, x: row.x, y: row.y, z: row.z, source: 'cache' });
+  }
+
+  // Участок подхода от старта лежит вне окружности (старт может быть сдвинут),
+  // поэтому там отклонение от кольца не ограничиваем — только коридор отрезка.
+  return Array.from(byName.values()).filter((point) =>
+    distanceToSegment(point, from, to) <= ROUTE_CORRIDOR
+    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= ANCHOR_DEVIATION_LIMIT));
+}
+
+/**
+ * Проверка итогового маршрута по трём требованиям кольца. `approach` помечает
+ * точки подхода от старта и возврата к нему: старт не обязан лежать на
+ * окружности, поэтому эти участки не проверяются на отклонение, но
+ * прыжки проверяются везде.
+ */
+export function validateRingRoute(input: {
+  route: RingPoint[];
+  approach: boolean[];
+  center: XYZ;
+  ringRadius: number;
+  start: XYZ;
+}): RingValidation {
+  const { route, approach, center, ringRadius, start } = input;
+
+  let maxJump = 0;
+  let jumpViolations = 0;
+  for (let index = 1; index < route.length; index++) {
+    const jump = distance3(route[index - 1], route[index]);
+    maxJump = Math.max(maxJump, jump);
+    if (jump > MAX_JUMP + 1e-6) jumpViolations++;
+  }
+
+  const anchors = route.filter((point) => point.isAnchor);
+  const spacings: number[] = [];
+  for (let index = 1; index < anchors.length; index++) {
+    spacings.push(distance3(anchors[index - 1], anchors[index]));
+  }
+  const spacingMin = spacings.length ? Math.min(...spacings) : 0;
+  const spacingMax = spacings.length ? Math.max(...spacings) : 0;
+  const spacingAvg = spacings.length ? spacings.reduce((sum, value) => sum + value, 0) / spacings.length : 0;
+  const spacingViolations = spacings.filter((value) => value > ANCHOR_SPACING_LIMIT + 1e-6).length;
+  const spacingOutside = spacings.filter((value) => value < ANCHOR_SPACING_MIN || value > ANCHOR_SPACING_MAX).length;
+
+  const anchorDeviations = anchors.map((anchor) => ringDeviation(anchor, center, ringRadius));
+  const anchorDeviationMax = anchorDeviations.length ? Math.max(...anchorDeviations) : 0;
+  const anchorDeviationAvg = anchorDeviations.length
+    ? anchorDeviations.reduce((sum, value) => sum + value, 0) / anchorDeviations.length
+    : 0;
+
+  let routeDeviationMax = 0;
+  let deviationViolations = 0;
+  route.forEach((point, index) => {
+    if (approach[index]) return;
+    const deviation = ringDeviation(point, center, ringRadius);
+    routeDeviationMax = Math.max(routeDeviationMax, deviation);
+    if (deviation > ANCHOR_DEVIATION_LIMIT + 1e-6) deviationViolations++;
+  });
+
+  const startOffset = ringDeviation(start, center, ringRadius);
+  const withinSpec = jumpViolations === 0
+    && spacingViolations === 0
+    && anchorDeviationMax <= ANCHOR_DEVIATION_LIMIT + 1e-6
+    && deviationViolations === 0;
+
+  const round1 = (value: number) => Math.round(value * 10) / 10;
+  return {
+    maxJump: Math.round(maxJump * 1000) / 1000,
+    jumpViolations,
+    anchorSpacingMin: round1(spacingMin),
+    anchorSpacingMax: round1(spacingMax),
+    anchorSpacingAvg: round1(spacingAvg),
+    anchorSpacingViolations: spacingViolations,
+    anchorSpacingOutside: spacingOutside,
+    anchorDeviationMax: round1(anchorDeviationMax),
+    anchorDeviationAvg: round1(anchorDeviationAvg),
+    routeDeviationMax: round1(routeDeviationMax),
+    deviationViolations,
+    startOffset: round1(startOffset),
+    withinSpec,
+  };
 }
 
 /** Сессия, у которой пройдены все сегменты, превращается в замкнутый маршрут. */
@@ -942,28 +1241,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
 
   const stats: RingStats = { ...session.stats };
   const catalogReady = await isCatalogReady();
-
-  // Пул реальных систем: всё, что кэш накопил в габаритном боксе кольца. После
-  // шага сканирования здесь лежат именно системы, найденные для этого кольца.
-  const half = session.ringRadius + session.searchRadius * 4 + Math.max(session.searchRadius * 4, 200);
-  const cachedRows = await listCachedSystemsInBox(boxAround(session.center, half), FINALIZE_POOL_LIMIT).catch(() => []);
-  const cached: RingPoint[] = cachedRows.map((row) => ({
-    name: row.name,
-    x: row.x,
-    y: row.y,
-    z: row.z,
-    source: (row.source === 'catalog' ? 'catalog' : 'cache') as RingSource,
-  }));
-
-  let syntheticCounter = 0;
-  const context: BridgeContext = {
-    maxJump: MAX_JUMP,
-    corridor: Math.max(session.searchRadius, 30),
-    catalogReady,
-    catalogBudget: FINALIZE_CATALOG_BUDGET,
-    systemsFound: 0,
-    syntheticCounter: { next: () => ++syntheticCounter },
-  };
+  const deadline = Date.now() + FINALIZE_TIME_BUDGET_MS;
 
   const anchors: RingPoint[] = session.anchors.map((anchor) => ({
     name: anchor.name,
@@ -971,69 +1249,93 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     y: anchor.y,
     z: anchor.z,
     source: anchor.source,
+    isAnchor: true,
   }));
+  const start: RingPoint = { ...session.start, source: 'start' };
 
   // Замкнутое кольцо: начальная система — первая и последняя точка.
-  const sequence: RingPoint[] = [
-    { ...session.start, source: 'start' },
-    ...anchors,
-    { ...session.start, source: 'start' },
-  ];
+  const sequence: RingPoint[] = [start, ...anchors, start];
 
-  const used = new Set<string>();
+  // Опоры и сам старт в мост не встраиваем: старт уже стоит в начале и в конце.
+  const used = new Set<string>([start.name.toLowerCase()]);
   for (const anchor of anchors) {
     if (anchor.source !== 'triangulated') used.add(anchor.name.toLowerCase());
   }
 
+  // Пулы считаем заранее и параллельно: сборка моста последовательна (общий `used`).
+  const lastSegment = sequence.length - 2;
+  const segments: number[] = [];
+  for (let index = 0; index < sequence.length - 1; index++) {
+    if (distance3(sequence[index], sequence[index + 1]) > MAX_JUMP) segments.push(index);
+  }
+  const pools = await mapConcurrent(segments, FINALIZE_CONCURRENCY, (index) => collectSegmentPool(
+    sequence[index],
+    sequence[index + 1],
+    {
+      catalogReady,
+      deadline,
+      center: session.center,
+      ringRadius: session.ringRadius,
+      approach: index === 0 || index === lastSegment,
+    },
+  ));
+  const poolBySegment = new Map<number, RingPoint[]>();
+  segments.forEach((index, position) => poolBySegment.set(index, pools[position]));
+
+  let syntheticCounter = 0;
+  const context: BridgeContext = {
+    maxJump: MAX_JUMP,
+    corridor: ROUTE_CORRIDOR,
+    syntheticStep: SYNTHETIC_STEP,
+    syntheticCounter: { next: () => ++syntheticCounter },
+  };
+
   const route: RingPoint[] = [sequence[0]];
+  const approach: boolean[] = [true];
   for (let index = 0; index < sequence.length - 1; index++) {
     const from = sequence[index];
     const to = sequence[index + 1];
+    const touchesStart = index === 0 || index === lastSegment;
     if (distance3(from, to) <= MAX_JUMP) {
       route.push(to);
+      approach.push(touchesStart);
       continue;
     }
-    const pool = await collectBridgePool(from, to, cached, context);
-    const bridge = bridgeSegment(from, to, pool, used, context);
-    for (const point of bridge) route.push(point);
+    const bridge = bridgeSegment(from, to, poolBySegment.get(index) || [], used, context);
+    for (const point of bridge) {
+      route.push(point);
+      approach.push(touchesStart);
+    }
     route.push(to);
+    approach.push(touchesStart);
   }
 
-  // Итоговая статистика: сколько точек реальные, сколько расчётных.
-  // Дубли убираем только внутри маршрута: замыкающая точка (старт) должна
-  // остаться последней, иначе кольцо перестаёт быть замкнутым.
+  // Убираем только идущие подряд совпадающие точки: они не меняют прыжков.
   const deduped: RingPoint[] = [];
-  const seen = new Set<string>();
-  const routeKey = (point: RingPoint) =>
-    `${point.name.toLowerCase()}|${point.x.toFixed(3)}|${point.y.toFixed(3)}|${point.z.toFixed(3)}`;
+  const dedupedApproach: boolean[] = [];
   route.forEach((point, index) => {
-    const isLast = index === route.length - 1;
-    const key = routeKey(point);
-    if (!isLast && seen.has(key)) return;
-    seen.add(key);
+    const previous = deduped[deduped.length - 1];
+    if (previous && distance3(previous, point) < 1e-9 && previous.name === point.name) return;
     deduped.push(point);
+    dedupedApproach.push(approach[index]);
   });
 
   const syntheticPoints = deduped.filter((point) => point.source === 'triangulated').length;
   stats.syntheticPoints = syntheticPoints;
   stats.realPoints = deduped.length - syntheticPoints;
-  stats.bridgeCatalogRequests = FINALIZE_CATALOG_BUDGET - context.catalogBudget;
-  stats.systemsFound = Math.max(stats.systemsFound, context.systemsFound);
+  stats.bridgeCatalogRequests = segments.length;
 
-  const deviations = session.anchors.map((anchor) => anchor.deviation).filter((value) => Number.isFinite(value));
+  const validation = validateRingRoute({
+    route: deduped,
+    approach: dedupedApproach,
+    center: session.center,
+    ringRadius: session.ringRadius,
+    start,
+  });
+
+  const deviations = anchors.map((anchor) => ringDeviation(anchor, session.center, session.ringRadius));
   const deviationAvg = deviations.length > 0 ? deviations.reduce((sum, value) => sum + value, 0) / deviations.length : 0;
   const deviationMax = deviations.length > 0 ? Math.max(...deviations) : 0;
-
-  // Сохраняем найденное: и в кэш систем, и в саму сессию.
-  const toSave = [...cached.filter((system) => system.source !== 'cache'), ...deduped.filter((point) => point.source !== 'triangulated')];
-  const saved = await saveCachedSystems(toSave.map((point) => ({
-    name: point.name,
-    x: point.x,
-    y: point.y,
-    z: point.z,
-    source: point.source || 'cache',
-  }))).catch(() => 0);
-  stats.systemsSaved += saved;
 
   const result: RingResult = {
     sessionId,
@@ -1049,10 +1351,11 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
       syntheticPoints,
       anchors: anchors.length,
       triangulatedAnchors: anchors.filter((anchor) => anchor.source === 'triangulated').length,
-      discovered: cachedRows.length,
+      discovered: stats.systemsFound,
       deviationAvg: Math.round(deviationAvg * 10) / 10,
       deviationMax: Math.round(deviationMax * 10) / 10,
     },
+    validation,
     stats,
   };
 
@@ -1092,4 +1395,10 @@ export function routeIsClosed(route: RingPoint[]): boolean {
   const first = route[0];
   const last = route[route.length - 1];
   return distance3(first, last) < 0.001;
+}
+
+/** Бюджет внешних запросов, общий на шаг поиска. */
+export interface RingBudget {
+  edsm: number;
+  spansh: number;
 }
