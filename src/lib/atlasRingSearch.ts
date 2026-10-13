@@ -25,8 +25,14 @@
  *      реальных систем с отклонением ≤ 100 и шагом 480–490 от предыдущей опоры.
  *      Если подходящих систем нет — расчётная опора на окружности нужного шага.
  *   3. Финализация: пул систем берётся по каждому сегменту отдельно (пачками,
- *      параллельно), коридор фиксирован допуском отклонения, а не радиусом поиска.
- *   4. Итоговый маршрут проверяется по всем трём требованиям и отдаёт статистику.
+ *      параллельно). Если ближайшие системы куба не покрывают хорду, сегмент
+ *      делится и запрашивается снова — иначе в плотном районе пул сбивается
+ *      к середине, а концы закрываются расчётом. Коридор моста шире допуска
+ *      отклонения: хорда между смещёнными опорами не должна прятать системы,
+ *      которые всё ещё лежат на оси кольца.
+ *   4. Мост идёт по связным островам реальных систем. Расчётная точка ставится
+ *      только в разрыве и наводится на следующую реальную систему, а не в пустоту
+ *      по прямой. Итог проверяется по всем трём требованиям и отдаёт статистику.
  */
 
 // Явные расширения нужны для `node --test`.
@@ -53,8 +59,13 @@ export const ANCHOR_SPACING_LIMIT = 500;
 /** Отклонение от окружности кольца: предпочтительно до 50, допуск до 100 св.л. */
 export const ANCHOR_DEVIATION_PREFERRED = 50;
 export const ANCHOR_DEVIATION_LIMIT = 100;
-/** Коридор моста между опорами совпадает с допуском отклонения от кольца. */
-export const ROUTE_CORRIDOR = ANCHOR_DEVIATION_LIMIT;
+/**
+ * Коридор моста между опорами. Шире допуска отклонения: когда опоры смещены
+ * от окружности, хорда уходит в сторону, и системы на оси кольца оказываются
+ * дальше 100 св.л. от прямой, хотя сами в допуске. Допуск 100 для точек
+ * кольца проверяется отдельно и коридором не подменяется.
+ */
+export const ROUTE_CORRIDOR = 150;
 /** Шаг расчётной точки чуть короче прыжка: запас на округление координат. */
 const SYNTHETIC_STEP = MAX_JUMP - 0.005;
 
@@ -85,10 +96,24 @@ const SPANSH_TIMEOUT_MS = 5000;
 
 /** Максимум систем, которые берём вокруг одной опорной точки. */
 const SECTOR_CACHE_LIMIT = 600;
-/** Пул систем одного сегмента маршрута (ближайшие к середине отрезка). */
-const SEGMENT_POOL_LIMIT = 2000;
+/**
+ * Сколько систем запрашиваем вокруг одной точки сегмента.
+ *
+ * RPC `galaxy_systems_near` и кэш отдают не больше 2000 ближайших. Больший
+ * лимит ничего не добавляет и всё равно собирает системы у центра куба:
+ * в плотном районе концы хорды остаются пустыми, и мост их триангулирует,
+ * хотя системы там есть. Если ответ упёрся в потолок, сегмент делится вдоль
+ * хорды и запрашивается снова — слитый пул тогда покрывает весь отрезок.
+ */
+const SEGMENT_QUERY_LIMIT = 2000;
+/** Сколько проб каталога/кэша можно сделать на один сегмент, пока не вышел бюджет. */
+const SEGMENT_QUERY_BUDGET = 15;
+/** Короче этого (вдоль хорды) делить пробу уже нет смысла: это пара прыжков. */
+const SEGMENT_MIN_SPAN = 40;
 /** Сколько точек сегмента отдаём клиенту для отрисовки на карте. */
 const STEP_FOUND_SAMPLE = 400;
+/** Не отдаём мосту десятки тысяч систем: лишние отсекаются равномерно вдоль хорды. */
+const BRIDGE_POOL_CAP = 8000;
 
 const EDSM_UA = 'ED-Ring-Colony/1.0 (galactic-ring-route)';
 
@@ -132,6 +157,8 @@ export interface RingStats {
   syntheticPoints: number;
   realPoints: number;
   bridgeCatalogRequests: number;
+  /** Сегменты моста, где пришлось вставить расчётные точки. */
+  triangulatedSegments: number;
 }
 
 export interface RingPlan {
@@ -221,6 +248,7 @@ const EMPTY_STATS: RingStats = {
   syntheticPoints: 0,
   realPoints: 0,
   bridgeCatalogRequests: 0,
+  triangulatedSegments: 0,
 };
 
 export function distance3(a: XYZ, b: XYZ): number {
@@ -772,6 +800,8 @@ interface AnchorGeometry {
   searchRadius: number;
   /** Предыдущая опора кольца (не старт): от неё считается шаг 480–490. */
   previous: XYZ | null;
+  /** Первая опора — только на последнем сегменте, чтобы кольцо замкнулось в пределах 500. */
+  closing: XYZ | null;
   usedNames: Set<string>;
 }
 
@@ -787,13 +817,16 @@ export interface AnchorCandidate {
 /**
  * Выбор опоры среди реальных систем сегмента. Жёсткие отсечки: отклонение от
  * окружности не больше 100 и шаг от предыдущей опоры не больше 500. Внутри
- * допустимых — приоритет: отклонение ≤ 50 и шаг 480–490, затем близость к цели.
+ * допустимых — приоритет: отклонение ≤ 50 и шаг 480–490, затем близость шага
+ * к 485, затем близость к цели сектора.
  */
 export function chooseAnchor(input: {
   target: XYZ;
   center: XYZ;
   ringRadius: number;
   previous: XYZ | null;
+  /** Первая опора кольца: последний сегмент не должен оставить замыкающий шаг больше 500. */
+  closing?: XYZ | null;
   candidates: RingPoint[];
   used: Set<string>;
 }): AnchorCandidate | null {
@@ -805,54 +838,55 @@ export function chooseAnchor(input: {
     if (deviation > ANCHOR_DEVIATION_LIMIT) continue;
     const spacing = input.previous ? distance3(system, input.previous) : null;
     if (spacing !== null && (spacing > ANCHOR_SPACING_LIMIT || spacing < 1)) continue;
+    const closingSpacing = input.closing ? distance3(system, input.closing) : null;
+    // Ту же систему, что и первая опора, не берём. Шаг замыкания больше 500 не
+    // отсекает кандидата: иначе последняя опора уезжает на расчётную точку и
+    // рвёт шаг от предыдущей. Штраф ниже всё равно тянет замыкание к 485.
+    if (closingSpacing !== null && closingSpacing < 1) continue;
     const spacingOk = spacing === null || (spacing >= ANCHOR_SPACING_MIN && spacing <= ANCHOR_SPACING_MAX);
     const tier = (deviation > ANCHOR_DEVIATION_PREFERRED ? 1 : 0) + (spacingOk ? 0 : 2);
     // Внутри класса — шаг ближе к 485 св.л., затем близость к цели сегмента.
+    // Шаг важнее: иначе опоры разъезжаются, и 80% промежутков выпадают из 480–490.
     const spacingPenalty = spacing === null ? 0 : Math.abs(spacing - ANCHOR_SPACING_TARGET) * 1000;
-    const score = tier * 1e7 + spacingPenalty + distance3(system, input.target);
+    const closingPenalty = closingSpacing === null ? 0 : Math.abs(closingSpacing - ANCHOR_SPACING_TARGET);
+    const score = tier * 1e7 + spacingPenalty + closingPenalty + distance3(system, input.target);
     if (!best || score < best.score) best = { system, deviation, spacing, tier, score };
   }
   return best;
 }
 
-/** Расчётная опора: точка на окружности; если шаг от предыдущей опоры вне 480–490 — корректируем. */
+/**
+ * Расчётная опора: точка на окружности. Если шаг от предыдущей опоры вне
+ * 480–490, сдвигаем её по окружности к 485 (запасной предел — 499.95), чтобы
+ * промежуток не выпал из диапазона и не перешагнул 500. Замыкание на первую
+ * опору учитывается, только если не рвёт шаг от предыдущей.
+ */
 function triangulatedAnchorPosition(geometry: AnchorGeometry): XYZ {
-  const { target, previous, center, basis, ringRadius, angle } = geometry;
-  if (previous) {
-    const spacing = distance3(previous, target);
-    if (spacing < ANCHOR_SPACING_MIN || spacing > ANCHOR_SPACING_MAX) {
-      // Пробуем точку на окружности на шаге 485 (целевой)
-      let onCircle = ringPointAtDistance(center, basis, ringRadius, previous, angle, ANCHOR_SPACING_TARGET);
-      if (onCircle) return onCircle;
+  const { target, previous, closing, center, basis, ringRadius, angle } = geometry;
+  const onTarget = { x: target.x, y: target.y, z: target.z };
+  if (!previous) return onTarget;
 
-      // Если не удалось при 485, пробуем ближайшие значения: 490, 495, 500
-      // Это гарантирует, что шаг не превысит ANCHOR_SPACING_LIMIT
-      const fallbackDistances = [
-        ANCHOR_SPACING_MAX,
-        ANCHOR_SPACING_LIMIT - 5,
-        ANCHOR_SPACING_LIMIT,
-      ];
-      for (const tryDistance of fallbackDistances) {
-        onCircle = ringPointAtDistance(center, basis, ringRadius, previous, angle, tryDistance);
-        if (onCircle) return onCircle;
-      }
+  const spacing = distance3(previous, onTarget);
+  const closingOk = !closing || distance3(onTarget, closing) <= ANCHOR_SPACING_LIMIT;
+  if (spacing >= ANCHOR_SPACING_MIN && spacing <= ANCHOR_SPACING_MAX && closingOk) return onTarget;
 
-      // Если все попытки не удались, stil на окружности ближайшей к цели,
-      // но проверяем, что шаг не превышает лимит.
-      if (spacing > ANCHOR_SPACING_LIMIT) {
-        // Предыдущая опора слишком далеко — ищем проекцию на окружность
-        // ближайшую к target, но не дальше 500 от previous.
-        const projectionOnCircle = ringPointAtAngle(center, basis, ringRadius, angle);
-        const projSpacing = distance3(previous, projectionOnCircle);
-        if (projSpacing <= ANCHOR_SPACING_LIMIT) {
-          return projectionOnCircle;
-        }
-        // Если даже проекция далеко, возвращаем target — но это может нарушить требования.
-        // В этом случае маршрут может быть с нарушениями, что видно в валидации.
-      }
-    }
+  // Вне 480–490 (или дальше 500 от первой опоры) ставим точку на окружности
+  // с нужным шагом, ближайшую к углу сектора. 499.95, а не ровно 500: иначе
+  // округление выталкивает шаг за жёсткий предел. Замыкание не имеет права
+  // отодвинуть точку так, что шаг от предыдущей опоры станет больше 500.
+  const safe = ANCHOR_SPACING_LIMIT - 0.05;
+  const pull = (distance: number) => ringPointAtDistance(center, basis, ringRadius, previous, angle, distance);
+  for (const distance of [ANCHOR_SPACING_TARGET, ANCHOR_SPACING_MAX, safe]) {
+    const point = pull(distance);
+    if (!point || distance3(point, previous) > ANCHOR_SPACING_LIMIT) continue;
+    if (closing && distance3(point, closing) > ANCHOR_SPACING_LIMIT) continue;
+    return point;
   }
-  return { x: target.x, y: target.y, z: target.z };
+  for (const distance of [ANCHOR_SPACING_TARGET, ANCHOR_SPACING_MAX, safe]) {
+    const point = pull(distance);
+    if (point && distance3(point, previous) <= ANCHOR_SPACING_LIMIT) return point;
+  }
+  return onTarget;
 }
 
 interface PickedAnchor {
@@ -895,6 +929,7 @@ async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promi
       center: geometry.center,
       ringRadius: geometry.ringRadius,
       previous: geometry.previous,
+      closing: geometry.closing,
       candidates: resolution.systems,
       used: geometry.usedNames,
     });
@@ -994,6 +1029,9 @@ export async function stepRingSession(
         ringRadius: session.ringRadius,
         searchRadius: session.searchRadius,
         previous: previousAnchor ? { x: previousAnchor.x, y: previousAnchor.y, z: previousAnchor.z } : null,
+        closing: sector === session.sectors - 1 && anchors.length > 0
+          ? { x: anchors[0].x, y: anchors[0].y, z: anchors[0].z }
+          : null,
         usedNames,
       },
       { catalogReady, budget, memoryPool, deadline },
@@ -1090,12 +1128,241 @@ interface BridgeContext {
   syntheticStep: number;
   /** Сквозная нумерация расчётных точек: имена должны быть уникальны. */
   syntheticCounter: { next: () => number };
+  /**
+   * Если задано, расчётная точка, вылезшая из допуска отклонения, подтягивается
+   * к оси кольца. Для подхода к старту не используется: старт не на окружности.
+   */
+  ring: { center: XYZ; radius: number; limit: number } | null;
+}
+
+interface SpatialGrid {
+  cell: number;
+  buckets: Map<string, RingPoint[]>;
+}
+
+function buildSpatialGrid(points: RingPoint[], cell: number): SpatialGrid {
+  const buckets = new Map<string, RingPoint[]>();
+  for (const point of points) {
+    const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)},${Math.floor(point.z / cell)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(point);
+    else buckets.set(key, [point]);
+  }
+  return { cell, buckets };
+}
+
+function queryGrid(grid: SpatialGrid, origin: XYZ, radius: number): RingPoint[] {
+  const { cell, buckets } = grid;
+  const x0 = Math.floor((origin.x - radius) / cell);
+  const x1 = Math.floor((origin.x + radius) / cell);
+  const y0 = Math.floor((origin.y - radius) / cell);
+  const y1 = Math.floor((origin.y + radius) / cell);
+  const z0 = Math.floor((origin.z - radius) / cell);
+  const z1 = Math.floor((origin.z + radius) / cell);
+  const radiusSquared = radius * radius + 1e-6;
+  const found: RingPoint[] = [];
+  for (let ix = x0; ix <= x1; ix++) {
+    for (let iy = y0; iy <= y1; iy++) {
+      for (let iz = z0; iz <= z1; iz++) {
+        const bucket = buckets.get(`${ix},${iy},${iz}`);
+        if (!bucket) continue;
+        for (const point of bucket) {
+          const dx = point.x - origin.x;
+          const dy = point.y - origin.y;
+          const dz = point.z - origin.z;
+          if (dx * dx + dy * dy + dz * dz <= radiusSquared) found.push(point);
+        }
+      }
+    }
+  }
+  return found;
 }
 
 /**
- * Цепочка реальных систем от `from` до `to`. Жадный проход: на каждом шаге
- * берём достижимую систему, которая сильнее всего приближает к цели и не
- * выходит из коридора маршрута. Расчётная точка — только если такой нет.
+ * Если пул раздулся делением проб, оставляем системы равномерно вдоль хорды,
+ * а не только самые близкие к середине: иначе концы снова закроются расчётом.
+ */
+function capPoolAlongSegment(pool: RingPoint[], from: XYZ, to: XYZ, cap: number): RingPoint[] {
+  if (pool.length <= cap) return pool;
+  const bins = 16;
+  const buckets: RingPoint[][] = Array.from({ length: bins }, () => []);
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const dz = to.z - from.z;
+  const lengthSquared = dx * dx + dy * dy + dz * dz || 1;
+  for (const point of pool) {
+    const t = ((point.x - from.x) * dx + (point.y - from.y) * dy + (point.z - from.z) * dz) / lengthSquared;
+    const bin = Math.max(0, Math.min(bins - 1, Math.floor(t * bins)));
+    buckets[bin].push(point);
+  }
+  const perBin = Math.ceil(cap / bins);
+  const kept: RingPoint[] = [];
+  for (const bucket of buckets) {
+    bucket.sort((left, right) => distanceToSegment(left, from, to) - distanceToSegment(right, from, to));
+    kept.push(...bucket.slice(0, perBin));
+  }
+  return kept;
+}
+
+/** Подтянуть точку к оси кольца, не выходя за допуск отклонения. */
+function clampToDeviation(point: RingPoint, center: XYZ, ringRadius: number, limit: number): RingPoint {
+  const deviation = ringDeviation(point, center, ringRadius);
+  if (deviation <= limit || deviation < 1e-9) return point;
+  const dx = point.x - center.x;
+  const dz = point.z - center.z;
+  const horizontal = Math.hypot(dx, dz);
+  const y = point.y - center.y;
+  const scale = limit / deviation;
+  const newHorizontal = ringRadius + (horizontal - ringRadius) * scale;
+  const nx = horizontal > 1e-9 ? dx / horizontal : 1;
+  const nz = horizontal > 1e-9 ? dz / horizontal : 0;
+  return {
+    ...point,
+    x: center.x + nx * (horizontal > 1e-9 ? newHorizontal : ringRadius),
+    y: center.y + y * scale,
+    z: center.z + nz * (horizontal > 1e-9 ? newHorizontal : 0),
+  };
+}
+
+function syntheticToward(current: XYZ, aim: XYZ, context: BridgeContext, clamp: boolean): RingPoint {
+  const remaining = distance3(current, aim);
+  let hop: number;
+  if (remaining > 2 * context.syntheticStep) {
+    hop = context.syntheticStep;
+  } else {
+    const parts = Math.max(1, Math.ceil(remaining / context.maxJump));
+    hop = remaining / parts;
+  }
+  hop = Math.min(hop, context.maxJump, remaining);
+  const ratio = remaining > 1e-12 ? hop / remaining : 0;
+  let synthetic: RingPoint = {
+    name: `RING TRIANGULATED ${context.syntheticCounter.next()}`,
+    x: current.x + (aim.x - current.x) * ratio,
+    y: current.y + (aim.y - current.y) * ratio,
+    z: current.z + (aim.z - current.z) * ratio,
+    source: 'triangulated',
+  };
+  if (clamp && context.ring) {
+    const clamped = clampToDeviation(synthetic, context.ring.center, context.ring.radius, context.ring.limit);
+    if (distance3(current, clamped) <= context.maxJump + 1e-6) synthetic = clamped;
+  }
+  return synthetic;
+}
+
+function shortcutPath(origin: RingPoint, path: RingPoint[], maxJump: number): RingPoint[] {
+  if (path.length <= 1) return path;
+  const chain = [origin, ...path];
+  const kept: RingPoint[] = [];
+  let index = 0;
+  while (index < chain.length - 1) {
+    let farthest = index + 1;
+    for (let next = chain.length - 1; next > index + 1; next--) {
+      if (distance3(chain[index], chain[next]) <= maxJump) {
+        farthest = next;
+        break;
+      }
+    }
+    kept.push(chain[farthest]);
+    index = farthest;
+  }
+  return kept;
+}
+
+/**
+ * Связный остров реальных систем от `current`. Выход — система острова,
+ * ближайшая к цели: так тупик в одном прыжке не перекрывает цепочку, которая
+ * доводит дальше. Промежуточные точки острова можно срезать, если прыжок
+ * позволяет — колонизировать нужно системы, а не каждый короткий шаг.
+ */
+function takeIsland(
+  current: RingPoint,
+  to: XYZ,
+  grid: SpatialGrid,
+  used: Set<string>,
+  maxJump: number,
+): RingPoint[] {
+  const parent = new Map<RingPoint, RingPoint | null>();
+  const visited = new Set<string>();
+  parent.set(current, null);
+  visited.add(current.name.toLowerCase());
+
+  const queue: RingPoint[] = [current];
+  let head = 0;
+  let best: RingPoint | null = null;
+  let bestRemaining = distance3(current, to);
+
+  while (head < queue.length) {
+    const node = queue[head++];
+    for (const candidate of queryGrid(grid, node, maxJump)) {
+      const key = candidate.name.toLowerCase();
+      if (visited.has(key) || used.has(key)) continue;
+      const step = distance3(node, candidate);
+      if (step > maxJump || step < 0.001) continue;
+      visited.add(key);
+      parent.set(candidate, node);
+      queue.push(candidate);
+      const toGoal = distance3(candidate, to);
+      if (toGoal < bestRemaining - 1e-3) {
+        best = candidate;
+        bestRemaining = toGoal;
+      }
+    }
+  }
+  if (!best) return [];
+
+  const path: RingPoint[] = [];
+  let cursor: RingPoint | null = best;
+  while (cursor && cursor !== current) {
+    path.push(cursor);
+    cursor = parent.get(cursor) ?? null;
+  }
+  path.reverse();
+  return shortcutPath(current, path, maxJump);
+}
+
+/**
+ * Ближайшая реальная система впереди, до которой не дотягивается один прыжок.
+ * Расчётный шаг наводится на неё, а не на пустую прямую к цели: иначе система
+ * в коридоре, но чуть в стороне от хорды, остаётся за бортом.
+ */
+function findSteerTarget(
+  current: XYZ,
+  to: XYZ,
+  grid: SpatialGrid,
+  used: Set<string>,
+  maxJump: number,
+  steerReach: number,
+  remaining: number,
+): RingPoint | null {
+  const candidates = queryGrid(grid, current, Math.min(steerReach, Math.max(maxJump, remaining)));
+  let best: RingPoint | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    if (used.has(candidate.name.toLowerCase())) continue;
+    const gap = distance3(current, candidate);
+    if (gap <= maxJump || gap < 0.001) continue;
+    const toGoal = distance3(candidate, to);
+    if (toGoal >= remaining - 1) continue;
+    const hops = Math.ceil(gap / maxJump);
+    const score = hops * 1e6 + toGoal;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Цепочка реальных систем от `from` до `to`. Сами концы в цепочку не входят.
+ *
+ * Приоритет: реальные системы (каталог, кэш, EDSM, Spansh) важнее расчётных точек.
+ * Сначала забираем весь остров систем, достижимых прыжком не длиннее maxJump
+ * внутри коридора, и выходим из него там, где ближе к цели. Расчётная точка —
+ * только если такого острова нет, и ставится она по направлению к следующей
+ * реальной системе, а не в пустоту. Если подходящих систем в коридоре нет,
+ * участок триангулируется. Это нормально: галактика не полностью исследована,
+ * и позже открытые системы попадут в зону поиска — маршрут можно собрать заново.
  */
 function bridgeSegment(
   from: RingPoint,
@@ -1103,63 +1370,65 @@ function bridgeSegment(
   pool: RingPoint[],
   used: Set<string>,
   context: BridgeContext,
+  clampDeviation = false,
 ): RingPoint[] {
   const points: RingPoint[] = [];
+  const maxJump = context.maxJump;
+  const fromKey = from.name.toLowerCase();
+  const toKey = to.name.toLowerCase();
+  const eligible: RingPoint[] = [];
+  for (const candidate of pool) {
+    if (!candidate.name) continue;
+    const key = candidate.name.toLowerCase();
+    if (key === fromKey || key === toKey || used.has(key)) continue;
+    if (distanceToSegment(candidate, from, to) > context.corridor) continue;
+    eligible.push(candidate);
+  }
+  const grid = buildSpatialGrid(
+    capPoolAlongSegment(eligible, from, to, BRIDGE_POOL_CAP),
+    maxJump,
+  );
+  const steerReach = Math.max(maxJump * 2, context.corridor + maxJump);
+
   let current: RingPoint = from;
   let guard = 0;
-
-  while (distance3(current, to) > context.maxJump && guard++ < 4000) {
+  while (distance3(current, to) > maxJump && guard++ < 12000) {
     const remaining = distance3(current, to);
-    let best: RingPoint | null = null;
-    let bestRemaining = remaining;
-    let bestLateral = Number.POSITIVE_INFINITY;
-
-    for (const candidate of pool) {
-      const key = candidate.name.toLowerCase();
-      if (used.has(key)) continue;
-      const step = distance3(current, candidate);
-      if (step > context.maxJump || step < 0.001) continue;
-      const toGoal = distance3(candidate, to);
-      if (toGoal >= remaining - 0.5) continue;
-      const lateral = distanceToSegment(candidate, from, to);
-      if (lateral > context.corridor) continue;
-      if (toGoal < bestRemaining - 0.5 || (toGoal <= bestRemaining + 0.5 && lateral < bestLateral)) {
-        best = candidate;
-        bestRemaining = toGoal;
-        bestLateral = lateral;
+    const island = takeIsland(current, to, grid, used, maxJump);
+    if (island.length > 0) {
+      for (const step of island) {
+        used.add(step.name.toLowerCase());
+        points.push({
+          name: step.name,
+          x: step.x,
+          y: step.y,
+          z: step.z,
+          source: step.source || 'cache',
+        });
       }
-    }
-
-    if (best) {
-      used.add(best.name.toLowerCase());
-      points.push({ name: best.name, x: best.x, y: best.y, z: best.z, source: best.source || 'cache' });
-      current = best;
+      current = island[island.length - 1];
       continue;
     }
 
-    // Расчётная точка. Остаток между `syntheticStep` и `2·syntheticStep` делим
-    // пополам, чтобы последний прыжок не получился крошечным.
-    // Гарантируем, что hop никогда не превышает maxJump.
-    let hop: number;
-    if (remaining > 2 * context.syntheticStep) {
-      hop = context.syntheticStep;
-    } else {
-      // Последний участок: делим remaining на части, каждая ≤ maxJump
-      const parts = Math.ceil(remaining / context.maxJump);
-      hop = remaining / parts;
+    const steer = findSteerTarget(current, to, grid, used, maxJump, steerReach, remaining);
+    let synthetic = syntheticToward(current, steer ?? to, context, clampDeviation);
+    if (distance3(synthetic, to) >= remaining - 1e-6) {
+      synthetic = syntheticToward(current, to, context, clampDeviation);
     }
-    const ratio = hop / remaining;
-    const synthetic: RingPoint = {
-      name: `RING TRIANGULATED ${context.syntheticCounter.next()}`,
-      x: current.x + (to.x - current.x) * ratio,
-      y: current.y + (to.y - current.y) * ratio,
-      z: current.z + (to.z - current.z) * ratio,
-      source: 'triangulated',
-    };
+    if (distance3(synthetic, to) >= remaining - 1e-9) break;
     points.push(synthetic);
     current = synthetic;
   }
 
+  // Предохранитель: если поиск зациклился, добрать прямыми точками до цели.
+  let emergency = 0;
+  while (distance3(current, to) > maxJump && emergency++ < 8000) {
+    const remaining = distance3(current, to);
+    const synthetic = syntheticToward(current, to, context, clampDeviation);
+    if (distance3(synthetic, to) >= remaining - 1e-9) break;
+    points.push(synthetic);
+    current = synthetic;
+  }
   return points;
 }
 
@@ -1183,48 +1452,120 @@ export function bridgeWithSystems(
     corridor: options.corridor ?? ROUTE_CORRIDOR,
     syntheticStep: options.syntheticStep ?? Math.min(maxJump, SYNTHETIC_STEP),
     syntheticCounter: { next: () => ++counter },
+    ring: null,
   });
 }
 
+interface SegmentProbe {
+  x: number;
+  y: number;
+  z: number;
+  half: number;
+  /** Доля отрезка, которую закрывает проба: [t0, t1] ⊂ [0, 1]. */
+  t0: number;
+  t1: number;
+}
+
+function childProbes(from: XYZ, to: XYZ, probe: SegmentProbe): SegmentProbe[] {
+  const midT = (probe.t0 + probe.t1) / 2;
+  const span = distance3(from, to) * (probe.t1 - probe.t0);
+  const childHalf = span / 4 + ROUTE_CORRIDOR + 1;
+  const make = (t0: number, t1: number): SegmentProbe => {
+    const t = (t0 + t1) / 2;
+    return {
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t,
+      z: from.z + (to.z - from.z) * t,
+      half: childHalf,
+      t0,
+      t1,
+    };
+  };
+  return [make(probe.t0, midT), make(midT, probe.t1)];
+}
+
 /**
- * Пул систем для одного сегмента: каталог (ближайшие к середине отрезка) и
- * кэш. Пул ограничен коридором и допуском отклонения, поэтому его размер не
- * зависит от радиуса поиска.
+ * Пул систем для одного сегмента. Сначала одна проба на середину хорды. Если
+ * каталог или кэш упёрлись в потолок ближайших систем, проба делится вдоль
+ * отрезка: иначе в плотном районе 2000 систем сидят у середины, а концы
+ * моста триангулируются при живых системах рядом. Пул режется коридором и
+ * (кроме подхода к старту) допуском отклонения от кольца.
  */
 async function collectSegmentPool(
   from: XYZ,
   to: XYZ,
-  options: { catalogReady: boolean; deadline: number; center: XYZ; ringRadius: number; approach: boolean },
+  options: {
+    catalogReady: boolean;
+    deadline: number;
+    center: XYZ;
+    ringRadius: number;
+    approach: boolean;
+    queries?: { count: number };
+  },
 ): Promise<RingPoint[]> {
   const length = distance3(from, to);
-  const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2 };
-  const half = length / 2 + ROUTE_CORRIDOR + 1;
   const byName = new Map<string, RingPoint>();
-
-  if (options.catalogReady && Date.now() < options.deadline) {
-    const rows = await withTimeout(
-      findSystemsInCube({ ...mid, half, limit: SEGMENT_POOL_LIMIT }).catch(() => [] as Array<{ name: string; x: number; y: number; z: number }>),
-      DB_TIMEOUT_MS,
-      [] as Array<{ name: string; x: number; y: number; z: number }>,
-    );
-    for (const row of rows) byName.set(row.name.toLowerCase(), { name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
-  }
-
-  const cached = await withTimeout(
-    listCachedSystemsNear(mid, half, SEGMENT_POOL_LIMIT).catch(() => [] as CachedSystem[]),
-    DB_TIMEOUT_MS,
-    [] as CachedSystem[],
-  );
-  for (const row of cached) {
-    const key = row.name.toLowerCase();
-    if (!byName.has(key)) byName.set(key, { name: row.name, x: row.x, y: row.y, z: row.z, source: 'cache' });
-  }
-
-  // Участок подхода от старта лежит вне окружности (старт может быть сдвинут),
-  // поэтому там отклонение от кольца не ограничиваем — только коридор отрезка.
-  return Array.from(byName.values()).filter((point) =>
+  const accept = (point: XYZ) =>
     distanceToSegment(point, from, to) <= ROUTE_CORRIDOR
-    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= ANCHOR_DEVIATION_LIMIT));
+    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= ANCHOR_DEVIATION_LIMIT);
+
+  const queue: SegmentProbe[] = [{
+    x: (from.x + to.x) / 2,
+    y: (from.y + to.y) / 2,
+    z: (from.z + to.z) / 2,
+    half: length / 2 + ROUTE_CORRIDOR + 1,
+    t0: 0,
+    t1: 1,
+  }];
+  let queries = 0;
+
+  while (queue.length > 0 && queries < SEGMENT_QUERY_BUDGET && Date.now() < options.deadline) {
+    const probe = queue.shift()!;
+    queries++;
+    if (options.queries) options.queries.count++;
+
+    const catalogPromise = options.catalogReady
+      ? withTimeout(
+        findSystemsInCube({ x: probe.x, y: probe.y, z: probe.z, half: probe.half, limit: SEGMENT_QUERY_LIMIT })
+          .catch(() => [] as Array<{ name: string; x: number; y: number; z: number }>),
+        DB_TIMEOUT_MS,
+        [] as Array<{ name: string; x: number; y: number; z: number }>,
+      )
+      : Promise.resolve([] as Array<{ name: string; x: number; y: number; z: number }>);
+    // Кэш на дочерних пробах нужен, только если каталога нет: при полном каталоге
+    // деление и так добирает системы вдоль хорды, а лишний запрос на каждую пробу
+    // не укладывает сборку в бюджет.
+    const wantCache = !options.catalogReady || (probe.t0 === 0 && probe.t1 === 1);
+    const cachePromise = wantCache
+      ? withTimeout(
+        listCachedSystemsNear(probe, probe.half, SEGMENT_QUERY_LIMIT).catch(() => [] as CachedSystem[]),
+        DB_TIMEOUT_MS,
+        [] as CachedSystem[],
+      )
+      : Promise.resolve([] as CachedSystem[]);
+    const [catalogRows, cachedRows] = await Promise.all([catalogPromise, cachePromise]);
+
+    for (const row of catalogRows) {
+      if (!row.name || !accept(row)) continue;
+      const key = row.name.toLowerCase();
+      if (!byName.has(key)) byName.set(key, { name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
+    }
+    for (const row of cachedRows) {
+      const key = row.name.toLowerCase();
+      if (byName.has(key) || !accept(row)) continue;
+      byName.set(key, { name: row.name, x: row.x, y: row.y, z: row.z, source: 'cache' });
+    }
+
+    const saturated = options.catalogReady
+      ? catalogRows.length >= SEGMENT_QUERY_LIMIT
+      : cachedRows.length >= SEGMENT_QUERY_LIMIT;
+    const span = length * (probe.t1 - probe.t0);
+    if (saturated && span > SEGMENT_MIN_SPAN * 2 && queries < SEGMENT_QUERY_BUDGET) {
+      queue.push(...childProbes(from, to, probe));
+    }
+  }
+
+  return Array.from(byName.values());
 }
 
 /**
@@ -1337,6 +1678,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
   for (let index = 0; index < sequence.length - 1; index++) {
     if (distance3(sequence[index], sequence[index + 1]) > MAX_JUMP) segments.push(index);
   }
+  const poolQueries = { count: 0 };
   const pools = await mapConcurrent(segments, FINALIZE_CONCURRENCY, (index) => collectSegmentPool(
     sequence[index],
     sequence[index + 1],
@@ -1346,6 +1688,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
       center: session.center,
       ringRadius: session.ringRadius,
       approach: index === 0 || index === lastSegment,
+      queries: poolQueries,
     },
   ));
   const poolBySegment = new Map<number, RingPoint[]>();
@@ -1357,16 +1700,14 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     corridor: ROUTE_CORRIDOR,
     syntheticStep: SYNTHETIC_STEP,
     syntheticCounter: { next: () => ++syntheticCounter },
+    ring: { center: session.center, radius: session.ringRadius, limit: ANCHOR_DEVIATION_LIMIT },
   };
 
   const route: RingPoint[] = [sequence[0]];
   const approach: boolean[] = [true];
+  const segmentStats: { index: number; poolSize: number; triangulatedCount: number }[] = [];
+  let timedOut = false;
   for (let index = 0; index < sequence.length - 1; index++) {
-    // Проверка дедлайна: если время вышло, прерываем сборку
-    if (Date.now() > deadline) {
-      console.warn('[ring-finalize] превышен бюджет времени сборки, маршрут может быть неполным');
-      break;
-    }
     const from = sequence[index];
     const to = sequence[index + 1];
     const touchesStart = index === 0 || index === lastSegment;
@@ -1375,13 +1716,34 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
       approach.push(touchesStart);
       continue;
     }
-    const bridge = bridgeSegment(from, to, poolBySegment.get(index) || [], used, context);
+    // Бюджет кончился — не обрываем кольцо. Оставшиеся разрывы закрываем
+    // расчётными точками, чтобы маршрут остался замкнутым и пригодным к проверке.
+    if (!timedOut && Date.now() > deadline) {
+      timedOut = true;
+      console.warn('[ring-finalize] бюджет времени сборки исчерпан: оставшиеся разрывы закрываются расчётными точками, кольцо остаётся замкнутым');
+    }
+    const pool = timedOut ? [] : (poolBySegment.get(index) || []);
+    const bridge = bridgeSegment(from, to, pool, used, context, !touchesStart);
+    const syntheticInSegment = bridge.filter((point) => point.source === 'triangulated').length;
+    segmentStats.push({ index, poolSize: pool.length, triangulatedCount: syntheticInSegment });
     for (const point of bridge) {
       route.push(point);
       approach.push(touchesStart);
     }
     route.push(to);
     approach.push(touchesStart);
+  }
+
+  const triangulatedSegments = segmentStats.filter((stat) => stat.triangulatedCount > 0);
+  if (triangulatedSegments.length > 0) {
+    const worst = [...triangulatedSegments]
+      .sort((left, right) => right.triangulatedCount - left.triangulatedCount)
+      .slice(0, 6);
+    console.warn(
+      `[ring-finalize] расчётные точки в ${triangulatedSegments.length} из ${segmentStats.length} сегментов `
+      + `(коридор ${ROUTE_CORRIDOR} св.л.; где системы не сомкнулись прыжком, участок триангулирован). `
+      + `Худшие: ${worst.map((stat) => `#${stat.index}: пул ${stat.poolSize}, расчётных ${stat.triangulatedCount}`).join('; ')}`,
+    );
   }
 
   // Убираем только идущие подряд совпадающие точки: они не меняют прыжков.
@@ -1397,7 +1759,8 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
   const syntheticPoints = deduped.filter((point) => point.source === 'triangulated').length;
   stats.syntheticPoints = syntheticPoints;
   stats.realPoints = deduped.length - syntheticPoints;
-  stats.bridgeCatalogRequests = segments.length;
+  stats.bridgeCatalogRequests = poolQueries.count;
+  stats.triangulatedSegments = triangulatedSegments.length;
 
   const validation = validateRingRoute({
     route: deduped,
@@ -1444,10 +1807,8 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     .eq('id', sessionId);
   if (error) console.warn('[ring] не удалось сохранить маршрут кольца:', error.message);
 
-  // Если маршрут неполный из-за дедлайна, помечаем это в статистике
-  if (result.route.length < sequence.length - 1) {
-    console.warn('[ring-finalize] маршрут собран не полностью (прерван по времени):',
-      result.route.length, 'из', sequence.length - 1, 'точек');
+  if (!routeIsClosed(deduped)) {
+    console.warn('[ring-finalize] маршрут не замкнулся:', deduped.length, 'точек');
   }
 
   return result;
