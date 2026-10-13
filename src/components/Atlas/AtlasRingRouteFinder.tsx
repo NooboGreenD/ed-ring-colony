@@ -55,6 +55,7 @@ interface RingStats {
   edsmRequests: number;
   spanshRequests: number;
   reusedFromNeighbours: number;
+  triangulatedSegments?: number;
 }
 
 interface RingValidation {
@@ -665,6 +666,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           <div className="atlas-details-box">
             <div className="atlas-stat-grid">
               <div>Расчётных опор</div><div>{result.totals.triangulatedAnchors} из {result.totals.anchors}</div>
+              <div>Сегментов с расчётом</div><div>{result.stats.triangulatedSegments ?? '—'}</div>
               <div>Среднее отклонение</div><div>{result.totals.deviationAvg} св.л.</div>
               <div>Максимальное отклонение</div><div>{result.totals.deviationMax} св.л.</div>
               <div>Систем из каталога Spansh</div><div>{result.stats.catalogHits.toLocaleString('ru-RU')}</div>

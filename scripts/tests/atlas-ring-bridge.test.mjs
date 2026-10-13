@@ -170,6 +170,62 @@ test('кольцо: система вне коридора не затягива
   }
 });
 
+test('кольцо: коридор моста шире допуска отклонения, чтобы не терять системы на оси', async () => {
+  const { mod, cleanup } = await loadRingModule();
+  try {
+    assert.equal(mod.ROUTE_CORRIDOR, 150);
+    assert.equal(mod.ANCHOR_DEVIATION_LIMIT, 100);
+  } finally {
+    cleanup();
+  }
+});
+
+test('кольцо: система в стороне от хорды, дальше одного прыжка, всё равно попадает в маршрут', async () => {
+  const { mod, cleanup } = await loadRingModule();
+  try {
+    const from = point('A', 0, 0, 0);
+    const to = point('B', 60, 0, 0);
+    // 26 св.л. от старта и 14 св.л. в стороне: жадный шаг по прямой её проскакивает,
+    // наведение расчётной точки — нет.
+    const pool = [point('Off-axis', 22, 0, 14, { source: 'catalog' })];
+    const bridge = mod.bridgeWithSystems(from, to, pool, { maxJump: 15, corridor: 30 });
+    assert.ok(bridge.some((item) => item.name === 'Off-axis'), `система в коридоре потеряна: ${bridge.map((item) => item.name)}`);
+    const chain = [from, ...bridge, to];
+    for (let index = 1; index < chain.length; index++) {
+      assert.ok(mod.distance3(chain[index - 1], chain[index]) <= 15 + 1e-9, 'каждый прыжок не длиннее 15 св.л.');
+    }
+  } finally {
+    cleanup();
+  }
+});
+
+test('кольцо: тупик в одном прыжке не перекрывает цепочку, которая доводит дальше', async () => {
+  const { mod, cleanup } = await loadRingModule();
+  try {
+    const from = point('A', 0, 0, 0);
+    const to = point('B', 90, 0, 0);
+    const pool = [
+      point('Dead-end', 14, 0, 0, { source: 'catalog' }),
+      point('Chain-20', 20, 18, 0, { source: 'catalog' }),
+      point('Chain-32', 32, 18, 0, { source: 'catalog' }),
+      point('Chain-44', 44, 18, 0, { source: 'catalog' }),
+      point('Chain-56', 56, 18, 0, { source: 'catalog' }),
+      point('Chain-68', 68, 18, 0, { source: 'catalog' }),
+    ];
+    const bridge = mod.bridgeWithSystems(from, to, pool, { maxJump: 15, corridor: 25 });
+    const names = bridge.map((item) => item.name);
+    assert.ok(names.includes('Chain-68'), `цепочка не дошла до конца: ${names}`);
+    assert.ok(names.some((name) => name.startsWith('Chain-')), `цепочка потеряна: ${names}`);
+    assert.ok(names.indexOf('Chain-68') > names.indexOf('Dead-end'), 'тупик не должен обрывать путь к цепочке');
+    const chain = [from, ...bridge, to];
+    for (let index = 1; index < chain.length; index++) {
+      assert.ok(mod.distance3(chain[index - 1], chain[index]) <= 15 + 1e-9, 'каждый прыжок не длиннее 15 св.л.');
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test('кольцо: маршрут считается замкнутым только при совпадении концов', async () => {
   const { mod, cleanup } = await loadRingModule();
   try {
