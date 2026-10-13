@@ -84,8 +84,17 @@ const MAX_STEP_SECTORS = 60;
 const STEP_TIME_BUDGET_MS = 20_000;
 /** Таймаут одного обращения к БД: зависший запрос не должен держать шаг. */
 const DB_TIMEOUT_MS = 8_000;
-/** Бюджет времени сборки маршрута (ниже таймаута роута в 120 с). */
-const FINALIZE_TIME_BUDGET_MS = 60_000;
+/**
+ * Бюджет сборки. Сбор и прокладка разделены, сумма ниже типичного таймаута
+ * прокси (60 с): иначе шлюз рвёт ответ, и клиент видит «Не удалось собрать
+ * маршрут кольца» без текста ошибки. Пулы, которые уже собраны, не выбрасываются.
+ */
+const FINALIZE_COLLECT_BUDGET_MS = 25_000;
+const FINALIZE_BRIDGE_BUDGET_MS = 12_000;
+/** Короткий таймаут пробы на сборке: зависший запрос не должен съедать всё кольцо. */
+const FINALIZE_DB_TIMEOUT_MS = 2_000;
+/** Сколько проб каталога можно сделать на всё кольцо, не на каждый сегмент. */
+const FINALIZE_QUERY_CAP = 360;
 const FINALIZE_CONCURRENCY = 6;
 
 /** Бюджеты внешних запросов на один шаг. */
@@ -106,14 +115,22 @@ const SECTOR_CACHE_LIMIT = 600;
  * хорды и запрашивается снова — слитый пул тогда покрывает весь отрезок.
  */
 const SEGMENT_QUERY_LIMIT = 2000;
-/** Сколько проб каталога/кэша можно сделать на один сегмент, пока не вышел бюджет. */
-const SEGMENT_QUERY_BUDGET = 15;
+/**
+ * Сколько проб на один сегмент. На кольце в сотни сегментов 15 проб на отрезок
+ * не укладываются в один HTTP-запрос и роняют сборку по таймауту.
+ */
+const SEGMENT_QUERY_BUDGET = 4;
 /** Короче этого (вдоль хорды) делить пробу уже нет смысла: это пара прыжков. */
 const SEGMENT_MIN_SPAN = 40;
 /** Сколько точек сегмента отдаём клиенту для отрисовки на карте. */
 const STEP_FOUND_SAMPLE = 400;
-/** Не отдаём мосту десятки тысяч систем: лишние отсекаются равномерно вдоль хорды. */
-const BRIDGE_POOL_CAP = 8000;
+/**
+ * Потолок пула одного сегмента. Тысячи систем на отрезок при 300 сегментах
+ * раздувают память и обход графа — процесс сборки падает, не отдав маршрут.
+ * Вдоль хорды хватает нескольких сотен: лишние в плотном районе всё равно
+ * ближе середины, а не на концах.
+ */
+const BRIDGE_POOL_CAP = 480;
 
 const EDSM_UA = 'ED-Ring-Colony/1.0 (galactic-ring-route)';
 
@@ -370,7 +387,7 @@ export function distanceToSegment(point: XYZ, a: XYZ, b: XYZ): number {
 }
 
 /** Не даём одному зависшему вызову держать шаг: по таймауту отдаём запасное значение. */
-async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+async function withTimeout<T>(promise: PromiseLike<T>, ms: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<T>((resolve) => {
     timer = setTimeout(() => resolve(fallback), ms);
@@ -1133,6 +1150,8 @@ interface BridgeContext {
    * к оси кольца. Для подхода к старту не используется: старт не на окружности.
    */
   ring: { center: XYZ; radius: number; limit: number } | null;
+  /** После этого момента разрыв закрывается прямой, без перебора пула. */
+  deadline?: number;
 }
 
 interface SpatialGrid {
@@ -1224,6 +1243,21 @@ function clampToDeviation(point: RingPoint, center: XYZ, ringRadius: number, lim
   };
 }
 
+/** Добить отрезок расчётными точками по прямой. Нужно, когда бюджет сборки кончился. */
+function fillStraight(current: RingPoint, to: XYZ, context: BridgeContext, clamp: boolean): RingPoint[] {
+  const points: RingPoint[] = [];
+  let cursor: RingPoint = current;
+  let guard = 0;
+  while (distance3(cursor, to) > context.maxJump && guard++ < 8000) {
+    const remaining = distance3(cursor, to);
+    const synthetic = syntheticToward(cursor, to, context, clamp);
+    if (distance3(synthetic, to) >= remaining - 1e-9) break;
+    points.push(synthetic);
+    cursor = synthetic;
+  }
+  return points;
+}
+
 function syntheticToward(current: XYZ, aim: XYZ, context: BridgeContext, clamp: boolean): RingPoint {
   const remaining = distance3(current, aim);
   let hop: number;
@@ -1279,6 +1313,7 @@ function takeIsland(
   to: XYZ,
   grid: SpatialGrid,
   used: Set<string>,
+  seen: Set<string>,
   maxJump: number,
 ): RingPoint[] {
   const parent = new Map<RingPoint, RingPoint | null>();
@@ -1295,7 +1330,7 @@ function takeIsland(
     const node = queue[head++];
     for (const candidate of queryGrid(grid, node, maxJump)) {
       const key = candidate.name.toLowerCase();
-      if (visited.has(key) || used.has(key)) continue;
+      if (visited.has(key) || used.has(key) || seen.has(key)) continue;
       const step = distance3(node, candidate);
       if (step > maxJump || step < 0.001) continue;
       visited.add(key);
@@ -1308,6 +1343,9 @@ function takeIsland(
       }
     }
   }
+  // Остров больше не перебираем: повторный обход тех же тысяч систем на каждом
+  // прыжке не укладывает сборку длинного кольца в таймаут запроса.
+  for (const key of visited) seen.add(key);
   if (!best) return [];
 
   const path: RingPoint[] = [];
@@ -1389,12 +1427,17 @@ function bridgeSegment(
     maxJump,
   );
   const steerReach = Math.max(maxJump * 2, context.corridor + maxJump);
+  const seen = new Set<string>([fromKey, toKey]);
 
   let current: RingPoint = from;
   let guard = 0;
   while (distance3(current, to) > maxJump && guard++ < 12000) {
+    if (context.deadline && Date.now() > context.deadline) {
+      points.push(...fillStraight(current, to, context, clampDeviation));
+      break;
+    }
     const remaining = distance3(current, to);
-    const island = takeIsland(current, to, grid, used, maxJump);
+    const island = takeIsland(current, to, grid, used, seen, maxJump);
     if (island.length > 0) {
       for (const step of island) {
         used.add(step.name.toLowerCase());
@@ -1501,9 +1544,15 @@ async function collectSegmentPool(
     ringRadius: number;
     approach: boolean;
     queries?: { count: number };
+    queryCap?: number;
+    queryTimeoutMs?: number;
   },
 ): Promise<RingPoint[]> {
+  if (Date.now() >= options.deadline) return [];
+  if (options.queries && options.queryCap && options.queries.count >= options.queryCap) return [];
+
   const length = distance3(from, to);
+  const timeoutMs = options.queryTimeoutMs ?? DB_TIMEOUT_MS;
   const byName = new Map<string, RingPoint>();
   const accept = (point: XYZ) =>
     distanceToSegment(point, from, to) <= ROUTE_CORRIDOR
@@ -1520,30 +1569,29 @@ async function collectSegmentPool(
   let queries = 0;
 
   while (queue.length > 0 && queries < SEGMENT_QUERY_BUDGET && Date.now() < options.deadline) {
+    if (options.queries && options.queryCap && options.queries.count >= options.queryCap) break;
     const probe = queue.shift()!;
     queries++;
     if (options.queries) options.queries.count++;
 
-    const catalogPromise = options.catalogReady
-      ? withTimeout(
+    const catalogRows = options.catalogReady
+      ? await withTimeout(
         findSystemsInCube({ x: probe.x, y: probe.y, z: probe.z, half: probe.half, limit: SEGMENT_QUERY_LIMIT })
           .catch(() => [] as Array<{ name: string; x: number; y: number; z: number }>),
-        DB_TIMEOUT_MS,
+        timeoutMs,
         [] as Array<{ name: string; x: number; y: number; z: number }>,
       )
-      : Promise.resolve([] as Array<{ name: string; x: number; y: number; z: number }>);
-    // Кэш на дочерних пробах нужен, только если каталога нет: при полном каталоге
-    // деление и так добирает системы вдоль хорды, а лишний запрос на каждую пробу
-    // не укладывает сборку в бюджет.
-    const wantCache = !options.catalogReady || (probe.t0 === 0 && probe.t1 === 1);
-    const cachePromise = wantCache
-      ? withTimeout(
+      : [] as Array<{ name: string; x: number; y: number; z: number }>;
+    // Кэш нужен, только если каталога нет или он пуст в этой пробе. Второй запрос
+    // на каждый из сотен сегментов не успевает уложиться в ответ сборки.
+    const wantCache = !options.catalogReady || catalogRows.length === 0;
+    const cachedRows = wantCache
+      ? await withTimeout(
         listCachedSystemsNear(probe, probe.half, SEGMENT_QUERY_LIMIT).catch(() => [] as CachedSystem[]),
-        DB_TIMEOUT_MS,
+        timeoutMs,
         [] as CachedSystem[],
       )
-      : Promise.resolve([] as CachedSystem[]);
-    const [catalogRows, cachedRows] = await Promise.all([catalogPromise, cachePromise]);
+      : [] as CachedSystem[];
 
     for (const row of catalogRows) {
       if (!row.name || !accept(row)) continue;
@@ -1565,7 +1613,7 @@ async function collectSegmentPool(
     }
   }
 
-  return Array.from(byName.values());
+  return capPoolAlongSegment(Array.from(byName.values()), from, to, BRIDGE_POOL_CAP);
 }
 
 /**
@@ -1641,8 +1689,86 @@ export function validateRingRoute(input: {
   };
 }
 
+/** Подход к старту и возврат: всё до первой опоры и после последней. */
+function approachFlags(route: RingPoint[]): boolean[] {
+  let first = -1;
+  let last = -1;
+  route.forEach((point, index) => {
+    if (!point.isAnchor) return;
+    if (first < 0) first = index;
+    last = index;
+  });
+  if (first < 0) return route.map(() => true);
+  return route.map((_, index) => index <= first || index >= last);
+}
+
+/**
+ * Повтор сборки после обрыва ответа: маршрут уже лежит в сессии, заново
+ * обходить каталог не нужно. Иначе повторный запрос снова упирается в таймаут.
+ */
+async function loadCompletedRing(sessionId: string): Promise<RingResult | null> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('atlas_ring_sessions')
+      .select('id,start_system,center,ring_radius,search_radius,route,anchors,stats,status')
+      .eq('id', sessionId)
+      .maybeSingle();
+    if (error || !data || data.status !== 'completed') return null;
+    const route = Array.isArray(data.route) ? data.route as RingPoint[] : [];
+    if (route.length < 3 || !routeIsClosed(route)) return null;
+    const center = {
+      name: 'Sagittarius A*',
+      x: Number(data.center?.x),
+      y: Number(data.center?.y),
+      z: Number(data.center?.z),
+      source: 'catalog' as const,
+    };
+    const ringRadius = Number(data.ring_radius);
+    const start = route[0];
+    const anchors = Array.isArray(data.anchors) && data.anchors.length
+      ? data.anchors as RingPoint[]
+      : route.filter((point) => point.isAnchor);
+    const stats: RingStats = { ...EMPTY_STATS, ...(data.stats || {}) };
+    const validation = validateRingRoute({
+      route,
+      approach: approachFlags(route),
+      center,
+      ringRadius,
+      start,
+    });
+    const syntheticPoints = route.filter((point) => point.source === 'triangulated').length;
+    return {
+      sessionId,
+      start: String(data.start_system || start.name),
+      center,
+      ringRadius,
+      searchRadius: Number(data.search_radius),
+      route,
+      anchors,
+      totals: {
+        points: route.length,
+        realPoints: route.length - syntheticPoints,
+        syntheticPoints,
+        anchors: anchors.length,
+        triangulatedAnchors: anchors.filter((anchor) => anchor.source === 'triangulated').length,
+        discovered: stats.systemsFound,
+        deviationAvg: validation.anchorDeviationAvg,
+        deviationMax: validation.anchorDeviationMax,
+      },
+      validation,
+      stats,
+    };
+  } catch (error: any) {
+    console.warn('[ring-finalize] не удалось прочитать готовый маршрут:', error?.message || error);
+    return null;
+  }
+}
+
 /** Сессия, у которой пройдены все сегменты, превращается в замкнутый маршрут. */
 export async function finalizeRingSession(sessionId: string): Promise<RingResult> {
+  const already = await loadCompletedRing(sessionId);
+  if (already) return already;
+
   const session = await loadRingSession(sessionId);
   if (!session) throw new Error('Сессия поиска кольца не найдена');
   if (session.sectorsDone < session.sectors) {
@@ -1651,7 +1777,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
 
   const stats: RingStats = { ...session.stats };
   const catalogReady = await isCatalogReady();
-  const deadline = Date.now() + FINALIZE_TIME_BUDGET_MS;
+  const collectDeadline = Date.now() + FINALIZE_COLLECT_BUDGET_MS;
 
   const anchors: RingPoint[] = session.anchors.map((anchor) => ({
     name: anchor.name,
@@ -1684,11 +1810,13 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     sequence[index + 1],
     {
       catalogReady,
-      deadline,
+      deadline: collectDeadline,
       center: session.center,
       ringRadius: session.ringRadius,
       approach: index === 0 || index === lastSegment,
       queries: poolQueries,
+      queryCap: FINALIZE_QUERY_CAP,
+      queryTimeoutMs: FINALIZE_DB_TIMEOUT_MS,
     },
   ));
   const poolBySegment = new Map<number, RingPoint[]>();
@@ -1701,12 +1829,12 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     syntheticStep: SYNTHETIC_STEP,
     syntheticCounter: { next: () => ++syntheticCounter },
     ring: { center: session.center, radius: session.ringRadius, limit: ANCHOR_DEVIATION_LIMIT },
+    deadline: Date.now() + FINALIZE_BRIDGE_BUDGET_MS,
   };
 
   const route: RingPoint[] = [sequence[0]];
   const approach: boolean[] = [true];
   const segmentStats: { index: number; poolSize: number; triangulatedCount: number }[] = [];
-  let timedOut = false;
   for (let index = 0; index < sequence.length - 1; index++) {
     const from = sequence[index];
     const to = sequence[index + 1];
@@ -1716,13 +1844,9 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
       approach.push(touchesStart);
       continue;
     }
-    // Бюджет кончился — не обрываем кольцо. Оставшиеся разрывы закрываем
-    // расчётными точками, чтобы маршрут остался замкнутым и пригодным к проверке.
-    if (!timedOut && Date.now() > deadline) {
-      timedOut = true;
-      console.warn('[ring-finalize] бюджет времени сборки исчерпан: оставшиеся разрывы закрываются расчётными точками, кольцо остаётся замкнутым');
-    }
-    const pool = timedOut ? [] : (poolBySegment.get(index) || []);
+    // Пул уже собран — не выбрасываем его из-за бюджета сбора. Если прокладка
+    // одного сегмента затянется, мост сам закроет хвост прямой и оставит кольцо замкнутым.
+    const pool = poolBySegment.get(index) || [];
     const bridge = bridgeSegment(from, to, pool, used, context, !touchesStart);
     const syntheticInSegment = bridge.filter((point) => point.source === 'triangulated').length;
     segmentStats.push({ index, poolSize: pool.length, triangulatedCount: syntheticInSegment });
@@ -1796,16 +1920,27 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     stats,
   };
 
-  const { error } = await supabaseAdmin
-    .from('atlas_ring_sessions')
-    .update({
-      route: result.route,
-      stats,
-      status: 'completed',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', sessionId);
-  if (error) console.warn('[ring] не удалось сохранить маршрут кольца:', error.message);
+  // Сохранение не должно ронять уже собранный маршрут: клиенту важнее ответ,
+  // чем запись в сессию. Повторный запрос прочитает её, если запись успела.
+  try {
+    const write = supabaseAdmin
+      .from('atlas_ring_sessions')
+      .update({
+        route: result.route,
+        stats,
+        status: 'completed',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', sessionId);
+    const saved = await withTimeout(
+      write as unknown as PromiseLike<{ error: { message: string } | null }>,
+      6_000,
+      { error: { message: 'таймаут сохранения маршрута' } },
+    );
+    if (saved?.error) console.warn('[ring] не удалось сохранить маршрут кольца:', saved.error.message);
+  } catch (error: any) {
+    console.warn('[ring] сохранение маршрута прервано:', error?.message || error);
+  }
 
   if (!routeIsClosed(deduped)) {
     console.warn('[ring-finalize] маршрут не замкнулся:', deduped.length, 'точек');
