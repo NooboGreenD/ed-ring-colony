@@ -275,7 +275,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           basis: session.basis3d ? {
             ux: session.basis3d.ux, uy: session.basis3d.uy, uz: session.basis3d.uz,
             vx: session.basis3d.vx, vy: session.basis3d.vy, vz: session.basis3d.vz,
-          } : null,
+          } : undefined,
         },
         beam: patch.beam || null,
         counters: {
@@ -371,7 +371,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           status: 'completed',
           center: payload.center,
           ring_center: payload.ringCenter ?? payload.center,
-          basis3d: payload.basis3D ?? null,
+          basis3d: payload.basis3D ?? undefined,
         },
         {
           percent: 100, stage: 'done', message: 'Кольцо готово',
@@ -644,7 +644,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           route: result.route,
           center: result.center,
           ring_center: result.ringCenter ?? result.center,
-          basis3d: result.basis3D ?? null,
+          basis3d: result.basis3D ?? undefined,
           ring_radius: result.ringRadius,
           refine_radius: opts?.radius ?? refineRadius,
           deviation_limit: opts?.deviation ?? refineDeviation,
