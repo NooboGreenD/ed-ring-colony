@@ -12,14 +12,8 @@ import {
 /**
  * Поиск Галактического кольца — пошагово.
  *
- * Раньше это был один длинный поток NDJSON: к 3–4-му сегменту соединение
- * рвалось (в браузере это выглядело как «network error»), а вся проделанная
- * работа пропадала. Теперь каждый запрос обрабатывает пачку сегментов и сразу
- * отвечает, прогресс лежит в `atlas_ring_sessions`, а поиск продолжается с
- * того же места — тем же запросом с `session_id`, в том числе после перезагрузки
- * страницы.
- *
- *   POST { start_system, ring_radius, search_radius }        — новая сессия + первый шаг
+ *   POST { start_system, ring_radius, search_radius, deviation_limit, key_systems }
+ *     — новая сессия + первый шаг; key_systems — массив имён обязательных систем
  *   POST { session_id }                                      — продолжить существующую
  *   GET  ?session_id=<id>                                    — состояние сессии (для возобновления)
  */
@@ -31,6 +25,8 @@ interface RequestBody {
   start_system?: string;
   ring_radius?: number;
   search_radius?: number;
+  deviation_limit?: number | null;
+  key_systems?: string[];
   session_id?: string;
   step_sectors?: number;
 }
@@ -41,6 +37,8 @@ function sessionEnvelope(plan: RingPlan) {
     start_system: plan.start.name,
     ring_radius: plan.ringRadius,
     search_radius: plan.searchRadius,
+    deviation_limit: plan.deviationLimit,
+    key_systems: plan.keySystems,
     sectors: plan.sectors,
     sectors_done: plan.sectorsDone,
     status: plan.status,
@@ -90,6 +88,8 @@ export async function POST(req: Request) {
           startSystem: String(body.start_system),
           ringRadius: body.ring_radius,
           searchRadius: body.search_radius,
+          deviationLimit: body.deviation_limit,
+          keySystems: Array.isArray(body.key_systems) ? body.key_systems : undefined,
         },
         user?.id || null,
       );

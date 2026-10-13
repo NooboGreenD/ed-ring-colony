@@ -178,6 +178,13 @@ export interface RingStats {
   triangulatedSegments: number;
 }
 
+export interface KeySystem {
+  name: string;
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface RingPlan {
   sessionId: string;
   start: RingPoint;
@@ -185,11 +192,15 @@ export interface RingPlan {
   basis: { ux: number; uz: number };
   ringRadius: number;
   searchRadius: number;
+  /** Пользовательский допуск отклонения от окружности (св.л); null — значение по умолчанию. */
+  deviationLimit: number;
+  /** Обязательные (ключевые) системы, которые маршрут обязан пройти. */
+  keySystems: KeySystem[];
   sectors: number;
   sectorsDone: number;
   anchors: RingAnchor[];
   stats: RingStats;
-  status: 'scanning' | 'ready' | 'completed' | 'failed';
+  status: 'scanning' | 'ready' | 'completed' | 'failed' | 'refining';
 }
 
 export interface RingStepResult {
@@ -228,14 +239,28 @@ export interface RingValidation {
   withinSpec: boolean;
 }
 
+/** Результат поиска строительных хабов по опорным точкам (для включения в RingResult). */
+export interface RingHubSummary {
+  anchorName: string;
+  hub: {
+    systemName: string | null;
+    status: 'found' | 'missing' | 'error';
+    distance: number | null;
+    note?: string;
+  };
+}
+
 export interface RingResult {
   sessionId: string;
   start: string;
   center: RingPoint;
   ringRadius: number;
   searchRadius: number;
+  deviationLimit: number;
+  keySystems: KeySystem[];
   route: RingPoint[];
   anchors: RingPoint[];
+  hubs?: RingHubSummary[];
   totals: {
     points: number;
     realPoints: number;
@@ -245,8 +270,10 @@ export interface RingResult {
     discovered: number;
     deviationAvg: number;
     deviationMax: number;
+    hubsFound?: number;
+    hubsMissing?: number;
   };
-  validation: RingValidation;
+  validation?: RingValidation;
   stats: RingStats;
 }
 
@@ -535,6 +562,8 @@ interface SessionRow {
   start_system: string;
   ring_radius: number;
   search_radius: number;
+  deviation_limit: number | null;
+  key_systems: KeySystem[] | null;
   sectors: number;
   sectors_done: number;
   center: XYZ;
@@ -554,6 +583,8 @@ function rowToPlan(row: SessionRow, start: RingPoint): RingPlan {
     basis: { ux: Number(row.basis.ux), uz: Number(row.basis.uz) },
     ringRadius: Number(row.ring_radius),
     searchRadius: Number(row.search_radius),
+    deviationLimit: Number(row.deviation_limit) || ANCHOR_DEVIATION_LIMIT,
+    keySystems: Array.isArray(row.key_systems) ? row.key_systems : [],
     sectors: Number(row.sectors),
     sectorsDone: Number(row.sectors_done),
     anchors: Array.isArray(row.anchors) ? row.anchors : [],
@@ -618,7 +649,15 @@ export async function loadRingRoute(sessionId: string): Promise<RingSessionRoute
 
 /** Создание новой сессии: координаты, базис, число сегментов. */
 export async function planRingSession(
-  config: { startSystem: string; ringRadius?: number; searchRadius?: number },
+  config: {
+    startSystem: string;
+    ringRadius?: number;
+    searchRadius?: number;
+    /** Пользовательский допуск отклонения от окружности (св.л). */
+    deviationLimit?: number | null;
+    /** Имена обязательных (ключевых) систем, через которые пройдёт маршрут. */
+    keySystems?: string[] | null;
+  },
   userId?: string | null,
 ): Promise<RingPlan> {
   const startName = String(config.startSystem || '').trim();
@@ -626,6 +665,7 @@ export async function planRingSession(
 
   const ringRadius = Math.min(MAX_RING_RADIUS, Math.max(MIN_RING_RADIUS, Number(config.ringRadius) || DEFAULT_RING_RADIUS));
   const searchRadius = Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, Number(config.searchRadius) || DEFAULT_SEARCH_RADIUS));
+  const deviationLimit = Math.min(ANCHOR_DEVIATION_LIMIT * 4, Math.max(10, Math.round(Number(config.deviationLimit) || ANCHOR_DEVIATION_LIMIT)));
 
   const [start, center] = await Promise.all([
     resolveRingSystem(startName),
@@ -633,6 +673,23 @@ export async function planRingSession(
   ]);
   if (!start) throw new Error(`Не удалось получить координаты системы «${startName}»`);
   if (!center) throw new Error('Не удалось получить координаты Sagittarius A*');
+
+  // Разрешаем координаты ключевых систем (параллельно, но не больше 8 сразу).
+  const keySystemNames = Array.from(new Set(
+    (Array.isArray(config.keySystems) ? config.keySystems : [])
+      .map((name) => String(name || '').trim())
+      .filter((name) => name && normalizeNameForCompare(name) !== normalizeNameForCompare(startName)),
+  ));
+  const keySystems: KeySystem[] = [];
+  const keyChunks: string[][] = [];
+  for (let i = 0; i < keySystemNames.length; i += 6) keyChunks.push(keySystemNames.slice(i, i + 6));
+  for (const chunk of keyChunks) {
+    const resolved = await Promise.all(chunk.map((name) => resolveRingSystem(name).catch(() => null)));
+    resolved.forEach((point, index) => {
+      if (point) keySystems.push({ name: point.name, x: point.x, y: point.y, z: point.z });
+      else console.warn(`[ring] ключевая система «${chunk[index]}» не найдена, пропускаем`);
+    });
+  }
 
   const basis = ringBasis(start, center);
   const sectors = computeSectorCount(ringRadius);
@@ -645,6 +702,8 @@ export async function planRingSession(
       start_system: start.name,
       ring_radius: ringRadius,
       search_radius: searchRadius,
+      deviation_limit: deviationLimit === ANCHOR_DEVIATION_LIMIT ? null : deviationLimit,
+      key_systems: keySystems.length > 0 ? keySystems : null,
       sectors,
       sectors_done: 0,
       center: { x: center.x, y: center.y, z: center.z },
@@ -660,11 +719,13 @@ export async function planRingSession(
     throw new Error(`Не удалось создать сессию поиска кольца: ${error?.message || 'нет ответа БД'}`);
   }
 
-  // Кэшируем начальную систему и центр — пригодятся и другим поисковикам.
-  await saveCachedSystems([
+  // Кэшируем начальную систему, центр и ключевые системы.
+  const toCache: Array<{ name: string; x: number; y: number; z: number; source: string }> = [
     { name: start.name, x: start.x, y: start.y, z: start.z, source: start.source || 'edsm' },
     { name: center.name, x: center.x, y: center.y, z: center.z, source: center.source || 'edsm' },
-  ]).catch(() => 0);
+    ...keySystems.map((ks) => ({ name: ks.name, x: ks.x, y: ks.y, z: ks.z, source: 'start' })),
+  ];
+  await saveCachedSystems(toCache).catch(() => 0);
 
   return {
     sessionId: String(data.id),
@@ -673,9 +734,95 @@ export async function planRingSession(
     basis,
     ringRadius,
     searchRadius,
+    deviationLimit,
+    keySystems,
     sectors,
     sectorsDone: 0,
     anchors: [],
+    stats,
+    status: 'scanning',
+  };
+}
+
+function normalizeNameForCompare(name: string): string {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Сброс сессии для повторного прогона (уточнения) с новыми параметрами.
+ * Сбрасывает anchors и sectorsDone в 0, но сохраняет центр/базис/стартовую систему.
+ * Позволяет изменить допуск отклонения и добавить ключевые системы без
+ * создания совершенно новой сессии.
+ */
+export async function replanRingSession(
+  sessionId: string,
+  updates: {
+    deviationLimit?: number | null;
+    additionalKeySystems?: string[] | null;
+    searchRadius?: number | null;
+  } = {},
+): Promise<RingPlan> {
+  const session = await loadRingSession(sessionId);
+  if (!session) throw new Error('Сессия поиска кольца не найдена');
+
+  // Объединяем ключевые системы: старые + новые (без дубликатов).
+  const existingNames = new Set(session.keySystems.map((ks) => normalizeNameForCompare(ks.name)));
+  existingNames.add(normalizeNameForCompare(session.start.name));
+  const addedKeySystems: KeySystem[] = [];
+  const newNames = Array.isArray(updates.additionalKeySystems)
+    ? Array.from(new Set(updates.additionalKeySystems.map((name) => String(name || '').trim()).filter(Boolean)))
+    : [];
+  for (const name of newNames) {
+    if (existingNames.has(normalizeNameForCompare(name))) continue;
+    const resolved = await resolveRingSystem(name).catch(() => null);
+    if (resolved) {
+      addedKeySystems.push({ name: resolved.name, x: resolved.x, y: resolved.y, z: resolved.z });
+      existingNames.add(normalizeNameForCompare(resolved.name));
+    }
+  }
+  const mergedKeySystems = [...session.keySystems, ...addedKeySystems];
+
+  const newDeviationLimit = updates.deviationLimit != null
+    ? Math.min(ANCHOR_DEVIATION_LIMIT * 4, Math.max(10, Math.round(Number(updates.deviationLimit))))
+    : session.deviationLimit;
+
+  const newSearchRadius = updates.searchRadius != null
+    ? Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, Math.round(Number(updates.searchRadius))))
+    : session.searchRadius;
+
+  const stats: RingStats = { ...EMPTY_STATS, sectors: session.sectors, systemsFound: session.stats.systemsFound };
+
+  // Сбрасываем anchors/sectorsDone, оставляем накопленную статистику найденных систем.
+  const { error } = await supabaseAdmin
+    .from('atlas_ring_sessions')
+    .update({
+      anchors: [],
+      sectors_done: 0,
+      route: null,
+      stats,
+      status: 'scanning',
+      deviation_limit: newDeviationLimit === ANCHOR_DEVIATION_LIMIT ? null : newDeviationLimit,
+      search_radius: newSearchRadius,
+      key_systems: mergedKeySystems.length > 0 ? mergedKeySystems : null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', sessionId);
+  if (error) throw new Error(`Не удалось сбросить сессию для повтора: ${error.message}`);
+
+  // Кэшируем новые ключевые системы.
+  if (addedKeySystems.length > 0) {
+    await saveCachedSystems(
+      addedKeySystems.map((ks) => ({ name: ks.name, x: ks.x, y: ks.y, z: ks.z, source: 'start' })),
+    ).catch(() => 0);
+  }
+
+  return {
+    ...session,
+    anchors: [],
+    sectorsDone: 0,
+    keySystems: mergedKeySystems,
+    deviationLimit: newDeviationLimit,
+    searchRadius: newSearchRadius,
     stats,
     status: 'scanning',
   };
@@ -815,6 +962,8 @@ interface AnchorGeometry {
   basis: { ux: number; uz: number };
   ringRadius: number;
   searchRadius: number;
+  /** Допуск отклонения от окружности (св.л); для уточнения может быть больше/меньше 100. */
+  deviationLimit: number;
   /** Предыдущая опора кольца (не старт): от неё считается шаг 480–490. */
   previous: XYZ | null;
   /** Первая опора — только на последнем сегменте, чтобы кольцо замкнулось в пределах 500. */
@@ -833,37 +982,35 @@ export interface AnchorCandidate {
 
 /**
  * Выбор опоры среди реальных систем сегмента. Жёсткие отсечки: отклонение от
- * окружности не больше 100 и шаг от предыдущей опоры не больше 500. Внутри
- * допустимых — приоритет: отклонение ≤ 50 и шаг 480–490, затем близость шага
- * к 485, затем близость к цели сектора.
+ * окружности не больше deviationLimit и шаг от предыдущей опоры не больше 500.
+ * Внутри допустимых — приоритет: отклонение ≤ 50 и шаг 480–490, затем близость
+ * шага к 485, затем близость к цели сектора.
  */
 export function chooseAnchor(input: {
   target: XYZ;
   center: XYZ;
   ringRadius: number;
+  deviationLimit?: number;
   previous: XYZ | null;
   /** Первая опора кольца: последний сегмент не должен оставить замыкающий шаг больше 500. */
   closing?: XYZ | null;
   candidates: RingPoint[];
   used: Set<string>;
 }): AnchorCandidate | null {
+  const devLimit = input.deviationLimit ?? ANCHOR_DEVIATION_LIMIT;
+  const preferred = Math.min(ANCHOR_DEVIATION_PREFERRED, devLimit);
   let best: AnchorCandidate | null = null;
   for (const system of input.candidates) {
     const key = system.name.toLowerCase();
     if (input.used.has(key)) continue;
     const deviation = ringDeviation(system, input.center, input.ringRadius);
-    if (deviation > ANCHOR_DEVIATION_LIMIT) continue;
+    if (deviation > devLimit) continue;
     const spacing = input.previous ? distance3(system, input.previous) : null;
     if (spacing !== null && (spacing > ANCHOR_SPACING_LIMIT || spacing < 1)) continue;
     const closingSpacing = input.closing ? distance3(system, input.closing) : null;
-    // Ту же систему, что и первая опора, не берём. Шаг замыкания больше 500 не
-    // отсекает кандидата: иначе последняя опора уезжает на расчётную точку и
-    // рвёт шаг от предыдущей. Штраф ниже всё равно тянет замыкание к 485.
     if (closingSpacing !== null && closingSpacing < 1) continue;
     const spacingOk = spacing === null || (spacing >= ANCHOR_SPACING_MIN && spacing <= ANCHOR_SPACING_MAX);
-    const tier = (deviation > ANCHOR_DEVIATION_PREFERRED ? 1 : 0) + (spacingOk ? 0 : 2);
-    // Внутри класса — шаг ближе к 485 св.л., затем близость к цели сегмента.
-    // Шаг важнее: иначе опоры разъезжаются, и 80% промежутков выпадают из 480–490.
+    const tier = (deviation > preferred ? 1 : 0) + (spacingOk ? 0 : 2);
     const spacingPenalty = spacing === null ? 0 : Math.abs(spacing - ANCHOR_SPACING_TARGET) * 1000;
     const closingPenalty = closingSpacing === null ? 0 : Math.abs(closingSpacing - ANCHOR_SPACING_TARGET);
     const score = tier * 1e7 + spacingPenalty + closingPenalty + distance3(system, input.target);
@@ -918,6 +1065,57 @@ interface PickedAnchor {
  * Выбор опорной точки сегмента. Окно поиска расширяется (×2, ×4), но только
  * пока не найдена опора лучшего класса; при неудаче — расчётная опора.
  */
+/**
+ * Поиск ближайшей неиспользованной ключевой системы к цели сегмента.
+ * Возвращает систему только если она лежит в окне `maxDistance` от цели сегмента
+ * и ещё не использована в маршруте — это гарантирует, что ключевые точки
+ * расставляются вдоль кольца, а не сбиваются в кучу у первой же опоры.
+ */
+function findNearestKeySystem(
+  keySystems: KeySystem[],
+  target: XYZ,
+  usedNames: Set<string>,
+  maxDistance: number,
+): KeySystem | null {
+  let best: { system: KeySystem; distance: number } | null = null;
+  for (const ks of keySystems) {
+    const key = ks.name.toLowerCase();
+    if (usedNames.has(key)) continue;
+    const d = distance3(ks, target);
+    if (d > maxDistance) continue;
+    if (!best || d < best.distance) best = { system: ks, distance: d };
+  }
+  return best ? best.system : null;
+}
+
+/** Форсированная опора: ключевая система принудительно становится опорой в этом сегменте. */
+function forcedAnchor(
+  keySystem: KeySystem,
+  target: XYZ,
+  center: XYZ,
+  ringRadius: number,
+): PickedAnchor {
+  const deviation = ringDeviation(keySystem, center, ringRadius);
+  return {
+    anchor: {
+      name: keySystem.name,
+      x: keySystem.x,
+      y: keySystem.y,
+      z: keySystem.z,
+      source: 'catalog', // Ключевая система — реальная система из каталога/кэша.
+      isAnchor: true,
+      deviation,
+      target,
+      found: 0,
+      usedRadius: 0,
+    },
+    systems: [],
+    catalogHits: 0,
+    cacheHits: 0,
+    reused: 0,
+  };
+}
+
 async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promise<PickedAnchor> {
   const base = geometry.searchRadius;
   const radii = [...new Set([base, Math.max(base, Math.min(base * 2, 1200)), Math.max(base, Math.min(base * 4, 2400))])];
@@ -945,6 +1143,7 @@ async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promi
       target: geometry.target,
       center: geometry.center,
       ringRadius: geometry.ringRadius,
+      deviationLimit: geometry.deviationLimit,
       previous: geometry.previous,
       closing: geometry.closing,
       candidates: resolution.systems,
@@ -1037,22 +1236,31 @@ export async function stepRingSession(
     const target = ringTarget(session.center, session.basis, session.ringRadius, sector, session.sectors);
     beam = target;
     const previousAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
-    const picked = await pickAnchor(
-      {
-        target,
-        angle: (2 * Math.PI * sector) / session.sectors,
-        center: session.center,
-        basis: session.basis,
-        ringRadius: session.ringRadius,
-        searchRadius: session.searchRadius,
-        previous: previousAnchor ? { x: previousAnchor.x, y: previousAnchor.y, z: previousAnchor.z } : null,
-        closing: sector === session.sectors - 1 && anchors.length > 0
-          ? { x: anchors[0].x, y: anchors[0].y, z: anchors[0].z }
-          : null,
-        usedNames,
-      },
-      { catalogReady, budget, memoryPool, deadline },
-    );
+
+    // Ключевые (обязательные) системы: если есть неиспользованная ключевая система
+    // рядом с этим сектором (в пределах удвоенного окна поиска), форсируем её как
+    // опору — маршрут обязан пройти через неё.
+    const forcedKey = findNearestKeySystem(session.keySystems, target, usedNames, session.searchRadius * 1.5);
+
+    const picked = forcedKey
+      ? forcedAnchor(forcedKey, target, session.center, session.ringRadius)
+      : await pickAnchor(
+        {
+          target,
+          angle: (2 * Math.PI * sector) / session.sectors,
+          center: session.center,
+          basis: session.basis,
+          ringRadius: session.ringRadius,
+          searchRadius: session.searchRadius,
+          deviationLimit: session.deviationLimit,
+          previous: previousAnchor ? { x: previousAnchor.x, y: previousAnchor.y, z: previousAnchor.z } : null,
+          closing: sector === session.sectors - 1 && anchors.length > 0
+            ? { x: anchors[0].x, y: anchors[0].y, z: anchors[0].z }
+            : null,
+          usedNames,
+        },
+        { catalogReady, budget, memoryPool, deadline },
+      );
     stats.catalogHits += picked.catalogHits;
     stats.cacheHits += picked.cacheHits;
     stats.reusedFromNeighbours += picked.reused;
@@ -1543,6 +1751,7 @@ async function collectSegmentPool(
     center: XYZ;
     ringRadius: number;
     approach: boolean;
+    deviationLimit?: number;
     queries?: { count: number };
     queryCap?: number;
     queryTimeoutMs?: number;
@@ -1553,10 +1762,11 @@ async function collectSegmentPool(
 
   const length = distance3(from, to);
   const timeoutMs = options.queryTimeoutMs ?? DB_TIMEOUT_MS;
+  const devLimit = options.deviationLimit ?? ANCHOR_DEVIATION_LIMIT;
   const byName = new Map<string, RingPoint>();
   const accept = (point: XYZ) =>
     distanceToSegment(point, from, to) <= ROUTE_CORRIDOR
-    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= ANCHOR_DEVIATION_LIMIT);
+    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= devLimit);
 
   const queue: SegmentProbe[] = [{
     x: (from.x + to.x) / 2,
@@ -1710,7 +1920,7 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
   try {
     const { data, error } = await supabaseAdmin
       .from('atlas_ring_sessions')
-      .select('id,start_system,center,ring_radius,search_radius,route,anchors,stats,status')
+      .select('id,start_system,center,ring_radius,search_radius,deviation_limit,key_systems,route,anchors,stats,status')
       .eq('id', sessionId)
       .maybeSingle();
     if (error || !data || data.status !== 'completed') return null;
@@ -1728,6 +1938,8 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
     const anchors = Array.isArray(data.anchors) && data.anchors.length
       ? data.anchors as RingPoint[]
       : route.filter((point) => point.isAnchor);
+    const keySystems = Array.isArray(data.key_systems) ? (data.key_systems as KeySystem[]) : [];
+    const deviationLimit = Number(data.deviation_limit) || ANCHOR_DEVIATION_LIMIT;
     const stats: RingStats = { ...EMPTY_STATS, ...(data.stats || {}) };
     const validation = validateRingRoute({
       route,
@@ -1743,8 +1955,11 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
       center,
       ringRadius,
       searchRadius: Number(data.search_radius),
+      deviationLimit,
+      keySystems,
       route,
       anchors,
+      hubs: undefined,
       totals: {
         points: route.length,
         realPoints: route.length - syntheticPoints,
@@ -1814,6 +2029,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
       center: session.center,
       ringRadius: session.ringRadius,
       approach: index === 0 || index === lastSegment,
+      deviationLimit: session.deviationLimit,
       queries: poolQueries,
       queryCap: FINALIZE_QUERY_CAP,
       queryTimeoutMs: FINALIZE_DB_TIMEOUT_MS,
@@ -1828,7 +2044,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     corridor: ROUTE_CORRIDOR,
     syntheticStep: SYNTHETIC_STEP,
     syntheticCounter: { next: () => ++syntheticCounter },
-    ring: { center: session.center, radius: session.ringRadius, limit: ANCHOR_DEVIATION_LIMIT },
+    ring: { center: session.center, radius: session.ringRadius, limit: session.deviationLimit || ANCHOR_DEVIATION_LIMIT },
     deadline: Date.now() + FINALIZE_BRIDGE_BUDGET_MS,
   };
 
@@ -1904,8 +2120,11 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     center: session.center,
     ringRadius: session.ringRadius,
     searchRadius: session.searchRadius,
+    deviationLimit: session.deviationLimit,
+    keySystems: session.keySystems,
     route: deduped,
     anchors,
+    hubs: undefined,
     totals: {
       points: deduped.length,
       realPoints: stats.realPoints,

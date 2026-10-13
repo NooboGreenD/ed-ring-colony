@@ -30,6 +30,9 @@ const KIND_COLORS: Record<AtlasSearchPointKind, string> = {
   station: '#f1c40f',
   'no-market': '#e74c3c',
   scanned: '#546e7a',
+  'hub-found': '#22c55e',     // зелёный: хаб-кандидат найден
+  'hub-missing': '#ef4444',   // красный: хаб не найден, нужна разведка
+  'key-system': '#60a5fa',    // синий: пользовательская ключевая система
 };
 
 /** Размер маркера в мировых единицах (кластеры растут вместе с зумом). */
@@ -41,6 +44,9 @@ const KIND_SIZES: Record<AtlasSearchPointKind, number> = {
   station: 32,
   'no-market': 20,
   scanned: 14,
+  'hub-found': 36,
+  'hub-missing': 28,
+  'key-system': 44,
 };
 
 const PROGRESS_ORANGE = '#e67e22';

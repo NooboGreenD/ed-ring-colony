@@ -72,6 +72,11 @@ export async function POST(req: Request) {
     const center = body?.center as Point | undefined;
     const ringRadius = Number(body?.ring_radius) || 23_000;
     const refineRadius = Math.min(120, Math.max(10, Number(body?.refine_radius) || DEFAULT_REFINE_RADIUS));
+    const deviationLimit = Math.min(400, Math.max(10, Number(body?.deviation_limit) || ANCHOR_DEVIATION_LIMIT));
+    // Флаг «уточнять опоры» — при повторном прогоне можно заменить триангулированные опоры.
+    const refineAnchors = body?.refine_anchors === true;
+    // Дополнительные системы, которые маршрут должен пройти (ключевые) — уже в маршруте?
+    const extraKeySystems: Point[] = Array.isArray(body?.key_systems) ? body.key_systems : [];
     if (input.length < 3 || !center) {
       return NextResponse.json({ error: 'Недостаточно данных для уточнения маршрута' }, { status: 400 });
     }
@@ -89,16 +94,19 @@ export async function POST(req: Request) {
         .filter((point) => point.source !== 'triangulated' && !point.name.startsWith('RING TRIANGULATED'))
         .map((point) => point.name.toLowerCase()),
     );
+    // Ключевые системы из запроса тоже считаем «занятыми».
+    for (const ks of extraKeySystems) {
+      if (ks?.name) used.add(String(ks.name).toLowerCase());
+    }
     const discovered = new Map<string, Point>();
     let replacements = 0;
+    let anchorReplacements = 0;
     let edsmRequests = 0;
     let cacheHits = 0;
     let catalogHits = 0;
 
     const startedAt = Date.now();
     for (let index = 1; index < result.length - 1; index++) {
-      // Уточнение — это проход по всему кольцу; на длинном маршруте он обязан
-      // уложиться в бюджет, иначе запрос оборвётся по таймауту с пустым ответом.
       if (index > 1 && Date.now() - startedAt > REFINE_TIME_BUDGET_MS) {
         console.warn('[ring-refine] бюджет времени исчерпан, уточнено не всё кольцо');
         break;
@@ -106,8 +114,41 @@ export async function POST(req: Request) {
       const current = result[index];
       const previous = result[index - 1];
       const next = result[index + 1];
-      // Опорные точки не трогаем: замена сдвинула бы шаг 480–490 между опорами.
-      if (current.isAnchor) continue;
+      // Опорные точки обычно не трогаем, но при refine_anchors=true триангулированные
+      // опоры пытаемся заменить на ближайшую реальную систему (в пределах отклонения).
+      if (current.isAnchor) {
+        if (!refineAnchors) continue;
+        const isTriangulatedAnchor = current.source === 'triangulated' || current.name.startsWith('RING TRIANGULATED');
+        if (!isTriangulatedAnchor) continue;
+        // Ищем систему с подходящим отклонением — не трогая соседние прыжки.
+        const candidates: Point[] = [];
+        const cached = await listCachedSystemsNear(current, refineRadius * 2, 200).catch(() => []);
+        for (const row of cached) candidates.push({ name: row.name, x: row.x, y: row.y, z: row.z, source: 'cache' });
+        if (candidates.length === 0 && catalogReady) {
+          try {
+            const rows = await findSystemsInCube({ x: current.x, y: current.y, z: current.z, half: refineRadius * 2, limit: 200 });
+            for (const row of rows) {
+              if (dist(row, current) > refineRadius * 2) continue;
+              candidates.push({ name: row.name, x: row.x, y: row.y, z: row.z, source: 'catalog' });
+            }
+          } catch {/* ignore */}
+        }
+        for (const c of candidates) discovered.set(c.name.toLowerCase(), c);
+        const replacement = candidates
+          .filter((c) => !used.has(c.name.toLowerCase())
+            && dist(c, previous) <= 14.99
+            && dist(c, next) <= 14.99
+            && deviationFrom(c, center, ringRadius) <= deviationLimit)
+          .sort((a, b) => deviationFrom(a, center, ringRadius) - deviationFrom(b, center, ringRadius))[0];
+        if (replacement) {
+          used.delete(current.name.toLowerCase());
+          used.add(replacement.name.toLowerCase());
+          result[index] = { ...replacement, isAnchor: true };
+          replacements++;
+          anchorReplacements++;
+        }
+        continue;
+      }
       const currentError = deviationFrom(current, center, ringRadius);
       const isSynthetic = current.source === 'triangulated' || current.name.startsWith('RING TRIANGULATED');
 
@@ -140,7 +181,7 @@ export async function POST(req: Request) {
         .filter((item) => !used.has(item.name.toLowerCase())
           && dist(item, previous) <= MAX_JUMP
           && dist(item, next) <= MAX_JUMP
-          && deviationFrom(item, center, ringRadius) <= ANCHOR_DEVIATION_LIMIT)
+          && deviationFrom(item, center, ringRadius) <= deviationLimit)
         .sort((left, right) => deviationFrom(left, center, ringRadius) - deviationFrom(right, center, ringRadius))[0];
 
       const candidateError = better ? deviationFrom(better, center, ringRadius) : Number.POSITIVE_INFINITY;
@@ -169,9 +210,11 @@ export async function POST(req: Request) {
     return NextResponse.json({
       route: result,
       replacements,
+      anchor_replacements: anchorReplacements,
       scanned: result.length - 2,
       discovered: discovered.size,
       refine_radius: refineRadius,
+      deviation_limit: deviationLimit,
       max_jump: MAX_JUMP,
       synthetic_points: synthetic,
       real_points: result.length - synthetic,

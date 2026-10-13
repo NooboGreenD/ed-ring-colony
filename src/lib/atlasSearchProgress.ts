@@ -21,7 +21,10 @@ export type AtlasSearchPointKind =
   | 'triangulated' // расчётная точка (триангуляция)
   | 'station'      // станция с рынком
   | 'no-market'    // система без рынка
-  | 'scanned';     // просканированная система без результата
+  | 'scanned'      // просканированная система без результата
+  | 'hub-found'    // найден кандидат на строительный хаб
+  | 'hub-missing'  // опора без подходящего хаба (требует разведки)
+  | 'key-system';  // пользовательская ключевая точка маршрута
 
 export interface AtlasSearchPoint {
   id?: string;
