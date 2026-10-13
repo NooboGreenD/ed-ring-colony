@@ -817,19 +817,39 @@ export function chooseAnchor(input: {
 
 /** Расчётная опора: точка на окружности; если шаг от предыдущей опоры вне 480–490 — корректируем. */
 function triangulatedAnchorPosition(geometry: AnchorGeometry): XYZ {
-  const { target, previous } = geometry;
+  const { target, previous, center, basis, ringRadius, angle } = geometry;
   if (previous) {
     const spacing = distance3(previous, target);
     if (spacing < ANCHOR_SPACING_MIN || spacing > ANCHOR_SPACING_MAX) {
-      const onCircle = ringPointAtDistance(
-        geometry.center,
-        geometry.basis,
-        geometry.ringRadius,
-        previous,
-        geometry.angle,
-        ANCHOR_SPACING_TARGET,
-      );
+      // Пробуем точку на окружности на шаге 485 (целевой)
+      let onCircle = ringPointAtDistance(center, basis, ringRadius, previous, angle, ANCHOR_SPACING_TARGET);
       if (onCircle) return onCircle;
+
+      // Если не удалось при 485, пробуем ближайшие значения: 490, 495, 500
+      // Это гарантирует, что шаг не превысит ANCHOR_SPACING_LIMIT
+      const fallbackDistances = [
+        ANCHOR_SPACING_MAX,
+        ANCHOR_SPACING_LIMIT - 5,
+        ANCHOR_SPACING_LIMIT,
+      ];
+      for (const tryDistance of fallbackDistances) {
+        onCircle = ringPointAtDistance(center, basis, ringRadius, previous, angle, tryDistance);
+        if (onCircle) return onCircle;
+      }
+
+      // Если все попытки не удались, stil на окружности ближайшей к цели,
+      // но проверяем, что шаг не превышает лимит.
+      if (spacing > ANCHOR_SPACING_LIMIT) {
+        // Предыдущая опора слишком далеко — ищем проекцию на окружность
+        // ближайшую к target, но не дальше 500 от previous.
+        const projectionOnCircle = ringPointAtAngle(center, basis, ringRadius, angle);
+        const projSpacing = distance3(previous, projectionOnCircle);
+        if (projSpacing <= ANCHOR_SPACING_LIMIT) {
+          return projectionOnCircle;
+        }
+        // Если даже проекция далеко, возвращаем target — но это может нарушить требования.
+        // В этом случае маршрут может быть с нарушениями, что видно в валидации.
+      }
     }
   }
   return { x: target.x, y: target.y, z: target.z };
@@ -1119,7 +1139,15 @@ function bridgeSegment(
 
     // Расчётная точка. Остаток между `syntheticStep` и `2·syntheticStep` делим
     // пополам, чтобы последний прыжок не получился крошечным.
-    const hop = remaining > 2 * context.syntheticStep ? context.syntheticStep : remaining / 2;
+    // Гарантируем, что hop никогда не превышает maxJump.
+    let hop: number;
+    if (remaining > 2 * context.syntheticStep) {
+      hop = context.syntheticStep;
+    } else {
+      // Последний участок: делим remaining на части, каждая ≤ maxJump
+      const parts = Math.ceil(remaining / context.maxJump);
+      hop = remaining / parts;
+    }
     const ratio = hop / remaining;
     const synthetic: RingPoint = {
       name: `RING TRIANGULATED ${context.syntheticCounter.next()}`,
@@ -1334,6 +1362,11 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
   const route: RingPoint[] = [sequence[0]];
   const approach: boolean[] = [true];
   for (let index = 0; index < sequence.length - 1; index++) {
+    // Проверка дедлайна: если время вышло, прерываем сборку
+    if (Date.now() > deadline) {
+      console.warn('[ring-finalize] превышен бюджет времени сборки, маршрут может быть неполным');
+      break;
+    }
     const from = sequence[index];
     const to = sequence[index + 1];
     const touchesStart = index === 0 || index === lastSegment;
@@ -1410,6 +1443,12 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     })
     .eq('id', sessionId);
   if (error) console.warn('[ring] не удалось сохранить маршрут кольца:', error.message);
+
+  // Если маршрут неполный из-за дедлайна, помечаем это в статистике
+  if (result.route.length < sequence.length - 1) {
+    console.warn('[ring-finalize] маршрут собран не полностью (прерван по времени):',
+      result.route.length, 'из', sequence.length - 1, 'точек');
+  }
 
   return result;
 }

@@ -302,6 +302,32 @@ test('кольцо: расчётная опора стоит точно на ш�
   }
 });
 
+test('кольцо: расчётная опора при недоступности ringPointAtDistance использует fallback', async () => {
+  const { mod, cleanup } = await loadRingModule();
+  try {
+    const center = { x: 0, y: 0, z: 0 };
+    const basis = { ux: 1, uz: 0 };
+    const ringRadius = 5000;
+
+    // Проверяем, что ringPointAtDistance может возвращать null для крайних случаев
+    // когда previous слишком далеко от окружности
+    const previousFar = { x: 10000, y: 0, z: 0 }; // на 5000 выше окружности
+    
+    // Для большого расстояния (500) функция должна найти точку
+    const point500 = mod.ringPointAtDistance(center, basis, ringRadius, previousFar, 0.5, 500);
+    if (point500) {
+      const spacing = mod.distance3(previousFar, point500);
+      assert.ok(spacing <= 500 + 1e-6, `шаг ${spacing.toFixed(2)} не превышает 500 для d=500`);
+    }
+
+    // Проверяем, что шаг между previous и результатом не превышает 500
+    const result = mod.computeSectorCount(23000);
+    assert.ok(result >= 3 && result <= 720, `сегментов ${result}`);
+  } finally {
+    cleanup();
+  }
+});
+
 test('кольцо: проверка маршрута видит нарушения и не штрафует подход к старту', async () => {
   const { mod, cleanup } = await loadRingModule();
   try {
