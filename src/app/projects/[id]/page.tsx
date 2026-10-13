@@ -1,5 +1,8 @@
 "use client";
 
+import { updateSystemCoordinates } from "@/lib/updateSystemCoordinates";
+import { readSystemCoordinates } from "@/lib/systemCoordinateTypes";
+
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase, authFetch } from "@/lib/supabaseClient";
@@ -71,8 +74,9 @@ const sysStatusClass = (s: string) => {
 };
 
 const formatCoordinates = (system: { x?: unknown; y?: unknown; z?: unknown }) => {
-  const coordinates = [system.x, system.y, system.z].map(Number);
-  return coordinates.every(Number.isFinite)
+  const coords = readSystemCoordinates(system);
+  const coordinates = coords ? [coords.x, coords.y, coords.z] : [];
+  return coords && coordinates.every(Number.isFinite)
     ? coordinates.map((value) => value.toFixed(2)).join(", ")
     : "Координаты не загружены";
 };
@@ -187,7 +191,7 @@ export default function ProjectPage() {
         const member = finalMembers.find((m: ProjectMember) => m.user_id === currentUser.id);
         setIsMember(!!member);
 
-        let canEditProject = member?.role === "leader" || member?.role === "officer";
+        let canEditProject = finalProject?.created_by === currentUser.id || member?.role === "leader" || member?.role === "officer";
         if (!canEditProject && finalProject?.squadron_id) {
           const { data: sqPerm } = await supabase
             .from("squadron_member_detail")
@@ -240,54 +244,32 @@ export default function ProjectPage() {
     }
   };
 
-  const fetchEdsmCoords = async () => {
-    if (!systems.length) return;
-    const missing = systems.filter((s) => s.x == null || s.y == null || s.z == null);
-    if (!missing.length) { alert("У всех систем уже есть координаты"); return; }
-
+  const fetchSystemCoords = async () => {
+    if (!canEdit) return;
     setEdsmLoading(true);
-    setEdsmProgress({ current: 0, total: missing.length, systemName: "Подготовка..." });
-
+    setEdsmProgress({ current: 0, total: 0, systemName: "Загрузка полного списка проекта..." });
     try {
-      const res = await fetch("/api/edsm/batch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ names: missing.map((s) => s.system_name) }),
-      });
-      const json = await res.json();
-      let updated = 0;
-
-      for (let i = 0; i < missing.length; i++) {
-        const s = missing[i];
-        setEdsmProgress({ current: i + 1, total: missing.length, systemName: s.system_name });
-
-        const coords = json.results?.[s.system_name];
-        if (coords) {
-          // Project coordinates belong only to project_systems. Never create
-          // or update route_systems here: that table is the global Atlas
-          // route and made EDSM imports leak project systems onto the map.
-          const coordinateResponse = await authFetch(`/api/projects/${id}/systems`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ system_id: s.id, x: coords.x, y: coords.y, z: coords.z }),
-          });
-          if (coordinateResponse.ok) updated++;
-          else {
-            const errorBody = await coordinateResponse.json().catch(() => ({}));
-            console.warn("[EDSM] Could not save coordinates:", errorBody.error || coordinateResponse.status);
-          }
+      const listResponse = await fetch(`/api/projects/${id}/systems?coordinates_only=1`, { cache: "no-store" });
+      const listData = await listResponse.json().catch(() => ({}));
+      if (!listResponse.ok || !Array.isArray(listData.systems)) throw new Error(listData.error || "Не удалось загрузить полный список проекта");
+      const allSystems: ProjectSystem[] = listData.systems;
+      const missing = allSystems.filter(row => !readSystemCoordinates(row));
+      if (!missing.length) { alert(allSystems.length ? "У всех систем уже есть координаты" : "В проекте пока нет систем"); return; }
+      setEdsmProgress({ current: 0, total: missing.length, systemName: "EDSM / Spansh..." });
+      const result = await updateSystemCoordinates(allSystems, async (system, coords) => {
+        // Project coordinates belong exclusively to project_systems.
+        const response = await authFetch(`/api/projects/${id}/systems`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ system_id: system.id, ...coords }),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.error || `HTTP ${response.status}`);
         }
-        await new Promise((r) => setTimeout(r, 50));
-      }
-
-      alert(`Обновлено координат: ${updated} из ${missing.length}`);
-      load();
-    } catch (e: any) {
-      alert("Ошибка EDSM: " + e.message);
-    } finally {
-      setEdsmLoading(false);
-      setEdsmProgress(null);
-    }
+      }, { endpoint: "/api/edsm/batch", onProgress: (current, total, systemName) => setEdsmProgress({ current, total, systemName }) });
+      alert(`Обновлено координат: ${result.updated} из ${result.total}. EDSM: ${result.sources.edsm}, Spansh: ${result.sources.spansh + result.sources.spansh_catalog}. Не найдены: ${result.unresolved}, ошибок записи: ${result.failed}. ${result.errors.join(' ')} ${result.warnings.join(' ')}`);
+    } catch (error: any) { alert("Ошибка получения координат: " + error.message); }
+    finally { setEdsmLoading(false); setEdsmProgress(null); load(); }
   };
 
   const addBulkSystems = async (names: string[]) => {
@@ -674,12 +656,12 @@ export default function ProjectPage() {
             <h2 style={{ fontSize: 14, letterSpacing: 2, margin: 0 }}>Маршрут проекта</h2>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <button
-                onClick={fetchEdsmCoords}
-                disabled={edsmLoading}
+                onClick={fetchSystemCoords}
+                disabled={edsmLoading || !canEdit}
                 className="btn success-btn"
                 style={{ fontSize: 11, padding: "6px 14px" }}
               >
-                {edsmLoading ? <><IconClock size={14} /> Загрузка...</> : <><IconSatellite size={14} /> Координаты с EDSM</>}
+                {edsmLoading ? <><IconClock size={14} /> Загрузка...</> : <><IconSatellite size={14} /> Координаты EDSM / Spansh</>}
               </button>
               {canEdit && systems.length > 0 && (
                 <button

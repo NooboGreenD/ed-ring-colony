@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = await params;
   const admin = createAdminClient();
+  const coordinatesOnly = new URL(req.url).searchParams.get('coordinates_only') === '1';
   const projectId = Number.parseInt(resolvedParams.id, 10);
   if (!Number.isSafeInteger(projectId)) {
     return NextResponse.json({ error: 'Invalid project id' }, { status: 400 });
@@ -17,11 +18,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   // those relations are optional in older deployments.
   // Explicit paging supports complete routes, including projects with 20,000+ systems.
   const { data: systems, error: systemsError } = await readAllRows((from, to) => admin
-    .from('project_systems').select('*').eq('project_id', projectId)
+    .from('project_systems').select(coordinatesOnly ? 'id,system_name,x,y,z' : '*').eq('project_id', projectId)
     .order('sort_order').order('id').range(from, to));
   if (systemsError) {
     return NextResponse.json({ error: systemsError.message }, { status: 500 });
   }
+
+  // Coordinate updates need stored project coordinates, not enriched global-route fallbacks.
+  if (coordinatesOnly) return NextResponse.json({ systems }, { headers: { 'Cache-Control': 'no-store' } });
 
   const requestedKeys = new Set((systems || []).map((system: any) => systemNameKey(system.system_name)).filter(Boolean));
   const [{ data: routeRows, error: routeError }, { data: hubRows, error: hubError }, { data: cacheRows, error: cacheError }] = await Promise.all([
