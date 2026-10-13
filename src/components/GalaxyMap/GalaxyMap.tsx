@@ -601,9 +601,19 @@ export default function GalaxyMap({
       else if (!point) handleClearSelection();
     };
 
+    const focusNearbySystem = (event: Event) => {
+      const point = (event as CustomEvent<{ name: string; x: number; y: number; z: number }>).detail;
+      const positioned = point ? { ...point, system_name: point.name } : null;
+      if (positioned && hasCoordinates(positioned)) {
+        handleClearSelection();
+        setFocusTarget(eliteToThreeCentered(positioned));
+      }
+    };
+    window.addEventListener('atlas-focus-system', focusNearbySystem);
     window.addEventListener('atlas-focus-candidate', focusAtlasCandidate);
     window.addEventListener('atlas-focus-route-point', focusRoutePoint);
     return () => {
+      window.removeEventListener('atlas-focus-system', focusNearbySystem);
       window.removeEventListener('atlas-focus-candidate', focusAtlasCandidate);
       window.removeEventListener('atlas-focus-route-point', focusRoutePoint);
     };

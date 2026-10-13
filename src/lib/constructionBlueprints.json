@@ -1,0 +1,4922 @@
+[
+  {
+    "id": "no_truss",
+    "name": "Coriolis Starport",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 10055
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 1207
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 11261
+      },
+      {
+        "name": "Computer Components",
+        "amount": 145
+      },
+      {
+        "name": "Copper",
+        "amount": 644
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 242
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 145
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 644
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 3781
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 25
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 25
+      },
+      {
+        "name": "Polymers",
+        "amount": 1046
+      },
+      {
+        "name": "Power Generators",
+        "amount": 65
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 161
+      },
+      {
+        "name": "Steel",
+        "amount": 14076
+      },
+      {
+        "name": "Superconductors",
+        "amount": 282
+      },
+      {
+        "name": "Titanium",
+        "amount": 8205
+      },
+      {
+        "name": "Water",
+        "amount": 1609
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 105
+      }
+    ]
+  },
+  {
+    "id": "asteroid",
+    "name": "Asteroid Base",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 10055
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 1207
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 11261
+      },
+      {
+        "name": "Computer Components",
+        "amount": 145
+      },
+      {
+        "name": "Copper",
+        "amount": 644
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 242
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 145
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 644
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 3781
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 25
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 25
+      },
+      {
+        "name": "Polymers",
+        "amount": 1046
+      },
+      {
+        "name": "Power Generators",
+        "amount": 65
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 161
+      },
+      {
+        "name": "Steel",
+        "amount": 14076
+      },
+      {
+        "name": "Superconductors",
+        "amount": 282
+      },
+      {
+        "name": "Titanium",
+        "amount": 8205
+      },
+      {
+        "name": "Water",
+        "amount": 1609
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 105
+      }
+    ]
+  },
+  {
+    "id": "dodec",
+    "name": "Dodec Starport",
+    "location": "orbital",
+    "tier": 3,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 45248
+      },
+      {
+        "name": "Auto-Fabricators",
+        "amount": 314
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 5432
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 50675
+      },
+      {
+        "name": "Computer Components",
+        "amount": 363
+      },
+      {
+        "name": "Copper",
+        "amount": 2898
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 605
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 363
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 1610
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 17015
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 63
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 63
+      },
+      {
+        "name": "Polymers",
+        "amount": 2615
+      },
+      {
+        "name": "Power Generators",
+        "amount": 163
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 403
+      },
+      {
+        "name": "Steel",
+        "amount": 63342
+      },
+      {
+        "name": "Superconductors",
+        "amount": 705
+      },
+      {
+        "name": "Titanium",
+        "amount": 36923
+      },
+      {
+        "name": "Water",
+        "amount": 7241
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 263
+      }
+    ]
+  },
+  {
+    "id": "ocellus",
+    "name": "Ocellus Starport",
+    "location": "orbital",
+    "tier": 3,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 40220
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 4828
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 45044
+      },
+      {
+        "name": "Computer Components",
+        "amount": 290
+      },
+      {
+        "name": "Copper",
+        "amount": 2576
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 484
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 290
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 1288
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 15124
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 50
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 50
+      },
+      {
+        "name": "Polymers",
+        "amount": 2092
+      },
+      {
+        "name": "Power Generators",
+        "amount": 130
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 322
+      },
+      {
+        "name": "Steel",
+        "amount": 56304
+      },
+      {
+        "name": "Superconductors",
+        "amount": 564
+      },
+      {
+        "name": "Titanium",
+        "amount": 32820
+      },
+      {
+        "name": "Water",
+        "amount": 6436
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 210
+      }
+    ]
+  },
+  {
+    "id": "apollo",
+    "name": "Orbis Starport",
+    "location": "orbital",
+    "tier": 3,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 40220
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 4828
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 45044
+      },
+      {
+        "name": "Computer Components",
+        "amount": 290
+      },
+      {
+        "name": "Copper",
+        "amount": 2576
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 484
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 290
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 1288
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 15124
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 50
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 50
+      },
+      {
+        "name": "Polymers",
+        "amount": 2092
+      },
+      {
+        "name": "Power Generators",
+        "amount": 130
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 322
+      },
+      {
+        "name": "Steel",
+        "amount": 56304
+      },
+      {
+        "name": "Superconductors",
+        "amount": 564
+      },
+      {
+        "name": "Titanium",
+        "amount": 32820
+      },
+      {
+        "name": "Water",
+        "amount": 6436
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 210
+      }
+    ]
+  },
+  {
+    "id": "plutus",
+    "name": "Commercial Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Ceramic Composites",
+        "amount": 497
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 3912
+      },
+      {
+        "name": "Computer Components",
+        "amount": 50
+      },
+      {
+        "name": "Copper",
+        "amount": 218
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 94
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 311
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1553
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 13
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 497
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 56
+      },
+      {
+        "name": "Steel",
+        "amount": 5588
+      },
+      {
+        "name": "Superconductors",
+        "amount": 100
+      },
+      {
+        "name": "Titanium",
+        "amount": 4843
+      },
+      {
+        "name": "Water",
+        "amount": 621
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "vulcan",
+    "name": "Industrial Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Ceramic Composites",
+        "amount": 497
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 3912
+      },
+      {
+        "name": "Computer Components",
+        "amount": 50
+      },
+      {
+        "name": "Copper",
+        "amount": 218
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 94
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 311
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1553
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 13
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 497
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 56
+      },
+      {
+        "name": "Steel",
+        "amount": 5588
+      },
+      {
+        "name": "Superconductors",
+        "amount": 100
+      },
+      {
+        "name": "Titanium",
+        "amount": 4843
+      },
+      {
+        "name": "Water",
+        "amount": 621
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "dysnomia",
+    "name": "Pirate Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Ceramic Composites",
+        "amount": 497
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 3912
+      },
+      {
+        "name": "Computer Components",
+        "amount": 50
+      },
+      {
+        "name": "Copper",
+        "amount": 218
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 94
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 311
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1553
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 13
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 497
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 56
+      },
+      {
+        "name": "Steel",
+        "amount": 5588
+      },
+      {
+        "name": "Superconductors",
+        "amount": 100
+      },
+      {
+        "name": "Titanium",
+        "amount": 4843
+      },
+      {
+        "name": "Water",
+        "amount": 621
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "vesta",
+    "name": "Civilian Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Ceramic Composites",
+        "amount": 497
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 3912
+      },
+      {
+        "name": "Computer Components",
+        "amount": 50
+      },
+      {
+        "name": "Copper",
+        "amount": 218
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 94
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 311
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1553
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 13
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 497
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 56
+      },
+      {
+        "name": "Steel",
+        "amount": 5588
+      },
+      {
+        "name": "Superconductors",
+        "amount": 100
+      },
+      {
+        "name": "Titanium",
+        "amount": 4843
+      },
+      {
+        "name": "Water",
+        "amount": 621
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "prometheus",
+    "name": "Scientific Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Ceramic Composites",
+        "amount": 497
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 3912
+      },
+      {
+        "name": "Computer Components",
+        "amount": 50
+      },
+      {
+        "name": "Copper",
+        "amount": 218
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 94
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 311
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1553
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 13
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 497
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 56
+      },
+      {
+        "name": "Steel",
+        "amount": 5588
+      },
+      {
+        "name": "Superconductors",
+        "amount": 100
+      },
+      {
+        "name": "Titanium",
+        "amount": 4843
+      },
+      {
+        "name": "Water",
+        "amount": 621
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "nemesis",
+    "name": "Military Outpost",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1317
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 24
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 30
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 238
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 356
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 48
+      },
+      {
+        "name": "Computer Components",
+        "amount": 42
+      },
+      {
+        "name": "Copper",
+        "amount": 131
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 107
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 48
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 178
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1424
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 18
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 36
+      },
+      {
+        "name": "Polymers",
+        "amount": 416
+      },
+      {
+        "name": "Power Generators",
+        "amount": 18
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 30
+      },
+      {
+        "name": "Steel",
+        "amount": 2966
+      },
+      {
+        "name": "Titanium",
+        "amount": 2373
+      },
+      {
+        "name": "Water",
+        "amount": 238
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 42
+      }
+    ]
+  },
+  {
+    "id": "hermes",
+    "name": "Satellite Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1322
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 85
+      },
+      {
+        "name": "Computer Components",
+        "amount": 22
+      },
+      {
+        "name": "Copper",
+        "amount": 85
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 26
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 9
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 106
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 678
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 170
+      },
+      {
+        "name": "Power Generators",
+        "amount": 9
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 34
+      },
+      {
+        "name": "Steel",
+        "amount": 2542
+      },
+      {
+        "name": "Superconductors",
+        "amount": 60
+      },
+      {
+        "name": "Titanium",
+        "amount": 1525
+      },
+      {
+        "name": "Water",
+        "amount": 22
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 13
+      }
+    ]
+  },
+  {
+    "id": "pistis",
+    "name": "Comms Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1322
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 85
+      },
+      {
+        "name": "Computer Components",
+        "amount": 22
+      },
+      {
+        "name": "Copper",
+        "amount": 85
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 26
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 9
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 106
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 678
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 170
+      },
+      {
+        "name": "Power Generators",
+        "amount": 9
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 34
+      },
+      {
+        "name": "Steel",
+        "amount": 2542
+      },
+      {
+        "name": "Superconductors",
+        "amount": 60
+      },
+      {
+        "name": "Titanium",
+        "amount": 1525
+      },
+      {
+        "name": "Water",
+        "amount": 22
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 13
+      }
+    ]
+  },
+  {
+    "id": "demeter",
+    "name": "Agricultural Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Agri-Medicines",
+        "amount": 115
+      },
+      {
+        "name": "Aluminium",
+        "amount": 842
+      },
+      {
+        "name": "Biowaste",
+        "amount": 153
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 77
+      },
+      {
+        "name": "Computer Components",
+        "amount": 12
+      },
+      {
+        "name": "Copper",
+        "amount": 46
+      },
+      {
+        "name": "Crop Harvesters",
+        "amount": 77
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 46
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 69
+      },
+      {
+        "name": "Grain",
+        "amount": 92
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 192
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1071
+      },
+      {
+        "name": "Pesticides",
+        "amount": 123
+      },
+      {
+        "name": "Polymers",
+        "amount": 230
+      },
+      {
+        "name": "Power Generators",
+        "amount": 8
+      },
+      {
+        "name": "Steel",
+        "amount": 1912
+      },
+      {
+        "name": "Titanium",
+        "amount": 1453
+      },
+      {
+        "name": "Water",
+        "amount": 173
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 31
+      }
+    ]
+  },
+  {
+    "id": "apate",
+    "name": "Pirate Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1233
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 23
+      },
+      {
+        "name": "Beer",
+        "amount": 380
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 95
+      },
+      {
+        "name": "Computer Components",
+        "amount": 19
+      },
+      {
+        "name": "Copper",
+        "amount": 57
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 61
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 16
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 95
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 911
+      },
+      {
+        "name": "Liquor",
+        "amount": 228
+      },
+      {
+        "name": "Polymers",
+        "amount": 190
+      },
+      {
+        "name": "Power Generators",
+        "amount": 8
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 23
+      },
+      {
+        "name": "Steel",
+        "amount": 1707
+      },
+      {
+        "name": "Titanium",
+        "amount": 1594
+      },
+      {
+        "name": "Water",
+        "amount": 65
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 16
+      }
+    ]
+  },
+  {
+    "id": "euthenia",
+    "name": "Industrial Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 921
+      },
+      {
+        "name": "Bioreducing Lichen",
+        "amount": 172
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 86
+      },
+      {
+        "name": "Computer Components",
+        "amount": 13
+      },
+      {
+        "name": "Copper",
+        "amount": 52
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 52
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 18
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 26
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 13
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 129
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1028
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 43
+      },
+      {
+        "name": "Polymers",
+        "amount": 215
+      },
+      {
+        "name": "Power Generators",
+        "amount": 9
+      },
+      {
+        "name": "Resonating Separators",
+        "amount": 22
+      },
+      {
+        "name": "Robotics",
+        "amount": 60
+      },
+      {
+        "name": "Steel",
+        "amount": 2141
+      },
+      {
+        "name": "Titanium",
+        "amount": 1628
+      },
+      {
+        "name": "Water",
+        "amount": 73
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 22
+      }
+    ]
+  },
+  {
+    "id": "enodia",
+    "name": "Relay Installation",
+    "location": "orbital",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1033
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 98
+      },
+      {
+        "name": "Computer Components",
+        "amount": 25
+      },
+      {
+        "name": "Copper",
+        "amount": 88
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 30
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 10
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 122
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 780
+      },
+      {
+        "name": "Polymers",
+        "amount": 195
+      },
+      {
+        "name": "Power Generators",
+        "amount": 10
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 39
+      },
+      {
+        "name": "Steel",
+        "amount": 2437
+      },
+      {
+        "name": "Superconductors",
+        "amount": 59
+      },
+      {
+        "name": "Titanium",
+        "amount": 1755
+      },
+      {
+        "name": "Water",
+        "amount": 25
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 15
+      }
+    ]
+  },
+  {
+    "id": "vacuna",
+    "name": "Military Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1317
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 24
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 30
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 238
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 356
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 48
+      },
+      {
+        "name": "Computer Components",
+        "amount": 42
+      },
+      {
+        "name": "Copper",
+        "amount": 131
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 107
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 48
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 178
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1424
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 18
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 36
+      },
+      {
+        "name": "Polymers",
+        "amount": 416
+      },
+      {
+        "name": "Power Generators",
+        "amount": 18
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 30
+      },
+      {
+        "name": "Steel",
+        "amount": 2966
+      },
+      {
+        "name": "Titanium",
+        "amount": 2373
+      },
+      {
+        "name": "Water",
+        "amount": 238
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 42
+      }
+    ]
+  },
+  {
+    "id": "dicaeosyne",
+    "name": "Security Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1774
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 19
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 122
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 25
+      },
+      {
+        "name": "Computer Components",
+        "amount": 31
+      },
+      {
+        "name": "Copper",
+        "amount": 122
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 37
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 13
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 183
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1458
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 19
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 19
+      },
+      {
+        "name": "Polymers",
+        "amount": 243
+      },
+      {
+        "name": "Power Generators",
+        "amount": 13
+      },
+      {
+        "name": "Steel",
+        "amount": 3645
+      },
+      {
+        "name": "Titanium",
+        "amount": 2309
+      },
+      {
+        "name": "Water",
+        "amount": 31
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 19
+      }
+    ]
+  },
+  {
+    "id": "harmonia",
+    "name": "Government Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1959
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 154
+      },
+      {
+        "name": "Computer Components",
+        "amount": 13
+      },
+      {
+        "name": "Copper",
+        "amount": 93
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 93
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 37
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 247
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1479
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 13
+      },
+      {
+        "name": "Polymers",
+        "amount": 370
+      },
+      {
+        "name": "Power Generators",
+        "amount": 13
+      },
+      {
+        "name": "Steel",
+        "amount": 3080
+      },
+      {
+        "name": "Titanium",
+        "amount": 2341
+      },
+      {
+        "name": "Water",
+        "amount": 154
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 31
+      }
+    ]
+  },
+  {
+    "id": "asclepius",
+    "name": "Medical Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1357
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 50
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 155
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 19
+      },
+      {
+        "name": "Computer Components",
+        "amount": 31
+      },
+      {
+        "name": "Copper",
+        "amount": 112
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 75
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 50
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 25
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 309
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1727
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 99
+      },
+      {
+        "name": "Polymers",
+        "amount": 371
+      },
+      {
+        "name": "Power Generators",
+        "amount": 19
+      },
+      {
+        "name": "Steel",
+        "amount": 3084
+      },
+      {
+        "name": "Titanium",
+        "amount": 2282
+      },
+      {
+        "name": "Water",
+        "amount": 278
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "astraeus",
+    "name": "Scientific Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 44
+      },
+      {
+        "name": "Aluminium",
+        "amount": 1380
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 13
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 157
+      },
+      {
+        "name": "Computer Components",
+        "amount": 38
+      },
+      {
+        "name": "Copper",
+        "amount": 126
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 76
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 26
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 26
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 32
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 314
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1506
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 51
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 13
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 38
+      },
+      {
+        "name": "Polymers",
+        "amount": 377
+      },
+      {
+        "name": "Power Generators",
+        "amount": 13
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 51
+      },
+      {
+        "name": "Steel",
+        "amount": 3136
+      },
+      {
+        "name": "Superconductors",
+        "amount": 88
+      },
+      {
+        "name": "Titanium",
+        "amount": 2383
+      },
+      {
+        "name": "Water",
+        "amount": 157
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      }
+    ]
+  },
+  {
+    "id": "hedone",
+    "name": "Tourist Installation",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1269
+      },
+      {
+        "name": "Animal Meat",
+        "amount": 78
+      },
+      {
+        "name": "Beer",
+        "amount": 389
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 130
+      },
+      {
+        "name": "Coffee",
+        "amount": 130
+      },
+      {
+        "name": "Computer Components",
+        "amount": 13
+      },
+      {
+        "name": "Copper",
+        "amount": 78
+      },
+      {
+        "name": "Fish",
+        "amount": 39
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 65
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 259
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1813
+      },
+      {
+        "name": "Liquor",
+        "amount": 195
+      },
+      {
+        "name": "Polymers",
+        "amount": 324
+      },
+      {
+        "name": "Power Generators",
+        "amount": 13
+      },
+      {
+        "name": "Steel",
+        "amount": 2589
+      },
+      {
+        "name": "Tea",
+        "amount": 259
+      },
+      {
+        "name": "Titanium",
+        "amount": 1813
+      },
+      {
+        "name": "Water",
+        "amount": 324
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 39
+      },
+      {
+        "name": "Wine",
+        "amount": 259
+      }
+    ]
+  },
+  {
+    "id": "dionysus",
+    "name": "Space Bar",
+    "location": "orbital",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1217
+      },
+      {
+        "name": "Animal Meat",
+        "amount": 38
+      },
+      {
+        "name": "Beer",
+        "amount": 497
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 125
+      },
+      {
+        "name": "Coffee",
+        "amount": 63
+      },
+      {
+        "name": "Computer Components",
+        "amount": 13
+      },
+      {
+        "name": "Copper",
+        "amount": 75
+      },
+      {
+        "name": "Fish",
+        "amount": 19
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 38
+      },
+      {
+        "name": "Insulating Membrane",
+        "amount": 249
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1738
+      },
+      {
+        "name": "Liquor",
+        "amount": 311
+      },
+      {
+        "name": "Polymers",
+        "amount": 311
+      },
+      {
+        "name": "Power Generators",
+        "amount": 13
+      },
+      {
+        "name": "Steel",
+        "amount": 2483
+      },
+      {
+        "name": "Tea",
+        "amount": 187
+      },
+      {
+        "name": "Titanium",
+        "amount": 1738
+      },
+      {
+        "name": "Water",
+        "amount": 311
+      },
+      {
+        "name": "Water Purifiers",
+        "amount": 38
+      },
+      {
+        "name": "Wine",
+        "amount": 621
+      }
+    ]
+  },
+  {
+    "id": "hestia",
+    "name": "Civilian Settlement",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 7047
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 407
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 814
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 6776
+      },
+      {
+        "name": "Computer Components",
+        "amount": 102
+      },
+      {
+        "name": "Copper",
+        "amount": 407
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 68
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 204
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 136
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 95
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 2372
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 48
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 34
+      },
+      {
+        "name": "Polymers",
+        "amount": 678
+      },
+      {
+        "name": "Power Generators",
+        "amount": 68
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 102
+      },
+      {
+        "name": "Steel",
+        "amount": 10164
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 678
+      },
+      {
+        "name": "Superconductors",
+        "amount": 136
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 610
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 55
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 68
+      },
+      {
+        "name": "Titanium",
+        "amount": 5760
+      }
+    ]
+  },
+  {
+    "id": "hephaestus",
+    "name": "Industrial Settlement",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 7047
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 407
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 814
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 6776
+      },
+      {
+        "name": "Computer Components",
+        "amount": 102
+      },
+      {
+        "name": "Copper",
+        "amount": 407
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 68
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 204
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 136
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 95
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 2372
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 48
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 34
+      },
+      {
+        "name": "Polymers",
+        "amount": 678
+      },
+      {
+        "name": "Power Generators",
+        "amount": 68
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 102
+      },
+      {
+        "name": "Steel",
+        "amount": 10164
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 678
+      },
+      {
+        "name": "Superconductors",
+        "amount": 136
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 610
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 55
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 68
+      },
+      {
+        "name": "Titanium",
+        "amount": 5760
+      }
+    ]
+  },
+  {
+    "id": "necessitas",
+    "name": "Scientific Settlement",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 7047
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 407
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 814
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 6776
+      },
+      {
+        "name": "Computer Components",
+        "amount": 102
+      },
+      {
+        "name": "Copper",
+        "amount": 407
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 68
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 204
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 136
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 95
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 2372
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 48
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 34
+      },
+      {
+        "name": "Polymers",
+        "amount": 678
+      },
+      {
+        "name": "Power Generators",
+        "amount": 68
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 102
+      },
+      {
+        "name": "Steel",
+        "amount": 10164
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 678
+      },
+      {
+        "name": "Superconductors",
+        "amount": 136
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 610
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 55
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 68
+      },
+      {
+        "name": "Titanium",
+        "amount": 5760
+      }
+    ]
+  },
+  {
+    "id": "zeus",
+    "name": "Port Surface Outpost",
+    "location": "surface",
+    "tier": 3,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 42282
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 2442
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 4884
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 40656
+      },
+      {
+        "name": "Computer Components",
+        "amount": 408
+      },
+      {
+        "name": "Copper",
+        "amount": 2442
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 272
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 816
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 544
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 380
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 14232
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 192
+      },
+      {
+        "name": "Non-Lethal Weapons",
+        "amount": 136
+      },
+      {
+        "name": "Polymers",
+        "amount": 2712
+      },
+      {
+        "name": "Power Generators",
+        "amount": 272
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 408
+      },
+      {
+        "name": "Steel",
+        "amount": 60984
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 2712
+      },
+      {
+        "name": "Superconductors",
+        "amount": 544
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 3660
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 220
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 272
+      },
+      {
+        "name": "Titanium",
+        "amount": 34560
+      }
+    ]
+  },
+  {
+    "id": "consus",
+    "name": "Agricultural Settlement - Small",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 559
+      },
+      {
+        "name": "Biowaste",
+        "amount": 280
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 42
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 28
+      },
+      {
+        "name": "Computer Components",
+        "amount": 14
+      },
+      {
+        "name": "Copper",
+        "amount": 21
+      },
+      {
+        "name": "Crop Harvesters",
+        "amount": 210
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 84
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 14
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 42
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 63
+      },
+      {
+        "name": "Grain",
+        "amount": 77
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 224
+      },
+      {
+        "name": "Pesticides",
+        "amount": 126
+      },
+      {
+        "name": "Polymers",
+        "amount": 91
+      },
+      {
+        "name": "Steel",
+        "amount": 768
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 56
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 56
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 14
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 70
+      }
+    ]
+  },
+  {
+    "id": "picumnus",
+    "name": "Agricultural Settlement - Medium",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1118
+      },
+      {
+        "name": "Biowaste",
+        "amount": 560
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 84
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 56
+      },
+      {
+        "name": "Computer Components",
+        "amount": 28
+      },
+      {
+        "name": "Copper",
+        "amount": 42
+      },
+      {
+        "name": "Crop Harvesters",
+        "amount": 420
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 168
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 28
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 84
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 126
+      },
+      {
+        "name": "Grain",
+        "amount": 154
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 448
+      },
+      {
+        "name": "Pesticides",
+        "amount": 252
+      },
+      {
+        "name": "Polymers",
+        "amount": 182
+      },
+      {
+        "name": "Steel",
+        "amount": 1536
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 112
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 112
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 28
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 140
+      }
+    ]
+  },
+  {
+    "id": "ceres",
+    "name": "Agricultural Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1677
+      },
+      {
+        "name": "Biowaste",
+        "amount": 840
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 126
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 84
+      },
+      {
+        "name": "Computer Components",
+        "amount": 42
+      },
+      {
+        "name": "Copper",
+        "amount": 63
+      },
+      {
+        "name": "Crop Harvesters",
+        "amount": 630
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 252
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 42
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 126
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 189
+      },
+      {
+        "name": "Grain",
+        "amount": 231
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 672
+      },
+      {
+        "name": "Pesticides",
+        "amount": 378
+      },
+      {
+        "name": "Polymers",
+        "amount": 273
+      },
+      {
+        "name": "Steel",
+        "amount": 2304
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 168
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 168
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 42
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 210
+      }
+    ]
+  },
+  {
+    "id": "ourea",
+    "name": "Extraction Settlement - Small",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 632
+      },
+      {
+        "name": "Bioreducing Lichen",
+        "amount": 162
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 59
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 59
+      },
+      {
+        "name": "Computer Components",
+        "amount": 30
+      },
+      {
+        "name": "Copper",
+        "amount": 30
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 96
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 30
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 45
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 30
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 52
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 15
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 177
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 45
+      },
+      {
+        "name": "Polymers",
+        "amount": 118
+      },
+      {
+        "name": "Robotics",
+        "amount": 59
+      },
+      {
+        "name": "Steel",
+        "amount": 1028
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 74
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 89
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 15
+      }
+    ]
+  },
+  {
+    "id": "mantus",
+    "name": "Extraction Settlement - Medium",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1264
+      },
+      {
+        "name": "Bioreducing Lichen",
+        "amount": 324
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 118
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 118
+      },
+      {
+        "name": "Computer Components",
+        "amount": 60
+      },
+      {
+        "name": "Copper",
+        "amount": 60
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 192
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 60
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 90
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 60
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 104
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 30
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 354
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 90
+      },
+      {
+        "name": "Polymers",
+        "amount": 236
+      },
+      {
+        "name": "Robotics",
+        "amount": 118
+      },
+      {
+        "name": "Steel",
+        "amount": 2056
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 148
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 178
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 30
+      }
+    ]
+  },
+  {
+    "id": "erebus",
+    "name": "Extraction Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1896
+      },
+      {
+        "name": "Bioreducing Lichen",
+        "amount": 486
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 177
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 177
+      },
+      {
+        "name": "Computer Components",
+        "amount": 90
+      },
+      {
+        "name": "Copper",
+        "amount": 90
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 288
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 90
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 135
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 90
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 156
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 45
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 531
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 135
+      },
+      {
+        "name": "Polymers",
+        "amount": 354
+      },
+      {
+        "name": "Robotics",
+        "amount": 177
+      },
+      {
+        "name": "Steel",
+        "amount": 3084
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 222
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 267
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 45
+      }
+    ]
+  },
+  {
+    "id": "fontus",
+    "name": "Industrial Settlement - Small",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 41
+      },
+      {
+        "name": "Aluminium",
+        "amount": 585
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 55
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 55
+      },
+      {
+        "name": "Computer Components",
+        "amount": 28
+      },
+      {
+        "name": "Copper",
+        "amount": 28
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 28
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 21
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 41
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 28
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 14
+      },
+      {
+        "name": "Microbial Furnaces",
+        "amount": 82
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 272
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 14
+      },
+      {
+        "name": "Mineral Extractors",
+        "amount": 164
+      },
+      {
+        "name": "Polymers",
+        "amount": 109
+      },
+      {
+        "name": "Resonating Separators",
+        "amount": 14
+      },
+      {
+        "name": "Robotics",
+        "amount": 55
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 14
+      },
+      {
+        "name": "Steel",
+        "amount": 1019
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 68
+      },
+      {
+        "name": "Superconductors",
+        "amount": 14
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 68
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 14
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 14
+      }
+    ]
+  },
+  {
+    "id": "meteope",
+    "name": "Industrial Settlement - Medium",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 82
+      },
+      {
+        "name": "Aluminium",
+        "amount": 1170
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 110
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 110
+      },
+      {
+        "name": "Computer Components",
+        "amount": 56
+      },
+      {
+        "name": "Copper",
+        "amount": 56
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 56
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 42
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 82
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 56
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 28
+      },
+      {
+        "name": "Microbial Furnaces",
+        "amount": 164
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 544
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 28
+      },
+      {
+        "name": "Mineral Extractors",
+        "amount": 328
+      },
+      {
+        "name": "Polymers",
+        "amount": 218
+      },
+      {
+        "name": "Resonating Separators",
+        "amount": 28
+      },
+      {
+        "name": "Robotics",
+        "amount": 110
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 28
+      },
+      {
+        "name": "Steel",
+        "amount": 2038
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 136
+      },
+      {
+        "name": "Superconductors",
+        "amount": 28
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 136
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 28
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 28
+      }
+    ]
+  },
+  {
+    "id": "gaea",
+    "name": "Industrial Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 123
+      },
+      {
+        "name": "Aluminium",
+        "amount": 1755
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 165
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 165
+      },
+      {
+        "name": "Computer Components",
+        "amount": 84
+      },
+      {
+        "name": "Copper",
+        "amount": 84
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 84
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 63
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 123
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 84
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 42
+      },
+      {
+        "name": "Microbial Furnaces",
+        "amount": 246
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 816
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 42
+      },
+      {
+        "name": "Mineral Extractors",
+        "amount": 492
+      },
+      {
+        "name": "Polymers",
+        "amount": 327
+      },
+      {
+        "name": "Resonating Separators",
+        "amount": 42
+      },
+      {
+        "name": "Robotics",
+        "amount": 165
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 42
+      },
+      {
+        "name": "Steel",
+        "amount": 3057
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 204
+      },
+      {
+        "name": "Superconductors",
+        "amount": 42
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 204
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 42
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 42
+      }
+    ]
+  },
+  {
+    "id": "ioke",
+    "name": "Military Settlement - Small",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 593
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 36
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 24
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 60
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 60
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 356
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 36
+      },
+      {
+        "name": "Computer Components",
+        "amount": 42
+      },
+      {
+        "name": "Copper",
+        "amount": 30
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 24
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 36
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 36
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 24
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 172
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 12
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 24
+      },
+      {
+        "name": "Polymers",
+        "amount": 119
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 24
+      },
+      {
+        "name": "Steel",
+        "amount": 949
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 101
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 60
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 24
+      }
+    ]
+  },
+  {
+    "id": "bellona",
+    "name": "Military Settlement - Medium",
+    "location": "surface",
+    "tier": 1,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1186
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 72
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 48
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 120
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 120
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 712
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 72
+      },
+      {
+        "name": "Computer Components",
+        "amount": 84
+      },
+      {
+        "name": "Copper",
+        "amount": 60
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 48
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 72
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 72
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 48
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 344
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 24
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 48
+      },
+      {
+        "name": "Polymers",
+        "amount": 238
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 48
+      },
+      {
+        "name": "Steel",
+        "amount": 1898
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 202
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 120
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 48
+      }
+    ]
+  },
+  {
+    "id": "minerva",
+    "name": "Military Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1779
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 108
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 72
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 180
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 180
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 1068
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 108
+      },
+      {
+        "name": "Computer Components",
+        "amount": 126
+      },
+      {
+        "name": "Copper",
+        "amount": 90
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 72
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 108
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 108
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 72
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 516
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 36
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 72
+      },
+      {
+        "name": "Polymers",
+        "amount": 357
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 72
+      },
+      {
+        "name": "Steel",
+        "amount": 2847
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 303
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 180
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 72
+      }
+    ]
+  },
+  {
+    "id": "pheobe",
+    "name": "High Tech Settlement - Small",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 95
+      },
+      {
+        "name": "Aluminium",
+        "amount": 607
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 14
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 54
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 41
+      },
+      {
+        "name": "Computer Components",
+        "amount": 41
+      },
+      {
+        "name": "Copper",
+        "amount": 34
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 27
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 27
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 41
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 27
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 27
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 27
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 351
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 41
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 14
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 95
+      },
+      {
+        "name": "Polymers",
+        "amount": 115
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 21
+      },
+      {
+        "name": "Steel",
+        "amount": 945
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 81
+      },
+      {
+        "name": "Superconductors",
+        "amount": 21
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 81
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 14
+      }
+    ]
+  },
+  {
+    "id": "asteria",
+    "name": "High Tech Settlement - Medium",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 190
+      },
+      {
+        "name": "Aluminium",
+        "amount": 1214
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 28
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 108
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 82
+      },
+      {
+        "name": "Computer Components",
+        "amount": 82
+      },
+      {
+        "name": "Copper",
+        "amount": 68
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 54
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 54
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 82
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 54
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 54
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 54
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 702
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 82
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 28
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 190
+      },
+      {
+        "name": "Polymers",
+        "amount": 230
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 42
+      },
+      {
+        "name": "Steel",
+        "amount": 1890
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 162
+      },
+      {
+        "name": "Superconductors",
+        "amount": 42
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 162
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 28
+      }
+    ]
+  },
+  {
+    "id": "chronos",
+    "name": "High Tech Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 285
+      },
+      {
+        "name": "Aluminium",
+        "amount": 1821
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 42
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 162
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 123
+      },
+      {
+        "name": "Computer Components",
+        "amount": 123
+      },
+      {
+        "name": "Copper",
+        "amount": 102
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 81
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 81
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 123
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 81
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 81
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 81
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 1053
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 123
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 42
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 285
+      },
+      {
+        "name": "Polymers",
+        "amount": 345
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 63
+      },
+      {
+        "name": "Steel",
+        "amount": 2835
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 243
+      },
+      {
+        "name": "Superconductors",
+        "amount": 63
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 243
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 42
+      }
+    ]
+  },
+  {
+    "id": "aergia",
+    "name": "Tourism Settlement - Small",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 509
+      },
+      {
+        "name": "Animal Meat",
+        "amount": 71
+      },
+      {
+        "name": "Beer",
+        "amount": 311
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 29
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 43
+      },
+      {
+        "name": "Coffee",
+        "amount": 71
+      },
+      {
+        "name": "Computer Components",
+        "amount": 15
+      },
+      {
+        "name": "Copper",
+        "amount": 22
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 15
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 22
+      },
+      {
+        "name": "Fish",
+        "amount": 36
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 71
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 227
+      },
+      {
+        "name": "Liquor",
+        "amount": 128
+      },
+      {
+        "name": "Polymers",
+        "amount": 114
+      },
+      {
+        "name": "Steel",
+        "amount": 707
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 57
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 57
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 15
+      },
+      {
+        "name": "Tea",
+        "amount": 170
+      },
+      {
+        "name": "Wine",
+        "amount": 156
+      }
+    ]
+  },
+  {
+    "id": "comus",
+    "name": "Tourism Settlement - Medium",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1018
+      },
+      {
+        "name": "Animal Meat",
+        "amount": 142
+      },
+      {
+        "name": "Beer",
+        "amount": 622
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 58
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 86
+      },
+      {
+        "name": "Coffee",
+        "amount": 142
+      },
+      {
+        "name": "Computer Components",
+        "amount": 30
+      },
+      {
+        "name": "Copper",
+        "amount": 44
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 30
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 44
+      },
+      {
+        "name": "Fish",
+        "amount": 72
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 142
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 454
+      },
+      {
+        "name": "Liquor",
+        "amount": 256
+      },
+      {
+        "name": "Polymers",
+        "amount": 228
+      },
+      {
+        "name": "Steel",
+        "amount": 1414
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 114
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 114
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 30
+      },
+      {
+        "name": "Tea",
+        "amount": 340
+      },
+      {
+        "name": "Wine",
+        "amount": 312
+      }
+    ]
+  },
+  {
+    "id": "fufluns",
+    "name": "Tourism Settlement - Large",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 1527
+      },
+      {
+        "name": "Animal Meat",
+        "amount": 213
+      },
+      {
+        "name": "Beer",
+        "amount": 933
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 87
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 129
+      },
+      {
+        "name": "Coffee",
+        "amount": 213
+      },
+      {
+        "name": "Computer Components",
+        "amount": 45
+      },
+      {
+        "name": "Copper",
+        "amount": 66
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 45
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 66
+      },
+      {
+        "name": "Fish",
+        "amount": 108
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 213
+      },
+      {
+        "name": "Liquid oxygen",
+        "amount": 681
+      },
+      {
+        "name": "Liquor",
+        "amount": 384
+      },
+      {
+        "name": "Polymers",
+        "amount": 342
+      },
+      {
+        "name": "Steel",
+        "amount": 2121
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 171
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 171
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 45
+      },
+      {
+        "name": "Tea",
+        "amount": 510
+      },
+      {
+        "name": "Wine",
+        "amount": 468
+      }
+    ]
+  },
+  {
+    "id": "tartarus",
+    "name": "Extraction Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2352
+      },
+      {
+        "name": "Bioreducing Lichen",
+        "amount": 714
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 210
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 252
+      },
+      {
+        "name": "Computer Components",
+        "amount": 38
+      },
+      {
+        "name": "Copper",
+        "amount": 84
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 42
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 51
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 51
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 34
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 210
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 126
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 160
+      },
+      {
+        "name": "Polymers",
+        "amount": 672
+      },
+      {
+        "name": "Power Generators",
+        "amount": 26
+      },
+      {
+        "name": "Robotics",
+        "amount": 252
+      },
+      {
+        "name": "Steel",
+        "amount": 3359
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 504
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 756
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 26
+      }
+    ]
+  },
+  {
+    "id": "aegle",
+    "name": "Civilian Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Agri-Medicines",
+        "amount": 235
+      },
+      {
+        "name": "Aluminium",
+        "amount": 2433
+      },
+      {
+        "name": "Biowaste",
+        "amount": 630
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 84
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 126
+      },
+      {
+        "name": "Computer Components",
+        "amount": 21
+      },
+      {
+        "name": "Copper",
+        "amount": 68
+      },
+      {
+        "name": "Crop Harvesters",
+        "amount": 210
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 42
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 68
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 68
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 42
+      },
+      {
+        "name": "Pesticides",
+        "amount": 378
+      },
+      {
+        "name": "Polymers",
+        "amount": 630
+      },
+      {
+        "name": "Power Generators",
+        "amount": 26
+      },
+      {
+        "name": "Steel",
+        "amount": 3775
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 336
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 588
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 38
+      },
+      {
+        "name": "Land Enrichment Systems",
+        "amount": 126
+      }
+    ]
+  },
+  {
+    "id": "tellus",
+    "name": "Exploration Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2483
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 89
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 134
+      },
+      {
+        "name": "Computer Components",
+        "amount": 49
+      },
+      {
+        "name": "Copper",
+        "amount": 178
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 45
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 36
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 54
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 36
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 621
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 249
+      },
+      {
+        "name": "Polymers",
+        "amount": 666
+      },
+      {
+        "name": "Power Generators",
+        "amount": 32
+      },
+      {
+        "name": "Steel",
+        "amount": 3547
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 267
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 1419
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 18
+      }
+    ]
+  },
+  {
+    "id": "io",
+    "name": "Outpost Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2797
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 290
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 145
+      },
+      {
+        "name": "Computer Components",
+        "amount": 25
+      },
+      {
+        "name": "Copper",
+        "amount": 78
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 49
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 49
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 174
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 87
+      },
+      {
+        "name": "Polymers",
+        "amount": 724
+      },
+      {
+        "name": "Power Generators",
+        "amount": 25
+      },
+      {
+        "name": "Steel",
+        "amount": 4051
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 338
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 1061
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 29
+      }
+    ]
+  },
+  {
+    "id": "athena",
+    "name": "Scientific Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 170
+      },
+      {
+        "name": "Aluminium",
+        "amount": 2581
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 72
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 178
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 223
+      },
+      {
+        "name": "Computer Components",
+        "amount": 67
+      },
+      {
+        "name": "Copper",
+        "amount": 112
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 63
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 36
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 54
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 36
+      },
+      {
+        "name": "Geological Equipment",
+        "amount": 401
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 156
+      },
+      {
+        "name": "Medical Diagnostic Equipment",
+        "amount": 161
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 49
+      },
+      {
+        "name": "Muon Imager",
+        "amount": 107
+      },
+      {
+        "name": "Polymers",
+        "amount": 712
+      },
+      {
+        "name": "Power Generators",
+        "amount": 36
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 72
+      },
+      {
+        "name": "Steel",
+        "amount": 3560
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 445
+      },
+      {
+        "name": "Superconductors",
+        "amount": 72
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 534
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 27
+      }
+    ]
+  },
+  {
+    "id": "alala",
+    "name": "Military Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2414
+      },
+      {
+        "name": "Basic Medicines",
+        "amount": 109
+      },
+      {
+        "name": "Battle Weapons",
+        "amount": 42
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 333
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 375
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 333
+      },
+      {
+        "name": "Combat Stabilisers",
+        "amount": 25
+      },
+      {
+        "name": "Computer Components",
+        "amount": 75
+      },
+      {
+        "name": "Copper",
+        "amount": 105
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 63
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 75
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 125
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 42
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 55
+      },
+      {
+        "name": "Military Grade Fabrics",
+        "amount": 42
+      },
+      {
+        "name": "Polymers",
+        "amount": 708
+      },
+      {
+        "name": "Power Generators",
+        "amount": 38
+      },
+      {
+        "name": "Reactive Armour",
+        "amount": 42
+      },
+      {
+        "name": "Steel",
+        "amount": 3746
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 542
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 583
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 50
+      }
+    ]
+  },
+  {
+    "id": "silenus",
+    "name": "Refinery Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Advanced Catalysers",
+        "amount": 112
+      },
+      {
+        "name": "Aluminium",
+        "amount": 2697
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 233
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 279
+      },
+      {
+        "name": "Computer Components",
+        "amount": 42
+      },
+      {
+        "name": "Copper",
+        "amount": 93
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 47
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 56
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 56
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 38
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 117
+      },
+      {
+        "name": "Polymers",
+        "amount": 744
+      },
+      {
+        "name": "Power Generators",
+        "amount": 28
+      },
+      {
+        "name": "Resonating Separators",
+        "amount": 84
+      },
+      {
+        "name": "Robotics",
+        "amount": 419
+      },
+      {
+        "name": "Steel",
+        "amount": 3720
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 465
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 558
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 28
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 103
+      }
+    ]
+  },
+  {
+    "id": "janus",
+    "name": "High Tech Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2512
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 135
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 225
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 270
+      },
+      {
+        "name": "Computer Components",
+        "amount": 68
+      },
+      {
+        "name": "Copper",
+        "amount": 113
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 59
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 45
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 54
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 36
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 90
+      },
+      {
+        "name": "Polymers",
+        "amount": 673
+      },
+      {
+        "name": "Power Generators",
+        "amount": 27
+      },
+      {
+        "name": "Robotics",
+        "amount": 449
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 108
+      },
+      {
+        "name": "Steel",
+        "amount": 3768
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 404
+      },
+      {
+        "name": "Superconductors",
+        "amount": 108
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 539
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 27
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 211
+      }
+    ]
+  },
+  {
+    "id": "molae",
+    "name": "Industrial Hub",
+    "location": "surface",
+    "tier": 2,
+    "materials": [
+      {
+        "name": "Aluminium",
+        "amount": 2407
+      },
+      {
+        "name": "Building Fabricators",
+        "amount": 208
+      },
+      {
+        "name": "Ceramic Composites",
+        "amount": 249
+      },
+      {
+        "name": "CMM Composite",
+        "amount": 166
+      },
+      {
+        "name": "Computer Components",
+        "amount": 38
+      },
+      {
+        "name": "Copper",
+        "amount": 83
+      },
+      {
+        "name": "Emergency Power Cells",
+        "amount": 42
+      },
+      {
+        "name": "Evacuation Shelter",
+        "amount": 50
+      },
+      {
+        "name": "Food Cartridges",
+        "amount": 50
+      },
+      {
+        "name": "Fruit and Vegetables",
+        "amount": 34
+      },
+      {
+        "name": "H.E. Suits",
+        "amount": 83
+      },
+      {
+        "name": "Microbial Furnaces",
+        "amount": 415
+      },
+      {
+        "name": "Micro Controllers",
+        "amount": 50
+      },
+      {
+        "name": "Mineral Extractors",
+        "amount": 415
+      },
+      {
+        "name": "Polymers",
+        "amount": 664
+      },
+      {
+        "name": "Power Generators",
+        "amount": 25
+      },
+      {
+        "name": "Robotics",
+        "amount": 332
+      },
+      {
+        "name": "Semiconductors",
+        "amount": 75
+      },
+      {
+        "name": "Steel",
+        "amount": 3320
+      },
+      {
+        "name": "Structural Regulators",
+        "amount": 498
+      },
+      {
+        "name": "Superconductors",
+        "amount": 75
+      },
+      {
+        "name": "Surface Stabilisers",
+        "amount": 498
+      },
+      {
+        "name": "Survival Equipment",
+        "amount": 25
+      },
+      {
+        "name": "Thermal Cooling Units",
+        "amount": 117
+      }
+    ]
+  }
+]

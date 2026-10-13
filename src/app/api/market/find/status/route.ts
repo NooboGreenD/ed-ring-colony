@@ -1,3 +1,4 @@
+import { marketError } from '@/lib/marketUpstream';
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
 
@@ -18,7 +19,12 @@ export async function GET(request: Request) {
       .eq('id', job_id)
       .single();
 
-    if (error || !job) {
+    if (error)
+      return NextResponse.json(
+        { error: marketError(new Error(error.message)) },
+        { status: 503 }
+      );
+    if (!job) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
 
@@ -39,6 +45,9 @@ export async function GET(request: Request) {
     });
   } catch (e: any) {
     console.error('[Market Status] Error:', e);
-    return NextResponse.json({ error: e.message || 'Status check failed' }, { status: 500 });
+    return NextResponse.json(
+      { error: marketError(e) || 'Не удалось проверить статус' },
+      { status: 500 }
+    );
   }
 }

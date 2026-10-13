@@ -6,6 +6,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAtlasData } from '@/hooks/useAtlasData';
 import { AtlasProvider, useAtlas } from '@/components/Atlas/AtlasContext';
+import AtlasNearbySearch from '@/components/Atlas/AtlasNearbySearch';
 import { AtlasSearchPanel } from '@/components/Atlas/AtlasSearchPanel';
 import { AtlasCandidateList } from '@/components/Atlas/AtlasCandidateList';
 import { AtlasSearchHistory } from '@/components/Atlas/AtlasSearchHistory';
@@ -54,7 +55,7 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby';
 
 const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }[] = [
   { id: 'search', label: 'Поиск', icon: <IconSearch size={14} />, hint: 'Поиск миров по типам (Alt+1)' },
@@ -62,13 +63,14 @@ const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }
   { id: 'route-finder', label: 'Маршрут A→B', icon: <IconRoute size={14} />, hint: 'Построение маршрута между системами (Alt+3)' },
   { id: 'ring-route', label: 'Кольцо', icon: <IconGlobe size={14} />, hint: 'Галактическое кольцо колонизации (Alt+4)' },
   { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+5)' },
+  { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+6)' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
 const MAX_POLL_ATTEMPTS = 90; // 3 минуты при интервале 2 с
 
 function parseTab(value: string | null): AtlasTab {
-  return value === 'market' || value === 'route' || value === 'route-finder' || value === 'ring-route' ? value : 'search';
+  return value === 'nearby' || value === 'market' || value === 'route' || value === 'route-finder' || value === 'ring-route' ? value : 'search';
 }
 
 export default function AtlasPage() {
@@ -174,7 +176,7 @@ function AtlasPageInner() {
     setActiveTab((current) => (current === tab ? current : tab));
   }, [searchParams]);
 
-  /* ── Alt+1..5 — быстрое переключение вкладок ── */
+  /* ── Alt+1..6 — быстрое переключение вкладок ── */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey) return;
@@ -860,6 +862,8 @@ function AtlasPageInner() {
               onSavedToProject={handleRingSaved}
             />
           )}
+
+          {activeTab === 'nearby' && <AtlasNearbySearch initialSystem={initialMarketSystem || 'Sol'} />}
 
           {activeTab === 'market' && (
             <AtlasMarketSearch

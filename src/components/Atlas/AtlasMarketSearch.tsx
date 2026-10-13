@@ -24,6 +24,8 @@ import {
   IconXCircle,
 } from '@/components/Icons';
 import { downloadCsv } from '@/lib/atlas';
+import { CONSTRUCTION_BLUEPRINTS, constructionBlueprint, constructionCommodities } from '@/lib/constructionBlueprints';
+import { marketError } from '@/lib/marketUpstream';
 import { BUILD_COMMODITIES as COMMODITIES, resolveCommodity } from '@/lib/commodities';
 
 const MAX_RADIUS = 500;
@@ -31,7 +33,7 @@ const MAX_RADIUS = 500;
 interface StationCommodity {
   name: string;
   stock: number;
-  sell_price: number;
+  sell_price: number | null;
 }
 
 interface StationBuildResult {
@@ -50,7 +52,7 @@ interface SingleResult {
   system_name: string;
   distance: number;
   commodity: string;
-  sell_price: number;
+  sell_price: number | null;
   stock: number;
   demand: number;
   landing_pad: string;
@@ -67,7 +69,7 @@ interface SearchProgress {
 
 interface ScanLogEntry {
   system: string;
-  status: 'cached' | 'has_market' | 'no_market';
+  status: 'cached' | 'has_market' | 'no_market' | 'unavailable';
   stations?: number;
   timestamp: string;
 }
@@ -114,6 +116,10 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
   const [commodity, setCommodity] = useState('Steel');
   const [radius, setRadius] = useState(50);
   const [mode, setMode] = useState<'single' | 'build'>('single');
+  const [buildType, setBuildType] = useState('all');
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const blueprint = constructionBlueprint(buildType);
+  const materials = constructionCommodities(buildType);
   const [singleResults, setSingleResults] = useState<SingleResult[]>([]);
   const [buildResults, setBuildResults] = useState<StationBuildResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -169,6 +175,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
     const generation = scanGenerationRef.current;
     const searchMode = mode;
     setError(null);
+    setWarnings([]);
     setSingleResults([]);
     setBuildResults([]);
     setScanLog([]);
@@ -198,6 +205,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           radius,
           mode: searchMode,
           commodity: searchMode === 'single' ? resolveCommodity(commodity) : undefined,
+          build_type: searchMode === 'build' ? buildType : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -276,6 +284,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ job_id: data.job_id }),
+            signal: controller.signal,
           });
           const stepData = await stepRes.json().catch(() => ({}));
           if (scanGenerationRef.current !== generation) return;
@@ -352,6 +361,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           const isDone = stepData.is_done === true || stepData.status === 'done';
           if (isDone) {
             const results = Array.isArray(stepData.result) ? stepData.result : [];
+            setWarnings(Array.isArray(stepData.warnings) ? stepData.warnings : []);
             const uniqueSystems = new Map<string, MapMarketResult>();
             for (const result of results) {
               if (!result || typeof result !== 'object') continue;
@@ -389,7 +399,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
               stage: 'done',
               percent: 100,
               message: `Сканирование завершено: станций найдено ${results.length}`,
-              summary: searchMode === 'build'
+              summary: stepData.warnings?.length ? 'Часть источников недоступна. Результаты могут быть неполными или устаревшими.' : searchMode === 'build'
                 ? 'Найденные станции сохранены в кэш рынка проекта — повторный поиск пойдёт быстрее.'
                 : 'Результаты сохранены в кэше проекта.',
               beam: null,
@@ -409,7 +419,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         } catch (pollError) {
           if (scanGenerationRef.current === generation) {
             finishCurrentSearch();
-            const message = pollError instanceof Error ? pollError.message : 'Ошибка сканирования';
+            const message = marketError(pollError);
             setError(message);
             finishAtlasSearchProgress({ stage: 'failed', message });
             toast(message, 'error');
@@ -423,7 +433,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
       void poll();
     } catch (startError) {
       if (scanGenerationRef.current !== generation || (startError instanceof DOMException && startError.name === 'AbortError')) return;
-      const message = startError instanceof Error ? startError.message : 'Не удалось начать поиск';
+      const message = marketError(startError);
       setError(message);
       finishAtlasSearchProgress({ stage: 'failed', message, percent: 0 });
       toast(message, 'error');
@@ -446,7 +456,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
     });
     return [...rows].sort((a, b) => {
       if (resultSort === 'stock') return (b.stock || 0) - (a.stock || 0);
-      if (resultSort === 'price') return (b.sell_price || 0) - (a.sell_price || 0);
+      if (resultSort === 'price') return (a.sell_price || Infinity) - (b.sell_price || Infinity);
       return (a.distance || 0) - (b.distance || 0);
     });
   }, [filterText, resultSort, singleResults]);
@@ -505,6 +515,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
             type="button"
             className={mode === 'single' ? 'active' : ''}
             aria-pressed={mode === 'single'}
+            disabled={loading}
             onClick={() => setMode('single')}
           >
             Один товар
@@ -513,6 +524,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
             type="button"
             className={mode === 'build' ? 'active' : ''}
             aria-pressed={mode === 'build'}
+            disabled={loading}
             onClick={() => setMode('build')}
           >
             Всё для стройки
@@ -525,6 +537,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           <label htmlFor="atlas-commodity">Товар</label>
           <input
             id="atlas-commodity"
+            disabled={loading}
             list="atlas-commodities"
             value={commodity}
             onChange={(event) => setCommodity(event.target.value)}
@@ -536,12 +549,89 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         </div>
       )}
 
+      {mode === 'build' && (
+        <div className="atlas-search-field">
+          <label htmlFor="atlas-build-type">Тип стройплощадки</label>
+          <select
+            id="atlas-build-type"
+            value={buildType}
+            disabled={loading}
+            onChange={(event) => setBuildType(event.target.value)}
+          >
+            <option value="all">
+              Все строительные материалы ({COMMODITIES.length})
+            </option>
+            {['orbital', 'surface'].map((location) => (
+              <optgroup
+                key={location}
+                label={
+                  location === 'orbital'
+                    ? 'Орбитальные сооружения'
+                    : 'Наземные сооружения'
+                }
+              >
+                {CONSTRUCTION_BLUEPRINTS.filter(
+                  (site) => site.location === location
+                ).map((site) => (
+                  <option key={site.id} value={site.id}>
+                    {site.name} · T{site.tier}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <p className="atlas-muted">
+            {materials.length} материалов.{' '}
+            {blueprint
+              ? 'Базовые справочные количества в тоннах; точные требования и остаток проверьте в депо игры.'
+              : 'Общий перечень материалов для всех типов строительства. Выберите площадку для её списка и базовых количеств.'}
+          </p>
+          <details className="atlas-build-materials" open>
+            <summary>
+              Материалы{' '}
+              {blueprint ? `для ${blueprint.name}` : 'для строительства'}
+            </summary>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Материал</th>
+                    <th>Базовое количество, т</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {materials.map((name) => (
+                    <tr key={name}>
+                      <td>{name}</td>
+                      <td>
+                        {blueprint?.materials
+                          .find((item) => item.name === name)
+                          ?.amount.toLocaleString('ru-RU') ??
+                          'Зависит от площадки'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <a
+              href="https://github.com/njthomson/RavenColonialWeb/blob/main/src/assets/colonization-costs2.json"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Источник справочных данных: RavenColonial
+            </a>
+          </details>
+        </div>
+      )}
+
       <div className="atlas-search-field">
         <label htmlFor="atlas-market-radius">
           Радиус поиска: <strong>{radius} св.л.</strong>
         </label>
         <input
           id="atlas-market-radius"
+          disabled={loading}
           type="range"
           min={10}
           max={MAX_RADIUS}
@@ -570,6 +660,19 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
         </p>
       )}
 
+      {warnings.length > 0 && (
+        <div className="atlas-inline-error" role="status">
+          Не все рынки удалось проверить ({warnings.length} систем). Результаты
+          могут быть неполными или устаревшими.{' '}
+          <details>
+            <summary>Подробности</summary>
+            {warnings.map((warning, index) => (
+              <p key={index}>{warning}</p>
+            ))}
+          </details>
+        </div>
+      )}
+
       {loading && progress && (
         <div className="atlas-progress" aria-live="polite">
           <div className="atlas-progress-head">
@@ -594,7 +697,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
                   )}
                 </span>
                 <span className="status">
-                  {entry.status === 'cached' ? 'из кэша' : entry.status === 'has_market' ? 'рынок найден' : 'нет рынка'}
+                  {entry.status === 'cached' ? 'из кэша' : entry.status === 'has_market' ? 'рынок найден' : entry.status === 'unavailable' ? 'источник недоступен / использован кэш' : 'нет рынка'}
                 </span>
               </div>
             ))}

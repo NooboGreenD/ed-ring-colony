@@ -11,7 +11,7 @@
  * её слой отрисован в другом компоненте.
  */
 
-export type AtlasSearchKind = 'world' | 'route' | 'ring' | 'market';
+export type AtlasSearchKind = 'world' | 'route' | 'ring' | 'market' | 'nearby';
 
 /** Тип точки на карте: влияет на цвет и размер маркера. */
 export type AtlasSearchPointKind =
