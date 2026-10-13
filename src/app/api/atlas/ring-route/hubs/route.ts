@@ -58,9 +58,11 @@ export async function POST(req: Request) {
         const batchResults = await findHubsForAnchors(batch, {
           spanshBudget: Math.max(0, spanshBudget - results.filter(r => r.hub.source === 'spansh').length),
           concurrency: BATCH,
-          onProgress: (_done, _total, latest) => {
-            // Немедленно отправляем отдельный результат на клиент.
-            writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'hub', hub: latest, index: results.length })}\n\n`));
+          onProgress: (done, _total, latest) => {
+            // done — количество завершённых опор ВНУТРИ текущего батча (1..BATCH).
+            // Абсолютный индекс = offset + done - 1.
+            const absoluteIndex = offset + done - 1;
+            writer.write(encoder.encode(`data: ${JSON.stringify({ type: 'hub', hub: latest, index: absoluteIndex })}\n\n`));
           },
         });
         results.push(...batchResults);

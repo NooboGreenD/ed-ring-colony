@@ -283,7 +283,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           'Реальных опор': patch.stats?.realAnchors ?? 0,
           'Расчётных опор': patch.stats?.triangulatedAnchors ?? 0,
           'Систем найдено': patch.stats?.systemsFound ?? 0,
-          ...(patch.hubs ? { 'Хабов найдено': patch.hubs.filter(h => h.hub.status === 'found').length } : {}),
+          ...(patch.hubs ? { 'Хабов найдено': patch.hubs.filter(h => h?.hub?.status === 'found').length } : {}),
         },
       });
     }
@@ -299,20 +299,20 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     }
     for (const anchor of patch.anchors || []) {
       // Если есть данные по хабам — цвет зависит от статуса.
-      const hub = patch.hubs?.find((h) => h.anchorName === anchor.name);
+      const hub = patch.hubs?.find((h) => h?.anchorName === anchor.name && h.hub);
       const kind: AtlasSearchPoint['kind'] = anchor.source === 'triangulated'
         ? 'triangulated'
         : (hub ? (hub.hub.status === 'found' ? 'hub-found' : hub.hub.status === 'missing' ? 'hub-missing' : 'anchor') : 'anchor');
-      const label = hub?.hub.status === 'found'
+      const label = hub?.hub?.status === 'found'
         ? `Хаб: ${hub.hub.systemName} (${hub.hub.distance} св.л)`
-        : hub?.hub.status === 'missing'
+        : hub?.hub?.status === 'missing'
           ? 'Хаб не найден — требуется разведка'
           : `Опорная точка (отклонение ${Number(anchor.deviation || 0).toFixed(1)} св.л.)`;
       points.push({ name: anchor.name, x: anchor.x, y: anchor.y, z: anchor.z, kind, label });
     }
     // Хабы — отдельные зелёные точки.
     for (const h of patch.hubs || []) {
-      if (h.hub.status === 'found' && h.hub.x != null && h.hub.y != null && h.hub.z != null) {
+      if (h?.hub?.status === 'found' && h.hub.x != null && h.hub.y != null && h.hub.z != null) {
         points.push({
           name: h.hub.systemName || 'Hub',
           x: h.hub.x, y: h.hub.y, z: h.hub.z,
@@ -764,19 +764,37 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
             const msg = JSON.parse(line.slice(6));
             if (msg.type === 'hub') {
               accum[msg.index] = msg.hub;
+              // Чтобы React не падал на undefined-слотах при .map, держим массив плотным:
+              // для ещё не обработанных ячеек оставляем статус searching.
+              for (let i = 0; i < anchors.length; i++) {
+                if (!accum[i]) {
+                  accum[i] = {
+                    anchorName: anchors[i].name,
+                    anchorX: anchors[i].x,
+                    anchorY: anchors[i].y,
+                    anchorZ: anchors[i].z,
+                    hub: { systemName: null, x: null, y: null, z: null, distance: null, bodyName: null, bodySubtype: null, status: 'searching' },
+                  };
+                }
+              }
               setHubs([...accum]);
             } else if (msg.type === 'progress') {
-              const found = accum.filter((h) => h?.hub.status === 'found').length;
-              const missing = accum.filter((h) => h?.hub.status === 'missing').length;
+              const found = accum.filter((h) => h?.hub?.status === 'found').length;
+              const missing = accum.filter((h) => h?.hub?.status === 'missing').length;
               setHubProgress({ done: msg.done, total: msg.total, found, missing });
             } else if (msg.type === 'done') {
-              setHubs(msg.results);
-              setHubProgress({ done: msg.results.length, total: msg.total, found: msg.found, missing: msg.missing });
+              const finalResults: HubResult[] = Array.isArray(msg.results)
+                ? msg.results.map((r: HubResult) => r && r.hub ? r : null).filter(Boolean) as HubResult[]
+                : [];
+              setHubs(finalResults);
+              const foundCount = Number.isFinite(msg.found) ? msg.found : finalResults.filter(r => r.hub.status === 'found').length;
+              const missingCount = Number.isFinite(msg.missing) ? msg.missing : finalResults.filter(r => r.hub.status === 'missing').length;
+              setHubProgress({ done: finalResults.length, total: msg.total ?? anchors.length, found: foundCount, missing: missingCount });
               // Обновляем результат и карту.
               const updated: RingResult = {
                 ...result,
-                hubs: msg.results,
-                totals: { ...result.totals, hubsFound: msg.found, hubsMissing: msg.missing },
+                hubs: finalResults,
+                totals: { ...result.totals, hubsFound: foundCount, hubsMissing: missingCount },
               };
               setResult(updated);
               publishToMap(
@@ -799,7 +817,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                   hubs: msg.results,
                 },
               );
-              toast(`Хабы: найдено ${msg.found}, не найдено ${msg.missing}`, msg.missing > 0 ? 'info' : 'success');
+              toast(`Хабы: найдено ${foundCount}, не найдено ${missingCount}`, missingCount > 0 ? 'info' : 'success');
             } else if (msg.type === 'error') {
               toast(msg.message || 'Ошибка поиска хабов', 'error');
             }
@@ -1392,7 +1410,9 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           )}
 
           <div className="atlas-hubs-list">
-            {hubs.map((h, i) => (
+            {hubs.map((h, i) => {
+              if (!h || !h.hub) return null;
+              return (
               <div key={`${h.anchorName}-${i}`} className="atlas-hub-row">
                 <span className={`atlas-hub-dot ${h.hub.status === 'found' ? 'found' : h.hub.status === 'missing' ? 'missing' : 'searching'}`} />
                 <span className="atlas-hub-name">{h.anchorName}</span>
@@ -1403,7 +1423,8 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
                   {h.hub.status === 'error' && 'ошибка'}
                 </span>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="atlas-modal-footer">
