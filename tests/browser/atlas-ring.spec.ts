@@ -1,10 +1,32 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type Locator } from '@playwright/test';
 
 async function openRing(page: Page) {
   // Layout and controls must be testable without the production catalog.
   await page.route('**/api/**', route => route.fulfill({ json: {} }));
   await page.goto('/atlas?tab=ring-route');
   await expect(page.locator('.atlas-ring-finder')).toBeVisible();
+}
+
+/** Проверяем сам input, а не только ширину родителя: overflow может быть скрыт. */
+async function expectKeyPointRowFits(row: Locator) {
+  const geometry = await row.evaluate(el => {
+    const bounds = el.getBoundingClientRect();
+    const box = el.querySelector('.atlas-system-box')!.getBoundingClientRect();
+    const input = el.querySelector('input')!.getBoundingClientRect();
+    const button = el.querySelector(':scope > button')!.getBoundingClientRect();
+    return {
+      separated: box.right <= button.left - 4,
+      inputContained: input.left >= box.left && input.right <= box.right,
+      buttonContained: button.right <= bounds.right + 1,
+      aligned: Math.abs(box.top - button.top) < 2,
+      inputWidth: input.width,
+    };
+  });
+  expect(geometry.separated).toBe(true);
+  expect(geometry.inputContained).toBe(true);
+  expect(geometry.buttonContained).toBe(true);
+  expect(geometry.aligned).toBe(true);
+  expect(geometry.inputWidth).toBeGreaterThan(30);
 }
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }, { width: 320, height: 640 }]) {
@@ -14,6 +36,16 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     const panel = page.locator('.atlas-sidebar-body');
     expect(await panel.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
     expect(await panel.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    const keyRow = page.locator('.atlas-ring-finder .atlas-key-chip-row');
+    await keyRow.scrollIntoViewIfNeeded();
+    await expectKeyPointRowFits(keyRow);
+    const keyInput = keyRow.getByRole('combobox');
+    await keyInput.fill('A very long system name for a key point');
+    await expectKeyPointRowFits(keyRow);
+    await keyRow.getByRole('button', { name: 'Добавить', exact: true }).click();
+    await expect(page.locator('.atlas-key-chip')).toContainText('A very long system name for a key point');
+    await expect(keyInput).toHaveValue('');
+    await expectKeyPointRowFits(keyRow);
     const fields = page.locator('.atlas-ring-finder .atlas-range-row');
     for (const field of await fields.all()) {
       const layout = await field.evaluate(el => {
@@ -103,6 +135,13 @@ test('ring request carries signed tilt and axis; result and modal fit a narrow p
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   const body = page.locator('.atlas-modal-body');
+  const keyRow = body.locator('.atlas-key-chip-row');
+  await expectKeyPointRowFits(keyRow);
+  await keyRow.getByRole('combobox').fill('Another long key system name');
+  await expectKeyPointRowFits(keyRow);
+  await keyRow.getByRole('button', { name: 'Добавить', exact: true }).click();
+  await expect(body.locator('.atlas-key-chip')).toContainText('Another long key system name');
+  await expectKeyPointRowFits(keyRow);
   expect(await body.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   const bounds = (await dialog.boundingBox())!;
   expect(bounds.x).toBeGreaterThanOrEqual(0);

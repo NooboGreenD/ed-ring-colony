@@ -6687,8 +6687,36 @@ html[data-hud-effect="glow"]::before {
   font-size: 14px;
 }
 .atlas-key-chip button:hover { opacity: 1; }
-.atlas-key-chip-row { display: flex; gap: 8px; margin-top: 6px; }
-.atlas-key-chip-row > *:first-child { flex: 1; }
+/* Поле ключевой системы и действие — отдельные колонки, а не две ширины 100%. */
+.atlas-key-chip-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+}
+.atlas-key-chip-row > .atlas-system-search { min-width: 0; margin: 0; }
+.atlas-key-chip-row > .atlas-secondary-btn {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+  white-space: nowrap;
+  min-height: 38px;
+}
+/* Общие стили .atlas-search-field input не должны расширять вложенный combobox. */
+.atlas-key-chip-row .atlas-system-box { min-width: 0; }
+.atlas-key-chip-row .atlas-system-box input[type="text"] {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 0;
+  border: none;
+  background: transparent;
+}
+.atlas-key-chip-row .atlas-system-clear,
+.atlas-key-chip-row .atlas-system-spinner { flex-shrink: 0; }
 
 /* Инфографика уточнения */
 .atlas-refine-infograph {
