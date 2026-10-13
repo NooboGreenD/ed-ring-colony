@@ -131,7 +131,7 @@ function DenseRoutePoints({ points }: { points: RouteSystem[] }) {
   const material = useMemo(
     () =>
       new THREE.PointsMaterial({
-        color: '#3b82f6',
+        color: '#9ca3af',
         size: 14,
         sizeAttenuation: true,
         transparent: true,
