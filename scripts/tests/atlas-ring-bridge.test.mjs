@@ -226,6 +226,31 @@ test('кольцо: тупик в одном прыжке не перекрыв�
   }
 });
 
+test('кольцо: плотный пул собирается быстро и не рвёт прыжки', async () => {
+  const { mod, cleanup } = await loadRingModule();
+  try {
+    const from = point('A', 0, 0, 0);
+    const to = point('B', 480, 0, 0);
+    const pool = [];
+    for (let x = 2; x < 480; x += 2) {
+      for (let y = -20; y <= 20; y += 10) {
+        pool.push(point(`S-${x}-${y}`, x, y, 0, { source: 'catalog' }));
+      }
+    }
+    const began = Date.now();
+    const bridge = mod.bridgeWithSystems(from, to, pool, { maxJump: 15, corridor: 30 });
+    const elapsed = Date.now() - began;
+    assert.ok(elapsed < 2000, `плотный пул собирался ${elapsed} мс`);
+    assert.ok(bridge.some((item) => item.source !== 'triangulated'), 'в плотном коридоре не осталось реальных систем');
+    const chain = [from, ...bridge, to];
+    for (let index = 1; index < chain.length; index++) {
+      assert.ok(mod.distance3(chain[index - 1], chain[index]) <= 15 + 1e-9, 'прыжок длиннее 15 св.л.');
+    }
+  } finally {
+    cleanup();
+  }
+});
+
 test('кольцо: маршрут считается замкнутым только при совпадении концов', async () => {
   const { mod, cleanup } = await loadRingModule();
   try {

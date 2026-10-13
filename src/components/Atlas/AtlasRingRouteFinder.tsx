@@ -142,6 +142,7 @@ const EMPTY_PROGRESS: ProgressView = {
 };
 
 const MAX_STEP_RETRIES = 4;
+const FINALIZE_ATTEMPTS = 3;
 const ROUTE_SAMPLE_LIMIT = 3000;
 const RING_RADIUS_RANGE = { min: 100, max: 45000, step: 100 } as const;
 const SEARCH_RADIUS_RANGE = { min: 50, max: 3000, step: 50 } as const;
@@ -279,19 +280,44 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         sectors: Number(data.session.sectors) || 0,
       };
     }
-    return data as { session: SessionView; step?: any; completed?: boolean };
+    return data as { session: SessionView; step?: any; completed?: boolean; route?: RingPoint[] };
   }, []);
 
   const postRingFinalize = useCallback(async (sessionId: string, controller: AbortController) => {
-    const res = await fetch('/api/atlas/ring-route/finalize', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Не удалось собрать маршрут кольца');
-    return data as { result: RingResult };
+    let lastMessage = 'Не удалось собрать маршрут кольца';
+    for (let attempt = 1; attempt <= FINALIZE_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        publishAtlasSearchProgress({
+          stage: 'route',
+          percent: 99,
+          message: `Сборка маршрута не успела, повторяем (${attempt} из ${FINALIZE_ATTEMPTS})`,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+      }
+      let res: Response;
+      try {
+        res = await fetch('/api/atlas/ring-route/finalize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+          signal: controller.signal,
+        });
+      } catch (error: any) {
+        if (controller.signal.aborted) throw error;
+        lastMessage = 'Не удалось собрать маршрут кольца: связь оборвалась. Сегменты сохранены — можно продолжить с этого места.';
+        continue;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.result?.route) && data.result.route.length > 1) {
+        return data as { result: RingResult };
+      }
+      const statusHint = res.status ? `HTTP ${res.status}` : 'нет ответа';
+      lastMessage = data.error
+        || `Не удалось собрать маршрут кольца (${statusHint}). Сегменты сохранены — можно продолжить с этого места.`;
+      // 400 — ошибка запроса, повтор её не исправит. Таймаут и 5xx — да.
+      if (res.status === 400) break;
+    }
+    throw new Error(lastMessage);
   }, []);
 
   const runSearch = useCallback(async (resumeSessionId?: string) => {
@@ -357,7 +383,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           stats,
         });
 
-        if (step.step?.done) break;
+        if (step.completed || step.step?.done) break;
 
         try {
           step = await postRing({ session_id: session.session_id }, controller);

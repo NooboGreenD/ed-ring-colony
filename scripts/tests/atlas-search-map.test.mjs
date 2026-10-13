@@ -175,6 +175,7 @@ test('Atlas: кольцо строится шагами и продолжает�
   assert.ok(route.includes("status: 404"), 'неизвестная сессия должна возвращать 404, а не падать');
   assert.ok(finalize.includes('finalizeRingSession'), 'нет финализации маршрута');
   assert.ok(client.includes('MAX_STEP_RETRIES'), 'клиент не повторяет упавший шаг');
+  assert.ok(client.includes('FINALIZE_ATTEMPTS'), 'сборка кольца не повторяется, если ответ оборвался');
   assert.ok(client.includes('resume'), 'нет продолжения прерванного поиска');
   assert.ok(search.includes('atlas_ring_sessions'), 'сессии не сохраняются в БД');
   assert.ok(search.includes('STEP_TIME_BUDGET_MS'), 'шаг не ограничен по времени');
