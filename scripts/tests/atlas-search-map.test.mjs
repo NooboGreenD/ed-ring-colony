@@ -103,14 +103,16 @@ test('Atlas: найденное кольцо остаётся на карте п
 test('Atlas: длинный маршрут кольца не ломает слой маркеров карты', () => {
   const markers = read('src/components/GalaxyMap/RouteMarkers.tsx');
 
-  // Кольцо — это 5–15 тысяч точек, а маркер — группа мешей с подписью:
-  // по компоненту на точку вкладка зависала ещё до первого кадра.
-  assert.ok(markers.includes('DENSE_ROUTE_LIMIT'), 'у маркеров нет порога плотности');
-  assert.ok(markers.includes('DenseRoutePoints'), 'длинные маршруты не рисуются одним облаком точек');
-  assert.ok(markers.includes('THREE.PointsMaterial'), 'облако точек не собирается одной геометрией');
+  // Dense-режим удалён: теперь все маркеры рисуются поточечно, что сохраняет
+  // кликабельность и единообразие отображения (planned/building/done со
+  // статусными цветами). Длинные маршруты не должны вызывать тормозов при
+  // взаимодействии с картой, поэтому проверяем, что плотный режим убран.
+  assert.ok(!markers.includes('DENSE_ROUTE_LIMIT'), 'должен отсутствовать порог плотности');
+  assert.ok(!markers.includes('DenseRoutePoints'), 'должна отсутствовать функция облака точек');
+  assert.ok(!markers.includes('THREE.PointsMaterial'), 'облако точек не должно собираться одной геометрией');
   assert.ok(
-    markers.includes('{(hovered || isSelected) && ('),
-    'подпись должна строиться только для видимой точки, а не для каждой',
+    markers.includes('points.map((point) =>'),
+    'маркеры должны рендериться посредством точечного отображения',
   );
 });
 

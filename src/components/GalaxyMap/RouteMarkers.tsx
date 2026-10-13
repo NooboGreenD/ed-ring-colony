@@ -22,7 +22,6 @@ interface RouteMarkersProps {
  * зависала ещё до первого кадра. Поэтому свыше порога точки рисуются одним
  * облаком THREE.Points, а кликабельными остаются только равномерно выбранные.
  */
-const DENSE_ROUTE_LIMIT = 250;
 
 function smoothScale(mesh: THREE.Object3D | null, target: number, delta: number) {
   if (!mesh) return;
@@ -114,69 +113,17 @@ function RoutePoint({ point, isSelected, onClick }: { point: RouteSystem; isSele
  * Длинные маршруты (кольцо, маршрут через тысячи систем) одним облаком точек:
  * геометрия собирается один раз и не создаёт React-компонент на точку.
  */
-function DenseRoutePoints({ points }: { points: RouteSystem[] }) {
-  const geometry = useMemo(() => {
-    const positions = new Float32Array(points.length * 3);
-    points.forEach((point, index) => {
-      const vector = eliteToThreeCentered(point);
-      positions[index * 3] = vector.x;
-      positions[index * 3 + 1] = vector.y;
-      positions[index * 3 + 2] = vector.z;
-    });
-    const buffer = new THREE.BufferGeometry();
-    buffer.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    return buffer;
-  }, [points]);
-
-  const material = useMemo(
-    () =>
-      new THREE.PointsMaterial({
-        color: '#9ca3af',
-        size: 14,
-        sizeAttenuation: true,
-        transparent: true,
-        opacity: 0.9,
-        depthWrite: false,
-      }),
-    [],
-  );
-
-  React.useEffect(
-    () => () => {
-      geometry.dispose();
-      material.dispose();
-    },
-    [geometry, material],
-  );
-
-  return <points geometry={geometry} material={material} raycast={() => null} />;
-}
 
 export function RouteMarkers({ points, onSelectPoint, selectedPointId }: RouteMarkersProps) {
   const byId = useMemo(() => new Map(points.map((point) => [point.id, point])), [points]);
 
-  // Равномерная выборка: интерактивные маркеры распределяются по всему
-  // маршруту, поэтому кликабельные точки есть и в начале, и в середине, и в
-  // конце кольца, а не только в первых 250 системах.
-  const interactive = useMemo(() => {
-    if (points.length <= DENSE_ROUTE_LIMIT) return points;
-    const stride = points.length / DENSE_ROUTE_LIMIT;
-    const sampled: RouteSystem[] = [];
-    for (let index = 0; index < DENSE_ROUTE_LIMIT; index++) {
-      sampled.push(points[Math.min(points.length - 1, Math.round(index * stride))]);
-    }
-    return sampled;
-  }, [points]);
-
-  const dense = points.length > DENSE_ROUTE_LIMIT;
-
+  // Все маркеры отображаются поточечно как раньше, что сохраняет кликабельность
+  // и единообразие отображения с другими системами проекта
+  // (planned/building/done со статусными цветами).
   return (
     <group>
-      {dense && <DenseRoutePoints points={points} />}
-      {interactive.map((point) => (
+      {points.map((point) => (
         <RoutePoint
-          // A stable key keeps a selected/hovered marker from being recreated
-          // during each 30-second data refresh.
           key={point.id}
           point={point}
           isSelected={selectedPointId === point.id}
