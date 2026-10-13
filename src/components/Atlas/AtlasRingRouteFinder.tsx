@@ -370,6 +370,8 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           sectors_done: payload.totals.anchors,
           status: 'completed',
           center: payload.center,
+          ring_center: payload.ringCenter ?? payload.center,
+          basis3d: payload.basis3D ?? null,
         },
         {
           percent: 100, stage: 'done', message: 'Кольцо готово',
@@ -584,7 +586,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       abortRef.current = null;
       setLoading(false);
     }
-  }, [applyResult, deviationLimit, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem]);
+  }, [applyResult, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees]);
 
   const search = useCallback(() => {
     sessionRef.current = null;
