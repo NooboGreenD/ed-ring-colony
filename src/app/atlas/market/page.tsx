@@ -66,7 +66,7 @@ export default function MarketPage() {
         || row.commodity_name.toLowerCase().includes(query);
     });
     return [...rows].sort((a, b) => {
-      if (sort === 'buy') return (b.buy_price || 0) - (a.buy_price || 0);
+      if (sort === 'buy') return (a.buy_price || 0) - (b.buy_price || 0);
       if (sort === 'stock') return (b.stock || 0) - (a.stock || 0);
       if (sort === 'system') return a.system_name.localeCompare(b.system_name);
       return (b.sell_price || 0) - (a.sell_price || 0);

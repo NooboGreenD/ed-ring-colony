@@ -12160,3 +12160,73 @@ GRANT EXECUTE ON FUNCTION public.atlas_system_cache_near(
 ) TO anon, authenticated, service_role;
 
 NOTIFY pgrst, 'reload schema';
+
+
+-- ═══ MIGRATION: 20261013000000_ring_key_systems_and_deviation.sql ═══
+
+-- Дополнительные колонки для сессий галактического кольца:
+--   • deviation_limit — пользовательский допуск отклонения от окружности (св.л.)
+--   • key_systems     — JSONB-массив обязательных (ключевых) систем с координатами
+-- Обе колонки опциональны (NULL = значение по умолчанию), чтобы не ломать
+-- существующие сессии.
+
+ALTER TABLE public.atlas_ring_sessions
+  ADD COLUMN IF NOT EXISTS deviation_limit DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS key_systems    JSONB;
+
+COMMENT ON COLUMN public.atlas_ring_sessions.deviation_limit
+  IS 'Пользовательский допуск отклонения от окружности кольца, св.л. NULL = 100 (по умолчанию).';
+COMMENT ON COLUMN public.atlas_ring_sessions.key_systems
+  IS 'Массив ключевых (обязательных) систем: [{name, x, y, z}], через которые должен пройти маршрут.';
+
+
+-- ═══ MIGRATION: 20261013010000_ring_tilt_and_center.sql ═══
+
+-- Поддержка некомпланарных галактических колец:
+--   * возможность сменить центр расчёта (не только Sagittarius A*);
+--   * высотное смещение центра кольца относительно галактической плоскости (-5000..+5000 св.л);
+--   * наклон (tilt) плоскости кольца в градусах 0..180.
+-- При tilt=0 кольцо лежит в галактической плоскости (поведение не меняется);
+-- при больших наклонах серверная логика зажимает высотное смещение так, чтобы
+-- кольцо не выходило за ±6000 св.л от галактической плоскости (толщина диска).
+
+ALTER TABLE atlas_ring_sessions
+  ADD COLUMN IF NOT EXISTS center_system TEXT,
+  ADD COLUMN IF NOT EXISTS height_offset DOUBLE PRECISION,
+  ADD COLUMN IF NOT EXISTS tilt_degrees DOUBLE PRECISION;
+
+-- Ограничения на диапазоны (NULL == значение по умолчанию).
+ALTER TABLE atlas_ring_sessions
+  ADD CONSTRAINT ring_height_offset_range
+    CHECK (height_offset IS NULL OR (height_offset >= -5000 AND height_offset <= 5000)),
+  ADD CONSTRAINT ring_tilt_degrees_range
+    CHECK (tilt_degrees IS NULL OR (tilt_degrees >= 0 AND tilt_degrees <= 180));
+
+
+-- ═══ MIGRATION: 20261013020000_ring_tilt_axis.sql ═══
+
+-- Двусторонний наклон и азимут оси. NULL/0 сохраняет геометрию старых сессий.
+ALTER TABLE public.atlas_ring_sessions
+  ADD COLUMN IF NOT EXISTS tilt_axis_degrees DOUBLE PRECISION;
+
+ALTER TABLE public.atlas_ring_sessions
+  DROP CONSTRAINT IF EXISTS ring_tilt_degrees_range;
+ALTER TABLE public.atlas_ring_sessions
+  ADD CONSTRAINT ring_tilt_degrees_range
+    CHECK (tilt_degrees IS NULL OR tilt_degrees BETWEEN -180 AND 180);
+
+ALTER TABLE public.atlas_ring_sessions
+  DROP CONSTRAINT IF EXISTS ring_tilt_axis_degrees_range;
+ALTER TABLE public.atlas_ring_sessions
+  ADD CONSTRAINT ring_tilt_axis_degrees_range
+    CHECK (tilt_axis_degrees IS NULL OR (tilt_axis_degrees >= 0 AND tilt_axis_degrees < 360));
+
+
+-- ═══ MIGRATION: 20261013030000_market_construction_blueprints.sql ═══
+
+-- Pin a search to its selected construction recipe instead of the generic list.
+ALTER TABLE public.market_search_jobs ADD COLUMN IF NOT EXISTS build_type TEXT;
+COMMENT ON COLUMN public.market_search_jobs.build_type IS 'Construction blueprint key; null/all uses the complete construction commodity list.';
+
+-- Commander purchase price, distinct from legacy sell_price cache values.
+ALTER TABLE public.market_search_cache ADD COLUMN IF NOT EXISTS buy_price INTEGER;
