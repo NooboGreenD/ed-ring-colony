@@ -1,22 +1,32 @@
 import { NextResponse } from 'next/server';
-export async function GET(req: Request) {
-  const name = new URL(req.url).searchParams.get('name');
-  if (!name)
-    return NextResponse.json({ error: 'name required' }, { status: 400 });
-  const url =
-    'https://www.edsm.net/api-v1/system?showCoordinates=1&systemName=' +
-    encodeURIComponent(name);
-  const res = await fetch(url, { next: { revalidate: 86400 } });
-  const data = await res.json();
-  if (!data || !data.coords)
+import { resolveSystemCoordinates } from '@/lib/systemCoordinates';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+export async function GET(request: Request) {
+  const name = new URL(request.url).searchParams.get('name');
+  if (!name?.trim() || name.length > 200)
     return NextResponse.json(
-      { error: 'Система не найдена в EDSM' },
-      { status: 404 }
+      { error: 'Укажите название системы (до 200 символов).' },
+      { status: 400 }
     );
-  return NextResponse.json({
-    system_name: data.name,
-    x: data.coords.x,
-    y: data.coords.y,
-    z: data.coords.z,
-  });
+  const resolved = await resolveSystemCoordinates([name]);
+  const coords = resolved.results[name];
+  if (!coords)
+    return NextResponse.json(
+      {
+        error:
+          'Координаты системы не найдены в EDSM и Spansh либо источники недоступны.',
+        warnings: resolved.warnings,
+      },
+      { status: resolved.warnings.length ? 503 : 404 }
+    );
+  return NextResponse.json(
+    {
+      system_name: resolved.canonical_names[name],
+      ...coords,
+      source: resolved.sources[name],
+      warnings: resolved.warnings,
+    },
+    { headers: { 'Cache-Control': 'no-store' } }
+  );
 }

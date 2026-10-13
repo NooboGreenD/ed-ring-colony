@@ -1,4 +1,7 @@
 "use client";
+
+import { updateSystemCoordinates } from '@/lib/updateSystemCoordinates';
+import { readSystemCoordinates } from '@/lib/systemCoordinateTypes';
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { readAllRows } from '@/lib/readAllRows';
@@ -87,6 +90,10 @@ export default function AdminPage() {
   };
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
+  const [hubLoadError, setHubLoadError] = useState('');
+  const [hubBusy, setHubBusy] = useState(false);
+  const [hubMsg, setHubMsg] = useState('');
+  const [hubProgress, setHubProgress] = useState(0);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeLoadError, setRouteLoadError] = useState('');
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
@@ -152,15 +159,16 @@ export default function AdminPage() {
 
       setRouteLoading(true);
       setRouteLoadError('');
-      const [{ data: us }, { data: hs }, { data: rs, error: routeError }, { data: c }, { data: nw }] = await Promise.all([
+      const [{ data: us }, { data: hs, error: hubError }, { data: rs, error: routeError }, { data: c }, { data: nw }] = await Promise.all([
         supabase.from('profiles').select('*').order('created_at'),
-        supabase.from('hubs').select('*').order('segment_order'),
+        readAllRows((from, to) => supabase.from('hubs').select('*').order('segment_order').order('id').range(from, to)),
         readAllRows((from, to) => supabase.from('route_systems').select('*').order('sort_order').order('id').range(from, to)),
         supabase.from('site_content').select('*').eq('id', 1).maybeSingle(),
         supabase.from('news').select('*, author:profiles(cmdr_name)').order('published_at', { ascending: false }),
       ]);
       setUsers(us ?? []);
       setHubs(hs ?? []);
+      setHubLoadError(hubError?.message || '');
       setRouteSystems(rs ?? []);
       if (routeError) setRouteLoadError(routeError.message);
       setRouteLoading(false);
@@ -184,6 +192,7 @@ export default function AdminPage() {
     } catch (error) {
       setRouteLoading(false);
       setRouteLoadError(error instanceof Error ? error.message : 'Route loading failed');
+      setHubLoadError(error instanceof Error ? error.message : 'Hub loading failed');
       // A network/auth failure must never grant production admin access.
       if (process.env.NODE_ENV !== 'production' && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         setRole('admin');
@@ -397,11 +406,31 @@ export default function AdminPage() {
   };
 
   const addHub = async () => {
-    const res = await fetch('/api/hubs/resolve?name=' + encodeURIComponent(system));
-    const coords = await res.json();
-    if (!res.ok) { alert(coords.error || t('admin.system')); return; }
-    await supabase.from('hubs').insert({ name, system_name: coords.system_name, x: coords.x, y: coords.y, z: coords.z, segment_order: order });
-    setName(''); setSystem(''); load();
+    setHubBusy(true); setHubMsg('');
+    try {
+      const res = await fetch('/api/hubs/resolve?name=' + encodeURIComponent(system));
+      const coords = await res.json();
+      if (!res.ok) throw new Error(coords.error || t('admin.system'));
+      const { error } = await supabase.from('hubs').insert({ name, system_name: coords.system_name, x: coords.x, y: coords.y, z: coords.z, segment_order: order });
+      if (error) throw new Error(error.message);
+      setName(''); setSystem('');
+      setHubMsg(`${t('admin.added')} ${coords.system_name} (${coords.source === 'edsm' ? 'EDSM' : 'Spansh'}).`);
+      load();
+    } catch (error: any) { setHubMsg(t('account.error') + ' ' + error.message); }
+    finally { setHubBusy(false); }
+  };
+
+  const resolveHubCoords = async () => {
+    if (hubs.every(h => readSystemCoordinates(h))) { setHubMsg(t('admin.allHaveCoords')); return; }
+    setHubBusy(true); setHubProgress(0); setHubMsg('');
+    try {
+      const result = await updateSystemCoordinates(hubs, async (hub, coords) => {
+        const { error } = await supabase.from('hubs').update(coords).eq('id', hub.id);
+        if (error) throw new Error(error.message);
+      }, { onProgress: (done, total) => setHubProgress(Math.round(done / total * 100)) });
+      setHubMsg(`${t('admin.updated')} ${result.updated} ${t('admin.of')} ${result.total} (EDSM: ${result.sources.edsm}, Spansh: ${result.sources.spansh + result.sources.spansh_catalog}). ${result.errors.join(' ')} ${result.warnings.join(' ')}`);
+    } catch (error: any) { setHubMsg(t('account.error') + ' ' + error.message); }
+    finally { setHubBusy(false); load(); }
   };
 
   const removeHub = async (id: number) => {
@@ -476,39 +505,16 @@ export default function AdminPage() {
   };
 
   const resolveRouteCoords = async () => {
-    const needResolve = routeSystems.filter((r) => r.x == null || r.y == null || r.z == null);
-    if (needResolve.length === 0) { setRouteMsg(t('admin.allHaveCoords')); return; }
-    setRouteBusy(true);
-    setRouteProgress(0);
-    setRouteMsg(`${t('admin.coordsRequest')} ${needResolve.length} ${t('admin.systemsThisWillTake')}${Math.ceil(needResolve.length / 100)} ${t('admin.sec')}`);
+    if (routeSystems.every(row => readSystemCoordinates(row))) { setRouteMsg(t('admin.allHaveCoords')); return; }
+    setRouteBusy(true); setRouteProgress(0); setRouteMsg('');
     try {
-      let updated = 0, resolved = 0;
-      // A 20,000-system request would time out upstream. Resolve bounded chunks
-      // and update progress even when a chunk has no known coordinates.
-      for (let offset = 0; offset < needResolve.length; offset += 100) {
-        const batch = needResolve.slice(offset, offset + 100);
-        const res = await fetch('/api/route/resolve', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ names: batch.map(row => row.system_name) }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        const entries = Object.entries(data.results || {}) as [string, { x: number; y: number; z: number }][];
-        const writes = await Promise.all(entries.map(([system_name, coords]) =>
-          supabase.from('route_systems').update({ x: coords.x, y: coords.y, z: coords.z }).eq('system_name', system_name)));
-        const failure = writes.find(write => write.error)?.error;
-        if (failure) throw new Error(failure.message);
-        updated += entries.length;
-        resolved += Number(data.resolved) || 0;
-        setRouteProgress(Math.round((offset + batch.length) / needResolve.length * 100));
-      }
-      setRouteMsg(`${t('admin.updated')} ${updated} ${t('admin.of')} ${needResolve.length} (${t('admin.foundInEdsm')} ${resolved}). ${t('admin.reloadPage')}`);
-      load();
-    } catch (e: any) {
-      setRouteMsg(t('account.error') + ' ' + e.message);
-    } finally {
-      setRouteBusy(false);
-    }
+      const result = await updateSystemCoordinates(routeSystems, async (row, coords) => {
+        const { error } = await supabase.from('route_systems').update(coords).eq('id', row.id);
+        if (error) throw new Error(error.message);
+      }, { onProgress: (done, total) => setRouteProgress(Math.round(done / total * 100)) });
+      setRouteMsg(`${t('admin.updated')} ${result.updated} ${t('admin.of')} ${result.total} (EDSM: ${result.sources.edsm}, Spansh: ${result.sources.spansh + result.sources.spansh_catalog}). ${result.errors.join(' ')} ${result.warnings.join(' ')}`);
+    } catch (error: any) { setRouteMsg(t('account.error') + ' ' + error.message); }
+    finally { setRouteBusy(false); load(); }
   };
 
   const syncRouteProgress = async () => {
@@ -700,8 +706,12 @@ export default function AdminPage() {
             <input placeholder={t('admin.hubNamePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} style={{ width: 200 }} />
             <input placeholder={t('admin.systemPlaceholder')} value={system} onChange={(e) => setSystem(e.target.value)} style={{ width: 200 }} />
             <input type="number" placeholder={t('admin.orderPlaceholder')} value={order} onChange={(e) => setOrder(+e.target.value)} style={{ width: 90 }} />
-            <button className={adminStyles.primaryAction} onClick={addHub}>{t('admin.addHub')}</button>
+            <button disabled={hubBusy || routeLoading || !!hubLoadError} className={adminStyles.primaryAction} onClick={addHub}>{t('admin.addHub')}</button>
           </div>
+          <button disabled={hubBusy || routeLoading || !!hubLoadError} onClick={resolveHubCoords}>{hubBusy ? t('common.loading') : t('admin.loadCoords')}</button>
+          {hubBusy && <p role="status">{hubProgress}%</p>}
+          {hubMsg && <p role="status">{hubMsg}</p>}
+          {hubLoadError && <p role="alert">{hubLoadError}</p>}
           <div className="table-scroll">
             <table>
               <thead><tr><th>#</th><th>{t('admin.nameCol')}</th><th>{t('admin.systemPlaceholder')}</th><th>{t('admin.statusCol')}</th><th>{t('admin.coordsCol')}</th><th></th></tr></thead>
@@ -719,14 +729,14 @@ export default function AdminPage() {
                       </a>
                     </td>
                     <td>
-                      <select value={h.status} onChange={(e) => setHubStatus(h.id, e.target.value)}>
+                      <select disabled={hubBusy || routeLoading || !!hubLoadError} value={h.status} onChange={(e) => setHubStatus(h.id, e.target.value)}>
                         <option value="planned">{t('admin.statusPlanned')}</option>
                         <option value="building">{t('admin.statusBuilding')}</option>
                         <option value="done">{t('admin.statusDone')}</option>
                       </select>
                     </td>
-                    <td>{h.x != null ? `${h.x.toFixed(1)} / ${h.y.toFixed(1)} / ${h.z.toFixed(1)}` : '—'}</td>
-                    <td><button className={adminStyles.dangerAction} onClick={() => removeHub(h.id)}>{t('admin.deleteBtn')}</button></td>
+                    <td>{readSystemCoordinates(h) ? [h.x, h.y, h.z].map(value => Number(value).toFixed(1)).join(' / ') : '—'}</td>
+                    <td><button disabled={hubBusy || routeLoading || !!hubLoadError} className={adminStyles.dangerAction} onClick={() => removeHub(h.id)}>{t('admin.deleteBtn')}</button></td>
                   </tr>
                 ))}
               </tbody>
@@ -771,7 +781,7 @@ export default function AdminPage() {
             <p style={{ color: routeMsg.startsWith(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{routeMsg}</p>
           )}
           <p style={{ color: '#9ca3af', fontSize: 13 }}>
-            {t('admin.inList')} {routeSystems.length} · {t('admin.noCoords')} {routeSystems.filter((r) => r.x == null || r.y == null || r.z == null).length}
+            {t('admin.inList')} {routeSystems.length} · {t('admin.noCoords')} {routeSystems.filter((r) => !readSystemCoordinates(r)).length}
             {routeQuery.trim() ? ` · ${t('admin.shown')} ${filteredRouteAdmin.length}` : ''}
           </p>
           <input style={{ width: '100%', maxWidth: 420 }} placeholder={t('admin.searchRoute')} value={routeQuery} onChange={(e) => setRouteQuery(e.target.value)} />
@@ -799,7 +809,7 @@ export default function AdminPage() {
                   <td>
                     <input type="number" disabled={routeDisabled} min={0} max={100} value={r.progress ?? 0} onChange={(e) => updateRoutePointProgress(r.id, +e.target.value)} style={{ width: 60 }} />
                   </td>
-                  <td>{r.x != null && r.y != null && r.z != null ? `${r.x.toFixed(1)} / ${r.y.toFixed(1)} / ${r.z.toFixed(1)}` : '—'}</td>
+                  <td>{readSystemCoordinates(r) ? [r.x, r.y, r.z].map(value => Number(value).toFixed(1)).join(' / ') : '—'}</td>
                   <td><button disabled={routeDisabled} className={adminStyles.dangerAction} onClick={() => removeRouteSystem(r.id)}>{t('admin.deleteBtn')}</button></td>
                 </tr>
               ))}</tbody>
