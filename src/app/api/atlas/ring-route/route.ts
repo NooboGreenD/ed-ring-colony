@@ -27,6 +27,9 @@ interface RequestBody {
   search_radius?: number;
   deviation_limit?: number | null;
   key_systems?: string[];
+  center_system?: string | null;
+  height_offset?: number | null;
+  tilt_degrees?: number | null;
   session_id?: string;
   step_sectors?: number;
 }
@@ -39,6 +42,11 @@ function sessionEnvelope(plan: RingPlan) {
     search_radius: plan.searchRadius,
     deviation_limit: plan.deviationLimit,
     key_systems: plan.keySystems,
+    center_system: plan.center.name === 'Sagittarius A*' ? null : plan.center.name,
+    height_offset: plan.heightOffset,
+    tilt_degrees: plan.tiltDegrees,
+    ring_center: plan.ringCenter,
+    basis3d: plan.basis3D,
     sectors: plan.sectors,
     sectors_done: plan.sectorsDone,
     status: plan.status,
@@ -90,6 +98,9 @@ export async function POST(req: Request) {
           searchRadius: body.search_radius,
           deviationLimit: body.deviation_limit,
           keySystems: Array.isArray(body.key_systems) ? body.key_systems : undefined,
+          centerSystem: body.center_system,
+          heightOffset: body.height_offset,
+          tiltDegrees: body.tilt_degrees,
         },
         user?.id || null,
       );

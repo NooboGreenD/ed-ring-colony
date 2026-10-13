@@ -98,6 +98,10 @@ interface RingResult {
   start?: string;
   route: RingPoint[];
   center: RingPoint;
+  ringCenter?: RingPoint;
+  basis3D?: RingBasis3D;
+  heightOffset?: number;
+  tiltDegrees?: number;
   ringRadius: number;
   searchRadius: number;
   deviationLimit: number;
@@ -131,6 +135,12 @@ const RING_LIMITS = {
 
 const DEVIATION_RANGE = { min: 10, max: 400, step: 5 } as const;
 
+interface RingBasis3D {
+  ux: number; uy: number; uz: number;
+  vx: number; vy: number; vz: number;
+  nx: number; ny: number; nz: number;
+}
+
 interface SessionView {
   session_id: string;
   start_system: string;
@@ -138,6 +148,11 @@ interface SessionView {
   search_radius: number;
   deviation_limit: number;
   key_systems: RingPoint[];
+  center_system?: string | null;
+  height_offset?: number;
+  tilt_degrees?: number;
+  ring_center?: { x: number; y: number; z: number };
+  basis3d?: RingBasis3D;
   sectors: number;
   sectors_done: number;
   status: string;
@@ -183,6 +198,10 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   const [deviationLimit, setDeviationLimit] = useState(DEFAULT_DEVIATION);
   const [keySystemDraft, setKeySystemDraft] = useState('');
   const [keySystems, setKeySystems] = useState<RingPoint[]>([]);
+  // Геометрия некомпланарного кольца:
+  const [centerSystem, setCenterSystem] = useState(''); // пусто = Sagittarius A*
+  const [heightOffset, setHeightOffset] = useState(0); // св.л от галактической плоскости, -5000..+5000
+  const [tiltDegrees, setTiltDegrees] = useState(0); // наклон 0..180°
   const [loading, setLoading] = useState(false);
   const [refining, setRefining] = useState(false);
   const [progress, setProgress] = useState<ProgressView>(EMPTY_PROGRESS);
@@ -248,7 +267,16 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         stage: patch.stage,
         percent: patch.percent,
         message: patch.message,
-        ring: { cx: session.center.x, cy: session.center.y, cz: session.center.z, radius: session.ring_radius },
+        ring: {
+          cx: (session.ring_center?.x ?? session.center.x),
+          cy: (session.ring_center?.y ?? session.center.y),
+          cz: (session.ring_center?.z ?? session.center.z),
+          radius: session.ring_radius,
+          basis: session.basis3d ? {
+            ux: session.basis3d.ux, uy: session.basis3d.uy, uz: session.basis3d.uz,
+            vx: session.basis3d.vx, vy: session.basis3d.vy, vz: session.basis3d.vz,
+          } : null,
+        },
         beam: patch.beam || null,
         counters: {
           'Сегмент': `${patch.percent > 0 ? session.sectors_done : 0}/${session.sectors}`,
@@ -460,6 +488,9 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         search_radius: searchRadius,
         deviation_limit: deviationLimit,
         key_systems: resumeSessionId ? undefined : keySystems.map((ks) => ks.name),
+        center_system: centerSystem.trim() || null,
+        height_offset: heightOffset === 0 ? null : heightOffset,
+        tilt_degrees: tiltDegrees === 0 ? null : tiltDegrees,
       }, controller);
       session = step.session;
 
@@ -610,6 +641,8 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         body: JSON.stringify({
           route: result.route,
           center: result.center,
+          ring_center: result.ringCenter ?? result.center,
+          basis3d: result.basis3D ?? null,
           ring_radius: result.ringRadius,
           refine_radius: opts?.radius ?? refineRadius,
           deviation_limit: opts?.deviation ?? refineDeviation,
@@ -878,10 +911,10 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       <div className="atlas-search-panel">
         <h3>Галактическое кольцо колонизации</h3>
         <p className="atlas-route-desc">
-          Замкнутый маршрут вокруг Sagittarius A*. Требования: прыжок ≤14,99 св.л.;
-          опоры через 480–490 св.л.; отклонение от оси до 50 св.л. (настраивается).
-          Поддерживаются ключевые системы (обязательные точки маршрута),
-          повторный прогон с уточнением координат и поиск кандидатов на строительные хабы.
+          Замкнутый маршрут вокруг галактического центра (по умолчанию — Sagittarius A*, можно переопределить).
+          Требования: прыжок ≤14,99 св.л.; опоры через 480–490 св.л.; отклонение от оси до 50 св.л. (настраивается).
+          Поддерживаются ключевые системы (обязательные точки маршрута), повторный прогон с уточнением координат,
+          наклонённое/смещённое кольцо и поиск кандидатов на строительные хабы.
         </p>
 
         <SystemSearchInput
@@ -901,7 +934,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           value={ringRadius}
           onChange={setRingRadius}
           disabled={busy}
-          hint="Радиус окружности кольца от Sagittarius A*."
+          hint="Радиус окружности кольца от центра расчёта."
         />
 
         <RangeNumberField
@@ -927,6 +960,55 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
           disabled={busy}
           hint="Максимальное отклонение от идеальной окружности (по умолчанию 100 св.л.). Увеличение допускает больше реальных систем, уменьшение — ведёт к более правильной форме кольца."
         />
+
+        <details className="atlas-advanced-fields" open={false}>
+          <summary>Геометрия: наклонённое кольцо, нестандартный центр</summary>
+          <div className="atlas-advanced-body">
+            <SystemSearchInput
+              label="Центр расчёта (необязательно)"
+              value={centerSystem}
+              onChange={setCenterSystem}
+              onSubmit={() => { /* nothing */ }}
+              placeholder="Sagittarius A* (по умолчанию)"
+            />
+            <RangeNumberField
+              id="ring-height"
+              label="Смещение от галактической плоскости, св.л."
+              min={-5000}
+              max={5000}
+              step={100}
+              value={heightOffset}
+              onChange={setHeightOffset}
+              disabled={busy}
+              hint="Высота/глубина центра кольца относительно плоскости галактики (от -5000 до +5000 св.л)."
+            />
+            <RangeNumberField
+              id="ring-tilt"
+              label="Наклон плоскости кольца, °"
+              min={0}
+              max={180}
+              step={1}
+              value={tiltDegrees}
+              onChange={setTiltDegrees}
+              disabled={busy}
+              hint="0° — в плоскости галактики (по умолчанию); 90° — перпендикулярно диску; 180° — опрокинуто. При больших наклонах высотное смещение автоматически ограничивается так, чтобы кольцо не выходило за ±6000 св.л от центра галактики по высоте (толщина диска)."
+            />
+            {(() => {
+              const ySwing = Math.round(ringRadius * Math.abs(Math.sin((tiltDegrees * Math.PI) / 180)));
+              const topEdge = Math.round(heightOffset + ySwing);
+              const bottomEdge = Math.round(heightOffset - ySwing);
+              const clampNeeded = topEdge > 6000 || bottomEdge < -6000;
+              if (!clampNeeded || tiltDegrees === 0) return null;
+              return (
+                <p className="atlas-tip warn">
+                  При радиусе {ringRadius} св.л, наклоне {tiltDegrees}° и смещении {heightOffset} св.л вертикальный размах
+                  кольца составит {bottomEdge}…{topEdge} св.л. от галактической плоскости — высотное смещение будет
+                  автоматически ограничено, чтобы не выходить за ±6000 св.л (толщина диска).
+                </p>
+              );
+            })()}
+          </div>
+        </details>
 
         {/* Ключевые системы — обязательные точки маршрута */}
         <div className="atlas-search-field">

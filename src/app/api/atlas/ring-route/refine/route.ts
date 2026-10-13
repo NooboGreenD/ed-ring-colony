@@ -28,8 +28,26 @@ type Point = { name: string; x: number; y: number; z: number; source?: string; i
 
 const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 
-/** Перпендикулярное отклонение от окружности кольца (как в atlasRingSearch). */
-const deviationFrom = (point: Point, center: Point, ringRadius: number) =>
+type RingBasis3D = {
+  ux: number; uy: number; uz: number;
+  vx: number; vy: number; vz: number;
+  nx: number; ny: number; nz: number;
+};
+
+/** 3D-отклонение точки от наклонённой окружности кольца. */
+const deviationFrom3D = (point: Point, ringCenter: Point, basis: RingBasis3D, ringRadius: number) => {
+  const dx = point.x - ringCenter.x;
+  const dy = point.y - ringCenter.y;
+  const dz = point.z - ringCenter.z;
+  const a = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+  const b = dx * basis.vx + dy * basis.vy + dz * basis.vz;
+  const c = dx * basis.nx + dy * basis.ny + dz * basis.nz;
+  const r = Math.hypot(a, b);
+  return Math.hypot(r - ringRadius, c);
+};
+
+/** Устаревшее 2D-отклонение — для совместимости со старыми кольцами. */
+const deviationFrom2D = (point: Point, center: Point, ringRadius: number) =>
   Math.hypot(Math.hypot(point.x - center.x, point.z - center.z) - ringRadius, point.y - center.y);
 
 async function edsmNear(point: Point, radius: number): Promise<Point[]> {
@@ -77,6 +95,16 @@ export async function POST(req: Request) {
     const refineAnchors = body?.refine_anchors === true;
     // Дополнительные системы, которые маршрут должен пройти (ключевые) — уже в маршруте?
     const extraKeySystems: Point[] = Array.isArray(body?.key_systems) ? body.key_systems : [];
+    // 3D-геометрия наклонённого кольца (basis3D + ringCenter). Если переданы — используем 3D-отклонение.
+    const basis3D = body?.basis3d as RingBasis3D | undefined;
+    const ringCenterIn = body?.ring_center as Point | undefined;
+    const has3D = Boolean(basis3D && ringCenterIn
+      && Number.isFinite(basis3D.ux) && Number.isFinite(basis3D.vx) && Number.isFinite(basis3D.nx)
+      && ringCenterIn && Number.isFinite(ringCenterIn.x));
+    const deviationFn = has3D
+      ? (p: Point) => deviationFrom3D(p, ringCenterIn!, basis3D!, ringRadius)
+      : (p: Point) => deviationFrom2D(p, center!, ringRadius);
+    const geomCenter = has3D ? ringCenterIn! : center!;
     if (input.length < 3 || !center) {
       return NextResponse.json({ error: 'Недостаточно данных для уточнения маршрута' }, { status: 400 });
     }
@@ -138,8 +166,8 @@ export async function POST(req: Request) {
           .filter((c) => !used.has(c.name.toLowerCase())
             && dist(c, previous) <= 14.99
             && dist(c, next) <= 14.99
-            && deviationFrom(c, center, ringRadius) <= deviationLimit)
-          .sort((a, b) => deviationFrom(a, center, ringRadius) - deviationFrom(b, center, ringRadius))[0];
+            && deviationFn(c) <= deviationLimit)
+          .sort((a, b) => deviationFn(a) - deviationFn(b))[0];
         if (replacement) {
           used.delete(current.name.toLowerCase());
           used.add(replacement.name.toLowerCase());
@@ -149,7 +177,7 @@ export async function POST(req: Request) {
         }
         continue;
       }
-      const currentError = deviationFrom(current, center, ringRadius);
+      const currentError = deviationFn(current);
       const isSynthetic = current.source === 'triangulated' || current.name.startsWith('RING TRIANGULATED');
 
       const candidates: Point[] = [];
@@ -181,10 +209,10 @@ export async function POST(req: Request) {
         .filter((item) => !used.has(item.name.toLowerCase())
           && dist(item, previous) <= MAX_JUMP
           && dist(item, next) <= MAX_JUMP
-          && deviationFrom(item, center, ringRadius) <= deviationLimit)
-        .sort((left, right) => deviationFrom(left, center, ringRadius) - deviationFrom(right, center, ringRadius))[0];
+          && deviationFn(item) <= deviationLimit)
+        .sort((left, right) => deviationFn(left) - deviationFn(right))[0];
 
-      const candidateError = better ? deviationFrom(better, center, ringRadius) : Number.POSITIVE_INFINITY;
+      const candidateError = better ? deviationFn(better) : Number.POSITIVE_INFINITY;
       const improves = Boolean(better)
         && (isSynthetic || candidateError + 0.01 < currentError);
       if (better && improves) {

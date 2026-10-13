@@ -6807,3 +6807,34 @@ html[data-hud-effect="glow"]::before {
 
 .atlas-tag.green { background: rgba(46,204,113,0.18); color: var(--green); }
 .atlas-tag.red   { background: rgba(231,76,60,0.18);  color: var(--red); }
+
+/* Блок «Геометрия наклонённого кольца» */
+.atlas-advanced-fields {
+  border: 1px dashed var(--line);
+  border-radius: 3px;
+  padding: 0;
+  margin: 6px 0;
+  background: transparent;
+}
+.atlas-advanced-fields > summary {
+  cursor: pointer;
+  padding: 8px 10px;
+  list-style: none;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+.atlas-advanced-fields > summary::-webkit-details-marker { display: none; }
+.atlas-advanced-fields > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 120ms;
+}
+.atlas-advanced-fields[open] > summary::before { transform: rotate(90deg); }
+.atlas-advanced-fields .atlas-advanced-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 10px; }
+.atlas-tip.warn {
+  color: var(--red);
+  font-size: 11px;
+  margin: 0;
+}

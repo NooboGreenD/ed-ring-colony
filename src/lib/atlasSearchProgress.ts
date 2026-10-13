@@ -46,11 +46,18 @@ export interface AtlasSearchCorridor {
   radius?: number;
 }
 
+export interface AtlasSearchRingBasis {
+  ux: number; uy: number; uz: number;
+  vx: number; vy: number; vz: number;
+}
+
 export interface AtlasSearchRing {
   cx: number;
   cy: number;
   cz: number;
   radius: number;
+  /** 3D-базис плоскости кольца (u — радиальное к старту, v — касательное). */
+  basis?: AtlasSearchRingBasis | null;
 }
 
 export interface AtlasSearchCube {

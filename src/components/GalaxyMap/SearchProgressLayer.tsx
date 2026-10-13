@@ -14,7 +14,7 @@
  * только во время активного поиска, поэтому обычная карта не тяжелеет.
  */
 
-import { useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { Line } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -111,31 +111,38 @@ function ProgressPoints({ points }: { points: AtlasSearchPoint[] }) {
   );
 }
 
-/** Кольцо поиска: контур, вращающийся луч и «прогресс» яркой дугой. */
+/** Кольцо поиска: контур, вращающийся луч и «прогресс» яркой дугой. Поддерживает наклон (tilt). */
 function RingGuide({ ring, percent }: { ring: NonNullable<AtlasSearchProgress['ring']>; percent: number }) {
   const center = useMemo(() => toVector({ x: ring.cx, y: ring.cy, z: ring.cz }), [ring.cx, ring.cy, ring.cz]);
+  const b = ring.basis;
+  const ux = b?.ux ?? 1, uy = b?.uy ?? 0, uz = b?.uz ?? 0;
+  const vx = b?.vx ?? 0, vy = b?.vy ?? 0, vz = b?.vz ?? 1;
+
+  const pointOnRing = useCallback((angle: number): [number, number, number] => {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    return [
+      center.x + ring.radius * (ux * c + vx * s),
+      center.y + ring.radius * (uy * c + vy * s),
+      center.z + ring.radius * (uz * c + vz * s),
+    ];
+  }, [center, ring.radius, ux, uy, uz, vx, vy, vz]);
 
   const ringPoints = useMemo(() => {
     const SEGMENTS = 256;
     const points: [number, number, number][] = [];
     for (let index = 0; index <= SEGMENTS; index++) {
-      const angle = (index / SEGMENTS) * Math.PI * 2;
-      points.push([
-        center.x + Math.cos(angle) * ring.radius,
-        center.y,
-        center.z + Math.sin(angle) * ring.radius,
-      ]);
+      points.push(pointOnRing((index / SEGMENTS) * Math.PI * 2));
     }
     return points;
-  }, [center, ring.radius]);
+  }, [pointOnRing]);
 
   const sweep = useMemo(() => {
     const angle = (Math.min(100, Math.max(0, percent)) / 100) * Math.PI * 2;
     return [
       [center.x, center.y, center.z] as [number, number, number],
-      [center.x + Math.cos(angle) * ring.radius, center.y, center.z + Math.sin(angle) * ring.radius] as [number, number, number],
+      pointOnRing(angle),
     ];
-  }, [center, percent, ring.radius]);
+  }, [center, percent, pointOnRing]);
 
   return (
     <group>
@@ -267,19 +274,23 @@ function ResultGeometry({ result }: { result: AtlasSearchProgress }) {
 /** Контур кольца без вращающегося луча и пульса — для готового результата. */
 function RingOutline({ ring }: { ring: NonNullable<AtlasSearchProgress['ring']> }) {
   const center = useMemo(() => toVector({ x: ring.cx, y: ring.cy, z: ring.cz }), [ring.cx, ring.cy, ring.cz]);
+  const b = ring.basis;
+  const ux = b?.ux ?? 1, uy = b?.uy ?? 0, uz = b?.uz ?? 0;
+  const vx = b?.vx ?? 0, vy = b?.vy ?? 0, vz = b?.vz ?? 1;
+  const pointOnRing = useCallback((angle: number): [number, number, number] => {
+    const c = Math.cos(angle), s = Math.sin(angle);
+    return [
+      center.x + ring.radius * (ux * c + vx * s),
+      center.y + ring.radius * (uy * c + vy * s),
+      center.z + ring.radius * (uz * c + vz * s),
+    ];
+  }, [center, ring.radius, ux, uy, uz, vx, vy, vz]);
   const ringPoints = useMemo(() => {
     const SEGMENTS = 256;
     const points: [number, number, number][] = [];
-    for (let index = 0; index <= SEGMENTS; index++) {
-      const angle = (index / SEGMENTS) * Math.PI * 2;
-      points.push([
-        center.x + Math.cos(angle) * ring.radius,
-        center.y,
-        center.z + Math.sin(angle) * ring.radius,
-      ]);
-    }
+    for (let index = 0; index <= SEGMENTS; index++) points.push(pointOnRing((index / SEGMENTS) * Math.PI * 2));
     return points;
-  }, [center, ring.radius]);
+  }, [pointOnRing]);
 
   return (
     <group>

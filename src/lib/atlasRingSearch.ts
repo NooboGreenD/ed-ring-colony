@@ -60,6 +60,19 @@ export const ANCHOR_SPACING_LIMIT = 500;
 export const ANCHOR_DEVIATION_PREFERRED = 50;
 export const ANCHOR_DEVIATION_LIMIT = 100;
 /**
+ * Максимальная толщина галактического диска (± от плоскости), св.л.
+ * При 90° наклоне кольца радиус + высотное смещение не должны выходить за эти пределы.
+ */
+export const GALACTIC_DISK_HALF_THICKNESS = 6_000;
+/** Рекомендуемая средняя толщина диска — 3000 св.л. */
+export const GALACTIC_DISK_RECOMMENDED = 3_000;
+/** Диапазон высотного смещения центра кольца от галактической плоскости. */
+export const MIN_HEIGHT_OFFSET = -5_000;
+export const MAX_HEIGHT_OFFSET = 5_000;
+/** Наклон плоскости кольца в градусах. */
+export const MIN_TILT_DEGREES = 0;
+export const MAX_TILT_DEGREES = 180;
+/**
  * Коридор моста между опорами. Шире допуска отклонения: когда опоры смещены
  * от окружности, хорда уходит в сторону, и системы на оси кольца оказываются
  * дальше 100 св.л. от прямой, хотя сами в допуске. Допуск 100 для точек
@@ -185,13 +198,38 @@ export interface KeySystem {
   z: number;
 }
 
+/**
+ * 3D-базис наклонённого кольца.
+ *  - e_radial  (u): направление от центра к точке «старта» в плоскости кольца;
+ *  - e_tangent (v): перпендикулярно u в плоскости кольца (по направлению обхода);
+ *  - e_normal  (n): нормаль к плоскости кольца.
+ * При tilt=0 кольцо лежит в галактической плоскости (n = (0,1,0)), и базис
+ * совпадает со старым 2D-вариантом (ux, uz); при tilt≠0 плоскость наклонена
+ * вокруг оси `e_radial` (точка старта остаётся на месте, противоположная
+ * сторона поднимается/опускается).
+ */
+export interface RingBasis3D {
+  ux: number; uy: number; uz: number;
+  vx: number; vy: number; vz: number;
+  nx: number; ny: number; nz: number;
+}
+
 export interface RingPlan {
   sessionId: string;
   start: RingPoint;
   center: RingPoint;
+  /** Устаревшее 2D-поле оставлено для обратной совместимости; для новой логики используйте basis3D. */
   basis: { ux: number; uz: number };
+  /** Полный 3D-базис с учётом наклона и высотного смещения. */
+  basis3D: RingBasis3D;
   ringRadius: number;
   searchRadius: number;
+  /** Смещение центра кольца по оси Y относительно `center`, св.л. */
+  heightOffset: number;
+  /** Наклон плоскости кольца в градусах (0 = в плоскости галактики, 90 = перпендикулярно, 180 = опрокинуто). */
+  tiltDegrees: number;
+  /** Эффективный центр кольца в пространстве = center + (0, heightOffset, 0). */
+  ringCenter: RingPoint;
   /** Пользовательский допуск отклонения от окружности (св.л); null — значение по умолчанию. */
   deviationLimit: number;
   /** Обязательные (ключевые) системы, которые маршрут обязан пройти. */
@@ -254,6 +292,14 @@ export interface RingResult {
   sessionId: string;
   start: string;
   center: RingPoint;
+  /** Эффективный центр кольца в пространстве (center + (0, heightOffset, 0)). */
+  ringCenter: RingPoint;
+  /** 3D-базис кольца с учётом наклона. */
+  basis3D: RingBasis3D;
+  /** Высотное смещение, св.л. */
+  heightOffset: number;
+  /** Наклон плоскости, градусы. */
+  tiltDegrees: number;
   ringRadius: number;
   searchRadius: number;
   deviationLimit: number;
@@ -326,7 +372,7 @@ export function computeSectorCount(ringRadius: number): number {
   return Math.max(MIN_SECTORS, Math.min(MAX_SECTORS, count));
 }
 
-/** Точка окружности кольца по углу (базис: направление на старт от центра). */
+/** Точка окружности кольца по углу (устаревший 2D-вариант; для наклонённых колец используйте ringPointAtAngle3D). */
 export function ringPointAtAngle(
   center: XYZ,
   basis: { ux: number; uz: number },
@@ -342,17 +388,44 @@ export function ringPointAtAngle(
   };
 }
 
-/** Точка на кольце для сегмента: базис строится от начальной системы к центру. */
+/**
+ * Точка на наклонённом кольце по углу.
+ *
+ * Плоскость кольца определяется 3D-базисом (e_radial, e_tangent, e_normal).
+ * Начальная система лежит в направлении `e_radial` от `ringCenter`, обход
+ * против часовой стрелки вокруг `e_normal`.
+ */
+export function ringPointAtAngle3D(
+  ringCenter: XYZ,
+  basis: RingBasis3D,
+  ringRadius: number,
+  angle: number,
+): XYZ {
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  // Точка на окружности: R·(cos·u + sin·v) от центра кольца.
+  return {
+    x: ringCenter.x + ringRadius * (basis.ux * cos + basis.vx * sin),
+    y: ringCenter.y + ringRadius * (basis.uy * cos + basis.vy * sin),
+    z: ringCenter.z + ringRadius * (basis.uz * cos + basis.vz * sin),
+  };
+}
+
+/** Точка на кольце для сегмента. */
 export function ringTarget(
   center: XYZ,
-  basis: { ux: number; uz: number },
+  basis: RingBasis3D | { ux: number; uz: number },
   ringRadius: number,
   sectorIndex: number,
   sectors: number,
+  ringCenter?: XYZ,
 ): XYZ {
-  return ringPointAtAngle(center, basis, ringRadius, (2 * Math.PI * sectorIndex) / sectors);
+  const angle = (2 * Math.PI * sectorIndex) / sectors;
+  if ('nx' in basis && ringCenter) return ringPointAtAngle3D(ringCenter, basis, ringRadius, angle);
+  return ringPointAtAngle(center, basis as { ux: number; uz: number }, ringRadius, angle);
 }
 
+/** Строит 2D-базис в плоскости XZ от центра к точке старта. */
 export function ringBasis(start: { x: number; z: number }, center: { x: number; z: number }): { ux: number; uz: number } {
   const vx = start.x - center.x;
   const vz = start.z - center.z;
@@ -361,8 +434,76 @@ export function ringBasis(start: { x: number; z: number }, center: { x: number; 
 }
 
 /**
- * Перпендикулярное отклонение точки от окружности кольца: горизонтальное
- * расстояние до центра минус радиус, объединённое с отступом по высоте.
+ * Строит полный 3D-базис наклонённого кольца.
+ *
+ * Наклон определяется как поворот вокруг радиальной оси (направление от центра
+ * к старту) на угол `tiltRadians`: точка старта не меняет высоту, противоположная
+ * сторона кольца поднимается/опускается. При tilt=0 кольцо лежит в галактической
+ * плоскости; при tilt=π/2 превращается в вертикальное (ось Y); при tilt=π опрокинуто.
+ */
+export function ringBasis3D(
+  start: XYZ,
+  center: XYZ,
+  tiltRadians: number,
+): RingBasis3D {
+  // Горизонтальный вектор от центра к старту (e_radial).
+  const dx = start.x - center.x;
+  const dz = start.z - center.z;
+  const rLen = Math.hypot(dx, dz) || 1;
+  const u = { x: dx / rLen, y: 0, z: dz / rLen };
+  // Касательный вектор в плоскости XZ. Обход «против часовой сверху» при n=(0,1,0):
+  // точка на окружности = R·(cos·u + sin·v0), где v0 = (-uz, 0, ux).
+  const v0 = { x: -u.z, y: 0, z: u.x };
+  // При tilt=0 n = up = (0,1,0). При повороте плоскости вокруг оси u на угол tilt
+  // (по формуле Родриго, так что при tilt=π/2 противоположная сторона кольца
+  // поднимается, а перпендикуляр к старту опускается):
+  //   v = cos·v0 - sin·(0,1,0)
+  // Нормаль n = v × u — так, чтобы при tilt=0 получить (0,1,0) вверх.
+  const cos = Math.cos(tiltRadians);
+  const sin = Math.sin(tiltRadians);
+  const v = {
+    x: cos * v0.x,
+    y: -sin,
+    z: cos * v0.z,
+  };
+  const n = {
+    x: v.y * u.z - v.z * u.y,
+    y: v.z * u.x - v.x * u.z,
+    z: v.x * u.y - v.y * u.x,
+  };
+  return {
+    ux: u.x, uy: u.y, uz: u.z,
+    vx: v.x, vy: v.y, vz: v.z,
+    nx: n.x, ny: n.y, nz: n.z,
+  };
+}
+
+/**
+ * Перпендикулярное отклонение точки от окружности наклонённого кольца.
+ *
+ * Алгоритм: вектор от `ringCenter` к точке раскладывается на составляющие по
+ * базису (u, v, n); отклонение = гипотенуза между (1) отклонением радиуса в
+ * плоскости кольца и (2) расстоянием до плоскости кольца.
+ */
+export function ringDeviation3D(
+  point: XYZ,
+  ringCenter: XYZ,
+  basis: RingBasis3D,
+  ringRadius: number,
+): number {
+  const dx = point.x - ringCenter.x;
+  const dy = point.y - ringCenter.y;
+  const dz = point.z - ringCenter.z;
+  const a = dx * basis.ux + dy * basis.uy + dz * basis.uz; // проекция на u
+  const b = dx * basis.vx + dy * basis.vy + dz * basis.vz; // проекция на v
+  const c = dx * basis.nx + dy * basis.ny + dz * basis.nz; // проекция на нормаль
+  const r = Math.hypot(a, b);
+  return Math.hypot(r - ringRadius, c);
+}
+
+/**
+ * Устаревшая 2D-функция отклонения (для обратной совместимости).
+ * Вся новая логика использует ringDeviation3D.
  */
 export function ringDeviation(point: XYZ, center: XYZ, ringRadius: number): number {
   const horizontal = Math.hypot(point.x - center.x, point.z - center.z);
@@ -370,11 +511,43 @@ export function ringDeviation(point: XYZ, center: XYZ, ringRadius: number): numb
 }
 
 /**
- * Точка окружности, отстоящая от `from` ровно на `distance`, ближайшая к углу
- * `angle`. Нужна расчётной опоре, чтобы шаг от предыдущей опоры остался в норме,
- * даже если предыдущая реальная опора ушла от окружности. null — если такой точки нет.
+ * Точка окружности наклонённого кольца, отстоящая от `from` ровно на `distance`,
+ * ближайшая к углу `angle` (отложенному в плоскости кольца от направления u).
+ * Унифицированная 3D-версия; работает и для плоского кольца (tilt=0).
  */
 export function ringPointAtDistance(
+  ringCenter: XYZ,
+  basis: RingBasis3D,
+  ringRadius: number,
+  from: XYZ,
+  angle: number,
+  distance: number,
+): XYZ | null {
+  const dx = from.x - ringCenter.x;
+  const dy = from.y - ringCenter.y;
+  const dz = from.z - ringCenter.z;
+  // Проекция вектора from→ringCenter на базис кольца.
+  const a = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+  const b = dx * basis.vx + dy * basis.vy + dz * basis.vz;
+  const c = dx * basis.nx + dy * basis.ny + dz * basis.nz;
+  const m = Math.hypot(a, b);
+  if (m < 1e-9 || ringRadius <= 0) return null;
+  const fMagSq = a * a + b * b + c * c;
+  const k = (ringRadius * ringRadius + fMagSq - distance * distance) / (2 * ringRadius * m);
+  if (k < -1 || k > 1) return null;
+  const phi = Math.atan2(b, a);
+  const delta = Math.acos(k);
+  const normalise = (value: number) => Math.atan2(Math.sin(value), Math.cos(value));
+  const first = phi + delta;
+  const second = phi - delta;
+  const theta = Math.abs(normalise(first - angle)) <= Math.abs(normalise(second - angle)) ? first : second;
+  return ringPointAtAngle3D(ringCenter, basis, ringRadius, theta);
+}
+
+/**
+ * Устаревшая 2D-обёртка (для обратной совместимости со старым кодом).
+ */
+export function ringPointAtDistance2D(
   center: XYZ,
   basis: { ux: number; uz: number },
   ringRadius: number,
@@ -385,7 +558,6 @@ export function ringPointAtDistance(
   const dx = from.x - center.x;
   const dz = from.z - center.z;
   const h = from.y - center.y;
-  // Проекции на базис окружности: e1 = (ux, uz), e2 = (-uz, ux).
   const a = dx * basis.ux + dz * basis.uz;
   const b = -dx * basis.uz + dz * basis.ux;
   const m = Math.hypot(a, b);
@@ -567,6 +739,12 @@ interface SessionRow {
   sectors: number;
   sectors_done: number;
   center: XYZ;
+  /** Система-центр кольца (переопределение; по умолчанию Sgr A*). */
+  center_system: string | null;
+  /** Смещение центра по оси Y, св.л. */
+  height_offset: number | null;
+  /** Наклон плоскости в градусах. */
+  tilt_degrees: number | null;
   basis: { ux: number; uz: number };
   anchors: RingAnchor[];
   discovered: number;
@@ -576,13 +754,24 @@ interface SessionRow {
 }
 
 function rowToPlan(row: SessionRow, start: RingPoint): RingPlan {
+  const center: RingPoint = row.center_system
+    ? { name: row.center_system, x: Number(row.center.x), y: Number(row.center.y), z: Number(row.center.z), source: 'catalog' }
+    : { name: 'Sagittarius A*', x: Number(row.center.x), y: Number(row.center.y), z: Number(row.center.z), source: 'catalog' };
+  const heightOffset = Number(row.height_offset ?? 0);
+  const tiltDegrees = Number(row.tilt_degrees ?? 0);
+  const ringCenter = { name: center.name, x: center.x, y: center.y + heightOffset, z: center.z, source: center.source };
+  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
   return {
     sessionId: row.id,
     start,
-    center: { name: 'Sagittarius A*', x: Number(row.center.x), y: Number(row.center.y), z: Number(row.center.z), source: 'catalog' },
+    center,
     basis: { ux: Number(row.basis.ux), uz: Number(row.basis.uz) },
+    basis3D,
     ringRadius: Number(row.ring_radius),
     searchRadius: Number(row.search_radius),
+    heightOffset,
+    tiltDegrees,
+    ringCenter,
     deviationLimit: Number(row.deviation_limit) || ANCHOR_DEVIATION_LIMIT,
     keySystems: Array.isArray(row.key_systems) ? row.key_systems : [],
     sectors: Number(row.sectors),
@@ -657,6 +846,12 @@ export async function planRingSession(
     deviationLimit?: number | null;
     /** Имена обязательных (ключевых) систем, через которые пройдёт маршрут. */
     keySystems?: string[] | null;
+    /** Переопределение центра кольца (по умолчанию — Sagittarius A*). */
+    centerSystem?: string | null;
+    /** Высотное смещение центра кольца относительно галактической плоскости (св.л). */
+    heightOffset?: number | null;
+    /** Наклон плоскости кольца в градусах (0=плоское, 90=перпендикулярно). */
+    tiltDegrees?: number | null;
   },
   userId?: string | null,
 ): Promise<RingPlan> {
@@ -667,12 +862,42 @@ export async function planRingSession(
   const searchRadius = Math.min(MAX_SEARCH_RADIUS, Math.max(MIN_SEARCH_RADIUS, Number(config.searchRadius) || DEFAULT_SEARCH_RADIUS));
   const deviationLimit = Math.min(ANCHOR_DEVIATION_LIMIT * 4, Math.max(10, Math.round(Number(config.deviationLimit) || ANCHOR_DEVIATION_LIMIT)));
 
-  const [start, center] = await Promise.all([
-    resolveRingSystem(startName),
-    resolveRingSystem('Sagittarius A*'),
-  ]);
+  const centerSystemName = String(config.centerSystem || '').trim();
+  const tiltDegrees = Math.min(MAX_TILT_DEGREES, Math.max(MIN_TILT_DEGREES, Number(config.tiltDegrees) || 0));
+  const requestedHeight = Number(config.heightOffset) || 0;
+  // Центр системы может быть уже не в галактической плоскости (пользовательский центр);
+  // выясним его координаты заранее, чтобы ограничить высоту с учётом этого.
+  // Разрешаем центр заранее (он нужен и ниже).
+  const sgrA = await resolveRingSystem('Sagittarius A*');
+  if (!sgrA) throw new Error('Не удалось получить координаты Sagittarius A*');
+  let customCenter: RingPoint | null = null;
+  if (centerSystemName && normalizeNameForCompare(centerSystemName) !== 'sagittarius a*') {
+    const resolved = await resolveRingSystem(centerSystemName).catch(() => null);
+    if (!resolved) throw new Error(`Не удалось получить координаты центра — системы «${centerSystemName}»`);
+    customCenter = { ...resolved, source: 'catalog' };
+  }
+  const baseCenter = customCenter || { ...sgrA, source: 'catalog', name: 'Sagittarius A*' };
+  // При наклоне проекция на ось Y растёт. Точки кольца имеют y-координаты:
+  //   y = baseCenter.y + heightOffset + ringRadius·(-sin(tilt)·cos(angle))  (от -R·sin до +R·sin)
+  // Чтобы все точки кольца умещались в ±GALACTIC_DISK_HALF_THICKNESS св.л. от галактической плоскости (y=0),
+  // ограничиваем heightOffset. Если сам базовый центр уже за пределами диска — зажим не поможет,
+  // оставляем высоту как запрошено в пределах диапазона пользователя.
+  const sinTilt = Math.abs(Math.sin((tiltDegrees * Math.PI) / 180));
+  const ySwing = ringRadius * sinTilt;
+  const upperAllowed = GALACTIC_DISK_HALF_THICKNESS - baseCenter.y - ySwing;
+  const lowerAllowed = -GALACTIC_DISK_HALF_THICKNESS - baseCenter.y + ySwing;
+  const clampedMax = Math.min(MAX_HEIGHT_OFFSET, Math.max(MIN_HEIGHT_OFFSET, upperAllowed));
+  const clampedMin = Math.max(MIN_HEIGHT_OFFSET, Math.min(MAX_HEIGHT_OFFSET, lowerAllowed));
+  const heightOffset = Math.min(clampedMax, Math.max(clampedMin, requestedHeight));
+  if (Math.abs(requestedHeight - heightOffset) > 0.5) {
+    console.warn(`[ring] высотное смещение ${requestedHeight} св.л ограничено ${heightOffset} (учтён наклон ${tiltDegrees}°, предел диска ±${GALACTIC_DISK_HALF_THICKNESS} св.л)`);
+  }
+
+  const start = await resolveRingSystem(startName);
   if (!start) throw new Error(`Не удалось получить координаты системы «${startName}»`);
-  if (!center) throw new Error('Не удалось получить координаты Sagittarius A*');
+
+  // Центр уже выбран выше (sgrA / customCenter).
+  const center: RingPoint = { ...baseCenter };
 
   // Разрешаем координаты ключевых систем (параллельно, но не больше 8 сразу).
   const keySystemNames = Array.from(new Set(
@@ -691,7 +916,12 @@ export async function planRingSession(
     });
   }
 
-  const basis = ringBasis(start, center);
+  const ringCenter: RingPoint = {
+    ...center,
+    y: center.y + heightOffset,
+  };
+  const basis = ringBasis(start, ringCenter);
+  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
   const sectors = computeSectorCount(ringRadius);
 
   const stats: RingStats = { ...EMPTY_STATS, sectors, systemsFound: 0 };
@@ -704,6 +934,9 @@ export async function planRingSession(
       search_radius: searchRadius,
       deviation_limit: deviationLimit === ANCHOR_DEVIATION_LIMIT ? null : deviationLimit,
       key_systems: keySystems.length > 0 ? keySystems : null,
+      center_system: centerSystemName || null,
+      height_offset: heightOffset === 0 ? null : heightOffset,
+      tilt_degrees: tiltDegrees === 0 ? null : tiltDegrees,
       sectors,
       sectors_done: 0,
       center: { x: center.x, y: center.y, z: center.z },
@@ -732,8 +965,12 @@ export async function planRingSession(
     start: { ...start, source: 'start' },
     center: { ...center, source: 'catalog' },
     basis,
+    basis3D,
     ringRadius,
     searchRadius,
+    heightOffset,
+    tiltDegrees,
+    ringCenter,
     deviationLimit,
     keySystems,
     sectors,
@@ -958,8 +1195,10 @@ interface AnchorGeometry {
   target: XYZ;
   /** Угол сегмента на окружности (нужен расчётной опоре). */
   angle: number;
-  center: XYZ;
-  basis: { ux: number; uz: number };
+  /** Центр кольца в пространстве (с учётом высотного смещения). */
+  ringCenter: XYZ;
+  /** 3D-базис наклонённого кольца. */
+  basis3D: RingBasis3D;
   ringRadius: number;
   searchRadius: number;
   /** Допуск отклонения от окружности (св.л); для уточнения может быть больше/меньше 100. */
@@ -988,7 +1227,8 @@ export interface AnchorCandidate {
  */
 export function chooseAnchor(input: {
   target: XYZ;
-  center: XYZ;
+  ringCenter: XYZ;
+  basis3D: RingBasis3D;
   ringRadius: number;
   deviationLimit?: number;
   previous: XYZ | null;
@@ -1003,7 +1243,7 @@ export function chooseAnchor(input: {
   for (const system of input.candidates) {
     const key = system.name.toLowerCase();
     if (input.used.has(key)) continue;
-    const deviation = ringDeviation(system, input.center, input.ringRadius);
+    const deviation = ringDeviation3D(system, input.ringCenter, input.basis3D, input.ringRadius);
     if (deviation > devLimit) continue;
     const spacing = input.previous ? distance3(system, input.previous) : null;
     if (spacing !== null && (spacing > ANCHOR_SPACING_LIMIT || spacing < 1)) continue;
@@ -1026,7 +1266,7 @@ export function chooseAnchor(input: {
  * опору учитывается, только если не рвёт шаг от предыдущей.
  */
 function triangulatedAnchorPosition(geometry: AnchorGeometry): XYZ {
-  const { target, previous, closing, center, basis, ringRadius, angle } = geometry;
+  const { target, previous, closing, ringCenter, basis3D, ringRadius, angle } = geometry;
   const onTarget = { x: target.x, y: target.y, z: target.z };
   if (!previous) return onTarget;
 
@@ -1039,7 +1279,7 @@ function triangulatedAnchorPosition(geometry: AnchorGeometry): XYZ {
   // округление выталкивает шаг за жёсткий предел. Замыкание не имеет права
   // отодвинуть точку так, что шаг от предыдущей опоры станет больше 500.
   const safe = ANCHOR_SPACING_LIMIT - 0.05;
-  const pull = (distance: number) => ringPointAtDistance(center, basis, ringRadius, previous, angle, distance);
+  const pull = (distance: number) => ringPointAtDistance(ringCenter, basis3D, ringRadius, previous, angle, distance);
   for (const distance of [ANCHOR_SPACING_TARGET, ANCHOR_SPACING_MAX, safe]) {
     const point = pull(distance);
     if (!point || distance3(point, previous) > ANCHOR_SPACING_LIMIT) continue;
@@ -1092,10 +1332,11 @@ function findNearestKeySystem(
 function forcedAnchor(
   keySystem: KeySystem,
   target: XYZ,
-  center: XYZ,
+  ringCenter: XYZ,
+  basis3D: RingBasis3D,
   ringRadius: number,
 ): PickedAnchor {
-  const deviation = ringDeviation(keySystem, center, ringRadius);
+  const deviation = ringDeviation3D(keySystem, ringCenter, basis3D, ringRadius);
   return {
     anchor: {
       name: keySystem.name,
@@ -1141,7 +1382,8 @@ async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promi
 
     const choice = chooseAnchor({
       target: geometry.target,
-      center: geometry.center,
+      ringCenter: geometry.ringCenter,
+      basis3D: geometry.basis3D,
       ringRadius: geometry.ringRadius,
       deviationLimit: geometry.deviationLimit,
       previous: geometry.previous,
@@ -1190,7 +1432,7 @@ async function pickAnchor(geometry: AnchorGeometry, options: PickOptions): Promi
       z: position.z,
       source: 'triangulated',
       isAnchor: true,
-      deviation: ringDeviation(position, geometry.center, geometry.ringRadius),
+      deviation: ringDeviation3D(position, geometry.ringCenter, geometry.basis3D, geometry.ringRadius),
       target: geometry.target,
       found: lastFound,
       usedRadius,
@@ -1233,7 +1475,7 @@ export async function stepRingSession(
     // Шаг не должен превращаться в минуты ожидания: при выходе из бюджета времени
     // возвращаем то, что успели; клиент запросит следующий шаг.
     if (processedTo > from && Date.now() > deadline) break;
-    const target = ringTarget(session.center, session.basis, session.ringRadius, sector, session.sectors);
+    const target = ringTarget(session.center, session.basis3D, session.ringRadius, sector, session.sectors, session.ringCenter);
     beam = target;
     const previousAnchor = anchors.length > 0 ? anchors[anchors.length - 1] : null;
 
@@ -1243,13 +1485,13 @@ export async function stepRingSession(
     const forcedKey = findNearestKeySystem(session.keySystems, target, usedNames, session.searchRadius * 1.5);
 
     const picked = forcedKey
-      ? forcedAnchor(forcedKey, target, session.center, session.ringRadius)
+      ? forcedAnchor(forcedKey, target, session.ringCenter, session.basis3D, session.ringRadius)
       : await pickAnchor(
         {
           target,
           angle: (2 * Math.PI * sector) / session.sectors,
-          center: session.center,
-          basis: session.basis,
+          ringCenter: session.ringCenter,
+          basis3D: session.basis3D,
           ringRadius: session.ringRadius,
           searchRadius: session.searchRadius,
           deviationLimit: session.deviationLimit,
@@ -1357,7 +1599,7 @@ interface BridgeContext {
    * Если задано, расчётная точка, вылезшая из допуска отклонения, подтягивается
    * к оси кольца. Для подхода к старту не используется: старт не на окружности.
    */
-  ring: { center: XYZ; radius: number; limit: number } | null;
+  ring: { ringCenter: XYZ; basis3D: RingBasis3D; radius: number; limit: number } | null;
   /** После этого момента разрыв закрывается прямой, без перебора пула. */
   deadline?: number;
 }
@@ -1431,15 +1673,49 @@ function capPoolAlongSegment(pool: RingPoint[], from: XYZ, to: XYZ, cap: number)
   return kept;
 }
 
-/** Подтянуть точку к оси кольца, не выходя за допуск отклонения. */
-function clampToDeviation(point: RingPoint, center: XYZ, ringRadius: number, limit: number): RingPoint {
-  const deviation = ringDeviation(point, center, ringRadius);
+/**
+ * Подтянуть точку к окружности наклонённого кольца, не выходя за допуск отклонения.
+ * Проецируем вектор точки от ringCenter на плоскость кольца, масштабируем радиус
+ * и компоненту по нормали линейно так, чтобы итоговое отклонение стало ≤ limit.
+ */
+function clampToDeviation3D(
+  point: RingPoint,
+  ringCenter: XYZ,
+  basis: RingBasis3D,
+  ringRadius: number,
+  limit: number,
+): RingPoint {
+  const dx = point.x - ringCenter.x;
+  const dy = point.y - ringCenter.y;
+  const dz = point.z - ringCenter.z;
+  const a = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+  const b = dx * basis.vx + dy * basis.vy + dz * basis.vz;
+  const c = dx * basis.nx + dy * basis.ny + dz * basis.nz;
+  const r = Math.hypot(a, b);
+  const deviation = Math.hypot(r - ringRadius, c);
   if (deviation <= limit || deviation < 1e-9) return point;
+  const scale = limit / deviation;
+  const newR = ringRadius + (r - ringRadius) * scale;
+  const newC = c * scale;
+  const newA = r > 1e-9 ? (a / r) * newR : newR;
+  const newB = r > 1e-9 ? (b / r) * newR : 0;
+  return {
+    ...point,
+    x: ringCenter.x + newA * basis.ux + newB * basis.vx + newC * basis.nx,
+    y: ringCenter.y + newA * basis.uy + newB * basis.vy + newC * basis.ny,
+    z: ringCenter.z + newA * basis.uz + newB * basis.vz + newC * basis.nz,
+  };
+}
+
+/** Устаревшая 2D-обёртка (для обратной совместимости). */
+function clampToDeviation(point: RingPoint, center: XYZ, ringRadius: number, limit: number): RingPoint {
   const dx = point.x - center.x;
   const dz = point.z - center.z;
   const horizontal = Math.hypot(dx, dz);
   const y = point.y - center.y;
-  const scale = limit / deviation;
+  const dev = Math.hypot(horizontal - ringRadius, y);
+  if (dev <= limit || dev < 1e-9) return point;
+  const scale = limit / dev;
   const newHorizontal = ringRadius + (horizontal - ringRadius) * scale;
   const nx = horizontal > 1e-9 ? dx / horizontal : 1;
   const nz = horizontal > 1e-9 ? dz / horizontal : 0;
@@ -1485,7 +1761,7 @@ function syntheticToward(current: XYZ, aim: XYZ, context: BridgeContext, clamp: 
     source: 'triangulated',
   };
   if (clamp && context.ring) {
-    const clamped = clampToDeviation(synthetic, context.ring.center, context.ring.radius, context.ring.limit);
+    const clamped = clampToDeviation3D(synthetic, context.ring.ringCenter, context.ring.basis3D, context.ring.radius, context.ring.limit);
     if (distance3(current, clamped) <= context.maxJump + 1e-6) synthetic = clamped;
   }
   return synthetic;
@@ -1748,7 +2024,8 @@ async function collectSegmentPool(
   options: {
     catalogReady: boolean;
     deadline: number;
-    center: XYZ;
+    ringCenter: XYZ;
+    basis3D: RingBasis3D;
     ringRadius: number;
     approach: boolean;
     deviationLimit?: number;
@@ -1766,7 +2043,7 @@ async function collectSegmentPool(
   const byName = new Map<string, RingPoint>();
   const accept = (point: XYZ) =>
     distanceToSegment(point, from, to) <= ROUTE_CORRIDOR
-    && (options.approach || ringDeviation(point, options.center, options.ringRadius) <= devLimit);
+    && (options.approach || ringDeviation3D(point, options.ringCenter, options.basis3D, options.ringRadius) <= devLimit);
 
   const queue: SegmentProbe[] = [{
     x: (from.x + to.x) / 2,
@@ -1835,11 +2112,12 @@ async function collectSegmentPool(
 export function validateRingRoute(input: {
   route: RingPoint[];
   approach: boolean[];
-  center: XYZ;
+  ringCenter: XYZ;
+  basis3D: RingBasis3D;
   ringRadius: number;
   start: XYZ;
 }): RingValidation {
-  const { route, approach, center, ringRadius, start } = input;
+  const { route, approach, ringCenter, basis3D, ringRadius, start } = input;
 
   let maxJump = 0;
   let jumpViolations = 0;
@@ -1860,7 +2138,7 @@ export function validateRingRoute(input: {
   const spacingViolations = spacings.filter((value) => value > ANCHOR_SPACING_LIMIT + 1e-6).length;
   const spacingOutside = spacings.filter((value) => value < ANCHOR_SPACING_MIN || value > ANCHOR_SPACING_MAX).length;
 
-  const anchorDeviations = anchors.map((anchor) => ringDeviation(anchor, center, ringRadius));
+  const anchorDeviations = anchors.map((anchor) => ringDeviation3D(anchor, ringCenter, basis3D, ringRadius));
   const anchorDeviationMax = anchorDeviations.length ? Math.max(...anchorDeviations) : 0;
   const anchorDeviationAvg = anchorDeviations.length
     ? anchorDeviations.reduce((sum, value) => sum + value, 0) / anchorDeviations.length
@@ -1870,12 +2148,12 @@ export function validateRingRoute(input: {
   let deviationViolations = 0;
   route.forEach((point, index) => {
     if (approach[index]) return;
-    const deviation = ringDeviation(point, center, ringRadius);
+    const deviation = ringDeviation3D(point, ringCenter, basis3D, ringRadius);
     routeDeviationMax = Math.max(routeDeviationMax, deviation);
     if (deviation > ANCHOR_DEVIATION_LIMIT + 1e-6) deviationViolations++;
   });
 
-  const startOffset = ringDeviation(start, center, ringRadius);
+  const startOffset = ringDeviation3D(start, ringCenter, basis3D, ringRadius);
   const withinSpec = jumpViolations === 0
     && spacingViolations === 0
     && anchorDeviationMax <= ANCHOR_DEVIATION_LIMIT + 1e-6
@@ -1920,21 +2198,26 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
   try {
     const { data, error } = await supabaseAdmin
       .from('atlas_ring_sessions')
-      .select('id,start_system,center,ring_radius,search_radius,deviation_limit,key_systems,route,anchors,stats,status')
+      .select('id,start_system,center,center_system,height_offset,tilt_degrees,ring_radius,search_radius,deviation_limit,key_systems,route,anchors,stats,status')
       .eq('id', sessionId)
       .maybeSingle();
     if (error || !data || data.status !== 'completed') return null;
     const route = Array.isArray(data.route) ? data.route as RingPoint[] : [];
     if (route.length < 3 || !routeIsClosed(route)) return null;
-    const center = {
-      name: 'Sagittarius A*',
+    const baseY = Number(data.center?.y);
+    const heightOffset = Number((data as any).height_offset ?? 0);
+    const tiltDegrees = Number((data as any).tilt_degrees ?? 0);
+    const center: RingPoint = {
+      name: (data as any).center_system || 'Sagittarius A*',
       x: Number(data.center?.x),
-      y: Number(data.center?.y),
+      y: baseY,
       z: Number(data.center?.z),
       source: 'catalog' as const,
     };
     const ringRadius = Number(data.ring_radius);
     const start = route[0];
+    const ringCenter: RingPoint = { ...center, y: baseY + heightOffset, name: center.name };
+    const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
     const anchors = Array.isArray(data.anchors) && data.anchors.length
       ? data.anchors as RingPoint[]
       : route.filter((point) => point.isAnchor);
@@ -1944,7 +2227,8 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
     const validation = validateRingRoute({
       route,
       approach: approachFlags(route),
-      center,
+      ringCenter,
+      basis3D,
       ringRadius,
       start,
     });
@@ -1953,6 +2237,10 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
       sessionId,
       start: String(data.start_system || start.name),
       center,
+      ringCenter,
+      basis3D,
+      heightOffset,
+      tiltDegrees,
       ringRadius,
       searchRadius: Number(data.search_radius),
       deviationLimit,
@@ -2026,7 +2314,8 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     {
       catalogReady,
       deadline: collectDeadline,
-      center: session.center,
+      ringCenter: session.ringCenter,
+      basis3D: session.basis3D,
       ringRadius: session.ringRadius,
       approach: index === 0 || index === lastSegment,
       deviationLimit: session.deviationLimit,
@@ -2044,7 +2333,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     corridor: ROUTE_CORRIDOR,
     syntheticStep: SYNTHETIC_STEP,
     syntheticCounter: { next: () => ++syntheticCounter },
-    ring: { center: session.center, radius: session.ringRadius, limit: session.deviationLimit || ANCHOR_DEVIATION_LIMIT },
+    ring: { ringCenter: session.ringCenter, basis3D: session.basis3D, radius: session.ringRadius, limit: session.deviationLimit || ANCHOR_DEVIATION_LIMIT },
     deadline: Date.now() + FINALIZE_BRIDGE_BUDGET_MS,
   };
 
@@ -2105,12 +2394,13 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
   const validation = validateRingRoute({
     route: deduped,
     approach: dedupedApproach,
-    center: session.center,
+    ringCenter: session.ringCenter,
+    basis3D: session.basis3D,
     ringRadius: session.ringRadius,
     start,
   });
 
-  const deviations = anchors.map((anchor) => ringDeviation(anchor, session.center, session.ringRadius));
+  const deviations = anchors.map((anchor) => ringDeviation3D(anchor, session.ringCenter, session.basis3D, session.ringRadius));
   const deviationAvg = deviations.length > 0 ? deviations.reduce((sum, value) => sum + value, 0) / deviations.length : 0;
   const deviationMax = deviations.length > 0 ? Math.max(...deviations) : 0;
 
@@ -2118,6 +2408,10 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     sessionId,
     start: session.start.name,
     center: session.center,
+    ringCenter: session.ringCenter,
+    basis3D: session.basis3D,
+    heightOffset: session.heightOffset,
+    tiltDegrees: session.tiltDegrees,
     ringRadius: session.ringRadius,
     searchRadius: session.searchRadius,
     deviationLimit: session.deviationLimit,
