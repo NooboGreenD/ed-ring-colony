@@ -21,7 +21,10 @@ export type AtlasSearchPointKind =
   | 'triangulated' // расчётная точка (триангуляция)
   | 'station'      // станция с рынком
   | 'no-market'    // система без рынка
-  | 'scanned';     // просканированная система без результата
+  | 'scanned'      // просканированная система без результата
+  | 'hub-found'    // найден кандидат на строительный хаб
+  | 'hub-missing'  // опора без подходящего хаба (требует разведки)
+  | 'key-system';  // пользовательская ключевая точка маршрута
 
 export interface AtlasSearchPoint {
   id?: string;
@@ -43,11 +46,18 @@ export interface AtlasSearchCorridor {
   radius?: number;
 }
 
+export interface AtlasSearchRingBasis {
+  ux: number; uy: number; uz: number;
+  vx: number; vy: number; vz: number;
+}
+
 export interface AtlasSearchRing {
   cx: number;
   cy: number;
   cz: number;
   radius: number;
+  /** 3D-базис плоскости кольца (u — радиальное к старту, v — касательное). */
+  basis?: AtlasSearchRingBasis | null;
 }
 
 export interface AtlasSearchCube {
