@@ -6838,3 +6838,169 @@ html[data-hud-effect="glow"]::before {
   font-size: 11px;
   margin: 0;
 }
+
+/* Atlas: устойчивый поток панели, без сжатия карточек и вложенных перекрытий. */
+.atlas-sidebar {
+  flex: 0 0 clamp(360px, 31vw, 440px);
+  width: clamp(360px, 31vw, 440px);
+  min-width: 0;
+  min-height: 0;
+}
+.atlas-sidebar-header, .atlas-tabs { flex-shrink: 0; }
+.atlas-sidebar-body {
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 14px;
+}
+.atlas-sidebar-body > * { flex-shrink: 0; min-width: 0; }
+.atlas-map-area { min-width: 0; min-height: 0; }
+.atlas-tabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.atlas-tab { min-width: 0; white-space: normal; padding: 10px 4px; font-size: 10px; }
+
+/* Единая прокрутка в палитре сайта, включая модалки и выпадающие списки. */
+:is(.atlas-sidebar-body, .atlas-modal-body, .atlas-system-list, .atlas-route-list,
+    .atlas-result-list, .atlas-jump-list, .atlas-hubs-list, .atlas-refine-log, .galaxy-map-controls-body) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) var(--bg);
+  color-scheme: dark;
+}
+:is(.atlas-sidebar-body, .atlas-modal-body, .atlas-system-list, .atlas-route-list,
+    .atlas-result-list, .atlas-jump-list, .atlas-hubs-list, .atlas-refine-log, .galaxy-map-controls-body)::-webkit-scrollbar {
+  width: 7px; height: 7px;
+}
+:is(.atlas-sidebar-body, .atlas-modal-body, .atlas-system-list, .atlas-route-list,
+    .atlas-result-list, .atlas-jump-list, .atlas-hubs-list, .atlas-refine-log, .galaxy-map-controls-body)::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+:is(.atlas-sidebar-body, .atlas-modal-body, .atlas-system-list, .atlas-route-list,
+    .atlas-result-list, .atlas-jump-list, .atlas-hubs-list, .atlas-refine-log, .galaxy-map-controls-body)::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 3px; border: 1px solid var(--bg);
+}
+:is(.atlas-sidebar-body, .atlas-modal-body, .atlas-system-list, .atlas-route-list,
+    .atlas-result-list, .atlas-jump-list, .atlas-hubs-list, .atlas-refine-log, .galaxy-map-controls-body)::-webkit-scrollbar-thumb:hover {
+  background: var(--orange);
+}
+.atlas-ring-finder, .atlas-ring-finder * { box-sizing: border-box; }
+.atlas-ring-finder { min-width: 0; display: grid; gap: 14px; }
+.atlas-ring-finder .atlas-search-panel { padding: 16px; margin: 0; background: var(--panel); }
+.atlas-ring-finder .atlas-search-panel h3 { font-size: 13px; line-height: 1.5; letter-spacing: 1px; }
+.atlas-ring-finder .atlas-route-desc { line-height: 1.65; }
+.atlas-ring-help { margin: 0 0 16px; }
+.atlas-ring-help p { margin-top: 10px; line-height: 1.65; }
+.atlas-ring-section { padding: 14px 0; border-top: 1px solid var(--line); min-width: 0; }
+.atlas-ring-section-title { margin: 0 0 14px; color: var(--orange); font: 11px ui-monospace, monospace; letter-spacing: 1px; text-transform: uppercase; }
+.atlas-ring-finder .atlas-search-field { min-width: 0; margin-bottom: 16px; }
+.atlas-ring-finder .atlas-search-field label {
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px;
+  font-size: 11px; letter-spacing: .4px; line-height: 1.5; margin-bottom: 8px;
+}
+.atlas-ring-finder .atlas-search-field label strong { color: var(--text); white-space: nowrap; }
+.atlas-ring-finder .atlas-range-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 88px; gap: 12px;
+}
+.atlas-ring-finder .atlas-range-row input.atlas-range-number { width: 100%; min-width: 0; min-height: 36px; }
+.atlas-ring-finder .atlas-range-scale { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font: 10px ui-monospace, monospace; margin-top: 4px; }
+.atlas-ring-finder .atlas-range-hint { margin: 8px 0 0; font-size: 11px; line-height: 1.6; }
+.atlas-ring-finder input[type="range"] { min-width: 0; height: 24px; margin: 0; cursor: pointer; }
+.atlas-ring-finder input:focus-visible, .atlas-ring-finder button:focus-visible,
+.atlas-ring-finder summary:focus-visible, .atlas-ring-finder select:focus-visible {
+  outline: 2px solid var(--orange); outline-offset: 3px;
+}
+.atlas-ring-preview-status {
+  display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px;
+  border-left: 2px solid var(--orange); background: rgba(230,126,34,.06);
+  color: var(--muted); font-size: 11px; line-height: 1.6; margin: 0 0 16px;
+}
+.atlas-ring-preview-status svg { flex-shrink: 0; margin-top: 3px; color: var(--orange); }
+.atlas-ring-geometry { margin: 0 0 16px; border: 1px solid var(--line); background: var(--bg); }
+.atlas-ring-geometry > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 12px; color: var(--text); }
+.atlas-ring-geometry-meta { margin-left: auto; color: var(--orange); font: 10px ui-monospace, monospace; }
+.atlas-ring-geometry .atlas-advanced-body { padding: 12px; gap: 12px; border-top: 1px solid var(--line); }
+.atlas-ring-geometry .atlas-search-field, .atlas-ring-geometry .atlas-system-search { margin-bottom: 0; }
+.atlas-ring-geometry .atlas-muted { font-size: 11px; line-height: 1.6; margin: 0; }
+.atlas-ring-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.atlas-ring-presets .atlas-preset { min-width: 0; min-height: 34px; border-radius: 2px; padding: 6px 8px; font-size: 11px; line-height: 1.4; }
+.atlas-ring-presets .atlas-preset[aria-pressed="true"] { color: var(--orange); border-color: var(--orange); background: rgba(230,126,34,.12); }
+.atlas-ring-presets .atlas-preset:disabled { opacity: .5; cursor: not-allowed; }
+.atlas-ring-geometry-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.atlas-ring-geometry-actions > button { flex: 1 1 120px; }
+.atlas-ring-finder .atlas-key-chip-row { align-items: flex-start; }
+.atlas-ring-finder .atlas-key-chip-row .atlas-system-search { min-width: 0; margin: 0; }
+.atlas-ring-finder .atlas-key-chip-row > button { flex-shrink: 0; min-height: 36px; }
+.atlas-ring-finder .atlas-key-chip { max-width: 100%; overflow-wrap: anywhere; }
+.atlas-ring-finder .atlas-key-chip button { flex-shrink: 0; }
+.atlas-ring-finder .atlas-button-row { flex-wrap: wrap; gap: 8px; }
+.atlas-ring-finder .atlas-button-row > button { flex: 1 1 160px; min-width: 0; white-space: normal; }
+.atlas-ring-finder .atlas-secondary-btn { white-space: normal; line-height: 1.5; min-height: 34px; }
+.atlas-ring-finder .atlas-secondary-btn svg { flex-shrink: 0; }
+.atlas-ring-finder .atlas-refine-infograph, .atlas-ring-finder .atlas-route-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.atlas-ring-finder .stat-box, .atlas-ring-finder .atlas-infograph-cell { min-width: 0; overflow-wrap: anywhere; }
+.atlas-ring-finder .atlas-infograph-cell .lbl { line-height: 1.5; }
+.atlas-ring-finder .atlas-stat-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.atlas-ring-finder .atlas-project-select { flex-direction: column; align-items: stretch; gap: 6px; }
+.atlas-ring-finder .atlas-project-select select { width: 100%; min-width: 0; }
+.atlas-ring-finder .atlas-section-head { flex-wrap: wrap; gap: 8px; }
+.atlas-modal { overflow: hidden; }
+.atlas-modal-header > div { min-width: 0; }
+.atlas-modal-header h2 { overflow-wrap: anywhere; line-height: 1.5; }
+.atlas-modal-close { flex-shrink: 0; }
+.atlas-modal-footer { flex-wrap: wrap; }
+.atlas-modal-body .atlas-key-chip-row > :first-child { min-width: 0; }
+
+@media (max-width: 768px) {
+  .atlas-page { height: calc(100dvh - 52px - 56px); }
+  .atlas-sidebar { flex: 0 1 auto; width: 100%; min-width: 0; max-height: 52dvh; }
+  .atlas-sidebar-header { padding: 10px 12px; }
+  .atlas-sidebar-body { padding: 10px; }
+  .atlas-map-area { flex: 1 0 35dvh; }
+  .atlas-ring-finder .atlas-search-panel { padding: 12px; }
+}
+@media (max-width: 380px) {
+  .atlas-ring-finder .atlas-range-row { grid-template-columns: minmax(0, 1fr) 76px; gap: 8px; }
+  .atlas-ring-geometry-meta { width: 100%; margin-left: 20px; }
+  .atlas-ring-geometry .atlas-advanced-body { padding: 10px; }
+}
+
+/* Ползунки геометрии: такие же тёмные дорожки и оранжевые маркеры, как кнопки. */
+.atlas-ring-finder input[type="range"] { appearance: none; background: transparent; }
+.atlas-ring-finder input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: var(--line); border-radius: 2px; }
+.atlas-ring-finder input[type="range"]::-moz-range-track { height: 4px; background: var(--line); border-radius: 2px; }
+.atlas-ring-finder input[type="range"]::-webkit-slider-thumb {
+  appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid var(--bg);
+  border-radius: 2px; background: var(--orange);
+}
+.atlas-ring-finder input[type="range"]::-moz-range-thumb {
+  width: 10px; height: 10px; border: 2px solid var(--bg); border-radius: 2px; background: var(--orange);
+}
+.atlas-ring-finder input[type="range"]:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Панель слоёв карты не должна занимать весь мобильный экран. */
+.galaxy-map-controls {
+  position: absolute; top: 12px; right: 12px; z-index: 10;
+  display: flex; flex-direction: column; width: 300px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px); min-height: 0; border: 1px solid var(--line);
+  border-radius: 3px; background: rgba(13,15,17,.9); backdrop-filter: blur(8px);
+  color: var(--text); pointer-events: auto; overflow: hidden;
+}
+.galaxy-map-controls-toggle { display: none; }
+.galaxy-map-controls-body { padding: 12px; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.galaxy-map-controls input[type="checkbox"], .atlas-ring-finder input[type="checkbox"] {
+  width: 14px; height: 14px; min-width: 14px; min-height: 14px; padding: 0; margin: 0;
+  flex-shrink: 0; accent-color: var(--orange);
+}
+.galaxy-map-controls-body label { min-height: 24px; }
+@media (max-width: 768px) {
+  .galaxy-map-controls-toggle {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    width: 100%; min-height: 44px; padding: 10px 12px; background: transparent;
+    color: var(--orange); border: none; margin: 0; font-size: 10px; letter-spacing: .5px;
+  }
+  .galaxy-map-controls-body { display: none; }
+  .galaxy-map-controls.expanded .galaxy-map-controls-body { display: block; border-top: 1px solid var(--line); }
+  .galaxy-map-controls-body label { min-height: 36px; }
+  .atlas-ring-finder .atlas-checkbox-row { min-height: 44px; align-items: center; }
+}

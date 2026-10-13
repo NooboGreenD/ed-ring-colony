@@ -1,7 +1,7 @@
 'use client';
 
 import { IconMapPin, IconPlane, IconGlobe, IconRefresh, IconCircleFill, IconExternalLink } from '@/components/Icons';
-import { useState, useCallback, useEffect, Suspense, useMemo } from 'react';
+import { useState, useId, useCallback, useEffect, Suspense, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
@@ -203,6 +203,8 @@ export default function GalaxyMap({
 
   // Layer filters. In the old map the "known systems" checkbox hid markers
   // but not the orange line, while it also unexpectedly hid Atlas/pilots.
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const controlsId = useId();
   const [showKnownSystems, setShowKnownSystems] = useState(true);
   const [showProjectRoute, setShowProjectRoute] = useState(true);
   const [showAtlasCandidates, setShowAtlasCandidates] = useState(true);
@@ -673,7 +675,12 @@ export default function GalaxyMap({
           {searchProgress.active && <span><i style={{ background: '#ffd166' }} /> Точка сканирования</span>}
         </div>
       )}
-      <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 10, background: 'rgba(13,15,17,0.85)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'none' }}>
+      <div className={`galaxy-map-controls${mobileControlsOpen ? ' expanded' : ''}`}>
+        <button type="button" className="galaxy-map-controls-toggle" aria-expanded={mobileControlsOpen}
+          aria-controls={controlsId} onClick={() => setMobileControlsOpen(open => !open)}>
+          <IconGlobe size={14} /> Слои и управление картой <span aria-hidden="true">{mobileControlsOpen ? '−' : '+'}</span>
+        </button>
+        <div className="galaxy-map-controls-body" id={controlsId}>
         <div style={{ marginBottom: 8, pointerEvents: 'auto' }}>
           <button onClick={handleResetView} style={{ background: 'rgba(30,41,59,0.8)', border: '1px solid #3a3d40', color: '#9ca3af', padding: '4px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit', width: '100%' }}>
             <IconRefresh size={12} /> Сброс вида
@@ -881,6 +888,7 @@ export default function GalaxyMap({
             <span style={{ color: '#3b82f6' }}><IconCircleFill size={8} /></span> Маршрут проекта
           </div>
         )}
+        </div>
       </div>
 
       {galaxyPick && (

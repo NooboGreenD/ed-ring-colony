@@ -36,6 +36,8 @@
  */
 
 // Явные расширения нужны для `node --test`.
+import { ringBasis3D, ringPointAtAngle3D, ringHeightOffset, type RingBasis3D } from './atlasRingGeometry.ts';
+export { ringBasis3D, ringPointAtAngle3D, type RingBasis3D } from './atlasRingGeometry.ts';
 import { supabaseAdmin } from './supabaseAdmin.ts';
 import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from './galaxySystemsDb.ts';
 import { listCachedSystemsNear, saveCachedSystems, type CachedSystem } from './atlasSystemCache.ts';
@@ -70,7 +72,7 @@ export const GALACTIC_DISK_RECOMMENDED = 3_000;
 export const MIN_HEIGHT_OFFSET = -5_000;
 export const MAX_HEIGHT_OFFSET = 5_000;
 /** Наклон плоскости кольца в градусах. */
-export const MIN_TILT_DEGREES = 0;
+export const MIN_TILT_DEGREES = -180;
 export const MAX_TILT_DEGREES = 180;
 /**
  * Коридор моста между опорами. Шире допуска отклонения: когда опоры смещены
@@ -205,14 +207,8 @@ export interface KeySystem {
  *  - e_normal  (n): нормаль к плоскости кольца.
  * При tilt=0 кольцо лежит в галактической плоскости (n = (0,1,0)), и базис
  * совпадает со старым 2D-вариантом (ux, uz); при tilt≠0 плоскость наклонена
- * вокруг оси `e_radial` (точка старта остаётся на месте, противоположная
- * сторона поднимается/опускается).
+ * вокруг горизонтальной оси с настраиваемым азимутом.
  */
-export interface RingBasis3D {
-  ux: number; uy: number; uz: number;
-  vx: number; vy: number; vz: number;
-  nx: number; ny: number; nz: number;
-}
 
 export interface RingPlan {
   sessionId: string;
@@ -228,6 +224,7 @@ export interface RingPlan {
   heightOffset: number;
   /** Наклон плоскости кольца в градусах (0 = в плоскости галактики, 90 = перпендикулярно, 180 = опрокинуто). */
   tiltDegrees: number;
+  tiltAxisDegrees: number;
   /** Эффективный центр кольца в пространстве = center + (0, heightOffset, 0). */
   ringCenter: RingPoint;
   /** Пользовательский допуск отклонения от окружности (св.л); null — значение по умолчанию. */
@@ -300,6 +297,7 @@ export interface RingResult {
   heightOffset: number;
   /** Наклон плоскости, градусы. */
   tiltDegrees: number;
+  tiltAxisDegrees: number;
   ringRadius: number;
   searchRadius: number;
   deviationLimit: number;
@@ -388,29 +386,6 @@ export function ringPointAtAngle(
   };
 }
 
-/**
- * Точка на наклонённом кольце по углу.
- *
- * Плоскость кольца определяется 3D-базисом (e_radial, e_tangent, e_normal).
- * Начальная система лежит в направлении `e_radial` от `ringCenter`, обход
- * против часовой стрелки вокруг `e_normal`.
- */
-export function ringPointAtAngle3D(
-  ringCenter: XYZ,
-  basis: RingBasis3D,
-  ringRadius: number,
-  angle: number,
-): XYZ {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  // Точка на окружности: R·(cos·u + sin·v) от центра кольца.
-  return {
-    x: ringCenter.x + ringRadius * (basis.ux * cos + basis.vx * sin),
-    y: ringCenter.y + ringRadius * (basis.uy * cos + basis.vy * sin),
-    z: ringCenter.z + ringRadius * (basis.uz * cos + basis.vz * sin),
-  };
-}
-
 /** Точка на кольце для сегмента. */
 export function ringTarget(
   center: XYZ,
@@ -431,51 +406,6 @@ export function ringBasis(start: { x: number; z: number }, center: { x: number; 
   const vz = start.z - center.z;
   const length = Math.hypot(vx, vz) || 1;
   return { ux: vx / length, uz: vz / length };
-}
-
-/**
- * Строит полный 3D-базис наклонённого кольца.
- *
- * Наклон определяется как поворот вокруг радиальной оси (направление от центра
- * к старту) на угол `tiltRadians`: точка старта не меняет высоту, противоположная
- * сторона кольца поднимается/опускается. При tilt=0 кольцо лежит в галактической
- * плоскости; при tilt=π/2 превращается в вертикальное (ось Y); при tilt=π опрокинуто.
- */
-export function ringBasis3D(
-  start: XYZ,
-  center: XYZ,
-  tiltRadians: number,
-): RingBasis3D {
-  // Горизонтальный вектор от центра к старту (e_radial).
-  const dx = start.x - center.x;
-  const dz = start.z - center.z;
-  const rLen = Math.hypot(dx, dz) || 1;
-  const u = { x: dx / rLen, y: 0, z: dz / rLen };
-  // Касательный вектор в плоскости XZ. Обход «против часовой сверху» при n=(0,1,0):
-  // точка на окружности = R·(cos·u + sin·v0), где v0 = (-uz, 0, ux).
-  const v0 = { x: -u.z, y: 0, z: u.x };
-  // При tilt=0 n = up = (0,1,0). При повороте плоскости вокруг оси u на угол tilt
-  // (по формуле Родриго, так что при tilt=π/2 противоположная сторона кольца
-  // поднимается, а перпендикуляр к старту опускается):
-  //   v = cos·v0 - sin·(0,1,0)
-  // Нормаль n = v × u — так, чтобы при tilt=0 получить (0,1,0) вверх.
-  const cos = Math.cos(tiltRadians);
-  const sin = Math.sin(tiltRadians);
-  const v = {
-    x: cos * v0.x,
-    y: -sin,
-    z: cos * v0.z,
-  };
-  const n = {
-    x: v.y * u.z - v.z * u.y,
-    y: v.z * u.x - v.x * u.z,
-    z: v.x * u.y - v.y * u.x,
-  };
-  return {
-    ux: u.x, uy: u.y, uz: u.z,
-    vx: v.x, vy: v.y, vz: v.z,
-    nx: n.x, ny: n.y, nz: n.z,
-  };
 }
 
 /**
@@ -745,6 +675,7 @@ interface SessionRow {
   height_offset: number | null;
   /** Наклон плоскости в градусах. */
   tilt_degrees: number | null;
+  tilt_axis_degrees?: number | null;
   basis: { ux: number; uz: number };
   anchors: RingAnchor[];
   discovered: number;
@@ -759,8 +690,9 @@ function rowToPlan(row: SessionRow, start: RingPoint): RingPlan {
     : { name: 'Sagittarius A*', x: Number(row.center.x), y: Number(row.center.y), z: Number(row.center.z), source: 'catalog' };
   const heightOffset = Number(row.height_offset ?? 0);
   const tiltDegrees = Number(row.tilt_degrees ?? 0);
+  const tiltAxisDegrees = Number(row.tilt_axis_degrees ?? 0);
   const ringCenter = { name: center.name, x: center.x, y: center.y + heightOffset, z: center.z, source: center.source };
-  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
+  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180, (tiltAxisDegrees * Math.PI) / 180);
   return {
     sessionId: row.id,
     start,
@@ -771,6 +703,7 @@ function rowToPlan(row: SessionRow, start: RingPoint): RingPlan {
     searchRadius: Number(row.search_radius),
     heightOffset,
     tiltDegrees,
+    tiltAxisDegrees,
     ringCenter,
     deviationLimit: Number(row.deviation_limit) || ANCHOR_DEVIATION_LIMIT,
     keySystems: Array.isArray(row.key_systems) ? row.key_systems : [],
@@ -852,6 +785,8 @@ export async function planRingSession(
     heightOffset?: number | null;
     /** Наклон плоскости кольца в градусах (0=плоское, 90=перпендикулярно). */
     tiltDegrees?: number | null;
+    /** Азимут горизонтальной оси наклона относительно направления к старту (0..360°). */
+    tiltAxisDegrees?: number | null;
   },
   userId?: string | null,
 ): Promise<RingPlan> {
@@ -864,6 +799,8 @@ export async function planRingSession(
 
   const centerSystemName = String(config.centerSystem || '').trim();
   const tiltDegrees = Math.min(MAX_TILT_DEGREES, Math.max(MIN_TILT_DEGREES, Number(config.tiltDegrees) || 0));
+  const rawAxis = Number(config.tiltAxisDegrees) || 0;
+  const tiltAxisDegrees = Number.isFinite(rawAxis) ? ((rawAxis % 360) + 360) % 360 : 0;
   const requestedHeight = Number(config.heightOffset) || 0;
   // Центр системы может быть уже не в галактической плоскости (пользовательский центр);
   // выясним его координаты заранее, чтобы ограничить высоту с учётом этого.
@@ -878,17 +815,11 @@ export async function planRingSession(
   }
   const baseCenter = customCenter || { ...sgrA, source: 'catalog', name: 'Sagittarius A*' };
   // При наклоне проекция на ось Y растёт. Точки кольца имеют y-координаты:
-  //   y = baseCenter.y + heightOffset + ringRadius·(-sin(tilt)·cos(angle))  (от -R·sin до +R·sin)
+  // Вертикальный размах при любой оси наклона: ±R·abs(sin(tilt)).
   // Чтобы все точки кольца умещались в ±GALACTIC_DISK_HALF_THICKNESS св.л. от галактической плоскости (y=0),
-  // ограничиваем heightOffset. Если сам базовый центр уже за пределами диска — зажим не поможет,
-  // оставляем высоту как запрошено в пределах диапазона пользователя.
-  const sinTilt = Math.abs(Math.sin((tiltDegrees * Math.PI) / 180));
-  const ySwing = ringRadius * sinTilt;
-  const upperAllowed = GALACTIC_DISK_HALF_THICKNESS - baseCenter.y - ySwing;
-  const lowerAllowed = -GALACTIC_DISK_HALF_THICKNESS - baseCenter.y + ySwing;
-  const clampedMax = Math.min(MAX_HEIGHT_OFFSET, Math.max(MIN_HEIGHT_OFFSET, upperAllowed));
-  const clampedMin = Math.max(MIN_HEIGHT_OFFSET, Math.min(MAX_HEIGHT_OFFSET, lowerAllowed));
-  const heightOffset = Math.min(clampedMax, Math.max(clampedMin, requestedHeight));
+  // ограничиваем heightOffset. Если кольцо шире диска, располагаем центр
+  // максимально близко к плоскости: полностью уместить такое кольцо нельзя.
+  const heightOffset = ringHeightOffset(baseCenter.y, ringRadius, tiltDegrees, requestedHeight);
   if (Math.abs(requestedHeight - heightOffset) > 0.5) {
     console.warn(`[ring] высотное смещение ${requestedHeight} св.л ограничено ${heightOffset} (учтён наклон ${tiltDegrees}°, предел диска ±${GALACTIC_DISK_HALF_THICKNESS} св.л)`);
   }
@@ -921,7 +852,7 @@ export async function planRingSession(
     y: center.y + heightOffset,
   };
   const basis = ringBasis(start, ringCenter);
-  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
+  const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180, (tiltAxisDegrees * Math.PI) / 180);
   const sectors = computeSectorCount(ringRadius);
 
   const stats: RingStats = { ...EMPTY_STATS, sectors, systemsFound: 0 };
@@ -937,6 +868,7 @@ export async function planRingSession(
       center_system: centerSystemName || null,
       height_offset: heightOffset === 0 ? null : heightOffset,
       tilt_degrees: tiltDegrees === 0 ? null : tiltDegrees,
+      tilt_axis_degrees: tiltAxisDegrees === 0 ? null : tiltAxisDegrees,
       sectors,
       sectors_done: 0,
       center: { x: center.x, y: center.y, z: center.z },
@@ -970,6 +902,7 @@ export async function planRingSession(
     searchRadius,
     heightOffset,
     tiltDegrees,
+    tiltAxisDegrees,
     ringCenter,
     deviationLimit,
     keySystems,
@@ -2198,7 +2131,7 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
   try {
     const { data, error } = await supabaseAdmin
       .from('atlas_ring_sessions')
-      .select('id,start_system,center,center_system,height_offset,tilt_degrees,ring_radius,search_radius,deviation_limit,key_systems,route,anchors,stats,status')
+      .select('id,start_system,center,center_system,height_offset,tilt_degrees,tilt_axis_degrees,ring_radius,search_radius,deviation_limit,key_systems,route,anchors,stats,status')
       .eq('id', sessionId)
       .maybeSingle();
     if (error || !data || data.status !== 'completed') return null;
@@ -2207,6 +2140,7 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
     const baseY = Number(data.center?.y);
     const heightOffset = Number((data as any).height_offset ?? 0);
     const tiltDegrees = Number((data as any).tilt_degrees ?? 0);
+    const tiltAxisDegrees = Number((data as any).tilt_axis_degrees ?? 0);
     const center: RingPoint = {
       name: (data as any).center_system || 'Sagittarius A*',
       x: Number(data.center?.x),
@@ -2217,7 +2151,7 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
     const ringRadius = Number(data.ring_radius);
     const start = route[0];
     const ringCenter: RingPoint = { ...center, y: baseY + heightOffset, name: center.name };
-    const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180);
+    const basis3D = ringBasis3D(start, ringCenter, (tiltDegrees * Math.PI) / 180, (tiltAxisDegrees * Math.PI) / 180);
     const anchors = Array.isArray(data.anchors) && data.anchors.length
       ? data.anchors as RingPoint[]
       : route.filter((point) => point.isAnchor);
@@ -2241,6 +2175,7 @@ async function loadCompletedRing(sessionId: string): Promise<RingResult | null> 
       basis3D,
       heightOffset,
       tiltDegrees,
+      tiltAxisDegrees,
       ringRadius,
       searchRadius: Number(data.search_radius),
       deviationLimit,
@@ -2412,6 +2347,7 @@ export async function finalizeRingSession(sessionId: string): Promise<RingResult
     basis3D: session.basis3D,
     heightOffset: session.heightOffset,
     tiltDegrees: session.tiltDegrees,
+    tiltAxisDegrees: session.tiltAxisDegrees,
     ringRadius: session.ringRadius,
     searchRadius: session.searchRadius,
     deviationLimit: session.deviationLimit,
