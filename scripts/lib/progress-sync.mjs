@@ -1,3 +1,5 @@
+import { readAllRows } from '../../src/lib/readAllRows.ts';
+
 const DEFAULT_BASE =
   'https://ravencolonial100-awcbdvabgze4c5cq.canadacentral-01.azurewebsites.net';
 
@@ -159,8 +161,8 @@ export async function fetchSystem(systemName) {
 export async function syncProgress({ supabase, fetchSystemImpl = fetchSystem }) {
   const { data: hubs, error } = await supabase.from('hubs').select('id,system_name,status');
   if (error) throw new Error(error.message);
-  const { data: route, error: routeError } = await supabase.from('route_systems')
-    .select('id,system_name,status').order('sort_order').order('id');
+  const { data: route, error: routeError } = await readAllRows((from, to) => supabase.from('route_systems')
+    .select('id,system_name,status').order('sort_order').order('id').range(from, to));
   if (routeError) throw new Error(routeError.message);
 
   const result = { ok: true, updated: 0, failed: 0, total: 0 };

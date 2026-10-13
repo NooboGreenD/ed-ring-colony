@@ -37,12 +37,14 @@ function state() {
 }
 
 function query(table) {
+  let from = 0, to = Infinity;
   const rows = () => (table === 'project_systems' ? state().projectSystems : []);
   const api = {
     select: () => api,
     eq: () => api,
     order: () => api,
     limit: () => api,
+    range: (start, end) => { from = start; to = end; return api; },
     single: async () => {
       if (table === 'project_members') {
         return state().membership ? { data: { role: state().membership } } : { data: null };
@@ -56,7 +58,7 @@ function query(table) {
       state().projectSystems.push(...list);
       return { error: null };
     },
-    then: (resolve, reject) => Promise.resolve({ data: rows(), error: null }).then(resolve, reject),
+    then: (resolve, reject) => Promise.resolve({ data: rows().slice(from, to + 1), error: null }).then(resolve, reject),
   };
   return api;
 }
@@ -215,4 +217,14 @@ test('сохранение кольца: длинный маршрут вста�
   assert.equal(state.inserts[0].length, 500);
   assert.equal(state.inserts[2].length, 200);
   assert.equal(state.projectSystems.length, 1200);
+});
+
+
+test('сохранение кольца: 20 001 точка не обрезается старым пределом 15 000', async () => {
+  resetState();
+  const route=Array.from({length:20001},(_,i)=>({name:`System ${i+1}`,x:i,y:0,z:0,source:'catalog'}));
+  const response=await mod.POST(new Request('http://example.test',{method:'POST',body:JSON.stringify({project_id:1,route})}));
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).added,20001);
+  assert.equal(globalThis.__ringSave.projectSystems.length,20001);
 });

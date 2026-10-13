@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
+import { readAllRows } from '@/lib/readAllRows';
 import { mergeProgressIntoMap } from '@/lib/systemProgress';
 
 export const dynamic = 'force-dynamic';
@@ -7,13 +8,13 @@ export const dynamic = 'force-dynamic';
 export async function GET() {
   const supabase = await createClient();
   const [{ data: points, error }, { data: progressData, error: progressError }] = await Promise.all([
-    supabase
+    readAllRows((from, to) => supabase
       .from('route_systems')
       .select('id, system_name, sort_order, x, y, z, status, progress')
-      .order('sort_order', { ascending: true }),
-    supabase
+      .order('sort_order', { ascending: true }).order('id').range(from, to)),
+    readAllRows((from, to) => supabase
       .from('system_progress')
-      .select('system_name, progress, updated_at'),
+      .select('system_name, progress, updated_at').order('system_name').range(from, to)),
   ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

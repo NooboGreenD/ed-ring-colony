@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { readAllRows } from '@/lib/readAllRows';
 import { Hub, RouteSystem } from '@/types/hub';
 
 function hasValidCoords(item: any): boolean {
@@ -21,7 +22,7 @@ export function useGalaxyData() {
       // 1. Загружаем хабы и маршрут (основные данные)
       const [{ data: hubsData, error: hubsError }, { data: routeData, error: routeError }] = await Promise.all([
         supabase.from("hubs").select("id, system_name, name, status, progress, x, y, z").order("id", { ascending: true }),
-        supabase.from("route_systems").select("id, system_name, sort_order, x, y, z, status, progress").order("sort_order", { ascending: true }),
+        readAllRows((from, to) => supabase.from("route_systems").select("id, system_name, sort_order, x, y, z, status, progress").order("sort_order", { ascending: true }).order("id").range(from, to)),
       ]);
 
       if (hubsError) throw hubsError;
@@ -50,9 +51,9 @@ export function useGalaxyData() {
       let mergedHubs = validHubs;
       let mergedRoute = validRoute;
       try {
-        const { data: progressData, error: progressError } = await supabase
+        const { data: progressData, error: progressError } = await readAllRows((from, to) => supabase
           .from('system_progress')
-          .select('system_name, progress, updated_at, data');
+          .select('system_name, progress, updated_at').order('system_name').range(from, to));
         
         if (!progressError && Array.isArray(progressData)) {
           const progressMap = new Map<string, { progress: number | null; status: string }>();

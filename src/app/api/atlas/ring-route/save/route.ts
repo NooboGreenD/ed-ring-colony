@@ -1,3 +1,4 @@
+import { readAllRows } from '@/lib/readAllRows';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabaseServer';
@@ -19,12 +20,8 @@ import { loadRingRoute } from '@/lib/atlasRingSearch';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/**
- * Предел одного сохранения. Совпадает с потолком чтения систем проекта
- * (`/api/projects/[id]/systems` листает до 15 000 строк): сохранённое кольцо
- * обязано целиком показываться в проекте и на карте.
- */
-const MAX_POINTS = 15_000;
+/** Защитный предел запроса; не ограничивает размер самого проекта. */
+const MAX_POINTS = 100_000;
 /** Размер пачки вставки: PostgREST не любит тела на мегабайты. */
 const INSERT_BATCH = 500;
 
@@ -86,10 +83,10 @@ export async function POST(req: Request) {
     }
 
     // Уже сохранённые в проекте системы не дублируем.
-    const { data: existing } = await admin
-      .from('project_systems')
-      .select('system_name')
-      .eq('project_id', projectId);
+    const { data: existing, error: existingError } = await readAllRows((from, to) => admin
+      .from('project_systems').select('system_name').eq('project_id', projectId)
+      .order('id').range(from, to));
+    if (existingError) throw new Error(existingError.message);
     const existingNames = new Set((existing || []).map((row) => String(row.system_name).toLowerCase()));
 
     const rows: Array<{
@@ -130,7 +127,9 @@ export async function POST(req: Request) {
         y: Number(point.y),
         z: Number(point.z),
       });
-      if (rows.length >= MAX_POINTS) break;
+      if (rows.length > MAX_POINTS) {
+        return NextResponse.json({ error: `За один запрос можно сохранить не более ${MAX_POINTS} точек. Маршрут не сохранён.` }, { status: 400 });
+      }
     }
 
     if (rows.length === 0) {
@@ -167,7 +166,7 @@ export async function POST(req: Request) {
       total_points: points.length,
       skipped_duplicate: skippedDuplicate,
       skipped_synthetic: skippedSynthetic,
-      truncated: points.length > MAX_POINTS,
+      truncated: false,
       start_system: startSystem || undefined,
       ring_radius: ringRadius ?? null,
     });

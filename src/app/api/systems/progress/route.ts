@@ -1,3 +1,4 @@
+import { readAllRows } from '@/lib/readAllRows';
 import { NextResponse } from 'next/server';
 import { createClient, createServiceClient } from '@/lib/supabaseServer';
 import { fetchRavenSystemProgress, deriveStatusFromProgress } from '@/lib/ravenColonial';
@@ -202,15 +203,15 @@ export async function GET(req: Request) {
   if (scope === 'route') {
     const [{ data: hubs }, { data: route, error }] = await Promise.all([
       supabase.from('hubs').select('system_name'),
-      supabase.from('route_systems').select('system_name,sort_order').order('sort_order').order('id'),
+      readAllRows((from, to) => supabase.from('route_systems').select('system_name,sort_order').order('sort_order').order('id').range(from, to)),
     ]);
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
     const hubSet = new Set((hubs ?? []).map((hub) => systemNameKey(hub.system_name)));
     const listed = (route ?? []).filter((routeSystem) => !hubSet.has(systemNameKey(routeSystem.system_name)));
-    const { data: cached } = await supabase
+    const { data: cached } = await readAllRows((from, to) => supabase
       .from('system_progress')
-      .select('system_name,progress,updated_at');
+      .select('system_name,progress,updated_at').order('system_name').range(from, to));
     return NextResponse.json({
       systems: mergeCached(
         listed.map((r) => ({ system_name: r.system_name })),
