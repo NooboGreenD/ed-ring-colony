@@ -36,6 +36,8 @@
  */
 
 // Явные расширения нужны для `node --test`.
+import { ringBasis3D, ringPointAtAngle3D, ringHeightOffset, type RingBasis3D } from './atlasRingGeometry.ts';
+export { ringBasis3D, ringPointAtAngle3D, type RingBasis3D } from './atlasRingGeometry.ts';
 import { supabaseAdmin } from './supabaseAdmin.ts';
 import { catalogIsComplete, findSystemByName, findSystemsInCube, getGalaxyStats } from './galaxySystemsDb.ts';
 import { listCachedSystemsNear, saveCachedSystems, type CachedSystem } from './atlasSystemCache.ts';
@@ -208,11 +210,6 @@ export interface KeySystem {
  * вокруг оси `e_radial` (точка старта остаётся на месте, противоположная
  * сторона поднимается/опускается).
  */
-export interface RingBasis3D {
-  ux: number; uy: number; uz: number;
-  vx: number; vy: number; vz: number;
-  nx: number; ny: number; nz: number;
-}
 
 export interface RingPlan {
   sessionId: string;
@@ -388,29 +385,6 @@ export function ringPointAtAngle(
   };
 }
 
-/**
- * Точка на наклонённом кольце по углу.
- *
- * Плоскость кольца определяется 3D-базисом (e_radial, e_tangent, e_normal).
- * Начальная система лежит в направлении `e_radial` от `ringCenter`, обход
- * против часовой стрелки вокруг `e_normal`.
- */
-export function ringPointAtAngle3D(
-  ringCenter: XYZ,
-  basis: RingBasis3D,
-  ringRadius: number,
-  angle: number,
-): XYZ {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  // Точка на окружности: R·(cos·u + sin·v) от центра кольца.
-  return {
-    x: ringCenter.x + ringRadius * (basis.ux * cos + basis.vx * sin),
-    y: ringCenter.y + ringRadius * (basis.uy * cos + basis.vy * sin),
-    z: ringCenter.z + ringRadius * (basis.uz * cos + basis.vz * sin),
-  };
-}
-
 /** Точка на кольце для сегмента. */
 export function ringTarget(
   center: XYZ,
@@ -431,51 +405,6 @@ export function ringBasis(start: { x: number; z: number }, center: { x: number; 
   const vz = start.z - center.z;
   const length = Math.hypot(vx, vz) || 1;
   return { ux: vx / length, uz: vz / length };
-}
-
-/**
- * Строит полный 3D-базис наклонённого кольца.
- *
- * Наклон определяется как поворот вокруг радиальной оси (направление от центра
- * к старту) на угол `tiltRadians`: точка старта не меняет высоту, противоположная
- * сторона кольца поднимается/опускается. При tilt=0 кольцо лежит в галактической
- * плоскости; при tilt=π/2 превращается в вертикальное (ось Y); при tilt=π опрокинуто.
- */
-export function ringBasis3D(
-  start: XYZ,
-  center: XYZ,
-  tiltRadians: number,
-): RingBasis3D {
-  // Горизонтальный вектор от центра к старту (e_radial).
-  const dx = start.x - center.x;
-  const dz = start.z - center.z;
-  const rLen = Math.hypot(dx, dz) || 1;
-  const u = { x: dx / rLen, y: 0, z: dz / rLen };
-  // Касательный вектор в плоскости XZ. Обход «против часовой сверху» при n=(0,1,0):
-  // точка на окружности = R·(cos·u + sin·v0), где v0 = (-uz, 0, ux).
-  const v0 = { x: -u.z, y: 0, z: u.x };
-  // При tilt=0 n = up = (0,1,0). При повороте плоскости вокруг оси u на угол tilt
-  // (по формуле Родриго, так что при tilt=π/2 противоположная сторона кольца
-  // поднимается, а перпендикуляр к старту опускается):
-  //   v = cos·v0 - sin·(0,1,0)
-  // Нормаль n = v × u — так, чтобы при tilt=0 получить (0,1,0) вверх.
-  const cos = Math.cos(tiltRadians);
-  const sin = Math.sin(tiltRadians);
-  const v = {
-    x: cos * v0.x,
-    y: -sin,
-    z: cos * v0.z,
-  };
-  const n = {
-    x: v.y * u.z - v.z * u.y,
-    y: v.z * u.x - v.x * u.z,
-    z: v.x * u.y - v.y * u.x,
-  };
-  return {
-    ux: u.x, uy: u.y, uz: u.z,
-    vx: v.x, vy: v.y, vz: v.z,
-    nx: n.x, ny: n.y, nz: n.z,
-  };
 }
 
 /**
@@ -882,13 +811,7 @@ export async function planRingSession(
   // Чтобы все точки кольца умещались в ±GALACTIC_DISK_HALF_THICKNESS св.л. от галактической плоскости (y=0),
   // ограничиваем heightOffset. Если сам базовый центр уже за пределами диска — зажим не поможет,
   // оставляем высоту как запрошено в пределах диапазона пользователя.
-  const sinTilt = Math.abs(Math.sin((tiltDegrees * Math.PI) / 180));
-  const ySwing = ringRadius * sinTilt;
-  const upperAllowed = GALACTIC_DISK_HALF_THICKNESS - baseCenter.y - ySwing;
-  const lowerAllowed = -GALACTIC_DISK_HALF_THICKNESS - baseCenter.y + ySwing;
-  const clampedMax = Math.min(MAX_HEIGHT_OFFSET, Math.max(MIN_HEIGHT_OFFSET, upperAllowed));
-  const clampedMin = Math.max(MIN_HEIGHT_OFFSET, Math.min(MAX_HEIGHT_OFFSET, lowerAllowed));
-  const heightOffset = Math.min(clampedMax, Math.max(clampedMin, requestedHeight));
+  const heightOffset = ringHeightOffset(baseCenter.y, ringRadius, tiltDegrees, requestedHeight);
   if (Math.abs(requestedHeight - heightOffset) > 0.5) {
     console.warn(`[ring] высотное смещение ${requestedHeight} св.л ограничено ${heightOffset} (учтён наклон ${tiltDegrees}°, предел диска ±${GALACTIC_DISK_HALF_THICKNESS} св.л)`);
   }

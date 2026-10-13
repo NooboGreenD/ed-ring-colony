@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RingBasis3D } from '@/lib/atlasRingGeometry';
+import { useAtlasRingPreview } from '@/hooks/useAtlasRingPreview';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { RangeNumberField } from '@/components/Atlas/RangeNumberField';
 import AtlasDialog from '@/components/Atlas/AtlasDialog';
@@ -135,11 +137,6 @@ const RING_LIMITS = {
 
 const DEVIATION_RANGE = { min: 10, max: 400, step: 5 } as const;
 
-interface RingBasis3D {
-  ux: number; uy: number; uz: number;
-  vx: number; vy: number; vz: number;
-  nx: number; ny: number; nz: number;
-}
 
 interface SessionView {
   session_id: string;
@@ -226,6 +223,12 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   const [refineKeyDraft, setRefineKeyDraft] = useState('');
   const [refineExtraKeys, setRefineExtraKeys] = useState<RingPoint[]>([]);
   const [rerunBeforeSearch, setRerunBeforeSearch] = useState(false);
+
+  const geometryKey = JSON.stringify([startSystem, centerSystem, ringRadius, heightOffset, tiltDegrees, searchRadius, deviationLimit]);
+  const [searchedGeometry, setSearchedGeometry] = useState<string | null>(null);
+  const busy = loading || refining || searchingHubs;
+  const previewMessage = useAtlasRingPreview(startSystem, centerSystem, ringRadius, heightOffset, tiltDegrees,
+    !busy && geometryKey !== searchedGeometry);
 
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
@@ -456,6 +459,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     const controller = new AbortController();
     abortRef.current = controller;
 
+    setSearchedGeometry(geometryKey);
     setLoading(true);
     setResult(null);
     setRouteFilter('');
@@ -586,7 +590,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       abortRef.current = null;
       setLoading(false);
     }
-  }, [applyResult, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees]);
+  }, [applyResult, geometryKey, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees]);
 
   const search = useCallback(() => {
     sessionRef.current = null;
@@ -909,7 +913,6 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
     return result.route.filter((point) => point.name.toLowerCase().includes(query));
   }, [result, routeFilter]);
 
-  const busy = loading || refining;
   const syntheticShare = result && result.totals.points > 0
     ? Math.round((result.totals.syntheticPoints / result.totals.points) * 100)
     : 0;
@@ -940,10 +943,13 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         <SystemSearchInput
           label="Начальная система"
           value={startSystem}
+          disabled={busy}
           onChange={setStartSystem}
           onSubmit={() => { if (startSystem.trim() && !busy) search(); }}
           placeholder="Sol"
         />
+
+        {previewMessage && <p className="atlas-muted" role="status">{previewMessage}</p>}
 
         <RangeNumberField
           id="ring-radius"
@@ -987,6 +993,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
             <SystemSearchInput
               label="Центр расчёта (необязательно)"
               value={centerSystem}
+              disabled={busy}
               onChange={setCenterSystem}
               onSubmit={() => { /* nothing */ }}
               placeholder="Sagittarius A* (по умолчанию)"

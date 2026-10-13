@@ -14,10 +14,12 @@
  * только во время активного поиска, поэтому обычная карта не тяжелеет.
  */
 
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { Line } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { atlasRingPointToThree } from '@/lib/atlasRingMapGeometry';
+import { readAtlasRingPreview, readServerRingPreview, subscribeAtlasRingPreview } from '@/lib/atlasRingPreview';
 import { eliteToThree, eliteToThreeCentered } from '@/lib/ed3dCanon';
 import type { AtlasSearchPoint, AtlasSearchPointKind, AtlasSearchProgress } from '@/lib/atlasSearchProgress';
 
@@ -114,18 +116,8 @@ function ProgressPoints({ points }: { points: AtlasSearchPoint[] }) {
 /** Кольцо поиска: контур, вращающийся луч и «прогресс» яркой дугой. Поддерживает наклон (tilt). */
 function RingGuide({ ring, percent }: { ring: NonNullable<AtlasSearchProgress['ring']>; percent: number }) {
   const center = useMemo(() => toVector({ x: ring.cx, y: ring.cy, z: ring.cz }), [ring.cx, ring.cy, ring.cz]);
-  const b = ring.basis;
-  const ux = b?.ux ?? 1, uy = b?.uy ?? 0, uz = b?.uz ?? 0;
-  const vx = b?.vx ?? 0, vy = b?.vy ?? 0, vz = b?.vz ?? 1;
-
-  const pointOnRing = useCallback((angle: number): [number, number, number] => {
-    const c = Math.cos(angle), s = Math.sin(angle);
-    return [
-      center.x + ring.radius * (ux * c + vx * s),
-      center.y + ring.radius * (uy * c + vy * s),
-      center.z + ring.radius * (uz * c + vz * s),
-    ];
-  }, [center, ring.radius, ux, uy, uz, vx, vy, vz]);
+  const pointOnRing = useCallback((angle: number): [number, number, number] =>
+    atlasRingPointToThree(ring, angle), [ring]);
 
   const ringPoints = useMemo(() => {
     const SEGMENTS = 256;
@@ -274,17 +266,8 @@ function ResultGeometry({ result }: { result: AtlasSearchProgress }) {
 /** Контур кольца без вращающегося луча и пульса — для готового результата. */
 function RingOutline({ ring }: { ring: NonNullable<AtlasSearchProgress['ring']> }) {
   const center = useMemo(() => toVector({ x: ring.cx, y: ring.cy, z: ring.cz }), [ring.cx, ring.cy, ring.cz]);
-  const b = ring.basis;
-  const ux = b?.ux ?? 1, uy = b?.uy ?? 0, uz = b?.uz ?? 0;
-  const vx = b?.vx ?? 0, vy = b?.vy ?? 0, vz = b?.vz ?? 1;
-  const pointOnRing = useCallback((angle: number): [number, number, number] => {
-    const c = Math.cos(angle), s = Math.sin(angle);
-    return [
-      center.x + ring.radius * (ux * c + vx * s),
-      center.y + ring.radius * (uy * c + vy * s),
-      center.z + ring.radius * (uz * c + vz * s),
-    ];
-  }, [center, ring.radius, ux, uy, uz, vx, vy, vz]);
+  const pointOnRing = useCallback((angle: number): [number, number, number] =>
+    atlasRingPointToThree(ring, angle), [ring]);
   const ringPoints = useMemo(() => {
     const SEGMENTS = 256;
     const points: [number, number, number][] = [];
@@ -310,16 +293,17 @@ export function SearchProgressLayer({
 }) {
   const { invalidate } = useThree();
   const active = progress.active;
+  const preview = useSyncExternalStore(subscribeAtlasRingPreview, readAtlasRingPreview, readServerRingPreview);
 
   // Карта работает в режиме frameloop="demand": пока идёт поиск, сами просим
   // кадры, чтобы пульс и луч двигались, а после завершения — перестаём.
   useFrame(() => {
-    if (active) invalidate();
+    if (active && !progress.finished) invalidate();
   });
 
   // Пока идёт поиск, показываем живой процесс; как только он закончился —
   // закреплённый итог, чтобы найденное не исчезало вместе с оверлеем.
-  if (active) {
+  if (active && !(progress.finished && preview)) {
     return (
       <group>
         {progress.ring && <RingGuide ring={progress.ring} percent={progress.percent} />}
@@ -332,6 +316,7 @@ export function SearchProgressLayer({
     );
   }
 
+  if (preview && (!active || progress.finished)) return <RingOutline ring={preview} />;
   if (result) return <ResultGeometry result={result} />;
   return null;
 }
