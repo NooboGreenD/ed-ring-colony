@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import type { RingBasis3D } from '@/lib/atlasRingGeometry';
 import { useAtlasRingPreview } from '@/hooks/useAtlasRingPreview';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
+import { RingGeometryControls } from '@/components/Atlas/RingGeometryControls';
 import { RangeNumberField } from '@/components/Atlas/RangeNumberField';
 import AtlasDialog from '@/components/Atlas/AtlasDialog';
 import { toast } from '@/components/ui/Toaster';
@@ -104,6 +105,7 @@ interface RingResult {
   basis3D?: RingBasis3D;
   heightOffset?: number;
   tiltDegrees?: number;
+  tiltAxisDegrees?: number;
   ringRadius: number;
   searchRadius: number;
   deviationLimit: number;
@@ -148,6 +150,7 @@ interface SessionView {
   center_system?: string | null;
   height_offset?: number;
   tilt_degrees?: number;
+  tilt_axis_degrees?: number;
   ring_center?: { x: number; y: number; z: number };
   basis3d?: RingBasis3D;
   sectors: number;
@@ -198,7 +201,8 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   // Геометрия некомпланарного кольца:
   const [centerSystem, setCenterSystem] = useState(''); // пусто = Sagittarius A*
   const [heightOffset, setHeightOffset] = useState(0); // св.л от галактической плоскости, -5000..+5000
-  const [tiltDegrees, setTiltDegrees] = useState(0); // наклон 0..180°
+  const [tiltDegrees, setTiltDegrees] = useState(0); // наклон −180..180°
+  const [tiltAxisDegrees, setTiltAxisDegrees] = useState(0); // направление оси 0..359°
   const [loading, setLoading] = useState(false);
   const [refining, setRefining] = useState(false);
   const [progress, setProgress] = useState<ProgressView>(EMPTY_PROGRESS);
@@ -224,11 +228,11 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   const [refineExtraKeys, setRefineExtraKeys] = useState<RingPoint[]>([]);
   const [rerunBeforeSearch, setRerunBeforeSearch] = useState(false);
 
-  const geometryKey = JSON.stringify([startSystem, centerSystem, ringRadius, heightOffset, tiltDegrees, searchRadius, deviationLimit]);
+  const geometryKey = JSON.stringify([startSystem, centerSystem, ringRadius, heightOffset, tiltDegrees, tiltAxisDegrees, searchRadius, deviationLimit]);
   const [searchedGeometry, setSearchedGeometry] = useState<string | null>(null);
   const busy = loading || refining || searchingHubs;
   const previewMessage = useAtlasRingPreview(startSystem, centerSystem, ringRadius, heightOffset, tiltDegrees,
-    !busy && geometryKey !== searchedGeometry);
+    !busy && geometryKey !== searchedGeometry, tiltAxisDegrees);
 
   const abortRef = useRef<AbortController | null>(null);
   const sessionRef = useRef<string | null>(null);
@@ -497,6 +501,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
         center_system: centerSystem.trim() || null,
         height_offset: heightOffset === 0 ? null : heightOffset,
         tilt_degrees: tiltDegrees === 0 ? null : tiltDegrees,
+        tilt_axis_degrees: tiltAxisDegrees === 0 ? null : tiltAxisDegrees,
       }, controller);
       session = step.session;
 
@@ -590,7 +595,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
       abortRef.current = null;
       setLoading(false);
     }
-  }, [applyResult, geometryKey, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees]);
+  }, [applyResult, geometryKey, centerSystem, deviationLimit, heightOffset, keySystems, postRing, postRingFinalize, publishToMap, ringRadius, searchRadius, startSystem, tiltDegrees, tiltAxisDegrees]);
 
   const search = useCallback(() => {
     sessionRef.current = null;
@@ -930,115 +935,80 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
   };
 
   return (
-    <div className="atlas-route-finder">
+    <div className="atlas-route-finder atlas-ring-finder">
       <div className="atlas-search-panel">
         <h3>Галактическое кольцо колонизации</h3>
         <p className="atlas-route-desc">
-          Замкнутый маршрут вокруг галактического центра (по умолчанию — Sagittarius A*, можно переопределить).
-          Требования: прыжок ≤14,99 св.л.; опоры через 480–490 св.л.; отклонение от оси до 50 св.л. (настраивается).
-          Поддерживаются ключевые системы (обязательные точки маршрута), повторный прогон с уточнением координат,
-          наклонённое/смещённое кольцо и поиск кандидатов на строительные хабы.
+          Настройте окружность на карте, затем запустите поиск систем вдоль кольца.
         </p>
-
-        <SystemSearchInput
-          label="Начальная система"
-          value={startSystem}
-          disabled={busy}
-          onChange={setStartSystem}
-          onSubmit={() => { if (startSystem.trim() && !busy) search(); }}
-          placeholder="Sol"
-        />
-
-        {previewMessage && <p className="atlas-muted" role="status">{previewMessage}</p>}
-
-        <RangeNumberField
-          id="ring-radius"
-          label="Удаление от центра"
-          min={RING_RADIUS_RANGE.min}
-          max={RING_RADIUS_RANGE.max}
-          step={RING_RADIUS_RANGE.step}
-          value={ringRadius}
-          onChange={setRingRadius}
-          disabled={busy}
-          hint="Радиус окружности кольца от центра расчёта."
-        />
-
-        <RangeNumberField
-          id="ring-search-radius"
-          label="Радиус поиска известных систем"
-          min={SEARCH_RADIUS_RANGE.min}
-          max={SEARCH_RADIUS_RANGE.max}
-          step={SEARCH_RADIUS_RANGE.step}
-          value={searchRadius}
-          onChange={setSearchRadius}
-          disabled={busy}
-          hint="Окно поиска опорной системы вокруг точки кольца."
-        />
-
-        <RangeNumberField
-          id="ring-deviation"
-          label="Допуск отклонения от оси, св.л."
-          min={DEVIATION_RANGE.min}
-          max={DEVIATION_RANGE.max}
-          step={DEVIATION_RANGE.step}
-          value={deviationLimit}
-          onChange={setDeviationLimit}
-          disabled={busy}
-          hint="Максимальное отклонение от идеальной окружности (по умолчанию 100 св.л.). Увеличение допускает больше реальных систем, уменьшение — ведёт к более правильной форме кольца."
-        />
-
-        <details className="atlas-advanced-fields" open={false}>
-          <summary>Геометрия: наклонённое кольцо, нестандартный центр</summary>
-          <div className="atlas-advanced-body">
-            <SystemSearchInput
-              label="Центр расчёта (необязательно)"
-              value={centerSystem}
-              disabled={busy}
-              onChange={setCenterSystem}
-              onSubmit={() => { /* nothing */ }}
-              placeholder="Sagittarius A* (по умолчанию)"
-            />
-            <RangeNumberField
-              id="ring-height"
-              label="Смещение от галактической плоскости, св.л."
-              min={-5000}
-              max={5000}
-              step={100}
-              value={heightOffset}
-              onChange={setHeightOffset}
-              disabled={busy}
-              hint="Высота/глубина центра кольца относительно плоскости галактики (от -5000 до +5000 св.л)."
-            />
-            <RangeNumberField
-              id="ring-tilt"
-              label="Наклон плоскости кольца, °"
-              min={0}
-              max={180}
-              step={1}
-              value={tiltDegrees}
-              onChange={setTiltDegrees}
-              disabled={busy}
-              hint="0° — в плоскости галактики (по умолчанию); 90° — перпендикулярно диску; 180° — опрокинуто. При больших наклонах высотное смещение автоматически ограничивается так, чтобы кольцо не выходило за ±6000 св.л от центра галактики по высоте (толщина диска)."
-            />
-            {(() => {
-              const ySwing = Math.round(ringRadius * Math.abs(Math.sin((tiltDegrees * Math.PI) / 180)));
-              const topEdge = Math.round(heightOffset + ySwing);
-              const bottomEdge = Math.round(heightOffset - ySwing);
-              const clampNeeded = topEdge > 6000 || bottomEdge < -6000;
-              if (!clampNeeded || tiltDegrees === 0) return null;
-              return (
-                <p className="atlas-tip warn">
-                  При радиусе {ringRadius} св.л, наклоне {tiltDegrees}° и смещении {heightOffset} св.л вертикальный размах
-                  кольца составит {bottomEdge}…{topEdge} св.л. от галактической плоскости — высотное смещение будет
-                  автоматически ограничено, чтобы не выходить за ±6000 св.л (толщина диска).
-                </p>
-              );
-            })()}
-          </div>
+        <details className="atlas-details atlas-ring-help">
+          <summary>Как строится маршрут</summary>
+          <p className="atlas-muted">Замкнутый маршрут вокруг выбранного центра. Прыжок ≤14,99 св.л.;
+            опоры через 480–490 св.л.; отклонение от окружности — в пределах выбранного допуска.
+            Ключевые системы обязательны для маршрута. После поиска можно уточнить расчётные точки и найти строительные хабы.</p>
         </details>
+        <div className="atlas-ring-section">
+          <h4 className="atlas-ring-section-title">Область поиска</h4>
+
+          <SystemSearchInput
+            label="Начальная система"
+            value={startSystem}
+            disabled={busy}
+            onChange={setStartSystem}
+            onSubmit={() => { if (startSystem.trim() && !busy) search(); }}
+            placeholder="Sol"
+          />
+
+          {previewMessage && <p className="atlas-ring-preview-status" role="status"><IconMapPin size={14} /><span>{previewMessage}</span></p>}
+
+          <RangeNumberField
+            id="ring-radius"
+            label="Удаление от центра"
+            min={RING_RADIUS_RANGE.min}
+            max={RING_RADIUS_RANGE.max}
+            step={RING_RADIUS_RANGE.step}
+            value={ringRadius}
+            onChange={setRingRadius}
+            disabled={busy}
+            hint="Радиус окружности кольца от центра расчёта."
+          />
+
+          <RangeNumberField
+            id="ring-search-radius"
+            label="Радиус поиска известных систем"
+            min={SEARCH_RADIUS_RANGE.min}
+            max={SEARCH_RADIUS_RANGE.max}
+            step={SEARCH_RADIUS_RANGE.step}
+            value={searchRadius}
+            onChange={setSearchRadius}
+            disabled={busy}
+            hint="Окно поиска опорной системы вокруг точки кольца."
+          />
+
+          <RangeNumberField
+            id="ring-deviation"
+            label="Допуск отклонения от окружности"
+            min={DEVIATION_RANGE.min}
+            max={DEVIATION_RANGE.max}
+            step={DEVIATION_RANGE.step}
+            value={deviationLimit}
+            onChange={setDeviationLimit}
+            disabled={busy}
+            hint="Максимальное отклонение от идеальной окружности (по умолчанию 100 св.л.). Увеличение допускает больше реальных систем, уменьшение — ведёт к более правильной форме кольца."
+          />
+
+        </div>
+
+        <RingGeometryControls
+          centerSystem={centerSystem} onCenterChange={setCenterSystem}
+          heightOffset={heightOffset} onHeightChange={setHeightOffset}
+          tiltDegrees={tiltDegrees} onTiltChange={setTiltDegrees}
+          tiltAxisDegrees={tiltAxisDegrees} onAxisChange={setTiltAxisDegrees}
+          disabled={busy}
+        />
 
         {/* Ключевые системы — обязательные точки маршрута */}
-        <div className="atlas-search-field">
+        <div className="atlas-search-field atlas-ring-section">
           <label>Ключевые системы (через них пройдёт маршрут)</label>
           <div className="atlas-key-systems">
             {keySystems.map((ks) => (
@@ -1052,6 +1022,7 @@ export default function AtlasRingRouteFinder({ onRouteFound, projects = [], onSa
             <SystemSearchInput
               label=""
               value={keySystemDraft}
+              disabled={busy}
               onChange={setKeySystemDraft}
               onSubmit={() => { if (keySystemDraft.trim()) void addKeySystem(keySystemDraft, 'main'); }}
               placeholder="Имя системы…"

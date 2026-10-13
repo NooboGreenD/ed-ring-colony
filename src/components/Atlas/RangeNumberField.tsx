@@ -14,6 +14,8 @@ interface Props {
   disabled?: boolean;
   /** Подсказка под полем (например, что изменится в расчёте). */
   hint?: string;
+  /** Единицы параметра: углы не должны подписываться как расстояния. */
+  unit?: string;
 }
 
 /**
@@ -21,7 +23,7 @@ interface Props {
  * Оба управляют одним значением. В поле можно печатать любое целое число в
  * диапазоне: применяется по Enter или при потере фокуса, Escape возвращает прежнее.
  */
-export function RangeNumberField({ id, label, min, max, step, value, onChange, disabled, hint }: Props) {
+export function RangeNumberField({ id, label, min, max, step, value, onChange, disabled, hint, unit = 'св.л.' }: Props) {
   const [draft, setDraft] = useState<string | null>(null);
 
   const commit = (raw: string) => {
@@ -33,7 +35,8 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
   return (
     <div className="atlas-search-field">
       <label htmlFor={id}>
-        {label}: <strong>{value.toLocaleString('ru-RU')} св.л.</strong>
+        <span>{label}</span>{' '}
+        <strong>{value.toLocaleString('ru-RU')} {unit}</strong>
       </label>
       <div className="atlas-range-row">
         <input
@@ -44,6 +47,7 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
           step={step}
           value={value}
           onChange={(event) => onChange(Number(event.target.value))}
+          aria-describedby={hint ? `${id}-hint` : undefined}
           disabled={disabled}
         />
         <input
@@ -66,6 +70,7 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
               setDraft(null);
             }
           }}
+          aria-describedby={hint ? `${id}-hint` : undefined}
           disabled={disabled}
         />
       </div>
@@ -73,7 +78,7 @@ export function RangeNumberField({ id, label, min, max, step, value, onChange, d
         <span>{min.toLocaleString('ru-RU')}</span>
         <span>{max.toLocaleString('ru-RU')}</span>
       </div>
-      {hint && <p className="atlas-muted atlas-range-hint">{hint}</p>}
+      {hint && <p id={`${id}-hint`} className="atlas-muted atlas-range-hint">{hint}</p>}
     </div>
   );
 }

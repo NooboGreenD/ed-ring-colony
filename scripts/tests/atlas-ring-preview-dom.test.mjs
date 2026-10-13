@@ -10,8 +10,8 @@ test('кольцо: превью обновляется до поиска, кэ�
     entrySource: `
       import { useAtlasRingPreview } from '@/hooks/useAtlasRingPreview';
       export * from '@/lib/atlasRingPreview';
-      export function Preview({start = 'Sol', center = '', radius = 23000, height = 0, tilt = 0, enabled = true}) {
-        const message = useAtlasRingPreview(start, center, radius, height, tilt, enabled);
+      export function Preview({start = 'Sol', center = '', radius = 23000, height = 0, tilt = 0, enabled = true, axis = 0}) {
+        const message = useAtlasRingPreview(start, center, radius, height, tilt, enabled, axis);
         return <p>{message}</p>;
       }`,
     external: ['react', 'react-dom', 'react-dom/client'],
@@ -52,6 +52,11 @@ test('кольцо: превью обновляется до поиска, кэ�
     await flush();
     assert.equal(calls.length, 1, 'ползунки не запрашивают координаты повторно');
     assert.equal(mod.readAtlasRingPreview().radius, 1000);
+    const along = mod.readAtlasRingPreview().basis;
+    await render({ start: 'Custom', center: 'Center', radius: 1000, tilt: -30, axis: 90 });
+    assert.notDeepEqual(mod.readAtlasRingPreview().basis, along);
+    assert.notEqual(mod.readAtlasRingPreview().basis.uy, 0);
+    assert.equal(calls.length, 1, 'направление оси и знак наклона не делают запросов');
     await render({ start: 'Slow' });
     await flush();
     await render({});

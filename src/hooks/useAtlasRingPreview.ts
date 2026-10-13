@@ -10,7 +10,7 @@ interface Coordinates { start: XYZ; center: XYZ }
 const coordinatesCache = new Map<string, Coordinates>();
 const coordinateKey = (start: string, center: string) => JSON.stringify([start.toLowerCase(), center.toLowerCase()]);
 
-export function useAtlasRingPreview(startSystem: string, centerSystem: string, radius: number, height: number, tilt: number, enabled: boolean) {
+export function useAtlasRingPreview(startSystem: string, centerSystem: string, radius: number, height: number, tilt: number, enabled: boolean, axis = 0) {
   const start = startSystem.trim();
   const center = centerSystem.trim() || 'Sagittarius A*';
   const key = coordinateKey(start, center);
@@ -57,15 +57,17 @@ export function useAtlasRingPreview(startSystem: string, centerSystem: string, r
     const ringCenter = { x: cx, y: cy + ringHeightOffset(cy, radius, tilt, height), z: cz };
     publishAtlasRingPreview({
       cx: ringCenter.x, cy: ringCenter.y, cz: ringCenter.z, radius,
-      basis: ringBasis3D({ x: sx, y: sy, z: sz }, ringCenter, tilt * Math.PI / 180),
+      basis: ringBasis3D({ x: sx, y: sy, z: sz }, ringCenter, tilt * Math.PI / 180, axis * Math.PI / 180),
     });
     return () => publishAtlasRingPreview(null);
-  }, [enabled, sx, sy, sz, cx, cy, cz, radius, height, tilt]);
+  }, [enabled, sx, sy, sz, cx, cy, cz, radius, height, tilt, axis]);
 
   if (!enabled) return '';
   if (!start) return 'Укажите начальную систему для предварительного контура.';
   if (failure?.key === key && !coordinates) return `Предварительный контур: ${failure.message}`;
+  const effectiveHeight = cy === undefined ? height : ringHeightOffset(cy, radius, tilt, height);
+  const tooTall = radius * Math.abs(Math.sin(tilt * Math.PI / 180)) > 6000;
   return coordinates
-    ? 'На карте показан предварительный контур поиска. Изменение параметров не запускает поиск.'
+    ? `Контур на карте · наклон ${tilt}° · ось ${axis}°.${Math.abs(effectiveHeight - height) > 0.5 ? ` Высота центра скорректирована до ${Math.round(effectiveHeight)} св.л.` : ''}${tooTall ? ' Кольцо шире диска ±6000 св.л.; полностью уместить его нельзя. Уменьшите радиус или наклон.' : ''}`
     : 'Загрузка координат для предварительного контура…';
 }
