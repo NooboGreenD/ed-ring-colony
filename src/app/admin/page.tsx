@@ -1,6 +1,8 @@
 "use client";
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import dynamic from "next/dynamic";
+import { readAllRows } from '@/lib/readAllRows';
+import { RoutePagination, useRoutePagination } from '@/components/Admin/RoutePagination';
 import AdminNavigation, { ADMIN_ONLY_TABS, isAdminTab, type AdminTab } from "@/components/Admin/AdminNavigation";
 import adminStyles from "@/components/Admin/AdminShell.module.css";
 
@@ -85,6 +87,8 @@ export default function AdminPage() {
   };
   const [users, setUsers] = useState<any[]>([]);
   const [hubs, setHubs] = useState<any[]>([]);
+  const [routeLoading, setRouteLoading] = useState(false);
+  const [routeLoadError, setRouteLoadError] = useState('');
   const [routeSystems, setRouteSystems] = useState<any[]>([]);
   const [routeBulk, setRouteBulk] = useState('');
   const [routeQuery, setRouteQuery] = useState('');
@@ -146,16 +150,20 @@ export default function AdminPage() {
         }
       }
 
-      const [{ data: us }, { data: hs }, { data: rs }, { data: c }, { data: nw }] = await Promise.all([
+      setRouteLoading(true);
+      setRouteLoadError('');
+      const [{ data: us }, { data: hs }, { data: rs, error: routeError }, { data: c }, { data: nw }] = await Promise.all([
         supabase.from('profiles').select('*').order('created_at'),
         supabase.from('hubs').select('*').order('segment_order'),
-        supabase.from('route_systems').select('*').order('sort_order').order('id'),
+        readAllRows((from, to) => supabase.from('route_systems').select('*').order('sort_order').order('id').range(from, to)),
         supabase.from('site_content').select('*').eq('id', 1).maybeSingle(),
         supabase.from('news').select('*, author:profiles(cmdr_name)').order('published_at', { ascending: false }),
       ]);
       setUsers(us ?? []);
       setHubs(hs ?? []);
       setRouteSystems(rs ?? []);
+      if (routeError) setRouteLoadError(routeError.message);
+      setRouteLoading(false);
       setNews(nw ?? []);
 
       if (c) {
@@ -173,7 +181,9 @@ export default function AdminPage() {
         setFooterEdsmLangs(pick('footer_edsm'));
         setFooterInaraLangs(pick('footer_inara'));
       }
-    } catch {
+    } catch (error) {
+      setRouteLoading(false);
+      setRouteLoadError(error instanceof Error ? error.message : 'Route loading failed');
       // A network/auth failure must never grant production admin access.
       if (process.env.NODE_ENV !== 'production' && !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
         setRole('admin');
@@ -248,6 +258,14 @@ export default function AdminPage() {
       setTranslating(false);
     }
   }, [t, translateOverwrite]);
+
+  const filteredRouteAdmin = useMemo(() => routeSystems.filter((r) => {
+    const q = routeQuery.trim().toLowerCase();
+    if (!q) return true;
+    return String(r.system_name).toLowerCase().includes(q);
+  }), [routeSystems, routeQuery]);
+  const routePagination = useRoutePagination(filteredRouteAdmin, routeQuery);
+  const routeDisabled = routeBusy || routeLoading || !!routeLoadError;
 
   if (role === null) return <section className="card"><p>{t('common.loading')}</p></section>;
   if (!['admin', 'moderator', 'support_manager'].includes(role))
@@ -440,15 +458,21 @@ export default function AdminPage() {
 
   const removeRouteSystem = async (id: number) => {
     if (!confirm(t('admin.confirmDeleteSystem'))) return;
-    await supabase.from('route_systems').delete().eq('id', id); load();
+    const { error } = await supabase.from('route_systems').delete().eq('id', id);
+    if (error) { setRouteMsg(t('account.error') + ' ' + error.message); return; }
+    setRouteSystems(rows => rows.filter(row => row.id !== id));
   };
 
   const updateRouteStatus = async (id: number, s: string) => {
-    await supabase.from('route_systems').update({ status: s }).eq('id', id); load();
+    const { error } = await supabase.from('route_systems').update({ status: s }).eq('id', id);
+    if (error) { setRouteMsg(t('account.error') + ' ' + error.message); return; }
+    setRouteSystems(rows => rows.map(row => row.id === id ? { ...row, status: s } : row));
   };
 
   const updateRoutePointProgress = async (id: number, p: number) => {
-    await supabase.from('route_systems').update({ progress: p }).eq('id', id); load();
+    const { error } = await supabase.from('route_systems').update({ progress: p }).eq('id', id);
+    if (error) { setRouteMsg(t('account.error') + ' ' + error.message); return; }
+    setRouteSystems(rows => rows.map(row => row.id === id ? { ...row, progress: p } : row));
   };
 
   const resolveRouteCoords = async () => {
@@ -458,31 +482,27 @@ export default function AdminPage() {
     setRouteProgress(0);
     setRouteMsg(`${t('admin.coordsRequest')} ${needResolve.length} ${t('admin.systemsThisWillTake')}${Math.ceil(needResolve.length / 100)} ${t('admin.sec')}`);
     try {
-      const res = await fetch('/api/route/resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ names: needResolve.map((r) => r.system_name) }),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        const text = await res.text();
-        throw new Error(`Сервер вернул не JSON (${contentType}): ${text.slice(0, 300)}`);
+      let updated = 0, resolved = 0;
+      // A 20,000-system request would time out upstream. Resolve bounded chunks
+      // and update progress even when a chunk has no known coordinates.
+      for (let offset = 0; offset < needResolve.length; offset += 100) {
+        const batch = needResolve.slice(offset, offset + 100);
+        const res = await fetch('/api/route/resolve', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ names: batch.map(row => row.system_name) }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const entries = Object.entries(data.results || {}) as [string, { x: number; y: number; z: number }][];
+        const writes = await Promise.all(entries.map(([system_name, coords]) =>
+          supabase.from('route_systems').update({ x: coords.x, y: coords.y, z: coords.z }).eq('system_name', system_name)));
+        const failure = writes.find(write => write.error)?.error;
+        if (failure) throw new Error(failure.message);
+        updated += entries.length;
+        resolved += Number(data.resolved) || 0;
+        setRouteProgress(Math.round((offset + batch.length) / needResolve.length * 100));
       }
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      const entries = Object.entries(data.results) as [string, { x: number; y: number; z: number }][];
-      const BATCH_DB = 100;
-      let updated = 0;
-      for (let i = 0; i < entries.length; i += BATCH_DB) {
-        const chunk = entries.slice(i, i + BATCH_DB);
-        const updates = chunk.map(([system_name, coords]) =>
-          supabase.from('route_systems').update({ x: coords.x, y: coords.y, z: coords.z }).eq('system_name', system_name)
-        );
-        await Promise.all(updates);
-        updated += chunk.length;
-        setRouteProgress(Math.round((updated / entries.length) * 100));
-      }
-      setRouteMsg(`${t('admin.updated')} ${updated} ${t('admin.of')} ${needResolve.length} (${t('admin.foundInEdsm')} ${data.resolved}). ${t('admin.reloadPage')}`);
+      setRouteMsg(`${t('admin.updated')} ${updated} ${t('admin.of')} ${needResolve.length} (${t('admin.foundInEdsm')} ${resolved}). ${t('admin.reloadPage')}`);
       load();
     } catch (e: any) {
       setRouteMsg(t('account.error') + ' ' + e.message);
@@ -531,12 +551,6 @@ export default function AdminPage() {
     setRouteMsg(t('admin.deleteRoute'));
     load();
   };
-
-  const filteredRouteAdmin = routeSystems.filter((r) => {
-    const q = routeQuery.trim().toLowerCase();
-    if (!q) return true;
-    return String(r.system_name).toLowerCase().includes(q);
-  });
 
   return (
     <section className={`card ${adminStyles.shell}`} aria-label="Админ-панель">
@@ -728,19 +742,19 @@ export default function AdminPage() {
             {t('admin.routeSystemsHint')} {t('admin.runSqlFirst')} <code>supabase/route_systems.sql</code> {t('admin.and')} <code>supabase/route_systems_coords.sql</code>.
           </p>
           <textarea value={routeBulk} onChange={(e) => setRouteBulk(e.target.value)} placeholder={`HIP 12345\nCol 285 Sector XX-X d1-2\n...`} style={{ minHeight: 180 }} />
-          <button disabled={routeBusy} onClick={addRouteSystems}>{routeBusy ? t('admin.saving') : t('admin.addToRoute')}</button>
+          <button disabled={routeDisabled} onClick={addRouteSystems}>{routeBusy ? t('admin.saving') : t('admin.addToRoute')}</button>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12, marginBottom: 12 }}>
-            <button disabled={routeBusy} onClick={resolveRouteCoords} style={{ fontSize: 12 }}>
+            <button disabled={routeDisabled} onClick={resolveRouteCoords} style={{ fontSize: 12 }}>
               {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconMapPin size={14} /> {t('admin.loadCoords')}</>}
             </button>
-            <button disabled={routeBusy} onClick={syncRouteProgress} style={{ fontSize: 12 }}>
+            <button disabled={routeDisabled} onClick={syncRouteProgress} style={{ fontSize: 12 }}>
               {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconBolt size={14} /> {t('admin.syncProgress')}</>}
             </button>
-            <button disabled={routeBusy} onClick={() => selectTab('sync')} className={adminStyles.secondaryAction}>
+            <button disabled={routeDisabled} onClick={() => selectTab('sync')} className={adminStyles.secondaryAction}>
               <IconSearch size={14} /> {t('admin.extendedSync')}
             </button>
             {role === 'admin' && (
-              <button disabled={routeBusy} onClick={deleteAllRouteSystems} className={adminStyles.dangerAction} style={{ marginLeft: 'auto' }}>
+              <button disabled={routeDisabled} onClick={deleteAllRouteSystems} className={adminStyles.dangerAction} style={{ marginLeft: 'auto' }}>
                 {routeBusy ? <><IconClock size={14} /> {t('common.loading')}</> : <><IconTrash size={14} /> {t('admin.deleteRoute')}</>}
               </button>
             )}
@@ -757,14 +771,17 @@ export default function AdminPage() {
             <p style={{ color: routeMsg.startsWith(t('account.error')) ? '#e74c3c' : '#2ecc71' }}>{routeMsg}</p>
           )}
           <p style={{ color: '#9ca3af', fontSize: 13 }}>
-            {t('admin.inList')} {routeSystems.length} · {t('admin.noCoords')} {routeSystems.filter((r) => r.x == null).length}
+            {t('admin.inList')} {routeSystems.length} · {t('admin.noCoords')} {routeSystems.filter((r) => r.x == null || r.y == null || r.z == null).length}
             {routeQuery.trim() ? ` · ${t('admin.shown')} ${filteredRouteAdmin.length}` : ''}
           </p>
           <input style={{ width: '100%', maxWidth: 420 }} placeholder={t('admin.searchRoute')} value={routeQuery} onChange={(e) => setRouteQuery(e.target.value)} />
+          {routeLoading && <p role="status">{t('common.loading')}</p>}
+          {routeLoadError && <p role="alert">{t('account.error')} {routeLoadError}</p>}
+          <RoutePagination {...routePagination} />
           <div className="table-scroll">
             <table>
               <thead><tr><th>#</th><th>{t('admin.systemPlaceholder')}</th><th>{t('admin.statusCol')}</th><th>{t('admin.statusCol')}</th><th>{t('admin.coordsCol')}</th><th></th></tr></thead>
-              <tbody>{filteredRouteAdmin.map((r) => (
+              <tbody>{routePagination.rows.map((r) => (
                 <tr key={r.id}>
                   <td>{r.sort_order}</td>
                   <td>
@@ -773,21 +790,22 @@ export default function AdminPage() {
                     </a>
                   </td>
                   <td>
-                    <select value={r.status || 'planned'} onChange={(e) => updateRouteStatus(r.id, e.target.value)}>
+                    <select disabled={routeDisabled} value={r.status || 'planned'} onChange={(e) => updateRouteStatus(r.id, e.target.value)}>
                       <option value="planned">{t('admin.statusPlanned')}</option>
                       <option value="building">{t('admin.statusBuilding')}</option>
                       <option value="done">{t('admin.statusDone')}</option>
                     </select>
                   </td>
                   <td>
-                    <input type="number" min={0} max={100} value={r.progress ?? 0} onChange={(e) => updateRoutePointProgress(r.id, +e.target.value)} style={{ width: 60 }} />
+                    <input type="number" disabled={routeDisabled} min={0} max={100} value={r.progress ?? 0} onChange={(e) => updateRoutePointProgress(r.id, +e.target.value)} style={{ width: 60 }} />
                   </td>
-                  <td>{r.x != null ? `${r.x.toFixed(1)} / ${r.y.toFixed(1)} / ${r.z.toFixed(1)}` : '—'}</td>
-                  <td><button className={adminStyles.dangerAction} onClick={() => removeRouteSystem(r.id)}>{t('admin.deleteBtn')}</button></td>
+                  <td>{r.x != null && r.y != null && r.z != null ? `${r.x.toFixed(1)} / ${r.y.toFixed(1)} / ${r.z.toFixed(1)}` : '—'}</td>
+                  <td><button disabled={routeDisabled} className={adminStyles.dangerAction} onClick={() => removeRouteSystem(r.id)}>{t('admin.deleteBtn')}</button></td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
+          <RoutePagination {...routePagination} />
         </div>
       )}
 

@@ -7,6 +7,7 @@ function database({ hubs = [], route = [], upsertError = null, updateError = nul
   return { writes, from(table) {
     const result = Promise.resolve({ data: table === 'hubs' ? hubs : route, error: null });
     result.order = () => result;
+    result.range = (from, to) => Promise.resolve({ data: (table === 'hubs' ? hubs : route).slice(from, to + 1), error: null });
     return {
       select: () => result,
       upsert: async row => { writes.push({ table, row }); return { error: upsertError }; },
@@ -51,4 +52,13 @@ test('database write failures are visible to the scheduler', async () => {
     assert.equal(result.ok, false);
     assert.equal(result.failed, 1);
   }
+});
+
+
+test('scheduled progress sync processes route records beyond the PostgREST first page', async () => {
+  const db = database({route:Array.from({length:2001},(_,i)=>({id:i+1,system_name:`System ${i+1}`}))});
+  const result = await syncProgress({supabase:db,fetchSystemImpl:async system_name=>({system_name,progress:100,data:{}})});
+  assert.equal(result.total,2001);
+  assert.equal(result.updated,2001);
+  assert.ok(db.writes.some(write=>write.table==='route_systems' && write.id===2001));
 });

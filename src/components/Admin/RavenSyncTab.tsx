@@ -1,5 +1,7 @@
 'use client';
 
+import { readAllRows } from '@/lib/readAllRows';
+import { RoutePagination, useRoutePagination } from './RoutePagination';
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, authFetch } from '@/lib/supabaseClient';
 import { IconCheckCircle, IconXCircle, IconMapPin, IconSatellite, IconRefresh, IconPackage, IconUserWorker, IconChart, IconClock, IconConstruction } from '@/components/Icons';
@@ -72,14 +74,18 @@ export default function RavenSyncTab() {
   const [isError, setIsError] = useState(false);
   const [detailSystem, setDetailSystem] = useState<string | null>(null);
 
+  const historyPage = useRoutePagination(routeSystems);
+  const resultsPage = useRoutePagination(results);
+
   const loadData = useCallback(async () => {
     const sup = supabase;
-    const [{ data: rs }, logRes] = await Promise.all([
-      sup.from('route_systems').select('id,system_name,status,progress,x,y,z').order('sort_order'),
+    const [{ data: rs, error }, logRes] = await Promise.all([
+      readAllRows((from, to) => sup.from('route_systems').select('id,system_name,status,progress,x,y,z').order('sort_order').order('id').range(from, to)),
       authFetch('/api/ravencolonial/sync/log?limit=100', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ logs: [] }))
     ]);
 
     setRouteSystems(rs || []);
+    if (error) { setMessage(error.message); setIsError(true); }
     setLogs(logRes?.logs || []);
 
     const map: Record<string, SyncLog> = {};
@@ -255,7 +261,8 @@ export default function RavenSyncTab() {
             <IconChart size={14} /> Результаты последнего запроса ({results.length} систем)
           </h3>
           <div style={{ display: 'grid', gap: 10 }}>
-            {results.map((res) => (
+            <RoutePagination {...resultsPage} />
+            {resultsPage.rows.map((res) => (
               <div key={res.system_name} onClick={() => setDetailSystem(detailSystem === res.system_name ? null : res.system_name)} style={{ background: '#25282b', border: '1px solid #323538', borderRadius: 8, padding: 12, cursor: 'pointer', transition: 'border-color 0.2s', borderLeft: `3px solid ${res.error ? '#e74c3c' : res.status === 'done' ? '#22c55e' : res.status === 'building' ? '#e67e22' : '#3b82f6'}` }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
@@ -362,6 +369,8 @@ export default function RavenSyncTab() {
             История синхронизаций пуста. Выполните первую синхронизацию.
           </div>
         ) : (
+          <>
+          <RoutePagination {...historyPage} />
           <div className='table-scroll'>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead>
@@ -375,7 +384,7 @@ export default function RavenSyncTab() {
                 </tr>
               </thead>
               <tbody>
-                {routeSystems.map((rs) => {
+                {historyPage.rows.map((rs) => {
                   const log = latestBySystem[rs.system_name.toLowerCase()];
                   const status = getSystemStatus(rs.system_name);
                   return (
@@ -397,6 +406,8 @@ export default function RavenSyncTab() {
               </tbody>
             </table>
           </div>
+          <RoutePagination {...historyPage} />
+          </>
         )}
       </div>
     </div>

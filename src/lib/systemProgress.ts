@@ -1,3 +1,4 @@
+import { readAllRows } from './readAllRows.ts';
 import type { RavenSystemV2 } from '@/lib/ravenColonial';
 
 /**
@@ -167,9 +168,21 @@ export async function persistRavenSystemProgress(
   }
 
   try {
+    const findNamedRows = async (table: 'route_systems' | 'hubs') => {
+      const matches = new Map<number | string, { id: number | string; system_name: string }>();
+      for (const key of candidateKeys) {
+        // Wildcards tolerate legacy surrounding/repeated whitespace;
+        // the normalized equality check below excludes unrelated matches.
+        const pattern = '%' + key.split(' ').map(word => word.replace(/[\\%_]/g, '\\$&')).join('%') + '%';
+        const response = await readAllRows<{ id: number | string; system_name: string }>((from, to) => supabase
+          .from(table).select('id, system_name').ilike('system_name', pattern).order('id').range(from, to));
+        if (response.error) return response;
+        response.data.forEach(row => matches.set(row.id, row));
+      }
+      return { data: Array.from(matches.values()), error: null };
+    };
     const [routeResponse, hubsResponse] = await Promise.all([
-      supabase.from('route_systems').select('id, system_name'),
-      supabase.from('hubs').select('id, system_name'),
+      findNamedRows('route_systems'), findNamedRows('hubs'),
     ]);
 
     if (routeResponse.error) result.warnings.push(`Could not find route-system cache rows: ${routeResponse.error.message}`);
