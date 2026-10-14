@@ -28,7 +28,7 @@ export async function GET(req: Request) {
   const posts = data || [];
   const authorIds = [...new Set(posts.map((p: any) => p.author_id).filter(Boolean))];
   const { data: profilesData } = authorIds.length
-    ? await supabase.from('profiles').select('id, cmdr_name, avatar_url').in('id', authorIds)
+    ? await supabase.from('public_profiles').select('id, cmdr_name, avatar_url').in('id', authorIds)
     : { data: [] };
   const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
   const postsWithAuthors = posts.map((p: any) => ({

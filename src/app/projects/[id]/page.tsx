@@ -129,14 +129,13 @@ export default function ProjectPage() {
         const [{ data: fbMembers }, { data: fbSystems }, { data: fbRoute }] = await Promise.all([
           supabase
             .from("project_members")
-            .select("*, profile:profiles(cmdr_name, avatar_url, squadron)")
+            .select("*")
             .eq("project_id", id)
             .order("role"),
           supabase
             .from("project_systems")
             .select(`
               *,
-              assignee:profiles!assigned_to(cmdr_name),
               route_system:route_systems(status, progress, x, y, z),
               hub:hubs(status, progress, x, y, z)
             `)
@@ -144,8 +143,27 @@ export default function ProjectPage() {
             .order("sort_order"),
           supabase.rpc("get_project_route", { project_id: id }),
         ]);
-        if (fbMembers?.length) finalMembers = fbMembers;
-        if (fbSystems?.length) finalSystems = fbSystems;
+        // Имена участников и ответственных — из публичного представления
+        // профилей. Встроенная связь `profiles(...)` после ужесточения RLS
+        // (20261015000000) видна только владельцу строки и персоналу, а
+        // public_profiles читается всеми и не содержит приватных колонок.
+        const profileIds = [...new Set([
+          ...(fbMembers || []).map((m: any) => m.user_id),
+          ...(fbSystems || []).map((s: any) => s.assigned_to),
+        ].filter(Boolean))];
+        const profileRows = profileIds.length
+          ? ((await supabase
+              .from("public_profiles")
+              .select("id, cmdr_name, avatar_url, squadron")
+              .in("id", profileIds)).data || [])
+          : [];
+        const profileMap = new Map(profileRows.map((p: any) => [p.id, p]));
+        if (fbMembers?.length) {
+          finalMembers = fbMembers.map((m: any) => ({ ...m, profile: profileMap.get(m.user_id) ?? null }));
+        }
+        if (fbSystems?.length) {
+          finalSystems = fbSystems.map((s: any) => ({ ...s, assignee: profileMap.get(s.assigned_to) ?? null }));
+        }
         if (fbRoute) finalRoute = fbRoute;
       } catch (e) {
         console.error("Fallback fetch failed:", e);

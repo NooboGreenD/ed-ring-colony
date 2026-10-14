@@ -55,13 +55,13 @@ export async function GET() {
     // reduced every category's totals to zero.
     supabase.from("forum_threads").select("id, title, category_id, author_id, updated_at").order("updated_at", { ascending: false }),
     supabase.from("forum_posts").select("id, content, created_at, author_id, thread_id").eq("is_deleted", false).order("created_at", { ascending: false }).limit(10),
-    supabase.from("profiles").select("id, cmdr_name, avatar_url"),
+    supabase.from("public_profiles").select("id, cmdr_name, avatar_url"),
     // An embedded `forum_posts(count)` would include soft-deleted posts under
     // the current public RLS policy.
     fetchVisiblePostThreadRows(),
     supabase.from("forum_threads").select("*", { count: "exact", head: true }),
     supabase.from("forum_posts").select("*", { count: "exact", head: true }).eq("is_deleted", false),
-    supabase.from("profiles").select("*", { count: "exact", head: true }),
+    supabase.from("public_profiles").select("*", { count: "exact", head: true }),
   ]);
 
   const postCountByThread = new Map<number, number>();

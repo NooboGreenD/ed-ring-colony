@@ -698,7 +698,7 @@ function SquadronPilotsTab({ squadronId, members, ranks, canManage, userId, onUp
   const invite = async () => {
     if (!inviteName.trim()) return;
     const { data: profile } = await supabase
-      .from("profiles")
+      .from("public_profiles")
       .select("id")
       .eq("cmdr_name", inviteName.trim())
       .maybeSingle();

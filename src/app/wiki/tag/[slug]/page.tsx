@@ -46,7 +46,7 @@ export default async function WikiTagPage({ params }: { params: Promise<{ slug: 
     const authorIds = [...new Set(articles.map((a: any) => a.author_id).filter(Boolean))];
     if (authorIds.length > 0) {
       const { data: profiles } = await supabase
-        .from('profiles')
+        .from('public_profiles')
         .select('id, cmdr_name')
         .in('id', authorIds);
       (profiles || []).forEach((p: any) => { authorMap[p.id] = p.cmdr_name; });

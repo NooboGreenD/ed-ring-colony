@@ -69,7 +69,7 @@ export default async function WikiArticlePage({ params }: { params: Promise<{ sl
       .maybeSingle();
 
     const { data: author } = await supabase
-      .from('profiles')
+      .from('public_profiles')
       .select('cmdr_name, avatar_url')
       .eq('id', article.author_id)
       .maybeSingle();

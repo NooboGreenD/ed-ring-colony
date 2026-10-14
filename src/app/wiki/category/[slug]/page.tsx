@@ -46,7 +46,7 @@ export default async function WikiCategoryPage({ params }: { params: Promise<{ s
   let authorMap: Record<string, string> = {};
   if (authorIds.length > 0) {
     const { data: profiles } = await supabase
-      .from('profiles')
+      .from('public_profiles')
       .select('id, cmdr_name')
       .in('id', authorIds);
     (profiles || []).forEach((p: any) => { authorMap[p.id] = p.cmdr_name; });

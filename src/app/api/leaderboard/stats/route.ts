@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createServiceClient } from '@/lib/supabaseServer';
 import { GOVERNANCE_TABLE } from '@/lib/architect/governance';
 import { PLAN_TABLE } from '@/lib/architect/store';
 import { readableProgress, statusFromProgress, systemNameKey } from '@/lib/systemProgress';
@@ -54,7 +54,9 @@ export async function GET(req: Request) {
         ? new Date(Date.now() - 30 * 86400000).toISOString()
         : null;
 
-    const supabase = await createClient();
+    // Агрегаты по deliveries всех пилотов: после ужесточения RLS
+    // (20261015000000) читаем service-role клиентом, наружу — только сводки.
+    const supabase = createServiceClient();
 
     // ── Системы: сколько тонн завезено в каждую ────────────────────────
     const systems = new Map<string, SystemAggregate>();

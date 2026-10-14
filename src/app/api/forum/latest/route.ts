@@ -1,10 +1,13 @@
-import { createClient } from "@/lib/supabaseServer";
+import { createServiceClient } from "@/lib/supabaseServer";
 import { NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const supabase = await createClient();
+  // Публичный маршрут, но с чтением profiles: встроенная связь
+  // `author:profiles(...)` после ужесточения RLS видна только персоналу.
+  // Собираем ответ service-role клиентом и отдаём наружу только имя автора.
+  const supabase = createServiceClient();
 
   const { data: posts } = await supabase
     .from("forum_posts")

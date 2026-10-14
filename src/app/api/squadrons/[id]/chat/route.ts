@@ -48,7 +48,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     let profilesMap: Record<string, { cmdr_name: string | null; avatar_url: string | null }> = {}
     if (userIds.length > 0) {
       const { data: profiles } = await supabase
-        .from('profiles')
+        .from('public_profiles')
         .select('id, cmdr_name, avatar_url')
         .in('id', userIds)
       for (const p of (profiles || [])) {

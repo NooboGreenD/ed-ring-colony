@@ -253,7 +253,7 @@ async function hydrateFriends(supabase: any, userId: string, rows: FriendRow[], 
 
   if (profileIds.length === 0) return normalised;
   const { data: profiles, error } = await supabase
-    .from("profiles")
+    .from("public_profiles")
     .select("id, cmdr_name, avatar_url")
     .in("id", profileIds);
   // A profile label is supplementary. Never hide a valid friend relationship

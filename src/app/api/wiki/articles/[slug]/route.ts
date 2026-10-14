@@ -50,7 +50,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
   let author = null;
   if (article.author_id) {
     const { data: prof } = await supabase
-      .from('profiles')
+      .from('public_profiles')
       .select('cmdr_name, avatar_url')
       .eq('id', article.author_id)
       .maybeSingle();

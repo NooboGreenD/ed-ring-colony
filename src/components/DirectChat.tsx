@@ -14,11 +14,13 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const boxRef = useRef<HTMLDivElement>(null);
 
-  // Загрузка списка пилотов
+  // Загрузка списка пилотов.
+  // Публичное представление без email: адрес чужого аккаунта —
+  // персональные данные, списку собеседников он не нужен.
   useEffect(() => {
     supabase
-      .from("profiles")
-      .select("id,cmdr_name,email,avatar_url")
+      .from("public_profiles")
+      .select("id,cmdr_name,avatar_url")
       .order("cmdr_name")
       .then(({ data }) =>
         setUsers((data ?? []).filter((u: any) => u.id !== userId))
@@ -179,7 +181,7 @@ export default function DirectChat({ userId, myName, myAvatar }: Props) {
               onClick={() => handleSelectPeer(u.id)}
               style={{ position: "relative" }}
             >
-              <PilotIdentity userId={u.id} cmdrName={u.cmdr_name || u.email || "Unknown"} avatarUrl={u.avatar_url} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
+              <PilotIdentity userId={u.id} cmdrName={u.cmdr_name || "Unknown"} avatarUrl={u.avatar_url} size={28} fontSize={13} link={false} showTier={false} style={{ flex: 1, textAlign: "left" }} />
               {unread > 0 && (
                 <span
                   style={{

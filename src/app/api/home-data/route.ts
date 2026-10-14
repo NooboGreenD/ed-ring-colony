@@ -34,7 +34,7 @@ export async function GET(request: Request) {
     supabase.from('site_content').select('*').eq('id', 1).maybeSingle(),
     supabase.from('news').select('*').order('published_at', { ascending: false }).limit(3),
     supabase.from('galnet_news').select('*').order('published_at', { ascending: false }).limit(3),
-    supabase.from('profiles').select('id', { count: 'exact', head: true }),
+    supabase.from('public_profiles').select('id', { count: 'exact', head: true }),
     supabase.from('hubs').select('id', { count: 'exact', head: true }),
     supabase.from('hubs').select('id', { count: 'exact', head: true }).eq('status', 'done'),
   ] as const);
