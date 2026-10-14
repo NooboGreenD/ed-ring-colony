@@ -7039,3 +7039,63 @@ html[data-hud-effect="glow"]::before {
 .atlas-nearby-pagination button, .atlas-nearby-pagination select { margin: 0; min-height: 32px; width: auto; }
 .atlas-nearby-pagination button { min-width: 32px; padding: 4px 8px; }
 .atlas-nearby-pagination button:disabled { opacity: .4; cursor: default; }
+
+@layer components {
+  /* Station finder shares Atlas panels, palette and typography. */
+  .station-search-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px; }
+  .station-search-eyebrow { color:var(--orange); font-size:10px; letter-spacing:2px; }
+  .station-search-tabs { display:flex; flex-wrap:wrap; gap:8px; margin:22px 0 14px; }
+  .station-search-tabs .btn, .station-search-page .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+  .station-search-form { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:16px; background:var(--panel); border:1px solid var(--line); border-top:2px solid var(--orange); border-radius:4px; padding:20px; }
+  .station-search-form .market-field { min-width:0; }
+  .station-search-form .station-query-field, .station-search-form .atlas-system-search { grid-column:span 2; min-width:0; margin:0; }
+  .station-search-form .input { width:100%; min-width:0; }
+  .station-search-actions { grid-column:1/-1; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:14px; padding-top:12px; border-top:1px solid var(--line); }
+  .station-fresh-toggle { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; }
+  .station-fresh-toggle input { accent-color:var(--orange); }
+  .station-search-notice { display:flex; align-items:flex-start; gap:8px; margin:16px 0 24px; color:var(--muted); font-size:12px; line-height:1.7; }
+  .station-search-notice svg { flex-shrink:0; margin-top:3px; color:var(--orange); }
+  .station-search-empty { padding:40px 20px; text-align:center; border:1px dashed var(--line); border-radius:4px; color:var(--muted); }
+  .station-search-empty svg { margin:0 auto 12px; color:var(--orange); }
+  .station-search-empty h2 { color:var(--text); font-size:16px; margin:0 0 10px; }
+  .station-search-empty p { max-width:620px; margin:0 auto 12px; font-size:13px; line-height:1.7; }
+  .station-search-error { padding:14px; margin:12px 0; border:1px solid var(--red); color:var(--red); border-radius:4px; }
+  .station-results-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin:20px 0 12px; }
+  .station-results-heading h2 { font-size:15px; margin:0; overflow-wrap:anywhere; }
+  .station-results-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+  .station-result-card { min-width:0; padding:18px; border:1px solid var(--line); border-radius:4px; background:var(--panel); }
+  .station-result-card h3 { margin:14px 0 3px; font-size:16px; overflow-wrap:anywhere; }
+  .station-result-top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+  .station-item-name { color:var(--orange); font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+  .station-report-badge { font-size:10px; padding:3px 7px; border:1px solid var(--line); border-radius:3px; color:var(--green); white-space:nowrap; }
+  .station-report-badge.stale { color:var(--orange); }
+  .station-system-name { font-size:12px; color:var(--cyan); overflow-wrap:anywhere; }
+  .station-result-facts { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:20px 0; }
+  .station-result-facts dt { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.6px; }
+  .station-result-facts dd { font-size:12px; margin:5px 0 0; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+  .station-report-time { color:var(--muted); font-size:10px; padding-top:12px; border-top:1px solid var(--line); }
+  .station-result-footer { margin-top:14px; }
+  .station-result-footer .btn { max-width:100%; white-space:normal; text-align:center; }
+  .station-search-pagination { display:flex; justify-content:center; align-items:center; gap:14px; margin:24px 0; font-size:12px; }
+  .station-atlas-focus { position:absolute; z-index:10; bottom:18px; left:16px; right:16px; max-width:500px; background:var(--panel); border:1px solid var(--orange); padding:12px 16px; border-radius:4px; font-size:12px; }
+  .station-atlas-focus strong { color:var(--orange); }
+  .station-atlas-focus a { display:block; margin-top:7px; color:var(--muted); }
+  @media (max-width:760px) {
+    .station-search-form { grid-template-columns:repeat(2,minmax(0,1fr)); padding:14px; }
+    .station-results-grid { grid-template-columns:1fr; }
+    .station-search-page { padding:18px 12px; }
+  }
+  @media (max-width:380px) {
+    .station-search-heading > .btn { width:100%; }
+    .station-search-tabs .btn { flex:1 1 40%; }
+    .station-result-facts { grid-template-columns:1fr; }
+    .station-search-actions > .btn { width:100%; }
+  }
+}
+
+@layer components {
+  .station-search-tabs [aria-selected="true"] { background:var(--orange); color:#17191b; border-color:var(--orange); }
+  .station-search-tabs [aria-selected="false"] { border-color:var(--line); color:var(--muted); }
+  .station-search-form input:disabled { opacity:.5; }
+  .station-fresh-toggle input[type="checkbox"] { width:14px; height:14px; min-height:14px; min-width:14px; padding:0; flex-shrink:0; }
+}

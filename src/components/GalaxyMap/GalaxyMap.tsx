@@ -160,6 +160,7 @@ function formatProgress(value: unknown): string {
 }
 
 export interface GalaxyMapProps {
+  focusSystem?: { name: string; x: number; y: number; z: number } | null;
   atlasCandidates?: AtlasCandidate[];
   squadronRouteSystems?: RouteSystem[];
   showOnlyMainRoute?: boolean;
@@ -173,6 +174,7 @@ export default function GalaxyMap({
   showOnlyMainRoute = false,
   noMarketSystems = [],
   marketResults = [],
+  focusSystem = null,
 }: GalaxyMapProps) {
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
   // общего канала: карта показывает сам процесс, а не только результат.
@@ -199,6 +201,11 @@ export default function GalaxyMap({
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
   const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
   const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
+  useEffect(() => {
+    if (focusSystem && [focusSystem.x, focusSystem.y, focusSystem.z].every(Number.isFinite)) {
+      setFocusTarget(eliteToThreeCentered(focusSystem));
+    }
+  }, [focusSystem]);
   const [resetCamera, setResetCamera] = useState(0);
 
   // Layer filters. In the old map the "known systems" checkbox hid markers

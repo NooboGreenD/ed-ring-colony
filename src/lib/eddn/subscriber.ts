@@ -3,7 +3,7 @@
 // Run: npx ts-node scripts/eddn-worker.ts
 // ═══════════════════════════════════════════════════════════════
 
-import type { EddnCommodityMessage } from '@/types/eddn';
+import { inflateSync } from 'node:zlib';
 
 const EDDN_RELAY = 'tcp://eddn.edcd.io:9500';
 
@@ -27,8 +27,8 @@ export async function startEddnListener(
 
   for await (const [msg] of sock) {
     try {
-      const data = JSON.parse(msg.toString()) as EddnCommodityMessage;
-      if (!data.$schemaRef?.includes('commodity')) continue;
+      const data = JSON.parse(inflateSync(msg).toString('utf-8'));
+      if (!/\/(commodity|outfitting|shipyard)\//.test(data.$schemaRef || '') || data.$schemaRef.includes('/test')) continue;
 
       const res = await fetch(ingestUrl, {
         method: 'POST',

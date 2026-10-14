@@ -62,6 +62,8 @@ import {
 } from './pgModule.ts';
 import { archiveFileNameForVariant, type GalaxyDumpVariant } from './galaxyDumpVariants.ts';
 
+import { spanshCommercePayload } from './stationCommerce.ts';
+
 export const SPANSH_DUMP_URL = 'https://downloads.spansh.co.uk/systems.json.gz';
 
 /**
@@ -901,6 +903,7 @@ export interface GalaxyRowWriter {
    */
   readonly deferred: number;
   add(row: GalaxySystemRecord): Promise<void>;
+  addCommerce?(system: SpanshSystemObject): Promise<void>;
   flush(): Promise<number>;
   /**
    * One last chance for `deferred` rows now that the pass is over and nothing
@@ -1618,6 +1621,10 @@ export async function createPgWriter(
     get deferred() {
       return deferredState.deferred.length;
     },
+    async addCommerce(system) {
+      const payload = spanshCommercePayload(system);
+      if (payload) await client.query(`SELECT public.save_spansh_commerce(${pgLiteral(JSON.stringify(payload))}::jsonb)`);
+    },
     async add(row) {
       rows.push(row);
       if (rows.length >= batchSize) await flush();
@@ -1779,6 +1786,12 @@ export function createSupabaseWriter(
     },
     get deferred() {
       return deferredState.deferred.length;
+    },
+    async addCommerce(system) {
+      const payload = spanshCommercePayload(system);
+      if (!payload) return;
+      const { error } = await client.rpc('save_spansh_commerce', { payload });
+      if (error) throw new Error(`Spansh station import: ${error.message}`);
     },
     async add(row) {
       rows.push(row);
@@ -2218,6 +2231,7 @@ export async function runGalaxyImport(options: GalaxyImportRunOptions): Promise<
         continue;
       }
       processed++;
+      await writer.addCommerce?.(object);
       await writer.add(row);
       if (streamed) {
         streamed.add({ x: row.x, y: row.y, z: row.z, id64: row.id64, starType: row.star_type });

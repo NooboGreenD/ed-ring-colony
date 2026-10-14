@@ -159,7 +159,9 @@ test('Atlas: найденное сохраняется в базе проект�
   assert.ok(routeApi.includes('saveCachedSystems'), 'маршрут не сохраняет найденные системы');
   assert.ok(routeApi.includes('listCachedSystemsInBox'), 'маршрут не смотрит в кэш перед EDSM');
   assert.ok(marketApi.includes('saveCachedSystems'), 'рынок не сохраняет список систем');
-  assert.ok(marketApi.includes('findSystemsInCube'), 'рынок не использует каталог проекта');
+  assert.ok(marketApi.includes('knownMarketSystems'), 'рынок не начинает с известных населённых систем');
+  const marketDiscovery = read('src/lib/marketDiscovery.ts');
+  assert.ok(marketApi.includes('discoverMarketSystems') && marketDiscovery.includes('findSystemsInCube'), 'резервный поиск рынка не использует каталог проекта');
 });
 
 test('Atlas: кольцо строится шагами и продолжается после обрыва связи', () => {

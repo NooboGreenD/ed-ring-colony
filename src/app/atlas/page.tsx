@@ -37,6 +37,8 @@ import {
 } from '@/lib/atlasSearchProgress';
 import { countByWorldType, downloadCsv, favoriteKey, filterCandidates, formatCoordinates, worldTypeLabel } from '@/lib/atlas';
 
+import { atlasFocusFromParams } from '@/lib/stationSearch';
+
 const GalaxyMap = dynamic(() => import('@/components/GalaxyMap'), {
   ssr: false,
   loading: () => (
@@ -88,6 +90,7 @@ export default function AtlasPage() {
 function AtlasPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const stationFocus = useMemo(() => atlasFocusFromParams(searchParams), [searchParams]);
   const { candidates, error, setCandidates } = useAtlasData();
   const { favorites, sessions, recordSearch, favoriteKeys } = useAtlas();
 
@@ -878,6 +881,9 @@ function AtlasPageInner() {
 
       {/* ── Карта ── */}
       <div className="atlas-map-area">
+        {stationFocus && <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из поиска станций
+          <Link href="/station-search">← Вернуться к поиску по станциям</Link>
+        </div>}
         {!sidebarOpen && (
           <button
             type="button"
@@ -893,7 +899,8 @@ function AtlasPageInner() {
           atlasCandidates={filteredCandidates}
           squadronRouteSystems={allRoutePoints}
           noMarketSystems={noMarketSystems}
-          marketResults={marketResults}
+          focusSystem={stationFocus}
+          marketResults={stationFocus ? [...marketResults, { system_name: stationFocus.name, x: stationFocus.x, y: stationFocus.y, z: stationFocus.z, distance: 0 }] : marketResults}
         />
       </div>
     </div>

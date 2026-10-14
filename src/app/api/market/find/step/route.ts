@@ -3,6 +3,8 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { constructionCommodities } from '@/lib/constructionBlueprints';
 import { commodityKey, resolveCommodity } from '@/lib/commodities';
 import { marketUpstream, marketError } from '@/lib/marketUpstream';
+import { edsmStationReport, saveStationReport, validTime, INVENTORY_TTL_MS, COMMERCE_SOURCE_RANK } from '@/lib/stationCommerce';
+import { discoverMarketSystems } from '@/lib/marketDiscovery';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -10,7 +12,8 @@ const STEP_SIZE = 5;
 
 export async function POST(request: Request) {
   try {
-    const { job_id } = await request.json();
+    const { job_id, known_systems_count } = await request.json();
+    const knownCount = Number.isInteger(known_systems_count) && known_systems_count >= 0 ? Math.min(known_systems_count, 10000) : 0;
     if (!job_id)
       return NextResponse.json(
         { error: 'job_id is required' },
@@ -33,6 +36,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         job_id,
         status: job.status,
+        systems_added: (job.systems_list || []).slice(knownCount),
         progress: {
           total: job.total_systems,
           scanned: job.scanned_systems,
@@ -72,7 +76,7 @@ export async function POST(request: Request) {
       currentSystem = sys.name;
       // Actual per-station reports, not just a cache of station names. EDDN
       // uses journal symbols whereas EDSM uses spaced display names.
-      const [cache, eddn] = await Promise.all([
+      const [cache, eddn, canonical] = await Promise.all([
         svc
           .from('market_search_cache')
           .select('*')
@@ -83,10 +87,14 @@ export async function POST(request: Request) {
           .select('*')
           .eq('system_name', sys.name)
           .limit(1000),
+        svc.from('station_commerce')
+          .select('*,station_inventory_snapshots(*)')
+          .eq('system_lc', sys.name.trim().toLowerCase())
+          .limit(1000),
       ]);
       const markets = new Map<
         string,
-        { name: string; type: string; marketId?: number; commodities: any[] }
+        { name: string; type: string; marketId?: number | string; metadata?: any; commodities: any[] }
       >();
       const rows = [
         ...(cache.data || []).map((row: any) => ({
@@ -118,6 +126,7 @@ export async function POST(request: Request) {
           buyPrice: Number(row.price) || 0,
           demand: Number(row.demand) || 0,
           reported_at: row.time,
+          source: row.source || 'legacy-cache',
         };
         const index = market.commodities.findIndex(
           (c) => commodityKey(c.name) === commodityKey(item.name)
@@ -125,13 +134,29 @@ export async function POST(request: Request) {
         if (index < 0) market.commodities.push(item);
         else market.commodities[index] = item;
       }
-      const recent = commoditiesList.every((name) =>
-        rows.some(
-          (row) =>
-            commodityKey(name) === commodityKey(row.commodity_name) &&
-            Date.now() - (Date.parse(row.time) || 0) < 3_600_000
-        )
-      );
+      // A complete canonical snapshot overrides legacy per-item rows. Otherwise
+      // removed commodities could be resurrected by the old market cache.
+      const canonicalTimes = new Map<string, number>();
+      const canonicalSources = new Map<string, string>();
+      const snapshotAges: number[] = [];
+      for (const station of canonical.data || []) {
+        const snapshot = station.station_inventory_snapshots?.find((item: any) => item.kind === 'market');
+        if (!snapshot) continue;
+        const observed = Date.parse(snapshot.observed_at) || 0;
+        canonicalTimes.set(station.station_name, observed);
+        canonicalSources.set(station.station_name, snapshot.source);
+        snapshotAges.push(observed);
+        markets.set(station.station_name, {
+          name: station.station_name, type: station.station_type || 'По отчёту рынка',
+          marketId: station.market_id, metadata: station.metadata,
+          commodities: snapshot.items.map((item: any) => ({ ...item, reported_at: snapshot.observed_at, source: snapshot.source })),
+        });
+      }
+      const recent = snapshotAges.length > 0
+        ? snapshotAges.every((at) => Date.now() - at < INVENTORY_TTL_MS)
+          && (canonical.data || []).every((station: any) => station.station_inventory_snapshots?.some((s: any) => s.kind === 'market'))
+        : commoditiesList.every((name) => rows.some((row) =>
+          commodityKey(name) === commodityKey(row.commodity_name) && Date.now() - (Date.parse(row.time) || 0) < INVENTORY_TTL_MS));
       let warning: string | undefined;
       if (!recent) {
         try {
@@ -143,6 +168,10 @@ export async function POST(request: Request) {
             throw new Error(
               'EDSM не передал список станций; сохранённые отчёты могут быть неполными.'
             );
+          // Keep metadata for all stations, not only commodity markets.
+          for (const station of stationData.stations) {
+            await saveStationReport(svc, edsmStationReport(sys, station), 'edsm');
+          }
           const stations = stationData.stations.filter(
             (station: any) => station.haveMarket && station.marketId
           );
@@ -154,10 +183,19 @@ export async function POST(request: Request) {
               );
               if (!Array.isArray(data?.commodities))
                 throw new Error('EDSM не передал данные рынка станции.');
-              markets.set(station.name, {
-                ...station,
-                commodities: data.commodities,
-              });
+              const report = edsmStationReport(sys, station);
+              const observed_at = validTime(data.updateTime || data.timestamp || station.updateTime?.market) || '1970-01-01T00:00:00.000Z';
+              report.inventories.market = { observed_at, items: data.commodities };
+              await saveStationReport(svc, report, 'edsm');
+              const storedTime = canonicalTimes.get(station.name) ?? -1;
+              const incomingTime = Date.parse(observed_at);
+              if (storedTime < incomingTime || (storedTime === incomingTime &&
+                  COMMERCE_SOURCE_RANK.edsm >= (COMMERCE_SOURCE_RANK[canonicalSources.get(station.name) || ''] || 0))) {
+                markets.set(station.name, {
+                  ...station, metadata: report.metadata,
+                  commodities: data.commodities.map((item: any) => ({ ...item, reported_at: observed_at, source: 'edsm' })),
+                });
+              }
               const wanted = commoditiesList.map(
                 (name) =>
                   data.commodities.find(
@@ -175,12 +213,36 @@ export async function POST(request: Request) {
                     buy_price: c.buyPrice,
                     sell_price: c.buyPrice,
                     distance: sys.distance,
-                    updated_at: new Date().toISOString(),
+                    updated_at: observed_at,
                   })),
                   { onConflict: 'system_name,station_name,commodity_name' }
                 );
             } catch (error) {
               warning = marketError(error);
+            }
+          }
+          for (const station of stationData.stations) {
+            if (deadline - Date.now() < 2000) break;
+            // Modules and ships are independent snapshots and must not be
+            // cleared by a commodity-only response or a failed endpoint.
+            for (const kind of ['outfitting', 'shipyard'] as const) {
+              if (!station.marketId || !station[kind === 'outfitting' ? 'haveOutfitting' : 'haveShipyard']) continue;
+              const saved = (canonical.data || []).find((s: any) => s.station_name === station.name)
+                ?.station_inventory_snapshots?.find((s: any) => s.kind === kind);
+              if (saved && Date.now() - Date.parse(saved.observed_at) < INVENTORY_TTL_MS) continue;
+              try {
+                const inventory = await marketUpstream(`/api-system-v1/stations/${kind}?systemName=${encodeURIComponent(sys.name)}&marketId=${station.marketId}`, deadline);
+                const items = inventory?.[kind === 'outfitting' ? 'modules' : 'ships'];
+                if (!Array.isArray(items)) continue;
+                const inventoryReport = edsmStationReport(sys, station);
+                inventoryReport.inventories[kind] = {
+                  observed_at: validTime(inventory.updateTime || station.updateTime?.[kind]) || '1970-01-01T00:00:00.000Z',
+                  items: items.map((item: any) => typeof item === 'string' ? { name: item } : item),
+                };
+                await saveStationReport(svc, inventoryReport, 'edsm');
+              } catch (error) {
+                console.warn('[Market Step] optional station inventory:', marketError(error));
+              }
             }
           }
           // Do not poison the availability cache after a network failure.
@@ -245,6 +307,8 @@ export async function POST(request: Request) {
                   stock: match.stock,
                   sell_price: match.buyPrice > 0 ? match.buyPrice : null,
                   reported_at: match.reported_at,
+                  source: match.source,
+                  stale: !match.reported_at || Date.now() - (Date.parse(match.reported_at) || 0) >= INVENTORY_TTL_MS,
                 },
               ]
             : [];
@@ -255,6 +319,8 @@ export async function POST(request: Request) {
           station_name: market.name,
           system_name: sys.name,
           distance: sys.distance,
+          x: sys.x, y: sys.y, z: sys.z,
+          market_id: market.marketId, station_location: market.metadata,
           landing_pad: market.type === 'Fleet Carrier' ? 'L' : '—',
           station_type: market.type,
         };
@@ -272,6 +338,8 @@ export async function POST(request: Request) {
                 sell_price: found[0].sell_price,
                 stock: found[0].stock,
                 reported_at: found[0].reported_at,
+                source: found[0].source,
+                stale: found[0].stale,
                 demand:
                   market.commodities.find(
                     (c) => commodityKey(c.name) === commodityKey(found[0].name)
@@ -282,7 +350,34 @@ export async function POST(request: Request) {
     }
 
     const newScanned = endIdx;
-    const isDone = newScanned >= systemsList.length;
+    let isDone = newScanned >= systemsList.length;
+    let nextSystems = systemsList;
+    let discoveryComplete = job.discovery_complete !== false;
+    const foundKeys = new Set(results.flatMap((result: any) =>
+      result.commodities ? result.commodities.map((c: any) => commodityKey(c.name)) : [commodityKey(result.commodity)]));
+    // Only expand the volume after stage one cannot supply the requested goods.
+    if (isDone && !discoveryComplete && commoditiesList.some((name) => !foundKeys.has(commodityKey(name)))) {
+      if (deadline - Date.now() < 10_000) {
+        // Persist stage-one progress now; perform discovery on the next step
+        // with a fresh budget rather than exceeding the route's 60s deadline.
+        isDone = false;
+      } else {
+        try {
+          const discovery = await discoverMarketSystems(job.ref_system, job.radius, job.reference_coords, deadline);
+          const visited = new Set(systemsList.map((s: any) => s.name.trim().toLowerCase()));
+          const additional = discovery.systems.filter((s) => s.coords && !visited.has(s.name.trim().toLowerCase()))
+            .map((s) => ({ name: s.name, ...s.coords!, distance: s.distance || 0 }))
+            .sort((a, b) => a.distance - b.distance);
+          nextSystems = [...systemsList, ...additional];
+          discoveryComplete = true;
+          isDone = newScanned >= nextSystems.length;
+        } catch (error) {
+          isDone = false;
+          scanLog.push({ system: job.ref_system, status: 'unavailable', timestamp: new Date().toISOString(),
+            warning: `Расширенный поиск временно недоступен: ${marketError(error)}. Результаты первого этапа сохранены.` });
+        }
+      }
+    }
 
     // A slow EDSM request can outlive the browser polling interval. Claim the
     // snapshot optimistically so two overlapping /step calls cannot append the
@@ -291,6 +386,9 @@ export async function POST(request: Request) {
       .from('market_search_jobs')
       .update({
         status: isDone ? 'done' : 'scanning',
+        systems_list: nextSystems,
+        total_systems: nextSystems.length,
+        discovery_complete: discoveryComplete,
         scanned_systems: newScanned,
         found_stations: foundStations,
         current_system: currentSystem,
@@ -327,6 +425,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         job_id,
         status: currentJob.status,
+        systems_added: (currentJob.systems_list || []).slice(knownCount),
         progress: {
           total: currentJob.total_systems,
           scanned: currentJob.scanned_systems,
@@ -345,6 +444,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       job_id,
       status: savedJob.status,
+      systems_added: (savedJob.systems_list || []).slice(knownCount),
       progress: {
         total: savedJob.total_systems,
         scanned: savedJob.scanned_systems,

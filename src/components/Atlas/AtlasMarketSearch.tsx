@@ -34,6 +34,9 @@ interface StationCommodity {
   name: string;
   stock: number;
   sell_price: number | null;
+  reported_at?: string;
+  stale?: boolean;
+  source?: string;
 }
 
 interface StationBuildResult {
@@ -48,6 +51,9 @@ interface StationBuildResult {
 }
 
 interface SingleResult {
+  reported_at?: string;
+  stale?: boolean;
+  source?: string;
   station_name: string;
   system_name: string;
   distance: number;
@@ -57,6 +63,12 @@ interface SingleResult {
   demand: number;
   landing_pad: string;
   station_type: string;
+}
+
+function reportLabel(report: { reported_at?: string; source?: string; stale?: boolean }) {
+  const at = report.reported_at ? Date.parse(report.reported_at) : 0;
+  const date = at > 0 ? new Date(at).toLocaleString('ru-RU') : 'время неизвестно';
+  return `Снимок: ${date}${report.source ? ` · ${report.source}` : ''}${report.stale ? ' · устарел, наличие уточняйте' : ''}`;
 }
 
 interface SearchProgress {
@@ -283,12 +295,24 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
           const stepRes = await fetch('/api/market/find/step', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ job_id: data.job_id }),
+            body: JSON.stringify({ job_id: data.job_id, known_systems_count: coordinatesBySystem.size }),
             signal: controller.signal,
           });
           const stepData = await stepRes.json().catch(() => ({}));
           if (scanGenerationRef.current !== generation) return;
           if (!stepRes.ok) throw new Error(stepData.error || 'Шаг сканирования не выполнен');
+
+          // The broad fallback appends systems only after the inhabited-system
+          // stage. Add their coordinates before painting beams/results.
+          for (const system of Array.isArray(stepData.systems_added) ? stepData.systems_added : []) {
+            const name = String(system?.name || '').trim().replace(/\s+/g, ' ');
+            if (!name || ![system.x, system.y, system.z].every(Number.isFinite)) continue;
+            const key = name.toLowerCase();
+            if (!coordinatesBySystem.has(key)) {
+              coordinatesBySystem.set(key, system);
+              scanSystems.push(system);
+            }
+          }
 
           if (stepData.progress) {
             const scanned = Number(stepData.progress.scanned) || 0;
@@ -768,6 +792,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
                         <strong>{item.name}</strong>
                         <span>{item.stock.toLocaleString('ru-RU')} шт.</span>
                         {item.sell_price ? <span>{item.sell_price.toLocaleString('ru-RU')} CR</span> : null}
+                        <small title={reportLabel(item)}>{reportLabel(item)}</small>
                       </span>
                     ))}
                   </div>
@@ -789,6 +814,7 @@ export default function AtlasMarketSearch({ initialSystem = '', onScanStart, onS
                     <span><IconMapPin size={10} /> {row.distance?.toFixed(1) ?? '?'} св.л.</span>
                     <span><IconRocket size={10} /> {row.landing_pad}</span>
                     {row.demand ? <span>спрос: {row.demand.toLocaleString('ru-RU')}</span> : null}
+                    <span title={reportLabel(row)}>{reportLabel(row)}</span>
                   </div>
                 </article>
               ))}

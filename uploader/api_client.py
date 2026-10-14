@@ -355,6 +355,23 @@ class ApiClient:
         except Exception as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
+    def upload_station_reports(self, reports: list) -> dict:
+        """Complete per-service station snapshots. The collector owns durable retries."""
+        if not self.token or not reports:
+            return {"ok": False, "error": "Нет токена или данных"}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/stations/report",
+                json={"token": self.token, "reports": reports},
+                allow_redirects=False, timeout=20,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except Exception as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
     def upload_pilot_stats(self, stats: dict, cmdr: str = None) -> dict:
         """Отправить баланс и статистику пилота в БД проекта (/api/cmdr/stats)."""
         if not self.token or not stats:
