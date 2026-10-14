@@ -95,8 +95,8 @@ export interface Bulkhead {
   archived?: boolean;
 }
 
-/** Слот внутреннего отсека: обычный (число) или особый (военный, посадочный). */
-export type InternalSlot = number | { class: number; name?: string; eligible?: Record<string, number> };
+/** Орудийный/внутренний слот: обычный (число) или особый. Архив хранит индекс старых сборок. */
+export type InternalSlot = number | { class: number; name?: string; eligible?: Record<string, number>; archived?: boolean };
 
 export interface ShipProperties {
   name: string;
@@ -247,6 +247,8 @@ export interface BuildSlot {
   class: number;
   /** Особое назначение слота: военный отсек, посадочный комплект. */
   special?: string;
+  /** Не предлагать в новых сборках, но сохранить модуль по старой ссылке. */
+  archived?: boolean;
   eligible?: Record<string, number>;
   /** Только эта группа модулей (основные слоты жёстко заданы). */
   group?: string;

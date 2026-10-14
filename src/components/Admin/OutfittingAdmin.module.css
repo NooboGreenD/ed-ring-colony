@@ -129,6 +129,8 @@
 .slotHeading h3 { margin: 0; font-size: 13px; color: var(--orange); }
 .slotSection > .helpText { display: block; margin: 0 0 12px; }
 .slotRow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.deletedSlotRow { background: color-mix(in srgb, var(--muted) 5%, transparent); color: var(--muted); }
+.slotRow.deletedSlotRow strong { color: var(--muted); }
 .slotRow strong { flex: 0 0 32px; font: 12px var(--mono); color: var(--orange); }
 .slotRow > label:not(.slotToggle) { display: flex; flex: 1 1 130px; flex-direction: column; gap: 4px; min-width: 100px; font: 10px var(--mono); color: var(--muted); }
 .slotRow > label:nth-of-type(2) { flex: 2 1 180px; }

@@ -168,10 +168,15 @@ function validateShip(key: string, value: Record<string, unknown>, data: Outfitt
       `${section}: число заводских модулей превышает число слотов`);
     list.forEach((slot, index) => {
       const label = `${section}[${index}]`;
+      check(section !== 'standard' || typeof slot === 'number', `${label}: основной слот должен быть числом`);
       const size = isRecord(slot) ? slot.class : slot;
       check(Number.isInteger(size) && Number(size) >= (section === 'hardpoints' ? 0 : 1)
         && Number(size) <= (section === 'hardpoints' ? 4 : 8), `${label}: недопустимый размер слота`);
       if (isRecord(slot)) {
+        if (slot.archived !== undefined) {
+          check(typeof slot.archived === 'boolean', `${label}: archived должен быть переключателем`);
+          if (!slot.archived) delete slot.archived;
+        }
         if (slot.name !== undefined) slot.name = text(slot.name, `${label}: назначение`, 80);
         if (slot.eligible !== undefined) {
           check(isRecord(slot.eligible) && Object.keys(slot.eligible).length > 0, `${label}: укажите допустимые группы`);
@@ -403,7 +408,16 @@ export function applyCatalogCommands(
         check(sameJson(edited.bulkheads, ship.bulkheads), 'Броню изменяйте в разделе «Броня». Сначала обновите каталог', 409);
         for (const section of ['standard', 'hardpoints', 'internal'] as const) {
           check(edited.slots[section].length >= ship.slots[section].length,
-            'Нельзя удалять существующие слоты: их индексы используются в сохранённых сборках', 409);
+            'Для удаления сохранённого слота используйте архивирование: его индекс нужен старым сборкам', 409);
+          if (section === 'standard') continue;
+          ship.slots[section].forEach((slot, index) => {
+            const next = edited.slots[section][index];
+            if (typeof next !== 'number' && next.archived) {
+              // The original size/restrictions still describe modules in old build links.
+              const preserved = typeof slot === 'number' ? { class: slot, archived: true } : { ...slot, archived: true };
+              check(sameJson(next, preserved), `${section}[${index}]: удалённый слот нельзя менять — сначала восстановите его`, 409);
+            }
+          });
         }
         edited.bulkheads = structuredClone((previous?.value as OutfittingShip | undefined)?.bulkheads
           ?? (original as OutfittingShip | undefined)?.bulkheads ?? ship.bulkheads);

@@ -280,6 +280,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
       class: typeof slot === 'number' ? slot : slot.class,
       special: typeof slot === 'number' ? undefined : slot.name,
       eligible: typeof slot === 'number' ? undefined : slot.eligible,
+      archived: typeof slot === 'number' ? undefined : slot.archived,
       module: moduleOf(data, build.hardpoints[index]),
       modification: build.mods[`H${index}`] ?? null,
     });
@@ -294,6 +295,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
       class: size,
       special: typeof slot === 'number' ? undefined : slot.name,
       eligible: typeof slot === 'number' ? undefined : slot.eligible,
+      archived: typeof slot === 'number' ? undefined : slot.archived,
       module: moduleOf(data, build.internal[index]),
       modification: build.mods[`I${index}`] ?? null,
     });
@@ -304,6 +306,7 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
 
 /** Модули, которые физически влезут в слот (без учёта энергии и денег). */
 export function modulesForSlot(data: OutfittingData, ship: OutfittingShip, slot: BuildSlot): OutfittingModule[] {
+  if (slot.archived) return [];
   const result: OutfittingModule[] = [];
   const push = (list: OutfittingModule[] | undefined) => {
     for (const module of list ?? []) {
@@ -565,7 +568,7 @@ export function computeStats(data: OutfittingData, build: ShipBuild): BuildStats
 
   for (const { slot, module } of views) {
     if (!module) {
-      if (slot.section !== 'hardpoints') emptySlots += 1;
+      if (slot.section !== 'hardpoints' && !slot.archived) emptySlots += 1;
       continue;
     }
     if (slot.modification?.blueprint) engineered += 1;

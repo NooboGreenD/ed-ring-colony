@@ -236,6 +236,64 @@ test('source ship edits and armour changes remain independent across reset and u
   assert.deepEqual(lib.mergeCatalog(upstream, state).ships.sidewinder, upstream.ships.sidewinder);
 });
 
+test('unsaved slots can be physically removed from the middle of a new ship', () => {
+  const ship = structuredClone(base.ships.sidewinder);
+  ship.id = 'light_ship'; ship.properties.name = 'Без лишних слотов';
+  ship.slots.hardpoints.splice(1, 1); ship.defaults.hardpoints.splice(1, 1);
+  ship.slots.internal.splice(2, 1); ship.defaults.internal.splice(2, 1);
+  const state = apply(initial(), operation('create', 'ship', ship.id, ship));
+  const saved = lib.mergeCatalog(base, state).ships.light_ship;
+  assert.deepEqual(saved.slots.hardpoints, ship.slots.hardpoints);
+  assert.deepEqual(saved.slots.internal, ship.slots.internal);
+  assert.deepEqual(saved.defaults, ship.defaults);
+  assert.equal(lib.defaultBuild(lib.mergeCatalog(base, state), ship.id).internal.length, ship.slots.internal.length);
+  assert.equal(base.ships.sidewinder.slots.internal.length, 7);
+});
+
+test('archiving individual existing slots preserves old builds, factory defaults and their indices', () => {
+  const source = base.ships.sidewinder;
+  const oldBuild = lib.defaultBuild(base, source.id);
+  assert.ok(oldBuild.internal[0] && oldBuild.hardpoints[1], 'use stock slots containing modules');
+  const oldStats = lib.computeStats(base, oldBuild);
+  const hull = structuredClone(source);
+  hull.slots.internal[0] = { class: source.slots.internal[0], archived: true };
+  hull.slots.internal[6] = { ...source.slots.internal[6], archived: true };
+  hull.slots.hardpoints[1] = { class: source.slots.hardpoints[1], archived: true };
+  let state = apply(initial(), operation('update', 'ship', source.id, hull));
+  let data = lib.mergeCatalog(base, state);
+  assert.equal(data.ships.sidewinder.slots.internal.length, source.slots.internal.length);
+  assert.equal(data.ships.sidewinder.slots.hardpoints.length, source.slots.hardpoints.length);
+  assert.deepEqual(data.ships.sidewinder.defaults, source.defaults, 'restoring a slot retains its stock module');
+  assert.equal(lib.defaultBuild(data, source.id).internal[0], null, 'no stock module for new builds');
+  assert.equal(lib.defaultBuild(data, source.id).internal[6], null);
+  assert.equal(lib.defaultBuild(data, source.id).hardpoints[1], null);
+  assert.deepEqual(data.ships.sidewinder.slots.internal[6], { ...source.slots.internal[6], archived: true }, 'special slot restrictions survive archival');
+  const slots = lib.buildSlots(data, oldBuild);
+  for (const key of ['I0', 'I6', 'H1']) {
+    const slot = slots.find((entry) => entry.key === key);
+    assert.equal(slot.archived, true);
+    assert.ok(slot.module, `old build module in ${key} is retained`);
+    assert.deepEqual(lib.modulesForSlot(data, data.ships.sidewinder, slot), [], 'cannot install modules into an archived slot');
+  }
+  assert.deepEqual(lib.computeStats(data, oldBuild), oldStats, 'old modules still contribute to stats');
+  assert.throws(() => apply(state, operation('update', 'ship', source.id, { ...data.ships.sidewinder,
+    slots: { ...data.ships.sidewinder.slots, internal: data.ships.sidewinder.slots.internal.slice(1) },
+  })), /архивирование/);
+  const tampered = structuredClone(data.ships.sidewinder);
+  tampered.slots.internal[0].class = 1;
+  assert.throws(() => apply(state, operation('update', 'ship', source.id, tampered)), /удалённый слот нельзя менять/);
+  tampered.slots.internal[0].class = source.slots.internal[0];
+  tampered.slots.internal[6].eligible = { hr: 1 };
+  assert.throws(() => apply(state, operation('update', 'ship', source.id, tampered)), /удалённый слот нельзя менять/);
+  const restored = structuredClone(data.ships.sidewinder);
+  restored.slots.internal[0] = source.slots.internal[0];
+  restored.slots.internal[6] = source.slots.internal[6];
+  restored.slots.hardpoints[1] = source.slots.hardpoints[1];
+  state = apply(state, operation('update', 'ship', source.id, restored));
+  data = lib.mergeCatalog(base, state);
+  assert.deepEqual(lib.defaultBuild(data, source.id), oldBuild);
+});
+
 test('invalid ships, armour tampering, removed slot indices and last-ship deletion are rejected atomically', () => {
   const source = structuredClone(base.ships.sidewinder);
   const withChange = (change) => { const next = structuredClone(source); next.id = 'sidewinder_copy'; change(next); return next; };
@@ -245,6 +303,8 @@ test('invalid ships, armour tampering, removed slot indices and last-ship deleti
     (s) => { s.properties.hullMass = -1; }, (s) => { s.properties.hullCost = 'infinite'; },
     (s) => { s.properties.fighterHangars = 'yes'; }, (s) => { s.retailCost = -1; },
     (s) => { s.slots.standard.pop(); s.defaults.standard.pop(); },
+    (s) => { s.slots.standard[0] = { class: 2, archived: true }; },
+    (s) => { s.slots.internal[0] = { class: 2, archived: 'yes' }; },
     (s) => { s.slots.hardpoints[0] = 8; }, (s) => { s.defaults.internal.push(0); },
     (s) => { s.slots.internal[0] = { class: 3, eligible: { missing_group: 1 } }; },
     (s) => { s.slots.internal[0] = { class: 3, eligible: { pl: 1 } }; },
@@ -260,7 +320,7 @@ test('invalid ships, armour tampering, removed slot indices and last-ship deleti
   assert.throws(() => apply(initial(), operation('update', 'ship', 'sidewinder', { ...source,
     slots: { ...source.slots, internal: source.slots.internal.slice(0, -1) },
     defaults: { ...source.defaults, internal: source.defaults.internal.slice(0, -1) },
-  })), /Нельзя удалять существующие слоты/);
+  })), /Для удаления сохранённого слота используйте архивирование/);
   const tiny = { ...base, ships: { sidewinder: source } };
   assert.throws(() => lib.applyCatalogCommands(tiny, initial(), [operation('delete', 'ship', 'sidewinder')], 'CMDR Test'), /последний доступный корабль/);
   assert.deepEqual(base.ships.sidewinder, source);
