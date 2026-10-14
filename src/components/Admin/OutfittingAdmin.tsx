@@ -214,7 +214,12 @@ export default function OutfittingAdmin() {
       hull.id = id; delete hull.archived;
       hull.properties.name = copy ? `${hull.properties.name} — копия` : '';
       for (const section of ['hardpoints', 'internal'] as const) {
-        hull.defaults[section] = hull.slots[section].map((_, index) => hull.defaults[section][index] ?? 0);
+        // A new ship ID has no old build links: omit archived slots and compact
+        // the factory modules with them, unlike updates to an existing hull.
+        const indices = hull.slots[section].flatMap((slot, index) =>
+          typeof slot !== 'number' && slot.archived ? [] : [index]);
+        hull.slots[section] = indices.map((index) => hull.slots[section][index]);
+        hull.defaults[section] = indices.map((index) => hull.defaults[section][index] ?? 0);
       }
       hull.bulkheads = hull.bulkheads.filter((entry) => !entry.archived).map((entry) => { const next = { ...entry }; delete next.archived; return next; });
       value = hull;

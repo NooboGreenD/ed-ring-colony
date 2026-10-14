@@ -88,6 +88,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': 'Характеристики',
     'outfitting.view.price': 'Цена',
 
+    'outfitting.slot.archived': 'Удалённый слот · старая сборка',
+    'outfitting.slot.archived.hint': 'Слот недоступен для новой установки. Модуль сохранён только в этой старой сборке.',
     'outfitting.tip.hint': 'ЛКМ — выбрать · ПКМ — убрать · тянуть — поменять местами',
     'outfitting.tip.pick': 'ЛКМ — показать параметры · двойной клик — установить',
     'outfitting.tip.noData': 'Числовых параметров нет',
@@ -209,6 +211,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': 'Performance',
     'outfitting.view.price': 'Price',
 
+    'outfitting.slot.archived': 'Removed slot · old build',
+    'outfitting.slot.archived.hint': 'No new modules can be fitted here. The installed module is kept for this older build.',
     'outfitting.tip.hint': 'Left click to pick, right click to remove, drag to swap',
     'outfitting.tip.pick': 'Left click to inspect, double click to install',
     'outfitting.tip.noData': 'No numeric parameters',
@@ -330,6 +334,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': 'Leistung',
     'outfitting.view.price': 'Preis',
 
+    'outfitting.slot.archived': 'Entfernter Slot · alte Konfiguration',
+    'outfitting.slot.archived.hint': 'Hier lassen sich keine neuen Module einbauen. Das Modul bleibt nur in dieser alten Konfiguration sichtbar.',
     'outfitting.tip.hint': 'Links wählen, rechts entfernen, ziehen zum Tauschen',
     'outfitting.tip.pick': 'Linksklick zeigt die Werte, Doppelklick baut ein',
     'outfitting.tip.noData': 'Keine Zahlenwerte',
@@ -451,6 +457,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': 'Prestazioni',
     'outfitting.view.price': 'Prezzo',
 
+    'outfitting.slot.archived': 'Slot rimosso · vecchia configurazione',
+    'outfitting.slot.archived.hint': 'Non si possono installare nuovi moduli qui. Il modulo resta visibile solo in questa vecchia configurazione.',
     'outfitting.tip.hint': 'Clic sinistro sceglie, destro rimuove, trascina per scambiare',
     'outfitting.tip.pick': 'Clic sinistro per i dettagli, doppio clic per installare',
     'outfitting.tip.noData': 'Nessun valore numerico',
@@ -572,6 +580,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': '성능',
     'outfitting.view.price': '가격',
 
+    'outfitting.slot.archived': '삭제된 슬롯 · 이전 빌드',
+    'outfitting.slot.archived.hint': '새 모듈은 장착할 수 없습니다. 기존 모듈은 이 이전 빌드에서만 표시됩니다.',
     'outfitting.tip.hint': '좌클릭 선택, 우클릭 제거, 끌어서 교체',
     'outfitting.tip.pick': '왼쪽 클릭: 제원 보기 · 더블 클릭: 장착',
     'outfitting.tip.noData': '수치 항목이 없습니다',
@@ -693,6 +703,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': '性能',
     'outfitting.view.price': '价格',
 
+    'outfitting.slot.archived': '已移除槽位 · 旧配装',
+    'outfitting.slot.archived.hint': '此处无法安装新模块。原有模块仅在这份旧配装中显示。',
     'outfitting.tip.hint': '左键选择，右键卸下，拖动交换',
     'outfitting.tip.pick': '左键查看参数 · 双击安装',
     'outfitting.tip.noData': '没有数值参数',
@@ -814,6 +826,8 @@ export const outfittingAnalysisTranslations: Record<string, Record<string, strin
     'outfitting.view.perf': '性能',
     'outfitting.view.price': '価格',
 
+    'outfitting.slot.archived': '削除済みスロット · 古いビルド',
+    'outfitting.slot.archived.hint': '新しいモジュールは装備できません。元のモジュールはこの古いビルドでのみ表示されます。',
     'outfitting.tip.hint': '左クリックで選択、右クリックで取り外し、ドラッグで入れ替え',
     'outfitting.tip.pick': '左クリックで詳細 · ダブルクリックで装備',
     'outfitting.tip.noData': '数値項目がありません',

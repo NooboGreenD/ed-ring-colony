@@ -1,6 +1,6 @@
 'use client';
 import { cloneElement, useId, useState, type ReactElement, type ReactNode } from 'react';
-import { IconPlus, IconSave, IconTrash, IconWrench } from '@/components/Icons';
+import { IconPlus, IconRefresh, IconSave, IconTrash, IconWrench } from '@/components/Icons';
 import { isRecord, validateCatalogValue } from '@/lib/outfitting/catalog';
 import type { InternalSlot, OutfittingData, OutfittingShip, ShipProperties } from '@/lib/outfitting/types';
 import { STANDARD_GROUPS } from '@/lib/outfitting/calc';
@@ -36,7 +36,7 @@ function eligibleBuffers(ship: OutfittingShip): Record<string, string> {
   const result: Record<string, string> = {};
   for (const section of ['hardpoints', 'internal'] as const) {
     ship.slots[section].forEach((slot, index) => {
-      if (typeof slot === 'object') result[`${section}:${index}`] = slot.eligible ? JSON.stringify(slot.eligible, null, 2) : '';
+      if (typeof slot === 'object' && !slot.archived) result[`${section}:${index}`] = slot.eligible ? JSON.stringify(slot.eligible, null, 2) : '';
     });
   }
   return result;
@@ -67,6 +67,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
   const [tab, setTab] = useState<Tab>('main');
   const [json, setJson] = useState(() => JSON.stringify(initial, null, 2));
   const [eligibleText, setEligibleText] = useState(() => eligibleBuffers(initial));
+  const [showArchived, setShowArchived] = useState<Record<Section, boolean>>({ hardpoints: false, internal: false });
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const dirty = JSON.stringify(initial) !== JSON.stringify(draft)
@@ -92,10 +93,44 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
     ship.slots[section].push(1);
     while (ship.defaults[section].length < ship.slots[section].length) ship.defaults[section].push(0);
   });
-  const removeLastSlot = (section: Section) => {
-    const index = draft.slots[section].length - 1;
-    update((ship) => { ship.slots[section].pop(); ship.defaults[section].splice(index, 1); });
-    setEligibleText((previous) => { const next = { ...previous }; delete next[`${section}:${index}`]; return next; });
+  const removeSlot = (section: Section, index: number) => {
+    const saved = !creating && index < initial.slots[section].length;
+    const label = `${section === 'hardpoints' ? 'H' : 'I'}${index}`;
+    const warning = saved
+      ? `Удалить слот ${label}? Он исчезнет из новых сборок, но останется на прежнем индексе для старых ссылок. Его можно восстановить в редакторе.`
+      : `Удалить слот ${label}? Его параметры и заводской модуль будут потеряны.`;
+    if (!window.confirm(warning)) return;
+    if (saved) {
+      // Existing slots are archived, never spliced: build links use array indices.
+      const original = data.ships[item.key]?.slots[section][index] ?? initial.slots[section][index];
+      const stock = data.ships[item.key]?.defaults[section][index];
+      update((ship) => {
+        ship.slots[section][index] = typeof original === 'number' ? { class: original, archived: true } : { ...original, archived: true };
+        if (stock !== undefined) ship.defaults[section][index] = stock;
+      });
+      setEligibleText((previous) => { const next = { ...previous }; delete next[`${section}:${index}`]; return next; });
+    } else {
+      // Only unsaved slots may be physically removed, including one in the middle.
+      update((ship) => { ship.slots[section].splice(index, 1); ship.defaults[section].splice(index, 1); });
+      setEligibleText((previous) => {
+        const next: Record<string, string> = {};
+        const prefix = `${section}:`;
+        for (const [key, text] of Object.entries(previous)) {
+          if (!key.startsWith(prefix)) { next[key] = text; continue; }
+          const position = Number(key.slice(prefix.length));
+          if (position !== index) next[`${prefix}${position > index ? position - 1 : position}`] = text;
+        }
+        return next;
+      });
+    }
+  };
+  const restoreSlot = (section: Section, index: number) => {
+    const slot = draft.slots[section][index];
+    if (typeof slot === 'number' || !slot.archived) return;
+    const restored = { ...slot }; delete restored.archived;
+    update((ship) => { ship.slots[section][index] = Object.keys(restored).length === 1 ? restored.class : restored; });
+    if (Object.keys(restored).length > 1) setEligibleText((previous) => ({ ...previous,
+      [`${section}:${index}`]: restored.eligible ? JSON.stringify(restored.eligible, null, 2) : '' }));
   };
   const toggleSpecial = (section: Section, index: number) => {
     const current = draft.slots[section][index];
@@ -123,7 +158,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
     if (!creating && data.ships[item.key]) value.bulkheads = structuredClone(data.ships[item.key].bulkheads);
     for (const section of ['hardpoints', 'internal'] as const) {
       value.slots[section].forEach((slot, index) => {
-        if (typeof slot !== 'object') return;
+        if (typeof slot !== 'object' || slot.archived) return;
         const raw = eligibleText[`${section}:${index}`]?.trim();
         if (!raw) delete slot.eligible;
         else slot.eligible = JSON.parse(raw);
@@ -158,11 +193,24 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
     finally { setBusy(false); }
   };
 
-  const slotList = (section: Section) => <div className={styles.slotSection} key={section}>
+  const slotList = (section: Section) => {
+    const archivedCount = draft.slots[section].filter((slot) => typeof slot !== 'number' && slot.archived).length;
+    return <div className={styles.slotSection} key={section}>
     <div className={styles.slotHeading}><h3>{section === 'hardpoints' ? 'Орудия и утилиты' : 'Внутренние отсеки'}</h3>
       <button type="button" className={styles.secondaryButton} disabled={draft.slots[section].length >= 64} onClick={() => addSlot(section)}><IconPlus size={14} color="currentColor" /> Добавить слот</button></div>
-    <p className={styles.helpText}>Порядок слотов определяет их индексы в сохранённых сборках. Размер 0 — вспомогательный слот (только для орудий/утилит).</p>
+    <p className={styles.helpText}>Сохранённые слоты удаляются без смещения индексов: новые сборки их не используют, а старые сохраняют модули. Новые, ещё не сохранённые слоты удаляются окончательно. Размер 0 — вспомогательный слот (только для орудий/утилит).</p>
+    {archivedCount > 0 && <button type="button" className={styles.quietButton} aria-expanded={showArchived[section]}
+      onClick={() => setShowArchived((previous) => ({ ...previous, [section]: !previous[section] }))}>
+      {showArchived[section] ? 'Скрыть удалённые слоты' : `Показать удалённые слоты (${archivedCount})`}
+    </button>}
     {draft.slots[section].map((slot, index) => {
+      const label = `${section === 'hardpoints' ? 'H' : 'I'}${index}`;
+      const archived = typeof slot !== 'number' && slot.archived;
+      if (archived) return showArchived[section] ? <div key={index} className={`${styles.slotRow} ${styles.deletedSlotRow}`}>
+        <strong>{label}</strong><span className={styles.slotGroup}>Удалённый слот · размер {slot.class}{slot.name ? ` · ${slot.name}` : ''}</span>
+        <button type="button" className={styles.restoreButton} aria-label={`Восстановить слот ${section} ${index}`} onClick={() => restoreSlot(section, index)}><IconRefresh size={14} color="currentColor" /> Восстановить</button>
+        {(creating || index >= initial.slots[section].length) && <button type="button" className={styles.iconButton} aria-label={`Удалить слот ${section} ${index}`} title="Удалить окончательно" onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>}
+      </div> : null;
       const special = typeof slot === 'object';
       return <div key={index} className={styles.slotRow}>
         <strong>{section === 'hardpoints' ? 'H' : 'I'}{index}</strong>
@@ -172,8 +220,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
         <label>Заводской модуль<input aria-label={`${section} ${index}: заводской модуль`} value={String(draft.defaults[section][index] ?? '')} placeholder="ID модуля / 0" maxLength={64}
           onChange={(event) => setDefault(section, index, event.target.value)} /></label>
         <label className={styles.slotToggle}><input type="checkbox" checked={special} onChange={() => toggleSpecial(section, index)} /> Особый</label>
-        {index === draft.slots[section].length - 1 && (creating || index >= initial.slots[section].length) &&
-          <button type="button" className={styles.iconButton} aria-label={`Удалить последний слот ${section}`} title="Удалить последний слот" onClick={() => removeLastSlot(section)}><IconTrash size={15} color="currentColor" /></button>}
+        <button type="button" className={styles.iconButton} aria-label={`Удалить слот ${section} ${index}`} title="Удалить слот" onClick={() => removeSlot(section, index)}><IconTrash size={15} color="currentColor" /></button>
         {special && <div className={styles.slotSpecial}>
           <Field label="Назначение слота"><input value={slot.name ?? ''} maxLength={80} placeholder="Military / Mining / Cargo" onChange={(event) => setSlot(section, index, { ...slot, name: event.target.value })} /></Field>
           <Field label="Допустимые группы (JSON)" hint={'Например {"hr":1,"mrp":1}; пусто — без ограничений. Группы должны существовать.'}>
@@ -184,6 +231,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
       </div>;
     })}
   </div>;
+  };
 
   return <OutfittingDialog title={`${creating ? 'Добавление' : 'Редактирование'} корабля`} eyebrow={creating ? 'Новый корпус' : item.key} onClose={requestClose} busy={busy}>
     <form className={styles.editorForm} onSubmit={(event) => { event.preventDefault(); void submit(); }}
@@ -221,7 +269,7 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
           </Field>)}</div>
         </>}
         {tab === 'slots' && <>
-          <div className={styles.note}>Основные слоты идут в фиксированном порядке. Существующие слоты нельзя удалять или менять местами: старые сборки ссылаются на их индексы. Новые слоты добавляются в конец. Заводская комплектация: ID модуля (в основных слотах можно класс+рейтинг, например 2E); 0 — пусто. Неизвестный ID оставит слот пустым.</div>
+          <div className={styles.note}>Семь основных слотов обязательны. Орудийные и внутренние слоты можно добавить или удалить по отдельности; уже сохранённый слот архивируется, чтобы не сместить оборудование в старых сборках. Удалённые слоты можно восстановить. Заводская комплектация: ID модуля (в основных слотах можно класс+рейтинг, например 2E); 0 — пусто. Неизвестный ID оставит слот пустым.</div>
           <div className={styles.slotSection}><div className={styles.slotHeading}><h3>Основные модули</h3><span className={styles.helpText}>7 обязательных слотов</span></div>
             {draft.slots.standard.map((size, index) => <div className={styles.slotRow} key={index}>
               <strong>S{index}</strong><span className={styles.slotGroup}>{data.groups[STANDARD_GROUPS[index]]?.name ?? STANDARD_GROUPS[index]}</span>

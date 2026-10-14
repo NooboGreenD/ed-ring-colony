@@ -68,13 +68,13 @@ export function defaultBuild(data: OutfittingData, shipId: string): ShipBuild {
 
   const hardpointGroups = groupsOfSection(data, 'hardpoints');
   build.hardpoints = ship.slots.hardpoints.map((slot, index) =>
-    resolveDefault(data, ship.defaults?.hardpoints?.[index],
+    typeof slot !== 'number' && slot.archived ? null : resolveDefault(data, ship.defaults?.hardpoints?.[index],
       typeof slot === 'number' || !slot.eligible ? hardpointGroups : hardpointGroups.filter((group) => !!slot.eligible?.[group])),
   );
 
   const internalGroups = groupsOfSection(data, 'internal');
   build.internal = ship.slots.internal.map((slot, index) =>
-    resolveDefault(data, ship.defaults?.internal?.[index],
+    typeof slot !== 'number' && slot.archived ? null : resolveDefault(data, ship.defaults?.internal?.[index],
       typeof slot === 'number' || !slot.eligible ? [...internalGroups, 'pas']
         : [...internalGroups, 'pas'].filter((group) => !!slot.eligible?.[group])),
   );

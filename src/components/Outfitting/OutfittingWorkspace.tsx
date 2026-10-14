@@ -118,7 +118,7 @@ function isSlotCompatibleWithModule(
   targetSlot: BuildSlot,
   candidate: OutfittingModule,
 ): boolean {
-  if (candidate.class > targetSlot.class) return false;
+  if (targetSlot.archived || candidate.class > targetSlot.class) return false;
 
   if (targetSlot.section === 'standard') {
     return targetSlot.group === candidate.grp;
@@ -150,7 +150,7 @@ function canSwapSlots(
   sourceSlot: BuildSlot,
   targetSlot: BuildSlot,
 ): boolean {
-  if (sourceSlot.key === targetSlot.key) return false;
+  if (sourceSlot.key === targetSlot.key || sourceSlot.archived || targetSlot.archived) return false;
   if (!sourceSlot.module) return false;
 
   if (!isSlotCompatibleWithModule(data, targetSlot, sourceSlot.module)) return false;
@@ -302,6 +302,7 @@ export default function OutfittingWorkspace() {
   }, [copySourceKey, t]);
 
   const setSlotModule = useCallback((slot: BuildSlot, ref: string | null) => {
+    if (slot.archived) return;
     setBuild((previous) => {
       if (!previous) return previous;
       const next: ShipBuild = {
@@ -439,6 +440,8 @@ export default function OutfittingWorkspace() {
     ? effectiveModule(data, installedBulkhead as unknown as OutfittingModule, bulkheadMod)
     : null;
   const hoverSlot = hover ? slots.find((slot) => slot.key === hover.key) ?? null : null;
+  // Removed slots keep their indices for old links, but do not appear in new builds.
+  const visibleSlot = (slot: BuildSlot) => !slot.archived || !!slot.module;
   const sections: {
     key: string;
     icon: React.ReactNode;
@@ -458,21 +461,21 @@ export default function OutfittingWorkspace() {
       icon: <IconCrosshair size={14} />,
       title: t('outfitting.sec.hardpoints'),
       hint: t('outfitting.sec.hardpoints.hint'),
-      items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class > 0),
+      items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class > 0 && visibleSlot(slot)),
     },
     {
       key: 'utility',
       icon: <IconShieldHalf size={14} />,
       title: t('outfitting.sec.utility'),
       hint: t('outfitting.sec.utility.hint'),
-      items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class === 0),
+      items: slots.filter((slot) => slot.section === 'hardpoints' && slot.class === 0 && visibleSlot(slot)),
     },
     {
       key: 'internal',
       icon: <IconLayers size={14} />,
       title: t('outfitting.sec.internal'),
       hint: t('outfitting.sec.internal.hint'),
-      items: slots.filter((slot) => slot.section === 'internal'),
+      items: slots.filter((slot) => slot.section === 'internal' && visibleSlot(slot)),
     },
   ];
 
@@ -799,6 +802,17 @@ export default function OutfittingWorkspace() {
                 )}
 
                 {section.items.map((slot) => {
+                  if (slot.archived && slot.module) return <div key={slot.key} data-slot-key={slot.key} title={t('outfitting.slot.archived.hint')}
+                    style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, padding: '9px 12px',
+                      borderBottom: '1px solid var(--line)', borderLeft: '3px solid var(--muted)', background: 'var(--bg)' }}>
+                    <span style={{ font: `11px ${MONO}`, color: 'var(--orange)' }}>{slot.key}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text)', flex: 1, minWidth: 140 }}>
+                      {moduleLabel(data, slot.module, locale)}
+                      {slot.modification?.blueprint && <> · {blueprintLabel(slot.modification.blueprint, locale)} G{slot.modification.grade ?? 1}</>}
+                      {slot.modification?.special && <> · {specialName(t, data.specials[slot.modification.special]) || slot.modification.special}</>}
+                    </span>
+                    <span style={{ fontSize: 10, color: 'var(--muted)' }}>{t('outfitting.slot.archived')}</span>
+                  </div>;
                   const module = slot.module;
                   const effective = effectiveModule(data, module, slot.modification);
                   const modification = slot.modification;
@@ -828,6 +842,7 @@ export default function OutfittingWorkspace() {
                   return (
                     <div
                       key={slot.key}
+                      data-slot-key={slot.key}
                       draggable={Boolean(module)}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('text/plain', slot.key);
