@@ -2,7 +2,7 @@
  * Товары для строительства колоний: используются и в панели Atlas, и на
  * странице `/atlas/market`, чтобы подсказки в обоих поисковиках совпадали.
  */
-import { CONSTRUCTION_COMMODITIES } from './constructionBlueprints';
+import { CONSTRUCTION_COMMODITIES } from './constructionBlueprints.ts';
 
 export const BUILD_COMMODITIES: string[] = CONSTRUCTION_COMMODITIES;
 

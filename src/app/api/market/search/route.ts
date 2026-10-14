@@ -26,6 +26,17 @@ export async function GET(req: Request) {
     }
 
     const svc = createServiceClient();
+    // Use complete station snapshots first. Old installations without the
+    // commerce migration keep the legacy endpoint until deployment completes.
+    try {
+      const { data, error } = await svc.rpc('search_station_commodity', {
+        search_name: commodity, system_filter: system, row_limit: limit,
+      });
+      if (!error) return NextResponse.json({ prices: data || [] });
+      console.warn('[Market Search] commerce query unavailable:', error.message);
+    } catch {
+      // Legacy database/client fallback.
+    }
     let query = svc
       .from('market_prices')
       .select('*')

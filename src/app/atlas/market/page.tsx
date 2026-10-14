@@ -17,6 +17,8 @@ interface MarketPrice {
   stock: number;
   demand: number;
   reported_at: string;
+  stale?: boolean;
+  source?: string;
 }
 
 type SortKey = 'sell' | 'buy' | 'stock' | 'system';
@@ -95,7 +97,7 @@ export default function MarketPage() {
 
       <h2 className="market-title">Рынок ресурсов</h2>
       <p className="atlas-muted">
-        Отчёт EDDN по товарам для строительства: цены, запас и спрос по станциям. Для поиска конкретного
+        Отчёты Colonial Helper, EDSM, Spansh и EDDN: цены, запас и спрос по станциям. Для поиска конкретного
         товара на маршруте используйте вкладку «Рынок» в Atlas.
       </p>
 
@@ -208,7 +210,8 @@ export default function MarketPage() {
                     <td className="num">{row.stock?.toLocaleString('ru-RU') ?? '—'}</td>
                     <td className="num">{row.demand?.toLocaleString('ru-RU') ?? '—'}</td>
                     <td className="muted">
-                      {row.reported_at ? new Date(row.reported_at).toLocaleDateString('ru-RU') : '—'}
+                      {Date.parse(row.reported_at) > 0 ? new Date(row.reported_at).toLocaleString('ru-RU') : 'Время неизвестно'}
+                      {row.source ? ` · ${row.source}` : ''}{row.stale ? ' · устарел' : ''}
                     </td>
                   </tr>
                 ))}

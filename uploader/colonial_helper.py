@@ -8022,6 +8022,8 @@ class ColonialHelperApp:
                     f"Разбор файлов: {processed_count}/{total}",
                 )
 
+            self._flush_station_reports()
+
             # Освобождаем память пачки явно перед чтением следующей.
             del batch_texts
 
@@ -8560,6 +8562,10 @@ class ColonialHelperApp:
         state_events.sort(key=lambda item: str(item.get("timestamp") or ""))
         for event in state_events:
             try:
+                self._station_commerce_collector().feed(event, live=False)
+            except Exception:
+                pass
+            try:
                 self.construction.handle("", event)
                 self.carrier.handle(event)
             except Exception:
@@ -8854,6 +8860,7 @@ class ColonialHelperApp:
         всей истории завысил бы вклад командира в общий проект.
         """
         self._defer_uploads = False
+        self._flush_station_reports()
         deliveries, construction = self._backfill_deliveries, self._backfill_construction
         self._backfill_deliveries, self._backfill_construction = [], []
         if not deliveries and not construction:
@@ -9016,6 +9023,18 @@ class ColonialHelperApp:
 
             # 2. Потом читаем JSON-файлы — НЕ перезаписываем health модулей
             self._load_current_state_files()
+            try:
+                commerce = self._station_commerce_collector()
+                commerce.read_files(self.journal_path)
+                result = commerce.flush(self.api)
+                if not result.get("ok") and commerce.pending:
+                    # Keep data queued; avoid flooding the log every five seconds.
+                    now = time.monotonic()
+                    if now - getattr(self, "_commerce_warning_at", 0) > 60:
+                        self._commerce_warning_at = now
+                        self.root.after(0, lambda message=result.get("error", ""): self.log(f"Station reports pending: {message}", "warn"))
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Station inventory: {message}", "error"))
             # Frontier перезаписывает NavRoute.json при построении нового
             # маршрута. Подхватываем изменение без ручного импорта.
             self._auto_load_navroute()
@@ -9571,6 +9590,28 @@ class ColonialHelperApp:
         except (OSError, ValueError):
             return {}
 
+    def _flush_station_reports(self, max_batches=25):
+        """Send historical station visits even when the file has no deliveries."""
+        try:
+            collector = self._station_commerce_collector()
+            for _ in range(max_batches):
+                if not collector.pending or not self.api.is_connected:
+                    break
+                result = collector.flush(self.api)
+                if not result.get("ok"):
+                    self.root.after(0, lambda message=result.get("error", ""): self.log(f"Station reports pending: {message}", "warn"))
+                    break
+        except Exception as exc:
+            self.root.after(0, lambda message=str(exc): self.log(f"Station reports: {message}", "warn"))
+
+    def _station_commerce_collector(self):
+        collector = getattr(self, "_station_commerce", None)
+        if collector is None:
+            from station_commerce import StationCommerceCollector
+            collector = StationCommerceCollector(self.config_path.with_name(".station_commerce_outbox.json"))
+            self._station_commerce = collector
+        return collector
+
     def _handle_tracked_event(self, ev: dict, live: bool = True):
         """Обработка одного события журнала: маршрут, корабль, оверлей.
 
@@ -9580,6 +9621,12 @@ class ColonialHelperApp:
         `overlay_manager.log_session_event()` — это отдельный `root.after()`,
         который забивает очередь Tkinter и сам по себе тормозит загрузку.
         """
+        # Shared project station database; journal offsets do not acknowledge
+        # network uploads. A separate durable outbox keeps failed reports.
+        try:
+            self._station_commerce_collector().feed(ev, live=live)
+        except Exception as exc:
+            self.log(f"Station report queue: {exc}", "error")
         if live:
             self._log_session_event(ev)
         if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):

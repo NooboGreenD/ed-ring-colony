@@ -25,13 +25,18 @@ const start = await import(
 const step = await import(
   await bundleFile({
     entry: 'src/app/api/market/find/step/route.ts',
-    stubs: { 'next/server': server, '@/lib/supabaseServer': dbStub },
+    stubs: { 'next/server': server, '@/lib/supabaseServer': dbStub, '@/lib/galaxySystemsDb': galaxy, '@/lib/atlasSystemCache': cache },
   })
 );
-function database({ job, cache = [], prices = [] } = {}) {
+function database({ job, cache = [], prices = [], stations = [], known = [] } = {}) {
   const writes = [];
+  const rpcCalls = [];
   return {
-    writes,
+    writes, rpcCalls,
+    async rpc(name, params) {
+      rpcCalls.push({ rpc: name, value: params });
+      return { data: name === 'nearby_commerce_systems' ? known : null, error: null };
+    },
     from(table) {
       let patch,
         insert,
@@ -79,7 +84,7 @@ function database({ job, cache = [], prices = [] } = {}) {
         },
         then(resolve, reject) {
           return Promise.resolve({
-            data: table === 'market_prices' ? prices : cache,
+            data: table === 'market_prices' ? prices : table === 'station_commerce' ? stations : cache,
             error: null,
           }).then(resolve, reject);
         },
@@ -359,4 +364,96 @@ test('standalone market search handles symbol/display spelling, valid limits and
     const failed=await search.GET(new Request('http://test.local?commodity=Steel'));
     assert.equal(failed.status,503);assert.doesNotMatch(failed.body.error,/fetch failed/);
   }finally{delete globalThis.__marketDb;}
+});
+
+test('market start selects known populated systems first instead of all catalog stars', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('No EDSM needed'); };
+  globalThis.__marketDb = database({ known: [{ system_name: 'Sol', x: 0, y: 0, z: 0, distance: 0 }] });
+  try {
+    const response = await start.POST(request({ ref_system: 'Sol', radius: 100, mode: 'single', commodity: 'Steel' }));
+    assert.equal(response.status, 200);
+    const saved = globalThis.__marketDb.writes.find((w) => w.table === 'market_search_jobs').value;
+    assert.equal(saved.discovery_complete, false);
+    assert.deepEqual(saved.systems_list.map((s) => s.name), ['Sol']);
+  } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
+});
+
+const stationSnapshot = (items, at = new Date().toISOString()) => [{
+  station_key: 'market:123', station_name: 'Station', station_type: 'Coriolis', market_id: '123',
+  metadata: { distance_to_arrival: 100 }, station_inventory_snapshots: [{ kind: 'market', items, observed_at: at, source: 'colonial-helper' }],
+}];
+
+test('fresh complete local market returns without external calls or broad discovery', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Unexpected EDSM'); };
+  globalThis.__marketDb = database({
+    job: job({ discovery_complete: false, ref_system: 'Sol', radius: 100, reference_coords: { x: 0, y: 0, z: 0 } }),
+    stations: stationSnapshot([{ name: 'Steel', stock: 100, buyPrice: 300 }]),
+  });
+  try {
+    const response = await step.POST(request({ job_id: 'job-1' }));
+    assert.equal(response.body.is_done, true);
+    assert.equal(response.body.result[0].stock, 100);
+    assert.equal(response.body.result[0].source, 'colonial-helper');
+    assert.equal(response.body.result[0].stale, false);
+    assert.equal(response.body.result[0].station_location.distance_to_arrival, 100);
+    assert.equal(response.body.progress.total, 1);
+  } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
+});
+
+test('complete empty snapshot suppresses removed legacy goods and triggers broad fallback only afterwards', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Fresh complete snapshot needs no EDSM'); };
+  globalThis.__marketDb = database({
+    job: job({ discovery_complete: false, ref_system: 'Sol', radius: 100, reference_coords: { x: 0, y: 0, z: 0 } }),
+    stations: stationSnapshot([]),
+    prices: [{ station_name: 'Station', system_name: 'Sol', commodity_name: 'steel', stock: 999, buy_price: 10, reported_at: new Date().toISOString() }],
+  });
+  try {
+    const response = await step.POST(request({ job_id: 'job-1' }));
+    assert.deepEqual(response.body.result, []);
+    assert.equal(response.body.is_done, false);
+    assert.equal(response.body.progress.total, 2);
+    const saved = globalThis.__marketDb.writes.find((w) => w.table === 'market_search_jobs').value;
+    assert.deepEqual(saved.systems_list.map((s) => s.name), ['Sol', 'Alpha']);
+    assert.equal(saved.discovery_complete, true);
+  } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
+});
+
+test('EDSM scan persists the entire inventory, modules and ships, using source timestamps', async () => {
+  const original = globalThis.fetch;
+  const stamp = new Date().toISOString();
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, json: async () => String(url).includes('/stations/market')
+      ? { updateTime: stamp, commodities: [{ name: 'Steel', stock: 10, buyPrice: 100 }, { name: 'Water', stock: 20, buyPrice: 50 }] }
+      : String(url).includes('/stations/outfitting') ? { updateTime: stamp, modules: [{ name: 'int_hyperdrive_size5_class5' }] }
+      : String(url).includes('/stations/shipyard') ? { updateTime: stamp, ships: ['sidewinder'] }
+      : { stations: [{ name: 'Station', marketId: 123, haveMarket: true, haveOutfitting: true, haveShipyard: true, type: 'Coriolis', distanceToArrival: 100 }] } };
+  };
+  globalThis.__marketDb = database({ job: job() });
+  try {
+    const response = await step.POST(request({ job_id: 'job-1' }));
+    assert.equal(response.body.result[0].stock, 10);
+    const reports = globalThis.__marketDb.rpcCalls.filter((c) => c.rpc === 'save_station_commerce').map((c) => c.value.report);
+    assert.equal(reports.find((r) => r.inventories.market).inventories.market.items.length, 2, 'also store goods not requested in this search');
+    assert.equal(reports.find((r) => r.inventories.market).inventories.market.observed_at, stamp);
+    assert.equal(reports.find((r) => r.inventories.outfitting).inventories.outfitting.items[0].name, 'int_hyperdrive_size5_class5');
+    assert.equal(reports.find((r) => r.inventories.shipyard).inventories.shipyard.items[0].name, 'sidewinder');
+    assert.equal(calls.length, 4);
+  } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
+});
+
+test('stale local inventory is labelled stale and retained when EDSM fails', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('Offline'); };
+  globalThis.__marketDb = database({ job: job(), stations: stationSnapshot([{ name: 'Steel', stock: 10, buyPrice: 30 }], '2026-01-01T00:00:00Z') });
+  try {
+    const response = await step.POST(request({ job_id: 'job-1' }));
+    assert.equal(response.body.result[0].stale, true);
+    assert.equal(response.body.result[0].stock, 10);
+    assert.ok(response.body.warnings.length);
+  } finally { globalThis.fetch = original; delete globalThis.__marketDb; }
 });

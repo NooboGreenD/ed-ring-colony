@@ -1,4 +1,4 @@
-import blueprints from './constructionBlueprints.json';
+import blueprints from './constructionBlueprints.json' with { type: 'json' };
 
 /** Community-observed baseline cargo, not a live depot's remaining requirements.
  * Factual data source: RavenColonialWeb/src/assets/colonization-costs2.json

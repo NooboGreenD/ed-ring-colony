@@ -35,6 +35,10 @@ export interface SpanshSystemObject {
   coords?: { x?: unknown; y?: unknown; z?: unknown } | null;
   needsPermit?: unknown;
   updateTime?: unknown;
+  date?: unknown;
+  population?: unknown;
+  stations?: unknown;
+  bodies?: unknown;
   /** Exact decimal digits of `id64` as written in the dump (u64-safe). */
   __id64Exact?: string;
   /**

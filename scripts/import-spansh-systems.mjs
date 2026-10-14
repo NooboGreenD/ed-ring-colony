@@ -23,6 +23,7 @@ import zlib from 'node:zlib';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 
+import { spanshCommercePayload } from '../src/lib/stationCommerce.ts';
 import {
   PointsBuilder,
   parsePointsFile,
@@ -281,6 +282,13 @@ class PgWriter {
     }
   }
 
+  async addCommerce(system) {
+    const payload = spanshCommercePayload(system);
+    if (!payload) return;
+    const { error } = await this.query(`SELECT public.save_spansh_commerce(${pgLiteral(JSON.stringify(payload))}::jsonb)`);
+    if (error) throw error;
+  }
+
   async add(row) {
     this.rows.push(row);
     if (this.rows.length >= this.batchSize) await this.flush();
@@ -512,6 +520,13 @@ class SupabaseWriter {
     this.log('Note: --truncate is not supported in supabase-js mode (run it via a direct DB session)');
   }
 
+  async addCommerce(system) {
+    const payload = spanshCommercePayload(system);
+    if (!payload) return;
+    const { error } = await this.supabase.rpc('save_spansh_commerce', { payload });
+    if (error) throw new Error(error.message);
+  }
+
   async add(row) {
     this.rows.push(row);
     if (this.rows.length >= this.batchSize) await this.flush();
@@ -577,7 +592,7 @@ function openDumpStream(file) {
  * shards. `null` means "a record the dump cannot store" and is counted as
  * invalid by the caller.
  */
-async function* iterateRows(args, source, log) {
+async function* iterateRows(args, source, log, db) {
   if (args.fromShards) {
     const manifest = readShardManifest(args.shardsDir);
     if (!manifest) throw new Error(`Shards not found in ${args.shardsDir} — run with --unpack first`);
@@ -589,6 +604,7 @@ async function* iterateRows(args, source, log) {
     return;
   }
   for await (const obj of streamObjects(openDumpStream(source))) {
+    if (db?.addCommerce) await db.addCommerce(obj);
     yield toGalaxySystemRow(obj);
   }
 }
@@ -616,7 +632,7 @@ async function runImport(args, db, log) {
   let lastLog = 0;
 
   log(args.fromShards ? `Importing shards from ${args.shardsDir}` : `Parsing ${source}`);
-  for await (const row of iterateRows(args, source, log)) {
+  for await (const row of iterateRows(args, source, log, db)) {
     if (args.limit > 0 && processed >= args.limit) break;
     if (!row) { invalid++; continue; }
     processed++;

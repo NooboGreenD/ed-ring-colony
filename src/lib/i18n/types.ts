@@ -22,6 +22,7 @@ export type TranslationKey =
   | 'nav.architect'
   | 'nav.outfitting'
   | 'nav.engineers'
+  | 'nav.stationSearch'
   | 'nav.atlas'
   | 'nav.sectors'
   | 'nav.support'
