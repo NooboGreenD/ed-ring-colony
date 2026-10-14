@@ -116,6 +116,8 @@ export interface ShipProperties {
   crew: number;
   reserveFuelCapacity: number;
   fighterHangars?: boolean;
+  luxuryCabins?: boolean;
+  boostInt?: number;
   pitch?: number;
   roll?: number;
   yaw?: number;
@@ -124,13 +126,15 @@ export interface ShipProperties {
 
 export interface OutfittingShip {
   id: string;
+  /** Архивный корпус остаётся в каталоге для сохранённых сборок, но не предлагается для новой. */
+  archived?: boolean;
   properties: ShipProperties;
   retailCost: number;
   bulkheads: Bulkhead[];
   slots: {
     /** Реактор, двигатели, FSD, жизнеобеспечение, распределитель, сенсоры, бак. */
     standard: number[];
-    hardpoints: number[];
+    hardpoints: InternalSlot[];
     internal: InternalSlot[];
   };
   defaults: {

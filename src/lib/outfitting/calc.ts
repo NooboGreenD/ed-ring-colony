@@ -272,12 +272,14 @@ export function buildSlots(data: OutfittingData, build: ShipBuild): BuildSlot[] 
     });
   });
 
-  ship.slots.hardpoints.forEach((size, index) => {
+  ship.slots.hardpoints.forEach((slot, index) => {
     slots.push({
       key: `H${index}`,
       section: 'hardpoints',
       index,
-      class: size,
+      class: typeof slot === 'number' ? slot : slot.class,
+      special: typeof slot === 'number' ? undefined : slot.name,
+      eligible: typeof slot === 'number' ? undefined : slot.eligible,
       module: moduleOf(data, build.hardpoints[index]),
       modification: build.mods[`H${index}`] ?? null,
     });
@@ -329,7 +331,9 @@ export function modulesForSlot(data: OutfittingData, ship: OutfittingShip, slot:
     for (const [group, list] of Object.entries(data.modules)) {
       const meta = data.groups[group];
       if (!meta) continue;
-      if (utility ? meta.category !== 'utility' : meta.category !== 'hardpoint') continue;
+      if (slot.eligible) {
+        if (!slot.eligible[group] || (meta.category !== 'hardpoint' && meta.category !== 'utility')) continue;
+      } else if (utility ? meta.category !== 'utility' : meta.category !== 'hardpoint') continue;
       push(list);
     }
     return result;

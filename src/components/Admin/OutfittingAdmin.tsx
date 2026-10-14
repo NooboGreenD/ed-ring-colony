@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   IconAnchor, IconChevronLeft, IconChevronRight, IconClock, IconCopy, IconCpu, IconDatabase,
   IconDownload, IconEdit, IconExternalLink, IconLayers, IconPlus, IconRefresh, IconSearch,
-  IconShield, IconTrash, IconX,
+  IconRocket, IconShield, IconTrash, IconX,
 } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
-import type { Bulkhead, OutfittingModule } from '@/lib/outfitting/types';
+import type { Bulkhead, OutfittingModule, OutfittingShip } from '@/lib/outfitting/types';
 import {
   CATALOG_CATEGORIES, changeId, groupDeletionReason, type CatalogCommand,
   type CatalogGroup, type CatalogKind, type CatalogSnapshot, type CatalogValue,
@@ -15,10 +15,11 @@ import { publishOutfittingData } from '@/lib/outfitting/useOutfittingData';
 import { bulkheadName } from '@/lib/outfitting/i18n';
 import { num } from '@/components/Outfitting/styles';
 import OutfittingEditor, { type CatalogEditorItem } from './OutfittingEditor';
+import OutfittingShipEditor from './OutfittingShipEditor';
 import OutfittingDialog from './OutfittingDialog';
 import styles from './OutfittingAdmin.module.css';
 
-type View = 'module' | 'group' | 'bulkhead' | 'history';
+type View = CatalogKind | 'history';
 type RowStatus = 'source' | 'modified' | 'custom' | 'deleted';
 interface CatalogRow {
   kind: CatalogKind;
@@ -46,7 +47,7 @@ async function requestSnapshot(init?: RequestInit): Promise<CatalogSnapshot> {
     error.status = response.status;
     throw error;
   }
-  if (!result.data?.modules || !Array.isArray(result.changes)) throw new Error('Сервер вернул некорректный каталог');
+  if (!result.data?.modules || !result.data?.ships || !Array.isArray(result.changes)) throw new Error('Сервер вернул некорректный каталог');
   return result;
 }
 
@@ -56,17 +57,19 @@ function rowsOf(snapshot: CatalogSnapshot, view: CatalogKind): CatalogRow[] {
   const append = (key: string, owner: string, value: CatalogValue) => {
     const change = changes.get(changeId(view, key));
     if (change?.deleted) return;
-    rows.push({ kind: view, key, owner, value, change, status: !change ? 'source' : change.fromSource ? 'modified' : 'custom' });
+    const customShipArmour = view === 'bulkhead' && changes.get(changeId('ship', owner))?.fromSource === false;
+    rows.push({ kind: view, key, owner, value, change, status: !change ? (customShipArmour ? 'custom' : 'source') : change.fromSource ? 'modified' : 'custom' });
   };
   if (view === 'module') for (const [group, modules] of Object.entries(snapshot.data.modules)) {
     modules.forEach((module) => append(`${group}:${module.id}`, group, module));
   }
   if (view === 'group') for (const [key, value] of Object.entries(snapshot.data.groups)) append(key, key, value);
+  if (view === 'ship') for (const [key, value] of Object.entries(snapshot.data.ships)) append(key, key, value);
   if (view === 'bulkhead') for (const ship of Object.values(snapshot.data.ships)) {
     ship.bulkheads.forEach((bulkhead) => append(`${ship.id}:${bulkhead.id}`, ship.id, bulkhead));
   }
   for (const change of snapshot.changes) if (change.kind === view && change.deleted) {
-    rows.push({ kind: view, key: change.key, owner: view === 'group' ? change.key : change.key.split(':')[0], value: change.value, change, status: 'deleted' });
+    rows.push({ kind: view, key: change.key, owner: view === 'group' || view === 'ship' ? change.key : change.key.split(':')[0], value: change.value, change, status: 'deleted' });
   }
   return rows;
 }
@@ -81,6 +84,7 @@ export default function OutfittingAdmin() {
   const [category, setCategory] = useState('all');
   const [group, setGroup] = useState('all');
   const [ship, setShip] = useState('all');
+  const [manufacturer, setManufacturer] = useState('all');
   const [query, setQuery] = useState('');
   const [level, setLevel] = useState('all');
   const [rating, setRating] = useState('all');
@@ -107,12 +111,13 @@ export default function OutfittingAdmin() {
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   }, []);
-  useEffect(() => { setPage(1); setSelected(new Set()); }, [view, category, group, ship, query, level, rating, status, pageSize]);
+  useEffect(() => { setPage(1); setSelected(new Set()); }, [view, category, group, ship, manufacturer, query, level, rating, status, pageSize]);
 
   const data = snapshot?.data;
   const rows = useMemo(() => snapshot && view !== 'history' ? rowsOf(snapshot, view) : [], [snapshot, view]);
   const rowName = useCallback((row: CatalogRow) => {
     if (row.kind === 'bulkhead') return bulkheadName('ru', (row.value as Bulkhead).name);
+    if (row.kind === 'ship') return (row.value as OutfittingShip).properties.name;
     return (row.value as OutfittingModule).name || data?.groups[row.owner]?.name || row.key;
   }, [data]);
   const filtered = useMemo(() => {
@@ -120,27 +125,33 @@ export default function OutfittingAdmin() {
     const result = rows.filter((row) => {
       const value = row.value as OutfittingModule;
       const rowCategory = row.kind === 'group' ? (row.value as CatalogGroup).category : data?.groups[row.owner]?.category;
-      if (view !== 'bulkhead' && category !== 'all' && rowCategory !== category) return false;
+      if ((view === 'module' || view === 'group') && category !== 'all' && rowCategory !== category) return false;
       if (view === 'module' && group !== 'all' && row.owner !== group) return false;
       if (view === 'bulkhead' && ship !== 'all' && row.owner !== ship) return false;
+      if (view === 'ship' && manufacturer !== 'all' && (row.value as OutfittingShip).properties.manufacturer !== manufacturer) return false;
       if (view === 'module' && level !== 'all' && value.class !== Number(level)) return false;
+      if (view === 'ship' && level !== 'all' && (row.value as OutfittingShip).properties.class !== Number(level)) return false;
       if (view === 'module' && rating !== 'all' && value.rating !== rating) return false;
       if (status === 'active' ? row.status === 'deleted' : status !== 'all' && row.status !== status) return false;
-      return !q || [rowName(row), row.key, data?.groups[row.owner]?.name, data?.ships[row.owner]?.properties.name, value.pp, value.info].join(' ').toLocaleLowerCase('ru').includes(q);
+      return !q || [rowName(row), row.key, data?.groups[row.owner]?.name, data?.ships[row.owner]?.properties.name,
+        view === 'ship' ? (row.value as OutfittingShip).properties.manufacturer : value.pp,
+        view === 'ship' ? '' : value.info].join(' ').toLocaleLowerCase('ru').includes(q);
     });
     result.sort((a, b) => {
       const av = a.value as OutfittingModule, bv = b.value as OutfittingModule;
+      const as = a.value as OutfittingShip, bs = b.value as OutfittingShip;
       let compared = 0;
-      if (sort === 'cost') compared = Number(av.cost ?? 0) - Number(bv.cost ?? 0);
-      else if (sort === 'class') compared = Number(av.class ?? 0) - Number(bv.class ?? 0);
+      if (sort === 'cost') compared = view === 'ship' ? as.retailCost - bs.retailCost : Number(av.cost ?? 0) - Number(bv.cost ?? 0);
+      else if (sort === 'class') compared = view === 'ship' ? as.properties.class - bs.properties.class : Number(av.class ?? 0) - Number(bv.class ?? 0);
       else if (sort === 'name') compared = rowName(a).localeCompare(rowName(b), 'ru');
+      else if (view === 'ship') compared = as.properties.manufacturer.localeCompare(bs.properties.manufacturer, 'ru') || rowName(a).localeCompare(rowName(b), 'ru');
       else compared = (data?.groups[a.owner]?.name || data?.ships[a.owner]?.properties.name || a.owner)
         .localeCompare(data?.groups[b.owner]?.name || data?.ships[b.owner]?.properties.name || b.owner, 'ru')
         || Number(av.class ?? 0) - Number(bv.class ?? 0);
       return (compared || a.key.localeCompare(b.key)) * (direction === 'asc' ? 1 : -1);
     });
     return result;
-  }, [rows, query, category, data, view, group, ship, level, rating, status, rowName, sort, direction]);
+  }, [rows, query, category, data, view, group, ship, manufacturer, level, rating, status, rowName, sort, direction]);
   const pages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, pages);
   const paged = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -148,6 +159,7 @@ export default function OutfittingAdmin() {
   const deletionReason = (row: CatalogRow): string | null => {
     if (!data) return 'Каталог ещё не загружен';
     if (row.kind === 'group') return groupDeletionReason(data, row.key);
+    if (row.kind === 'ship' && Object.values(data.ships).filter((entry) => !entry.archived).length <= 1) return 'Нельзя удалить последний доступный корабль';
     if (row.kind === 'bulkhead' && data.ships[row.owner]?.bulkheads[0]?.id === (row.value as Bulkhead).id) return 'Базовую броню корабля удалять нельзя';
     return null;
   };
@@ -172,13 +184,18 @@ export default function OutfittingAdmin() {
   const ask = (next: Confirmation) => { setConfirmationError(''); setConfirmation(next); };
   const remove = (list: CatalogRow[]) => ask({
     title: list.length === 1 ? `Удалить «${rowName(list[0])}»?` : `Удалить записи (${list.length})?`,
-    text: 'Записи исчезнут из списка установки в верфи. Они останутся в архиве: их можно восстановить через фильтр «Удалённые». Коды сохранённых сборок не удаляются. У брони сохраняется её индекс и параметры в старых сборках.',
+    text: list.every((row) => row.kind === 'ship')
+      ? 'Корабли исчезнут из выбора новых сборок, но останутся доступны по сохранённым ссылкам вместе с модулями, слотами и бронёй. Их можно вернуть через фильтр «Удалённые».'
+      : 'Записи исчезнут из списка установки в верфи. Они останутся в архиве: их можно восстановить через фильтр «Удалённые». Коды сохранённых сборок не удаляются. У брони сохраняется её индекс и параметры в старых сборках.',
     label: 'Удалить', danger: true,
     commands: list.map((row) => ({ action: 'delete', kind: row.kind, key: row.key })),
   });
   const restore = (row: CatalogRow, reset = false) => ask({
     title: reset ? 'Вернуть исходные параметры?' : `Восстановить «${rowName(row)}»?`,
-    text: reset ? 'Ручные правки этой записи будут отменены. Будут использованы параметры из текущего игрового справочника.' : 'Запись снова станет доступна в верфи с параметрами, которые были у неё перед удалением.',
+    text: reset && row.kind === 'ship'
+      ? 'Корпус вернётся к текущему игровому справочнику. Вручную добавленные слоты исчезнут: сборки, использующие их, могут потерять установленное оборудование. Отдельные правки брони сохранятся.'
+      : reset ? 'Ручные правки этой записи будут отменены. Будут использованы параметры из текущего игрового справочника. Правки брони корабля останутся отдельными.'
+        : 'Запись снова станет доступна в верфи с параметрами, которые были у неё перед удалением.',
     label: reset ? 'Сбросить к исходному' : 'Восстановить',
     commands: [{ action: reset ? 'reset' : 'restore', kind: row.kind, key: row.key }],
   });
@@ -189,7 +206,19 @@ export default function OutfittingAdmin() {
     const owner = copy?.owner ?? (kind === 'bulkhead' ? (ship === 'all' ? 'sidewinder' : ship) : (group === 'all' ? (category === 'all' ? 'pp' : Object.keys(data.groups).find((key) => data.groups[key].category === category) ?? 'pp') : group));
     let value: CatalogValue;
     let key = `${owner}:${id}`;
-    if (copy) {
+    if (kind === 'ship') {
+      key = id;
+      const template = copy ? copy.value as OutfittingShip : (data.ships.sidewinder?.archived ? undefined : data.ships.sidewinder) ?? Object.values(data.ships).find((entry) => !entry.archived);
+      if (!template) return;
+      const hull = structuredClone(template);
+      hull.id = id; delete hull.archived;
+      hull.properties.name = copy ? `${hull.properties.name} — копия` : '';
+      for (const section of ['hardpoints', 'internal'] as const) {
+        hull.defaults[section] = hull.slots[section].map((_, index) => hull.defaults[section][index] ?? 0);
+      }
+      hull.bulkheads = hull.bulkheads.filter((entry) => !entry.archived).map((entry) => { const next = { ...entry }; delete next.archived; return next; });
+      value = hull;
+    } else if (copy) {
       value = { ...structuredClone(copy.value), name: `${rowName(copy)} — копия` };
       if (kind === 'group') { key = id; if ((value as CatalogGroup).category === 'core') (value as CatalogGroup).category = 'internal'; }
       else Object.assign(value, { id });
@@ -205,8 +234,13 @@ export default function OutfittingAdmin() {
     const link = document.createElement('a'); link.href = url; link.download = `outfitting-catalog-r${snapshot?.revision}.json`;
     document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  const clearFilters = () => { setQuery(''); setCategory('all'); setGroup('all'); setShip('all'); setLevel('all'); setRating('all'); setStatus('active'); };
+  const clearFilters = () => { setQuery(''); setCategory('all'); setGroup('all'); setShip('all'); setManufacturer('all'); setLevel('all'); setRating('all'); setStatus('active'); };
   const changeView = (next: View) => { setView(next); clearFilters(); setSort('group'); };
+  const saveEditor = async (key: string, value: CatalogValue) => {
+    if (!editor) return;
+    await mutate([{ action: editor.mode, kind: editor.kind, key, value }]);
+    setEditor(null); clearFilters(); setQuery(key); setPage(1);
+  };
 
   const renderActions = (row: CatalogRow) => <div className={styles.rowActions}>
     {row.status === 'deleted' ? <button type="button" disabled={!canWrite || saving} className={styles.restoreButton} onClick={() => restore(row)} aria-label={`Восстановить ${rowName(row)}`}><IconRefresh size={14} color="currentColor" /> Восстановить</button> : <>
@@ -220,7 +254,7 @@ export default function OutfittingAdmin() {
 
   return <section className={styles.root} aria-label="Управление верфью">
     <header className={styles.header}>
-      <div className={styles.titleBlock}><span className={styles.sectionIcon}><IconAnchor size={24} color="currentColor" /></span><div><span className={styles.eyebrow}>Каталог оборудования / Shipyard</span><h2>Управление верфью</h2><p>Модули, группы и броня кораблей. Все изменения применяются к конструктору сборок.</p></div></div>
+      <div className={styles.titleBlock}><span className={styles.sectionIcon}><IconAnchor size={24} color="currentColor" /></span><div><span className={styles.eyebrow}>Каталог оборудования / Shipyard</span><h2>Управление верфью</h2><p>Корабли, модули, группы и броня. Все изменения применяются к конструктору сборок.</p></div></div>
       <a className={styles.secondaryButton} href="/outfitting" target="_blank" rel="noopener noreferrer"><IconExternalLink size={15} color="currentColor" /> Открыть верфь</a>
     </header>
     {snapshot && <>
@@ -228,7 +262,8 @@ export default function OutfittingAdmin() {
         {[
           { label: 'Модули', value: Object.values(snapshot.data.modules).reduce((sum, list) => sum + list.length, 0), icon: IconCpu },
           { label: 'Группы', value: Object.keys(snapshot.data.groups).length, icon: IconLayers },
-          { label: 'Броня кораблей', value: Object.values(snapshot.data.ships).reduce((sum, item) => sum + item.bulkheads.filter((entry) => !entry.archived).length, 0), icon: IconShield },
+          { label: 'Корабли', value: Object.values(snapshot.data.ships).filter((item) => !item.archived).length, icon: IconRocket },
+          { label: 'Броня кораблей', value: Object.values(snapshot.data.ships).reduce((sum, item) => sum + (item.archived ? 0 : item.bulkheads.filter((entry) => !entry.archived).length), 0), icon: IconShield },
           { label: 'Ручные правки', value: snapshot.changes.length, icon: IconEdit },
         ].map((stat) => <div key={stat.label} className={styles.stat}><stat.icon size={18} color="currentColor" /><strong>{stat.value.toLocaleString('ru-RU')}</strong><span>{stat.label}</span></div>)}
       </div>
@@ -239,13 +274,13 @@ export default function OutfittingAdmin() {
     {notice && <div role="status" className={styles.successBanner}><span>{notice}</span><button type="button" className={styles.iconButton} aria-label="Скрыть уведомление" onClick={() => setNotice('')}><IconX size={14} color="currentColor" /></button></div>}
     <div className={styles.toolbar}>
       <div className={styles.viewTabs} role="tablist" aria-label="Каталоги верфи">
-        {([{ key: 'module', label: 'Модули', icon: IconCpu }, { key: 'group', label: 'Группы', icon: IconLayers }, { key: 'bulkhead', label: 'Броня', icon: IconShield }, { key: 'history', label: 'Журнал', icon: IconClock }] as const).map((item) =>
+        {([{ key: 'module', label: 'Модули', icon: IconCpu }, { key: 'group', label: 'Группы', icon: IconLayers }, { key: 'ship', label: 'Корабли', icon: IconRocket }, { key: 'bulkhead', label: 'Броня', icon: IconShield }, { key: 'history', label: 'Журнал', icon: IconClock }] as const).map((item) =>
           <button key={item.key} type="button" role="tab" aria-selected={view === item.key} aria-controls="shipyard-catalog-panel" className={view === item.key ? styles.activeTab : styles.tabButton} onClick={() => changeView(item.key)}><item.icon size={15} color="currentColor" />{item.label}</button>)}
       </div>
       <div className={styles.actions}>
         <button type="button" className={styles.iconButton} disabled={loading || saving} onClick={() => void refresh()} title="Обновить каталог" aria-label="Обновить каталог"><IconRefresh size={16} color="currentColor" /></button>
         <button type="button" className={styles.secondaryButton} onClick={exportCatalog} disabled={!snapshot || loading} title="Скачать полный справочник с текущими изменениями"><IconDownload size={15} color="currentColor" /> Экспорт JSON</button>
-        {view !== 'history' && <button type="button" className={styles.primaryButton} disabled={!canWrite || loading || saving} onClick={() => create()}><IconPlus size={16} color="currentColor" />{view === 'module' ? 'Добавить модуль' : view === 'group' ? 'Добавить группу' : 'Добавить броню'}</button>}
+        {view !== 'history' && <button type="button" className={styles.primaryButton} disabled={!canWrite || loading || saving} onClick={() => create()}><IconPlus size={16} color="currentColor" />{view === 'module' ? 'Добавить модуль' : view === 'group' ? 'Добавить группу' : view === 'ship' ? 'Добавить корабль' : 'Добавить броню'}</button>}
       </div>
     </div>
     {loading && !snapshot ? <div className={styles.empty} role="status">Загрузка каталога верфи…</div> : snapshot && <div id="shipyard-catalog-panel" role="tabpanel" aria-label={view === 'history' ? 'Журнал изменений' : 'Каталог'}>
@@ -255,38 +290,44 @@ export default function OutfittingAdmin() {
           {snapshot.history.map((entry, index) => <tr key={`${entry.at}-${index}`}><td data-label="Дата / администратор"><span>{new Date(entry.at).toLocaleString('ru-RU')}</span><small>{entry.actor}</small></td><td data-label="Действие">{ACTION_LABELS[entry.action]}</td><td data-label="Запись">{entry.label}<small>{entry.kind} / {entry.key}</small></td></tr>)}
         </tbody></table></div> : <div className={styles.empty}><IconClock size={28} color="currentColor" /><h3>Журнал пока пуст</h3><p>Добавления, изменения, удаления и восстановления будут показаны здесь.</p></div>}
       </> : <>
-        {view !== 'bulkhead' && <div className={styles.categoryBar} aria-label="Категории модулей">
+        {(view === 'module' || view === 'group') && <div className={styles.categoryBar} aria-label="Категории модулей">
           <button type="button" aria-pressed={category === 'all'} className={category === 'all' ? styles.activeCategory : styles.categoryButton} onClick={() => { setCategory('all'); setGroup('all'); }}>Все категории<span>{rows.filter((row) => row.status !== 'deleted').length}</span></button>
           {Object.entries(CATALOG_CATEGORIES).map(([key, label]) => <button key={key} type="button" aria-pressed={category === key} className={category === key ? styles.activeCategory : styles.categoryButton} onClick={() => { setCategory(key); setGroup('all'); }}>{label}<span>{rows.filter((row) => row.status !== 'deleted' && (view === 'group' ? (row.value as CatalogGroup).category : data?.groups[row.owner]?.category) === key).length}</span></button>)}
         </div>}
         <div className={styles.filters}>
-          <label className={`${styles.field} ${styles.searchField}`}><span>Поиск</span><div className={styles.searchControl}><IconSearch size={16} color="currentColor" /><input type="search" placeholder="Название, ID, группа…" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Поиск по каталогу" /></div></label>
+          <label className={`${styles.field} ${styles.searchField}`}><span>Поиск</span><div className={styles.searchControl}><IconSearch size={16} color="currentColor" /><input type="search" placeholder={view === 'ship' ? 'Название, ID, производитель…' : 'Название, ID, группа…'} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Поиск по каталогу" /></div></label>
           {view === 'module' && <label className={styles.field}><span>Группа</span><select aria-label="Фильтр группы" value={group} onChange={(event) => setGroup(event.target.value)}><option value="all">Все группы</option>{Object.entries(snapshot.data.groups).filter(([, meta]) => category === 'all' || meta.category === category).sort(([, a], [, b]) => a.name.localeCompare(b.name, 'ru')).map(([key, meta]) => <option key={key} value={key}>{meta.name}</option>)}</select></label>}
-          {view === 'bulkhead' && <label className={styles.field}><span>Корабль</span><select aria-label="Фильтр корабля" value={ship} onChange={(event) => setShip(event.target.value)}><option value="all">Все корабли</option>{Object.values(snapshot.data.ships).sort((a, b) => a.properties.name.localeCompare(b.properties.name)).map((item) => <option key={item.id} value={item.id}>{item.properties.name}</option>)}</select></label>}
-          {view === 'module' && <><label className={styles.field}><span>Класс</span><select aria-label="Фильтр класса" value={level} onChange={(event) => setLevel(event.target.value)}><option value="all">Все</option>{Array.from({ length: 9 }, (_, index) => <option key={index} value={index}>{index}</option>)}</select></label>
-            <label className={styles.field}><span>Рейтинг</span><select aria-label="Фильтр рейтинга" value={rating} onChange={(event) => setRating(event.target.value)}><option value="all">Все</option>{Array.from(new Set(rows.map((row) => (row.value as OutfittingModule).rating))).sort().map((key) => <option key={key}>{key}</option>)}</select></label></>}
+          {view === 'bulkhead' && <label className={styles.field}><span>Корабль</span><select aria-label="Фильтр корабля" value={ship} onChange={(event) => setShip(event.target.value)}><option value="all">Все корабли</option>{Object.values(snapshot.data.ships).sort((a, b) => a.properties.name.localeCompare(b.properties.name)).map((item) => <option key={item.id} value={item.id}>{item.properties.name}{item.archived ? ' (архив)' : ''}</option>)}</select></label>}
+          {view === 'ship' && <label className={styles.field}><span>Производитель</span><select aria-label="Фильтр производителя" value={manufacturer} onChange={(event) => setManufacturer(event.target.value)}><option value="all">Все</option>{Array.from(new Set(rows.map((row) => (row.value as OutfittingShip).properties.manufacturer))).sort((a, b) => a.localeCompare(b, 'ru')).map((name) => <option key={name}>{name}</option>)}</select></label>}
+          {(view === 'module' || view === 'ship') && <label className={styles.field}><span>{view === 'ship' ? 'Размер' : 'Класс'}</span><select aria-label={view === 'ship' ? 'Фильтр размера' : 'Фильтр класса'} value={level} onChange={(event) => setLevel(event.target.value)}><option value="all">Все</option>{Array.from({ length: view === 'ship' ? 3 : 9 }, (_, index) => <option key={index} value={view === 'ship' ? index + 1 : index}>{view === 'ship' ? ['Малый', 'Средний', 'Большой'][index] : index}</option>)}</select></label>}
+          {view === 'module' && <label className={styles.field}><span>Рейтинг</span><select aria-label="Фильтр рейтинга" value={rating} onChange={(event) => setRating(event.target.value)}><option value="all">Все</option>{Array.from(new Set(rows.map((row) => (row.value as OutfittingModule).rating))).sort().map((key) => <option key={key}>{key}</option>)}</select></label>}
           <label className={styles.field}><span>Состояние</span><select aria-label="Фильтр состояния" value={status} onChange={(event) => setStatus(event.target.value)}><option value="active">Доступные</option><option value="all">Все, включая удалённые</option><option value="source">Без изменений</option><option value="modified">Изменённые</option><option value="custom">Добавленные</option><option value="deleted">Удалённые</option></select></label>
         </div>
         <div className={styles.listToolbar}>
           <span className={styles.resultCount}>Найдено <strong>{filtered.length.toLocaleString('ru-RU')}</strong> / {rows.length.toLocaleString('ru-RU')}</span>
           {view !== 'group' && <label className={styles.mobileSelectAll}><input type="checkbox" aria-label="Выбрать все записи на странице" checked={allSelected} disabled={!canWrite || selectable.length === 0} onChange={(event) => setSelected((previous) => { const next = new Set(previous); selectable.forEach((row) => event.target.checked ? next.add(row.key) : next.delete(row.key)); return next; })} /> Выбрать страницу</label>}
-          <div className={styles.sortActions}><label>Сортировка<select aria-label="Сортировка" value={sort} onChange={(event) => setSort(event.target.value)}><option value="group">{view === 'bulkhead' ? 'По кораблю' : 'По группе'}</option><option value="name">По названию</option>{view !== 'group' && <option value="cost">По цене</option>}{view === 'module' && <option value="class">По классу</option>}</select></label><button type="button" className={styles.iconButton} title={direction === 'asc' ? 'По возрастанию' : 'По убыванию'} aria-label="Изменить направление сортировки" onClick={() => setDirection(direction === 'asc' ? 'desc' : 'asc')}>{direction === 'asc' ? '↑' : '↓'}</button>
+          <div className={styles.sortActions}><label>Сортировка<select aria-label="Сортировка" value={sort} onChange={(event) => setSort(event.target.value)}><option value="group">{view === 'bulkhead' ? 'По кораблю' : view === 'ship' ? 'По производителю' : 'По группе'}</option><option value="name">По названию</option>{view !== 'group' && <option value="cost">По цене</option>}{(view === 'module' || view === 'ship') && <option value="class">{view === 'ship' ? 'По размеру' : 'По классу'}</option>}</select></label><button type="button" className={styles.iconButton} title={direction === 'asc' ? 'По возрастанию' : 'По убыванию'} aria-label="Изменить направление сортировки" onClick={() => setDirection(direction === 'asc' ? 'desc' : 'asc')}>{direction === 'asc' ? '↑' : '↓'}</button>
             <button type="button" className={styles.quietButton} onClick={clearFilters}>Сбросить фильтры</button></div>
         </div>
         {selected.size > 0 && <div className={styles.selectionBar}><span>Выбрано: {selected.size}</span><div className={styles.actions}><button type="button" className={styles.quietButton} onClick={() => setSelected(new Set())}>Снять выбор</button><button type="button" className={styles.dangerButton} disabled={!canWrite || saving || selected.size > 100} onClick={() => remove(rows.filter((row) => selected.has(row.key)))}><IconTrash size={14} color="currentColor" />Удалить выбранные</button></div></div>}
         {filtered.length ? <div className={styles.tableContainer} aria-busy={loading || saving}>
           <table className={styles.table}><thead><tr>
             {view !== 'group' && <th className={styles.selectionCell}><input type="checkbox" aria-label="Выбрать записи на странице" checked={allSelected} disabled={!canWrite || selectable.length === 0} onChange={(event) => setSelected((previous) => { const next = new Set(previous); selectable.forEach((row) => event.target.checked ? next.add(row.key) : next.delete(row.key)); return next; })} /></th>}
-            <th>{view === 'module' ? 'Модуль' : view === 'group' ? 'Группа' : 'Броня'}</th><th>{view === 'bulkhead' ? 'Корабль' : 'Категория / группа'}</th>
-            {view === 'group' ? <th>Модулей</th> : <><th className={styles.numberCell}>Масса, т</th>{view === 'module' && <th className={styles.numberCell}>Энергия, МВт</th>}<th className={styles.numberCell}>Цена, CR</th></>}
+            <th>{view === 'module' ? 'Модуль' : view === 'group' ? 'Группа' : view === 'ship' ? 'Корабль' : 'Броня'}</th><th>{view === 'bulkhead' ? 'Корабль' : view === 'ship' ? 'Производитель' : 'Категория / группа'}</th>
+            {view === 'group' ? <th>Модулей</th> : view === 'ship' ? <><th>Размер</th><th>Слоты (S / H / I)</th><th className={styles.numberCell}>Цена, CR</th></> : <><th className={styles.numberCell}>Масса, т</th>{view === 'module' && <th className={styles.numberCell}>Энергия, МВт</th>}<th className={styles.numberCell}>Цена, CR</th></>}
             <th>Состояние</th><th className={styles.actionHeading}>Действия</th>
           </tr></thead><tbody>{paged.map((row) => {
             const value = row.value as OutfittingModule;
+            const hull = row.value as OutfittingShip;
             return <tr key={row.key} className={`${selected.has(row.key) ? styles.selectedRow : ''} ${row.status === 'deleted' ? styles.deletedRow : ''}`}>
               {view !== 'group' && <td className={styles.selectionCell}><input type="checkbox" aria-label={`Выбрать ${row.key}`} checked={selected.has(row.key)} disabled={!canWrite || row.status === 'deleted' || !!deletionReason(row)} onChange={(event) => setSelected((previous) => { const next = new Set(previous); if (event.target.checked) next.add(row.key); else next.delete(row.key); return next; })} /></td>}
-              <td className={styles.nameCell} data-label="Запись"><div className={styles.moduleName}>{view === 'module' && <span className={styles.classBadge}>{value.class}{value.rating}</span>}<span>{rowName(row)}</span></div><small>{row.key}{value.mount ? ` · ${value.mount === 'F' ? 'Фикс.' : value.mount === 'G' ? 'Турель' : 'Навод.'}` : ''}{value.preEngineered ? ' · Pre-eng' : ''}{value.merc ? ' · Merc Coin' : ''}</small></td>
-              <td data-label={view === 'bulkhead' ? 'Корабль' : 'Категория / группа'}>{view === 'bulkhead' ? data?.ships[row.owner]?.properties.name ?? row.owner : view === 'group' ? CATALOG_CATEGORIES[(row.value as CatalogGroup).category] : data?.groups[row.owner]?.name ?? row.owner}{view === 'module' && <small>{CATALOG_CATEGORIES[data!.groups[row.owner]?.category] ?? 'Архив группы'}</small>}</td>
-              {view === 'group' ? <td className={styles.numberCell} data-label="Модулей">{data?.modules[row.key]?.length ?? 0}</td> : <><td className={styles.numberCell} data-label="Масса, т">{typeof value.mass === 'number' ? num(value.mass, 2) : '—'}</td>{view === 'module' && <td className={styles.numberCell} data-label="Энергия, МВт">{typeof value.power === 'number' ? num(value.power, 2) : '—'}</td>}<td className={styles.numberCell} data-label="Цена, CR">{typeof value.cost === 'number' ? num(value.cost, 0) : '—'}</td></>}
+              <td className={styles.nameCell} data-label="Запись"><div className={styles.moduleName}>{view === 'module' && <span className={styles.classBadge}>{value.class}{value.rating}</span>}<span>{rowName(row)}</span></div><small>{row.key}{view === 'module' && value.mount ? ` · ${value.mount === 'F' ? 'Фикс.' : value.mount === 'G' ? 'Турель' : 'Навод.'}` : ''}{view === 'module' && value.preEngineered ? ' · Pre-eng' : ''}{view === 'module' && value.merc ? ' · Merc Coin' : ''}</small></td>
+              <td data-label={view === 'bulkhead' ? 'Корабль' : view === 'ship' ? 'Производитель' : 'Категория / группа'}>{view === 'bulkhead' ? `${data?.ships[row.owner]?.properties.name ?? row.owner}${data?.ships[row.owner]?.archived ? ' (архив корабля)' : ''}` : view === 'ship' ? hull.properties.manufacturer : view === 'group' ? CATALOG_CATEGORIES[(row.value as CatalogGroup).category] : data?.groups[row.owner]?.name ?? row.owner}{view === 'module' && <small>{CATALOG_CATEGORIES[data!.groups[row.owner]?.category] ?? 'Архив группы'}</small>}</td>
+              {view === 'group' ? <td className={styles.numberCell} data-label="Модулей">{data?.modules[row.key]?.length ?? 0}</td>
+                : view === 'ship' ? <><td data-label="Размер">{['', 'Малый', 'Средний', 'Большой'][hull.properties.class] ?? hull.properties.class}</td>
+                  <td data-label="Слоты (S / H / I)">{hull.slots.standard.length} / {hull.slots.hardpoints.length} / {hull.slots.internal.length}</td>
+                  <td className={styles.numberCell} data-label="Цена, CR">{num(hull.retailCost, 0)}</td></>
+                  : <><td className={styles.numberCell} data-label="Масса, т">{typeof value.mass === 'number' ? num(value.mass, 2) : '—'}</td>{view === 'module' && <td className={styles.numberCell} data-label="Энергия, МВт">{typeof value.power === 'number' ? num(value.power, 2) : '—'}</td>}<td className={styles.numberCell} data-label="Цена, CR">{typeof value.cost === 'number' ? num(value.cost, 0) : '—'}</td></>}
               <td data-label="Состояние">{statusBadge(row)}</td><td className={styles.actionCell}>{renderActions(row)}</td>
             </tr>;
           })}</tbody></table>
@@ -298,10 +339,9 @@ export default function OutfittingAdmin() {
       </>}
     </div>}
     <p className={styles.sourceNote}>Источник: {snapshot?.data.source ?? 'EDCD/coriolis-data'}. Правки хранятся отдельно от игровых данных; обновление исходного справочника их не перезаписывает.</p>
-    {editor && data && <OutfittingEditor key={`${editor.kind}/${editor.key}/${editor.mode}`} item={editor} data={data} onClose={() => setEditor(null)} onSave={async (key, value) => {
-      await mutate([{ action: editor.mode, kind: editor.kind, key, value }]);
-      setEditor(null); clearFilters(); setQuery(key); setPage(1);
-    }} />}
+    {editor && data && (editor.kind === 'ship'
+      ? <OutfittingShipEditor key={`${editor.kind}/${editor.key}/${editor.mode}`} item={editor} data={data} onClose={() => setEditor(null)} onSave={saveEditor} />
+      : <OutfittingEditor key={`${editor.kind}/${editor.key}/${editor.mode}`} item={editor} data={data} onClose={() => setEditor(null)} onSave={saveEditor} />)}
     {confirmation && <OutfittingDialog title={confirmation.title} eyebrow="Подтверждение действия" compact busy={saving} onClose={() => { if (!saving) setConfirmation(null); }}>
       <div className={styles.confirmationBody}><p>{confirmation.text}</p>{confirmation.commands.length > 1 && <ul>{confirmation.commands.map((command) => <li key={command.key}>{command.key}</li>)}</ul>}{confirmationError && <div role="alert" className={styles.formError}>{confirmationError}</div>}</div>
       <footer className={styles.dialogFooter}><div className={styles.actions}><button type="button" disabled={saving} className={styles.secondaryButton} onClick={() => setConfirmation(null)}>Отмена</button><button type="button" disabled={saving} className={confirmation.danger ? styles.dangerButton : styles.primaryButton} onClick={async () => {

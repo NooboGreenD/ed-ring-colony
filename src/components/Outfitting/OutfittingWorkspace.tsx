@@ -266,7 +266,8 @@ export default function OutfittingWorkspace() {
       setBuild(decoded);
       return;
     }
-    const first = data.ships.sidewinder ? 'sidewinder' : Object.keys(data.ships)[0];
+    const first = data.ships.sidewinder && !data.ships.sidewinder.archived
+      ? 'sidewinder' : Object.values(data.ships).find((ship) => !ship.archived)?.id ?? Object.keys(data.ships)[0];
     setBuild(defaultBuild(data, first));
   }, [data, build]);
 
@@ -414,12 +415,9 @@ export default function OutfittingWorkspace() {
     if (!data) return [];
     const text = search.trim().toLowerCase();
     return Object.values(data.ships)
-      .filter(
-        (entry) =>
-          !text ||
-          entry.properties.name.toLowerCase().includes(text) ||
-          entry.properties.manufacturer.toLowerCase().includes(text),
-      )
+      .filter((entry) => !entry.archived && (!text ||
+        entry.properties.name.toLowerCase().includes(text) ||
+        entry.properties.manufacturer.toLowerCase().includes(text)))
       .sort((left, right) => left.properties.name.localeCompare(right.properties.name));
   }, [data, search]);
 
@@ -531,6 +529,9 @@ export default function OutfittingWorkspace() {
               onChange={(event) => setBuild(defaultBuild(data, event.target.value))}
               style={{ fontSize: 13, fontFamily: MONO, minWidth: 220, margin: 0, fontWeight: 700 }}
             >
+              {!shipList.some((entry) => entry.id === build.ship) && <option value={build.ship} disabled={!!ship.archived}>
+                {ship.properties.name} · {ship.properties.manufacturer}{ship.archived ? ' (архив)' : ''}
+              </option>}
               {shipList.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.properties.name} · {entry.properties.manufacturer}

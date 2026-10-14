@@ -178,7 +178,7 @@ export default function OutfittingEditor({ item, data, onClose, onSave }: {
               {kind === 'module' ? <Field label="Группа модулей"><select value={group} disabled={!creating} onChange={(event) => set('grp', event.target.value)}>
                 {Object.entries(data.groups).map(([key, meta]) => <option key={key} value={key}>{meta.name} ({key})</option>)}
               </select></Field> : <Field label="Корабль"><select value={owner} disabled={!creating} onChange={(event) => setOwner(event.target.value)}>
-                {Object.values(data.ships).sort((a, b) => a.properties.name.localeCompare(b.properties.name)).map((ship) => <option key={ship.id} value={ship.id}>{ship.properties.name}</option>)}
+                {Object.values(data.ships).sort((a, b) => a.properties.name.localeCompare(b.properties.name)).map((ship) => <option key={ship.id} value={ship.id}>{ship.properties.name}{ship.archived ? ' (архив)' : ''}</option>)}
               </select></Field>}
               {kind === 'module' && <>
                 <Field label="Класс"><input type="number" min={0} max={8} step={1} required value={String(draft.class ?? '')} onChange={(event) => set('class', event.target.value === '' ? undefined : Number(event.target.value))} /></Field>

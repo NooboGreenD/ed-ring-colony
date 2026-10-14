@@ -28,7 +28,7 @@
 .restoreButton:hover:not(:disabled) { background: color-mix(in srgb, var(--green) 10%, transparent); }
 .iconButton { width: 36px; flex: 0 0 36px; padding: 0; }
 .quietButton { border-color: transparent; padding: 6px 8px; min-height: 30px !important; }
-.stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--bg); }
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--bg); }
 .stat { display: grid; grid-template-columns: 24px 1fr; column-gap: 12px; align-items: center; padding: 16px 20px; border-right: 1px solid var(--line); }
 .stat:last-child { border: 0; }
 .stat svg { color: var(--muted); grid-row: span 2; }
@@ -116,6 +116,19 @@
 .editorBody { border: 0; margin: 0; padding: 20px 22px; overflow: auto; min-width: 0; min-height: 0; }
 .formGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 14px; align-items: start; }
 .wideField { grid-column: 1 / -1; }
+.slotSection { margin: 0 0 26px; border: 1px solid var(--line); padding: 14px; background: var(--bg); }
+.slotHeading { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.slotHeading h3 { margin: 0; font-size: 13px; color: var(--orange); }
+.slotSection > .helpText { display: block; margin: 0 0 12px; }
+.slotRow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.slotRow strong { flex: 0 0 32px; font: 12px var(--mono); color: var(--orange); }
+.slotRow > label:not(.slotToggle) { display: flex; flex: 1 1 130px; flex-direction: column; gap: 4px; min-width: 100px; font: 10px var(--mono); color: var(--muted); }
+.slotRow > label:nth-of-type(2) { flex: 2 1 180px; }
+.slotRow select, .slotRow input { width: 100%; }
+.slotRow .slotToggle { flex: 0 1 85px; display: flex; align-items: center; gap: 5px; font: 11px var(--mono); color: var(--muted); }
+.slotGroup { flex: 1 1 130px; font-size: 12px; }
+.slotSpecial { flex: 0 0 100%; padding: 12px 0 4px 42px; display: grid; grid-template-columns: minmax(120px, 1fr) minmax(190px, 2fr); gap: 12px; }
+.slotSpecial textarea { width: 100%; }
 .dialog textarea { resize: vertical; line-height: 1.6; min-height: 80px; }
 .dialog .codeInput { font: 12px/1.65 var(--mono); tab-size: 2; min-height: 140px; }
 .checkField { display: flex; gap: 8px; align-items: center; min-height: 36px; font-size: 12px; line-height: 1.5; padding: 8px 0; }
@@ -145,15 +158,16 @@
   .sectionIcon { width: 38px; height: 38px; }
   .titleBlock { gap: 10px; }
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stat:nth-child(2) { border-right: 0; }
-  .stat:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+  .stat:nth-child(2n) { border-right: 0; }
+  .stat:not(:last-child) { border-bottom: 1px solid var(--line); }
+  .stat:last-child { grid-column: 1 / -1; }
   .stat strong { font-size: 24px; }
   .stat span { font-size: 10px; letter-spacing: 0; }
   .meta { font-size: 10px; line-height: 1.6; }
   .toolbar { align-items: stretch; gap: 12px; }
   .toolbar > .actions { display: grid; grid-template-columns: 36px minmax(0, 1fr); width: 100%; }
   .toolbar .primaryButton { grid-column: 1 / -1; width: 100%; }
-  .viewTabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; gap: 4px; }
+  .viewTabs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); width: 100%; gap: 4px; }
   .viewTabs button { font-size: 10px; padding: 8px 6px; gap: 5px; letter-spacing: 0; }
   .categoryBar { gap: 5px; }
   .filters, .filters:has(> label:nth-child(3):last-child), .filters:has(> label:nth-child(2):last-child) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -188,9 +202,16 @@
   .dialogFooter > .helpText { width: 100%; }
   .dialogFooter > .actions { width: 100%; justify-content: flex-end; }
   .editorForm > .formError { padding: 10px 14px; }
+  .slotSpecial { padding-left: 0; grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 420px) {
   .formGrid { grid-template-columns: minmax(0, 1fr); }
+  .slotSection { padding: 10px; }
+  .slotRow > label { flex-basis: 100px; }
+  .slotRow .slotToggle { flex-basis: 90px; }
+  .viewTabs button { flex-direction: column; padding: 7px 1px; font-size: 9px; gap: 3px; }
+  .editorTabs { flex-wrap: nowrap; overflow-x: auto; }
+  .editorTabs button { white-space: nowrap; }
   .header h2 { font-size: 16px; }
   .categoryButton, .activeCategory { letter-spacing: 0 !important; }
 }

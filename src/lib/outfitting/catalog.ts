@@ -1,10 +1,10 @@
 /** Shared, side-effect-free catalogue editing rules (API, admin UI and tests). */
-import type { Bulkhead, OutfittingData, OutfittingModule } from './types';
+import type { Bulkhead, OutfittingData, OutfittingModule, OutfittingShip } from './types';
 import { MODULE_SPECS } from './specs';
 
-export type CatalogKind = 'module' | 'group' | 'bulkhead';
+export type CatalogKind = 'module' | 'group' | 'bulkhead' | 'ship';
 export type CatalogGroup = OutfittingData['groups'][string];
-export type CatalogValue = OutfittingModule | CatalogGroup | Bulkhead;
+export type CatalogValue = OutfittingModule | CatalogGroup | Bulkhead | OutfittingShip;
 export type CatalogAction = 'create' | 'update' | 'delete' | 'restore' | 'reset';
 
 export interface CatalogChange {
@@ -60,6 +60,7 @@ export const PROTECTED_GROUPS = ['pp', 't', 'fsd', 'ls', 'pd', 's', 'ft', 'pas']
 export const EMPTY_CATALOG_STATE: CatalogState = { revision: 0, changes: {}, history: [], updatedAt: null };
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_GROUP = /^[a-z][a-z0-9_-]{0,31}$/;
+const SAFE_SHIP = /^[a-z][a-z0-9_-]{0,63}$/;
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const NUMBER_FIELDS = new Set([...MODULE_SPECS.map((spec) => spec.key),
   'passive', 'coins', 'minmulspeed', 'minmulrotation', 'minmulacceleration',
@@ -115,6 +116,99 @@ function numericMap(value: unknown, label: string): void {
   Object.values(value).forEach((entry) => number(entry, label));
 }
 
+/** Key order is not significant in JSON (notably for the armour copied into a ship edit). */
+function sameJson(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((entry, index) => sameJson(entry, right[index]));
+  }
+  if (isRecord(left) || isRecord(right)) {
+    return isRecord(left) && isRecord(right) && Object.keys(left).length === Object.keys(right).length
+      && Object.entries(left).every(([key, entry]) => Object.hasOwn(right, key) && sameJson(entry, right[key]));
+  }
+  return left === right;
+}
+
+/** Hull shape is used by both the stock builder and saved build links. */
+function validateShip(key: string, value: Record<string, unknown>, data: OutfittingData): OutfittingShip {
+  check(SAFE_SHIP.test(key) && !FORBIDDEN_KEYS.has(key), 'ID корабля: строчные латинские буквы, цифры, _ или -');
+  check(value.id === key, 'ID корабля нельзя менять: он используется в сохранённых сборках');
+  delete value.archived; // Only delete/restore commands control availability.
+
+  const props = value.properties;
+  check(isRecord(props), 'Характеристики корабля: ожидается объект');
+  props.name = text(props.name, 'Название корабля', 160);
+  props.manufacturer = text(props.manufacturer, 'Производитель', 120);
+  check(Number.isInteger(props.class) && Number(props.class) >= 1 && Number(props.class) <= 3, 'Размер корабля: 1, 2 или 3');
+  for (const field of ['hullCost', 'speed', 'boost', 'boostEnergy', 'baseShieldStrength', 'baseArmour',
+    'heatCapacity', 'hardness', 'hullMass', 'masslock', 'pipSpeed', 'reserveFuelCapacity']) {
+    number(props[field], field, true);
+  }
+  check(Number(props.hullMass) > 0 && Number(props.pipSpeed) > 0, 'Масса корпуса и скорость распределителя должны быть больше нуля');
+  check(Number.isInteger(props.crew) && Number(props.crew) >= 1 && Number(props.crew) <= 16, 'Экипаж: целое число от 1 до 16');
+  for (const field of ['minthrust', 'boostInt', 'pitch', 'roll', 'yaw']) {
+    if (props[field] !== undefined) number(props[field], field, true);
+  }
+  for (const field of ['fighterHangars', 'luxuryCabins']) {
+    if (props[field] !== undefined) check(typeof props[field] === 'boolean', `${field}: ожидается переключатель`);
+  }
+  number(value.retailCost, 'Стоимость покупки', true);
+
+  check(isRecord(value.slots) && isRecord(value.defaults), 'Укажите слоты и заводскую комплектацию');
+  const slots = value.slots, defaults = value.defaults;
+  for (const section of ['standard', 'hardpoints', 'internal'] as const) {
+    const list = slots[section], stock = defaults[section];
+    check(Array.isArray(list) && Array.isArray(stock), `${section}: ожидаются списки слотов и заводских модулей`);
+    check(list.length <= (section === 'standard' ? 7 : 64) && (section !== 'standard' || list.length === 7),
+      'Основных слотов должно быть 7, остальных — не более 64');
+    // Upstream has a few ships with missing trailing defaults (and one with
+    // unused extras). Keep existing data editable, but don't permit new extras.
+    const existingStockLength = data.ships[key]?.defaults[section]?.length ?? 0;
+    check(section === 'standard' ? stock.length === 7 : stock.length <= Math.max(list.length, existingStockLength),
+      `${section}: число заводских модулей превышает число слотов`);
+    list.forEach((slot, index) => {
+      const label = `${section}[${index}]`;
+      const size = isRecord(slot) ? slot.class : slot;
+      check(Number.isInteger(size) && Number(size) >= (section === 'hardpoints' ? 0 : 1)
+        && Number(size) <= (section === 'hardpoints' ? 4 : 8), `${label}: недопустимый размер слота`);
+      if (isRecord(slot)) {
+        if (slot.name !== undefined) slot.name = text(slot.name, `${label}: назначение`, 80);
+        if (slot.eligible !== undefined) {
+          check(isRecord(slot.eligible) && Object.keys(slot.eligible).length > 0, `${label}: укажите допустимые группы`);
+          for (const [group, allowed] of Object.entries(slot.eligible)) {
+            check(SAFE_GROUP.test(group) && !!data.groups[group], `${label}: группа ${group} не найдена`);
+            const category = data.groups[group].category;
+            check(section === 'hardpoints' ? category === 'hardpoint' || category === 'utility'
+              : category === 'internal' || group === 'ft', `${label}: группа ${group} не подходит для этого слота`);
+            number(allowed, `${label}: ${group}`, true);
+            check(Number(allowed) > 0, `${label}: разрешение группы должно быть больше нуля`);
+          }
+        }
+      }
+    });
+    stock.forEach((entry, index) => {
+      check((typeof entry === 'string' && entry.length <= 64 && !/[\x00-\x1f]/.test(entry))
+        || (Number.isSafeInteger(entry) && Number(entry) >= 0), `${section}[${index}]: укажите ID модуля, класс+рейтинг или пустое значение`);
+    });
+  }
+
+  check(Array.isArray(value.bulkheads) && value.bulkheads.length > 0, 'У корабля должна быть базовая броня');
+  const ids = new Set<string>();
+  value.bulkheads.forEach((entry, index) => {
+    check(isRecord(entry) && typeof entry.id === 'string' && SAFE_ID.test(entry.id) && !ids.has(entry.id), 'Повторяющийся или некорректный ID брони');
+    ids.add(entry.id);
+    check(entry.grp === 'bh', 'Группа брони должна быть bh');
+    entry.name = text(entry.name, 'Название брони', 160);
+    for (const field of ['mass', 'cost', 'hullboost', 'kinres', 'thermres', 'explres']) {
+      number(entry[field], field, field === 'mass' || field === 'cost');
+    }
+    if (entry.causres !== undefined) number(entry.causres, 'causres');
+    if (entry.archived !== undefined) check(typeof entry.archived === 'boolean', 'archived: ожидается переключатель');
+    if (index === 0) check(entry.archived !== true, 'Базовую броню корабля нельзя архивировать');
+  });
+  return value as unknown as OutfittingShip;
+}
+
 export function changeId(kind: CatalogKind, key: string): string {
   return `${kind}/${key}`;
 }
@@ -127,6 +221,7 @@ function splitKey(key: string): [string, string] {
 
 export function sourceValue(base: OutfittingData, kind: CatalogKind, key: string): CatalogValue | undefined {
   if (kind === 'group') return Object.hasOwn(base.groups, key) ? base.groups[key] : undefined;
+  if (kind === 'ship') return Object.hasOwn(base.ships, key) ? base.ships[key] : undefined;
   const [owner, id] = splitKey(key);
   if (kind === 'module') return base.modules[owner]?.find((module) => module.id === id);
   return base.ships[owner]?.bulkheads.find((bulkhead) => bulkhead.id === id);
@@ -159,6 +254,16 @@ export function mergeCatalog(base: OutfittingData, state: CatalogState): Outfitt
     } else if (index >= 0) modules[index] = structuredClone(change.value as OutfittingModule);
     else modules.push(structuredClone(change.value as OutfittingModule));
   }
+  for (const change of Object.values(state.changes).filter((entry) => entry.kind === 'ship')) {
+    // Keep archived ships addressable by saved builds; the selector hides them.
+    const ship = structuredClone(change.value as OutfittingShip);
+    // Ship edits never freeze source armour or absorb independent armour edits.
+    // They are applied below, after the hull, so reset/restore work separately.
+    if (Object.hasOwn(base.ships, change.key)) ship.bulkheads = structuredClone(base.ships[change.key].bulkheads);
+    delete ship.archived;
+    if (change.deleted) ship.archived = true;
+    data.ships[change.key] = ship;
+  }
   for (const change of Object.values(state.changes).filter((entry) => entry.kind === 'bulkhead')) {
     const [ship, id] = splitKey(change.key);
     const bulkheads = data.ships[ship]?.bulkheads;
@@ -186,6 +291,7 @@ export function validateCatalogValue(kind: CatalogKind, key: string, input: unkn
     // customName is derived by the server, not trusted from the request.
     return { name: value.name, category: value.category, ...(value.short ? { short: value.short } : {}) } as CatalogGroup;
   }
+  if (kind === 'ship') return validateShip(key, value, data);
   const [owner, id] = splitKey(key);
   check(value.id === id, 'ID записи нельзя менять: он используется в сохранённых сборках');
   if (kind === 'bulkhead') {
@@ -248,10 +354,11 @@ export function parseCatalogCommands(input: unknown): { revision: number; comman
   check(Array.isArray(input.commands) && input.commands.length > 0 && input.commands.length <= 100, 'Допускается от 1 до 100 операций за запрос');
   const commands = input.commands.map((command) => {
     check(isRecord(command), 'Некорректная операция');
-    check(['module', 'group', 'bulkhead'].includes(String(command.kind)), 'Неизвестный вид записи');
+    check(['module', 'group', 'bulkhead', 'ship'].includes(String(command.kind)), 'Неизвестный вид записи');
     check(['create', 'update', 'delete', 'restore', 'reset'].includes(String(command.action)), 'Неизвестная операция');
     check(typeof command.key === 'string' && command.key.length <= 100, 'Не указан ключ записи');
     if (command.kind === 'group') check(SAFE_GROUP.test(command.key) && !FORBIDDEN_KEYS.has(command.key) && command.key !== 'bh', 'Некорректный код группы');
+    else if (command.kind === 'ship') check(SAFE_SHIP.test(command.key) && !FORBIDDEN_KEYS.has(command.key), 'Некорректный ID корабля');
     else splitKey(command.key);
     return { action: command.action, kind: command.kind, key: command.key, value: command.value } as CatalogCommand;
   });
@@ -262,6 +369,10 @@ export function groupDeletionReason(data: OutfittingData, key: string): string |
   if (PROTECTED_GROUPS.includes(key)) return 'Группа связана с обязательными слотами кораблей';
   if (data.modules[key]?.length) return 'Сначала удалите все модули этой группы';
   if (data.moduleBlueprints[key]) return 'Группа связана с инженерными чертежами';
+  if (Object.values(data.ships).some((ship) => [...ship.slots.hardpoints, ...ship.slots.internal]
+    .some((slot) => isRecord(slot) && isRecord(slot.eligible) && Object.hasOwn(slot.eligible, key)))) {
+    return 'Группа используется особыми слотами кораблей';
+  }
   return null;
 }
 
@@ -286,6 +397,17 @@ export function applyCatalogCommands(
     if (action === 'create' || action === 'update') {
       check(action === 'create' ? !existing && !previous && !original : active, action === 'create' ? 'Такой ID уже существует, в том числе в архиве' : 'Запись не найдена', action === 'create' ? 409 : 404);
       value = validateCatalogValue(kind, key, command.value, data);
+      if (kind === 'ship' && action === 'update') {
+        const ship = existing as OutfittingShip;
+        const edited = value as OutfittingShip;
+        check(sameJson(edited.bulkheads, ship.bulkheads), 'Броню изменяйте в разделе «Броня». Сначала обновите каталог', 409);
+        for (const section of ['standard', 'hardpoints', 'internal'] as const) {
+          check(edited.slots[section].length >= ship.slots[section].length,
+            'Нельзя удалять существующие слоты: их индексы используются в сохранённых сборках', 409);
+        }
+        edited.bulkheads = structuredClone((previous?.value as OutfittingShip | undefined)?.bulkheads
+          ?? (original as OutfittingShip | undefined)?.bulkheads ?? ship.bulkheads);
+      }
       if (kind === 'group') {
         const group = value as CatalogGroup;
         if (action === 'create') check(group.category !== 'core', 'Новые группы доступны для внутренних отсеков, вооружения и вспомогательных слотов');
@@ -304,7 +426,17 @@ export function applyCatalogCommands(
         const [ship, bulkheadId] = splitKey(key);
         check(data.ships[ship].bulkheads[0]?.id !== bulkheadId, 'Базовую броню корабля удалять нельзя', 409);
       }
+      if (kind === 'ship') {
+        check(Object.values(data.ships).some((ship) => ship.id !== key && !ship.archived),
+          'Нельзя удалить последний доступный корабль', 409);
+      }
       value = existing;
+      if (kind === 'ship') {
+        value = { ...(existing as OutfittingShip), bulkheads: structuredClone(
+          (previous?.value as OutfittingShip | undefined)?.bulkheads
+          ?? (original as OutfittingShip | undefined)?.bulkheads ?? (existing as OutfittingShip).bulkheads,
+        ) };
+      }
       state.changes[id] = { kind, key, value, deleted: true, updatedAt: at, updatedBy: actor };
     } else if (action === 'restore') {
       check(previous?.deleted, 'Запись не находится в архиве', 409);
@@ -318,7 +450,7 @@ export function applyCatalogCommands(
       delete state.changes[id];
     }
     const record = value as unknown as Record<string, unknown>;
-    state.history.unshift({ action, kind, key, label: String(record.name || key), at, actor });
+    state.history.unshift({ action, kind, key, label: kind === 'ship' ? (value as OutfittingShip).properties.name : String(record.name || key), at, actor });
   }
   state.history = state.history.slice(0, 100);
   state.revision += 1;

@@ -39,7 +39,7 @@ export * from '@/lib/outfitting/catalogStore';
 export {requireCatalogAdmin} from '@/lib/outfitting/catalogAuth';
 export {catalogGroupName} from '@/lib/outfitting/i18n';
 export {moduleLabel, defaultBuild} from '@/lib/outfitting/build';
-export {modulesForSlot, buildSlots} from '@/lib/outfitting/calc';
+export {modulesForSlot, buildSlots, computeStats} from '@/lib/outfitting/calc';
 export * as admin from '@/app/api/admin/outfitting/route';
 export * as publicCatalog from '@/app/api/outfitting/catalog/route';
 export {auth} from './auth.mjs';export {db} from './db.mjs';
@@ -164,6 +164,125 @@ test('armour edits and deletions retain source and custom build indices', () => 
   assert.throws(() => apply(state, operation('delete', 'bulkhead', `${ship.id}:${ship.bulkheads[0].id}`)), /Базовую броню/);
 });
 
+test('all source ships validate without loss, including short utility defaults and special hardpoints', () => {
+  for (const ship of Object.values(base.ships)) {
+    assert.deepEqual(lib.validateCatalogValue('ship', ship.id, ship, base), ship, ship.id);
+  }
+  const ship = base.ships.type_11_prospector;
+  const slot = lib.buildSlots(base, lib.defaultBuild(base, ship.id)).find((entry) => entry.key === 'H0');
+  assert.equal(slot.class, 3);
+  assert.equal(slot.special, 'Mining');
+  assert.ok(lib.modulesForSlot(base, ship, slot).some((module) => module.grp === 'abl'));
+  assert.ok(lib.modulesForSlot(base, ship, slot).some((module) => module.grp === 'pwa'), 'mining hardpoints may explicitly permit utility scanners');
+  assert.ok(!lib.modulesForSlot(base, ship, slot).some((module) => module.grp === 'pl'));
+  const modified = structuredClone(base);
+  modified.ships.type_11_prospector.defaults.hardpoints[0] = base.modules.pl[0].id;
+  assert.equal(lib.defaultBuild(modified, ship.id).hardpoints[0], null, 'stock module must respect special slot restrictions');
+});
+
+test('custom ships work in the stock builder and retain their armour when edited, archived and restored', () => {
+  const source = base.ships.sidewinder;
+  const ship = structuredClone(source);
+  ship.id = 'test_ship'; ship.properties.name = 'Испытатель';
+  ship.slots.internal.push({ class: 3, name: 'Cargo', eligible: { cr: 1 } });
+  ship.defaults.internal.push(0);
+  const state0 = initial();
+  let state = apply(state0, operation('create', 'ship', ship.id, { ...ship, archived: true }));
+  assert.deepEqual(state0, initial());
+  let data = lib.mergeCatalog(base, state);
+  assert.equal(data.ships.test_ship.archived, undefined, 'availability is server-owned');
+  assert.equal(data.ships.test_ship.properties.name, 'Испытатель');
+  assert.equal(data.ships.test_ship.slots.internal.length, source.slots.internal.length + 1);
+  assert.equal(lib.defaultBuild(data, ship.id).internal.length, ship.slots.internal.length);
+  assert.equal(lib.buildSlots(data, lib.defaultBuild(data, ship.id)).at(-1).special, 'Cargo');
+  assert.ok(Number.isFinite(lib.computeStats(data, lib.defaultBuild(data, ship.id)).armour));
+  const armour = { ...source.bulkheads[1], id: 'extra_armour', name: 'Пробная броня' };
+  state = apply(state, operation('create', 'bulkhead', 'test_ship:extra_armour', armour));
+  data = lib.mergeCatalog(base, state);
+  state = apply(state, operation('update', 'ship', ship.id, { ...data.ships.test_ship, properties: { ...data.ships.test_ship.properties, speed: 310 } }));
+  assert.equal(state.changes['ship/test_ship'].value.bulkheads.length, source.bulkheads.length, 'armour overlays must not be absorbed by hull edits');
+  state = apply(state, operation('delete', 'ship', ship.id));
+  data = lib.mergeCatalog(base, state);
+  assert.equal(data.ships.test_ship.archived, true);
+  assert.equal(data.ships.test_ship.bulkheads.at(-1).id, 'extra_armour');
+  assert.equal(lib.defaultBuild(data, 'test_ship').ship, 'test_ship', 'old build links still resolve');
+  assert.throws(() => apply(state, operation('create', 'ship', ship.id, ship)), /ID уже существует/);
+  state = apply(state, operation('restore', 'ship', ship.id));
+  data = lib.mergeCatalog(base, state);
+  assert.equal(data.ships.test_ship.archived, undefined);
+  assert.equal(data.ships.test_ship.properties.speed, 310);
+  assert.equal(state.history[0].label, 'Испытатель');
+  assert.throws(() => apply(state, operation('reset', 'ship', ship.id)), /Исходная запись/);
+});
+
+test('source ship edits and armour changes remain independent across reset and upstream rebuild', () => {
+  const original = base.ships.sidewinder;
+  const armourKey = `${original.id}:${original.bulkheads[1].id}`;
+  let state = apply(initial(), operation('update', 'bulkhead', armourKey, { ...original.bulkheads[1], name: 'Новый сплав' }));
+  let data = lib.mergeCatalog(base, state);
+  state = apply(state, operation('update', 'ship', original.id, { ...data.ships.sidewinder,
+    properties: { ...data.ships.sidewinder.properties, name: 'Новое имя' } }));
+  assert.equal(lib.mergeCatalog(base, state).ships.sidewinder.bulkheads[1].name, 'Новый сплав');
+  state = apply(state, operation('reset', 'bulkhead', armourKey));
+  assert.deepEqual(lib.mergeCatalog(base, state).ships.sidewinder.bulkheads[1], original.bulkheads[1]);
+  state = apply(state, operation('delete', 'ship', original.id));
+  const upstream = structuredClone(base);
+  upstream.ships.sidewinder.bulkheads[1].cost = 12345;
+  assert.equal(lib.mergeCatalog(upstream, state).ships.sidewinder.archived, true);
+  assert.equal(lib.mergeCatalog(upstream, state).ships.sidewinder.bulkheads[1].cost, 12345);
+  state = lib.applyCatalogCommands(upstream, state, [operation('restore', 'ship', original.id)], 'CMDR Test');
+  assert.equal(lib.mergeCatalog(upstream, state).ships.sidewinder.properties.name, 'Новое имя');
+  state = lib.applyCatalogCommands(upstream, state, [operation('reset', 'ship', original.id)], 'CMDR Test');
+  assert.deepEqual(lib.mergeCatalog(upstream, state).ships.sidewinder, upstream.ships.sidewinder);
+});
+
+test('invalid ships, armour tampering, removed slot indices and last-ship deletion are rejected atomically', () => {
+  const source = structuredClone(base.ships.sidewinder);
+  const withChange = (change) => { const next = structuredClone(source); next.id = 'sidewinder_copy'; change(next); return next; };
+  for (const change of [
+    (s) => { s.id = 'not_the_key'; }, (s) => { s.properties.name = ''; },
+    (s) => { s.properties.class = 4; }, (s) => { s.properties.crew = 0; },
+    (s) => { s.properties.hullMass = -1; }, (s) => { s.properties.hullCost = 'infinite'; },
+    (s) => { s.properties.fighterHangars = 'yes'; }, (s) => { s.retailCost = -1; },
+    (s) => { s.slots.standard.pop(); s.defaults.standard.pop(); },
+    (s) => { s.slots.hardpoints[0] = 8; }, (s) => { s.defaults.internal.push(0); },
+    (s) => { s.slots.internal[0] = { class: 3, eligible: { missing_group: 1 } }; },
+    (s) => { s.slots.internal[0] = { class: 3, eligible: { pl: 1 } }; },
+    (s) => { s.bulkheads.push({ ...s.bulkheads[0] }); },
+    (s) => { s.bulkheads[0].archived = true; },
+  ]) assert.throws(() => apply(initial(), operation('create', 'ship', 'sidewinder_copy', withChange(change))), lib.CatalogError);
+  const malicious = JSON.parse('{"properties":{"__proto__":{"polluted":true}}}');
+  assert.throws(() => lib.validateCatalogValue('ship', 'sidewinder', { ...source, ...malicious }, base), /Недопустимое имя/);
+  for (const key of ['constructor', '__proto__', 'ABC', 'foo:bar']) {
+    assert.throws(() => lib.parseCatalogCommands({ revision: 0, commands: [operation('create', 'ship', key, source)] }));
+  }
+  assert.throws(() => apply(initial(), operation('update', 'ship', 'sidewinder', { ...source, bulkheads: source.bulkheads.slice(1) })), /Броню|базовая броня/i);
+  assert.throws(() => apply(initial(), operation('update', 'ship', 'sidewinder', { ...source,
+    slots: { ...source.slots, internal: source.slots.internal.slice(0, -1) },
+    defaults: { ...source.defaults, internal: source.defaults.internal.slice(0, -1) },
+  })), /Нельзя удалять существующие слоты/);
+  const tiny = { ...base, ships: { sidewinder: source } };
+  assert.throws(() => lib.applyCatalogCommands(tiny, initial(), [operation('delete', 'ship', 'sidewinder')], 'CMDR Test'), /последний доступный корабль/);
+  assert.deepEqual(base.ships.sidewinder, source);
+});
+
+test('batching ship creation with armour and special group obeys dependencies and is atomic', () => {
+  const ship = structuredClone(base.ships.sidewinder);
+  ship.id = 'new_hull'; ship.properties.name = 'Новый корпус';
+  ship.slots.internal.push({ class: 1, name: 'Custom', eligible: { custom_fit: 1 } });
+  ship.defaults.internal.push(0);
+  const group = operation('create', 'group', 'custom_fit', { name: 'Тест', category: 'internal' });
+  const create = operation('create', 'ship', ship.id, ship);
+  const state = apply(initial(), group, create);
+  assert.match(lib.groupDeletionReason(lib.mergeCatalog(base, state), 'custom_fit'), /особыми слотами/);
+  assert.throws(() => apply(state, operation('delete', 'group', 'custom_fit')), /особыми слотами/);
+  assert.throws(() => apply(initial(), create, group), /группа custom_fit не найдена/);
+  assert.throws(() => apply(initial(), group, create, operation('delete', 'group', 'pp')), /обязательными слотами/);
+  const armour = { ...ship.bulkheads[1], id: 'custom_armour' };
+  const done = apply(state, operation('create', 'bulkhead', 'new_hull:custom_armour', armour));
+  assert.equal(lib.mergeCatalog(base, done).ships.new_hull.bulkheads.at(-1).id, 'custom_armour');
+});
+
 test('invalid batches roll back every operation, including history and revision', () => {
   const state = initial();
   assert.throws(() => apply(state, operation('create', 'module', 'pp:test_module', moduleValue()), operation('delete', 'group', 'fsd')), /обязательными слотами/);
@@ -215,6 +334,25 @@ test('API CRUD persists locally, public API immediately sees edits and never dis
   assert.equal(publicResult.body.history, undefined); assert.equal(publicResult.body.changes, undefined);
   const stale = await response(await lib.admin.POST(request({ revision: 0, commands: [operation('delete', 'module', 'pp:test_module')] })));
   assert.equal(stale.status, 409); assert.equal((await lib.readCatalogState()).revision, 1);
+});
+
+test('admin ship writes persist in the existing store and public catalogue has no audit metadata', async () => {
+  const hull = structuredClone(base.ships.sidewinder);
+  hull.id = 'api_ship'; hull.properties.name = 'Корабль API';
+  const write = await response(await lib.admin.POST(request({ revision: 0, commands: [operation('create', 'ship', hull.id, hull)] })));
+  assert.equal(write.status, 200);
+  assert.equal(write.body.changes[0].kind, 'ship');
+  assert.equal(write.body.history[0].label, 'Корабль API');
+  assert.equal(JSON.parse(readFileSync(process.env.OUTFITTING_DATA_FILE, 'utf8')).changes['ship/api_ship'].value.id, hull.id);
+  const publicData = await response(await lib.publicCatalog.GET());
+  assert.equal(publicData.status, 200);
+  assert.equal(publicData.body.ships.api_ship.properties.name, 'Корабль API');
+  assert.equal(publicData.body.history, undefined);
+  const archive = await response(await lib.admin.POST(request({ revision: 1, commands: [operation('delete', 'ship', hull.id)] })));
+  assert.equal(archive.status, 200);
+  assert.equal(archive.body.data.ships.api_ship.archived, true);
+  assert.equal((await response(await lib.publicCatalog.GET())).body.ships.api_ship.archived, true);
+  assert.equal((await lib.admin.POST(request({ revision: 1, commands: [operation('update', 'ship', hull.id, hull)] }))).status, 409);
 });
 
 test('anonymous production and staff roles cannot read/write, even with preview host or billing preview flag', async () => {
