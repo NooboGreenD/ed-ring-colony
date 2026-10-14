@@ -34,8 +34,10 @@ export default function FriendsPanel({ userId, myName, myAvatar }: Props) {
   const doSearch = async () => {
     if (!search.trim()) return;
     setSearching(true);
+    // public_profiles: поиск по позывным не должен открывать приватные
+    // колонки profiles (email, role, privacy_settings).
     const { data } = await supabase
-      .from("profiles")
+      .from("public_profiles")
       .select("id, cmdr_name, avatar_url")
       .ilike("cmdr_name", `%${search.trim()}%`)
       .limit(20);

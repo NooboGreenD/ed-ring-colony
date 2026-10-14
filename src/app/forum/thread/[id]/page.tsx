@@ -59,7 +59,7 @@ export default async function ThreadPage({ params }: Props) {
   let avatars: Record<string, string | null> = {};
   if (authorIds.length > 0) {
     const { data: profiles } = await supabase
-      .from("profiles")
+      .from("public_profiles")
       .select("id, avatar_url")
       .in("id", authorIds);
     avatars = Object.fromEntries((profiles ?? []).map((p: any) => [p.id, p.avatar_url]));

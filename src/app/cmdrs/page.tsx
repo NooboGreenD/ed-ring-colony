@@ -24,8 +24,9 @@ export default function CmdrsPage() {
 
   const loadAllCmdrs = async () => {
     setLoading(true);
+    // Публичный список пилотов — из представления без приватных колонок.
     const { data } = await supabase
-      .from("profiles")
+      .from("public_profiles")
       .select("id, cmdr_name, avatar_url, created_at")
       .order("cmdr_name")
       .limit(500);

@@ -29,7 +29,7 @@ export async function GET(req: Request) {
   ].filter(Boolean))];
 
   const { data: profilesData } = allAuthorIds.length
-    ? await supabase.from('profiles').select('id, cmdr_name').in('id', allAuthorIds)
+    ? await supabase.from('public_profiles').select('id, cmdr_name').in('id', allAuthorIds)
     : { data: [] };
   const profileMap = new Map((profilesData || []).map((p: any) => [p.id, p]));
 

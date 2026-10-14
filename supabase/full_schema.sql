@@ -12564,3 +12564,93 @@ FROM (VALUES
   ('Einheriar','Eidolon Hold','Yi Shen')
 ) AS ref(system_name,station_name,engineer)
 WHERE lower(st.system_name) = lower(ref.system_name) AND regexp_replace(lower(st.station_name),'[^a-z0-9]','','g') = regexp_replace(lower(ref.station_name),'[^a-z0-9]','','g');
+
+
+-- ═══ MIGRATION: 20261015000000_profiles_rls_hardening.sql ═══
+
+-- КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: персональные данные и права в profiles.
+-- Подробное описание причин и последствий — в файле миграции.
+
+CREATE OR REPLACE FUNCTION public.request_is_staff()
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE id = auth.uid()
+      AND role IN ('admin', 'moderator', 'support_manager')
+  );
+$$;
+
+DROP POLICY IF EXISTS profiles_select ON public.profiles;
+CREATE POLICY profiles_select ON public.profiles
+  FOR SELECT TO authenticated
+  USING (id = auth.uid() OR public.request_is_staff());
+
+REVOKE SELECT ON public.profiles FROM anon;
+
+CREATE OR REPLACE VIEW public.public_profiles AS
+SELECT
+  p.id,
+  p.cmdr_name,
+  p.avatar_url,
+  p.squadron,
+  p.created_at,
+  p.updated_at,
+  p.forum_posts_count
+FROM public.profiles p;
+
+REVOKE ALL ON public.public_profiles FROM PUBLIC;
+GRANT SELECT ON public.public_profiles TO anon, authenticated, service_role;
+
+COMMENT ON VIEW public.public_profiles IS
+  'Публичные колонки profiles (имена авторов, составы, поиск пилотов). '
+  'email/role/privacy_settings/language остаются во внутренней таблице, '
+  'которую видит только владелец строки и персонал.';
+
+CREATE OR REPLACE FUNCTION public.protect_profile_privileged_columns()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NOT (auth.uid() IS NULL OR public.request_is_admin()) THEN
+    IF TG_OP = 'INSERT' THEN
+      IF NEW.role IS DISTINCT FROM 'user' THEN
+        RAISE EXCEPTION 'profiles.role может задать только администратор'
+          USING ERRCODE = '42501';
+      END IF;
+    ELSE
+      IF NEW.role IS DISTINCT FROM OLD.role THEN
+        RAISE EXCEPTION 'profiles.role может изменить только администратор'
+          USING ERRCODE = '42501';
+      END IF;
+      IF NEW.email IS DISTINCT FROM OLD.email THEN
+        RAISE EXCEPTION 'profiles.email синхронизируется только сервером'
+          USING ERRCODE = '42501';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_protect_profile_privileged_columns ON public.profiles;
+CREATE TRIGGER trg_protect_profile_privileged_columns
+  BEFORE INSERT OR UPDATE OF role, email ON public.profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION public.protect_profile_privileged_columns();
+
+DROP POLICY IF EXISTS deliveries_select ON public.deliveries;
+CREATE POLICY deliveries_select ON public.deliveries
+  FOR SELECT TO authenticated
+  USING (user_id = auth.uid() OR public.request_is_staff());
+
+REVOKE SELECT ON public.deliveries FROM anon;
+
+NOTIFY pgrst, 'reload schema';

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabaseServer';
+import { createServiceClient } from '@/lib/supabaseServer';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,7 +28,11 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const period = searchParams.get('period') || 'all';
   const limit = validLimit(searchParams.get('limit'));
-  const supabase = await createClient();
+  // Лидерборд публичный, но агрегирует deliveries всех пилотов и имена из
+  // profiles — после миграции 20261015000000 обе таблицы видны только
+  // владельцу и персоналу, поэтому читаем service-role клиентом и наружу
+  // отдаём только агрегаты (имя + тонны).
+  const supabase = createServiceClient();
   const since = period === 'week'
     ? new Date(Date.now() - 7 * 86400000).toISOString()
     : period === 'month'

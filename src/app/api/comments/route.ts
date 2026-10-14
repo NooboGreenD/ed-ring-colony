@@ -38,7 +38,7 @@ export async function GET(req: Request) {
     let profiles: Record<string, any> = {};
     if (authorIds.length > 0) {
       const { data: profilesData } = await supabase
-        .from('profiles')
+        .from('public_profiles')
         .select('id, cmdr_name, avatar_url')
         .in('id', authorIds);
       profiles = Object.fromEntries((profilesData || []).map((p: any) => [p.id, p]));

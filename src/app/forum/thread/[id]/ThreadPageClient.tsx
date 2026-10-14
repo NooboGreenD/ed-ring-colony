@@ -78,7 +78,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
     });
     // Загружаем имя автора темы
     if (thread.author_id) {
-      supabase.from("profiles").select("cmdr_name").eq("id", thread.author_id).maybeSingle().then(({ data: p }) => {
+      supabase.from("public_profiles").select("cmdr_name").eq("id", thread.author_id).maybeSingle().then(({ data: p }) => {
         setThreadAuthorName(p?.cmdr_name || "Unknown");
       });
     }
@@ -97,7 +97,7 @@ export function ThreadPageClient({ thread, category, initialPosts }: Props) {
     let profileMap = new Map<string, { cmdr_name: string; avatar_url: string | null }>();
     if (authorIds.length > 0) {
       const { data: profiles } = await supabase
-        .from("profiles")
+        .from("public_profiles")
         .select("id, cmdr_name, avatar_url")
         .in("id", authorIds);
       profileMap = new Map((profiles ?? []).map((p: any) => [p.id, p]));

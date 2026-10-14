@@ -19,13 +19,17 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
   // `20260918010000_profile_privacy_settings` видны только владельцу, поэтому
   // досье читает их service-role клиентом и само решает, что показать:
   // фильтрация обязана происходить на сервере, до передачи данных в браузер.
+  // С миграции `20261015000000_profiles_rls_hardening` то же касается
+  // `profiles` (email/privacy_settings) и `deliveries` (перевозимый груз):
+  // RLS пускает туда только владельца и персонал, а публичное досье
+  // собирается здесь целиком и фильтруется по настройкам приватности.
   const svc = createServiceClient();
 
   const { data: { user } } = await supabase.auth.getUser();
   const currentUserId = user?.id ?? null;
 
   // 1. Находим профиль по cmdr_name (единственный источник имени)
-  const { data: profile } = await supabase
+  const { data: profile } = await svc
     .from('profiles')
     .select('id, cmdr_name, avatar_url, created_at, privacy_settings')
     .eq('cmdr_name', name)
@@ -44,7 +48,7 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
     const rows: any[] = [];
     let offset = 0;
     while (true) {
-      const { data, error } = await supabase
+      const { data, error } = await svc
         .from('deliveries')
         .select(columns)
         .eq('user_id', profileId)
@@ -84,7 +88,7 @@ export default async function CmdrPage({ params }: { params: Promise<{ name: str
   ] = await Promise.all([
     loadAllDeliveries(),
     profileId
-      ? supabase.from('deliveries').select('system_name, commodity, amount, delivered_at').eq('user_id', profileId).order('delivered_at', { ascending: false }).limit(50)
+      ? svc.from('deliveries').select('system_name, commodity, amount, delivered_at').eq('user_id', profileId).order('delivered_at', { ascending: false }).limit(50)
       : Promise.resolve({ data: [] }),
     profileId
       ? supabase.rpc('get_cmdr_rank', { user_uuid: profileId })

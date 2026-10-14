@@ -87,7 +87,7 @@ export async function loadSquadronMembers(
       ? db.from("squadron_ranks").select("*").in("id", rankIds)
       : Promise.resolve({ data: [], error: null }),
     userIds.length
-      ? db.from("profiles").select("id, cmdr_name, avatar_url").in("id", userIds)
+      ? db.from("public_profiles").select("id, cmdr_name, avatar_url").in("id", userIds)
       : Promise.resolve({ data: [], error: null }),
   ]);
 
