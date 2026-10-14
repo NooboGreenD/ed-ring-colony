@@ -329,6 +329,77 @@ test('ship editor remains usable on a narrow screen', async ({ page }) => {
   expect(app.errors).toEqual([]);
 });
 
+test('ship editor scrolls through a long loadout without hiding its controls', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 620 });
+  const app = await fixture(page);
+  await page.getByRole('tab', { name: 'Корабли', exact: true }).click();
+  await page.getByLabel('Поиск по каталогу').fill('anaconda');
+  await page.locator('tbody tr').filter({ hasText: 'anaconda' }).getByRole('button', { name: /^Редактировать/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Редактирование корабля' });
+  await dialog.getByRole('tab', { name: 'Слоты и комплектация' }).click();
+  const scrollArea = dialog.getByRole('region', { name: 'Содержимое редактора корабля' });
+
+  for (const viewport of [{ width: 1280, height: 620 }, { width: 360, height: 600 }, { width: 390, height: 480 }]) {
+    await page.setViewportSize(viewport);
+    const layout = await scrollArea.evaluate((body) => {
+      const modal = body.closest('dialog')!;
+      const footer = modal.querySelector('footer')!;
+      body.scrollTop = body.scrollHeight;
+      return {
+        clientHeight: body.clientHeight,
+        scrollHeight: body.scrollHeight,
+        scrollTop: body.scrollTop,
+        dialogBottom: modal.getBoundingClientRect().bottom,
+        dialogScrollTop: modal.scrollTop,
+        footerBottom: footer.getBoundingClientRect().bottom,
+        overflowY: getComputedStyle(body).overflowY,
+        scrollbarWidth: getComputedStyle(body).scrollbarWidth,
+      };
+    });
+    expect(layout.scrollHeight).toBeGreaterThan(layout.clientHeight + 100);
+    expect(layout.scrollTop).toBeGreaterThan(100);
+    expect(layout.clientHeight).toBeGreaterThan(100);
+    expect(layout.dialogBottom).toBeLessThanOrEqual(viewport.height + 1);
+    expect(layout.dialogScrollTop).toBe(0);
+    expect(layout.footerBottom).toBeLessThanOrEqual(viewport.height + 1);
+    expect(layout.overflowY).toBe('auto');
+    expect(layout.scrollbarWidth).toBe('thin');
+    await expect(dialog.getByRole('heading', { name: 'Редактирование корабля' })).toBeInViewport();
+    await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeInViewport();
+    const lastSlot = dialog.getByLabel(/internal \d+: размер/).last();
+    await lastSlot.scrollIntoViewIfNeeded();
+    await expect(lastSlot).toBeInViewport();
+  }
+  await scrollArea.evaluate((body) => { body.scrollTop = 0; });
+  await scrollArea.hover({ position: { x: 16, y: 16 } });
+  await page.mouse.wheel(0, 480);
+  await expect.poll(() => scrollArea.evaluate((body) => body.scrollTop)).toBeGreaterThan(0);
+  await dialog.getByRole('tab', { name: 'Характеристики' }).click();
+  expect(await scrollArea.evaluate((body) => body.scrollTop)).toBe(0);
+  const lastSpec = dialog.getByLabel('Рысканье, °/с');
+  await lastSpec.scrollIntoViewIfNeeded();
+  await expect(lastSpec).toBeInViewport();
+  await dialog.getByRole('tab', { name: 'JSON' }).click();
+  expect(await scrollArea.evaluate((body) => { body.scrollTop = body.scrollHeight; return body.scrollTop; })).toBeGreaterThan(0);
+  await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeInViewport();
+  expect(app.errors).toEqual([]);
+});
+
+test('module editor keeps a scrollable body and visible actions on a short screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 600 });
+  const app = await fixture(page);
+  await page.getByRole('button', { name: 'Добавить модуль' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Добавление модуля' });
+  const scrollArea = dialog.getByRole('region', { name: 'Содержимое редактора записи' });
+  const scroll = await scrollArea.evaluate((body) => { body.scrollTop = body.scrollHeight; return body.scrollTop; });
+  expect(scroll).toBeGreaterThan(0);
+  await expect(dialog.getByRole('heading', { name: 'Добавление модуля' })).toBeInViewport();
+  await expect(dialog.getByRole('button', { name: 'Сохранить', exact: true })).toBeInViewport();
+  await dialog.getByLabel('Цена, CR').scrollIntoViewIfNeeded();
+  await expect(dialog.getByLabel('Цена, CR')).toBeInViewport();
+  expect(app.errors).toEqual([]);
+});
+
 test('armour edits and archives preserve saved-build indices', async ({ page }) => {
   const app = await fixture(page);
   await page.getByRole('tab', { name: 'Броня', exact: true }).click();
