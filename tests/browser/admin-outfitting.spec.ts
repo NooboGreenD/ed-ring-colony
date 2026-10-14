@@ -5,6 +5,7 @@ import {
   type CatalogState, type CatalogCommand,
 } from '../../src/lib/outfitting/catalog';
 import type { OutfittingData } from '../../src/lib/outfitting/types';
+import { defaultBuild, encodeBuild } from '../../src/lib/outfitting/build';
 
 const base = JSON.parse(readFileSync('public/data/outfitting.json', 'utf8')) as OutfittingData;
 const adminUser = { id: 'browser-test-admin', email: 'admin@example.test', aud: 'authenticated', role: 'authenticated', app_metadata: {}, user_metadata: {}, created_at: '2026-10-10T00:00:00Z' };
@@ -113,6 +114,115 @@ test('module CRUD, copying, archive, restoration, public data and export work en
   expect(app.errors).toEqual([]);
 });
 
+test('ship CRUD, slots, copies and archive are reflected in the public shipyard without breaking old builds', async ({ page }) => {
+  const app = await fixture(page);
+  await page.getByRole('tab', { name: 'Корабли', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Добавить корабль' })).toBeEnabled();
+  await expect(page.locator('tbody tr')).toHaveCount(25);
+  await page.getByRole('button', { name: 'Добавить корабль' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Добавление корабля' });
+  await dialog.getByLabel('ID корабля').fill('test_ship');
+  await dialog.getByLabel('Название корабля').fill('Корабль тест');
+  await dialog.getByLabel('Производитель').fill('Испытательная верфь');
+  await dialog.getByRole('tab', { name: 'Характеристики' }).click();
+  await dialog.getByLabel('Скорость, м/с').fill('318');
+  await dialog.getByRole('tab', { name: 'Слоты и комплектация' }).click();
+  const internal = dialog.getByRole('heading', { name: 'Внутренние отсеки' }).locator('../..');
+  await internal.getByRole('button', { name: 'Добавить слот' }).click();
+  const newSlot = internal.getByLabel('internal 7: размер').locator('../..');
+  await internal.getByLabel('internal 7: размер').selectOption('3');
+  await newSlot.getByRole('checkbox', { name: 'Особый' }).check();
+  await newSlot.getByLabel('Назначение слота').fill('Cargo');
+  await newSlot.getByLabel('Допустимые группы (JSON)').fill('{"cr":1}');
+  await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(app.state().changes['ship/test_ship'].value).toMatchObject({
+    id: 'test_ship', properties: { name: 'Корабль тест', manufacturer: 'Испытательная верфь', speed: 318 },
+  });
+  expect(mergeCatalog(base, app.state()).ships.test_ship.slots.internal).toHaveLength(8);
+  expect(mergeCatalog(base, app.state()).ships.test_ship.slots.internal[7]).toMatchObject({ class: 3, name: 'Cargo', eligible: { cr: 1 } });
+  const row = page.locator('tbody tr').filter({ has: page.getByRole('button', { name: 'Редактировать Корабль тест', exact: true }) });
+  await expect(row).toContainText('Испытательная верфь');
+  await row.getByRole('button', { name: 'Редактировать Корабль тест' }).click();
+  const editor = page.getByRole('dialog', { name: 'Редактирование корабля' });
+  await expect(editor.getByLabel('ID корабля')).toBeDisabled();
+  await editor.getByLabel('Цена покупки, CR').fill('123456');
+  await editor.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  expect(mergeCatalog(base, app.state()).ships.test_ship.retailCost).toBe(123456);
+  await row.getByRole('button', { name: 'Копировать Корабль тест' }).click();
+  const copy = page.getByRole('dialog', { name: 'Добавление корабля' });
+  await copy.getByLabel('ID корабля').fill('test_ship_copy');
+  await copy.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  expect(mergeCatalog(base, app.state()).ships.test_ship_copy.properties.name).toContain('копия');
+  await page.getByLabel('Поиск по каталогу').fill('test_ship');
+  await row.getByRole('button', { name: 'Удалить Корабль тест' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Удалить', exact: true }).click();
+  await expect(row).not.toBeVisible();
+  await page.getByLabel('Фильтр состояния').selectOption('deleted');
+  await expect(page.getByRole('button', { name: 'Восстановить Корабль тест', exact: true })).toBeVisible();
+  expect(mergeCatalog(base, app.state()).ships.test_ship.archived).toBe(true);
+  await page.goto('/outfitting');
+  const hullSelect = page.locator('select').filter({ has: page.locator('option[value="test_ship_copy"]') });
+  await expect(hullSelect).toBeVisible();
+  await expect(hullSelect.locator('option[value="test_ship"]')).toHaveCount(0);
+  const code = encodeBuild(defaultBuild(mergeCatalog(base, app.state()), 'test_ship'));
+  await page.goto(`/outfitting?b=${encodeURIComponent(code)}`);
+  const archivedSelect = page.locator('select').filter({ has: page.locator('option[value="test_ship"]') });
+  await expect(archivedSelect).toHaveValue('test_ship');
+  await expect(archivedSelect.locator('option[value="test_ship"]')).toBeDisabled();
+  await page.goto('/admin?tab=outfitting');
+  await page.getByRole('tab', { name: 'Корабли', exact: true }).click();
+  await page.getByLabel('Фильтр состояния').selectOption('deleted');
+  await page.getByRole('button', { name: 'Восстановить Корабль тест' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Восстановить', exact: true }).click();
+  expect(mergeCatalog(base, app.state()).ships.test_ship.archived).toBeUndefined();
+  expect(app.errors).toEqual([]);
+});
+
+test('ship source reset, filters and invalid JSON keep the editor safe', async ({ page }) => {
+  const app = await fixture(page);
+  await page.getByRole('tab', { name: 'Корабли', exact: true }).click();
+  await page.getByLabel('Фильтр производителя').selectOption('Faulcon DeLacy');
+  await page.getByLabel('Фильтр размера').selectOption('1');
+  await page.getByLabel('Поиск по каталогу').fill('sidewinder');
+  const row = page.locator('tbody tr').filter({ hasText: 'sidewinder' });
+  await expect(row).toHaveCount(1);
+  await row.getByRole('button', { name: 'Редактировать Sidewinder' }).click();
+  const editor = page.getByRole('dialog', { name: 'Редактирование корабля' });
+  await editor.getByLabel('Название корабля').fill('Sidewinder обновлённый');
+  await editor.getByRole('tab', { name: 'JSON' }).click();
+  await editor.getByLabel('Данные корабля (JSON)').fill('{"id":"broken"}');
+  await editor.getByRole('tab', { name: 'Слоты и комплектация' }).click();
+  await expect(editor.getByRole('alert')).toContainText('Исправьте JSON');
+  await editor.getByLabel('Данные корабля (JSON)').fill(JSON.stringify({ ...base.ships.sidewinder,
+    slots: { ...base.ships.sidewinder.slots, internal: [null] } }));
+  await editor.getByRole('tab', { name: 'Слоты и комплектация' }).click();
+  await expect(editor.getByRole('alert')).toContainText('Исправьте JSON');
+  await editor.getByLabel('Данные корабля (JSON)').fill('{broken');
+  await editor.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(editor.getByRole('alert')).toContainText('JSON');
+  await editor.getByLabel('Данные корабля (JSON)').fill(JSON.stringify({ ...base.ships.sidewinder, properties: { ...base.ships.sidewinder.properties, name: 'Sidewinder обновлённый' } }));
+  await editor.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(editor).not.toBeVisible();
+  await expect(row).toContainText('Sidewinder обновлённый');
+  await row.getByRole('button', { name: 'Сбросить изменения Sidewinder обновлённый' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Сбросить к исходному' }).click();
+  await expect(row).toContainText('Sidewinder');
+  expect(app.state().changes['ship/sidewinder']).toBeUndefined();
+  await row.getByRole('button', { name: 'Удалить Sidewinder' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Удалить', exact: true }).click();
+  await page.goto('/outfitting');
+  const selector = page.locator('select').filter({ has: page.locator('option[value="anaconda"]') });
+  await expect(selector).not.toHaveValue('sidewinder');
+  await expect(selector.locator('option[value="sidewinder"]')).toHaveCount(0);
+  const code = encodeBuild(defaultBuild(mergeCatalog(base, app.state()), 'sidewinder'));
+  await page.goto(`/outfitting?b=${encodeURIComponent(code)}`);
+  const savedSelector = page.locator('select').filter({ has: page.locator('option[value="sidewinder"]') });
+  await expect(savedSelector).toHaveValue('sidewinder');
+  await expect(savedSelector.locator('option[value="sidewinder"]')).toBeDisabled();
+  expect(app.errors).toEqual([]);
+});
+
 test('group names, category changes for new groups and protected groups are handled safely', async ({ page }) => {
   const app = await fixture(page);
   await page.getByRole('tab', { name: 'Группы', exact: true }).click();
@@ -178,6 +288,44 @@ test('mobile layout keeps controls within the screen and dialogs work with keybo
   await expect(dialog).not.toBeVisible();
   await expect(add).toBeFocused();
   await page.screenshot({ path: '.cache/admin-outfitting-mobile.png', fullPage: true });
+  expect(app.errors).toEqual([]);
+});
+
+test('copying a source ship normalizes its irregular stock-slot arrays', async ({ page }) => {
+  const app = await fixture(page);
+  await page.getByRole('tab', { name: 'Корабли', exact: true }).click();
+  await page.getByLabel('Поиск по каталогу').fill('python_nx');
+  await page.locator('tbody tr').filter({ hasText: 'python_nx' }).getByRole('button', { name: /^Копировать/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Добавление корабля' });
+  await dialog.getByLabel('ID корабля').fill('custom_python');
+  await dialog.getByRole('button', { name: 'Сохранить', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  const ship = mergeCatalog(base, app.state()).ships.custom_python;
+  expect(ship.defaults.internal).toHaveLength(ship.slots.internal.length);
+  expect(ship.defaults.hardpoints).toHaveLength(ship.slots.hardpoints.length);
+  expect(app.errors).toEqual([]);
+});
+
+test('ship editor remains usable on a narrow screen', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 780 });
+  const app = await fixture(page);
+  const tab = page.getByRole('tab', { name: 'Корабли', exact: true });
+  await tab.click();
+  const rect = await tab.boundingBox();
+  expect(rect!.x).toBeGreaterThanOrEqual(0);
+  expect(rect!.x + rect!.width).toBeLessThanOrEqual(360);
+  await page.getByRole('button', { name: 'Добавить корабль' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Добавление корабля' });
+  await expect(dialog.getByLabel('Название корабля')).toBeVisible();
+  await dialog.getByRole('tab', { name: 'Слоты и комплектация' }).click();
+  const internal = dialog.getByRole('heading', { name: 'Внутренние отсеки' }).locator('../..');
+  await internal.getByRole('button', { name: 'Добавить слот' }).click();
+  await expect(internal.getByLabel('internal 7: размер')).toBeVisible();
+  const overflow = await dialog.evaluate((element) => element.scrollWidth > element.clientWidth + 1);
+  expect(overflow).toBe(false);
+  page.once('dialog', (confirmation) => confirmation.accept());
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
   expect(app.errors).toEqual([]);
 });
 
