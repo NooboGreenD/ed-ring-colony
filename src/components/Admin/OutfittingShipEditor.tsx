@@ -192,7 +192,8 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
         {(Object.keys(TABS) as Tab[]).map((key) => <button type="button" role="tab" aria-selected={tab === key} aria-controls="ship-editor-panel" key={key}
           disabled={busy} className={tab === key ? styles.activeTab : styles.tabButton} onClick={() => changeTab(key)}>{TABS[key]}</button>)}
       </div>
-      <fieldset disabled={busy} className={styles.editorBody} id="ship-editor-panel" role="tabpanel" aria-label={TABS[tab]}>
+      <div key={tab} className={styles.editorScroll} role="region" aria-label="Содержимое редактора корабля" tabIndex={0}>
+        <fieldset disabled={busy} className={styles.editorBody} id="ship-editor-panel" role="tabpanel" aria-label={TABS[tab]}>
         {tab === 'main' && <>
           <div className={styles.note}><IconWrench size={16} color="currentColor" /><span>Кнопка добавления использует шаблон Sidewinder; можно также копировать подходящий корпус из списка. ID существующего корабля не меняется: он используется в ссылках и сохранённых сборках.</span></div>
           <div className={styles.formGrid}>
@@ -235,7 +236,8 @@ export default function OutfittingShipEditor({ item, data, onClose, onSave }: {
         {tab === 'json' && <><div className={styles.note}>Полная запись корпуса и слотов. ID неизменен; броню существующего корабля редактируйте в отдельной вкладке «Броня» — прямые изменения этого массива не сохраняются.</div>
           <Field label="Данные корабля (JSON)" wide><textarea className={styles.codeInput} rows={22} spellCheck={false} value={json} onChange={(event) => { setJson(event.target.value); setError(''); }} /></Field>
         </>}
-      </fieldset>
+        </fieldset>
+      </div>
       {error && <div role="alert" className={styles.formError}>{error}</div>}
       <footer className={styles.dialogFooter}><span className={styles.helpText}>{dirty ? 'Есть несохранённые изменения' : 'Изменения появятся в верфи после сохранения'}</span>
         <div className={styles.actions}><button type="button" disabled={busy} className={styles.secondaryButton} onClick={requestClose}>Отмена</button>

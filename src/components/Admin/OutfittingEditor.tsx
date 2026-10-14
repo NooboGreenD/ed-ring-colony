@@ -157,7 +157,8 @@ export default function OutfittingEditor({ item, data, onClose, onSave }: {
           <button type="button" role="tab" aria-selected={tab === key} aria-controls="catalog-editor-panel" key={key}
             disabled={busy} className={tab === key ? styles.activeTab : styles.tabButton} onClick={() => changeTab(key)}>{TAB_LABELS[key]}</button>)}
       </div>
-      <fieldset disabled={busy} className={styles.editorBody} id="catalog-editor-panel" role="tabpanel" aria-label={TAB_LABELS[tab]}>
+      <div key={tab} className={styles.editorScroll} role="region" aria-label="Содержимое редактора записи" tabIndex={0}>
+        <fieldset disabled={busy} className={styles.editorBody} id="catalog-editor-panel" role="tabpanel" aria-label={TAB_LABELS[tab]}>
         {tab === 'main' && <>
           <div className={styles.note}><IconWrench size={16} color="currentColor" /><span>Названия и параметры можно менять. Технические ID существующих записей сохраняются, чтобы не ломать ссылки на сборки.</span></div>
           <div className={styles.formGrid}>
@@ -236,7 +237,8 @@ export default function OutfittingEditor({ item, data, onClose, onSave }: {
           <div className={styles.note}>Полная запись без потери дополнительных полей. Проценты хранятся в долях (0.25 = 25%). При сохранении проверяются типы и постоянные ID.</div>
           <Field label="Данные записи (JSON)" wide><textarea className={styles.codeInput} rows={22} spellCheck={false} value={json} onChange={(event) => { setJson(event.target.value); setError(''); }} /></Field>
         </>}
-      </fieldset>
+        </fieldset>
+      </div>
       {error && <div className={styles.formError} role="alert">{error}</div>}
       <footer className={styles.dialogFooter}>
         <span className={styles.helpText}>{dirty ? 'Есть несохранённые изменения' : 'Изменения появятся в верфи после сохранения'}</span>

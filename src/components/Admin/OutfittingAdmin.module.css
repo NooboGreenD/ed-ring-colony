@@ -111,9 +111,17 @@
 .dialogHeader { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); padding: 18px 22px; background: var(--bg); }
 .dialogHeader h2 { font-size: 16px; letter-spacing: 1px; margin: 0; overflow-wrap: anywhere; }
 .dialogHeader .eyebrow { font-size: 10px; margin-bottom: 5px; }
-.editorForm { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.editorForm { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
 .editorTabs { padding: 12px 22px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
-.editorBody { border: 0; margin: 0; padding: 20px 22px; overflow: auto; min-width: 0; min-height: 0; }
+/* Fieldsets cannot reliably scroll their contents in Chromium; scroll their wrapper instead. */
+.editorScroll { flex: 1 1 auto; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+.editorScroll:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+.editorBody { border: 0; margin: 0; padding: 20px 22px; min-width: 0; width: 100%; }
+:is(.editorScroll, .editorTabs, .dialog textarea) { scrollbar-width: thin; scrollbar-color: var(--line) var(--bg); color-scheme: dark; }
+:is(.editorScroll, .editorTabs, .dialog textarea)::-webkit-scrollbar { width: 7px; height: 7px; }
+:is(.editorScroll, .editorTabs, .dialog textarea)::-webkit-scrollbar-track { background: var(--bg); }
+:is(.editorScroll, .editorTabs, .dialog textarea)::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; border: 1px solid var(--bg); }
+:is(.editorScroll, .editorTabs, .dialog textarea)::-webkit-scrollbar-thumb:hover { background: var(--orange); }
 .formGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px 14px; align-items: start; }
 .wideField { grid-column: 1 / -1; }
 .slotSection { margin: 0 0 26px; border: 1px solid var(--line); padding: 14px; background: var(--bg); }
