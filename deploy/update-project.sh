@@ -305,9 +305,9 @@ fi
 
 run_sql() { # SQL на stdin
   if [ "$DB_PSQL" = "container" ]; then
-    docker exec -i "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1
+    docker exec -i -e PGOPTIONS='-c client_min_messages=warning' "$SUPA_CONTAINER" psql -U postgres -d postgres -q -v ON_ERROR_STOP=1
   elif [ "$DB_PSQL" = "url" ]; then
-    psql "$DB_URL" -q -v ON_ERROR_STOP=1
+    PGOPTIONS='-c client_min_messages=warning' psql "$DB_URL" -q -v ON_ERROR_STOP=1
   else
     return 1
   fi

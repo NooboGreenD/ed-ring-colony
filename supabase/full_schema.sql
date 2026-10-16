@@ -12671,71 +12671,93 @@ NOTIFY pgrst, 'reload schema';
 -- 4. public.delivery_scope_summary: включаем security_invoker = true и убираем доступ anon,
 --    чтобы представление уважало RLS на public.deliveries.
 -- 5. public.squadron_member_detail: переключаем JOIN с закрытой таблицы public.profiles
---    на безопасное представление public.public_profiles.
+--    на безопасное представление public.public_profiles без изменения набора колонок.
 -- =============================================================================
 
+SET client_min_messages TO warning;
+
 -- ── 1. public.capi_tokens: доступ только для service_role ─────────────────────
-ALTER TABLE public.capi_tokens ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "capi_tokens_select_own" ON public.capi_tokens;
-
-REVOKE ALL ON public.capi_tokens FROM PUBLIC, anon, authenticated;
-GRANT ALL ON public.capi_tokens TO service_role;
+DO $$
+BEGIN
+  IF to_regclass('public.capi_tokens') IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE public.capi_tokens ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'DROP POLICY IF EXISTS "capi_tokens_select_own" ON public.capi_tokens';
+    EXECUTE 'REVOKE ALL ON public.capi_tokens FROM PUBLIC, anon, authenticated';
+    EXECUTE 'GRANT ALL ON public.capi_tokens TO service_role';
+  END IF;
+END
+$$;
 
 -- ── 2. public.inara_profiles: доступ только для service_role ──────────────────
-ALTER TABLE public.inara_profiles ENABLE ROW LEVEL SECURITY;
-
-DROP POLICY IF EXISTS "inara_profiles_select_own" ON public.inara_profiles;
-
-REVOKE ALL ON public.inara_profiles FROM PUBLIC, anon, authenticated;
-GRANT ALL ON public.inara_profiles TO service_role;
+DO $$
+BEGIN
+  IF to_regclass('public.inara_profiles') IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE public.inara_profiles ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'DROP POLICY IF EXISTS "inara_profiles_select_own" ON public.inara_profiles';
+    EXECUTE 'REVOKE ALL ON public.inara_profiles FROM PUBLIC, anon, authenticated';
+    EXECUTE 'GRANT ALL ON public.inara_profiles TO service_role';
+  END IF;
+END
+$$;
 
 -- ── 3. public.api_tokens: скрытие token_hash и запрет прямой записи ───────────
-ALTER TABLE public.api_tokens ENABLE ROW LEVEL SECURITY;
+DO $$
+BEGIN
+  IF to_regclass('public.api_tokens') IS NOT NULL THEN
+    EXECUTE 'ALTER TABLE public.api_tokens ENABLE ROW LEVEL SECURITY';
+    EXECUTE 'ALTER TABLE public.api_tokens
+      ADD COLUMN IF NOT EXISTS scopes TEXT[] DEFAULT ARRAY[''upload'']::text[],
+      ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ';
 
-DROP POLICY IF EXISTS "Users insert own api_tokens" ON public.api_tokens;
-DROP POLICY IF EXISTS "Users update own api_tokens" ON public.api_tokens;
-DROP POLICY IF EXISTS "Users delete own api_tokens" ON public.api_tokens;
-DROP POLICY IF EXISTS "Users can manage own tokens" ON public.api_tokens;
-DROP POLICY IF EXISTS "Users can insert own tokens" ON public.api_tokens;
-DROP POLICY IF EXISTS "Users can delete own tokens" ON public.api_tokens;
+    EXECUTE 'DROP POLICY IF EXISTS "api_tokens_insert" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "api_tokens_update" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "api_tokens_delete" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users insert own api_tokens" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users update own api_tokens" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users delete own api_tokens" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users can manage own tokens" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users can insert own tokens" ON public.api_tokens';
+    EXECUTE 'DROP POLICY IF EXISTS "Users can delete own tokens" ON public.api_tokens';
 
-REVOKE ALL ON public.api_tokens FROM PUBLIC, anon, authenticated;
-GRANT SELECT (id, user_id, name, scopes, is_revoked, revoked_at, last_used_at, expires_at, created_at)
-  ON public.api_tokens TO authenticated;
-GRANT ALL ON public.api_tokens TO service_role;
+    EXECUTE 'REVOKE ALL ON public.api_tokens FROM PUBLIC, anon, authenticated';
+    EXECUTE 'GRANT SELECT (id, user_id, name, scopes, is_revoked, revoked_at, last_used_at, expires_at, created_at)
+      ON public.api_tokens TO authenticated';
+    EXECUTE 'GRANT ALL ON public.api_tokens TO service_role';
+  END IF;
+END
+$$;
 
 -- ── 4. public.delivery_scope_summary: уважение RLS таблицы deliveries ─────────
-CREATE OR REPLACE VIEW public.delivery_scope_summary
-WITH (security_invoker = true) AS
-SELECT
-  user_id,
-  cmdr_name,
-  cargo_scope,
-  COUNT(*)::bigint AS delivery_count,
-  COALESCE(SUM(quantity), 0)::bigint AS total_tons,
-  MAX(delivered_at) AS last_delivery_at
-FROM public.deliveries
-GROUP BY user_id, cmdr_name, cargo_scope;
-
-REVOKE ALL ON public.delivery_scope_summary FROM PUBLIC, anon;
-GRANT SELECT ON public.delivery_scope_summary TO authenticated, service_role;
+DO $$
+BEGIN
+  IF to_regclass('public.delivery_scope_summary') IS NOT NULL THEN
+    EXECUTE 'ALTER VIEW public.delivery_scope_summary SET (security_invoker = true)';
+    EXECUTE 'REVOKE ALL ON public.delivery_scope_summary FROM PUBLIC, anon';
+    EXECUTE 'GRANT SELECT ON public.delivery_scope_summary TO authenticated, service_role';
+  END IF;
+END
+$$;
 
 -- ── 5. public.squadron_member_detail: чтение из public_profiles ───────────────
-CREATE OR REPLACE VIEW public.squadron_member_detail
-WITH (security_invoker = true) AS
-SELECT
-  sm.id,
-  sm.squadron_id,
-  sm.user_id,
-  sm.role,
-  sm.joined_at,
-  COALESCE(NULLIF(BTRIM(p.cmdr_name), ''), 'Пилот') AS cmdr_name,
-  p.avatar_url
-FROM public.squadron_members sm
-LEFT JOIN public.public_profiles p ON p.id = sm.user_id;
-
-GRANT SELECT ON public.squadron_member_detail TO anon, authenticated, service_role;
+DO $$
+DECLARE
+  v_def text;
+BEGIN
+  IF to_regclass('public.squadron_member_detail') IS NOT NULL
+     AND to_regclass('public.public_profiles') IS NOT NULL THEN
+    v_def := pg_get_viewdef('public.squadron_member_detail'::regclass, true);
+    IF v_def ~* '\mprofiles\M' THEN
+      v_def := regexp_replace(v_def, '\mpublic\.profiles\M', 'public.public_profiles', 'gi');
+      v_def := regexp_replace(v_def, '(?<!\.)\mprofiles\M', 'public.public_profiles', 'gi');
+      EXECUTE 'CREATE OR REPLACE VIEW public.squadron_member_detail WITH (security_invoker = true) AS ' || v_def;
+    ELSE
+      EXECUTE 'ALTER VIEW public.squadron_member_detail SET (security_invoker = true)';
+    END IF;
+    EXECUTE 'GRANT SELECT ON public.squadron_member_detail TO anon, authenticated, service_role';
+  END IF;
+END
+$$;
 
 NOTIFY pgrst, 'reload schema';
 
