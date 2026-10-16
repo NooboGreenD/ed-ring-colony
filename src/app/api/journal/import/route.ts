@@ -8,6 +8,7 @@ import {
   type ColonisationSiteRow,
   type DepotSnapshotRow,
 } from '@/lib/colonisationEvents';
+import { resetJournalData } from '@/lib/journalReset';
 
 const JOURNAL_DATABASE_BATCH_SIZE = 100;
 const MAX_EVENTS_PER_REQUEST = 500;
@@ -24,6 +25,15 @@ interface ImportBody {
   finalize?: boolean;
   depotEvents?: ParsedColonisationDepot[];
   contributionEvents?: ParsedColonisationContribution[];
+  /**
+   * Полная перезагрузка с нуля: перед первой пачкой событий очищаем все
+   * журнальные данные пользователя (поставки, импорты, сводку пилота, сканы).
+   * Маркер `_reset_performed` не даёт последующим батчам очистить только что
+   * записанные строки.
+   */
+  reset?: boolean;
+  full_reimport?: boolean;
+  _reset_performed?: boolean;
 }
 
 function batches<T>(rows: T[]): T[][] {
@@ -90,6 +100,26 @@ export async function POST(req: Request) {
     }
 
     svc = createServiceClient();
+
+    // Полная перезагрузка журнала с нуля: при `reset: true` на первой пачке
+    // (importId ещё не назначен и флаг _reset_performed не стоит) очищаем все
+    // журнальные данные пользователя от мусорных частей, оставшихся после
+    // сбойных или дублированных импортов.
+    let resetOutcome = null;
+    const shouldReset = body.reset === true || body.full_reimport === true;
+    const isFirstBatch = boundedNumber(body.importId, 0) === 0 && !body._reset_performed;
+    if (shouldReset && isFirstBatch) {
+      try {
+        resetOutcome = await resetJournalData(svc, user.id);
+      } catch (resetError) {
+        console.error('[Journal Import] Reset failed:', (resetError as Error).message);
+        if (svc && importId) {
+          await svc.from('journal_imports').update({ status: 'failed', error_message: (resetError as Error).message.slice(0, 1000) }).eq('id', importId);
+        }
+        return NextResponse.json({ error: `Не удалось очистить старые логи: ${(resetError as Error).message}` }, { status: 500 });
+      }
+    }
+
     const totalEvents = boundedNumber(body.totalEvents, requestEventCount);
     const requestedImportId = boundedNumber(body.importId, 0);
 
@@ -176,6 +206,7 @@ export async function POST(req: Request) {
       snapshotCount,
       totalEvents: insertedDepots,
       complete,
+      reset: resetOutcome,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal error';

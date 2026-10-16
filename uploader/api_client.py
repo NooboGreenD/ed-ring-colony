@@ -303,6 +303,32 @@ class ApiClient:
         result["deferred"] = state["deferred"]
         return result
 
+    def reset_journal_data(self) -> dict:
+        """Очистить все журнальные данные на сервере (для перезагрузки с нуля).
+
+        Вызывается перед полной отправкой истории, когда в БД накопились
+        мусорные части логов после сбойных импортов. Маршрут на сервере
+        удаляет: доставки, импорты, устаревшие colonisation_events,
+        строку pilot_stats и сканы тел этого пользователя; у общих
+        colonisation_sites снимается авторство (user_id → NULL), чтобы
+        новые snapshots могли их перезаписать.
+        """
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/journal/reset",
+                json={"token": self.token, "confirm": True},
+                allow_redirects=False,
+                timeout=90,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return {"ok": True, "reset": data.get("reset", {}), "message": data.get("message", "")}
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
     @property
     def is_connected(self) -> bool:
         return bool(self.token and self.user_id)
