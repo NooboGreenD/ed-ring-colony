@@ -707,7 +707,9 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   per-block behaviour, hotkeys) are stored in `config.json` under `profiles`.
 - HUD block management (2.3.0): each of the seven blocks (`route`, `status`,
   `ship`, `cargo`, `session`, `events`, `exobio`) has its own visibility,
-  position lock, click-through (`WS_EX_TRANSPARENT` via ctypes), alpha, font
+  position lock (since 2.15.0 a locked block is always click-through:
+  `WS_EX_TRANSPARENT` via ctypes, applied on `<Map>` to the real top-level
+  HWND), detach from the game / move to another monitor (`screens.py`), alpha, font
   size, size preset (XS/S/M/L/XL), auto-show rule and hotkey. Everything is
   pushed into the **live** windows (`apply_block_style()`), so changing the
   font, alpha or profile never recreates the overlay. Behaviour rules

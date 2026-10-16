@@ -13,8 +13,17 @@ from game_monitor import (
     GameMonitor,
     GameState,
     _is_own_window,
+    _own_pid,
     _win32_find_game_window,
     _win32_window_pid,
+)
+from screens import (
+    MonitorInfo,
+    fit_into_area,
+    header_visible,
+    list_monitors,
+    monitor_for_area,
+    translate_between_areas,
 )
 from exobiology import estimate_value, format_credits
 from hotkeys import HotkeyManager
@@ -88,15 +97,6 @@ def _set_window_topmost(hwnd: int, topmost: bool):
     pass
 
 
-def _hwnd_of(window) -> Optional[int]:
-    """HWND окна Tk (frame id -> parent window handle)."""
-    try:
-        import ctypes
-        return ctypes.windll.user32.GetParent(window.winfo_id())
-    except Exception:
-        return None
-
-
 #: Флаги Win32 для режима «клик насквозь».
 GWL_EXSTYLE = -20
 WS_EX_TRANSPARENT = 0x00000020
@@ -107,59 +107,194 @@ SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
+GA_ROOT = 2
+
+#: user32 с прототипами функций; None — ещё не загружали, False — нет Win32.
+_USER32 = None
 
 
-def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0) -> bool:
+def _user32():
+    """user32 с прототипами (argtypes/restype) — или None вне Windows.
+
+    Отдельный экземпляр `WinDLL`, а не общий `ctypes.windll.user32`:
+    прототипы задаём только себе и не меняем поведение чужих модулей. Без
+    них ctypes считает каждый результат 32-битным `int`, а HWND и стили на
+    64-битной Windows — это указатели (`LONG_PTR`): значения обрезались, и
+    `SetWindowLongPtrW` молча писала стиль не туда или не писала вовсе.
+    """
+    global _USER32
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return None
+    if _USER32 is None:
+        try:
+            lib = ctypes.WinDLL("user32", use_last_error=True)
+            hwnd_t = wintypes.HWND
+            long_ptr = ctypes.c_ssize_t
+
+            def proto(name, restype, *argtypes):
+                func = getattr(lib, name)
+                func.argtypes = list(argtypes)
+                func.restype = restype
+                return func
+
+            try:
+                get_style = proto("GetWindowLongPtrW", long_ptr, hwnd_t, ctypes.c_int)
+                set_style = proto("SetWindowLongPtrW", long_ptr, hwnd_t, ctypes.c_int, long_ptr)
+            except AttributeError:
+                # 32-битная Windows: функций *Ptr* в user32 нет, стиль — LONG.
+                get_style = proto("GetWindowLongW", wintypes.LONG, hwnd_t, ctypes.c_int)
+                set_style = proto("SetWindowLongW", wintypes.LONG, hwnd_t, ctypes.c_int, wintypes.LONG)
+
+            class _Api:
+                GetAncestor = proto("GetAncestor", hwnd_t, hwnd_t, wintypes.UINT)
+                IsWindow = proto("IsWindow", wintypes.BOOL, hwnd_t)
+                GetWindowLong = get_style
+                SetWindowLong = set_style
+                SetLayeredWindowAttributes = proto(
+                    "SetLayeredWindowAttributes", wintypes.BOOL,
+                    hwnd_t, wintypes.DWORD, ctypes.c_ubyte, wintypes.DWORD,
+                )
+                SetWindowPos = proto(
+                    "SetWindowPos", wintypes.BOOL, hwnd_t, hwnd_t,
+                    ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+                )
+                GetForegroundWindow = proto("GetForegroundWindow", hwnd_t)
+                GetWindowThreadProcessId = proto(
+                    "GetWindowThreadProcessId", wintypes.DWORD,
+                    hwnd_t, ctypes.POINTER(wintypes.DWORD),
+                )
+
+            _USER32 = _Api
+        except Exception:
+            _USER32 = False
+    return _USER32 or None
+
+
+def _toplevel_hwnd(window) -> Optional[int]:
+    """HWND настоящего окна верхнего уровня у Tk-окна — или None, пока его нет.
+
+    Tk на Windows рисует содержимое Toplevel в дочернем окне, а рамку
+    («wrapper») создаёт только при первом показе — и пересоздаёт её при
+    некоторых операциях (overrideredirect, -toolwindow, полноэкранный режим).
+    Поэтому HWND нельзя запоминать навсегда, а до первого показа его просто
+    нет: GetAncestor(GA_ROOT) вернёт само дочернее окно. Раньше «клик
+    насквозь» применялся именно в этот момент — к несуществующему окну, — и
+    не работал, пока его не перещёлкнешь вручную.
+    """
+    user32 = _user32()
+    if user32 is None:
+        return None
+    try:
+        child = int(window.winfo_id())
+    except Exception:
+        return None
+    if not child:
+        return None
+    try:
+        root = user32.GetAncestor(child, GA_ROOT)
+        if not root or int(root) == child or not user32.IsWindow(root):
+            return None
+        return int(root)
+    except Exception:
+        return None
+
+
+#: Старое имя: так помощник назывался, когда брал GetParent(winfo_id()).
+_hwnd_of = _toplevel_hwnd
+
+
+def _foreground_window() -> Optional[int]:
+    """HWND активного окна (без чтения заголовка — см. _is_ed_foreground)."""
+    user32 = _user32()
+    if user32 is None:
+        return None
+    try:
+        return int(user32.GetForegroundWindow() or 0) or None
+    except Exception:
+        return None
+
+
+def _window_pid(hwnd: Optional[int]) -> int:
+    """PID процесса, которому принадлежит окно (0 — не удалось узнать)."""
+    user32 = _user32()
+    if user32 is None or not hwnd:
+        return 0
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+    except Exception:
+        return 0
+
+
+def _set_click_through(hwnd: int, enabled: bool, alpha: float = 1.0,
+                       keep_layered: Optional[bool] = None) -> bool:
     """Сделать окно прозрачным для мыши (WS_EX_TRANSPARENT | WS_EX_LAYERED).
 
     Нужен именно Win32: tkinter не умеет «клик насквозь». Окно остаётся
-    видимым и поверх игры, но все щелчки уходят в игру.
+    видимым и поверх игры, но все щелчки уходят в игру. Возвращает True,
+    только если нужный стиль действительно стоит на окне — это проверяется
+    повторным чтением, поэтому неудачная запись больше не выдаёт себя за
+    успех.
 
-    Тонкости, без которых окно мигает при редактировании:
+    Тонкости:
 
+    * стиль пишем только когда он отличается от нужного: каждая запись
+      пересобирает окно, и при постоянной перезаписи блок мерцал;
     * после смены расширенного стиля Windows требует
-      ``SetWindowPos(..., SWP_FRAMECHANGED)`` — без него новое оформление
-      применяется «когда получится», и окно дёргается;
-    * ``WS_EX_LAYERED`` снимаем симметрично: раньше он оставался навсегда,
-      и любое последующее действие с окном (``lift()``, смена размера,
-      перетаскивание) пересобирало слоистое окно — отсюда мерцание;
-    * включив ``WS_EX_LAYERED``, сразу задаём альфу через
+      ``SetWindowPos(..., SWP_FRAMECHANGED)``;
+    * впервые включив ``WS_EX_LAYERED``, сразу задаём альфу через
       ``SetLayeredWindowAttributes``: слоистое окно без атрибутов Windows
-      считает полностью прозрачным, и блок на долю секунды пропадал.
-      При alpha < 1.0 слой нужен самому Tk, поэтому при выключении
-      «клик насквозь» его не трогаем.
+      считает полностью прозрачным, и блок пропадал;
+    * при выключении ``WS_EX_LAYERED`` снимаем, только если слой не нужен
+      самому Tk (``keep_layered``): Tk ставит его для прозрачности < 100 %
+      и считает, что он стоит навсегда, — сняв его, мы сломали бы
+      дальнейшие смены прозрачности. По умолчанию слой оставляем при
+      alpha < 1.0.
     """
     if not hwnd:
         return False
+    user32 = _user32()
+    if user32 is None:
+        return False
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        # На 64-битных сборках стили живут в LONG_PTR.
-        get_style = getattr(user32, "GetWindowLongPtrW", None) or user32.GetWindowLongW
-        set_style = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
         try:
             transparency = max(0.0, min(1.0, float(alpha)))
         except (TypeError, ValueError):
             transparency = 1.0
-        style = get_style(hwnd, GWL_EXSTYLE)
+        if not user32.IsWindow(hwnd):
+            return False
+        style = int(user32.GetWindowLong(hwnd, GWL_EXSTYLE))
         if enabled:
-            new_style = style | WS_EX_TRANSPARENT | WS_EX_LAYERED
-            set_style(hwnd, GWL_EXSTYLE, new_style)
-            # Слоистое окно обязано иметь атрибуты, иначе оно не рисуется.
-            user32.SetLayeredWindowAttributes(
-                hwnd, 0, int(round(transparency * 255)), LWA_ALPHA
-            )
+            desired = style | WS_EX_TRANSPARENT | WS_EX_LAYERED
         else:
-            new_style = style & ~WS_EX_TRANSPARENT
-            if transparency >= 1.0:
-                new_style &= ~WS_EX_LAYERED
-            set_style(hwnd, GWL_EXSTYLE, new_style)
-        if new_style != style:
+            desired = style & ~WS_EX_TRANSPARENT
+            if keep_layered is None:
+                keep_layered = transparency < 1.0
+            if not keep_layered:
+                desired &= ~WS_EX_LAYERED
+        if desired != style:
+            user32.SetWindowLong(hwnd, GWL_EXSTYLE, desired)
+            if desired & WS_EX_LAYERED and not style & WS_EX_LAYERED:
+                # Слоистое окно обязано иметь атрибуты, иначе оно не рисуется.
+                user32.SetLayeredWindowAttributes(
+                    hwnd, 0, int(round(transparency * 255)), LWA_ALPHA
+                )
             user32.SetWindowPos(
-                hwnd, 0, 0, 0, 0, 0,
+                hwnd, None, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )
-        return True
+            style = int(user32.GetWindowLong(hwnd, GWL_EXSTYLE))
+        through = bool(style & WS_EX_TRANSPARENT)
+        if enabled:
+            return through and bool(style & WS_EX_LAYERED)
+        return not through
     except Exception:
         return False
 
@@ -419,11 +554,30 @@ def resolve_block_font_size(settings: dict, key: str) -> int:
 
 
 def block_click_through(settings: dict, key: str) -> bool:
-    """Клик-сквозь: своё значение, если задано, иначе общее."""
+    """Пропускает ли блок мышь в игру («клик насквозь»).
+
+    С 2.15.0 отдельной настройки нет: закреплённый блок всегда прозрачен для
+    мыши, откреплённый всегда принимает клики — его двигают и настраивают.
+    Раньше это были две независимые галочки, и закреплённый блок без «клика
+    насквозь» перехватывал мышь у игры.
+    """
+    return bool(settings.get(f"{key}_locked", False))
+
+
+def legacy_click_through(settings: dict, key: str) -> bool:
+    """Значение «клик насквозь» по правилам до 2.15.0: своё у блока, иначе общее.
+
+    Нужно только миграции настроек и старым профилям раскладки.
+    """
     value = settings.get(f"{key}_click_through")
     if value is None:
         return bool(settings.get("click_through", False))
     return bool(value)
+
+
+def block_detached(settings: dict, key: str) -> bool:
+    """Блок отвязан от игры: виден и без фокуса игры, живёт на своём экране."""
+    return bool(settings.get(f"{key}_detached", False))
 
 
 def auto_rule_matches(rule: str, context: dict) -> bool:
@@ -536,6 +690,13 @@ def compute_anchored_position(
     return int(x), int(y)
 
 
+#: Общие настройки, которые профиль раскладки сохраняет вместе с блоками.
+LAYOUT_GLOBAL_KEYS = (
+    "alpha", "font_family", "font_size", "layout_margin", "idle_timeout",
+    "auto_rules_enabled", "hide_when_game_off", "attach_to_game",
+)
+
+
 def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dict:
     """Снимок текущей раскладки для профиля (чистая функция, без Tk).
 
@@ -555,8 +716,10 @@ def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dic
             # «Хаул» и «Эксобиология» отличаются не только позициями.
             "alpha": settings.get(f"{key}_alpha"),
             "font_size": settings.get(f"{key}_font_size"),
+            # Закреплённый блок заодно пропускает мышь в игру (см.
+            # block_click_through) — отдельного «клика насквозь» больше нет.
             "locked": settings.get(f"{key}_locked", False),
-            "click_through": settings.get(f"{key}_click_through"),
+            "detached": block_detached(settings, key),
             "auto_rule": settings.get(f"{key}_auto_rule", "always"),
             "hotkey": settings.get(f"{key}_hotkey", ""),
         }
@@ -572,9 +735,7 @@ def capture_layout_snapshot(settings: dict, windows: dict, blocks: tuple) -> dic
                 pass
         snapshot[key] = entry
     # Общие настройки вида и поведения тоже часть раскладки.
-    for key in ("alpha", "font_family", "font_size", "layout_margin",
-                "click_through", "idle_timeout", "auto_rules_enabled",
-                "hide_when_game_off", "attach_to_game"):
+    for key in LAYOUT_GLOBAL_KEYS:
         if key in settings:
             snapshot[key] = settings[key]
     return snapshot
@@ -590,20 +751,27 @@ def apply_layout_snapshot(settings: dict, snapshot: dict, blocks: tuple) -> None
             "x", "y", "width", "height", "anchor",
             # None означает «как везде» — важно уметь вернуть общее значение,
             # поэтому сбрасываем ключ, а не пишем None.
-            "alpha", "font_size", "click_through",
+            "alpha", "font_size",
         ):
             if entry.get(suffix) is not None:
                 settings[f"{key}_{suffix}"] = entry[suffix]
             elif f"{key}_{suffix}" in settings:
                 settings.pop(f"{key}_{suffix}", None)
-        for suffix in ("locked", "auto_rule", "hotkey"):
+        for suffix in ("locked", "detached", "auto_rule", "hotkey"):
             if suffix in entry:
                 settings[f"{key}_{suffix}"] = entry[suffix]
+        if "click_through" in entry or "click_through" in snapshot:
+            # Профиль до 2.15.0: «клик насквозь» был отдельной галочкой.
+            # Блок, который пропускал мышь, теперь закреплён — иначе после
+            # применения старого профиля он начал бы перехватывать клики.
+            legacy = {"click_through": snapshot.get("click_through", False)}
+            if entry.get("click_through") is not None:
+                legacy[f"{key}_click_through"] = entry["click_through"]
+            if legacy_click_through(legacy, key):
+                settings[f"{key}_locked"] = True
         if entry.get("visible") is not None:
             settings[f"show_{key}"] = bool(entry["visible"])
-    for key in ("alpha", "font_family", "font_size", "layout_margin",
-                "click_through", "idle_timeout", "auto_rules_enabled",
-                "hide_when_game_off", "attach_to_game"):
+    for key in LAYOUT_GLOBAL_KEYS:
         if key in snapshot and snapshot[key] is not None:
             settings[key] = snapshot[key]
 
@@ -637,13 +805,23 @@ class OverlayWindow:
         self._alpha = settings.get("alpha", 0.90)
         self._drag_data = {"x": 0, "y": 0}
         self._resize_data = {"x": 0, "y": 0, "w": 0, "h": 0}
-        self._locked = settings.get(f"{overlay_key}_locked", False)
+        self._locked = bool(settings.get(f"{overlay_key}_locked", False))
         self._anchor = settings.get(f"{overlay_key}_anchor", "custom")
         self._min_width = 200
         self._min_height = 100
-        # Клик-сквозь: окно видно, но мышь работает в игре. Включается через
-        # Win32, поэтому применяется после того, как окно реально создано.
-        self._click_through = block_click_through(settings, overlay_key)
+        # Клик-сквозь: окно видно, но мышь работает в игре. Его даёт
+        # закрепление блока (см. block_click_through): закреплённый блок
+        # пропускает мышь всегда, откреплённый — никогда. Включается через
+        # Win32 и только когда у окна есть настоящая рамка — см. <Map> ниже.
+        self._click_through = self._locked
+        # Отвязан от игры: виден и без фокуса игры, может жить на другом экране.
+        self._detached = block_detached(settings, overlay_key)
+        # Менеджер оверлея: через него шапка закрепляет/отвязывает блок, чтобы
+        # настройка сохранилась и галочки во вкладке «Оверлей» не врали.
+        self._controller = None
+        # Сделал ли Tk окно «слоистым» (прозрачность < 100 %). Такой слой Tk
+        # считает своим навсегда, и снимать его при откреплении нельзя.
+        self._tk_layered = False
         # Шрифты виджетов запоминаем после сборки contents (см. _register_fonts):
         # живая смена размера шрифта не должна пересоздавать окно.
         self._font_specs: dict = {}
@@ -660,7 +838,11 @@ class OverlayWindow:
         # Всегда topmost — базовое поведение для оверлея
         self.window.attributes("-topmost", True)
         self.window.attributes("-alpha", self._alpha)
+        self._tk_layered = self._alpha_below_one(self._alpha)
         self.window.configure(bg=COLOR_BG)
+        # Последний HWND, к которому применяли режим мыши. Только для
+        # сравнения: Tk может пересоздать рамку окна, поэтому каждый раз
+        # спрашиваем настоящий HWND заново (_toplevel_hwnd).
         self._hwnd: Optional[int] = None
         self._is_topmost = True
         # Меню шапки держим в атрибутах: локальный tk.Menu уничтожился бы под
@@ -679,7 +861,7 @@ class OverlayWindow:
         # теперь у всех один строгий «корпус прибора».
         self.outer = tk.Frame(self.window, bg=COLOR_BORDER, bd=0)
         self.outer.pack(fill=tk.BOTH, expand=True)
-        self.signal_rail = tk.Frame(self.outer, bg=COLOR_ACCENT, height=2)
+        self.signal_rail = tk.Frame(self.outer, bg=self._state_color(), height=2)
         self.signal_rail.pack(fill=tk.X)
 
         # Header: номер модуля / название / назначение / компактные controls.
@@ -688,11 +870,11 @@ class OverlayWindow:
         self.header.pack_propagate(False)
 
         code, purpose = OVERLAY_META.get(overlay_key, ("00", overlay_key.upper()))
-        self.header_indicator = tk.Frame(self.header, bg=COLOR_ACCENT, width=2)
+        self.header_indicator = tk.Frame(self.header, bg=self._state_color(), width=2)
         self.header_indicator.pack(side=tk.LEFT, fill=tk.Y)
         self.code_label = tk.Label(
             self.header, text=code, font=("Consolas", 8, "bold"),
-            fg=COLOR_BG, bg=COLOR_ACCENT, width=3,
+            fg=COLOR_BG, bg=self._state_color(), width=3,
         )
         self.code_label.pack(side=tk.LEFT, fill=tk.Y)
 
@@ -728,18 +910,28 @@ class OverlayWindow:
         self.content.pack(fill=tk.BOTH, expand=True, padx=1, pady=(0, 1))
 
         # Resize handle — небольшой контрастный угол вместо заметного квадрата.
+        # У закреплённого блока угла нет: мышь всё равно уходит в игру.
         self.resize_handle = tk.Frame(self.window, bg=COLOR_ACCENT, width=10, height=10, cursor="size_nw_se")
-        self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
+        if not self._locked:
+            self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
         self.resize_handle.bind("<Button-1>", self._on_resize_start)
         self.resize_handle.bind("<B1-Motion>", self._on_resize_motion)
         self.resize_handle.bind("<ButtonRelease-1>", self._on_drag_release)
 
         self._on_move_callback: Optional[Callable] = None
         self._on_resize_callback: Optional[Callable] = None
+        # Перетаскивание/ресайз закончились — менеджер сохраняет позицию и
+        # пересчитывает экран отвязанного блока.
+        self._on_release_callback: Optional[Callable] = None
 
         self._area_provider: Optional[Callable[[], Optional[Tuple[int, int, int, int]]]] = None
-        if self._click_through:
-            self.window.after_idle(self._sync_click_through)
+        # Режим мыши применяем, когда окно реально показано: настоящую рамку
+        # (HWND верхнего уровня) Tk создаёт только при первом показе, а событие
+        # <Map> приходит уже после этого — и после каждого повторного показа.
+        # Раньше стиль ставился через after_idle сразу после создания, когда
+        # рамки ещё нет, — вызов уходил в пустоту, и сохранённый «клик
+        # насквозь» не работал, пока его не перещёлкнешь вручную.
+        self.window.bind("<Map>", self._on_window_map, add="+")
         self._apply_anchor()
 
     # -- обход виджетов ----------------------------------------------------
@@ -815,47 +1007,73 @@ class OverlayWindow:
                 pass
         self._applied_font = (family, size)
 
-    def _sync_click_through(self, force: bool = False):
-        """Применить режим «клик насквозь» (после создания окна).
-
-        Если состояние не менялось — ничего не делаем. Раньше каждая правка
-        стиля через Win32 пересобирала окно: при редактировании (перетаскивание,
-        ресайз, смена прозрачности) это выглядело как мерцание блока.
-        """
-        if not force and self._applied_through == self._click_through:
-            return
-        hwnd = self._hwnd or _hwnd_of(self.window)
-        if hwnd:
-            self._hwnd = hwnd
-        if _set_click_through(hwnd, self._click_through, self._alpha):
-            self._applied_through = self._click_through
-
-    def set_click_through(self, enabled: bool, save_key: Optional[str] = None):
-        """Включить/выключить клик-сквозь.
-
-        `save_key` — ключ настройки: свой у блока (`{key}_click_through`)
-        или общий (`click_through`). None — в настройки не пишем.
-        """
-        enabled = bool(enabled)
-        changed = self._click_through != enabled
-        self._click_through = enabled
-        if save_key:
-            self.settings[save_key] = enabled
+    # -- режим мыши: закреплён = клик насквозь -------------------------------
+    @staticmethod
+    def _alpha_below_one(alpha) -> bool:
         try:
-            self.through_btn.config(
-                text="CT",
-                fg=COLOR_CYAN if self._click_through else COLOR_TEXT_DIM,
-            )
-        except Exception:
-            pass
-        if changed:
-            self.window.after_idle(self._sync_click_through)
-            self._flash_indicator(COLOR_CYAN if enabled else COLOR_ACCENT)
+            return float(alpha) < 1.0
+        except (TypeError, ValueError):
+            return False
 
-    def _toggle_click_through(self):
-        """Переключатель «клик-сквозь» из меню шапки."""
-        self.set_click_through(not self._click_through,
-                               f"{self.overlay_key}_click_through")
+    def _on_window_map(self, event=None):
+        """Окно показано (впервые или после withdraw): проверить режим мыши.
+
+        <Map> на Toplevel срабатывает и от дочерних виджетов (они наследуют
+        привязки окна через bindtags) — нужен только сам Toplevel.
+        """
+        if event is not None and getattr(event, "widget", self.window) is not self.window:
+            return
+        self._applied_through = None
+        try:
+            self.window.after_idle(self._sync_click_through)
+        except Exception:
+            self._sync_click_through()
+
+    def _sync_click_through(self, force: bool = False) -> bool:
+        """Привести Win32-стиль окна к режиму мыши блока.
+
+        Закреплённый блок пропускает клики в игру, откреплённый — принимает.
+        HWND спрашиваем каждый раз заново: до первого показа настоящей рамки
+        нет вовсе, а Tk может её пересоздать. Повторно стиль не пишем, если ни
+        режим, ни окно не менялись — каждая запись пересобирает окно, и при
+        редактировании блок мерцал. `force` — проверить стиль на самом окне
+        (дёшево: запись будет, только если стиль кто-то сбросил).
+        """
+        desired = bool(self._click_through)
+        hwnd = _toplevel_hwnd(self.window)
+        if not hwnd:
+            # Рамки ещё нет (окно не показано) — применим по <Map>.
+            self._applied_through = None
+            return False
+        if not force and self._applied_through == desired and self._hwnd == hwnd:
+            return True
+        ok = _set_click_through(hwnd, desired, self._alpha,
+                                keep_layered=getattr(self, "_tk_layered", None))
+        self._hwnd = hwnd
+        self._applied_through = desired if ok else None
+        return ok
+
+    def ensure_mouse_mode(self) -> bool:
+        """Страховка раз в тик менеджера: стиль окна совпадает с режимом блока.
+
+        Tk при первом переходе окна в «слоистое» (прозрачность < 100 %)
+        перезаписывает расширенный стиль целиком — WS_EX_TRANSPARENT
+        пропадает. Здесь это чинится без участия пользователя.
+        """
+        try:
+            if not self.window.winfo_viewable():
+                return False
+        except Exception:
+            return False
+        return self._sync_click_through(force=True)
+
+    def set_controller(self, controller):
+        """Менеджер оверлея: шапка будет закреплять/отвязывать блок через него."""
+        self._controller = controller
+
+    def _state_color(self) -> str:
+        """Цвет сигнальной линии: оранжевый — с игрой, голубой — отвязан."""
+        return COLOR_CYAN if getattr(self, "_detached", False) else COLOR_ACCENT
 
     def _build_control_buttons(self):
         btn_frame = tk.Frame(self.header, bg=COLOR_BG)
@@ -871,16 +1089,6 @@ class OverlayWindow:
         self.lock_btn.pack(side=tk.LEFT, padx=(0, 4))
         self.lock_btn.bind("<Button-1>", lambda e: self._toggle_lock())
 
-        self.through_btn = tk.Label(
-            btn_frame, text="CT",
-            font=("Consolas", 7, "bold"),
-            fg=COLOR_CYAN if self._click_through else COLOR_TEXT_DIM,
-            bg=COLOR_BG, cursor="hand2", width=2
-        )
-        self.through_btn.pack(side=tk.LEFT, padx=(0, 4))
-        self.through_btn.bind("<Button-1>", lambda e: self.set_click_through(
-            not self._click_through, f"{self.overlay_key}_click_through"))
-
         self.edit_btn = tk.Label(
             btn_frame, text="···",
             font=("Consolas", 8, "bold"), fg=COLOR_TEXT_MUTED, bg=COLOR_BG,
@@ -891,37 +1099,123 @@ class OverlayWindow:
 
         self.drag_label = tk.Label(
             btn_frame, text="::",
-            font=("Consolas", 8, "bold"), fg=COLOR_TEXT_DIM, bg=COLOR_BG,
+            font=("Consolas", 8, "bold"),
+            fg=COLOR_TEXT_DIM if self._locked else COLOR_TEXT_MUTED, bg=COLOR_BG,
             cursor="fleur" if not self._locked else "no",
             width=2
         )
         self.drag_label.pack(side=tk.LEFT)
         if not self._locked:
-            self.drag_label.bind("<Button-1>", self._on_drag_start)
-            self.drag_label.bind("<B1-Motion>", self._on_drag_motion)
+            self._bind_drag_label()
 
-    def set_locked(self, locked: bool):
-        """Заблокировать/разблокировать позицию окна (без пересоздания)."""
-        self._locked = bool(locked)
-        self.settings[f"{self.overlay_key}_locked"] = self._locked
+    def _bind_drag_label(self):
+        self.drag_label.bind("<Button-1>", self._on_drag_start)
+        self.drag_label.bind("<B1-Motion>", self._on_drag_motion)
+        # Без отпускания флаг перетаскивания оставался поднятым навсегда, и
+        # менеджер переставал поднимать блок в Z-order.
+        self.drag_label.bind("<ButtonRelease-1>", self._on_drag_release)
+
+    def _refresh_lock_controls(self):
+        """Шапка и угол ресайза по состоянию «закреплён/откреплён»."""
+        locked = self._locked
         try:
             self.lock_btn.config(
-                text="LK" if self._locked else "UL",
-                fg=COLOR_ACCENT if self._locked else COLOR_TEXT_DIM,
+                text="LK" if locked else "UL",
+                fg=COLOR_ACCENT if locked else COLOR_TEXT_DIM,
             )
-            self.drag_label.config(cursor="no" if self._locked else "fleur")
+            self.drag_label.config(cursor="no" if locked else "fleur",
+                                   fg=COLOR_TEXT_DIM if locked else COLOR_TEXT_MUTED)
         except Exception:
             pass
-        if self._locked:
-            self.drag_label.unbind("<Button-1>")
-            self.drag_label.unbind("<B1-Motion>")
-        else:
-            self.drag_label.bind("<Button-1>", self._on_drag_start)
-            self.drag_label.bind("<B1-Motion>", self._on_drag_motion)
-        self._flash_indicator(COLOR_GREEN_TEXT if self._locked else COLOR_ACCENT)
+        try:
+            if locked:
+                self.drag_label.unbind("<Button-1>")
+                self.drag_label.unbind("<B1-Motion>")
+                self.drag_label.unbind("<ButtonRelease-1>")
+            else:
+                self._bind_drag_label()
+        except Exception:
+            pass
+        try:
+            if locked:
+                self.resize_handle.place_forget()
+            else:
+                self.resize_handle.place(relx=1.0, rely=1.0, anchor="se")
+        except Exception:
+            pass
+
+    def set_locked(self, locked: bool, save: bool = True):
+        """Закрепить/открепить блок (без пересоздания окна).
+
+        Закреплённый блок не двигается и всегда пропускает мышь в игру;
+        откреплённый можно тянуть, менять размер и открывать меню — клики он
+        принимает сам.
+        """
+        locked = bool(locked)
+        changed = locked != self._locked or locked != self._click_through
+        self._locked = locked
+        self._click_through = locked
+        if save:
+            self.settings[f"{self.overlay_key}_locked"] = locked
+        self._refresh_lock_controls()
+        if locked:
+            # Закрепили посреди перетаскивания (горячая клавиша) — отпускаем.
+            self._dragging = False
+        if changed:
+            self._applied_through = None
+            try:
+                self.window.after_idle(self._sync_click_through)
+            except Exception:
+                pass
+            self._flash_indicator(COLOR_GREEN_TEXT if locked else COLOR_ACCENT)
 
     def _toggle_lock(self):
+        """LK/UL в шапке: через менеджер, чтобы настройка сохранилась."""
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.set_block_locked(self.overlay_key, not self._locked)
+                return
+            except Exception:
+                pass
         self.set_locked(not self._locked)
+
+    def set_detached(self, detached: bool, save: bool = True):
+        """Отвязать блок от игры (или вернуть): меняется только цвет шапки.
+
+        Видимость и область якорей отвязанного блока считает менеджер.
+        """
+        self._detached = bool(detached)
+        if save:
+            self.settings[f"{self.overlay_key}_detached"] = self._detached
+        color = self._state_color()
+        for widget in (getattr(self, "code_label", None),
+                       getattr(self, "header_indicator", None),
+                       getattr(self, "signal_rail", None)):
+            if widget is None:
+                continue
+            try:
+                widget.config(bg=color)
+            except Exception:
+                pass
+
+    def _toggle_detached(self):
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.set_block_detached(self.overlay_key, not self._detached)
+                return
+            except Exception:
+                pass
+        self.set_detached(not self._detached)
+
+    def _move_to_monitor(self, index: int):
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.move_block_to_monitor(self.overlay_key, index)
+            except Exception:
+                pass
 
     def _flash_indicator(self, color: str, duration_ms: int = 300):
         try:
@@ -929,8 +1223,8 @@ class OverlayWindow:
             self.signal_rail.config(bg=color)
 
             def restore():
-                self.header_indicator.config(bg=COLOR_ACCENT)
-                self.signal_rail.config(bg=COLOR_ACCENT)
+                self.header_indicator.config(bg=self._state_color())
+                self.signal_rail.config(bg=self._state_color())
 
             self.window.after(duration_ms, restore)
         except Exception:
@@ -963,15 +1257,57 @@ class OverlayWindow:
         """Переопределяется подклассами для добавления пунктов в меню редактирования."""
         pass
 
-    def _show_edit_menu(self):
-        # Повторный клик по «*» не должен оставлять предыдущее меню висеть.
-        self._destroy_edit_menu()
-        menu = tk.Menu(self.window, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                       activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT,
-                       borderwidth=1, relief="solid")
+    def _menu_monitors(self) -> list:
+        """Экраны для подменю «Экран» (пусто — без менеджера или один экран)."""
+        controller = getattr(self, "_controller", None)
+        if controller is None:
+            return []
+        try:
+            return list(controller.monitors() or [])
+        except Exception:
+            return []
 
-        anchor_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                              activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
+    def _current_monitor_index(self) -> Optional[int]:
+        controller = getattr(self, "_controller", None)
+        if controller is None:
+            return None
+        try:
+            monitor = controller.block_monitor(self.overlay_key)
+        except Exception:
+            return None
+        return getattr(monitor, "index", None)
+
+    def _show_edit_menu(self):
+        # Повторный клик по «···» не должен оставлять предыдущее меню висеть.
+        self._destroy_edit_menu()
+        menu_style = dict(tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
+                          activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
+        menu = tk.Menu(self.window, borderwidth=1, relief="solid", **menu_style)
+        submenus = []
+
+        # Меню открывается только у откреплённого блока: закреплённый
+        # пропускает мышь в игру. Отсюда же блок и закрепляют.
+        detached = bool(getattr(self, "_detached", False))
+        menu.add_command(label="Закрепить (клики уходят в игру)", command=self._toggle_lock)
+        menu.add_command(
+            label=f"{'[x] ' if detached else '[ ] '}Отвязать от игры (виден всегда)",
+            command=self._toggle_detached,
+        )
+        monitors = self._menu_monitors()
+        if len(monitors) > 1:
+            screen_menu = tk.Menu(menu, **menu_style)
+            current = self._current_monitor_index()
+            for monitor in monitors:
+                mark = "[x] " if detached and monitor.index == current else "[ ] "
+                screen_menu.add_command(
+                    label=f"{mark}{monitor.label()}",
+                    command=lambda index=monitor.index: self._move_to_monitor(index),
+                )
+            menu.add_cascade(label="Экран", menu=screen_menu)
+            submenus.append(screen_menu)
+        menu.add_separator()
+
+        anchor_menu = tk.Menu(menu, **menu_style)
         for pos in ANCHOR_KEYS:
             label = ANCHOR_LABELS.get(pos, pos)
             anchor_menu.add_command(
@@ -979,26 +1315,22 @@ class OverlayWindow:
                 command=lambda p=pos: self._set_anchor(p)
             )
         menu.add_cascade(label="Anchor", menu=anchor_menu)
+        submenus.append(anchor_menu)
         menu.add_separator()
         menu.add_command(label=f"Width: {self.window.winfo_width()}px", state="disabled")
         menu.add_command(label=f"Height: {self.window.winfo_height()}px", state="disabled")
         menu.add_command(label="Reset size", command=self._reset_size)
-        menu.add_command(
-            label=f"{'[x] ' if self._click_through else '[ ] '}Клик-сквозь",
-            command=self._toggle_click_through,
-        )
         menu.add_separator()
-        alpha_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                             activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
+        alpha_menu = tk.Menu(menu, **menu_style)
         for a in [0.3, 0.5, 0.7, 0.85, 0.95, 1.0]:
             alpha_menu.add_command(
                 label=f"{'[x] ' if abs(self._alpha - a) < 0.05 else '[ ] '}{int(a*100)}%",
-                command=lambda v=a: self.set_alpha(v)
+                command=lambda v=a: self._menu_alpha(v)
             )
         menu.add_cascade(label="Alpha", menu=alpha_menu)
+        submenus.append(alpha_menu)
         # Персональный размер шрифта: '' — как у всех блоков.
-        font_menu = tk.Menu(menu, tearoff=0, bg=COLOR_PANEL, fg=COLOR_TEXT,
-                            activebackground=COLOR_PANEL_HOVER, activeforeground=COLOR_ACCENT)
+        font_menu = tk.Menu(menu, **menu_style)
         own_font = self.settings.get(f"{self.overlay_key}_font_size")
         font_menu.add_command(
             label=f"{'[x] ' if own_font in (None, '') else '[ ] '}Как у всех ({int(self.settings.get('font_size', 10) or 10)})",
@@ -1010,19 +1342,53 @@ class OverlayWindow:
                 command=lambda v=value: self._set_own_font(v),
             )
         menu.add_cascade(label="Font size", menu=font_menu)
+        submenus.append(font_menu)
 
         self._add_custom_menu_entries(menu)
 
         # Ссылки храним до закрытия меню (см. _destroy_edit_menu).
         self._edit_menu = menu
-        self._edit_submenus = [anchor_menu, alpha_menu, font_menu]
+        self._edit_submenus = submenus
         # `tk_popup`, а не `post`: Tk сам снимает граббер и прячет меню после
         # выбора пункта или клика мимо. У `post` этого нет — по документации
         # Tk закрыть такое меню обязано приложение, иначе граббер остаётся.
         menu.tk_popup(self.edit_btn.winfo_rootx(), self.edit_btn.winfo_rooty() + 20)
 
+    def _persist(self, name: str, value=None):
+        """Сохранить правку из меню шапки и сообщить вкладке «Оверлей»."""
+        controller = getattr(self, "_controller", None)
+        if controller is None:
+            return
+        try:
+            controller.save_settings()
+            controller._notify_block(self.overlay_key, name, value)
+        except Exception:
+            pass
+
+    def _menu_alpha(self, alpha: float):
+        """Прозрачность из меню шапки — своя у этого блока.
+
+        Раньше пункт менял общую прозрачность (ключ `alpha`), хотя применялся
+        только к одному окну: остальные блоки менялись лишь после перезапуска.
+        """
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.set_block_alpha(self.overlay_key, alpha)
+                return
+            except Exception:
+                pass
+        self.set_alpha(alpha)
+
     def _set_own_font(self, size: Optional[int]):
         """Свой размер шрифта блока (None — общий)."""
+        controller = getattr(self, "_controller", None)
+        if controller is not None:
+            try:
+                controller.set_block_font_size(self.overlay_key, size)
+                return
+            except Exception:
+                pass
         if size is None:
             self.settings.pop(f"{self.overlay_key}_font_size", None)
         else:
@@ -1036,6 +1402,7 @@ class OverlayWindow:
         self.settings[f"{self.overlay_key}_anchor"] = position
         self._apply_anchor()
         self._flash_indicator(COLOR_CYAN)
+        self._persist("anchor", position)
 
     def set_position(self, x: int, y: int, save: bool = True):
         """Переместить окно в точку (x, y) — используется якорями и профилями."""
@@ -1137,8 +1504,9 @@ class OverlayWindow:
             self.settings[f"{self.overlay_key}_height"] = height
 
     def _reset_size(self):
-        default = DEFAULT_BLOCK_POSITIONS.get(self.overlay_key, (280, 200))
+        default = DEFAULT_BLOCK_POSITIONS.get(self.overlay_key, (50, 50, 280, 200))
         self.set_size(default[2], default[3])
+        self._persist("size", (default[2], default[3]))
 
     def set_on_move(self, callback: Callable):
         self._on_move_callback = callback
@@ -1159,7 +1527,18 @@ class OverlayWindow:
         Пока флаг поднят, OverlayManager не поднимает окно в Z-order —
         иначе ежесекундный lift() борется с курсором и блок мигает.
         """
+        was_dragging = getattr(self, "_dragging", False)
         self._dragging = False
+        callback = getattr(self, "_on_release_callback", None)
+        if was_dragging and callback:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def set_on_release(self, callback: Optional[Callable]):
+        """Колбэк «перетаскивание/ресайз закончились» (сохранить, пересчитать экран)."""
+        self._on_release_callback = callback
 
     def _on_drag_motion(self, event):
         if self._locked:
@@ -1206,18 +1585,19 @@ class OverlayWindow:
             self.settings["alpha"] = alpha
         try:
             self.window.attributes("-alpha", alpha)
+            if self._alpha_below_one(alpha):
+                self._tk_layered = True
         except Exception:
             pass
-        # У слоистого окна (режим «клик насквозь») альфу задаём мы сами через
-        # SetLayeredWindowAttributes, поэтому после смены прозрачности режим
-        # надо применить заново — иначе блок останется полупрозрачным на глаз
-        # не тем, каким его выставили.
-        if self._click_through:
-            self._applied_through = None
-            try:
-                self.window.after_idle(self._sync_click_through)
-            except Exception:
-                pass
+        # Впервые сделав окно полупрозрачным, Tk перезаписывает расширенный
+        # стиль целиком (SetWindowLongPtr) — WS_EX_TRANSPARENT закреплённого
+        # блока пропадает, и мышь снова застревает в оверлее. Поэтому после
+        # любой смены прозрачности режим мыши проверяем заново.
+        self._applied_through = None
+        try:
+            self.window.after_idle(self._sync_click_through)
+        except Exception:
+            pass
 
     def set_topmost(self, topmost: bool):
         """Установить/снять topmost через tkinter (безопасно для overrideredirect)."""
@@ -3163,6 +3543,16 @@ class OverlayManager:
         # Когда в последний раз переставляли блоки в Z-order (см.
         # _set_all_visibility и ZORDER_REFRESH_SECONDS).
         self._zorder_at = 0.0
+        # Экраны (кэш на пару секунд): нужны отвязанным блокам и меню «Экран».
+        self._monitors_cache: List[MonitorInfo] = []
+        self._monitors_at = 0.0
+        # HWND окон оверлея и главного окна Helper. Заполняет поток Tk, читает
+        # фоновый цикл: пока пользователь тянет блок или открыл его меню,
+        # фокус у нашего окна, и HUD не должен прятаться как «игра не в фокусе».
+        self._overlay_hwnds: frozenset = frozenset()
+        self._helper_hwnd: Optional[int] = None
+        # Открыта вкладка «Оверлей»: HUD остаётся на экране, пока его настраивают.
+        self._ui_editing = False
         self.hotkeys = HotkeyManager(master, logger=self.log)
 
     def start(self, update_callback: Callable):
@@ -3187,23 +3577,44 @@ class OverlayManager:
         self.exobio_overlay = ExobiologyOverlay(self.master, self.settings)
         self.carrier_overlay = CarrierOverlay(self.master, self.settings)
 
-        for ov, key in self._blocks():
-            ov.set_on_move(self._make_moved_handler(key))
-            ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
-            # Якоря считаем относительно экрана или окна игры — см. overlay_area().
-            ov.set_area_provider(self.overlay_area)
+        for key, ov in self._blocks():
+            self._wire_block(key, ov)
             # Содержимое уже собрано — запоминаем шрифты и применяем
             # персональные настройки блока (свой размер шрифта/прозрачность).
             ov._register_fonts()
             ov.apply_font(self.settings.get("font_family", "Consolas"),
                           resolve_block_font_size(self.settings, key))
             ov.set_alpha(resolve_block_alpha(self.settings, key), save=False)
+            # Экран, на котором стоял блок, могли отключить — возвращаем блок
+            # на ближайший, иначе его не достать мышью.
+            self.ensure_block_on_screen(key)
             if not self.settings.get(f"show_{key}", True):
                 ov.hide()
 
+        try:
+            self._helper_hwnd = _toplevel_hwnd(self.master)
+        except Exception:
+            self._helper_hwnd = None
         # Применяем якоря после того, как все окна созданы и знают свой размер.
         self.master.after(60, self.apply_anchors)
         self.register_hotkeys()
+
+    def _wire_block(self, key: str, ov):
+        """Подключить окно блока к менеджеру (при создании и пересоздании)."""
+        ov.set_on_move(self._make_moved_handler(key))
+        ov.set_on_resize(lambda w, h, k=key: self._on_resized(k, w, h))
+        if hasattr(ov, "set_on_release"):
+            ov.set_on_release(lambda k=key: self._on_block_released(k))
+        # Якоря считаем относительно экрана с игрой — или своего экрана у
+        # отвязанного блока (см. block_area).
+        ov.set_area_provider(lambda k=key: self.block_area(k))
+        if hasattr(ov, "set_controller"):
+            ov.set_controller(self)
+
+    def _on_block_released(self, key: str):
+        """Блок отпустили после перетаскивания/ресайза: сохранить и сообщить UI."""
+        self.save_settings()
+        self._notify_block(key, "position", None)
 
     # ============================================================
     #  Блоки, геометрия, раскладка
@@ -3243,7 +3654,8 @@ class OverlayManager:
     def screen_area(self) -> Tuple[int, int, int, int]:
         """Весь основной экран."""
         try:
-            return (0, 0, self.master.winfo_screenwidth(), self.master.winfo_screenheight())
+            return (0, 0, int(self.master.winfo_screenwidth()),
+                    int(self.master.winfo_screenheight()))
         except Exception:
             return (0, 0, 1920, 1080)
 
@@ -3252,7 +3664,7 @@ class OverlayManager:
 
         Если включена привязка к окну игры и игра запущена — это прямоугольник
         монитора с игрой (так оверлей не уедет на другой экран). Иначе — весь
-        основной экран.
+        основной экран. У отвязанного блока область своя — см. block_area().
         """
         if self.settings.get("attach_to_game", True):
             state = self.game_state()
@@ -3262,15 +3674,184 @@ class OverlayManager:
                 return (left, top, max(1, right - left), max(1, bottom - top))
         return self.screen_area()
 
+    # -- экраны и отвязанные блоки -------------------------------------------
+    def monitors(self) -> List[MonitorInfo]:
+        """Подключённые экраны (основной — первый). Кэш на пару секунд.
+
+        Вне Windows (и если Win32 не ответил) — один экран размером с
+        основной: так меню и раскладка работают одинаково везде.
+        """
+        now = time.monotonic()
+        if self._monitors_cache and now - self._monitors_at < 2.0:
+            return list(self._monitors_cache)
+        found = []
+        try:
+            found = list_monitors()
+        except Exception:
+            found = []
+        if not found:
+            x, y, w, h = self.screen_area()
+            rect = (x, y, x + w, y + h)
+            found = [MonitorInfo(index=1, work=rect, bounds=rect, primary=True)]
+        self._monitors_cache = list(found)
+        self._monitors_at = now
+        return list(found)
+
+    def block_detached(self, key: str) -> bool:
+        return block_detached(self.settings, key)
+
+    def _block_rect(self, key: str) -> Tuple[int, int, int, int]:
+        """Геометрия блока (x, y, w, h).
+
+        Позицию берём из настроек: её обновляют и перетаскивание, и якоря, и
+        перенос на другой экран — причём сразу, а Tk отдаёт новые координаты
+        окна только после обработки отложенных задач. Размер — у живого окна,
+        если Tk его уже знает.
+        """
+        default = DEFAULT_BLOCK_POSITIONS.get(key, (50, 50, 280, 200))
+        values = []
+        for suffix, fallback in zip(("x", "y", "width", "height"), default):
+            try:
+                values.append(int(self.settings.get(f"{key}_{suffix}", fallback)))
+            except (TypeError, ValueError):
+                values.append(int(fallback))
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            try:
+                width, height = overlay.window.winfo_width(), overlay.window.winfo_height()
+                if int(width) > 1 and int(height) > 1:
+                    values[2], values[3] = int(width), int(height)
+            except Exception:
+                pass
+        return tuple(values)
+
+    def block_monitor(self, key: str) -> Optional[MonitorInfo]:
+        """Экран, на котором сейчас стоит блок."""
+        return monitor_for_area(self._block_rect(key), self.monitors())
+
+    def block_area(self, key: str) -> Tuple[int, int, int, int]:
+        """Область якорей блока: экран с игрой — или свой экран отвязанного."""
+        if not self.block_detached(key):
+            return self.overlay_area()
+        monitor = self.block_monitor(key)
+        if monitor is not None:
+            return monitor.work_area
+        return self.screen_area()
+
+    def ensure_block_on_screen(self, key: str, save: bool = False) -> bool:
+        """Вернуть блок на экран, если его шапка не видна ни на одном мониторе.
+
+        Так бывает, когда отвязанный блок стоял на втором мониторе, а тот
+        отключили: окно жило бы за краем, и достать его мышью было бы нельзя.
+        """
+        overlay = self._overlay_for(key)
+        if overlay is None:
+            return False
+        monitors = self.monitors()
+        x, y, w, h = self._block_rect(key)
+        if header_visible((x, y, w, h), monitors):
+            return False
+        target = monitor_for_area((x, y, w, h), monitors)
+        if target is None:
+            return False
+        nx, ny = fit_into_area(x, y, w, h, target.work_area)
+        try:
+            overlay.set_position(nx, ny, save=True)
+        except Exception:
+            return False
+        if save:
+            self.save_settings()
+        return True
+
+    def set_block_detached(self, key: str, detached: bool, move_to_game: bool = False):
+        """Отвязать блок от игры (или привязать обратно).
+
+        Отвязанный блок виден и без фокуса игры и раскладывается по якорю
+        внутри своего экрана. `move_to_game` — при возврате к игре перенести
+        блок на экран с игрой (выбор «с игрой» во вкладке «Оверлей»).
+        """
+        detached = bool(detached)
+        self.settings[f"{key}_detached"] = detached
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            try:
+                overlay.set_detached(detached, save=False)
+            except Exception:
+                pass
+        area = None
+        if not detached and move_to_game:
+            area = self.overlay_area()
+            self._move_block_into(key, area)
+        self._reanchor(key, area)
+        self.save_settings()
+        self._notify_block(key, "detached", detached)
+
+    def move_block_to_monitor(self, key: str, index: int) -> bool:
+        """Отвязать блок от игры и перенести на экран `index` (1 — основной)."""
+        monitors = self.monitors()
+        target = next((m for m in monitors if m.index == int(index)), None)
+        if target is None:
+            return False
+        self.settings[f"{key}_detached"] = True
+        overlay = self._overlay_for(key)
+        if overlay is not None:
+            try:
+                overlay.set_detached(True, save=False)
+            except Exception:
+                pass
+        # Оверлей может быть выключен — тогда переносим сохранённую позицию,
+        # и блок появится уже на новом экране.
+        self._move_block_into(key, target.work_area)
+        self._reanchor(key, target.work_area)
+        self.save_settings()
+        self._notify_block(key, "detached", True)
+        self.log(f"{BLOCK_LABELS.get(key, key)}: отвязан от игры → {target.label()}", "info")
+        return True
+
+    def _move_block_into(self, key: str, area: Tuple[int, int, int, int]):
+        """Перенести блок в область (экран), сохранив его место «по смыслу»."""
+        if not area:
+            return
+        x, y, w, h = self._block_rect(key)
+        ax, ay, aw, ah = area
+        cx, cy = x + w // 2, y + h // 2
+        if ax <= cx < ax + aw and ay <= cy < ay + ah:
+            return  # блок уже на этом экране
+        source = monitor_for_area((x, y, w, h), self.monitors())
+        nx, ny = translate_between_areas(x, y, w, h,
+                                         source.work_area if source else None, area)
+        overlay = self._overlay_for(key)
+        if overlay is None:
+            self.settings[f"{key}_x"] = int(nx)
+            self.settings[f"{key}_y"] = int(ny)
+            return
+        try:
+            overlay.set_position(nx, ny, save=True)
+        except Exception:
+            pass
+
+    def _reanchor(self, key: str, area: Optional[Tuple[int, int, int, int]] = None):
+        """Переставить блок по якорю. `area` — если окно только что двигали:
+        Tk отдаёт новые координаты окна не сразу, и экран по ним не узнать."""
+        overlay = self._overlay_for(key)
+        if overlay is None:
+            return
+        anchor = self.settings.get(f"{key}_anchor", "custom")
+        if not anchor or anchor == "custom":
+            return
+        try:
+            overlay._apply_anchor(area or self.block_area(key))
+        except Exception:
+            pass
+
     def apply_anchors(self):
-        """Расставить все блоки по их якорям внутри текущей области."""
-        area = self.overlay_area()
+        """Расставить все блоки по их якорям внутри их областей."""
         for key, overlay in self._blocks():
             anchor = self.settings.get(f"{key}_anchor", "custom")
             if not anchor or anchor == "custom":
                 continue
             try:
-                overlay._apply_anchor(area)
+                overlay._apply_anchor(self.block_area(key))
             except Exception:
                 pass
 
@@ -3285,7 +3866,7 @@ class OverlayManager:
                 return
             try:
                 overlay._anchor = anchor
-                overlay._apply_anchor(self.overlay_area())
+                overlay._apply_anchor(self.block_area(key))
             except Exception:
                 pass
             return
@@ -3449,13 +4030,23 @@ class OverlayManager:
                 last_game_running = True
                 self.master.after(0, self.apply_anchors)
 
+            # Фокус у окна самого оверлея (блок тянут, открыто его меню, идёт
+            # настройка во вкладке «Оверлей») — это тоже «игра»: раньше HUD
+            # прятался через три секунды прямо под курсором у того, кто его
+            # настраивал, а таймер простоя прятал его посреди настройки.
+            try:
+                own_focus = self._own_overlay_in_focus()
+            except Exception:
+                own_focus = False
+            if own_focus:
+                self.mark_activity()
             # Проверяем, активна ли игра — оверлей topmost только над игрой
             attach = self.settings.get("attach_to_game", True)
             if attach:
                 try:
                     # Эвристика по заголовку foreground-окна остаётся страховкой:
                     # окно игры находится не всегда (например, до первого кадра).
-                    ed_active = game.focused or _is_ed_foreground()
+                    ed_active = game.focused or own_focus or _is_ed_foreground()
                     if ed_active:
                         ed_active_counter = 3  # держим visible ещё 3 цикла после потери фокуса
                         if game.focused:
@@ -3463,7 +4054,8 @@ class OverlayManager:
                     elif ed_active_counter > 0:
                         ed_active_counter -= 1
                     should_show = ed_active_counter > 0
-                    self.master.after(0, lambda s=should_show: self._set_all_visibility(s))
+                    # Отвязанные от игры блоки видны и без её фокуса.
+                    self.master.after(0, lambda s=should_show: self._set_all_visibility(s, detached=True))
                 except Exception:
                     pass
             else:
@@ -3487,8 +4079,35 @@ class OverlayManager:
                 self.master.after(0, lambda m=msg, l=level: self._add_log_safe(m, l))
             time.sleep(1.0)
 
-    def _set_all_visibility(self, show: bool):
+    def _own_overlay_in_focus(self) -> bool:
+        """В фокусе наше окно, рядом с которым HUD должен оставаться на экране.
+
+        Это окна самого оверлея (блок тянут мышью, открыто меню «···») и
+        главное окно Helper, пока в нём открыта вкладка «Оверлей». Вызывается
+        из фонового потока: только HWND и PID, без заголовков окон (см.
+        _is_ed_foreground — чтение заголовка своего окна вешало программу).
+        """
+        fg = _foreground_window()
+        if not fg:
+            return False
+        if fg in self._overlay_hwnds:
+            return True
+        if not _is_own_window(_window_pid(fg), _own_pid()):
+            return False
+        if self._helper_hwnd and fg == self._helper_hwnd:
+            return bool(self._ui_editing)
+        # Прочие окна процесса — меню и диалоги, открытые из блоков.
+        return True
+
+    def set_ui_editing(self, editing: bool):
+        """Открыта ли вкладка «Оверлей» в Helper (HUD тогда не прячется)."""
+        self._ui_editing = bool(editing)
+
+    def _set_all_visibility(self, show: bool, detached: Optional[bool] = None):
         """Показать/скрыть оверлеи. При показе — lift() + topmost для гарантии Z-order.
+
+        `detached` — видимость блоков, отвязанных от игры (None — как у всех):
+        они не зависят от фокуса игры, но подчиняются остальным правилам.
 
         Z-order поднимаем не на каждом тике (цикл работает раз в секунду),
         а только когда это действительно нужно: блок только что появился,
@@ -3502,9 +4121,10 @@ class OverlayManager:
         нужен (`show` — есть игра/фокус), пользователь включил блок, сработало
         правило «по ситуации» и не истёк таймер простоя.
         """
-        visibility = self.evaluate_block_visibility(game_visible=show)
+        visibility = self.evaluate_block_visibility(game_visible=show, detached_visible=detached)
         now = time.monotonic()
         refresh_due = (now - self._zorder_at) >= ZORDER_REFRESH_SECONDS
+        hwnds = set()
         for key, ov in self._blocks():
             if not ov:
                 continue
@@ -3514,6 +4134,15 @@ class OverlayManager:
                     just_shown = not ov.window.winfo_viewable()
                     if just_shown:
                         ov.show()
+                    else:
+                        # Страховка: закреплённый блок обязан пропускать мышь.
+                        # Стиль пишется, только если его кто-то сбросил.
+                        ensure = getattr(ov, "ensure_mouse_mode", None)
+                        if ensure is not None:
+                            ensure()
+                    hwnd = getattr(ov, "_hwnd", None)
+                    if isinstance(hwnd, int) and hwnd:
+                        hwnds.add(hwnd)
                     # Пока блок тянут мышью, порядок окон не трогаем.
                     if getattr(ov, "_dragging", False):
                         continue
@@ -3524,6 +4153,7 @@ class OverlayManager:
                     ov.hide()
             except Exception:
                 pass
+        self._overlay_hwnds = frozenset(hwnds)
         self._zorder_at = now
 
     def _hash_data(self, data: dict) -> str:
@@ -3690,6 +4320,7 @@ class OverlayManager:
         self.enabled = False
         self._stop.set()
         self.hotkeys.stop()
+        self._overlay_hwnds = frozenset()
         self.save_settings()
         for _key, ov in self._blocks():
             self.master.after(0, ov.destroy)
@@ -3799,11 +4430,9 @@ class OverlayManager:
             was_visible = self.ship_overlay.window.winfo_viewable()
             self.ship_overlay.destroy()
             self.ship_overlay = ShipOverlay(self.master, self.settings)
-            self.ship_overlay.set_on_move(self._on_ship_moved)
-            self.ship_overlay.set_on_resize(lambda w, h: self._on_resized("ship", w, h))
-            self.ship_overlay.set_area_provider(self.overlay_area)
+            self._wire_block("ship", self.ship_overlay)
             self.ship_overlay._register_fonts()
-            self.ship_overlay._apply_anchor(self.overlay_area())
+            self.ship_overlay._apply_anchor(self.block_area("ship"))
             self.apply_block_style("ship")
             if not was_visible or not self.settings.get("show_ship", True):
                 self.ship_overlay.hide()
@@ -3919,12 +4548,42 @@ class OverlayManager:
         self._notify_block("", "visible", not any_visible)
 
     def set_block_locked(self, key: str, locked: bool):
+        """Закрепить блок (не двигается, мышь уходит в игру) или открепить."""
         self.settings[f"{key}_locked"] = bool(locked)
         overlay = self._overlay_for(key)
         if overlay is not None:
             overlay.set_locked(bool(locked))
         self.save_settings()
         self._notify_block(key, "locked", bool(locked))
+
+    def all_locked(self) -> bool:
+        return all(bool(self.settings.get(f"{key}_locked", False)) for key in self.BLOCKS)
+
+    def set_all_locked(self, locked: bool):
+        """Закрепить или открепить все блоки сразу."""
+        locked = bool(locked)
+        for key in self.BLOCKS:
+            self.settings[f"{key}_locked"] = locked
+            overlay = self._overlay_for(key)
+            if overlay is not None:
+                try:
+                    overlay.set_locked(locked)
+                except Exception:
+                    pass
+        self.save_settings()
+        self._notify_block("", "locked", locked)
+
+    def toggle_all_locked(self) -> bool:
+        """Горячая клавиша (Ctrl+F12): все закреплены — открепить, иначе закрепить.
+
+        Закреплённый оверлей мышь не ловит вовсе, поэтому открепить его можно
+        только отсюда или из вкладки «Оверлей».
+        """
+        locked = not self.all_locked()
+        self.set_all_locked(locked)
+        self.log("Оверлей закреплён: клики уходят в игру" if locked
+                 else "Оверлей откреплён: блоки можно двигать и настраивать", "info")
+        return locked
 
     def set_block_alpha(self, key: str, alpha: Optional[float]):
         """Прозрачность блока. `None` — вернуть общую настройку."""
@@ -3995,23 +4654,6 @@ class OverlayManager:
             self.save_settings()
         return changed
 
-    def set_click_through(self, enabled: bool, key: Optional[str] = None):
-        """Клик-сквозь: для одного блока или для всех (`key=None`)."""
-        if key:
-            self.settings[f"{key}_click_through"] = bool(enabled)
-            overlay = self._overlay_for(key)
-            if overlay is not None:
-                overlay.set_click_through(bool(enabled), save_key=None)
-            self._notify_block(key, "click_through", bool(enabled))
-        else:
-            self.settings["click_through"] = bool(enabled)
-            for block_key, overlay in self._blocks():
-                if self.settings.get(f"{block_key}_click_through") is not None:
-                    continue  # у блока своё значение — общую правку не применяем
-                overlay.set_click_through(bool(enabled), save_key=None)
-                self._notify_block(block_key, "click_through", bool(enabled))
-        self.save_settings()
-
     def set_auto_rule(self, key: str, rule: str):
         """Правило автопоказа: `always`, `docked`, `has_cargo`, ..."""
         if rule not in AUTO_RULES:
@@ -4041,6 +4683,7 @@ class OverlayManager:
         for suffix in ("alpha", "font_size", "click_through"):
             self.settings.pop(f"{key}_{suffix}", None)
         self.settings[f"{key}_locked"] = False
+        self.settings[f"{key}_detached"] = False
         self.settings[f"{key}_auto_rule"] = "always"
         self.settings[f"{key}_anchor"] = "custom"
         self.settings[f"{key}_x"] = x
@@ -4053,11 +4696,10 @@ class OverlayManager:
                 overlay._anchor = "custom"
                 overlay.set_geometry(x, y, width, height)
                 overlay.set_locked(False)
+                overlay.set_detached(False, save=False)
                 overlay.set_alpha(resolve_block_alpha(self.settings, key), save=False)
                 overlay.apply_font(self.settings.get("font_family", "Consolas"),
                                    resolve_block_font_size(self.settings, key))
-                overlay.set_click_through(block_click_through(self.settings, key),
-                                          save_key=None)
                 overlay.show() if self.settings.get(f"show_{key}", True) else overlay.hide()
             except Exception:
                 pass
@@ -4073,9 +4715,9 @@ class OverlayManager:
             try:
                 overlay.set_alpha(resolve_block_alpha(self.settings, block_key), save=False)
                 overlay.apply_font(family, resolve_block_font_size(self.settings, block_key))
+                # Закрепление = клик насквозь (см. block_click_through).
                 overlay.set_locked(bool(self.settings.get(f"{block_key}_locked", False)))
-                overlay.set_click_through(block_click_through(self.settings, block_key),
-                                          save_key=None)
+                overlay.set_detached(block_detached(self.settings, block_key), save=False)
             except Exception:
                 pass
 
@@ -4120,12 +4762,14 @@ class OverlayManager:
         return context
 
     def evaluate_block_visibility(self, context: Optional[dict] = None,
-                                  game_visible: bool = True) -> Dict[str, bool]:
+                                  game_visible: bool = True,
+                                  detached_visible: Optional[bool] = None) -> Dict[str, bool]:
         """Кому из блоков сейчас можно быть на экране.
 
         Складывается из четырёх условий: игра показывает HUD вообще,
         пользователь включил блок, сработало правило «по ситуации» и не
-        истёк таймер простоя.
+        истёк таймер простоя. Для блоков, отвязанных от игры, первое условие
+        задаёт `detached_visible` (None — как у всех): фокус игры им не нужен.
         """
         ctx = context if context is not None else (self._context_state or {})
         # Keep the preference meaningful even for callers that provide a
@@ -4133,13 +4777,17 @@ class OverlayManager:
         # one path showing blocks while the loop correctly hides them.
         if self.settings.get("hide_when_game_off", True) and ctx.get("game_running") is False:
             game_visible = False
+            detached_visible = False
         timeout = self.idle_timeout()
         idle_hidden = timeout > 0 and (time.monotonic() - self._last_activity) > timeout
         self._hidden_by_idle = idle_hidden
         rules_on = bool(self.settings.get("auto_rules_enabled", False))
         result: Dict[str, bool] = {}
         for key in self.BLOCKS:
-            visible = bool(game_visible) and bool(self.settings.get(f"show_{key}", True))
+            base = game_visible
+            if detached_visible is not None and self.block_detached(key):
+                base = detached_visible
+            visible = bool(base) and bool(self.settings.get(f"show_{key}", True))
             if visible and idle_hidden:
                 visible = False
             if visible and rules_on:
@@ -4163,7 +4811,20 @@ class OverlayManager:
         all_combo = str(self.settings.get("toggle_all_hotkey", "F12") or "").strip()
         if all_combo:
             self.hotkeys.register(all_combo, self.toggle_all_blocks)
+        # Закрепить/открепить все: закреплённый блок мышью не открепить —
+        # клики уходят в игру, поэтому нужна клавиша.
+        lock_combo = str(self.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "").strip()
+        if lock_combo:
+            self.hotkeys.register(lock_combo, self.toggle_all_locked)
         self.hotkeys.start()
+
+    def set_lock_hotkey(self, combo: str) -> bool:
+        """Клавиша «закрепить/открепить все блоки» ('' — без клавиши)."""
+        self.settings["lock_toggle_hotkey"] = (combo or "").strip()
+        self.save_settings()
+        if self.enabled:
+            self.register_hotkeys()
+        return True
 
     def set_block_hotkey(self, key: str, combo: str) -> bool:
         """Назначить блоку горячую клавишу ('' — снять)."""
@@ -4188,7 +4849,7 @@ class OverlayManager:
 #: у уже существующего ключа: сохранённый конфиг перекрывает DEFAULT_SETTINGS,
 #: поэтому без миграции прежний пользователь навсегда остался бы на старом
 #: значении и не увидел бы исправления.
-SETTINGS_SCHEMA_VERSION = 4
+SETTINGS_SCHEMA_VERSION = 5
 
 #: Миграции: версия схемы -> {ключ: прежнее значение по умолчанию}.
 #: Ключ получает новый дефолт только если пользователь его не менял, то есть
@@ -4221,6 +4882,33 @@ SETTINGS_POSITION_CHANGES = {
 }
 
 
+#: Ключи, которых больше нет: «клик насквозь» с 2.15.0 даёт закрепление блока.
+#: Из конфига их убирает save_overlay_settings, значения переносит миграция.
+LEGACY_OVERLAY_KEYS = ("click_through",) + tuple(
+    f"{_block}_click_through" for _block in DEFAULT_BLOCK_POSITIONS
+)
+
+#: Персональные настройки блока, у которых «нет ключа» значит «как у всех».
+#: Их удаление тоже надо сохранять — иначе после перезапуска возвращалось
+#: старое значение (см. save_overlay_settings).
+BLOCK_OVERRIDE_SUFFIXES = ("alpha", "font_size", "hotkey")
+
+
+def _migrate_click_through_to_lock(merged: dict, stored: dict) -> None:
+    """Схема 5 (2.15.0): «клик насквозь» перестал быть отдельной галочкой.
+
+    Теперь его даёт закрепление: закреплённый блок всегда пропускает мышь в
+    игру, откреплённый — всегда принимает клики. Блок, который раньше
+    пропускал мышь (своей галочкой или общей), становится закреплённым —
+    иначе после обновления он начал бы перехватывать клики у игры.
+    """
+    for block in DEFAULT_BLOCK_POSITIONS:
+        if legacy_click_through(stored, block):
+            merged[f"{block}_locked"] = True
+    for key in LEGACY_OVERLAY_KEYS:
+        merged.pop(key, None)
+
+
 def migrate_overlay_settings(merged: dict, stored: dict) -> dict:
     """Поднять дефолты, которые пользователь не менял, до текущей версии схемы.
 
@@ -4244,6 +4932,8 @@ def migrate_overlay_settings(merged: dict, stored: dict) -> dict:
             if (stored.get(f"{block}_x"), stored.get(f"{block}_y")) == (old_x, old_y):
                 merged[f"{block}_x"] = DEFAULT_SETTINGS[f"{block}_x"]
                 merged[f"{block}_y"] = DEFAULT_SETTINGS[f"{block}_y"]
+        if version == 5:
+            _migrate_click_through_to_lock(merged, stored)
     merged["settings_schema"] = SETTINGS_SCHEMA_VERSION
     return merged
 
@@ -4309,19 +4999,23 @@ DEFAULT_SETTINGS = {
     "exobio_planet_limit": 6,
     "carrier_locked": False,
     "carrier_anchor": "custom",
+    # Привязка к игре: блоки видны только пока игра в фокусе. Блок, у
+    # которого <ключ>_detached = True, отвязан — виден всегда и может жить
+    # на другом экране (ключи по умолчанию добавляет цикл ниже).
     "attach_to_game": True,
     # Раскладка: отступ от края области (экрана или окна игры)
     "layout_margin": 24,
     # Прятать HUD, когда игра не запущена
     "hide_when_game_off": True,
-    # Клик-сквозь по умолчанию для всех блоков (мышь работает в игре)
-    "click_through": False,
     # Скрывать HUD, если в журнале нет событий дольше N секунд (0 — не скрывать)
     "idle_timeout": 0,
     # Учитывать правила «показывать блок по ситуации»
     "auto_rules_enabled": False,
     # Горячая клавиша «показать/скрыть все блоки»
     "toggle_all_hotkey": "F12",
+    # Горячая клавиша «закрепить/открепить все блоки». Закреплённый блок
+    # пропускает мышь в игру, и мышью его уже не открепить.
+    "lock_toggle_hotkey": "Ctrl+F12",
     # Профили раскладки: {имя: {блок: {x,y,width,height,anchor,visible}, ...}}
     "profiles": {},
     "active_profile": "",
@@ -4336,6 +5030,7 @@ for _key, (_x, _y, _w, _h) in DEFAULT_BLOCK_POSITIONS.items():
     DEFAULT_SETTINGS[f"{_key}_y"] = _y
     DEFAULT_SETTINGS[f"{_key}_width"] = _w
     DEFAULT_SETTINGS[f"{_key}_height"] = _h
+    DEFAULT_SETTINGS[f"{_key}_detached"] = False
 del _key, _x, _y, _w, _h
 
 
@@ -4382,6 +5077,17 @@ def save_overlay_settings(config_path: Path, settings: dict):
             "carrier_",
         )))
         existing.update({key: settings[key] for key in overlay_keys if key in settings})
+        # Удаление ключа — тоже изменение. Общий конфиг пишут два владельца:
+        # приложение (save_config кладёт всё, что прочитало при запуске) и
+        # оверлей. Без явного удаления «вернуть общую прозрачность» или «снять
+        # клавишу» откатывались после перезапуска, а устаревшие ключи жили вечно.
+        for key in LEGACY_OVERLAY_KEYS:
+            existing.pop(key, None)
+        for block in DEFAULT_BLOCK_POSITIONS:
+            for suffix in BLOCK_OVERRIDE_SUFFIXES:
+                name = f"{block}_{suffix}"
+                if name not in settings:
+                    existing.pop(name, None)
         tmp = config_path.with_suffix(config_path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(existing, f, indent=2, ensure_ascii=False)
