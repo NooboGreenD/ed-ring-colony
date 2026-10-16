@@ -349,6 +349,67 @@ class RavenColonialAPI:
         except requests.RequestException as exc:
             return {"ok": False, "error": str(exc)}
 
+    #: Сколько помним ответ «знает ли Raven этот авианосец».
+    FC_KNOWN_TTL = 600.0
+    FC_UNKNOWN_TTL = 600.0
+
+    def get_fc(self, market_id: int) -> dict:
+        """GET /api/fc/{marketId} — регистрация носителя в Raven и его груз."""
+        try:
+            market_id = int(market_id)
+        except (TypeError, ValueError):
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        if market_id <= 0:
+            return {"ok": False, "data": None, "error": "MarketID авианосца не задан", "status": 0}
+        return self._request("GET", f"/fc/{market_id}")
+
+    def fc_known(self, market_id: int) -> Optional[bool]:
+        """Зарегистрирован ли носитель в Raven Colonial (с кэшем).
+
+        Так же поступает SrvSurvey: грузовые дельты уходят только по носителям,
+        которые Raven знает. Иначе PATCH по случайному авианосцу, где пилот
+        однажды продал груз, заводил в Raven «обрывок» трюма из одной дельты.
+        None — не удалось проверить (сеть): решение откладываем.
+        """
+        try:
+            key = int(market_id)
+        except (TypeError, ValueError):
+            return False
+        now = time.monotonic()
+        cache = getattr(self, "_fc_known_cache", None)
+        if cache is None:
+            cache = self._fc_known_cache = {}
+        cached = cache.get(key)
+        if cached and now - cached[0] < (self.FC_KNOWN_TTL if cached[1] else self.FC_UNKNOWN_TTL):
+            return cached[1]
+        result = self.get_fc(key)
+        if result.get("ok"):
+            data = result.get("data")
+            known = isinstance(data, dict) and bool(data.get("marketId") or data.get("name") or data.get("cargo") is not None)
+        elif result.get("status") in (400, 404):
+            known = False
+        else:
+            return None
+        cache[key] = (now, known)
+        return known
+
+    def set_fc_cargo(self, market_id: int, cargo: dict) -> dict:
+        """POST /api/fc/{marketId}/cargo — установить количество по товарам.
+
+        В отличие от PATCH (прибавить дельту), значения заменяются. Так
+        SrvSurvey исправляет Raven по снимку рынка носителя; отправляются
+        только изменившиеся товары.
+        """
+        if not self.api_key:
+            return {"ok": False, "error": "Raven Colonial API key is empty"}
+        body = {str(name): max(0, int(value)) for name, value in (cargo or {}).items() if name}
+        if not body:
+            return {"ok": True, "data": None, "error": None, "status": 0}
+        try:
+            return self._request("POST", f"/fc/{int(market_id)}/cargo", body)
+        except (TypeError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+
     def get_fc_cargo(self, market_id: int) -> dict:
         """Поимённый груз Fleet Carrier: GET /api/fc/{marketId}/cargo.
 

@@ -1977,7 +1977,18 @@ class CarrierOverlay(OverlayWindow):
             details.append("списывается!")
         if bool(data.get("at_carrier")):
             details.append("вы на борту")
-        self.detail_label.config(text="  ·  ".join(details))
+        # Прыжок и службы — с сайта проекта / из журнала владельца.
+        jump_system = str(data.get("jump_system") or "").strip()
+        if jump_system:
+            details.append(f"прыжок → {jump_system[:24]}")
+        elif data.get("location_estimated") and system:
+            details.append(f"≈ {system[:24]}")
+        services = [str(item) for item in (data.get("services") or []) if item]
+        detail_text = "  ·  ".join(details)
+        if services:
+            shown = ", ".join(services[:4]) + (f" +{len(services) - 4}" if len(services) > 4 else "")
+            detail_text = (f"{detail_text}\n" if detail_text else "") + f"службы: {shown}"
+        self.detail_label.config(text=detail_text)
 
         rows = list(data.get("commodities") or [])
         self._render_rows(rows, self._empty_text(data))
@@ -2018,10 +2029,13 @@ class CarrierOverlay(OverlayWindow):
             cargo_source = "remote" if data.get("remote_seen") else (
                 "journal" if (tracked_total or delivered_total) else "")
         source = {
+            "server": "груз: сайт проекта",
             "remote": "груз: Raven Colonial",
             "journal": "груз: по журналу (только ваши перевозки)",
             "estimate": "груз: оценка, сведена с CarrierStats",
         }.get(cargo_source, "")
+        if cargo_source == "server" and int(data.get("server_age") or 0) >= 15:
+            source = f"{source} ({int(data.get('server_age') or 0)} мин назад)"
         if delivered_total and need_total:
             source = (f"{source} · завезено вами {delivered_total} t").strip(" ·")
         if source:

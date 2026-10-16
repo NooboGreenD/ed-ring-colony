@@ -23,9 +23,10 @@ import {
   IconCheck
 } from "@/components/Icons";
 import SquadronChat from "@/components/SquadronChat";
+import CarrierPanel from "@/components/Carriers/CarrierPanel";
 import Avatar from "@/components/Avatar";
 
-type Tab = "overview" | "pilots" | "ranks" | "projects" | "settings" | "chat";
+type Tab = "overview" | "pilots" | "ranks" | "projects" | "carrier" | "settings" | "chat";
 
 export default function SquadronPage() {
   const params = useParams();
@@ -267,6 +268,7 @@ export default function SquadronPage() {
         <button className={tab === "pilots" ? "tab tab-active" : "tab"} onClick={() => setTab("pilots")}>Пилоты ({members.length})</button>
         <button className={tab === "ranks" ? "tab tab-active" : "tab"} onClick={() => setTab("ranks")}>Звания</button>
         <button className={tab === "projects" ? "tab tab-active" : "tab"} onClick={() => setTab("projects")}>Проекты ({projects.length})</button>
+        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>Авианосец</button>
         {(canEditSquadron || isCreator) && (
           <button className={tab === "settings" ? "tab tab-active" : "tab"} onClick={() => setTab("settings")}>Настройки</button>
         )}
@@ -414,6 +416,11 @@ export default function SquadronPage() {
           onUpdate={load}
           setMsg={setMsg}
         />
+      )}
+
+      {/* Эскадренный авианосец: статус, система, службы, трюм, рынок */}
+      {tab === "carrier" && Number.isSafeInteger(Number(id)) && (
+        <CarrierPanel mode="squadron" squadronId={Number(id)} />
       )}
 
       {/* Настройки — отдельная вкладка */}
