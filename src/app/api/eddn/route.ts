@@ -21,6 +21,15 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
+  const secret = req.headers.get('x-eddn-secret');
+  const validSecret = Boolean(process.env.EDDN_INGEST_SECRET && secret === process.env.EDDN_INGEST_SECRET);
+  if (!validSecret) {
+    const { requireAdmin } = await import('@/lib/billing/auth');
+    const auth = await requireAdmin(req);
+    if ('response' in auth) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+  }
   const body = await req.json();
   const { messages } = body;
   if (!Array.isArray(messages) || messages.length === 0) {

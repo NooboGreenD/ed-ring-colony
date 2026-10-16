@@ -50,7 +50,7 @@ sign() {
 ANON_KEY="$(sign anon)"
 SERVICE_ROLE_KEY="$(sign service_role)"
 POSTGRES_PASSWORD="$(openssl rand -hex 24)"
-DASHBOARD_PASSWORD="$(openssl rand -hex 12)"
+DASHBOARD_PASSWORD="$(openssl rand -hex 24)"
 
 cat <<EOF
 # ── Вставьте в supabase/docker/.env ─────────────────────────────────

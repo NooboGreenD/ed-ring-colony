@@ -7,66 +7,84 @@ import androidx.security.crypto.MasterKey
 
 class TokenManager(context: Context) {
 
+    private val appContext = context.applicationContext
+
+    private val prefs: SharedPreferences by lazy {
+        createEncryptedPrefs(appContext)
+    }
+
+    private fun createEncryptedPrefs(ctx: Context): SharedPreferences {
+        val masterKey = MasterKey.Builder(ctx)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return try {
+            EncryptedSharedPreferences.create(
+                ctx,
+                PREFS_FILE_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (_: Exception) {
+            // При повреждении ключей Keystore сбрасываем зашифрованное хранилище
+            // и пересоздаём его без отката на незашифрованный SharedPreferences.
+            ctx.deleteSharedPreferences(PREFS_FILE_NAME)
+            ctx.deleteSharedPreferences("fallback_prefs")
+            EncryptedSharedPreferences.create(
+                ctx,
+                PREFS_FILE_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+    }
+
     companion object {
-        private const val PREFS_NAME = "secure_prefs"
-        private const val KEY_TOKEN = "access_token"
-        private const val KEY_REFRESH = "refresh_token"
+        private const val PREFS_FILE_NAME = "secure_prefs"
+        private const val KEY_ACCESS_TOKEN = "access_token"
+        private const val KEY_REFRESH_TOKEN = "refresh_token"
+        private const val KEY_USER_EMAIL = "user_email"
+        private const val KEY_CMDR_NAME = "cmdr_name"
+        private const val KEY_USER_ROLE = "user_role"
         private const val KEY_BASE_URL = "base_url"
-        private const val KEY_EMAIL = "email"
-        private const val KEY_ROLE = "role"
-        private const val KEY_CMDR = "cmdr_name"
+        const val DEFAULT_BASE_URL = "https://edringcolony.ru"
     }
 
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs: SharedPreferences = try {
-        EncryptedSharedPreferences.create(
-            context,
-            PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    } catch (e: Exception) {
-        // Fallback for devices without encryption support (emulator)
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
-
-    fun saveTokens(access: String, refresh: String?) {
+    fun saveSession(
+        accessToken: String,
+        refreshToken: String?,
+        email: String?,
+        cmdrName: String?,
+        role: String?
+    ) {
         prefs.edit()
-            .putString(KEY_TOKEN, access)
-            .putString(KEY_REFRESH, refresh ?: "")
+            .putString(KEY_ACCESS_TOKEN, accessToken)
+            .putString(KEY_REFRESH_TOKEN, refreshToken)
+            .putString(KEY_USER_EMAIL, email)
+            .putString(KEY_CMDR_NAME, cmdrName)
+            .putString(KEY_USER_ROLE, role)
             .apply()
     }
 
-    fun saveUser(email: String, role: String, cmdr: String) {
-        prefs.edit()
-            .putString(KEY_EMAIL, email)
-            .putString(KEY_ROLE, role)
-            .putString(KEY_CMDR, cmdr)
-            .apply()
-    }
+    fun getAccessToken(): String? = prefs.getString(KEY_ACCESS_TOKEN, null)
+    fun getRefreshToken(): String? = prefs.getString(KEY_REFRESH_TOKEN, null)
+    fun getEmail(): String? = prefs.getString(KEY_USER_EMAIL, null)
+    fun getCmdrName(): String? = prefs.getString(KEY_CMDR_NAME, null)
+    fun getRole(): String? = prefs.getString(KEY_USER_ROLE, null)
 
-    fun getAccessToken(): String? = prefs.getString(KEY_TOKEN, null)?.takeIf { it.isNotBlank() }
-    fun getRefreshToken(): String? = prefs.getString(KEY_REFRESH, null)?.takeIf { it.isNotBlank() }
-    fun getEmail(): String? = prefs.getString(KEY_EMAIL, null)
-    fun getRole(): String? = prefs.getString(KEY_ROLE, null)
-    fun getCmdr(): String? = prefs.getString(KEY_CMDR, null)
-
-    fun getBaseUrl(): String {
-        return prefs.getString(KEY_BASE_URL, null)
-            ?: "https://edringcolony.ru" // default, override in gradle.properties
-    }
+    fun getBaseUrl(): String =
+        prefs.getString(KEY_BASE_URL, DEFAULT_BASE_URL) ?: DEFAULT_BASE_URL
 
     fun setBaseUrl(url: String) {
-        prefs.edit().putString(KEY_BASE_URL, url.trim().trimEnd('/')).apply()
+        val cleaned = url.trim().trimEnd('/')
+        prefs.edit().putString(KEY_BASE_URL, cleaned.ifEmpty { DEFAULT_BASE_URL }).apply()
     }
 
     fun isLoggedIn(): Boolean = !getAccessToken().isNullOrBlank()
 
-    fun clear() {
-        prefs.edit().clear().apply()
+    fun clearSession() {
+        val savedUrl = getBaseUrl()
+        prefs.edit().clear().putString(KEY_BASE_URL, savedUrl).apply()
     }
 }

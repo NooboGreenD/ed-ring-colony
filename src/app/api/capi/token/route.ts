@@ -7,9 +7,22 @@ import { fetchFrontierIdentity } from '@/lib/capi/oauth';
 import { upsertResilient, schemaWarning } from '@/lib/capi/persist';
 import { capiSession } from '@/lib/capi/session';
 import { markCapiTokenBroken, syncCapiPilot } from '@/lib/capi/syncPilot';
+import { checkRateLimit } from '@/lib/rateLimit';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+  Pragma: 'no-cache',
+  'Referrer-Policy': 'no-referrer',
+};
+
+function clientIp(req: Request): string {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim() || 'local';
+  return req.headers.get('x-real-ip')?.trim() || 'local';
+}
 
 /**
  * Обмен привязкой Frontier CAPI между Colonial Helper и сайтом.
@@ -47,14 +60,14 @@ async function resolveUserId(
   bodyToken = '',
 ): Promise<string | null> {
   const candidates: string[] = [];
-  const url = new URL(req.url);
-  const queryToken = url.searchParams.get('token')?.trim() || '';
-  if (queryToken) candidates.push(queryToken);
-  if (bodyToken) candidates.push(bodyToken);
   const authHeader = req.headers.get('authorization') || '';
   const bearerToken = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
   // JWT сессии Supabase содержит точки, API-токен Helper'а — нет.
   if (bearerToken && !bearerToken.includes('.')) candidates.push(bearerToken);
+  if (bodyToken) candidates.push(bodyToken);
+  const url = new URL(req.url);
+  const queryToken = url.searchParams.get('token')?.trim() || '';
+  if (queryToken) candidates.push(queryToken);
 
   for (const candidate of candidates) {
     const { data: apiToken } = await svc
@@ -78,7 +91,12 @@ export async function GET(req: Request) {
   try {
     const svc = getServiceClient();
     const userId = await resolveUserId(req, svc);
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!userId) {
+      if (!checkRateLimit(`capi-token-unauth:${clientIp(req)}`, 10)) {
+        return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: NO_STORE_HEADERS });
+      }
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
+    }
 
     const { data: token } = await svc
       .from('capi_tokens')
@@ -89,7 +107,7 @@ export async function GET(req: Request) {
     // Сломанную привязку (отозванный refresh, аккаунт без игры) не отдаём:
     // Helper'у она не поможет, а просить заново входить должен сайт.
     if (!token?.refresh_token || token.is_active === false) {
-      return NextResponse.json({ ok: false, error: 'No active CAPI binding' }, { status: 404 });
+      return NextResponse.json({ ok: false, error: 'No active CAPI binding' }, { status: 404, headers: NO_STORE_HEADERS });
     }
 
     // Access-токен мог истечь: продлеваем его сами (сессия устойчива к
@@ -115,11 +133,11 @@ export async function GET(req: Request) {
         platform: token.platform,
         cmdr_name: token.cmdr_name,
       },
-    });
+    }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed';
     console.error('[CAPI Token GET]', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
 
@@ -133,17 +151,22 @@ export async function POST(req: Request) {
         body = parsed as Record<string, unknown>;
       }
     } catch {
-      return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+      return NextResponse.json({ error: 'Invalid JSON' }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
     const apiToken = typeof body.token === 'string' ? body.token.trim() : '';
     const userId = await resolveUserId(req, svc, apiToken);
-    if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!userId) {
+      if (!checkRateLimit(`capi-token-unauth:${clientIp(req)}`, 10)) {
+        return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: NO_STORE_HEADERS });
+      }
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
+    }
 
     const accessToken = typeof body.access_token === 'string' ? body.access_token.trim() : '';
     const refreshToken = typeof body.refresh_token === 'string' ? body.refresh_token.trim() : '';
     if (accessToken.length < 20 || refreshToken.length < 20) {
-      return NextResponse.json({ error: 'access_token/refresh_token required' }, { status: 400 });
+      return NextResponse.json({ error: 'access_token/refresh_token required' }, { status: 400, headers: NO_STORE_HEADERS });
     }
 
     // Срок действия: верим Helper'у в разумных пределах, иначе считаем
@@ -170,7 +193,7 @@ export async function POST(req: Request) {
         .neq('user_id', userId)
         .maybeSingle();
       if (clash?.user_id) {
-        return NextResponse.json({ error: 'already_linked_elsewhere' }, { status: 409 });
+        return NextResponse.json({ error: 'already_linked_elsewhere' }, { status: 409, headers: NO_STORE_HEADERS });
       }
     }
 
@@ -196,7 +219,7 @@ export async function POST(req: Request) {
       const samePlatform = !existing.platform || !identity?.platform || existing.platform === identity.platform;
       if (sameAccount && samePlatform && existing.is_active !== false
         && Number.isFinite(existingExpiry) && existingExpiry >= expiresAtMs) {
-        return NextResponse.json({ ok: true, synced: false, stale: true, reason: 'site_tokens_newer' });
+        return NextResponse.json({ ok: true, synced: false, stale: true, reason: 'site_tokens_newer' }, { headers: NO_STORE_HEADERS });
       }
     }
 
@@ -223,7 +246,7 @@ export async function POST(req: Request) {
     );
     if (!tokenWrite.ok) {
       console.error('[CAPI Token POST] save', tokenWrite.error);
-      return NextResponse.json({ error: tokenWrite.error?.message ?? 'Save failed' }, { status: 500 });
+      return NextResponse.json({ error: tokenWrite.error?.message ?? 'Save failed' }, { status: 500, headers: NO_STORE_HEADERS });
     }
     const warning = schemaWarning('capi_tokens', tokenWrite.droppedColumns);
     if (warning) console.warn('[CAPI Token POST]', warning);
@@ -263,10 +286,10 @@ export async function POST(req: Request) {
       console.warn('[CAPI Token POST] first sync skipped:', (syncError as Error).message);
     }
 
-    return NextResponse.json({ ok: true, synced, cmdr: cmdrName, ...failure });
+    return NextResponse.json({ ok: true, synced, cmdr: cmdrName, ...failure }, { headers: NO_STORE_HEADERS });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed';
     console.error('[CAPI Token POST]', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    return NextResponse.json({ error: message }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
