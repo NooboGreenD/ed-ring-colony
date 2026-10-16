@@ -76,30 +76,75 @@ class _ZBlock:
 class _ClickThroughBlock:
     """Минимальный блок для проверки синхронизации «клик насквозь»."""
 
-    def __init__(self):
+    def __init__(self, locked=False):
         from overlay import OverlayWindow
 
         self.block = OverlayWindow.__new__(OverlayWindow)
         self.block.overlay_key = "route"
         self.block.settings = {}
-        self.block._click_through = False
+        self.block._locked = locked
+        self.block._click_through = locked
+        self.block._detached = False
+        self.block._controller = None
         self.block._alpha = 0.9
+        self.block._tk_layered = True
         self.block._applied_through = None
-        self.block._hwnd = 4242
+        self.block._hwnd = None
         self.block._is_topmost = True
-        self.block.through_btn = mock.MagicMock()
+        self.block._dragging = False
+        self.block.lock_btn = mock.MagicMock()
+        self.block.drag_label = mock.MagicMock()
+        self.block.resize_handle = mock.MagicMock()
+        self.block.header_indicator = mock.MagicMock()
+        self.block.signal_rail = mock.MagicMock()
         self.block.window = mock.MagicMock()
+
+
+class _FakeUser32:
+    """user32 без Windows: расширенные стили окон живут в словаре.
+
+    `broken_write` — SetWindowLong «не срабатывает» (как у чужого или уже
+    уничтоженного окна): стиль остаётся прежним.
+    """
+
+    def __init__(self, styles=None, broken_write=False):
+        self.styles = dict(styles or {})
+        self.broken_write = broken_write
+        self.writes = []
+        self.layered_attrs = []
+        self.frame_changes = 0
+
+    def IsWindow(self, hwnd):
+        return hwnd in self.styles
+
+    def GetWindowLong(self, hwnd, index):
+        return self.styles[hwnd]
+
+    def SetWindowLong(self, hwnd, index, value):
+        self.writes.append((hwnd, value))
+        if not self.broken_write:
+            self.styles[hwnd] = value
+        return 0
+
+    def SetLayeredWindowAttributes(self, hwnd, key, alpha, flags):
+        self.layered_attrs.append((hwnd, alpha))
+        return 1
+
+    def SetWindowPos(self, *args):
+        self.frame_changes += 1
+        return 1
 
 
 # ---------------------------------------------------------------------------
 class ClickThroughSyncTests(unittest.TestCase):
-    """Win32-режим «клик насквозь» применяется один раз на изменение."""
+    """Закреплённый блок пропускает мышь сразу и всегда, без перещёлкивания."""
 
     def test_sync_is_skipped_when_state_unchanged(self):
         import overlay
 
         fixture = _ClickThroughBlock()
-        with mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
+        with mock.patch.object(overlay, "_toplevel_hwnd", return_value=4242), \
+                mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
             fixture.block._click_through = True
             fixture.block._sync_click_through()
             fixture.block._sync_click_through()
@@ -107,30 +152,125 @@ class ClickThroughSyncTests(unittest.TestCase):
             self.assertEqual(win32.call_count, 1, "повторные вызовы не должны дёргать Win32")
             # Альфа окна передаётся в Win32: слоистое окно без атрибутов
             # Windows считает полностью прозрачным.
-            self.assertEqual(win32.call_args[0][1:], (True, 0.9))
-            # force=True — применяем заново (например, окно пересоздали).
+            self.assertEqual(win32.call_args[0], (4242, True, 0.9))
+            # Слой поставил сам Tk (прозрачность < 100 %) — снимать его нельзя.
+            self.assertTrue(win32.call_args[1]["keep_layered"])
+            # force=True — проверяем стиль на самом окне ещё раз.
             fixture.block._sync_click_through(force=True)
             self.assertEqual(win32.call_count, 2)
 
-    def test_set_click_through_reacts_only_to_change(self):
+    def test_style_waits_for_real_window(self):
+        """Корень жалобы: стиль ставился до того, как у окна появилась рамка.
+
+        Tk создаёт настоящее окно верхнего уровня только при первом показе.
+        Раньше «клик насквозь» применялся через after_idle сразу после
+        создания блока — к несуществующей рамке, — и сохранённый режим не
+        работал, пока его не перещёлкнешь. Теперь без рамки стиль не
+        считается применённым и ставится по <Map>.
+        """
+        import overlay
+
+        fixture = _ClickThroughBlock(locked=True)
+        block = fixture.block
+        with mock.patch.object(overlay, "_toplevel_hwnd", return_value=None), \
+                mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
+            self.assertFalse(block._sync_click_through())
+            win32.assert_not_called()
+            self.assertIsNone(block._applied_through)
+
+        with mock.patch.object(overlay, "_toplevel_hwnd", return_value=4242), \
+                mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
+            event = mock.Mock(widget=block.window)
+            block._on_window_map(event)
+            block.window.after_idle.assert_called_with(block._sync_click_through)
+            block.window.after_idle.call_args[0][0]()   # Tk выполняет отложенный вызов
+            win32.assert_called_once()
+            self.assertEqual(win32.call_args[0][:2], (4242, True))
+            self.assertTrue(block._applied_through)
+
+    def test_map_of_child_widget_is_ignored(self):
+        fixture = _ClickThroughBlock(locked=True)
+        fixture.block._on_window_map(mock.Mock(widget=object()))
+        fixture.block.window.after_idle.assert_not_called()
+
+    def test_recreated_frame_is_styled_again(self):
+        """Tk пересоздал рамку окна — стиль нужно поставить на новую."""
+        import overlay
+
+        fixture = _ClickThroughBlock(locked=True)
+        with mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
+            with mock.patch.object(overlay, "_toplevel_hwnd", return_value=4242):
+                fixture.block._sync_click_through()
+            with mock.patch.object(overlay, "_toplevel_hwnd", return_value=5151):
+                fixture.block._sync_click_through()
+        self.assertEqual([call.args[0] for call in win32.call_args_list], [4242, 5151])
+
+    def test_failed_write_is_retried(self):
+        import overlay
+
+        fixture = _ClickThroughBlock(locked=True)
+        with mock.patch.object(overlay, "_toplevel_hwnd", return_value=4242), \
+                mock.patch.object(overlay, "_set_click_through", side_effect=[False, True]) as win32:
+            self.assertFalse(fixture.block._sync_click_through())
+            self.assertIsNone(fixture.block._applied_through)
+            self.assertTrue(fixture.block._sync_click_through())
+            self.assertEqual(win32.call_count, 2)
+
+    def test_lock_switches_click_through(self):
+        """Закрепили — мышь уходит в игру; открепили — блок снова ловит мышь."""
         fixture = _ClickThroughBlock()
-        fixture.block._flash_indicator = mock.MagicMock()
-        with mock.patch.object(fixture.block.window, "after_idle") as after_idle:
-            fixture.block.set_click_through(True, "route_click_through")
-            fixture.block.set_click_through(True, "route_click_through")
-            self.assertEqual(after_idle.call_count, 1)
-            self.assertEqual(fixture.block.settings["route_click_through"], True)
-            fixture.block.set_click_through(False, "route_click_through")
-            self.assertEqual(after_idle.call_count, 2)
+        block = fixture.block
+        block._flash_indicator = mock.MagicMock()
+        block.set_locked(True)
+        self.assertTrue(block._locked)
+        self.assertTrue(block._click_through)
+        self.assertTrue(block.settings["route_locked"])
+        self.assertEqual(block.window.after_idle.call_count, 1)
+        block.resize_handle.place_forget.assert_called_once()
+
+        block.set_locked(True)   # то же состояние — окно не трогаем
+        self.assertEqual(block.window.after_idle.call_count, 1)
+
+        block.set_locked(False)
+        self.assertFalse(block._click_through)
+        self.assertFalse(block.settings["route_locked"])
+        self.assertEqual(block.window.after_idle.call_count, 2)
+        block.resize_handle.place.assert_called()
+
+    def test_header_lock_goes_through_manager(self):
+        """LK/UL в шапке сохраняет настройку через менеджер (и вкладку тоже)."""
+        fixture = _ClickThroughBlock()
+        controller = mock.Mock()
+        fixture.block.set_controller(controller)
+        fixture.block._toggle_lock()
+        controller.set_block_locked.assert_called_once_with("route", True)
 
     def test_alpha_change_reapplies_layered_window(self):
-        fixture = _ClickThroughBlock()
-        fixture.block._click_through = True
+        fixture = _ClickThroughBlock(locked=True)
         fixture.block._applied_through = True
+        fixture.block._tk_layered = False
         fixture.block.set_alpha(0.4, save=False)
-        # Состояние сброшено — следующий sync применит новую альфу.
+        # Состояние сброшено — следующий sync применит стиль заново: Tk,
+        # впервые делая окно полупрозрачным, затирает WS_EX_TRANSPARENT.
         self.assertIsNone(fixture.block._applied_through)
         self.assertEqual(fixture.block._alpha, 0.4)
+        self.assertTrue(fixture.block._tk_layered)
+        fixture.block.window.after_idle.assert_called_with(fixture.block._sync_click_through)
+
+    def test_ensure_mouse_mode_checks_visible_window(self):
+        import overlay
+
+        fixture = _ClickThroughBlock(locked=True)
+        fixture.block._applied_through = True
+        fixture.block._hwnd = 4242
+        fixture.block.window.winfo_viewable.return_value = True
+        with mock.patch.object(overlay, "_toplevel_hwnd", return_value=4242), \
+                mock.patch.object(overlay, "_set_click_through", return_value=True) as win32:
+            self.assertTrue(fixture.block.ensure_mouse_mode())
+            win32.assert_called_once()
+            fixture.block.window.winfo_viewable.return_value = False
+            self.assertFalse(fixture.block.ensure_mouse_mode())
+            win32.assert_called_once()
 
     def test_win32_helper_survives_absent_windows(self):
         """На Linux/в CI без Windows функция не падает и возвращает False."""
@@ -142,6 +282,90 @@ class ClickThroughSyncTests(unittest.TestCase):
             self.skipTest("тест для окружения без Win32 API")
         self.assertFalse(overlay._set_click_through(4242, True))
         self.assertFalse(overlay._set_click_through(0, False))
+
+
+class SetClickThroughWin32Tests(unittest.TestCase):
+    """Логика записи стиля: только при отличии, с проверкой результата."""
+
+    def _run(self, user32, *args, **kwargs):
+        import overlay
+
+        with mock.patch.object(overlay, "_user32", return_value=user32):
+            return overlay._set_click_through(*args, **kwargs)
+
+    def test_enable_adds_flags_once(self):
+        import overlay
+
+        user32 = _FakeUser32({1: 0})
+        self.assertTrue(self._run(user32, 1, True, 0.9))
+        self.assertEqual(user32.styles[1], overlay.WS_EX_TRANSPARENT | overlay.WS_EX_LAYERED)
+        self.assertEqual(user32.layered_attrs, [(1, 230)], "новый слой обязан получить альфу")
+        self.assertEqual(user32.frame_changes, 1)
+        # Повтор — стиль уже на месте, писать нечего.
+        self.assertTrue(self._run(user32, 1, True, 0.9))
+        self.assertEqual(len(user32.writes), 1)
+
+    def test_layer_of_tk_is_kept(self):
+        import overlay
+
+        user32 = _FakeUser32({1: overlay.WS_EX_LAYERED})
+        self.assertTrue(self._run(user32, 1, True, 0.9))
+        self.assertEqual(user32.layered_attrs, [], "альфу слоя Tk не перетираем")
+        self.assertTrue(self._run(user32, 1, False, 0.9, keep_layered=True))
+        self.assertEqual(user32.styles[1], overlay.WS_EX_LAYERED)
+
+    def test_own_layer_is_removed_on_unlock(self):
+        import overlay
+
+        user32 = _FakeUser32({1: overlay.WS_EX_TRANSPARENT | overlay.WS_EX_LAYERED})
+        self.assertTrue(self._run(user32, 1, False, 1.0, keep_layered=False))
+        self.assertEqual(user32.styles[1], 0)
+
+    def test_failed_write_is_reported(self):
+        user32 = _FakeUser32({1: 0}, broken_write=True)
+        self.assertFalse(self._run(user32, 1, True, 0.9),
+                         "стиль не встал — это не успех, иначе повтора не будет")
+
+    def test_dead_window_is_skipped(self):
+        user32 = _FakeUser32({})
+        self.assertFalse(self._run(user32, 1, True, 0.9))
+        self.assertEqual(user32.writes, [])
+
+    def test_user32_functions_get_prototypes(self):
+        """64-битные HWND и LONG_PTR не обрезаются: у функций есть прототипы.
+
+        На 32-битной Windows функций *LongPtr* нет — берём GetWindowLongW.
+        """
+        import ctypes
+
+        import overlay
+
+        class _Func:
+            argtypes = None
+            restype = None
+
+        class _Lib:
+            def __init__(self, missing=()):
+                self.missing = set(missing)
+                self.funcs = {}
+
+            def __getattr__(self, name):
+                if name in self.missing or name.startswith("__"):
+                    raise AttributeError(name)
+                return self.funcs.setdefault(name, _Func())
+
+        for missing, getter in (((), "GetWindowLongPtrW"),
+                                (("GetWindowLongPtrW",), "GetWindowLongW")):
+            with self.subTest(getter=getter):
+                lib = _Lib(missing)
+                with mock.patch.object(overlay, "_USER32", None), \
+                        mock.patch.object(ctypes, "WinDLL", create=True, return_value=lib):
+                    api = overlay._user32()
+                    self.assertIsNotNone(api)
+                    self.assertIs(api.GetWindowLong, lib.funcs[getter])
+                    self.assertIsNotNone(lib.funcs[getter].restype)
+                    self.assertIsNotNone(lib.funcs["GetAncestor"].argtypes)
+                    self.assertIsNotNone(lib.funcs["SetWindowPos"].argtypes)
 
 
 # ---------------------------------------------------------------------------

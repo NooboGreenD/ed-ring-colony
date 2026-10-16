@@ -145,7 +145,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.14.0"
+VERSION = "2.15.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -423,6 +423,7 @@ class ColonialHelperApp:
 
         # Горячие клавиши
         self.root.bind("<F12>", lambda e: self._on_toggle_overlay_visibility())
+        self.root.bind("<Control-F12>", lambda e: self._on_toggle_overlay_lock())
         self.root.bind("<Control-o>", lambda e: self._on_toggle_overlay())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -5307,6 +5308,16 @@ class ColonialHelperApp:
                 self._map_motion_start()
         else:
             self._map_motion_stop()
+        if hasattr(self, "notebook") and hasattr(self, "tab_overlay"):
+            # Пока открыта вкладка «Оверлей», HUD не прячется из-за того, что
+            # фокус у Helper, а не у игры: видно, что меняешь.
+            try:
+                editing = self.notebook.select() == str(self.tab_overlay)
+                self.overlay_manager.set_ui_editing(editing)
+                if editing:
+                    self._sync_overlay_block_rows()
+            except Exception:
+                pass
         if hasattr(self, "notebook") and hasattr(self, "tab_exobio"):
             try:
                 selected_tab = self.notebook.select()
@@ -5351,7 +5362,10 @@ class ColonialHelperApp:
         tb.Label(frame, text="Настройки оверлея HUD", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
         tb.Label(
             frame,
-            text="Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\nПеретаскивайте окна мышью. ПКМ по заголовку — меню управления. F12 — показать/скрыть.",
+            text="Оверлей работает поверх Elite Dangerous в режиме Borderless Windowed.\n"
+                 "Закреплённый блок не мешает мыши — клики уходят в игру. Чтобы подвинуть "
+                 "блоки или поменять размер, открепите их (Ctrl+F12 или галочки «Закреп.» ниже). "
+                 "F12 — показать/скрыть.",
             foreground=COLOR_MUTED,
             wraplength=700,
         ).pack(anchor=W, pady=(0, 10))
@@ -5422,9 +5436,12 @@ class ColonialHelperApp:
         tb.Label(frame, text="Блоки HUD: вид и поведение", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(10, 5))
         tb.Label(
             frame,
-            text="Каждый блок настраивается отдельно: показывать ли его, можно ли перетаскивать, "
-                 "своя прозрачность и свой размер шрифта, размер окна, «клик насквозь» и правило "
-                 "«показывать по ситуации». Всё применяется сразу — оверлей перезапускать не нужно.",
+            text="Каждый блок настраивается отдельно: показывать ли его, закреплён ли он, на каком "
+                 "экране живёт, своя прозрачность и свой размер шрифта, размер окна и правило "
+                 "«показывать по ситуации». Закреплённый блок не двигается и пропускает клики мыши "
+                 "в игру; откреплённый можно тянуть и настраивать. «Экран»: «с игрой» — блок виден "
+                 "только поверх игры; «экран N» — блок отвязан от игры, виден всегда и стоит на "
+                 "выбранном мониторе. Всё применяется сразу — оверлей перезапускать не нужно.",
             foreground=COLOR_MUTED,
             wraplength=700,
         ).pack(anchor=W, pady=(0, 8))
@@ -5432,7 +5449,7 @@ class ColonialHelperApp:
         head = tb.Frame(frame)
         head.pack(fill=X, pady=(0, 2))
         for column_text, column_width in (
-            ("Блок", 20), ("Показ", 6), ("Блокир.", 8), ("Сквозь", 7),
+            ("Блок", 20), ("Показ", 6), ("Закреп.", 8), ("Экран", 10),
             ("Прозр.", 8), ("Шрифт", 7), ("Размер", 10), ("Показывать", 24), ("Клавиша", 8),
         ):
             tb.Label(head, text=column_text, width=column_width, anchor=W,
@@ -5441,6 +5458,14 @@ class ColonialHelperApp:
         self._overlay_block_vars = {}
         for block_key in self.overlay_manager.BLOCKS:
             self._build_overlay_block_row(frame, block_key)
+
+        # Какие экраны есть: в колонке «Экран» только номера, чтобы таблица
+        # влезала в окно, а разрешение и «основной» — здесь.
+        self.overlay_screens_label = tb.Label(
+            frame, text=self._overlay_screens_text(), foreground=COLOR_MUTED,
+            font=("Consolas", 8), wraplength=700, justify=LEFT,
+        )
+        self.overlay_screens_label.pack(anchor=W, pady=(4, 0))
 
         # Общий размер всех блоков
         all_size_frame = tb.Frame(frame)
@@ -5461,15 +5486,33 @@ class ColonialHelperApp:
         # ---- Поведение оверлея ----
         tb.Label(frame, text="Поведение оверлея", font=("Segoe UI", 10, "bold")).pack(anchor=W, pady=(0, 5))
 
-        self.click_through_var = tk.BooleanVar(
-            value=bool(self.overlay_manager.settings.get("click_through", False))
-        )
-        tb.Checkbutton(
+        tb.Label(
             frame,
-            text="Клик-сквозь для всех блоков (HUD только для глаз, мышь работает в игре)",
-            variable=self.click_through_var,
-            command=self._on_click_through_changed,
-        ).pack(anchor=W, pady=2)
+            text="Закреплённый блок — только для глаз: мышь проходит сквозь него в игру, "
+                 "сразу после запуска и всегда. Откреплённый блок ловит мышь: его можно "
+                 "тянуть за шапку, менять размер за угол и открывать меню «···».",
+            foreground=COLOR_MUTED,
+            wraplength=700,
+        ).pack(anchor=W, pady=(0, 4))
+        lock_frame = tb.Frame(frame)
+        lock_frame.pack(fill=X, pady=(0, 4))
+        tb.Button(lock_frame, text="Закрепить все", command=lambda: self._on_lock_all(True),
+                  bootstyle="success-outline", width=16).pack(side=LEFT, padx=(0, 6))
+        tb.Button(lock_frame, text="Открепить все", command=lambda: self._on_lock_all(False),
+                  bootstyle="warning-outline", width=16).pack(side=LEFT, padx=(0, 12))
+        tb.Label(lock_frame, text="Клавиша:").pack(side=LEFT, padx=(0, 4))
+        current_lock_key = str(self.overlay_manager.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "")
+        self.lock_hotkey_var = tk.StringVar(value=current_lock_key or "—")
+        lock_combo = tb.Combobox(
+            lock_frame, textvariable=self.lock_hotkey_var, width=14, state="readonly",
+            values=list(self.OVERLAY_LOCK_HOTKEY_CHOICES),
+        )
+        lock_combo.pack(side=LEFT)
+        lock_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_lock_hotkey_changed())
+        tb.Label(
+            lock_frame, text="закрепить/открепить все, даже из игры",
+            foreground=COLOR_MUTED,
+        ).pack(side=LEFT, padx=(10, 0))
 
         self.auto_rules_var = tk.BooleanVar(
             value=bool(self.overlay_manager.settings.get("auto_rules_enabled", False))
@@ -5486,7 +5529,8 @@ class ColonialHelperApp:
         )
         tb.Checkbutton(
             frame,
-            text="Привязать оверлей к окну Elite Dangerous (только поверх игры)",
+            text="Привязать оверлей к окну Elite Dangerous (только поверх игры; "
+                 "блоки с экраном «экран N» видны всегда)",
             variable=self.attach_game_var,
             command=self._on_attach_game_changed,
         ).pack(anchor=W, pady=2)
@@ -5549,8 +5593,9 @@ class ColonialHelperApp:
         tb.Label(
             frame,
             text="Блоки прилипают к краям и углам области. Область — весь экран, либо экран с "
-                 "окном игры, если включена привязка к игре. Профиль сохраняет всю раскладку "
-                 "(позиции, размеры, видимость, прозрачность) — например «Хаул», «Эксобиология», «Бой».",
+                 "окном игры, если включена привязка к игре; у блока, отвязанного от игры, — его "
+                 "собственный экран. Профиль сохраняет всю раскладку (позиции, размеры, видимость, "
+                 "прозрачность, закрепление, экран) — например «Хаул», «Эксобиология», «Бой».",
             foreground=COLOR_MUTED,
             wraplength=700,
         ).pack(anchor=W, pady=(0, 8))
@@ -5590,15 +5635,8 @@ class ColonialHelperApp:
         tb.Label(frame, text="Привязка блоков:", font=("Segoe UI", 10)).pack(anchor=W, pady=(8, 2))
         anchor_values = [ANCHOR_LABELS[key] for key in ANCHOR_KEYS]
         self._anchor_vars = {}
-        for block_key, block_label in [
-            ("route", "ROUTE — маршрут"),
-            ("status", "STATUS — статус"),
-            ("ship", "SHIP — корабль"),
-            ("cargo", "CARGO — трюм"),
-            ("session", "SESSION — сессия"),
-            ("events", "EVENTS — события"),
-            ("exobio", "EXOBIO — экзобиология"),
-        ]:
+        for block_key in self.overlay_manager.BLOCKS:
+            block_label = BLOCK_LABELS.get(block_key, block_key)
             row = tb.Frame(frame)
             row.pack(fill=X, pady=1)
             tb.Label(row, text=block_label, width=24, anchor=W).pack(side=LEFT)
@@ -5653,11 +5691,12 @@ class ColonialHelperApp:
         tb.Label(
             frame,
             text="Управление оверлеями:\n"
-                 "  • Перетаскивайте за заголовок (если блок не заблокирован)\n"
-                 "  • [L/U] в шапке — блокировка позиции\n"
-                 "  • [<] / [>] в шапке — клик-сквозь для этого блока\n"
-                 "  • [*] в шапке — меню: привязка, размер, прозрачность\n"
-                 "  • Потяните за угол — изменение размера\n"
+                 "  • UL в шапке — блок откреплён: тяните за заголовок или «::», размер — за угол\n"
+                 "  • LK в шапке — блок закреплён: не двигается, клики мыши уходят в игру\n"
+                 "  • Закрепить/открепить все — клавиша из «Поведения оверлея» (Ctrl+F12)\n"
+                 "  • ··· в шапке — меню: закрепить, отвязать от игры, экран, якорь, размер,\n"
+                 "    прозрачность, шрифт\n"
+                 "  • Голубая полоса сверху — блок отвязан от игры и виден всегда\n"
                  "  • Клавиши из таблицы выше — показать/скрыть конкретный блок\n"
                  "  • F12 — показать/скрыть все блоки, Ctrl+O — включить/выключить оверлей",
             foreground=COLOR_MUTED,
@@ -5675,6 +5714,10 @@ class ColonialHelperApp:
     OVERLAY_FONT_CHOICES = ("общий", "8", "9", "10", "11", "12", "14", "16", "18")
     OVERLAY_HOTKEY_CHOICES = ("—", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8",
                               "F9", "F10", "F11", "F12")
+    OVERLAY_LOCK_HOTKEY_CHOICES = ("—", "Ctrl+F12", "Ctrl+F11", "Ctrl+F10", "Shift+F12",
+                                   "Alt+F12", "Ctrl+Shift+F12", "Ctrl+Shift+L")
+    #: Колонка «Экран»: блок с игрой или отвязан и стоит на экране N.
+    OVERLAY_SCREEN_WITH_GAME = "с игрой"
 
     def _idle_label(self, seconds: int) -> str:
         """Подпись для выбора таймера простоя."""
@@ -5726,17 +5769,22 @@ class ColonialHelperApp:
         tb.Checkbutton(row, variable=visible_var, width=3,
                        command=lambda: self._on_block_visible_changed(key)).pack(side=LEFT, padx=(0, 4))
 
-        # Блокировка позиции
+        # Закрепление: не двигается и пропускает мышь в игру
         lock_var = tk.BooleanVar(value=bool(settings.get(f"{key}_locked", False)))
         widgets["locked"] = lock_var
         tb.Checkbutton(row, variable=lock_var, width=3,
                        command=lambda: self._on_block_lock_changed(key)).pack(side=LEFT, padx=(0, 4))
 
-        # Клик-сквозь
-        through_var = tk.BooleanVar(value=self._block_through_value(key))
-        widgets["click_through"] = through_var
-        tb.Checkbutton(row, variable=through_var, width=3,
-                       command=lambda: self._on_block_through_changed(key)).pack(side=LEFT, padx=(0, 4))
+        # Экран: с игрой или отвязан и стоит на выбранном мониторе
+        screen_var = tk.StringVar(value=self._block_screen_label(key))
+        widgets["screen"] = screen_var
+        screen_combo = tb.Combobox(row, textvariable=screen_var, width=10, state="readonly",
+                                   values=self._overlay_screen_choices())
+        # Мониторы могут подключить и отключить — список собираем при открытии.
+        screen_combo.configure(
+            postcommand=lambda c=screen_combo: c.configure(values=self._overlay_screen_choices()))
+        screen_combo.pack(side=LEFT, padx=(0, 4))
+        screen_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_block_screen_changed(key))
 
         # Прозрачность
         alpha_var = tk.StringVar(value=self._block_alpha_label(key))
@@ -5785,10 +5833,43 @@ class ColonialHelperApp:
         self._overlay_block_vars[key] = widgets
 
     # -- подписи и разбор значений --
-    def _block_through_value(self, key: str) -> bool:
-        from overlay import block_click_through
+    def _overlay_screen_choices(self) -> list:
+        """Значения колонки «Экран»: «с игрой» и номера подключённых экранов."""
+        choices = [self.OVERLAY_SCREEN_WITH_GAME]
+        try:
+            monitors = self.overlay_manager.monitors()
+        except Exception:
+            monitors = []
+        choices.extend(f"экран {monitor.index}" for monitor in monitors)
+        return choices
 
-        return block_click_through(self.overlay_manager.settings, key)
+    def _overlay_screens_text(self) -> str:
+        """Подпись под таблицей: какие экраны есть и какой из них какой."""
+        try:
+            monitors = self.overlay_manager.monitors()
+        except Exception:
+            monitors = []
+        if not monitors:
+            return ""
+        parts = []
+        for monitor in monitors:
+            width, height = monitor.size
+            text = f"экран {monitor.index} — {width}×{height}"
+            if monitor.primary:
+                text += " (основной)"
+            parts.append(text)
+        return "Экраны: " + "; ".join(parts)
+
+    def _block_screen_label(self, key: str) -> str:
+        """Текущее значение колонки «Экран» для блока."""
+        manager = self.overlay_manager
+        if not manager.block_detached(key):
+            return self.OVERLAY_SCREEN_WITH_GAME
+        try:
+            monitor = manager.block_monitor(key)
+        except Exception:
+            monitor = None
+        return f"экран {monitor.index}" if monitor is not None else "экран 1"
 
     def _block_alpha_label(self, key: str) -> str:
         value = self.overlay_manager.settings.get(f"{key}_alpha")
@@ -5816,15 +5897,62 @@ class ColonialHelperApp:
         self.overlay_manager.set_block_visible(key, show)
 
     def _on_block_lock_changed(self, key: str):
-        self.overlay_manager.set_block_locked(key, self._overlay_block_vars[key]["locked"].get())
-
-    def _on_block_through_changed(self, key: str):
-        enabled = bool(self._overlay_block_vars[key]["click_through"].get())
-        self.overlay_manager.set_click_through(enabled, key=key)
+        locked = bool(self._overlay_block_vars[key]["locked"].get())
+        self.overlay_manager.set_block_locked(key, locked)
         self.log(
-            f"{BLOCK_LABELS.get(key, key)}: клик-сквозь {'включён' if enabled else 'выключен'}",
+            f"{BLOCK_LABELS.get(key, key)}: "
+            + ("закреплён — клики уходят в игру" if locked
+               else "откреплён — можно двигать и настраивать"),
             "info",
         )
+
+    def _on_block_screen_changed(self, key: str):
+        """Колонка «Экран»: вернуть блок к игре или отвязать и вынести на экран."""
+        value = str(self._overlay_block_vars[key]["screen"].get() or "").strip()
+        label = BLOCK_LABELS.get(key, key)
+        if value == self.OVERLAY_SCREEN_WITH_GAME or not value:
+            self.overlay_manager.set_block_detached(key, False, move_to_game=True)
+            self.log(f"{label}: снова с игрой — виден только поверх игры", "info")
+        else:
+            digits = "".join(ch for ch in value if ch.isdigit())
+            if not digits or not self.overlay_manager.move_block_to_monitor(key, int(digits)):
+                self.log(f"{label}: экран {digits or '?'} не найден", "warn")
+            else:
+                self.log(f"{label}: отвязан от игры, {value}", "info")
+        self._sync_overlay_block_rows()
+
+    def _on_lock_all(self, locked: bool):
+        self.overlay_manager.set_all_locked(locked)
+        self._sync_overlay_block_rows()
+        self.log("Все блоки закреплены: клики уходят в игру" if locked
+                 else "Все блоки откреплены: их можно двигать и настраивать", "info")
+
+    def _on_lock_hotkey_changed(self):
+        value = str(self.lock_hotkey_var.get() or "").strip()
+        combo = "" if value in ("", "—") else value
+        self.overlay_manager.set_lock_hotkey(combo)
+        self._update_overlay_hotkey_hint()
+        if combo and not self.overlay_manager.hotkeys.available:
+            self.log(
+                f"Горячая клавиша {combo} сохранена, но системные горячие клавиши "
+                f"доступны только в Windows.",
+                "warn",
+            )
+        elif combo:
+            self.log(f"Закрепить/открепить все блоки: {combo}", "success")
+
+    def _on_toggle_overlay_lock(self):
+        """Ctrl+F12 в окне Helper: закрепить/открепить все блоки.
+
+        Если системные горячие клавиши работают, нажатие уже обработал
+        `HotkeyManager` — второй раз не переключаем.
+        """
+        if self.overlay_manager.hotkeys.running:
+            return
+        locked = self.overlay_manager.toggle_all_locked()
+        self._sync_overlay_block_rows()
+        self.log("Все блоки закреплены: клики уходят в игру" if locked
+                 else "Все блоки откреплены: их можно двигать и настраивать", "info")
 
     def _on_block_alpha_changed(self, key: str):
         label = self._overlay_block_vars[key]["alpha"].get()
@@ -5879,16 +6007,6 @@ class ColonialHelperApp:
             self._sync_overlay_block_rows()
             self.log(f"Размер всех блоков: {SIZE_PRESET_LABELS.get(preset, preset)}", "info")
 
-    def _on_click_through_changed(self):
-        enabled = bool(self.click_through_var.get())
-        self.overlay_manager.set_click_through(enabled)
-        self._sync_overlay_block_rows()
-        self.log(
-            "Клик-сквозь включён: HUD не перехватывает мышь" if enabled
-            else "Клик-сквозь выключен",
-            "info",
-        )
-
     def _on_auto_rules_changed(self):
         self.overlay_manager.set_auto_rules_enabled(bool(self.auto_rules_var.get()))
 
@@ -5902,7 +6020,7 @@ class ColonialHelperApp:
         for key, widgets in getattr(self, "_overlay_block_vars", {}).items():
             widgets["visible"].set(bool(settings.get(f"show_{key}", True)))
             widgets["locked"].set(bool(settings.get(f"{key}_locked", False)))
-            widgets["click_through"].set(self._block_through_value(key))
+            widgets["screen"].set(self._block_screen_label(key))
             widgets["alpha"].set(self._block_alpha_label(key))
             widgets["font_size"].set(self._block_font_label(key))
             widgets["size"].set(SIZE_PRESET_LABELS.get(self._block_size_preset(key), "M — 100%"))
@@ -5911,8 +6029,13 @@ class ColonialHelperApp:
             widgets["hotkey"].set(str(settings.get(f"{key}_hotkey", "") or "—") or "—")
         if hasattr(self, "idle_var"):
             self.idle_var.set(self._idle_label(int(settings.get("idle_timeout", 0) or 0)))
-        if hasattr(self, "click_through_var"):
-            self.click_through_var.set(bool(settings.get("click_through", False)))
+        if hasattr(self, "lock_hotkey_var"):
+            self.lock_hotkey_var.set(str(settings.get("lock_toggle_hotkey", "Ctrl+F12") or "") or "—")
+        if hasattr(self, "overlay_screens_label"):
+            try:
+                self.overlay_screens_label.config(text=self._overlay_screens_text())
+            except Exception:
+                pass
         if hasattr(self, "auto_rules_var"):
             self.auto_rules_var.set(bool(settings.get("auto_rules_enabled", False)))
         if hasattr(self, "all_size_var"):
@@ -5934,6 +6057,9 @@ class ColonialHelperApp:
         all_combo = str(self.overlay_manager.settings.get("toggle_all_hotkey", "F12") or "")
         if all_combo:
             lines.append(f"{all_combo} — показать/скрыть все блоки")
+        lock_combo = str(self.overlay_manager.settings.get("lock_toggle_hotkey", "Ctrl+F12") or "")
+        if lock_combo:
+            lines.append(f"{lock_combo} — закрепить/открепить все блоки")
         hint = "Назначено: " + "; ".join(lines) if lines else "Клавиши не назначены."
         if not self.overlay_manager.hotkeys.available:
             hint += "  (системные горячие клавиши работают только в Windows)"

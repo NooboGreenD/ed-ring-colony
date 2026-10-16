@@ -298,5 +298,72 @@ class ShipCompactHeightMigrationTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["ship_modules_view"], "all")
 
 
+class ClickThroughToLockMigrationTests(unittest.TestCase):
+    """2.15.0 (схема 5): «клик насквозь» теперь даёт закрепление блока.
+
+    Раньше это были две независимые галочки. Блок, который пропускал мышь в
+    игру, после обновления обязан остаться таким же — то есть закреплённым.
+    """
+
+    def test_global_click_through_locks_blocks_without_own_value(self):
+        settings = overlay.load_overlay_settings(_config({
+            "settings_schema": 4,
+            "click_through": True,
+            "ship_click_through": False,
+            "route_locked": False,
+        }))
+        self.assertTrue(settings["route_locked"])
+        self.assertTrue(settings["carrier_locked"])
+        self.assertFalse(settings["ship_locked"], "свой «нет» у блока сильнее общего «да»")
+        self.assertEqual(settings["settings_schema"], overlay.SETTINGS_SCHEMA_VERSION)
+
+    def test_own_click_through_locks_block(self):
+        settings = overlay.load_overlay_settings(_config({
+            "settings_schema": 4,
+            "exobio_click_through": True,
+            "exobio_locked": False,
+        }))
+        self.assertTrue(settings["exobio_locked"])
+        self.assertFalse(settings["route_locked"])
+
+    def test_locked_block_stays_locked(self):
+        """Закреплённый блок без «клика насквозь» теперь пропускает мышь — это и есть новое правило."""
+        settings = overlay.load_overlay_settings(_config({
+            "settings_schema": 4, "cargo_locked": True, "cargo_click_through": False,
+        }))
+        self.assertTrue(settings["cargo_locked"])
+        self.assertTrue(overlay.block_click_through(settings, "cargo"))
+
+    def test_legacy_keys_are_dropped(self):
+        path = _config({"settings_schema": 4, "click_through": True,
+                        "route_click_through": True, "token": "секрет"})
+        settings = overlay.load_overlay_settings(path)
+        for key in overlay.LEGACY_OVERLAY_KEYS:
+            self.assertNotIn(key, settings)
+        overlay.save_overlay_settings(path, settings)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("click_through", raw)
+        self.assertNotIn("route_click_through", raw)
+        self.assertEqual(raw["token"], "секрет", "чужие ключи общего конфига не трогаем")
+
+    def test_stale_legacy_keys_written_back_are_cleaned(self):
+        """Приложение могло вернуть старые ключи в файл (save_config) — чистим снова."""
+        path = _config({"settings_schema": overlay.SETTINGS_SCHEMA_VERSION,
+                        "click_through": True, "route_click_through": True})
+        settings = overlay.load_overlay_settings(path)
+        self.assertFalse(settings["route_locked"], "на новой схеме старые ключи ничего не решают")
+        overlay.save_overlay_settings(path, settings)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        self.assertNotIn("click_through", raw)
+        self.assertNotIn("route_click_through", raw)
+
+    def test_detach_and_lock_hotkey_have_defaults(self):
+        self.assertEqual(overlay.DEFAULT_SETTINGS["lock_toggle_hotkey"], "Ctrl+F12")
+        for block in overlay.DEFAULT_BLOCK_POSITIONS:
+            with self.subTest(block=block):
+                self.assertIs(overlay.DEFAULT_SETTINGS[f"{block}_detached"], False)
+        self.assertNotIn("click_through", overlay.DEFAULT_SETTINGS)
+
+
 if __name__ == "__main__":
     unittest.main()

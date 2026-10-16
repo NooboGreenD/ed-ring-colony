@@ -3,8 +3,9 @@
 Проверяется то, что пользователь меняет чаще всего и что раньше требовало
 перезапуска оверлея:
 
-* персональные настройки блока (прозрачность, шрифт, размер, блокировка,
-  клик-сквозь) применяются к живому окну, а не после перезапуска;
+* персональные настройки блока (прозрачность, шрифт, размер, закрепление,
+  отвязка от игры) применяются к живому окну, а не после перезапуска;
+* закреплённый блок всегда пропускает мышь в игру, откреплённый — нет;
 * пресеты размера и сброс блока считают размеры от стандарта;
 * правила «показывать по ситуации» и автоскрытие при простое решают,
   какие блоки видны;
@@ -55,12 +56,14 @@ _ensure_gui_stubs()
 class _FakeBlock:
     """Оверлей-заглушка, которая запоминает все обращения менеджера."""
 
-    def __init__(self, key="route"):
+    def __init__(self, key="route", settings=None):
         self.overlay_key = key
         self.window = _FakeWindow(10, 20, 300, 200)
         self._anchor = "custom"
         self.calls = []
         self.shown = True
+        # Настройки менеджера (как у настоящего окна): set_position их пишет.
+        self.settings = settings
 
     def _record(self, name, **kwargs):
         self.calls.append((name, kwargs))
@@ -82,8 +85,18 @@ class _FakeBlock:
     def set_locked(self, locked):
         self._record("set_locked", locked=locked)
 
-    def set_click_through(self, enabled, save_key=None):
-        self._record("set_click_through", enabled=enabled, save_key=save_key)
+    def set_detached(self, detached, save=True):
+        self._record("set_detached", detached=detached)
+
+    def set_position(self, x, y, save=True):
+        self.window.x, self.window.y = x, y
+        if save and self.settings is not None:
+            self.settings[f"{self.overlay_key}_x"] = int(x)
+            self.settings[f"{self.overlay_key}_y"] = int(y)
+        self._record("set_position", x=x, y=y)
+
+    def _apply_anchor(self, area=None):
+        self._record("apply_anchor", area=area)
 
     def set_size(self, width, height, save=True):
         self.window.width = width
@@ -124,7 +137,7 @@ class _ManagerTestCase(unittest.TestCase):
         """Подсунуть менеджеру живые окна-заглушки."""
         blocks = {}
         for key in keys:
-            block = _FakeBlock(key)
+            block = _FakeBlock(key, settings=self.manager.settings)
             setattr(self.manager, f"{key}_overlay", block)
             blocks[key] = block
         return blocks
@@ -183,14 +196,25 @@ class BlockSettingHelpersTests(unittest.TestCase):
         settings["cargo_font_size"] = None
         self.assertEqual(resolve_block_font_size(settings, "cargo"), 12)
 
-    def test_click_through_prefers_block_value(self):
+    def test_click_through_follows_lock(self):
+        """С 2.15.0 «клик насквозь» — это закрепление, а не отдельная галочка."""
         from overlay import block_click_through
 
-        settings = {"click_through": True}
+        settings = {"click_through": True, "route_click_through": True}
+        self.assertFalse(block_click_through(settings, "route"),
+                         "старые ключи больше ничего не решают")
+        settings["route_locked"] = True
         self.assertTrue(block_click_through(settings, "route"))
+        self.assertFalse(block_click_through(settings, "ship"))
+
+    def test_legacy_click_through_prefers_block_value(self):
+        from overlay import legacy_click_through
+
+        settings = {"click_through": True}
+        self.assertTrue(legacy_click_through(settings, "route"))
         settings["route_click_through"] = False
-        self.assertFalse(block_click_through(settings, "route"))
-        self.assertTrue(block_click_through(settings, "ship"))
+        self.assertFalse(legacy_click_through(settings, "route"))
+        self.assertTrue(legacy_click_through(settings, "ship"))
 
     def test_auto_rule_matches_situation(self):
         from overlay import auto_rule_matches
@@ -322,19 +346,38 @@ class BlockSettingsLiveTests(_ManagerTestCase):
         self.assertTrue(self.manager.settings["route_locked"])
         self.assertIn(("set_locked", {"locked": True}), blocks["route"].calls)
 
-    def test_click_through_global_skips_blocks_with_own_value(self):
+    def test_lock_all_and_unlock_all(self):
         blocks = self.attach("route", "ship")
-        self.manager.settings["ship_click_through"] = False
-        self.manager.set_click_through(True)
-        self.assertTrue(self.manager.settings["click_through"])
-        self.assertIn("set_click_through", blocks["route"].names())
-        self.assertNotIn("set_click_through", blocks["ship"].names())
+        events = []
+        self.manager.on_settings_changed = lambda key, name, value: events.append((key, name, value))
+        self.manager.set_all_locked(True)
+        self.assertTrue(all(self.manager.settings[f"{key}_locked"] for key in self.manager.BLOCKS))
+        self.assertIn(("set_locked", {"locked": True}), blocks["route"].calls)
+        self.assertIn(("set_locked", {"locked": True}), blocks["ship"].calls)
+        self.assertEqual(events[-1], ("", "locked", True))
+        self.manager.set_all_locked(False)
+        self.assertFalse(any(self.manager.settings[f"{key}_locked"] for key in self.manager.BLOCKS))
 
-    def test_click_through_per_block(self):
-        blocks = self.attach("exobio")
-        self.manager.set_click_through(True, key="exobio")
-        self.assertTrue(self.manager.settings["exobio_click_through"])
-        self.assertEqual(blocks["exobio"].calls[-1][1], {"enabled": True, "save_key": None})
+    def test_toggle_all_locked(self):
+        """Ctrl+F12: хоть один блок откреплён — закрепить все; все закреплены — открепить."""
+        self.attach("route")
+        self.manager.settings["route_locked"] = True
+        self.assertTrue(self.manager.toggle_all_locked())
+        self.assertTrue(self.manager.all_locked())
+        self.assertFalse(self.manager.toggle_all_locked())
+        self.assertFalse(any(self.manager.settings[f"{key}_locked"] for key in self.manager.BLOCKS))
+        from overlay import load_overlay_settings
+
+        self.assertFalse(load_overlay_settings(self.config_path)["route_locked"])
+
+    def test_detach_is_applied_live(self):
+        blocks = self.attach("carrier")
+        self.manager.set_block_detached("carrier", True)
+        self.assertTrue(self.manager.settings["carrier_detached"])
+        self.assertIn(("set_detached", {"detached": True}), blocks["carrier"].calls)
+        from overlay import load_overlay_settings
+
+        self.assertTrue(load_overlay_settings(self.config_path)["carrier_detached"])
 
     def test_reset_block_returns_defaults(self):
         blocks = self.attach("session")
@@ -345,7 +388,10 @@ class BlockSettingsLiveTests(_ManagerTestCase):
         self.manager.settings["session_locked"] = True
         self.manager.settings["session_anchor"] = "top_right"
         self.manager.settings["session_auto_rule"] = "never"
+        self.manager.settings["session_detached"] = True
         self.manager.reset_block("session")
+        self.assertFalse(self.manager.settings["session_detached"])
+        self.assertIn(("set_detached", {"detached": False}), blocks["session"].calls)
 
         self.assertNotIn("session_alpha", self.manager.settings)
         self.assertNotIn("session_font_size", self.manager.settings)
@@ -574,15 +620,87 @@ class OverlayBehaviourTests(_ManagerTestCase):
         from overlay import load_overlay_settings
 
         self.manager.set_idle_timeout(120)
-        self.manager.set_click_through(True)
+        self.manager.set_lock_hotkey("Ctrl+F11")
         self.manager.set_auto_rules_enabled(True)
         self.manager.set_block_hotkey("route", "F7")
 
         reloaded = load_overlay_settings(self.config_path)
         self.assertEqual(reloaded.get("idle_timeout"), 120)
-        self.assertTrue(reloaded.get("click_through"))
+        self.assertEqual(reloaded.get("lock_toggle_hotkey"), "Ctrl+F11")
         self.assertTrue(reloaded.get("auto_rules_enabled"))
         self.assertEqual(reloaded.get("route_hotkey"), "F7")
+
+    def test_removed_override_stays_removed_after_restart(self):
+        """«Вернуть общую прозрачность» и «снять клавишу» доживают до перезапуска.
+
+        Общий конфиг пишет и приложение: save_config кладёт туда всё, что
+        прочитало при запуске, — и снятый ключ возвращался.
+        """
+        import json
+
+        from overlay import load_overlay_settings
+
+        self.manager.set_block_alpha("ship", 0.4)
+        self.manager.set_block_hotkey("route", "F7")
+        stale = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.manager.set_block_alpha("ship", None)
+        self.manager.set_block_hotkey("route", "")
+        # Приложение перезаписало файл снимком, прочитанным при запуске.
+        self.config_path.write_text(json.dumps(stale), encoding="utf-8")
+        self.manager.save_settings()
+
+        reloaded = load_overlay_settings(self.config_path)
+        self.assertNotIn("ship_alpha", reloaded)
+        self.assertNotIn("route_hotkey", reloaded)
+
+    def test_detached_block_ignores_game_focus(self):
+        self.manager.settings["carrier_detached"] = True
+        result = self.manager.evaluate_block_visibility({}, game_visible=False, detached_visible=True)
+        self.assertTrue(result["carrier"])
+        self.assertFalse(result["route"])
+        # Без detached_visible отвязанный блок ведёт себя как все.
+        result = self.manager.evaluate_block_visibility({}, game_visible=False)
+        self.assertFalse(result["carrier"])
+
+    def test_detached_block_still_obeys_user_and_game_off(self):
+        self.manager.settings["carrier_detached"] = True
+        self.manager.settings["show_carrier"] = False
+        result = self.manager.evaluate_block_visibility({}, game_visible=False, detached_visible=True)
+        self.assertFalse(result["carrier"], "выключенный пользователем блок не показываем")
+        self.manager.settings["show_carrier"] = True
+        self.manager.settings["hide_when_game_off"] = True
+        result = self.manager.evaluate_block_visibility({"game_running": False},
+                                                        game_visible=True, detached_visible=True)
+        self.assertFalse(result["carrier"], "игры нет и просили прятать — прячем всех")
+
+    def test_set_all_visibility_shows_only_detached_without_focus(self):
+        blocks = self.attach("route", "carrier")
+        self.manager.settings["carrier_detached"] = True
+        self.manager._set_all_visibility(False, detached=True)
+        self.assertTrue(blocks["carrier"].shown)
+        self.assertFalse(blocks["route"].shown)
+
+    def test_own_overlay_window_keeps_hud_visible(self):
+        """Тянем блок или открыли его меню — HUD не прячется как «не игра»."""
+        import overlay
+
+        self.manager._overlay_hwnds = frozenset({4242})
+        self.manager._helper_hwnd = 777
+        with mock.patch.object(overlay, "_foreground_window", return_value=4242):
+            self.assertTrue(self.manager._own_overlay_in_focus())
+        with mock.patch.object(overlay, "_foreground_window", return_value=777), \
+                mock.patch.object(overlay, "_window_pid", return_value=1), \
+                mock.patch.object(overlay, "_own_pid", return_value=1):
+            self.assertFalse(self.manager._own_overlay_in_focus(),
+                             "главное окно Helper — не игра, пока не открыта вкладка «Оверлей»")
+            self.manager.set_ui_editing(True)
+            self.assertTrue(self.manager._own_overlay_in_focus())
+        with mock.patch.object(overlay, "_foreground_window", return_value=999), \
+                mock.patch.object(overlay, "_window_pid", return_value=2), \
+                mock.patch.object(overlay, "_own_pid", return_value=1):
+            self.assertFalse(self.manager._own_overlay_in_focus(), "чужое окно")
+        with mock.patch.object(overlay, "_foreground_window", return_value=None):
+            self.assertFalse(self.manager._own_overlay_in_focus())
 
     def test_idle_disabled_by_zero(self):
         self.manager.set_idle_timeout(0)
@@ -673,6 +791,36 @@ class ProfileBehaviourTests(_ManagerTestCase):
         self.assertEqual(self.manager.settings["ship_hotkey"], "F6")
         register.assert_called()
 
+    def test_profile_captures_lock_and_detach(self):
+        self.manager.settings["carrier_locked"] = True
+        self.manager.settings["carrier_detached"] = True
+        self.manager.capture_layout("Второй экран")
+        snapshot = self.manager.settings["profiles"]["Второй экран"]
+        self.assertTrue(snapshot["carrier"]["locked"])
+        self.assertTrue(snapshot["carrier"]["detached"])
+        self.assertNotIn("click_through", snapshot["carrier"])
+        self.assertNotIn("click_through", snapshot)
+
+        self.manager.settings["carrier_locked"] = False
+        self.manager.settings["carrier_detached"] = False
+        self.manager.apply_layout("Второй экран")
+        self.assertTrue(self.manager.settings["carrier_locked"])
+        self.assertTrue(self.manager.settings["carrier_detached"])
+
+    def test_old_profile_click_through_means_locked(self):
+        """Профиль до 2.15.0: блок с «кликом насквозь» применяется закреплённым."""
+        self.manager.settings["profiles"] = {"Старый": {
+            "click_through": False,
+            "route": {"x": 10, "y": 10, "width": 280, "height": 160,
+                      "locked": False, "click_through": True},
+            "ship": {"x": 50, "y": 450, "width": 360, "height": 330,
+                     "locked": False, "click_through": None},
+        }}
+        self.manager.apply_layout("Старый")
+        self.assertTrue(self.manager.settings["route_locked"])
+        self.assertFalse(self.manager.settings["ship_locked"])
+        self.assertNotIn("route_click_through", self.manager.settings)
+
     def test_profile_without_block_override_removes_it(self):
         """Профиль с `alpha: None` должен вернуть общую прозрачность."""
         self.manager.settings["ship_alpha"] = 0.4
@@ -725,7 +873,7 @@ class OverlayTabTests(unittest.TestCase):
         rows = self.app._overlay_block_vars
         self.assertEqual(tuple(sorted(rows)), tuple(sorted(self.app.overlay_manager.BLOCKS)))
         for key, widgets in rows.items():
-            for name in ("visible", "locked", "click_through", "alpha",
+            for name in ("visible", "locked", "screen", "alpha",
                          "font_size", "size", "auto_rule", "hotkey"):
                 self.assertIn(name, widgets, f"{key}: нет настройки {name}")
 
@@ -802,14 +950,53 @@ class OverlayTabTests(unittest.TestCase):
         self.assertEqual(widgets["font_size"].get(), "общий")
         self.assertFalse(widgets["locked"].get())
 
-    def test_click_through_switch_applies_to_blocks_without_own_value(self):
+    def test_lock_all_buttons_sync_rows(self):
         manager = self.app.overlay_manager
-        manager.settings["exobio_click_through"] = True
-        self.app.click_through_var.set(True)
-        self.app._on_click_through_changed()
-        self.assertTrue(manager.settings["click_through"])
-        self.assertTrue(self.app._overlay_block_vars["route"]["click_through"].get())
-        self.assertTrue(self.app._overlay_block_vars["exobio"]["click_through"].get())
+        self.app._on_lock_all(True)
+        self.assertTrue(manager.all_locked())
+        self.assertTrue(all(widgets["locked"].get()
+                            for widgets in self.app._overlay_block_vars.values()))
+        self.app._on_lock_all(False)
+        self.assertFalse(any(manager.settings[f"{key}_locked"] for key in manager.BLOCKS))
+        self.assertFalse(any(widgets["locked"].get()
+                             for widgets in self.app._overlay_block_vars.values()))
+
+    def test_lock_hotkey_updates_rows_from_overlay(self):
+        """Ctrl+F12 из игры — галочки «Закреп.» во вкладке догоняют."""
+        manager = self.app.overlay_manager
+        manager.toggle_all_locked()
+        self.assertTrue(self.app._overlay_block_vars["route"]["locked"].get())
+
+    def test_lock_hotkey_choice_is_saved(self):
+        self.app.lock_hotkey_var.set("Ctrl+F11")
+        self.app._on_lock_hotkey_changed()
+        self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "Ctrl+F11")
+        self.app.lock_hotkey_var.set("—")
+        self.app._on_lock_hotkey_changed()
+        self.assertEqual(self.app.overlay_manager.settings["lock_toggle_hotkey"], "")
+
+    def test_screen_choice_detaches_and_returns_block(self):
+        manager = self.app.overlay_manager
+        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "с игрой")
+        self.assertIn("экран 1", self.app._overlay_screen_choices())
+
+        self.app._overlay_block_vars["carrier"]["screen"].set("экран 1")
+        self.app._on_block_screen_changed("carrier")
+        self.assertTrue(manager.settings["carrier_detached"])
+        self.assertEqual(self.app._overlay_block_vars["carrier"]["screen"].get(), "экран 1")
+
+        self.app._overlay_block_vars["carrier"]["screen"].set("с игрой")
+        self.app._on_block_screen_changed("carrier")
+        self.assertFalse(manager.settings["carrier_detached"])
+
+    def test_overlay_tab_keeps_hud_visible_while_editing(self):
+        manager = self.app.overlay_manager
+        self.app.notebook.select.return_value = str(self.app.tab_overlay)
+        self.app._on_notebook_tab_changed()
+        self.assertTrue(manager._ui_editing)
+        self.app.notebook.select.return_value = "другая вкладка"
+        self.app._on_notebook_tab_changed()
+        self.assertFalse(manager._ui_editing)
 
     def test_idle_choice_roundtrip(self):
         self.assertEqual(self.app._idle_label(0), "не скрывать")
@@ -933,6 +1120,23 @@ class HotkeyBindingTests(_ManagerTestCase):
         combos = [call.args[0] for call in register.call_args_list]
         self.assertIn("F5", combos)
         self.assertIn("F12", combos)
+        # Закреплённый оверлей мышью не открепить — нужна клавиша.
+        self.assertIn("Ctrl+F12", combos)
+
+    def test_lock_hotkey_toggles_all_blocks(self):
+        self.manager.enabled = True
+        callbacks = {}
+
+        def fake_register(combo, callback):
+            callbacks[combo] = callback
+            return True
+
+        with mock.patch.object(self.manager.hotkeys, "register", side_effect=fake_register):
+            self.manager.register_hotkeys()
+        callbacks["Ctrl+F12"]()
+        self.assertTrue(self.manager.all_locked())
+        callbacks["Ctrl+F12"]()
+        self.assertFalse(any(self.manager.settings[f"{key}_locked"] for key in self.manager.BLOCKS))
 
     def test_hotkey_callback_toggles_block(self):
         self.manager.enabled = True
@@ -1076,11 +1280,37 @@ class OverlayEditMenuTests(unittest.TestCase):
         with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
             block._show_edit_menu()
         menu = _FakeEditMenu.created[0]
-        labels = [item.get("label") for item in menu.commands]
-        self.assertTrue(any("Клик-сквозь" in str(label) for label in labels))
-        self.assertTrue(any("Reset size" in str(label) for label in labels))
+        labels = [str(item.get("label")) for item in menu.commands]
+        self.assertFalse(any("Клик-сквозь" in label for label in labels),
+                         "отдельного «клика насквозь» нет — его даёт закрепление")
+        self.assertTrue(any(label.startswith("Закрепить") for label in labels))
+        self.assertTrue(any("Отвязать от игры" in label for label in labels))
+        self.assertTrue(any("Reset size" in label for label in labels))
         self.assertEqual([c.get("label") for c in menu.cascades],
                          ["Anchor", "Alpha", "Font size"])
+
+    def test_menu_offers_screens_when_there_are_several(self):
+        from screens import MonitorInfo
+
+        overlay_module, block = self._overlay()
+        controller = mock.Mock()
+        controller.monitors.return_value = [
+            MonitorInfo(1, (0, 0, 1920, 1040), (0, 0, 1920, 1080), primary=True),
+            MonitorInfo(2, (1920, 0, 4480, 1400), (1920, 0, 4480, 1440)),
+        ]
+        controller.block_monitor.return_value = controller.monitors.return_value[0]
+        block._controller = controller
+        with mock.patch.object(overlay_module.tk, "Menu", _FakeEditMenu):
+            block._show_edit_menu()
+        self.assertEqual(len(_FakeEditMenu.created), 5)   # меню + 4 подменю
+        menu = _FakeEditMenu.created[0]
+        self.assertEqual([c.get("label") for c in menu.cascades],
+                         ["Экран", "Anchor", "Alpha", "Font size"])
+        screen_menu = _FakeEditMenu.created[1]
+        labels = [item["label"] for item in screen_menu.commands]
+        self.assertTrue(any("Экран 2 · 2560×1440" in label for label in labels), labels)
+        screen_menu.commands[1]["command"]()
+        controller.move_block_to_monitor.assert_called_once_with("route", 2)
 
 
 if __name__ == "__main__":
