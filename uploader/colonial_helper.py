@@ -145,7 +145,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.13.4"
+VERSION = "2.14.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -253,6 +253,10 @@ class ColonialHelperApp:
         self._site_remote_market = 0           # по какой площадке уже спросили Raven
         self._site_remote_at = 0.0             # когда последний раз спрашивали
         self._carrier_remote_at = 0.0          # когда последний раз брали груз FC
+        # Учёт авианосцев на сайте проекта: когда последний раз читали
+        # /api/carriers/mine (0 — перечитать на ближайшем тике watcher'а).
+        self._carrier_server_at = 0.0
+        self._carrier_server_warning_at = 0.0
         # Что уже написано в лог про стройплощадку/авианосец: обе строки
         # перечитываются по таймеру (300 с) и без сравнения повторялись бы
         # в логе без конца, даже когда цифры не менялись.
@@ -7430,6 +7434,11 @@ class ColonialHelperApp:
         self.overlay_manager.stop()
         try:
             self.dispatcher.stop(wait=False)
+            try:
+                if getattr(self, "_carrier_sync", None) is not None:
+                    self._carrier_sync.save()
+            except Exception:
+                pass
         except Exception:
             pass
         self.save_config()
@@ -9112,6 +9121,10 @@ class ColonialHelperApp:
                         self.root.after(0, lambda message=result.get("error", ""): self.log(f"Station reports pending: {message}", "warn"))
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.log(f"Station inventory: {message}", "error"))
+            try:
+                self._flush_carrier_sync()
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Авианосцы: {message}", "error"))
             # Frontier перезаписывает NavRoute.json при построении нового
             # маршрута. Подхватываем изменение без ручного импорта.
             self._auto_load_navroute()
@@ -9686,8 +9699,122 @@ class ColonialHelperApp:
         if collector is None:
             from station_commerce import StationCommerceCollector
             collector = StationCommerceCollector(self.config_path.with_name(".station_commerce_outbox.json"))
+            # Новый снимок рынка авианосца исправляет его груз в Raven Colonial.
+            collector.on_inventory = self._on_station_inventory
             self._station_commerce = collector
         return collector
+
+    def _carrier_sync_collector(self):
+        """События авианосцев для сайта проекта (outbox на диске, см. carrier_sync.py)."""
+        collector = getattr(self, "_carrier_sync", None)
+        if collector is None:
+            from carrier_sync import CarrierEventCollector
+            collector = CarrierEventCollector(
+                self.config_path.with_name(".carrier_events_outbox.json"),
+                inventory_reader=self._read_ship_inventory,
+            )
+            self._carrier_sync = collector
+        return collector
+
+    def _read_ship_inventory(self):
+        """Текущий трюм корабля из Cargo.json (для учёта банка эскадры)."""
+        from carrier_sync import inventory_from_cargo
+        try:
+            path = self.journal_path / "Cargo.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, AttributeError):
+            return None
+        if not isinstance(data, dict) or str(data.get("Vessel") or "Ship") != "Ship":
+            return None
+        return inventory_from_cargo(data)
+
+    def _on_station_inventory(self, kind: str, event: dict, report: dict):
+        """Снимок рынка текущей стоянки. У авианосца — исправление груза в Raven.
+
+        Правило SrvSurvey (эталонный клиент Raven Colonial): товар на продажу —
+        его Stock и есть количество на борту, распроданная позиция — ноль.
+        Сайт проекта получает тот же снимок отчётом о станции и сам уточняет
+        по нему учёт носителя.
+        """
+        if kind != "market" or not isinstance(event, dict):
+            return
+        from carrier_sync import carrier_market_cargo, is_carrier_market
+        market_id = report.get("market_id") or event.get("MarketID")
+        station_type = str(event.get("StationType") or report.get("station_type") or "")
+        if not (is_carrier_market(market_id) or "carrier" in station_type.lower()):
+            return
+        cargo = carrier_market_cargo(event.get("Items"))
+        if cargo:
+            self.dispatcher.submit_fc_cargo_correction(market_id, cargo=cargo, reason="по рынку носителя")
+        # Отчёт о станции вот-вот уйдёт на сайт — перечитать учёт носителя.
+        self._carrier_server_at = 0.0
+
+    #: Как часто перечитывать учёт авианосцев с сайта проекта.
+    CARRIER_SERVER_REFRESH_SECONDS = 90.0
+    #: Свежие данные сайта — Raven Colonial для груза не опрашиваем.
+    CARRIER_SERVER_FRESH_SECONDS = 600.0
+
+    def _flush_carrier_sync(self):
+        """Отправить накопленные события авианосцев и при необходимости перечитать учёт."""
+        if not self.api.is_connected:
+            return
+        collector = self._carrier_sync_collector()
+        # Отправка идёт в цикле watcher'а: после сбоя делаем паузу, чтобы
+        # недоступный сайт не подвешивал чтение журнала таймаутами.
+        if collector.pending_count and time.monotonic() >= float(getattr(self, "_carrier_flush_retry_at", 0.0)):
+            result = collector.flush(self.api, max_batches=3)
+            if result.get("ok") and result.get("sent"):
+                self._carrier_server_at = 0.0
+            elif not result.get("ok"):
+                self._carrier_flush_retry_at = time.monotonic() + 60.0
+                now = time.monotonic()
+                if now - float(self._carrier_server_warning_at or 0.0) > 120:
+                    self._carrier_server_warning_at = now
+                    self.root.after(0, lambda message=result.get("error", ""): self.log(
+                        f"Авианосцы: события ждут отправки на сайт ({collector.pending_count}) — {message}", "warn"))
+        now = time.monotonic()
+        if now - float(self._carrier_server_at or 0.0) >= self.CARRIER_SERVER_REFRESH_SECONDS:
+            self._carrier_server_at = now
+            threading.Thread(target=self._load_server_carriers, daemon=True).start()
+
+    def _load_server_carriers(self):
+        """Фоновый запрос учёта авианосцев с сайта проекта → блок CARRIER.
+
+        Личный носитель, носители эскадрильи и тот, у которого пилот стоит
+        сейчас (чужому сайт отдаёт статус и рынок без груза).
+        """
+        try:
+            result = self.api.fetch_my_carriers()
+        except Exception:
+            return
+        if not result.get("ok"):
+            return
+        views = [view for view in [result.get("own"), *(result.get("squadron") or [])] if isinstance(view, dict)]
+        active_id = int(self.carrier.state.market_id or 0)
+        if active_id and self.carrier.state.at_carrier and all(
+                int(view.get("carrierId") or 0) != active_id for view in views):
+            try:
+                single = self.api.fetch_carrier(active_id)
+            except Exception:
+                single = {}
+            if single.get("ok") and isinstance(single.get("carrier"), dict):
+                views.append(single["carrier"])
+        pending = self._carrier_sync_collector().pending_carrier_ids()
+        changed = 0
+        for view in views:
+            try:
+                carrier_id = int(view.get("carrierId") or 0)
+                if self.carrier.merge_server(view, merge_cargo=carrier_id not in pending):
+                    changed += 1
+            except Exception:
+                continue
+        signature = tuple(sorted(
+            (str(view.get("carrierId")), sum(int(item.get("quantity") or 0)
+                                             for item in ((view.get("cargo") or {}).get("items") or [])))
+            for view in views))
+        if changed and signature != getattr(self, "_carrier_server_log_sig", None):
+            self._carrier_server_log_sig = signature
+            self.log(f"Авианосцы: учёт обновлён с сайта проекта ({changed} носит.)", "info")
 
     def _handle_tracked_event(self, ev: dict, live: bool = True):
         """Обработка одного события журнала: маршрут, корабль, оверлей.
@@ -9704,6 +9831,12 @@ class ColonialHelperApp:
             self._station_commerce_collector().feed(ev, live=live)
         except Exception as exc:
             self.log(f"Station report queue: {exc}", "error")
+        # Учёт авианосцев на сайте проекта: и живые события, и история —
+        # сервер идемпотентен и упорядочивает по времени события.
+        try:
+            self._carrier_sync_collector().feed(ev, live=live)
+        except Exception as exc:
+            self.log(f"Carrier sync queue: {exc}", "error")
         if live:
             self._log_session_event(ev)
         if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):
@@ -9849,6 +9982,15 @@ class ColonialHelperApp:
             return
         if not changed or not live:
             return
+        if str(event.get("event")) == "CarrierStats":
+            usage = event.get("SpaceUsage") if isinstance(event.get("SpaceUsage"), dict) else {}
+            if usage.get("Cargo") == 0 and event.get("CarrierID"):
+                # Трюм подтверждённо пуст — Raven тоже должен это знать.
+                self.dispatcher.submit_fc_cargo_correction(
+                    event.get("CarrierID"), empty=True, reason="трюм пуст по CarrierStats")
+        if str(event.get("event")) in ("Docked", "CarrierStats", "CarrierJump", "CarrierLocation"):
+            # Пилот у носителя или открыл управление им — свежий учёт с сайта.
+            self._carrier_server_at = 0.0
         market_id = int(self.carrier.state.market_id or 0)
         if not market_id:
             return
@@ -9877,6 +10019,12 @@ class ColonialHelperApp:
         """
         market_id = int(market_id or 0)
         if market_id <= 0 or not self.raven_api.is_connected:
+            return
+        # Главный источник груза — сайт проекта. Raven Colonial опрашиваем,
+        # только если сайт этот носитель не знает или давно не отвечал.
+        known = self.carrier.states().get(market_id)
+        if (known is not None and known.cargo_origin == "server" and known.server_at
+                and time.time() - known.server_at < self.CARRIER_SERVER_FRESH_SECONDS):
             return
         now = time.monotonic()
         fresh = now - float(self._carrier_remote_at or 0.0)

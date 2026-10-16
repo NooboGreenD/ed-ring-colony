@@ -8,9 +8,11 @@ import AuthMethods from "@/components/AuthMethods";
 import { createJournalParseState, parseJournal, type Delivery } from "@/lib/journalParser";
 import { DEFAULT_PRIVACY, PRIVACY_KEYS, privacyPayload, resolvePrivacy, type PrivacySettings } from "@/lib/privacy";
 import { TelemetryCollector } from "@/lib/journalTelemetry";
+import { CarrierEventCollector } from "@/lib/fleetCarrierCollector";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import AccountPremiumPanel from "@/components/Cosmetics/AccountPremiumPanel";
+import CarrierPanel from "@/components/Carriers/CarrierPanel";
 import CosmeticAvatar from "@/components/Cosmetics/CosmeticAvatar";
 import CosmeticBadge from "@/components/Cosmetics/CosmeticBadge";
 import CosmeticCallsign from "@/components/Cosmetics/CosmeticCallsign";
@@ -38,7 +40,7 @@ import {
 
 
 type Progress = { current: number; total: number; phase: string; pct: number };
-type Tab = "profile" | "squadron" | "journals" | "tokens" | "premium" | "builds";
+type Tab = "profile" | "squadron" | "carrier" | "journals" | "tokens" | "premium" | "builds";
 
 /**
  * Подписи получателей груза в сводке импорта. Ключи — `delivery_kind` из
@@ -172,6 +174,7 @@ export default function AccountPage() {
   useEffect(() => {
     const qTab = new URLSearchParams(window.location.search).get('tab');
     if (qTab === 'tokens') setTab('tokens');
+    if (qTab === 'carrier') setTab('carrier');
     if (qTab === 'premium') setTab('premium');
     if (qTab === 'builds') { setTab('builds'); void loadBuilds(); }
     load();
@@ -357,6 +360,11 @@ export default function AccountPage() {
       // пилота. Собирается тем же проходом по журналу, что и доставки, —
       // второй раз гонять по сотням файлов JSON.parse было бы расточительно.
       const telemetry = new TelemetryCollector();
+      // События авианосцев (статус, система, службы, грузовые операции) — тем
+      // же проходом. Сервер ведёт по ним учёт носителей; хеши дельт совпадают
+      // с отправкой из Colonial Helper, поэтому повторная загрузка не задваивает.
+      const carrierCollector = new CarrierEventCollector();
+      const allCarrierEvents: Record<string, unknown>[] = [];
       const allConstructionEvents: unknown[] = [];
       const allScans = new Map<string, any>();
       let pilotStats: Record<string, number> | null = null;
@@ -412,7 +420,9 @@ export default function AccountPage() {
         // ColonisationContribution amount commonly straddle file rotation.
         const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState, [
           (line, event) => telemetry.feed(line, event),
+          (line, event) => carrierCollector.feed(line, event),
         ]);
+        allCarrierEvents.push(...carrierCollector.drain());
         // `drain()`, а не `finish()`: загрузчик идёт по файлам по одному, а
         // `finish()` отдаёт накопленное целиком — его вызов в цикле повторял
         // бы в запросах всё, что уже собрано к этому файлу (на истории из
@@ -620,6 +630,34 @@ export default function AccountPage() {
         if (json) telemetryResult.pilotStatsUpdated = Boolean(json.telemetry?.pilotStatsUpdated);
       }
 
+      // Авианосцы: отдельный маршрут, пачками. Сбой здесь не отменяет загрузку
+      // поставок — о нём сообщаем в итоге, повторная загрузка безопасна.
+      const carrierResult = { events: allCarrierEvents.length, applied: 0, duplicates: 0, carriers: new Set<string>(), failedChunks: 0 };
+      const CARRIER_CHUNK = 1000;
+      for (let index = 0; index < allCarrierEvents.length; index += CARRIER_CHUNK) {
+        setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} carriers ${Math.floor(index / CARRIER_CHUNK) + 1}`,
+          pct: 96,
+        });
+        try {
+          const response = await authFetch('/api/carriers/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ events: allCarrierEvents.slice(index, index + CARRIER_CHUNK) }),
+          });
+          const json = await response.json().catch(() => ({}));
+          if (!response.ok || !json.ok) throw new Error(json.error || `HTTP ${response.status}`);
+          carrierResult.applied += Number(json.applied ?? 0);
+          carrierResult.duplicates += Number(json.duplicates ?? 0);
+          for (const id of Array.isArray(json.carriers) ? json.carriers : []) carrierResult.carriers.add(String(id));
+        } catch (carrierError) {
+          console.warn('[Account] Carrier sync chunk failed:', carrierError);
+          carrierResult.failedChunks += 1;
+        }
+      }
+
       setSummary({
         ok: true,
         filesProcessed: list.length,
@@ -632,6 +670,7 @@ export default function AccountPage() {
         telemetry: telemetryResult,
         telemetryStats,
         telemetryFailedChunks,
+        carriers: { ...carrierResult, carriers: carrierResult.carriers.size },
       });
     } catch (error) {
       console.error('[Account] Journal import failed:', error);
@@ -793,6 +832,7 @@ export default function AccountPage() {
       <div className="tabs" style={{ marginBottom: 20 }}>
         <button className={tab === "profile" ? "tab tab-active" : "tab"} onClick={() => setTab("profile")}>{t('account.tabProfile')}</button>
         <button className={tab === "squadron" ? "tab tab-active" : "tab"} onClick={() => setTab("squadron")}>{t('account.tabSquadron')}</button>
+        <button className={tab === "carrier" ? "tab tab-active" : "tab"} onClick={() => setTab("carrier")}>Авианосец</button>
         <button className={tab === "journals" ? "tab tab-active" : "tab"} onClick={() => setTab("journals")}>{t('account.tabJournals')}</button>
         <button className={tab === "tokens" ? "tab tab-active" : "tab"} onClick={() => { setTab("tokens"); loadTokens(); }}>{t('account.tabTokens')}</button>
         <button className={tab === "premium" ? "tab tab-active" : "tab"} onClick={() => setTab("premium")} style={{ borderColor: tab === "premium" ? undefined : "rgba(230,126,34,0.4)", color: tab === "premium" ? undefined : "var(--orange)" }}>{t('account.tabPremium') || 'Премиум и покупки'}</button>
@@ -1163,6 +1203,14 @@ export default function AccountPage() {
                   )}
                 </div>
               )}
+              {summary.carriers?.events > 0 && (
+                <p style={{ color: summary.carriers.failedChunks ? '#e74c3c' : '#9ca3af', fontSize: 12, margin: '10px 0 0' }}>
+                  Авианосцы: событий {summary.carriers.events.toLocaleString('ru')}, носителей {summary.carriers.carriers},
+                  {' '}применено {summary.carriers.applied.toLocaleString('ru')}, повторов {summary.carriers.duplicates.toLocaleString('ru')}
+                  {summary.carriers.failedChunks ? ` — ${summary.carriers.failedChunks} пачек не отправилось, загрузите журнал ещё раз` : ''}.
+                  {' '}<Link href="/account?tab=carrier" style={{ color: '#3498db' }}>Открыть «Авианосец»</Link>
+                </p>
+              )}
               {summary.telemetryFailedChunks > 0 && (
                 <p style={{ color: '#e74c3c', fontSize: 12, margin: '10px 0 0' }}>
                   Часть телеметрии ({summary.telemetryFailedChunks} пачек: снимки строек, сканы тел или
@@ -1220,6 +1268,8 @@ export default function AccountPage() {
           )}
         </div>
       )}
+
+      {tab === "carrier" && <CarrierPanel mode="account" />}
 
       {tab === "premium" && <AccountPremiumPanel />}
       {tab === "builds" && (

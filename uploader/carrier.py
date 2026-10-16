@@ -79,6 +79,9 @@ from event_dispatch import (
 #: Какие события журнала вообще смотрит трекер.
 CARRIER_EVENTS = frozenset({
     "CarrierStats",
+    "CarrierLocation",
+    "CarrierJumpRequest",
+    "CarrierJumpCancelled",
     "CarrierNameChanged",
     "CarrierDecommission",
     "CarrierCancelDecommission",
@@ -131,6 +134,18 @@ def event_time(event: Mapping[str, Any], default: Optional[float] = None) -> flo
     except (OverflowError, OSError, ValueError):
         return now
     return min(float(value), now)
+
+
+def _iso_epoch(value) -> float:
+    """ISO-время с сайта (`2026-03-01T10:00:00.000Z`) → секунды epoch; 0 — не разобрать."""
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        stamp = datetime.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")
+        return stamp.replace(tzinfo=timezone.utc).timestamp()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0.0
 
 
 class CarrierState:
@@ -195,6 +210,23 @@ class CarrierState:
         # а не затирать состояние личного носителя.
         self.kind: str = "other"
         self.station_type: str = ""
+        # Тип из журнала (CarrierType: FleetCarrier / SquadronCarrier) и службы
+        # станции из Docked: эскадренный Javelin-Class виден по «squadronBank»,
+        # а StationType у него такой же — «FleetCarrier».
+        self.carrier_type: str = ""
+        self.station_services: list = []
+        # Запланированный прыжок (CarrierJumpRequest) — для подписи в оверлее.
+        self.jump_system: str = ""
+        self.jump_departure: str = ""
+        # Данные сайта проекта (GET /api/carriers/mine): службы, статус и
+        # прочее, чего локальный журнал может и не знать.
+        self.services: list = []
+        self.docking_label: str = ""
+        self.location_estimated: bool = False
+        self.server_seen: bool = False
+        self.server_at: float = 0.0
+        # Откуда последний «чистый» снимок груза: "server" или "raven".
+        self.cargo_origin: str = ""
 
     # -- производные величины ---------------------------------------------
     @property
@@ -441,7 +473,7 @@ class CarrierState:
         пустая строка — данных по товарам нет вовсе.
         """
         if self.remote_seen:
-            return "remote"
+            return "server" if self.cargo_origin == "server" else "remote"
         if self.reconciled in ("trimmed", "dropped", "emptied"):
             return "estimate"
         if self.commodities or self.delivered:
@@ -527,6 +559,16 @@ class CarrierState:
             "need_total": sum(max(0, _as_int(v)) for v in need.values()),
             "need_label": str(need_label or ""),
             "need_source": str(need_source or ""),
+            # Со страницы «Авианосец» на сайте проекта.
+            "carrier_type": str(self.carrier_type or ""),
+            "services": [str(item) for item in self.services][:12],
+            "docking_label": str(self.docking_label or ""),
+            "jump_system": str(self.jump_system or ""),
+            "jump_departure": str(self.jump_departure or ""),
+            "location_estimated": bool(self.location_estimated),
+            "server_seen": bool(self.server_seen),
+            "server_age": (int(max(0.0, time.time() - self.server_at) // 60)
+                           if self.server_at else 0),
         }
 
 
@@ -607,6 +649,8 @@ class CarrierTracker:
         владельцу). Эскадренный Javelin-Class отличается трюмом (60 000 т
         против 25 000 т) и типом станции, если игра его уточняет.
         """
+        if state.carrier_type == "SquadronCarrier" or "squadronbank" in (state.station_services or []):
+            return "squadron"
         if self.own_carrier_id and int(state.carrier_id or 0) == int(self.own_carrier_id):
             return "own"
         station = str(state.station_type or "").lower()
@@ -631,6 +675,9 @@ class CarrierTracker:
             return False
         handler = {
             "CarrierStats": self._absorb_stats,
+            "CarrierLocation": self._absorb_carrier_location,
+            "CarrierJumpRequest": self._absorb_jump_request,
+            "CarrierJumpCancelled": self._absorb_jump_cancelled,
             "CarrierNameChanged": self._absorb_rename,
             "CarrierDecommission": self._absorb_decommission,
             "CarrierCancelDecommission": self._absorb_cancel_decommission,
@@ -663,9 +710,16 @@ class CarrierTracker:
         carrier_id = _as_int(event.get("CarrierID"))
         if not carrier_id:
             return False
-        # CarrierStats приходит только владельцу — значит это его носитель.
-        self.own_carrier_id = carrier_id
+        squadron = str(event.get("CarrierType") or "") == "SquadronCarrier"
+        # CarrierStats приходит только тому, кто управляет носителем. Личный —
+        # значит свой. Эскадренный (CarrierType: SquadronCarrier) открывают и
+        # офицеры эскадрильи: раньше он становился «своим» и затирал учёт
+        # личного носителя.
+        if not squadron:
+            self.own_carrier_id = carrier_id
         state = self._state_for(carrier_id) or self.state
+        if squadron:
+            state.carrier_type = "SquadronCarrier"
         # Пока мы стоим на чужом носителе, активным остаётся он: сводка по
         # своему обновится «в фоне» и попадёт в строку «ещё носители».
         if state is not self.state and not self.state.at_carrier:
@@ -780,6 +834,11 @@ class CarrierTracker:
         state.station_type = station_type
         state.market_id = market_id
         state.carrier_id = state.carrier_id or market_id
+        services = event.get("StationServices")
+        if isinstance(services, list):
+            state.station_services = [str(item).strip().lower() for item in services if isinstance(item, str)]
+        if str(event.get("CarrierType") or "") == "SquadronCarrier" or "squadronbank" in state.station_services:
+            state.carrier_type = "SquadronCarrier"
         state.kind = self._kind_for(state)
         # Имя из `CarrierStats`/`CarrierNameChanged` достовернее: `StationName`
         # у непереименованного авианосца — это «FC L14X1J» по позывному.
@@ -791,6 +850,52 @@ class CarrierTracker:
             state.system_address = _as_int(event["SystemAddress"])
         state.at_carrier = True
         self._remember(state)
+        return True
+
+    def _absorb_carrier_location(self, event: Mapping[str, Any]) -> bool:
+        """CarrierLocation (запуск игры, после прыжка): где стоит носитель.
+
+        Не делает носитель активным и не трогает «вы на борту» — событие
+        приходит, где бы ни был пилот.
+        """
+        carrier_id = _as_int(event.get("CarrierID"))
+        system = str(event.get("StarSystem") or "")
+        if not carrier_id or not system:
+            return False
+        state = self._state_for(carrier_id) or self.state
+        state.carrier_id = carrier_id
+        state.market_id = carrier_id
+        state.system_name = system
+        if event.get("SystemAddress"):
+            state.system_address = _as_int(event["SystemAddress"])
+        if str(event.get("CarrierType") or "") == "SquadronCarrier":
+            state.carrier_type = "SquadronCarrier"
+        state.jump_system = ""
+        state.jump_departure = ""
+        state.location_estimated = False
+        state.kind = self._kind_for(state)
+        self._remember(state)
+        return True
+
+    def _absorb_jump_request(self, event: Mapping[str, Any]) -> bool:
+        carrier_id = _as_int(event.get("CarrierID"))
+        system = str(event.get("SystemName") or "")
+        if not carrier_id or not system:
+            return False
+        state = self._state_for(carrier_id) or self.state
+        state.jump_system = system
+        state.jump_departure = str(event.get("DepartureTime") or "")
+        return True
+
+    def _absorb_jump_cancelled(self, event: Mapping[str, Any]) -> bool:
+        carrier_id = _as_int(event.get("CarrierID"))
+        if not carrier_id:
+            return False
+        state = self._state_for(carrier_id) or self.state
+        if not state.jump_system:
+            return False
+        state.jump_system = ""
+        state.jump_departure = ""
         return True
 
     def _absorb_undocked(self, event: Mapping[str, Any]) -> bool:
@@ -974,6 +1079,7 @@ class CarrierTracker:
         # при этом сохраняем — это другая величина.
         state.commodities = dict(merged)
         state.remote_seen = True
+        state.cargo_origin = "raven"
         state.reconciled = ""
         if capacity:
             state.capacity = _as_int(capacity) or state.capacity
@@ -982,6 +1088,90 @@ class CarrierTracker:
         # Свежий снимок тоже сверяем с тоннажем: если CarrierStats новее (мы
         # только что открыли Carrier Management), правда за ним.
         state.reconcile()
+        self._remember(state)
+        return True
+
+    def merge_server(self, view: Mapping[str, Any], merge_cargo: bool = True) -> bool:
+        """Подставить карточку носителя с сайта проекта (/api/carriers/mine).
+
+        Сайт ведёт учёт по журналам всех пилотов проекта (и эскадрильи), с
+        базовыми снимками (рынок носителя, пустой трюм) — это главный источник
+        для оверлея; Raven Colonial остаётся запасным. `merge_cargo=False` —
+        у Helper'а ещё есть неотправленные события по этому носителю: груз
+        тогда не трогаем, чтобы не откатить только что сделанные переводы.
+        """
+        if not isinstance(view, Mapping):
+            return False
+        carrier_id = _as_int(view.get("carrierId"))
+        if not carrier_id:
+            return False
+        state = self._state_for(carrier_id)
+        if state is None:
+            return False
+        state.carrier_id = carrier_id
+        state.market_id = carrier_id
+        if view.get("name") and not state.name:
+            state.name = str(view["name"])
+        elif view.get("name") and view.get("relation") == "own":
+            state.name = str(view["name"])
+        if view.get("callsign"):
+            state.callsign = str(view["callsign"])
+        if view.get("type") == "SquadronCarrier":
+            state.carrier_type = "SquadronCarrier"
+        location = view.get("location") if isinstance(view.get("location"), Mapping) else {}
+        if location.get("system") and not state.at_carrier:
+            state.system_name = str(location["system"])
+        state.location_estimated = bool(location.get("estimated"))
+        jump = view.get("jump") if isinstance(view.get("jump"), Mapping) else None
+        state.jump_system = str(jump.get("system") or "") if jump else ""
+        state.jump_departure = str(jump.get("departureAt") or "") if jump else ""
+        status = view.get("status") if isinstance(view.get("status"), Mapping) else {}
+        state.docking_label = str(status.get("dockingLabel") or "")
+        if status.get("pendingDecommission") is not None:
+            state.pending_decommission = bool(status.get("pendingDecommission"))
+        services = view.get("services") if isinstance(view.get("services"), list) else []
+        state.services = [str(item.get("label") or item.get("role"))
+                          for item in services
+                          if isinstance(item, Mapping) and item.get("activated") and item.get("enabled")]
+        stations = view.get("stationServices")
+        if isinstance(stations, list) and stations:
+            state.station_services = [str(item).lower() for item in stations]
+
+        # Тоннаж с сайта — только если он новее нашего CarrierStats.
+        space = view.get("space") if isinstance(view.get("space"), Mapping) else None
+        if space and space.get("statsAt") and space.get("cargo") is not None:
+            stats_at = _iso_epoch(space.get("statsAt"))
+            if stats_at and stats_at > state.stats_at:
+                state.stored = _as_int(space.get("cargo"))
+                state.free = _as_int(space.get("freeSpace"))
+                state.reserved = _as_int(space.get("reserved"))
+                state.capacity = _as_int(space.get("totalCapacity")) or state.capacity
+                state.stats_seen = True
+                state.stats_at = stats_at
+                state.stored_estimated = False
+
+        cargo = view.get("cargo") if isinstance(view.get("cargo"), Mapping) else None
+        if cargo is not None and merge_cargo:
+            items = {}
+            for item in cargo.get("items") or []:
+                if not isinstance(item, Mapping):
+                    continue
+                key = canonical_commodity(item.get("commodity"))
+                amount = _as_int(item.get("quantity"))
+                if key and amount > 0:
+                    items[key] = amount
+                    if item.get("name"):
+                        state.names[key] = str(item["name"])
+            state.commodities = dict(items)
+            state.remote_cargo = dict(items)
+            state.remote_at = time.time()
+            state.remote_seen = True
+            state.cargo_origin = "server"
+            state.reconciled = ""
+            state.reconcile()
+        state.server_seen = True
+        state.server_at = time.time()
+        state.kind = self._kind_for(state)
         self._remember(state)
         return True
 

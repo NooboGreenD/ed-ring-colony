@@ -323,6 +323,7 @@ class ThirdPartyDispatcher:
             "skipped_backfill": 0,   # историческое событие, внешние API не нужны
             "duplicate": 0,
             "eddn_skipped": 0,      # событие не годится для EDDN (см. eddn_api.py)
+            "skipped": 0,           # носитель не зарегистрирован в Raven и т.п.
         }
 
         # Опциональный колбэк: on_result(service, ok, message)
@@ -338,6 +339,10 @@ class ThirdPartyDispatcher:
         # Последнее отправленное состояние потребности по marketId: depot-
         # события приходят пачками, а Raven не любит бессмысленные ProjectUpdate.
         self._raven_supply_state: dict = {}
+        # Исправления груза FC в Raven: последний отправленный снимок по носителю
+        # и носители, о незарегистрированности которых уже сказали в логе.
+        self._raven_fc_corrections: dict = {}
+        self._raven_fc_unknown_notified: set = set()
         # «Приложение не в белом списке Inara» не лечится повторами: пишем один
         # раз, иначе каждое событие журнала добавляло бы простыню в лог.
         self._inara_access_notified = False
@@ -539,7 +544,7 @@ class ThirdPartyDispatcher:
         if self._inara_enabled() and event_name in INARA_EVENTS:
             results.append(self._submit_inara(event, event_name))
         if self._raven_enabled() and event_name in RAVEN_CARGO_EVENTS:
-            results.append(self._submit_raven(event, event_name, station_type))
+            results.append(self._submit_raven(event, event_name, station_type, live=live))
         if self._eddn_enabled() and event_name in EDDN_EVENTS:
             results.append(self._submit_eddn(event, event_name))
         # ProjectUpdate потребности шлём только за живыми событиями: при
@@ -688,8 +693,15 @@ class ThirdPartyDispatcher:
             "max_need": int(max_need or 0),
         })
 
-    def _submit_raven(self, event: dict, event_name: str, station_type: str = "") -> str:
+    def _submit_raven(self, event: dict, event_name: str, station_type: str = "",
+                      live: bool = True) -> str:
         """Fleet Carrier cargo: продажа на FC добавляет груз, покупка — забирает.
+
+        Только живые события. PATCH в Raven аддитивен: дельта из истории
+        (догрузка журналов во внешние сервисы, сброс кэша импорта) прибавлялась
+        к трюму повторно и раздувала его — ровно тот «неправильный рынок
+        авианосца», который потом читал оверлей. Историю ведёт сайт проекта
+        (идемпотентно), а в Raven уходят только события «здесь и сейчас».
 
         Тип станции больше не единственный признак авианосца: если программа
         запущена, когда командир уже стоит на FC, событий `Docked`/`Market`
@@ -697,6 +709,9 @@ class ThirdPartyDispatcher:
         не уходил в Raven Colonial вовсе. Теперь сначала проверяем MarketID
         (диапазон авианосцев) и `CarrierID`.
         """
+        if not live:
+            self.stats["skipped_backfill"] += 1
+            return _SKIPPED
         if event_name == "CargoTransfer":
             return self._submit_raven_transfer(event, station_type)
 
@@ -885,11 +900,101 @@ class ThirdPartyDispatcher:
             self.stats["failed"] += 1
             self._notify_failure("inara", str(result.get("error") or "Inara отклонила событие"))
 
+    def _raven_fc_known(self, market_id) -> Optional[bool]:
+        checker = getattr(self.raven_api, "fc_known", None)
+        if not callable(checker):
+            return True
+        try:
+            return checker(market_id)
+        except Exception:
+            return None
+
+    def _notify_fc_unknown(self, market_id) -> None:
+        if market_id in self._raven_fc_unknown_notified:
+            return
+        self._raven_fc_unknown_notified.add(market_id)
+        self._notify(
+            "raven", True,
+            f"Raven Colonial: авианосец {market_id} там не зарегистрирован — груз туда не "
+            f"отправляется (учёт ведёт сайт проекта). Привяжите носитель на ravencolonial.com, "
+            f"если он нужен и в Raven.",
+        )
+
+    def submit_fc_cargo_correction(self, market_id, cargo: dict = None, empty: bool = False,
+                                   reason: str = "") -> str:
+        """Исправить груз носителя в Raven Colonial достоверным снимком.
+
+        `cargo` — {товар: тонны} по снимку рынка носителя (правило SrvSurvey),
+        `empty=True` — трюм подтверждённо пуст (CarrierStats.SpaceUsage.Cargo = 0).
+        Значения не прибавляются, а устанавливаются (POST), отправляются только
+        изменившиеся позиции. Один и тот же снимок повторно не отправляется.
+        """
+        if not self._raven_enabled():
+            return _SKIPPED
+        try:
+            key = int(market_id or 0)
+        except (TypeError, ValueError):
+            return _SKIPPED
+        if not key or (not cargo and not empty):
+            return _SKIPPED
+        signature = ("empty",) if empty else tuple(sorted((str(k), int(v)) for k, v in (cargo or {}).items()))
+        if self._raven_fc_corrections.get(key) == signature:
+            return _SKIPPED
+        self._raven_fc_corrections[key] = signature
+        return self._enqueue("raven", {
+            "kind": "fc_set",
+            "market_id": key,
+            "cargo": {str(k): max(0, int(v)) for k, v in (cargo or {}).items()},
+            "empty": bool(empty),
+            "reason": str(reason or ""),
+        })
+
+    def _do_raven_fc_set(self, payload: dict):
+        market_id = payload.get("market_id")
+        known = self._raven_fc_known(market_id)
+        if known is not True:
+            if known is False:
+                self._notify_fc_unknown(market_id)
+            return
+        current = {}
+        snapshot = self.raven_api.get_fc_cargo(market_id) or {}
+        if snapshot.get("ok") and isinstance(snapshot.get("data"), dict):
+            for name, amount in snapshot["data"].items():
+                try:
+                    current[canonical_commodity(name)] = int(amount or 0)
+                except (TypeError, ValueError):
+                    continue
+        if payload.get("empty"):
+            wanted = {name: 0 for name, amount in current.items() if name and amount}
+        else:
+            wanted = dict(payload.get("cargo") or {})
+        changed = {name: value for name, value in wanted.items() if name and current.get(name, 0) != value}
+        if not changed:
+            return
+        result = self.raven_api.set_fc_cargo(market_id, changed) or {}
+        if result.get("ok"):
+            self.stats["sent"] += 1
+            reason = payload.get("reason") or ("трюм пуст" if payload.get("empty") else "по рынку носителя")
+            self._notify("raven", True,
+                         f"Raven FC cargo: груз носителя {market_id} исправлен ({reason}, позиций: {len(changed)})")
+        else:
+            self.stats["failed"] += 1
+            # Снимок не ушёл — дать ему шанс при следующем открытии рынка.
+            self._raven_fc_corrections.pop(market_id, None)
+            self._notify_failure("raven", str(result.get("error") or "Raven Colonial не принял исправление груза"))
+
     def _do_raven(self, payload: dict):
         if not self._raven_enabled():
             return
         if payload.get("kind") == "supply":
             self._do_raven_supply(payload)
+            return
+        if payload.get("kind") == "fc_set":
+            self._do_raven_fc_set(payload)
+            return
+        if self._raven_fc_known(payload.get("market_id")) is False:
+            self.stats["skipped"] += 1
+            self._notify_fc_unknown(payload.get("market_id"))
             return
         result = self.raven_api.supply_fc(
             payload["market_id"], payload["commodity"], payload["delta"]

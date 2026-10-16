@@ -329,6 +329,65 @@ class ApiClient:
         except requests.RequestException as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
+    # -- авианосцы (учёт на сайте проекта) -----------------------------------
+    def sync_carrier_events(self, events: list) -> dict:
+        """Журнальные события авианосцев → POST /api/carriers/sync.
+
+        Сервер идемпотентен: повтор пачки после сетевого сбоя ничего не
+        задваивает (хеши грузовых дельт считаются из полей событий).
+        """
+        if not self.token or not events:
+            return {"ok": False, "error": "Нет токена или данных"}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/carriers/sync",
+                json={"token": self.token, "events": events},
+                allow_redirects=False,
+                timeout=30,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def fetch_my_carriers(self) -> dict:
+        """Личный авианосец и носители эскадрильи → GET /api/carriers/mine."""
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = _session_for_thread().get(
+                f"{self.api_base}/carriers/mine",
+                headers={"Authorization": f"Bearer {self.token}"},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
+    def fetch_carrier(self, carrier_id) -> dict:
+        """Карточка любого носителя → GET /api/carriers/{id} (чужому — без груза)."""
+        if not self.token:
+            return {"ok": False, "error": "Нет токена"}
+        try:
+            resp = _session_for_thread().get(
+                f"{self.api_base}/carriers/{int(carrier_id)}",
+                headers={"Authorization": f"Bearer {self.token}"},
+                allow_redirects=False,
+                timeout=15,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "status": resp.status_code, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except (requests.RequestException, TypeError, ValueError) as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
     @property
     def is_connected(self) -> bool:
         return bool(self.token and self.user_id)

@@ -46,6 +46,14 @@ def _items(event, kind):
                 item[target] = value
         if entry.get("id") is not None:
             item["id"] = str(entry["id"])
+        if kind == "market":
+            # Флаги рынка нужны учёту авианосцев: у FC товар на продажу
+            # (Producer) — это то, что лежит на борту (правило SrvSurvey/Raven).
+            for source, target in (("Producer", "producer"), ("Consumer", "consumer")):
+                if isinstance(entry.get(source), bool):
+                    item[target] = entry[source]
+            if isinstance(entry.get("Name_Localised"), str) and entry["Name_Localised"].strip():
+                item["name_localised"] = entry["Name_Localised"].strip()[:120]
         result.append(item)
     return result if len(result) <= 5000 else None
 
@@ -57,6 +65,9 @@ class StationCommerceCollector:
         self.context = {}
         self.files_seen = {}
         self.lock = threading.RLock()
+        # on_inventory(kind, event, report) — новый полный снимок рынка/
+        # снаряжения/верфи текущей стоянки (например, исправить груз FC в Raven).
+        self.on_inventory = None
         try:
             value = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(value, dict):
@@ -151,6 +162,11 @@ class StationCommerceCollector:
             return False
         report["inventories"][kind] = {"observed_at": report["observed_at"], "items": items}
         self._queue(report, kind)
+        if self.on_inventory:
+            try:
+                self.on_inventory(kind, event, report)
+            except Exception:
+                pass
         return True
 
     def read_files(self, journal_path):
