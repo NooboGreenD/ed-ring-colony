@@ -4,6 +4,7 @@ import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
 import { persistImportedDeliveries } from '@/lib/deliveryImport';
 import { persistJournalTelemetry } from '@/lib/journalTelemetry';
+import { resetJournalData } from '@/lib/journalReset';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -108,6 +109,28 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Authentication failed' }, { status: 401 });
     }
 
+    // Полная перезагрузка журналов с нуля: клиент (сайт или Colonial Helper)
+    // может передать `reset: true` на первом батче — тогда перед записью
+    // новых данных мы очищаем всё, что было накоплено у пользователя
+    // (поставки, импорты, сводку пилота, сканы тел, устаревшие colonisation_events).
+    // Сброс идёт один раз — флаг читаем ТОЛЬКО в первой партии (пустые
+    // deliveries и нет телеметрии), чтобы промежуточные батчи не теряли
+    // только что записанные строки.
+    const shouldReset = body.reset === true || body.full_reimport === true;
+    const resetPerformedAt = (body as Record<string, unknown>)._reset_performed;
+    let resetOutcome = null;
+    if (shouldReset && !resetPerformedAt) {
+      try {
+        resetOutcome = await resetJournalData(svc, userId);
+      } catch (resetError) {
+        console.warn('[logs/import] journal reset failed before import:', (resetError as Error).message);
+        return NextResponse.json(
+          { error: `Не удалось очистить старые данные: ${(resetError as Error).message}` },
+          { status: 500 },
+        );
+      }
+    }
+
     // Имя командира — только начальное значение для старого helper-клиента.
     // Уже сохранённый профиль не должен меняться при повторных batch-загрузках.
     if (cmdr) {
@@ -146,7 +169,7 @@ export async function POST(req: Request) {
       console.warn('[logs/import] telemetry could not be stored:', (telemetryError as Error).message);
     }
 
-    return NextResponse.json({ ...outcome, telemetry });
+    return NextResponse.json({ ...outcome, telemetry, reset: resetOutcome });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/import] Failed:', message);

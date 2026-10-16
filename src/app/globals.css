@@ -518,6 +518,9 @@
   .btn-orange:hover { background: rgba(255,157,46,0.12); }
   .btn-cyan { border-color: var(--cyan); color: var(--cyan); }
   .btn-cyan:hover { background: rgba(45,212,238,0.12); }
+  .btn-danger { border-color: #e74c3c; color: #e74c3c; }
+  .btn-danger:hover { background: rgba(231,76,60,0.12); }
+  .btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
 
   /* ===== STATS & CORNERS ===== */
   .stats {

@@ -4,6 +4,7 @@ import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
 import { persistImportedDeliveries } from '@/lib/deliveryImport';
 import { persistJournalTelemetry } from '@/lib/journalTelemetry';
+import { resetJournalData } from '@/lib/journalReset';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -85,6 +86,26 @@ export async function POST(req: Request) {
     // make an otherwise valid Journal batch fail.
     void svc.from('api_tokens').update({ last_used_at: new Date().toISOString() }).eq('token_hash', tokenHash);
 
+    // Полная перезагрузка с нуля: Colonial Helper может прислать
+    // `reset: true` на первом батче, чтобы очистить БД от мусорных частей
+    // логов перед отправкой новых. Флаг читается только один раз — клиент
+    // передаёт специальный маркер `_reset_performed` в повторных пачках,
+    // чтобы промежуточные запросы не стёрли только что записанные строки.
+    let resetOutcome = null;
+    const shouldReset = body.reset === true || body.full_reimport === true;
+    const alreadyReset = Boolean((body as Record<string, unknown>)._reset_performed);
+    if (shouldReset && !alreadyReset) {
+      try {
+        resetOutcome = await resetJournalData(svc, userId);
+      } catch (resetError) {
+        console.warn('[logs/upload] journal reset failed before import:', (resetError as Error).message);
+        return NextResponse.json(
+          { error: `Не удалось очистить старые логи: ${(resetError as Error).message}` },
+          { status: 500 },
+        );
+      }
+    }
+
     // A Journal may contain the commander's original in-game name. It should
     // initialise an empty legacy profile only, never overwrite a saved nick.
     if (cmdr) {
@@ -139,6 +160,7 @@ export async function POST(req: Request) {
       // 'web_source' — сводка пилота защищена загрузкой журналов на сайте
       pilotStatsSkipped: telemetry?.pilotStatsSkipped ?? null,
       systemScansInserted: telemetry?.systemScansInserted ?? 0,
+      reset: resetOutcome,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';

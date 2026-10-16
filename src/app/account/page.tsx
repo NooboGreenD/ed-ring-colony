@@ -32,6 +32,8 @@ import {
   IconSquadron,
   IconCheck,
   IconCircle,
+  IconTrash,
+  IconError,
 } from "@/components/Icons";
 
 
@@ -94,6 +96,9 @@ export default function AccountPage() {
   const [capiLinked, setCapiLinked] = useState(false);
   // Конфиденциальность досье: что видят другие командиры на странице /cmdr/…
   const [privacy, setPrivacy] = useState<PrivacySettings>({ ...DEFAULT_PRIVACY });
+  const [resettingJournals, setResettingJournals] = useState(false);
+  const [journalsResetResult, setJournalsResetResult] = useState<string | null>(null);
+  const [journalsResetError, setJournalsResetError] = useState<string | null>(null);
   const [myBuilds, setMyBuilds] = useState<any[]>([]);
   const loadBuilds = async () => {
     const response = await authFetch('/api/outfitting/builds', { cache: 'no-store' });
@@ -1042,9 +1047,60 @@ export default function AccountPage() {
             >
               {t('account.downloadColonialHelper')}
             </a>
+            <button
+              className="btn btn-danger"
+              disabled={busy || resettingJournals}
+              onClick={async () => {
+                if (!confirm('Очистить все ранее загруженные журнальные данные? После этого можно заново загрузить логи с нуля — мусорные части в БД будут удалены, статистика пересчитается.')) return;
+                setResettingJournals(true);
+                setJournalsResetError(null);
+                setJournalsResetResult(null);
+                try {
+                  const res = await authFetch('/api/journal/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm: true }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(data.error || 'Ошибка очистки');
+                  const r = data.reset || {};
+                  setJournalsResetResult(
+                    `Очищено: поставок — ${r.deliveriesDeleted ?? 0}, ` +
+                    `импортов — ${r.journalImportsDeleted ?? 0}, ` +
+                    `событий стройки — ${r.legacyEventsDeleted ?? 0}, ` +
+                    `сканов тел — ${r.systemScansDeleted ?? 0}. Теперь можно загрузить логи заново.`
+                  );
+                  setSummary(null);
+                  setFiles(null);
+                } catch (err: any) {
+                  setJournalsResetError(err instanceof Error ? err.message : 'Ошибка очистки');
+                } finally {
+                  setResettingJournals(false);
+                }
+              }}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, marginLeft: 'auto' }}
+              title="Очистить все журнальные данные этого профиля (поставки, сканы, статистику пилота) для последующей загрузки с нуля"
+            >
+              <IconTrash size={14} />
+              {resettingJournals ? 'Очистка...' : 'Очистить и пересчитать логи'}
+            </button>
           </div>
 
           {files && files.length > 0 && (<p style={{ fontSize: 12, color: '#9ca3af' }}>{t('account.filesSelected')} {files.length}</p>)}
+
+          {journalsResetError && (
+            <div className="journal-error-box" style={{ margin: '12px 0' }}>
+              <IconError size={16} color="#e74c3c" />
+              <span>{journalsResetError}</span>
+            </div>
+          )}
+
+          {journalsResetResult && (
+            <div className="journal-success-box" style={{ margin: '12px 0' }}>
+              <IconCheck size={16} color="#2ecc71" />
+              <span>{journalsResetResult}</span>
+            </div>
+          )}
 
           {progress && (
             <div style={{ margin: "14px 0" }}>

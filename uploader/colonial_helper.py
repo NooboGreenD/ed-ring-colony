@@ -1479,6 +1479,13 @@ class ColonialHelperApp:
             command=self._reset_import_cache,
             bootstyle="secondary-outline",
             width=22,
+        ).pack(side=LEFT, padx=(0, 6))
+        tb.Button(
+            cache_frame,
+            text="Очистить логи на сервере",
+            command=self._reset_server_journals,
+            bootstyle="danger-outline",
+            width=26,
         ).pack(side=LEFT)
 
         self.selected_files: list[Path] = []
@@ -7347,6 +7354,76 @@ class ColonialHelperApp:
         self.log(
             f"Кэш импорта сброшен ({count} записей) — файлы будут разобраны и загружены заново",
             "info",
+        )
+
+    def _reset_server_journals(self):
+        """Очистить все журнальные данные на сервере (кнопка на вкладке загрузки).
+
+        Нужна, когда в БД накопились мусорные части логов (оборванные импорты,
+        старые схемы, неконсистентные повторы): «залить поверх» не поможет,
+        потому что идемпотентные ключи deliveries не чистят мусор, а снимки
+        строек и сканы тел остаются от старых прогонов. Сервер удаляет все
+        журнальные данные этого пользователя и отвязывает авторство у общих
+        colonisation_sites. Локальный кэш тоже сбрасывается: без этого Helper
+        решит, что всё уже отправлено, и не пошлёт ничего заново.
+        """
+        if not self.api.is_connected:
+            messagebox.showwarning(
+                "Нет подключения",
+                "Подключитесь к серверу (введите API-токен на вкладке «Подключение»)",
+                parent=self.root,
+            )
+            return
+        if not messagebox.askyesno(
+            "Очистка журналов на сервере",
+            "Будут удалены ВСЕ ранее загруженные журналные данные этого профиля:\n"
+            "  • поставки (тоннаж в досье)\n"
+            "  • история импортов\n"
+            "  • снимки строек и сводка пилота\n"
+            "  • сканы тел, загруженные вами\n\n"
+            "После очистки запустите «Загрузить журналы из папки» — логи будут "
+            "пересчитаны и записаны заново.\n\n"
+            "Продолжить?",
+            parent=self.root,
+        ):
+            return
+
+        self.log("Очистка журнальных данных на сервере...", "info")
+
+        def worker():
+            result = self.api.reset_journal_data()
+            self.root.after(0, lambda: self._on_server_journals_reset(result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_server_journals_reset(self, result: dict):
+        if not result.get("ok"):
+            self.log(f"Очистка не удалась: {result.get('error', 'неизвестная ошибка')}", "error")
+            messagebox.showerror(
+                "Ошибка очистки",
+                result.get("error", "Не удалось очистить журнальные данные"),
+                parent=self.root,
+            )
+            return
+        # Сбрасываем и локальный кэш, чтобы Helper действительно отправил
+        # файлы заново, а не решил, что всё уже импортировано.
+        self._reset_import_cache()
+        r = result.get("reset") or {}
+        self.log(
+            "Журнальные данные на сервере очищены: "
+            f"поставок — {r.get('deliveriesDeleted', 0)}, "
+            f"импортов — {r.get('journalImportsDeleted', 0)}, "
+            f"событий стройки — {r.get('legacyEventsDeleted', 0)}, "
+            f"сканов тел — {r.get('systemScansDeleted', 0)}, "
+            f"площадок отвязано — {r.get('sitesDetached', 0)}. "
+            "Теперь можно загрузить логи заново.",
+            "info",
+        )
+        messagebox.showinfo(
+            "Очистка завершена",
+            "Сервер очистил журнальные данные профиля. Локальный кэш тоже сброшен. "
+            "Нажмите «Загрузить журналы из папки», чтобы пересчитать логи с нуля.",
+            parent=self.root,
         )
 
     def _on_close(self):

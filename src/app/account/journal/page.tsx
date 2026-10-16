@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { IconJournal, IconCheck, IconError, IconBuilding } from '@/components/Icons';
+import { IconJournal, IconCheck, IconError, IconBuilding, IconTrash } from '@/components/Icons';
 import { authFetch } from '@/lib/supabaseClient';
 
 interface ParsedDepot {
@@ -41,6 +41,9 @@ export default function JournalPage() {
   const [importProgress, setImportProgress] = useState<{ current: number; total: number } | null>(null);
   const [imported, setImported] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
@@ -148,11 +151,80 @@ export default function JournalPage() {
     }
   }
 
+  async function handleReset() {
+    setResetting(true);
+    setError(null);
+    setResetResult(null);
+    try {
+      const res = await authFetch('/api/journal/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || 'Reset failed');
+      }
+      const r = data.reset || {};
+      setResetResult(
+        `Очищено: поставок — ${r.deliveriesDeleted ?? 0}, ` +
+        `импортов — ${r.journalImportsDeleted ?? 0}, ` +
+        `событий стройки — ${r.legacyEventsDeleted ?? 0}, ` +
+        `сканов тел — ${r.systemScansDeleted ?? 0}, ` +
+        `площадок отвязано — ${r.sitesDetached ?? 0}. ` +
+        `Сводка пилота: ${r.pilotStatsDeleted ? 'сброшена' : 'не тронута'}.`
+      );
+      setResult(null);
+      setImported(false);
+    } catch (err: any) {
+      setError(err instanceof Error ? err.message : 'Reset failed');
+    } finally {
+      setResetting(false);
+      setConfirmingReset(false);
+    }
+  }
+
   return (
     <div style={{ padding: '24px 20px', maxWidth: 1200 }}>
-      <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 20 }}>
-        ЖУРНАЛ CMDR
-      </h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 12 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>
+          ЖУРНАЛ CMDR
+        </h2>
+        {confirmingReset ? (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 12, color: '#e74c3c', fontFamily: 'ui-monospace' }}>
+              Точно очистить все логи?
+            </span>
+            <button
+              className="btn btn-danger"
+              onClick={handleReset}
+              disabled={resetting}
+              style={{ padding: '6px 12px', fontSize: 12 }}
+            >
+              {resetting ? 'Очистка...' : 'Да, очистить'}
+            </button>
+            <button
+              className="btn"
+              onClick={() => setConfirmingReset(false)}
+              disabled={resetting}
+              style={{ padding: '6px 12px', fontSize: 12 }}
+            >
+              Отмена
+            </button>
+          </div>
+        ) : (
+          <button
+            className="btn btn-danger"
+            onClick={() => { setError(null); setResetResult(null); setConfirmingReset(true); }}
+            disabled={resetting || importing || parsing}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 14px', fontSize: 12 }}
+            title="Очистить все ранее загруженные журнальные данные и пересчитать логи заново"
+          >
+            <IconTrash size={14} />
+            Перезагрузить логи с нуля (очистить)
+          </button>
+        )}
+      </div>
 
       {/* Drop zone */}
       <div
@@ -203,6 +275,26 @@ export default function JournalPage() {
         <div className="journal-error-box" style={{ margin: '24px 0' }}>
           <IconError size={16} color="#e74c3c" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {/* Reset result */}
+      {resetResult && (
+        <div className="journal-success-box" style={{ margin: '24px 0' }}>
+          <IconCheck size={16} color="#2ecc71" />
+          <span>{resetResult}</span>
+        </div>
+      )}
+
+      {/* Reset progress */}
+      {resetting && (
+        <div style={{ margin: '24px 0' }}>
+          <div className="journal-progress-bar">
+            <div className="journal-progress-fill" style={{ width: '60%' }} />
+          </div>
+          <p style={{ fontFamily: 'ui-monospace', fontSize: 11, color: '#9ca3af', marginTop: 8, letterSpacing: '2px', textTransform: 'uppercase' }}>
+            Очистка журнальных данных...
+          </p>
         </div>
       )}
 
