@@ -66,8 +66,12 @@ async function createFixtureDb() {
       user_id UUID,
       cmdr_name TEXT,
       commodity TEXT NOT NULL,
-      quantity INT NOT NULL,
-      cargo_scope TEXT DEFAULT 'colonisation',
+      amount INT NOT NULL,
+      is_construction BOOLEAN DEFAULT true,
+      source TEXT DEFAULT 'journal',
+      delivery_kind TEXT,
+      station_name TEXT,
+      station_kind TEXT,
       delivered_at TIMESTAMPTZ DEFAULT NOW()
     );
     ALTER TABLE public.deliveries ENABLE ROW LEVEL SECURITY;
@@ -98,45 +102,94 @@ async function createFixtureDb() {
     CREATE POLICY "inara_profiles_select_own" ON public.inara_profiles FOR SELECT USING (auth.uid() = user_id);
     GRANT ALL ON public.inara_profiles TO anon, authenticated, service_role;
 
+    -- Реальная схема api_tokens из 000_base_schema.sql (без scopes/revoked_at/expires_at до нашей миграции)
     CREATE TABLE public.api_tokens (
       id UUID PRIMARY KEY,
       user_id UUID NOT NULL,
       token_hash TEXT NOT NULL UNIQUE,
       name TEXT,
-      scopes TEXT[] DEFAULT ARRAY['upload']::text[],
       is_revoked BOOLEAN NOT NULL DEFAULT false,
-      revoked_at TIMESTAMPTZ,
       last_used_at TIMESTAMPTZ,
-      expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE public.api_tokens ENABLE ROW LEVEL SECURITY;
-    CREATE POLICY "Users read own api_tokens" ON public.api_tokens FOR SELECT TO authenticated USING (auth.uid() = user_id);
-    CREATE POLICY "Users insert own api_tokens" ON public.api_tokens FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+    CREATE POLICY api_tokens_select ON public.api_tokens FOR SELECT TO authenticated USING (auth.uid() = user_id);
+    CREATE POLICY api_tokens_insert ON public.api_tokens FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+    CREATE POLICY api_tokens_update ON public.api_tokens FOR UPDATE TO authenticated USING (auth.uid() = user_id);
+    CREATE POLICY api_tokens_delete ON public.api_tokens FOR DELETE TO authenticated USING (auth.uid() = user_id);
     GRANT ALL ON public.api_tokens TO anon, authenticated, service_role;
 
-    CREATE VIEW public.delivery_scope_summary AS
+    -- Реальное представление delivery_scope_summary из 20260918000000_deliveries_cargo_scope.sql
+    CREATE OR REPLACE VIEW public.delivery_scope_summary AS
     SELECT
       user_id,
-      cmdr_name,
-      cargo_scope,
-      COUNT(*)::bigint AS delivery_count,
-      COALESCE(SUM(quantity), 0)::bigint AS total_tons,
-      MAX(delivered_at) AS last_delivery_at
+      COALESCE(
+        delivery_kind,
+        CASE
+          WHEN is_construction IS DISTINCT FROM false THEN 'legacy_site'
+          WHEN source = 'carrier_delivery' THEN 'fleet_carrier'
+          WHEN source IN ('mission_delivery', 'cargo_depot') THEN 'mission_delivery'
+          WHEN source = 'powerplay_delivery' THEN 'powerplay_delivery'
+          WHEN source = 'rescue_delivery' THEN 'rescue_delivery'
+          ELSE 'market_sale'
+        END
+      ) AS kind,
+      COALESCE(SUM(GREATEST(amount, 0)), 0) AS tons,
+      COUNT(*) FILTER (WHERE amount > 0) AS ops
     FROM public.deliveries
-    GROUP BY user_id, cmdr_name, cargo_scope;
+    GROUP BY 1, 2;
     GRANT SELECT ON public.delivery_scope_summary TO anon, authenticated, service_role;
+
+    CREATE TABLE public.squadron_ranks (
+      id SERIAL PRIMARY KEY,
+      squadron_id INT NOT NULL,
+      name TEXT NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0,
+      is_default BOOLEAN NOT NULL DEFAULT false,
+      can_manage_projects BOOLEAN NOT NULL DEFAULT false,
+      can_manage_members BOOLEAN NOT NULL DEFAULT false,
+      can_manage_ranks BOOLEAN NOT NULL DEFAULT false,
+      can_edit_squadron BOOLEAN NOT NULL DEFAULT false
+    );
+    ALTER TABLE public.squadron_ranks ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY "squadron_ranks_select" ON public.squadron_ranks FOR SELECT USING (true);
+    GRANT SELECT ON public.squadron_ranks TO anon, authenticated, service_role;
 
     CREATE TABLE public.squadron_members (
       id SERIAL PRIMARY KEY,
       squadron_id INT NOT NULL,
       user_id UUID NOT NULL,
-      role TEXT NOT NULL DEFAULT 'member',
+      rank_id INT,
+      callsign TEXT,
       joined_at TIMESTAMPTZ DEFAULT NOW()
     );
     ALTER TABLE public.squadron_members ENABLE ROW LEVEL SECURITY;
     CREATE POLICY "squadron_members_select" ON public.squadron_members FOR SELECT USING (true);
     GRANT SELECT ON public.squadron_members TO anon, authenticated, service_role;
+
+    -- Реальное представление squadron_member_detail из 20260911030000_squadron_read_models_and_profile_sync.sql
+    CREATE VIEW public.squadron_member_detail
+    WITH (security_invoker = true) AS
+    SELECT
+      sm.id,
+      sm.squadron_id,
+      sm.user_id,
+      sm.rank_id,
+      sm.callsign,
+      sm.joined_at,
+      sr.name AS rank_name,
+      sr.sort_order AS rank_order,
+      sr.is_default,
+      sr.can_manage_projects,
+      sr.can_manage_members,
+      sr.can_manage_ranks,
+      sr.can_edit_squadron,
+      p.cmdr_name,
+      p.avatar_url
+    FROM public.squadron_members AS sm
+    LEFT JOIN public.squadron_ranks AS sr ON sr.id = sm.rank_id
+    LEFT JOIN public.profiles AS p ON p.id = sm.user_id;
+    GRANT SELECT ON public.squadron_member_detail TO anon, authenticated, service_role;
 
     INSERT INTO public.profiles (id, email, cmdr_name, avatar_url, role) VALUES
       ('${ALICE}', 'alice@secret.example', 'CMDR Alice', 'https://cdn.example/a.png', 'user'),
@@ -152,13 +205,17 @@ async function createFixtureDb() {
     INSERT INTO public.api_tokens (id, user_id, token_hash, name) VALUES
       ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', '${ALICE}', 'sha256_secret_hash_alice', 'Colonial Helper');
 
-    INSERT INTO public.deliveries (user_id, cmdr_name, commodity, quantity, cargo_scope) VALUES
-      ('${ALICE}', 'CMDR Alice', 'Titanium',  500, 'colonisation'),
-      ('${BOB}',   'CMDR Bob',   'Aluminium', 300, 'colonisation');
+    INSERT INTO public.deliveries (user_id, cmdr_name, commodity, amount, delivery_kind) VALUES
+      ('${ALICE}', 'CMDR Alice', 'Titanium',  500, 'construction_site'),
+      ('${BOB}',   'CMDR Bob',   'Aluminium', 300, 'construction_site');
 
-    INSERT INTO public.squadron_members (squadron_id, user_id, role) VALUES
-      (1, '${ALICE}', 'leader'),
-      (1, '${BOB}',   'member');
+    INSERT INTO public.squadron_ranks (id, squadron_id, name, sort_order) VALUES
+      (1, 1, 'Leader', 1),
+      (2, 1, 'Member', 2);
+
+    INSERT INTO public.squadron_members (squadron_id, user_id, rank_id) VALUES
+      (1, '${ALICE}', 1),
+      (1, '${BOB}',   2);
   `);
 
   await db.exec(readFileSync(MIGRATION_PROFILES_PATH, 'utf8'));
@@ -263,16 +320,16 @@ pgTest('delivery_scope_summary и squadron_member_detail соблюдают RLS 
     /permission denied for view delivery_scope_summary/i,
   );
 
-  const aliceSummary = await asRole(db, 'authenticated', ALICE, 'SELECT cmdr_name, total_tons FROM public.delivery_scope_summary');
-  assert.deepEqual(aliceSummary.rows, [{ cmdr_name: 'CMDR Alice', total_tons: 500 }]);
+  const aliceSummary = await asRole(db, 'authenticated', ALICE, 'SELECT user_id, kind, tons FROM public.delivery_scope_summary');
+  assert.deepEqual(aliceSummary.rows, [{ user_id: ALICE, kind: 'construction_site', tons: 500 }]);
 
-  const adminSummary = await asRole(db, 'authenticated', ADMIN, 'SELECT cmdr_name FROM public.delivery_scope_summary ORDER BY cmdr_name');
-  assert.deepEqual(adminSummary.rows.map(r => r.cmdr_name), ['CMDR Alice', 'CMDR Bob']);
+  const adminSummary = await asRole(db, 'authenticated', ADMIN, 'SELECT user_id FROM public.delivery_scope_summary ORDER BY user_id');
+  assert.deepEqual(adminSummary.rows.map(r => r.user_id), [ALICE, BOB]);
 
-  const anonMembers = await asRole(db, 'anon', null, 'SELECT cmdr_name, role FROM public.squadron_member_detail ORDER BY cmdr_name');
+  const anonMembers = await asRole(db, 'anon', null, 'SELECT cmdr_name, rank_name FROM public.squadron_member_detail ORDER BY cmdr_name');
   assert.deepEqual(anonMembers.rows, [
-    { cmdr_name: 'CMDR Alice', role: 'leader' },
-    { cmdr_name: 'CMDR Bob', role: 'member' },
+    { cmdr_name: 'CMDR Alice', rank_name: 'Leader' },
+    { cmdr_name: 'CMDR Bob', rank_name: 'Member' },
   ]);
 
   const aliceMembers = await asRole(db, 'authenticated', ALICE, 'SELECT cmdr_name, avatar_url FROM public.squadron_member_detail ORDER BY cmdr_name');
