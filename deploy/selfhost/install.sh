@@ -151,7 +151,7 @@ else
   JWT_SECRET=$(openssl rand -hex 32)
   ANON_KEY=$(make_jwt anon "$JWT_SECRET")
   SERVICE_ROLE_KEY=$(make_jwt service_role "$JWT_SECRET")
-  DASHBOARD_PASSWORD=$(openssl rand -hex 12)
+  DASHBOARD_PASSWORD=$(openssl rand -hex 24)
   CRON_SECRET=$(openssl rand -hex 32)
   # Не переиспользует CRON_SECRET: отдельный ключ только для web → agent.
   MONITOR_AGENT_TOKEN=$(openssl rand -hex 32)
@@ -219,6 +219,12 @@ set_env "$E" FILE_SIZE_LIMIT           "73400320"
 # enabling new signups; see POST-MIGRATION.md (never auto-confirm mailboxes).
 set_env "$E" ENABLE_EMAIL_AUTOCONFIRM "false"
 set_env "$E" DISABLE_SIGNUP "true"
+if [ "$MODE" = domain ]; then
+  set_env "$E" KONG_HTTP_PORT  "127.0.0.1:8000"
+  set_env "$E" KONG_HTTPS_PORT "127.0.0.1:8443"
+fi
+set_env "$E" POSTGRES_PORT     "127.0.0.1:5432"
+set_env "$E" POOLER_PROXY_PORT_TRANSACTION "127.0.0.1:6543"
 echo "$E настроен"
 
 ( cd "$SUPA_DIR" && docker compose pull -q && docker compose up -d )
@@ -294,6 +300,20 @@ server {
         proxy_set_header Host \$host;
         add_header Cache-Control "public, max-age=31536000, immutable";
     }
+    # Запрет публичного доступа к Supabase Studio и pg-meta через туннель /api/supabase
+    location = /api/supabase { return 404; }
+    location = /api/supabase/ { return 404; }
+    location ^~ /api/supabase/project/ { return 404; }
+    location ^~ /api/supabase/api/pg-meta/ { return 404; }
+    location = /api/capi/token {
+        access_log off;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 }
 EOF
 
@@ -321,6 +341,11 @@ server {
         # apikey is present in the WebSocket URL. Never include it in access logs.
         access_log off;
     }
+    # Запрет публичного доступа к Supabase Studio и pg-meta на сабдомене API
+    location = / { return 404; }
+    location ^~ /project/ { return 404; }
+    location ^~ /api/pg-meta/ { return 404; }
+    location ^~ /_next/ { return 404; }
     location / {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;

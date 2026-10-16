@@ -15,11 +15,15 @@ export interface BillingActor {
 
 /**
  * Dev/preview fallback: when there is no Supabase session AND we are not in
- * production, act as a preview admin so the UI can be inspected locally.
- * Never enabled in production.
+ * production AND no live service role key is configured, act as a preview
+ * admin so the UI can be inspected locally without exposing real DB data.
+ * Never enabled in production or when SUPABASE_SERVICE_ROLE_KEY is present.
  */
-function previewAllowed(): boolean {
-  return process.env.NODE_ENV !== 'production' || process.env.BILLING_PREVIEW_ADMIN === '1';
+function previewAllowed(req?: Request): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  if (process.env.SUPABASE_SERVICE_ROLE_KEY) return false;
+  if (req?.headers.has('authorization')) return false;
+  return process.env.NODE_ENV === 'development' || process.env.BILLING_PREVIEW_ADMIN === '1';
 }
 
 export async function billingActor(req: Request): Promise<BillingActor | null> {
@@ -34,7 +38,7 @@ export async function billingActor(req: Request): Promise<BillingActor | null> {
       isPreview: false,
     };
   }
-  if (previewAllowed()) {
+  if (previewAllowed(req)) {
     return { userId: 'preview-user-guest', cmdrName: 'CMDR Preview', email: null, role: 'admin', isPreview: true };
   }
   return null;

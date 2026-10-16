@@ -2,6 +2,18 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createHash } from 'crypto';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
+import { checkRateLimit } from '@/lib/rateLimit';
+
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, private',
+  Pragma: 'no-cache',
+};
+
+function clientIp(req: Request): string {
+  const fwd = req.headers.get('x-forwarded-for');
+  if (fwd) return fwd.split(',')[0].trim() || 'local';
+  return req.headers.get('x-real-ip')?.trim() || 'local';
+}
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -16,16 +28,21 @@ function getAdminClient() {
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
+  const ip = clientIp(req);
+  if (!checkRateLimit(`auth-token:${ip}`, 15)) {
+    return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: NO_STORE_HEADERS });
+  }
+
   const svc = getAdminClient();
 
   let body: { token?: string } = {};
   try { body = await req.json(); } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400, headers: NO_STORE_HEADERS });
   }
 
   const token = String(body.token ?? '').trim();
   if (!token) {
-    return NextResponse.json({ error: 'Token required' }, { status: 400 });
+    return NextResponse.json({ error: 'Token required' }, { status: 400, headers: NO_STORE_HEADERS });
   }
 
   const tokenHash = hashToken(token);
@@ -37,7 +54,10 @@ export async function POST(req: Request) {
     .maybeSingle();
 
   if (error || !apiToken || apiToken.is_revoked) {
-    return NextResponse.json({ error: 'Invalid or revoked token' }, { status: 401 });
+    if (!checkRateLimit(`auth-token-fail:${ip}`, 5)) {
+      return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: NO_STORE_HEADERS });
+    }
+    return NextResponse.json({ error: 'Invalid or revoked token' }, { status: 401, headers: NO_STORE_HEADERS });
   }
 
   // Обновляем last_used_at
@@ -56,5 +76,5 @@ export async function POST(req: Request) {
     cmdr_name: profile?.cmdr_name ?? null,
     email: profile?.email ?? null,
     token_name: apiToken.name,
-  });
+  }, { headers: NO_STORE_HEADERS });
 }

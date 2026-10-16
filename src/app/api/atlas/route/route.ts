@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabaseServer';
 import { greedyRoute, weightedAStarRoute } from '@/lib/routeEngine';
+import { checkRateLimit } from '@/lib/rateLimit';
 import type { RouteWaypoint } from '@/types/atlas';
 
 export const dynamic = 'force-dynamic';
@@ -12,10 +13,15 @@ interface CoordPoint {
 }
 
 export async function POST(req: Request) {
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+  if (!checkRateLimit(`atlas-route:${ip}`, 10)) {
+    return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
+  }
+
   const body = await req.json();
   const { from_system, to_system, via_candidates, engine = 'greedy', jump_range = 30, name } = body;
 
-  if (!from_system || !to_system || !Array.isArray(via_candidates) || via_candidates.length < 2) {
+  if (!from_system || !to_system || !Array.isArray(via_candidates) || via_candidates.length < 2 || via_candidates.length > 500) {
     return NextResponse.json({ error: 'Invalid parameters' }, { status: 400 });
   }
 

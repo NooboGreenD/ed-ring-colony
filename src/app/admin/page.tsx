@@ -9,7 +9,7 @@ import { RoutePagination, useRoutePagination } from '@/components/Admin/RoutePag
 import AdminNavigation, { ADMIN_ONLY_TABS, isAdminTab, type AdminTab } from "@/components/Admin/AdminNavigation";
 import adminStyles from "@/components/Admin/AdminShell.module.css";
 
-import { supabase } from "@/lib/supabaseClient";
+import { supabase, authFetch } from "@/lib/supabaseClient";
 import { useI18n } from "@/lib/i18n/I18nContext";
 import { DEFAULT_FOOTER, buildSiteContentPayload } from "@/lib/siteFooter";
 import ForumAdmin from "@/components/Forum/ForumAdmin";
@@ -233,7 +233,7 @@ export default function AdminPage() {
         return;
       }
 
-      const res = await fetch('/api/translate', {
+      const res = await authFetch('/api/translate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ texts, sourceLang }),

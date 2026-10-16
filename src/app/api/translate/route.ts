@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { SUPPORTED_TRANSLATION_LANGS, hasTranslateCredentials, translateTexts } from '@/lib/translate';
+import { requireStaff } from '@/lib/billing/auth';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -25,6 +26,9 @@ function normalizeTexts(value: unknown): string[] {
 }
 
 export async function POST(req: Request) {
+  const auth = await requireStaff(req);
+  if ('response' in auth) return auth.response;
+
   try {
     const body = await req.json().catch(() => null) as { texts?: unknown; sourceLang?: unknown } | null;
     const texts = normalizeTexts(body?.texts);

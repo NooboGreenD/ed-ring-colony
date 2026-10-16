@@ -409,7 +409,7 @@ class ApiClient:
         try:
             resp = self._session.get(
                 f"{self.api_base}/capi/token",
-                params={"token": self.token},
+                headers={"Authorization": f"Bearer {self.token}"},
                 allow_redirects=False,
                 timeout=15,
             )
@@ -434,6 +434,7 @@ class ApiClient:
         try:
             resp = self._session.post(
                 f"{self.api_base}/capi/token",
+                headers={"Authorization": f"Bearer {self.token}"},
                 json={"token": self.token, **tokens},
                 allow_redirects=False,
                 timeout=15,

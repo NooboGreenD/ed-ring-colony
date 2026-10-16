@@ -9,6 +9,9 @@ import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 /** Сколько просить браузер подождать перед повторной попыткой (секунды). */
 const MAINTENANCE_RETRY_AFTER = '120';
 
+/** Разрешённые публичные API-маршруты Kong через туннель /api/supabase/* (без Supabase Studio и pg-meta). */
+const ALLOWED_SUPABASE_GATEWAY_PREFIX = /^\/api\/supabase\/(?:auth|rest|realtime|storage|functions|graphql)\/v1(?:\/|$)/;
+
 export async function proxy(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
@@ -16,7 +19,12 @@ export async function proxy(request: NextRequest) {
   // Do not try to refresh a session or read maintenance state on its requests:
   // that would add a second auth request before every GoTrue/PostgREST call and
   // can recurse back through the same gateway.
-  if (path === '/api/supabase' || path.startsWith('/api/supabase/')) return NextResponse.next();
+  if (path === '/api/supabase' || path.startsWith('/api/supabase/')) {
+    if (!ALLOWED_SUPABASE_GATEWAY_PREFIX.test(path)) {
+      return NextResponse.json({ error: 'Not Found' }, { status: 404, headers: { 'Cache-Control': 'no-store' } });
+    }
+    return NextResponse.next();
+  }
 
   // ── Технические работы ──────────────────────────────────────────────
   // Пока идёт резервное копирование базы, посетители видят заглушку вместо
