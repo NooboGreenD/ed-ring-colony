@@ -3,6 +3,7 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import ArchitectNav from '@/components/Architect/ArchitectNav';
 import DataQualityPanel from '@/components/Architect/DataQualityPanel';
 import ExistingPanel, { structureKey } from '@/components/Architect/ExistingPanel';
 import GovernancePanel from '@/components/Architect/GovernancePanel';
@@ -15,6 +16,7 @@ import SiteEditor from '@/components/Architect/SiteEditor';
 import SiteTable from '@/components/Architect/SiteTable';
 import SourcingPanel from '@/components/Architect/SourcingPanel';
 import SyncPanel from '@/components/Architect/SyncPanel';
+import SystemProjectsPanel from '@/components/Architect/SystemProjectsPanel';
 import RavenCreatePanel from '@/components/Architect/RavenCreatePanel';
 import { CATALOGUE_VERSION, ECONOMY_LABELS_RU } from '@/lib/architect/catalogue';
 import { bodyBoostedEconomies, economyBodyFit } from '@/lib/architect/economy';
@@ -596,6 +598,7 @@ export default function ArchitectWorkspace() {
 
   return (
     <main style={{ maxWidth: 1440, margin: '24px auto', padding: '0 16px' }}>
+      <ArchitectNav active="planner" />
       <header style={{ ...cardStyle, marginBottom: 12 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'baseline', justifyContent: 'space-between' }}>
           <div>
@@ -974,6 +977,7 @@ export default function ArchitectWorkspace() {
               onNotice={setNotice}
               onState={setPlanGovernance}
             />
+            <SystemProjectsPanel systemName={systemName} planId={remoteId} onNotice={setNotice} />
             <PlanSummary
               plan={plan}
               evaluation={evaluation}
