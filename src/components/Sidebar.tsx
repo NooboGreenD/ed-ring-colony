@@ -90,7 +90,12 @@ const NAV_GROUPS: NavGroup[] = [
     titleKey: 'nav.group.tools',
     items: [
       { href: '/station-search', translation: 'nav.stationSearch', icon: <IconSearch size={iconSize} className="sidebar-icon" /> },
-      { href: '/architect', translation: 'nav.architect', icon: <IconBuilding size={iconSize} className="sidebar-icon" /> },
+      {
+        href: '/architect',
+        translation: 'nav.architect',
+        icon: <IconBuilding size={iconSize} className="sidebar-icon" />,
+        children: [{ href: '/architect/projects', labelKey: 'nav.architectProjects' }],
+      },
       { href: '/outfitting', translation: 'nav.outfitting', icon: <IconWrench size={iconSize} className="sidebar-icon" /> },
       { href: '/engineers', translation: 'nav.engineers', icon: <IconGear size={iconSize} className="sidebar-icon" /> },
     ],

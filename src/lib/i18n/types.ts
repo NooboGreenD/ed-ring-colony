@@ -20,6 +20,7 @@ export type TranslationKey =
   | 'nav.squadrons'
   | 'nav.projects'
   | 'nav.architect'
+  | 'nav.architectProjects'
   | 'nav.outfitting'
   | 'nav.engineers'
   | 'nav.stationSearch'
