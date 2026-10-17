@@ -23,7 +23,10 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 
 ## Features
 
-- **Galaxy Map** — Interactive 3D visualization of the colonization ring (Three.js + React Three Fiber)
+- **Galaxy Map** — Interactive 3D visualization of the colonization ring (Three.js + React Three Fiber).
+  Слой «Авианосцы» (и на `/map`, и в Atlas): носители значком как в игре, фильтр «мой / эскадрилья /
+  другие» и «Drake / Javelin», список «в каких системах», карточка системы и пунктир запланированного
+  прыжка — [FLEET-CARRIERS.md](FLEET-CARRIERS.md#карта-галактики-и-atlas-web-2160)
 - **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemMap/SystemOrrery3D.tsx`): орбиты
   строятся по настоящим элементам из журнала/EDSM — уравнение Кеплера, эллипс со звездой в фокусе, наклонение
   и аргумент перицентра, положение тела по средней аномалии; цвет звезды считается по её температуре, размер —
@@ -421,6 +424,7 @@ ed-ring-colony/
 - `GET /api/admin/monitor` — protected admin-only server, DB, Docker, scheduler and deployment snapshot
 - `GET /api/admin/monitor/update` — manual update status (admin) + public `/api/status` for topbar `System Update`
 - `GET /api/admin/billing/stats?period=30d` — billing telemetry + live counters (pilots, systems, tonnage)
+- `GET /api/map/carriers` — fleet carriers for the galaxy map layer (public markers, no cargo/finance)
 - `GET /api/leaderboard` — Player stats
 - `GET /api/atlas/search` — System search
 - `GET /api/news` — Site news

@@ -400,6 +400,7 @@ Applied via `npx supabase db push`.
 | `/api/admin/monitor/update` | GET/POST/DELETE | Admin | Manual update status + trigger + abort — public `/api/status` for topbar System Update (stage+percent only) |
 | `/api/admin/billing/stats` | GET | Staff | Billing telemetry + live counters (pilots, systems, tonnage) — period 7d/30d/90d/1y/all |
 | `/api/status` | GET | None | Public liveness: ok, system online/update, update {active,percent,stage} — polled by SiteStatusBar + future Android FCM |
+| `/api/map/carriers` | GET | Optional | Galaxy map / Atlas carrier layer: public markers (no cargo or finance), relation own/squadron/other for the viewer, owner name only when their location is public; coordinates from the journal, local catalogues, then EDSM |
 | `/api/leaderboard` | GET | None | Player stats |
 | `/api/atlas/search` | POST/GET | None | World search: POST creates the session and runs it in the background, GET returns `session.progress` (stage, percent, last found points) + candidates |
 | `/api/atlas/ring-route` | POST/GET | None | Galactic ring: step-by-step sessions (`session_id` to continue), GET returns the session state |
@@ -538,6 +539,9 @@ React и без строк интерфейса, повторяющие моде
 | AtlasRouteFinder | `components/Atlas/AtlasRouteFinder.tsx` | Client | Route finder; publishes corridor/beam/results to the shared search-progress channel |
 | AtlasRingRouteFinder | `components/Atlas/AtlasRingRouteFinder.tsx` | Client | Galactic ring: step loop, resume after a broken connection, refine, CSV |
 | SearchProgressLayer | `components/GalaxyMap/SearchProgressLayer.tsx` | Client | 3D layer of any Atlas search: ring, corridor, cube, path, points, scan beam |
+| CarrierMarkers | `components/GalaxyMap/CarrierMarkers.tsx` | Client | 3D carrier layer: in-game style icon per system (constant screen size, count badge), jump trails, hover label |
+| CarrierLayerControls | `components/GalaxyMap/CarrierLayerControls.tsx` | Client | Carrier layer panel on `/map` and `/atlas`: toggle, own/squadron/other and Drake/Javelin filters, "which systems" list |
+| CarrierSystemCard | `components/GalaxyMap/CarrierSystemCard.tsx` | Client | HUD card of a system with carriers: owner (privacy-aware), squadron, docking, services, jump |
 | AtlasCandidateList | `components/Atlas/AtlasCandidateList.tsx` | Client | Candidate systems |
 | CommentSection | `components/Comments/CommentSection.tsx` | Client | Comments |
 | FriendsPanel | `components/FriendsPanel.tsx` | Client | Friend list |

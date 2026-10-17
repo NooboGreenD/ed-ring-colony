@@ -27,7 +27,7 @@ function RegionMarker({ region, showLabel }: { region: (typeof REGIONS)[number];
     <group position={[position.x, position.y, position.z]}>
       <sprite material={material} scale={[70, 70, 1]} />
       {showLabel && (
-        <Html position={[0, 60, 0]} center style={{ pointerEvents: 'auto', cursor: 'pointer' }} zIndexRange={[100, 0]}>
+        <Html position={[0, 60, 0]} center style={{ pointerEvents: 'auto', cursor: 'pointer' }} zIndexRange={[8, 7]}>
           <div
             onClick={(event) => {
               event.stopPropagation();
