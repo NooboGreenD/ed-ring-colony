@@ -41,7 +41,7 @@ function LandmarkSprite({ landmark, index, onSelect }: { landmark: Landmark; ind
 
   return <group position={[pos.x, pos.y, pos.z]}>
     <sprite material={material} scale={[120, 120, 1]} onClick={select} />
-    <Html position={[0, 90, 0]} distanceFactor={800} style={{ pointerEvents: "none" }} center>
+    <Html position={[0, 90, 0]} distanceFactor={800} zIndexRange={[8, 7]} style={{ pointerEvents: "none" }} center>
       <div style={{ color: landmark.color, fontFamily: '"Courier New", monospace', fontSize: "18px", fontWeight: "bold", textShadow: `0 0 6px ${landmark.color}`, whiteSpace: "nowrap", textAlign: "center", letterSpacing: "1px", transform: "translateX(-50%)" }}>
         {landmark.name}
       </div>

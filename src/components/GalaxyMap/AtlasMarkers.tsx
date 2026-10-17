@@ -217,6 +217,7 @@ function AtlasTooltip({ candidate, onClose }: { candidate: AtlasCandidate; onClo
     <Html
       position={[pos.x, pos.y + 140, pos.z]}
       distanceFactor={600}
+      zIndexRange={[9, 9]}
       style={{ pointerEvents: "auto" }}
       center
     >

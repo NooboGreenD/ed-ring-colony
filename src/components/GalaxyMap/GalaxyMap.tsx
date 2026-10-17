@@ -20,6 +20,18 @@ import { GALAXY_NEBULAE, NEBULA_KIND_LABELS, type GalaxyNebula, type NebulaKind 
 import { catalogNote, fetchGalaxyCatalogStatus } from '@/lib/galaxyCatalogStatus';
 import { useSystemAutocomplete, type SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import {
+  DEFAULT_CARRIER_FILTER,
+  countMapCarriers,
+  filterMapCarriers,
+  groupCarriersBySystem,
+  type CarrierLayerFilter,
+  type CarrierSystemGroup,
+  type MapCarrier,
+  type MapCarriersResponse,
+} from '@/lib/carrierMap';
+import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerControls';
+import { CarrierSystemCard } from './CarrierSystemCard';
+import {
   POINTS_BYTES_PER_POINT,
   POINTS_HEADER_SIZE,
   STAR_CLASS_COLORS,
@@ -186,6 +198,10 @@ export default function GalaxyMap({
   const [hubs, setHubs] = useState<Hub[]>([]);
   const [allRouteSystems, setAllRouteSystems] = useState<RouteSystem[]>([]);
   const [pilots, setPilots] = useState<any[]>([]);
+  const [carriers, setCarriers] = useState<MapCarrier[]>([]);
+  const [carriersStatus, setCarriersStatus] = useState<CarrierLayerStatus>('loading');
+  const [carriersSignedIn, setCarriersSignedIn] = useState(false);
+  const [selectedCarrierKey, setSelectedCarrierKey] = useState<string | null>(null);
   const [selectedHub, setSelectedHub] = useState<Hub | null>(null);
   const [selectedRouteSystem, setSelectedRouteSystem] = useState<RouteSystem | null>(null);
   const [systemSearch, setSystemSearch] = useState('');
@@ -218,6 +234,9 @@ export default function GalaxyMap({
   const [showPilots, setShowPilots] = useState(true);
   const [showMarketResults, setShowMarketResults] = useState(true);
   const [showNoMarketSystems, setShowNoMarketSystems] = useState(true);
+  // Авианосцы — слой и на /map (компактный режим), и в Atlas.
+  const [showCarriers, setShowCarriers] = useState(true);
+  const [carrierFilter, setCarrierFilter] = useState<CarrierLayerFilter>(DEFAULT_CARRIER_FILTER);
   const [showRegionLabels, setShowRegionLabels] = useState(true);
   const [showRegionBoundaries, setShowRegionBoundaries] = useState(true);
   const [showNebulae, setShowNebulae] = useState(true);
@@ -346,6 +365,44 @@ export default function GalaxyMap({
     return () => window.clearInterval(interval);
   }, []);
 
+  // Носители прыгают не чаще раза в 15–20 минут, а прыжок виден заранее —
+  // опроса раз в минуту достаточно. Выключенный слой сеть не тратит.
+  useEffect(() => {
+    if (!showCarriers) return;
+    let cancelled = false;
+    const loadCarriers = async () => {
+      try {
+        const response = await fetch(`/api/map/carriers?t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = (await response.json()) as MapCarriersResponse;
+        if (cancelled) return;
+        setCarriers(Array.isArray(data.carriers) ? data.carriers : []);
+        setCarriersSignedIn(Boolean(data.viewer?.signedIn));
+        setCarriersStatus('ready');
+      } catch {
+        // Необязательный слой: последний удачный ответ остаётся на карте.
+        if (!cancelled) setCarriersStatus('error');
+      }
+    };
+
+    void loadCarriers();
+    const interval = window.setInterval(loadCarriers, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [showCarriers]);
+
+  const carrierCounts = useMemo(() => countMapCarriers(carriers), [carriers]);
+  const visibleCarriers = useMemo(() => filterMapCarriers(carriers, carrierFilter), [carriers, carrierFilter]);
+  const carrierGroups = useMemo(() => groupCarriersBySystem(visibleCarriers), [visibleCarriers]);
+  const selectedCarrierGroup = useMemo(
+    () => (showCarriers && selectedCarrierKey
+      ? carrierGroups.find((group) => group.key === selectedCarrierKey) ?? null
+      : null),
+    [carrierGroups, selectedCarrierKey, showCarriers],
+  );
+
   const uniqueRouteSystems = useMemo(
     () => uniqueBySystemName(allRouteSystems).filter(hasCoordinates) as RouteSystem[],
     [allRouteSystems],
@@ -438,8 +495,14 @@ export default function GalaxyMap({
     });
   }, [pilots, compactMap, showPilots]);
 
+  // Фильтр или опрос убрали систему с носителями — карточка закрывается.
+  useEffect(() => {
+    if (selectedCarrierKey && !selectedCarrierGroup) setSelectedCarrierKey(null);
+  }, [selectedCarrierKey, selectedCarrierGroup]);
+
   const handleSelectHub = useCallback((hub: Hub | null) => {
     setSelectedNebula(null);
+    setSelectedCarrierKey(null);
     setSelectedHub(hub);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
@@ -450,6 +513,7 @@ export default function GalaxyMap({
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
     setSelectedNebula(null);
+    setSelectedCarrierKey(null);
     setSelectedRouteSystem(point);
     setSelectedHub(null);
     setSelectedAtlasCandidate(null);
@@ -460,6 +524,7 @@ export default function GalaxyMap({
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
     setSelectedNebula(null);
+    setSelectedCarrierKey(null);
     setSelectedAtlasCandidate(candidate);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -470,6 +535,7 @@ export default function GalaxyMap({
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
     setSelectedNebula(null);
+    setSelectedCarrierKey(null);
     setSelectedPilot(pilot);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -479,6 +545,7 @@ export default function GalaxyMap({
   }, []);
 
   const openGalaxy = useCallback((data: GalaxyPick) => {
+    setSelectedCarrierKey(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
@@ -551,12 +618,26 @@ export default function GalaxyMap({
   // её, ведёт камеру и показывает карточку.
   const handleSelectNebula = useCallback((nebula: GalaxyNebula | null) => {
     setSelectedNebula(nebula);
+    setSelectedCarrierKey(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (nebula) setFocusTarget(eliteToThreeCentered(nebula));
+  }, []);
+
+  // Система с авианосцами — такой же объект карты: камера летит к ней, внизу
+  // слева карточка со списком носителей.
+  const handleSelectCarrierGroup = useCallback((group: CarrierSystemGroup | null) => {
+    setSelectedNebula(null);
+    setSelectedHub(null);
+    setSelectedRouteSystem(null);
+    setSelectedAtlasCandidate(null);
+    setSelectedPilot(null);
+    setGalaxyPick(null);
+    setSelectedCarrierKey(group?.key ?? null);
+    if (group?.position) setFocusTarget(eliteToThreeCentered(group.position));
   }, []);
 
   const toggleNebulaKind = useCallback((kind: NebulaKind) => {
@@ -567,6 +648,7 @@ export default function GalaxyMap({
 
   const handleClearSelection = useCallback(() => {
     setSelectedNebula(null);
+    setSelectedCarrierKey(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
     setSelectedAtlasCandidate(null);
@@ -804,6 +886,19 @@ export default function GalaxyMap({
                   : 'Загрузка всех систем…'}
             </div>
           )}
+          <CarrierLayerControls
+            show={showCarriers}
+            onShowChange={setShowCarriers}
+            filter={carrierFilter}
+            onFilterChange={setCarrierFilter}
+            counts={carrierCounts}
+            visibleCount={visibleCarriers.length}
+            groups={carrierGroups}
+            selectedKey={selectedCarrierGroup?.key ?? null}
+            onSelectGroup={handleSelectCarrierGroup}
+            status={carriersStatus}
+            signedIn={carriersSignedIn}
+          />
           {!compactMap && (
             <>
               <label style={{ fontSize: 11, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -947,6 +1042,16 @@ export default function GalaxyMap({
         />
       )}
 
+      {selectedCarrierGroup && !galaxyPick && (
+        <CarrierSystemCard
+          group={selectedCarrierGroup}
+          onClose={() => setSelectedCarrierKey(null)}
+          onFocus={(group) => {
+            if (group.position) setFocusTarget(eliteToThreeCentered(group.position));
+          }}
+        />
+      )}
+
       {selected && !galaxyPick && (
         <div style={{ position: 'absolute', bottom: 12, left: 12, zIndex: 10, background: 'rgba(13,15,17,0.9)', backdropFilter: 'blur(8px)', border: '1px solid #2d2f33', borderRadius: 8, padding: 12, minWidth: 220, maxWidth: 300, pointerEvents: 'auto' }}>
           <Link href={`/system/${encodeURIComponent((selected as any).system_name || (selected as any).name)}`} style={{ textDecoration: 'none' }}>
@@ -1020,6 +1125,10 @@ export default function GalaxyMap({
             showPilots={!compactMap && showPilots}
             showMarketResults={!compactMap && showMarketResults}
             showNoMarketSystems={!compactMap && showNoMarketSystems}
+            carrierGroups={carrierGroups}
+            showCarriers={showCarriers}
+            selectedCarrierKey={selectedCarrierGroup?.key ?? null}
+            onSelectCarrierGroup={handleSelectCarrierGroup}
             showRegionLabels={showRegionLabels}
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}

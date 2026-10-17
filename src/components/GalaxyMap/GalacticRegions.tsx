@@ -223,6 +223,8 @@ function RegionLabel({
     <Html
       position={[pos.x, 50, pos.z]}
       distanceFactor={1000}
+      // Подписи карты — под панелью слоёв и карточками (z-index 10).
+      zIndexRange={[7, 1]}
       style={{ pointerEvents: "none" }}
       center
     >

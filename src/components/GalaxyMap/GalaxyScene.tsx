@@ -16,6 +16,7 @@ import { RouteMarkers } from './RouteMarkers';
 import { HubMarkers } from './HubMarkers';
 import { AtlasMarkers } from './AtlasMarkers';
 import { PilotMarkers } from './PilotMarkers';
+import { CarrierMarkers } from './CarrierMarkers';
 import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
 import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions } from './AllSystemsPoints';
@@ -27,6 +28,7 @@ import type { GalaxyNebula, NebulaKind } from '@/lib/galaxyNebulae';
 import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 import type { AtlasSearchProgress } from '@/lib/atlasSearchProgress';
+import type { CarrierSystemGroup } from '@/lib/carrierMap';
 
 function DataWatcher({
   routeLinePoints,
@@ -74,6 +76,11 @@ interface GalaxySceneProps {
   showPilots?: boolean;
   showMarketResults?: boolean;
   showNoMarketSystems?: boolean;
+  /** Авианосцы по системам (уже после фильтра слоя). */
+  carrierGroups?: CarrierSystemGroup[];
+  showCarriers?: boolean;
+  selectedCarrierKey?: string | null;
+  onSelectCarrierGroup?: (group: CarrierSystemGroup | null) => void;
   showRegionLabels?: boolean;
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
@@ -124,6 +131,10 @@ export function GalaxyScene({
   showPilots = true,
   showMarketResults = true,
   showNoMarketSystems = true,
+  carrierGroups = [],
+  showCarriers = true,
+  selectedCarrierKey = null,
+  onSelectCarrierGroup,
   showRegionLabels = true,
   showRegionBoundaries = true,
   showNebulae = true,
@@ -286,6 +297,9 @@ export function GalaxyScene({
       )}
       {showMarketResults && <MarketResultMarkers systems={marketResults} />}
       {showNoMarketSystems && <NoMarketMarkers systems={noMarketSystems} />}
+      {showCarriers && carrierGroups.length > 0 && (
+        <CarrierMarkers groups={carrierGroups} selectedKey={selectedCarrierKey} onSelect={onSelectCarrierGroup} />
+      )}
       {searchProgress && <SearchProgressLayer progress={searchProgress} result={searchResult} />}
     </>
   );

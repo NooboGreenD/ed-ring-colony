@@ -77,6 +77,12 @@ export default function SquadronPage() {
     load();
   }, [id]);
 
+  // Прямая ссылка на вкладку (карта галактики ведёт на «Авианосец»).
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    if (requested === "carrier") setTab("carrier");
+  }, []);
+
   const saveSettings = async () => {
     if (!form) return;
     setSaving(true);
