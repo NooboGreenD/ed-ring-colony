@@ -7,9 +7,14 @@
  * подставной `fetch` с настоящим gzip и Range. Проверяется:
  *   * импорт: архив на сервер, разбивка на куски, запись кусков, этапы и
  *     журнал, архив и куски удаляются; тот же дамп второй раз не качается;
- *   * конвейер как у каталога: соединения берут куски файла по порядку,
- *     разбивка и запись идут, пока архив ещё качается; остановка посреди
- *     записи и продолжение без повторного скачивания (та же метка импорта);
+ *   * конвейер как у каталога, шаги по очереди: соединения берут куски файла
+ *     по порядку, разбивка начинается, когда архив скачан целиком, запись —
+ *     когда архив разбит; остановка посреди записи и продолжение без
+ *     повторного скачивания (та же метка импорта);
+ *   * сеть, «замораживающая» TCP-сессии после нескольких килобайт: замолчавшие
+ *     соединения переподключаются, загрузка переходит на короткие запросы;
+ *   * архив, загруженный в админке с компьютера (кусками, с продолжением), и
+ *     положенный на сервер вручную — пишутся в базу без EDSM;
  *     дамп, пересобранный EDSM посреди скачивания, начинается заново;
  *     запуски по частям (скачать / разбить / записать без EDSM); EDSM
  *     недоступен — запись того, что уже на сервере; прямой Postgres;
@@ -25,7 +30,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -40,6 +45,8 @@ process.env.CRON_SECRET = 'factions-cron-secret';
 process.env.FACTIONS_ARCHIVE_DIR = ARCHIVE_DIR;
 process.env.FACTIONS_MIN_SYSTEMS = '2';
 process.env.GALAXY_DOWNLOAD_SEGMENTS = '1';
+// Подставной EDSM — это `globalThis.fetch`; настоящий сервер — новое соединение на запрос (freshFetch).
+process.env.FACTIONS_FRESH_CONNECTIONS = '0';
 test.after(() => rmSync(ARCHIVE_DIR, { recursive: true, force: true }));
 
 const NEXT_SERVER_STUB = `
@@ -82,6 +89,7 @@ export * as presenceRoute from '@/app/api/factions/presence/route';
 export * as systemRoute from '@/app/api/factions/system/route';
 export * as syncRoute from '@/app/api/factions/sync/route';
 export * as adminRoute from '@/app/api/admin/factions/route';
+export * as uploadRoute from '@/app/api/admin/factions/upload/route';
 export * as cronRoute from '@/app/api/cron/factions-sync/route';
 export { state, createServiceClient } from '@/lib/supabaseServer';
 export { authState } from '@/lib/billing/auth';
@@ -89,8 +97,9 @@ export { helperState } from '@/lib/helperAuth';
 export {
   runBgsSync, startBgsSync, cancelBgsSync, isBgsSyncRunning, readBgsSyncState, resetBgsSyncRuntime, getBgsLastRun,
   getBgsLiveRun, bgsArchivePath, bgsArchiveInfo, bgsShardsDir, bgsShardsStatus, decideBgsScheduledSync, nextBgsScheduledRun,
-  BGS_SCHEDULE, bgsDownloadSegments, bgsPieceBytes, bgsShardSystems,
+  BGS_SCHEDULE, bgsDownloadSegments, bgsPieceBytes, bgsShardSystems, bgsStallMs, bgsShortRequests, bgsFreshConnections,
 } from '@/lib/bgsSync';
+export { bgsUploadInfo, bgsUploadFile } from '@/lib/bgsUpload';
 export { readBgsShardManifest } from '@/lib/bgsShards';
 export { resetBgsLayerCache } from '@/lib/bgsStore';
 export { decodeBgsLayer, decodeFactionPresence, decodeFactionSearch, decodeSystemDetail } from '@/lib/bgs';
@@ -319,8 +328,13 @@ test('импорт дампа EDSM: системы, фракции, присут
   assert.equal(progress.stages[3].done, 1, 'запись — в кусках');
   const text = log.map((line) => line.text).join('\n');
   assert.match(text, /Запуск: вручную · загрузка данных/);
-  assert.match(text, /Скачиваю архив на сервер/);
-  assert.match(text, /Разбивка: читаю архив по мере скачивания/);
+  assert.match(text, /Скачиваю архив на сервер целиком/);
+  assert.match(text, /Разбивка: читаю скачанный архив/);
+  const order = ['Архив скачан целиком', 'Разбивка: читаю скачанный архив', 'Разбивка завершена', 'Запись в базу: кусок 1'].map((line) => text.indexOf(line));
+  assert.ok(order.every((at) => at >= 0) && order.every((at, i) => i === 0 || at > order[i - 1]), `шаги по очереди: ${order}`);
+  const [downloadStage, splitStage, importStage] = ['download', 'split', 'import'].map((id) => progress.stages.find((stage) => stage.id === id));
+  assert.ok(Date.parse(downloadStage.finishedAt) <= Date.parse(splitStage.startedAt), 'разбивка — после скачивания');
+  assert.ok(Date.parse(splitStage.finishedAt) <= Date.parse(importStage.startedAt), 'запись — после разбивки');
   assert.match(text, /Запись в базу: PostgREST — пачками по 250 систем/);
   assert.match(text, /населённых систем с фракциями: 4/);
   assert.match(text, /Архив и куски удалены с сервера/);
@@ -552,8 +566,10 @@ test('«Остановить» на скачивании: скачанное о�
   const started = mod.startBgsSync(svc, { ...runOptions(edsm(v3, { etag: '"dump-3"', stallAfter: 40 })), trigger: 'admin' });
   assert.equal(started.started, true);
   assert.equal(mod.startBgsSync(svc, runOptions(edsm(v3))).started, false, 'второй не начинается');
-  await waitFor(() => existsSync(ARCHIVE) && statSync(ARCHIVE).size >= 40, 'первые байты на диске');
+  const downloadedNow = () => mod.getBgsLiveRun()?.progress.stages.find((stage) => stage.id === 'download')?.done ?? 0;
+  await waitFor(() => downloadedNow() >= 40, 'первые байты на диске');
   assert.equal(mod.getBgsLiveRun().progress.stage, 'download');
+  assert.equal(mod.bgsArchiveInfo(ARCHIVE).total, v3.length, 'файл выделен целиком, а план кусков уже на диске');
   // Вкладка Atlas видит идущий импорт коротким запросом.
   const watching = await (await get(mod.layerRoute, '/api/factions/systems?meta=1')).json();
   assert.equal(watching.meta.refreshing, true);
@@ -564,7 +580,6 @@ test('«Остановить» на скачивании: скачанное о�
   const last = mod.getBgsLastRun();
   assert.equal(last.progress.phase, 'cancelled');
   assert.match(last.log.map((line) => line.text).join('\n'), /продолжит с того же места/);
-  assert.equal(statSync(ARCHIVE).size, 40, 'скачанная часть на диске');
   const info = mod.bgsArchiveInfo(ARCHIVE);
   assert.equal(info.complete, false);
   assert.equal(info.partial, true);
@@ -574,7 +589,7 @@ test('«Остановить» на скачивании: скачанное о�
   const resumed = await mod.runBgsSync(svc, runOptions(edsm(v3, { etag: '"dump-3"' })));
   assert.equal(resumed.status, 'ok', resumed.error);
   const get3 = fetchCalls.find((call) => call.method === 'GET');
-  assert.equal(get3.range, 'bytes=40-', 'докачка с того же места');
+  assert.equal(get3.range, `bytes=40-${v3.length - 1}`, 'докачка с того же места');
 });
 
 /* ── Задача планировщика ───────────────────────────────────────────────── */
@@ -709,7 +724,7 @@ test('/api/admin/factions: права, состояние, сводка, обн�
     assert.equal(again.status, 409);
     const running = await (await mod.adminRoute.GET(adminRequest())).json();
     assert.equal(running.running, true);
-    await waitFor(() => existsSync(ARCHIVE) && statSync(ARCHIVE).size >= 30, 'скачивание пошло');
+    await waitFor(() => (mod.getBgsLiveRun()?.progress.stages.find((stage) => stage.id === 'download')?.done ?? 0) >= 30, 'скачивание пошло');
     const cancel = await (await mod.adminRoute.POST(adminRequest('POST', { action: 'cancel' }))).json();
     assert.deepEqual(cancel, { success: true, cancelled: true });
     await waitFor(() => !mod.isBgsSyncRunning(), 'остановлено');
@@ -753,7 +768,7 @@ function pipeOptions(fetchImpl, extra = {}) {
   return runOptions(fetchImpl, { segments: 3, pieceBytes: 1024, minSegmentedBytes: 0, shardSystems: 4, ...extra });
 }
 
-test('конвейер: соединения берут куски файла по порядку, разбивка и запись идут, пока архив качается', async () => {
+test('конвейер: соединения берут куски файла по порядку, разбивка и запись — только когда архив скачан целиком', async () => {
   assert.ok(PIPE_GZ.length > 30 * 1024, `архив ${PIPE_GZ.length} байт — много кусков файла`);
   fetchCalls.length = 0;
   let firstApplyAt = null;
@@ -775,7 +790,7 @@ test('конвейер: соединения берут куски файла п
   assert.deepEqual([...starts].sort((a, b) => a - b), starts, 'куски берутся по порядку файла');
   assert.equal(starts[0], 0);
   const lastGetAt = Math.max(...gets.map((call) => call.at));
-  assert.ok(firstApplyAt && firstApplyAt < lastGetAt, 'первый кусок записан в базу раньше, чем ушёл последний запрос скачивания');
+  assert.ok(firstApplyAt && firstApplyAt > lastGetAt, 'первый кусок записан в базу после последнего запроса скачивания');
 
   assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Pipe %'`), 60);
   assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE source = 'edsm' AND name NOT LIKE 'Pipe %'`), 0, 'системы прошлого дампа удалены');
@@ -955,6 +970,16 @@ test('настройки конвейера: соединения, кусок ф
   assert.equal(mod.bgsPieceBytes({ FACTIONS_PIECE_MB: '1000' }), 64 * 1024 * 1024);
   assert.equal(mod.bgsShardSystems({}), 1000);
   assert.equal(mod.bgsShardSystems({ FACTIONS_SHARD_SYSTEMS: '5' }), 100);
+  assert.equal(mod.bgsStallMs({}), 15_000);
+  assert.equal(mod.bgsStallMs({ FACTIONS_STALL_SECONDS: '1' }), 3_000);
+  assert.equal(mod.bgsStallMs({ FACTIONS_STALL_SECONDS: '0' }), 0, '0 — ждать, пока сокет закроет система');
+  assert.equal(mod.bgsStallMs({ FACTIONS_STALL_SECONDS: 'abc' }), 15_000);
+  assert.equal(mod.bgsShortRequests({}), 'auto');
+  assert.equal(mod.bgsShortRequests({ FACTIONS_REQUEST_KB: 'off' }), 'off');
+  assert.equal(mod.bgsShortRequests({ FACTIONS_REQUEST_KB: '12' }), 12 * 1024);
+  assert.equal(mod.bgsShortRequests({ FACTIONS_REQUEST_KB: '1' }), 4 * 1024);
+  assert.equal(mod.bgsFreshConnections({}), true);
+  assert.equal(mod.bgsFreshConnections({ FACTIONS_FRESH_CONNECTIONS: '0' }), false);
 });
 
 test('/api/admin/factions: запуски по частям, ход, оборванный перезапуском сайта, честно помечен', async () => {
@@ -1000,4 +1025,149 @@ test('/api/admin/factions: запуски по частям, ход, оборв�
   assert.match(lost.progress.result.error, /Прервано перезапуском сайта/);
   assert.equal(lost.progress.stages.find((stage) => stage.id === 'download').status, 'error');
   await db.query(`UPDATE bgs_sync_state SET status = 'ok'`);
+});
+
+/* ── Сеть, «замораживающая» TCP-сессии ─────────────────────────────────── */
+
+test('сеть «замораживает» сессии после нескольких КБ: соединения переподключаются, загрузка переходит на короткие запросы', async () => {
+  const systems = manySystems(30, 'Frozen', { base: 9_950_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems, [], { padding: 1000 }), 'utf8'));
+  assert.ok(gz.length > 20_000, `архив ${gz.length} байт`);
+  fetchCalls.length = 0;
+  // Каждый ответ отдаёт 6000 байт и замолкает навсегда — как сессия к Cloudflare за ТСПУ.
+  const frozen = edsm(gz, { etag: '"frozen"', lastModified: 'Sun, 25 Oct 2026 04:50:00 GMT', stallAfter: 6000 });
+  const result = await mod.runBgsSync(svc, pipeOptions(frozen, { segments: 2, pieceBytes: 64 * 1024, stallTimeoutMs: 150, shortRequests: 'auto' }));
+  assert.equal(result.status, 'ok', result.error);
+  assert.equal(result.stats.systems, 30);
+  const text = mod.getBgsLastRun().log.map((line) => line.text).join('\n');
+  assert.match(text, /соединение без данных 0\.2 с переподключается \(замирающие соединения → короткие запросы\)/);
+  assert.match(text, /соединение замолчало на 0\.2 с, успев передать 5\.9 КБ — переподключаюсь/);
+  assert.match(text, /Перехожу на короткие запросы по 4\.1 КБ — каждый в новом соединении/);
+  assert.match(text, /коротких запросов: \d+, замолчавших соединений: 2\)/, 'после перехода — ни одной заморозки');
+  assert.doesNotMatch(text, /Короткий запрос тоже замер/);
+  const ranges = fetchCalls.filter((call) => call.method === 'GET').map((call) => /bytes=(\d+)-(\d+)/.exec(call.range ?? '')).filter(Boolean);
+  const short = ranges.filter((match) => Number(match[2]) - Number(match[1]) + 1 <= 4200);
+  assert.ok(short.length >= 3, `после заморозок — короткие запросы (${short.length} из ${ranges.length})`);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Frozen %'`), 30);
+});
+
+/* ── Архив с компьютера ────────────────────────────────────────────────── */
+
+function uploadRequest(method, { body, offset, json } = {}) {
+  return new Request(`https://edringcolony.ru/api/admin/factions/upload${offset != null ? `?offset=${offset}` : ''}`, {
+    method,
+    headers: { authorization: 'Bearer test', 'content-type': json ? 'application/json' : 'application/octet-stream' },
+    body: json ? JSON.stringify(json) : body,
+  });
+}
+
+const uploadPost = (json) => mod.uploadRoute.POST(uploadRequest('POST', { json }));
+const uploadPut = (offset, body) => mod.uploadRoute.PUT(uploadRequest('PUT', { offset, body }));
+
+test('архив с компьютера: кусками с продолжением, проверка, «Загрузить данные» без EDSM', async () => {
+  const systems = manySystems(26, 'Upload', { base: 9_960_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems, [], { padding: 200 }), 'utf8'));
+  const file = { name: 'systemsPopulated.json.gz', size: gz.length, lastModified: Date.parse('2026-10-26T06:00:00Z') };
+
+  mod.authState.role = 'user';
+  assert.equal((await uploadPost({ action: 'start', ...file })).status, 403, 'только администратор');
+  assert.equal((await uploadPut(0, gz)).status, 403);
+  mod.authState.role = 'admin';
+  const unpacked = await uploadPost({ action: 'start', name: 'systemsPopulated.json', size: 5000 });
+  assert.equal(unpacked.status, 400);
+  assert.match((await unpacked.json()).error, /Нужен архив \.json\.gz/);
+  assert.equal((await uploadPost({ action: 'start', name: 'a.gz', size: 0 })).status, 400, 'пустой файл');
+  assert.equal((await uploadPut(0, gz.subarray(0, 10))).status, 409, 'кусок без начатой загрузки');
+
+  let response = await uploadPost({ action: 'start', ...file });
+  let body = await response.json();
+  assert.equal(response.status, 200, body.error);
+  assert.deepEqual([body.offset, body.resumed, body.chunkBytes], [0, false, 8 * 1024 * 1024]);
+  const half = Math.floor(gz.length / 2);
+  body = await (await uploadPut(0, gz.subarray(0, half))).json();
+  assert.deepEqual([body.offset, body.complete], [half, false]);
+  // Ответ потерялся, браузер повторил тот же кусок: сервер говорит, сколько у него на самом деле.
+  response = await uploadPut(0, gz.subarray(0, half));
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).offset, half);
+  assert.equal((await uploadPut(half, Buffer.alloc(gz.length))).status, 400, 'кусок за концом файла');
+
+  const status = await (await mod.adminRoute.GET(adminRequest())).json();
+  assert.deepEqual([status.upload.active, status.upload.received, status.upload.size, status.upload.name], [true, half, gz.length, 'systemsPopulated.json.gz']);
+  assert.equal((await uploadPost({ action: 'finish' })).status, 409, 'файл ещё не весь');
+
+  // Страницу перезагрузили и выбрали тот же файл — загрузка продолжается.
+  body = await (await uploadPost({ action: 'start', ...file })).json();
+  assert.deepEqual([body.offset, body.resumed], [half, true]);
+  body = await (await uploadPut(half, gz.subarray(half))).json();
+  assert.deepEqual([body.offset, body.complete], [gz.length, true]);
+
+  // На EDSM сейчас файл ровно такого размера — это тот же дамп: архив получает его ETag и дату.
+  globalThis.fetch = edsm(gz, { etag: '"edsm-upload"', lastModified: 'Mon, 26 Oct 2026 04:50:00 GMT' });
+  try {
+    response = await uploadPost({ action: 'finish' });
+    body = await response.json();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(response.status, 200, body.error);
+  assert.deepEqual([body.bytes, body.sameAsEdsm, body.source.etag, body.name], [gz.length, true, '"edsm-upload"', 'systemsPopulated.json.gz']);
+  const info = mod.bgsArchiveInfo(ARCHIVE);
+  assert.deepEqual([info.complete, info.uploaded, info.uploadName, info.bytes, info.manual], [true, true, 'systemsPopulated.json.gz', gz.length, false]);
+  assert.equal(mod.bgsUploadInfo(ARCHIVE).active, false);
+  assert.equal(existsSync(mod.bgsUploadFile(ARCHIVE)), false, 'временный файл стал архивом');
+
+  fetchCalls.length = 0;
+  const result = await mod.runBgsSync(svc, runOptions(edsm(gz, { unreachable: true })));
+  assert.equal(result.status, 'ok', result.error);
+  assert.equal(fetchCalls.length, 0, 'EDSM не спрашивали');
+  assert.equal(result.stats.systems, 26);
+  const { progress, log } = mod.getBgsLastRun();
+  assert.match(log.map((line) => line.text).join('\n'), /Архив загружен в админке с компьютера \(systemsPopulated\.json\.gz/);
+  assert.deepEqual(progress.stages.map((stage) => [stage.id, stage.status]),
+    [['probe', 'skipped'], ['download', 'done'], ['split', 'done'], ['import', 'done'], ['finish', 'done']]);
+  assert.equal((await mod.readBgsSyncState(svc)).etag, '"edsm-upload"', 'в базе тот же дамп, что на EDSM: «Загрузить данные» его второй раз не качает');
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Upload %'`), 26);
+
+  fetchCalls.length = 0;
+  const again = await mod.runBgsSync(svc, runOptions(edsm(gz, { etag: '"edsm-upload"', lastModified: 'Mon, 26 Oct 2026 04:50:00 GMT' })));
+  assert.equal(again.status, 'not_modified');
+  assert.deepEqual(fetchCalls.map((call) => call.method), ['HEAD']);
+});
+
+test('архив с компьютера: не gzip и не дамп отвергаются, отмена удаляет принятое; файл, положенный вручную, принимается', async () => {
+  const send = async (buffer) => {
+    assert.equal((await uploadPost({ action: 'start', name: 'systemsPopulated.json.gz', size: buffer.length, lastModified: 1 })).status, 200);
+    assert.equal((await uploadPut(0, buffer)).status, 200);
+    return uploadPost({ action: 'finish' });
+  };
+  let response = await send(Buffer.from('это не gzip, а просто текст '.repeat(8)));
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error, /не похож на systemsPopulated\.json\.gz с EDSM: это не gzip/);
+  assert.equal(existsSync(mod.bgsUploadFile(ARCHIVE)), false, 'отвергнутый файл удалён');
+  response = await send(gzipSync(Buffer.from(JSON.stringify({ hello: 'world', padding: 'x'.repeat(100) }))));
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error, /не JSON-массив/);
+  assert.equal(mod.bgsArchiveInfo(ARCHIVE).exists, false, 'архива не появилось');
+
+  const part = gzipSync(Buffer.from(dumpText(manySystems(5, 'Cancel', { base: 9_965_000 })), 'utf8'));
+  assert.equal((await uploadPost({ action: 'start', name: 'systemsPopulated.json.gz', size: part.length, lastModified: 2 })).status, 200);
+  assert.equal((await uploadPut(0, part.subarray(0, 50))).status, 200);
+  const cancelled = await (await uploadPost({ action: 'cancel' })).json();
+  assert.deepEqual([cancelled.success, cancelled.removed, cancelled.freed], [true, true, 50]);
+  assert.equal(mod.bgsUploadInfo(ARCHIVE).active, false);
+  assert.equal((await uploadPost({ action: 'bogus' })).status, 400);
+
+  // Администратор положил файл в каталог архива сам (scp) — без метки и плана докачки.
+  const gz = gzipSync(Buffer.from(dumpText(manySystems(20, 'Manual', { base: 9_970_000 })), 'utf8'));
+  writeFileSync(ARCHIVE, gz);
+  const info = mod.bgsArchiveInfo(ARCHIVE);
+  assert.deepEqual([info.manual, info.partial, info.complete, info.total], [true, false, false, gz.length]);
+  fetchCalls.length = 0;
+  const result = await mod.runBgsSync(svc, runOptions(edsm(gz, { unreachable: true }), { mode: 'import' }));
+  assert.equal(result.status, 'ok', result.error);
+  assert.equal(fetchCalls.length, 0);
+  assert.match(mod.getBgsLastRun().log.map((line) => line.text).join('\n'), /файл архива без метки .* принят как положенный вручную/);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Manual %'`), 20);
+  assert.equal(existsSync(ARCHIVE), false, 'после загрузки архив удалён');
 });

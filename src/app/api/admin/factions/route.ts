@@ -16,6 +16,8 @@ import {
   bgsRefreshDays,
   bgsShardSystems,
   bgsShardsStatus,
+  bgsShortRequests,
+  bgsStallMs,
   bgsSyncInterrupted,
   cancelBgsSync,
   clampBgsSegments,
@@ -30,6 +32,7 @@ import {
   readBgsSyncState,
   startBgsSync,
 } from '@/lib/bgsSync';
+import { BGS_UPLOAD_CHUNK_BYTES, bgsUploadInfo } from '@/lib/bgsUpload';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -99,11 +102,12 @@ const RUN_STARTED: Record<BgsSyncMode, string> = {
  * обновления от пилотов (Colonial Helper и загрузчик журналов на сайте),
  * архив и куски на сервере, путь записи в базу и настройки.
  *
- * POST (как у «Каталога систем»: архив → куски → база):
- *   * `{ action: 'start' }`               — всё сразу: скачать архив на сервер,
- *                                           по мере скачивания разбить на куски и
- *                                           записать их в базу (тот же дамп, что
- *                                           в прошлый раз, не качается);
+ * POST (как у «Каталога систем»: архив → куски → база, шаги по очереди):
+ *   * `{ action: 'start' }`               — всё: скачать архив на сервер целиком,
+ *                                           затем разбить на куски, затем записать
+ *                                           их в базу (тот же дамп, что в прошлый
+ *                                           раз, не качается; архив, загруженный с
+ *                                           компьютера, берётся вместо EDSM);
  *   * `{ action: 'start', force: true }`  — загрузить заново, даже если дамп тот
  *                                           же, и принять «усохший»;
  *   * `{ action: 'download' }`            — только скачать архив на сервер;
@@ -114,6 +118,8 @@ const RUN_STARTED: Record<BgsSyncMode, string> = {
  *   * `{ action: 'cancel' }`              — остановить (скачанное и разбитое
  *                                           остаётся для продолжения);
  *   * `{ action: 'cleanup' }`             — удалить архив и куски с сервера.
+ *
+ * Загрузка архива с компьютера — `/api/admin/factions/upload`.
  */
 export async function GET(req: Request) {
   const auth = await requireAdmin(req);
@@ -173,6 +179,7 @@ export async function GET(req: Request) {
         updates,
         archive: bgsArchiveInfo(),
         shards: bgsShardsStatus(),
+        upload: { ...bgsUploadInfo(), chunkBytes: BGS_UPLOAD_CHUNK_BYTES },
         writer,
         config: {
           dumpUrl: bgsDumpUrl(),
@@ -180,6 +187,8 @@ export async function GET(req: Request) {
           segments: bgsDownloadSegments(),
           maxSegments: BGS_MAX_SEGMENTS,
           pieceBytes: bgsPieceBytes(),
+          stallSeconds: Math.round(bgsStallMs() / 1000),
+          shortRequests: bgsShortRequests(),
           shardSystems: bgsShardSystems(),
           batchSize: bgsBatchSize(),
           minSystems: bgsMinSystems(),

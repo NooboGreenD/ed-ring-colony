@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authFetch } from '@/lib/supabaseClient';
-import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconXCircle } from '@/components/Icons';
+import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconUpload, IconXCircle } from '@/components/Icons';
 import { BGS_ALLEGIANCE_COLOR, BGS_SOURCE_LABEL, allegianceLabel, formatBgsDate, normalizeSource } from '@/lib/bgs';
 import {
   BGS_MODE_LABEL,
@@ -14,6 +14,7 @@ import {
   formatBgsBytes,
   formatBgsCount,
   formatBgsDuration,
+  formatBgsSpeed,
   sanitizeBgsLog,
   sanitizeBgsProgress,
   type BgsLogLine,
@@ -27,9 +28,10 @@ import {
  * Минорные фракции для вкладки «Фракции» в Atlas хранятся в базе проекта и
  * приходят из двух источников:
  *   * ночной дамп EDSM `systemsPopulated.json.gz` (≈0,5 ГБ) — полный набор
- *     населённых систем. Загрузка устроена как у «Каталога систем»: архив
- *     скачивается на сервер в несколько соединений, там разбивается на куски
- *     по тысяче систем, куски пишутся в базу — одновременно со скачиванием.
+ *     населённых систем. Загрузка устроена как у «Каталога систем», шаги идут
+ *     по очереди: архив скачивается на сервер целиком в несколько соединений,
+ *     затем разбивается на куски по тысяче систем, затем куски пишутся в базу.
+ *     Серверу, которому EDSM недоступен, архив можно загрузить с компьютера.
  *     Здесь — карточки архива и кусков (каждый шаг можно запустить отдельно),
  *     этапы с прогресс-барами, общий процент, журнал, остановка и очистка;
  *   * журналы пилотов — Colonial Helper и загрузчик журналов на сайте шлют
@@ -101,7 +103,11 @@ interface AdminStatus {
     complete: boolean;
     lastModified: string | null;
     freeBytes: number | null;
+    uploaded?: boolean;
+    uploadName?: string | null;
+    manual?: boolean;
   };
+  upload?: { active: boolean; name: string | null; size: number; received: number; startedAt: string | null; chunkBytes?: number };
   shards?: {
     dir: string;
     exists: boolean;
@@ -122,6 +128,8 @@ interface AdminStatus {
     segments: number;
     maxSegments?: number;
     pieceBytes?: number;
+    stallSeconds?: number;
+    shortRequests?: 'auto' | 'off' | number;
     shardSystems?: number;
     batchSize: number;
     minSystems: number;
@@ -254,6 +262,39 @@ function ProgressBar({ fraction, color, height = 8, indeterminate = false, label
   );
 }
 
+interface UploadState {
+  name: string;
+  size: number;
+  sent: number;
+  /** С какого байта началась эта сессия (продолжение незаконченной загрузки). */
+  startOffset: number;
+  startedAt: number;
+}
+
+class UploadHttpError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+const UPLOAD_CHUNK_FALLBACK = 8 * 1024 * 1024;
+
+async function postUpload(body: Record<string, unknown>): Promise<Record<string, any>> {
+  const response = await authFetch('/api/admin/factions/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || payload.success === false) {
+    throw new UploadHttpError(payload?.error || `HTTP ${response.status}`, response.status);
+  }
+  return payload;
+}
+
 function Stat({ label, value, color, small = false, title }: { label: string; value: string; color?: string; small?: boolean; title?: string }) {
   return (
     <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px' }} title={title}>
@@ -271,6 +312,9 @@ export default function FactionsAdminTab() {
   const [isError, setIsError] = useState(false);
   const [copied, setCopied] = useState(false);
   const [segments, setSegments] = useState<number | null>(null);
+  const [upload, setUpload] = useState<UploadState | null>(null);
+  const uploadAbort = useRef<AbortController | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -348,7 +392,9 @@ export default function FactionsAdminTab() {
       } else {
         setMessage(force
           ? 'Загрузка запущена принудительно: дамп загружается, даже если он тот же, и принимается, даже если он заметно меньше прошлого.'
-          : `Загрузка запущена: архив качается на сервер (${connections} соедин.), по мере скачивания разбивается на куски, а куски сразу пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу.`);
+          : status?.archive.uploaded && status.archive.complete
+            ? 'Загрузка запущена: архив, загруженный с компьютера, разбивается на куски, затем куски пишутся в базу — без EDSM.'
+            : `Загрузка запущена: архив целиком скачивается на сервер (${connections} соедин.), затем разбивается на куски, затем куски пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу.`);
       }
       stickToBottom.current = true;
       await load();
@@ -358,6 +404,85 @@ export default function FactionsAdminTab() {
     } finally {
       setBusy(null);
     }
+  };
+
+  /**
+   * Архив с компьютера: кусками по 8 МБ, каждый со своим смещением. Обрыв —
+   * повтор куска; 409 — сервер говорит, сколько у него на самом деле, и
+   * загрузка продолжается с этого места (в том числе после перезагрузки
+   * страницы: тот же файл продолжается, а не начинается заново).
+   */
+  const uploadArchive = async (file: File) => {
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    setMessage('');
+    setIsError(false);
+    try {
+      const started = await postUpload({ action: 'start', name: file.name, size: file.size, lastModified: file.lastModified });
+      let offset = Math.max(0, Number(started.offset) || 0);
+      const chunkBytes = Math.max(1024, Number(started.chunkBytes) || UPLOAD_CHUNK_FALLBACK);
+      setUpload({ name: file.name, size: file.size, sent: offset, startOffset: offset, startedAt: Date.now() });
+      while (offset < file.size) {
+        const end = Math.min(file.size, offset + chunkBytes);
+        for (let attempt = 1; ; attempt++) {
+          if (controller.signal.aborted) throw new Error('stopped');
+          try {
+            const response = await authFetch(`/api/admin/factions/upload?offset=${offset}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/octet-stream' },
+              body: file.slice(offset, end),
+              signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => null);
+            if (response.status === 409 && typeof payload?.offset === 'number') {
+              offset = payload.offset;
+              break;
+            }
+            if (!response.ok || !payload?.success) throw new UploadHttpError(payload?.error || `HTTP ${response.status}`, response.status);
+            offset = Number(payload.offset);
+            break;
+          } catch (error) {
+            if (controller.signal.aborted) throw error;
+            const status = (error as UploadHttpError).status ?? 0;
+            const retryable = status === 0 || status >= 500 || status === 408 || status === 429;
+            if (!retryable || attempt >= 6) throw error;
+            await new Promise((resolve) => window.setTimeout(resolve, 1500 * attempt));
+          }
+        }
+        setUpload((current) => (current ? { ...current, sent: offset } : current));
+      }
+      const done = await postUpload({ action: 'finish' });
+      setMessage(
+        `Архив загружен на сервер: ${formatBgsBytes(done.bytes)}${done.sameAsEdsm ? ' — это тот же дамп, что сейчас на EDSM' : ''}. `
+          + 'Нажмите «Загрузить данные»: архив разобьётся на куски и запишется в базу, EDSM не понадобится.',
+      );
+    } catch (error) {
+      if (controller.signal.aborted) {
+        setMessage('Загрузка архива остановлена. Принятое осталось на сервере — выберите тот же файл, и загрузка продолжится.');
+      } else {
+        setMessage(`Архив не загружен: ${(error as Error).message}`);
+        setIsError(true);
+      }
+    } finally {
+      uploadAbort.current = null;
+      setUpload(null);
+      if (fileInput.current) fileInput.current.value = '';
+      stickToBottom.current = true;
+      await load();
+    }
+  };
+
+  const discardUpload = async () => {
+    if (!window.confirm('Удалить незаконченную загрузку архива с сервера?')) return;
+    try {
+      const result = await postUpload({ action: 'cancel' });
+      setMessage(result.removed ? `Незаконченная загрузка удалена — освобождено ${formatBgsBytes(result.freed)}` : 'Незаконченной загрузки нет');
+      setIsError(false);
+    } catch (error) {
+      setMessage((error as Error).message);
+      setIsError(true);
+    }
+    await load();
   };
 
   const copyLog = async () => {
@@ -395,6 +520,13 @@ export default function FactionsAdminTab() {
   const archiveTotal = archive?.total ?? null;
   const pieceMb = Math.round((status?.config.pieceBytes ?? 8 * 1024 * 1024) / (1024 * 1024));
   const shardSystems = status?.config.shardSystems ?? 1000;
+  const stallSeconds = status?.config.stallSeconds ?? 15;
+  const shortRequests = status?.config.shortRequests ?? 'auto';
+  const uploading = upload !== null;
+  const splitting = running && progress?.stages.find((stage) => stage.id === 'split')?.status === 'running';
+  const pendingUpload = !uploading && status?.upload?.active ? status.upload : null;
+  const uploadSpeed = upload ? (upload.sent - upload.startOffset) / Math.max(1, (Date.now() - upload.startedAt) / 1000) : 0;
+  const dumpUrl = status?.config.dumpUrl ?? 'https://www.edsm.net/dump/systemsPopulated.json.gz';
 
   return (
     <div data-bgs-admin="">
@@ -484,19 +616,19 @@ export default function FactionsAdminTab() {
       <div style={cardStyle} data-bgs-admin-sync="">
         <div style={labelStyle}>Загрузка из EDSM (systemsPopulated)</div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
-          Как в «Каталоге систем»: <strong style={{ color: TEXT }}>архив скачивается на сервер</strong> →{' '}
-          <strong style={{ color: TEXT }}>разбивается там на куски</strong> по {formatBgsCount(shardSystems)} систем →{' '}
-          <strong style={{ color: TEXT }}>куски загружаются в базу</strong>. Все три шага идут одновременно: запись в базу начинается
-          с первых мегабайт, а не после скачивания всего архива. Каждый шаг можно запустить и отдельно — кнопками в карточках ниже.
+          Как в «Каталоге систем», шаги по очереди: <strong style={{ color: TEXT }}>архив скачивается на сервер целиком</strong> →{' '}
+          <strong style={{ color: TEXT }}>затем разбивается на куски</strong> по {formatBgsCount(shardSystems)} систем →{' '}
+          <strong style={{ color: TEXT }}>затем куски загружаются в базу</strong>. Каждый шаг начинается, когда предыдущий закончен, и
+          его можно запустить отдельно — кнопками в карточках ниже. Серверу, которому EDSM недоступен, архив можно загрузить с компьютера.
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
-          <button type="button" className="btn btn-cyan" disabled={busy !== null || running} onClick={() => void act('start')} data-bgs-admin-action="start">
+          <button type="button" className="btn btn-cyan" disabled={busy !== null || running || uploading} onClick={() => void act('start')} data-bgs-admin-action="start">
             {systems > 0 ? 'Загрузить сейчас' : 'Загрузить данные'}
           </button>
           <button
             type="button"
             className="btn"
-            disabled={busy !== null || running}
+            disabled={busy !== null || running || uploading}
             onClick={() => void act('force')}
             title="Загрузить дамп, даже если он тот же, что в прошлый раз, и принять его, даже если он заметно меньше"
             data-bgs-admin-action="force"
@@ -526,8 +658,15 @@ export default function FactionsAdminTab() {
               <div style={{ ...labelStyle, marginBottom: 4 }}>1 · Архив на сервере</div>
               {archive.exists ? (
                 archive.complete ? (
-                  <div style={{ color: '#22c55e' }}>
-                    Скачан целиком: {formatBgsBytes(archive.bytes)}{archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}
+                  <div style={{ color: '#22c55e' }} data-bgs-admin-archive-state={archive.uploaded ? 'uploaded' : 'complete'}>
+                    {archive.uploaded
+                      ? <>Загружен с компьютера целиком: {formatBgsBytes(archive.bytes)}{archive.uploadName ? ` (${archive.uploadName})` : ''}</>
+                      : <>Скачан целиком: {formatBgsBytes(archive.bytes)}{archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}</>}
+                  </div>
+                ) : archive.manual ? (
+                  <div style={{ color: '#fbbf24' }} data-bgs-admin-archive-state="manual">
+                    Файл архива без метки ({formatBgsBytes(archive.bytes)}) — похоже, положен на сервер вручную: «Загрузить данные» примет его
+                    как загруженный с компьютера
                   </div>
                 ) : (
                   <>
@@ -556,7 +695,7 @@ export default function FactionsAdminTab() {
                   type="button"
                   className="btn"
                   style={{ fontSize: 12, padding: '3px 8px' }}
-                  disabled={busy !== null || running}
+                  disabled={busy !== null || running || uploading}
                   onClick={() => void act('download')}
                   title="Только скачать архив на сервер (в базу ничего не пишется)"
                   data-bgs-admin-action="download"
@@ -567,7 +706,7 @@ export default function FactionsAdminTab() {
                   type="button"
                   className="btn"
                   style={{ fontSize: 12, padding: '3px 8px' }}
-                  disabled={busy !== null || running || !(archive.exists || shards?.exists)}
+                  disabled={busy !== null || running || uploading || !(archive.exists || shards?.exists)}
                   onClick={() => void act('cleanup')}
                   title="Удалить архив и куски с сервера"
                   data-bgs-admin-action="cleanup"
@@ -575,15 +714,83 @@ export default function FactionsAdminTab() {
                   <IconTrash size={12} /> Удалить архив и куски
                 </button>
               </div>
+              <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #2d3136' }} data-bgs-admin-upload="">
+                {upload ? (
+                  <>
+                    <div style={{ color: RUN }} data-bgs-admin-upload-progress="">
+                      Загружаю {upload.name}: {formatBgsBytes(upload.sent)} из {formatBgsBytes(upload.size)}
+                      {` (${Math.floor((upload.sent / Math.max(1, upload.size)) * 100)} %)`}
+                      {uploadSpeed > 0 ? ` · ${formatBgsSpeed(uploadSpeed)}` : ''}
+                    </div>
+                    <div style={{ marginTop: 4 }}>
+                      <ProgressBar fraction={upload.sent / Math.max(1, upload.size)} color={RUN} height={5} label="Загружено с компьютера" />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      style={{ fontSize: 12, padding: '3px 8px', marginTop: 6 }}
+                      onClick={() => uploadAbort.current?.abort()}
+                      data-bgs-admin-action="upload-stop"
+                    >
+                      Остановить загрузку
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {pendingUpload && (
+                      <div style={{ color: '#fbbf24', marginBottom: 6 }} data-bgs-admin-upload-pending="">
+                        Незаконченная загрузка: {pendingUpload.name} — {formatBgsBytes(pendingUpload.received)} из {formatBgsBytes(pendingUpload.size)}.
+                        Выберите тот же файл — загрузка продолжится с этого места.{' '}
+                        <button type="button" className="btn" style={{ fontSize: 11, padding: '1px 6px' }} onClick={() => void discardUpload()} data-bgs-admin-action="upload-discard">
+                          Удалить
+                        </button>
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ fontSize: 12, padding: '3px 8px' }}
+                      disabled={busy !== null || running}
+                      onClick={() => fileInput.current?.click()}
+                      title="Передать на сервер systemsPopulated.json.gz, скачанный на этом компьютере"
+                      data-bgs-admin-action="upload"
+                    >
+                      <IconUpload size={12} /> Загрузить архив с компьютера
+                    </button>
+                    <input
+                      ref={fileInput}
+                      type="file"
+                      accept=".gz,application/gzip,application/x-gzip"
+                      style={{ display: 'none' }}
+                      data-bgs-admin-upload-input=""
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0];
+                        if (file) void uploadArchive(file);
+                      }}
+                    />
+                    <div style={{ fontSize: 11, color: DIM, marginTop: 4, lineHeight: 1.5 }}>
+                      Серверу не скачать архив с EDSM (в журнале соединения «замолкают» или «замирают»)? Скачайте{' '}
+                      <a href={dumpUrl} target="_blank" rel="noreferrer" style={{ color: ACCENT }}>systemsPopulated.json.gz</a> на этом
+                      компьютере и загрузите его сюда — дальше «Загрузить данные» разобьёт его на куски и запишет в базу без EDSM.
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           )}
           <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED }} data-bgs-admin-shards="">
             <div style={{ ...labelStyle, marginBottom: 4 }}>2 · Куски (шарды) → 3 · база</div>
-            {shards?.exists ? (
+            {shards?.exists && (shards.shards > 0 || shards.complete) ? (
               <>
-                <div style={{ color: shards.complete ? TEXT : running ? RUN : '#fbbf24' }}>
+                <div style={{ color: shards.complete ? TEXT : splitting ? RUN : '#fbbf24' }}>
                   {formatBgsCount(shards.shards)} кусков · {formatBgsCount(shards.systems)} систем · {formatBgsBytes(shards.bytes)}
-                  {shards.complete ? ' — архив разбит до конца' : running ? ' — разбивка идёт' : ' — разбит не до конца, следующий запуск продолжит'}
+                  {shards.complete
+                    ? ' — архив разбит до конца'
+                    : splitting
+                      ? ' — разбивка идёт'
+                      : running
+                        ? ' — разбит не до конца, разбивка продолжится в свою очередь'
+                        : ' — разбит не до конца, следующий запуск продолжит'}
                 </div>
                 <div style={{ color: shards.imported === shards.shards && shards.complete ? '#22c55e' : MUTED, marginTop: 2 }}>
                   В базе: {formatBgsCount(shards.imported)} из {formatBgsCount(shards.shards)} кусков ({formatBgsCount(shards.importedSystems)} систем)
@@ -598,7 +805,9 @@ export default function FactionsAdminTab() {
               <div>
                 {archive?.complete
                   ? 'Кусков нет — архив скачан: «Разбить на куски» или «Загрузить данные» разобьют его'
-                  : 'Кусков нет — они появятся, как только начнёт качаться архив'}
+                  : running
+                    ? 'Кусков пока нет — архив разобьётся на куски, когда скачается целиком'
+                    : 'Кусков нет — они появятся, когда архив будет на сервере целиком'}
               </div>
             )}
             <div style={{ marginTop: 2 }} data-bgs-admin-writer="">
@@ -613,7 +822,7 @@ export default function FactionsAdminTab() {
                 type="button"
                 className="btn"
                 style={{ fontSize: 12, padding: '3px 8px' }}
-                disabled={busy !== null || running || !archive?.complete}
+                disabled={busy !== null || running || uploading || !archive?.complete}
                 onClick={() => void act('split')}
                 title={archive?.complete ? 'Разбить скачанный архив на куски (без EDSM и без записи в базу)' : 'Сначала скачайте архив целиком'}
                 data-bgs-admin-action="split"
@@ -624,7 +833,7 @@ export default function FactionsAdminTab() {
                 type="button"
                 className="btn"
                 style={{ fontSize: 12, padding: '3px 8px' }}
-                disabled={busy !== null || running || !(archive?.complete || shards?.complete)}
+                disabled={busy !== null || running || uploading || !(archive?.complete || shards?.complete)}
                 onClick={() => void act('import')}
                 title="Записать в базу то, что уже на сервере (архив или куски), без обращения к EDSM"
                 data-bgs-admin-action="import"
@@ -679,7 +888,10 @@ export default function FactionsAdminTab() {
                     </span>
                     <span style={{ minWidth: 0 }}>
                       <ProgressBar fraction={stage.status === 'skipped' ? 0 : bgsStageFraction(stage)} color={color} height={6} indeterminate={indeterminate} label={def.label} />
-                      <span style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span
+                        style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                        title={stage.detail || undefined}
+                      >
                         {stage.detail || stageStatusLabel(stage, progress.phase)}
                       </span>
                     </span>
@@ -738,13 +950,19 @@ export default function FactionsAdminTab() {
 
         <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginTop: 12 }}>
           Источник: <code>{status?.config.dumpUrl ?? 'https://www.edsm.net/dump/systemsPopulated.json.gz'}</code> — ночной дамп
-          EDSM: все населённые системы с минорными фракциями (влияние, состояния), ≈0,5 ГБ gzip. Архив качается на сервер в
-          {` ${connections} `}соединений (<code>FACTIONS_DOWNLOAD_SEGMENTS</code>): соединения берут куски файла по {pieceMb} МБ по
-          порядку, поэтому начало архива готово сразу и его можно разбирать, пока качается остальное; обрыв и перезапуск сайта
-          не теряют скачанного. Разобранные системы раскладываются в куски по {formatBgsCount(shardSystems)} (станции и тела
-          отбрасываются — от 0,5 ГБ остаются мегабайты), и каждый готовый кусок сразу пишется в базу; кусок — единица
-          продолжения. Если EDSM пересоберёт дамп посреди скачивания (около 04:50 UTC), скачивание начнётся заново со свежим
-          дампом — половинки двух дампов не склеиваются. После удачной загрузки архив и куски
+          EDSM: все населённые системы с минорными фракциями (влияние, состояния), ≈0,5 ГБ gzip. Архив качается на сервер
+          целиком в{` ${connections} `}соединений (<code>FACTIONS_DOWNLOAD_SEGMENTS</code>), куски файла по {pieceMb} МБ; обрыв и
+          перезапуск сайта не теряют скачанного. Соединение, молчащее {stallSeconds} с (<code>FACTIONS_STALL_SECONDS</code>),
+          переподключается сразу, а не через 70 с ожидания ОС.
+          {shortRequests === 'off'
+            ? ' Короткие запросы выключены (FACTIONS_REQUEST_KB=off).'
+            : typeof shortRequests === 'number'
+              ? ` Запросы — по ${formatBgsBytes(shortRequests)}, каждый в новом соединении (FACTIONS_REQUEST_KB).`
+              : ' Если соединения замирают, успев передать лишь несколько килобайт (так сеть сервера режет сессии к зарубежным CDN, а EDSM — за Cloudflare), загрузка сама переходит на короткие запросы меньше этого порога, каждый в новом соединении.'}
+          {' '}Когда архив скачан, он разбирается в куски по {formatBgsCount(shardSystems)} систем (станции и тела отбрасываются — от
+          0,5 ГБ остаются мегабайты), затем куски пишутся в базу; кусок — единица продолжения. Если EDSM пересоберёт дамп посреди
+          скачивания (около 04:50 UTC), скачивание начнётся заново со свежим дампом — половинки двух дампов не склеиваются. После
+          удачной загрузки архив и куски
           {status?.config.archiveKeep ? ' остаются на сервере (FACTIONS_ARCHIVE_KEEP=1)' : ' удаляются с сервера'}.
           <br />
           Свежее наблюдение побеждает: системы, которые пилоты прислали позже даты дампа, импорт не трогает. Пропавшие из дампа

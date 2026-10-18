@@ -1020,7 +1020,7 @@ Full description: **POWERPLAY.md**.
   (120 ly sprite) no longer swallows clicks in the bubble and landmarks are not
   clickable while the PowerPlay layer is shown.
 
-### 8.16 Minor factions (BGS) in Atlas — web 2.19.0 (pipeline 2.20.0), Helper 2.16.0
+### 8.16 Minor factions (BGS) in Atlas — web 2.19.0 (pipeline 2.20.0, sequential + upload 2.21.0), Helper 2.16.0
 Full description: **FACTIONS.md**.
 - Atlas tab «Фракции» (8th, `?tab=factions`, Alt+8) + a 3D layer: without a
   selection — every populated system with minor factions, colour = allegiance,
@@ -1041,23 +1041,38 @@ Full description: **FACTIONS.md**.
   `bgs_faction_presence_rows`, `bgs_system_detail`, `bgs_admin_summary`. Every call
   fits PostgREST's short `statement_timeout` (a timed-out batch is halved).
 - Bulk source: EDSM `systemsPopulated.json.gz` (~0.5 GB). Since 2.20.0 the import
-  is the catalog-style pipeline «archive on the server → chunks → DB», with all
-  steps running at once (`src/lib/bgsSync.ts`): galaxy `downloadDump` in ordered
+  is the catalog-style pipeline «archive on the server → chunks → DB»; since
+  2.21.0 the steps run one after another (download the whole archive, then
+  split, then write — `src/lib/bgsSync.ts`): galaxy `downloadDump` in ordered
   piece mode (`FACTIONS_DOWNLOAD_SEGMENTS`=8 connections take 8 MiB pieces in
-  file order, `contiguous` = finished prefix, `strictSource` compares every
-  response with the probed dump — a dump regenerated mid-transfer restarts the
-  download, a server refusing extra connections gets fewer), `.meta.json` +
-  `.parts.json` for resume; `bgsShards.ts` follows the finished prefix of the
-  growing archive and splits it into `shards/bgs-NNNNN.ndjson.gz` (1000 systems,
-  ready RPC rows, `manifest.json` with the dump, run id, records read, imported
-  flags); `bgsWriter.ts` writes each ready chunk — direct Postgres
+  file order, `strictSource` compares every response with the probed dump — a
+  dump regenerated mid-transfer restarts the download, a server refusing extra
+  connections gets fewer), `.meta.json` + `.parts.json` for resume. EDSM is
+  behind Cloudflare and Russian ISPs (TSPU) freeze TCP sessions to foreign CDNs
+  after ~16 KB (seen in production: every connection got ~14 KB, then
+  `read ETIMEDOUT` after Node's 70 s keep-alive): `stallTimeoutMs`
+  (`FACTIONS_STALL_SECONDS`=15) aborts a silent attempt, and after two freezes
+  under 1 MiB `shortRequests: 'auto'` (`FACTIONS_REQUEST_KB`) switches to Range
+  requests of ~70 % of the smallest freeze point (≥ 4 KiB), each over a new
+  connection (`src/lib/freshFetch.ts`: node:https, `keepAlive: false`, shared TLS
+  session cache, redirects; `FACTIONS_FRESH_CONNECTIONS=0` = plain fetch).
+  Fallback: «Загрузить архив с компьютера» (`src/lib/bgsUpload.ts`,
+  `/api/admin/factions/upload`: start → `PUT ?offset=` 8 MiB chunks, 409 returns
+  the real offset, resume by name+size+lastModified → finish checks gzip + EDSM
+  array, adopts EDSM's ETag when the size matches, `.meta.json` `uploaded: true`);
+  `full` mode takes an uploaded, not-yet-imported archive instead of probing
+  EDSM; a gzip placed by hand (no meta, no plan) is adopted too.
+  `bgsShards.ts` splits the downloaded archive into
+  `shards/bgs-NNNNN.ndjson.gz` (1000 systems, ready RPC rows, `manifest.json`
+  with the dump, run id, records read, imported flags); `bgsWriter.ts` writes the
+  chunks — direct Postgres
   (`DATABASE_URL`/`SUPABASE_DB_URL`, one call per chunk, no statement timeout;
   `FACTIONS_DB_DIRECT=0` disables) or PostgREST (250-system batches halved on
   57014). A chunk is the resume unit (same run id, no re-download/re-split).
   Modes `full` / `download` / `split` / `import` (offline). Guards
   (< `FACTIONS_MIN_SYSTEMS`, < 50 % of the previous total) skip the deletion of
   missing systems; broken gzip drops archive + chunks. Stages probe / download /
-  split / import / finish (`bgsProgress.ts`, several may run at once).
+  split / import / finish (`bgsProgress.ts`, one after another).
 - Updates: Colonial Helper 2.16 (`uploader/bgs_sync.py`) and the site journal
   uploader (`BgsSnapshotCollector` in `src/lib/bgsJournal.ts`) send projected
   FSDJump/Location/CarrierJump with `Factions` to `POST /api/factions/sync`; both
@@ -1066,7 +1081,8 @@ Full description: **FACTIONS.md**.
 - Admin → «Игровые данные» → «Фракции» (`FactionsAdminTab.tsx`,
   `/api/admin/factions`: start / force / download / split / import (+`segments`)
   / cancel / cleanup): DB summary, archive and chunk cards like «Каталог систем»,
-  connection count selector, stage bars, pilots' updates, process log. Job `factions-sync` (daily
+  upload from computer (progress, stop, resume, discard), connection count
+  selector, stage bars, pilots' updates, process log. Job `factions-sync` (daily
   07:10 UTC, default-enabled) never makes the first import; it refreshes data older
   than `FACTIONS_REFRESH_DAYS` and resumes an interrupted import.
 
