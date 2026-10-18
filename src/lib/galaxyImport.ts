@@ -25,6 +25,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { setMaxListeners } from 'node:events';
 import { open as openFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -134,6 +135,13 @@ export interface DumpDownloadInfo {
   contiguous?: number;
   /** Connections still transferring (parallel download). */
   connections?: number;
+  /**
+   * Short-request mode (see `SegmentedDownloadOptions.shortRequests`): the
+   * most bytes one request asks for, `null` while requests take whole pieces.
+   */
+  requestBytes?: number | null;
+  /** Attempts aborted because the connection went silent (`stallTimeoutMs`). */
+  stalls?: number;
 }
 
 /** Validators of the file being downloaded (`strictSource`): size and Last-Modified/ETag. */
@@ -706,12 +714,50 @@ export interface SegmentedDownloadOptions extends DownloadDumpOptions {
    * of being stitched onto the old bytes.
    */
   strictSource?: boolean;
+  /**
+   * Abort an attempt that receives no bytes for this long — the wait for the
+   * response included — and reconnect, instead of trusting the kernel: a peer
+   * that silently stopped answering is detected by Node's keep-alive only after
+   * ~70 s (`read ETIMEDOUT`). Off by default.
+   */
+  stallTimeoutMs?: number;
+  /**
+   * Short requests, for networks that freeze every TCP session after a few KB
+   * (Russian ISPs do it to connections to foreign hosting and CDNs: ~16–20 KB
+   * pass, then packets stop). `'auto'` switches to them once two attempts went
+   * silent after a small amount (needs `stallTimeoutMs`): every request then
+   * asks for ~70 % of the smallest freeze point. A number forces requests of at
+   * most that many bytes from the start; `'off'` (default) never. Each short
+   * request must travel over a NEW connection, so pass a `fetchImpl` without
+   * keep-alive (`createFreshConnectionFetch` in `freshFetch.ts`).
+   */
+  shortRequests?: 'auto' | 'off' | number;
+  /** Smallest short request (default `MIN_SHORT_REQUEST_BYTES`). */
+  minRequestBytes?: number;
 }
 
 /** Consecutive failures of one piece after which an extra connection is dropped (piece mode). */
 const RETIRE_AFTER_FAILURES = 3;
 /** …but only while some other connection delivered bytes this recently. */
 const RETIRE_PROGRESS_WINDOW_MS = 120_000;
+/** Frozen attempts (silent after a little data) seen before short requests start. */
+const FREEZE_SAMPLES = 2;
+/** An attempt that delivered more than this before going silent just stalled; it does not prove a freeze. */
+const FREEZE_MAX_BYTES = 1024 * 1024;
+/** A short request asks for this share of the smallest freeze point. */
+const SHORT_REQUEST_SHARE = 0.7;
+/** Smallest and largest short request. */
+export const MIN_SHORT_REQUEST_BYTES = 4 * 1024;
+const MAX_SHORT_REQUEST_BYTES = FREEZE_MAX_BYTES;
+/** A short request silent for longer than this froze as well. */
+const SHORT_STALL_MS = 5_000;
+/** At most one line about silent connections per this period (the rest are counted). */
+const STALL_LOG_EVERY_MS = 30_000;
+
+function formatSeconds(ms: number): string {
+  const seconds = ms / 1000;
+  return `${seconds >= 10 ? Math.round(seconds) : Math.round(seconds * 10) / 10} с`;
+}
 
 /**
  * Download one file with N parallel HTTP Range connections into a single
@@ -732,6 +778,14 @@ export async function downloadDumpSegmented(
   const statePath = segmentStatePath(dest);
   const pieceBytes =
     options.pieceBytes && options.pieceBytes > 0 ? Math.max(MIN_PIECE_BYTES, Math.floor(options.pieceBytes)) : null;
+  const stallTimeoutMs = Math.max(0, Math.floor(options.stallTimeoutMs ?? 0));
+  const minRequestBytes = Math.max(256, Math.floor(options.minRequestBytes ?? MIN_SHORT_REQUEST_BYTES));
+  const clampRequest = (bytes: number) => Math.max(minRequestBytes, Math.min(MAX_SHORT_REQUEST_BYTES, Math.floor(bytes)));
+  // Short requests need pieces (a part per connection has no notion of them)
+  // and, in 'auto', a stall timer to notice the freezes at all.
+  const autoShort = Boolean(pieceBytes) && options.shortRequests === 'auto' && stallTimeoutMs > 0;
+  let shortCap: number | null =
+    pieceBytes && typeof options.shortRequests === 'number' && options.shortRequests > 0 ? clampRequest(options.shortRequests) : null;
 
   const probe = options.probe ?? (await probeDumpSource(options.url, { fetchImpl, signal: options.signal }));
   if (!probe.acceptsRanges || !probe.total) {
@@ -784,6 +838,13 @@ export async function downloadDumpSegmented(
     } finally {
       await handle.close();
     }
+    // The file already has its full size: without the plan next to it nobody
+    // could tell how much of it is real.
+    try {
+      writeFileSync(statePath, JSON.stringify(plan, null, 1));
+    } catch (error) {
+      log(`Не удалось сохранить план частей: ${(error as Error).message}`);
+    }
   }
 
   const segments = plan.segments;
@@ -809,17 +870,24 @@ export async function downloadDumpSegmented(
     ? Math.max(1, Math.min(Math.floor(options.segments) || 1, 32, Math.max(1, unfinished)))
     : segments.length;
   const connections = pieceBytes ? workers : options.segments;
+  const modeNote = shortCap
+    ? `, короткими запросами по ${formatBytes(shortCap)} (каждый в новом соединении)`
+    : stallTimeoutMs > 0
+      ? `, соединение без данных ${formatSeconds(stallTimeoutMs)} переподключается${autoShort ? ' (замирающие соединения → короткие запросы)' : ''}`
+      : '';
   log(
     pieceBytes
       ? already > 0
-        ? `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
-        : `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}, ${formatBytes(total)}`
+        ? `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}${modeNote}, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
+        : `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}${modeNote}, ${formatBytes(total)}`
       : already > 0
         ? `Архив: ${options.segments} параллельных соединений, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
         : `Архив: ${options.segments} параллельных соединений, ${formatBytes(total)}`,
   );
 
   const controller = new AbortController();
+  // One listener per connection attempt and per backoff pause: more than the default 10.
+  setMaxListeners(256, controller.signal);
   const abort = () => controller.abort();
   if (options.signal?.aborted) abort();
   options.signal?.addEventListener('abort', abort, { once: true });
@@ -847,6 +915,54 @@ export async function downloadDumpSegmented(
   // while another one is left to finish its piece.
   let running = workers;
 
+  // ── Silent connections ──
+  // A connection that stops delivering is aborted after `stallTimeoutMs`. If it
+  // had delivered a little before falling silent, the network freezes TCP
+  // sessions past a threshold: requests smaller than that threshold, each over
+  // its own connection, pass whole.
+  let stallCount = 0;
+  let stallsUnlogged = 0;
+  let lastStallLogAt = 0;
+  let shortRequestsDone = 0;
+  const freezePoints: number[] = [];
+  /** `requested` — bytes the short request asked for (`null` while requests take whole pieces). */
+  const noteStall = (got: number, requested: number | null, index: number, waitedMs: number) => {
+    stallCount += 1;
+    const at = Date.now();
+    if (stallCount <= FREEZE_SAMPLES + 1 || at - lastStallLogAt >= STALL_LOG_EVERY_MS) {
+      log(
+        `${pieceBytes ? 'Кусок' : 'Сегмент'} ${index + 1}: соединение замолчало на ${formatSeconds(waitedMs)}, ` +
+          `${got > 0 ? `успев передать ${formatBytes(got)}` : 'не передав ни байта'} — переподключаюсь` +
+          (stallsUnlogged > 0 ? ` (и ещё ${stallsUnlogged} таких обрывов с прошлой записи)` : ''),
+      );
+      lastStallLogAt = at;
+      stallsUnlogged = 0;
+    } else {
+      stallsUnlogged += 1;
+    }
+    if (got <= 0) return;
+    if (requested == null) {
+      if (!autoShort || got >= FREEZE_MAX_BYTES) return;
+      freezePoints.push(got);
+      if (shortCap == null && freezePoints.length >= FREEZE_SAMPLES) {
+        const smallest = Math.min(...freezePoints);
+        shortCap = clampRequest(smallest * SHORT_REQUEST_SHARE);
+        log(
+          `Соединения замирают, успев передать ~${formatBytes(smallest)}: так сеть сервера «замораживает» TCP-сессии к ` +
+            `зарубежным хостингам и CDN. Перехожу на короткие запросы по ${formatBytes(shortCap)} — каждый в новом соединении, ` +
+            'меньше порога заморозки',
+        );
+      }
+    } else if (got < requested && shortCap != null) {
+      // A short request froze before its end: the threshold is lower still.
+      const lowered = clampRequest(got * SHORT_REQUEST_SHARE);
+      if (lowered < shortCap) {
+        shortCap = lowered;
+        log(`Короткий запрос тоже замер (успел ${formatBytes(got)}) — уменьшаю запросы до ${formatBytes(shortCap)}`);
+      }
+    }
+  };
+
   const report = async (force = false) => {
     const at = Date.now();
     if (!force && at - lastReport < progressIntervalMs) return;
@@ -864,6 +980,8 @@ export async function downloadDumpSegmented(
         failures,
         contiguous: contiguousDumpBytes(segments),
         connections: running,
+        requestBytes: shortCap,
+        stalls: stallCount,
       });
     } catch {
       // A progress sink must never kill the download.
@@ -876,16 +994,35 @@ export async function downloadDumpSegmented(
       if (isComplete(segment)) return 'done';
       if (controller.signal.aborted) throw new Error('Download aborted');
       const from = segment.start + segment.done;
+      const cap = shortCap;
+      // A short request takes a slice of the piece; the next one continues it.
+      const to = cap ? Math.min(segment.end, from + cap - 1) : segment.end;
       const before = segment.done;
+      // Every attempt has its own signal: a silent connection is aborted alone.
+      const attempt = new AbortController();
+      const relay = () => attempt.abort(controller.signal.reason);
+      controller.signal.addEventListener('abort', relay, { once: true });
+      const stallMs = stallTimeoutMs > 0 ? (cap ? Math.min(stallTimeoutMs, SHORT_STALL_MS) : stallTimeoutMs) : 0;
+      let stalled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const arm = () => {
+        if (!stallMs) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          stalled = true;
+          attempt.abort(new Error(`соединение молчит ${formatSeconds(stallMs)}`));
+        }, stallMs);
+      };
+      arm();
       try {
         const response = await fetchImpl(options.url, {
-          headers: { Range: `bytes=${from}-${segment.end}` },
-          signal: controller.signal,
+          headers: { Range: `bytes=${from}-${to}` },
+          signal: attempt.signal,
         });
         if (options.strictSource && (response.status === 206 || response.status === 200 || response.status === 416)) {
           const why =
             response.status === 416
-              ? `диапазон ${from}-${segment.end} больше файла на сервере`
+              ? `диапазон ${from}-${to} больше файла на сервере`
               : dumpSourceMismatch(response, expect);
           if (why) {
             await response.body?.cancel().catch(() => undefined);
@@ -904,29 +1041,44 @@ export async function downloadDumpSegmented(
           throw new Error(`HTTP ${response.status} ${response.statusText}`);
         }
         if (!response.body) throw new Error('Dump response has no body');
+        arm();
         for await (const chunk of Readable.fromWeb(response.body as unknown as WebReadableStream)) {
           if (controller.signal.aborted) throw new Error('Download aborted');
           const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
-          const room = segment.end - (segment.start + segment.done) + 1;
+          const room = to - (segment.start + segment.done) + 1;
           if (room <= 0) break;
           const slice = buffer.length > room ? buffer.subarray(0, room) : buffer;
           await handle.write(slice, 0, slice.length, segment.start + segment.done);
           segment.done += slice.length;
           lastBytesAt = Date.now();
+          arm();
           await report();
+          // Everything asked for is here: do not wait for the end of the
+          // stream (a frozen session may never deliver it).
+          if (segment.start + segment.done > to) break;
         }
-        if (segment.done >= segment.end - segment.start + 1) {
-          await report(true);
-          return 'done';
+        if (segment.start + segment.done > to) {
+          if (isComplete(segment)) {
+            await report(true);
+            return 'done';
+          }
+          // A short request got its whole slice: straight on to the next one.
+          stagnant = 0;
+          shortRequestsDone += 1;
+          continue;
         }
         // Clean EOF before the end of the range: treat as a drop and continue.
         throw new Error('соединение закрылось раньше конца диапазона');
       } catch (error) {
+        // The attempt is over: its stall timer must not fire during the backoff.
+        if (timer) clearTimeout(timer);
         if (error instanceof SegmentedDownloadUnsupported || isDumpSourceChanged(error)) throw error;
         if (controller.signal.aborted) throw new Error('Download aborted');
         failures += 1;
-        stagnant = segment.done > before ? 0 : stagnant + 1;
-        const message = networkErrorMessage(error, 'connection dropped');
+        const got = segment.done - before;
+        stagnant = got > 0 ? 0 : stagnant + 1;
+        if (stalled) noteStall(got, cap ? to - from + 1 : null, index, stallMs);
+        const message = stalled ? `соединение замолчало на ${formatSeconds(stallMs)}` : networkErrorMessage(error, 'connection dropped');
         if (
           pieceBytes &&
           stagnant >= RETIRE_AFTER_FAILURES &&
@@ -948,11 +1100,21 @@ export async function downloadDumpSegmented(
               `(${pieceBytes ? 'кусок' : 'сегмент'} ${index + 1}, на диске ${received().toLocaleString()} из ${total.toLocaleString()} байт — повтор продолжит отсюда)`,
           );
         }
-        log(
-          `${pieceBytes ? 'Кусок' : 'Сегмент'} ${index + 1}: обрыв на байте ${(segment.start + segment.done).toLocaleString()} (${message}) — продолжаю`,
-        );
+        if (stalled && got > 0) {
+          // The session froze after delivering: a new one is worth a try at
+          // once (noteStall has already logged it and adjusted the requests).
+          continue;
+        }
+        if (!stalled) {
+          log(
+            `${pieceBytes ? 'Кусок' : 'Сегмент'} ${index + 1}: обрыв на байте ${(segment.start + segment.done).toLocaleString()} (${message}) — продолжаю`,
+          );
+        }
         persist();
         await pause(DUMP_BACKOFF_MS[Math.min(stagnant, DUMP_BACKOFF_MS.length - 1)]);
+      } finally {
+        if (timer) clearTimeout(timer);
+        controller.signal.removeEventListener('abort', relay);
       }
     }
   };
@@ -1020,7 +1182,12 @@ export async function downloadDumpSegmented(
       }
     }
     rmSync(statePath, { force: true });
-    log(`Архив на диске: ${size.toLocaleString()} байт (${connections} соединений)`);
+    log(
+      `Архив на диске: ${size.toLocaleString()} байт (${connections} соединений` +
+        (shortRequestsDone > 0 ? `, коротких запросов: ${shortRequestsDone.toLocaleString()}` : '') +
+        (stallCount > 0 ? `, замолчавших соединений: ${stallCount.toLocaleString()}` : '') +
+        ')',
+    );
     return { path: dest, bytes: size, total, segments: connections };
   } catch (error) {
     if (isDumpSourceChanged(error) && !discarded) {
@@ -1041,14 +1208,24 @@ export async function downloadDumpSegmented(
 export interface SmartDownloadOptions extends DownloadDumpOptions {
   /** Parallel connections; default `GALAXY_DOWNLOAD_SEGMENTS` (4). */
   segments?: number;
-  /** Ordered piece mode (see `SegmentedDownloadOptions.pieceBytes`). */
+  /**
+   * Ordered piece mode (see `SegmentedDownloadOptions.pieceBytes`). With it a
+   * server that supports ranges is always downloaded in pieces — even over one
+   * connection and whatever the size — so stalls and freezes are handled.
+   */
   pieceBytes?: number;
   /** Validate every response against the probed file (see `SegmentedDownloadOptions.strictSource`). */
   strictSource?: boolean;
   /** An already made probe of `url` — saves the HEAD request. */
   probe?: DumpProbe;
-  /** Files smaller than this go over one connection (default `SEGMENTED_MIN_BYTES`). */
+  /** Files smaller than this go over one connection (default `SEGMENTED_MIN_BYTES`; ignored in piece mode). */
   minSegmentedBytes?: number;
+  /** See `SegmentedDownloadOptions.stallTimeoutMs` (piece and part modes). */
+  stallTimeoutMs?: number;
+  /** See `SegmentedDownloadOptions.shortRequests` (piece mode). */
+  shortRequests?: 'auto' | 'off' | number;
+  /** See `SegmentedDownloadOptions.minRequestBytes`. */
+  minRequestBytes?: number;
 }
 
 export interface SmartDownloadResult {
@@ -1075,9 +1252,10 @@ export async function downloadDump(options: SmartDownloadOptions): Promise<Smart
   // A plan on disk means a preallocated file of parallel parts: only the
   // segmented path can continue it.
   const havePlan = existsSync(statePath);
+  const pieceMode = Boolean(options.pieceBytes && options.pieceBytes > 0);
   let probe: DumpProbe | null = options.probe ?? null;
 
-  if (segments > 1 || havePlan || options.strictSource) {
+  if (segments > 1 || havePlan || options.strictSource || pieceMode) {
     if (!probe) {
       try {
         probe = await probeDumpSource(options.url, { fetchImpl: options.fetchImpl, signal: options.signal });
@@ -1092,7 +1270,7 @@ export async function downloadDump(options: SmartDownloadOptions): Promise<Smart
       }
     }
     const ranged = Boolean(probe?.acceptsRanges && probe.total);
-    if (probe && ranged && (havePlan || (segments > 1 && (probe.total ?? 0) >= minBytes))) {
+    if (probe && ranged && (havePlan || pieceMode || (segments > 1 && (probe.total ?? 0) >= minBytes))) {
       try {
         const result = await downloadDumpSegmented({ ...options, segments, probe });
         return { ...result, lastModified: probe.lastModified };

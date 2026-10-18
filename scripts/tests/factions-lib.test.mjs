@@ -73,13 +73,11 @@ import {
   updateBgsStage,
 } from '../../src/lib/bgsProgress.ts';
 import {
-  BgsPulse,
   bgsShardsInfo,
   clearBgsShards,
   createBgsShardManifest,
   readBgsShardManifest,
   readBgsShardRows,
-  readGrowingFile,
   sameBgsDumpSource,
   splitBgsArchive,
 } from '../../src/lib/bgsShards.ts';
@@ -589,7 +587,7 @@ function shardTestLine(index) {
   return `    ${JSON.stringify(record).slice(0, -1)},"stations":[{"name":"${'x'.repeat(200)}"}],"bodies":[],"date":"2026-10-15 08:00:00"}`;
 }
 
-test('куски: разбивка архива, который ещё качается (читается только готовое начало), и продолжение', async () => {
+test('куски: разбивка скачанного архива и продолжение', async () => {
   const { mkdtempSync, writeFileSync, rmSync, existsSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const { gzipSync } = await import('node:zlib');
@@ -599,38 +597,19 @@ test('куски: разбивка архива, который ещё кача�
     const lines = Array.from({ length: 25 }, (_, index) => shardTestLine(index));
     const gz = gzipSync(Buffer.from(`[\n${lines.join(',\n')},\n{"broken":\n]`, 'utf8'));
     const archive = join(dir, 'dump.json.gz');
-    // Файл выделен целиком (как при параллельном скачивании), готово только начало.
-    const preallocated = Buffer.alloc(gz.length);
-    gz.copy(preallocated, 0, 0, 40);
-    writeFileSync(archive, preallocated);
+    writeFileSync(archive, gz);
     const source = { url: 'https://example/dump.json.gz', etag: '"e1"', lastModified: 'Sat, 17 Oct 2026 04:50:00 GMT', total: gz.length };
     const manifest = createBgsShardManifest({ source, runId: 'run-a', systemsPerShard: 10 });
-    const pulse = new BgsPulse();
-    let available = 40;
     const reads = [];
     const shardsSeen = [];
-    const controller = new AbortController();
-    const splitting = splitBgsArchive({
-      archive, dir: join(dir, 'shards'), manifest, counter: new BgsDumpCounter(), signal: controller.signal,
-      available: () => available, waitForBytes: (signal) => pulse.wait(signal, 50),
+    const done = await splitBgsArchive({
+      archive, dir: join(dir, 'shards'), manifest, counter: new BgsDumpCounter(), signal: new AbortController().signal,
       onShard: (entry) => shardsSeen.push(entry.file),
       onProgress: (info) => reads.push(info.bytesRead),
     });
-    // «Скачивание» дописывает файл частями; разбивка не читает дальше готового.
-    for (let at = 40; at < gz.length; at += 300) {
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      const end = Math.min(gz.length, at + 300);
-      const handle = await import('node:fs/promises').then((fs) => fs.open(archive, 'r+'));
-      await handle.write(gz, at, end - at, at);
-      await handle.close();
-      available = end;
-      assert.ok(Math.max(0, ...reads) <= available, 'разбивка не заглядывает за готовую границу');
-      pulse.notify();
-    }
-    available = null;
-    pulse.notify();
-    const done = await splitting;
     assert.equal(done.complete, true);
+    assert.equal(reads.at(-1), gz.length, 'прочитан весь архив');
+    for (let i = 1; i < reads.length; i++) assert.ok(reads[i] >= reads[i - 1], 'процент не откатывается');
     assert.deepEqual(shardsSeen, ['bgs-00001.ndjson.gz', 'bgs-00002.ndjson.gz', 'bgs-00003.ndjson.gz']);
     assert.deepEqual(done.shards.map((entry) => entry.systems), [10, 10, 5]);
     assert.equal(done.stats.systems, 25);
@@ -659,7 +638,6 @@ test('куски: разбивка архива, который ещё кача�
     rmSync(join(dir, 'shards', 'bgs-00003.ndjson.gz'));
     const resumed = await splitBgsArchive({
       archive, dir: join(dir, 'shards'), manifest: partial, counter: new BgsDumpCounter(), signal: new AbortController().signal,
-      available: () => null, waitForBytes: async () => {},
     });
     assert.deepEqual(resumed.shards.map((entry) => [entry.file, entry.systems]), [['bgs-00001.ndjson.gz', 10], ['bgs-00002.ndjson.gz', 10], ['bgs-00003.ndjson.gz', 5]]);
     assert.equal(resumed.stats.systems, 25, 'итоги — по всему архиву, а не только по дочитанному');
@@ -685,23 +663,34 @@ test('куски: тот же дамп — по размеру и ETag (без �
   assert.equal(sameBgsDumpSource(base, { ...base, url: 'v' }), false);
   assert.equal(sameBgsDumpSource(base, null), false);
 
-  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { mkdtempSync, writeFileSync, rmSync, existsSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
-  const dir = mkdtempSync(join(tmpdir(), 'bgs-growing-'));
+  const { gzipSync } = await import('node:zlib');
+  const { BgsDumpCounter } = await import('../../src/lib/bgsDump.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'bgs-stop-'));
   try {
-    const file = join(dir, 'growing.bin');
-    writeFileSync(file, Buffer.from('abcdef'));
+    const archive = join(dir, 'dump.json.gz');
+    writeFileSync(archive, gzipSync(Buffer.from(`[\n${Array.from({ length: 50 }, (_, index) => shardTestLine(index)).join(',\n')}\n]`, 'utf8')));
+    const manifest = createBgsShardManifest({ source: base, runId: 'run-stop', systemsPerShard: 10 });
     const controller = new AbortController();
-    const chunks = [];
-    const reading = (async () => {
-      for await (const chunk of readGrowingFile(file, { available: () => 3, wait: (signal) => new BgsPulse().wait(signal, 20), signal: controller.signal })) {
-        chunks.push(chunk.toString());
-      }
-    })();
-    await new Promise((resolve) => setTimeout(resolve, 60));
     controller.abort(new Error('стоп'));
-    await assert.rejects(reading, /стоп/);
-    assert.deepEqual(chunks, ['abc'], 'дальше готовой границы не читает, остановка — сразу');
+    await assert.rejects(
+      splitBgsArchive({ archive, dir: join(dir, 'shards'), manifest, counter: new BgsDumpCounter(), signal: controller.signal }),
+      /стоп/,
+    );
+    assert.equal(manifest.complete, false, 'остановленная разбивка не отмечена законченной');
+
+    // Обрезанный архив (недокачанный) — ошибка zlib, а не «готово» на половине.
+    const truncated = join(dir, 'truncated.json.gz');
+    const whole = gzipSync(Buffer.from(`[\n${Array.from({ length: 50 }, (_, index) => shardTestLine(index)).join(',\n')}\n]`, 'utf8'));
+    writeFileSync(truncated, whole.subarray(0, Math.floor(whole.length / 2)));
+    const fresh = createBgsShardManifest({ source: base, runId: 'run-cut', systemsPerShard: 10 });
+    await assert.rejects(
+      splitBgsArchive({ archive: truncated, dir: join(dir, 'cut'), manifest: fresh, counter: new BgsDumpCounter(), signal: new AbortController().signal }),
+      /unexpected end of file/i,
+    );
+    assert.equal(fresh.complete, false);
+    assert.equal(existsSync(join(dir, 'cut', 'manifest.json')), true, 'разложенное до обрыва помнится');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

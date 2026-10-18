@@ -528,3 +528,191 @@ test('план частей на диске: один поток его не п�
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/* ── Сеть, «замораживающая» TCP-сессии (ТСПУ → Cloudflare) ─────────────── */
+
+/**
+ * Сервер «за ТСПУ»: каждое соединение (сокет) отдаёт не больше `freezeAfter`
+ * байт тела, потом замолкает навсегда — пакеты просто не идут. Ровно так
+ * выглядело скачивание дампа EDSM с российского сервера: каждое соединение
+ * получало ~14 КБ и через 70 с падало с `read ETIMEDOUT`.
+ */
+function freezingServer(buffer, { freezeAfter, silentFromStart = false } = {}) {
+  const state = { sockets: new Set(), requests: 0, ranges: [] };
+  const budget = new WeakMap();
+  return {
+    state,
+    handler(req, res) {
+      state.requests++;
+      state.sockets.add(req.socket);
+      if (!budget.has(req.socket)) budget.set(req.socket, silentFromStart ? 0 : freezeAfter);
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'Content-Length': buffer.length, 'Accept-Ranges': 'bytes', 'Last-Modified': 'Wed, 30 Sep 2026 03:00:00 GMT', ETag: '"frozen"' });
+        res.end();
+        return;
+      }
+      state.ranges.push(req.headers.range ?? null);
+      const match = /bytes=(\d+)-(\d*)/.exec(req.headers.range ?? '');
+      const start = Number(match?.[1] ?? 0);
+      const end = match?.[2] ? Number(match[2]) : buffer.length - 1;
+      const slice = buffer.subarray(start, end + 1);
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${buffer.length}`,
+        'Content-Length': slice.length,
+        'Last-Modified': 'Wed, 30 Sep 2026 03:00:00 GMT',
+        ETag: '"frozen"',
+      });
+      const left = budget.get(req.socket);
+      if (slice.length <= left) {
+        budget.set(req.socket, left - slice.length);
+        res.end(slice);
+        return;
+      }
+      budget.set(req.socket, 0);
+      if (left > 0) res.write(slice.subarray(0, left));
+      // …и тишина: ни байта, ни FIN.
+    },
+  };
+}
+
+test('freshFetch: новое соединение на каждый запрос, Range и HEAD, редирект, обрыв посреди тела', async () => {
+  const { createFreshConnectionFetch } = await import('../../src/lib/freshFetch.ts');
+  const buffer = payload(64 * 1024);
+  const sockets = new Set();
+  const inner = rangeServer(buffer);
+  const server = await startServer((req, res) => {
+    sockets.add(req.socket);
+    if (req.url === '/moved') {
+      res.writeHead(302, { Location: '/systems.json.gz' });
+      res.end();
+      return;
+    }
+    if (req.url === '/slow') {
+      res.writeHead(200, { 'Content-Length': 1000 });
+      res.write(Buffer.alloc(10));
+      return; // тело так и не дойдёт
+    }
+    assert.equal(req.headers.connection, 'close', 'соединение не переиспользуется');
+    inner.handler(req, res);
+  });
+  const fresh = createFreshConnectionFetch();
+  try {
+    const head = await fresh(server.url, { method: 'HEAD', headers: { 'User-Agent': 'test' } });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get('content-length'), String(buffer.length));
+    assert.equal(head.body, null);
+    for (const [from, to] of [[0, 999], [1000, 4095], [60000, buffer.length - 1]]) {
+      const response = await fresh(server.url, { headers: { Range: `bytes=${from}-${to}` } });
+      assert.equal(response.status, 206);
+      assert.equal(response.headers.get('content-range'), `bytes ${from}-${to}/${buffer.length}`);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), buffer.subarray(from, to + 1));
+    }
+    assert.equal(sockets.size, 4, 'каждый запрос — своё TCP-соединение');
+
+    const moved = await fresh(server.url.replace('/systems.json.gz', '/moved'), { headers: { Range: 'bytes=0-9' } });
+    assert.equal(moved.status, 206, 'редирект пройден, Range сохранён');
+    assert.deepEqual(Buffer.from(await moved.arrayBuffer()), buffer.subarray(0, 10));
+
+    const controller = new AbortController();
+    const slow = await fresh(server.url.replace('/systems.json.gz', '/slow'), { signal: controller.signal });
+    const reading = (async () => {
+      for await (const chunk of slow.body) void chunk;
+    })();
+    setTimeout(() => controller.abort(new Error('стоп')), 50);
+    await assert.rejects(reading, /стоп/);
+    await assert.rejects(fresh(server.url, { signal: controller.signal }), /стоп/, 'уже отменённый сигнал — сразу отказ');
+    await assert.rejects(fresh(server.url, { method: 'POST' }), /только GET и HEAD/);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('замерзающие соединения: замолчавшее переподключается, после двух заморозок — короткие запросы, каждый в новом соединении', async () => {
+  const { createFreshConnectionFetch } = await import('../../src/lib/freshFetch.ts');
+  const dir = tmpDir();
+  const buffer = payload(600 * 1024);
+  const frozen = freezingServer(buffer, { freezeAfter: 20 * 1024 });
+  const server = await startServer(frozen.handler);
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  const lines = [];
+  const caps = [];
+  try {
+    const result = await downloadDump({
+      url: server.url,
+      dest,
+      segments: 4,
+      pieceBytes: 64 * 1024,
+      strictSource: true,
+      stallTimeoutMs: 300,
+      shortRequests: 'auto',
+      fetchImpl: createFreshConnectionFetch(),
+      retries: Infinity,
+      maxStagnantFailures: 12,
+      progressIntervalMs: 250,
+      log: (line) => lines.push(line),
+      onProgress: (info) => caps.push(info.requestBytes ?? null),
+    });
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'файл целый');
+    assert.equal(result.segments, 4);
+    const text = lines.join('\n');
+    assert.match(text, /соединение без данных 0\.3 с переподключается \(замирающие соединения → короткие запросы\)/);
+    assert.match(text, /Кусок \d+: соединение замолчало на 0\.3 с, успев передать 20\.0 КБ — переподключаюсь/);
+    assert.match(text, /Соединения замирают, успев передать ~20\.0 КБ.*Перехожу на короткие запросы по 14\.0 КБ — каждый в новом соединении/);
+    assert.match(text, /коротких запросов: \d+/);
+    assert.ok(caps.includes(14 * 1024), 'размер коротких запросов виден в ходе скачивания');
+    const short = frozen.state.ranges.map((range) => /bytes=(\d+)-(\d+)/.exec(range)).filter((m) => m && Number(m[2]) - Number(m[1]) + 1 <= 14 * 1024);
+    assert.ok(short.length >= 20, `короткие запросы (${short.length})`);
+    assert.equal(frozen.state.sockets.size, frozen.state.requests, 'ни один запрос не попал в чужое (замороженное) соединение');
+    assert.ok(!fs.existsSync(segmentStatePath(dest)));
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('короткие запросы с самого начала (число), хвост куска короче — не «заморозка»', async () => {
+  const { createFreshConnectionFetch } = await import('../../src/lib/freshFetch.ts');
+  const dir = tmpDir();
+  const buffer = payload(100 * 1024);
+  const frozen = freezingServer(buffer, { freezeAfter: 12 * 1024 });
+  const server = await startServer(frozen.handler);
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  const lines = [];
+  try {
+    await downloadDump({
+      url: server.url, dest, segments: 2, pieceBytes: 32 * 1024, strictSource: true, stallTimeoutMs: 300, shortRequests: 10 * 1024,
+      fetchImpl: createFreshConnectionFetch(), retries: Infinity, log: (line) => lines.push(line),
+    });
+    assert.deepEqual(fs.readFileSync(dest), buffer);
+    assert.match(lines.join('\n'), /короткими запросами по 10\.0 КБ \(каждый в новом соединении\)/);
+    assert.doesNotMatch(lines.join('\n'), /замолчало|замер/, 'запросы меньше порога — ни одной заморозки');
+    const sizes = frozen.state.ranges.map((range) => /bytes=(\d+)-(\d+)/.exec(range)).filter(Boolean).map((m) => Number(m[2]) - Number(m[1]) + 1);
+    assert.ok(sizes.every((size) => size <= 10 * 1024), `все запросы не больше 10 КБ: ${sizes}`);
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('сервер молчит с самого начала: паузы между попытками и понятная ошибка, а не вечное ожидание', async () => {
+  const dir = tmpDir();
+  const buffer = payload(64 * 1024);
+  const silent = freezingServer(buffer, { freezeAfter: 0, silentFromStart: true });
+  const server = await startServer(silent.handler);
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  const pauses = [];
+  try {
+    await assert.rejects(
+      () => downloadDump({
+        url: server.url, dest, segments: 1, pieceBytes: 16 * 1024, strictSource: true, stallTimeoutMs: 100, shortRequests: 'auto',
+        retries: Infinity, maxStagnantFailures: 2, sleep: async (ms) => { pauses.push(ms); },
+      }),
+      /Скачивание не удалось после 3 обрыва\(ов\): соединение замолчало на 0\.1 с/,
+    );
+    assert.deepEqual(pauses, [10_000, 20_000], 'ни байта — паузы растут, как при любом обрыве');
+    assert.ok(fs.existsSync(segmentStatePath(dest)), 'план кусков остался для продолжения');
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -3,30 +3,37 @@
  *
  * Дамп большой (≈0,5 ГБ gzip, несколько ГБ JSON — почти всё станции и тела),
  * а канал сервера к EDSM тонкий. Поэтому конвейер такой же, как у каталога
- * систем — архив скачивается на сервер, разбивается там на куски, куски
- * загружаются в базу, — только этапы идут ОДНОВРЕМЕННО:
+ * систем, и шаги идут ПО ОЧЕРЕДИ — каждый начинается, когда предыдущий
+ * закончен целиком:
  *
  *   1. probe    — HEAD к EDSM: размер, дата, поддержка Range. Тот же дамп,
  *                 что в прошлый удачный импорт, второй раз не качается;
- *   2. download — архив на сервер (`data/spansh/factions`, тот же диск, что у
- *                 каталога систем). FACTIONS_DOWNLOAD_SEGMENTS соединений (8)
- *                 берут куски файла по FACTIONS_PIECE_MB (8 МБ) по порядку,
- *                 поэтому начало файла готово почти сразу, а скорость — сумма
- *                 соединений. Докачка после обрыва и перезапуска сайта; дамп,
- *                 пересобранный EDSM посреди скачивания, со старым не
- *                 склеивается — скачивание начинается заново;
- *   3. split    — по мере скачивания архив разбирается (`bgsDump.ts`) и
- *                 раскладывается в куски по FACTIONS_SHARD_SYSTEMS систем
- *                 (`bgsShards.ts`): от 0,5 ГБ остаются мегабайты;
- *   4. import   — готовые куски сразу пишутся в базу (`bgsWriter.ts`: прямой
- *                 Postgres, как у каталога, или PostgREST). Кусок — единица
- *                 продолжения: после обрыва пишутся только незаписанные;
+ *   2. download — архив скачивается на сервер ЦЕЛИКОМ (`data/spansh/factions`,
+ *                 тот же диск, что у каталога систем). FACTIONS_DOWNLOAD_SEGMENTS
+ *                 соединений (8) берут куски файла по FACTIONS_PIECE_MB (8 МБ);
+ *                 докачка после обрыва и перезапуска сайта; дамп, пересобранный
+ *                 EDSM посреди скачивания, со старым не склеивается — скачивание
+ *                 начинается заново. Соединение, замолчавшее на
+ *                 FACTIONS_STALL_SECONDS (15 с), переподключается сразу, а не
+ *                 через 70 с `read ETIMEDOUT`. Если соединения замирают, успев
+ *                 передать лишь несколько килобайт (так сеть сервера режет
+ *                 TCP-сессии к зарубежным CDN — EDSM за Cloudflare), загрузка
+ *                 переходит на короткие запросы меньше порога, каждый в новом
+ *                 соединении (FACTIONS_REQUEST_KB, `freshFetch.ts`);
+ *   3. split    — скачанный архив разбирается (`bgsDump.ts`) и раскладывается
+ *                 в куски по FACTIONS_SHARD_SYSTEMS систем (`bgsShards.ts`):
+ *                 от 0,5 ГБ остаются мегабайты;
+ *   4. import   — куски пишутся в базу (`bgsWriter.ts`: прямой Postgres, как у
+ *                 каталога, или PostgREST). Кусок — единица продолжения: после
+ *                 обрыва пишутся только незаписанные;
  *   5. finish   — удалить системы, пропавшие из дампа (если пилоты не
  *                 присылали их последние 30 дней), пересчитать фракции,
  *                 записать состояние; архив и куски удаляются с диска.
  *
  * Админка умеет и по частям (`mode`): только скачать архив, только разбить
- * его на куски, загрузить в базу то, что уже на сервере (без EDSM).
+ * его на куски, загрузить в базу то, что уже на сервере (без EDSM). Архив
+ * можно и загрузить в админке с компьютера (`bgsUpload.ts`) — для сервера,
+ * которому EDSM недоступен.
  *
  * Правило слияния в базе — «свежее наблюдение побеждает»: данные пилота из
  * Colonial Helper новее дампа не затираются.
@@ -37,8 +44,8 @@
  * журнал — в памяти процесса и копией в `bgs_sync_state`.
  */
 
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, statfsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { BgsDumpCounter, type BgsDumpStats } from './bgsDump.ts';
@@ -66,7 +73,6 @@ import {
   type BgsSyncTrigger,
 } from './bgsProgress.ts';
 import {
-  BgsPulse,
   BGS_SPLIT_ABORTED,
   DEFAULT_BGS_SHARD_SYSTEMS,
   bgsShardsInfo,
@@ -89,8 +95,8 @@ import {
   type BgsDbWriter,
   type BgsPgClient,
 } from './bgsWriter.ts';
+import { createFreshConnectionFetch } from './freshFetch.ts';
 import {
-  contiguousBytesOnDisk,
   downloadDump,
   downloadedBytesOnDisk,
   galaxyArchiveDir,
@@ -123,6 +129,10 @@ export const BGS_DEFAULT_REFRESH_DAYS = 7;
  * соединения (у Spansh — ~10 КБ/с на поток), поэтому их больше, чем у каталога.
  */
 export const BGS_DEFAULT_SEGMENTS = 8;
+/** Соединение без единого байта дольше этого обрывается и переподключается. */
+export const BGS_DEFAULT_STALL_SECONDS = 15;
+/** Имя файла дампа на EDSM — для подсказок «скачайте на компьютере». */
+export const BGS_ARCHIVE_SOURCE_NAME = 'systemsPopulated.json.gz';
 export const BGS_MAX_SEGMENTS = 16;
 /** Кусок файла, который соединение берёт за раз. */
 export const BGS_DEFAULT_PIECE_MB = 8;
@@ -205,6 +215,51 @@ export function bgsPieceBytes(env: Record<string, string | undefined> = process.
   const raw = Number(env.FACTIONS_PIECE_MB);
   const mb = Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.min(64, Math.floor(raw))) : BGS_DEFAULT_PIECE_MB;
   return mb * 1024 * 1024;
+}
+
+/**
+ * `FACTIONS_STALL_SECONDS` — соединение, не получившее ни байта за это время,
+ * обрывается и переподключается (3–300 с, по умолчанию 15). `0` — ждать, пока
+ * сокет не закроет сама система (у Node это ~70 с `read ETIMEDOUT`).
+ */
+export function bgsStallMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.FACTIONS_STALL_SECONDS?.trim() ?? '';
+  if (/^(0|off|no|false)$/i.test(raw)) return 0;
+  const seconds = Number(raw);
+  return (Number.isFinite(seconds) && seconds > 0 ? Math.max(3, Math.min(300, Math.floor(seconds))) : BGS_DEFAULT_STALL_SECONDS) * 1000;
+}
+
+/**
+ * `FACTIONS_REQUEST_KB` — короткие запросы для сети, которая «замораживает»
+ * TCP-сессии после нескольких килобайт: `auto` (по умолчанию) — включаются
+ * сами, когда соединения замирают; `off` — никогда; число 4–1024 — запросы
+ * по столько КБ с самого начала.
+ */
+export function bgsShortRequests(env: Record<string, string | undefined> = process.env): 'auto' | 'off' | number {
+  const raw = env.FACTIONS_REQUEST_KB?.trim().toLowerCase() ?? '';
+  if (!raw || raw === 'auto') return 'auto';
+  if (/^(0|off|no|false)$/.test(raw)) return 'off';
+  const kb = Number(raw);
+  return Number.isFinite(kb) && kb > 0 ? Math.max(4, Math.min(1024, Math.floor(kb))) * 1024 : 'auto';
+}
+
+/**
+ * `FACTIONS_FRESH_CONNECTIONS=0` — запросы к EDSM через обычный `fetch` с
+ * keep-alive. По умолчанию каждый запрос идёт в новом соединении
+ * (`freshFetch.ts`): иначе короткие запросы попадали бы в уже «замороженную»
+ * сессию.
+ */
+export function bgsFreshConnections(env: Record<string, string | undefined> = process.env): boolean {
+  return !/^(0|off|no|false)$/i.test(env.FACTIONS_FRESH_CONNECTIONS?.trim() ?? '');
+}
+
+type FreshGlobal = typeof globalThis & { edrcBgsFreshFetch?: typeof fetch };
+
+/** Один на процесс: общий кэш TLS-сессий делает новые соединения дешевле. */
+function freshFetch(): typeof fetch {
+  const holder = globalThis as FreshGlobal;
+  holder.edrcBgsFreshFetch ??= createFreshConnectionFetch();
+  return holder.edrcBgsFreshFetch;
 }
 
 /** `FACTIONS_SHARD_SYSTEMS` — систем в куске (100–10 000, по умолчанию 1000). */
@@ -307,15 +362,19 @@ function importedSource(state: BgsSyncState): BgsDumpSource | null {
  * чья недокачанная часть лежит на диске: дописать к ней хвост другого дампа —
  * значит получить битый gzip.
  */
-interface ArchiveMeta {
+export interface ArchiveMeta {
   url: string;
   etag: string | null;
   lastModified: string | null;
   total: number | null;
   completedAt: string | null;
+  /** Архив загружен в админке с компьютера (или положен на сервер вручную), а не скачан с EDSM. */
+  uploaded?: boolean;
+  /** Имя загруженного файла. */
+  uploadName?: string | null;
 }
 
-function readArchiveMeta(dest: string): ArchiveMeta | null {
+export function readArchiveMeta(dest: string): ArchiveMeta | null {
   try {
     const raw = JSON.parse(readFileSync(`${dest}${META_SUFFIX}`, 'utf8')) as Partial<ArchiveMeta>;
     if (!raw || typeof raw.url !== 'string') return null;
@@ -325,13 +384,14 @@ function readArchiveMeta(dest: string): ArchiveMeta | null {
       lastModified: typeof raw.lastModified === 'string' ? raw.lastModified : null,
       total: typeof raw.total === 'number' && raw.total > 0 ? raw.total : null,
       completedAt: typeof raw.completedAt === 'string' && raw.completedAt ? raw.completedAt : null,
+      ...(raw.uploaded === true ? { uploaded: true, uploadName: typeof raw.uploadName === 'string' ? raw.uploadName.slice(0, 200) : null } : {}),
     };
   } catch {
     return null;
   }
 }
 
-function writeArchiveMeta(dest: string, meta: ArchiveMeta): void {
+export function writeArchiveMeta(dest: string, meta: ArchiveMeta): void {
   try {
     mkdirSync(dirname(dest), { recursive: true });
     writeFileAtomic(`${dest}${META_SUFFIX}`, JSON.stringify(meta, null, 1));
@@ -353,18 +413,19 @@ function fileSize(path: string): number {
 }
 
 /** Архив скачан целиком: есть метка с `completedAt`, размер сходится, плана докачки нет. */
-function archiveIsComplete(dest: string, meta: ArchiveMeta | null): boolean {
+export function archiveIsComplete(dest: string, meta: ArchiveMeta | null): boolean {
   return Boolean(meta?.completedAt && existsSync(dest) && !existsSync(segmentStatePath(dest)) && meta.total === fileSize(dest));
 }
 
-function removeArchive(dest: string): number {
+/** Удалить архив, план докачки и метку. Возвращает освобождённые байты. */
+export function removeArchive(dest: string): number {
   const partial = downloadedBytesOnDisk(dest);
   const bytes = partial ? partial.done : fileSize(dest);
   for (const path of [dest, segmentStatePath(dest), `${dest}${META_SUFFIX}`]) rmSync(path, { force: true });
   return bytes;
 }
 
-function freeBytes(dir: string): number | null {
+export function freeBytes(dir: string): number | null {
   try {
     mkdirSync(dir, { recursive: true });
     const stats = statfsSync(dir);
@@ -389,6 +450,11 @@ export interface BgsArchiveInfo {
   complete: boolean;
   lastModified: string | null;
   freeBytes: number | null;
+  /** Загружен в админке с компьютера (или положен вручную и уже принят). */
+  uploaded: boolean;
+  uploadName: string | null;
+  /** Файл без метки и без плана докачки — положен на сервер вручную; загрузка примет его. */
+  manual: boolean;
 }
 
 export function bgsArchiveInfo(path = bgsArchivePath()): BgsArchiveInfo {
@@ -397,17 +463,70 @@ export function bgsArchiveInfo(path = bgsArchivePath()): BgsArchiveInfo {
   const bytes = exists ? fileSize(path) : 0;
   const plan = exists ? downloadedBytesOnDisk(path) : null;
   const complete = archiveIsComplete(path, meta);
+  const manual = exists && !meta && !plan;
   return {
     path,
     exists,
     bytes,
     downloaded: plan ? plan.done : bytes,
-    total: plan?.total ?? meta?.total ?? (complete ? bytes : null),
-    partial: Boolean(plan) || (exists && !complete),
+    total: plan?.total ?? meta?.total ?? (complete || manual ? bytes : null),
+    partial: Boolean(plan) || (exists && !complete && !manual),
     complete,
     lastModified: meta?.lastModified ?? null,
     freeBytes: freeBytes(dirname(path)),
+    uploaded: Boolean(meta?.uploaded),
+    uploadName: meta?.uploaded ? meta.uploadName ?? null : null,
+    manual,
   };
+}
+
+/** Метка для архива, который не скачан с EDSM: размер и начало файла вместо ETag. */
+export function uploadedDumpEtag(size: number, head: Buffer): string {
+  return `"upload-${size.toString(16)}-${createHash('sha1').update(head).digest('hex').slice(0, 12)}"`;
+}
+
+/** Начало файла (для метки и проверки «это gzip»). */
+export function readFileHead(path: string, bytes = 1024 * 1024): Buffer {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const buffer = Buffer.alloc(bytes);
+    const read = readSync(fd, buffer, 0, bytes, 0);
+    return buffer.subarray(0, read);
+  } catch {
+    return Buffer.alloc(0);
+  } finally {
+    if (fd != null) closeSync(fd);
+  }
+}
+
+/**
+ * Файл дампа, положенный на сервер вручную (scp в каталог архива), — без
+ * метки и плана докачки. Если это gzip, он принимается как загруженный:
+ * получает метку, и дальше с ним работают как с архивом, загруженным в админке.
+ */
+export function adoptManualBgsArchive(dest: string, url: string): ArchiveMeta | null {
+  if (!existsSync(dest) || existsSync(`${dest}${META_SUFFIX}`) || existsSync(segmentStatePath(dest))) return null;
+  const size = fileSize(dest);
+  const head = readFileHead(dest);
+  if (size <= 0 || head[0] !== 0x1f || head[1] !== 0x8b) return null;
+  let mtime = Date.now();
+  try {
+    mtime = statSync(dest).mtimeMs;
+  } catch {
+    // дата файла неизвестна — сейчас
+  }
+  const meta: ArchiveMeta = {
+    url,
+    etag: uploadedDumpEtag(size, head),
+    lastModified: new Date(mtime).toUTCString(),
+    total: size,
+    completedAt: new Date().toISOString(),
+    uploaded: true,
+    uploadName: 'положен на сервер вручную',
+  };
+  writeArchiveMeta(dest, meta);
+  return readArchiveMeta(dest);
 }
 
 export function bgsShardsStatus(dir = bgsShardsDir()): BgsShardsInfo {
@@ -497,6 +616,12 @@ export interface BgsSyncOptions {
   pieceBytes?: number;
   /** Файл меньше — одним соединением (тесты; по умолчанию 64 МБ). */
   minSegmentedBytes?: number;
+  /** Соединение без данных дольше — переподключение (по умолчанию `FACTIONS_STALL_SECONDS`). */
+  stallTimeoutMs?: number;
+  /** Короткие запросы (по умолчанию `FACTIONS_REQUEST_KB`: auto). */
+  shortRequests?: 'auto' | 'off' | number;
+  /** Самый короткий запрос (тесты). */
+  minRequestBytes?: number;
   shardSystems?: number;
   /** Пачка записи через PostgREST. */
   batchSize?: number;
@@ -568,6 +693,11 @@ function withUserAgent(fetchImpl: typeof fetch): typeof fetch {
   }) as typeof fetch;
 }
 
+/** `fetch` для запросов к EDSM: свой User-Agent, по умолчанию — новое соединение на запрос. */
+export function bgsEdsmFetch(fetchImpl?: typeof fetch): typeof fetch {
+  return withUserAgent(fetchImpl ?? (bgsFreshConnections() ? freshFetch() : fetch));
+}
+
 /** Архив испорчен (gzip не разбирается): его надо удалить и скачать заново. */
 class BgsArchiveCorrupted extends Error {
   constructor(message: string) {
@@ -607,22 +737,6 @@ function describeStats(stats: BgsDumpStats): string[] {
   return lines;
 }
 
-/** Все задачи конвейера сразу; первая ошибка останавливает остальные и уходит наверх. */
-async function runTogether(tasks: Array<() => Promise<void>>, controller: AbortController): Promise<void> {
-  let failure: { error: unknown } | null = null;
-  await Promise.all(
-    tasks.map((task) =>
-      task().catch((error) => {
-        if (!failure) {
-          failure = { error };
-          controller.abort(error instanceof Error ? error : new Error(shortError(error)));
-        }
-      }),
-    ),
-  );
-  if (failure) throw (failure as { error: unknown }).error;
-}
-
 /** Что есть на сервере для работы без EDSM: архив целиком или разбитые до конца куски. */
 function localDump(dest: string, shardsDir: string): BgsDumpSource | null {
   const meta = readArchiveMeta(dest);
@@ -638,7 +752,9 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
   const url = options.url ?? bgsDumpUrl();
   const dest = resolve(options.archivePath ?? bgsArchivePath());
   const shardsDir = resolve(options.shardsDir ?? bgsShardsDirFor(dest));
-  const fetchImpl = withUserAgent(options.fetchImpl ?? fetch);
+  const fetchImpl = bgsEdsmFetch(options.fetchImpl);
+  const stallTimeoutMs = options.stallTimeoutMs ?? bgsStallMs();
+  const shortRequests = options.shortRequests ?? bgsShortRequests();
   const minSystems = options.minSystems ?? bgsMinSystems();
   const segments = clampBgsSegments(options.segments ?? bgsDownloadSegments());
   const pieceBytes = options.pieceBytes ?? bgsPieceBytes();
@@ -700,9 +816,22 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
     const imported = importedSource(previous);
 
     /* ── Какой дамп ── */
+    const adopted = adoptManualBgsArchive(dest, url);
+    if (adopted) {
+      log('info', `На сервере лежит файл архива без метки (${formatBgsBytes(adopted.total)}, ${dest}) — принят как положенный вручную`);
+    }
     let source: BgsDumpSource | null = null;
     let probe: DumpProbe | null = null;
-    if (online) {
+    const localMeta = readArchiveMeta(dest);
+    const uploaded = mode === 'full' && localMeta?.uploaded && archiveIsComplete(dest, localMeta) ? metaSource(localMeta) : null;
+    if (uploaded && (force || !sameBgsDumpSource(uploaded, imported))) {
+      // Архив загружен администратором с компьютера (серверу EDSM недоступен
+      // или медленен) и ещё не в базе: ради этого его и загружали.
+      complete('probe', 'не нужен — архив загружен с компьютера', 'skipped');
+      log('info', `Архив загружен в админке с компьютера (${localMeta?.uploadName ?? 'файл'}, ${formatBgsBytes(uploaded.total)}`
+        + `${uploaded.lastModified ? `, файл от ${uploaded.lastModified}` : ''}) — беру его, EDSM не опрашиваю`);
+      source = uploaded;
+    } else if (online) {
       await begin('probe', { detail: 'HEAD-запрос к EDSM' });
       const probeStarted = Date.now();
       try {
@@ -814,6 +943,197 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
       log('info', `Архив уже разбит на куски: ${formatBgsCount(ctx.manifest!.shards.length)} шт., ${formatBgsCount(ctx.manifest!.systems)} систем (${shardsDir})`);
     }
 
+    /* ── Шаги по очереди: архив скачивается целиком → разбивается на куски → куски пишутся в базу ── */
+    const tallies = { applied: 0, stale: 0, calls: 0 };
+    let downloadSeen: { stalls: number; requestBytes: number | null } = { stalls: 0, requestBytes: null };
+
+    const downloadArchive = async (): Promise<void> => {
+      const total = ctx.source.total;
+      const already = downloadedBytesOnDisk(dest)?.done ?? fileSize(dest);
+      const free = freeBytes(dirname(dest));
+      const need = Math.max(0, (total ?? 600 * 1024 * 1024) - already) + DISK_RESERVE_BYTES;
+      if (free != null && free < need) {
+        throw new Error(`Недостаточно места на диске для дампа: свободно ${formatBgsBytes(free)}, нужно ~${formatBgsBytes(need)} (${dirname(dest)})`);
+      }
+      writeArchiveMeta(dest, { url: ctx.source.url, etag: ctx.source.etag, lastModified: ctx.source.lastModified, total, completedAt: null });
+      log('info', `Скачиваю архив на сервер целиком: ${dest} — до ${segments} соединений, куски по ${formatBgsBytes(pieceBytes)}`
+        + `${already > 0 ? `, уже скачано ${formatBgsBytes(already)} — докачка` : ''}`
+        + (mode === 'full' ? '. Разбивка и запись в базу начнутся, когда архив будет на диске целиком' : ''));
+      await begin('download', { total, done: already, detail: 'соединение' });
+      const downloadStarted = Date.now();
+      let firstBytes: number | null = null;
+      downloadSeen = { stalls: 0, requestBytes: null };
+      const result = await downloadDump({
+        url: ctx.source.url,
+        dest,
+        segments,
+        pieceBytes,
+        strictSource: true,
+        probe: ctx.probe ?? undefined,
+        minSegmentedBytes: options.minSegmentedBytes,
+        stallTimeoutMs,
+        shortRequests,
+        minRequestBytes: options.minRequestBytes,
+        signal: run.controller.signal,
+        retries: Infinity,
+        maxStagnantFailures: 12,
+        verify: false,
+        fetchImpl,
+        sleep: options.sleep,
+        progressIntervalMs: 1000,
+        log: (line) => log(/обрыв|не удалось|недоступн|не даёт|не ответил|заново|замолчал|замирают|замер/i.test(line) ? 'warn' : 'info', `Скачивание: ${line}`),
+        onProgress: (info) => {
+          downloadSeen = { stalls: info.stalls ?? 0, requestBytes: info.requestBytes ?? null };
+          if (firstBytes == null) firstBytes = info.received;
+          const seconds = Math.max(1, (Date.now() - downloadStarted) / 1000);
+          const speed = Math.max(0, info.received - firstBytes) / seconds;
+          const left = info.total && speed > 0 ? ((info.total - info.received) / speed) * 1000 : null;
+          return advance('download', {
+            done: info.received,
+            total: info.total,
+            detail: `${formatBgsBytes(info.received)}${info.total ? ` из ${formatBgsBytes(info.total)}` : ''}`
+              + (info.connections ? ` · соединений: ${info.connections}` : '')
+              + (info.requestBytes ? ` · запросы по ${formatBgsBytes(info.requestBytes)}` : '')
+              + (speed > 0 ? ` · ${formatBgsSpeed(speed)}` : '')
+              + (left != null ? ` · осталось ~${formatBgsDuration(left)}` : '')
+              + (info.failures > 0 ? ` · обрывов: ${formatBgsCount(info.failures)}` : ''),
+          });
+        },
+      });
+      writeArchiveMeta(dest, {
+        url: ctx.source.url,
+        etag: ctx.source.etag,
+        lastModified: result.lastModified ?? ctx.source.lastModified,
+        total: result.bytes,
+        completedAt: new Date().toISOString(),
+      });
+      archiveReady = true;
+      const took = Date.now() - downloadStarted;
+      complete('download', `${formatBgsBytes(result.bytes)} за ${formatBgsDuration(took)} · соединений: ${result.segments}`);
+      log('info', `Архив скачан целиком: ${formatBgsBytes(result.bytes)} за ${formatBgsDuration(took)} (${result.segments} соедин.)`);
+    };
+
+    const splitArchive = async (): Promise<void> => {
+      const manifest = ctx.manifest!;
+      const counter = new BgsDumpCounter();
+      const totalBytes = fileSize(dest) || ctx.source.total || null;
+      await begin('split', { total: totalBytes, done: 0, detail: 'читаю архив' });
+      log('info', manifest.recordsRead > 0
+        ? `Разбивка: продолжаю — ${formatBgsCount(manifest.recordsRead)} записей уже в ${formatBgsCount(manifest.shards.length)} кусках, перечитываю архив до этой точки`
+        : `Разбивка: читаю скачанный архив (${formatBgsBytes(totalBytes)}), кусок — ${formatBgsCount(manifest.systemsPerShard)} систем → ${shardsDir}`);
+      const splitStarted = Date.now();
+      try {
+        await splitBgsArchive({
+          archive: dest,
+          dir: shardsDir,
+          manifest,
+          counter,
+          signal: run.controller.signal,
+          onShard: (entry, current) => {
+            if (current.shards.length === 1 || current.shards.length % 10 === 0) {
+              log('info', `Разбивка: кусок ${current.shards.length} (${entry.file}) — ${formatBgsCount(entry.systems)} систем, ${formatBgsBytes(entry.bytes)}`);
+            }
+          },
+          onProgress: (info) => advance('split', {
+            done: info.bytesRead,
+            total: totalBytes,
+            detail: `кусков ${formatBgsCount(info.shards)} · систем ${formatBgsCount(info.systems)}`
+              + ` · прочитано ${formatBgsBytes(info.bytesRead)}${totalBytes ? ` из ${formatBgsBytes(totalBytes)}` : ''}`,
+          }),
+        });
+      } catch (error) {
+        if (run.controller.signal.aborted || (error as Error)?.message === BGS_SPLIT_ABORTED) throw error;
+        if (isArchiveCorruption(error)) throw new BgsArchiveCorrupted(`Архив не разбирается: ${shortError(error)}`);
+        throw error;
+      }
+      complete('split', `${formatBgsCount(manifest.shards.length)} кусков · ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - splitStarted)}`);
+      log('info', `Разбивка завершена: ${formatBgsCount(manifest.shards.length)} кусков, ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - splitStarted)}`);
+      for (const line of describeStats(counter.stats)) log('info', line);
+    };
+
+    const importShards = async (): Promise<void> => {
+      const manifest = ctx.manifest!;
+      const db = writer!;
+      const total = manifest.shards.length;
+      const importedNow = () => manifest.shards.filter((entry) => entry.imported).length;
+      const resumed = importedNow();
+      if (resumed > 0) log('info', `Запись в базу: продолжаю — ${formatBgsCount(resumed)} кусков этого дампа уже в базе`);
+      await begin('import', { total, done: resumed, detail: `кусок ${formatBgsCount(resumed)} из ${formatBgsCount(total)}` });
+      const importStarted = Date.now();
+      let importedHere = 0;
+      for (let index = 0; index < manifest.shards.length; index++) {
+        checkCancelled();
+        const entry = manifest.shards[index];
+        if (entry.imported) continue;
+        let rows: Record<string, unknown>[];
+        try {
+          rows = await readBgsShardRows(join(shardsDir, entry.file));
+        } catch (error) {
+          throw new BgsShardCorrupted(`Кусок ${entry.file} не читается: ${shortError(error)}`);
+        }
+        const result = await db.apply(rows, manifest.runId);
+        Object.assign(entry, { imported: true, applied: result.applied, stale: result.stale });
+        writeBgsShardManifest(shardsDir, manifest);
+        written += rows.length;
+        importedHere += 1;
+        tallies.calls += result.calls;
+        if (importedHere === 1 || importedHere % 10 === 0) {
+          log('info', `Запись в базу: кусок ${index + 1} из ${formatBgsCount(total)} — применено ${formatBgsCount(result.applied)}, свежее у пилотов ${formatBgsCount(result.stale)}`);
+        }
+        const done = importedNow();
+        const systems = manifest.shards.reduce((sum, item) => sum + (item.imported ? item.systems : 0), 0);
+        const stale = manifest.shards.reduce((sum, item) => sum + item.stale, 0);
+        await advance('import', {
+          done,
+          total,
+          detail: `кусок ${formatBgsCount(done)} из ${formatBgsCount(total)} · систем ${formatBgsCount(systems)} · свежее у пилотов ${formatBgsCount(stale)}`,
+        });
+      }
+      tallies.applied = manifest.shards.reduce((sum, item) => sum + item.applied, 0);
+      tallies.stale = manifest.shards.reduce((sum, item) => sum + item.stale, 0);
+      complete('import', `${formatBgsCount(total)} кусков · ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - importStarted)}`);
+      log('info', `Записано в базу: ${formatBgsCount(manifest.systems)} систем из ${formatBgsCount(total)} кусков`
+        + `${tallies.calls ? ` (${formatBgsCount(tallies.calls)} вызовов)` : ''}, не тронуто — у пилотов свежее: ${formatBgsCount(tallies.stale)}`);
+    };
+
+    // 1. Скачать архив целиком (если его нет и куски не готовы). EDSM может
+    //    пересобрать дамп посреди скачивания — тогда заново со свежим дампом.
+    if (needDownload && !archiveReady) {
+      for (let restarts = 0; ; restarts++) {
+        try {
+          await downloadArchive();
+          break;
+        } catch (error) {
+          if (run.cancelled || !isDumpSourceChanged(error) || restarts >= MAX_SOURCE_RESTARTS) {
+            if (!run.cancelled && downloadSeen.stalls > 0) {
+              log('warn', downloadSeen.requestBytes
+                ? `Соединения с EDSM замирают даже на коротких запросах по ${formatBgsBytes(downloadSeen.requestBytes)} — сеть сервера (фильтрация трафика к зарубежным CDN) не даёт скачать дамп. Скачайте ${BGS_ARCHIVE_SOURCE_NAME} на компьютере и загрузите его кнопкой «Загрузить архив с компьютера» или задайте FACTIONS_DUMP_URL на доступное серверу зеркало`
+                : `Соединения с EDSM замолкали ${formatBgsCount(downloadSeen.stalls)} раз. Скачанное осталось на сервере — следующий запуск докачает. Если так и не пойдёт, скачайте ${BGS_ARCHIVE_SOURCE_NAME} на компьютере и загрузите кнопкой «Загрузить архив с компьютера»`);
+            }
+            throw error;
+          }
+          // Старые байты бесполезны: начать со свежим дампом.
+          log('warn', `Дамп на EDSM обновился во время скачивания (${shortError(error)}) — удаляю скачанное и начинаю заново со свежим дампом`);
+          removeArchive(dest);
+          clearBgsShards(shardsDir);
+          const fresh = await probeDumpSource(url, { fetchImpl, signal: run.controller.signal });
+          ctx.probe = fresh;
+          ctx.source = { url, etag: fresh.etag, lastModified: fresh.lastModified, total: fresh.total };
+          if (ctx.manifest) {
+            ctx.manifest = createBgsShardManifest({ source: ctx.source, runId: randomUUID(), systemsPerShard: shardSystems });
+            writeBgsShardManifest(shardsDir, ctx.manifest);
+          }
+          resetBgsStage(run.progress, 'download');
+          log('info', `Новый дамп: ${fresh.total ? formatBgsBytes(fresh.total) : 'размер неизвестен'}${fresh.lastModified ? ` от ${fresh.lastModified}` : ''}`);
+        }
+      }
+    }
+    checkCancelled();
+    // 2. Разбить архив на куски — только когда он целиком на диске.
+    if (needSplit && !ctx.manifest!.complete) await splitArchive();
+    checkCancelled();
+    // 3. Записать куски в базу. Подключение к базе открывается только сейчас:
+    //    простаивая всё скачивание, его мог бы закрыть сервер или пул.
     if (needImport) {
       writer = await createBgsWriter({
         svc,
@@ -825,231 +1145,7 @@ async function syncOnce(svc: Svc, options: BgsSyncOptions): Promise<BgsSyncResul
       log('info', writer.backend === 'pg'
         ? `Запись в базу: ${writer.label} — кусок одним вызовом, без statement_timeout`
         : `Запись в базу: ${writer.label} — пачками по ${formatBgsCount(writer.batchSize)} систем (пачка, не уложившаяся в statement_timeout, делится пополам)`);
-    }
-
-    /* ── Конвейер: скачивание, разбивка и запись одновременно ── */
-    let splitBytesRead = 0;
-    const tallies = { applied: 0, stale: 0, calls: 0 };
-
-    const runPipeline = async (): Promise<void> => {
-      const pipe = new AbortController();
-      const onRunAbort = () => pipe.abort(new Error(BGS_CANCEL_MESSAGE));
-      if (run.controller.signal.aborted) onRunAbort();
-      run.controller.signal.addEventListener('abort', onRunAbort, { once: true });
-      const bytesPulse = new BgsPulse();
-      const shardPulse = new BgsPulse();
-      const live = {
-        downloading: needDownload && !archiveReady,
-        contiguous: existsSync(segmentStatePath(dest)) ? contiguousBytesOnDisk(dest) : fileSize(dest),
-      };
-      const tasks: Array<() => Promise<void>> = [];
-
-      if (live.downloading) {
-        tasks.push(async () => {
-          const total = ctx.source.total;
-          const already = downloadedBytesOnDisk(dest)?.done ?? fileSize(dest);
-          const free = freeBytes(dirname(dest));
-          const need = Math.max(0, (total ?? 600 * 1024 * 1024) - already) + DISK_RESERVE_BYTES;
-          if (free != null && free < need) {
-            throw new Error(`Недостаточно места на диске для дампа: свободно ${formatBgsBytes(free)}, нужно ~${formatBgsBytes(need)} (${dirname(dest)})`);
-          }
-          writeArchiveMeta(dest, { url: ctx.source.url, etag: ctx.source.etag, lastModified: ctx.source.lastModified, total, completedAt: null });
-          log('info', `Скачиваю архив на сервер: ${dest} — до ${segments} соединений, куски по ${formatBgsBytes(pieceBytes)}${already > 0 ? `, уже скачано ${formatBgsBytes(already)} — докачка` : ''}`);
-          await begin('download', { total, done: already, detail: 'соединение' });
-          const downloadStarted = Date.now();
-          let firstBytes: number | null = null;
-          const result = await downloadDump({
-            url: ctx.source.url,
-            dest,
-            segments,
-            pieceBytes,
-            strictSource: true,
-            probe: ctx.probe ?? undefined,
-            minSegmentedBytes: options.minSegmentedBytes,
-            signal: pipe.signal,
-            retries: Infinity,
-            maxStagnantFailures: 12,
-            verify: false,
-            fetchImpl,
-            sleep: options.sleep,
-            progressIntervalMs: 1000,
-            log: (line) => log(/обрыв|не удалось|недоступн|не даёт|не ответил|заново/i.test(line) ? 'warn' : 'info', `Скачивание: ${line}`),
-            onProgress: (info) => {
-              live.contiguous = info.contiguous ?? info.received;
-              bytesPulse.notify();
-              if (firstBytes == null) firstBytes = info.received;
-              const seconds = Math.max(1, (Date.now() - downloadStarted) / 1000);
-              const speed = Math.max(0, info.received - firstBytes) / seconds;
-              const left = info.total && speed > 0 ? ((info.total - info.received) / speed) * 1000 : null;
-              return advance('download', {
-                done: info.received,
-                total: info.total,
-                detail: `${formatBgsBytes(info.received)}${info.total ? ` из ${formatBgsBytes(info.total)}` : ''}`
-                  + (info.connections ? ` · соединений: ${info.connections}` : '')
-                  + (speed > 0 ? ` · ${formatBgsSpeed(speed)}` : '')
-                  + (left != null ? ` · осталось ~${formatBgsDuration(left)}` : '')
-                  + (info.failures > 0 ? ` · обрывов: ${info.failures}` : ''),
-              });
-            },
-          });
-          writeArchiveMeta(dest, {
-            url: ctx.source.url,
-            etag: ctx.source.etag,
-            lastModified: result.lastModified ?? ctx.source.lastModified,
-            total: result.bytes,
-            completedAt: new Date().toISOString(),
-          });
-          live.downloading = false;
-          archiveReady = true;
-          bytesPulse.notify();
-          const took = Date.now() - downloadStarted;
-          complete('download', `${formatBgsBytes(result.bytes)} за ${formatBgsDuration(took)} · соединений: ${result.segments}`);
-          log('info', `Архив скачан: ${formatBgsBytes(result.bytes)} за ${formatBgsDuration(took)} (${result.segments} соедин.)`);
-        });
-      }
-
-      if (needSplit) {
-        tasks.push(async () => {
-          const manifest = ctx.manifest!;
-          const counter = new BgsDumpCounter();
-          const totalBytes = ctx.source.total ?? (fileSize(dest) || null);
-          await begin('split', { total: totalBytes, done: 0, detail: live.downloading ? 'жду первые байты архива' : 'читаю архив' });
-          log('info', manifest.recordsRead > 0
-            ? `Разбивка: продолжаю — ${formatBgsCount(manifest.recordsRead)} записей уже в ${formatBgsCount(manifest.shards.length)} кусках, перечитываю архив до этой точки`
-            : `Разбивка: ${live.downloading ? 'читаю архив по мере скачивания' : 'читаю архив'}, кусок — ${formatBgsCount(manifest.systemsPerShard)} систем → ${shardsDir}`);
-          const splitStarted = Date.now();
-          try {
-            await splitBgsArchive({
-              archive: dest,
-              dir: shardsDir,
-              manifest,
-              counter,
-              signal: pipe.signal,
-              available: () => (live.downloading ? live.contiguous : null),
-              waitForBytes: (signal) => bytesPulse.wait(signal, 1000),
-              onShard: (entry, current) => {
-                shardPulse.notify();
-                if (current.shards.length === 1 || current.shards.length % 10 === 0) {
-                  log('info', `Разбивка: кусок ${current.shards.length} (${entry.file}) — ${formatBgsCount(entry.systems)} систем, ${formatBgsBytes(entry.bytes)}`);
-                }
-              },
-              onProgress: (info) => {
-                splitBytesRead = info.bytesRead;
-                return advance('split', {
-                  done: info.bytesRead,
-                  total: totalBytes,
-                  detail: `кусков ${formatBgsCount(info.shards)} · систем ${formatBgsCount(info.systems)}`
-                    + ` · прочитано ${formatBgsBytes(info.bytesRead)}${totalBytes ? ` из ${formatBgsBytes(totalBytes)}` : ''}`
-                    + (info.waiting ? ' · ждёт скачивания' : ''),
-                });
-              },
-            });
-          } catch (error) {
-            if (pipe.signal.aborted || (error as Error)?.message === BGS_SPLIT_ABORTED) throw error;
-            if (isArchiveCorruption(error)) throw new BgsArchiveCorrupted(`Архив не разбирается: ${shortError(error)}`);
-            throw error;
-          }
-          shardPulse.notify();
-          complete('split', `${formatBgsCount(manifest.shards.length)} кусков · ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - splitStarted)}`);
-          log('info', `Разбивка завершена: ${formatBgsCount(manifest.shards.length)} кусков, ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - splitStarted)}`);
-          for (const line of describeStats(counter.stats)) log('info', line);
-        });
-      }
-
-      if (needImport) {
-        tasks.push(async () => {
-          const manifest = ctx.manifest!;
-          const db = writer!;
-          const estimate = (): number | null => {
-            if (manifest.complete) return manifest.shards.length;
-            const total = ctx.source.total ?? 0;
-            if (total > 0 && splitBytesRead > 0 && manifest.shards.length > 0) {
-              return Math.max(manifest.shards.length, Math.round((manifest.shards.length * total) / splitBytesRead));
-            }
-            return null;
-          };
-          const importedNow = () => manifest.shards.filter((entry) => entry.imported).length;
-          const resumed = importedNow();
-          if (resumed > 0) log('info', `Запись в базу: продолжаю — ${formatBgsCount(resumed)} кусков этого дампа уже в базе`);
-          await begin('import', { total: estimate(), done: resumed, detail: manifest.shards.length ? 'пишу' : 'жду первый кусок' });
-          const importStarted = Date.now();
-          let index = 0;
-          let importedHere = 0;
-          for (;;) {
-            if (pipe.signal.aborted) throw pipe.signal.reason instanceof Error ? pipe.signal.reason : new Error(BGS_CANCEL_MESSAGE);
-            if (index >= manifest.shards.length) {
-              if (manifest.complete) break;
-              await shardPulse.wait(pipe.signal, 1000);
-              continue;
-            }
-            const entry = manifest.shards[index];
-            if (!entry.imported) {
-              let rows: Record<string, unknown>[];
-              try {
-                rows = await readBgsShardRows(join(shardsDir, entry.file));
-              } catch (error) {
-                throw new BgsShardCorrupted(`Кусок ${entry.file} не читается: ${shortError(error)}`);
-              }
-              const result = await db.apply(rows, manifest.runId);
-              Object.assign(entry, { imported: true, applied: result.applied, stale: result.stale });
-              writeBgsShardManifest(shardsDir, manifest);
-              written += rows.length;
-              importedHere += 1;
-              tallies.calls += result.calls;
-              if (importedHere === 1 || importedHere % 10 === 0) {
-                const total = estimate();
-                log('info', `Запись в базу: кусок ${index + 1}${total ? ` из ${manifest.complete ? '' : '~'}${formatBgsCount(total)}` : ''} — применено ${formatBgsCount(result.applied)}, свежее у пилотов ${formatBgsCount(result.stale)}`);
-              }
-            }
-            index += 1;
-            const done = importedNow();
-            const systems = manifest.shards.reduce((sum, item) => sum + (item.imported ? item.systems : 0), 0);
-            const stale = manifest.shards.reduce((sum, item) => sum + item.stale, 0);
-            const total = estimate();
-            await advance('import', {
-              done,
-              total,
-              detail: `кусок ${formatBgsCount(done)}${total ? ` из ${manifest.complete ? '' : '~'}${formatBgsCount(total)}` : ''}`
-                + ` · систем ${formatBgsCount(systems)} · свежее у пилотов ${formatBgsCount(stale)}`,
-            });
-          }
-          tallies.applied = manifest.shards.reduce((sum, item) => sum + item.applied, 0);
-          tallies.stale = manifest.shards.reduce((sum, item) => sum + item.stale, 0);
-          complete('import', `${formatBgsCount(manifest.shards.length)} кусков · ${formatBgsCount(manifest.systems)} систем за ${formatBgsDuration(Date.now() - importStarted)}`);
-          log('info', `Записано в базу: ${formatBgsCount(manifest.systems)} систем из ${formatBgsCount(manifest.shards.length)} кусков`
-            + `${tallies.calls ? ` (${formatBgsCount(tallies.calls)} вызовов)` : ''}, не тронуто — у пилотов свежее: ${formatBgsCount(tallies.stale)}`);
-        });
-      }
-
-      try {
-        await runTogether(tasks, pipe);
-      } finally {
-        run.controller.signal.removeEventListener('abort', onRunAbort);
-      }
-    };
-
-    for (let restarts = 0; ; restarts++) {
-      try {
-        await runPipeline();
-        break;
-      } catch (error) {
-        if (run.cancelled || !isDumpSourceChanged(error) || !online || restarts >= MAX_SOURCE_RESTARTS) throw error;
-        // EDSM выложил новый дамп посреди скачивания: старые байты бесполезны.
-        log('warn', `Дамп на EDSM обновился во время скачивания (${shortError(error)}) — удаляю скачанное и начинаю заново со свежим дампом`);
-        removeArchive(dest);
-        clearBgsShards(shardsDir);
-        const fresh = await probeDumpSource(url, { fetchImpl, signal: run.controller.signal });
-        ctx.probe = fresh;
-        ctx.source = { url, etag: fresh.etag, lastModified: fresh.lastModified, total: fresh.total };
-        if (ctx.manifest) {
-          ctx.manifest = createBgsShardManifest({ source: ctx.source, runId: randomUUID(), systemsPerShard: shardSystems });
-          writeBgsShardManifest(shardsDir, ctx.manifest);
-        }
-        archiveReady = false;
-        splitBytesRead = 0;
-        for (const stage of ['download', 'split', 'import'] as const) resetBgsStage(run.progress, stage);
-        log('info', `Новый дамп: ${fresh.total ? formatBgsBytes(fresh.total) : 'размер неизвестен'}${fresh.lastModified ? ` от ${fresh.lastModified}` : ''}`);
-      }
+      await importShards();
     }
     checkCancelled();
 

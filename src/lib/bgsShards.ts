@@ -2,19 +2,17 @@
  * Куски (шарды) дампа EDSM `systemsPopulated.json.gz` — так же, как архив
  * каталога систем раскладывается в шарды (`galaxyShards.ts`).
  *
- * Зачем: архив весит ≈0,5 ГБ, и на тонком канале сервера он идёт часами.
- * Раньше запись в базу начиналась только после последнего байта, а обрыв
- * разбора (перезапуск сайта) означал «перечитать и записать всё заново».
- * Теперь:
+ * Зачем: архив весит ≈0,5 ГБ, а разбор и запись в базу — дольше всего и
+ * обрываются перезапуском сайта. Поэтому шаги идут по очереди:
  *
- *   * **разбивка** читает архив один раз — прямо во время скачивания, ровно до
- *     той границы, до которой файл уже скачан без дыр (`available`), — и
- *     раскладывает населённые системы по маленьким файлам `bgs-00001.ndjson.gz`
- *     (по тысяче систем) с готовыми строками для `bgs_apply_snapshots`
- *     (станции и тела дампа сюда не попадают: от 0,5 ГБ остаются мегабайты);
- *   * **загрузка в базу** идёт по кускам, как только кусок готов; кусок —
- *     единица продолжения: после обрыва записываются только незаписанные куски
- *     той же метки импорта (`runId`), архив повторно не разбирается;
+ *   * **разбивка** начинается, когда архив скачан на сервер ЦЕЛИКОМ, читает
+ *     его один раз и раскладывает населённые системы по маленьким файлам
+ *     `bgs-00001.ndjson.gz` (по тысяче систем) с готовыми строками для
+ *     `bgs_apply_snapshots` (станции и тела дампа сюда не попадают: от 0,5 ГБ
+ *     остаются мегабайты);
+ *   * **загрузка в базу** идёт по кускам после разбивки; кусок — единица
+ *     продолжения: после обрыва записываются только незаписанные куски той же
+ *     метки импорта (`runId`), архив повторно не разбирается;
  *   * `manifest.json` рядом с кусками говорит, из какого дампа они (адрес,
  *     размер, Last-Modified/ETag), сколько записей архива уже разобрано и какие
  *     куски уже в базе.
@@ -22,10 +20,8 @@
  * Файлы обычные: `zcat bgs-00001.ndjson.gz | head` показывает строки как есть.
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { open as openFile } from 'node:fs/promises';
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { createGunzip, gunzip as gunzipCallback, gzip as gzipCallback } from 'node:zlib';
@@ -293,112 +289,9 @@ export async function readBgsShardRows(file: string): Promise<Record<string, unk
   return rows;
 }
 
-/* ── Сигнал «появилось новое» ──────────────────────────────────────────── */
-
-/**
- * Будильник между этапами конвейера: скачивание будит разбивку («байты
- * пришли»), разбивка — загрузку в базу («кусок готов»). Ожидание всегда
- * ограничено `timeoutMs`, поэтому пропущенный сигнал стоит максимум паузу.
- */
-export class BgsPulse {
-  private waiters: Array<() => void> = [];
-
-  notify(): void {
-    const waiters = this.waiters;
-    this.waiters = [];
-    for (const wake of waiters) wake();
-  }
-
-  wait(signal?: AbortSignal, timeoutMs = 1000): Promise<void> {
-    return new Promise<void>((resolveWait) => {
-      let finished = false;
-      const done = () => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', done);
-        resolveWait();
-      };
-      const timer = setTimeout(done, Math.max(1, timeoutMs));
-      if (signal?.aborted) {
-        done();
-        return;
-      }
-      signal?.addEventListener('abort', done, { once: true });
-      this.waiters.push(done);
-    });
-  }
-}
-
-/* ── Чтение архива, который ещё качается ───────────────────────────────── */
-
-export interface GrowingFileOptions {
-  /** Сколько байт от начала файла уже можно читать; `null` — файл готов целиком. */
-  available: () => number | null;
-  /** Подождать новых байт (или паузу). */
-  wait: (signal: AbortSignal) => Promise<void>;
-  signal: AbortSignal;
-  chunkBytes?: number;
-  /** Позиция чтения после каждого куска (сжатые байты, для процента). */
-  onRead?: (position: number) => void;
-  /** Ждём байты (а не читаем) — для подписи «ждёт скачивания». */
-  onWaiting?: (waiting: boolean) => void;
-}
-
 function abortError(signal: AbortSignal): Error {
   const reason = signal.reason;
   return reason instanceof Error ? reason : new Error(BGS_SPLIT_ABORTED);
-}
-
-/**
- * Файл, который ещё скачивается: читается ровно до границы, за которой могут
- * быть дыры (параллельные части пишутся в заранее выделенный файл), и ждёт,
- * пока граница сдвинется. Готовый файл (`available() === null`) — до конца.
- */
-export async function* readGrowingFile(path: string, options: GrowingFileOptions): AsyncGenerator<Buffer> {
-  let handle: Awaited<ReturnType<typeof openFile>> | null = null;
-  // Файл появляется с первым ответом сервера.
-  while (!handle) {
-    if (options.signal.aborted) throw abortError(options.signal);
-    try {
-      handle = await openFile(path, 'r');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT' || options.available() === null) throw error;
-      options.onWaiting?.(true);
-      await options.wait(options.signal);
-    }
-  }
-  try {
-    const buffer = Buffer.allocUnsafe(Math.max(4096, options.chunkBytes ?? 1 << 20));
-    let position = 0;
-    let waiting = false;
-    for (;;) {
-      if (options.signal.aborted) throw abortError(options.signal);
-      const limit = options.available();
-      const room = limit == null ? buffer.length : Math.min(buffer.length, limit - position);
-      if (room > 0) {
-        const { bytesRead } = await handle.read(buffer, 0, room, position);
-        if (bytesRead > 0) {
-          if (waiting) {
-            waiting = false;
-            options.onWaiting?.(false);
-          }
-          position += bytesRead;
-          options.onRead?.(position);
-          yield Buffer.from(buffer.subarray(0, bytesRead));
-          continue;
-        }
-        if (limit == null) return;
-      }
-      if (!waiting) {
-        waiting = true;
-        options.onWaiting?.(true);
-      }
-      await options.wait(options.signal);
-    }
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
 }
 
 /* ── Разбивка архива на куски ──────────────────────────────────────────── */
@@ -410,11 +303,10 @@ export interface BgsSplitProgress {
   records: number;
   systems: number;
   shards: number;
-  /** Разбивка догнала скачивание и ждёт новых байт. */
-  waiting: boolean;
 }
 
 export interface SplitBgsArchiveOptions {
+  /** Скачанный целиком архив. */
   archive: string;
   dir: string;
   /** Манифест этого дампа (новый или для продолжения) — меняется на месте. */
@@ -422,19 +314,18 @@ export interface SplitBgsArchiveOptions {
   /** Счётчик итогов: при продолжении в него попадают и уже разложенные записи. */
   counter: BgsDumpCounter;
   signal: AbortSignal;
-  available: () => number | null;
-  waitForBytes: (signal: AbortSignal) => Promise<void>;
   onShard?: (entry: BgsShardEntry, manifest: BgsShardManifest) => void | Promise<void>;
   onProgress?: (progress: BgsSplitProgress) => void | Promise<void>;
   progressIntervalMs?: number;
 }
 
 /**
- * Прочитать архив (можно — пока он качается) и разложить системы по кускам.
+ * Прочитать скачанный архив и разложить системы по кускам.
  *
  * Продолжение: gzip нельзя начать с середины, поэтому архив перечитывается с
  * начала, но записи, уже лежащие в кусках (`manifest.recordsRead`), только
- * считаются для итогов — повторно не пишутся.
+ * считаются для итогов — повторно не пишутся. Испорченный архив (обрезанный,
+ * с неверной CRC) обрывает разбивку ошибкой zlib.
  */
 export async function splitBgsArchive(options: SplitBgsArchiveOptions): Promise<BgsShardManifest> {
   const { archive, dir, manifest, counter, signal } = options;
@@ -445,7 +336,6 @@ export async function splitBgsArchive(options: SplitBgsArchiveOptions): Promise<
   let seen = 0;
   let pending: string[] = [];
   let position = 0;
-  let waiting = false;
   let lastProgressAt = 0;
 
   const snapshot = (): BgsSplitProgress => ({
@@ -453,7 +343,6 @@ export async function splitBgsArchive(options: SplitBgsArchiveOptions): Promise<
     records: seen,
     systems: manifest.systems + pending.length,
     shards: manifest.shards.length,
-    waiting,
   });
   const report = async (force = false) => {
     const at = Date.now();
@@ -478,20 +367,10 @@ export async function splitBgsArchive(options: SplitBgsArchiveOptions): Promise<
     await report(true);
   };
 
-  const source = Readable.from(
-    readGrowingFile(archive, {
-      available: options.available,
-      wait: options.waitForBytes,
-      signal,
-      onRead: (at) => {
-        position = at;
-      },
-      onWaiting: (value) => {
-        waiting = value;
-        if (value) void report(true);
-      },
-    }),
-  );
+  const source = createReadStream(archive, { highWaterMark: 1 << 20 });
+  source.on('data', (chunk) => {
+    position += chunk.length;
+  });
   const gunzipStream = createGunzip();
   source.on('error', (error) => gunzipStream.destroy(error));
   source.pipe(gunzipStream);
