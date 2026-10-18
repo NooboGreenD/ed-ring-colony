@@ -68,7 +68,7 @@ NEXT_PUBLIC_SUPABASE_URL=https://supabase.edringcolony.ru
 FRONTIER_REDIRECT_URI=https://edringcolony.ru/api/capi/callback
 AUTH_OAUTH_PROVIDERS=discord
 AUTH_EMAIL_ENABLED=false # включить после настройки и проверки SMTP
-JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync
+JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync
 GALNET_FEED_LIMIT=30
 GALNET_TRANSLATE_LIMIT=10
 JOBS_TRANSLATE_PASSES=4
@@ -144,6 +144,7 @@ docker compose --env-file .env.production logs --tail=100 jobs
 | `galnet-sync` | 06:20 ежедневно (09:20 МСК) | `/api/galnet` + очередь переводов |
 | `translate` | 00:40, 06:40, 12:40, 18:40 | `/api/cron/translate` |
 | `powerplay-sync` | 05:20 и 17:20 (08:20 и 20:20 МСК) | `/api/cron/powerplay-sync` — слой PowerPlay карты Atlas из дампа EDSM |
+| `factions-sync` | 07:10 ежедневно (10:10 МСК) | `/api/cron/factions-sync` — минорные фракции карты Atlas: обновление из дампа EDSM раз в `FACTIONS_REFRESH_DAYS` (первый импорт — из админки) |
 
 - Контейнер обращается к `http://web:3000` **внутри Docker-сети**. Это не адрес
   для браузера и не публичная передача токенов по HTTP. Опубликованных портов у

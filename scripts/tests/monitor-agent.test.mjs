@@ -14,6 +14,7 @@ import {
 test('monitor agent shares scheduler defaults and preserves an explicit empty JOBS_ENABLED', () => {
   assert.deepEqual(enabledJobNames(undefined), [
     'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
+    'factions-sync',
   ]);
   assert.deepEqual(enabledJobNames(''), []);
   assert.deepEqual(enabledJobNames('capi-sync, translate'), ['capi-sync', 'translate']);

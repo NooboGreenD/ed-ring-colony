@@ -17,6 +17,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bundleFile } from './helpers/bundle.mjs';
 import { EMPTY_POWERPLAY_META, encodePowerplayLayer } from '../../src/lib/powerplay.ts';
+import { EMPTY_BGS_META, encodeBgsLayer } from '../../src/lib/bgs.ts';
 
 // Заглушка <Link> обязана пробрасывать aria-атрибуты: именно по aria-current
 // проверяется подсветка активного раздела меню.
@@ -76,6 +77,7 @@ const ENTRY = [
   "export { default as AtlasPage } from '@/app/atlas/page';",
   "export { resetAtlasSearchProgress, readAtlasSearchResult } from '@/lib/atlasSearchProgress';",
   "export { resetPowerplayLayerCache } from '@/hooks/usePowerplayLayer';",
+  "export { resetFactionsLayerCache } from '@/hooks/useFactionsLayer';",
 ].join('\n');
 
 async function renderAtlas(ui, options = {}) {
@@ -441,12 +443,13 @@ test('страница Atlas: вкладки, панель поиска и пе�
     await ui.render(ui.React.createElement(ui.mod.AtlasPage));
 
     const tabs = Array.from(ui.document.querySelectorAll('[role="tab"]'));
-    assert.equal(tabs.length, 7, 'в панели семь разделов');
+    assert.equal(tabs.length, 8, 'в панели восемь разделов');
     assert.deepEqual(
       tabs.map((tab) => (tab.textContent || '').trim()),
-      ['Поиск', 'Маршрут', 'Маршрут A→B', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay'],
+      ['Поиск', 'Маршрут', 'Маршрут A→B', 'Кольцо', 'Рынок', 'Поблизости', 'PowerPlay', 'Фракции'],
       'подписи и порядок вкладок',
     );
+    assert.match(tabs[7].getAttribute('title'), /Alt\+8/);
     assert.equal(tabs[0].getAttribute('aria-selected'), 'true');
     assert.match(ui.text(), /Поиск миров/, 'по умолчанию открыт поиск миров');
     assert.match(ui.text(), /История поисков/);
@@ -653,6 +656,176 @@ test('страница Atlas: PowerPlay — ошибка с повтором, з
     // Галочки работают и без данных — и запоминаются до их прихода.
     await ui.click(ui.document.querySelector('[data-power="Jerome Archer"] input'));
     assert.deepEqual(JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).filter.hiddenPowers, ['Jerome Archer']);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+/* ── Вкладка «Фракции»: минорные фракции на карте ── */
+
+const BGS_ROWS = [
+  { id64: '10477373803', name: 'Sol', x: 0, y: 0, z: 0, allegiance: 'Federation', government: 'Democracy', controllingId: 1, controlling: 'Mother Gaia', population: 22780919531, factionsCount: 2, observedSec: 1792040000, source: 'helper' },
+  { id64: '3932277478106', name: 'Lave', x: 75.75, y: 48.75, z: 70.75, allegiance: 'Independent', government: 'Dictatorship', controllingId: 2, controlling: 'Lave Radio', population: 1000000, factionsCount: 3, observedSec: null, source: 'edsm' },
+  { id64: '36028797018963971', name: 'Col 285 Sector AB-C d14-3', x: -24.5, y: -33.8, z: 108.8, allegiance: 'Independent', government: 'Cooperative', controllingId: 3, controlling: 'Ring Colony Pioneers', population: 18457, factionsCount: 2, observedSec: 1792050000, source: 'web' },
+  { id64: '5', name: 'Achenar', x: 67.5, y: -119.5, z: 24.8, allegiance: 'Empire', government: 'Patronage', controllingId: 4, controlling: 'Achenar Empire League', population: 10000000, factionsCount: 4, observedSec: null, source: 'edsm' },
+];
+
+const PIONEERS = {
+  id: 3, name: 'Ring Colony Pioneers', allegiance: 'Independent', government: 'Cooperative', is_player: true, systems_count: 2, controlled_count: 1,
+  systems: [
+    ['5', 'Achenar', 67.5, -119.5, 24.8, 0.12, 'None', false, null, [], [], [], 'Happy', 10000000, 'Empire'],
+    ['36028797018963971', 'Col 285 Sector AB-C d14-3', -24.5, -33.8, 108.8, 0.85, 'Expansion', true, 1792050000, ['Expansion'], [], [], 'Happy', 18457, 'Independent'],
+  ],
+};
+
+test('страница Atlas: вкладка «Фракции» — все населённые системы, поиск и выбор фракций, «у власти»', async () => {
+  // Сервер отдаёт системы по имени (bgs_layer_rows) — панель их не пересортировывает.
+  const sorted = [...BGS_ROWS].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+  const layer = { status: 'ready', version: 'run-1.0', meta: { ...EMPTY_BGS_META, dumpGeneratedAt: '2026-10-17T04:50:00.000Z', factions: 7, pilotUpdateAt: '2026-10-18T09:30:00.000Z' }, ...encodeBgsLayer(sorted) };
+  const searches = [];
+  const ui = await renderAtlas(null, {
+    url: 'http://localhost/atlas?tab=factions',
+    api: (target) => {
+      if (target.includes('/api/factions/systems')) return { body: layer };
+      if (target.includes('/api/factions/search')) {
+        searches.push(target);
+        const results = [{ id: 3, name: 'Ring Colony Pioneers', allegiance: 'Independent', government: 'Cooperative', is_player: true, systems: 2, controlled: 1 }];
+        return { body: { results: target.includes('q=zzz') ? [] : results } };
+      }
+      if (target.includes('/api/factions/presence')) return { body: { factions: [PIONEERS] } };
+      if (target.includes('/api/projects')) return { body: { projects: [] } };
+      if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) return { status: 401, body: { error: 'Unauthorized' } };
+      return { body: {} };
+    },
+  });
+  const focused = [];
+  const onFocus = (event) => focused.push(event.detail?.name);
+  try {
+    ui.mod.resetFactionsLayerCache();
+    ui.dom.window.addEventListener('atlas-focus-faction-system', onFocus);
+    await ui.render(ui.React.createElement(ui.mod.AtlasPage));
+    await ui.flush(60);
+    const doc = ui.document;
+
+    const tab = Array.from(doc.querySelectorAll('[role="tab"]')).find((item) => (item.textContent || '').includes('Фракции'));
+    assert.equal(tab.getAttribute('aria-selected'), 'true', 'вкладка открыта по ?tab=factions');
+    assert.ok(ui.calls.includes('GET /api/factions/systems'), `набор не запрошен: ${ui.calls.join(', ')}`);
+    const card = doc.querySelector('[data-bgs-status]');
+    assert.equal(card.getAttribute('data-bgs-status'), 'ready');
+    assert.match(card.textContent, /4 населённых систем · фракций: 7/);
+    assert.match(card.textContent, /Дамп EDSM от 17\.10\.2026/);
+    assert.match(card.textContent, /пилоты обновляли/);
+    // Первый визит сам включает слой.
+    assert.equal(doc.querySelector('.bgs-toggle input').checked, true);
+    assert.equal(JSON.parse(ui.dom.window.localStorage.getItem('atlas-factions-v1')).visible, true);
+
+    // Без выбранных фракций — все населённые системы по имени, фильтр принадлежности.
+    const rows = () => Array.from(doc.querySelectorAll('[data-bgs-row]')).map((item) => item.getAttribute('data-bgs-row'));
+    assert.deepEqual(rows(), ['Achenar', 'Col 285 Sector AB-C d14-3', 'Lave', 'Sol']);
+    assert.match(doc.querySelector('[data-bgs-row="Sol"]').textContent, /Mother Gaia · Федерация · 22,8 млрд · фракций 2/);
+    const chip = doc.querySelector('[data-bgs-allegiance="Independent"]');
+    assert.match(chip.textContent, /Независимые2/);
+    await ui.click(chip);
+    assert.equal(chip.getAttribute('aria-pressed'), 'false');
+    assert.deepEqual(rows(), ['Achenar', 'Sol'], 'независимые скрыты');
+    assert.deepEqual(JSON.parse(ui.dom.window.localStorage.getItem('atlas-factions-v1')).filter.hiddenAllegiances, ['Independent']);
+    await ui.click(chip);
+
+    // Поиск фракции: одна буква — ничего не ищет, от двух — запрос с задержкой.
+    const search = doc.querySelector('input[aria-label="Поиск минорной фракции"]');
+    await ui.typeInto(search, 'p');
+    await ui.flush(260);
+    assert.equal(searches.length, 0, 'одна буква — без запроса');
+    await ui.typeInto(search, 'pio');
+    await ui.flush(300);
+    assert.ok(searches.some((url) => url.includes('q=pio')), `поиск не ушёл: ${searches.join(', ')}`);
+    const result = doc.querySelector('[data-bgs-result="Ring Colony Pioneers"]');
+    assert.ok(result, 'фракция найдена');
+    assert.match(result.textContent, /PMF/);
+    assert.match(result.textContent, /Независимые · Кооператив · систем 2 · у власти 1/);
+
+    // Выбор фракции: на карте и в списке — только её системы, сначала где она у власти.
+    await ui.click(result);
+    await ui.flush(60);
+    assert.ok(ui.calls.some((call) => call.includes('/api/factions/presence?ids=3')), 'системы фракции запрошены');
+    const selected = doc.querySelector('[data-bgs-selected-faction="Ring Colony Pioneers"]');
+    assert.ok(selected, 'фракция в списке выбранных');
+    assert.match(selected.textContent, /систем 2 · у власти 1/);
+    assert.match(doc.querySelector('[data-bgs-picker]').textContent, /выбрано 1 из 12/);
+    assert.deepEqual(rows(), ['Col 285 Sector AB-C d14-3', 'Achenar'], 'сначала «у власти»');
+    assert.match(doc.querySelector('[data-bgs-row="Col 285 Sector AB-C d14-3"]').textContent, /Ring Colony Pioneers 85,0 % \(у власти\), экспансия/);
+    assert.match(doc.querySelector('.powerplay-summary').textContent, /На карте: 2 систем выбранных фракций/);
+    const stored = JSON.parse(ui.dom.window.localStorage.getItem('atlas-factions-v1')).selection;
+    assert.deepEqual(stored.map((item) => [item.id, item.name]), [[3, 'Ring Colony Pioneers']], 'выбор запомнен');
+    assert.equal(doc.querySelector('[data-bgs-result="Ring Colony Pioneers"]').classList.contains('chosen'), true);
+
+    // «Только где у власти».
+    const controlsOnly = Array.from(doc.querySelectorAll('.bgs-options label')).find((label) => (label.textContent || '').includes('у власти')).querySelector('input');
+    await ui.click(controlsOnly);
+    assert.deepEqual(rows(), ['Col 285 Sector AB-C d14-3']);
+    await ui.click(controlsOnly);
+
+    // Клик по строке — выбор и камера карты.
+    await ui.click(doc.querySelector('[data-bgs-row="Achenar"]'));
+    assert.deepEqual(focused, ['Achenar']);
+    assert.equal(doc.querySelector('[data-bgs-row="Achenar"]').getAttribute('aria-pressed'), 'true');
+
+    // Нет совпадений — понятный ответ; только фракции игроков — свой запрос.
+    await ui.typeInto(search, 'zzz');
+    await ui.flush(300);
+    assert.match(doc.querySelector('[data-bgs-results]').textContent, /Фракция «zzz» не найдена/);
+    await ui.typeInto(search, '');
+    await ui.click(Array.from(doc.querySelectorAll('.bgs-check')).find((label) => (label.textContent || '').includes('PMF')).querySelector('input'));
+    await ui.flush(60);
+    assert.ok(searches.some((url) => url.includes('player=1')), 'запрос фракций игроков');
+
+    // Сбросить выбор — снова все населённые системы.
+    await ui.click(doc.querySelector('[data-bgs-clear]'));
+    assert.deepEqual(rows(), ['Achenar', 'Col 285 Sector AB-C d14-3', 'Lave', 'Sol']);
+    assert.match(doc.querySelector('[data-bgs-picker]').textContent, /Фракции не выбраны/);
+  } finally {
+    ui.dom.window.removeEventListener('atlas-focus-faction-system', onFocus);
+    await ui.cleanup();
+  }
+});
+
+test('страница Atlas: «Фракции» — данных нет (подсказка про админку) и ход импорта на сервере', async () => {
+  let importing = false;
+  const ui = await renderAtlas(null, {
+    url: 'http://localhost/atlas?tab=factions',
+    api: (target) => {
+      if (target.includes('/api/factions/systems')) {
+        return {
+          body: {
+            status: 'empty', version: 'none', allegiances: [], governments: [], sources: [], factions: [], systems: [],
+            meta: importing
+              ? { ...EMPTY_BGS_META, refreshing: true, progress: { stage: 'download', stageLabel: 'Скачивание дампа на диск', percent: 37, message: 'Скачивание дампа на диск: 210 МБ из 498 МБ', startedAt: '2026-10-18T10:00:00.000Z' } }
+              : { ...EMPTY_BGS_META },
+          },
+        };
+      }
+      if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) return { status: 401, body: { error: 'Unauthorized' } };
+      return { body: {} };
+    },
+  });
+  try {
+    ui.mod.resetFactionsLayerCache();
+    await ui.render(ui.React.createElement(ui.mod.AtlasPage));
+    await ui.flush(60);
+    let card = ui.document.querySelector('[data-bgs-status]');
+    assert.equal(card.getAttribute('data-bgs-status'), 'empty');
+    assert.match(card.textContent, /Данных о фракциях пока нет/);
+    assert.match(card.textContent, /Админка → Игровые данные → Фракции/);
+    assert.match(card.textContent, /Colonial Helper/);
+    importing = true;
+    const recheck = Array.from(ui.document.querySelectorAll('.bgs-panel button')).find((button) => (button.textContent || '').includes('Проверить снова'));
+    await ui.click(recheck);
+    await ui.flush(60);
+    card = ui.document.querySelector('[data-bgs-status]');
+    assert.equal(card.getAttribute('data-bgs-status'), 'importing');
+    assert.match(card.textContent, /Сервер загружает дамп EDSM — 37 %/);
+    assert.match(card.textContent, /210 МБ из 498 МБ/);
+    assert.equal(card.querySelector('[role="progressbar"]').getAttribute('aria-valuenow'), '37');
   } finally {
     await ui.cleanup();
   }

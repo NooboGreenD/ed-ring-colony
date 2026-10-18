@@ -145,7 +145,7 @@ except Exception:  # pragma: no cover - запуск из исходников �
 
 # -- Константы --
 APP_NAME = "Colonial Helper"
-VERSION = "2.15.0"
+VERSION = "2.16.0"
 DEFAULT_JOURNAL_PATH = Path.home() / "Saved Games" / "Frontier Developments" / "Elite Dangerous"
 
 # Frontier просит третьи стороны представляться как `EDCD-<App>-<версия>`
@@ -7565,6 +7565,12 @@ class ColonialHelperApp:
                     self._carrier_sync.save()
             except Exception:
                 pass
+            try:
+                # Неотправленные наблюдения фракций переживают перезапуск.
+                if getattr(self, "_bgs_sync", None) is not None:
+                    self._bgs_sync.save()
+            except Exception:
+                pass
         except Exception:
             pass
         self.save_config()
@@ -9251,6 +9257,10 @@ class ColonialHelperApp:
                 self._flush_carrier_sync()
             except Exception as exc:
                 self.root.after(0, lambda message=str(exc): self.log(f"Авианосцы: {message}", "error"))
+            try:
+                self._flush_bgs_sync()
+            except Exception as exc:
+                self.root.after(0, lambda message=str(exc): self.log(f"Фракции: {message}", "error"))
             # Frontier перезаписывает NavRoute.json при построении нового
             # маршрута. Подхватываем изменение без ручного импорта.
             self._auto_load_navroute()
@@ -9842,6 +9852,47 @@ class ColonialHelperApp:
             self._carrier_sync = collector
         return collector
 
+    def _bgs_sync_collector(self):
+        """Состояние фракций посещённых систем для сайта проекта (см. bgs_sync.py)."""
+        collector = getattr(self, "_bgs_sync", None)
+        if collector is None:
+            from bgs_sync import BgsSnapshotCollector
+            collector = BgsSnapshotCollector(self.config_path.with_name(".bgs_snapshots_outbox.json"))
+            self._bgs_sync = collector
+        return collector
+
+    def _flush_bgs_sync(self):
+        """Отправить накопленные наблюдения фракций на сайт проекта (вкладка «Фракции» Atlas)."""
+        if not self.api.is_connected:
+            return
+        collector = self._bgs_sync_collector()
+        # Как у авианосцев: после сбоя — пауза, чтобы недоступный сайт не
+        # подвешивал цикл чтения журнала таймаутами.
+        if not collector.pending_count or time.monotonic() < float(getattr(self, "_bgs_flush_retry_at", 0.0)):
+            return
+        result = collector.flush(self.api, max_batches=2)
+        now = time.monotonic()
+        if result.get("ok"):
+            self._bgs_applied_unlogged = int(getattr(self, "_bgs_applied_unlogged", 0)) + int(result.get("applied") or 0)
+            names = getattr(self, "_bgs_logged_systems", [])
+            for name in result.get("systems") or []:
+                if name not in names:
+                    names.append(name)
+            self._bgs_logged_systems = names[-5:]
+            if self._bgs_applied_unlogged and now - float(getattr(self, "_bgs_log_at", 0.0)) > 60:
+                self._bgs_log_at = now
+                applied, shown = self._bgs_applied_unlogged, ", ".join(self._bgs_logged_systems[-3:])
+                self._bgs_applied_unlogged = 0
+                self._bgs_logged_systems = []
+                self.root.after(0, lambda: self.log(
+                    f"Фракции: на сайте обновлено систем — {applied}{f' ({shown})' if shown else ''}", "info"))
+        else:
+            self._bgs_flush_retry_at = now + 60.0
+            if now - float(getattr(self, "_bgs_warning_at", 0.0)) > 120:
+                self._bgs_warning_at = now
+                self.root.after(0, lambda message=result.get("error", ""): self.log(
+                    f"Фракции: данные ждут отправки на сайт ({collector.pending_count}) — {message}", "warn"))
+
     def _read_ship_inventory(self):
         """Текущий трюм корабля из Cargo.json (для учёта банка эскадры)."""
         from carrier_sync import inventory_from_cargo
@@ -9963,6 +10014,13 @@ class ColonialHelperApp:
             self._carrier_sync_collector().feed(ev, live=live)
         except Exception as exc:
             self.log(f"Carrier sync queue: {exc}", "error")
+        # Минорные фракции на сайте проекта: состояние посещённой населённой
+        # системы (FSDJump / Location / CarrierJump) — и живые события, и
+        # история; из нескольких посещений системы в очереди остаётся свежее.
+        try:
+            self._bgs_sync_collector().feed(ev, live=live)
+        except Exception as exc:
+            self.log(f"Faction sync queue: {exc}", "error")
         if live:
             self._log_session_event(ev)
         if ev.get("event") in ("FSDJump", "Location", "Docked", "CarrierJump"):

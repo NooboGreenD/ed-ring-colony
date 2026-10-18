@@ -33,8 +33,10 @@ import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerCon
 import type { FocusTarget } from './GalaxyScene';
 import { CarrierSystemCard } from './CarrierSystemCard';
 import { PowerplaySystemCard } from './PowerplaySystemCard';
+import { FactionSystemCard } from './FactionSystemCard';
 import { PowerplayGlyph } from './PowerplayGlyph';
 import { POWERPLAY_STATE_LABEL, powerInfo, powerplayInfluenceAt, type PowerplaySystem } from '@/lib/powerplay';
+import { BGS_ALLEGIANCE_COLOR, allegianceLabel, formatInfluence, type BgsMapPoint } from '@/lib/bgs';
 import {
   POINTS_BYTES_PER_POINT,
   POINTS_HEADER_SIZE,
@@ -198,6 +200,32 @@ export interface GalaxyMapPowerplay {
 
 const NO_POWERPLAY_SYSTEMS: PowerplaySystem[] = [];
 
+/**
+ * Слой «Фракции» (вкладка Atlas): данные, фильтр и выбранные фракции живут на
+ * странице (`useAtlasFactions`); карта рисует готовые точки, сообщает о клике
+ * и показывает карточку выбранной системы.
+ */
+export interface GalaxyMapFactions {
+  visible: boolean;
+  /** Что на карте: населённые системы или системы выбранных фракций. */
+  points: BgsMapPoint[];
+  /** Сколько систем слоя на карте (без фоновых точек) — для переключателя в панели слоёв. */
+  count: number;
+  selected: BgsMapPoint | null;
+  onSelect: (point: BgsMapPoint | null) => void;
+  onVisibleChange?: (visible: boolean) => void;
+  status?: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+  /** Выбрано фракций (0 — показаны все населённые системы). */
+  selectedCount: number;
+  /** Цвета выбранных фракций: id → цвет (карточка отмечает их в списке). */
+  selectedColors: ReadonlyMap<number, string>;
+  onAddFaction?: (faction: { id: number; name: string; allegiance?: string | null }) => void;
+  onRemoveFaction?: (id: number) => void;
+  overviewRequest?: { id: number; view: { x: number; y: number; z: number; radius: number } } | null;
+}
+
+const NO_FACTION_POINTS: BgsMapPoint[] = [];
+
 export interface GalaxyMapProps {
   focusSystem?: { name: string; x: number; y: number; z: number } | null;
   atlasCandidates?: AtlasCandidate[];
@@ -206,6 +234,7 @@ export interface GalaxyMapProps {
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
   marketResults?: MarketResult[];
   powerplay?: GalaxyMapPowerplay | null;
+  factions?: GalaxyMapFactions | null;
 }
 
 export default function GalaxyMap({
@@ -216,6 +245,7 @@ export default function GalaxyMap({
   marketResults = [],
   focusSystem = null,
   powerplay = null,
+  factions = null,
 }: GalaxyMapProps) {
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
   // общего канала: карта показывает сам процесс, а не только результат.
@@ -253,6 +283,17 @@ export default function GalaxyMap({
   const clearPowerplaySelection = useCallback(() => {
     if (powerplayRef.current?.selected) powerplayRef.current.onSelect(null);
   }, []);
+  // То же для слоя «Фракции»: выбор системы принадлежит странице.
+  const factionsRef = useRef<GalaxyMapFactions | null>(factions);
+  factionsRef.current = factions;
+  const clearFactionSelection = useCallback(() => {
+    if (factionsRef.current?.selected) factionsRef.current.onSelect(null);
+  }, []);
+  /** Выбор в слоях страницы (PowerPlay, фракции) — сбросить разом. */
+  const clearLayerSelections = useCallback(() => {
+    clearPowerplaySelection();
+    clearFactionSelection();
+  }, [clearFactionSelection, clearPowerplaySelection]);
   useEffect(() => {
     if (focusSystem && [focusSystem.x, focusSystem.y, focusSystem.z].every(Number.isFinite)) {
       setFocusTarget(eliteToThreeCentered(focusSystem));
@@ -537,7 +578,7 @@ export default function GalaxyMap({
   }, [selectedCarrierKey, selectedCarrierGroup]);
 
   const handleSelectHub = useCallback((hub: Hub | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedHub(hub);
@@ -546,10 +587,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (hub) setFocusTarget(eliteToThreeCentered(hub));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedRouteSystem(point);
@@ -558,10 +599,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (point) setFocusTarget(eliteToThreeCentered(point));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedAtlasCandidate(candidate);
@@ -570,10 +611,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (candidate) setFocusTarget(eliteToThreeCentered(candidate));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedPilot(pilot);
@@ -582,10 +623,10 @@ export default function GalaxyMap({
     setSelectedAtlasCandidate(null);
     setGalaxyPick(null);
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   const openGalaxy = useCallback((data: GalaxyPick) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedCarrierKey(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -595,7 +636,7 @@ export default function GalaxyMap({
     setFocusTarget(eliteToThreeCentered(data));
     setSuggestOpen(false);
     setAllSystemsError('');
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   // Клик по точке облака «все системы»: id64 → карточка каталога, не «запланировано».
   const handlePickAllSystem = useCallback(async (id64: string) => {
@@ -658,7 +699,7 @@ export default function GalaxyMap({
   // Туманность — такой же объект карты, как хаб или пилот: выбор подсвечивает
   // её, ведёт камеру и показывает карточку.
   const handleSelectNebula = useCallback((nebula: GalaxyNebula | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(nebula);
     setSelectedCarrierKey(null);
     setSelectedHub(null);
@@ -667,12 +708,12 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (nebula) setFocusTarget(eliteToThreeCentered(nebula));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   // Система с авианосцами — такой же объект карты: камера летит к ней, внизу
   // слева карточка со списком носителей.
   const handleSelectCarrierGroup = useCallback((group: CarrierSystemGroup | null) => {
-    clearPowerplaySelection();
+    clearLayerSelections();
     setSelectedNebula(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -681,7 +722,7 @@ export default function GalaxyMap({
     setGalaxyPick(null);
     setSelectedCarrierKey(group?.key ?? null);
     if (group?.position) setFocusTarget(eliteToThreeCentered(group.position));
-  }, [clearPowerplaySelection]);
+  }, [clearLayerSelections]);
 
   // Остальные карточки закрываются, выбор PowerPlay (если он есть) остаётся.
   const clearNonPowerplaySelection = useCallback(() => {
@@ -697,9 +738,39 @@ export default function GalaxyMap({
   // Клик по системе слоя PowerPlay: выбор уходит странице, камера — к системе.
   const handleSelectPowerplay = useCallback((system: PowerplaySystem | null) => {
     clearNonPowerplaySelection();
+    clearFactionSelection();
     powerplayRef.current?.onSelect(system);
     if (system) setFocusTarget(eliteToThreeCentered(system));
-  }, [clearNonPowerplaySelection]);
+  }, [clearFactionSelection, clearNonPowerplaySelection]);
+
+  // Клик по системе слоя «Фракции»: выбор уходит странице, камера — к системе.
+  const handleSelectFaction = useCallback((point: BgsMapPoint | null) => {
+    clearNonPowerplaySelection();
+    clearPowerplaySelection();
+    factionsRef.current?.onSelect(point);
+    if (point) setFocusTarget(eliteToThreeCentered(point));
+  }, [clearNonPowerplaySelection, clearPowerplaySelection]);
+
+  // Наведение на систему слоя «Фракции» — подсказка у курсора, как у PowerPlay.
+  const [factionHover, setFactionHover] = useState<BgsMapPoint | null>(null);
+  const factionHoverRef = useRef<BgsMapPoint | null>(null);
+  const factionHoverAt = useRef({ x: 0, y: 0 });
+  const factionTipRef = useRef<HTMLDivElement | null>(null);
+  const handleHoverFaction = useCallback((point: BgsMapPoint | null, at: { x: number; y: number } | null) => {
+    if (at) {
+      factionHoverAt.current = at;
+      const tip = factionTipRef.current;
+      if (tip) {
+        tip.style.left = `${at.x + 14}px`;
+        tip.style.top = `${at.y + 14}px`;
+      }
+    }
+    const next = point && at ? point : null;
+    if (factionHoverRef.current !== next) {
+      factionHoverRef.current = next;
+      setFactionHover(next);
+    }
+  }, []);
 
   // Наведение на систему слоя PowerPlay: подсказка у курсора (имя, держава,
   // состояние) — так видно, что точку можно выбрать кликом. Состояние меняется,
@@ -733,8 +804,8 @@ export default function GalaxyMap({
 
   const handleClearSelection = useCallback(() => {
     clearNonPowerplaySelection();
-    clearPowerplaySelection();
-  }, [clearNonPowerplaySelection, clearPowerplaySelection]);
+    clearLayerSelections();
+  }, [clearLayerSelections, clearNonPowerplaySelection]);
 
   const handleResetView = useCallback(() => {
     setFocusTarget(null);
@@ -783,20 +854,32 @@ export default function GalaxyMap({
       const system = (event as CustomEvent<PowerplaySystem | null>).detail;
       if (system && hasCoordinates({ ...system, system_name: system.name })) {
         clearNonPowerplaySelection();
+        clearFactionSelection();
         setFocusTarget(eliteToThreeCentered(system));
       }
     };
+    // Строка списка вкладки «Фракции»: выбор уже сделан страницей, здесь — камера.
+    const focusFactionSystem = (event: Event) => {
+      const point = (event as CustomEvent<BgsMapPoint | null>).detail;
+      if (point && hasCoordinates({ ...point, system_name: point.name })) {
+        clearNonPowerplaySelection();
+        clearPowerplaySelection();
+        setFocusTarget(eliteToThreeCentered(point));
+      }
+    };
     window.addEventListener('atlas-focus-powerplay', focusPowerplaySystem);
+    window.addEventListener('atlas-focus-faction-system', focusFactionSystem);
     window.addEventListener('atlas-focus-system', focusNearbySystem);
     window.addEventListener('atlas-focus-candidate', focusAtlasCandidate);
     window.addEventListener('atlas-focus-route-point', focusRoutePoint);
     return () => {
       window.removeEventListener('atlas-focus-powerplay', focusPowerplaySystem);
+      window.removeEventListener('atlas-focus-faction-system', focusFactionSystem);
       window.removeEventListener('atlas-focus-system', focusNearbySystem);
       window.removeEventListener('atlas-focus-candidate', focusAtlasCandidate);
       window.removeEventListener('atlas-focus-route-point', focusRoutePoint);
     };
-  }, [clearNonPowerplaySelection, handleClearSelection, handleSelectAtlasCandidate, handleSelectRouteSystem]);
+  }, [clearFactionSelection, clearNonPowerplaySelection, clearPowerplaySelection, handleClearSelection, handleSelectAtlasCandidate, handleSelectRouteSystem]);
 
   // «Показать на карте целиком» (вкладка PowerPlay): центр набора и камера на
   // расстоянии, с которого видна основная часть систем. Запрос — проп, а не
@@ -813,6 +896,18 @@ export default function GalaxyMap({
     target.viewDistance = Math.min(30_000, Math.max(250, view.radius * 3.4));
     setFocusTarget(target);
   }, [powerplayOverviewRequest]);
+  // То же для слоя «Фракции» (свой счётчик запросов).
+  const factionsOverviewRequest = factions?.overviewRequest ?? null;
+  const appliedFactionsOverview = useRef(0);
+  useEffect(() => {
+    if (!factionsOverviewRequest || factionsOverviewRequest.id === appliedFactionsOverview.current) return;
+    appliedFactionsOverview.current = factionsOverviewRequest.id;
+    const view = factionsOverviewRequest.view;
+    if (![view.x, view.y, view.z, view.radius].every(Number.isFinite)) return;
+    const target = eliteToThreeCentered(view) as FocusTarget;
+    target.viewDistance = Math.min(30_000, Math.max(250, view.radius * 3.4));
+    setFocusTarget(target);
+  }, [factionsOverviewRequest]);
 
   const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
   const powerplayVisible = Boolean(powerplay?.visible);
@@ -821,6 +916,10 @@ export default function GalaxyMap({
   const powerplaySystems = powerplayVisible && powerplay ? powerplay.systems : NO_POWERPLAY_SYSTEMS;
   const selectedPowerplay = powerplayVisible ? powerplay?.selected ?? null : null;
   const powerplayAllSystems = powerplay?.allSystems ?? NO_POWERPLAY_SYSTEMS;
+  const factionsVisible = Boolean(factions?.visible);
+  const factionPoints = factionsVisible && factions ? factions.points : NO_FACTION_POINTS;
+  const hoveredFaction = factionHover && factionsVisible && factions?.points.includes(factionHover) ? factionHover : null;
+  const selectedFaction = factionsVisible ? factions?.selected ?? null : null;
   const selectedPowerplayInfluence = useMemo(
     () => (selectedPowerplay
       ? powerplayInfluenceAt(selectedPowerplay, powerplayAllSystems, { excludeId64: selectedPowerplay.id64 || null })
@@ -1039,6 +1138,34 @@ export default function GalaxyMap({
               )}
             </div>
           )}
+          {factions && (
+            <div className="bgs-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
+              <label style={{ fontSize: 11, color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                title="Населённые системы с минорными фракциями — поиск фракций и фильтр во вкладке «Фракции»">
+                <input
+                  type="checkbox"
+                  checked={factionsVisible}
+                  onChange={(event) => factions.onVisibleChange?.(event.target.checked)}
+                />
+                <span aria-hidden="true" style={{ width: 9, height: 9, borderRadius: '50%', background: 'linear-gradient(135deg, #3b82f6, #a855f7 50%, #22c55e)', display: 'inline-block' }} />
+                Фракции ({factions.status === 'loading' && factions.points.length === 0 ? '…' : factions.count.toLocaleString('ru-RU')})
+              </label>
+              {factionsVisible && (
+                <div style={{ paddingLeft: 22, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', fontSize: 9, color: '#9ca3af', alignItems: 'center' }}>
+                  {factions.selectedCount > 0 ? (
+                    <>
+                      <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} title="у власти" /> у власти</span>
+                      <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} title="несколько выбранных" /> несколько</span>
+                      <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} title="присутствует" /> присутствует</span>
+                      <span style={{ color: '#6b7280' }}>цвет — фракция</span>
+                    </>
+                  ) : (
+                    <span style={{ color: '#6b7280' }}>цвет — принадлежность системы</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
           {!compactMap && (
             <>
               <label style={{ fontSize: 11, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -1192,6 +1319,42 @@ export default function GalaxyMap({
         />
       )}
 
+      {selectedFaction && factions && !galaxyPick && !selected && !selectedCarrierGroup && !selectedNebula && !selectedPowerplay && (
+        <FactionSystemCard
+          key={selectedFaction.key}
+          point={selectedFaction}
+          selectedColors={factions.selectedColors}
+          onClose={() => factions.onSelect(null)}
+          onAddFaction={factions.onAddFaction}
+          onRemoveFaction={factions.onRemoveFaction}
+        />
+      )}
+
+      {hoveredFaction && (
+        <div
+          ref={factionTipRef}
+          className="powerplay-hover-tip bgs-hover-tip"
+          data-bgs-hover={hoveredFaction.name}
+          style={{ left: factionHoverAt.current.x + 14, top: factionHoverAt.current.y + 14 }}
+        >
+          <strong style={{ color: hoveredFaction.background ? '#e5e7eb' : hoveredFaction.color }}>{hoveredFaction.name}</strong>
+          {hoveredFaction.entries.length > 0 ? (
+            hoveredFaction.entries.slice(0, 3).map((entry) => (
+              <span key={entry.factionId} style={{ display: 'block' }}>
+                <span style={{ color: entry.color }}>{entry.name}</span> · {formatInfluence(entry.influence)}{entry.controls ? ' · у власти' : ''}
+              </span>
+            ))
+          ) : (
+            <span style={{ display: 'block' }}>
+              {hoveredFaction.system?.controlling ? `${hoveredFaction.system.controlling} · ` : ''}
+              <span style={{ color: BGS_ALLEGIANCE_COLOR[hoveredFaction.system?.allegiance ?? 'None'] }}>{allegianceLabel(hoveredFaction.system?.allegiance)}</span>
+              {hoveredFaction.system ? ` · фракций: ${hoveredFaction.system.factionsCount}` : ''}
+            </span>
+          )}
+          <em>щёлкните — все фракции системы</em>
+        </div>
+      )}
+
       {hoveredPowerplay && (
         <div
           ref={powerplayTipRef}
@@ -1297,6 +1460,11 @@ export default function GalaxyMap({
             selectedPowerplay={selectedPowerplay}
             onPickPowerplay={handleSelectPowerplay}
             onHoverPowerplay={handleHoverPowerplay}
+            factionPoints={factionPoints}
+            showFactions={factionsVisible}
+            selectedFaction={selectedFaction}
+            onPickFaction={handleSelectFaction}
+            onHoverFaction={handleHoverFaction}
             showRegionLabels={showRegionLabels}
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}

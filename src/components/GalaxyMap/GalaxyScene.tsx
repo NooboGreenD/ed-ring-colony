@@ -21,6 +21,7 @@ import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
 import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions, type MapClickPoints } from './AllSystemsPoints';
 import { PowerplayPoints, PowerplaySelection, usePowerplayPositions } from './PowerplayPoints';
+import { FactionPoints, FactionSelection, useFactionPositions } from './FactionPoints';
 import { SearchProgressLayer } from './SearchProgressLayer';
 import type { Pilot } from './PilotMarkers';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
@@ -31,6 +32,7 @@ import type { AtlasCandidate } from '@/types/atlas';
 import type { AtlasSearchProgress } from '@/lib/atlasSearchProgress';
 import type { CarrierSystemGroup } from '@/lib/carrierMap';
 import type { PowerplaySystem } from '@/lib/powerplay';
+import type { BgsMapPoint } from '@/lib/bgs';
 
 function DataWatcher({
   routeLinePoints,
@@ -96,6 +98,12 @@ interface GalaxySceneProps {
   onPickPowerplay?: (system: PowerplaySystem) => void;
   /** Курсор над системой слоя PowerPlay (или ушёл с неё): подсказка и «рука». */
   onHoverPowerplay?: (system: PowerplaySystem | null, at: { x: number; y: number } | null) => void;
+  /** Слой «Фракции» (Atlas): населённые системы или системы выбранных фракций. */
+  factionPoints?: BgsMapPoint[];
+  showFactions?: boolean;
+  selectedFaction?: BgsMapPoint | null;
+  onPickFaction?: (point: BgsMapPoint) => void;
+  onHoverFaction?: (point: BgsMapPoint | null, at: { x: number; y: number } | null) => void;
   showRegionLabels?: boolean;
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
@@ -155,6 +163,11 @@ export function GalaxyScene({
   selectedPowerplay = null,
   onPickPowerplay,
   onHoverPowerplay,
+  factionPoints = [],
+  showFactions = false,
+  selectedFaction = null,
+  onPickFaction,
+  onHoverFaction,
   showRegionLabels = true,
   showRegionBoundaries = true,
   showNebulae = true,
@@ -187,24 +200,50 @@ export function GalaxyScene({
   const mapPositions = useMapPositions(showAllSystems ? allSystemsData : null);
   const powerplayVisible = showPowerplay && powerplaySystems.length > 0;
   const powerplayPositions = usePowerplayPositions(powerplayVisible ? powerplaySystems : null);
-  const powerplayPick = useMemo<MapClickPoints | null>(() => (
-    powerplayVisible && powerplayPositions && onPickPowerplay
-      ? {
-          positions: powerplayPositions,
-          count: powerplaySystems.length,
-          pixelRadius: 10,
-          onPick: (index: number) => {
-            const system = powerplaySystems[index];
-            if (system) onPickPowerplay(system);
-          },
-          onHover: onHoverPowerplay
-            ? (index: number | null, at: { x: number; y: number } | null) => {
-                onHoverPowerplay(index === null ? null : powerplaySystems[index] ?? null, at);
-              }
-            : undefined,
+  const factionsVisible = showFactions && factionPoints.length > 0;
+  const factionPositionsArray = useFactionPositions(factionsVisible ? factionPoints : null);
+  // Обе «кликабельные» точки слоёв (PowerPlay и фракции) — одно облако выбора:
+  // сначала системы держав, за ними системы фракций; индекс говорит, чья точка.
+  const layerPick = useMemo<MapClickPoints | null>(() => {
+    const ppCount = powerplayVisible && powerplayPositions && onPickPowerplay ? powerplaySystems.length : 0;
+    const fCount = factionsVisible && factionPositionsArray && onPickFaction ? factionPoints.length : 0;
+    if (ppCount === 0 && fCount === 0) return null;
+    let positions: Float32Array;
+    if (ppCount > 0 && fCount > 0) {
+      positions = new Float32Array((ppCount + fCount) * 3);
+      positions.set(powerplayPositions!.subarray(0, ppCount * 3), 0);
+      positions.set(factionPositionsArray!.subarray(0, fCount * 3), ppCount * 3);
+    } else {
+      positions = ppCount > 0 ? powerplayPositions! : factionPositionsArray!;
+    }
+    const hoverEnabled = Boolean((ppCount > 0 && onHoverPowerplay) || (fCount > 0 && onHoverFaction));
+    return {
+      positions,
+      count: ppCount + fCount,
+      pixelRadius: 10,
+      onPick: (index: number) => {
+        if (index < ppCount) {
+          const system = powerplaySystems[index];
+          if (system) onPickPowerplay?.(system);
+          return;
         }
-      : null
-  ), [onHoverPowerplay, onPickPowerplay, powerplayPositions, powerplaySystems, powerplayVisible]);
+        const point = factionPoints[index - ppCount];
+        if (point) onPickFaction?.(point);
+      },
+      onHover: hoverEnabled
+        ? (index: number | null, at: { x: number; y: number } | null) => {
+            const inPowerplay = index !== null && index < ppCount;
+            onHoverPowerplay?.(inPowerplay ? powerplaySystems[index!] ?? null : null, inPowerplay ? at : null);
+            const inFactions = index !== null && index >= ppCount;
+            onHoverFaction?.(inFactions ? factionPoints[index! - ppCount] ?? null : null, inFactions ? at : null);
+          }
+        : undefined,
+    };
+  }, [
+    factionPoints, factionPositionsArray, factionsVisible, onHoverFaction, onHoverPowerplay, onPickFaction, onPickPowerplay,
+    powerplayPositions, powerplaySystems, powerplayVisible,
+  ]);
+  const layerPointsVisible = powerplayVisible || factionsVisible;
   const selectedPosition = selectedAllSystem
     ? (() => {
         const p = eliteToThreeCentered(selectedAllSystem);
@@ -293,8 +332,8 @@ export function GalaxyScene({
         />
       )}
       {showRingZone && <RingZone />}
-      {/* Со слоем PowerPlay ориентиры не перехватывают клики: Sol — сама система державы. */}
-      <LandmarkMarkers onSelect={onSelectRouteSystem} interactive={!powerplayVisible} />
+      {/* Со слоями PowerPlay и «Фракции» ориентиры не перехватывают клики: Sol — сама система слоя. */}
+      <LandmarkMarkers onSelect={onSelectRouteSystem} interactive={!layerPointsVisible} />
       <GalacticRegions />
       <GalaxyRegionMarkers showLabels={showRegionLabels} />
       {showRegionBoundaries && <GalaxyRegionBoundaries />}
@@ -306,7 +345,7 @@ export function GalaxyScene({
         enabled={showAllSystems && !!allSystemsData && !!mapPositions}
         onPick={onPickAllSystem}
         onEmpty={onEmptyMapClick}
-        extraPoints={powerplayPick}
+        extraPoints={layerPick}
       />
       {showAllSystems && allSystemsData && mapPositions && (
         <AllSystemsPoints data={allSystemsData} positions={mapPositions} visibleMask={allSystemsMask} />
@@ -316,6 +355,10 @@ export function GalaxyScene({
         <PowerplayPoints systems={powerplaySystems} positions={powerplayPositions} />
       )}
       {showPowerplay && selectedPowerplay && <PowerplaySelection system={selectedPowerplay} />}
+      {factionsVisible && factionPositionsArray && (
+        <FactionPoints points={factionPoints} positions={factionPositionsArray} />
+      )}
+      {showFactions && selectedFaction && <FactionSelection point={selectedFaction} />}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (

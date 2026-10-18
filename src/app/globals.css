@@ -7250,3 +7250,61 @@ html[data-hud-effect="glow"]::before {
   .powerplay-hover-tip span { color: #9ca3af; }
   .powerplay-hover-tip em { display: block; font-style: normal; font-size: 10px; color: #6b7280; margin-top: 1px; }
 }
+
+/* ── Atlas: вкладка «Фракции» (минорные фракции BGS) ──
+   Общие элементы панели (плашка состояния, полосы, переключатель, список
+   систем) — классы вкладки PowerPlay; здесь только своё: поиск и выбор
+   фракций, фильтр принадлежности, карточка системы на карте. */
+@layer components {
+  .bgs-picker { display: flex; flex-direction: column; gap: 5px; }
+  .bgs-check { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); cursor: pointer; line-height: 1.35; }
+  .bgs-results {
+    list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; border: 1px solid #2d2f33; border-radius: 3px;
+  }
+  .bgs-result {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 6px; align-items: center; width: 100%;
+    padding: 4px 6px; text-align: left; background: transparent; border: none; border-bottom: 1px solid #24272a;
+    color: var(--text); font-family: inherit; text-transform: none; letter-spacing: normal; font-size: 12px; cursor: pointer;
+  }
+  .bgs-result:hover:not(:disabled) { background: rgba(196,181,253,0.08); }
+  .bgs-result.chosen { background: rgba(196,181,253,0.12); }
+  .bgs-result:disabled { opacity: .45; cursor: not-allowed; }
+  .bgs-result-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bgs-result-meta { grid-column: 2; font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bgs-result-action { grid-column: 3; grid-row: 1 / span 2; color: #c4b5fd; display: inline-flex; }
+  .bgs-pmf {
+    margin-left: 5px; font-size: 9px; padding: 0 3px; border-radius: 2px; border: 1px solid rgba(251,191,36,.5);
+    color: #fbbf24; font-weight: 500; vertical-align: 1px;
+  }
+  .bgs-selected { list-style: none; margin: 0; padding: 0; border: 1px solid #2d2f33; border-radius: 3px; }
+  .bgs-selected-item {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 5px;
+    padding: 4px 6px; border-bottom: 1px solid #24272a;
+  }
+  .bgs-selected-item:last-child { border-bottom: none; }
+  .bgs-selected-item.off { opacity: .45; }
+  .bgs-selected-name {
+    display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 0; background: none; border: none;
+    color: var(--text); font: inherit; font-size: 12px; text-align: left; text-transform: none; letter-spacing: normal; cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  .bgs-selected-name:hover { color: #c4b5fd; }
+  .bgs-selected-title { display: block; }
+  .bgs-selected-meta { font-size: 10px; color: var(--muted); }
+  .bgs-swatch-btn, .bgs-icon-btn {
+    display: inline-flex; align-items: center; justify-content: center; padding: 2px; min-height: 0; background: transparent;
+    border: 1px solid transparent; border-radius: 3px; color: var(--muted); cursor: pointer; font-family: inherit;
+  }
+  .bgs-icon-btn:hover, .bgs-swatch-btn:hover { color: #c4b5fd; border-color: rgba(196,181,253,.4); }
+  .bgs-options { display: flex; flex-direction: column; gap: 4px; }
+  .bgs-allegiance-filter { display: flex; flex-direction: column; gap: 5px; }
+  .bgs-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+  .powerplay-chip.bgs-chip.active { color: var(--text); border-color: rgba(196,181,253,.45); background: rgba(196,181,253,.08); }
+  .bgs-hint { margin: 0; }
+  .bgs-card-btn {
+    display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; min-height: 0;
+    background: transparent; border: 1px solid #3a3d40; border-radius: 3px; color: #c4b5fd; cursor: pointer; flex: 0 0 auto;
+  }
+  .bgs-card-btn:disabled { opacity: .4; cursor: not-allowed; }
+  .bgs-hover-tip > span { display: block; }
+}

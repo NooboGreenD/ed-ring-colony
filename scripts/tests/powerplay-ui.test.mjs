@@ -194,7 +194,8 @@ test('подключение: вкладка и слой — в Atlas, клик 
   assert.match(map, /className="powerplay-layer-controls"/, 'переключатель в панели слоёв карты');
 
   const scene = read('src/components/GalaxyMap/GalaxyScene.tsx');
-  assert.match(scene, /extraPoints=\{powerplayPick\}/);
+  // Точки PowerPlay и «Фракций» — одно облако выбора для MapClickLayer.
+  assert.match(scene, /extraPoints=\{layerPick\}/);
   assert.match(scene, /<PowerplayPoints systems=\{powerplaySystems\}/);
   assert.match(scene, /<PowerplaySelection system=\{selectedPowerplay\}/);
 
@@ -204,13 +205,15 @@ test('подключение: вкладка и слой — в Atlas, клик 
   assert.match(click, /extraPickRef\.current\(index\)/);
   // Наведение: «рука» и подсказка — видно, что точку можно выбрать.
   assert.match(click, /el\.style\.cursor = 'pointer'/);
-  assert.match(scene, /onHover: onHoverPowerplay/);
+  assert.match(scene, /onHoverPowerplay\?\.\(inPowerplay \? powerplaySystems\[index!\] \?\? null : null, inPowerplay \? at : null\)/);
   assert.match(map, /className="powerplay-hover-tip"/);
   // Свечение Sol (120 св. лет) больше не глушит клики по «пузырю» держав.
   const landmarks = read('src/components/GalaxyMap/LandmarkMarkers.tsx');
   assert.match(landmarks, /<sprite material=\{material\} scale=\{\[120, 120, 1\]\} raycast=\{\(\) => null\} \/>/);
   assert.match(landmarks, /sizeAttenuation: false/);
-  assert.match(scene, /<LandmarkMarkers onSelect=\{onSelectRouteSystem\} interactive=\{!powerplayVisible\} \/>/);
+  // Ориентиры не перехватывают клики, пока на карте точки слоёв (PowerPlay или «Фракции»).
+  assert.match(scene, /const layerPointsVisible = powerplayVisible \|\| factionsVisible;/);
+  assert.match(scene, /<LandmarkMarkers onSelect=\{onSelectRouteSystem\} interactive=\{!layerPointsVisible\} \/>/);
   assert.match(read('src/components/GalaxyMap/GalaxyRegionMarkers.tsx'), /scale=\{\[70, 70, 1\]\} raycast=\{\(\) => null\}/);
 
   const job = JOBS.find((item) => item.name === 'powerplay-sync');
@@ -219,7 +222,7 @@ test('подключение: вкладка и слой — в Atlas, клик 
   assert.equal(job.period, 12 * 60 * 60 * 1000);
   assert.ok(DEFAULT_JOBS.includes('powerplay-sync'), 'включена по умолчанию: дамп маленький');
   const compose = read('docker-compose.yml');
-  assert.equal((compose.match(/translate,powerplay-sync\}/g) || []).length, 2, 'и в jobs, и в мониторинге');
+  assert.equal((compose.match(/translate,powerplay-sync[,}]/g) || []).length, 2, 'и в jobs, и в мониторинге');
   assert.match(read('.env.example'), /^JOBS_ENABLED=.*powerplay-sync/m);
   assert.match(read('deploy/crontab.example'), /--once powerplay-sync/);
 });

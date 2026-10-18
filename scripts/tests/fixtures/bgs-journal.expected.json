@@ -1,0 +1,144 @@
+[
+ {
+  "event": "FSDJump",
+  "timestamp": "2026-10-17T18:20:05Z",
+  "StarSystem": "Col 285 Sector AB-C d14-3",
+  "SystemAddress": "36028797018963971",
+  "StarPos": [
+   -24.53125,
+   -33.78125,
+   108.8125
+  ],
+  "SystemAllegiance": "Independent",
+  "SystemGovernment": "$government_Cooperative;",
+  "SystemEconomy": "$economy_Colony;",
+  "SystemSecondEconomy": "$economy_Industrial;",
+  "SystemSecurity": "$SYSTEM_SECURITY_low;",
+  "Population": 18457,
+  "SystemFaction": {
+   "Name": "Ring Colony Pioneers",
+   "FactionState": "Expansion"
+  },
+  "Factions": [
+   {
+    "Name": "Ring Colony Pioneers",
+    "FactionState": "Expansion",
+    "Government": "Cooperative",
+    "Influence": 0.612,
+    "Allegiance": "Independent",
+    "Happiness": "$Faction_HappinessBand2;",
+    "ActiveStates": [
+     {
+      "State": "Expansion"
+     },
+     {
+      "State": "Boom"
+     }
+    ],
+    "PendingStates": [
+     {
+      "State": "Investment"
+     }
+    ],
+    "RecoveringStates": [
+     {
+      "State": "Election"
+     }
+    ]
+   },
+   {
+    "Name": "Col 285 Sector Labour",
+    "FactionState": "None",
+    "Government": "Democracy",
+    "Influence": 0.288,
+    "Allegiance": "Federation",
+    "Happiness": "$Faction_HappinessBand3;"
+   },
+   {
+    "Name": "Pilots' Federation Local Branch",
+    "FactionState": "None",
+    "Government": "Democracy",
+    "Influence": 0.0,
+    "Allegiance": "PilotsFederation",
+    "Happiness": ""
+   }
+  ]
+ },
+ {
+  "event": "Location",
+  "timestamp": "2017-03-14T09:12:00Z",
+  "StarSystem": "Sol",
+  "SystemAddress": "10477373803",
+  "StarPos": [
+   0.0,
+   0.0,
+   0.0
+  ],
+  "SystemAllegiance": "Federation",
+  "SystemGovernment": "$government_Democracy;",
+  "SystemEconomy": "$economy_Refinery;",
+  "SystemSecurity": "$SYSTEM_SECURITY_high;",
+  "Population": 22780871769,
+  "SystemFaction": "Mother Gaia",
+  "FactionState": "Boom",
+  "Factions": [
+   {
+    "Name": "Mother Gaia",
+    "FactionState": "Boom",
+    "Government": "Democracy",
+    "Influence": 0.462,
+    "Allegiance": "Federation",
+    "PendingStates": [
+     {
+      "State": "Expansion"
+     }
+    ]
+   },
+   {
+    "Name": "Sol Workers' Party",
+    "FactionState": "None",
+    "Government": "Democracy",
+    "Influence": 0.538,
+    "Allegiance": "Federation"
+   }
+  ]
+ },
+ {
+  "event": "CarrierJump",
+  "timestamp": "2026-10-17T19:00:00Z",
+  "StarSystem": "HIP 4120",
+  "SystemAddress": "2557887812314",
+  "StarPos": [
+   12.5,
+   -3.25,
+   40.0
+  ],
+  "SystemAllegiance": "Empire",
+  "SystemGovernment": "$government_Patronage;",
+  "SystemEconomy": "$economy_HighTech;",
+  "SystemSecurity": "$GAlAXY_MAP_INFO_state_anarchy;",
+  "Population": 0,
+  "SystemFaction": {
+   "Name": "HIP 4120 Imperial Society",
+   "FactionState": "War"
+  },
+  "Factions": [
+   {
+    "Name": "HIP 4120 Imperial Society",
+    "FactionState": "War",
+    "Government": "Patronage",
+    "Influence": 1.0,
+    "Allegiance": "Empire",
+    "Happiness": "$Faction_HappinessBand5;",
+    "ActiveStates": [
+     {
+      "State": "War"
+     }
+    ]
+   }
+  ]
+ },
+ null,
+ null,
+ null
+]

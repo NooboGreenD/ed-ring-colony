@@ -352,6 +352,29 @@ class ApiClient:
         except requests.RequestException as exc:
             return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
 
+    # -- минорные фракции (данные карты Atlas) --------------------------------
+    def sync_bgs_snapshots(self, events: list) -> dict:
+        """Состояние фракций посещённых систем → POST /api/factions/sync.
+
+        Сервер применяет наблюдение, только если оно свежее сохранённого:
+        повтор пачки после сетевого сбоя ничего не портит.
+        """
+        if not self.token or not events:
+            return {"ok": False, "error": "Нет токена или данных"}
+        try:
+            resp = _session_for_thread().post(
+                f"{self.api_base}/factions/sync",
+                json={"token": self.token, "events": events},
+                allow_redirects=False,
+                timeout=30,
+            )
+            data = _safe_json(resp)
+            if resp.ok and data.get("ok"):
+                return data
+            return {"ok": False, "error": data.get("error", f"HTTP {resp.status_code}")}
+        except requests.RequestException as exc:
+            return {"ok": False, "error": f"Сетевая ошибка: {exc}"}
+
     def fetch_my_carriers(self) -> dict:
         """Личный авианосец и носители эскадрильи → GET /api/carriers/mine."""
         if not self.token:

@@ -141,6 +141,11 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV, карточка
   системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM, задача
   `powerplay-sync` — [POWERPLAY.md](POWERPLAY.md)
+  Вкладка «Фракции»: все населённые системы с минорными фракциями на 3D-карте (цвет — принадлежность),
+  поиск фракций и показ систем одной или нескольких выбранных (у власти / несколько / присутствует), карточка
+  системы со всеми фракциями и их влиянием. Данные — в базе проекта: дамп EDSM `systemsPopulated` (загрузка
+  и журнал — Админка → Игровые данные → Фракции, задача `factions-sync`) и обновления от Colonial Helper и
+  загрузчика журналов — [FACTIONS.md](FACTIONS.md)
 - **Notifications** — Real-time in-app and push notifications (web-push)
 - **Direct Chat** — Peer-to-peer messaging between players
 - **Friends** — Friend list with online status

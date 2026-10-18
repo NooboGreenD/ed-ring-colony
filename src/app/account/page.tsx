@@ -9,6 +9,7 @@ import { createJournalParseState, parseJournal, type Delivery } from "@/lib/jour
 import { DEFAULT_PRIVACY, PRIVACY_KEYS, privacyPayload, resolvePrivacy, type PrivacySettings } from "@/lib/privacy";
 import { TelemetryCollector } from "@/lib/journalTelemetry";
 import { CarrierEventCollector } from "@/lib/fleetCarrierCollector";
+import { BgsSnapshotCollector } from "@/lib/bgsJournal";
 import { avatarFromUser, hasProvider, nickFromUser } from "@/lib/authProfile";
 import Link from "next/link";
 import AccountPremiumPanel from "@/components/Cosmetics/AccountPremiumPanel";
@@ -365,6 +366,10 @@ export default function AccountPage() {
       // с отправкой из Colonial Helper, поэтому повторная загрузка не задваивает.
       const carrierCollector = new CarrierEventCollector();
       const allCarrierEvents: Record<string, unknown>[] = [];
+      // Минорные фракции: состояние каждой посещённой населённой системы
+      // (FSDJump / Location / CarrierJump) — то же, что шлёт Colonial Helper.
+      // Из нескольких посещений системы остаётся самое свежее.
+      const factionCollector = new BgsSnapshotCollector();
       const allConstructionEvents: unknown[] = [];
       const allScans = new Map<string, any>();
       let pilotStats: Record<string, number> | null = null;
@@ -421,6 +426,7 @@ export default function AccountPage() {
         const { cmdrName, deliveries, stats } = parseJournal(journalText, lookup, parserState, [
           (line, event) => telemetry.feed(line, event),
           (line, event) => carrierCollector.feed(line, event),
+          (line, event) => factionCollector.feed(line, event),
         ]);
         allCarrierEvents.push(...carrierCollector.drain());
         // `drain()`, а не `finish()`: загрузчик идёт по файлам по одному, а
@@ -658,6 +664,35 @@ export default function AccountPage() {
         }
       }
 
+      // Минорные фракции: отдельный маршрут, пачками. Повтор безопасен — сервер
+      // применяет наблюдение, только если оно свежее сохранённого.
+      const factionEvents = factionCollector.drain();
+      const factionResult = { events: factionEvents.length, applied: 0, stale: 0, created: 0, failedChunks: 0 };
+      const FACTION_CHUNK = 400;
+      for (let index = 0; index < factionEvents.length; index += FACTION_CHUNK) {
+        setProgress({
+          current: list.length,
+          total: list.length,
+          phase: `${t('account.sendingBatch')} factions ${Math.floor(index / FACTION_CHUNK) + 1}`,
+          pct: 98,
+        });
+        try {
+          const response = await authFetch('/api/factions/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ events: factionEvents.slice(index, index + FACTION_CHUNK) }),
+          });
+          const json = await response.json().catch(() => ({}));
+          if (!response.ok || !json.ok) throw new Error(json.error || `HTTP ${response.status}`);
+          factionResult.applied += Number(json.applied ?? 0);
+          factionResult.stale += Number(json.stale ?? 0);
+          factionResult.created += Number(json.created ?? 0);
+        } catch (factionError) {
+          console.warn('[Account] Faction sync chunk failed:', factionError);
+          factionResult.failedChunks += 1;
+        }
+      }
+
       setSummary({
         ok: true,
         filesProcessed: list.length,
@@ -671,6 +706,7 @@ export default function AccountPage() {
         telemetryStats,
         telemetryFailedChunks,
         carriers: { ...carrierResult, carriers: carrierResult.carriers.size },
+        factions: factionResult,
       });
     } catch (error) {
       console.error('[Account] Journal import failed:', error);
@@ -1202,6 +1238,14 @@ export default function AccountPage() {
                     </>
                   )}
                 </div>
+              )}
+              {summary.factions?.events > 0 && (
+                <p style={{ color: summary.factions.failedChunks ? '#e74c3c' : '#9ca3af', fontSize: 12, margin: '10px 0 0' }}>
+                  Минорные фракции: систем {summary.factions.events.toLocaleString('ru')}, обновлено на карте {summary.factions.applied.toLocaleString('ru')}
+                  {summary.factions.created ? `, новых ${summary.factions.created.toLocaleString('ru')}` : ''}
+                  {summary.factions.stale ? `, уже свежее на сайте ${summary.factions.stale.toLocaleString('ru')}` : ''}
+                  {summary.factions.failedChunks ? ` — ${summary.factions.failedChunks} пачек не отправилось, загрузите журнал ещё раз` : ''}.
+                </p>
               )}
               {summary.carriers?.events > 0 && (
                 <p style={{ color: summary.carriers.failedChunks ? '#e74c3c' : '#9ca3af', fontSize: 12, margin: '10px 0 0' }}>

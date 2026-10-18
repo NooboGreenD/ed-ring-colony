@@ -16,7 +16,9 @@ import AtlasMarketSearch from '@/components/Atlas/AtlasMarketSearch';
 import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
 import { AtlasPowerplayPanel } from '@/components/Atlas/AtlasPowerplayPanel';
 import { useAtlasPowerplay } from '@/hooks/usePowerplayLayer';
-import type { GalaxyMapPowerplay } from '@/components/GalaxyMap/GalaxyMap';
+import { AtlasFactionsPanel } from '@/components/Atlas/AtlasFactionsPanel';
+import { useAtlasFactions } from '@/hooks/useFactionsLayer';
+import type { GalaxyMapFactions, GalaxyMapPowerplay } from '@/components/GalaxyMap/GalaxyMap';
 import { toast } from '@/components/ui/Toaster';
 import {
   IconAtlas,
@@ -26,6 +28,7 @@ import {
   IconPower,
   IconRoute,
   IconSearch,
+  IconShieldHalf,
   IconStore,
   IconTrash,
   IconX,
@@ -61,7 +64,7 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby' | 'powerplay';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby' | 'powerplay' | 'factions';
 
 const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }[] = [
   { id: 'search', label: 'Поиск', icon: <IconSearch size={14} />, hint: 'Поиск миров по типам (Alt+1)' },
@@ -71,6 +74,7 @@ const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }
   { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+5)' },
   { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+6)' },
   { id: 'powerplay', label: 'PowerPlay', icon: <IconPower size={14} />, hint: 'Системы под контролем держав PowerPlay (Alt+7)' },
+  { id: 'factions', label: 'Фракции', icon: <IconShieldHalf size={14} />, hint: 'Минорные фракции: поиск и их системы на карте (Alt+8)' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
@@ -141,6 +145,37 @@ function AtlasPageInner() {
     powerplayOverviewShown.current = true;
     focusPowerplayOverview();
   }, [activeTab, focusPowerplayOverview, powerplay.status, powerplay.visible, powerplay.visibleSystems.length]);
+
+  // Слой «Фракции»: населённые системы и выбранные минорные фракции — общие для вкладки и карты.
+  const factions = useAtlasFactions({ tabActive: activeTab === 'factions' });
+  const factionsSelectedColors = useMemo(
+    () => new Map(factions.selection.map((item) => [item.id, item.color] as [number, string])),
+    [factions.selection],
+  );
+  const factionsCount = useMemo(() => factions.points.reduce((sum, point) => sum + (point.background ? 0 : 1), 0), [factions.points]);
+  const factionsLayer = useMemo<GalaxyMapFactions>(() => ({
+    visible: factions.visible,
+    points: factions.points,
+    count: factionsCount,
+    selected: factions.selected,
+    onSelect: (point) => factions.select(point),
+    onVisibleChange: factions.setVisible,
+    status: factions.status,
+    selectedCount: factions.selection.length,
+    selectedColors: factionsSelectedColors,
+    onAddFaction: factions.addFaction,
+    onRemoveFaction: factions.removeFaction,
+    overviewRequest: factions.overviewRequest,
+  }), [factions.visible, factions.points, factionsCount, factions.selected, factions.select, factions.setVisible, factions.status, factions.selection.length, factionsSelectedColors, factions.addFaction, factions.removeFaction, factions.overviewRequest]);
+  // Населённые системы — в пузыре вокруг Sol: при первом открытии вкладки камера летит к ним.
+  const factionsOverviewShown = useRef(false);
+  const { focusOverview: focusFactionsOverview } = factions;
+  useEffect(() => {
+    if (activeTab !== 'factions' || factionsOverviewShown.current || !factions.visible) return;
+    if (factions.points.length === 0) return;
+    factionsOverviewShown.current = true;
+    focusFactionsOverview();
+  }, [activeTab, factions.points.length, factions.visible, focusFactionsOverview]);
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
@@ -900,6 +935,8 @@ function AtlasPageInner() {
 
           {activeTab === 'powerplay' && <AtlasPowerplayPanel powerplay={powerplay} />}
 
+          {activeTab === 'factions' && <AtlasFactionsPanel factions={factions} />}
+
           {activeTab === 'market' && (
             <AtlasMarketSearch
               initialSystem={initialMarketSystem}
@@ -934,6 +971,7 @@ function AtlasPageInner() {
           focusSystem={stationFocus}
           marketResults={stationFocus ? [...marketResults, { system_name: stationFocus.name, x: stationFocus.x, y: stationFocus.y, z: stationFocus.z, distance: 0 }] : marketResults}
           powerplay={powerplayLayer}
+          factions={factionsLayer}
         />
       </div>
     </div>

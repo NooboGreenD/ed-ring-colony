@@ -16,6 +16,11 @@ export const JOBS = [
   // PowerPlay layer of the Atlas map: EDSM publishes the dump once a day, the
   // conditional request turns the second daily run into a cheap 304.
   { name: 'powerplay-sync', period: 12 * HOUR, offset: 5 * HOUR + 20 * MINUTE, path: '/api/cron/powerplay-sync', timeout: 10 * MINUTE },
+  // Minor factions (Atlas «Фракции»): the EDSM systemsPopulated dump is ~0.5 GB,
+  // so the job never makes the FIRST import (the admin does) — afterwards it
+  // refreshes data older than FACTIONS_REFRESH_DAYS and resumes an import cut
+  // off by a restart. The request returns at once; the import runs in `web`.
+  { name: 'factions-sync', period: 24 * HOUR, offset: 7 * HOUR + 10 * MINUTE, path: '/api/cron/factions-sync', timeout: 5 * MINUTE },
   // The full Spansh import is deliberately opt-in: it downloads a ~6 GiB dump.
   { name: 'galaxy-import', period: 24 * HOUR, offset: 2 * HOUR, path: '/api/cron/galaxy-import', timeout: 10 * MINUTE },
 ];
