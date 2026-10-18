@@ -1003,6 +1003,22 @@ Full description: **POWERPLAY.md**.
   (≤ 1 attempt / 30 min). The API answers compact tuples
   `[id64, name, x, y, z, powerIdx, stateIdx, observedSec]`, ETag = import + meta,
   cached in memory until the next import.
+- Progress (2.18.0, `src/lib/powerplayProgress.ts`): every run records six weighted
+  stages (request, download in bytes, gunzip, parse, batched write, finish), an
+  overall percent and a log; the live run lives in `globalThis`, a copy goes to
+  `powerplay_sync_state.progress` / `.log` (migration
+  `20261018180000_powerplay_sync_progress.sql`, which also adds the
+  `powerplay_admin_summary()` RPC). Admin → «Игровые данные» → «PowerPlay»
+  (`PowerplayAdminTab.tsx`, `/api/admin/powerplay`: GET status, POST start /
+  force / cancel) shows stage progress bars and the process log. The public layer
+  API exposes only `meta.progress` (stage + percent) so the Atlas tab can say
+  «сервер загружает данные EDSM — 64 %».
+- Atlas tab: a status card (loading bytes via `X-Content-Bytes` / server import /
+  loaded N systems / no data / error) and an always-visible power filter (all 12
+  powers before data arrives, faction quick filter). Map points are clickable with
+  a hover tooltip (`MapClickLayer` `extraPoints.onHover`); the Sol landmark glow
+  (120 ly sprite) no longer swallows clicks in the bubble and landmarks are not
+  clickable while the PowerPlay layer is shown.
 
 ---
 

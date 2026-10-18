@@ -129,7 +129,8 @@ function AtlasPageInner() {
     onVisibleChange: powerplay.setVisible,
     status: powerplay.status,
     overviewRequest: powerplay.overviewRequest,
-  }), [powerplay.visible, powerplay.visibleSystems, powerplay.systems, powerplay.selected, powerplay.select, powerplay.setVisible, powerplay.status, powerplay.overviewRequest]);
+    onShowSystem: powerplay.showSystem,
+  }), [powerplay.visible, powerplay.visibleSystems, powerplay.systems, powerplay.selected, powerplay.select, powerplay.setVisible, powerplay.status, powerplay.overviewRequest, powerplay.showSystem]);
   // Державы — в пузыре вокруг Sol, а карта открывается обзором всей галактики:
   // при первом открытии вкладки камера сама летит к системам слоя.
   const powerplayOverviewShown = useRef(false);

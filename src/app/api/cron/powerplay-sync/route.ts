@@ -19,8 +19,8 @@ export const runtime = 'nodejs';
  */
 async function handle(request: Request) {
   const force = new URL(request.url).searchParams.get('force') === '1';
-  const result = await runPowerplaySync(createServiceClient(), { force });
-  if (result.status === 'error') {
+  const result = await runPowerplaySync(createServiceClient(), { force, trigger: 'cron' });
+  if (result.status === 'error' || result.status === 'cancelled') {
     return NextResponse.json({ ok: false, ...result }, { status: 502 });
   }
   return NextResponse.json({ ok: true, ...result });

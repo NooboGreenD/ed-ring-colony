@@ -31,7 +31,13 @@ export async function GET(request: Request) {
     }
     return new Response(layer.body, {
       status: 200,
-      headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' },
+      headers: {
+        ...headers,
+        'Content-Type': 'application/json; charset=utf-8',
+        // Content-Length после gzip nginx с распакованными байтами не сравнить:
+        // настоящий размер — для полосы «загружено 1,2 из 4,1 МБ» во вкладке.
+        'X-Content-Bytes': String(layer.bytes),
+      },
     });
   } catch (error) {
     console.error('[powerplay/systems]', error instanceof Error ? error.message : error);

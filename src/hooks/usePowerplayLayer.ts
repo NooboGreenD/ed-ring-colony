@@ -6,7 +6,9 @@ import {
   countPowerplay,
   decodePowerplayLayer,
   filterPowerplaySystems,
+  isPowerVisible,
   parsePowerplayFilter,
+  powerplayFilterPowers,
   powerplayOverview,
   type PowerplayCounts,
   type PowerplayOverview,
@@ -26,14 +28,32 @@ import {
  */
 
 export const POWERPLAY_STORAGE_KEY = 'atlas-powerplay-v1';
-/** Пока сервер импортирует дамп, пустой ответ перезапрашивается. */
-const EMPTY_RETRY_MS = 20_000;
-const EMPTY_RETRY_LIMIT = 30;
+/**
+ * Пока сервер импортирует дамп, пустой ответ перезапрашивается: часто, чтобы
+ * полоса «сервер загружает данные» двигалась, но не дольше ~20 минут.
+ */
+const EMPTY_RETRY_MS = 4_000;
+const EMPTY_RETRY_LIMIT = 300;
+/** Набор есть, но сервер его обновляет: заглянуть за новой версией позже. */
+const REFRESH_RECHECK_MS = 60_000;
+const REFRESH_RECHECK_LIMIT = 15;
 
 export type PowerplayLoadStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
+/** Сколько байт набора уже пришло (полоса «загружаю системы держав»). */
+export interface PowerplayDownloadProgress {
+  received: number;
+  /** Размер тела, если сервер его сообщил (`X-Content-Bytes`). */
+  total: number | null;
+}
+
 let moduleCache: PowerplayLayerData | null = null;
 let inFlight: Promise<PowerplayLayerData> | null = null;
+const progressListeners = new Set<(progress: PowerplayDownloadProgress | null) => void>();
+
+function emitProgress(progress: PowerplayDownloadProgress | null): void {
+  for (const listener of progressListeners) listener(progress);
+}
 
 /** Для тестов: забыть загруженный набор. */
 export function resetPowerplayLayerCache(): void {
@@ -41,23 +61,58 @@ export function resetPowerplayLayerCache(): void {
   inFlight = null;
 }
 
+async function readBody(response: Response): Promise<unknown> {
+  const declared = Number(response.headers?.get?.('x-content-bytes'));
+  const total = Number.isFinite(declared) && declared > 0 ? declared : null;
+  const reader = response.body && typeof response.body.getReader === 'function' ? response.body.getReader() : null;
+  if (!reader) return response.json().catch(() => null);
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  let lastEmit = 0;
+  emitProgress({ received: 0, total });
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.byteLength;
+    const now = Date.now();
+    if (now - lastEmit > 80) {
+      lastEmit = now;
+      emitProgress({ received, total });
+    }
+  }
+  emitProgress({ received, total: total ?? received });
+  const merged = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(merged));
+  } catch {
+    return null;
+  }
+}
+
 export function fetchPowerplayLayer(force = false): Promise<PowerplayLayerData> {
   if (!force && moduleCache && moduleCache.status === 'ready') return Promise.resolve(moduleCache);
   if (inFlight) return inFlight;
   inFlight = (async () => {
     const response = await fetch('/api/powerplay/systems', force ? { cache: 'no-cache' } : undefined);
-    const body = await response.json().catch(() => null);
     if (!response.ok) {
+      const body = await response.json().catch(() => null);
       const message = body && typeof body === 'object' && typeof (body as { error?: unknown }).error === 'string'
         ? (body as { error: string }).error
         : `HTTP ${response.status}`;
       throw new Error(message);
     }
-    const data = decodePowerplayLayer(body);
+    const data = decodePowerplayLayer(await readBody(response));
     moduleCache = data;
     return data;
   })().finally(() => {
     inFlight = null;
+    emitProgress(null);
   });
   return inFlight;
 }
@@ -92,6 +147,10 @@ function writeSettings(settings: StoredSettings): void {
 export interface AtlasPowerplayState {
   /** Слой виден на карте. */
   visible: boolean;
+  /** Сколько набора уже скачано браузером (пока идёт запрос), иначе null. */
+  download: PowerplayDownloadProgress | null;
+  /** Все державы для фильтра: двенадцать держав PowerPlay 2.0 плюс встреченные в данных. */
+  filterPowers: string[];
   setVisible: (visible: boolean) => void;
   filter: PowerplayFilter;
   setFilter: (filter: PowerplayFilter) => void;
@@ -108,6 +167,11 @@ export interface AtlasPowerplayState {
   selected: PowerplaySystem | null;
   /** Выбрать систему; `focus` — подвести к ней камеру карты. */
   select: (system: PowerplaySystem | null, options?: { focus?: boolean }) => void;
+  /**
+   * Показать систему по ссылке (зона влияния, «Чья зона?»): видимую — выбрать
+   * и открыть карточку, скрытую фильтром — только подвести камеру.
+   */
+  showSystem: (ref: { id64?: string | null; name: string }) => void;
   /** Показать на карте набор целиком (по умолчанию — то, что под фильтром). */
   focusOverview: (systems?: PowerplaySystem[]) => void;
   /**
@@ -132,7 +196,16 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
   const [error, setError] = useState('');
   const [reloadToken, setReloadToken] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [download, setDownload] = useState<PowerplayDownloadProgress | null>(null);
   const retries = useRef(0);
+  const rechecks = useRef(0);
+
+  useEffect(() => {
+    progressListeners.add(setDownload);
+    return () => {
+      progressListeners.delete(setDownload);
+    };
+  }, []);
 
   // localStorage — только после монтирования: страница пререндерится на сервере.
   useEffect(() => {
@@ -171,10 +244,14 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
         setData(next);
         setError('');
         setStatus(next.status);
-        // Сервер импортирует дамп фоном — вернёмся за результатом.
+        // Сервер импортирует дамп фоном — вернёмся за результатом: пустой
+        // набор — часто (ход загрузки на полосе), обновление готового — реже.
         if (next.status === 'empty' && next.meta.refreshing && retries.current < EMPTY_RETRY_LIMIT) {
           retries.current += 1;
           timer = window.setTimeout(() => void load(true), EMPTY_RETRY_MS);
+        } else if (next.status === 'ready' && next.meta.refreshing && rechecks.current < REFRESH_RECHECK_LIMIT) {
+          rechecks.current += 1;
+          timer = window.setTimeout(() => void load(true), REFRESH_RECHECK_MS);
         }
       } catch (err) {
         if (cancelled) return;
@@ -192,7 +269,9 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
 
   const systems = useMemo(() => data?.systems ?? [], [data]);
   const visibleSystems = useMemo(() => filterPowerplaySystems(systems, filter), [systems, filter]);
-  const counts = useMemo(() => countPowerplay(systems, data?.powers ?? []), [data, systems]);
+  const filterPowers = useMemo(() => powerplayFilterPowers(data?.powers ?? []), [data]);
+  // Все державы, даже с нулём систем: фильтр виден и работает до загрузки данных.
+  const counts = useMemo(() => countPowerplay(systems, filterPowers), [filterPowers, systems]);
   const visibleIndex = useMemo(() => {
     const index = new Map<string, PowerplaySystem>();
     for (const system of visibleSystems) index.set(system.id64 || system.nameLc, system);
@@ -214,6 +293,7 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
 
   const reload = useCallback(() => {
     retries.current = 0;
+    rechecks.current = 0;
     setReloadToken((token) => token + 1);
   }, []);
 
@@ -230,6 +310,23 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
 
   const visibleRef = useRef(visibleSystems);
   visibleRef.current = visibleSystems;
+  const systemsRef = useRef(systems);
+  systemsRef.current = systems;
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+
+  const showSystem = useCallback((ref: { id64?: string | null; name: string }) => {
+    const key = ref.name.trim().toLowerCase();
+    const target = systemsRef.current.find((system) => (ref.id64 && system.id64 === ref.id64) || system.nameLc === key) ?? null;
+    if (!target) return;
+    const shown = isPowerVisible(filterRef.current, target.power) && filterRef.current.states[target.state] !== false;
+    if (shown) {
+      select(target, { focus: true });
+    } else if (typeof window !== 'undefined') {
+      // Держава скрыта фильтром: карточку не откроем, но покажем, где это.
+      window.dispatchEvent(new CustomEvent('atlas-focus-system', { detail: { name: target.name, x: target.x, y: target.y, z: target.z } }));
+    }
+  }, [select]);
   const [overviewRequest, setOverviewRequest] = useState<PowerplayOverviewRequest | null>(null);
   const focusOverview = useCallback((target?: PowerplaySystem[]) => {
     const view = powerplayOverview(target ?? visibleRef.current);
@@ -240,6 +337,8 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
 
   return {
     visible,
+    download,
+    filterPowers,
     setVisible,
     filter,
     setFilter,
@@ -253,6 +352,7 @@ export function useAtlasPowerplay({ tabActive }: { tabActive: boolean }): AtlasP
     selectedId,
     selected,
     select,
+    showSystem,
     focusOverview,
     overviewRequest,
   };

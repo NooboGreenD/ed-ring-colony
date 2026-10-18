@@ -201,7 +201,17 @@ test('подключение: вкладка и слой — в Atlas, клик 
   const points = read('src/components/GalaxyMap/PowerplayPoints.tsx');
   assert.match(points, /raycast=\{\(\) => null\}/, 'встроенный raycast по десяткам тысяч вершин выключен');
   const click = read('src/components/GalaxyMap/AllSystemsPoints.tsx');
-  assert.match(click, /extraPickRef\.current\(hit\.index\)/);
+  assert.match(click, /extraPickRef\.current\(index\)/);
+  // Наведение: «рука» и подсказка — видно, что точку можно выбрать.
+  assert.match(click, /el\.style\.cursor = 'pointer'/);
+  assert.match(scene, /onHover: onHoverPowerplay/);
+  assert.match(map, /className="powerplay-hover-tip"/);
+  // Свечение Sol (120 св. лет) больше не глушит клики по «пузырю» держав.
+  const landmarks = read('src/components/GalaxyMap/LandmarkMarkers.tsx');
+  assert.match(landmarks, /<sprite material=\{material\} scale=\{\[120, 120, 1\]\} raycast=\{\(\) => null\} \/>/);
+  assert.match(landmarks, /sizeAttenuation: false/);
+  assert.match(scene, /<LandmarkMarkers onSelect=\{onSelectRouteSystem\} interactive=\{!powerplayVisible\} \/>/);
+  assert.match(read('src/components/GalaxyMap/GalaxyRegionMarkers.tsx'), /scale=\{\[70, 70, 1\]\} raycast=\{\(\) => null\}/);
 
   const job = JOBS.find((item) => item.name === 'powerplay-sync');
   assert.ok(job, 'задача планировщика есть');

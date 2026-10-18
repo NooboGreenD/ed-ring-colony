@@ -2,24 +2,41 @@
 
 /**
  * Вкладка «PowerPlay» в Atlas: все системы под контролем держав PowerPlay 2.0
- * на карте и фильтр по державам и состояниям.
+ * на карте и фильтр отображения по державам.
  *
- *  * переключатель слоя на карте и откуда/когда данные;
- *  * фильтр по состоянию (оплоты / укреплённые / эксплуатируемые) и по
- *    державам (каждая — со своим цветом и счётчиками, «только эта»);
- *  * список систем под фильтр с поиском по имени: клик ведёт камеру к системе
- *    и открывает её карточку; выгрузка списка в CSV;
+ *  * сверху — состояние данных: грузит ли браузер набор (полоса в байтах),
+ *    загружает ли сервер дамп EDSM (этап и процент), сколько систем на карте и
+ *    от какого числа данные, или почему их нет;
+ *  * фильтр по державам виден всегда — все двенадцать держав сразу, даже пока
+ *    данные грузятся: галочка на каждой, «только эта», «все», «ни одной» и
+ *    быстрый выбор фракции (Империя, Федерация, Альянс, независимые);
+ *  * фильтр по состоянию (оплоты / укреплённые / эксплуатируемые);
+ *  * список систем под фильтр с поиском: клик ведёт камеру к системе и
+ *    открывает её карточку (по самой точке на карте тоже можно кликнуть);
  *  * «Чья зона?» — любая система галактики: под чьим она контролем и чьи
- *    оплоты и укреплённые системы до неё дотягиваются (важно для колонизации).
+ *    оплоты и укреплённые системы до неё дотягиваются. Имена систем в ответе
+ *    кликабельны.
  *
  * Состояние (данные, фильтр, выбор) живёт в `useAtlasPowerplay` на странице:
  * им же пользуется 3D-слой карты.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { PowerSwatch, PowerplayGlyph } from '@/components/GalaxyMap/PowerplayGlyph';
-import { IconDownload, IconPower, IconRefresh, IconSearch, IconX } from '@/components/Icons';
+import {
+  IconAlert,
+  IconAlliance,
+  IconCheckCircle,
+  IconDownload,
+  IconEmpire,
+  IconFederation,
+  IconIndependent,
+  IconPower,
+  IconRefresh,
+  IconSearch,
+  IconX,
+} from '@/components/Icons';
 import type { AtlasPowerplayState } from '@/hooks/usePowerplayLayer';
 import type { SystemSuggestion } from '@/hooks/useSystemAutocomplete';
 import { downloadCsv } from '@/lib/atlas';
@@ -34,6 +51,7 @@ import {
   formatLy,
   formatPowerplayDate,
   hideAllPowers,
+  isAllegianceSolo,
   isDefaultPowerplayFilter,
   isPowerVisible,
   orderPowerplaySystems,
@@ -41,22 +59,38 @@ import {
   powerplayInfluenceAt,
   searchPowerplaySystems,
   showAllPowers,
+  soloAllegiance,
   soloPower,
   togglePowerVisible,
   togglePowerplayState,
+  type PowerAllegiance,
   type PowerplayInfluence,
   type PowerplayPoint,
   type PowerplaySystem,
 } from '@/lib/powerplay';
+import { formatPowerplayBytes } from '@/lib/powerplayProgress';
 
 const PAGE_SIZE = 150;
 const MUTED = '#9ca3af';
 const DIM = '#6b7280';
-const TEXT = '#eeeeee';
 const PP_COLOR = '#f0af28';
+
+const ALLEGIANCES: { id: PowerAllegiance; Icon: typeof IconEmpire }[] = [
+  { id: 'Empire', Icon: IconEmpire },
+  { id: 'Federation', Icon: IconFederation },
+  { id: 'Alliance', Icon: IconAlliance },
+  { id: 'Independent', Icon: IconIndependent },
+];
 
 function formatCount(value: number): string {
   return value.toLocaleString('ru-RU');
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return '—';
+  return new Date(ms).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
 interface CheckResult {
@@ -95,12 +129,32 @@ async function resolveSystem(name: string, systems: PowerplaySystem[]): Promise<
   return null;
 }
 
+/** Полоса хода: с процентом или «бегущая», когда объём заранее неизвестен. */
+function StatusBar({ percent, label }: { percent: number | null; label: string }) {
+  const value = percent == null ? null : Math.max(0, Math.min(100, percent));
+  return (
+    <div
+      className={`powerplay-progress${value == null ? ' indeterminate' : ''}`}
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value == null ? undefined : Math.round(value)}
+    >
+      <div className="powerplay-progress-fill" style={value == null ? undefined : { width: `${value}%` }} />
+    </div>
+  );
+}
+
 export interface AtlasPowerplayPanelProps {
   powerplay: AtlasPowerplayState;
 }
 
 export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
-  const { visible, setVisible, filter, setFilter, status, data, error, reload, systems, visibleSystems, counts, selectedId, select, focusOverview } = powerplay;
+  const {
+    visible, setVisible, filter, setFilter, status, data, error, reload, systems, visibleSystems, counts, selectedId, select,
+    showSystem, focusOverview, download, filterPowers,
+  } = powerplay;
   const [query, setQuery] = useState('');
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [checkName, setCheckName] = useState('');
@@ -108,7 +162,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const [checkError, setCheckError] = useState('');
   const [checking, setChecking] = useState(false);
 
-  const allPowers = useMemo(() => counts.powers.map((item) => item.power), [counts]);
+  const loaded = systems.length > 0;
   const visibleCounts = useMemo(() => {
     const out = { Stronghold: 0, Fortified: 0, Exploited: 0 };
     for (const system of visibleSystems) out[system.state] += 1;
@@ -121,6 +175,8 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
   const shown = listed.slice(0, limit);
   const meta = data?.meta;
   const filtered = !isDefaultPowerplayFilter(filter);
+  const shownPowers = filterPowers.filter((power) => isPowerVisible(filter, power)).length;
+  const powersWithSystems = counts.powers.filter((item) => item.total > 0).length;
 
   const runCheck = async (name: string, suggestion?: SystemSuggestion) => {
     const clean = name.trim();
@@ -171,12 +227,91 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
     ]);
   };
 
-  const sourceLine = meta?.dumpGeneratedAt || meta?.syncedAt
-    ? `Дамп EDSM от ${formatPowerplayDate(meta.dumpGeneratedAt ?? meta.syncedAt)}`
-      + (meta.oldestObservation && meta.newestObservation
-        ? ` · наблюдения ${formatPowerplayDate(meta.oldestObservation)}–${formatPowerplayDate(meta.newestObservation)}`
-        : '')
-    : '';
+  /* ── Что с данными: одна понятная плашка вместо строчки мелким шрифтом ── */
+  const serverProgress = meta?.progress ?? null;
+  const importing = status === 'empty' && Boolean(meta?.refreshing);
+  const statusKind = status === 'loading' || status === 'idle'
+    ? 'loading'
+    : status === 'error'
+      ? 'error'
+      : importing
+        ? 'importing'
+        : status === 'empty'
+          ? 'empty'
+          : 'ready';
+
+  let statusBlock: ReactNode = null;
+  if (statusKind === 'loading') {
+    const percent = download?.total ? (download.received / download.total) * 100 : null;
+    statusBlock = (
+      <>
+        <div className="powerplay-status-title">Загружаю системы держав…</div>
+        <StatusBar percent={percent} label="Загрузка систем держав" />
+        <div className="powerplay-status-detail">
+          {download && download.received > 0
+            ? `${formatPowerplayBytes(download.received)}${download.total ? ` из ${formatPowerplayBytes(download.total)}` : ''}`
+            : 'Запрашиваю набор у сервера'}
+        </div>
+      </>
+    );
+  } else if (statusKind === 'importing') {
+    statusBlock = (
+      <>
+        <div className="powerplay-status-title">Сервер загружает данные EDSM{serverProgress ? ` — ${Math.round(serverProgress.percent)} %` : '…'}</div>
+        <StatusBar percent={serverProgress ? serverProgress.percent : null} label="Импорт дампа EDSM на сервере" />
+        <div className="powerplay-status-detail">
+          {serverProgress?.message || 'Скачивание и разбор дампа EDSM'}
+        </div>
+        <div className="powerplay-status-hint">Это занимает до минуты. Карта заполнится сама — обновлять страницу не нужно.</div>
+      </>
+    );
+  } else if (statusKind === 'error') {
+    statusBlock = (
+      <>
+        <div className="powerplay-status-title"><IconAlert size={12} /> Не удалось загрузить системы PowerPlay</div>
+        <div className="powerplay-status-detail">{error || 'Сервер не ответил'}</div>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Повторить</button>
+      </>
+    );
+  } else if (statusKind === 'empty') {
+    statusBlock = (
+      <>
+        <div className="powerplay-status-title"><IconAlert size={12} /> Данных пока нет</div>
+        <div className="powerplay-status-detail">
+          {meta?.lastError ? `Последняя загрузка не удалась: ${meta.lastError}.` : 'Сервер ещё не загружал дамп EDSM.'}
+        </div>
+        <div className="powerplay-status-hint">
+          Сайт загружает данные сам (задача powerplay-sync, а при пустой базе — при открытии этой вкладки). Администратор
+          может запустить загрузку и посмотреть её журнал: Админка → Игровые данные → PowerPlay.
+        </div>
+        <button type="button" className="atlas-link-btn powerplay-retry" onClick={reload}>Проверить снова</button>
+      </>
+    );
+  } else {
+    statusBlock = (
+      <>
+        <div className="powerplay-status-title">
+          <IconCheckCircle size={12} /> Загружено {formatCount(systems.length)} систем · держав: {powersWithSystems}
+        </div>
+        <div className="powerplay-status-detail" title="EDSM собирает состояние систем из журналов пилотов (EDDN); в дампе — системы, о которых сообщали за последние ~30 дней">
+          Дамп EDSM от {formatPowerplayDate(meta?.dumpGeneratedAt ?? meta?.syncedAt)}
+          {meta?.oldestObservation && meta.newestObservation
+            ? ` · наблюдения ${formatPowerplayDate(meta.oldestObservation)}–${formatPowerplayDate(meta.newestObservation)}`
+            : ''}
+          {meta?.checkedAt ? ` · проверено ${formatDateTime(meta.checkedAt)}` : ''}
+          {' · '}
+          <a href={meta?.sourceUrl || 'https://www.edsm.net/en/nightly-dumps'} target="_blank" rel="noopener noreferrer">EDSM</a>
+        </div>
+        {meta?.refreshing && (
+          <div className="powerplay-status-hint">
+            Сервер обновляет данные{meta.progress ? `: ${meta.progress.stageLabel.toLowerCase()}, ${Math.round(meta.progress.percent)} %` : '…'} —
+            новый набор подгрузится сам.
+          </div>
+        )}
+        {meta?.lastError && <div className="powerplay-warning">Последнее обновление не удалось: {meta.lastError}</div>}
+      </>
+    );
+  }
 
   return (
     <div className="atlas-section powerplay-panel" data-powerplay-panel="">
@@ -188,116 +323,119 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
           <button type="button" className="atlas-icon-btn" title="Выгрузить список в CSV" onClick={exportList} disabled={listed.length === 0}>
             <IconDownload size={12} />
           </button>
-          <button type="button" className="atlas-icon-btn" title="Обновить данные" onClick={reload}>
+          <button type="button" className="atlas-icon-btn" title="Перезапросить данные" onClick={reload}>
             <IconRefresh size={12} />
           </button>
         </div>
       </div>
 
-      <p className="atlas-muted powerplay-intro">
-        Все системы под контролем держав PowerPlay 2.0: оплоты (зона влияния 30 св. лет), укреплённые (20 св. лет) и
-        эксплуатируемые. Цвет точки — держава, форма — состояние.
-      </p>
+      <div className={`powerplay-state-card ${statusKind}`} data-powerplay-status={statusKind} role="status" aria-live="polite">
+        {statusBlock}
+      </div>
 
       <label className="powerplay-toggle">
         <input type="checkbox" checked={visible} onChange={(event) => setVisible(event.target.checked)} />
         Показывать на карте
-        {status === 'ready' && <span className="powerplay-toggle-count">{formatCount(visibleSystems.length)}</span>}
+        {loaded && <span className="powerplay-toggle-count">{formatCount(visibleSystems.length)}</span>}
       </label>
 
-      {status === 'loading' && <div className="powerplay-status">Загрузка систем держав…</div>}
-      {status === 'error' && (
-        <div className="atlas-error powerplay-status" role="alert">
-          {error || 'Не удалось загрузить системы PowerPlay'}{' '}
-          <button type="button" className="atlas-link-btn" onClick={reload}>Повторить</button>
+      {/* ── Фильтр по державам: всегда виден, работает и до загрузки ── */}
+      <div className="powerplay-filter" data-powerplay-filter="">
+        <div className="powerplay-group-head">
+          <span className="powerplay-group-title">Державы · показано {shownPowers} из {filterPowers.length}</span>
+          <span className="powerplay-group-actions">
+            <button type="button" className="atlas-link-btn" onClick={() => setFilter(showAllPowers(filter))} disabled={filter.hiddenPowers.length === 0}>
+              все
+            </button>
+            <button type="button" className="atlas-link-btn" onClick={() => setFilter(hideAllPowers(filter, filterPowers))} disabled={shownPowers === 0}>
+              ни одной
+            </button>
+          </span>
         </div>
-      )}
-      {status === 'empty' && (
-        <div className="powerplay-status" role="status">
-          {meta?.refreshing
-            ? 'Сервер загружает свежий дамп EDSM — системы появятся через минуту.'
-            : meta?.lastError
-              ? `Данных пока нет: ${meta.lastError}.`
-              : 'Данных пока нет: импорт запускается задачей powerplay-sync.'}
-        </div>
-      )}
-      {status === 'ready' && (
-        <div className="powerplay-source" title="EDSM собирает состояние систем из журналов пилотов (EDDN); в дампе — системы, о которых сообщали за последние ~30 дней">
-          {sourceLine}
-          {meta?.lastError && <div className="powerplay-warning">Последнее обновление не удалось: {meta.lastError}</div>}
-          {' '}
-          <a href={meta?.sourceUrl || 'https://www.edsm.net/en/nightly-dumps'} target="_blank" rel="noopener noreferrer">EDSM</a>
-        </div>
-      )}
-
-      {systems.length > 0 && (
-        <>
-          <div className="powerplay-group-title">Состояние</div>
-          <div className="powerplay-chips" role="group" aria-label="Состояние систем">
-            {POWERPLAY_STATES.map((state) => {
-              const on = filter.states[state] !== false;
-              return (
-                <button
-                  key={state}
-                  type="button"
-                  className={`powerplay-chip${on ? ' active' : ''}`}
-                  aria-pressed={on}
-                  title={POWERPLAY_STATE_HINT[state]}
-                  onClick={() => setFilter(togglePowerplayState(filter, state))}
-                >
-                  <PowerplayGlyph state={state} color={on ? PP_COLOR : DIM} size={12} />
-                  {POWERPLAY_STATE_PLURAL[state]}
-                  <span className="powerplay-chip-count">{formatCount(counts.states[state])}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="powerplay-group-head">
-            <span className="powerplay-group-title">Державы ({counts.powers.length})</span>
-            <span className="powerplay-group-actions">
-              <button type="button" className="atlas-link-btn" onClick={() => setFilter(showAllPowers(filter))} disabled={filter.hiddenPowers.length === 0}>
-                все
+        <div className="powerplay-allegiances" role="group" aria-label="Фракции держав">
+          {ALLEGIANCES.map(({ id, Icon }) => {
+            const active = isAllegianceSolo(filter, id, filterPowers);
+            return (
+              <button
+                key={id}
+                type="button"
+                className={`powerplay-allegiance${active ? ' active' : ''}`}
+                aria-pressed={active}
+                data-allegiance={id}
+                title={active ? 'Снова показать все державы' : `Показать только державы: ${POWER_ALLEGIANCE_LABEL[id]}`}
+                onClick={() => {
+                  const next = active ? showAllPowers(filter) : soloAllegiance(filter, id, filterPowers);
+                  setFilter(next);
+                  if (!active) focusOverview(filterPowerplaySystems(systems, next));
+                }}
+              >
+                <Icon size={11} /> {POWER_ALLEGIANCE_LABEL[id]}
               </button>
-              <button type="button" className="atlas-link-btn" onClick={() => setFilter(hideAllPowers(filter, allPowers))}>
-                скрыть все
-              </button>
-            </span>
-          </div>
-          <ul className="powerplay-powers" aria-label="Державы">
-            {counts.powers.map((item) => {
-              const info = powerInfo(item.power);
-              const on = isPowerVisible(filter, item.power);
-              return (
-                <li key={item.power} className={`powerplay-power${on ? '' : ' off'}`} data-power={item.power}>
-                  <label className="powerplay-power-main" title={`${info.label}: ${formatCount(item.total)} систем`}>
-                    <input type="checkbox" checked={on} onChange={() => setFilter(togglePowerVisible(filter, item.power))} />
-                    <PowerSwatch color={info.color} />
-                    <span className="powerplay-power-name">{info.label}</span>
-                    {info.allegiance && <span className="powerplay-power-allegiance">{POWER_ALLEGIANCE_LABEL[info.allegiance]}</span>}
-                  </label>
+            );
+          })}
+        </div>
+        <ul className="powerplay-powers" aria-label="Державы">
+          {counts.powers.map((item) => {
+            const info = powerInfo(item.power);
+            const on = isPowerVisible(filter, item.power);
+            return (
+              <li key={item.power} className={`powerplay-power${on ? '' : ' off'}`} data-power={item.power}>
+                <label className="powerplay-power-main" title={loaded ? `${info.label}: ${formatCount(item.total)} систем` : info.label}>
+                  <input type="checkbox" checked={on} onChange={() => setFilter(togglePowerVisible(filter, item.power))} />
+                  <PowerSwatch color={info.color} />
+                  <span className="powerplay-power-name">{info.label}</span>
+                  {info.allegiance && <span className="powerplay-power-allegiance">{POWER_ALLEGIANCE_LABEL[info.allegiance]}</span>}
+                </label>
+                {loaded ? (
                   <span className="powerplay-power-counts" aria-label={`Оплоты ${item.states.Stronghold}, укреплённые ${item.states.Fortified}, эксплуатируемые ${item.states.Exploited}`}>
                     <span title="Оплоты"><PowerplayGlyph state="Stronghold" color={info.color} size={9} /> {formatCount(item.states.Stronghold)}</span>
                     <span title="Укреплённые"><PowerplayGlyph state="Fortified" color={info.color} size={9} /> {formatCount(item.states.Fortified)}</span>
                     <span title="Эксплуатируемые"><PowerplayGlyph state="Exploited" color={info.color} size={9} /> {formatCount(item.states.Exploited)}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="powerplay-solo"
-                    title={`Показать только ${info.label} и подвести к ней камеру`}
-                    onClick={() => {
-                      const next = soloPower(filter, item.power, allPowers);
-                      setFilter(next);
-                      focusOverview(filterPowerplaySystems(systems, next));
-                    }}
-                  >
-                    только
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+                ) : (
+                  <span className="powerplay-power-counts" aria-hidden="true">—</span>
+                )}
+                <button
+                  type="button"
+                  className="powerplay-solo"
+                  title={`Показать только ${info.label} и подвести к ней камеру`}
+                  onClick={() => {
+                    const next = soloPower(filter, item.power, filterPowers);
+                    setFilter(next);
+                    focusOverview(filterPowerplaySystems(systems, next));
+                  }}
+                >
+                  только
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
+      <div className="powerplay-group-title">Состояние</div>
+      <div className="powerplay-chips" role="group" aria-label="Состояние систем">
+        {POWERPLAY_STATES.map((state) => {
+          const on = filter.states[state] !== false;
+          return (
+            <button
+              key={state}
+              type="button"
+              className={`powerplay-chip${on ? ' active' : ''}`}
+              aria-pressed={on}
+              title={POWERPLAY_STATE_HINT[state]}
+              onClick={() => setFilter(togglePowerplayState(filter, state))}
+            >
+              <PowerplayGlyph state={state} color={on ? PP_COLOR : DIM} size={12} />
+              {POWERPLAY_STATE_PLURAL[state]}
+              {loaded && <span className="powerplay-chip-count">{formatCount(counts.states[state])}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {loaded && (
+        <>
           <div className="powerplay-summary">
             <span>
               На карте: <strong>{formatCount(visibleSystems.length)}</strong> из {formatCount(systems.length)} систем
@@ -320,6 +458,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
               Показать целиком
             </button>
             {!visible && <div className="powerplay-warning">Слой выключен — включите «Показывать на карте».</div>}
+            <div className="powerplay-hint">Системы кликабельны: щёлкните точку на карте или строку списка — откроется карточка системы.</div>
           </div>
 
           <div className="atlas-inline-search">
@@ -356,7 +495,7 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                     aria-pressed={active}
                     data-powerplay-row={system.name}
                     onClick={() => select(system, { focus: true })}
-                    title="Показать на карте"
+                    title="Показать на карте и открыть карточку"
                   >
                     <PowerplayGlyph state={system.state} color={info.color} size={12} />
                     <span className="powerplay-row-name">{system.name}</span>
@@ -365,7 +504,11 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                 </li>
               );
             })}
-            {listed.length === 0 && <li className="powerplay-empty">{query ? 'Под поиск ничего не нашлось' : 'Под фильтр систем нет'}</li>}
+            {listed.length === 0 && (
+              <li className="powerplay-empty">
+                {query ? 'Под поиск ничего не нашлось' : shownPowers === 0 ? 'Все державы скрыты — отметьте хотя бы одну' : 'Под фильтр систем нет'}
+              </li>
+            )}
           </ul>
           {listed.length > shown.length && (
             <button type="button" className="atlas-link-btn powerplay-more" onClick={() => setLimit((value) => value + PAGE_SIZE)}>
@@ -407,7 +550,17 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
                           <span>
                             <span style={{ color: info.color, fontWeight: 600 }}>{info.label}</span>
                             <span style={{ color: MUTED }}>
-                              {' '}— {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()} {item.nearest.name}, {formatLy(item.nearest.distance)}
+                              {' '}— {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()}{' '}
+                              <button
+                                type="button"
+                                className="powerplay-system-link"
+                                data-powerplay-link={item.nearest.name}
+                                title="Показать эту систему на карте"
+                                onClick={() => showSystem({ id64: item.nearest.id64, name: item.nearest.name })}
+                              >
+                                {item.nearest.name}
+                              </button>
+                              , {formatLy(item.nearest.distance)}
                               {item.sources > 1 ? `, зон: ${item.sources}` : ''}
                             </span>
                           </span>
@@ -426,10 +579,6 @@ export function AtlasPowerplayPanel({ powerplay }: AtlasPowerplayPanelProps) {
             )}
           </div>
         </>
-      )}
-
-      {systems.length === 0 && status === 'ready' && (
-        <div className="powerplay-status" style={{ color: TEXT }}>В наборе нет систем.</div>
       )}
     </div>
   );

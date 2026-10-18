@@ -94,6 +94,8 @@ interface GalaxySceneProps {
   showPowerplay?: boolean;
   selectedPowerplay?: PowerplaySystem | null;
   onPickPowerplay?: (system: PowerplaySystem) => void;
+  /** Курсор над системой слоя PowerPlay (или ушёл с неё): подсказка и «рука». */
+  onHoverPowerplay?: (system: PowerplaySystem | null, at: { x: number; y: number } | null) => void;
   showRegionLabels?: boolean;
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
@@ -152,6 +154,7 @@ export function GalaxyScene({
   showPowerplay = false,
   selectedPowerplay = null,
   onPickPowerplay,
+  onHoverPowerplay,
   showRegionLabels = true,
   showRegionBoundaries = true,
   showNebulae = true,
@@ -194,9 +197,14 @@ export function GalaxyScene({
             const system = powerplaySystems[index];
             if (system) onPickPowerplay(system);
           },
+          onHover: onHoverPowerplay
+            ? (index: number | null, at: { x: number; y: number } | null) => {
+                onHoverPowerplay(index === null ? null : powerplaySystems[index] ?? null, at);
+              }
+            : undefined,
         }
       : null
-  ), [onPickPowerplay, powerplayPositions, powerplaySystems, powerplayVisible]);
+  ), [onHoverPowerplay, onPickPowerplay, powerplayPositions, powerplaySystems, powerplayVisible]);
   const selectedPosition = selectedAllSystem
     ? (() => {
         const p = eliteToThreeCentered(selectedAllSystem);
@@ -285,7 +293,8 @@ export function GalaxyScene({
         />
       )}
       {showRingZone && <RingZone />}
-      <LandmarkMarkers onSelect={onSelectRouteSystem} />
+      {/* Со слоем PowerPlay ориентиры не перехватывают клики: Sol — сама система державы. */}
+      <LandmarkMarkers onSelect={onSelectRouteSystem} interactive={!powerplayVisible} />
       <GalacticRegions />
       <GalaxyRegionMarkers showLabels={showRegionLabels} />
       {showRegionBoundaries && <GalaxyRegionBoundaries />}

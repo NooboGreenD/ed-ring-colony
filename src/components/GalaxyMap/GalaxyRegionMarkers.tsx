@@ -25,7 +25,9 @@ function RegionMarker({ region, showLabel }: { region: (typeof REGIONS)[number];
 
   return (
     <group position={[position.x, position.y, position.z]}>
-      <sprite material={material} scale={[70, 70, 1]} />
+      {/* Обработчика у точки нет (клик — по подписи), а без raycast={null} квадрат 70 св. лет
+          считался маркером и глушил клики по системам вокруг (MapClickLayer). */}
+      <sprite material={material} scale={[70, 70, 1]} raycast={() => null} />
       {showLabel && (
         <Html position={[0, 60, 0]} center style={{ pointerEvents: 'auto', cursor: 'pointer' }} zIndexRange={[8, 7]}>
           <div

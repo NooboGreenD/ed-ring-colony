@@ -525,9 +525,17 @@ test('страница Atlas: вкладка PowerPlay — фильтр держ
     assert.equal(toggle.checked, true);
     assert.equal(JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).visible, true);
     assert.match(ui.text(), /Дамп EDSM от 17\.10\.2026 · наблюдения 14\.10\.2026–16\.10\.2026/);
+    // Плашка состояния говорит прямо: данные загружены, сколько и от какого числа.
+    const statusCard = doc.querySelector('[data-powerplay-status]');
+    assert.equal(statusCard.getAttribute('data-powerplay-status'), 'ready');
+    assert.match(statusCard.textContent, /Загружено 5 систем · держав: 2/);
 
+    // В фильтре все двенадцать держав PowerPlay 2.0: с системами — первыми, по числу систем.
     const powers = () => Array.from(doc.querySelectorAll('.powerplay-power')).map((item) => item.getAttribute('data-power'));
-    assert.deepEqual(powers(), ['Yuri Grom', 'Archon Delaine'], 'державы по числу систем');
+    assert.deepEqual(powers().slice(0, 2), ['Yuri Grom', 'Archon Delaine'], 'державы по числу систем');
+    assert.equal(powers().length, 12, 'фильтр показывает все державы, а не только найденные в наборе');
+    assert.ok(powers().includes('Jerome Archer') && powers().includes('A. Lavigny-Duval'));
+    assert.match(doc.querySelector('[data-powerplay-filter]').textContent, /Державы · показано 12 из 12/);
     const rows = () => Array.from(doc.querySelectorAll('[data-powerplay-row]')).map((item) => item.getAttribute('data-powerplay-row'));
     assert.deepEqual(rows(), ['Alpha', 'Epsilon', 'Gamma', 'Beta', 'Delta'], 'сначала оплоты, затем укреплённые, внутри — по имени');
     assert.match(doc.querySelector('.powerplay-summary').textContent, /На карте: 5 из 5 систем/);
@@ -536,7 +544,10 @@ test('страница Atlas: вкладка PowerPlay — фильтр держ
     await ui.click(doc.querySelector('[data-power="Archon Delaine"] .powerplay-solo'));
     assert.deepEqual(rows(), ['Gamma', 'Delta']);
     assert.ok(doc.querySelector('[data-power="Yuri Grom"]').classList.contains('off'));
-    assert.deepEqual(JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).filter.hiddenPowers, ['Yuri Grom'], 'фильтр запомнен');
+    const hidden = JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).filter.hiddenPowers;
+    assert.ok(hidden.includes('Yuri Grom') && !hidden.includes('Archon Delaine'), 'фильтр запомнен');
+    assert.equal(hidden.length, 11, 'скрыты все остальные державы');
+    assert.match(doc.querySelector('[data-powerplay-filter]').textContent, /показано 1 из 12/);
 
     // Состояние: без эксплуатируемых.
     const exploitedChip = Array.from(doc.querySelectorAll('.powerplay-chip')).find((chip) => (chip.textContent || '').includes('Эксплуатируемые'));
@@ -549,6 +560,20 @@ test('страница Atlas: вкладка PowerPlay — фильтр держ
     const allButton = Array.from(doc.querySelectorAll('.powerplay-group-actions button')).find((button) => (button.textContent || '').trim() === 'все');
     await ui.click(allButton);
     assert.deepEqual(rows(), ['Alpha', 'Epsilon', 'Gamma', 'Beta', 'Delta']);
+
+    // Быстрый выбор фракции: у Федерации в наборе систем нет, Независимые — обе державы.
+    await ui.click(doc.querySelector('.powerplay-allegiance[data-allegiance="Federation"]'));
+    assert.deepEqual(rows(), []);
+    assert.match(doc.querySelector('.powerplay-list').textContent, /Под фильтр систем нет/);
+    assert.equal(doc.querySelector('.powerplay-allegiance[data-allegiance="Federation"]').getAttribute('aria-pressed'), 'true');
+    await ui.click(doc.querySelector('.powerplay-allegiance[data-allegiance="Independent"]'));
+    assert.deepEqual(rows(), ['Alpha', 'Epsilon', 'Gamma', 'Beta', 'Delta']);
+    await ui.click(doc.querySelector('.powerplay-allegiance[data-allegiance="Independent"]'));
+    assert.equal(JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).filter.hiddenPowers.length, 0, 'повторный клик — снова все');
+    const noneButton = Array.from(doc.querySelectorAll('.powerplay-group-actions button')).find((button) => (button.textContent || '').trim() === 'ни одной');
+    await ui.click(noneButton);
+    assert.match(doc.querySelector('.powerplay-list').textContent, /Все державы скрыты/);
+    await ui.click(allButton);
     await ui.typeInto(doc.querySelector('input[aria-label="Поиск системы среди систем держав"]'), 'ta');
     assert.deepEqual(rows(), ['Beta', 'Delta']);
 
@@ -575,20 +600,34 @@ test('страница Atlas: вкладка PowerPlay — фильтр держ
     assert.match(result.textContent, /Yuri Grom — оплот Alpha, 6,00 св\. лет/);
     assert.match(result.textContent, /Archon Delaine — укреплённая Gamma, 19,0 св\. лет/);
     assert.ok(ui.calls.some((call) => call.includes('/api/galaxy/systems/by-name?name=Colony%20Target')));
+
+    // Имена систем в ответе кликабельны: выбор, карточка и камера.
+    await ui.click(result.querySelector('[data-powerplay-link="Alpha"]'));
+    assert.equal(focused[focused.length - 1], 'Alpha', 'клик по имени ведёт камеру к системе');
+    assert.equal(doc.querySelector('.powerplay-toggle input').checked, true, 'и снова показывает слой');
   } finally {
     ui.dom.window.removeEventListener('atlas-focus-powerplay', onFocus);
     await ui.cleanup();
   }
 });
 
-test('страница Atlas: PowerPlay — пустой набор объясняет, что идёт загрузка, ошибка — с повтором', async () => {
+test('страница Atlas: PowerPlay — ошибка с повтором, затем ход импорта на сервере и фильтр до данных', async () => {
   let fail = true;
   const ui = await renderAtlas(null, {
     url: 'http://localhost/atlas?tab=powerplay',
     api: (target) => {
       if (target.includes('/api/powerplay/systems')) {
         if (fail) return { status: 503, body: { error: 'Не удалось загрузить системы PowerPlay' } };
-        return { body: { status: 'empty', version: 'none', powers: [], states: ['Stronghold', 'Fortified', 'Exploited'], systems: [], meta: { ...EMPTY_POWERPLAY_META, refreshing: true } } };
+        return {
+          body: {
+            status: 'empty', version: 'none', powers: [], states: ['Stronghold', 'Fortified', 'Exploited'], systems: [],
+            meta: {
+              ...EMPTY_POWERPLAY_META,
+              refreshing: true,
+              progress: { stage: 'write', percent: 64, message: 'Запись в базу: пачка 9 из 14', startedAt: '2026-10-18T10:00:00.000Z' },
+            },
+          },
+        };
       }
       if (target.includes('/api/atlas/favorites') || target.includes('/api/atlas/sessions')) return { status: 401, body: { error: 'Unauthorized' } };
       return { body: {} };
@@ -599,11 +638,21 @@ test('страница Atlas: PowerPlay — пустой набор объясн
     await ui.render(ui.React.createElement(ui.mod.AtlasPage));
     await ui.flush(60);
     assert.match(ui.text(), /Не удалось загрузить системы PowerPlay/);
+    assert.equal(ui.document.querySelector('[data-powerplay-status]').getAttribute('data-powerplay-status'), 'error');
+    // Фильтр держав виден и до данных: двенадцать держав, счётчиков пока нет.
+    assert.equal(ui.document.querySelectorAll('.powerplay-power').length, 12);
     fail = false;
     const retry = Array.from(ui.document.querySelectorAll('.powerplay-panel button')).find((button) => (button.textContent || '').includes('Повторить'));
     await ui.click(retry);
     await ui.flush(60);
-    assert.match(ui.text(), /Сервер загружает свежий дамп EDSM/);
+    const card = ui.document.querySelector('[data-powerplay-status]');
+    assert.equal(card.getAttribute('data-powerplay-status'), 'importing');
+    assert.match(card.textContent, /Сервер загружает данные EDSM — 64 %/);
+    assert.match(card.textContent, /Запись в базу: пачка 9 из 14/);
+    assert.equal(card.querySelector('[role="progressbar"]').getAttribute('aria-valuenow'), '64');
+    // Галочки работают и без данных — и запоминаются до их прихода.
+    await ui.click(ui.document.querySelector('[data-power="Jerome Archer"] input'));
+    assert.deepEqual(JSON.parse(ui.dom.window.localStorage.getItem('atlas-powerplay-v1')).filter.hiddenPowers, ['Jerome Archer']);
   } finally {
     await ui.cleanup();
   }
