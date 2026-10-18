@@ -10,11 +10,11 @@ const json = body => new Response(JSON.stringify(body), { headers: { 'Content-Ty
 
 test('all six former Actions have UTC schedules, including progress', () => {
   assert.deepEqual(JOBS.map(job => job.name), [
-    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'galaxy-import',
+    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync', 'galaxy-import',
   ]);
   // The Spansh catalog import stays opt-in: it must not run on a bare scheduler.
   assert.deepEqual(DEFAULT_JOBS, [
-    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate',
+    'capi-sync', 'update-progress', 'cg-check', 'eddn-cleanup', 'colonisation-cleanup', 'galnet-sync', 'translate', 'powerplay-sync',
   ]);
   assert.deepEqual(config().jobs.map(job => job.name), DEFAULT_JOBS);
   assert.deepEqual(config({ JOBS_ENABLED: 'galaxy-import' }).jobs.map(job => job.name), ['galaxy-import']);
@@ -134,11 +134,11 @@ test('tick is sequential, does one catch-up, and persists successes without secr
       return { ok: true };
     } };
   await runTick(options);
-  assert.equal(calls.length, 7);
+  assert.equal(calls.length, DEFAULT_JOBS.length);
   await runTick(options);
-  assert.equal(calls.length, 7, 'do not replay the current slot');
+  assert.equal(calls.length, DEFAULT_JOBS.length, 'do not replay the current slot');
   await runTick({ ...options, now: () => Date.parse('2026-09-23T12:00:00Z') });
-  assert.equal(calls.length, 14, 'three days of downtime must not replay every missed minute');
+  assert.equal(calls.length, 2 * DEFAULT_JOBS.length, 'three days of downtime must not replay every missed minute');
 });
 
 test('failures retry within the same slot with backoff and do not block other jobs', async () => {

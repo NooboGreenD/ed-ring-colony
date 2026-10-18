@@ -19,7 +19,8 @@ import { PilotMarkers } from './PilotMarkers';
 import { CarrierMarkers } from './CarrierMarkers';
 import { NoMarketMarkers } from './NoMarketMarkers';
 import { MarketResultMarkers, type MarketResult } from './MarketResultMarkers';
-import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions } from './AllSystemsPoints';
+import { AllSystemsPoints, MapClickLayer, SelectedStarRing, useMapPositions, type MapClickPoints } from './AllSystemsPoints';
+import { PowerplayPoints, PowerplaySelection, usePowerplayPositions } from './PowerplayPoints';
 import { SearchProgressLayer } from './SearchProgressLayer';
 import type { Pilot } from './PilotMarkers';
 import { eliteToThreeCentered } from '@/lib/ed3dCanon';
@@ -29,6 +30,7 @@ import type { Hub, RouteSystem } from '@/types/hub';
 import type { AtlasCandidate } from '@/types/atlas';
 import type { AtlasSearchProgress } from '@/lib/atlasSearchProgress';
 import type { CarrierSystemGroup } from '@/lib/carrierMap';
+import type { PowerplaySystem } from '@/lib/powerplay';
 
 function DataWatcher({
   routeLinePoints,
@@ -59,6 +61,12 @@ function DataWatcher({
   return null;
 }
 
+/**
+ * Точка, к которой летит камера. `viewDistance` — с какого расстояния смотреть
+ * (обзор набора систем); без него — обычный подлёт к одной системе.
+ */
+export type FocusTarget = THREE.Vector3 & { viewDistance?: number };
+
 interface GalaxySceneProps {
   hubs: Hub[];
   /** Marker points after the UI status/layer filters have been applied. */
@@ -81,6 +89,11 @@ interface GalaxySceneProps {
   showCarriers?: boolean;
   selectedCarrierKey?: string | null;
   onSelectCarrierGroup?: (group: CarrierSystemGroup | null) => void;
+  /** Слой PowerPlay (Atlas): системы держав после фильтра вкладки. */
+  powerplaySystems?: PowerplaySystem[];
+  showPowerplay?: boolean;
+  selectedPowerplay?: PowerplaySystem | null;
+  onPickPowerplay?: (system: PowerplaySystem) => void;
   showRegionLabels?: boolean;
   showRegionBoundaries?: boolean;
   showNebulae?: boolean;
@@ -135,6 +148,10 @@ export function GalaxyScene({
   showCarriers = true,
   selectedCarrierKey = null,
   onSelectCarrierGroup,
+  powerplaySystems = [],
+  showPowerplay = false,
+  selectedPowerplay = null,
+  onPickPowerplay,
   showRegionLabels = true,
   showRegionBoundaries = true,
   showNebulae = true,
@@ -165,6 +182,21 @@ export function GalaxyScene({
   const controlsRef = useRef<any>(null);
   const { camera, invalidate } = useThree();
   const mapPositions = useMapPositions(showAllSystems ? allSystemsData : null);
+  const powerplayVisible = showPowerplay && powerplaySystems.length > 0;
+  const powerplayPositions = usePowerplayPositions(powerplayVisible ? powerplaySystems : null);
+  const powerplayPick = useMemo<MapClickPoints | null>(() => (
+    powerplayVisible && powerplayPositions && onPickPowerplay
+      ? {
+          positions: powerplayPositions,
+          count: powerplaySystems.length,
+          pixelRadius: 10,
+          onPick: (index: number) => {
+            const system = powerplaySystems[index];
+            if (system) onPickPowerplay(system);
+          },
+        }
+      : null
+  ), [onPickPowerplay, powerplayPositions, powerplaySystems, powerplayVisible]);
   const selectedPosition = selectedAllSystem
     ? (() => {
         const p = eliteToThreeCentered(selectedAllSystem);
@@ -176,7 +208,10 @@ export function GalaxyScene({
     if (!focusTarget || !controlsRef.current) return;
 
     const target = focusTarget.clone();
-    const offset = new THREE.Vector3(0, 120, 250);
+    const viewDistance = (focusTarget as FocusTarget).viewDistance;
+    const offset = viewDistance && viewDistance > 0
+      ? new THREE.Vector3(0, 0.75, 1).normalize().multiplyScalar(viewDistance)
+      : new THREE.Vector3(0, 120, 250);
     const endPosition = target.clone().add(offset);
     const startPosition = camera.position.clone();
     const startTarget = controlsRef.current.target.clone();
@@ -262,11 +297,16 @@ export function GalaxyScene({
         enabled={showAllSystems && !!allSystemsData && !!mapPositions}
         onPick={onPickAllSystem}
         onEmpty={onEmptyMapClick}
+        extraPoints={powerplayPick}
       />
       {showAllSystems && allSystemsData && mapPositions && (
         <AllSystemsPoints data={allSystemsData} positions={mapPositions} visibleMask={allSystemsMask} />
       )}
       {selectedPosition && <SelectedStarRing position={selectedPosition} />}
+      {powerplayVisible && powerplayPositions && (
+        <PowerplayPoints systems={powerplaySystems} positions={powerplayPositions} />
+      )}
+      {showPowerplay && selectedPowerplay && <PowerplaySelection system={selectedPowerplay} />}
 
       {showKnownSystems && <RouteLine points={routeLinePoints} />}
       {showSquadronRoute && squadronRouteSystems.length > 1 && (

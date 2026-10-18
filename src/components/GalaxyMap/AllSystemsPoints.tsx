@@ -134,6 +134,18 @@ export function useMapPositions(data: AllSystemsData | null): Float32Array | nul
   return useMemo(() => (data ? toMapPositions(data.positions, data.count) : null), [data]);
 }
 
+/**
+ * Ещё одно облако точек с выбором по клику (слой PowerPlay в Atlas). Его точки
+ * крупнее точек каталога и стоят выше в приоритете: клик сначала ищет их.
+ */
+export interface MapClickPoints {
+  positions: Float32Array;
+  count: number;
+  onPick: (index: number) => void;
+  /** Радиус попадания вокруг курсора, CSS-пиксели. */
+  pixelRadius?: number;
+}
+
 interface MapClickLayerProps {
   data: AllSystemsData | null;
   positions: Float32Array | null;
@@ -141,12 +153,22 @@ interface MapClickLayerProps {
   enabled: boolean;
   onPick?: (id64: string, index: number) => void;
   onEmpty?: () => void;
+  extraPoints?: MapClickPoints | null;
 }
 
-/** Click handler for the whole map: markers win, then a catalog star, then empty space. */
-export function MapClickLayer({ data, positions, visibleMask, enabled, onPick, onEmpty }: MapClickLayerProps) {
+/** Click handler for the whole map: markers win, then extra points (PowerPlay), then a catalog star, then empty space. */
+export function MapClickLayer({ data, positions, visibleMask, enabled, onPick, onEmpty, extraPoints = null }: MapClickLayerProps) {
   const { camera, gl, raycaster, scene } = useThree();
   const gridRef = useRef<PointGrid | null>(null);
+  const extraGridRef = useRef<PointGrid | null>(null);
+  const extraBoundsRef = useRef<Float32Array | null>(null);
+  // Обработчик выбора меняется с каждым рендером родителя — держим его в ref,
+  // чтобы не переподписывать слушатели canvas на каждый кадр данных.
+  const extraPickRef = useRef<MapClickPoints['onPick'] | null>(null);
+  extraPickRef.current = extraPoints?.onPick ?? null;
+  const extraPositions = extraPoints?.positions ?? null;
+  const extraCount = extraPoints?.count ?? 0;
+  const extraRadius = extraPoints?.pixelRadius ?? 10;
 
   useEffect(() => {
     if (!enabled || !data || !positions) {
@@ -155,6 +177,16 @@ export function MapClickLayer({ data, positions, visibleMask, enabled, onPick, o
     }
     gridRef.current = buildPointGrid(positions, data.count);
   }, [data, enabled, positions]);
+
+  useEffect(() => {
+    if (!extraPositions || extraCount <= 0) {
+      extraGridRef.current = null;
+      extraBoundsRef.current = null;
+      return;
+    }
+    extraGridRef.current = buildPointGrid(extraPositions, extraCount);
+    extraBoundsRef.current = pointBounds(extraPositions, extraCount);
+  }, [extraPositions, extraCount]);
 
   useEffect(() => {
     const el = gl.domElement;
@@ -185,36 +217,57 @@ export function MapClickLayer({ data, positions, visibleMask, enabled, onPick, o
       ));
       if (marker) return;
 
+      const origin = raycaster.ray.origin;
+      const dir = raycaster.ray.direction;
+      const ray = { ox: origin.x, oy: origin.y, oz: origin.z, dx: dir.x, dy: dir.y, dz: dir.z };
+      const perspective = camera as THREE.PerspectiveCamera;
+      const fov = perspective.fov || 45;
+      const e = camera.matrixWorld.elements;
+      const pickCamera: PickCamera = {
+        position: { x: e[12], y: e[13], z: e[14] },
+        right: { x: e[0], y: e[1], z: e[2] },
+        up: { x: e[4], y: e[5], z: e[6] },
+        forward: { x: -e[8], y: -e[9], z: -e[10] },
+        fovY: (fov * Math.PI) / 180,
+        width: rect.width,
+        height: rect.height,
+        clickX: event.clientX - rect.left,
+        clickY: event.clientY - rect.top,
+      };
+      // Коридор вокруг луча: на глубине плоскости галактики (или камеры) —
+      // в мировых единицах, с запасом на 14 пикселей. Точный отбор — в пикселях.
+      const corridor = (fallbackDepth: number) => {
+        let depth = fallbackDepth;
+        if (Math.abs(dir.y) > 1e-4) {
+          const t = -origin.y / dir.y;
+          if (t > 10 && t < 200_000) depth = t;
+        }
+        return Math.max(8, worldUnitsPerPixel(depth, fov, rect.height) * 14);
+      };
+
+      const extraGrid = extraGridRef.current;
+      if (extraGrid && extraPositions && extraPickRef.current) {
+        // Пузырь держав далеко от центра карты (Sgr A*) и толщиной в сотни
+        // световых лет: коридор считаем по самой дальней от камеры точке облака,
+        // а не по плоскости галактики, — иначе система ниже плоскости промахнётся.
+        const depth = farthestCorner(extraBoundsRef.current, pickCamera.position) ?? camera.position.length();
+        const hit = pickAlongRay(extraGrid, extraPositions, ray, {
+          threshold: Math.max(8, worldUnitsPerPixel(depth, fov, rect.height) * (extraRadius + 4)),
+          camera: pickCamera,
+          pixelRadius: extraRadius,
+        });
+        if (hit) {
+          extraPickRef.current(hit.index);
+          return;
+        }
+      }
+
       if (enabled && data && positions) {
         const grid = gridRef.current ?? buildPointGrid(positions, data.count);
         gridRef.current = grid;
         if (grid) {
-          const origin = raycaster.ray.origin;
-          const dir = raycaster.ray.direction;
-          let depth = camera.position.length();
-          if (Math.abs(dir.y) > 1e-4) {
-            const t = -origin.y / dir.y;
-            if (t > 10 && t < 200_000) depth = t;
-          }
-          const perspective = camera as THREE.PerspectiveCamera;
-          const fov = perspective.fov || 45;
-          const threshold = Math.max(8, worldUnitsPerPixel(depth, fov, rect.height) * 14);
-          const e = camera.matrixWorld.elements;
-          const pickCamera: PickCamera = {
-            position: { x: e[12], y: e[13], z: e[14] },
-            right: { x: e[0], y: e[1], z: e[2] },
-            up: { x: e[4], y: e[5], z: e[6] },
-            forward: { x: -e[8], y: -e[9], z: -e[10] },
-            fovY: (fov * Math.PI) / 180,
-            width: rect.width,
-            height: rect.height,
-            clickX: event.clientX - rect.left,
-            clickY: event.clientY - rect.top,
-          };
-          const hit = pickAlongRay(grid, positions, {
-            ox: origin.x, oy: origin.y, oz: origin.z, dx: dir.x, dy: dir.y, dz: dir.z,
-          }, {
-            threshold,
+          const hit = pickAlongRay(grid, positions, ray, {
+            threshold: corridor(camera.position.length()),
             visibleMask,
             starTypes: data.starTypes,
             camera: pickCamera,
@@ -235,9 +288,32 @@ export function MapClickLayer({ data, positions, visibleMask, enabled, onPick, o
       el.removeEventListener('pointerdown', onDown);
       el.removeEventListener('pointerup', onUp);
     };
-  }, [camera, data, enabled, gl, onEmpty, onPick, positions, raycaster, scene, visibleMask]);
+  }, [camera, data, enabled, extraPositions, extraRadius, gl, onEmpty, onPick, positions, raycaster, scene, visibleMask]);
 
   return null;
+}
+
+/** Габариты облака точек: [minX, minY, minZ, maxX, maxY, maxZ]. */
+function pointBounds(positions: Float32Array, count: number): Float32Array {
+  const box = new Float32Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity]);
+  const total = Math.min(count, Math.floor(positions.length / 3));
+  for (let i = 0; i < total; i++) {
+    for (let axis = 0; axis < 3; axis++) {
+      const value = positions[i * 3 + axis];
+      if (value < box[axis]) box[axis] = value;
+      if (value > box[axis + 3]) box[axis + 3] = value;
+    }
+  }
+  return box;
+}
+
+/** Расстояние от камеры до самого дальнего угла габаритов облака. */
+function farthestCorner(box: Float32Array | null, from: { x: number; y: number; z: number }): number | null {
+  if (!box || !Number.isFinite(box[0])) return null;
+  const dx = Math.max(Math.abs(box[0] - from.x), Math.abs(box[3] - from.x));
+  const dy = Math.max(Math.abs(box[1] - from.y), Math.abs(box[4] - from.y));
+  const dz = Math.max(Math.abs(box[2] - from.z), Math.abs(box[5] - from.z));
+  return Math.min(200_000, Math.hypot(dx, dy, dz));
 }
 
 export function SelectedStarRing({ position }: { position: [number, number, number] }) {

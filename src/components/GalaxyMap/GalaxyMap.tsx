@@ -1,7 +1,7 @@
 'use client';
 
 import { IconMapPin, IconPlane, IconGlobe, IconRefresh, IconCircleFill, IconExternalLink } from '@/components/Icons';
-import { useState, useId, useCallback, useEffect, Suspense, useMemo } from 'react';
+import { useState, useId, useCallback, useEffect, Suspense, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
@@ -30,7 +30,11 @@ import {
   type MapCarriersResponse,
 } from '@/lib/carrierMap';
 import { CarrierLayerControls, type CarrierLayerStatus } from './CarrierLayerControls';
+import type { FocusTarget } from './GalaxyScene';
 import { CarrierSystemCard } from './CarrierSystemCard';
+import { PowerplaySystemCard } from './PowerplaySystemCard';
+import { PowerplayGlyph } from './PowerplayGlyph';
+import { powerplayInfluenceAt, type PowerplaySystem } from '@/lib/powerplay';
 import {
   POINTS_BYTES_PER_POINT,
   POINTS_HEADER_SIZE,
@@ -171,6 +175,27 @@ function formatProgress(value: unknown): string {
     : '0';
 }
 
+/**
+ * Слой «PowerPlay» (вкладка Atlas). Данные, фильтр и выбор живут на странице
+ * (`useAtlasPowerplay`): карта рисует отфильтрованные системы, сообщает о клике
+ * по ним и показывает карточку выбранной.
+ */
+export interface GalaxyMapPowerplay {
+  visible: boolean;
+  /** Системы после фильтра вкладки — то, что на карте. */
+  systems: PowerplaySystem[];
+  /** Все системы набора: зоны влияния в карточке считаются по ним. */
+  allSystems: PowerplaySystem[];
+  selected: PowerplaySystem | null;
+  onSelect: (system: PowerplaySystem | null) => void;
+  onVisibleChange?: (visible: boolean) => void;
+  status?: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
+  /** «Показать целиком»: новый `id` — новый подлёт камеры к центру набора. */
+  overviewRequest?: { id: number; view: { x: number; y: number; z: number; radius: number } } | null;
+}
+
+const NO_POWERPLAY_SYSTEMS: PowerplaySystem[] = [];
+
 export interface GalaxyMapProps {
   focusSystem?: { name: string; x: number; y: number; z: number } | null;
   atlasCandidates?: AtlasCandidate[];
@@ -178,6 +203,7 @@ export interface GalaxyMapProps {
   showOnlyMainRoute?: boolean;
   noMarketSystems?: Array<{ system_name: string; x: number; y: number; z: number }>;
   marketResults?: MarketResult[];
+  powerplay?: GalaxyMapPowerplay | null;
 }
 
 export default function GalaxyMap({
@@ -187,6 +213,7 @@ export default function GalaxyMap({
   noMarketSystems = [],
   marketResults = [],
   focusSystem = null,
+  powerplay = null,
 }: GalaxyMapProps) {
   // Прогресс любого поисковика Atlas (миры, маршрут, кольцо, рынок) приходит из
   // общего канала: карта показывает сам процесс, а не только результат.
@@ -217,6 +244,13 @@ export default function GalaxyMap({
   const [selectedAtlasCandidate, setSelectedAtlasCandidate] = useState<AtlasCandidate | null>(null);
   const [selectedPilot, setSelectedPilot] = useState<any | null>(null);
   const [focusTarget, setFocusTarget] = useState<THREE.Vector3 | null>(null);
+  // Выбор в слое PowerPlay принадлежит странице: обработчики ниже созданы один
+  // раз, поэтому свежий колбэк берётся из ref.
+  const powerplayRef = useRef<GalaxyMapPowerplay | null>(powerplay);
+  powerplayRef.current = powerplay;
+  const clearPowerplaySelection = useCallback(() => {
+    if (powerplayRef.current?.selected) powerplayRef.current.onSelect(null);
+  }, []);
   useEffect(() => {
     if (focusSystem && [focusSystem.x, focusSystem.y, focusSystem.z].every(Number.isFinite)) {
       setFocusTarget(eliteToThreeCentered(focusSystem));
@@ -501,6 +535,7 @@ export default function GalaxyMap({
   }, [selectedCarrierKey, selectedCarrierGroup]);
 
   const handleSelectHub = useCallback((hub: Hub | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedHub(hub);
@@ -509,9 +544,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (hub) setFocusTarget(eliteToThreeCentered(hub));
-  }, []);
+  }, [clearPowerplaySelection]);
 
   const handleSelectRouteSystem = useCallback((point: RouteSystem | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedRouteSystem(point);
@@ -520,9 +556,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (point) setFocusTarget(eliteToThreeCentered(point));
-  }, []);
+  }, [clearPowerplaySelection]);
 
   const handleSelectAtlasCandidate = useCallback((candidate: AtlasCandidate | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedAtlasCandidate(candidate);
@@ -531,9 +568,10 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (candidate) setFocusTarget(eliteToThreeCentered(candidate));
-  }, []);
+  }, [clearPowerplaySelection]);
 
   const handleSelectPilot = useCallback((pilot: any | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedPilot(pilot);
@@ -542,9 +580,10 @@ export default function GalaxyMap({
     setSelectedAtlasCandidate(null);
     setGalaxyPick(null);
     if (pilot) setFocusTarget(eliteToThreeCentered(pilot));
-  }, []);
+  }, [clearPowerplaySelection]);
 
   const openGalaxy = useCallback((data: GalaxyPick) => {
+    clearPowerplaySelection();
     setSelectedCarrierKey(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -554,7 +593,7 @@ export default function GalaxyMap({
     setFocusTarget(eliteToThreeCentered(data));
     setSuggestOpen(false);
     setAllSystemsError('');
-  }, []);
+  }, [clearPowerplaySelection]);
 
   // Клик по точке облака «все системы»: id64 → карточка каталога, не «запланировано».
   const handlePickAllSystem = useCallback(async (id64: string) => {
@@ -617,6 +656,7 @@ export default function GalaxyMap({
   // Туманность — такой же объект карты, как хаб или пилот: выбор подсвечивает
   // её, ведёт камеру и показывает карточку.
   const handleSelectNebula = useCallback((nebula: GalaxyNebula | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(nebula);
     setSelectedCarrierKey(null);
     setSelectedHub(null);
@@ -625,11 +665,12 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
     if (nebula) setFocusTarget(eliteToThreeCentered(nebula));
-  }, []);
+  }, [clearPowerplaySelection]);
 
   // Система с авианосцами — такой же объект карты: камера летит к ней, внизу
   // слева карточка со списком носителей.
   const handleSelectCarrierGroup = useCallback((group: CarrierSystemGroup | null) => {
+    clearPowerplaySelection();
     setSelectedNebula(null);
     setSelectedHub(null);
     setSelectedRouteSystem(null);
@@ -638,15 +679,10 @@ export default function GalaxyMap({
     setGalaxyPick(null);
     setSelectedCarrierKey(group?.key ?? null);
     if (group?.position) setFocusTarget(eliteToThreeCentered(group.position));
-  }, []);
+  }, [clearPowerplaySelection]);
 
-  const toggleNebulaKind = useCallback((kind: NebulaKind) => {
-    setNebulaKinds((current) =>
-      current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
-    );
-  }, []);
-
-  const handleClearSelection = useCallback(() => {
+  // Остальные карточки закрываются, выбор PowerPlay (если он есть) остаётся.
+  const clearNonPowerplaySelection = useCallback(() => {
     setSelectedNebula(null);
     setSelectedCarrierKey(null);
     setSelectedHub(null);
@@ -655,6 +691,24 @@ export default function GalaxyMap({
     setSelectedPilot(null);
     setGalaxyPick(null);
   }, []);
+
+  // Клик по системе слоя PowerPlay: выбор уходит странице, камера — к системе.
+  const handleSelectPowerplay = useCallback((system: PowerplaySystem | null) => {
+    clearNonPowerplaySelection();
+    powerplayRef.current?.onSelect(system);
+    if (system) setFocusTarget(eliteToThreeCentered(system));
+  }, [clearNonPowerplaySelection]);
+
+  const toggleNebulaKind = useCallback((kind: NebulaKind) => {
+    setNebulaKinds((current) =>
+      current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
+    );
+  }, []);
+
+  const handleClearSelection = useCallback(() => {
+    clearNonPowerplaySelection();
+    clearPowerplaySelection();
+  }, [clearNonPowerplaySelection, clearPowerplaySelection]);
 
   const handleResetView = useCallback(() => {
     setFocusTarget(null);
@@ -698,17 +752,53 @@ export default function GalaxyMap({
         setFocusTarget(eliteToThreeCentered(positioned));
       }
     };
+    // Строка списка вкладки PowerPlay: выбор уже сделан страницей, здесь — камера.
+    const focusPowerplaySystem = (event: Event) => {
+      const system = (event as CustomEvent<PowerplaySystem | null>).detail;
+      if (system && hasCoordinates({ ...system, system_name: system.name })) {
+        clearNonPowerplaySelection();
+        setFocusTarget(eliteToThreeCentered(system));
+      }
+    };
+    window.addEventListener('atlas-focus-powerplay', focusPowerplaySystem);
     window.addEventListener('atlas-focus-system', focusNearbySystem);
     window.addEventListener('atlas-focus-candidate', focusAtlasCandidate);
     window.addEventListener('atlas-focus-route-point', focusRoutePoint);
     return () => {
+      window.removeEventListener('atlas-focus-powerplay', focusPowerplaySystem);
       window.removeEventListener('atlas-focus-system', focusNearbySystem);
       window.removeEventListener('atlas-focus-candidate', focusAtlasCandidate);
       window.removeEventListener('atlas-focus-route-point', focusRoutePoint);
     };
-  }, [handleClearSelection, handleSelectAtlasCandidate, handleSelectRouteSystem]);
+  }, [clearNonPowerplaySelection, handleClearSelection, handleSelectAtlasCandidate, handleSelectRouteSystem]);
+
+  // «Показать на карте целиком» (вкладка PowerPlay): центр набора и камера на
+  // расстоянии, с которого видна основная часть систем. Запрос — проп, а не
+  // событие: при первом открытии вкладки карта ещё догружается.
+  const powerplayOverviewRequest = powerplay?.overviewRequest ?? null;
+  const appliedOverview = useRef(0);
+  useEffect(() => {
+    if (!powerplayOverviewRequest || powerplayOverviewRequest.id === appliedOverview.current) return;
+    appliedOverview.current = powerplayOverviewRequest.id;
+    const view = powerplayOverviewRequest.view;
+    if (![view.x, view.y, view.z, view.radius].every(Number.isFinite)) return;
+    const target = eliteToThreeCentered(view) as FocusTarget;
+    // Видимая часть карты — между панелью Atlas и панелью слоёв: с запасом.
+    target.viewDistance = Math.min(30_000, Math.max(250, view.radius * 3.4));
+    setFocusTarget(target);
+  }, [powerplayOverviewRequest]);
 
   const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
+  const powerplayVisible = Boolean(powerplay?.visible);
+  const powerplaySystems = powerplayVisible && powerplay ? powerplay.systems : NO_POWERPLAY_SYSTEMS;
+  const selectedPowerplay = powerplayVisible ? powerplay?.selected ?? null : null;
+  const powerplayAllSystems = powerplay?.allSystems ?? NO_POWERPLAY_SYSTEMS;
+  const selectedPowerplayInfluence = useMemo(
+    () => (selectedPowerplay
+      ? powerplayInfluenceAt(selectedPowerplay, powerplayAllSystems, { excludeId64: selectedPowerplay.id64 || null })
+      : []),
+    [powerplayAllSystems, selectedPowerplay],
+  );
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -899,6 +989,28 @@ export default function GalaxyMap({
             status={carriersStatus}
             signedIn={carriersSignedIn}
           />
+          {powerplay && (
+            <div className="powerplay-layer-controls" style={{ borderTop: '1px solid #2d2f33', marginTop: 5, paddingTop: 5 }}>
+              <label style={{ fontSize: 11, color: '#f0af28', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+                title="Системы под контролем держав PowerPlay 2.0 — фильтр по державам и состояниям во вкладке «PowerPlay»">
+                <input
+                  type="checkbox"
+                  checked={powerplayVisible}
+                  onChange={(event) => powerplay.onVisibleChange?.(event.target.checked)}
+                />
+                <PowerplayGlyph state="Stronghold" color="#f0af28" size={12} />
+                PowerPlay ({powerplay.status === 'loading' && powerplay.systems.length === 0 ? '…' : powerplay.systems.length.toLocaleString('ru-RU')})
+              </label>
+              {powerplayVisible && (
+                <div style={{ paddingLeft: 22, marginTop: 3, display: 'flex', flexWrap: 'wrap', gap: '2px 8px', fontSize: 9, color: '#9ca3af', alignItems: 'center' }}>
+                  <span><PowerplayGlyph state="Stronghold" color="#d1d5db" size={9} /> оплот</span>
+                  <span><PowerplayGlyph state="Fortified" color="#d1d5db" size={9} /> укреплённая</span>
+                  <span><PowerplayGlyph state="Exploited" color="#d1d5db" size={9} /> эксплуатируемая</span>
+                  <span style={{ color: '#6b7280' }}>цвет — держава</span>
+                </div>
+              )}
+            </div>
+          )}
           {!compactMap && (
             <>
               <label style={{ fontSize: 11, color: '#60a5fa', display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
@@ -1042,6 +1154,15 @@ export default function GalaxyMap({
         />
       )}
 
+      {selectedPowerplay && !galaxyPick && !selected && !selectedCarrierGroup && !selectedNebula && (
+        <PowerplaySystemCard
+          system={selectedPowerplay}
+          influence={selectedPowerplayInfluence}
+          onClose={() => powerplay?.onSelect(null)}
+          onFocus={(system) => setFocusTarget(eliteToThreeCentered(system))}
+        />
+      )}
+
       {selectedCarrierGroup && !galaxyPick && (
         <CarrierSystemCard
           group={selectedCarrierGroup}
@@ -1129,6 +1250,10 @@ export default function GalaxyMap({
             showCarriers={showCarriers}
             selectedCarrierKey={selectedCarrierGroup?.key ?? null}
             onSelectCarrierGroup={handleSelectCarrierGroup}
+            powerplaySystems={powerplaySystems}
+            showPowerplay={powerplayVisible}
+            selectedPowerplay={selectedPowerplay}
+            onPickPowerplay={handleSelectPowerplay}
             showRegionLabels={showRegionLabels}
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}

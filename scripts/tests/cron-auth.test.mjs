@@ -63,6 +63,7 @@ test('all real cron and Galnet write handlers reject spoofed Vercel requests', a
     'src/app/api/cron/capi-sync/route.ts', 'src/app/api/cron/cg-check/route.ts',
     'src/app/api/cron/eddn-cleanup/route.ts', 'src/app/api/cron/colonisation-cleanup/route.ts',
     'src/app/api/cron/translate/route.ts',
+    'src/app/api/cron/powerplay-sync/route.ts',
     'src/app/api/cron/update-progress/route.ts', 'src/app/api/galnet/route.ts',
   ];
   process.env.CRON_SECRET = secret;
