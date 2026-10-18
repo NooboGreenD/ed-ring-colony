@@ -60,7 +60,7 @@ production TLS configs require a reviewed merge, not rerunning install.sh.
 - **Forum** — Community forum with categories, threads, reactions, search, moderation
 - **Wiki** — Full wiki with categories, tags, revisions, favorites, colonization guides
 - **Leaderboard** — Player statistics and achievements
-- **Atlas** — System search, favorites, route finder, candidate lists
+- **Atlas** — System search, favorites, route finder, candidate lists, PowerPlay tab (all systems controlled by PowerPlay 2.0 powers on the 3D map)
 - **News** — Admin-managed news feed + auto-synced Galnet
 - **Notifications** — Real-time push + in-app notification bell
 - **Direct Chat** — Peer-to-peer messaging between players
@@ -978,6 +978,32 @@ All in `src/components/Icons.tsx`. See DESIGN.md for full list.
   `stored_estimated`, `reconciled` (`""|emptied|trimmed|dropped`),
   `cargo_source` (`remote|journal|estimate`), `stats_age` (minutes).
 
+### 8.15 PowerPlay layer in Atlas (EDSM nightly dump)
+Full description: **POWERPLAY.md**.
+- Atlas tab «PowerPlay» (7th, `?tab=powerplay`, Alt+7) + a 3D layer: every system
+  controlled by a PowerPlay 2.0 power (Stronghold / Fortified / Exploited). Colour =
+  power (`POWERPLAY_POWERS` in `src/lib/powerplay.ts`), shape = state. Filter by
+  power and state, list with search, CSV, map card with influence zones, and
+  «Чья зона?» for any system (Stronghold 30 ly, Fortified 20 ly).
+- Source: EDSM `https://www.edsm.net/dump/powerPlay.json.gz` (~3.6 MB, daily,
+  systems reported via EDDN in the last ~30 days). Unoccupied rows are dropped:
+  EDSM keeps one power out of several contenders. Spansh `galaxy_populated` is
+  4+ GiB — too big for the production link; EDDN is not deployed.
+- Table `powerplay_systems` + singleton `powerplay_sync_state`; RPCs
+  `powerplay_apply_batch`, `powerplay_finish_sync` (deletes rows the new dump
+  lacks, in one transaction with the state), `powerplay_layer_rows` (one JSON —
+  bypasses PostgREST `max_rows`). Migration `20261018120000_powerplay_systems.sql`.
+- Import `src/lib/powerplaySync.ts`: conditional GET (ETag/If-Modified-Since),
+  gzip by magic bytes (a proxy may already have decoded it), size caps, guards:
+  HTTP error / broken gzip / non-array / < 100 rows / < 50 % of the previous total
+  never touch the table (`?force=1` accepts a shrunken dump). One run per process
+  (`globalThis` single-flight — route bundles have separate module copies).
+- Triggers: job `powerplay-sync` (12 h, default-enabled) and lazy refresh from
+  `GET /api/powerplay/systems` when the table is empty or unchecked for 26 h
+  (≤ 1 attempt / 30 min). The API answers compact tuples
+  `[id64, name, x, y, z, powerIdx, stateIdx, observedSec]`, ETag = import + meta,
+  cached in memory until the next import.
+
 ---
 
 ## 9. Environment Variables
@@ -1020,6 +1046,7 @@ GALAXY_IMPORT_FILE=...     # pin a local dump; import reads it, downloads nothin
 
 # External APIs
 RAVEN_API_BASE=...
+POWERPLAY_DUMP_URL=...     # mirror of EDSM powerPlay.json.gz (default https://www.edsm.net/dump/powerPlay.json.gz)
 
 # Frontier CAPI (PKCE — no FDEV Shared Key required)
 FRONTIER_REDIRECT_URI=https://<site>/api/capi/callback   # defaults to NEXT_PUBLIC_SITE_URL + /api/capi/callback

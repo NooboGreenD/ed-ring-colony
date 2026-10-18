@@ -136,7 +136,11 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   найденное кольцо остаётся на 3D-карте (контур, опорные точки, маршрут) до
   явной уборки, а маршрут сохраняется в проект эскадрильи вместе с координатами
   или выгружается в CSV — [ATLAS-SEARCH-REWORK.md](ATLAS-SEARCH-REWORK.md),
-  [ATLAS-RING-RESULT-FIX.md](ATLAS-RING-RESULT-FIX.md)
+  [ATLAS-RING-RESULT-FIX.md](ATLAS-RING-RESULT-FIX.md).
+  Вкладка «PowerPlay»: все системы под контролем держав PowerPlay 2.0 на 3D-карте (цвет — держава, форма —
+  оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV, карточка
+  системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM, задача
+  `powerplay-sync` — [POWERPLAY.md](POWERPLAY.md)
 - **Notifications** — Real-time in-app and push notifications (web-push)
 - **Direct Chat** — Peer-to-peer messaging between players
 - **Friends** — Friend list with online status

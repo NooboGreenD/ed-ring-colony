@@ -14,12 +14,16 @@ import { AtlasFavorites } from '@/components/Atlas/AtlasFavorites';
 import AtlasRouteFinder from '@/components/Atlas/AtlasRouteFinder';
 import AtlasMarketSearch from '@/components/Atlas/AtlasMarketSearch';
 import AtlasRingRouteFinder from '@/components/Atlas/AtlasRingRouteFinder';
+import { AtlasPowerplayPanel } from '@/components/Atlas/AtlasPowerplayPanel';
+import { useAtlasPowerplay } from '@/hooks/usePowerplayLayer';
+import type { GalaxyMapPowerplay } from '@/components/GalaxyMap/GalaxyMap';
 import { toast } from '@/components/ui/Toaster';
 import {
   IconAtlas,
   IconDownload,
   IconGlobe,
   IconMap,
+  IconPower,
   IconRoute,
   IconSearch,
   IconStore,
@@ -57,7 +61,7 @@ type ProjectItem = {
   squadron_name?: string;
 };
 
-type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby';
+type AtlasTab = 'search' | 'route' | 'route-finder' | 'ring-route' | 'market' | 'nearby' | 'powerplay';
 
 const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }[] = [
   { id: 'search', label: 'Поиск', icon: <IconSearch size={14} />, hint: 'Поиск миров по типам (Alt+1)' },
@@ -66,13 +70,16 @@ const TABS: { id: AtlasTab; label: string; icon: React.ReactNode; hint: string }
   { id: 'ring-route', label: 'Кольцо', icon: <IconGlobe size={14} />, hint: 'Галактическое кольцо колонизации (Alt+4)' },
   { id: 'market', label: 'Рынок', icon: <IconStore size={14} />, hint: 'Поиск товаров для стройки (Alt+5)' },
   { id: 'nearby', label: 'Поблизости', icon: <IconGlobe size={14} />, hint: 'Все системы в сфере/кубе 1–50 св.л. (Alt+6)' },
+  { id: 'powerplay', label: 'PowerPlay', icon: <IconPower size={14} />, hint: 'Системы под контролем держав PowerPlay (Alt+7)' },
 ];
 
 const CANDIDATE_PAGE_SIZE = 200;
 const MAX_POLL_ATTEMPTS = 90; // 3 минуты при интервале 2 с
 
+const TAB_IDS = new Set<string>(TABS.map((tab) => tab.id));
+
 function parseTab(value: string | null): AtlasTab {
-  return value === 'nearby' || value === 'market' || value === 'route' || value === 'route-finder' || value === 'ring-route' ? value : 'search';
+  return value && TAB_IDS.has(value) ? (value as AtlasTab) : 'search';
 }
 
 export default function AtlasPage() {
@@ -111,6 +118,28 @@ function AtlasPageInner() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const initialMarketSystem = searchParams.get('system') || '';
   const [activeTab, setActiveTab] = useState<AtlasTab>(() => parseTab(searchParams.get('tab')));
+  // Слой PowerPlay: данные и фильтр общие для вкладки и 3D-карты.
+  const powerplay = useAtlasPowerplay({ tabActive: activeTab === 'powerplay' });
+  const powerplayLayer = useMemo<GalaxyMapPowerplay>(() => ({
+    visible: powerplay.visible,
+    systems: powerplay.visibleSystems,
+    allSystems: powerplay.systems,
+    selected: powerplay.selected,
+    onSelect: (system) => powerplay.select(system),
+    onVisibleChange: powerplay.setVisible,
+    status: powerplay.status,
+    overviewRequest: powerplay.overviewRequest,
+  }), [powerplay.visible, powerplay.visibleSystems, powerplay.systems, powerplay.selected, powerplay.select, powerplay.setVisible, powerplay.status, powerplay.overviewRequest]);
+  // Державы — в пузыре вокруг Sol, а карта открывается обзором всей галактики:
+  // при первом открытии вкладки камера сама летит к системам слоя.
+  const powerplayOverviewShown = useRef(false);
+  const { focusOverview: focusPowerplayOverview } = powerplay;
+  useEffect(() => {
+    if (activeTab !== 'powerplay' || powerplay.status !== 'ready' || !powerplay.visible || powerplayOverviewShown.current) return;
+    if (powerplay.visibleSystems.length === 0) return;
+    powerplayOverviewShown.current = true;
+    focusPowerplayOverview();
+  }, [activeTab, focusPowerplayOverview, powerplay.status, powerplay.visible, powerplay.visibleSystems.length]);
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
@@ -179,7 +208,7 @@ function AtlasPageInner() {
     setActiveTab((current) => (current === tab ? current : tab));
   }, [searchParams]);
 
-  /* ── Alt+1..6 — быстрое переключение вкладок ── */
+  /* ── Alt+1..7 — быстрое переключение вкладок ── */
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.altKey || event.ctrlKey || event.metaKey) return;
@@ -868,6 +897,8 @@ function AtlasPageInner() {
 
           {activeTab === 'nearby' && <AtlasNearbySearch initialSystem={initialMarketSystem || 'Sol'} />}
 
+          {activeTab === 'powerplay' && <AtlasPowerplayPanel powerplay={powerplay} />}
+
           {activeTab === 'market' && (
             <AtlasMarketSearch
               initialSystem={initialMarketSystem}
@@ -901,6 +932,7 @@ function AtlasPageInner() {
           noMarketSystems={noMarketSystems}
           focusSystem={stationFocus}
           marketResults={stationFocus ? [...marketResults, { system_name: stationFocus.name, x: stationFocus.x, y: stationFocus.y, z: stationFocus.z, distance: 0 }] : marketResults}
+          powerplay={powerplayLayer}
         />
       </div>
     </div>
