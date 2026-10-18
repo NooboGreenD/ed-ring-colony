@@ -100,7 +100,7 @@ CREATE TABLE public.route_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY
 CREATE TABLE public.hubs(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, system_name text, x float8, y float8, z float8);
 CREATE TABLE public.galaxy_systems(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, name text, name_lc text UNIQUE, x float8 NOT NULL, y float8 NOT NULL, z float8 NOT NULL);
 `);
-for (const file of ['20261014000000_station_commerce.sql', '20261017000000_fleet_carriers.sql']) {
+for (const file of ['20261014000000_station_commerce.sql', '20261017000000_fleet_carriers.sql', '20261018000000_fleet_carrier_squadron_claims.sql']) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
 

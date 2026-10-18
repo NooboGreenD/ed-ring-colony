@@ -14,6 +14,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { looksLikeSquadronCallsign } from './carrierTags.ts';
 
 export const FC_MARKET_MIN = 3_700_000_000;
 export const FC_MARKET_MAX = 3_800_000_000;
@@ -35,6 +36,24 @@ export const CARRIER_JOURNAL_EVENTS = new Set([
   // не пишет в журнал ни CargoTransfer, ни Market*).
   'SquadronBankTransfer',
 ]);
+
+/**
+ * События, которые игра пишет только членам эскадрильи носителя, — единственное
+ * основание привязать Javelin к эскадрилье пилота на сайте (`squadron_claim`):
+ *
+ *   * `CarrierLocation` — при каждом запуске игры, сразу после `SquadronStartup`,
+ *     про носитель своей эскадрильи;
+ *   * `CarrierStats` — управление носителем (офицеры);
+ *   * `CarrierBuy` — покупка носителя эскадрильей.
+ *
+ * Стыковка (`Docked`/`Location`/`CarrierJump`) ничего не доказывает: Javelin
+ * пускает всех, кого разрешает его доступ к стыковке (например, «все пилоты»).
+ * Раньше стыковка тоже считалась доказательством, и каждый эскадренный
+ * носитель, к которому стыковались пилоты одной эскадрильи, приписывался ей.
+ * Тот же список проверяет SQL (`apply_fleet_carrier_batch`).
+ */
+export const SQUADRON_PROOF_EVENTS = ['CarrierStats', 'CarrierBuy', 'CarrierLocation'] as const;
+export type SquadronProofEvent = (typeof SQUADRON_PROOF_EVENTS)[number];
 
 export type CarrierType = 'FleetCarrier' | 'SquadronCarrier';
 export type CarrierSource = 'helper' | 'web' | 'capi' | 'manual';
@@ -122,6 +141,22 @@ function isoTime(value: unknown): string | undefined {
 /** Позывной FC: «K7X-B0Z». У непереименованного носителя StationName = позывной. */
 export function looksLikeCallsign(value: unknown): boolean {
   return typeof value === 'string' && /^[A-Z0-9]{3}-[A-Z0-9]{3}$/.test(value.trim());
+}
+
+/**
+ * Позывной из имени стоянки (`StationName`, имя станции в отчёте Helper'а):
+ * у Drake — «K7X-B0Z», у Javelin — тег эскадрильи из четырёх символов
+ * (см. carrierTags.ts). Иначе это имя носителя.
+ */
+function stationCallsign(stationName: string | undefined, carrierType: CarrierType | undefined): string | undefined {
+  if (!stationName) return undefined;
+  if (looksLikeCallsign(stationName)) return stationName;
+  if (carrierType === 'SquadronCarrier' && looksLikeSquadronCallsign(stationName)) return stationName.toUpperCase();
+  return undefined;
+}
+
+function squadronClaim(carrierId: string, at: string, proof: SquadronProofEvent): CarrierOp {
+  return { op: 'squadron_claim', carrier_id: carrierId, at, proof };
 }
 
 function carrierTypeOf(event: JournalEvent): CarrierType | undefined {
@@ -286,9 +321,10 @@ export function normalizeCarrierEvents(
           finance: finance(event.Finance),
           services: crewServices(event.Crew),
         }));
-        // CarrierStats приходит только тому, кто управляет носителем.
+        // CarrierStats приходит только тому, кто управляет носителем: владельцу
+        // Drake или офицеру эскадрильи Javelin.
         ops.push(squadron
-          ? { op: 'squadron_claim', carrier_id: id, at }
+          ? squadronClaim(id, at, 'CarrierStats')
           : { op: 'owner', carrier_id: id, at, proof: 'journal' });
         // Подтверждённо пустой трюм — полный базовый снимок.
         if (usage?.cargo === 0) {
@@ -301,7 +337,7 @@ export function normalizeCarrierEvents(
         if (!id) break;
         ops.push(compactObject({ op: 'identity', carrier_id: id, at, carrier_type: carrierType, callsign: text(event.Callsign, 20) }));
         ops.push(squadron
-          ? { op: 'squadron_claim', carrier_id: id, at }
+          ? squadronClaim(id, at, 'CarrierBuy')
           : { op: 'owner', carrier_id: id, at, proof: 'journal' });
         const system = text(event.Location ?? event.StarSystem);
         if (system) {
@@ -324,9 +360,11 @@ export function normalizeCarrierEvents(
           system_address: journalInteger(event.SystemAddress) ?? undefined,
           body_id: integerOf(event.BodyID), source_event: 'CarrierLocation',
         }));
-        // Пишется при запуске игры про «свой» носитель — мягкое доказательство.
+        // Пишется при запуске игры (и после прыжка) только про «свои» носители:
+        // личный — мягкое доказательство владения; эскадренный — носитель
+        // эскадрильи пилота (идёт сразу после SquadronStartup).
         ops.push(squadron
-          ? { op: 'squadron_claim', carrier_id: id, at }
+          ? squadronClaim(id, at, 'CarrierLocation')
           : { op: 'owner', carrier_id: id, at, proof: 'soft' });
         break;
       }
@@ -338,11 +376,12 @@ export function normalizeCarrierEvents(
         const system = text(event.StarSystem);
         if (!id) break;
         const stationName = text(event.StationName, 120);
+        const callsign = stationCallsign(stationName, carrierType);
         ops.push(compactObject({
           op: 'identity', carrier_id: id, at, carrier_type: carrierType,
-          callsign: looksLikeCallsign(stationName) ? stationName : undefined,
-          name: stationName && !looksLikeCallsign(stationName) ? stationName : undefined,
-          weak_name: stationName && !looksLikeCallsign(stationName) ? true : undefined,
+          callsign,
+          name: stationName && !callsign ? stationName : undefined,
+          weak_name: stationName && !callsign ? true : undefined,
           station_services: stationServices(event.StationServices),
         }));
         if (system) {
@@ -355,8 +394,8 @@ export function normalizeCarrierEvents(
             ...coords, source_event: name,
           }));
         }
-        // К эскадренному носителю пускают только членов эскадры.
-        if (squadron) ops.push({ op: 'squadron_claim', carrier_id: id, at });
+        // Привязки к эскадрилье стыковка не даёт: Javelin пускает и чужих
+        // пилотов, если это разрешает его доступ к стыковке (см. SQUADRON_PROOF_EVENTS).
         break;
       }
       case 'CarrierJumpRequest': {
@@ -525,11 +564,13 @@ export function carrierOpsFromStationReport(report: {
   if (!at) return [];
   const services = stationServices(report.metadata?.services);
   const type: CarrierType | undefined = services?.includes('squadronbank') ? 'SquadronCarrier' : undefined;
+  const stationName = text(report.station_name, 120);
+  const callsign = stationCallsign(stationName, type);
   const ops: CarrierOp[] = [compactObject({
     op: 'identity', carrier_id: id, at, carrier_type: type,
-    callsign: looksLikeCallsign(report.station_name) ? report.station_name : undefined,
-    name: looksLikeCallsign(report.station_name) ? undefined : report.station_name,
-    weak_name: looksLikeCallsign(report.station_name) ? undefined : true,
+    callsign,
+    name: stationName && !callsign ? stationName : undefined,
+    weak_name: stationName && !callsign ? true : undefined,
     station_services: services,
   })];
   const hasCoords = [report.x, report.y, report.z].every((value) => typeof value === 'number' && Number.isFinite(value));
@@ -791,7 +832,10 @@ export function buildCarrierView(
   };
 }
 
-/** Разбор «как пилот ввёл носитель»: Carrier ID (MarketID) или позывной. */
+/**
+ * Разбор «как пилот ввёл носитель»: Carrier ID (MarketID), позывной Drake
+ * («ABC-123») или позывной Javelin — тег эскадрильи из четырёх символов.
+ */
 export function parseCarrierReference(value: unknown): { carrierId: string } | { callsign: string } | null {
   const raw = String(value ?? '').trim().toUpperCase();
   if (!raw) return null;
@@ -799,6 +843,6 @@ export function parseCarrierReference(value: unknown): { carrierId: string } | {
     const id = positiveId(raw);
     return id ? { carrierId: id } : null;
   }
-  if (looksLikeCallsign(raw)) return { callsign: raw };
+  if (looksLikeCallsign(raw) || looksLikeSquadronCallsign(raw)) return { callsign: raw };
   return null;
 }

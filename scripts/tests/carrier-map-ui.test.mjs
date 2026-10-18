@@ -247,6 +247,42 @@ test('карточка системы: носители по порядку, в�
   }
 });
 
+test('карточка системы: чужой Javelin — с тегом своей эскадрильи из позывного, а не с эскадрильей зрителя', async () => {
+  const ui = await setup();
+  try {
+    const { React, mod } = ui;
+    const [group] = groupCarriersBySystem([
+      carrier({ id: '3713124352', type: 'SquadronCarrier', name: 'ENDURANCE ENDEAVOUR', callsign: 'ENEX', system: 'LHS 5333' }),
+      carrier({ id: '3713000002', type: 'SquadronCarrier', callsign: null, name: null, system: 'LHS 5333' }),
+      carrier({
+        id: '3713000003', type: 'SquadronCarrier', name: 'The Bearded Lady', callsign: 'CWIG', system: 'LHS 5333',
+        squadron: { id: 2, name: 'Circle of Wigs', tag: 'CWIG', member: false },
+      }),
+    ]);
+    await ui.render(React.createElement(mod.CarrierSystemCard, { group, now: NOW, onClose: () => {}, onFocus: () => {} }));
+    const items = new Map(Array.from(ui.document.querySelectorAll('li[data-carrier-id]'))
+      .map((item) => [item.getAttribute('data-carrier-id'), item]));
+
+    const enex = items.get('3713124352');
+    assert.match(enex.textContent, /ENEX · Javelin/);
+    assert.match(enex.textContent, /Эскадрилья в игре: \[ENEX\] · на сайте не привязана/);
+    assert.match(enex.textContent, /чужой носитель/);
+    assert.doesNotMatch(enex.textContent, /Владелец не привязан/, 'у Javelin нет личного владельца');
+    assert.equal(enex.querySelector('[data-carrier-game-squadron]').getAttribute('data-carrier-game-squadron'), 'ENEX');
+
+    const unknown = items.get('3713000002');
+    assert.match(unknown.textContent, /Эскадрилья на сайте не привязана/);
+    assert.doesNotMatch(unknown.textContent, /Эскадрилья в игре/);
+
+    const bound = items.get('3713000003');
+    assert.match(bound.textContent, /Эскадрилья: \[CWIG\] Circle of Wigs/);
+    const links = Array.from(bound.querySelectorAll('a')).map((link) => link.getAttribute('href'));
+    assert.deepEqual(links, ['/squadrons/2'], 'чужой эскадрилье — только ссылка на её страницу, без «Носитель эскадрильи»');
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test('значок: Drake — кольцо, Javelin — заполненный круг, списываемый перечёркнут; цвет по тону', async () => {
   const ui = await setup();
   try {

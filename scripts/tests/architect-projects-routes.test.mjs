@@ -121,7 +121,7 @@ CREATE TABLE public.deliveries(
   system_name text NOT NULL, commodity text, amount int, delivered_at timestamptz, created_at timestamptz DEFAULT now(),
   market_id text, station_name text, delivery_kind text, is_construction boolean);
 `);
-for (const file of ['20261014000000_station_commerce.sql', '20261017000000_fleet_carriers.sql', '20261017120000_architect_projects.sql']) {
+for (const file of ['20261014000000_station_commerce.sql', '20261017000000_fleet_carriers.sql', '20261017120000_architect_projects.sql', '20261018000000_fleet_carrier_squadron_claims.sql']) {
   await db.exec(readFileSync(join(TEST_ROOT, 'supabase', 'migrations', file), 'utf8'));
 }
 await db.exec(`
