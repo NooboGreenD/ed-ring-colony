@@ -17,6 +17,10 @@ https://edringcolony.ru/m-admin
 
 ## Вариант 2: Нативное Android-приложение
 
+> ⚠️ На 18.10.2026 сборка падает (`MainActivity` вызывает удалённый
+> `RetrofitClient.create`) — см. «Известная проблема» в [README.md](README.md).
+> Пока проблема не исправлена, используйте вариант 1.
+
 ### Сборка в Android Studio
 
 1. Откройте папку `android-app` в Android Studio Hedgehog+
