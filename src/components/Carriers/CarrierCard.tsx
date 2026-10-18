@@ -1,7 +1,9 @@
 "use client";
 
 import type { ReactNode } from "react";
+import Link from "next/link";
 import type { CarrierView } from "@/lib/fleetCarriers";
+import { systemPageHref } from "@/lib/systemIdentity";
 
 /**
  * Карточка авианосца: статус, система и прыжок, службы, трюм поимённо, рынок.
@@ -104,7 +106,7 @@ export default function CarrierCard({ carrier, actions }: { carrier: CarrierView
       <Section title="Где находится">
         <div style={{ fontSize: 14, color: TEXT }}>
           {carrier.location.system
-            ? <>{carrier.location.estimated ? "≈ " : ""}<b>{carrier.location.system}</b>{carrier.location.body ? <span style={{ color: MUTED }}> · {carrier.location.body}</span> : null}</>
+            ? <>{carrier.location.estimated ? "≈ " : ""}<Link href={systemPageHref(carrier.location.system)} title="Карточка системы" style={{ color: "inherit" }}><b>{carrier.location.system}</b></Link>{carrier.location.body ? <span style={{ color: MUTED }}> · {carrier.location.body}</span> : null}</>
             : <span style={{ color: MUTED }}>неизвестно — нужна стыковка или запуск игры с Colonial Helper</span>}
         </div>
         <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>
@@ -115,7 +117,7 @@ export default function CarrierCard({ carrier, actions }: { carrier: CarrierView
         {carrier.jump && (
           <div style={{ marginTop: 6, fontSize: 13, color: ORANGE }}>
             {carrier.jump.state === "jumping" ? "В прыжке → " : "Запланирован прыжок → "}
-            <b>{carrier.jump.system}</b>{carrier.jump.body ? ` · ${carrier.jump.body}` : ""}
+            <Link href={systemPageHref(carrier.jump.system)} title="Карточка системы" style={{ color: "inherit" }}><b>{carrier.jump.system}</b></Link>{carrier.jump.body ? ` · ${carrier.jump.body}` : ""}
             {carrier.jump.departureAt && carrier.jump.state === "scheduled"
               ? <span style={{ color: MUTED }}> · вылет {formatTime(carrier.jump.departureAt)} ({relativeTime(carrier.jump.departureAt)})</span> : null}
           </div>

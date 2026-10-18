@@ -7,7 +7,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase, authFetch } from "@/lib/supabaseClient";
 import Link from "next/link";
-import { systemPageHref } from "@/lib/systemIdentity";
+import { systemKey, systemPageHref } from "@/lib/systemIdentity";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
 import Avatar from "@/components/Avatar";
 
@@ -99,6 +99,9 @@ export default function ProjectPage() {
   const [edsmLoading, setEdsmLoading] = useState(false);
   const [edsmProgress, setEdsmProgress] = useState<EdsmProgress>(null);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  // Прогресс каждой системы тем же расчётом, что у «Проектов систем» и карточки
+  // системы: кэш Raven + площадки из журналов пилотов (GET /api/projects/[id]/progress).
+  const [systemProgress, setSystemProgress] = useState<Record<string, { progress: number | null; status: string; sitesComplete: number; sitesActive: number; remaining: number | null }>>({});
 
   const project = data?.project;
   const members: ProjectMember[] = data?.members || [];
@@ -233,6 +236,22 @@ export default function ProjectPage() {
   };
 
   useEffect(() => { load(); }, [id]);
+
+  const systemsCount = systems.length;
+  useEffect(() => {
+    if (!systemsCount) return;
+    let cancelled = false;
+    fetch(`/api/projects/${id}/progress`, { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (cancelled || !payload || !Array.isArray(payload.systems)) return;
+        const next: Record<string, { progress: number | null; status: string; sitesComplete: number; sitesActive: number; remaining: number | null }> = {};
+        for (const row of payload.systems) next[String(row.key)] = row;
+        setSystemProgress(next);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [id, systemsCount, data]);
 
   const syncAllProgress = async () => {
     if (!systems.length) return;
@@ -552,6 +571,20 @@ export default function ProjectPage() {
                   <span className="sys-name">{s.system_name}</span>
                   <span className="sys-meta">
                     <span>{sysStatusLabel(s.planned_status)}</span>
+                    {(() => {
+                      const unified = systemProgress[systemKey(s.system_name)];
+                      if (!unified || unified.progress == null) return null;
+                      const sites = unified.sitesComplete + unified.sitesActive;
+                      return (
+                        <span
+                          className="sys-unified-progress"
+                          title={`Тот же расчёт, что в «Проектах систем»: площадок ${sites} (готово ${unified.sitesComplete})${unified.remaining != null ? `, осталось ${unified.remaining.toLocaleString("ru-RU")} т` : ""}`}
+                          style={{ color: unified.status === "done" ? "#22c55e" : "#e67e22", fontFamily: "ui-monospace, monospace" }}
+                        >
+                          {unified.progress.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%
+                        </span>
+                      );
+                    })()}
                     {s.target_date && <span>&#8594; {new Date(s.target_date).toLocaleDateString("ru-RU")}</span>}
                     {s.assignee?.cmdr_name && <span style={{ color: "#60a5fa" }}>@{s.assignee.cmdr_name}</span>}
                   </span>

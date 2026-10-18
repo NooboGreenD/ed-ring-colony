@@ -59,6 +59,8 @@ interface AdminStatus {
   summary: {
     total: number;
     powers: PowerSummaryRow[];
+    sources?: Record<string, number>;
+    vacated?: number;
     oldestObservation: string | null;
     newestObservation: string | null;
     lastChange: string | null;
@@ -283,6 +285,10 @@ export default function PowerplayAdminTab() {
     }
     return out;
   }, [summary]);
+  // Системы, где данные пилотов свежее дампа (Helper, сайт, CAPI) — не «edsm».
+  const pilotRows = Object.entries(summary?.sources ?? {})
+    .filter(([source]) => source !== 'edsm')
+    .reduce((sum, [, value]) => sum + value, 0);
 
   return (
     <div data-powerplay-admin="">
@@ -320,6 +326,12 @@ export default function PowerplayAdminTab() {
             {summary.oldestObservation && summary.newestObservation && (
               <> · наблюдения пилотов {formatPowerplayDate(summary.oldestObservation)} – {formatPowerplayDate(summary.newestObservation)}</>
             )}
+          </div>
+        )}
+        {summary && (pilotRows > 0 || (summary.vacated ?? 0) > 0) && (
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }} data-pp-admin-pilots="">
+            Из журналов пилотов (Colonial Helper, загрузка на сайте, CAPI): {formatPowerplayCount(pilotRows)} систем свежее дампа
+            {(summary.vacated ?? 0) > 0 && <> · {formatPowerplayCount(summary.vacated ?? 0)} систем пилоты увидели свободными</>}
           </div>
         )}
         {status && total === 0 && !running && (

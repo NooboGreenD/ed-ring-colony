@@ -492,3 +492,68 @@ export async function loadSystemOverview(
   }
   return shapeSystemOverview(name || id64 || '', raw, viewer, carriers, warnings);
 }
+
+/* ── Прогресс набора систем (проекты эскадрилий и др.) ─────────────────── */
+
+export interface CompactSystemProgress {
+  systemName: string;
+  key: string;
+  status: SystemProgressView['status'];
+  progress: number | null;
+  sitesComplete: number;
+  sitesActive: number;
+  remaining: number | null;
+  needs: Array<{ label: string; remaining: number }>;
+  ravenUpdatedAt: string | null;
+  journalUpdatedAt: string | null;
+}
+
+/**
+ * Прогресс любых систем тем же расчётом, что у «Проектов систем» и карточки
+ * системы: кэш Raven + площадки из журналов (`system_progress_sources`).
+ * Планы здесь не участвуют — у проектов эскадрилий их нет.
+ */
+export async function loadSystemsProgress(svc: Svc, names: Iterable<string>): Promise<CompactSystemProgress[]> {
+  const byKey = new Map<string, string>();
+  for (const name of names) {
+    const clean = cleanSystemName(name);
+    const key = systemKey(clean);
+    if (key && !byKey.has(key)) byKey.set(key, clean);
+    if (byKey.size >= 1000) break;
+  }
+  if (byKey.size === 0) return [];
+  const { data, error } = await svc.rpc('system_progress_sources', { p_keys: Array.from(byKey.keys()) });
+  if (error) throw new Error(error.message);
+  const raw = (typeof data === 'string' ? JSON.parse(data) : data ?? {}) as Row;
+  const ravenByKey = new Map<string, RavenCacheRow[]>();
+  for (const row of rows(raw.raven)) {
+    const key = systemKey(row.system_key ?? row.system_name);
+    ravenByKey.set(key, [...(ravenByKey.get(key) ?? []), row as RavenCacheRow]);
+  }
+  const depotsByKey = new Map<string, DepotRow[]>();
+  for (const row of rows(raw.depots)) {
+    const key = systemKey(row.system_key ?? row.system_name);
+    depotsByKey.set(key, [...(depotsByKey.get(key) ?? []), row as DepotRow]);
+  }
+  return Array.from(byKey.entries()).map(([key, systemName]) => {
+    const view = buildSystemProgress({
+      systemId: key,
+      systemName,
+      raven: pickRavenRow(ravenByKey.get(key) ?? []),
+      depots: depotsByKey.get(key) ?? [],
+      plan: null,
+    });
+    return {
+      systemName,
+      key,
+      status: view.status,
+      progress: view.progress,
+      sitesComplete: view.sitesComplete,
+      sitesActive: view.sitesActive,
+      remaining: view.remaining,
+      needs: view.needs.slice(0, 5).map((need) => ({ label: need.label, remaining: need.remaining })),
+      ravenUpdatedAt: view.ravenUpdatedAt,
+      journalUpdatedAt: view.journalUpdatedAt,
+    };
+  });
+}

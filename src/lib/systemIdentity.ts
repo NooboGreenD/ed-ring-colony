@@ -87,8 +87,9 @@ export type AtlasSystemTab = 'search' | 'market' | 'nearby' | 'powerplay' | 'fac
 
 /**
  * Атлас с наведением на систему. Вкладки PowerPlay и «Фракции» по `focus_id64`
- * сами открывают карточку системы на своём слое; остальные вкладки показывают
- * отметку системы на карте (по координатам).
+ * сами открывают карточку системы на своём слое, «Рынок» и «Поблизости» берут
+ * её опорной системой; остальные вкладки показывают отметку системы на карте
+ * (по координатам).
  */
 export function atlasSystemHref(
   name: unknown,
@@ -97,7 +98,8 @@ export function atlasSystemHref(
   const params = new URLSearchParams();
   if (options.tab && options.tab !== 'search') params.set('tab', options.tab);
   const clean = cleanSystemName(name);
-  if (options.tab === 'market' && clean) params.set('system', clean);
+  // «Рынок» и «Поблизости» берут опорную систему из `system`.
+  if ((options.tab === 'market' || options.tab === 'nearby') && clean) params.set('system', clean);
   const point = finitePoint(options.point);
   if (clean && point) {
     params.set('focus_system', clean);

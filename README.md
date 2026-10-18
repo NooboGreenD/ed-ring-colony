@@ -4,8 +4,9 @@
 > Live: https://edringcolony.ru · Supabase: https://supabase.edringcolony.ru
 > Repo: https://github.com/NooboGreenD/ed-ring-colony
 >
-> **Сайт 2.21.0 · Colonial Helper 2.16.0** · документация сверена с кодом 18.10.2026.
+> **Сайт 2.22.0 · Colonial Helper 2.17.0** · документация сверена с кодом 19.10.2026.
 > Карта всех документов — **[DOCS.md](DOCS.md)**, устройство проекта — [CONTEXT.md](CONTEXT.md),
+> как разделы связаны в единый механизм — [ARCHITECTURE.md](ARCHITECTURE.md),
 > история изменений — [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -32,6 +33,24 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
 
 ## Возможности
 
+### Единый механизм
+
+Все разделы сайта говорят об одной и той же звёздной системе одним языком
+([ARCHITECTURE.md](ARCHITECTURE.md)):
+
+- **Карточка системы** (`/system/[name]`, `GET /api/systems/overview`) — всё, что проект знает о
+  системе, на одной странице. Стройка считается по всем источникам тем же расчётом, что и в «Проектах
+  систем». Здесь же проекты эскадрилий и ваши «Проекты систем», кольцо, станции и свежесть их рынков,
+  минорные фракции, PowerPlay, авианосцы в системе, цели сообщества, суммарные поставки и сканы, свежесть
+  каждого источника. Есть ссылки во все разделы: Атлас открывает систему сразу на слое «Фракции» или
+  PowerPlay. В карточку ведут поиск станций и проекты.
+- **Одно наблюдение — все слои**: прыжок пилота (Helper, загрузка журналов в кабинете, CAPI) обновляет
+  и фракции, и PowerPlay. Ночной дамп EDSM свежие данные пилотов не перетирает.
+- **Стройки из журналов → проекты эскадрилий**: статусы систем проектов продвигаются сами (только
+  вперёд), участники получают уведомление в колокольчик и push.
+- Общий ключ системы (`src/lib/systemIdentity.ts`), общий приём журналов (`src/lib/journalIngest.ts`),
+  общий канал уведомлений (`src/lib/notify.ts`).
+
 ### Карта и Atlas
 
 - **Galaxy Map** (`/map`) — 3D-карта кольца колонизации (Three.js + React Three Fiber): хабы, общий
@@ -56,8 +75,9 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
     [ATLAS-NEARBY-SEARCH.md](ATLAS-NEARBY-SEARCH.md).
   - «PowerPlay»: все системы под контролем держав PowerPlay 2.0 на 3D-карте (цвет — держава, форма —
     оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV,
-    карточка системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM,
-    задача `powerplay-sync`, управление — Админка → Игровые данные → PowerPlay — [POWERPLAY.md](POWERPLAY.md).
+    карточка системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM
+    (задача `powerplay-sync`) и журналы пилотов: Helper 2.17.0, загрузчик в кабинете, CAPI. Свежее
+    наблюдение побеждает. Управление — Админка → Игровые данные → PowerPlay — [POWERPLAY.md](POWERPLAY.md).
   - «Фракции»: все населённые системы с минорными фракциями на 3D-карте (цвет — принадлежность), поиск
     фракций и показ систем одной или нескольких выбранных (у власти / несколько / присутствует), карточка
     системы со всеми фракциями и их влиянием. Данные — в базе проекта: дамп EDSM `systemsPopulated`
@@ -103,7 +123,8 @@ ED Ring Colony is a web platform for coordinating colonization efforts in the ga
   участников эскадрильи. Службы, стыковка, система, прыжок, трюм (снимки + дельты, хеши дельт считает
   сервер) и банк эскадры видны в профиле и на странице эскадрильи; оверлей Helper читает груз с сайта, а в
   Raven Colonial уходят исправленные значения — [FLEET-CARRIERS.md](FLEET-CARRIERS.md)
-- **Projects** — проекты колонизации эскадрилий с маршрутом, системами и прогрессом (`/projects`)
+- **Projects** — проекты колонизации эскадрилий с маршрутом, системами и прогрессом (`/projects`); статусы
+  систем двигают и стройки из журналов любого пути загрузки, у каждой системы — ссылка на её карточку
 - **Log Import** — разбор журналов и в браузере (личный кабинет `/account`), и в Colonial Helper идёт по одним и
   тем же правилам и в одни и те же таблицы: доставки, состояния стройплощадок, снимки прогресса, сканы тел,
   сводка пилота, авианосцы и фракции. Повторы доставок отсекает `source_hash`, и он считается побайтно
@@ -259,7 +280,7 @@ npm run typecheck  # next typegen + tsc --noEmit
 
 ```bash
 npm run test:quick    # быстрый контур: без jsdom-рендеров и shell-интеграций (1263 проверки, ~1 мин)
-npm test              # весь набор: 142 файла, 1520 проверок (~1,5–2 мин на 2 ядрах)
+npm test              # весь набор: 145 файлов, 1536 проверок (~1,5–2 мин на 2 ядрах)
 npm run test:list     # какие файлы есть и к какому контуру они относятся
 node scripts/run-tests.mjs atlas ring    # только файлы про Atlas и кольцо
 npm run test:browser  # Playwright-сценарии tests/browser/*.spec.ts (нужен запущенный сайт)
@@ -283,7 +304,7 @@ python -m unittest discover -s uploader/tests   # тесты Colonial Helper
 `deploy/update-project.sh` накатывает все файлы `supabase/migrations/*.sql`, которых ещё нет в
 `migrations.mark`, по алфавиту, после бэкапа БД.
 
-**Новая установка.** `supabase/full_schema.sql` (все 86 миграций одним файлом) или
+**Новая установка.** `supabase/full_schema.sql` (все 87 миграций одним файлом) или
 `npx supabase db push` — подробно в [supabase/DATABASE.md](supabase/DATABASE.md). Каталог систем
 требует отдельной загрузки дампа — [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
 
@@ -323,7 +344,7 @@ ed-ring-colony/
       layout.tsx            # topbar (статус System Online/Update) + sidebar + footer
       atlas/ map/ system/ systems/ architect/ outfitting/ engineers/ station-search/ ...
       admin/ m-admin/       # админка и мобильная админка (PWA)
-      api/                  # 227 маршрутов API (полный список — CONTEXT.md §5)
+      api/                  # 228 маршрутов API (полный список — CONTEXT.md §5)
     components/
       GalaxyMap/            # 3D-карта галактики и её слои (INTEGRATION.md)
       SystemMap/            # карта системы: SystemOrrery3D + список тел
@@ -340,7 +361,7 @@ ed-ring-colony/
     types/
   scripts/                  # run-tests.mjs, server-jobs.mjs + job-schedule.mjs, update-agent.mjs,
                             #   monitor-agent.mjs, импорт Spansh, Galnet, EDDN, сборка данных верфи
-    tests/                  # 142 файла автотестов (+ helpers, fixtures)
+    tests/                  # 145 файлов автотестов (+ helpers, fixtures)
   uploader/                 # Colonial Helper (Python): программа, лаунчер, сборка пакета, тесты
   android-app/              # Android-монитор (Kotlin + Compose)
   supabase/                 # migrations/ (86), full_schema.sql, maintenance/, templates/, DATABASE.md
@@ -354,7 +375,7 @@ ed-ring-colony/
 
 ## API Routes
 
-227 маршрутов в `src/app/api/`. Полная таблица с методами и доступом — [CONTEXT.md §5](CONTEXT.md#5-api-routes).
+228 маршрутов в `src/app/api/`. Полная таблица с методами и доступом — [CONTEXT.md §5](CONTEXT.md#5-api-routes).
 Основные группы:
 
 | Группа | Префикс | Доступ |
@@ -474,12 +495,14 @@ docker compose exec web node scripts/galnet-sync.mjs --translate-only
 остаются `failed` и будут повторно взяты следующим запуском — свежие статьи обрабатываются первыми).
 Ключи `.env.production` можно посмотреть и поменять в Админка → Мониторинг → «API-ключи сайта».
 
-## Colonial Helper 2.16.0
+## Colonial Helper 2.17.0
 
 В репозитории находится Windows/Python-клиент `uploader/colonial_helper.py` для загрузки данных Elite
 Dangerous на ED Ring Colony. Что он умеет и как собирается — [uploader/README.md](uploader/README.md),
 журнал версий — [uploader/CHANGES.md](uploader/CHANGES.md). Последние версии:
 
+* **2.17.0** — в том же наблюдении системы едет PowerPlay 2.0 (держава, состояние, шкала контроля,
+  подкрепление, подрыв): сайт обновляет и фракции, и слой PowerPlay ([ARCHITECTURE.md](ARCHITECTURE.md));
 * **2.16.0** — состояние минорных фракций посещённых систем → `POST /api/factions/sync` ([FACTIONS.md](FACTIONS.md));
 * **2.15.0** — закреплённый блок оверлея всегда пропускает мышь (Ctrl+F12 — закрепить/открепить все),
   любой блок можно отвязать от игры и вынести на другой монитор;

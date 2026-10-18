@@ -109,6 +109,7 @@ test('ссылки между разделами строятся одинако
   assert.deepEqual(atlasFocusFromParams(params), { name: 'Col 285 Sector AB-C d14-3', x: -24.5, y: -33.75, z: 108.8 });
 
   assert.equal(atlasSystemHref('Sol', { tab: 'market' }), '/atlas?tab=market&system=Sol');
+  assert.equal(atlasSystemHref('Sol', { tab: 'nearby' }), '/atlas?tab=nearby&system=Sol', '«Поблизости» — от этой системы');
   assert.equal(atlasSystemHref('Sol'), '/atlas', 'без координат и адреса фокусировать нечего');
   assert.equal(atlasSystemHref('Sol', { point: { x: NaN, y: 0, z: 0 } }), '/atlas', 'битые координаты не попадают в ссылку');
 

@@ -619,6 +619,10 @@ export interface PowerplayPowerSummary {
 export interface PowerplayTableSummary {
   total: number;
   powers: PowerplayPowerSummary[];
+  /** Системы под контролем по источнику: edsm (дамп), helper, web (журнал/CAPI через сайт), eddn. */
+  sources: Record<string, number>;
+  /** Системы, которые пилоты увидели свободными после дампа (слой их не показывает). */
+  vacated: number;
   oldestObservation: string | null;
   newestObservation: string | null;
   lastChange: string | null;
@@ -651,9 +655,17 @@ export async function readPowerplaySummary(svc: Svc): Promise<PowerplayTableSumm
           total: count(item.total),
         }))
     : [];
+  const sources: Record<string, number> = {};
+  if (raw.sources && typeof raw.sources === 'object' && !Array.isArray(raw.sources)) {
+    for (const [source, value] of Object.entries(raw.sources as Record<string, unknown>)) {
+      if (/^[a-z-]{1,24}$/.test(source)) sources[source] = count(value);
+    }
+  }
   return {
     total: count(raw.total),
     powers,
+    sources,
+    vacated: count(raw.vacated),
     oldestObservation: isoOrNull(raw.oldest_observation),
     newestObservation: isoOrNull(raw.newest_observation),
     lastChange: isoOrNull(raw.last_change),

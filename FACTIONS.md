@@ -1,4 +1,4 @@
-# Минорные фракции на карте Atlas (web 2.21.0, Colonial Helper 2.16.0)
+# Минорные фракции на карте Atlas (web 2.21.0, Colonial Helper 2.16.0; одно наблюдение с PowerPlay — web 2.22.0, Helper 2.17.0)
 
 Вкладка **«Фракции»** в Atlas (`/atlas?tab=factions`, Alt+8) и слой 3D-карты:
 **все населённые системы, где есть минорные фракции**, поиск фракций по имени и
@@ -94,7 +94,10 @@ Colonial Helper, журнал на сайте), ссылки EDSM / Inara / Span
 
 Проекция одинакова у обоих (`projectBgsEvent` ↔ `project_bgs_event`): эталон —
 `scripts/tests/fixtures/bgs-journal.expected.json`, с ним сверяются и тест сайта,
-и тест Helper'а. Личные поля (`MyReputation`, `SquadronFaction`, `HomeSystem`,
+и тест Helper'а. С web 2.22.0 / Helper 2.17.0 проекция несёт и поля PowerPlay
+2.0, а сервер раскладывает одно наблюдение по слоям фракций и PowerPlay
+(`src/lib/systemObservations.ts`, [POWERPLAY.md](POWERPLAY.md)). Тем же путём
+идёт журнал за день из синхронизации Frontier CAPI (источник — `web`). Личные поля (`MyReputation`, `SquadronFaction`, `HomeSystem`,
 `HappiestSystem`) и `_Localised` не отправляются, `SystemAddress` — строкой
 (он шире 2^53). Хеши доставок (`source_hash`) не затронуты: фракции идут
 отдельным маршрутом.

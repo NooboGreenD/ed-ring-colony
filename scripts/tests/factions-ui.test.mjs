@@ -534,7 +534,11 @@ test('подключение: вкладка Atlas, слой карты, адм�
   const helper = read('uploader/colonial_helper.py');
   assert.match(helper, /self\._bgs_sync_collector\(\)\.feed\(ev, live=live\)/);
   assert.match(helper, /self\._flush_bgs_sync\(\)/);
-  assert.match(helper, /VERSION = "2\.16\.0"/);
+  // Фракции в Helper'е — с 2.16.0; дальше версия растёт (2.17.0 — PowerPlay в том же наблюдении).
+  const helperVersion = /VERSION = "(\d+)\.(\d+)\.(\d+)"/.exec(helper);
+  assert.ok(helperVersion, 'VERSION в colonial_helper.py');
+  const [major, minor] = helperVersion.slice(1).map(Number);
+  assert.ok(major > 2 || (major === 2 && minor >= 16), `Helper ${helperVersion[0]} умеет фракции (нужно не ниже 2.16.0)`);
   assert.match(read('uploader/api_client.py'), /\/factions\/sync/);
 
   const schema = read('supabase/full_schema.sql');

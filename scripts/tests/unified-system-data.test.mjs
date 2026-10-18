@@ -63,6 +63,7 @@ export async function resolveRequestUser() { return helperState.user; }
 const ENTRY = `
 export * as syncRoute from '@/app/api/factions/sync/route';
 export * as overviewRoute from '@/app/api/systems/overview/route';
+export * as projectProgressRoute from '@/app/api/projects/[id]/progress/route';
 export { state, createServiceClient } from '@/lib/supabaseServer';
 export { helperState } from '@/lib/helperAuth';
 export { applySystemObservations, splitSystemObservations, observationEventsFromJournalText } from '@/lib/systemObservations';
@@ -71,7 +72,7 @@ export { loadPowerplayLayer, resetPowerplayLayerCache } from '@/lib/powerplaySto
 export { decodePowerplayLayer } from '@/lib/powerplay';
 export { projectBgsEvent } from '@/lib/bgsJournal';
 export { syncProjectsFromSites } from '@/lib/projects/projectSync';
-export { loadSystemOverview } from '@/lib/systemOverview';
+export { loadSystemOverview, loadSystemsProgress } from '@/lib/systemOverview';
 `;
 
 /* ── База: заглушки соседних таблиц + настоящие миграции ───────────────── */
@@ -482,4 +483,18 @@ test('карточка системы: неизвестная система и 
   assert.equal(unknown.body.found, false);
   const empty = await overviewAs(null, 'name=');
   assert.equal(empty.status, 400);
+});
+
+test('проект эскадрильи: прогресс каждой системы — тот же расчёт, что у «Проектов систем»', async () => {
+  const response = await mod.projectProgressRoute.GET(new Request('https://edringcolony.ru/api/projects/1/progress'), { params: Promise.resolve({ id: '1' }) });
+  assert.equal(response.status, 200);
+  const { systems } = await response.json();
+  const byKey = Object.fromEntries(systems.map((row) => [row.key, row]));
+  const ring = byKey[SYSTEM.toLowerCase()];
+  assert.equal(ring.progress, 45, 'журнал (45%) новее кэша Raven (40%)');
+  assert.equal(ring.sitesActive, 1);
+  assert.equal(ring.remaining, 550);
+  assert.equal(ring.needs[0].remaining, 550);
+  assert.equal(byKey['untouched'].progress, null, 'о системе без строек данных нет');
+  assert.equal((await mod.projectProgressRoute.GET(new Request('https://x/api/projects/abc/progress'), { params: Promise.resolve({ id: 'abc' }) })).status, 400);
 });
