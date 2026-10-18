@@ -576,6 +576,11 @@ export interface JournalTelemetryOutcome {
    * программы (Colonial Helper) не имеют права её перетереть.
    */
   pilotStatsSkipped: 'web_source' | null;
+  /**
+   * Системы, где состояние площадки изменилось: по ним сервер продвигает
+   * статусы проектов эскадрилий (`projects/projectSync.ts`).
+   */
+  changedSystems: string[];
   warnings: string[];
 }
 
@@ -665,6 +670,7 @@ export async function persistJournalTelemetry(
     systemScansInserted: 0,
     pilotStatsUpdated: false,
     pilotStatsSkipped: null,
+    changedSystems: [],
     warnings,
   };
 
@@ -686,6 +692,9 @@ export async function persistJournalTelemetry(
     outcome.constructionInserted += write.changed;
     outcome.constructionDuplicates += write.unchanged + write.stale;
     warnings.push(...write.warnings);
+    outcome.changedSystems = Array.from(new Set(
+      rows.filter((row) => write.changedMarkets.has(row.market_id)).map((row) => row.system_name),
+    ));
 
     // Снимок прогресса — только по площадкам, чьё состояние реально изменилось
     // (новая площадка или другой прогресс/набор ресурсов). Журнал пишет

@@ -6,6 +6,8 @@
  * (scripts/tests/atlas-ui.test.mjs) и в браузере одинаково.
  */
 
+import { systemKey } from './systemIdentity.ts';
+
 export interface AtlasCandidateLike {
   id: string;
   system_name: string;
@@ -84,9 +86,9 @@ export function formatCoordinates(point: { x: number; y: number; z: number }, di
   return `${point.x.toFixed(digits)}, ${point.y.toFixed(digits)}, ${point.z.toFixed(digits)}`;
 }
 
-/** Нормализованный ключ системы: регистр и лишние пробелы не важны. */
+/** Нормализованный ключ системы: регистр и лишние пробелы не важны (общий `systemKey`). */
 export function normalizeSystemKey(name: string): string {
-  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+  return systemKey(name);
 }
 
 /** Ключ избранного: у одной системы может быть несколько типов миров. */

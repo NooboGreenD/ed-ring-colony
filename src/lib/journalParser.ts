@@ -8,6 +8,7 @@ import {
   type StationContext,
   type StationKind,
 } from './cargoScope.ts';
+import { systemKey as sharedSystemKey } from './systemIdentity.ts';
 
 export type DeliverySource =
   | 'colonisation_contribution'
@@ -168,9 +169,8 @@ export function createJournalParseState(): JournalParseState {
   };
 }
 
-function systemKey(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
+// Ключ системы — общий для всего проекта (`systemIdentity.ts`); в source_hash не входит.
+const systemKey = sharedSystemKey;
 
 function commodityKey(value: unknown): string {
   // Ключ инвентаря должен совпадать с Python `build_inventory`:

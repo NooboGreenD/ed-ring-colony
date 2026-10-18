@@ -8,7 +8,10 @@ EDSM, но он обновляется раз в несколько дней, а
 каждые сутки. Helper сразу после прыжка (FSDJump), входа в игру (Location) или
 прыжка авианосца (CarrierJump) отправляет состояние фракций этой системы:
 контролирующую фракцию, влияние, состояния, принадлежность, правительство,
-экономику, безопасность и население — ``POST /api/factions/sync``.
+экономику, безопасность и население — ``POST /api/factions/sync``. С версии
+2.17.0 в той же проекции едут поля PowerPlay 2.0 (держава, состояние, шкала
+контроля, подкрепление и подрыв): сайт обновляет по ним и слой PowerPlay, так
+что одно наблюдение системы питает оба слоя.
 
 Алгоритм отбора — тот же, что ``src/lib/bgsJournal.ts`` (``projectBgsEvent``)
 у загрузчика журналов на сайте: одинаковые поля, личного (MyReputation,
@@ -33,11 +36,17 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 #: События, которые несут состояние фракций системы.
 BGS_EVENTS = ("FSDJump", "Location", "CarrierJump")
+#: Поля PowerPlay 2.0 — тот же список, что POWERPLAY_JOURNAL_FIELDS в src/lib/powerplayJournal.ts.
+#: С ними одно наблюдение системы обновляет на сайте и фракции, и слой PowerPlay.
+POWERPLAY_SYSTEM_FIELDS = (
+    "ControllingPower", "Powers", "PowerplayState",
+    "PowerplayStateControlProgress", "PowerplayStateReinforcement", "PowerplayStateUndermining",
+)
 #: Поля события — тот же список, что BGS_SYSTEM_FIELDS в src/lib/bgsJournal.ts.
 BGS_SYSTEM_FIELDS = (
     "event", "timestamp", "StarSystem", "SystemAddress", "StarPos", "SystemAllegiance", "SystemGovernment",
     "SystemEconomy", "SystemSecondEconomy", "SystemSecurity", "Population", "SystemFaction", "FactionState",
-)
+) + POWERPLAY_SYSTEM_FIELDS
 #: Поля элемента ``Factions`` — тот же список, что BGS_FACTION_FIELDS на сайте.
 BGS_FACTION_FIELDS = (
     "Name", "FactionState", "Government", "Influence", "Allegiance", "Happiness",

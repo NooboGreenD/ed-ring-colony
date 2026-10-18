@@ -45,6 +45,7 @@ import {
 import { countByWorldType, downloadCsv, favoriteKey, filterCandidates, formatCoordinates, worldTypeLabel } from '@/lib/atlas';
 
 import { atlasFocusFromParams } from '@/lib/stationSearch';
+import { systemId64, systemPageHref } from '@/lib/systemIdentity';
 
 const GalaxyMap = dynamic(() => import('@/components/GalaxyMap'), {
   ssr: false,
@@ -102,6 +103,11 @@ function AtlasPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const stationFocus = useMemo(() => atlasFocusFromParams(searchParams), [searchParams]);
+  // Переход из карточки системы (`/system/[name]`) или поиска станций: вкладки
+  // PowerPlay и «Фракции» открывают эту систему на своём слое (`focus_id64`).
+  const focusId64 = useMemo(() => systemId64(searchParams.get('focus_id64')), [searchParams]);
+  const focusFrom = searchParams.get('from') === 'system' ? 'system' : 'stations';
+  const layerFocusRequested = Boolean(stationFocus || focusId64);
   const { candidates, error, setCandidates } = useAtlasData();
   const { favorites, sessions, recordSearch, favoriteKeys } = useAtlas();
 
@@ -137,7 +143,7 @@ function AtlasPageInner() {
   }), [powerplay.visible, powerplay.visibleSystems, powerplay.systems, powerplay.selected, powerplay.select, powerplay.setVisible, powerplay.status, powerplay.overviewRequest, powerplay.showSystem]);
   // Державы — в пузыре вокруг Sol, а карта открывается обзором всей галактики:
   // при первом открытии вкладки камера сама летит к системам слоя.
-  const powerplayOverviewShown = useRef(false);
+  const powerplayOverviewShown = useRef(layerFocusRequested);
   const { focusOverview: focusPowerplayOverview } = powerplay;
   useEffect(() => {
     if (activeTab !== 'powerplay' || powerplay.status !== 'ready' || !powerplay.visible || powerplayOverviewShown.current) return;
@@ -168,7 +174,7 @@ function AtlasPageInner() {
     overviewRequest: factions.overviewRequest,
   }), [factions.visible, factions.points, factionsCount, factions.selected, factions.select, factions.setVisible, factions.status, factions.selection.length, factionsSelectedColors, factions.addFaction, factions.removeFaction, factions.overviewRequest]);
   // Населённые системы — в пузыре вокруг Sol: при первом открытии вкладки камера летит к ним.
-  const factionsOverviewShown = useRef(false);
+  const factionsOverviewShown = useRef(layerFocusRequested);
   const { focusOverview: focusFactionsOverview } = factions;
   useEffect(() => {
     if (activeTab !== 'factions' || factionsOverviewShown.current || !factions.visible) return;
@@ -176,6 +182,24 @@ function AtlasPageInner() {
     factionsOverviewShown.current = true;
     focusFactionsOverview();
   }, [activeTab, factions.points.length, factions.visible, focusFactionsOverview]);
+
+  // Система из ссылки открывается на слое, как только слой загрузился.
+  const layerFocusDone = useRef<string | null>(null);
+  const { showSystem: showPowerplaySystem } = powerplay;
+  const { showSystem: showFactionSystem } = factions;
+  useEffect(() => {
+    if (!layerFocusRequested) return;
+    const name = stationFocus?.name ?? '';
+    const key = `${activeTab}|${focusId64 ?? ''}|${name}`;
+    if (layerFocusDone.current === key) return;
+    if (activeTab === 'powerplay' && powerplay.status === 'ready') {
+      layerFocusDone.current = key;
+      showPowerplaySystem({ id64: focusId64, name });
+    } else if (activeTab === 'factions' && factions.status === 'ready') {
+      layerFocusDone.current = key;
+      showFactionSystem({ id64: focusId64, name, x: stationFocus?.x, y: stationFocus?.y, z: stationFocus?.z });
+    }
+  }, [activeTab, factions.status, focusId64, layerFocusRequested, powerplay.status, showFactionSystem, showPowerplaySystem, stationFocus]);
 
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
@@ -950,9 +974,16 @@ function AtlasPageInner() {
 
       {/* ── Карта ── */}
       <div className="atlas-map-area">
-        {stationFocus && <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из поиска станций
-          <Link href="/station-search">← Вернуться к поиску по станциям</Link>
-        </div>}
+        {stationFocus && (focusFrom === 'system' ? (
+          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из карточки системы
+            <Link href={systemPageHref(stationFocus.name)}>← Вернуться к карточке системы</Link>
+          </div>
+        ) : (
+          <div className="station-atlas-focus"><strong>{stationFocus.name}</strong> — система из поиска станций
+            <Link href="/station-search">← Вернуться к поиску по станциям</Link>
+            <Link href={systemPageHref(stationFocus.name)}>Карточка системы →</Link>
+          </div>
+        ))}
         {!sidebarOpen && (
           <button
             type="button"

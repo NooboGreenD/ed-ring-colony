@@ -7,6 +7,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase, authFetch } from "@/lib/supabaseClient";
 import Link from "next/link";
+import { systemPageHref } from "@/lib/systemIdentity";
 import { IconClock, IconSatellite, IconTrash, IconCheckCircle, IconConstruction, IconX } from "@/components/Icons";
 import Avatar from "@/components/Avatar";
 
@@ -558,6 +559,14 @@ export default function ProjectPage() {
                     {formatCoordinates(s)}
                   </span>
                   <div className="sys-links">
+                    <Link
+                      className="project-link-button"
+                      href={systemPageHref(s.system_name)}
+                      onClick={(event) => event.stopPropagation()}
+                      title="Карточка системы: стройки, фракции, PowerPlay, станции, авианосцы"
+                    >
+                      Система
+                    </Link>
                     <a
                       className="project-link-button"
                       href={`https://ravencolonial.com/#sys=${encodeURIComponent(s.system_name)}`}
@@ -743,6 +752,9 @@ export default function ProjectPage() {
                     {r.status === "done" ? <IconCheckCircle size={14} /> : r.status === "building" ? <IconConstruction size={14} /> : <IconClock size={14} />}
                   </span>
                   <div className="sys-links">
+                    <Link href={systemPageHref(r.system_name)} onClick={(event) => event.stopPropagation()}>
+                      Система
+                    </Link>
                     <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(r.system_name)}`} target="_blank" rel="noreferrer">
                       RC
                     </a>

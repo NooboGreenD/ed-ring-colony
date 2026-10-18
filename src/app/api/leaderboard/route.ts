@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabaseServer';
+import { systemKey } from '@/lib/systemIdentity';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,9 +16,6 @@ type LeaderboardStats = {
   commodities: Map<string, { commodity: string; amount: number }>;
 };
 
-function systemKey(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
 
 function validLimit(value: string | null): number {
   const parsed = Number.parseInt(value || '50', 10);

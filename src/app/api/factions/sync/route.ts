@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
-import type { BgsSnapshot } from '@/lib/bgs';
-import { journalEventToSnapshot, type BgsJournalReject } from '@/lib/bgsJournal';
-import { applyPilotSnapshots } from '@/lib/bgsStore';
 import { resolveRequestUser } from '@/lib/helperAuth';
 import { createServiceClient } from '@/lib/supabaseServer';
+import { applySystemObservations } from '@/lib/systemObservations';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -12,16 +10,19 @@ const MAX_BYTES = 3 * 1024 * 1024;
 const MAX_EVENTS = 500;
 
 /**
- * POST /api/factions/sync — состояние фракций из журналов пилотов.
+ * POST /api/factions/sync — наблюдения систем из журналов пилотов.
  *
  * Шлют Colonial Helper (API-токен: живые прыжки и догрузка истории) и
  * загрузчик журналов на сайте (сессия). Тело: `{ token?, events: [...] }`,
  * события — проекции FSDJump / Location / CarrierJump со списком `Factions`
- * (`projectBgsEvent` / `uploader/bgs_sync.py`).
+ * и полями PowerPlay (`projectBgsEvent` / `uploader/bgs_sync.py`).
  *
- * База применяет наблюдение, только если оно не старше сохранённого, поэтому
- * повтор пачки и один журнал, загруженный и с сайта, и из Helper'а, ничего не
- * портят. Ответ: сколько пришло, применено, устарело и отброшено.
+ * Одно наблюдение обновляет все слои: фракции и PowerPlay
+ * (`src/lib/systemObservations.ts`). База применяет наблюдение, только если
+ * оно не старше сохранённого, поэтому повтор пачки и один журнал, загруженный
+ * и с сайта, и из Helper'а, ничего не портят. Ответ: сколько пришло,
+ * применено, устарело и отброшено — по фракциям (поля верхнего уровня, как
+ * раньше) и по PowerPlay (`powerplay`).
  */
 export async function POST(request: Request) {
   try {
@@ -51,27 +52,27 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `Too many events (max ${MAX_EVENTS})` }, { status: 413 });
     }
 
-    const nowMs = Date.now();
-    const snapshots: BgsSnapshot[] = [];
-    const rejected: Partial<Record<BgsJournalReject, number>> = {};
-    for (const event of body.events) {
-      const result = journalEventToSnapshot(event, nowMs);
-      if ('snapshot' in result) snapshots.push(result.snapshot);
-      else rejected[result.reject] = (rejected[result.reject] ?? 0) + 1;
-    }
-    const invalid = body.events.length - snapshots.length;
     const source = user.via === 'api_token' ? 'helper' : 'web';
-    const result = await applyPilotSnapshots(createServiceClient(), snapshots, { source, userId: user.userId, invalid });
+    const result = await applySystemObservations(createServiceClient(), body.events, { source, userId: user.userId });
     return NextResponse.json({
       ok: true,
-      received: body.events.length,
-      accepted: snapshots.length,
-      applied: result.applied,
-      stale: result.stale,
-      created: result.created,
-      invalid,
-      rejected,
-      systems: result.systems,
+      received: result.received,
+      accepted: result.factions.accepted,
+      applied: result.factions.applied,
+      stale: result.factions.stale,
+      created: result.factions.created,
+      invalid: result.factions.invalid,
+      rejected: result.factions.rejected,
+      systems: result.factions.systems,
+      powerplay: {
+        accepted: result.powerplay.accepted,
+        applied: result.powerplay.applied,
+        stale: result.powerplay.stale,
+        created: result.powerplay.created,
+        vacated: result.powerplay.vacated,
+        rejected: result.powerplay.rejected,
+        error: result.powerplay.error,
+      },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

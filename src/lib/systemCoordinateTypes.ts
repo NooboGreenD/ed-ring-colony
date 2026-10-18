@@ -1,12 +1,14 @@
 /** Pure shared validation: missing coordinates must never turn into (0,0,0). */
+import { systemKey } from './systemIdentity.ts';
+
 export interface SystemCoordinates {
   x: number;
   y: number;
   z: number;
 }
 export type CoordinateSource = 'edsm' | 'spansh_catalog' | 'spansh';
-export const coordinateNameKey = (name: string) =>
-  name.trim().replace(/\s+/g, ' ').toLowerCase();
+/** Ключ системы — общий для всего проекта (`systemIdentity.ts`). */
+export const coordinateNameKey = (name: string): string => systemKey(name);
 export function readSystemCoordinates(
   value: unknown
 ): SystemCoordinates | null {

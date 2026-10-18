@@ -12,6 +12,8 @@
  * подсвечен жёлтым (см. `components/GalaxyMap/CarrierGlyph.tsx`).
  */
 
+import { systemKey } from './systemIdentity.ts';
+
 export type MapCarrierRelation = 'own' | 'squadron' | 'other';
 export type MapCarrierType = 'FleetCarrier' | 'SquadronCarrier';
 
@@ -118,9 +120,8 @@ export const DEFAULT_CARRIER_FILTER: CarrierLayerFilter = {
 };
 
 /** Ключ сравнения систем: регистр и лишние пробелы не важны. */
-export function carrierSystemKey(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
+/** Ключ системы — общий для всего проекта (`systemIdentity.ts`). */
+export const carrierSystemKey = systemKey;
 
 export function isMapPoint(value: unknown): value is MapPoint {
   if (!value || typeof value !== 'object') return false;

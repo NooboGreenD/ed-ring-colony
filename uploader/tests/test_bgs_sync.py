@@ -66,17 +66,44 @@ class ProjectionTests(unittest.TestCase):
     def test_no_personal_or_localised_fields(self):
         projected = project_bgs_event(journal_events()[0])
         text = json.dumps(projected, ensure_ascii=False)
-        for key in ("MyReputation", "SquadronFaction", "HomeSystem", "HappiestSystem", "_Localised", "Powers", "JumpDist", "Conflicts"):
+        for key in ("MyReputation", "SquadronFaction", "HomeSystem", "HappiestSystem", "_Localised", "JumpDist", "Conflicts"):
             self.assertNotIn(key, text)
+
+    def test_powerplay_fields_travel_with_the_observation(self):
+        """С 2.17.0 проекция несёт PowerPlay 2.0: сайт обновляет по ней и слой PowerPlay."""
+        event = dict(journal_events()[0])
+        event.update({
+            "PowerplayStateControlProgress": 0.42,
+            "PowerplayStateReinforcement": 1200,
+            "PowerplayStateUndermining": 300,
+            "PowerplayConflictProgress": [{"Power": "Yuri Grom", "ConflictProgress": 0.1}],
+        })
+        projected = project_bgs_event(event)
+        self.assertEqual(projected["ControllingPower"], "Jerome Archer")
+        self.assertEqual(projected["Powers"], ["Jerome Archer"])
+        self.assertEqual(projected["PowerplayState"], "Exploited")
+        self.assertEqual(projected["PowerplayStateControlProgress"], 0.42)
+        self.assertEqual(projected["PowerplayStateReinforcement"], 1200)
+        self.assertEqual(projected["PowerplayStateUndermining"], 300)
+        # Прогресс захвата чужими державами сайту не нужен — не отправляем.
+        self.assertNotIn("PowerplayConflictProgress", projected)
 
     def test_big_system_address_is_exact_string(self):
         projected = project_bgs_event(journal_events()[0])
         self.assertEqual(projected["SystemAddress"], "36028797018963971")
 
     def test_field_lists_match_site(self):
-        source = (HERE.parent.parent / "src" / "lib" / "bgsJournal.ts").read_text(encoding="utf-8")
-        for name in bgs_sync.BGS_SYSTEM_FIELDS + bgs_sync.BGS_FACTION_FIELDS:
+        lib = HERE.parent.parent / "src" / "lib"
+        source = (lib / "bgsJournal.ts").read_text(encoding="utf-8")
+        powerplay = (lib / "powerplayJournal.ts").read_text(encoding="utf-8")
+        site_fields = set(bgs_sync.BGS_SYSTEM_FIELDS) - set(bgs_sync.POWERPLAY_SYSTEM_FIELDS)
+        for name in tuple(site_fields) + bgs_sync.BGS_FACTION_FIELDS:
             self.assertIn(f"'{name}'", source, f"{name} нет в src/lib/bgsJournal.ts")
+        # Поля PowerPlay сайт держит в powerplayJournal.ts (POWERPLAY_JOURNAL_FIELDS),
+        # а bgsJournal.ts добавляет их к проекции целиком.
+        self.assertIn("...POWERPLAY_JOURNAL_FIELDS", source)
+        for name in bgs_sync.POWERPLAY_SYSTEM_FIELDS:
+            self.assertIn(f"'{name}'", powerplay, f"{name} нет в src/lib/powerplayJournal.ts")
         for name in bgs_sync.BGS_EVENTS:
             self.assertIn(f"'{name}'", source)
 

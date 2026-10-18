@@ -2,9 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
-import { persistImportedDeliveries } from '@/lib/deliveryImport';
-import { persistJournalTelemetry } from '@/lib/journalTelemetry';
-import { resetJournalData } from '@/lib/journalReset';
+import { ingestJournalBatch, JournalResetError, projectSyncSummary } from '@/lib/journalIngest';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -109,67 +107,26 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Authentication failed' }, { status: 401 });
     }
 
-    // Полная перезагрузка журналов с нуля: клиент (сайт или Colonial Helper)
-    // может передать `reset: true` на первом батче — тогда перед записью
-    // новых данных мы очищаем всё, что было накоплено у пользователя
-    // (поставки, импорты, сводку пилота, сканы тел, устаревшие colonisation_events).
-    // Сброс идёт один раз — флаг читаем ТОЛЬКО в первой партии (пустые
-    // deliveries и нет телеметрии), чтобы промежуточные батчи не теряли
-    // только что записанные строки.
-    const shouldReset = body.reset === true || body.full_reimport === true;
-    const resetPerformedAt = (body as Record<string, unknown>)._reset_performed;
-    let resetOutcome = null;
-    if (shouldReset && !resetPerformedAt) {
-      try {
-        resetOutcome = await resetJournalData(svc, userId);
-      } catch (resetError) {
-        console.warn('[logs/import] journal reset failed before import:', (resetError as Error).message);
-        return NextResponse.json(
-          { error: `Не удалось очистить старые данные: ${(resetError as Error).message}` },
-          { status: 500 },
-        );
-      }
-    }
-
-    // Имя командира — только начальное значение для старого helper-клиента.
-    // Уже сохранённый профиль не должен меняться при повторных batch-загрузках.
-    if (cmdr) {
-      const { data: profile, error: profileError } = await svc
-        .from('profiles')
-        .select('cmdr_name')
-        .eq('id', userId)
-        .maybeSingle();
-      if (profileError) {
-        console.warn('[logs/import] Could not inspect profile nickname:', profileError.message);
-      } else if (!profile?.cmdr_name) {
-        const { error: updateError } = await svc
-          .from('profiles')
-          .update({ cmdr_name: cmdr.slice(0, 250) })
-          .eq('id', userId);
-        if (updateError) console.warn('[logs/import] Could not initialise profile nickname:', updateError.message);
-      }
-    }
-
-    const outcome = await persistImportedDeliveries(svc, userId, deliveries);
-
-    // Browser-side Journal loader must land the same data as the desktop
-    // Colonial Helper: construction snapshots, body scans and the pilot's
-    // summary stats. Without them the dossier shows only tonnage, and the map
-    // and «первооткрытия» stay empty for pilots who never run the helper.
-    let telemetry = null;
+    // Дальше — тот же приём пачки, что у Colonial Helper (`src/lib/journalIngest.ts`):
+    // полная перезагрузка по `reset: true` на первой пачке (поставки, импорты,
+    // сводка пилота, сканы тел; маркер `_reset_performed` защищает следующие
+    // пачки), начальный ник, доставки, телеметрия и реакции других разделов
+    // (статусы систем в проектах эскадрилий). Браузерный загрузчик кладёт в
+    // базу ровно то же, что и десктопный помощник.
+    let ingest;
     try {
-      telemetry = await persistJournalTelemetry(svc, userId, {
-        constructionEvents: body.constructionEvents ?? body.construction_events,
-        systemScans: body.systemScans ?? body.system_scans ?? body.scans,
-        pilotStats: body.pilotStats ?? body.pilot_stats,
-      }, cmdr || null, { source });
-    } catch (telemetryError) {
-      // Доставки уже сохранены — телеметрия не имеет права превращать
-      // успешный импорт в ошибку 500.
-      console.warn('[logs/import] telemetry could not be stored:', (telemetryError as Error).message);
+      ingest = await ingestJournalBatch(svc, { userId, source, cmdr, body, logTag: '[logs/import]' });
+    } catch (error) {
+      if (error instanceof JournalResetError) {
+        return NextResponse.json({ error: `Не удалось очистить старые данные: ${error.message}` }, { status: 500 });
+      }
+      throw error;
     }
+    const outcome = ingest.deliveries;
+    const telemetry = ingest.telemetry;
+    const resetOutcome = ingest.reset;
 
-    return NextResponse.json({ ...outcome, telemetry, reset: resetOutcome });
+    return NextResponse.json({ ...outcome, telemetry, reset: resetOutcome, projects: projectSyncSummary(ingest.projects) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not import deliveries';
     console.error('[logs/import] Failed:', message);

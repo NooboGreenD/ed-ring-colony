@@ -9,6 +9,7 @@ import {
   type DepotSnapshotRow,
 } from '@/lib/colonisationEvents';
 import { resetJournalData } from '@/lib/journalReset';
+import { syncProjectsFromSites } from '@/lib/projects/projectSync';
 
 const JOURNAL_DATABASE_BATCH_SIZE = 100;
 const MAX_EVENTS_PER_REQUEST = 500;
@@ -174,6 +175,16 @@ export async function POST(req: Request) {
     const snapshots = snapshotRowsForChangedSites(depotRows, depotWrite.changedMarkets);
     const snapshotCount = await insertSnapshots(svc, snapshots);
 
+    // Те же реакции, что у загрузки журналов на /account и в Colonial Helper:
+    // стройка из журнала продвигает статусы систем в проектах эскадрилий.
+    const changedSystems = Array.from(new Set(
+      depotRows.filter((row) => depotWrite.changedMarkets.has(row.market_id)).map((row) => row.system_name),
+    ));
+    const projects = changedSystems.length > 0
+      ? await syncProjectsFromSites(svc, changedSystems, { actorId: user.id })
+      : null;
+    if (projects?.warning) console.warn('[Journal Import]', projects.warning);
+
     // Вклады (`ColonisationContribution`) в базу больше НЕ пишем. Строку не читает
     // ни один потребитель (тоннаж командира живёт в `deliveries` с собственным
     // идемпотентным `source_hash`), а множились они по каждой позиции груза —
@@ -207,6 +218,7 @@ export async function POST(req: Request) {
       totalEvents: insertedDepots,
       complete,
       reset: resetOutcome,
+      projects: projects ? { changed: projects.changed.length, notified: projects.notified } : null,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal error';

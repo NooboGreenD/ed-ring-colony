@@ -21,6 +21,8 @@
  *     где он офицер), выходит из проекта и обновляет прогресс из Raven.
  */
 
+import { cleanSystemName, systemKey as sharedSystemKey } from '../systemIdentity.ts';
+
 export const PROJECT_ROLES = ['owner', 'moderator', 'member'] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
 
@@ -190,18 +192,11 @@ export function editableSystemFields(actor: ProjectActor, responsibleId: string 
 
 // ── Нормализация ввода ─────────────────────────────────────────────────────
 
-/** Имя системы так, как его хранит проект: без лишних пробелов. */
-export function normalizeSystemName(value: unknown): string {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+/** Имя системы так, как его хранит проект: без лишних пробелов (общий `cleanSystemName`). */
+export const normalizeSystemName = cleanSystemName;
 
-/** Ключ системы — тот же, что `system_name_lc` в БД. */
-export function systemKey(value: unknown): string {
-  return normalizeSystemName(value).toLowerCase();
-}
+/** Ключ системы — тот же, что `system_name_lc` в БД (общий `systemKey`). */
+export const systemKey = sharedSystemKey;
 
 export interface ParsedSystemList {
   /** Уникальные имена в порядке ввода. */
