@@ -25,6 +25,7 @@ import {
   type CarrierSystemGroup,
   type MapCarrier,
 } from '@/lib/carrierMap';
+import { carrierSquadronTag } from '@/lib/carrierTags';
 import { CarrierGlyph } from './CarrierGlyph';
 
 const MUTED = '#9ca3af';
@@ -59,6 +60,9 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
   const stale = isCarrierStale(carrier, now);
   const services = carrier.services.slice(0, SERVICES_SHOWN);
   const moreServices = carrier.services.length - services.length;
+  const javelin = carrier.type === 'SquadronCarrier';
+  // Позывной Javelin — тег его эскадрильи в игре: виден, даже если эскадрильи нет на сайте.
+  const gameTag = carrierSquadronTag(carrier);
 
   return (
     <li data-carrier-id={carrier.id} style={{ borderTop: '1px solid #2d2f33', paddingTop: 8, marginTop: 8, listStyle: 'none' }}>
@@ -87,17 +91,23 @@ function CarrierRow({ carrier, now }: { carrier: MapCarrier; now: number }) {
               <div>Владелец: <Link href={`/cmdr/${encodeURIComponent(carrier.owner)}`} style={{ color: TEXT, textDecoration: 'none' }}>CMDR {carrier.owner}</Link></div>
             ) : carrier.ownerHidden ? (
               <div>Владелец скрыл местоположение</div>
-            ) : !carrier.squadron ? (
+            ) : !carrier.squadron && !javelin ? (
               <div>Владелец не привязан на сайте</div>
             ) : null}
-            {carrier.squadron && (
+            {carrier.squadron ? (
               <div>
                 Эскадрилья:{' '}
                 <Link href={`/squadrons/${carrier.squadron.id}`} style={{ color: '#4ade80', textDecoration: 'none' }}>
                   {squadronLabel(carrier.squadron)}
                 </Link>
               </div>
-            )}
+            ) : javelin ? (
+              <div data-carrier-game-squadron={gameTag ?? ''}>
+                {gameTag ? (
+                  <>Эскадрилья в игре: <span style={{ color: TEXT, fontFamily: MONO }}>[{gameTag}]</span> · на сайте не привязана</>
+                ) : 'Эскадрилья на сайте не привязана'}
+              </div>
+            ) : null}
             {carrier.body && <div>У тела: <span style={{ color: TEXT }}>{carrier.body}</span></div>}
             {carrier.docking && (
               <div>

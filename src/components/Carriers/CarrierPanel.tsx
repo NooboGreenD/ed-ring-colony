@@ -59,7 +59,7 @@ function BindForm({ kind, squadronId, onDone }: { kind: "personal" | "squadron";
           value={value}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-          placeholder="Carrier ID (3700…) или позывной ABC-123"
+          placeholder={kind === "squadron" ? "Carrier ID (3700…) или позывной Javelin — тег эскадрильи (ABCD)" : "Carrier ID (3700…) или позывной ABC-123"}
           style={{ flex: "1 1 240px", background: "#141618", border: "1px solid #323538", color: "#eeeeee", padding: "8px 10px", borderRadius: 4, fontSize: 13 }}
         />
         <button className="btn btn-cyan" style={{ padding: "8px 14px", fontSize: 11 }} disabled={busy || !value.trim()} onClick={() => void submit()}>
@@ -103,7 +103,7 @@ export default function CarrierPanel(props: Props) {
   const unbind = async (carrier: CarrierView, kind: "personal" | "squadron") => {
     const question = kind === "personal"
       ? `Отвязать «${carrier.name || carrier.callsign || carrier.carrierId}» от профиля? Учёт груза сохранится.`
-      : `Отвязать «${carrier.name || carrier.callsign || carrier.carrierId}» от эскадрильи?`;
+      : `Отвязать «${carrier.name || carrier.callsign || carrier.carrierId}» от эскадрильи? Журналы участников больше не привяжут его к ней сами — вернуть можно только вручную.`;
     if (!window.confirm(question)) return;
     const response = await authFetch("/api/carriers/bind", {
       method: "DELETE",
@@ -162,7 +162,7 @@ export default function CarrierPanel(props: Props) {
           ) : !loading && (
             <div style={{ border: "1px dashed #323538", borderRadius: 8, padding: 16, color: "#9ca3af", fontSize: 13 }}>
               {state.isMember || props.mode === "account"
-                ? "Эскадренный носитель привяжется сам, когда участник эскадрильи с Colonial Helper пристыкуется к нему или откроет управление им."
+                ? "Эскадренный носитель привяжется сам по свежему журналу участника эскадрильи (Colonial Helper или загрузка журналов): при каждом запуске игра пишет, где стоит носитель эскадрильи. Стыковка к носителю его не привязывает — Javelin пускает и чужих пилотов."
                 : "У эскадрильи пока нет привязанного авианосца."}
             </div>
           )}

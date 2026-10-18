@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 
-/* Учёт авианосцев в БД (supabase/migrations/20261017000000_fleet_carriers.sql).
+/* Учёт авианосцев в БД (supabase/migrations/20261017000000_fleet_carriers.sql и
+   20261018000000_fleet_carrier_squadron_claims.sql — правила привязки Javelin).
    Функция apply_fleet_carrier_batch получает уже нормализованные операции —
-   здесь проверяется сама книга груза и правила «свежее побеждает». */
+   здесь проверяется сама книга груза и правила «свежее побеждает». Переход
+   со старых привязок и все правила squadron_claim —
+   fleet-carriers-squadron-claims.test.mjs. */
 
 const db = new PGlite();
 const OWNER = '00000000-0000-4000-8000-000000000001';
@@ -37,6 +40,7 @@ CREATE TABLE market_prices(station_name text,system_name text,commodity_name tex
 `);
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261014000000_station_commerce.sql', import.meta.url), 'utf8'));
 await db.exec(readFileSync(new URL('../../supabase/migrations/20261017000000_fleet_carriers.sql', import.meta.url), 'utf8'));
+await db.exec(readFileSync(new URL('../../supabase/migrations/20261018000000_fleet_carrier_squadron_claims.sql', import.meta.url), 'utf8'));
 
 let hashCounter = 0;
 const hash = () => (++hashCounter).toString(16).padStart(64, '0');
@@ -166,17 +170,24 @@ test('personal binding: proofs bind, soft proofs never steal, the newest carrier
 });
 
 test('squadron carriers: type clears personal ownership, members auto-bind to their own squadron only', async () => {
-  await apply([{ op: 'identity', carrier_id: SQ_FC, at: '2026-03-02T00:00:00Z', carrier_type: 'SquadronCarrier' }]);
+  // Привязку дают только свежие события (30 дней), поэтому время — от «сейчас».
+  const recent = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  await apply([{ op: 'identity', carrier_id: SQ_FC, at: recent(30), carrier_type: 'SquadronCarrier' }]);
   // A personal claim on a squadron carrier is refused.
-  const personal = await apply([{ op: 'owner', carrier_id: SQ_FC, at: '2026-03-02T00:00:01Z', proof: 'journal' }], MEMBER);
+  const personal = await apply([{ op: 'owner', carrier_id: SQ_FC, at: recent(29), proof: 'journal' }], MEMBER);
   assert.equal(personal.ignored, 1);
-  await apply([{ op: 'squadron_claim', carrier_id: SQ_FC, at: '2026-03-02T00:00:02Z' }], MEMBER);
+  // A claim without a membership proof (old server: docking) is refused too.
+  const unproven = await apply([{ op: 'squadron_claim', carrier_id: SQ_FC, at: recent(28) }], MEMBER);
+  assert.equal(unproven.ignored, 1);
+  assert.equal((await carrier(SQ_FC)).squadron_id, null);
+  await apply([{ op: 'squadron_claim', carrier_id: SQ_FC, at: recent(27), proof: 'CarrierLocation' }], MEMBER);
   let row = await carrier(SQ_FC);
   assert.equal(row.carrier_type, 'SquadronCarrier');
   assert.equal(row.owner_id, null);
   assert.equal(Number(row.squadron_id), 1);
+  assert.equal(row.squadron_source, 'member');
   // A member of another squadron cannot rebind it.
-  const foreign = await apply([{ op: 'squadron_claim', carrier_id: SQ_FC, at: '2026-03-03T00:00:00Z' }], OTHER);
+  const foreign = await apply([{ op: 'squadron_claim', carrier_id: SQ_FC, at: recent(26), proof: 'CarrierStats' }], OTHER);
   assert.equal(foreign.ignored, 1);
   row = await carrier(SQ_FC);
   assert.equal(Number(row.squadron_id), 1);
@@ -238,6 +249,8 @@ test('only service_role may execute the batch function', async () => {
   const { rows } = await db.query(`
     SELECT has_function_privilege('anon', 'public.apply_fleet_carrier_batch(uuid,text,jsonb)', 'EXECUTE') AS anon_exec,
            has_function_privilege('authenticated', 'public.apply_fleet_carrier_batch(uuid,text,jsonb)', 'EXECUTE') AS auth_exec,
+           has_function_privilege('anon', 'public.fleet_carrier_tag_conflict(text,bigint)', 'EXECUTE') AS anon_tag,
+           has_function_privilege('service_role', 'public.apply_fleet_carrier_batch(uuid,text,jsonb)', 'EXECUTE') AS service_exec,
            has_table_privilege('anon', 'public.fleet_carriers', 'SELECT') AS anon_select`);
-  assert.deepEqual(rows[0], { anon_exec: false, auth_exec: false, anon_select: false });
+  assert.deepEqual(rows[0], { anon_exec: false, auth_exec: false, anon_tag: false, service_exec: true, anon_select: false });
 });

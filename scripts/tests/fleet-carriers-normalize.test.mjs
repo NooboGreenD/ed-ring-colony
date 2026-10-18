@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeCarrierEvents, carrierMarketCargo, carrierOpsFromStationReport, buildCarrierView,
-  canonicalCommodity, parseCarrierReference, carrierDeltaHash,
+  canonicalCommodity, parseCarrierReference, carrierDeltaHash, SQUADRON_PROOF_EVENTS,
 } from '../../src/lib/fleetCarriers.ts';
+import {
+  carrierSquadronTag, gameSquadronTag, looksLikeSquadronCallsign, normalizeSquadronTag, squadronTagConflict,
+} from '../../src/lib/carrierTags.ts';
 import { CarrierEventCollector } from '../../src/lib/fleetCarrierCollector.ts';
 
 const USER = '00000000-0000-4000-8000-000000000001';
@@ -44,10 +47,47 @@ test('CarrierStats: identity, stats, ownership proof and an empty-hold baseline'
 });
 
 test('squadron carrier stats bind to the squadron, never to the pilot', () => {
-  const result = norm([{ ...STATS, CarrierType: 'SquadronCarrier' }]);
+  const result = norm([{ ...STATS, CarrierType: 'SquadronCarrier', Callsign: 'ENEX', Name: 'ENDURANCE ENDEAVOUR' }]);
   assert.equal(opsOf(result, 'owner').length, 0);
-  assert.equal(opsOf(result, 'squadron_claim').length, 1);
+  assert.deepEqual(opsOf(result, 'squadron_claim'), [
+    { op: 'squadron_claim', carrier_id: '3700005632', at: '2026-03-01T10:00:00.000Z', proof: 'CarrierStats' },
+  ]);
   assert.equal(opsOf(result, 'identity')[0].carrier_type, 'SquadronCarrier');
+  assert.equal(opsOf(result, 'identity')[0].callsign, 'ENEX');
+});
+
+test('squadron membership: only CarrierLocation, CarrierStats and CarrierBuy claim a Javelin — docking never does', () => {
+  assert.deepEqual([...SQUADRON_PROOF_EVENTS], ['CarrierStats', 'CarrierBuy', 'CarrierLocation']);
+  const JAVELIN = 3713124352;
+  // Так выглядит запуск игры у члена эскадрильи (реальный журнал, ENDURANCE EXPLORATION).
+  const login = norm([
+    { timestamp: '2026-03-01T09:00:00Z', event: 'SquadronStartup', SquadronID: 75645, SquadronName: 'ENDURANCE EXPLORATION', CurrentRank: 4 },
+    { timestamp: '2026-03-01T09:00:01Z', event: 'CarrierLocation', CarrierType: 'SquadronCarrier', CarrierID: JAVELIN,
+      StarSystem: 'Col 285 Sector FZ-K b23-5', SystemAddress: 11664997164513, BodyID: 8 },
+  ]);
+  assert.deepEqual(opsOf(login, 'squadron_claim').map((op) => op.proof), ['CarrierLocation']);
+  assert.equal(opsOf(login, 'owner').length, 0);
+  const bought = norm([{ timestamp: '2026-03-01T09:00:00Z', event: 'CarrierBuy', CarrierType: 'SquadronCarrier', CarrierID: JAVELIN,
+    Callsign: 'ENEX', Location: 'Sol', SystemAddress: 10477373803 }]);
+  assert.deepEqual(opsOf(bought, 'squadron_claim').map((op) => op.proof), ['CarrierBuy']);
+
+  // Стыковка к чужому Javelin (доступ «все пилоты»): носитель, система и тег — да, привязка — нет.
+  const docked = { timestamp: '2026-03-01T09:10:00Z', StationName: 'ENEX', StationType: 'FleetCarrier', MarketID: JAVELIN,
+    StarSystem: 'Col 285 Sector FZ-K b23-5', SystemAddress: 11664997164513,
+    StationServices: ['dock', 'autodock', 'commodities', 'contacts', 'squadronBank', 'flightcontroller'] };
+  const visits = norm([
+    { ...docked, event: 'Docked' },
+    { ...docked, event: 'Location', Docked: true, timestamp: '2026-03-01T09:20:00Z' },
+    { ...docked, event: 'CarrierJump', Docked: true, timestamp: '2026-03-01T09:30:00Z', StarSystem: 'LHS 5333' },
+  ]);
+  assert.equal(opsOf(visits, 'squadron_claim').length, 0, 'стыковка к Javelin не делает его носителем эскадрильи пилота');
+  assert.equal(opsOf(visits, 'location').length, 3);
+  for (const identity of opsOf(visits, 'identity')) {
+    assert.equal(identity.carrier_type, 'SquadronCarrier');
+    assert.equal(identity.callsign, 'ENEX', 'имя стоянки Javelin — его позывной, тег эскадрильи');
+    assert.equal(identity.name, undefined);
+    assert.equal(identity.weak_name, undefined);
+  }
 });
 
 test('market trades: sale TO the carrier adds cargo, purchase FROM it removes; other markets are ignored', () => {
@@ -86,7 +126,7 @@ test('CargoTransfer uses the docked carrier from context; tosrv and missing cont
   assert.equal(opsOf(norm([transfer]), 'delta').length, 0);
 });
 
-test('docking at a carrier records location, callsign and squadron membership', () => {
+test('docking at a carrier records location, callsign and services, never squadron membership', () => {
   const result = norm([{ timestamp: '2026-03-01T09:00:00Z', event: 'Docked', StationName: 'K7X-B0Z', StationType: 'FleetCarrier',
     MarketID: 3709000001, StarSystem: 'HIP 1', SystemAddress: 123, StationServices: ['dock', 'squadronBank', 'refuel'], _StarPos: [1, 2, 3] }]);
   const identity = opsOf(result, 'identity')[0];
@@ -95,9 +135,32 @@ test('docking at a carrier records location, callsign and squadron membership', 
   assert.deepEqual(identity.station_services, ['dock', 'squadronbank', 'refuel']);
   const location = opsOf(result, 'location')[0];
   assert.deepEqual([location.system_name, location.x, location.y, location.z], ['HIP 1', 1, 2, 3]);
-  assert.equal(opsOf(result, 'squadron_claim').length, 1);
+  assert.equal(opsOf(result, 'squadron_claim').length, 0);
+  // A four-letter name of a Drake (no squadronBank) stays a (weak) name, not a squadron tag.
+  const drake = opsOf(norm([{ timestamp: '2026-03-01T09:00:00Z', event: 'Docked', StationName: 'HOME', StationType: 'FleetCarrier',
+    MarketID: 3700000077, StarSystem: 'Sol', StationServices: ['dock', 'refuel'] }]), 'identity')[0];
+  assert.deepEqual([drake.callsign, drake.name, drake.weak_name], [undefined, 'HOME', true]);
   // Docking at an ordinary station produces nothing.
   assert.equal(norm([{ timestamp: '2026-03-01T09:00:00Z', event: 'Docked', StationType: 'Coriolis', MarketID: 128666762, StarSystem: 'Sol' }]).ops.length, 0);
+});
+
+test('squadron tags: the Javelin callsign is its squadron tag; site tags are compared without brackets', () => {
+  assert.equal(looksLikeSquadronCallsign('ENEX'), true);
+  assert.equal(looksLikeSquadronCallsign(' enex '), true);
+  assert.equal(looksLikeSquadronCallsign('K7X-B0Z'), false);
+  assert.equal(looksLikeSquadronCallsign('ENEXX'), false);
+  assert.equal(normalizeSquadronTag('[dnhg] '), 'DNHG');
+  assert.equal(gameSquadronTag('[DNHG]'), 'DNHG');
+  assert.equal(gameSquadronTag('DH'), null, 'тег не из четырёх символов ничего не доказывает');
+  assert.equal(gameSquadronTag('DRUNKHEDGE'), null);
+  assert.equal(carrierSquadronTag({ type: 'SquadronCarrier', callsign: 'enex' }), 'ENEX');
+  assert.equal(carrierSquadronTag({ type: 'FleetCarrier', callsign: 'HOME' }), null);
+  assert.equal(carrierSquadronTag({ type: 'SquadronCarrier', callsign: null }), null);
+  assert.equal(squadronTagConflict('ENEX', '[DNHG]'), true);
+  assert.equal(squadronTagConflict('DNHG', 'dnhg'), false);
+  assert.equal(squadronTagConflict('ENEX', 'DRUNKHEDGE'), false);
+  assert.equal(squadronTagConflict(null, 'DNHG'), false);
+  assert.equal(squadronTagConflict('K7X-B0Z', 'DNHG'), false);
 });
 
 test('jumps: request with departure time, default countdown for old journals, cancellation', () => {
@@ -158,7 +221,15 @@ test('station reports from a carrier become identity, location and a market base
   assert.deepEqual(ops.map((op) => op.op), ['identity', 'location', 'baseline']);
   assert.equal(ops[2].full, false);
   assert.deepEqual(ops[2].items, [{ commodity: 'steel', qty: 5, name_localised: undefined }]);
+  assert.equal(ops[0].callsign, 'L14-X1J');
   assert.deepEqual(carrierOpsFromStationReport({ market_id: '128666762', station_type: 'Coriolis', station_name: 'Galileo', system_name: 'Sol', observed_at: '2026-03-01T10:00:00Z' }), []);
+  // Рынок Javelin: имя станции — тег эскадрильи (позывной); отчёт о рынке привязки не даёт.
+  const javelin = carrierOpsFromStationReport({
+    market_id: '3713124352', station_type: 'FleetCarrier', station_name: 'ENEX', system_name: 'LHS 5333', observed_at: '2026-03-01T10:00:00Z',
+    metadata: { services: ['dock', 'commodities', 'squadronBank'] },
+  });
+  assert.deepEqual(javelin.map((op) => op.op), ['identity', 'location']);
+  assert.deepEqual([javelin[0].carrier_type, javelin[0].callsign, javelin[0].name], ['SquadronCarrier', 'ENEX', undefined]);
 });
 
 test('carrier view: estimated arrival after a jump, cargo and finance hidden from the public', () => {
@@ -187,10 +258,12 @@ test('carrier view: estimated arrival after a jump, cargo and finance hidden fro
   assert.equal(pub.ownerSource, null);
 });
 
-test('carrier references: Carrier ID or callsign', () => {
+test('carrier references: Carrier ID, Drake callsign or Javelin squadron tag', () => {
   assert.deepEqual(parseCarrierReference(' 3700005632 '), { carrierId: '3700005632' });
   assert.deepEqual(parseCarrierReference('l14-x1j'), { callsign: 'L14-X1J' });
+  assert.deepEqual(parseCarrierReference(' enex '), { callsign: 'ENEX' });
   assert.equal(parseCarrierReference('hello'), null);
+  assert.equal(parseCarrierReference('[ENEX]'), null);
 });
 
 test('collector: web upload and Helper-style full events produce identical deltas', () => {

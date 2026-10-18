@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabaseServer';
 import { resolveRequestUser } from '@/lib/helperAuth';
 import { parseCarrierReference } from '@/lib/fleetCarriers';
 import { buildViews, findCarrier, findOrCreateCarrier, viewerContext } from '@/lib/fleetCarrierStore';
+import { carrierSquadronTag, gameSquadronTag } from '@/lib/carrierTags';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,11 +13,17 @@ export const dynamic = 'force-dynamic';
  * Ручная привязка авианосца.
  *
  * Обычно она не нужна: личный носитель привязывается сам по CarrierStats /
- * CarrierBuy из журнала, эскадренный — когда член эскадрильи видит его
- * CarrierStats или стыкуется к нему. Ручной ввод — для случаев, когда журнал
- * сброшен или носитель ещё не встречался.
+ * CarrierBuy из журнала, эскадренный — по CarrierLocation (игра пишет его
+ * участникам эскадрильи при каждом запуске) или CarrierStats. Стыковка к
+ * носителю его не привязывает. Ручной ввод — для случаев, когда журнал сброшен
+ * или носитель ещё не встречался.
  *
- *   POST   { kind: 'personal' | 'squadron', carrier: '<Carrier ID | ABC-123>', squadron_id? }
+ * Позывной Javelin — тег его эскадрильи в игре: носитель с другим тегом к
+ * эскадрилье не привязывается (тег эскадрильи из четырёх символов). Отвязка
+ * офицером запоминается (`squadron_rejected`): журналы участников носитель к
+ * эскадрилье не вернут, вернуть можно только вручную.
+ *
+ *   POST   { kind: 'personal' | 'squadron', carrier: '<Carrier ID | ABC-123 | ABCD>', squadron_id? }
  *   DELETE { kind: 'personal' | 'squadron', carrier_id }
  */
 
@@ -31,6 +38,16 @@ async function readBody(request: Request): Promise<Record<string, any>> {
 
 function fail(message: string, status: number) {
   return NextResponse.json({ ok: false, error: message }, { status });
+}
+
+/**
+ * Эскадрильи, отказавшиеся от носителя. `undefined` — колонки ещё нет
+ * (код выкатили раньше миграции 20261018000000): тогда её и не пишем.
+ */
+function rejectedSquadrons(row: Record<string, any>): number[] | undefined {
+  if (!('squadron_rejected' in row)) return undefined;
+  const list = Array.isArray(row.squadron_rejected) ? row.squadron_rejected : [];
+  return Array.from(new Set(list.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0)));
 }
 
 export async function POST(request: Request) {
@@ -86,8 +103,22 @@ export async function POST(request: Request) {
     if (row.squadron_id != null && Number(row.squadron_id) !== squadronId) {
       return fail('Носитель уже привязан к другой эскадрилье', 409);
     }
+    const carrierTag = carrierSquadronTag({ type: row.carrier_type, callsign: row.callsign });
+    if (carrierTag) {
+      const { data: squadron, error: squadronError } = await svc.from('squadrons')
+        .select('id, tag').eq('id', squadronId).maybeSingle();
+      if (squadronError) throw new Error(squadronError.message);
+      const squadronTag = gameSquadronTag(squadron?.tag);
+      if (squadronTag && squadronTag !== carrierTag) {
+        return fail(`Это носитель эскадрильи [${carrierTag}]: позывной Javelin — тег его эскадрильи в игре, а у вашей эскадрильи тег [${squadronTag}]. Если тег на сайте указан неверно, исправьте его в настройках эскадрильи.`, 409);
+      }
+    }
+    const update: Record<string, unknown> = { squadron_id: squadronId, squadron_source: 'manual', squadron_at: now, updated_at: now };
+    // Ручная привязка отменяет прежний отказ эскадрильи от этого носителя.
+    const rejected = rejectedSquadrons(row);
+    if (rejected) update.squadron_rejected = rejected.filter((id) => id !== squadronId);
     const { error } = await svc.from('fleet_carriers')
-      .update({ squadron_id: squadronId, squadron_source: 'manual', squadron_at: now, updated_at: now })
+      .update(update)
       .eq('carrier_id', row.carrier_id);
     if (error) throw new Error(error.message);
     const updated = await findCarrier(svc, { carrierId: String(row.carrier_id) });
@@ -115,8 +146,16 @@ export async function DELETE(request: Request) {
       if (row.squadron_id == null || !viewer.officerSquadronIds.includes(Number(row.squadron_id))) {
         return fail('Отвязать носитель могут создатель эскадрильи и звания с правом редактирования', 403);
       }
+      const update: Record<string, unknown> = {
+        squadron_id: null, squadron_source: null, squadron_at: null, updated_at: new Date().toISOString(),
+      };
+      // Отвязка — решение офицеров: журналы участников этой эскадрильи больше
+      // не привяжут носитель к ней снова (иначе ошибочная привязка возвращалась
+      // при следующем запуске игры кем-то из них).
+      const rejected = rejectedSquadrons(row);
+      if (rejected) update.squadron_rejected = Array.from(new Set([...rejected, Number(row.squadron_id)]));
       const { error } = await svc.from('fleet_carriers')
-        .update({ squadron_id: null, squadron_source: null, squadron_at: null, updated_at: new Date().toISOString() })
+        .update(update)
         .eq('carrier_id', row.carrier_id);
       if (error) throw new Error(error.message);
       return NextResponse.json({ ok: true });

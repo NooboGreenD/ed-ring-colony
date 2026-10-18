@@ -79,12 +79,12 @@ function setup() {
       { squadron_id: 7, user_id: MEMBER, rank_id: 71 },
     ],
     squadron_ranks: [{ id: 70, squadron_id: 7, can_edit_squadron: true }, { id: 71, squadron_id: 7, can_edit_squadron: false }],
-    squadrons: [{ id: 7, created_by: 'someone-else' }],
+    squadrons: [{ id: 7, created_by: 'someone-else', tag: '[DNHG]' }],
     fleet_carriers: [
       { carrier_id: 3700000001, carrier_type: 'FleetCarrier', callsign: 'AAA-111', owner_id: STRANGER, owner_source: 'journal', updated_at: '2026-01-01' },
       { carrier_id: 3700000002, carrier_type: 'FleetCarrier', callsign: 'BBB-222', owner_id: null, updated_at: '2026-01-01' },
       { carrier_id: 3709000001, carrier_type: 'SquadronCarrier', callsign: 'SQD-001', squadron_id: 7, updated_at: '2026-01-01',
-        finance: { carrier_balance: 99 }, space_usage: { cargo: 100, free_space: 59000 } },
+        finance: { carrier_balance: 99 }, space_usage: { cargo: 100, free_space: 59000 }, squadron_rejected: [] },
     ],
     fleet_carrier_cargo: [{ carrier_id: 3709000001, commodity: 'steel', name_localised: 'Steel', quantity: 100 }],
     station_inventory_snapshots: [],
@@ -213,4 +213,39 @@ test('squadron binding needs membership and edit rights; cannot steal another sq
   globalThis.__user = { id: OFFICER };
   assert.equal((await bind.DELETE(del({ kind: 'squadron', carrier_id: '3700000002' }))).status, 200);
   assert.equal(tables.fleet_carriers[1].squadron_id, null);
+});
+
+test('squadron unbinding is remembered for journals, manual binding clears it; a Javelin of another squadron tag is refused', async () => {
+  const tables = setup();
+  const javelin = () => tables.fleet_carriers.find((row) => String(row.carrier_id) === '3709000001');
+  globalThis.__user = { id: OFFICER };
+
+  // Отвязка офицером: журналы участников эскадрильи 7 этот носитель больше не вернут.
+  assert.equal((await bind.DELETE(del({ kind: 'squadron', carrier_id: '3709000001' }))).status, 200);
+  assert.equal(javelin().squadron_id, null);
+  assert.deepEqual(javelin().squadron_rejected, [7]);
+  // Ручная привязка — решение офицеров — отказ снимает.
+  let response = await bind.POST(post({ kind: 'squadron', squadron_id: 7, carrier: '3709000001' }));
+  assert.equal(response.status, 200);
+  assert.equal(Number(javelin().squadron_id), 7);
+  assert.equal(javelin().squadron_source, 'manual');
+  assert.deepEqual(javelin().squadron_rejected, []);
+
+  // Позывной Javelin — тег его эскадрильи: «ENEX» не носитель эскадрильи с тегом «[DNHG]».
+  tables.fleet_carriers.push({ carrier_id: 3713124352, carrier_type: 'SquadronCarrier', callsign: 'ENEX', squadron_id: null, squadron_rejected: [] });
+  response = await bind.POST(post({ kind: 'squadron', squadron_id: 7, carrier: 'enex' }));
+  assert.equal(response.status, 409);
+  assert.match(response.body.error, /\[ENEX\].*\[DNHG\]/);
+  assert.equal(tables.fleet_carriers.at(-1).squadron_id, null);
+
+  // Тег совпал — привязывается. Базы без миграции 20261018000000 (нет колонки
+  // squadron_rejected) маршрут не ломает: колонку он тогда не пишет.
+  tables.fleet_carriers.push({ carrier_id: 3713000001, carrier_type: 'SquadronCarrier', callsign: 'DNHG', squadron_id: null });
+  response = await bind.POST(post({ kind: 'squadron', squadron_id: 7, carrier: 'DNHG' }));
+  assert.equal(response.status, 200);
+  assert.equal(Number(tables.fleet_carriers.at(-1).squadron_id), 7);
+  const update = globalThis.__db.calls.filter((call) => call.operation === 'update').at(-1);
+  assert.equal('squadron_rejected' in update.payload, false);
+  assert.equal((await bind.DELETE(del({ kind: 'squadron', carrier_id: '3713000001' }))).status, 200);
+  assert.equal('squadron_rejected' in tables.fleet_carriers.at(-1), false);
 });
