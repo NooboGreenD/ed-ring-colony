@@ -4,9 +4,15 @@
  *
  * Маршруты собираются esbuild'ом с подменой `next/server`,
  * `@/lib/supabaseServer`, `@/lib/billing/auth` и `@/lib/helperAuth`; EDSM —
- * подставной `fetch` с настоящим gzip. Проверяется:
- *   * импорт: скачивание на диск, разбор потоком, запись пачками, этапы и
- *     журнал, архив удаляется; тот же дамп второй раз не качается;
+ * подставной `fetch` с настоящим gzip и Range. Проверяется:
+ *   * импорт: архив на сервер, разбивка на куски, запись кусков, этапы и
+ *     журнал, архив и куски удаляются; тот же дамп второй раз не качается;
+ *   * конвейер как у каталога: соединения берут куски файла по порядку,
+ *     разбивка и запись идут, пока архив ещё качается; остановка посреди
+ *     записи и продолжение без повторного скачивания (та же метка импорта);
+ *     дамп, пересобранный EDSM посреди скачивания, начинается заново;
+ *     запуски по частям (скачать / разбить / записать без EDSM); EDSM
+ *     недоступен — запись того, что уже на сервере; прямой Postgres;
  *   * API слоя (ETag/304), поиска (экранирование), присутствия, карточки;
  *   * `POST /api/factions/sync`: свежее применяется, старое — нет, новые
  *     системы появляются, состав фракций заменяется, журнал обновлений;
@@ -18,6 +24,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,8 +88,10 @@ export { authState } from '@/lib/billing/auth';
 export { helperState } from '@/lib/helperAuth';
 export {
   runBgsSync, startBgsSync, cancelBgsSync, isBgsSyncRunning, readBgsSyncState, resetBgsSyncRuntime, getBgsLastRun,
-  getBgsLiveRun, bgsArchivePath, bgsArchiveInfo, decideBgsScheduledSync, nextBgsScheduledRun, BGS_SCHEDULE,
+  getBgsLiveRun, bgsArchivePath, bgsArchiveInfo, bgsShardsDir, bgsShardsStatus, decideBgsScheduledSync, nextBgsScheduledRun,
+  BGS_SCHEDULE, bgsDownloadSegments, bgsPieceBytes, bgsShardSystems,
 } from '@/lib/bgsSync';
+export { readBgsShardManifest } from '@/lib/bgsShards';
 export { resetBgsLayerCache } from '@/lib/bgsStore';
 export { decodeBgsLayer, decodeFactionPresence, decodeFactionSearch, decodeSystemDetail } from '@/lib/bgs';
 `;
@@ -108,6 +117,7 @@ const mod = await import(bundle);
 mod.state.db = db;
 const svc = mod.createServiceClient();
 const ARCHIVE = mod.bgsArchivePath();
+const SHARDS = mod.bgsShardsDir();
 
 /* ── Подставной дамп EDSM ──────────────────────────────────────────────── */
 
@@ -134,13 +144,26 @@ function system(name, id64, coords, factions, extra = {}) {
   };
 }
 
-/** Строки как у EDSM: массив, запись на строку, id64 числом, станции и тела в хвосте. */
-function dumpText(records, rawLines = []) {
+/**
+ * Строки как у EDSM: массив, запись на строку, id64 числом, станции и тела в
+ * хвосте. `padding` — случайные байты в станциях: такой архив почти не
+ * сжимается и делится на много кусков файла.
+ */
+function dumpText(records, rawLines = [], { padding = 0 } = {}) {
   const lines = records.map((record) => {
     const head = JSON.stringify(record).replace(/"id64":"(\d+)"/, '"id64":$1').slice(0, -1);
-    return `    ${head},"stations":[{"id":1,"name":"Port","controllingFaction":{"id":9,"name":"x"}}],"bodies":[{"id":2,"id64":5,"name":"Body A"}],"date":"2026-10-15 08:00:00"}`;
+    const port = padding > 0 ? randomBytes(padding).toString('hex') : 'Port';
+    return `    ${head},"stations":[{"id":1,"name":"${port}","controllingFaction":{"id":9,"name":"x"}}],"bodies":[{"id":2,"id64":5,"name":"Body A"}],"date":"2026-10-15 08:00:00"}`;
   });
   return `[\n${[...lines, ...rawLines].join(',\n')}\n]`;
+}
+
+/** Много населённых систем с общими фракциями. */
+function manySystems(count, prefix, extra = {}) {
+  return Array.from({ length: count }, (_, i) => system(`${prefix} ${i}`, String((extra.base ?? 5_000_000) + i), { x: i, y: -i, z: i / 2 }, [
+    faction(`${prefix} Front ${i % 7}`, 0.6, { lastUpdate: NOW_SEC - DAY }),
+    faction(`${prefix} Union ${i % 5}`, 0.4, { lastUpdate: NOW_SEC - DAY, isPlayer: i % 5 === 0 }),
+  ]));
 }
 
 const SOL = system('Sol', '10477373803', { x: 0, y: 0, z: 0 }, [
@@ -160,24 +183,45 @@ const V1_GZ = gzipSync(Buffer.from(V1, 'utf8'));
 
 const fetchCalls = [];
 
-/** EDSM: HEAD (размер, дата, Range), GET целиком или с Range. */
-function edsm(body, { etag = '"dump-1"', lastModified = 'Sat, 17 Oct 2026 04:50:00 GMT', stallAfter = null } = {}) {
+/**
+ * EDSM: HEAD (размер, дата, Range), GET целиком или с Range `от-до`.
+ * `delayMs` — задержка ответа на GET (тонкий канал), `unreachable` — сервер не
+ * отвечает, `next` + `switchAfterGets` — после N запросов GET (и в HEAD тоже)
+ * EDSM отдаёт уже другой, пересобранный дамп.
+ */
+function edsm(body, {
+  etag = '"dump-1"', lastModified = 'Sat, 17 Oct 2026 04:50:00 GMT', stallAfter = null, delayMs = 0, unreachable = false,
+  next = null, switchAfterGets = Infinity, onGet = null,
+} = {}) {
+  let gets = 0;
   return async (url, init = {}) => {
     const headers = new Headers(init.headers || {});
     const method = init.method || 'GET';
     const range = headers.get('range');
-    fetchCalls.push({ method, range, ua: headers.get('user-agent'), url: String(url) });
-    const common = { etag, 'last-modified': lastModified, 'accept-ranges': 'bytes', 'content-type': 'application/gzip' };
-    if (method === 'HEAD') return new Response(null, { status: 200, headers: { ...common, 'content-length': String(body.length) } });
+    fetchCalls.push({ method, range, ua: headers.get('user-agent'), url: String(url), at: Date.now() });
+    if (unreachable) throw new TypeError('fetch failed');
+    const current = next && gets >= switchAfterGets ? next : { body, etag, lastModified };
+    if (method === 'GET') {
+      gets += 1;
+      onGet?.(range);
+    }
+    const common = { etag: current.etag, 'last-modified': current.lastModified, 'accept-ranges': 'bytes', 'content-type': 'application/gzip' };
+    if (method === 'HEAD') return new Response(null, { status: 200, headers: { ...common, 'content-length': String(current.body.length) } });
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     let start = 0;
+    let end = current.body.length - 1;
     let status = 200;
     if (range) {
       const match = /bytes=(\d+)-(\d*)/.exec(range);
       start = Number(match[1]);
+      if (match[2]) end = Math.min(end, Number(match[2]));
+      if (start >= current.body.length) {
+        return new Response(null, { status: 416, headers: { ...common, 'content-range': `bytes */${current.body.length}` } });
+      }
       status = 206;
     }
-    const slice = body.subarray(start);
-    const extra = status === 206 ? { 'content-range': `bytes ${start}-${body.length - 1}/${body.length}` } : {};
+    const slice = current.body.subarray(start, end + 1);
+    const extra = status === 206 ? { 'content-range': `bytes ${start}-${end}/${current.body.length}` } : {};
     if (stallAfter != null) {
       const signal = init.signal;
       let sent = false;
@@ -220,12 +264,15 @@ test.after(() => {
 });
 
 function runOptions(fetchImpl, extra = {}) {
-  return { fetchImpl, archivePath: ARCHIVE, segments: 1, keepArchive: false, trigger: 'manual', ...extra };
+  return { fetchImpl, archivePath: ARCHIVE, segments: 1, keepArchive: false, trigger: 'manual', directDb: false, sleep: async () => {}, ...extra };
 }
+
+/** Прямой Postgres поверх того же PGlite. */
+const pgliteDirect = async () => ({ query: (text, values) => db.query(text, values), end: async () => {} });
 
 /* ── Импорт ────────────────────────────────────────────────────────────── */
 
-test('импорт дампа EDSM: системы, фракции, присутствие, этапы и журнал, архив удалён', async () => {
+test('импорт дампа EDSM: системы, фракции, присутствие, этапы и журнал, архив и куски удалены', async () => {
   mod.resetBgsSyncRuntime();
   fetchCalls.length = 0;
   const result = await mod.runBgsSync(svc, runOptions(edsm(V1_GZ)));
@@ -237,9 +284,12 @@ test('импорт дампа EDSM: системы, фракции, присут
   assert.equal(result.stats.skipped.invalid, 1);
   assert.equal(result.stats.playerFactions, 2);
 
-  assert.deepEqual(fetchCalls.map((call) => call.method), ['HEAD', 'GET']);
+  assert.deepEqual(fetchCalls.map((call) => call.method), ['HEAD', 'GET'], 'один HEAD: скачивание берёт готовый ответ на запрос');
   assert.ok(fetchCalls.every((call) => /ED-Ring-Colony/.test(call.ua ?? '')), 'свой User-Agent');
   assert.equal(existsSync(ARCHIVE), false, 'архив удалён после импорта');
+  assert.equal(existsSync(join(SHARDS, 'manifest.json')), false, 'куски удалены после импорта');
+  assert.equal(result.shards, 1);
+  assert.equal(result.backend, 'postgrest');
 
   const colony = (await db.query('SELECT id64::text, name, source, factions_count, population FROM bgs_systems WHERE name = $1', ['Col 285 Sector AB-C d14-3'])).rows[0];
   assert.equal(colony.id64, BIG_ID64, 'id64 шире 2^53 без потери разрядов');
@@ -262,13 +312,18 @@ test('импорт дампа EDSM: системы, фракции, присут
   const { progress, log } = mod.getBgsLastRun();
   assert.equal(progress.phase, 'ok');
   assert.equal(progress.percent, 100);
-  assert.deepEqual(progress.stages.map((stage) => [stage.id, stage.status]), [['probe', 'done'], ['download', 'done'], ['import', 'done'], ['finish', 'done']]);
+  assert.equal(progress.mode, 'full');
+  assert.deepEqual(progress.stages.map((stage) => [stage.id, stage.status]),
+    [['probe', 'done'], ['download', 'done'], ['split', 'done'], ['import', 'done'], ['finish', 'done']]);
   assert.equal(progress.stages[1].done, V1_GZ.length, 'скачивание в байтах');
+  assert.equal(progress.stages[3].done, 1, 'запись — в кусках');
   const text = log.map((line) => line.text).join('\n');
-  assert.match(text, /Запуск импорта: вручную/);
-  assert.match(text, /Скачиваю дамп на диск/);
+  assert.match(text, /Запуск: вручную · загрузка данных/);
+  assert.match(text, /Скачиваю архив на сервер/);
+  assert.match(text, /Разбивка: читаю архив по мере скачивания/);
+  assert.match(text, /Запись в базу: PostgREST — пачками по 250 систем/);
   assert.match(text, /населённых систем с фракциями: 4/);
-  assert.match(text, /Архив удалён с диска/);
+  assert.match(text, /Архив и куски удалены с сервера/);
   assert.equal(state.log.length, log.length, 'журнал — копией в базе');
 });
 
@@ -503,14 +558,17 @@ test('«Остановить» на скачивании: скачанное о�
   const watching = await (await get(mod.layerRoute, '/api/factions/systems?meta=1')).json();
   assert.equal(watching.meta.refreshing, true);
   assert.equal(watching.meta.progress.stage, 'download');
-  assert.equal(watching.meta.progress.stageLabel, 'Скачивание дампа на диск');
+  assert.equal(watching.meta.progress.stageLabel, 'Скачивание архива на сервер');
   assert.equal(mod.cancelBgsSync(), true);
   await waitFor(() => !mod.isBgsSyncRunning(), 'импорт остановлен');
   const last = mod.getBgsLastRun();
   assert.equal(last.progress.phase, 'cancelled');
-  assert.match(last.log.map((line) => line.text).join('\n'), /докачает/);
+  assert.match(last.log.map((line) => line.text).join('\n'), /продолжит с того же места/);
   assert.equal(statSync(ARCHIVE).size, 40, 'скачанная часть на диске');
-  assert.equal(mod.bgsArchiveInfo(ARCHIVE).complete, false);
+  const info = mod.bgsArchiveInfo(ARCHIVE);
+  assert.equal(info.complete, false);
+  assert.equal(info.partial, true);
+  assert.equal(info.downloaded, 40);
 
   fetchCalls.length = 0;
   const resumed = await mod.runBgsSync(svc, runOptions(edsm(v3, { etag: '"dump-3"' })));
@@ -555,7 +613,7 @@ test('задача factions-sync: секрет, первый импорт — т
     const last = mod.getBgsLastRun();
     assert.equal(last.progress.phase, 'ok', last.progress.message);
     assert.equal(last.progress.trigger, 'cron');
-    assert.match(last.log.map((line) => line.text).join('\n'), /Запуск импорта: задача планировщика factions-sync/);
+    assert.match(last.log.map((line) => line.text).join('\n'), /Запуск: задача планировщика factions-sync/);
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -646,7 +704,7 @@ test('/api/admin/factions: права, состояние, сводка, обн�
   try {
     const start = await mod.adminRoute.POST(adminRequest('POST', { action: 'start' }));
     assert.equal(start.status, 200);
-    assert.deepEqual(await start.json(), { success: true, started: true, force: false });
+    assert.deepEqual(await start.json(), { success: true, started: true, force: false, mode: 'full', message: 'Загрузка запущена' });
     const again = await mod.adminRoute.POST(adminRequest('POST', { action: 'start', force: true }));
     assert.equal(again.status, 409);
     const running = await (await mod.adminRoute.GET(adminRequest())).json();
@@ -661,14 +719,285 @@ test('/api/admin/factions: права, состояние, сводка, обн�
   const after = await (await mod.adminRoute.GET(adminRequest())).json();
   assert.equal(after.progress.phase, 'cancelled');
   assert.equal(after.archive.exists, true);
-  assert.equal(after.archive.partial, false, 'одним потоком — без плана сегментов');
+  assert.equal(after.archive.partial, true, 'скачан не полностью');
+  assert.equal(after.archive.downloaded, 30);
   assert.equal(after.archive.complete, false);
+  assert.equal(after.shards.exists, true, 'манифест кусков этого дампа заведён');
+  assert.equal(after.shards.shards, 0, 'в 30 байтах ещё нет ни одной системы');
+  assert.equal(after.writer.backend, 'postgrest', 'DATABASE_URL в тесте не задан');
 
   const cleanup = await (await mod.adminRoute.POST(adminRequest('POST', { action: 'cleanup' }))).json();
   assert.equal(cleanup.success, true);
   assert.equal(cleanup.removed, true);
-  assert.equal(cleanup.freed, 30);
+  assert.ok(cleanup.freed >= 30, `освобождено ${cleanup.freed}`);
   assert.equal(existsSync(ARCHIVE), false);
+  assert.equal(existsSync(join(SHARDS, 'manifest.json')), false, 'куски удалены вместе с архивом');
   assert.equal((await mod.adminRoute.POST(adminRequest('POST', { action: 'cancel' }))).status, 200);
   assert.equal((await mod.adminRoute.POST(adminRequest('POST', { action: 'bogus' }))).status, 400);
+  assert.equal((await mod.adminRoute.POST(adminRequest('POST', { action: 'download', segments: 99 }))).status, 400, 'соединений — не больше 16');
+  assert.equal((await mod.adminRoute.POST(adminRequest('POST', { action: 'split' }))).status, 200, 'запуск принят — ошибка видна в ходе');
+  await waitFor(() => !mod.isBgsSyncRunning(), 'разбивка без архива закончилась');
+  const noArchive = mod.getBgsLastRun();
+  assert.equal(noArchive.progress.mode, 'split');
+  assert.equal(noArchive.progress.phase, 'error');
+  assert.match(noArchive.progress.result.error, /нет скачанного архива/);
+});
+
+/* ── Конвейер как у каталога систем ────────────────────────────────────── */
+
+const PIPE_LM = 'Sun, 18 Oct 2026 04:50:00 GMT';
+const PIPE_SYSTEMS = manySystems(60, 'Pipe');
+const PIPE_GZ = gzipSync(Buffer.from(dumpText(PIPE_SYSTEMS, [], { padding: 600 }), 'utf8'));
+
+function pipeOptions(fetchImpl, extra = {}) {
+  return runOptions(fetchImpl, { segments: 3, pieceBytes: 1024, minSegmentedBytes: 0, shardSystems: 4, ...extra });
+}
+
+test('конвейер: соединения берут куски файла по порядку, разбивка и запись идут, пока архив качается', async () => {
+  assert.ok(PIPE_GZ.length > 30 * 1024, `архив ${PIPE_GZ.length} байт — много кусков файла`);
+  fetchCalls.length = 0;
+  let firstApplyAt = null;
+  mod.state.rpcGuard = async (name) => {
+    if (name === 'bgs_apply_snapshots' && firstApplyAt == null) firstApplyAt = Date.now();
+  };
+  try {
+    const result = await mod.runBgsSync(svc, pipeOptions(edsm(PIPE_GZ, { etag: '"pipe-1"', lastModified: PIPE_LM, delayMs: 25 })));
+    assert.equal(result.status, 'ok', result.error);
+    assert.equal(result.stats.systems, 60);
+    assert.equal(result.shards, 15, '60 систем по 4 в куске');
+  } finally {
+    mod.state.rpcGuard = null;
+  }
+  const gets = fetchCalls.filter((call) => call.method === 'GET');
+  assert.ok(gets.length >= 20, `кусков файла: ${gets.length}`);
+  assert.ok(gets.every((call) => /^bytes=\d+-\d+$/.test(call.range ?? '')), 'каждый запрос — свой кусок «от-до»');
+  const starts = gets.map((call) => Number(/bytes=(\d+)-/.exec(call.range)[1]));
+  assert.deepEqual([...starts].sort((a, b) => a - b), starts, 'куски берутся по порядку файла');
+  assert.equal(starts[0], 0);
+  const lastGetAt = Math.max(...gets.map((call) => call.at));
+  assert.ok(firstApplyAt && firstApplyAt < lastGetAt, 'первый кусок записан в базу раньше, чем ушёл последний запрос скачивания');
+
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Pipe %'`), 60);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE source = 'edsm' AND name NOT LIKE 'Pipe %'`), 0, 'системы прошлого дампа удалены');
+  const state = await mod.readBgsSyncState(svc);
+  assert.equal(state.last_modified, PIPE_LM);
+  assert.equal(state.stats.shards, 15);
+  assert.equal(state.stats.backend, 'postgrest');
+  const text = mod.getBgsLastRun().log.map((line) => line.text).join('\n');
+  assert.match(text, /до 3 соединений, куски по 1,0 КБ/);
+  assert.match(text, /Скачивание: Архив: 3 параллельных соединений, куски по 1\.0 КБ/);
+  assert.match(text, /Разбивка завершена: 15 кусков, 60 систем/);
+  assert.equal(existsSync(ARCHIVE), false);
+  assert.equal(existsSync(join(SHARDS, 'manifest.json')), false);
+});
+
+test('остановка посреди записи: следующий запуск не качает архив заново и пишет только незаписанные куски', async () => {
+  const systems = manySystems(40, 'Resume', { base: 7_000_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems, [], { padding: 200 }), 'utf8'));
+  const applies = [];
+  mod.state.rpcGuard = async (name, args) => {
+    if (name !== 'bgs_apply_snapshots') return;
+    applies.push(args.p_run);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  };
+  try {
+    const started = mod.startBgsSync(svc, { ...pipeOptions(edsm(gz, { etag: '"resume-1"', lastModified: 'Mon, 19 Oct 2026 04:50:00 GMT' })), trigger: 'admin' });
+    assert.equal(started.started, true);
+    await waitFor(() => (mod.readBgsShardManifest(SHARDS)?.shards.filter((entry) => entry.imported).length ?? 0) >= 3, 'три куска в базе', 1500);
+    assert.equal(mod.cancelBgsSync(), true);
+    await waitFor(() => !mod.isBgsSyncRunning(), 'остановлено', 1500);
+  } finally {
+    mod.state.rpcGuard = null;
+  }
+  const stopped = mod.readBgsShardManifest(SHARDS);
+  const doneBefore = stopped.shards.filter((entry) => entry.imported).length;
+  assert.ok(doneBefore >= 3 && doneBefore < 10, `в базе ${doneBefore} из 10 кусков`);
+  const runId = stopped.runId;
+  assert.equal(mod.getBgsLastRun().progress.phase, 'cancelled');
+  assert.match(mod.getBgsLastRun().log.map((line) => line.text).join('\n'), /записанное осталось — следующий запуск продолжит с того же места/);
+  assert.equal(mod.bgsShardsStatus(SHARDS).imported, doneBefore);
+
+  fetchCalls.length = 0;
+  const appliedAgain = [];
+  mod.state.rpcGuard = async (name, args) => {
+    if (name === 'bgs_apply_snapshots') appliedAgain.push(args.p_run);
+  };
+  try {
+    const resumed = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { etag: '"resume-1"', lastModified: 'Mon, 19 Oct 2026 04:50:00 GMT' })));
+    assert.equal(resumed.status, 'ok', resumed.error);
+    assert.equal(resumed.stats.systems, 40);
+  } finally {
+    mod.state.rpcGuard = null;
+  }
+  const methods = fetchCalls.map((call) => call.method);
+  assert.equal(methods.filter((method) => method === 'HEAD').length, 1);
+  const refetched = fetchCalls.filter((call) => call.method === 'GET').length;
+  assert.ok(refetched < 12, `докачан только хвост архива (${refetched} запросов), а не весь заново`);
+  assert.equal(appliedAgain.length, 10 - doneBefore, 'записаны только незаписанные куски');
+  assert.ok(appliedAgain.every((id) => id === runId), 'с той же меткой импорта');
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Resume %'`), 40, 'ни одна система первой половины не удалена как «пропавшая»');
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Resume %' AND sync_run::text = $1`, [runId]), 40);
+  assert.equal((await mod.readBgsSyncState(svc)).run_id, runId);
+  assert.match(mod.getBgsLastRun().log.map((line) => line.text).join('\n'), new RegExp(`продолжаю — ${doneBefore} кусков этого дампа уже в базе`));
+});
+
+test('дамп пересобран посреди скачивания: скачанное выбрасывается, загрузка начинается заново со свежим дампом', async () => {
+  const oldSystems = manySystems(20, 'Stale', { base: 8_000_000 });
+  const newSystems = manySystems(24, 'Rebuilt', { base: 8_100_000 });
+  const oldGz = gzipSync(Buffer.from(dumpText(oldSystems, [], { padding: 300 }), 'utf8'));
+  const newGz = gzipSync(Buffer.from(dumpText(newSystems, [], { padding: 300 }), 'utf8'));
+  const next = { body: newGz, etag: '"rebuilt"', lastModified: 'Tue, 20 Oct 2026 04:50:00 GMT' };
+  fetchCalls.length = 0;
+  const result = await mod.runBgsSync(svc, pipeOptions(edsm(oldGz, { etag: '"stale"', lastModified: 'Mon, 19 Oct 2026 05:00:00 GMT', next, switchAfterGets: 3 })));
+  assert.equal(result.status, 'ok', result.error);
+  assert.equal(result.stats.systems, 24, 'загружен новый дамп');
+  const text = mod.getBgsLastRun().log.map((line) => line.text).join('\n');
+  assert.match(text, /Дамп на EDSM обновился во время скачивания/);
+  assert.match(text, /Новый дамп: /);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Rebuilt %'`), 24);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Stale %' AND source = 'edsm'`), 0, 'системы недокачанного дампа не остались «в дампе»');
+  assert.equal((await mod.readBgsSyncState(svc)).last_modified, 'Tue, 20 Oct 2026 04:50:00 GMT');
+  assert.equal(fetchCalls.filter((call) => call.method === 'HEAD').length, 2, 'новый дамп заново опрошен');
+});
+
+test('по частям: «Скачать архив» → «Разбить на куски» → «Загрузить куски в базу» без EDSM', async () => {
+  const systems = manySystems(18, 'Steps', { base: 9_000_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems, [], { padding: 120 }), 'utf8'));
+  const lm = 'Wed, 21 Oct 2026 04:50:00 GMT';
+  const before = await mod.readBgsSyncState(svc);
+
+  fetchCalls.length = 0;
+  const downloaded = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { etag: '"steps"', lastModified: lm }), { mode: 'download' }));
+  assert.equal(downloaded.status, 'ok', downloaded.error);
+  assert.equal(downloaded.mode, 'download');
+  assert.equal(downloaded.archiveBytes, gz.length);
+  let progress = mod.getBgsLastRun().progress;
+  assert.deepEqual(progress.stages.map((stage) => [stage.id, stage.status]),
+    [['probe', 'done'], ['download', 'done'], ['split', 'skipped'], ['import', 'skipped'], ['finish', 'skipped']]);
+  assert.match(progress.message, /Архив скачан на сервер/);
+  assert.equal(mod.bgsArchiveInfo(ARCHIVE).complete, true);
+  assert.equal(mod.bgsShardsStatus(SHARDS).shards, 0, 'только скачивание — кусков нет');
+  const afterDownload = await mod.readBgsSyncState(svc);
+  assert.equal(afterDownload.synced_at, before.synced_at, 'база не тронута');
+  assert.equal(afterDownload.status, before.status, 'статус импорта не тронут');
+
+  const offline = edsm(gz, { unreachable: true });
+  fetchCalls.length = 0;
+  const split = await mod.runBgsSync(svc, pipeOptions(offline, { mode: 'split' }));
+  assert.equal(split.status, 'ok', split.error);
+  assert.equal(split.shards, 5, '18 систем по 4');
+  progress = mod.getBgsLastRun().progress;
+  assert.deepEqual(progress.stages.map((stage) => [stage.id, stage.status]),
+    [['probe', 'skipped'], ['download', 'skipped'], ['split', 'done'], ['import', 'skipped'], ['finish', 'skipped']]);
+  const shardsInfo = mod.bgsShardsStatus(SHARDS);
+  assert.deepEqual([shardsInfo.complete, shardsInfo.shards, shardsInfo.imported, shardsInfo.systems], [true, 5, 0, 18]);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Steps %'`), 0, 'разбивка в базу не пишет');
+
+  const imported = await mod.runBgsSync(svc, pipeOptions(offline, { mode: 'import' }));
+  assert.equal(imported.status, 'ok', imported.error);
+  assert.equal(fetchCalls.length, 0, 'ни одного запроса к EDSM');
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Steps %'`), 18);
+  const state = await mod.readBgsSyncState(svc);
+  assert.equal(state.last_modified, lm, 'дата дампа — из архива на сервере');
+  assert.equal(state.status, 'ok');
+  assert.equal(existsSync(ARCHIVE), false, 'после загрузки архив и куски удалены');
+
+  const again = await mod.runBgsSync(svc, pipeOptions(offline, { mode: 'import' }));
+  assert.equal(again.status, 'error', 'на сервере больше ничего нет');
+  assert.match(again.error, /нет ни архива, ни кусков/);
+});
+
+test('EDSM не отвечает: «Загрузить данные» пишет в базу архив, который уже на сервере', async () => {
+  const systems = manySystems(12, 'Offline', { base: 9_500_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems, [], { padding: 64 }), 'utf8'));
+  const lm = 'Thu, 22 Oct 2026 04:50:00 GMT';
+  const downloaded = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { etag: '"offline"', lastModified: lm }), { mode: 'download' }));
+  assert.equal(downloaded.status, 'ok', downloaded.error);
+
+  fetchCalls.length = 0;
+  const result = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { unreachable: true })));
+  assert.equal(result.status, 'ok', result.error);
+  assert.ok(fetchCalls.length <= 2 && fetchCalls.every((call) => call.method === 'HEAD' || call.range === 'bytes=0-0'),
+    'только запрос к EDSM (HEAD и однобайтовый GET), архив не качается');
+  assert.match(mod.getBgsLastRun().log.map((line) => line.text).join('\n'), /EDSM не ответил .* загружаю в базу то, что уже лежит на сервере/);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Offline %'`), 12);
+
+  fetchCalls.length = 0;
+  const nothing = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { unreachable: true })));
+  assert.equal(nothing.status, 'error', 'на сервере ничего нет — честная ошибка');
+  assert.match(nothing.error, /EDSM не ответил/);
+});
+
+test('прямой Postgres: кусок одним вызовом, завершение одним запросом на шаг', async () => {
+  const systems = manySystems(30, 'Direct', { base: 9_700_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems), 'utf8'));
+  const result = await mod.runBgsSync(svc, pipeOptions(edsm(gz, { etag: '"direct"', lastModified: 'Fri, 23 Oct 2026 04:50:00 GMT' }), {
+    directDb: true, pgClient: pgliteDirect, shardSystems: 10,
+  }));
+  assert.equal(result.status, 'ok', result.error);
+  assert.equal(result.backend, 'pg');
+  assert.equal(result.shards, 3);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE name LIKE 'Direct %'`), 30);
+  assert.equal(await scalar(`SELECT count(*)::int FROM bgs_systems WHERE source = 'edsm' AND name NOT LIKE 'Direct %'`), 0, 'пропавшие удалены');
+  assert.equal(await scalar(`SELECT systems_count FROM bgs_factions WHERE name = 'Direct Front 0'`), 5, 'счётчики пересчитаны');
+  const state = await mod.readBgsSyncState(svc);
+  assert.equal(state.stats.backend, 'pg');
+  assert.match(mod.getBgsLastRun().log.map((line) => line.text).join('\n'), /Запись в базу: прямой Postgres — кусок одним вызовом/);
+});
+
+test('настройки конвейера: соединения, кусок файла, систем в куске', () => {
+  assert.equal(mod.bgsDownloadSegments({}), 8);
+  assert.equal(mod.bgsDownloadSegments({ FACTIONS_DOWNLOAD_SEGMENTS: '12' }), 12);
+  assert.equal(mod.bgsDownloadSegments({ FACTIONS_DOWNLOAD_SEGMENTS: '99' }), 16);
+  assert.equal(mod.bgsDownloadSegments({ FACTIONS_DOWNLOAD_SEGMENTS: 'abc' }), 8);
+  assert.equal(mod.bgsPieceBytes({}), 8 * 1024 * 1024);
+  assert.equal(mod.bgsPieceBytes({ FACTIONS_PIECE_MB: '2' }), 2 * 1024 * 1024);
+  assert.equal(mod.bgsPieceBytes({ FACTIONS_PIECE_MB: '1000' }), 64 * 1024 * 1024);
+  assert.equal(mod.bgsShardSystems({}), 1000);
+  assert.equal(mod.bgsShardSystems({ FACTIONS_SHARD_SYSTEMS: '5' }), 100);
+});
+
+test('/api/admin/factions: запуски по частям, ход, оборванный перезапуском сайта, честно помечен', async () => {
+  const systems = manySystems(24, 'Admin', { base: 9_900_000 });
+  const gz = gzipSync(Buffer.from(dumpText(systems), 'utf8'));
+  globalThis.fetch = edsm(gz, { etag: '"admin-steps"', lastModified: 'Sat, 24 Oct 2026 04:50:00 GMT' });
+  try {
+    const download = await mod.adminRoute.POST(adminRequest('POST', { action: 'download', segments: 4 }));
+    assert.equal(download.status, 200);
+    assert.deepEqual(await download.json(), { success: true, started: true, force: false, mode: 'download', segments: 4, message: 'Скачивание архива запущено' });
+    await waitFor(() => !mod.isBgsSyncRunning(), 'скачивание закончилось');
+    let status = await (await mod.adminRoute.GET(adminRequest())).json();
+    assert.equal(status.progress.mode, 'download');
+    assert.equal(status.progress.phase, 'ok', status.progress.message);
+    assert.equal(status.archive.complete, true);
+    assert.equal(status.config.segments, 8);
+    assert.equal(status.config.maxSegments, 16);
+    assert.equal(status.config.shardSystems, 1000);
+
+    const importing = await mod.adminRoute.POST(adminRequest('POST', { action: 'import' }));
+    assert.equal(importing.status, 200);
+    await waitFor(() => !mod.isBgsSyncRunning(), 'запись закончилась');
+    status = await (await mod.adminRoute.GET(adminRequest())).json();
+    assert.equal(status.progress.mode, 'import');
+    assert.equal(status.progress.phase, 'ok', status.progress.message);
+    assert.equal(status.shards.exists, false, 'после записи куски удалены');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+
+  // Ход «идёт» в базе, а живого запуска нет — сайт перезапустился посреди работы.
+  const stale = {
+    id: 'lost-run', trigger: 'admin', force: false, mode: 'full', phase: 'running', stage: 'download', percent: 12, message: 'Скачивание…',
+    startedAt: new Date(Date.now() - 600_000).toISOString(), updatedAt: new Date(Date.now() - 500_000).toISOString(), finishedAt: null,
+    stages: [{ id: 'probe', status: 'done' }, { id: 'download', status: 'running', done: 10, total: 100 }], result: null,
+  };
+  mod.resetBgsSyncRuntime();
+  await db.query(`UPDATE bgs_sync_state SET progress = $1::jsonb, status = 'running', attempt_at = now() - interval '10 minutes'`, [JSON.stringify(stale)]);
+  const lost = await (await mod.adminRoute.GET(adminRequest())).json();
+  assert.equal(lost.running, false);
+  assert.equal(lost.interrupted, true);
+  assert.equal(lost.progress.phase, 'cancelled', 'не «идёт»');
+  assert.match(lost.progress.result.error, /Прервано перезапуском сайта/);
+  assert.equal(lost.progress.stages.find((stage) => stage.id === 'download').status, 'error');
+  await db.query(`UPDATE bgs_sync_state SET status = 'ok'`);
 });

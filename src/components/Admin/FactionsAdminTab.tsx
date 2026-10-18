@@ -6,6 +6,7 @@ import { authFetch } from '@/lib/supabaseClient';
 import { IconAlert, IconCheckCircle, IconClock, IconCopy, IconRefresh, IconShieldHalf, IconTrash, IconXCircle } from '@/components/Icons';
 import { BGS_ALLEGIANCE_COLOR, BGS_SOURCE_LABEL, allegianceLabel, formatBgsDate, normalizeSource } from '@/lib/bgs';
 import {
+  BGS_MODE_LABEL,
   BGS_PHASE_LABEL,
   BGS_SYNC_STAGES,
   BGS_TRIGGER_LABEL,
@@ -26,9 +27,11 @@ import {
  * Минорные фракции для вкладки «Фракции» в Atlas хранятся в базе проекта и
  * приходят из двух источников:
  *   * ночной дамп EDSM `systemsPopulated.json.gz` (≈0,5 ГБ) — полный набор
- *     населённых систем; здесь его загружают: этапы с прогресс-барами (запрос,
- *     скачивание на диск с докачкой, разбор и запись, завершение), общий
- *     процент, журнал процесса, остановка и удаление архива;
+ *     населённых систем. Загрузка устроена как у «Каталога систем»: архив
+ *     скачивается на сервер в несколько соединений, там разбивается на куски
+ *     по тысяче систем, куски пишутся в базу — одновременно со скачиванием.
+ *     Здесь — карточки архива и кусков (каждый шаг можно запустить отдельно),
+ *     этапы с прогресс-барами, общий процент, журнал, остановка и очистка;
  *   * журналы пилотов — Colonial Helper и загрузчик журналов на сайте шлют
  *     состояние фракций каждой посещённой системы; здесь видно, сколько
  *     обновлений пришло и от кого.
@@ -46,8 +49,12 @@ interface UpdateRow {
   cmdr: string | null;
 }
 
+type RunMode = 'full' | 'download' | 'split' | 'import';
+type Action = 'start' | 'force' | 'download' | 'split' | 'import' | 'cancel' | 'cleanup';
+
 interface AdminStatus {
   running: boolean;
+  mode?: RunMode | null;
   interrupted: boolean;
   progress: BgsSyncProgress | null;
   log: BgsLogLine[];
@@ -88,15 +95,34 @@ interface AdminStatus {
     path: string;
     exists: boolean;
     bytes: number;
+    downloaded?: number;
+    total?: number | null;
     partial: boolean;
     complete: boolean;
     lastModified: string | null;
     freeBytes: number | null;
   };
+  shards?: {
+    dir: string;
+    exists: boolean;
+    complete: boolean;
+    shards: number;
+    imported: number;
+    systems: number;
+    importedSystems: number;
+    files: number;
+    bytes: number;
+    source: { url: string; lastModified: string | null; total: number | null } | null;
+    completedAt: string | null;
+  };
+  writer?: { backend: 'pg' | 'postgrest'; host: string | null; disabled: boolean };
   config: {
     dumpUrl: string;
     archiveKeep: boolean;
     segments: number;
+    maxSegments?: number;
+    pieceBytes?: number;
+    shardSystems?: number;
     batchSize: number;
     minSystems: number;
     keepDays: number;
@@ -131,6 +157,15 @@ const STAGE_COLORS: Record<BgsStageProgress['status'], string> = {
   done: '#22c55e',
   skipped: '#6b7280',
   error: '#ef4444',
+};
+
+const SEGMENT_CHOICES = [1, 2, 4, 6, 8, 12, 16];
+
+const RUNNING_PILL: Record<RunMode, string> = {
+  full: 'идёт загрузка дампа',
+  download: 'идёт скачивание архива на сервер',
+  split: 'идёт разбивка архива на куски',
+  import: 'идёт запись кусков в базу',
 };
 
 const SCHEDULE_REASON: Record<string, string> = {
@@ -186,7 +221,7 @@ function stageDuration(stage: BgsStageProgress, serverNow: number): string {
 
 function phasePill(status: AdminStatus | null): { text: string; color: string } {
   if (!status) return { text: 'загрузка…', color: MUTED };
-  if (status.running) return { text: 'идёт загрузка дампа', color: RUN };
+  if (status.running) return { text: RUNNING_PILL[status.mode ?? 'full'] ?? RUNNING_PILL.full, color: RUN };
   if (status.interrupted) return { text: 'загрузка прервана перезапуском сайта', color: '#e67e22' };
   const systems = status.summary?.systems ?? status.state.systems_total;
   if (status.state.status === 'error') return { text: systems > 0 ? 'ошибка последней загрузки' : 'ошибка — данных нет', color: '#ef4444' };
@@ -235,6 +270,7 @@ export default function FactionsAdminTab() {
   const [message, setMessage] = useState('');
   const [isError, setIsError] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [segments, setSegments] = useState<number | null>(null);
   const logRef = useRef<HTMLPreElement | null>(null);
   const stickToBottom = useRef(true);
 
@@ -274,16 +310,21 @@ export default function FactionsAdminTab() {
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
   }, [logLength, lastLogAt]);
 
-  const act = async (action: 'start' | 'cancel' | 'cleanup', force = false) => {
-    if (action === 'cleanup' && !window.confirm('Удалить скачанный архив дампа с диска? Следующая загрузка скачает его заново.')) return;
-    setBusy(force ? 'force' : action);
+  const connections = segments ?? status?.config.segments ?? 8;
+
+  const act = async (action: Action) => {
+    if (action === 'cleanup' && !window.confirm('Удалить архив дампа и куски с сервера? Следующая загрузка скачает дамп заново.')) return;
+    setBusy(action);
     setMessage('');
     setIsError(false);
+    const force = action === 'force';
+    const body: Record<string, unknown> = { action: force ? 'start' : action, force };
+    if (action === 'start' || action === 'force' || action === 'download') body.segments = connections;
     try {
       const response = await authFetch('/api/admin/factions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, force }),
+        body: JSON.stringify(body),
       });
       const payload = await response.json().catch(() => null);
       if (response.status === 409) {
@@ -291,13 +332,23 @@ export default function FactionsAdminTab() {
       } else if (!response.ok || payload?.success === false) {
         throw new Error(payload?.error || `HTTP ${response.status}`);
       } else if (action === 'cancel') {
-        setMessage(payload?.cancelled ? 'Останавливаю импорт… Скачанная часть дампа останется на диске для докачки.' : 'Импорт не выполнялся');
+        setMessage(payload?.cancelled
+          ? 'Останавливаю… Скачанное и разбитое останется на сервере — следующий запуск продолжит с того же места.'
+          : 'Импорт не выполнялся');
       } else if (action === 'cleanup') {
-        setMessage(payload?.removed ? `Архив удалён — освобождено ${formatBgsBytes(payload?.freed)}` : 'Архива на диске нет');
+        setMessage(payload?.removed
+          ? `Архив и куски удалены с сервера — освобождено ${formatBgsBytes(payload?.freed)}`
+          : 'На сервере нет ни архива, ни кусков');
+      } else if (action === 'download') {
+        setMessage(`Архив скачивается на сервер в ${connections} соедин. Страницу можно закрыть: при обрыве или перезапуске скачивание продолжится с того же места.`);
+      } else if (action === 'split') {
+        setMessage('Разбивка архива на куски запущена — она не обращается к EDSM.');
+      } else if (action === 'import') {
+        setMessage('Запись в базу запущена: то, что уже на сервере, без обращения к EDSM.');
       } else {
         setMessage(force
-          ? 'Импорт запущен принудительно: дамп импортируется, даже если он тот же, и принимается, даже если он заметно меньше прошлого.'
-          : 'Загрузка запущена. Если дамп тот же, что в прошлый раз, импорт закончится сразу («без изменений»).');
+          ? 'Загрузка запущена принудительно: дамп загружается, даже если он тот же, и принимается, даже если он заметно меньше прошлого.'
+          : `Загрузка запущена: архив качается на сервер (${connections} соедин.), по мере скачивания разбивается на куски, а куски сразу пишутся в базу. Если дамп тот же, что в прошлый раз, загрузка закончится сразу.`);
       }
       stickToBottom.current = true;
       await load();
@@ -333,7 +384,17 @@ export default function FactionsAdminTab() {
   );
   const maxAllegiance = Math.max(1, ...allegiances.map(([, n]) => n));
   const archive = status?.archive ?? null;
+  const shards = status?.shards ?? null;
+  const writer = status?.writer ?? null;
   const decision = status?.config.scheduleDecision ?? null;
+  const maxSegments = status?.config.maxSegments ?? 16;
+  const segmentChoices = SEGMENT_CHOICES.filter((n) => n <= maxSegments);
+  if (!segmentChoices.includes(connections)) segmentChoices.push(connections);
+  segmentChoices.sort((a, b) => a - b);
+  const archiveDownloaded = archive ? archive.downloaded ?? archive.bytes : 0;
+  const archiveTotal = archive?.total ?? null;
+  const pieceMb = Math.round((status?.config.pieceBytes ?? 8 * 1024 * 1024) / (1024 * 1024));
+  const shardSystems = status?.config.shardSystems ?? 1000;
 
   return (
     <div data-bgs-admin="">
@@ -422,7 +483,13 @@ export default function FactionsAdminTab() {
       {/* ── Загрузка дампа EDSM ── */}
       <div style={cardStyle} data-bgs-admin-sync="">
         <div style={labelStyle}>Загрузка из EDSM (systemsPopulated)</div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
+          Как в «Каталоге систем»: <strong style={{ color: TEXT }}>архив скачивается на сервер</strong> →{' '}
+          <strong style={{ color: TEXT }}>разбивается там на куски</strong> по {formatBgsCount(shardSystems)} систем →{' '}
+          <strong style={{ color: TEXT }}>куски загружаются в базу</strong>. Все три шага идут одновременно: запись в базу начинается
+          с первых мегабайт, а не после скачивания всего архива. Каждый шаг можно запустить и отдельно — кнопками в карточках ниже.
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
           <button type="button" className="btn btn-cyan" disabled={busy !== null || running} onClick={() => void act('start')} data-bgs-admin-action="start">
             {systems > 0 ? 'Загрузить сейчас' : 'Загрузить данные'}
           </button>
@@ -430,8 +497,8 @@ export default function FactionsAdminTab() {
             type="button"
             className="btn"
             disabled={busy !== null || running}
-            onClick={() => void act('start', true)}
-            title="Импортировать дамп, даже если он тот же, что в прошлый раз, и принять его, даже если он заметно меньше"
+            onClick={() => void act('force')}
+            title="Загрузить дамп, даже если он тот же, что в прошлый раз, и принять его, даже если он заметно меньше"
             data-bgs-admin-action="force"
           >
             Импортировать принудительно
@@ -439,34 +506,146 @@ export default function FactionsAdminTab() {
           <button type="button" className="btn btn-danger" disabled={busy !== null || !running} onClick={() => void act('cancel')} data-bgs-admin-action="cancel">
             Остановить
           </button>
-          <button
-            type="button"
-            className="btn"
-            disabled={busy !== null || running || !archive?.exists}
-            onClick={() => void act('cleanup')}
-            title="Удалить скачанный архив дампа с диска"
-            data-bgs-admin-action="cleanup"
-          >
-            <IconTrash size={12} /> Удалить архив
-          </button>
+          <label style={{ fontSize: 12, color: MUTED, display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Сколько параллельных соединений к EDSM открывать для скачивания архива: канал сервера режет скорость одного соединения, поэтому несколько соединений качают быстрее">
+            Соединений к EDSM:
+            <select
+              value={connections}
+              disabled={busy !== null || running}
+              onChange={(event) => setSegments(Number(event.target.value))}
+              data-bgs-admin-segments=""
+              style={{ background: '#101214', color: TEXT, border: '1px solid #323538', borderRadius: 3, padding: '2px 4px', fontSize: 12 }}
+            >
+              {segmentChoices.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
         </div>
 
-        {archive && (
-          <div style={{ fontSize: 12, color: MUTED, marginBottom: 10 }} data-bgs-admin-archive="">
-            Архив на диске:{' '}
-            {archive.exists
-              ? <>{formatBgsBytes(archive.bytes)}{archive.partial ? ' — скачан не полностью, следующий запуск докачает' : archive.complete ? ` — скачан целиком${archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}` : ''}</>
-              : 'нет'}
-            {archive.freeBytes != null ? ` · свободно на диске ${formatBgsBytes(archive.freeBytes)}` : ''}
-            <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{archive.path}</code></div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10, marginBottom: 10 }}>
+          {archive && (
+            <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED }} data-bgs-admin-archive="">
+              <div style={{ ...labelStyle, marginBottom: 4 }}>1 · Архив на сервере</div>
+              {archive.exists ? (
+                archive.complete ? (
+                  <div style={{ color: '#22c55e' }}>
+                    Скачан целиком: {formatBgsBytes(archive.bytes)}{archive.lastModified ? ` (дамп от ${archive.lastModified})` : ''}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ color: running ? RUN : '#fbbf24' }}>
+                      {running ? 'Качается' : 'Скачан не полностью'}: {formatBgsBytes(archiveDownloaded)}
+                      {archiveTotal ? ` из ${formatBgsBytes(archiveTotal)} (${Math.floor((archiveDownloaded / Math.max(1, archiveTotal)) * 100)} %)` : ''}
+                      {running ? '' : ' — следующий запуск докачает'}
+                    </div>
+                    {archiveTotal ? (
+                      <div style={{ marginTop: 4 }}>
+                        <ProgressBar fraction={archiveDownloaded / Math.max(1, archiveTotal)} color={running ? RUN : '#fbbf24'} height={5} label="Скачано архива" />
+                      </div>
+                    ) : null}
+                  </>
+                )
+              ) : (
+                <div>Архива нет — «Загрузить данные» или «Скачать архив» скачают его</div>
+              )}
+              <div style={{ marginTop: 2 }}>
+                до {connections} соединений, куски файла по {pieceMb} МБ
+                {archive.freeBytes != null ? ` · свободно на диске ${formatBgsBytes(archive.freeBytes)}` : ''}
+              </div>
+              <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{archive.path}</code></div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: 12, padding: '3px 8px' }}
+                  disabled={busy !== null || running}
+                  onClick={() => void act('download')}
+                  title="Только скачать архив на сервер (в базу ничего не пишется)"
+                  data-bgs-admin-action="download"
+                >
+                  {archive.exists && !archive.complete ? 'Докачать архив' : 'Скачать архив'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ fontSize: 12, padding: '3px 8px' }}
+                  disabled={busy !== null || running || !(archive.exists || shards?.exists)}
+                  onClick={() => void act('cleanup')}
+                  title="Удалить архив и куски с сервера"
+                  data-bgs-admin-action="cleanup"
+                >
+                  <IconTrash size={12} /> Удалить архив и куски
+                </button>
+              </div>
+            </div>
+          )}
+          <div style={{ background: '#101214', border: '1px solid #26292d', borderRadius: 4, padding: '8px 10px', fontSize: 12, color: MUTED }} data-bgs-admin-shards="">
+            <div style={{ ...labelStyle, marginBottom: 4 }}>2 · Куски (шарды) → 3 · база</div>
+            {shards?.exists ? (
+              <>
+                <div style={{ color: shards.complete ? TEXT : running ? RUN : '#fbbf24' }}>
+                  {formatBgsCount(shards.shards)} кусков · {formatBgsCount(shards.systems)} систем · {formatBgsBytes(shards.bytes)}
+                  {shards.complete ? ' — архив разбит до конца' : running ? ' — разбивка идёт' : ' — разбит не до конца, следующий запуск продолжит'}
+                </div>
+                <div style={{ color: shards.imported === shards.shards && shards.complete ? '#22c55e' : MUTED, marginTop: 2 }}>
+                  В базе: {formatBgsCount(shards.imported)} из {formatBgsCount(shards.shards)} кусков ({formatBgsCount(shards.importedSystems)} систем)
+                </div>
+                {shards.shards > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <ProgressBar fraction={shards.imported / Math.max(1, shards.shards)} color={shards.imported === shards.shards ? '#22c55e' : RUN} height={5} label="Кусков в базе" />
+                  </div>
+                )}
+              </>
+            ) : (
+              <div>
+                {archive?.complete
+                  ? 'Кусков нет — архив скачан: «Разбить на куски» или «Загрузить данные» разобьют его'
+                  : 'Кусков нет — они появятся, как только начнёт качаться архив'}
+              </div>
+            )}
+            <div style={{ marginTop: 2 }} data-bgs-admin-writer="">
+              Запись в базу:{' '}
+              {writer?.backend === 'pg'
+                ? <>прямой Postgres{writer.host ? ` (${writer.host})` : ''} — кусок одним вызовом</>
+                : <>PostgREST — пачками по {formatBgsCount(status?.config.batchSize ?? 250)} систем{writer?.disabled ? ' (FACTIONS_DB_DIRECT=0)' : ''}</>}
+            </div>
+            {shards?.dir && <div style={{ fontSize: 11, color: DIM, marginTop: 2, overflowWrap: 'anywhere' }}><code>{shards.dir}</code></div>}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 12, padding: '3px 8px' }}
+                disabled={busy !== null || running || !archive?.complete}
+                onClick={() => void act('split')}
+                title={archive?.complete ? 'Разбить скачанный архив на куски (без EDSM и без записи в базу)' : 'Сначала скачайте архив целиком'}
+                data-bgs-admin-action="split"
+              >
+                Разбить на куски
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ fontSize: 12, padding: '3px 8px' }}
+                disabled={busy !== null || running || !(archive?.complete || shards?.complete)}
+                onClick={() => void act('import')}
+                title="Записать в базу то, что уже на сервере (архив или куски), без обращения к EDSM"
+                data-bgs-admin-action="import"
+              >
+                Загрузить куски в базу
+              </button>
+            </div>
           </div>
-        )}
+        </div>
 
         {progress ? (
           <div data-bgs-admin-progress={progress.phase}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12, color: MUTED, marginBottom: 4, flexWrap: 'wrap' }}>
               <span style={{ color: progress.phase === 'running' ? RUN : progress.phase === 'error' ? '#ef4444' : progress.phase === 'cancelled' ? '#e67e22' : '#22c55e' }}>
-                {progress.phase === 'running' ? 'Идёт загрузка' : `Последняя загрузка: ${BGS_PHASE_LABEL[progress.phase]}`}
+                {progress.phase === 'running'
+                  ? 'Идёт загрузка'
+                  : progress.phase === 'ok' && progress.mode === 'download'
+                    ? 'Последний запуск: архив скачан'
+                    : progress.phase === 'ok' && progress.mode === 'split'
+                      ? 'Последний запуск: архив разбит на куски'
+                      : `Последняя загрузка: ${BGS_PHASE_LABEL[progress.phase]}`}
                 {' · '}{progress.percent.toLocaleString('ru-RU', { maximumFractionDigits: 1 })} %
               </span>
               <span>
@@ -481,7 +660,7 @@ export default function FactionsAdminTab() {
             />
             <div style={{ fontSize: 12, color: TEXT, marginTop: 6 }} data-bgs-admin-message="">{progress.message}</div>
             <div style={{ fontSize: 11, color: DIM, marginTop: 2 }}>
-              Запуск: {BGS_TRIGGER_LABEL[progress.trigger]}{progress.force ? ' · принудительно' : ''}
+              Запуск: {BGS_TRIGGER_LABEL[progress.trigger]} · {BGS_MODE_LABEL[progress.mode] ?? BGS_MODE_LABEL.full}{progress.force ? ' · принудительно' : ''}
             </div>
 
             <ol style={{ listStyle: 'none', margin: '10px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 7 }} aria-label="Этапы загрузки">
@@ -491,7 +670,7 @@ export default function FactionsAdminTab() {
                 const color = STAGE_COLORS[stage.status];
                 const indeterminate = stage.status === 'running' && !(stage.total && stage.total > 0);
                 return (
-                  <li key={def.id} data-bgs-admin-stage={def.id} data-status={stage.status} style={{ display: 'grid', gridTemplateColumns: '170px minmax(0, 1fr) 90px', gap: 8, alignItems: 'center', fontSize: 12 }}>
+                  <li key={def.id} data-bgs-admin-stage={def.id} data-status={stage.status} style={{ display: 'grid', gridTemplateColumns: '205px minmax(0, 1fr) 90px', gap: 8, alignItems: 'center', fontSize: 12 }}>
                     <span style={{ color: stage.status === 'pending' ? DIM : TEXT, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       {stage.status === 'done' ? <IconCheckCircle size={12} color={color} /> : stage.status === 'error' ? <IconXCircle size={12} color={color} /> : (
                         <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: color, marginLeft: 2, marginRight: 2 }} />
@@ -499,7 +678,7 @@ export default function FactionsAdminTab() {
                       {def.label}
                     </span>
                     <span style={{ minWidth: 0 }}>
-                      <ProgressBar fraction={bgsStageFraction(stage)} color={color} height={6} indeterminate={indeterminate} label={def.label} />
+                      <ProgressBar fraction={stage.status === 'skipped' ? 0 : bgsStageFraction(stage)} color={color} height={6} indeterminate={indeterminate} label={def.label} />
                       <span style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {stage.detail || stageStatusLabel(stage, progress.phase)}
                       </span>
@@ -513,16 +692,25 @@ export default function FactionsAdminTab() {
               })}
             </ol>
 
-            {progress.phase === 'ok' && progress.result && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }}>
+            {progress.phase === 'ok' && progress.result && (progress.mode === 'download' || progress.mode === 'split') && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-bgs-admin-result="">
+                <IconCheckCircle size={14} color="#22c55e" />
+                {progress.mode === 'download'
+                  ? <>Архив на сервере: {formatBgsBytes(progress.result.archiveBytes)} · за {formatBgsDuration(progress.result.durationMs)} — в базу пока ничего не записано</>
+                  : <>Кусков: {formatBgsCount(progress.result.shards)} · систем {formatBgsCount(progress.result.systems)} · за {formatBgsDuration(progress.result.durationMs)} — в базу пока ничего не записано</>}
+              </div>
+            )}
+            {progress.phase === 'ok' && progress.result && progress.mode !== 'download' && progress.mode !== 'split' && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-bgs-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
                 В базе {formatBgsCount(progress.result.systems)} систем и {formatBgsCount(progress.result.factions)} фракций · удалено
                 пропавших систем {formatBgsCount(progress.result.deletedSystems)} · не тронуто (у пилотов свежее){' '}
-                {formatBgsCount(progress.result.stale)} · за {formatBgsDuration(progress.result.durationMs)}
+                {formatBgsCount(progress.result.stale)}
+                {progress.result.shards ? <> · кусков {formatBgsCount(progress.result.shards)}</> : null} · за {formatBgsDuration(progress.result.durationMs)}
               </div>
             )}
             {progress.phase === 'not_modified' && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }}>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: '#22c55e', fontSize: 13, marginTop: 10 }} data-bgs-admin-result="">
                 <IconCheckCircle size={14} color="#22c55e" />
                 Дамп EDSM тот же, что при прошлом импорте, — данные актуальны. «Импортировать принудительно» загрузит его ещё раз.
               </div>
@@ -541,17 +729,23 @@ export default function FactionsAdminTab() {
         )}
 
         {status?.interrupted && (
-          <div style={{ fontSize: 12, color: '#e67e22', marginTop: 8 }}>
-            Прошлая загрузка оборвалась вместе с процессом сайта (обновление или перезапуск). Скачанная часть дампа на диске —
-            «Загрузить сейчас» продолжит с того же места; задача factions-sync сделает это сама при следующем запуске.
+          <div style={{ fontSize: 12, color: '#e67e22', marginTop: 8 }} data-bgs-admin-interrupted="">
+            Прошлая загрузка оборвалась вместе с процессом сайта (обновление или перезапуск). Скачанное и разбитое осталось на
+            сервере — «Загрузить сейчас» продолжит с того же места (уже записанные куски повторно не пишутся); задача
+            factions-sync сделает это сама при следующем запуске.
           </div>
         )}
 
         <div style={{ fontSize: 12, color: MUTED, lineHeight: 1.6, marginTop: 12 }}>
           Источник: <code>{status?.config.dumpUrl ?? 'https://www.edsm.net/dump/systemsPopulated.json.gz'}</code> — ночной дамп
-          EDSM: все населённые системы с минорными фракциями (влияние, состояния), ≈0,5 ГБ gzip. Дамп скачивается на диск в
-          {` ${status?.config.segments ?? 4} `}соединения с докачкой, затем разбирается потоком и пишется в базу пачками по
-          {` ${status?.config.batchSize ?? 250} `}систем; после удачного импорта архив{status?.config.archiveKeep ? ' остаётся на диске (FACTIONS_ARCHIVE_KEEP=1)' : ' удаляется с диска'}.
+          EDSM: все населённые системы с минорными фракциями (влияние, состояния), ≈0,5 ГБ gzip. Архив качается на сервер в
+          {` ${connections} `}соединений (<code>FACTIONS_DOWNLOAD_SEGMENTS</code>): соединения берут куски файла по {pieceMb} МБ по
+          порядку, поэтому начало архива готово сразу и его можно разбирать, пока качается остальное; обрыв и перезапуск сайта
+          не теряют скачанного. Разобранные системы раскладываются в куски по {formatBgsCount(shardSystems)} (станции и тела
+          отбрасываются — от 0,5 ГБ остаются мегабайты), и каждый готовый кусок сразу пишется в базу; кусок — единица
+          продолжения. Если EDSM пересоберёт дамп посреди скачивания (около 04:50 UTC), скачивание начнётся заново со свежим
+          дампом — половинки двух дампов не склеиваются. После удачной загрузки архив и куски
+          {status?.config.archiveKeep ? ' остаются на сервере (FACTIONS_ARCHIVE_KEEP=1)' : ' удаляются с сервера'}.
           <br />
           Свежее наблюдение побеждает: системы, которые пилоты прислали позже даты дампа, импорт не трогает. Пропавшие из дампа
           системы удаляются, если пилоты не присылали их {status?.config.keepDays ?? 30} дней. Защита: меньше
@@ -647,10 +841,10 @@ export default function FactionsAdminTab() {
                 key={`${line.at}-${index}`}
                 data-level={line.level}
                 style={{
-                  color: line.level === 'error' ? '#f87171' : line.level === 'warn' ? '#fbbf24' : /^Запуск импорта/.test(line.text) ? TEXT : MUTED,
-                  borderTop: /^Запуск импорта/.test(line.text) && index > 0 ? '1px dashed #2d3136' : undefined,
-                  paddingTop: /^Запуск импорта/.test(line.text) && index > 0 ? 4 : undefined,
-                  marginTop: /^Запуск импорта/.test(line.text) && index > 0 ? 4 : undefined,
+                  color: line.level === 'error' ? '#f87171' : line.level === 'warn' ? '#fbbf24' : /^Запуск( импорта)?:/.test(line.text) ? TEXT : MUTED,
+                  borderTop: /^Запуск( импорта)?:/.test(line.text) && index > 0 ? '1px dashed #2d3136' : undefined,
+                  paddingTop: /^Запуск( импорта)?:/.test(line.text) && index > 0 ? 4 : undefined,
+                  marginTop: /^Запуск( импорта)?:/.test(line.text) && index > 0 ? 4 : undefined,
                 }}
               >
                 <span style={{ color: DIM }}>{formatClock(line.at)}</span> {line.text}

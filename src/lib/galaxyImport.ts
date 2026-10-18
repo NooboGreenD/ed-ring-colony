@@ -126,6 +126,69 @@ export interface DumpDownloadInfo {
   resuming: boolean;
   /** Consecutive interrupted connections. */
   failures: number;
+  /**
+   * Bytes from the start of the file that are already on disk without holes —
+   * what a reader following the download may consume. Equal to `received` for
+   * a single stream; for parallel parts it is the finished prefix.
+   */
+  contiguous?: number;
+  /** Connections still transferring (parallel download). */
+  connections?: number;
+}
+
+/** Validators of the file being downloaded (`strictSource`): size and Last-Modified/ETag. */
+export interface DumpSourceValidators {
+  total: number | null;
+  etag: string | null;
+  lastModified: string | null;
+}
+
+/**
+ * The file on the server is not the one the download started with (a nightly
+ * dump was regenerated mid-transfer). Its bytes must not be stitched onto the
+ * old ones: the caller starts over with the new file.
+ */
+export class DumpSourceChanged extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DumpSourceChanged';
+  }
+}
+
+/** `instanceof` breaks across bundled copies of this module — also duck-type. */
+export function isDumpSourceChanged(error: unknown): error is DumpSourceChanged {
+  return error instanceof DumpSourceChanged || (error as Error | null)?.name === 'DumpSourceChanged';
+}
+
+function sameHttpDate(a: string, b: string): boolean {
+  const left = Date.parse(a);
+  const right = Date.parse(b);
+  return Number.isFinite(left) && Number.isFinite(right) ? left === right : a.trim() === b.trim();
+}
+
+function bareEtag(value: string): string {
+  return value.trim().replace(/^W\//i, '');
+}
+
+/**
+ * Why `response` does not describe the expected file, or `null` when it does.
+ * Size is decisive; Last-Modified is preferred over ETag because some servers
+ * and CDNs emit a different ETag per node for the very same file.
+ */
+export function dumpSourceMismatch(response: Response, expect: DumpSourceValidators): string | null {
+  const total = parseContentRangeTotal(response.headers.get('content-range'));
+  if (total != null && expect.total != null && total !== expect.total) {
+    return `размер ${total.toLocaleString('ru-RU')} вместо ${expect.total.toLocaleString('ru-RU')} байт`;
+  }
+  const lastModified = response.headers.get('last-modified');
+  if (expect.lastModified && lastModified && !sameHttpDate(lastModified, expect.lastModified)) {
+    return `дата ${lastModified} вместо ${expect.lastModified}`;
+  }
+  const etag = response.headers.get('etag');
+  if (!expect.lastModified && expect.etag && etag && bareEtag(etag) !== bareEtag(expect.etag)) {
+    return `ETag ${etag} вместо ${expect.etag}`;
+  }
+  return null;
 }
 
 export interface DownloadDumpOptions {
@@ -152,6 +215,11 @@ export interface DownloadDumpOptions {
   progressIntervalMs?: number;
   /** Skip the final gzip integrity check (default false). */
   verify?: boolean;
+  /**
+   * Single stream only: every ranged response must describe this file; a
+   * regenerated dump throws `DumpSourceChanged` (the partial file is removed).
+   */
+  expectSource?: DumpSourceValidators;
 }
 
 /** Backoff between interrupted connections, capped at 60 s. */
@@ -261,6 +329,15 @@ export async function downloadDumpFile(
     if (response.status === 416) {
       // Range not satisfiable: the offset already covers the whole file.
       const total = parseContentRangeTotal(response.headers.get('content-range'));
+      const expected = options.expectSource?.total ?? null;
+      if (options.expectSource && ((total != null && expected != null && total !== expected) || (expected != null && offset !== expected))) {
+        // The file on the server is no longer the one these bytes came from.
+        await response.body?.cancel().catch(() => undefined);
+        rmSync(dest, { force: true });
+        throw new DumpSourceChanged(
+          `файл на сервере изменился во время скачивания (на диске ${offset.toLocaleString('ru-RU')} байт, на сервере ${total ?? '?'})`,
+        );
+      }
       if (options.verify !== false && dest.toLowerCase().endsWith('.gz')) {
         // The file is complete (or was completed before the state was
         // persisted): prove it instead of trusting a stale size. A corrupted
@@ -281,6 +358,17 @@ export async function downloadDumpFile(
         }
       }
       return { path: dest, bytes: offset, total: total ?? offset };
+    }
+
+    if (options.expectSource && (response.status === 206 || response.status === 200)) {
+      const why = dumpSourceMismatch(response, options.expectSource);
+      // A full (200) body of another file is consistent in itself, but it is
+      // not the dump the caller probed: let it start over knowing the new one.
+      if (why && (offset > 0 || response.status === 200)) {
+        await response.body?.cancel().catch(() => undefined);
+        rmSync(dest, { force: true });
+        throw new DumpSourceChanged(`файл на сервере изменился во время скачивания (${why})`);
+      }
     }
 
     let startOffset = offset;
@@ -332,7 +420,10 @@ export async function downloadDumpFile(
       const at = Date.now();
       if (options.onProgress && at - lastReport >= progressIntervalMs) {
         lastReport = at;
-        void reportProgress({ received: startOffset + received, total, resuming: startOffset > 0, failures });
+        // Bytes counted here are not necessarily flushed yet: a follower may
+        // only read what the file already holds.
+        const onDisk = Math.min(startOffset + received, safeSize(dest));
+        void reportProgress({ received: startOffset + received, total, resuming: startOffset > 0, failures, contiguous: onDisk, connections: 1 });
       }
       done(null, chunk);
     },
@@ -343,7 +434,14 @@ export async function downloadDumpFile(
     if (!response.body) throw new Error('Dump response has no body');
     await pipeline(Readable.fromWeb(response.body as unknown as WebReadableStream), counter, writeStream);
     if (options.onProgress) {
-      await reportProgress({ received: startOffset + received, total, resuming: startOffset > 0, failures: 0 });
+      await reportProgress({
+        received: startOffset + received,
+        total,
+        resuming: startOffset > 0,
+        failures: 0,
+        contiguous: startOffset + received,
+        connections: 1,
+      });
     }
   } catch (error) {
       if (options.signal?.aborted) throw new Error('Download aborted');
@@ -426,7 +524,87 @@ export interface DumpSegmentPlan {
   total: number;
   /** `ETag`/`Last-Modified` of the file the parts belong to. */
   signature: string | null;
+  /**
+   * Piece size of an ordered plan (`pieceBytes`); absent for the original
+   * layout where every connection owns one equal part.
+   */
+  pieceBytes?: number | null;
   segments: DumpSegment[];
+}
+
+/** Smallest piece of an ordered plan: below this a request costs more than its bytes. */
+export const MIN_PIECE_BYTES = 1024;
+
+/**
+ * Cut `total` bytes into pieces of `pieceBytes` for ordered parallel download:
+ * N connections take the next unfinished piece in file order (like aria2c), so
+ * the finished prefix of the file grows at the speed of ALL connections and a
+ * reader can follow it while the rest is still arriving.
+ */
+export function planDumpPieces(total: number, pieceBytes: number): DumpSegment[] {
+  const size = Math.max(MIN_PIECE_BYTES, Math.floor(pieceBytes) || MIN_PIECE_BYTES);
+  const pieces: DumpSegment[] = [];
+  for (let start = 0; start < total; start += size) {
+    pieces.push({ start, end: Math.min(total, start + size) - 1, done: 0 });
+  }
+  return pieces;
+}
+
+/**
+ * Re-cut a stored plan (e.g. four big parts of an older run) into pieces: the
+ * bytes already on disk stay as finished pieces, only the unfinished tails are
+ * split. Nothing is downloaded twice.
+ */
+export function rechunkDumpSegments(segments: DumpSegment[], pieceBytes: number): DumpSegment[] {
+  const size = Math.max(MIN_PIECE_BYTES, Math.floor(pieceBytes) || MIN_PIECE_BYTES);
+  const out: DumpSegment[] = [];
+  for (const segment of [...segments].sort((a, b) => a.start - b.start)) {
+    const length = segment.end - segment.start + 1;
+    const done = Math.max(0, Math.min(length, Math.floor(segment.done) || 0));
+    if (done > 0) out.push({ start: segment.start, end: segment.start + done - 1, done });
+    for (let start = segment.start + done; start <= segment.end; start += size) {
+      out.push({ start, end: Math.min(segment.end, start + size - 1), done: 0 });
+    }
+  }
+  return out;
+}
+
+/** Bytes from the start of the file that are on disk without a hole. */
+export function contiguousDumpBytes(segments: DumpSegment[]): number {
+  let edge = 0;
+  for (const segment of [...segments].sort((a, b) => a.start - b.start)) {
+    if (segment.start > edge) break;
+    const length = segment.end - segment.start + 1;
+    const done = Math.max(0, Math.min(length, segment.done));
+    edge = Math.max(edge, segment.start + done);
+    if (done < length) break;
+  }
+  return edge;
+}
+
+/** Finished prefix of a partial download according to its sidecar plan (0 without one). */
+export function contiguousBytesOnDisk(dest: string): number {
+  try {
+    const stored = JSON.parse(readFileSync(segmentStatePath(dest), 'utf8')) as DumpSegmentPlan;
+    return Array.isArray(stored?.segments) ? contiguousDumpBytes(stored.segments) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Bytes of a partial download already on disk according to its sidecar plan. */
+export function downloadedBytesOnDisk(dest: string): { done: number; total: number } | null {
+  try {
+    const stored = JSON.parse(readFileSync(segmentStatePath(dest), 'utf8')) as DumpSegmentPlan;
+    if (!Array.isArray(stored?.segments) || !(stored.total > 0)) return null;
+    const done = stored.segments.reduce(
+      (sum, segment) => sum + Math.max(0, Math.min(segment.end - segment.start + 1, segment.done)),
+      0,
+    );
+    return { done, total: stored.total };
+  } catch {
+    return null;
+  }
 }
 
 /** Split `total` bytes into `count` contiguous ranges (the last one takes the remainder). */
@@ -514,7 +692,26 @@ export class SegmentedDownloadUnsupported extends Error {}
 export interface SegmentedDownloadOptions extends DownloadDumpOptions {
   segments: number;
   probe?: DumpProbe;
+  /**
+   * Ordered piece mode: cut the file into pieces of this size and let
+   * `segments` connections take them in file order. The finished prefix then
+   * grows at the speed of all connections (`contiguous` in progress), and a
+   * connection the server keeps refusing is dropped instead of failing the
+   * whole download. Without it every connection owns one equal part.
+   */
+  pieceBytes?: number;
+  /**
+   * Every ranged response must describe the probed file (size, Last-Modified /
+   * ETag): a dump regenerated mid-transfer throws `DumpSourceChanged` instead
+   * of being stitched onto the old bytes.
+   */
+  strictSource?: boolean;
 }
+
+/** Consecutive failures of one piece after which an extra connection is dropped (piece mode). */
+const RETIRE_AFTER_FAILURES = 3;
+/** …but only while some other connection delivered bytes this recently. */
+const RETIRE_PROGRESS_WINDOW_MS = 120_000;
 
 /**
  * Download one file with N parallel HTTP Range connections into a single
@@ -533,6 +730,8 @@ export async function downloadDumpSegmented(
   const progressIntervalMs = Math.max(250, options.progressIntervalMs ?? 5_000);
   const dest = resolve(options.dest);
   const statePath = segmentStatePath(dest);
+  const pieceBytes =
+    options.pieceBytes && options.pieceBytes > 0 ? Math.max(MIN_PIECE_BYTES, Math.floor(options.pieceBytes)) : null;
 
   const probe = options.probe ?? (await probeDumpSource(options.url, { fetchImpl, signal: options.signal }));
   if (!probe.acceptsRanges || !probe.total) {
@@ -543,6 +742,7 @@ export async function downloadDumpSegmented(
 
   const total = probe.total;
   const signature = probe.etag || probe.lastModified || null;
+  const expect: DumpSourceValidators = { total, etag: probe.etag, lastModified: probe.lastModified };
   mkdirSync(dirname(dest), { recursive: true });
 
   // Reuse the stored plan only when it describes the same file: a regenerated
@@ -563,8 +763,20 @@ export async function downloadDumpSegmented(
     plan = null;
   }
 
+  if (plan && pieceBytes && plan.pieceBytes !== pieceBytes) {
+    // A plan of a few big parts (an older run): keep every byte on disk and
+    // re-cut only the unfinished tails into ordered pieces.
+    plan = { ...plan, pieceBytes, segments: rechunkDumpSegments(plan.segments, pieceBytes) };
+  }
+
   if (!plan) {
-    plan = { url: options.url, total, signature, segments: planDumpSegments(total, options.segments) };
+    plan = {
+      url: options.url,
+      total,
+      signature,
+      ...(pieceBytes ? { pieceBytes } : {}),
+      segments: pieceBytes ? planDumpPieces(total, pieceBytes) : planDumpSegments(total, options.segments),
+    };
     // Preallocate so every segment can write at its absolute offset.
     const handle = await openFile(dest, existsSync(dest) ? 'r+' : 'w+');
     try {
@@ -575,7 +787,11 @@ export async function downloadDumpSegmented(
   }
 
   const segments = plan.segments;
+  // Set when the archive (and its plan) were deliberately thrown away: nothing
+  // may write the sidecar back afterwards and resurrect a dead plan.
+  let discarded = false;
   const persist = () => {
+    if (discarded) return;
     try {
       writeFileSync(statePath, JSON.stringify({ ...plan, segments }, null, 1));
     } catch (error) {
@@ -583,25 +799,53 @@ export async function downloadDumpSegmented(
     }
   };
 
+  const isComplete = (segment: DumpSegment) => segment.done > segment.end - segment.start;
   const received = () => segments.reduce((sum, segment) => sum + segment.done, 0);
   const already = received();
+  const unfinished = segments.filter((segment) => !isComplete(segment)).length;
+  // Legacy layout: one connection per stored part. Piece mode: the requested
+  // number of connections, never more than there are pieces left.
+  const workers = pieceBytes
+    ? Math.max(1, Math.min(Math.floor(options.segments) || 1, 32, Math.max(1, unfinished)))
+    : segments.length;
+  const connections = pieceBytes ? workers : options.segments;
   log(
-    already > 0
-      ? `Архив: ${options.segments} параллельных соединений, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
-      : `Архив: ${options.segments} параллельных соединений, ${formatBytes(total)}`,
+    pieceBytes
+      ? already > 0
+        ? `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
+        : `Архив: ${connections} параллельных соединений, куски по ${formatBytes(pieceBytes)}, ${formatBytes(total)}`
+      : already > 0
+        ? `Архив: ${options.segments} параллельных соединений, продолжаю с ${formatBytes(already)} из ${formatBytes(total)}`
+        : `Архив: ${options.segments} параллельных соединений, ${formatBytes(total)}`,
   );
 
   const controller = new AbortController();
   const abort = () => controller.abort();
+  if (options.signal?.aborted) abort();
   options.signal?.addEventListener('abort', abort, { once: true });
+  // A backoff pause must not outlive a cancel: the workers are awaited below.
+  const pause = (ms: number) =>
+    controller.signal.aborted
+      ? Promise.resolve()
+      : new Promise<void>((resolvePause) => {
+          const wake = () => resolvePause();
+          controller.signal.addEventListener('abort', wake, { once: true });
+          void sleep(ms).then(() => {
+            controller.signal.removeEventListener('abort', wake);
+            resolvePause();
+          });
+        });
 
   const handle = await openFile(dest, 'r+');
   let failures = 0;
   let lastPersist = Date.now();
   let lastReport = 0;
-  // Set when the archive (and its plan) were deliberately thrown away: the
-  // error path must not write the sidecar back and resurrect a dead plan.
-  let discarded = false;
+  // When any connection last wrote bytes (0 = nobody yet): dropping an extra
+  // connection is only safe once the others have proven they can deliver.
+  let lastBytesAt = 0;
+  // Workers still inside their loop: an extra connection may only be dropped
+  // while another one is left to finish its piece.
+  let running = workers;
 
   const report = async (force = false) => {
     const at = Date.now();
@@ -613,16 +857,23 @@ export async function downloadDumpSegmented(
     }
     if (!options.onProgress) return;
     try {
-      await options.onProgress({ received: received(), total, resuming: already > 0, failures });
+      await options.onProgress({
+        received: received(),
+        total,
+        resuming: already > 0,
+        failures,
+        contiguous: contiguousDumpBytes(segments),
+        connections: running,
+      });
     } catch {
       // A progress sink must never kill the download.
     }
   };
 
-  const pump = async (segment: DumpSegment, index: number): Promise<void> => {
+  const pump = async (segment: DumpSegment, index: number, worker: number): Promise<'done' | 'retire'> => {
     let stagnant = 0;
     for (;;) {
-      if (segment.done > segment.end - segment.start) return; // complete
+      if (isComplete(segment)) return 'done';
       if (controller.signal.aborted) throw new Error('Download aborted');
       const from = segment.start + segment.done;
       const before = segment.done;
@@ -631,6 +882,16 @@ export async function downloadDumpSegmented(
           headers: { Range: `bytes=${from}-${segment.end}` },
           signal: controller.signal,
         });
+        if (options.strictSource && (response.status === 206 || response.status === 200 || response.status === 416)) {
+          const why =
+            response.status === 416
+              ? `диапазон ${from}-${segment.end} больше файла на сервере`
+              : dumpSourceMismatch(response, expect);
+          if (why) {
+            await response.body?.cancel().catch(() => undefined);
+            throw new DumpSourceChanged(`файл на сервере изменился во время скачивания (${why})`);
+          }
+        }
         if (response.status === 200) {
           await response.body?.cancel().catch(() => undefined);
           throw new SegmentedDownloadUnsupported('сервер проигнорировал заголовок Range');
@@ -651,42 +912,96 @@ export async function downloadDumpSegmented(
           const slice = buffer.length > room ? buffer.subarray(0, room) : buffer;
           await handle.write(slice, 0, slice.length, segment.start + segment.done);
           segment.done += slice.length;
+          lastBytesAt = Date.now();
           await report();
         }
         if (segment.done >= segment.end - segment.start + 1) {
           await report(true);
-          return;
+          return 'done';
         }
         // Clean EOF before the end of the range: treat as a drop and continue.
         throw new Error('соединение закрылось раньше конца диапазона');
       } catch (error) {
-        if (error instanceof SegmentedDownloadUnsupported) throw error;
+        if (error instanceof SegmentedDownloadUnsupported || isDumpSourceChanged(error)) throw error;
         if (controller.signal.aborted) throw new Error('Download aborted');
         failures += 1;
         stagnant = segment.done > before ? 0 : stagnant + 1;
         const message = networkErrorMessage(error, 'connection dropped');
+        if (
+          pieceBytes &&
+          stagnant >= RETIRE_AFTER_FAILURES &&
+          running > 1 &&
+          lastBytesAt > 0 &&
+          Date.now() - lastBytesAt < RETIRE_PROGRESS_WINDOW_MS
+        ) {
+          // The others are moving: the server just does not want this many
+          // connections (429/503, refused). Hand the piece back and go away.
+          log(
+            `Соединение ${worker}: ${message} (${stagnant} раз подряд) — похоже, сервер не даёт столько соединений, продолжаю в ${running - 1}`,
+          );
+          persist();
+          return 'retire';
+        }
         if (failures > retries || stagnant > maxStagnant) {
           throw new Error(
             `Скачивание не удалось после ${failures} обрыва(ов): ${message} ` +
-              `(сегмент ${index + 1}, на диске ${received().toLocaleString()} из ${total.toLocaleString()} байт — повтор продолжит отсюда)`,
+              `(${pieceBytes ? 'кусок' : 'сегмент'} ${index + 1}, на диске ${received().toLocaleString()} из ${total.toLocaleString()} байт — повтор продолжит отсюда)`,
           );
         }
-        log(`Сегмент ${index + 1}: обрыв на байте ${(segment.start + segment.done).toLocaleString()} (${message}) — продолжаю`);
+        log(
+          `${pieceBytes ? 'Кусок' : 'Сегмент'} ${index + 1}: обрыв на байте ${(segment.start + segment.done).toLocaleString()} (${message}) — продолжаю`,
+        );
         persist();
-        await sleep(DUMP_BACKOFF_MS[Math.min(stagnant, DUMP_BACKOFF_MS.length - 1)]);
+        await pause(DUMP_BACKOFF_MS[Math.min(stagnant, DUMP_BACKOFF_MS.length - 1)]);
       }
     }
   };
 
+  // Pieces are taken in file order; a retired connection hands its piece back.
+  const taken = new Set<number>();
+  const takeNext = (): number => {
+    for (let index = 0; index < segments.length; index++) {
+      if (taken.has(index) || isComplete(segments[index])) continue;
+      taken.add(index);
+      return index;
+    }
+    return -1;
+  };
+  const work = async (worker: number): Promise<void> => {
+    try {
+      for (;;) {
+        if (controller.signal.aborted) throw new Error('Download aborted');
+        const index = takeNext();
+        if (index < 0) return;
+        let outcome: 'done' | 'retire';
+        try {
+          outcome = await pump(segments[index], index, worker);
+        } finally {
+          taken.delete(index);
+        }
+        if (outcome === 'retire') return;
+      }
+    } finally {
+      running -= 1;
+    }
+  };
+
   try {
+    // The first failure stops every connection; all of them are awaited so no
+    // write or sidecar update can land after the cleanup below.
+    let failure: { error: unknown } | null = null;
     await Promise.all(
-      segments.map((segment, index) =>
-        pump(segment, index).catch((error) => {
+      Array.from({ length: workers }, (_, worker) =>
+        work(worker + 1).catch((error) => {
+          if (!failure) failure = { error };
           controller.abort();
-          throw error;
         }),
       ),
     );
+    if (failure) throw (failure as { error: unknown }).error;
+    if (segments.some((segment) => !isComplete(segment))) {
+      throw new Error('Скачивание не завершено: остались недокачанные части — повтор продолжит отсюда');
+    }
     persist();
     await handle.close();
 
@@ -705,9 +1020,16 @@ export async function downloadDumpSegmented(
       }
     }
     rmSync(statePath, { force: true });
-    log(`Архив на диске: ${size.toLocaleString()} байт (${options.segments} соединений)`);
-    return { path: dest, bytes: size, total, segments: options.segments };
+    log(`Архив на диске: ${size.toLocaleString()} байт (${connections} соединений)`);
+    return { path: dest, bytes: size, total, segments: connections };
   } catch (error) {
+    if (isDumpSourceChanged(error) && !discarded) {
+      // Bytes of the old file are worthless: start the new one from scratch.
+      discarded = true;
+      rmSync(statePath, { force: true });
+      await handle.close().catch(() => undefined);
+      rmSync(dest, { force: true });
+    }
     if (!discarded) persist();
     await handle.close().catch(() => undefined);
     throw error;
@@ -719,6 +1041,14 @@ export async function downloadDumpSegmented(
 export interface SmartDownloadOptions extends DownloadDumpOptions {
   /** Parallel connections; default `GALAXY_DOWNLOAD_SEGMENTS` (4). */
   segments?: number;
+  /** Ordered piece mode (see `SegmentedDownloadOptions.pieceBytes`). */
+  pieceBytes?: number;
+  /** Validate every response against the probed file (see `SegmentedDownloadOptions.strictSource`). */
+  strictSource?: boolean;
+  /** An already made probe of `url` — saves the HEAD request. */
+  probe?: DumpProbe;
+  /** Files smaller than this go over one connection (default `SEGMENTED_MIN_BYTES`). */
+  minSegmentedBytes?: number;
 }
 
 export interface SmartDownloadResult {
@@ -740,15 +1070,29 @@ export interface SmartDownloadResult {
 export async function downloadDump(options: SmartDownloadOptions): Promise<SmartDownloadResult> {
   const log = options.log ?? (() => undefined);
   const segments = Math.max(1, Math.floor(options.segments ?? galaxyDownloadSegments()));
-  let probe: DumpProbe | null = null;
+  const minBytes = Math.max(0, options.minSegmentedBytes ?? SEGMENTED_MIN_BYTES);
+  const statePath = segmentStatePath(resolve(options.dest));
+  // A plan on disk means a preallocated file of parallel parts: only the
+  // segmented path can continue it.
+  const havePlan = existsSync(statePath);
+  let probe: DumpProbe | null = options.probe ?? null;
 
-  if (segments > 1) {
-    try {
-      probe = await probeDumpSource(options.url, { fetchImpl: options.fetchImpl, signal: options.signal });
-    } catch (error) {
-      log(`Не удалось опросить источник (${(error as Error).message}) — скачиваю одним потоком`);
+  if (segments > 1 || havePlan || options.strictSource) {
+    if (!probe) {
+      try {
+        probe = await probeDumpSource(options.url, { fetchImpl: options.fetchImpl, signal: options.signal });
+      } catch (error) {
+        if (options.signal?.aborted) throw new Error('Download aborted');
+        if (havePlan) {
+          throw new Error(
+            `Источник не ответил (${(error as Error).message}) — недокачанный архив продолжится со следующей попытки`,
+          );
+        }
+        log(`Не удалось опросить источник (${(error as Error).message}) — скачиваю одним потоком`);
+      }
     }
-    if (probe?.acceptsRanges && probe.total && probe.total >= SEGMENTED_MIN_BYTES) {
+    const ranged = Boolean(probe?.acceptsRanges && probe.total);
+    if (probe && ranged && (havePlan || (segments > 1 && (probe.total ?? 0) >= minBytes))) {
       try {
         const result = await downloadDumpSegmented({ ...options, segments, probe });
         return { ...result, lastModified: probe.lastModified };
@@ -756,14 +1100,29 @@ export async function downloadDump(options: SmartDownloadOptions): Promise<Smart
         if (!(error instanceof SegmentedDownloadUnsupported)) throw error;
         log(`Параллельная загрузка недоступна (${error.message}) — скачиваю одним потоком`);
       }
-    } else if (probe && !probe.acceptsRanges) {
+    } else if (probe && !probe.acceptsRanges && segments > 1) {
       log('Сервер не поддерживает Range — скачиваю одним потоком');
-    } else if (probe && probe.total && probe.total < SEGMENTED_MIN_BYTES) {
+    } else if (probe && probe.total && probe.total < minBytes && segments > 1) {
       log(`Файл небольшой (${formatBytes(probe.total)}) — одного соединения достаточно (одним потоком)`);
     }
   }
 
-  const result = await downloadDumpFile(options);
+  if (existsSync(statePath)) {
+    // The file was preallocated for parallel parts: to a single stream it
+    // would look complete (its size already equals the total). Start over.
+    rmSync(resolve(options.dest), { force: true });
+    rmSync(statePath, { force: true });
+    log('Недокачанные параллельные части не годятся для одного потока — начинаю файл заново');
+  }
+
+  const result = await downloadDumpFile({
+    ...options,
+    expectSource:
+      options.expectSource ??
+      (options.strictSource && probe?.total
+        ? { total: probe.total, etag: probe.etag, lastModified: probe.lastModified }
+        : undefined),
+  });
   return { ...result, segments: 1, lastModified: probe?.lastModified ?? null };
 }
 
