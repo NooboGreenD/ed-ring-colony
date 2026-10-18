@@ -1020,6 +1020,44 @@ Full description: **POWERPLAY.md**.
   (120 ly sprite) no longer swallows clicks in the bubble and landmarks are not
   clickable while the PowerPlay layer is shown.
 
+### 8.16 Minor factions (BGS) in Atlas — web 2.19.0, Helper 2.16.0
+Full description: **FACTIONS.md**.
+- Atlas tab «Фракции» (8th, `?tab=factions`, Alt+8) + a 3D layer: without a
+  selection — every populated system with minor factions, colour = allegiance,
+  allegiance filter; faction search (`/api/factions/search`, PMF-only toggle) and
+  up to 12 selected factions (`/api/factions/presence`): their systems only,
+  colour = faction, star = controls, ring = several selected, dot = present;
+  «controls only» and «others as background» toggles. Clickable points with a
+  hover tip and a system card (`/api/factions/system`) listing every faction
+  with influence/states and «+» to put it on the map. PowerPlay and faction
+  points share one `MapClickLayer` pick cloud (`layerPick` in `GalaxyScene`).
+- Data lives in the project DB (migration `20261019120000_minor_factions.sql`):
+  `bgs_systems`, `bgs_factions`, `bgs_faction_presence`, `bgs_sync_state`,
+  `bgs_updates`; RPCs `bgs_apply_snapshots` (newer `observed_at` wins, the faction
+  set of an applied system is replaced, known factions are not re-inserted so the
+  id sequence is not burnt), the finish in short looped calls —
+  `bgs_delete_missing`, `bgs_recount_factions_batch`, `bgs_prune_factions`,
+  `bgs_finish_sync` — plus `bgs_layer_rows`, `bgs_search_factions`,
+  `bgs_faction_presence_rows`, `bgs_system_detail`, `bgs_admin_summary`. Every call
+  fits PostgREST's short `statement_timeout` (a timed-out batch is halved).
+- Bulk source: EDSM `systemsPopulated.json.gz` (~0.5 GB): `src/lib/bgsSync.ts`
+  downloads it to disk (`data/spansh/factions`, galaxy `downloadDump`: Range
+  segments + resume, `.meta.json` marks whose dump a partial file is), then
+  streams gunzip → lines (`bgsDump.ts` cuts stations/bodies before `JSON.parse`,
+  id64 from text) → 250-system batches. Guards (< `FACTIONS_MIN_SYSTEMS`, < 50 %
+  of the previous total) skip the deletion of missing systems; broken gzip drops
+  the archive. Stages probe / download / import / finish (`bgsProgress.ts`).
+- Updates: Colonial Helper 2.16 (`uploader/bgs_sync.py`) and the site journal
+  uploader (`BgsSnapshotCollector` in `src/lib/bgsJournal.ts`) send projected
+  FSDJump/Location/CarrierJump with `Factions` to `POST /api/factions/sync`; both
+  projections are checked against `scripts/tests/fixtures/bgs-journal.expected.json`.
+  No personal fields, `SystemAddress` as a string, `source_hash` untouched.
+- Admin → «Игровые данные» → «Фракции» (`FactionsAdminTab.tsx`,
+  `/api/admin/factions`: start / force / cancel / cleanup): DB summary, stage bars,
+  archive status, pilots' updates, process log. Job `factions-sync` (daily
+  07:10 UTC, default-enabled) never makes the first import; it refreshes data older
+  than `FACTIONS_REFRESH_DAYS` and resumes an interrupted import.
+
 ---
 
 ## 9. Environment Variables

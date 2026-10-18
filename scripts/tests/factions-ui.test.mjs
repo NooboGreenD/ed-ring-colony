@@ -1,0 +1,355 @@
+/**
+ * Минорные фракции: интерфейс в jsdom и подключение по исходникам.
+ *
+ *   * карточка системы на карте (`FactionSystemCard`): кто у власти, все
+ *     фракции с влиянием и состояниями, «добавить на карту» / «убрать»;
+ *   * раздел админки «Игровые данные → Фракции» (`FactionsAdminTab`): данные
+ *     в базе, этапы импорта с прогресс-барами, журнал, обновления пилотов,
+ *     кнопки «Загрузить», «Остановить», «Удалить архив»;
+ *   * подключение: вкладка Atlas и слой карты, общий выбор точек с PowerPlay,
+ *     раздел админки, загрузчик журналов в личном кабинете, Colonial Helper,
+ *     миграция в снимке схемы, задача планировщика.
+ */
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { bundleFile } from './helpers/bundle.mjs';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+const read = (path) => readFileSync(join(ROOT, path), 'utf8');
+const NOW = Date.parse('2026-10-18T12:00:00Z');
+
+const NEXT_LINK_STUB = `
+import * as React from 'react';
+export default function Link(props: any) {
+  const { href, children, prefetch, ...rest } = props;
+  return React.createElement('a', { href, ...rest }, children);
+}
+`;
+
+const SUPABASE_CLIENT_STUB = `
+export async function authFetch(input, init) {
+  return globalThis.__bgsAdminFetch(String(input), init || {});
+}
+export const supabase = {};
+`;
+
+const ENTRY = `
+export { FactionSystemCard } from '@/components/GalaxyMap/FactionSystemCard';
+export { default as FactionsAdminTab } from '@/components/Admin/FactionsAdminTab';
+`;
+
+async function setup() {
+  const { JSDOM } = await import('jsdom');
+  const bundle = await bundleFile({
+    entrySource: ENTRY,
+    stubs: { 'next/link': NEXT_LINK_STUB, '@/lib/supabaseClient': SUPABASE_CLIENT_STUB },
+    external: ['react', 'react-dom', 'react-dom/client'],
+  });
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { pretendToBeVisual: true, url: 'http://localhost/atlas' });
+  const previous = {
+    window: global.window, document: global.document, HTMLElement: global.HTMLElement, Element: global.Element, Node: global.Node,
+    IS_REACT_ACT_ENVIRONMENT: global.IS_REACT_ACT_ENVIRONMENT, fetch: global.fetch,
+  };
+  global.window = dom.window;
+  global.document = dom.window.document;
+  global.HTMLElement = dom.window.HTMLElement;
+  global.Element = dom.window.Element;
+  global.Node = dom.window.Node;
+  global.IS_REACT_ACT_ENVIRONMENT = true;
+  const React = (await import('react')).default;
+  const { act } = await import('react');
+  const { createRoot } = await import('react-dom/client');
+  const mod = await import(bundle);
+  const root = createRoot(dom.window.document.getElementById('root'));
+  const flush = async (ms = 20) => {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, ms)); });
+  };
+  const render = async (element) => {
+    await act(async () => { root.render(element); });
+    await flush(30);
+  };
+  const click = async (element) => {
+    await act(async () => { element.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })); });
+    await flush(30);
+  };
+  const cleanup = async () => {
+    await act(async () => { root.unmount(); });
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete global[key];
+      else global[key] = value;
+    }
+  };
+  return { React, mod, render, click, flush, cleanup, dom, document: dom.window.document };
+}
+
+const POINT = {
+  key: '10477373803', id64: '10477373803', name: 'Sol', nameLc: 'sol', x: 0, y: 0, z: 0, color: '#f0af28', shape: 2, size: 12,
+  background: false, influence: 0.7, observedAt: NOW - 2 * 3600_000,
+  system: { id64: '10477373803', name: 'Sol', nameLc: 'sol', x: 0, y: 0, z: 0, allegiance: 'Federation', government: 'Democracy', controllingId: 1, controlling: 'Mother Gaia', population: 22780919531, factionsCount: 3, observedAt: NOW - 2 * 3600_000, source: 'helper' },
+  entries: [{ factionId: 1, name: 'Mother Gaia', color: '#f0af28', influence: 0.7, state: 'Election', controls: true }],
+};
+
+const DETAIL = {
+  system: {
+    id64: '10477373803', name: 'Sol', x: 0, y: 0, z: 0, allegiance: 'Federation', government: 'Democracy', economy: 'Refinery',
+    second_economy: 'Service', security: 'High', state: 'Election', population: 22780919531, controlling_faction_id: 1,
+    controlling_faction: 'Mother Gaia', factions_count: 3, observed_at: '2026-10-18T10:00:00+00:00', source: 'helper',
+  },
+  factions: [
+    { id: 1, name: 'Mother Gaia', allegiance: 'Federation', government: 'Democracy', is_player: false, influence: 0.7, state: 'Election', active_states: ['Election'], pending_states: [], recovering_states: ['Boom'], happiness: 'Happy', systems_count: 4, controlled_count: 2 },
+    { id: 2, name: 'Sol Workers Party', allegiance: 'Federation', government: 'Democracy', is_player: false, influence: 0.2, state: 'Election', active_states: ['Election'], pending_states: ['Expansion'], recovering_states: [], happiness: 'Discontented', systems_count: 1, controlled_count: 0 },
+    { id: 9, name: 'Sol Pilots Club', allegiance: 'Independent', government: 'Cooperative', is_player: true, influence: 0.1, state: 'None', active_states: [], pending_states: [], recovering_states: [], happiness: null, systems_count: 1, controlled_count: 0 },
+  ],
+};
+
+test('карточка системы слоя «Фракции»: власть, фракции с влиянием, «на карту» и «убрать»', async () => {
+  const ui = await setup();
+  const requests = [];
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    return { ok: true, status: 200, json: async () => DETAIL };
+  };
+  try {
+    const added = [];
+    const removed = [];
+    let closed = 0;
+    await ui.render(ui.React.createElement(ui.mod.FactionSystemCard, {
+      point: POINT,
+      selectedColors: new Map([[1, '#f0af28']]),
+      now: NOW,
+      onClose: () => { closed += 1; },
+      onAddFaction: (faction) => added.push(faction),
+      onRemoveFaction: (id) => removed.push(id),
+    }));
+    await ui.flush(40);
+    assert.deepEqual(requests, ['/api/factions/system?id64=10477373803']);
+    const card = ui.document.querySelector('.bgs-system-card');
+    assert.ok(card, 'карточка отрисована');
+    assert.equal(card.getAttribute('role'), 'dialog');
+    const text = card.textContent;
+    assert.match(text, /У власти: Mother Gaia · Выборы/);
+    assert.match(text, /Федерация · Демократия · безопасность высокая/);
+    assert.match(text, /Экономика: Переработка \/ Сфера услуг · население 22,8 млрд/);
+    assert.match(text, /Фракции системы \(3\)/);
+    assert.match(text, /Данные: 18\.10\.2026 \(сегодня\) · Colonial Helper/);
+    const rows = Array.from(card.querySelectorAll('[data-bgs-faction]')).map((item) => item.getAttribute('data-bgs-faction'));
+    assert.deepEqual(rows, ['Mother Gaia', 'Sol Workers Party', 'Sol Pilots Club'], 'по убыванию влияния');
+    const gaia = card.querySelector('[data-bgs-faction="Mother Gaia"]').textContent;
+    assert.match(gaia, /70,0 %/);
+    assert.match(gaia, /у власти/);
+    assert.match(gaia, /затухает:Бум/);
+    assert.match(card.querySelector('[data-bgs-faction="Sol Workers Party"]').textContent, /ожидается:Экспансия/);
+    assert.match(card.querySelector('[data-bgs-faction="Sol Pilots Club"]').textContent, /PMF/);
+
+    const links = Array.from(card.querySelectorAll('a')).map((link) => link.getAttribute('href'));
+    assert.ok(links.includes('/system/Sol'));
+    assert.ok(links.includes('https://www.edsm.net/en/system?systemName=Sol'));
+    assert.ok(links.includes('https://spansh.co.uk/system/10477373803'));
+
+    await ui.click(card.querySelector('button[aria-label="Показать Sol Workers Party на карте"]'));
+    assert.deepEqual(added, [{ id: 2, name: 'Sol Workers Party', allegiance: 'Federation' }]);
+    await ui.click(card.querySelector('button[aria-label="Убрать Mother Gaia с карты"]'));
+    assert.deepEqual(removed, [1]);
+    await ui.click(card.querySelector('button[aria-label="Закрыть карточку"]'));
+    assert.equal(closed, 1);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+/* ── Админка ───────────────────────────────────────────────────────────── */
+
+function adminStatus(overrides = {}) {
+  return {
+    success: true,
+    running: true,
+    interrupted: false,
+    progress: {
+      id: 'run-7', trigger: 'admin', force: false, phase: 'running', stage: 'download', percent: 24.5,
+      message: 'Скачивание дампа на диск: 120 МБ из 498 МБ', startedAt: '2026-10-18T11:50:00.000Z', updatedAt: '2026-10-18T11:59:00.000Z', finishedAt: null,
+      stages: [
+        { id: 'probe', status: 'done', done: 0, total: null, detail: '498 МБ · от Sat, 17 Oct 2026 04:50:00 GMT', startedAt: '2026-10-18T11:50:00.000Z', finishedAt: '2026-10-18T11:50:01.000Z' },
+        { id: 'download', status: 'running', done: 125_829_120, total: 522_190_000, detail: '120 МБ из 498 МБ · 1,2 МБ/с · осталось ~5 мин 30 с', startedAt: '2026-10-18T11:50:01.000Z', finishedAt: null },
+        { id: 'import', status: 'pending', done: 0, total: null, detail: '', startedAt: null, finishedAt: null },
+        { id: 'finish', status: 'pending', done: 0, total: null, detail: '', startedAt: null, finishedAt: null },
+      ],
+      result: null,
+    },
+    log: [
+      { at: '2026-10-18T11:50:00.000Z', level: 'info', text: 'Запуск импорта: вручную из админки' },
+      { at: '2026-10-18T11:55:00.000Z', level: 'warn', text: 'Скачивание: Сегмент 1: обрыв на байте 1 000 — продолжаю' },
+    ],
+    state: {
+      status: 'running', source_url: 'https://www.edsm.net/dump/systemsPopulated.json.gz', last_modified: null, dump_generated_at: '2026-10-11T04:50:00.000Z',
+      dump_bytes: 521_000_000, systems_total: 31_250, factions_total: 76_500, presence_total: 160_000, error: null,
+      attempt_at: '2026-10-18T11:50:00.000Z', checked_at: '2026-10-11T07:10:00.000Z', synced_at: '2026-10-11T07:40:00.000Z',
+    },
+    summary: {
+      systems: 31_250, factions: 76_500, playerFactions: 1_820, presence: 160_000,
+      allegiances: { Federation: 9000, Empire: 7000, Alliance: 3000, Independent: 12_000, None: 250 },
+      sources: { edsm: 30_000, helper: 1_000, web: 250 },
+      oldestObservation: '2024-01-01T00:00:00.000Z', newestObservation: '2026-10-18T11:00:00.000Z', fresh7d: 6_000,
+      updates24h: 42, applied24h: 37, updates7d: 300, applied7d: 260, reporters7d: 5, lastUpdate: '2026-10-18T11:40:00.000Z',
+    },
+    summaryError: null,
+    updates: [
+      { received_at: '2026-10-18T11:40:00.000Z', source: 'helper', received: 3, applied: 2, stale: 1, created: 1, invalid: 0, systems: ['Sol', 'Fresh Colony'], cmdr: 'CMDR Nova' },
+      { received_at: '2026-10-18T10:00:00.000Z', source: 'web', received: 120, applied: 30, stale: 90, created: 0, invalid: 2, systems: ['Lave', 'Leesti', 'Diso', 'Orrere', 'Zaonce'], cmdr: null },
+    ],
+    archive: { path: '/app/data/spansh/factions/edsm-systemsPopulated.json.gz', exists: true, bytes: 125_829_120, partial: true, complete: false, lastModified: null, freeBytes: 80 * 1024 ** 3 },
+    config: {
+      dumpUrl: 'https://www.edsm.net/dump/systemsPopulated.json.gz', archiveKeep: false, segments: 4, batchSize: 250, minSystems: 1000,
+      keepDays: 30, refreshDays: 7, nextScheduledRun: '2026-10-19T07:10:00.000Z', scheduleDecision: { action: 'skip', reason: 'running' },
+    },
+    serverTime: '2026-10-18T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+test('админка «Фракции»: данные в базе, этапы с прогресс-барами, журнал, обновления пилотов, кнопки', async () => {
+  const ui = await setup();
+  const posts = [];
+  let payload = adminStatus();
+  global.__bgsAdminFetch = async (url, init) => {
+    if (init.method === 'POST') {
+      posts.push(JSON.parse(init.body));
+      const action = JSON.parse(init.body).action;
+      if (action === 'cleanup') return { ok: true, status: 200, json: async () => ({ success: true, removed: true, freed: 125_829_120 }) };
+      return { ok: true, status: 200, json: async () => ({ success: true, cancelled: true }) };
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  };
+  ui.dom.window.confirm = () => true;
+  try {
+    await ui.render(ui.React.createElement(ui.mod.FactionsAdminTab));
+    await ui.flush(40);
+    const doc = ui.document;
+    assert.match(doc.querySelector('[data-bgs-admin-pill]').textContent.replace(/[\u00a0\u202f]/g, ' '), /идёт загрузка дампа/);
+    const data = doc.querySelector('[data-bgs-admin-data]').textContent.replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(data, /Населённых систем31 250/);
+    assert.match(data, /Фракций76 500/);
+    assert.match(data, /дамп EDSM 30 000 · Colonial Helper 1 000 · журнал на сайте 250/);
+    assert.deepEqual(Array.from(doc.querySelectorAll('[data-bgs-admin-allegiance]')).map((row) => row.getAttribute('data-bgs-admin-allegiance')),
+      ['Independent', 'Federation', 'Empire', 'Alliance', 'None'], 'по убыванию');
+
+    const stages = Array.from(doc.querySelectorAll('[data-bgs-admin-stage]'));
+    assert.deepEqual(stages.map((item) => [item.getAttribute('data-bgs-admin-stage'), item.getAttribute('data-status')]),
+      [['probe', 'done'], ['download', 'running'], ['import', 'pending'], ['finish', 'pending']]);
+    assert.match(stages[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /120 МБ из 498 МБ · 1,2 МБ\/с · осталось ~5 мин 30 с/);
+    assert.equal(stages[1].querySelector('[role="progressbar"]').getAttribute('aria-valuenow'), '24');
+    assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Идёт загрузка · 24,5 %/);
+    assert.match(doc.querySelector('[data-bgs-admin-archive]').textContent.replace(/[\u00a0\u202f]/g, ' '), /скачан не полностью, следующий запуск докачает · свободно на диске 80,0 ГБ/);
+    assert.equal(doc.querySelectorAll('[data-bgs-admin-log] [data-level="warn"]').length, 1);
+
+    const updates = Array.from(doc.querySelectorAll('[data-bgs-admin-update]'));
+    assert.equal(updates.length, 2);
+    assert.match(updates[0].textContent.replace(/[\u00a0\u202f]/g, ' '), /Colonial Helper/);
+    assert.match(updates[0].textContent.replace(/[\u00a0\u202f]/g, ' '), /CMDR Nova/);
+    assert.match(updates[0].textContent.replace(/[\u00a0\u202f]/g, ' '), /3 \/ 2 \/ 1 \/ \+1/);
+    assert.match(updates[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /журнал на сайте/);
+    assert.match(updates[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /отброшено 2/);
+    assert.match(updates[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /и ещё 1/);
+    assert.match(doc.querySelector('[data-bgs-admin-updates]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Пилотов за 7 дней5/);
+    assert.match(doc.querySelector('[data-bgs-admin-sync]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Сейчас задача: импорт уже идёт/);
+
+    const button = (action) => doc.querySelector(`[data-bgs-admin-action="${action}"]`);
+    assert.equal(button('start').disabled, true, 'во время импорта запуск недоступен');
+    assert.equal(button('cleanup').disabled, true, 'и удаление архива тоже');
+    assert.equal(button('cancel').disabled, false);
+    await ui.click(button('cancel'));
+    assert.deepEqual(posts.at(-1), { action: 'cancel', force: false });
+
+    // Импорт закончился: запуск и удаление архива снова доступны.
+    payload = adminStatus({
+      running: false,
+      progress: { ...adminStatus().progress, phase: 'cancelled', finishedAt: '2026-10-18T12:00:00.000Z', result: { error: 'Импорт остановлен администратором' } },
+      config: { ...adminStatus().config, scheduleDecision: { action: 'skip', reason: 'fresh' } },
+    });
+    await ui.click(doc.querySelector('button.btn'));
+    await ui.flush(40);
+    assert.equal(button('start').disabled, false);
+    assert.match(button('start').textContent.replace(/[\u00a0\u202f]/g, ' '), /Загрузить сейчас/);
+    assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Импорт остановлен администратором/);
+    await ui.click(button('cleanup'));
+    assert.deepEqual(posts.at(-1), { action: 'cleanup', force: false });
+    assert.match(doc.body.textContent.replace(/[\u00a0\u202f]/g, ' '), /Архив удалён — освобождено 120 МБ/);
+  } finally {
+    delete global.__bgsAdminFetch;
+    await ui.cleanup();
+  }
+});
+
+/* ── Подключение по исходникам ─────────────────────────────────────────── */
+
+test('позиции 3D-слоя «Фракции» — тот же кадр карты, что eliteToThreeCentered', async () => {
+  const bundle = await bundleFile({
+    entrySource: `
+      export { factionPositions } from '@/components/GalaxyMap/FactionPoints';
+      export { eliteToThreeCentered } from '@/lib/ed3dCanon';
+    `,
+    external: ['react', 'react-dom', 'react-dom/client', '@react-three/fiber', 'three'],
+  });
+  const mod = await import(bundle);
+  const points = [{ name: 'Sol', x: 0, y: 0, z: 0 }, { name: 'Colony', x: -24.5, y: -33.8, z: 108.8 }];
+  const positions = mod.factionPositions(points);
+  assert.equal(positions.length, points.length * 3);
+  points.forEach((point, index) => {
+    const expected = mod.eliteToThreeCentered(point);
+    assert.ok(Math.abs(positions[index * 3] - expected.x) < 1e-3, `x ${point.name}`);
+    assert.ok(Math.abs(positions[index * 3 + 1] - expected.y) < 1e-3, `y ${point.name}`);
+    assert.ok(Math.abs(positions[index * 3 + 2] - expected.z) < 1e-3, `z ${point.name}`);
+  });
+});
+
+test('подключение: вкладка Atlas, слой карты, админка, кабинет, Colonial Helper, схема, задача', () => {
+  const page = read('src/app/atlas/page.tsx');
+  assert.match(page, /\{ id: 'factions', label: 'Фракции'/);
+  assert.match(page, /useAtlasFactions\(\{ tabActive: activeTab === 'factions' \}\)/);
+  assert.match(page, /<AtlasFactionsPanel factions=\{factions\} \/>/);
+  assert.match(page, /factions=\{factionsLayer\}/);
+
+  const map = read('src/components/GalaxyMap/GalaxyMap.tsx');
+  assert.match(map, /export interface GalaxyMapFactions/);
+  assert.match(map, /<FactionSystemCard/);
+  assert.match(map, /className="powerplay-hover-tip bgs-hover-tip"/);
+  assert.match(map, /'atlas-focus-faction-system'/);
+  assert.match(map, /onPickFaction=\{handleSelectFaction\}/);
+  assert.match(map, /clearLayerSelections/);
+
+  const scene = read('src/components/GalaxyMap/GalaxyScene.tsx');
+  assert.match(scene, /<FactionPoints points=\{factionPoints\} positions=\{factionPositionsArray\} \/>/);
+  assert.match(scene, /extraPoints=\{layerPick\}/, 'PowerPlay и фракции — одно облако выбора');
+  assert.match(scene, /<LandmarkMarkers onSelect=\{onSelectRouteSystem\} interactive=\{!layerPointsVisible\} \/>/);
+
+  const nav = read('src/components/Admin/AdminNavigation.tsx');
+  assert.match(nav, /'powerplay', 'factions', 'backup'/);
+  assert.match(nav, /ADMIN_ONLY_TABS: AdminTab\[\] = \[[^\]]*'factions'/);
+  assert.match(nav, /\{ id: 'factions', label: 'Фракции', icon: IconShieldHalf \}/);
+  assert.match(read('src/app/admin/page.tsx'), /tab === 'factions' && role === 'admin' && <FactionsAdminTab \/>/);
+
+  const account = read('src/app/account/page.tsx');
+  assert.match(account, /new BgsSnapshotCollector\(\)/);
+  assert.match(account, /\(line, event\) => factionCollector\.feed\(line, event\)/);
+  assert.match(account, /authFetch\('\/api\/factions\/sync'/);
+
+  const helper = read('uploader/colonial_helper.py');
+  assert.match(helper, /self\._bgs_sync_collector\(\)\.feed\(ev, live=live\)/);
+  assert.match(helper, /self\._flush_bgs_sync\(\)/);
+  assert.match(helper, /VERSION = "2\.16\.0"/);
+  assert.match(read('uploader/api_client.py'), /\/factions\/sync/);
+
+  const schema = read('supabase/full_schema.sql');
+  const migration = read('supabase/migrations/20261019120000_minor_factions.sql');
+  assert.ok(schema.includes(migration.trim().slice(0, 2000)), 'миграция в снимке full_schema.sql');
+
+  const compose = read('docker-compose.yml');
+  assert.equal((compose.match(/powerplay-sync,factions-sync\}/g) || []).length, 2, 'и в jobs, и в мониторинге');
+  assert.match(read('.env.example'), /^JOBS_ENABLED=.*factions-sync/m);
+  assert.match(read('deploy/crontab.example'), /--once factions-sync/);
+
+  // Fallback-ссылки и тексты сайта не обещают несуществующего.
+  assert.match(read('src/components/Atlas/AtlasFactionsPanel.tsx'), /Админка → Игровые данные → Фракции/);
+});

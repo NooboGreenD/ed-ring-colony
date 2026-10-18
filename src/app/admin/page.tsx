@@ -19,6 +19,7 @@ import RavenSyncTab from "@/components/Admin/RavenSyncTab";
 import AuthProvidersTab from "@/components/Admin/AuthProvidersTab";
 import GalaxyCatalogTab from "@/components/Admin/GalaxyCatalogTab";
 import PowerplayAdminTab from "@/components/Admin/PowerplayAdminTab";
+import FactionsAdminTab from "@/components/Admin/FactionsAdminTab";
 import BackupTab from "@/components/Admin/BackupTab";
 import {
   IconTrash,
@@ -838,6 +839,7 @@ export default function AdminPage() {
       {tab === 'monitor' && role === 'admin' && <ServerMonitorTab />}
       {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
       {tab === 'powerplay' && role === 'admin' && <PowerplayAdminTab />}
+      {tab === 'factions' && role === 'admin' && <FactionsAdminTab />}
       {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
       {tab === 'helper' && role === 'admin' && <HelperUpdatesTab />}
