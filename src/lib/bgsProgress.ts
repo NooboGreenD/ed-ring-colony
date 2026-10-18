@@ -6,20 +6,27 @@
  *   * админка (Игровые данные → Фракции) рисует по нему прогресс-бары этапов
  *     и журнал процесса;
  *   * вкладка «Фракции» в Atlas показывает короткую строку «сервер загружает
- *     данные EDSM: скачивание дампа, 37 %».
+ *     данные EDSM: скачивание архива, 37 %».
  *
  * Устроен так же, как ход импорта PowerPlay (`powerplayProgress.ts`), но с
- * другими этапами: дамп большой (≈0,5 ГБ), поэтому он сначала скачивается на
- * диск с докачкой, а разбор и запись идут одним потоком.
+ * конвейером, как у каталога систем: архив (≈0,5 ГБ) скачивается на сервер
+ * в несколько соединений, по мере скачивания разбивается на куски по тысяче
+ * систем, а готовые куски сразу пишутся в базу. Поэтому несколько этапов могут
+ * идти одновременно; «текущий» этап — первый из идущих.
+ *
+ * Запуск бывает не только полным: админка умеет отдельно скачать архив,
+ * разбить его на куски и загрузить куски в базу (`mode`). Этапы, которых нет
+ * в запуске, сразу помечаются «не нужен» и в процент не входят.
  *
  * Только стираемый TypeScript без зависимостей: модуль импортируют тесты,
  * сервер и браузер.
  */
 
 export const BGS_SYNC_STAGES = [
-  { id: 'probe', label: 'Запрос к EDSM', weight: 3 },
-  { id: 'download', label: 'Скачивание дампа на диск', weight: 57 },
-  { id: 'import', label: 'Разбор и запись в базу', weight: 35 },
+  { id: 'probe', label: 'Запрос к EDSM', weight: 2 },
+  { id: 'download', label: 'Скачивание архива на сервер', weight: 55 },
+  { id: 'split', label: 'Разбивка на куски', weight: 8 },
+  { id: 'import', label: 'Загрузка кусков в базу', weight: 30 },
   { id: 'finish', label: 'Завершение', weight: 5 },
 ] as const;
 
@@ -28,12 +35,35 @@ export type BgsStageStatus = 'pending' | 'running' | 'done' | 'skipped' | 'error
 export type BgsSyncTrigger = 'admin' | 'cron' | 'manual';
 export type BgsSyncPhase = 'running' | 'ok' | 'not_modified' | 'error' | 'cancelled';
 export type BgsLogLevel = 'info' | 'warn' | 'error';
+/**
+ * Что делает запуск: `full` — всё (скачать → разбить → загрузить → завершить),
+ * `download` — только скачать архив на сервер, `split` — только разбить архив
+ * на куски, `import` — загрузить в базу то, что уже лежит на сервере, без
+ * обращения к EDSM.
+ */
+export type BgsSyncMode = 'full' | 'download' | 'split' | 'import';
 
 const STAGE_IDS = BGS_SYNC_STAGES.map((stage) => stage.id) as readonly string[];
 const STAGE_STATUSES: readonly string[] = ['pending', 'running', 'done', 'skipped', 'error'];
 const TRIGGERS: readonly string[] = ['admin', 'cron', 'manual'];
 const PHASES: readonly string[] = ['running', 'ok', 'not_modified', 'error', 'cancelled'];
 const LEVELS: readonly string[] = ['info', 'warn', 'error'];
+const MODES: readonly string[] = ['full', 'download', 'split', 'import'];
+
+/** Этапы каждого вида запуска. */
+export const BGS_MODE_STAGES: Record<BgsSyncMode, readonly BgsStageId[]> = {
+  full: ['probe', 'download', 'split', 'import', 'finish'],
+  download: ['probe', 'download'],
+  split: ['split'],
+  import: ['split', 'import', 'finish'],
+};
+
+export const BGS_MODE_LABEL: Record<BgsSyncMode, string> = {
+  full: 'загрузка данных (скачать → разбить на куски → записать в базу)',
+  download: 'только скачивание архива на сервер',
+  split: 'только разбивка архива на куски',
+  import: 'загрузка в базу того, что уже на сервере (без EDSM)',
+};
 
 export const BGS_TRIGGER_LABEL: Record<BgsSyncTrigger, string> = {
   admin: 'вручную из админки',
@@ -72,6 +102,10 @@ export interface BgsSyncSummary {
   stale?: number;
   deletedSystems?: number;
   durationMs?: number;
+  /** Скачано / лежит на сервере (запуск «только скачать»). */
+  archiveBytes?: number;
+  /** Кусков (запуски «разбить» и «загрузить»). */
+  shards?: number;
   error?: string;
 }
 
@@ -79,6 +113,7 @@ export interface BgsSyncProgress {
   id: string;
   trigger: BgsSyncTrigger;
   force: boolean;
+  mode: BgsSyncMode;
   phase: BgsSyncPhase;
   stage: BgsStageId | null;
   /** Общий процент 0–100 по весам этапов. */
@@ -104,6 +139,7 @@ export interface BgsPublicProgress {
   percent: number;
   message: string;
   startedAt: string | null;
+  mode?: BgsSyncMode;
 }
 
 function iso(now: number | string | Date = Date.now()): string {
@@ -119,13 +155,17 @@ export function createBgsProgress(options: {
   id: string;
   trigger?: BgsSyncTrigger;
   force?: boolean;
+  mode?: BgsSyncMode;
   now?: number | string | Date;
 }): BgsSyncProgress {
   const at = iso(options.now);
+  const mode = options.mode ?? 'full';
+  const included = BGS_MODE_STAGES[mode];
   return {
     id: options.id,
     trigger: options.trigger ?? 'manual',
     force: options.force === true,
+    mode,
     phase: 'running',
     stage: null,
     percent: 0,
@@ -135,7 +175,8 @@ export function createBgsProgress(options: {
     finishedAt: null,
     stages: BGS_SYNC_STAGES.map((stage) => ({
       id: stage.id,
-      status: 'pending' as BgsStageStatus,
+      // Этапы, которых в этом запуске нет, в процент не входят.
+      status: (included.includes(stage.id) ? 'pending' : 'skipped') as BgsStageStatus,
       done: 0,
       total: null,
       detail: '',
@@ -159,25 +200,45 @@ export function bgsStageFraction(stage: BgsStageProgress): number {
   return 0;
 }
 
+/** Общий процент по весам этапов; пропущенные («не нужен») в расчёт не входят. */
 export function computeBgsPercent(progress: Pick<BgsSyncProgress, 'stages'>): number {
   let total = 0;
   let done = 0;
   for (const def of BGS_SYNC_STAGES) {
-    total += def.weight;
     const stage = progress.stages.find((item) => item.id === def.id);
+    if (stage?.status === 'skipped') continue;
+    total += def.weight;
     if (stage) done += def.weight * bgsStageFraction(stage);
   }
   return total > 0 ? Math.round((done / total) * 1000) / 10 : 0;
 }
 
-function touch(progress: BgsSyncProgress, now?: number | string | Date): void {
-  progress.updatedAt = iso(now);
-  progress.percent = computeBgsPercent(progress);
-}
-
 function describe(stage: BgsStageProgress): string {
   const label = bgsStageLabel(stage.id);
   return stage.detail ? `${label}: ${stage.detail}` : `${label}…`;
+}
+
+/**
+ * Скачивание, разбивка и запись идут одновременно: «текущий» этап для строки
+ * состояния — первый из идущих (обычно скачивание: оно дольше всех).
+ */
+function leadingStage(progress: BgsSyncProgress): BgsStageProgress | null {
+  for (const def of BGS_SYNC_STAGES) {
+    const stage = progress.stages.find((item) => item.id === def.id);
+    if (stage?.status === 'running') return stage;
+  }
+  return null;
+}
+
+function touch(progress: BgsSyncProgress, now?: number | string | Date): void {
+  progress.updatedAt = iso(now);
+  progress.percent = computeBgsPercent(progress);
+  if (progress.phase !== 'running') return;
+  const lead = leadingStage(progress);
+  if (lead) {
+    progress.stage = lead.id;
+    progress.message = describe(lead);
+  }
 }
 
 export function startBgsStage(
@@ -198,6 +259,19 @@ export function startBgsStage(
   return stage;
 }
 
+/** Этап снова «ждёт» (дамп на EDSM сменился — скачивание и разбивка начинаются заново). */
+export function resetBgsStage(progress: BgsSyncProgress, id: BgsStageId, now?: number | string | Date): BgsStageProgress {
+  const stage = stageOf(progress, id);
+  if (stage.status !== 'skipped') stage.status = 'pending';
+  stage.done = 0;
+  stage.total = null;
+  stage.detail = '';
+  stage.startedAt = null;
+  stage.finishedAt = null;
+  touch(progress, now);
+  return stage;
+}
+
 export function updateBgsStage(
   progress: BgsSyncProgress,
   id: BgsStageId,
@@ -207,7 +281,6 @@ export function updateBgsStage(
   if (typeof patch.done === 'number' && Number.isFinite(patch.done)) stage.done = Math.max(0, patch.done);
   if (patch.total !== undefined) stage.total = patch.total;
   if (typeof patch.detail === 'string') stage.detail = patch.detail;
-  if (progress.stage === id) progress.message = describe(stage);
   touch(progress, patch.now);
   return stage;
 }
@@ -226,6 +299,28 @@ export function finishBgsStage(
   stage.finishedAt = iso(options.now);
   touch(progress, options.now);
   return stage;
+}
+
+/**
+ * Ход, сохранённый в базе со статусом «идёт», а живого импорта в процессе нет:
+ * сайт перезапустился посреди работы. Показывать его «идущим» нельзя.
+ */
+export function markBgsInterrupted(progress: BgsSyncProgress, now?: number | string | Date): BgsSyncProgress {
+  if (progress.phase !== 'running') return progress;
+  const copy: BgsSyncProgress = JSON.parse(JSON.stringify(progress));
+  const at = iso(now ?? copy.updatedAt);
+  for (const stage of copy.stages) {
+    if (stage.status === 'running') {
+      stage.status = 'error';
+      stage.finishedAt = at;
+    }
+  }
+  const message = 'Прервано перезапуском сайта — скачанное и разбитое осталось на сервере, следующий запуск продолжит с того же места';
+  copy.phase = 'cancelled';
+  copy.finishedAt = at;
+  copy.message = message;
+  copy.result = { ...(copy.result ?? {}), error: message };
+  return copy;
 }
 
 export function finishBgsProgress(
@@ -275,7 +370,7 @@ function asCount(value: unknown): number {
   return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
-const SUMMARY_FIELDS = ['systems', 'factions', 'presence', 'applied', 'stale', 'deletedSystems', 'durationMs'] as const;
+const SUMMARY_FIELDS = ['systems', 'factions', 'presence', 'applied', 'stale', 'deletedSystems', 'durationMs', 'archiveBytes', 'shards'] as const;
 
 /** Ход импорта из JSON (база, ответ API): всё непонятное отбрасывается. */
 export function sanitizeBgsProgress(value: unknown): BgsSyncProgress | null {
@@ -291,9 +386,13 @@ export function sanitizeBgsProgress(value: unknown): BgsSyncProgress | null {
       }
     }
   }
+  const phase = PHASES.includes(String(raw.phase)) ? (raw.phase as BgsSyncPhase) : 'error';
   const stages: BgsStageProgress[] = BGS_SYNC_STAGES.map((def) => {
     const item = byId.get(def.id) ?? {};
-    const status = STAGE_STATUSES.includes(String(item.status)) ? (item.status as BgsStageStatus) : 'pending';
+    // Этапа нет в сохранённом ходе (запись старой версии сайта): у законченного
+    // запуска он «не нужен», а не «ждёт».
+    const fallback: BgsStageStatus = byId.has(def.id) || phase === 'running' ? 'pending' : 'skipped';
+    const status = STAGE_STATUSES.includes(String(item.status)) ? (item.status as BgsStageStatus) : fallback;
     const total = item.total == null ? null : asCount(item.total) || null;
     return {
       id: def.id,
@@ -320,7 +419,8 @@ export function sanitizeBgsProgress(value: unknown): BgsSyncProgress | null {
     id: raw.id.slice(0, 64),
     trigger: TRIGGERS.includes(String(raw.trigger)) ? (raw.trigger as BgsSyncTrigger) : 'manual',
     force: raw.force === true,
-    phase: PHASES.includes(String(raw.phase)) ? (raw.phase as BgsSyncPhase) : 'error',
+    mode: MODES.includes(String(raw.mode)) ? (raw.mode as BgsSyncMode) : 'full',
+    phase,
     stage: STAGE_IDS.includes(String(raw.stage)) ? (raw.stage as BgsStageId) : null,
     percent: 0,
     message: typeof raw.message === 'string' ? raw.message.slice(0, 300) : '',
@@ -362,6 +462,7 @@ export function publicBgsProgress(progress: BgsSyncProgress | null | undefined):
     percent: progress.percent,
     message: progress.message.slice(0, 160),
     startedAt: progress.startedAt,
+    mode: progress.mode,
   };
 }
 

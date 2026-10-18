@@ -799,7 +799,7 @@ test('страница Atlas: «Фракции» — данных нет (под
           body: {
             status: 'empty', version: 'none', allegiances: [], governments: [], sources: [], factions: [], systems: [],
             meta: importing
-              ? { ...EMPTY_BGS_META, refreshing: true, progress: { stage: 'download', stageLabel: 'Скачивание дампа на диск', percent: 37, message: 'Скачивание дампа на диск: 210 МБ из 498 МБ', startedAt: '2026-10-18T10:00:00.000Z' } }
+              ? { ...EMPTY_BGS_META, refreshing: true, progress: { stage: 'download', stageLabel: 'Скачивание архива на сервер', percent: 37, message: 'Скачивание архива на сервер: 210 МБ из 498 МБ', startedAt: '2026-10-18T10:00:00.000Z' } }
               : { ...EMPTY_BGS_META },
           },
         };

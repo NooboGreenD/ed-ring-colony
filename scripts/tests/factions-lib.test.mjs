@@ -56,19 +56,33 @@ import {
 import { BgsDumpCounter, edsmPopulatedRecord, parseEdsmPopulatedLine, trimEdsmPopulatedLine } from '../../src/lib/bgsDump.ts';
 import { BGS_FACTION_FIELDS, BGS_SYSTEM_FIELDS, BgsSnapshotCollector, journalEventToSnapshot, projectBgsEvent } from '../../src/lib/bgsJournal.ts';
 import {
+  BGS_MODE_STAGES,
   BGS_SYNC_STAGES,
   computeBgsPercent,
   createBgsProgress,
   finishBgsProgress,
   finishBgsStage,
   formatBgsDuration,
+  markBgsInterrupted,
   publicBgsProgress,
   pushBgsLog,
+  resetBgsStage,
   sanitizeBgsLog,
   sanitizeBgsProgress,
   startBgsStage,
   updateBgsStage,
 } from '../../src/lib/bgsProgress.ts';
+import {
+  BgsPulse,
+  bgsShardsInfo,
+  clearBgsShards,
+  createBgsShardManifest,
+  readBgsShardManifest,
+  readBgsShardRows,
+  readGrowingFile,
+  sameBgsDumpSource,
+  splitBgsArchive,
+} from '../../src/lib/bgsShards.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 const FIXTURES = join(ROOT, 'scripts', 'tests', 'fixtures');
@@ -480,15 +494,29 @@ test('подписи: влияние, население, возраст дан�
 
 test('ход импорта: веса этапов, проценты, завершение, журнал, разбор из JSON', () => {
   assert.equal(BGS_SYNC_STAGES.reduce((sum, stage) => sum + stage.weight, 0), 100);
+  assert.deepEqual(BGS_SYNC_STAGES.map((stage) => stage.id), ['probe', 'download', 'split', 'import', 'finish']);
   const progress = createBgsProgress({ id: 'run-1', trigger: 'admin', now: NOW });
+  assert.equal(progress.mode, 'full');
   startBgsStage(progress, 'probe', { now: NOW });
   finishBgsStage(progress, 'probe', { now: NOW });
   startBgsStage(progress, 'download', { total: 1000, now: NOW });
   updateBgsStage(progress, 'download', { done: 500, detail: '500 Б из 1000 Б', now: NOW });
-  assert.equal(progress.percent, 3 + 57 / 2);
-  assert.equal(progress.message, 'Скачивание дампа на диск: 500 Б из 1000 Б');
+  assert.equal(progress.percent, 2 + 55 / 2);
+  assert.equal(progress.message, 'Скачивание архива на сервер: 500 Б из 1000 Б');
   assert.equal(computeBgsPercent(progress), progress.percent);
-  assert.equal(publicBgsProgress(progress).stageLabel, 'Скачивание дампа на диск');
+  assert.equal(publicBgsProgress(progress).stageLabel, 'Скачивание архива на сервер');
+  assert.equal(publicBgsProgress(progress).mode, 'full');
+
+  // Разбивка и запись идут одновременно со скачиванием: «текущий» этап — первый из идущих.
+  startBgsStage(progress, 'split', { total: 1000, now: NOW });
+  updateBgsStage(progress, 'split', { done: 250, detail: 'кусков 3', now: NOW });
+  startBgsStage(progress, 'import', { total: 10, done: 1, now: NOW });
+  assert.equal(progress.stage, 'download');
+  assert.match(progress.message, /^Скачивание архива на сервер/);
+  assert.equal(progress.percent, Math.round((2 + 55 / 2 + 8 / 4 + 30 / 10) * 10) / 10);
+  finishBgsStage(progress, 'download', { now: NOW });
+  assert.equal(progress.stage, 'split', 'скачивание закончилось — текущей стала разбивка');
+  assert.equal(progress.message, 'Разбивка на куски: кусков 3');
 
   const restored = sanitizeBgsProgress(JSON.parse(JSON.stringify(progress)));
   assert.deepEqual(restored, progress, 'JSON туда и обратно без потерь');
@@ -497,8 +525,16 @@ test('ход импорта: веса этапов, проценты, завер
 
   finishBgsProgress(progress, 'ok', { result: { systems: 10, factions: 20, durationMs: 1500 }, now: NOW });
   assert.equal(progress.percent, 100);
-  assert.deepEqual(progress.stages.map((stage) => stage.status), ['done', 'done', 'skipped', 'skipped']);
+  assert.deepEqual(progress.stages.map((stage) => stage.status), ['done', 'done', 'done', 'done', 'skipped']);
   assert.equal(publicBgsProgress(progress), null, 'закончившийся прогон не публикуется');
+
+  // Запись старой версии сайта без этапа «split»: у законченного запуска он «не нужен».
+  const old = sanitizeBgsProgress({
+    id: 'old', phase: 'ok', startedAt: '2026-10-18T00:00:00Z',
+    stages: [{ id: 'probe', status: 'done' }, { id: 'download', status: 'done' }, { id: 'import', status: 'done' }, { id: 'finish', status: 'done' }],
+  });
+  assert.equal(old.mode, 'full');
+  assert.equal(old.stages.find((stage) => stage.id === 'split').status, 'skipped');
 
   const log = [];
   for (let index = 0; index < 300; index++) pushBgsLog(log, 'info', `строка ${index}`, { now: NOW });
@@ -507,4 +543,166 @@ test('ход импорта: веса этапов, проценты, завер
   assert.equal(sanitizeBgsLog([{ at: 'bad', text: 'x' }, { at: '2026-10-18T00:00:00Z', level: 'odd', text: 'ok' }]).length, 1);
   assert.equal(formatBgsDuration(3_725_000), '1 ч 02 мин');
   assert.equal(formatBgsDuration(65_000), '1 мин 05 с');
+});
+
+test('виды запуска: этапы, которых нет в запуске, не входят в процент; оборванный ход честно помечен', () => {
+  assert.deepEqual(BGS_MODE_STAGES.download, ['probe', 'download']);
+  const download = createBgsProgress({ id: 'd', mode: 'download', now: NOW });
+  assert.deepEqual(download.stages.map((stage) => stage.status), ['pending', 'pending', 'skipped', 'skipped', 'skipped']);
+  startBgsStage(download, 'probe', { now: NOW });
+  finishBgsStage(download, 'probe', { now: NOW });
+  startBgsStage(download, 'download', { total: 100, now: NOW });
+  updateBgsStage(download, 'download', { done: 50, now: NOW });
+  assert.equal(download.percent, Math.round(((2 + 55 / 2) / 57) * 1000) / 10, 'процент только по своим этапам');
+
+  const split = createBgsProgress({ id: 's', mode: 'split', now: NOW });
+  assert.deepEqual(split.stages.filter((stage) => stage.status !== 'skipped').map((stage) => stage.id), ['split']);
+  const imported = createBgsProgress({ id: 'i', mode: 'import', now: NOW });
+  assert.deepEqual(imported.stages.filter((stage) => stage.status !== 'skipped').map((stage) => stage.id), ['split', 'import', 'finish']);
+
+  // Дамп сменился посреди скачивания — этап начинается заново.
+  startBgsStage(download, 'download', { total: 100, done: 70, now: NOW });
+  resetBgsStage(download, 'download', NOW);
+  assert.deepEqual([download.stages[1].status, download.stages[1].done, download.stages[1].total], ['pending', 0, null]);
+  resetBgsStage(download, 'split', NOW);
+  assert.equal(download.stages[2].status, 'skipped', 'пропущенный этап так и остаётся пропущенным');
+
+  const running = createBgsProgress({ id: 'r', now: NOW });
+  startBgsStage(running, 'download', { total: 100, now: NOW });
+  const lost = markBgsInterrupted(running, NOW + 1000);
+  assert.equal(lost.phase, 'cancelled');
+  assert.match(lost.result.error, /Прервано перезапуском сайта/);
+  assert.equal(lost.stages[1].status, 'error');
+  assert.equal(running.phase, 'running', 'исходный ход не тронут');
+  assert.equal(markBgsInterrupted(lost), lost, 'законченный — как есть');
+});
+
+/* ── Куски дампа ───────────────────────────────────────────────────────── */
+
+function shardTestLine(index) {
+  const record = {
+    id: index, id64: 900000 + index, name: `Shard Test ${index}`, coords: { x: index, y: 0, z: -index },
+    allegiance: 'Independent', government: 'Cooperative', state: 'None', economy: 'Industrial', security: 'Low', population: 1000 + index,
+    controllingFaction: { id: 1, name: `Owners ${index % 3}`, allegiance: 'Independent', government: 'Cooperative', isPlayer: false },
+    factions: [{ id: 1, name: `Owners ${index % 3}`, allegiance: 'Independent', government: 'Cooperative', influence: 1, state: 'None', activeStates: [], recoveringStates: [], pendingStates: [], happiness: 'Happy', isPlayer: false, lastUpdate: 1760000000 }],
+  };
+  return `    ${JSON.stringify(record).slice(0, -1)},"stations":[{"name":"${'x'.repeat(200)}"}],"bodies":[],"date":"2026-10-15 08:00:00"}`;
+}
+
+test('куски: разбивка архива, который ещё качается (читается только готовое начало), и продолжение', async () => {
+  const { mkdtempSync, writeFileSync, rmSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { gzipSync } = await import('node:zlib');
+  const { BgsDumpCounter } = await import('../../src/lib/bgsDump.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'bgs-shards-'));
+  try {
+    const lines = Array.from({ length: 25 }, (_, index) => shardTestLine(index));
+    const gz = gzipSync(Buffer.from(`[\n${lines.join(',\n')},\n{"broken":\n]`, 'utf8'));
+    const archive = join(dir, 'dump.json.gz');
+    // Файл выделен целиком (как при параллельном скачивании), готово только начало.
+    const preallocated = Buffer.alloc(gz.length);
+    gz.copy(preallocated, 0, 0, 40);
+    writeFileSync(archive, preallocated);
+    const source = { url: 'https://example/dump.json.gz', etag: '"e1"', lastModified: 'Sat, 17 Oct 2026 04:50:00 GMT', total: gz.length };
+    const manifest = createBgsShardManifest({ source, runId: 'run-a', systemsPerShard: 10 });
+    const pulse = new BgsPulse();
+    let available = 40;
+    const reads = [];
+    const shardsSeen = [];
+    const controller = new AbortController();
+    const splitting = splitBgsArchive({
+      archive, dir: join(dir, 'shards'), manifest, counter: new BgsDumpCounter(), signal: controller.signal,
+      available: () => available, waitForBytes: (signal) => pulse.wait(signal, 50),
+      onShard: (entry) => shardsSeen.push(entry.file),
+      onProgress: (info) => reads.push(info.bytesRead),
+    });
+    // «Скачивание» дописывает файл частями; разбивка не читает дальше готового.
+    for (let at = 40; at < gz.length; at += 300) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      const end = Math.min(gz.length, at + 300);
+      const handle = await import('node:fs/promises').then((fs) => fs.open(archive, 'r+'));
+      await handle.write(gz, at, end - at, at);
+      await handle.close();
+      available = end;
+      assert.ok(Math.max(0, ...reads) <= available, 'разбивка не заглядывает за готовую границу');
+      pulse.notify();
+    }
+    available = null;
+    pulse.notify();
+    const done = await splitting;
+    assert.equal(done.complete, true);
+    assert.deepEqual(shardsSeen, ['bgs-00001.ndjson.gz', 'bgs-00002.ndjson.gz', 'bgs-00003.ndjson.gz']);
+    assert.deepEqual(done.shards.map((entry) => entry.systems), [10, 10, 5]);
+    assert.equal(done.stats.systems, 25);
+    assert.equal(done.stats.skipped.invalid, 1);
+    assert.equal(done.recordsRead, 26);
+    const rows = await readBgsShardRows(join(dir, 'shards', 'bgs-00002.ndjson.gz'));
+    assert.equal(rows.length, 10);
+    assert.equal(rows[0].name, 'Shard Test 10');
+    assert.equal(rows[0].id64, '900010', 'id64 строкой');
+    assert.deepEqual(Object.keys(rows[0]).sort(), ['allegiance', 'controlling', 'economy', 'factions', 'government', 'id64', 'name', 'observed_at', 'population', 'second_economy', 'security', 'state', 'x', 'y', 'z']);
+
+    const fromDisk = readBgsShardManifest(join(dir, 'shards'));
+    assert.equal(fromDisk.runId, 'run-a');
+    assert.equal(fromDisk.complete, true);
+    assert.equal(fromDisk.systems, 25);
+    assert.equal(bgsShardsInfo(join(dir, 'shards')).files, 3);
+
+    // Продолжение: разложенное не пишется второй раз, итоги считаются целиком.
+    const partial = readBgsShardManifest(join(dir, 'shards'));
+    partial.shards = partial.shards.slice(0, 1);
+    partial.systems = 10;
+    partial.recordsRead = 10;
+    partial.complete = false;
+    partial.stats = null;
+    rmSync(join(dir, 'shards', 'bgs-00002.ndjson.gz'));
+    rmSync(join(dir, 'shards', 'bgs-00003.ndjson.gz'));
+    const resumed = await splitBgsArchive({
+      archive, dir: join(dir, 'shards'), manifest: partial, counter: new BgsDumpCounter(), signal: new AbortController().signal,
+      available: () => null, waitForBytes: async () => {},
+    });
+    assert.deepEqual(resumed.shards.map((entry) => [entry.file, entry.systems]), [['bgs-00001.ndjson.gz', 10], ['bgs-00002.ndjson.gz', 10], ['bgs-00003.ndjson.gz', 5]]);
+    assert.equal(resumed.stats.systems, 25, 'итоги — по всему архиву, а не только по дочитанному');
+    assert.equal((await readBgsShardRows(join(dir, 'shards', 'bgs-00002.ndjson.gz')))[0].name, 'Shard Test 10');
+
+    assert.ok(clearBgsShards(join(dir, 'shards')) > 0);
+    assert.equal(existsSync(join(dir, 'shards', 'manifest.json')), false);
+    assert.equal(readBgsShardManifest(join(dir, 'shards')), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('куски: тот же дамп — по размеру и ETag (без него — по дате); остановка разбивки', async () => {
+  const base = { url: 'u', etag: '"a"', lastModified: 'Sat, 17 Oct 2026 04:50:00 GMT', total: 100 };
+  assert.equal(sameBgsDumpSource(base, { ...base }), true);
+  assert.equal(sameBgsDumpSource(base, { ...base, etag: 'W/"a"' }), true, 'слабый ETag — тот же');
+  assert.equal(sameBgsDumpSource(base, { ...base, etag: '"b"' }), false);
+  assert.equal(sameBgsDumpSource(base, { ...base, total: 101 }), false);
+  assert.equal(sameBgsDumpSource({ ...base, etag: null }, { ...base, etag: null, lastModified: 'Sat, 17 Oct 2026 04:50:00 +0000' }), true, 'дата в другой записи');
+  assert.equal(sameBgsDumpSource({ ...base, etag: null }, { ...base, etag: null, lastModified: 'Sun, 18 Oct 2026 04:50:00 GMT' }), false);
+  assert.equal(sameBgsDumpSource({ ...base, etag: null, lastModified: null }, { ...base, etag: null, lastModified: null }), false, 'без валидаторов не доказать');
+  assert.equal(sameBgsDumpSource(base, { ...base, url: 'v' }), false);
+  assert.equal(sameBgsDumpSource(base, null), false);
+
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'bgs-growing-'));
+  try {
+    const file = join(dir, 'growing.bin');
+    writeFileSync(file, Buffer.from('abcdef'));
+    const controller = new AbortController();
+    const chunks = [];
+    const reading = (async () => {
+      for await (const chunk of readGrowingFile(file, { available: () => 3, wait: (signal) => new BgsPulse().wait(signal, 20), signal: controller.signal })) {
+        chunks.push(chunk.toString());
+      }
+    })();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    controller.abort(new Error('стоп'));
+    await assert.rejects(reading, /стоп/);
+    assert.deepEqual(chunks, ['abc'], 'дальше готовой границы не читает, остановка — сразу');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

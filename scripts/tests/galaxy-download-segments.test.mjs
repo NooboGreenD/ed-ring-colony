@@ -313,3 +313,218 @@ test('битый архив удаляется вместе с планом се
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/* ── Упорядоченные куски (конвейер фракций) ────────────────────────────── */
+
+test('planDumpPieces / rechunkDumpSegments / contiguousDumpBytes: куски по порядку, скачанное не теряется', async () => {
+  const { planDumpPieces, rechunkDumpSegments, contiguousDumpBytes } = await import('../../src/lib/galaxyImport.ts');
+  const pieces = planDumpPieces(10_000, 4096);
+  assert.deepEqual(pieces.map((piece) => [piece.start, piece.end]), [[0, 4095], [4096, 8191], [8192, 9999]]);
+  assert.equal(planDumpPieces(10, 1).length, 1, 'кусок не меньше 1 КБ');
+
+  // Старый план: четыре больших части с разным прогрессом.
+  const legacy = [
+    { start: 0, end: 2499, done: 2500 },
+    { start: 2500, end: 4999, done: 1000 },
+    { start: 5000, end: 7499, done: 0 },
+    { start: 7500, end: 9999, done: 2500 },
+  ];
+  const recut = rechunkDumpSegments(legacy, 1024);
+  assert.equal(recut.reduce((sum, piece) => sum + piece.done, 0), 6000, 'все скачанные байты сохранены');
+  for (let i = 1; i < recut.length; i++) assert.equal(recut[i].start, recut[i - 1].end + 1, 'без дыр и перекрытий');
+  assert.equal(recut.at(-1).end, 9999);
+  assert.ok(recut.filter((piece) => piece.done === 0).every((piece) => piece.end - piece.start + 1 <= 1024));
+
+  assert.equal(contiguousDumpBytes(legacy), 3500, 'готовое начало: первая часть + 1000 байт второй');
+  assert.equal(contiguousDumpBytes(recut), 3500);
+  assert.equal(contiguousDumpBytes([{ start: 0, end: 99, done: 0 }, { start: 100, end: 199, done: 100 }]), 0, 'дыра в начале — читать нечего');
+});
+
+test('упорядоченные куски: N соединений, запросы «от-до» по порядку, готовое начало растёт без откатов', async () => {
+  const dir = tmpDir();
+  const buffer = payload(256 * 1024);
+  const { handler, state } = rangeServer(buffer);
+  const server = await startServer(handler);
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  const contiguous = [];
+  try {
+    const result = await downloadDump({
+      url: server.url,
+      dest,
+      segments: 3,
+      pieceBytes: 16 * 1024,
+      minSegmentedBytes: 0,
+      progressIntervalMs: 250,
+      onProgress: (info) => contiguous.push(info.contiguous),
+    });
+    assert.equal(result.segments, 3);
+    assert.deepEqual(fs.readFileSync(dest), buffer);
+    const ranges = state.ranges.filter((range) => range && range !== 'bytes=0-0');
+    assert.equal(ranges.length, Math.ceil(buffer.length / (16 * 1024)), 'по запросу на кусок');
+    assert.ok(ranges.every((range) => /^bytes=\d+-\d+$/.test(range)));
+    const starts = ranges.map((range) => Number(/bytes=(\d+)-/.exec(range)[1]));
+    assert.deepEqual([...starts].sort((a, b) => a - b), starts, 'куски берутся по порядку файла');
+    assert.ok(contiguous.length > 0);
+    for (let i = 1; i < contiguous.length; i++) assert.ok(contiguous[i] >= contiguous[i - 1], 'готовое начало не откатывается');
+    assert.equal(contiguous.at(-1), buffer.length);
+    assert.ok(!fs.existsSync(segmentStatePath(dest)));
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('сервер не даёт столько соединений (503): лишние отключаются, скачивание доходит до конца', async () => {
+  const dir = tmpDir();
+  const buffer = payload(192 * 1024);
+  const inner = rangeServer(buffer);
+  let inFlight = 0;
+  let refused = 0;
+  const server = await startServer((req, res) => {
+    if (req.method === 'GET' && req.headers.range && req.headers.range !== 'bytes=0-0') {
+      if (inFlight >= 2) {
+        refused++;
+        res.writeHead(503);
+        res.end();
+        return;
+      }
+      inFlight++;
+      res.on('close', () => { inFlight--; });
+      // Медленный ответ: два «разрешённых» соединения заняты, пока остальные стучатся.
+      setTimeout(() => inner.handler(req, res), 15);
+      return;
+    }
+    inner.handler(req, res);
+  });
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  const lines = [];
+  try {
+    const result = await downloadDump({
+      url: server.url,
+      dest,
+      segments: 4,
+      pieceBytes: 8 * 1024,
+      minSegmentedBytes: 0,
+      retries: Infinity,
+      maxStagnantFailures: 50,
+      sleep: () => new Promise((resolve) => setTimeout(resolve, 5)),
+      log: (line) => lines.push(line),
+    });
+    assert.equal(result.bytes, buffer.length);
+    assert.deepEqual(fs.readFileSync(dest), buffer);
+    assert.ok(refused > 0, 'сервер действительно отказывал');
+    assert.ok(lines.some((line) => /не даёт столько соединений, продолжаю в [123]/.test(line)), lines.join('\n'));
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('strictSource: дамп пересобран посреди скачивания — DumpSourceChanged, недокачанное удалено', async () => {
+  const { DumpSourceChanged, isDumpSourceChanged, downloadDumpFile } = await import('../../src/lib/galaxyImport.ts');
+  const dir = tmpDir();
+  const buffer = payload(128 * 1024);
+  const OLD = 'Wed, 30 Sep 2026 03:00:00 GMT';
+  const NEW = 'Thu, 01 Oct 2026 03:00:00 GMT';
+  let gets = 0;
+  let switchAfter = 3;
+  const server = await startServer((req, res) => {
+    const lastModified = gets >= switchAfter ? NEW : OLD;
+    if (req.method === 'HEAD') {
+      res.writeHead(200, { 'Content-Length': buffer.length, 'Accept-Ranges': 'bytes', 'Last-Modified': lastModified });
+      res.end();
+      return;
+    }
+    gets++;
+    const match = /bytes=(\d+)-(\d*)/.exec(req.headers.range ?? '');
+    const start = Number(match?.[1] ?? 0);
+    const end = match?.[2] ? Number(match[2]) : buffer.length - 1;
+    res.writeHead(match ? 206 : 200, {
+      ...(match ? { 'Content-Range': `bytes ${start}-${end}/${buffer.length}` } : {}),
+      'Content-Length': end - start + 1,
+      'Last-Modified': lastModified,
+    });
+    res.end(buffer.subarray(start, end + 1));
+  });
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+  try {
+    // Параллельные куски: третий ответ уже от другого файла.
+    await assert.rejects(
+      () => downloadDump({ url: server.url, dest, segments: 2, pieceBytes: 8 * 1024, minSegmentedBytes: 0, strictSource: true, sleep: async () => {} }),
+      (error) => isDumpSourceChanged(error) && error instanceof DumpSourceChanged && /изменился во время скачивания/.test(error.message),
+    );
+    assert.ok(!fs.existsSync(dest), 'байты старого файла удалены');
+    assert.ok(!fs.existsSync(segmentStatePath(dest)), 'и план частей тоже');
+
+    // Без strictSource каталог ведёт себя по-старому: ответы не сверяются.
+    gets = 0;
+    switchAfter = Infinity;
+    const plain = await downloadDump({ url: server.url, dest, segments: 2, pieceBytes: 8 * 1024, minSegmentedBytes: 0, sleep: async () => {} });
+    assert.equal(plain.bytes, buffer.length);
+    fs.rmSync(dest, { force: true });
+
+    // Один поток: докачка недокачанного файла сверяется с ожидаемым дампом.
+    fs.writeFileSync(dest, buffer.subarray(0, 4096));
+    gets = 0;
+    switchAfter = 0;
+    await assert.rejects(
+      () => downloadDumpFile({ url: server.url, dest, verify: false, expectSource: { total: buffer.length, etag: null, lastModified: OLD } }),
+      (error) => isDumpSourceChanged(error),
+    );
+    assert.ok(!fs.existsSync(dest), 'чужое начало удалено');
+  } finally {
+    await stopServer(server);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('план частей на диске: один поток его не портит, а одно соединение продолжает его', async () => {
+  const dir = tmpDir();
+  const buffer = payload(128 * 1024);
+  const dest = path.join(dir, 'systemsPopulated.json.gz');
+
+  // Недокачанный параллельный файл: сервер рвёт каждый ответ.
+  const broken = rangeServer(buffer, { dropAfter: 4096 });
+  const first = await startServer(broken.handler);
+  await assert.rejects(() => downloadDump({
+    url: first.url, dest, segments: 2, pieceBytes: 16 * 1024, minSegmentedBytes: 0, retries: 0, maxStagnantFailures: 0, sleep: async () => {},
+  }));
+  await stopServer(first);
+  assert.ok(fs.existsSync(segmentStatePath(dest)), 'план частей сохранён');
+  assert.equal(fs.statSync(dest).size, buffer.length, 'файл выделен целиком — «одним потоком» он выглядел бы готовым');
+
+  // Тот же сервер, одно соединение: план продолжается, а не выбрасывается.
+  const healthy = rangeServer(buffer);
+  const second = await startServer(healthy.handler);
+  try {
+    const result = await downloadDump({ url: second.url, dest, segments: 1, pieceBytes: 16 * 1024, minSegmentedBytes: 0, sleep: async () => {} });
+    assert.deepEqual(fs.readFileSync(dest), buffer);
+    assert.equal(result.segments, 1);
+    const starts = healthy.state.ranges.filter((range) => range && range !== 'bytes=0-0').map((range) => Number(/bytes=(\d+)-/.exec(range)[1]));
+    assert.ok(!starts.includes(0) || broken.state.ranges.length === 0, 'скачанное начало не качается заново');
+  } finally {
+    await stopServer(second);
+  }
+
+  // Ещё раз недокачанный файл, но теперь сервер без Range: файл начинается заново, а не «уже готов».
+  const brokenAgain = rangeServer(buffer, { dropAfter: 4096 });
+  const third = await startServer(brokenAgain.handler);
+  fs.rmSync(dest, { force: true });
+  await assert.rejects(() => downloadDump({
+    url: third.url, dest, segments: 2, pieceBytes: 16 * 1024, minSegmentedBytes: 0, retries: 0, maxStagnantFailures: 0, sleep: async () => {},
+  }));
+  await stopServer(third);
+  const noRange = rangeServer(buffer, { ignoreRange: true });
+  const fourth = await startServer(noRange.handler);
+  const lines = [];
+  try {
+    const result = await downloadDump({ url: fourth.url, dest, segments: 2, minSegmentedBytes: 0, log: (line) => lines.push(line) });
+    assert.equal(result.segments, 1);
+    assert.deepEqual(fs.readFileSync(dest), buffer, 'настоящий файл, а не выделенный с нулями');
+    assert.ok(lines.some((line) => /не годятся для одного потока/.test(line)), lines.join('\n'));
+    assert.ok(!fs.existsSync(segmentStatePath(dest)));
+  } finally {
+    await stopServer(fourth);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

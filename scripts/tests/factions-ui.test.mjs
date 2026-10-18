@@ -4,8 +4,10 @@
  *   * карточка системы на карте (`FactionSystemCard`): кто у власти, все
  *     фракции с влиянием и состояниями, «добавить на карту» / «убрать»;
  *   * раздел админки «Игровые данные → Фракции» (`FactionsAdminTab`): данные
- *     в базе, этапы импорта с прогресс-барами, журнал, обновления пилотов,
- *     кнопки «Загрузить», «Остановить», «Удалить архив»;
+ *     в базе, карточки «архив на сервере» и «куски → база» (как у каталога
+ *     систем), этапы импорта с прогресс-барами, журнал, обновления пилотов,
+ *     кнопки «Загрузить», «Остановить», «Скачать архив», «Разбить на куски»,
+ *     «Загрузить куски в базу», «Удалить архив и куски», число соединений;
  *   * подключение: вкладка Atlas и слой карты, общий выбор точек с PowerPlay,
  *     раздел админки, загрузчик журналов в личном кабинете, Colonial Helper,
  *     миграция в снимке схемы, задача планировщика.
@@ -82,7 +84,7 @@ async function setup() {
       else global[key] = value;
     }
   };
-  return { React, mod, render, click, flush, cleanup, dom, document: dom.window.document };
+  return { React, mod, render, click, flush, cleanup, dom, act, document: dom.window.document };
 }
 
 const POINT = {
@@ -167,20 +169,22 @@ function adminStatus(overrides = {}) {
     success: true,
     running: true,
     interrupted: false,
+    mode: 'full',
     progress: {
-      id: 'run-7', trigger: 'admin', force: false, phase: 'running', stage: 'download', percent: 24.5,
-      message: 'Скачивание дампа на диск: 120 МБ из 498 МБ', startedAt: '2026-10-18T11:50:00.000Z', updatedAt: '2026-10-18T11:59:00.000Z', finishedAt: null,
+      id: 'run-7', trigger: 'admin', force: false, mode: 'full', phase: 'running', stage: 'download', percent: 24.5,
+      message: 'Скачивание архива на сервер: 120 МБ из 498 МБ', startedAt: '2026-10-18T11:50:00.000Z', updatedAt: '2026-10-18T11:59:00.000Z', finishedAt: null,
       stages: [
         { id: 'probe', status: 'done', done: 0, total: null, detail: '498 МБ · от Sat, 17 Oct 2026 04:50:00 GMT', startedAt: '2026-10-18T11:50:00.000Z', finishedAt: '2026-10-18T11:50:01.000Z' },
-        { id: 'download', status: 'running', done: 125_829_120, total: 522_190_000, detail: '120 МБ из 498 МБ · 1,2 МБ/с · осталось ~5 мин 30 с', startedAt: '2026-10-18T11:50:01.000Z', finishedAt: null },
-        { id: 'import', status: 'pending', done: 0, total: null, detail: '', startedAt: null, finishedAt: null },
+        { id: 'download', status: 'running', done: 125_829_120, total: 522_190_000, detail: '120 МБ из 498 МБ · соединений: 8 · 1,2 МБ/с · осталось ~5 мин 30 с', startedAt: '2026-10-18T11:50:01.000Z', finishedAt: null },
+        { id: 'split', status: 'running', done: 120_000_000, total: 522_190_000, detail: 'кусков 8 · систем 8 000 · прочитано 114 МБ из 498 МБ · ждёт скачивания', startedAt: '2026-10-18T11:50:02.000Z', finishedAt: null },
+        { id: 'import', status: 'running', done: 7, total: 36, detail: 'кусок 7 из ~36 · систем 7 000 · свежее у пилотов 12', startedAt: '2026-10-18T11:50:03.000Z', finishedAt: null },
         { id: 'finish', status: 'pending', done: 0, total: null, detail: '', startedAt: null, finishedAt: null },
       ],
       result: null,
     },
     log: [
-      { at: '2026-10-18T11:50:00.000Z', level: 'info', text: 'Запуск импорта: вручную из админки' },
-      { at: '2026-10-18T11:55:00.000Z', level: 'warn', text: 'Скачивание: Сегмент 1: обрыв на байте 1 000 — продолжаю' },
+      { at: '2026-10-18T11:50:00.000Z', level: 'info', text: 'Запуск: вручную из админки · загрузка данных (скачать → разбить на куски → записать в базу)' },
+      { at: '2026-10-18T11:55:00.000Z', level: 'warn', text: 'Скачивание: Кусок 12: обрыв на байте 1 000 — продолжаю' },
     ],
     state: {
       status: 'running', source_url: 'https://www.edsm.net/dump/systemsPopulated.json.gz', last_modified: null, dump_generated_at: '2026-10-11T04:50:00.000Z',
@@ -199,9 +203,19 @@ function adminStatus(overrides = {}) {
       { received_at: '2026-10-18T11:40:00.000Z', source: 'helper', received: 3, applied: 2, stale: 1, created: 1, invalid: 0, systems: ['Sol', 'Fresh Colony'], cmdr: 'CMDR Nova' },
       { received_at: '2026-10-18T10:00:00.000Z', source: 'web', received: 120, applied: 30, stale: 90, created: 0, invalid: 2, systems: ['Lave', 'Leesti', 'Diso', 'Orrere', 'Zaonce'], cmdr: null },
     ],
-    archive: { path: '/app/data/spansh/factions/edsm-systemsPopulated.json.gz', exists: true, bytes: 125_829_120, partial: true, complete: false, lastModified: null, freeBytes: 80 * 1024 ** 3 },
+    archive: {
+      path: '/app/data/spansh/factions/edsm-systemsPopulated.json.gz', exists: true, bytes: 522_190_000, downloaded: 125_829_120, total: 522_190_000,
+      partial: true, complete: false, lastModified: null, freeBytes: 80 * 1024 ** 3,
+    },
+    shards: {
+      dir: '/app/data/spansh/factions/shards', exists: true, complete: false, shards: 8, imported: 7, systems: 8000, importedSystems: 7000,
+      files: 8, bytes: 2_400_000, source: { url: 'https://www.edsm.net/dump/systemsPopulated.json.gz', lastModified: 'Sat, 17 Oct 2026 04:50:00 GMT', total: 522_190_000 },
+      completedAt: null,
+    },
+    writer: { backend: 'pg', host: 'db', disabled: false },
     config: {
-      dumpUrl: 'https://www.edsm.net/dump/systemsPopulated.json.gz', archiveKeep: false, segments: 4, batchSize: 250, minSystems: 1000,
+      dumpUrl: 'https://www.edsm.net/dump/systemsPopulated.json.gz', archiveKeep: false, segments: 8, maxSegments: 16, pieceBytes: 8 * 1024 * 1024,
+      shardSystems: 1000, batchSize: 250, minSystems: 1000,
       keepDays: 30, refreshDays: 7, nextScheduledRun: '2026-10-19T07:10:00.000Z', scheduleDecision: { action: 'skip', reason: 'running' },
     },
     serverTime: '2026-10-18T12:00:00.000Z',
@@ -237,11 +251,23 @@ test('админка «Фракции»: данные в базе, этапы с
 
     const stages = Array.from(doc.querySelectorAll('[data-bgs-admin-stage]'));
     assert.deepEqual(stages.map((item) => [item.getAttribute('data-bgs-admin-stage'), item.getAttribute('data-status')]),
-      [['probe', 'done'], ['download', 'running'], ['import', 'pending'], ['finish', 'pending']]);
-    assert.match(stages[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /120 МБ из 498 МБ · 1,2 МБ\/с · осталось ~5 мин 30 с/);
+      [['probe', 'done'], ['download', 'running'], ['split', 'running'], ['import', 'running'], ['finish', 'pending']], 'скачивание, разбивка и запись — одновременно');
+    assert.match(stages[1].textContent.replace(/[\u00a0\u202f]/g, ' '), /120 МБ из 498 МБ · соединений: 8 · 1,2 МБ\/с · осталось ~5 мин 30 с/);
+    assert.match(stages[1].textContent, /Скачивание архива на сервер/);
+    assert.match(stages[2].textContent.replace(/[\u00a0\u202f]/g, ' '), /Разбивка на куски.*кусков 8 · систем 8 000/);
+    assert.match(stages[3].textContent.replace(/[\u00a0\u202f]/g, ' '), /Загрузка кусков в базу.*кусок 7 из ~36/);
     assert.equal(stages[1].querySelector('[role="progressbar"]').getAttribute('aria-valuenow'), '24');
     assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Идёт загрузка · 24,5 %/);
-    assert.match(doc.querySelector('[data-bgs-admin-archive]').textContent.replace(/[\u00a0\u202f]/g, ' '), /скачан не полностью, следующий запуск докачает · свободно на диске 80,0 ГБ/);
+    assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent, /Запуск: вручную из админки · загрузка данных/);
+    const archiveCard = doc.querySelector('[data-bgs-admin-archive]').textContent.replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(archiveCard, /Архив на сервере/);
+    assert.match(archiveCard, /Качается: 120 МБ из 498 МБ \(24 %\)/, 'скачано, а не размер выделенного файла');
+    assert.match(archiveCard, /до 8 соединений, куски файла по 8 МБ · свободно на диске 80,0 ГБ/);
+    const shardsCard = doc.querySelector('[data-bgs-admin-shards]').textContent.replace(/[\u00a0\u202f]/g, ' ');
+    assert.match(shardsCard, /8 кусков · 8 000 систем · 2,3 МБ — разбивка идёт/);
+    assert.match(shardsCard, /В базе: 7 из 8 кусков \(7 000 систем\)/);
+    assert.match(doc.querySelector('[data-bgs-admin-writer]').textContent, /прямой Postgres \(db\) — кусок одним вызовом/);
+    assert.match(doc.querySelector('[data-bgs-admin-sync]').textContent, /архив скачивается на сервер.*разбивается там на куски.*куски загружаются в базу/i);
     assert.equal(doc.querySelectorAll('[data-bgs-admin-log] [data-level="warn"]').length, 1);
 
     const updates = Array.from(doc.querySelectorAll('[data-bgs-admin-update]'));
@@ -256,8 +282,10 @@ test('админка «Фракции»: данные в базе, этапы с
     assert.match(doc.querySelector('[data-bgs-admin-sync]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Сейчас задача: импорт уже идёт/);
 
     const button = (action) => doc.querySelector(`[data-bgs-admin-action="${action}"]`);
-    assert.equal(button('start').disabled, true, 'во время импорта запуск недоступен');
-    assert.equal(button('cleanup').disabled, true, 'и удаление архива тоже');
+    for (const action of ['start', 'force', 'download', 'split', 'import', 'cleanup']) {
+      assert.equal(button(action).disabled, true, `во время импорта «${action}» недоступна`);
+    }
+    assert.equal(doc.querySelector('[data-bgs-admin-segments]').disabled, true);
     assert.equal(button('cancel').disabled, false);
     await ui.click(button('cancel'));
     assert.deepEqual(posts.at(-1), { action: 'cancel', force: false });
@@ -272,10 +300,61 @@ test('админка «Фракции»: данные в базе, этапы с
     await ui.flush(40);
     assert.equal(button('start').disabled, false);
     assert.match(button('start').textContent.replace(/[\u00a0\u202f]/g, ' '), /Загрузить сейчас/);
+    assert.match(button('download').textContent, /Докачать архив/, 'архив скачан не полностью');
+    assert.equal(button('split').disabled, true, 'разбивать нечего: архив не скачан целиком');
+    assert.equal(button('import').disabled, true, 'и записывать в базу тоже');
     assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Импорт остановлен администратором/);
+
+    // Число соединений уходит с запуском.
+    const select = doc.querySelector('[data-bgs-admin-segments]');
+    assert.equal(select.value, '8');
+    assert.deepEqual(Array.from(select.options).map((option) => option.value), ['1', '2', '4', '6', '8', '12', '16']);
+    await ui.act(async () => {
+      select.value = '12';
+      select.dispatchEvent(new ui.dom.window.Event('change', { bubbles: true }));
+    });
+    await ui.click(button('download'));
+    assert.deepEqual(posts.at(-1), { action: 'download', force: false, segments: 12 });
+    assert.match(doc.body.textContent.replace(/[\u00a0\u202f]/g, ' '), /Архив скачивается на сервер в 12 соедин/);
+    await ui.click(button('start'));
+    assert.deepEqual(posts.at(-1), { action: 'start', force: false, segments: 12 });
+    await ui.click(button('force'));
+    assert.deepEqual(posts.at(-1), { action: 'start', force: true, segments: 12 });
+
     await ui.click(button('cleanup'));
     assert.deepEqual(posts.at(-1), { action: 'cleanup', force: false });
-    assert.match(doc.body.textContent.replace(/[\u00a0\u202f]/g, ' '), /Архив удалён — освобождено 120 МБ/);
+    assert.match(doc.body.textContent.replace(/[\u00a0\u202f]/g, ' '), /Архив и куски удалены с сервера — освобождено 120 МБ/);
+
+    // Архив скачан целиком, куски разбиты — доступны «Разбить» и «Загрузить куски в базу».
+    payload = adminStatus({
+      running: false,
+      mode: null,
+      progress: {
+        ...adminStatus().progress, mode: 'download', phase: 'ok', finishedAt: '2026-10-18T12:00:00.000Z', percent: 100,
+        message: 'Архив скачан на сервер: 498 МБ — «Загрузить данные» разобьёт его и запишет в базу без повторного скачивания',
+        stages: adminStatus().progress.stages.map((stage) => ({ ...stage, status: ['probe', 'download'].includes(stage.id) ? 'done' : 'skipped' })),
+        result: { archiveBytes: 522_190_000, durationMs: 600_000 },
+      },
+      archive: { ...adminStatus().archive, bytes: 522_190_000, downloaded: 522_190_000, partial: false, complete: true, lastModified: 'Sat, 17 Oct 2026 04:50:00 GMT' },
+      shards: { ...adminStatus().shards, exists: false, shards: 0, imported: 0, systems: 0, importedSystems: 0, files: 0, bytes: 0 },
+      writer: { backend: 'postgrest', host: null, disabled: false },
+      config: { ...adminStatus().config, scheduleDecision: { action: 'skip', reason: 'fresh' } },
+    });
+    await ui.click(doc.querySelector('button.btn'));
+    await ui.flush(40);
+    assert.match(doc.querySelector('[data-bgs-admin-archive]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Скачан целиком: 498 МБ \(дамп от Sat, 17 Oct 2026 04:50:00 GMT\)/);
+    assert.match(doc.querySelector('[data-bgs-admin-shards]').textContent, /Кусков нет/);
+    assert.match(doc.querySelector('[data-bgs-admin-writer]').textContent.replace(/[\u00a0\u202f]/g, ' '), /PostgREST — пачками по 250 систем/);
+    assert.match(doc.querySelector('[data-bgs-admin-result]').textContent.replace(/[\u00a0\u202f]/g, ' '), /Архив на сервере: 498 МБ · за 10 мин 00 с — в базу пока ничего не записано/);
+    assert.match(doc.querySelector('[data-bgs-admin-progress]').textContent, /Последний запуск: архив скачан/);
+    assert.match(doc.querySelector('[data-bgs-admin-shards]').textContent, /архив скачан: «Разбить на куски» или «Загрузить данные» разобьют его/);
+    assert.equal(button('split').disabled, false);
+    assert.equal(button('import').disabled, false);
+    await ui.click(button('split'));
+    assert.deepEqual(posts.at(-1), { action: 'split', force: false });
+    await ui.click(button('import'));
+    assert.deepEqual(posts.at(-1), { action: 'import', force: false });
+    assert.match(doc.body.textContent, /без обращения к EDSM/);
   } finally {
     delete global.__bgsAdminFetch;
     await ui.cleanup();

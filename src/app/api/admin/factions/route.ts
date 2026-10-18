@@ -2,19 +2,26 @@ import { NextResponse } from 'next/server';
 
 import { requireAdmin } from '@/lib/billing/auth';
 import { createServiceClient } from '@/lib/supabaseServer';
-import { galaxyDownloadSegments } from '@/lib/galaxyImport';
+import { markBgsInterrupted, type BgsSyncMode } from '@/lib/bgsProgress';
 import {
   BGS_KEEP_DAYS,
+  BGS_MAX_SEGMENTS,
   bgsArchiveInfo,
   bgsArchiveKeep,
   bgsBatchSize,
+  bgsDownloadSegments,
   bgsDumpUrl,
   bgsMinSystems,
+  bgsPieceBytes,
   bgsRefreshDays,
+  bgsShardSystems,
+  bgsShardsStatus,
   bgsSyncInterrupted,
   cancelBgsSync,
+  clampBgsSegments,
   cleanupBgsArchive,
   decideBgsScheduledSync,
+  describeBgsWriter,
   getBgsLastRun,
   getBgsLiveRun,
   isBgsSyncRunning,
@@ -69,22 +76,44 @@ async function readRecentUpdates(svc: any): Promise<Array<Omit<UpdateRow, 'user_
   }));
 }
 
+/** Действие админки → вид запуска импорта. */
+const RUN_ACTIONS: Record<string, BgsSyncMode> = {
+  start: 'full',
+  download: 'download',
+  split: 'split',
+  import: 'import',
+};
+
+const RUN_STARTED: Record<BgsSyncMode, string> = {
+  full: 'Загрузка запущена',
+  download: 'Скачивание архива запущено',
+  split: 'Разбивка архива на куски запущена',
+  import: 'Загрузка кусков в базу запущена',
+};
+
 /**
  * Админка → Игровые данные → Фракции: управление данными о минорных фракциях.
  *
  * GET — состояние для панели: идёт ли импорт дампа EDSM (этапы, проценты,
  * журнал), что лежит в базе (системы, фракции, источники, свежесть),
  * обновления от пилотов (Colonial Helper и загрузчик журналов на сайте),
- * архив на диске и настройки.
+ * архив и куски на сервере, путь записи в базу и настройки.
  *
- * POST:
- *   * `{ action: 'start' }`              — загрузить дамп сейчас (тот же дамп,
- *                                          что в прошлый раз, не качается);
- *   * `{ action: 'start', force: true }` — импортировать заново, даже если дамп
- *                                          тот же, и принять «усохший»;
- *   * `{ action: 'cancel' }`             — остановить импорт (скачанное
- *                                          остаётся на диске для докачки);
- *   * `{ action: 'cleanup' }`            — удалить скачанный архив с диска.
+ * POST (как у «Каталога систем»: архив → куски → база):
+ *   * `{ action: 'start' }`               — всё сразу: скачать архив на сервер,
+ *                                           по мере скачивания разбить на куски и
+ *                                           записать их в базу (тот же дамп, что
+ *                                           в прошлый раз, не качается);
+ *   * `{ action: 'start', force: true }`  — загрузить заново, даже если дамп тот
+ *                                           же, и принять «усохший»;
+ *   * `{ action: 'download' }`            — только скачать архив на сервер;
+ *   * `{ action: 'split' }`               — только разбить скачанный архив на куски;
+ *   * `{ action: 'import' }`              — записать в базу то, что уже на сервере
+ *                                           (архив или куски), без обращения к EDSM;
+ *   * `segments: 1…16`                    — соединений к EDSM для этого запуска;
+ *   * `{ action: 'cancel' }`              — остановить (скачанное и разбитое
+ *                                           остаётся для продолжения);
+ *   * `{ action: 'cleanup' }`             — удалить архив и куски с сервера.
  */
 export async function GET(req: Request) {
   const auth = await requireAdmin(req);
@@ -105,16 +134,21 @@ export async function GET(req: Request) {
     const last = live ?? getBgsLastRun();
     const running = isBgsSyncRunning() || Boolean(live);
     const persisted = state.progress;
-    const progress = last?.progress && (!persisted || Date.parse(last.progress.startedAt) >= Date.parse(persisted.startedAt))
+    const chosen = last?.progress && (!persisted || Date.parse(last.progress.startedAt) >= Date.parse(persisted.startedAt))
       ? last.progress
       : persisted;
+    // «Идёт» в базе, а живого запуска нет — сайт перезапустился посреди работы.
+    const stuck = !running && chosen?.phase === 'running';
+    const progress = stuck && chosen ? markBgsInterrupted(chosen) : chosen;
     const log = last?.log?.length ? last.log : state.log;
     const decision = decideBgsScheduledSync(state, { nowMs });
+    const writer = describeBgsWriter();
     return NextResponse.json(
       {
         success: true,
         running,
-        interrupted: !running && bgsSyncInterrupted(state, nowMs),
+        mode: running ? live?.progress.mode ?? null : null,
+        interrupted: !running && (bgsSyncInterrupted(state, nowMs) || stuck),
         progress,
         log,
         state: {
@@ -138,10 +172,15 @@ export async function GET(req: Request) {
         summaryError,
         updates,
         archive: bgsArchiveInfo(),
+        shards: bgsShardsStatus(),
+        writer,
         config: {
           dumpUrl: bgsDumpUrl(),
           archiveKeep: bgsArchiveKeep(),
-          segments: galaxyDownloadSegments(),
+          segments: bgsDownloadSegments(),
+          maxSegments: BGS_MAX_SEGMENTS,
+          pieceBytes: bgsPieceBytes(),
+          shardSystems: bgsShardSystems(),
           batchSize: bgsBatchSize(),
           minSystems: bgsMinSystems(),
           keepDays: BGS_KEEP_DAYS,
@@ -172,25 +211,34 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   const auth = await requireAdmin(req);
   if ('response' in auth) return auth.response;
-  let body: { action?: unknown; force?: unknown } = {};
+  let body: { action?: unknown; force?: unknown; segments?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
     body = {};
   }
   const action = typeof body.action === 'string' ? body.action : '';
-  if (action === 'start') {
+  const mode = Object.prototype.hasOwnProperty.call(RUN_ACTIONS, action) ? RUN_ACTIONS[action] : null;
+  if (mode) {
+    if (body.segments !== undefined && body.segments !== null && !(Number(body.segments) >= 1 && Number(body.segments) <= BGS_MAX_SEGMENTS)) {
+      return NextResponse.json({ success: false, error: `Соединений к EDSM: от 1 до ${BGS_MAX_SEGMENTS}` }, { status: 400, headers });
+    }
     let svc;
     try {
       svc = createServiceClient();
     } catch (error) {
       return NextResponse.json({ success: false, error: `Нет подключения к базе: ${String((error as Error)?.message ?? error).slice(0, 200)}` }, { status: 503, headers });
     }
-    const result = startBgsSync(svc, { force: body.force === true, trigger: 'admin' });
+    const force = body.force === true;
+    const segments = body.segments == null ? undefined : clampBgsSegments(body.segments);
+    const result = startBgsSync(svc, { force, mode, segments, trigger: 'admin' });
     if (!result.started) {
       return NextResponse.json({ success: false, started: false, reason: result.reason }, { status: 409, headers });
     }
-    return NextResponse.json({ success: true, started: true, force: body.force === true }, { headers });
+    return NextResponse.json(
+      { success: true, started: true, force, mode, ...(segments ? { segments } : {}), message: RUN_STARTED[mode] },
+      { headers },
+    );
   }
   if (action === 'cancel') {
     const cancelled = cancelBgsSync();
@@ -203,5 +251,8 @@ export async function POST(req: Request) {
     }
     return NextResponse.json({ success: true, ...result }, { headers });
   }
-  return NextResponse.json({ success: false, error: 'Неизвестное действие: нужен start, cancel или cleanup' }, { status: 400, headers });
+  return NextResponse.json(
+    { success: false, error: 'Неизвестное действие: нужен start, download, split, import, cancel или cleanup' },
+    { status: 400, headers },
+  );
 }
