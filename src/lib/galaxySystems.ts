@@ -139,7 +139,13 @@ export const STAR_CLASS_LABELS: Record<StarClass, string> = {
   s_type: 'S-тип', ms_type: 'MS-тип',
 };
 
-/** Normalized search key for a system name (matches galaxy_systems.name_lc). */
+/**
+ * Normalized search key for a system name (matches galaxy_systems.name_lc).
+ *
+ * Kept as a separate, minimal function: the Spansh import runs it for ~2×10⁸
+ * names. For every real system name it equals the project-wide `systemKey`
+ * (`systemIdentity.ts`) — `scripts/tests/system-identity.test.mjs` checks that.
+ */
 export function normalizeSystemName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').toLowerCase();
 }

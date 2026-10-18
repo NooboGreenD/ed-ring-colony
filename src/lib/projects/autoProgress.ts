@@ -86,3 +86,8 @@ export async function updateProjectProgress(
 
   return { updated: true, newStatus, systemsAffected: projectSystems.length };
 }
+
+// Общая реакция «площадки из журнала → проекты эскадрилий» для всех путей
+// загрузки (Helper, сайт, CAPI). `updateProjectProgress` выше остаётся для
+// совместимости: CAPI теперь идёт той же реакцией, что и журналы.
+export { syncProjectsFromSites, type ProjectSyncResult, type ProjectSystemChange } from './projectSync';

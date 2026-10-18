@@ -15,12 +15,12 @@
  * функциями, а маршруты принимают «что угодно с методом from».
  */
 
+import { systemKey as sharedSystemKey } from '../systemIdentity.ts';
+
 export const GOVERNANCE_TABLE = 'system_architects';
 
 /** Ключ сравнения имён систем: регистр и лишние пробелы не должны плодить дубли. */
-export function systemKey(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
+export const systemKey = sharedSystemKey;
 
 /** Строка `system_architects`, как её отдаёт Supabase. */
 export interface SystemArchitectRow {

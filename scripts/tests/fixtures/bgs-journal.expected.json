@@ -19,6 +19,11 @@
    "Name": "Ring Colony Pioneers",
    "FactionState": "Expansion"
   },
+  "ControllingPower": "Jerome Archer",
+  "Powers": [
+   "Jerome Archer"
+  ],
+  "PowerplayState": "Exploited",
   "Factions": [
    {
     "Name": "Ring Colony Pioneers",

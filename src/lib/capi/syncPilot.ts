@@ -22,12 +22,13 @@ import { upsertResilient, updateResilient, schemaWarning } from './persist.ts';
 import { syncMemberLocation } from './locationSync.ts';
 import { parseColonisationEvents } from '@/lib/journalParser';
 import {
-  latestDepotEvents,
   persistColonisationSites,
   siteRowFromDepot,
+  snapshotRowsForChangedSites,
   type ColonisationSiteRow,
 } from '@/lib/colonisationEvents';
-import { updateProjectProgress } from '@/lib/projects/autoProgress';
+import { syncProjectsFromSites } from '@/lib/projects/autoProgress';
+import { applySystemObservations, observationEventsFromJournalText } from '@/lib/systemObservations';
 
 export type JournalStatus = 'ok' | 'empty' | 'partial' | 'error' | 'skipped';
 
@@ -220,13 +221,39 @@ export async function syncCapiPilot(
         result.eventsDuplicate = write.unchanged + write.stale;
         result.eventsSkipped = events.depotEvents.length - rows.length;
 
-        // Прогресс проекта — по последнему состоянию каждой стройки: окно
-        // CAPI на каждом синке содержит одни и те же события.
-        for (const ev of latestDepotEvents(events.depotEvents)) {
+        // Снимки прогресса и проекты — те же реакции, что у журналов с сайта
+        // и из Colonial Helper: только по площадкам, чьё состояние изменилось
+        // (окно CAPI на каждом синке содержит одни и те же события).
+        const snapshots = snapshotRowsForChangedSites(rows, write.changedMarkets)
+          .map((row) => ({ ...row, source: 'capi' }));
+        for (let offset = 0; offset < snapshots.length; offset += 100) {
+          const { error } = await svc.from('construction_depot_snapshots').insert(snapshots.slice(offset, offset + 100));
+          if (error) {
+            warnings.push(`Снимки прогресса строек не записаны: ${error.message}`);
+            break;
+          }
+        }
+        const changedSystems = Array.from(new Set(
+          rows.filter((row) => write.changedMarkets.has(row.market_id)).map((row) => row.system_name),
+        ));
+        if (changedSystems.length > 0) {
           try {
-            await updateProjectProgress(ev.systemName, ev.constructionProgress, ev.resourcesRequired, 'capi');
+            const projects = await syncProjectsFromSites(svc, changedSystems, { actorId: userId });
+            if (projects?.warning) warnings.push(`Проекты эскадрилий: ${projects.warning}`);
           } catch (err) {
-            warnings.push(`Прогресс ${ev.systemName} не обновлён: ${err instanceof Error ? err.message : String(err)}`);
+            warnings.push(`Статусы проектов не обновлены: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
+        // Наблюдения систем (FSDJump / Location / CarrierJump) за день — в
+        // слои фракций и PowerPlay, как у журналов с сайта и из Helper'а.
+        const observations = observationEventsFromJournalText(journal.text);
+        if (observations.length > 0) {
+          try {
+            const applied = await applySystemObservations(svc, observations, { source: 'web', userId });
+            if (applied.powerplay.error) warnings.push(applied.powerplay.error);
+          } catch (err) {
+            warnings.push(`Фракции и PowerPlay из журнала не обновлены: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }

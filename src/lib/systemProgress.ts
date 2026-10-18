@@ -1,4 +1,5 @@
 import { readAllRows } from './readAllRows.ts';
+import { systemKey } from './systemIdentity.ts';
 import type { RavenSystemV2 } from '@/lib/ravenColonial';
 
 /**
@@ -6,12 +7,8 @@ import type { RavenSystemV2 } from '@/lib/ravenColonial';
  * repeated whitespace in the route, RavenColonial and a journal.  Keep the
  * comparison key independent from the label shown to a pilot.
  */
-export function systemNameKey(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-}
+/** Ключ системы — общий для всего проекта (`systemIdentity.ts`). */
+export const systemNameKey = systemKey;
 
 export function readableProgress(value: unknown): number | null {
   const number = typeof value === 'number'

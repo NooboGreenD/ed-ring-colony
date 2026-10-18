@@ -1,4 +1,6 @@
 /** Shared nearby-system contract and exact volume filtering (no network). */
+import { systemKey } from './systemIdentity.ts';
+
 export type NearbyShape = 'sphere' | 'cube';
 export type NearbySourceId =
   | 'catalog'
@@ -34,8 +36,8 @@ export interface NearbyResult {
   sources: NearbySource[];
   warnings: string[];
 }
-export const nearbyNameKey = (name: string) =>
-  name.trim().replace(/\s+/g, ' ').toLowerCase();
+/** Ключ системы — общий для всего проекта (`systemIdentity.ts`). */
+export const nearbyNameKey = (name: string): string => systemKey(name);
 export function nearbyPoint(value: unknown): NearbyPoint | null {
   if (!value || typeof value !== 'object') return null;
   const input = value as Record<string, any>;

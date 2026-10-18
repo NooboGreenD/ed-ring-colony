@@ -6,6 +6,7 @@ import { SystemSearchInput } from '@/components/Atlas/SystemSearchInput';
 import { IconSearch, IconMap, IconPackage, IconWrench, IconRocket, IconGear, IconAlert } from '@/components/Icons';
 import { SERVICE_OPTIONS, stationAtlasLink, type StationSearchKind, type StationSearchResult } from '@/lib/stationSearch';
 import { BUILD_COMMODITIES } from '@/lib/commodities';
+import { cleanSystemName, systemPageHref } from '@/lib/systemIdentity';
 
 const TABS = [
   { id: 'market' as const, title: 'Товары', icon: IconPackage, placeholder: 'Например, Steel или Water' },
@@ -29,6 +30,14 @@ export default function StationSearchPage() {
   const tab = TABS.find((entry) => entry.id === form.kind)!;
   useEffect(() => {
     setReady(true);
+    // Ссылка из карточки системы и других разделов: `?reference=<система>&kind=…&q=…`.
+    const params = new URLSearchParams(window.location.search);
+    const reference = cleanSystemName(params.get('reference') ?? '').slice(0, 200);
+    const q = (params.get('q') ?? '').slice(0, 200);
+    const kind = TABS.find((entry) => entry.id === params.get('kind'))?.id;
+    if (reference || q || kind) {
+      setForm((current) => ({ ...current, reference: reference || current.reference, q: q || current.q, kind: kind ?? current.kind }));
+    }
     return () => { generation.current++; controller.current?.abort(); };
   }, []);
   const change = (patch: Partial<typeof form>) => {
@@ -110,7 +119,7 @@ export default function StationSearchPage() {
             const mapLink = stationAtlasLink(row);
             return <article className="station-result-card" key={`${row.station_key}-${row.item.symbol || row.item.name}-${index}`}>
               <div className="station-result-top"><span className="station-item-name">{row.item_display || row.item.name}</span><span className={`station-report-badge${row.stale ? ' stale' : ''}`}>{row.stale ? 'Устаревший отчёт' : 'За последний час'}</span></div>
-              <h3>{row.station_name}</h3><div className="station-system-name">{row.system_name}</div>
+              <h3>{row.station_name}</h3><div className="station-system-name"><Link href={systemPageHref(row.system_name)} title="Всё о системе: стройки, фракции, PowerPlay, станции, авианосцы">{row.system_name}</Link></div>
               <dl className="station-result-facts">
                 <div><dt>От опорной системы</dt><dd>{number(row.distance, ' св. л.')}</dd></div>
                 {data.kind !== 'services' && <div><dt>Цена покупки</dt><dd>{number(data.kind === 'market' ? row.item.buyPrice : row.item.price, ' CR')}</dd></div>}

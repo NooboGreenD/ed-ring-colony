@@ -273,6 +273,8 @@ export interface PowerplayRunSnapshot {
 type SyncGlobal = typeof globalThis & {
   edrcPowerplaySync?: Promise<PowerplaySyncResult> | null;
   edrcPowerplayLayerVersion?: number;
+  /** Счётчик применённых наблюдений пилотов (журналы через Helper, сайт, CAPI). */
+  edrcPowerplayJournalVersion?: number;
   edrcPowerplayLive?: LiveRun | null;
   edrcPowerplayLastRun?: PowerplayRunSnapshot | null;
   /** В `powerplay_sync_state` нет колонок progress/log (миграция не применена). */
@@ -287,6 +289,18 @@ export function isPowerplaySyncRunning(): boolean {
 /** Счётчик завершённых импортов: кэш слоя сбрасывается, когда он меняется. */
 export function powerplayLayerGeneration(): number {
   return shared.edrcPowerplayLayerVersion ?? 0;
+}
+
+/**
+ * Счётчик обновлений слоя из журналов пилотов: слой пересобирается не сразу,
+ * а не чаще раза в минуту (`powerplayStore.ts`), — прыжки пилотов идут часто.
+ */
+export function powerplayJournalGeneration(): number {
+  return shared.edrcPowerplayJournalVersion ?? 0;
+}
+
+export function bumpPowerplayJournalGeneration(): void {
+  shared.edrcPowerplayJournalVersion = powerplayJournalGeneration() + 1;
 }
 
 function snapshot(run: { progress: PowerplaySyncProgress; log: PowerplayLogLine[] }): PowerplayRunSnapshot {
@@ -605,6 +619,10 @@ export interface PowerplayPowerSummary {
 export interface PowerplayTableSummary {
   total: number;
   powers: PowerplayPowerSummary[];
+  /** Системы под контролем по источнику: edsm (дамп), helper, web (журнал/CAPI через сайт), eddn. */
+  sources: Record<string, number>;
+  /** Системы, которые пилоты увидели свободными после дампа (слой их не показывает). */
+  vacated: number;
   oldestObservation: string | null;
   newestObservation: string | null;
   lastChange: string | null;
@@ -637,9 +655,17 @@ export async function readPowerplaySummary(svc: Svc): Promise<PowerplayTableSumm
           total: count(item.total),
         }))
     : [];
+  const sources: Record<string, number> = {};
+  if (raw.sources && typeof raw.sources === 'object' && !Array.isArray(raw.sources)) {
+    for (const [source, value] of Object.entries(raw.sources as Record<string, unknown>)) {
+      if (/^[a-z-]{1,24}$/.test(source)) sources[source] = count(value);
+    }
+  }
   return {
     total: count(raw.total),
     powers,
+    sources,
+    vacated: count(raw.vacated),
     oldestObservation: isoOrNull(raw.oldest_observation),
     newestObservation: isoOrNull(raw.newest_observation),
     lastChange: isoOrNull(raw.last_change),

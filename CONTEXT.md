@@ -1,10 +1,11 @@
 # ED Ring Colony — Project Context & Architecture
 
 > **Living document for developers and AI assistants.**
-> Last updated: **2026-10-18** (checked against the code).
-> Web release: **2.21.0** · Colonial Helper: **2.16.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
-> 86 SQL migrations · 227 API routes · 59 pages · 142 test files (1520 checks).
-> Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md).
+> Last updated: **2026-10-19** (checked against the code).
+> Web release: **2.22.0** · Colonial Helper: **2.17.0** (`PARSER_VERSION = 5`, launcher 1.0.0).
+> 87 SQL migrations · 228 API routes · 59 pages · 145 test files (1536 checks).
+> Map of all documents: [DOCS.md](DOCS.md) · history: [CHANGELOG.md](CHANGELOG.md) ·
+> how the sections work as one mechanism (analysis, gaps, plan): [ARCHITECTURE.md](ARCHITECTURE.md).
 > Project: https://github.com/NooboGreenD/ed-ring-colony
 > Live: https://edringcolony.ru
 
@@ -131,7 +132,7 @@ src/
     support/ premium-shop/ offer/ details/ maintenance/
     admin/                # /admin?tab=… (AdminNavigation.tsx: 4 groups)
     m-admin/              # Mobile admin PWA — HUD, bottom nav, 9 tabs
-    api/                  # 227 route handlers (section 5)
+    api/                  # 228 route handlers (section 5)
   components/             # GalaxyMap/, SystemMap/, Atlas/, Architect/, Carriers/, Admin/, Outfitting/, ...
   hooks/                  # useAtlasData, usePowerplayLayer, useFactionsLayer, useAtlasSearchProgress, ...
   lib/                    # server + shared logic (imports, sync, CAPI, BGS, PowerPlay, carriers, architect, outfitting, i18n)
@@ -277,7 +278,7 @@ Invariants that must stay identical in both languages:
 
 ## 4. Database Schema
 
-127 tables are created by the 86 migrations in `supabase/migrations/` (a few of
+127 tables are created by the 87 migrations in `supabase/migrations/` (a few of
 them are legacy and empty on fresh installs). Grouped by area — the migration
 named in brackets introduced the group; everything else comes from
 `000_base_schema.sql` / early migrations. Full schema in one file:
@@ -306,9 +307,12 @@ named in brackets introduced the group; everything else comes from
 Heavy logic lives in SQL functions called through PostgREST RPC with the
 service role, e.g. `colonisation_sites_write`, `colonisation_retention_prune`,
 `apply_fleet_carrier_batch`, `save_station_commerce`, `search_station_catalog`,
-`powerplay_apply_batch` / `powerplay_finish_sync` / `powerplay_layer_rows`,
-`bgs_apply_snapshots` / `bgs_layer_rows` / `bgs_system_detail`,
-`architect_project_progress_sources` / `architect_project_contributions`.
+`powerplay_apply_batch` / `powerplay_finish_sync` / `powerplay_layer_rows` /
+`powerplay_apply_observations`, `bgs_apply_snapshots` / `bgs_layer_rows` /
+`bgs_system_detail`, `architect_project_progress_sources` /
+`architect_project_contributions`, and the cross-section functions of
+`20261020120000_unified_system_data.sql`: `system_overview_sources`,
+`system_progress_sources`, `sync_project_systems_from_sites` (section 8.23).
 Calls that may return many rows return one JSON value to bypass PostgREST
 `max_rows`; long jobs are split into short calls to fit `statement_timeout`.
 
@@ -363,7 +367,7 @@ All tables have Row Level Security enabled. Key policies:
 
 ## 5. API Routes
 
-227 route handlers in `src/app/api/**/route.ts`. «Доступ» is what the handler
+228 route handlers in `src/app/api/**/route.ts`. «Доступ» is what the handler
 checks itself:
 
 | Значение | Смысл |
@@ -434,6 +438,7 @@ checks itself:
 | `/api/route/resolve` | POST · — | Координаты систем маршрута (EDSM → каталог → Spansh) |
 | `/api/stations/report` | POST · сессия/токен | Станции и рынки от Colonial Helper (`station_commerce`; источник ставит сервер) |
 | `/api/stations/search` | GET · — | Поиск товаров по станциям (`/station-search`) |
+| `/api/systems/overview` | GET · — (зритель по сессии) | Карточка системы: каталог, стройка (тот же расчёт, что у «Проектов систем»), проекты, кольцо, станции, фракции, PowerPlay, авианосцы, цели, поставки, ссылки (`src/lib/systemOverview.ts`, SQL `system_overview_sources`) |
 | `/api/systems/progress` | GET · — | Стройплощадки и прогресс системы (Архитектор, `/systems`) |
 
 ### 5.2 Колонизация: Архитектор, проекты, Raven Colonial
@@ -458,7 +463,7 @@ checks itself:
 | `/api/projects/[id]` | GET/PATCH/DELETE · сессия | Проект: карточка, правка, удаление |
 | `/api/projects/[id]/assign` | POST/DELETE · сессия | Назначить/снять пилота на систему проекта |
 | `/api/projects/[id]/members` | GET/POST/PATCH/DELETE · сессия | Участники проекта |
-| `/api/projects/[id]/progress` | POST · — | Обновить прогресс систем проекта из Raven Colonial |
+| `/api/projects/[id]/progress` | GET · —; POST · — | GET — прогресс каждой системы проекта тем же расчётом, что у «Проектов систем» (кэш Raven + журналы); POST — обновить прогресс систем проекта из Raven Colonial |
 | `/api/projects/[id]/route` | POST · сессия | Построить маршрут проекта |
 | `/api/projects/[id]/systems` | GET · —<br>POST · сессия<br>PATCH · сессия<br>DELETE · сессия | Системы проекта |
 | `/api/projects/[id]/systems/bulk` | POST · сессия | Добавить системы проекта списком |
@@ -913,8 +918,8 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   cargo — since 2.14.0 only live deltas for carriers Raven knows, corrected by
   set-values from the carrier market (8.18, FLEET-CARRIERS.md)
 
-### 8.6 Colonial Helper (uploader) 2.16.0
-- Source: `uploader/colonial_helper.py` (`VERSION = "2.16.0"`), launcher
+### 8.6 Colonial Helper (uploader) 2.17.0
+- Source: `uploader/colonial_helper.py` (`VERSION = "2.17.0"`), launcher
   `uploader/launcher.py` (`LAUNCHER_VERSION = "1.0.0"`), parser
   `uploader/journal_parser.py` (`PARSER_VERSION = 5`). Release notes —
   `uploader/CHANGES.md`, user docs — `uploader/README.md`, update channel —
@@ -926,7 +931,9 @@ All 131 icons are in `src/components/Icons.tsx`. See DESIGN.md → «Icons» for
   `POST /api/atlas/system-bodies` (body scans), `POST /api/cmdr/stats`,
   `POST /api/carriers/sync` + `GET /api/carriers/mine` (2.14.0),
   `POST /api/stations/report` (station commerce), `POST /api/factions/sync`
-  (2.16.0), `POST /api/journal/reset`, `GET/POST /api/capi/token`.
+  (2.16.0; since 2.17.0 the same projection carries PowerPlay 2.0 fields —
+  one system observation feeds factions and PowerPlay), `POST /api/journal/reset`,
+  `GET/POST /api/capi/token`.
 - Sends personal deliveries through `persistImportedDeliveries` into `deliveries`.
 - Sends `ColonisationConstructionDepot` snapshots through the same endpoint
   into `colonisation_sites` (one row per site) and `construction_depot_snapshots`.
@@ -1293,6 +1300,20 @@ Full description: **POWERPLAY.md**.
   systems reported via EDDN in the last ~30 days). Unoccupied rows are dropped:
   EDSM keeps one power out of several contenders. Spansh `galaxy_populated` is
   4+ GiB — too big for the production link; EDDN is not deployed.
+- Pilot journals (web 2.22.0, Helper 2.17.0): the system observation that
+  updates factions (`POST /api/factions/sync`, browser loader, CAPI daily
+  journal) also carries `ControllingPower` / `Powers` / `PowerplayState` /
+  control progress / reinforcement / undermining. `src/lib/systemObservations.ts`
+  splits it into both layers (`src/lib/powerplayJournal.ts` →
+  `powerplay_apply_observations`): the fresher observation wins, a new system is
+  added only if it is newer than the last dump, `Unoccupied` is stored as a
+  marker row the layer hides (an older dump cannot bring the system back),
+  pre-PP2 journals (< 2024-10-29) are rejected. The dump import no longer
+  overwrites fresher pilot rows and `powerplay_finish_sync` keeps pilot rows
+  observed after the dump was generated. New columns `powers`,
+  `control_progress`, `reinforcement`, `undermining`; the layer rebuilds at most
+  once a minute after pilot updates; the admin tab shows how many systems are
+  fresher than the dump.
 - Table `powerplay_systems` + singleton `powerplay_sync_state`; RPCs
   `powerplay_apply_batch`, `powerplay_finish_sync` (deletes rows the new dump
   lacks, in one transaction with the state), `powerplay_layer_rows` (one JSON —
@@ -1488,6 +1509,42 @@ Details: **PROFILES-PII-RLS-FIX.md** and
 
 ---
 
+### 8.23 One mechanism for system data (web 2.22.0) — see ARCHITECTURE.md
+Analysis of all sections, the gaps found (G1–G17) and the plan live in
+**ARCHITECTURE.md**. What the code now shares:
+- **System identity** — `src/lib/systemIdentity.ts`: `systemKey` (the old
+  `systemNameKey`, `carrierSystemKey`, `coordinateNameKey`, `normalizeSystemKey`,
+  `nearbyNameKey`, Architect `systemKey` are aliases; `system-identity.test.mjs`
+  guards it), `systemId64`, and the cross-section links `systemPageHref`,
+  `atlasSystemHref` (`?tab=factions|powerplay&focus_id64=…` opens the system on
+  the layer), `stationSearchHref` (`/station-search?reference=…`),
+  `externalSystemLinks`.
+- **Journal ingest** — `src/lib/journalIngest.ts` is the single body of
+  `/api/logs/upload` (Helper) and `/api/logs/import` (browser): reset, nickname,
+  deliveries, telemetry, then reactions. Responses are unchanged plus `projects`.
+- **System observations** — `src/lib/systemObservations.ts`: one FSDJump /
+  Location / CarrierJump → factions + PowerPlay (section 8.16); used by
+  `/api/factions/sync` and CAPI (`observationEventsFromJournalText`).
+- **Reactions** — `src/lib/projects/projectSync.ts` +
+  SQL `sync_project_systems_from_sites`: construction sites from any journal
+  path (Helper, browser, `/account/journal`, CAPI) move squadron project systems
+  forward only (planned → building → done) and notify project members through
+  `src/lib/notify.ts` (`user_notifications` + web push when VAPID is set). CAPI
+  no longer calls `updateProjectProgress` per event.
+- **System card** — SQL `system_overview_sources(key, id64, names, viewer)` +
+  `src/lib/systemOverview.ts` + `GET /api/systems/overview` +
+  `src/components/System/SystemOverviewSections.tsx` on `/system/[name]`:
+  catalog, colonisation through the same `buildSystemProgress` as «Проекты
+  систем» (Raven cache + journal sites + plan), squadron projects, the viewer's
+  architect projects (strangers' projects are not revealed even as a count),
+  ring route/hub, stations with inventory freshness, factions, PowerPlay,
+  carriers (`carrierMapStore.loadSystemCarriers`, same privacy as the map layer),
+  community goals, delivery totals, scans, per-source freshness and links.
+  `system_progress_sources(keys)` gives the same progress inputs for any set of
+  systems (`systemOverview.loadSystemsProgress`); `GET /api/projects/[id]/progress`
+  serves it per system of a squadron project, and `/projects/[id]` shows the
+  percentage next to each system.
+
 ## 9. Background jobs (`jobs`)
 
 Schedule: `scripts/job-schedule.mjs` (shared with the monitor agent), runner:
@@ -1548,7 +1605,7 @@ npm ci
 cp .env.example .env.local     # fill in Supabase values
 npm run dev                    # http://localhost:3000
 npm run typecheck              # next typegen + tsc --noEmit
-npm run test:quick             # ~1263 checks; npm test — all 1520
+npm run test:quick             # ~1278 checks; npm test — all 1536
 ```
 `next dev` rewrites `next-env.d.ts` and may touch `data/billing_store.json` —
 do not commit those changes by accident.

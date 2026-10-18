@@ -2,9 +2,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getServerSupabaseUrl } from '@/lib/supabaseServerUrl';
 import { createHash } from 'crypto';
-import { persistImportedDeliveries } from '@/lib/deliveryImport';
-import { persistJournalTelemetry } from '@/lib/journalTelemetry';
-import { resetJournalData } from '@/lib/journalReset';
+import { ingestJournalBatch, JournalResetError, projectSyncSummary } from '@/lib/journalIngest';
 
 // Current browser/desktop clients send 100 rows. Keep a 500-row allowance for
 // older helpers, while preventing an unbounded legacy payload from turning one
@@ -86,70 +84,25 @@ export async function POST(req: Request) {
     // make an otherwise valid Journal batch fail.
     void svc.from('api_tokens').update({ last_used_at: new Date().toISOString() }).eq('token_hash', tokenHash);
 
-    // Полная перезагрузка с нуля: Colonial Helper может прислать
-    // `reset: true` на первом батче, чтобы очистить БД от мусорных частей
-    // логов перед отправкой новых. Флаг читается только один раз — клиент
-    // передаёт специальный маркер `_reset_performed` в повторных пачках,
-    // чтобы промежуточные запросы не стёрли только что записанные строки.
-    let resetOutcome = null;
-    const shouldReset = body.reset === true || body.full_reimport === true;
-    const alreadyReset = Boolean((body as Record<string, unknown>)._reset_performed);
-    if (shouldReset && !alreadyReset) {
-      try {
-        resetOutcome = await resetJournalData(svc, userId);
-      } catch (resetError) {
-        console.warn('[logs/upload] journal reset failed before import:', (resetError as Error).message);
-        return NextResponse.json(
-          { error: `Не удалось очистить старые логи: ${(resetError as Error).message}` },
-          { status: 500 },
-        );
-      }
-    }
-
-    // A Journal may contain the commander's original in-game name. It should
-    // initialise an empty legacy profile only, never overwrite a saved nick.
-    if (cmdr) {
-      const { data: profile, error: profileError } = await svc
-        .from('profiles')
-        .select('cmdr_name')
-        .eq('id', userId)
-        .maybeSingle();
-      if (profileError) {
-        console.warn('[logs/upload] Could not inspect profile nickname:', profileError.message);
-      } else if (!profile?.cmdr_name) {
-        const { error: updateError } = await svc
-          .from('profiles')
-          .update({ cmdr_name: cmdr.slice(0, 250) })
-          .eq('id', userId);
-        if (updateError) console.warn('[logs/upload] Could not initialise profile nickname:', updateError.message);
-      }
-    }
-
-    const outcome = await persistImportedDeliveries(svc, userId, deliveries);
-
-    // Телеметрия журнала: snapshots строек, сканы тел и сводка пилота.
-    // Общий код с браузерным загрузчиком (см. `persistJournalTelemetry`).
-    //
-    // Обёрнуто в try/catch так же, как в /api/logs/import: доставки уже
-    // сохранены, и сбой телеметрии не имеет права превращать успешную
-    // загрузку в 500. Для Colonial Helper это особенно важно — он ретраит
-    // пачку на 5xx, то есть на голой ошибке телеметрии журнал отправлялся бы
-    // заново без всякого толку.
-    let telemetry = null;
+    // Дальше — общий для сайта и Helper'а приём пачки (`src/lib/journalIngest.ts`):
+    // полная перезагрузка по `reset: true` на первой пачке (маркер
+    // `_reset_performed` в следующих не даёт стереть уже записанное), начальный
+    // ник, доставки, телеметрия (снимки строек, сканы, сводка пилота — сводка
+    // программы не перетирает загруженную через сайт) и реакции других
+    // разделов (статусы систем в проектах эскадрилий). Сбой телеметрии не
+    // превращает успешную загрузку в 500: Helper ретраит пачку на 5xx.
+    let ingest;
     try {
-      // Этот роут — только для программы (Colonial Helper, API-токен):
-      // её сводка пилота не перетирает данные, загруженные через сайт.
-      telemetry = await persistJournalTelemetry(svc, userId, {
-        constructionEvents: body.construction_events ?? body.constructionEvents,
-        systemScans: body.system_scans ?? body.systemScans ?? body.scans,
-        pilotStats: body.pilot_stats ?? body.pilotStats,
-      }, cmdr || null, { source: 'helper' });
-      for (const warning of telemetry.warnings) {
-        console.warn('[logs/upload]', warning);
+      ingest = await ingestJournalBatch(svc, { userId, source: 'helper', cmdr, body, logTag: '[logs/upload]' });
+    } catch (error) {
+      if (error instanceof JournalResetError) {
+        return NextResponse.json({ error: `Не удалось очистить старые логи: ${error.message}` }, { status: 500 });
       }
-    } catch (telemetryError) {
-      console.warn('[logs/upload] telemetry could not be stored:', (telemetryError as Error).message);
+      throw error;
     }
+    const outcome = ingest.deliveries;
+    const telemetry = ingest.telemetry;
+    const resetOutcome = ingest.reset;
 
     return NextResponse.json({
       ...outcome,
@@ -160,6 +113,7 @@ export async function POST(req: Request) {
       // 'web_source' — сводка пилота защищена загрузкой журналов на сайте
       pilotStatsSkipped: telemetry?.pilotStatsSkipped ?? null,
       systemScansInserted: telemetry?.systemScansInserted ?? 0,
+      projects: projectSyncSummary(ingest.projects),
       reset: resetOutcome,
     });
   } catch (error) {

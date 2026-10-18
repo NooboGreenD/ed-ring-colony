@@ -259,3 +259,60 @@ export async function loadMapCarriers(svc: Svc, viewerId: string | null, options
   });
   return response;
 }
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
+/**
+ * Носители в одной системе — для карточки системы. Права и приватность те же,
+ * что у слоя «Авианосцы» карты (`shapeMapCarriers`): чужой личный носитель
+ * виден без имени владельца, если тот его скрыл, груза здесь нет вовсе.
+ */
+export async function loadSystemCarriers(
+  svc: Svc,
+  viewerId: string | null,
+  systemName: string,
+  options: { point?: MapPoint | null; now?: Date } = {},
+): Promise<MapCarriersResponse['carriers']> {
+  const now = options.now ?? new Date();
+  const key = carrierSystemKey(systemName);
+  if (!key) return [];
+  // Носитель «в системе» — как на карте: стоит в ней или уже прилетел по
+  // расписанному прыжку (место считает `buildCarrierView`), поэтому берём обе
+  // колонки, а отбираем по вычисленной системе ниже.
+  const pattern = escapeLike(systemName.trim());
+  const [here, arriving] = await Promise.all([
+    svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).ilike('system_name', pattern).limit(200),
+    svc.from('fleet_carriers').select(MAP_CARRIER_COLUMNS).ilike('jump_system_name', pattern).limit(200),
+  ]);
+  if (here.error) throw new Error(here.error.message);
+  const byId = new Map<string, Row>();
+  for (const row of [...(Array.isArray(here.data) ? here.data : []), ...(arriving.error || !Array.isArray(arriving.data) ? [] : arriving.data)]) {
+    if (row?.carrier_id != null) byId.set(String(row.carrier_id), row);
+  }
+  const rows = Array.from(byId.values()).filter((row) => isMapCarrierRow(row, now));
+  if (!rows.length) return [];
+
+  const ownerIds = Array.from(new Set(rows.map((row: Row) => row.owner_id).filter(Boolean).map(String))) as string[];
+  const squadronIds = Array.from(new Set(rows
+    .map((row: Row) => (row.squadron_id == null ? NaN : Number(row.squadron_id)))
+    .filter(Number.isFinite))) as number[];
+  const [viewer, owners, squadrons] = await Promise.all([
+    viewerContext(svc, viewerId),
+    loadOwners(svc, ownerIds),
+    loadSquadrons(svc, squadronIds),
+  ]);
+  const squadronMateIds = await loadSquadronMates(svc, viewer.squadronIds, viewerId);
+  const coordinates = new Map<string, MapPoint>(rowCoordinates(rows, now));
+  if (options.point && isMapPoint(options.point) && !coordinates.has(key)) coordinates.set(key, options.point);
+  return shapeMapCarriers(rows, {
+    viewerId,
+    viewerSquadronIds: viewer.squadronIds,
+    squadronMateIds,
+    owners,
+    squadrons,
+    coordinates,
+    now,
+  }).filter((carrier) => carrierSystemKey(carrier.system) === key);
+}

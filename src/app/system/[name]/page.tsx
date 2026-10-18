@@ -17,7 +17,9 @@ import {
 
 import { buildOrreryLayout, habitableZoneLs, toStructures } from '@/lib/systemOrrery';
 import SystemOrrery3D from '@/components/SystemMap/SystemOrrery3D';
+import SystemOverviewSections, { SystemLinksBar } from '@/components/System/SystemOverviewSections';
 import { STAR_CLASS_LABELS, type StarClass } from '@/lib/galaxySystems';
+import type { SystemOverview } from '@/lib/systemOverview';
 
 interface ResourceData {
   name: string;
@@ -178,6 +180,9 @@ export default function SystemPage() {
     distance_from_sgra: number | null;
   } | null>(null);
   const [bodies, setBodies] = useState<any[]>([]);
+  // Карточка системы: всё, что о ней знают остальные разделы сайта
+  // (фракции, PowerPlay, станции, проекты, авианосцы, цели, поставки).
+  const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [mapFocus, setMapFocus] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -194,12 +199,16 @@ export default function SystemPage() {
       fetch(`/api/galaxy/systems/by-name?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
         .then((response) => (response.ok ? response.json() : null))
         .catch(() => null),
+      fetch(`/api/systems/overview?name=${encodeURIComponent(systemName)}`, { cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .catch(() => null),
     ])
-      .then(([progress, scanBodies, catalog]) => {
+      .then(([progress, scanBodies, catalog, summary]) => {
         if (cancelled) return;
         setSystem(progress);
         setBodies(scanBodies);
         setGalaxy(catalog?.name ? catalog : null);
+        setOverview(summary && typeof summary === 'object' && 'links' in summary ? summary as SystemOverview : null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -295,11 +304,13 @@ export default function SystemPage() {
             <div style={{ color: 'var(--red)' }}>Нужен permit</div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
-          <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--cyan)')}>EDSM <IconExternalLink size={10} /></a>
-          <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Raven <IconExternalLink size={10} /></a>
-          <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Spansh <IconExternalLink size={10} /></a>
-        </div>
+        {overview ? <SystemLinksBar overview={overview} /> : (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
+            <a href={`https://www.edsm.net/en/system?systemName=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--cyan)')}>EDSM <IconExternalLink size={10} /></a>
+            <a href={`https://ravencolonial.com/#sys=${encodeURIComponent(galaxy.name)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Raven <IconExternalLink size={10} /></a>
+            <a href={`https://spansh.co.uk/system/${encodeURIComponent(galaxy.id64)}`} target="_blank" rel="noopener noreferrer" style={linkButtonStyle('var(--orange)')}>Spansh <IconExternalLink size={10} /></a>
+          </div>
+        )}
         {bodies.length > 0 && (
           <SystemOrrery3D
             systemName={galaxy.name}
@@ -314,6 +325,25 @@ export default function SystemPage() {
         {orreryLayout.bodies.length > 0 && (
           <p style={{ color: 'var(--muted)', fontSize: 13 }}>В локальных сканах {orreryLayout.bodies.length} тел.</p>
         )}
+        {overview && <SystemOverviewSections overview={overview} />}
+      </main>
+    );
+  }
+
+  // Ни Raven, ни каталог системы не знают, но другие разделы знают (журналы
+  // пилотов, фракции, станции, авианосцы) — показываем то, что есть.
+  if ((!system || !system.found) && overview?.found) {
+    return (
+      <main className="card" style={pageStyle}>
+        <div style={{ marginBottom: 20 }}>
+          <Link href="/map" style={{ color: 'var(--muted)', textDecoration: 'none', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>← Назад к карте</Link>
+        </div>
+        <h1 style={titleStyle}>{overview.name}</h1>
+        <p style={{ color: 'var(--muted)', marginTop: 0 }}>
+          Системы нет в каталоге и у Raven Colonial, но о ней знают другие разделы сайта.
+        </p>
+        <SystemLinksBar overview={overview} />
+        <SystemOverviewSections overview={overview} />
       </main>
     );
   }
@@ -371,6 +401,7 @@ export default function SystemPage() {
           <IconGlobe size={12} /> EDSM <IconExternalLink size={10} />
         </a>
       </div>
+      {overview && <SystemLinksBar overview={overview} />}
 
       {system.error && (
         <div style={{ marginBottom: 16, padding: '10px 12px', borderRadius: 3, color: 'var(--orange)', background: 'transparent', border: '1px solid var(--line)', fontSize: 12 }}>
@@ -623,6 +654,10 @@ export default function SystemPage() {
 
       {/* Тела системы перечислены в списке справа от карты: там же поиск,
           фильтры и прогресс строек, чего сетка плиток не давала. */}
+
+      {/* Остальные разделы сайта об этой системе. Стройку уже показали выше
+          живым чтением Raven, поэтому сводный расчёт колонизации здесь не дублируется. */}
+      {overview && <SystemOverviewSections overview={overview} showColonisation={false} />}
     </main>
   );
 }

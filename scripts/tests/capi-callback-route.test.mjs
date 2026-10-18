@@ -171,6 +171,10 @@ export const progressCalls = [];
 export async function updateProjectProgress(system, progress, resources, source) {
   progressCalls.push({ system, progress, resources, source });
 }
+export async function syncProjectsFromSites(svc, systems, options) {
+  progressCalls.push({ systems: Array.from(systems), options });
+  return { changed: [], notified: 0, warning: null };
+}
 `;
 
 async function buildRoutes() {

@@ -18,20 +18,28 @@ import {
 } from './powerplay.ts';
 import { publicPowerplayProgress } from './powerplayProgress.ts';
 import {
+  bumpPowerplayJournalGeneration,
   ensurePowerplayFresh,
   getPowerplayLiveRun,
+  powerplayJournalGeneration,
   powerplayLayerGeneration,
   readPowerplaySyncState,
   type PowerplaySyncOptions,
 } from './powerplaySync.ts';
+import { latestPowerplayObservations, powerplayObservationToRpcRow, type PowerplayObservation } from './powerplayJournal.ts';
 
 type Svc = any;
 
 /** Сколько держать собранный набор без импорта (на случай записи мимо процесса). */
 const CACHE_TTL_MS = 10 * 60 * 1000;
+/** После обновлений из журналов пилотов слой пересобирается не чаще. */
+const JOURNAL_REBUILD_MS = 60 * 1000;
+/** Наблюдений пилота в одном вызове `powerplay_apply_observations`. */
+const PILOT_CHUNK = 200;
 
 interface CachedLayer {
   key: string;
+  journalGeneration: number;
   builtAt: number;
   count: number;
   /** Готовые JSON-фрагменты: `powers`, `states`, `systems`. */
@@ -76,7 +84,7 @@ function rowsFromRpc(value: unknown): PowerplayRow[] {
   return rows;
 }
 
-async function buildLayer(svc: Svc, key: string): Promise<CachedLayer> {
+async function buildLayer(svc: Svc, key: string, journalGeneration: number): Promise<CachedLayer> {
   const { data, error } = await svc.rpc('powerplay_layer_rows');
   if (error) throw new Error(error.message);
   const rows = rowsFromRpc(data);
@@ -91,6 +99,7 @@ async function buildLayer(svc: Svc, key: string): Promise<CachedLayer> {
   }
   return {
     key,
+    journalGeneration,
     builtAt: Date.now(),
     count: encoded.systems.length,
     powersJson: JSON.stringify(encoded.powers),
@@ -133,9 +142,15 @@ export async function loadPowerplayLayer(
     : ensurePowerplayFresh(svc, state, options);
 
   const key = `${state.run_id ?? 'none'}:${powerplayLayerGeneration()}`;
+  const journalGeneration = powerplayJournalGeneration();
   let cached = shared.edrcPowerplayLayerCache ?? null;
-  if (!cached || cached.key !== key || nowMs - cached.builtAt > CACHE_TTL_MS) {
-    cached = await buildLayer(svc, key);
+  if (
+    !cached
+    || cached.key !== key
+    || nowMs - cached.builtAt > CACHE_TTL_MS
+    || (cached.journalGeneration !== journalGeneration && nowMs - cached.builtAt > JOURNAL_REBUILD_MS)
+  ) {
+    cached = await buildLayer(svc, key, journalGeneration);
     shared.edrcPowerplayLayerCache = cached;
   }
 
@@ -153,10 +168,55 @@ export async function loadPowerplayLayer(
     // Вкладка Atlas показывает по нему «сервер загружает данные: этап, %».
     progress: freshness.refreshing ? publicPowerplayProgress(getPowerplayLiveRun()?.progress) : null,
   };
-  const version = state.run_id ?? 'none';
+  const version = cached.journalGeneration ? `${state.run_id ?? 'none'}.${cached.journalGeneration}` : (state.run_id ?? 'none');
   const metaJson = JSON.stringify(meta);
   const body = `{"status":${JSON.stringify(status)},"version":${JSON.stringify(version)},"meta":${metaJson},`
     + `"powers":${cached.powersJson},"states":${cached.statesJson},"systems":${cached.systemsJson}}`;
-  const etag = `"pp-${createHash('sha1').update(`${cached.key}|${metaJson}`).digest('hex').slice(0, 20)}"`;
+  const etag = `"pp-${createHash('sha1').update(`${cached.key}|${cached.journalGeneration}|${metaJson}`).digest('hex').slice(0, 20)}"`;
   return { body, etag, status, refreshing: freshness.refreshing, count: cached.count, bytes: Buffer.byteLength(body) };
+}
+
+/* ── Обновления от пилотов ─────────────────────────────────────────────── */
+
+export interface PilotPowerplayResult {
+  received: number;
+  applied: number;
+  stale: number;
+  created: number;
+  /** Сколько систем пилоты увидели свободными (`Unoccupied`) — слой их больше не показывает. */
+  vacated: number;
+  systems: string[];
+}
+
+export const EMPTY_PILOT_POWERPLAY: PilotPowerplayResult = { received: 0, applied: 0, stale: 0, created: 0, vacated: 0, systems: [] };
+
+/**
+ * Наблюдения PowerPlay из журналов пилотов → `powerplay_apply_observations`.
+ * База применяет только более свежее наблюдение; слой пересобирается позже.
+ */
+export async function applyPilotPowerplay(
+  svc: Svc,
+  observations: PowerplayObservation[],
+  meta: { source: 'helper' | 'web' | 'eddn' },
+): Promise<PilotPowerplayResult> {
+  const result: PilotPowerplayResult = { ...EMPTY_PILOT_POWERPLAY, systems: [] };
+  const latest = latestPowerplayObservations(observations);
+  for (let offset = 0; offset < latest.length; offset += PILOT_CHUNK) {
+    const { data, error } = await svc.rpc('powerplay_apply_observations', {
+      p_rows: latest.slice(offset, offset + PILOT_CHUNK).map(powerplayObservationToRpcRow),
+      p_source: meta.source,
+    });
+    if (error) throw new Error(error.message);
+    const raw = (typeof data === 'string' ? JSON.parse(data) : data ?? {}) as Record<string, unknown>;
+    result.received += Number(raw.received ?? 0) || 0;
+    result.applied += Number(raw.applied ?? 0) || 0;
+    result.stale += Number(raw.stale ?? 0) || 0;
+    result.created += Number(raw.created ?? 0) || 0;
+    result.vacated += Number(raw.vacated ?? 0) || 0;
+    for (const name of Array.isArray(raw.systems) ? raw.systems : []) {
+      if (typeof name === 'string' && result.systems.length < 20) result.systems.push(name);
+    }
+  }
+  if (result.applied > 0) bumpPowerplayJournalGeneration();
+  return result;
 }

@@ -36,16 +36,23 @@ import {
   type BgsSnapshot,
   type BgsSnapshotFaction,
 } from './bgs.ts';
+import { POWERPLAY_JOURNAL_FIELDS } from './powerplayJournal.ts';
 
 type JournalEvent = Record<string, unknown>;
 
 /** События, которые несут состояние фракций системы. */
 export const BGS_JOURNAL_EVENTS = ['FSDJump', 'Location', 'CarrierJump'] as const;
 
-/** Поля события, которые нужны серверу — тот же список, что `BGS_SYSTEM_FIELDS` в uploader/bgs_sync.py. */
+/**
+ * Поля события, которые нужны серверу — тот же список, что `BGS_SYSTEM_FIELDS`
+ * в uploader/bgs_sync.py. Хвост — поля PowerPlay 2.0 (`POWERPLAY_JOURNAL_FIELDS`):
+ * одно наблюдение системы обновляет и слой фракций, и слой PowerPlay
+ * (`src/lib/systemObservations.ts`).
+ */
 export const BGS_SYSTEM_FIELDS = [
   'event', 'timestamp', 'StarSystem', 'SystemAddress', 'StarPos', 'SystemAllegiance', 'SystemGovernment',
   'SystemEconomy', 'SystemSecondEconomy', 'SystemSecurity', 'Population', 'SystemFaction', 'FactionState',
+  ...POWERPLAY_JOURNAL_FIELDS,
 ] as const;
 
 /**
