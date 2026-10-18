@@ -1,16 +1,17 @@
 # Перенос ED Ring Colony с Vercel на VPS / другой хостинг
 
-> **Уже работающий сервер Ubuntu 20.04 / Docker Compose:** начните с
-> [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md), не переустанавливайте стек.
-> Новые регистрации требуют SMTP и подтверждения; autoconfirm не включать.
-> Для исходников нужен Node >=22.18; Docker-образы используют Node 22.
-
-
-> **Обновление 20.09.2026:** для уже работающего `edringcolony.ru` используйте
-> [POST-MIGRATION.md](POST-MIGRATION.md), а не повторную первоначальную установку.
-> Фоновые задачи теперь запускает Docker-сервис `jobs`; Actions оставлен только
-> для сборки Uploader. OAuth в self-hosted GoTrue требует compose override,
-> одного добавления переменных в `.env` недостаточно.
+> **Состояние на 18.10.2026 (сайт 2.21.0).** Перенос с Vercel завершён в
+> сентябре 2026; документ остаётся справкой по устройству развёртывания.
+> Уже работающий `edringcolony.ru` обновляется кнопкой «Обновить сейчас» в
+> Админка → Мониторинг (git, бэкап БД, миграции, пересборка —
+> [MONITORING.md](MONITORING.md)); стек не переустанавливайте.
+> Фоновые задачи (10, из них 9 включены по умолчанию) запускает Docker-сервис
+> `jobs`; GitHub Actions в проекте нет — Colonial Helper собирается,
+> подписывается и публикуется самим сервером (Админка → Обновления Helper).
+> OAuth в self-hosted GoTrue требует compose override, одного добавления
+> переменных в `.env` недостаточно. Новые регистрации требуют SMTP и
+> подтверждения; autoconfirm не включать. Для исходников нужен Node >=22.18;
+> Docker-образы используют Node 22. Все документы — [DOCS.md](DOCS.md).
 
 Инструкция по результатам анализа дистрибутива. Проект подготовлен к переносу:
 включён `output: 'standalone'` в `next.config.mjs`, добавлены `Dockerfile`,
@@ -42,7 +43,7 @@ API-роуты используют Node.js runtime; middleware Next.js оста
 | `src/app/login/actions.ts`, `src/lib/siteUrl.ts` | OAuth origin за reverse proxy | канонический HTTPS `NEXT_PUBLIC_SITE_URL`, default edringcolony.ru |
 | `src/app/layout.tsx` | жёсткий OG-url | теперь берётся из `NEXT_PUBLIC_SITE_URL` |
 | `src/app/api/cron/translate/route.ts`, `api/galnet` | доверяли `vercel-cron/` User-Agent | обход удалён; только `Bearer CRON_SECRET` / `x-cron-secret` |
-| старые Actions cron workflows | внешний scheduler | удалены; все 6 задач перенесены в `jobs`, см. POST-MIGRATION.md |
+| старые Actions cron workflows | внешний scheduler | удалены; задачи перенесены в `jobs` (сейчас их 10 — README → «Фоновые задачи»), см. POST-MIGRATION.md |
 | `api/atlas/ring-route` | `maxDuration = 300` (на Vercel Hobby ограничен 10–60 с) | на VPS ограничений нет; в `deploy/nginx.conf` выставлен `proxy_read_timeout 310s` |
 | `scripts/eddn-worker.ts` | ZeroMQ-воркер, на Vercel не запускался вовсе | на VPS можно наконец включить (см. §7) |
 
@@ -365,11 +366,14 @@ bash deploy/selfhost/check-release-upload-limit.sh https://ваш-домен
 
 ## 7. Крон-задачи
 
-Все шесть задач перенесены в Docker-сервис `jobs`. Отключите старые Actions
-на default branch и cron-вызовы API перед включением сервиса. Резервная копия
-базы по расписанию не выполняется: её делает админ вручную из
-**Админка → Бэкапы** примерно раз в неделю (см. MONITORING.md). Проверки сайта выполняются во время Docker build; сборка Windows EXE
-остаётся в Actions. Полный порядок: [POST-MIGRATION.md](POST-MIGRATION.md).
+Все фоновые задачи выполняет Docker-сервис `jobs` (10 задач, 9 включены по
+умолчанию; список и расписание — README → «Фоновые задачи», CONTEXT.md §9).
+Не добавляйте поверх него cron-вызовы API и не держите второй планировщик.
+Резервная копия базы по расписанию не выполняется: её делает админ вручную из
+**Админка → Бэкапы** примерно раз в неделю (см. MONITORING.md). Проверки сайта
+выполняются во время Docker build; GitHub Actions в проекте нет, Windows EXE
+Colonial Helper собирается вручную только при смене рантайма. История перехода:
+[POST-MIGRATION.md](POST-MIGRATION.md).
 
 ## 8. Внешние сервисы — smена адреса
 
@@ -463,7 +467,8 @@ cd android-app
 
 ### CI/CD для Android (опционально)
 
-Добавьте в `.github/workflows/`:
+CI в проекте нет. Если понадобится сборка APK на GitHub, пример workflow
+(`.github/workflows/android.yml`):
 
 ```yaml
 name: Build Android APK
@@ -516,7 +521,7 @@ jobs:
 UPLOADER_STORE_DIR=/data/uploader
 # Отдельная папка на диске с backup'ами (обычно SDB), не Docker volume.
 UPLOADER_STORE_HOST_DIR=/opt/ed-ring-colony/backups/uploader-releases
-UPLOADER_PUBLISH_TOKEN=<длинная случайная строка>   # им публикует CI
+UPLOADER_PUBLISH_TOKEN=<длинная случайная строка>   # для запасной публикации скриптом
 UPLOADER_SIGN_PUBLIC_KEYS=k202609:<публичный ключ>  # проверка подписи манифеста
 ```
 
@@ -545,17 +550,23 @@ Helper» → «Настроить»**), включая генерацию пар
 пишутся в `config.json` внутри тома хранилища и складываются с переменными
 окружения — заданное в окружении из UI не удалить.
 
-**Что нужно в GitHub** (Settings → Secrets → Actions)
+**Публикация.** Основной путь — Админка → **Обновления Helper**: сервер сам
+собирает пакет из папки `uploader`, считает SHA-256, подписывает манифест
+ключом, которому доверяют установленные программы (`TRUSTED_KEYS` в
+`uploader/bundle.py`), и переключает канал. GitHub Actions не используются.
 
-| Секрет | Значение |
+Запасной путь — скрипт с доверенной машины (переменные окружения или флаги):
+
+| Переменная | Значение |
 |---|---|
 | `UPLOADER_SIGN_KEY` | приватный ключ подписи (`python uploader/build_bundle.py --keygen`) |
 | `UPLOADER_SIGN_KEY_ID` | идентификатор ключа, например `k202609` |
 | `UPLOADER_PUBLISH_URL` | `https://ваш-домен/api/admin/uploader/publish` |
 | `UPLOADER_PUBLISH_TOKEN` | тот же токен, что в `.env.production` |
 
-Без секретов ничего не ломается: пакет соберётся и останется артефактом
-сборки, а программа продолжит проверять обновления по-старому.
+```bash
+python uploader/build_bundle.py --out dist/bundle --channel stable --publish
+```
 
 **Проверка и управление**
 

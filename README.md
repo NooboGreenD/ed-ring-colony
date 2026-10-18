@@ -1,209 +1,226 @@
 # ED Ring Colony — The Galaxy Ring Project
 
 > Elite Dangerous colonization coordination platform.
-> Live: https://edringcolony.ru
+> Live: https://edringcolony.ru · Supabase: https://supabase.edringcolony.ru
 > Repo: https://github.com/NooboGreenD/ed-ring-colony
+>
+> **Сайт 2.21.0 · Colonial Helper 2.16.0** · документация сверена с кодом 18.10.2026.
+> Карта всех документов — **[DOCS.md](DOCS.md)**, устройство проекта — [CONTEXT.md](CONTEXT.md),
+> история изменений — [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
-## После переезда на собственный сервер
+## Состояние проекта
 
-**Команда для Ubuntu 20.04: [UBUNTU20-UPGRADE.md](UBUNTU20-UPGRADE.md).**
-Подробности изменений: [POST-MIGRATION.md](POST-MIGRATION.md).
-Сайт и Supabase работают на `edringcolony.ru` / `supabase.edringcolony.ru`.
-Для всех шести фоновых задач подготовлен Docker-сервис `jobs`; обновления Colonial Helper теперь
-собираются, подписываются и публикуются собственным сервером без GitHub Actions. В инструкции — Discord, дополнительные способы входа,
-порядок переключения без двойных расписаний, подтверждение почты и откат.
-Next.js 16 / React 19; существующие пароли и UUID сохраняются. Само изменение
-ветки не обновляет production и не отключает расписания на default branch.
+* Сайт и Supabase работают на собственном сервере (Docker Compose): сервисы
+  `web`, `jobs`, а в профиле `monitoring` — `monitor-agent` и `update-agent`.
+  Vercel отключён (`vercel.json` → `deploymentEnabled: false`).
+* **Обновление сервера** — Админка → Мониторинг → «Обновить сейчас»: git, бэкап
+  БД, недостающие миграции, пересборка, переключение и проверка живости делает
+  `deploy/update-project.sh` через `update-agent`. Подробно — [MONITORING.md](MONITORING.md).
+* **Фоновые задачи** — сервис `jobs`: 10 задач, 9 включены по умолчанию (таблица
+  ниже). GitHub Actions в проекте нет.
+* **Colonial Helper** собирается, подписывается Ed25519 и публикуется самим
+  сервером (Админка → Обновления Helper); установленные программы обновляются
+  пакетом кода, а не новым EXE — [UPLOADER-UPDATE-STRUCTURE.md](UPLOADER-UPDATE-STRUCTURE.md).
+* Существующие пароли, UUID пользователей и API-токены сохранены при переезде
+  (сентябрь 2026) — [POST-MIGRATION.md](POST-MIGRATION.md).
 
 ## About
 
-ED Ring Colony is a web platform for coordinating colonization efforts in the game Elite Dangerous. It provides tools for squadron management, project planning, system atlas, community forum, wiki, real-time communication, and multi-language support.
+ED Ring Colony is a web platform for coordinating colonization efforts in the game Elite Dangerous. It provides tools for squadron management, project planning, a galaxy atlas with search, a system architect, fleet carrier tracking, PowerPlay and minor-faction maps, a ship builder, a community forum and wiki, real-time communication, and a desktop companion (Colonial Helper) that uploads journal data.
 
-## Features
+## Возможности
 
-- **Galaxy Map** — Interactive 3D visualization of the colonization ring (Three.js + React Three Fiber).
-  Слой «Авианосцы» (и на `/map`, и в Atlas): носители значком как в игре, фильтр «мой / эскадрилья /
-  другие» и «Drake / Javelin», список «в каких системах», карточка системы и пунктир запланированного
-  прыжка — [FLEET-CARRIERS.md](FLEET-CARRIERS.md#карта-галактики-и-atlas-web-2160)
-- **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemMap/SystemOrrery3D.tsx`): орбиты
-  строятся по настоящим элементам из журнала/EDSM — уравнение Кеплера, эллипс со звездой в фокусе, наклонение
-  и аргумент перицентра, положение тела по средней аномалии; цвет звезды считается по её температуре, размер —
-  по настоящему радиусу. Движок three.js (`lib/orrery3d/`): сферы тел, кольца, полоса обитаемой зоны, постройки
-  с дугой прогресса на поверхности, фокус-зум по телам (кластер → окрестность → поверхность), LOD подписей,
-  подсказки наведением, фильтры и список тел, движение по орбитам на любую дату. Общая раскладка живёт в
-  `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`; пакет данных версионируется одним контрактом
-  (`ORRERY_VIEW_VERSION` ↔ `uploader/system_view.py`), а Colonial Helper рисует ту же сцену прямо во вкладке
-  «Карта системы» — холстом Tk (`uploader/tk_orrery.py`), без браузера и без отдельного HTML-файла
-- **Pilot Dossier** — раздельные блоки «весь перевозимый груз» и «тоннаж на стройплощадки», а внутри —
-  структура перевозок по назначению: стройплощадки и колонизационные корабли отдельно от авианосцев, миссий,
-  powerplay, спасательных рейсов и продаж на рынке. Видимость блоков (баланс, ранги, груз, доставки, позиция)
-  пилот настраивает сам
+### Карта и Atlas
+
+- **Galaxy Map** (`/map`) — 3D-карта кольца колонизации (Three.js + React Three Fiber): хабы, общий
+  маршрут, пилоты, туманности, 42 региона, «Все системы ⚗» из каталога Spansh. Слой «Авианосцы» (и на
+  `/map`, и в Atlas): носители значком как в игре, фильтр «мой / эскадрилья / другие» и «Drake / Javelin»,
+  список «в каких системах», карточка системы и пунктир запланированного прыжка —
+  [FLEET-CARRIERS.md](FLEET-CARRIERS.md#карта-галактики-и-atlas-web-2160). Устройство слоёв —
+  [src/components/GalaxyMap/INTEGRATION.md](src/components/GalaxyMap/INTEGRATION.md)
+- **Atlas** (`/atlas`) — восемь вкладок рядом с той же 3D-картой (Alt+1…Alt+8):
+  «Поиск» миров по типам, «Маршрут» проекта, «Маршрут A→B», «Кольцо», «Рынок», «Поблизости»,
+  «PowerPlay», «Фракции»; плюс «Галактические секторы» (`/atlas/sector`). Найденное сохраняется в базе
+  проекта (`atlas_system_cache`, `atlas_body_cache`), поэтому повторный поиск в том же районе не ходит в
+  EDSM/Spansh, а прогресс любого поиска виден на карте —
+  [ATLAS-SEARCH-REWORK.md](ATLAS-SEARCH-REWORK.md).
+  - Поиск галактического кольца идёт шагами с продолжением после обрыва связи, найденное кольцо остаётся
+    на 3D-карте (контур, опорные точки, маршрут) до явной уборки; ключевые системы, наклон и центр кольца,
+    уточнение реальными системами, поиск хабов у опор; маршрут сохраняется в проект эскадрильи вместе с
+    координатами или выгружается в CSV — [ATLAS-RING-RESULT-FIX.md](ATLAS-RING-RESULT-FIX.md),
+    [ATLAS-RING-LIMITS-FIX.md](ATLAS-RING-LIMITS-FIX.md).
+  - «Рынок» — где купить материалы стройки, с выбором стройплощадки —
+    [ATLAS-MARKET-FIX.md](ATLAS-MARKET-FIX.md); «Поблизости» — все системы в сфере/кубе 1–50 св. лет —
+    [ATLAS-NEARBY-SEARCH.md](ATLAS-NEARBY-SEARCH.md).
+  - «PowerPlay»: все системы под контролем держав PowerPlay 2.0 на 3D-карте (цвет — держава, форма —
+    оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV,
+    карточка системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM,
+    задача `powerplay-sync`, управление — Админка → Игровые данные → PowerPlay — [POWERPLAY.md](POWERPLAY.md).
+  - «Фракции»: все населённые системы с минорными фракциями на 3D-карте (цвет — принадлежность), поиск
+    фракций и показ систем одной или нескольких выбранных (у власти / несколько / присутствует), карточка
+    системы со всеми фракциями и их влиянием. Данные — в базе проекта: дамп EDSM `systemsPopulated`
+    (по очереди: архив скачивается на сервер целиком, затем разбивается на куски, затем куски пишутся в
+    базу; соединения, которые «замораживает» сеть сервера, переходят на короткие запросы, а архив можно
+    загрузить и с компьютера; управление и журнал — Админка → Игровые данные → Фракции, задача
+    `factions-sync`) и обновления от Colonial Helper и загрузчика журналов — [FACTIONS.md](FACTIONS.md).
+- **System Map** — 3D orrery of one system (`/system/[name]`, `components/SystemMap/SystemOrrery3D.tsx`):
+  орбиты строятся по настоящим элементам из журнала/EDSM — уравнение Кеплера, эллипс со звездой в фокусе,
+  наклонение и аргумент перицентра, положение тела по средней аномалии; цвет звезды считается по её
+  температуре, размер — по настоящему радиусу. Движок three.js (`lib/orrery3d/`): сферы тел, кольца, полоса
+  обитаемой зоны, постройки с дугой прогресса на поверхности, фокус-зум по телам (кластер → окрестность →
+  поверхность), LOD подписей, подсказки наведением, фильтры и список тел, движение по орбитам на любую дату.
+  Общая раскладка живёт в `lib/systemOrrery.ts` и зеркалится в `uploader/orrery.py`; пакет данных
+  версионируется одним контрактом (`ORRERY_VIEW_VERSION` ↔ `uploader/system_view.py`), а Colonial Helper
+  рисует ту же сцену прямо во вкладке «Карта системы» — холстом Tk (`uploader/tk_orrery.py`). Страница
+  открывается и для систем без стройки, если они есть в каталоге. Сводный прогресс строек — `/systems`.
+- **Каталог систем** — вся исследованная галактика (`galaxy_systems`, ~2×10⁸ строк) из дампа Spansh:
+  опорные координаты и звёздные кандидаты Atlas, страница любой системы, облако точек карты —
+  [SPANSH-IMPORT.md](SPANSH-IMPORT.md) и раздел ниже.
+
+### Колонизация
+
+- **System Architect** — `/architect` (тестовый режим): планировщик застройки системы по образцу
+  инструмента проектирования из Raven Colonial. Считает наземные слоты тел (радиус, атмосфера, вулканизм,
+  терраформирование, потолок 7), очки системы T2/T3 с «налогом» на дополнительные порты, цепочки
+  предшественников, порядок стройки, сводный тоннаж грузов, оценку системы, эффекты и открываемые сервисы.
+  Постройки привязаны к карточкам тел, где наземные и орбитальные разделены; орбитальные слоты планет и лун
+  явно задаются по карте системы. В плане указывается ответственный архитектор системы, а любую запись можно
+  отредактировать на месте; порт — дополнительно пометить «основным»: он не тратит очки системы, но требует
+  собственный список материалов. План показывается на той же 3D-карте системы, выгружается в JSON и
+  копируется сводкой; его можно сохранить на сервере (`system_plans`), опубликовать и поделиться ссылкой
+  `/architect?plan=<id>`. Рядом — фактические стройплощадки системы (`/api/systems/progress`) и расчёт «где
+  купить» по рынкам из собственной базы EDDN; прогресс сверяется параллельно со снимками Colonial Helper и
+  Raven Colonial. Три вида — «Тела», «Таблица» и «Аналитика»; панель источников показывает, кто ответил:
+  база проекта, EDSM, Spansh и Raven Colonial. Движок — `lib/architect/` (каталог из 55 построек + правила),
+  подробности — [ARCHITECT.md](ARCHITECT.md)
+- **Проекты систем** — `/architect/projects`: группы систем одного замысла, участники и модераторы,
+  авианосцы проекта, прогресс по системам и лидеры по доставкам (`architect_projects*`) —
+  [ARCHITECT.md](ARCHITECT.md)
+- **Авианосцы** — учёт носителей на сайте (`fleet_carriers`): личный носитель привязывается сам по журналу
+  (`CarrierStats`/`CarrierBuy`), вручную — по Carrier ID или позывному; эскадренный Javelin — через
+  участников эскадрильи. Службы, стыковка, система, прыжок, трюм (снимки + дельты, хеши дельт считает
+  сервер) и банк эскадры видны в профиле и на странице эскадрильи; оверлей Helper читает груз с сайта, а в
+  Raven Colonial уходят исправленные значения — [FLEET-CARRIERS.md](FLEET-CARRIERS.md)
+- **Projects** — проекты колонизации эскадрилий с маршрутом, системами и прогрессом (`/projects`)
+- **Log Import** — разбор журналов и в браузере (личный кабинет `/account`), и в Colonial Helper идёт по одним и
+  тем же правилам и в одни и те же таблицы: доставки, состояния стройплощадок, снимки прогресса, сканы тел,
+  сводка пилота, авианосцы и фракции. Повторы доставок отсекает `source_hash`, и он считается побайтно
+  одинаково в браузере (TS) и в Helper'е (Python), поэтому одни и те же журналы, загруженные обоими путями,
+  не дублируются. «Перезагрузить логи с нуля» (кабинет или Helper → `POST /api/journal/reset`) очищает ранее
+  загруженные данные пилота, после чего журналы пересчитываются заново. Состояние каждой стройплощадки хранится одной строкой
+  (`colonisation_sites`, ключ — MarketID), снимки прогресса подрезает задача `colonisation-cleanup` (окно
+  `COLONISATION_RETENTION_DAYS`). «Монеты наёмников» читаются из `Bank_Account.MercCoins_Current`. У сводки
+  пилота (`pilot_stats`) хранится источник последней записи (`stats_source`: сайт / программа / CAPI) —
+  [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md),
+  [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
+- **Станции и товары** — станции, рынки и снимки ассортимента в базе проекта (`station_commerce`), поиск
+  товаров `/station-search` с фокусом на карте Atlas; данные приходят из Colonial Helper и дампов —
+  [STATION-COMMERCE.md](STATION-COMMERCE.md)
+- **Community Goals** — `/cg`: цели сообщества из Inara (задача `cg-check`)
+
+### Пилот
+
+- **Pilot Dossier** (`/cmdr/[name]`, список — `/cmdrs`) — раздельные блоки «весь перевозимый груз» и «тоннаж
+  на стройплощадки», а внутри — структура перевозок по назначению: стройплощадки и колонизационные корабли
+  отдельно от авианосцев, миссий, powerplay, спасательных рейсов и продаж на рынке. Видимость блоков
+  (баланс, ранги, груз, доставки, позиция) пилот настраивает сам
 - **Frontier CAPI** — досье заполняется из Companion API по потоку **PKCE**, поэтому Shared Key от FDEV не
   требуется: нужен только `FRONTIER_REDIRECT_URI`, а `FRONTIER_CLIENT_ID` опционален (по умолчанию — ключ
-  приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper). Десктопный Colonial Helper авторизуется сам и присылает
-  профиль на сайт. Привязка фиксируется сразу после обмена кода на токены, поэтому недоступный CAPI
-  (техобслуживание `418`, аккаунт без входа в игру) даёт «привязано, данных пока нет», а не потерю связи;
-  `/account/capi` показывает причину, срок действия токена и диагностику (`/api/capi/status`). При
-  (пере)подключении выбирается платформа магазина (Frontier/Steam/Epic/Xbox/PSN), колбэк сверяет её с
-  фактической платформой токена, а Helper и сайт делят одну привязку через `/api/capi/token` — живой токен
-  продлевается расписанием и не умирает за 25 дней простоя приложения. Refresh-токен одноразовый: параллельные
-  синки не ломают друг друга (сериализация + сверка строки), сайт не принимает от Helper'а устаревшую копию
-  токенов, а `GET /api/capi/token` продлевает access-токен сам. Пилоты Legacy-галактики читаются с
-  `legacy-companion.orerve.net`. Отказ CAPI в правах (`400`) после подтверждённого входа через EGS/Steam
-  сохраняет OAuth: переподключение предлагается только при реальном несовпадении платформ или отзыве токена,
-  а обычный Bad Request не выдаётся за отсутствие игры — [CAPI-ENTITLEMENT-FIX.md](CAPI-ENTITLEMENT-FIX.md).
-  Разбор и правки — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md), выбор платформы и общий токен —
-  [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md), стабильность всех видов подключения и защита
-  источника сводки пилота — [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
-- **Log Import** — разбор журналов и в браузере (`/account`), и в десктопном uploader'е идёт по одним и тем же
-  правилам и в одни и те же таблицы: доставки, состояния стройплощадок, снимки прогресса, сканы тел, сводка пилота.
-  Повторы доставок отсекает `source_hash`. Состояние каждой стройплощадки хранится одной строкой (`colonisation_sites`,
-  ключ — MarketID), в Uploader и на сайт уходят только нужные поля, а снимки прогресса подрезает задача
-  `colonisation-cleanup` (окно `COLONISATION_RETENTION_DAYS`). «Монеты наёмников» читаются из
-  `Bank_Account.MercCoins_Current` (кап игры 9999), а не из боевых облигаций. У сводки пилота (`pilot_stats`)
-  хранится источник последней записи (`stats_source`: сайт / программа / CAPI): данные программы не перетирают
-  данные с логов, загруженных через сайт —
-  [LOG-UPLOAD-OPTIMIZATION.md](LOG-UPLOAD-OPTIMIZATION.md), [COLONISATION-SITES-REWORK.md](COLONISATION-SITES-REWORK.md), [CAPI-STABILITY-AND-STATS-SOURCE.md](CAPI-STABILITY-AND-STATS-SOURCE.md)
-- **Squadrons** — Create and manage player squadrons with ranks, permissions, and dual-channel chat
-- **Projects** — Plan and track colonization projects with route optimization
-- **System Architect** — `/architect` (тестовый режим): планировщик застройки системы по образцу инструмента
-  проектирования из Raven Colonial. Считает наземные слоты тел (радиус, атмосфера, вулканизм, терраформирование,
-  потолок 7), очки системы T2/T3 с «налогом» на дополнительные порты, цепочки предшественников, порядок стройки,
-  сводный тоннаж грузов, оценку системы, эффекты и открываемые сервисы. Постройки привязаны к карточкам тел,
-  где наземные и орбитальные разделены, карточки сворачиваются, фильтруются и сортируются. Орбитальные слоты
-  планет и лун явно задаются по карте системы и сохраняются в плане: раздел появляется только у подходящих тел.
-  В плане также указывается ответственный архитектор системы, а любую запись можно отредактировать на месте;
-  порт — дополнительно пометить «основным»: он не тратит очки системы,
-  но требует собственный список материалов (у всех 12 портов каталога, точные — со сканов ED Wiki,
-  остальные — оценка «≈»). План показывается на той же 3D-карте
-  системы, выгружается в JSON и копируется сводкой. План можно сохранить на сервере (`system_plans`), опубликовать
-  и поделиться ссылкой `/architect?plan=<id>`; рядом показываются фактические стройплощадки системы
-  (`/api/systems/progress`) и расчёт «где купить» по рынкам из собственной базы EDDN. Colonial Helper 2.13.2
-  отправляет расширенные сканы тел и snapshots стройки, а прогресс сверяется параллельно с Raven Colonial.
-  План смотрится тремя видами — «Тела», «Таблица» и «Аналитика» (бюджет очков по шагам стройки, тоннаж и рейсы,
-  доли товаров, экономики, эффекты, загрузка тел); загруженные данные проверяются на дубли и невозможные значения,
-  а панель источников показывает, кто ответил: база проекта, EDSM, Spansh и Raven Colonial.
-  Движок — `lib/architect/`
-  (каталог из 55 построек + правила), подробности и план развития — [ARCHITECT.md](ARCHITECT.md)
+  приложения «ED Ring Colony» `0d6027a7-2561-4e1b-af2e-2fe71b296bdd`, общий для сайта и Colonial Helper).
+  Привязка фиксируется сразу после обмена кода на токены, поэтому недоступный CAPI (техобслуживание `418`,
+  аккаунт без входа в игру) даёт «привязано, данных пока нет», а не потерю связи; `/account/capi` показывает
+  причину, срок действия токена и диагностику (`/api/capi/status`). Helper и сайт делят одну привязку через
+  `/api/capi/token`, живой токен продлевается задачей `capi-sync`. Отказ CAPI в правах (`400`) после
+  подтверждённого входа через EGS/Steam сохраняет OAuth — [CAPI-ENTITLEMENT-FIX.md](CAPI-ENTITLEMENT-FIX.md);
+  история разборов — [CAPI-BINDING-FIX.md](CAPI-BINDING-FIX.md),
+  [CAPI-PLATFORM-RELINK-FIX.md](CAPI-PLATFORM-RELINK-FIX.md)
+- **Leaderboard** (`/leaderboard`) — тоннаж и достижения пилотов
 - **Верфь (Outfitting)** — `/outfitting`: конструктор сборок кораблей по образцу coriolis.io на собственных
-  расчётах. Все корпуса, слоты (основные, орудия, утилиты, внутренние, военные), переборки, модули,
-  инженерные чертежи и **экспериментальные эффекты**; сводка считает массу, дальность одного прыжка и полный
-  радиус, скорость и буст, щит с сопротивлениями, броню, баланс энергии по приоритетам, ёмкости
-  распределителя, трюм, пассажирские места и стоимость. Сборка кодируется в ссылку `?b=<код>` и сохраняется
-  в браузере.
-  Боковая панель разбита на четыре вкладки, как в coriolis.io: **сводка**, **атака** (DPS и SDPS по типам
-  урона, расход энергии и тепла, пробитие, дальности, время непрерывного огня из ёмкости WEP),
-  **защита** (щит с бустерами и ячейками, восстановление, эффективный запас с учётом пипок, броня,
-  усиление модулей) и **графики** (прыжок от груза и топлива, скорость от пипок ENG, эффективный щит
-  от пипок SYS, стоимость и энергобаланс по разделам — рисуются своим SVG, без библиотек).
-  Под пипками — блок **управления кораблём**: форсаж, выпущенные орудия, груз и топливо ползунками,
-  так что все цифры пересчитываются для реальной загрузки. Строки слотов умеют показывать
-  одни названия или добавлять к ним массу / энергию / характеристики / цену одним переключателем, при наведении показывают подсказку
-  с полным набором параметров модуля (изменённое инженерией подсвечено; прокрутки внутри нет —
-  если параметров много, карточка раскладывается в колонки), а модуль можно не только
-  перетащить, но и **скопировать** в любую совместимую ячейку. В окне выбора список остаётся списком
-  (класс, название, цена), а параметры показывает та же подсказка при наведении; у выбранного модуля
-  правая панель даёт полную таблицу по разделам, для орудий — с расчётными DPS, EPS, нагревом
-  и уроном на единицу энергии, и отдельно влияние на сборку. Сборку можно **обменять** с внешними
-  сервисами: экспорт в ссылку Coriolis и в SLEF (его читают EDSY, Inara и Coriolis), импорт из ссылок
-  Coriolis, своих ссылок и SLEF/journal `Loadout` (`lib/outfitting/exchange.ts`). Отдельный блок
-  перечисляет снаряжение за **Merc Coin** из обновления 4.4.0.0.
-  Движок — `lib/outfitting/` (формулы игры: кривая массы двигателей и щитов, формула прыжка, применение
-  модификаций multiplicative/additive/overwrite, боевая аналитика в `analysis.ts`),
-  данные — `public/data/outfitting.json`,
-  собирается `scripts/build-outfitting-data.mjs` из открытого набора [EDCD/coriolis-data](https://github.com/EDCD/coriolis-data).
-  Все 60 экспериментальных эффектов (91 запись справочника) применяются к характеристикам модуля наравне
-  с чертежами: проценты, сопротивления «от остатка», интервал вместо скорострельности, распределение урона.
-  Названия и описания переведены на все семь языков (`lib/i18n/outfittingSpecials.ts`), числа и списки
-  доступности сверены с EDSY и лежат в `scripts/data/experimental-effects.json`
-- **Инженеры** — `/engineers`: логическое дерево разблокировки. Корабельная и наземная (Одиссея) ветки,
-  связи «кто о ком рассказывает», условие встречи, плата за приглашение, отметки пройденного (в браузере)
-  и полный список чертежей каждого инженера с максимальным уровнем — те же данные, что и у верфи,
-  поэтому страницы не расходятся (`/outfitting` ↔ `/engineers?engineer=<id>`)
-- **Управление верфью** — `/admin?tab=outfitting`: добавление, редактирование всех полей и заводской инженерии,
-  переименование, копирование, массовое удаление и восстановление модулей; группы и корабельная броня,
-  фильтры, экспорт JSON и журнал действий. Правки хранятся отдельно от игрового справочника в Supabase,
-  исходные ID и индексы архивной брони сохраняются. Админ-панель получила сгруппированную навигацию и
-  адаптивные кнопки/формы в HUD-стиле сайта. Развёртывание и правила — [OUTFITTING-ADMIN.md](OUTFITTING-ADMIN.md).
-- **Forum** — Community discussions with markdown support, reactions, search, and moderation
+  расчётах. Все корпуса, слоты, переборки, модули, инженерные чертежи и **экспериментальные эффекты**;
+  сводка считает массу, дальность прыжка, скорость и буст, щит с сопротивлениями, броню, баланс энергии,
+  трюм и стоимость. Четыре вкладки — **сводка**, **атака** (DPS/SDPS, энергия и тепло), **защита** и
+  **графики** (свой SVG). Управление кораблём (форсаж, орудия, груз и топливо), подсказки по модулям,
+  перетаскивание и копирование модулей, обмен сборками с Coriolis/EDSY/Inara (SLEF, журнальный `Loadout`),
+  снаряжение за Merc Coin. Сборка кодируется в ссылку `?b=<код>`, сохраняется в браузере и в профиле
+  (`outfitting_builds`). Движок — `lib/outfitting/`, данные — `public/data/outfitting.json` из
+  [EDCD/coriolis-data](https://github.com/EDCD/coriolis-data) (`scripts/build-outfitting-data.mjs`) плюс
+  правки админки; все 60 экспериментальных эффектов сверены с EDSY и переведены на семь языков
+- **Инженеры** — `/engineers`: дерево разблокировки (корабельная и наземная ветки), условия встречи,
+  отметки пройденного и чертежи каждого инженера — те же данные, что у верфи
+  (`/outfitting` ↔ `/engineers?engineer=<id>`)
+
+### Сообщество
+
+- **Squadrons** — эскадрильи со званиями и правами, оформлением (`branding`), чатом в двух каналах
+  (общий + офицерский, Realtime) и голосовыми комнатами (WebRTC, `squadron_voice_*`)
+- **Forum** — Community discussions with markdown support, reactions, subscriptions, search, and moderation
 - **Wiki** — Full wiki system with categories, tags, revisions, favorites, and colonization guides
-- **Galnet** — Automatic sync of Frontier's Galnet news
-- **Leaderboard** — Player statistics and achievements
-- **Atlas** — System search, favorites, route finder, and candidate lists.
-  Поиск галактического кольца идёт шагами с продолжением после обрыва связи,
-  найденное кольцо остаётся на 3D-карте (контур, опорные точки, маршрут) до
-  явной уборки, а маршрут сохраняется в проект эскадрильи вместе с координатами
-  или выгружается в CSV — [ATLAS-SEARCH-REWORK.md](ATLAS-SEARCH-REWORK.md),
-  [ATLAS-RING-RESULT-FIX.md](ATLAS-RING-RESULT-FIX.md).
-  Вкладка «PowerPlay»: все системы под контролем держав PowerPlay 2.0 на 3D-карте (цвет — держава, форма —
-  оплот / укреплённая / эксплуатируемая), фильтр по державам и состояниям, список с поиском и CSV, карточка
-  системы с зонами влияния и проверка «чья зона?» для любой системы. Данные — ночной дамп EDSM, задача
-  `powerplay-sync` — [POWERPLAY.md](POWERPLAY.md)
-  Вкладка «Фракции»: все населённые системы с минорными фракциями на 3D-карте (цвет — принадлежность),
-  поиск фракций и показ систем одной или нескольких выбранных (у власти / несколько / присутствует), карточка
-  системы со всеми фракциями и их влиянием. Данные — в базе проекта: дамп EDSM `systemsPopulated` (как у
-  каталога систем, по очереди: архив скачивается на сервер целиком, затем разбивается на куски, затем куски пишутся
-  в базу; соединения, которые «замораживает» сеть сервера, переходят на короткие запросы, а архив можно загрузить
-  и с компьютера; управление и журнал — Админка → Игровые данные → Фракции, задача `factions-sync`) и обновления от
-  Colonial Helper и загрузчика журналов — [FACTIONS.md](FACTIONS.md)
+  (`public/wiki/colonization-guide/`)
+- **News** и **Galnet** — новости сайта и автоматическая синхронизация Galnet с переводами
 - **Notifications** — Real-time in-app and push notifications (web-push)
-- **Direct Chat** — Peer-to-peer messaging between players
-- **Friends** — Friend list with online status
-- **Comments** — Comment system on profiles and content
-- **Admin Panel** — Raven Colonial sync, site content management, moderation
-- **Mobile Admin** — `/m-admin` PWA-ready HUD dashboard with 9 tabs (Overview, Monitor, Billing, Systems, Content, Users, Support, Backup, Auth), auto-refresh 20s, bottom nav, fully adapted for phones
-- **Android App** — Native Kotlin + Jetpack Compose monitor app in `android-app/` — repeats all admin panel points, EncryptedSharedPreferences, Retrofit, offline-ready scaffolding, APK build via Gradle
-- **i18n** — Multi-language support (RU, EN, DE, IT, KO, ZH, JA, FR, ES, PT, PL, UK, NL, TR, AR, HE, HI, TH, VI, ID, CS, RO, HU, BG, SK, SL, HR, SR, LT, LV, ET, DA, SV, NO, FI, EL, GA, WA, CY, MT, IS, FO, AF, MS, SW, ZU, XH, SO, AM, OM, TI, HA, IG, YO, SN, RW, MG, ML, TA, TE, KA, MR, GU, PA, UR, FA, PS, KU, SD, NE, BO, DZ, LO, MY, KM, TG, UZ, KK, TG, KY, MN, MK, AL, SQ, MO, BE, UK, BA, TT, CV, CRH, KRC, ADY, KBD, CE, AV, LBE, LEZ, TAB, AB, KI, LAG, MG, MFE, SG, BI, TO, FJ, HO, MI, RAP, RAR, TVL, KI, PW, MH, FM, NA, NR, TO, TK, SM, AS, TV, NG, CK, PN, WF, NU, TK, KI, WS, TO, FJ, VU, SB, PG, TL, ID, MY, PH, VN, LA, KH, MM, BD, NP, BT, LK, MV, AF, PK, IN, LK, MV, BD, NP, BT, MM, LA, KH, VN, PH, MY, ID, TL, PG, SB, VU, FJ, WS, TO, TK, KI, NU, PN, CK, NG, TV, AS, SM, TK, TO, NR, NA, FM, MH, PW, KI, TVL, RAR, RAP, MI, HO, FJ, TO, BI, SG, MFE, MG, LAG, KI, AB, TAB, LEZ, LBE, AV, CE, KBD, ADY, KRC, CRH, CV, TT, BA, UK, BE, MO, SQ, AL, MK, MN, KY, TG, KK, UZ, TG, KM, MY, LO, DZ, BO, NE, SD, PS, FA, UR, PA, GU, MR, KA, TE, TA, ML, MG, RW, SN, YO, IG, HA, TI, OM, AM, SO, XH, ZU, SW, MS, AF, FO, IS, MT, CY, WA, GA, EL, FI, NO, SV, DA, ET, LV, LT, HR, SR, SL, SK, BG, HU, RO, CS, ID, VI, TH, HI, HE, AR, TR, NL, PL, PT, ES, FR, IT, DE, EN, RU)
-- **Yandex Translate** — Automatic content translation via cron jobs
+- **Direct Chat**, **Friends**, **Comments** — личные сообщения, друзья с онлайн-статусом, комментарии
+  (вкладка кабинета «Сообщения и друзья», `/account/friends`)
+- **Support** — тикеты техподдержки с вложениями (`/support`, разбор — Админка → Поддержка)
+- **Премиум и платежи** — магазин косметики и почётных титулов (`/premium-shop`), подписки, кредиты;
+  провайдер Т-Банк (по умолчанию выключен) — [TBANK-SETUP.md](TBANK-SETUP.md); оферта `/offer`,
+  реквизиты `/details`
 
-## Приём платежей Т-Банка
+### Администрирование
 
-Разовая оплата кредитов, товаров и периода подписки через страницу банка; без автосписаний.
-Настройка терминала, тестирование, требования к чекам и порядок разбора сбоев: **[TBANK-SETUP.md](TBANK-SETUP.md)**.
-Провайдер выключен по умолчанию.
+- **Admin Panel** — `/admin`, четыре группы вкладок:
+  - «Контент сайта»: контент главной, новости;
+  - «Сообщество»: управление (пользователи и роли, модерация доставок), форум, комментарии, поддержка;
+  - «Игровые данные»: верфь ([OUTFITTING-ADMIN.md](OUTFITTING-ADMIN.md)), хабы, маршрут, RavenColonial,
+    «Каталог систем», PowerPlay, «Фракции»;
+  - «Система и сервисы»: биллинг, мониторинг (+ обновление проекта и ключи `.env.production`), бэкапы,
+    авторизация (кнопки входа, SMTP), обновления Helper.
+- **Mobile Admin** — `/m-admin` PWA-ready HUD dashboard with 9 tabs (Overview, Monitor, Billing, Systems,
+  Content, Users, Support, Backup, Auth), auto-refresh 20s, bottom nav —
+  [MOBILE-ADMIN.md](MOBILE-ADMIN.md)
+- **Android App** — Native Kotlin + Jetpack Compose monitor app in `android-app/` (тот же агрегатор
+  `/api/mobile/admin-summary`). **Сейчас не собирается** — см. «Известная проблема» в
+  [android-app/README.md](android-app/README.md)
+- **i18n** — интерфейс на 7 языках: ru, en, de, it, ko, zh, ja (свой контекст `lib/i18n/`); новости,
+  Galnet и тексты главной переводятся Yandex Translate (задачи `translate` и `galnet-sync`)
 
 ## Tech Stack
 
-- **Framework**: Next.js 16.3.5 / React 19.2.8 (App Router)
-- **Language**: TypeScript 5 (strict mode) + Kotlin 1.9 (Android)
-- **Styling**: Tailwind CSS 4.3.3 + custom CSS (`globals.css`, `forum-extra.css`) + Jetpack Compose Material3 (Android HUD theme)
-- **Database**: Supabase (PostgreSQL + Realtime)
-- **Auth**: Supabase Auth (verified Email + Discord; opt-in Google/GitHub) + VK ID и Яндекс ID (собственные OAuth/PKCE-потоки сайта, выключены по умолчанию — см. VK-ID-SETUP.md и YANDEX-ID-SETUP.md); управление кнопками входа — админка, вкладка «Авторизация» + Bearer JWT для Android
+- **Framework**: Next.js 16.3.5 / React 19.2.8 (App Router, `output: 'standalone'`, `src/proxy.ts` вместо middleware)
+- **Language**: TypeScript 5 (strict) · Python 3.10+ (Colonial Helper, Tk + ttkbootstrap) · Kotlin 1.9 (Android)
+- **Styling**: Tailwind CSS 4.3.3 + `src/app/globals.css` + `src/styles/forum-extra.css` + CSS-модули админки; Jetpack Compose Material3 (Android)
+- **Database**: self-hosted Supabase (PostgreSQL + PostgREST + Realtime + Storage, шлюз Kong за тем же доменом сайта) + прямой Postgres (`pg`, `pg-copy-streams`) для тяжёлых импортов
+- **Auth**: Supabase Auth (подтверждённая почта + Discord; Google/GitHub — opt-in) + VK ID и Яндекс ID (собственные OAuth/PKCE-потоки сайта, выключены по умолчанию — [VK-ID-SETUP.md](VK-ID-SETUP.md), [YANDEX-ID-SETUP.md](YANDEX-ID-SETUP.md)); кнопки входа и SMTP — Админка → Авторизация; Bearer JWT для Android; API-токены `rc_…` для Colonial Helper
 - **3D**: Three.js 0.185.1 + React Three Fiber 9.7.0 + Drei 10.7.8
 - **Push**: web-push 3.6.7
 - **Markdown**: react-markdown 10.1.0 + remark-gfm + rehype-sanitize
-- **Validation**: zod 4.4.3
-- **Cache**: lru-cache 11.5.2
-- **i18n**: Custom React context (`lib/i18n/`)
-- **Mobile**: PWA `/m-admin` (React, HUD, bottom nav) + Native Android `android-app/` (Kotlin, Compose, Retrofit, EncryptedSharedPreferences, Navigation Compose)
+- **Validation**: zod 4.4.3 · **Cache**: lru-cache 11.5.2 · **i18n**: свой React-контекст (`lib/i18n/`)
+- **Tests**: `node:test` + jsdom + esbuild-бандлы + PGlite (Postgres в процессе) + libpg-query; Playwright 1.63 для браузерных сценариев; `unittest` для Helper'а
+- **Mobile**: PWA `/m-admin` + Native Android `android-app/` (Kotlin, Compose, Retrofit, EncryptedSharedPreferences, Navigation Compose)
 
 ## Quick Start
 
 ### Prerequisites
-- Node.js 22.18+
-- npm (в репозитории есть package-lock.json)
-- Supabase CLI (optional, for database management)
+- Node.js 22.18+ и npm (в репозитории `package-lock.json`; pnpm/yarn не используются)
+- Python 3.10+ — только для Colonial Helper (`uploader/`)
+- Supabase CLI — опционально, для управления базой
 
 ### Installation
 
 ```bash
-# Clone repository
 git clone https://github.com/NooboGreenD/ed-ring-colony.git
 cd ed-ring-colony
-
-# Install dependencies
 npm ci
-
-# Set up environment variables
-cp .env.example .env.local
-# Edit .env.local with your Supabase credentials
+cp .env.example .env.local   # заполните значения Supabase
 ```
 
 ### Environment Variables
 
-The repository includes a safe, placeholder-only [`.env.example`](.env.example). Copy it to the ignored `.env.local` file and keep all real or temporary credentials there. Never expose a service-role, CLI access token, or database password through a `NEXT_PUBLIC_` variable.
+The repository includes a safe, placeholder-only [`.env.example`](.env.example) — полный справочник всех
+переменных с пояснениями. Copy it to the ignored `.env.local` file (на сервере — `.env.production`) and keep
+all real or temporary credentials there. Never expose a service-role, CLI access token, or database password
+through a `NEXT_PUBLIC_` variable.
 
 ```env
 # Required
@@ -211,59 +228,71 @@ NEXT_PUBLIC_SITE_URL=https://edringcolony.ru
 NEXT_PUBLIC_SUPABASE_URL=https://supabase.edringcolony.ru
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+CRON_SECRET=your-cron-secret-min-32-chars
 
 # Optional
 AUTH_OAUTH_PROVIDERS=discord
 # OAuth client secrets belong in the Supabase Auth stack, not the website.
+DATABASE_URL=postgres://...            # прямой Postgres для импортов (каталог систем, фракции)
 DISCORD_WEBHOOK_URL=your-discord-webhook-url
 NEXT_PUBLIC_VAPID_PUBLIC_KEY=your-vapid-public-key
 VAPID_PRIVATE_KEY=your-vapid-private-key
-
-# Translation
 YANDEX_TRANSLATE_API_KEY=your-yandex-key
-CRON_SECRET=your-cron-secret-min-32-chars
-
-# External APIs
-RAVEN_API_BASE=https://ravencolonial...
+INARA_API_KEY=...                      # Community Goals
+JOBS_ENABLED=capi-sync,update-progress,cg-check,eddn-cleanup,colonisation-cleanup,galnet-sync,translate,powerplay-sync,factions-sync
 ```
+
+Группы переменных (каталог систем `GALAXY_*`, PowerPlay `POWERPLAY_*`, фракции `FACTIONS_*`, обновление
+`UPDATE_*`/`PROJECT_*`, мониторинг `MONITOR_*`, Helper `UPLOADER_*`, Frontier `FRONTIER_*`/`CAPI_*`,
+платежи, VK/Яндекс) описаны в `.env.example` и в CONTEXT.md, раздел «Environment Variables».
 
 ### Run
 
 ```bash
-pnpm dev        # localhost:3000
-pnpm build      # Production build
+npm run dev        # http://localhost:3000
+npm run build      # production build (standalone)
+npm run start      # запустить собранное
+npm run typecheck  # next typegen + tsc --noEmit
 ```
 
 ### Тесты
 
 ```bash
-npm run test:quick    # быстрый контур: без jsdom-рендеров и shell-интеграций (~16 с, 1003 проверки)
-npm test              # весь набор (~50 с, 1223 проверки)
+npm run test:quick    # быстрый контур: без jsdom-рендеров и shell-интеграций (1263 проверки, ~1 мин)
+npm test              # весь набор: 142 файла, 1520 проверок (~1,5–2 мин на 2 ядрах)
 npm run test:list     # какие файлы есть и к какому контуру они относятся
 node scripts/run-tests.mjs atlas ring    # только файлы про Atlas и кольцо
+npm run test:browser  # Playwright-сценарии tests/browser/*.spec.ts (нужен запущенный сайт)
+python -m unittest discover -s uploader/tests   # тесты Colonial Helper
 ```
 
-Набор гоняется параллельно по файлам (`scripts/run-tests.mjs`), сборки esbuild
-для тестов кэшируются в `.cache/test-bundles`. Подробности и история ускорения —
-[TEST-SUITE-SPEED.md](TEST-SUITE-SPEED.md).
+Набор гоняется параллельно по файлам (`scripts/run-tests.mjs`), сборки esbuild для тестов кэшируются в
+`.cache/test-bundles`, база в тестах — PGlite. Тот же `npm test` выполняется при сборке Docker-образа `web`
+(`RUN_TESTS=1`). Подробности — [TEST-SUITE-SPEED.md](TEST-SUITE-SPEED.md).
+
+**Известные падения (на 18.10.2026):** 6 проверок галактического кольца, написанных до переработки кольца
+в #122–#128: 4 в `scripts/tests/atlas-ring-constraints.test.mjs` (выбор и шаг опоры, проверка маршрута)
+и по одной в `atlas-search-map.test.mjs` и `atlas-ui-dom.test.mjs` (подписи «Копировать текстом»). Они
+падают и на `main`; остальные 1514 проходят.
 
 ## Database Setup
 
-For the existing self-hosted installation, preserve `auth.users`, identities,
-profiles and API tokens. This update adds **no SQL migrations**; do not re-run
-`full_schema.sql`. See [POST-MIGRATION.md](POST-MIGRATION.md).
-The full-galaxy catalog is the exception: apply
-`supabase/migrations/20260924000000_galaxy_systems_finish.sql` before the
-map point cloud and nearest-star search can use the database. See
-[SPANSH-IMPORT.md](SPANSH-IMPORT.md).
-Если Galnet-новости не переводятся, а в очереди висят `pending`-статьи — на
-базе не применены колонки переводов; разово прогоните
-`node --env-file=.env.production scripts/apply-galnet-migration.mjs`
-(идемпотентно). Подробности: [GALNET-TRANSLATIONS-FIX.md](GALNET-TRANSLATIONS-FIX.md).
-The CLI linking example below is for a **hosted Supabase project**; a self-hosted
-DB uses a direct connection (`--db-url`) or reviewed SQL via local `psql`.
+**Существующая установка.** Сохраняйте `auth.users`, identities, `profiles` и API-токены; не запускайте
+`supabase/full_schema.sql` на живой базе. Недостающие миграции применяет сам сервер: кнопка «Обновить
+сейчас» (флажок «с миграциями») или «Применить только миграции» в Админка → Мониторинг —
+`deploy/update-project.sh` накатывает все файлы `supabase/migrations/*.sql`, которых ещё нет в
+`migrations.mark`, по алфавиту, после бэкапа БД.
 
-For a remote migration deployment, set these temporary, **server-only** values in `.env.local` in addition to the application values:
+**Новая установка.** `supabase/full_schema.sql` (все 86 миграций одним файлом) или
+`npx supabase db push` — подробно в [supabase/DATABASE.md](supabase/DATABASE.md). Каталог систем
+требует отдельной загрузки дампа — [SPANSH-IMPORT.md](SPANSH-IMPORT.md).
+
+Если Galnet-новости не переводятся, а в очереди висят `pending`-статьи — на базе не применены колонки
+переводов; разово прогоните `node --env-file=.env.production scripts/apply-galnet-migration.mjs`
+(идемпотентно) — [GALNET-TRANSLATIONS-FIX.md](GALNET-TRANSLATIONS-FIX.md).
+
+Для **облачного** Supabase-проекта миграции можно применить CLI. Временные **серверные** значения — в
+`.env.local`:
 
 ```env
 SUPABASE_PROJECT_REF=your-project-ref
@@ -272,212 +301,123 @@ SUPABASE_DB_PASSWORD=temporary-database-password
 # Or use SUPABASE_DB_URL for a direct, percent-encoded connection URL.
 ```
 
-Load the ignored local configuration into the current shell without printing it, then link and push:
-
 ```bash
-set -a
-. ./.env.local
-set +a
-
-# Link your project (only needed once per checkout)
+set -a; . ./.env.local; set +a
 npx supabase link --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
-
-# Preview pending migrations first
 npx supabase db push --dry-run --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
-
-# Apply migrations only after reviewing the dry run
 npx supabase db push --project-ref "$SUPABASE_PROJECT_REF" --password "$SUPABASE_DB_PASSWORD"
 ```
 
-If using a direct database connection instead, use `npx supabase db push --db-url "$SUPABASE_DB_URL"`. Migrations are in `supabase/migrations/`. Enable Realtime for: `squadron_chat_messages`, `user_notifications`, `forum_threads`, `forum_posts`.
+Self-hosted база — `npx supabase db push --db-url "$SUPABASE_DB_URL"` или проверенный SQL через `psql`.
+Realtime (публикация `supabase_realtime`) нужен для таблиц, на которые подписан браузер: `messages`,
+`friends`, `user_notifications`, `forum_notifications`, `squadron_chat_messages`,
+`squadron_voice_participants`, `squadron_voice_signals`.
 
 ## Project Structure
 
 ```
 ed-ring-colony/
   src/
-    app/                    # Next.js App Router pages
-      layout.tsx            # Root layout (topbar + sidebar + footer)
-      page.tsx              # Homepage
-      m-admin/              # Mobile admin PWA (HUD, bottom nav, 9 tabs, /m-admin)
-        page.tsx            # Fully adapted mobile dashboard (React, ED style)
-        layout.tsx          # PWA manifest + viewport
-      [route]/              # Route pages (map, squadrons, projects, forum, wiki, etc)
-      api/                  # API routes
-        mobile/
-          admin-summary/    # Aggregator for Android + /m-admin (all admin points)
-          auth/             # Mobile auth (login + role check)
-        admin/monitor/      # Server monitor snapshot (admin only)
-        admin/billing/      # Billing stats
-    components/             # React components
-      Icons.tsx             # Custom SVG icons
-      SquadronChat.tsx      # Squadron chat
-      DirectChat.tsx        # P2P messaging
-      NotificationBell.tsx  # Notifications
-      Sidebar.tsx           # Navigation
-      Starfield.tsx         # Canvas starfield
-      GalaxyMap/            # 3D map components
-      SystemMap/            # System orrery: SystemOrrery3D + body rail (/system/[name])
-      Architect/            # System architect planner UI (/architect): workspace, picker, summary, share/progress/sourcing panels
-      Outfitting/           # Ship builder UI (/outfitting): workspace, module picker, stats panel (summary/offence/defence/charts),
-                            #   ship control (boost + pips + load), module tooltip, SVG charts, EDSY/Coriolis exchange, Merc Coin list
-      Engineers/            # Engineer unlock tree (/engineers)
-      Forum/                # Forum components
-      Wiki/                 # Wiki components
-      Atlas/                # Atlas components
-      Projects/             # Project components
-      Admin/                # Admin components (ServerMonitorTab, BillingDashboard, etc)
-      Comments/             # Comment components
-    lib/                    # Utilities
-      supabaseClient.ts     # Browser Supabase client
-      supabaseServer.ts     # Server Supabase client
-      supabaseAdmin.ts      # Service role client
-      serverMonitor.ts      # Monitor snapshot logic (app, db, docker, jobs, disk, content, project)
-      billing/              # Billing logic + auth
-      i18n/                 # i18n context & translations
-      translate.ts          # Yandex Translate API
-      ravenColonial.ts      # Raven Colonial API
-      spanshClient.ts       # Spansh route planning
-      eddnClient.ts         # EDDN ingestion
-      pushNotifications.ts  # Push notification utils
-      routeEngine.ts        # Route engine
-      journalParser.ts      # ED journal parser (deliveries + construction flag)
-      journalTelemetry.ts   # Journal telemetry: depot snapshots, body scans, pilot stats
-      dossierCargo.ts       # Pure cargo math for the pilot dossier (all cargo vs site tonnage)
-      systemOrrery.ts       # Pure system-map layout engine (mirrored by uploader/orrery.py)
-      orrery3d/             # Shared three.js map engine: payload, scene, camera, viewer
-      architect/            # System buildout planner: catalogue, rules engine, plan store, progress matcher, sourcing
-      outfitting/           # Ship builder: data contracts, game formulas (calc), combat analysis, module specs,
-                            #   builds & share links, FD symbol names, EDSY/Coriolis/SLEF exchange, Merc Coin catalogue, data loader
-      engineers/            # Engineer unlock tree data (requirements, referrals, links to blueprints)
+    proxy.ts                # сессии Supabase, заглушка техработ, шлюз Supabase (вместо middleware)
+    app/                    # Next.js App Router: 59 страниц
+      layout.tsx            # topbar (статус System Online/Update) + sidebar + footer
+      atlas/ map/ system/ systems/ architect/ outfitting/ engineers/ station-search/ ...
+      admin/ m-admin/       # админка и мобильная админка (PWA)
+      api/                  # 227 маршрутов API (полный список — CONTEXT.md §5)
+    components/
+      GalaxyMap/            # 3D-карта галактики и её слои (INTEGRATION.md)
+      SystemMap/            # карта системы: SystemOrrery3D + список тел
+      Atlas/                # вкладки Atlas: поиск, маршруты, кольцо, рынок, поблизости, PowerPlay, фракции
+      Architect/            # планировщик застройки и «Проекты систем»
+      Carriers/             # карточки и панель авианосцев
+      Outfitting/ Engineers/ Forum/ Wiki/ Projects/ Comments/ Cosmetics/ Galnet/ Support/
+      Admin/                # вкладки админки (мониторинг, каталог, PowerPlay, фракции, Helper, верфь, ...)
+      Icons.tsx             # все иконки (131 SVG)
+    hooks/                  # слои Atlas (usePowerplayLayer, useFactionsLayer), поиск, друзья, realtime
+    lib/                    # серверная и общая логика: импорты, синхронизации, CAPI, BGS, PowerPlay,
+                            #   авианосцы, архитектор, верфь, журналы, i18n, Supabase-клиенты
+    styles/forum-extra.css
     types/
-      monitor.ts            # ServerMonitorSnapshot types
-      billing.ts            # Billing types
-  android-app/              # Native Android monitor app (Kotlin + Compose)
-    app/src/main/
-      java/com/edringcolony/monitor/
-        MainActivity.kt     # Scaffold + TopBar + BottomNav + Auth + auto-refresh 20s
-        data/model/         # AdminSummary, Monitor, Billing models (Gson)
-        data/network/       # ApiService, AuthInterceptor, RetrofitClient
-        data/local/         # TokenManager (EncryptedSharedPreferences)
-        ui/theme/           # Color.kt, Type.kt, Theme.kt (DESIGN.md palette)
-        ui/components/      # StatusPill, StatCard, LoadingView
-        ui/screens/         # 9 screens: Login, Dashboard, Monitor, Billing, Systems, Content, Users, Support, Backup, Auth + WebView fallback
-        ui/navigation/      # BottomNav, NavGraph
-      res/values/           # strings, colors (#1e2022 etc), themes
-  supabase/
-    migrations/             # SQL migrations
-  public/
-    manifest-mobile.json    # PWA manifest for /m-admin
-  scripts/                  # Utility scripts
-  DESIGN.md                 # Design system documentation (incl. mobile)
-  CONTEXT.md                # Architecture documentation (incl. mobile)
-  MONITORING.md             # Monitoring docs (incl. mobile)
-  MOBILE-ADMIN.md           # Mobile admin + Android app docs
+  scripts/                  # run-tests.mjs, server-jobs.mjs + job-schedule.mjs, update-agent.mjs,
+                            #   monitor-agent.mjs, импорт Spansh, Galnet, EDDN, сборка данных верфи
+    tests/                  # 142 файла автотестов (+ helpers, fixtures)
+  uploader/                 # Colonial Helper (Python): программа, лаунчер, сборка пакета, тесты
+  android-app/              # Android-монитор (Kotlin + Compose)
+  supabase/                 # migrations/ (86), full_schema.sql, maintenance/, templates/, DATABASE.md
+  deploy/                   # Dockerfile'ы jobs/агентов, nginx, systemd, update-project.sh, бэкап,
+                            #   selfhost/ (install.sh, upgrade.py, realtime-check.py)
+  public/                   # data/outfitting.json, ed3d/, wiki/, fonts/, manifest-mobile.json
+  tests/browser/            # Playwright
+  Dockerfile, docker-compose.yml, next.config.mjs, .env.example
+  migrations/, fix-supabase.js, package-additions.json   # старые разовые файлы, оставлены для справки
 ```
 
 ## API Routes
 
-### Squadron Endpoints
-- `GET /api/squadrons` — List squadrons
-- `POST /api/squadrons` — Create squadron
-- `GET /api/squadrons/[id]` — Get squadron
-- `PATCH /api/squadrons/[id]` — Update squadron
-- `GET /api/squadrons/[id]/members` — List members
-- `POST /api/squadrons/[id]/members` — Add member
-- `GET /api/squadrons/[id]/chat` — Get chat messages
-- `POST /api/squadrons/[id]/chat` — Send message
-- `DELETE /api/squadrons/[id]/chat/[msgId]` — Delete message
+227 маршрутов в `src/app/api/`. Полная таблица с методами и доступом — [CONTEXT.md §5](CONTEXT.md#5-api-routes).
+Основные группы:
 
-### Project Endpoints
-- `GET /api/projects` — List projects
-- `POST /api/projects` — Create project
-- `GET /api/projects/[id]` — Get project
-- `PATCH /api/projects/[id]` — Update project
+| Группа | Префикс | Доступ |
+|---|---|---|
+| Atlas, карта, каталог | `/api/atlas/*`, `/api/map/*`, `/api/galaxy/*`, `/api/powerplay/*`, `/api/factions/*`, `/api/edsm/*` | публично (часть — с сессией) |
+| Колонизация | `/api/architect/*`, `/api/projects/*`, `/api/hubs*`, `/api/route*`, `/api/systems/progress`, `/api/market/*`, `/api/stations/*` | сессия / публично |
+| Журналы и Helper | `/api/logs/upload`, `/api/logs/import`, `/api/journal/*`, `/api/carriers/*`, `/api/factions/sync`, `/api/cmdr/stats` | API-токен `rc_…` или сессия |
+| Frontier CAPI | `/api/capi/*` | сессия (`/token` — и токен Helper'а) |
+| Сообщество | `/api/squadrons/*`, `/api/forum/*`, `/api/wiki/*`, `/api/comments*`, `/api/friends`, `/api/notifications`, `/api/support/*`, `/api/news*`, `/api/galnet*` | публично / сессия |
+| Магазин и платежи | `/api/billing/*`, `/api/shop/*` | сессия; вебхуки провайдеров |
+| Обновления Helper | `/api/uploader/*` (манифест, blob, лаунчер) | публично |
+| Админка | `/api/admin/*`, `/api/mobile/*` | роль `admin` (часть — staff) |
+| Фоновые задачи | `/api/cron/*`, `POST /api/galnet` | `Authorization: Bearer $CRON_SECRET` |
+| Служебное | `/api/health`, `/api/status`, `/api/maintenance` | публично |
 
-### Forum Endpoints
-- `GET /api/forum/categories` — List categories
-- `GET /api/forum/threads` — List threads
-- `POST /api/forum/threads` — Create thread
-- `GET /api/forum/posts` — List posts
-- `POST /api/forum/posts` — Create post
-- `POST /api/forum/reactions` — Add reaction
+## Фоновые задачи
 
-### Wiki Endpoints
-- `GET /api/wiki/articles` — List articles
-- `POST /api/wiki/articles` — Create article
-- `GET /api/wiki/articles/[slug]` — Get article
-- `GET /api/wiki/categories` — List categories
-- `GET /api/wiki/tags` — List tags
-- `GET /api/wiki/search` — Search wiki
+Расписание — `scripts/job-schedule.mjs`, исполнитель — `scripts/server-jobs.mjs` в Docker-сервисе `jobs`
+(ровно один экземпляр). Он вызывает защищённые маршруты внутри Docker-сети (`http://web:3000`) с
+`CRON_SECRET`; состояние запусков — `jobs-state.json`, его видно в Админка → Мониторинг. Список включённых —
+`JOBS_ENABLED` (пустое значение отключает всё).
 
-### Galnet Endpoints
-- `GET /api/galnet` — Список статей Galnet (`?locale=ru&limit=100`)
-- `POST /api/galnet` — Синхронизация ленты + перевод новых статей (cron)
-- `PATCH /api/galnet` — Догон очереди переводов (cron)
-- `GET /api/galnet/[nid]` — Одна статья (по `nid`, `guid` или `slug`)
+| Задача | Расписание (UTC) | Маршрут | Что делает |
+|---|---|---|---|
+| `capi-sync` | каждые 5 мин | `/api/cron/capi-sync` | синхронизация привязанных аккаунтов Frontier небольшой пачкой, продление токенов |
+| `update-progress` | каждые 30 мин | `/api/cron/update-progress` | прогресс хабов и систем маршрута из Raven Colonial → `system_progress` |
+| `cg-check` | каждые 6 ч | `/api/cron/cg-check` | Community Goals из Inara (нужен `INARA_API_KEY`) |
+| `eddn-cleanup` | каждые 6 ч, :30 | `/api/cron/eddn-cleanup` | удаляет цены EDDN старше 7 дней |
+| `colonisation-cleanup` | 03:40 | `/api/cron/colonisation-cleanup` | подрезает снимки прогресса строек старше `COLONISATION_RETENTION_DAYS` |
+| `galnet-sync` | 06:20 | `/api/galnet` | лента Galnet + догон переводов |
+| `translate` | каждые 6 ч, :40 | `/api/cron/translate` | очередь переводов `news` и `galnet_news` |
+| `powerplay-sync` | 05:20 и 17:20 | `/api/cron/powerplay-sync` | дамп EDSM PowerPlay (условный запрос — второй за сутки обычно 304) |
+| `factions-sync` | 07:10 | `/api/cron/factions-sync` | обновляет фракции старше `FACTIONS_REFRESH_DAYS` и продолжает прерванный импорт; **первую** загрузку делает админ |
+| `galaxy-import` | 02:00, **выключена по умолчанию** | `/api/cron/galaxy-import` | дельта каталога Spansh; включается осознанно |
 
-### Galaxy Systems (Spansh) Endpoints
-- `GET /api/galaxy/stats` — Статус каталога и состояние импорта (прогресс, ошибка)
-- `GET /api/galaxy/systems/search?q=…` — Поиск по всем системам галактики
-- `GET /api/galaxy/systems/by-name?name=…` — Система по имени
-- `GET /api/galaxy/systems/:id64` — Система по Spansh ID64
-- `GET /api/galaxy/all-systems` — Бинарное облако точек для карты: кэш на диске данных → storage → сборка из таблицы (503 + подсказка, пока каталог пуст)
-- `GET|POST /api/admin/galaxy` — Импорт каталога из админки (роль `admin`)
-- `GET|POST /api/cron/galaxy-import` — Импорт каталога по `CRON_SECRET`
-
-### Mobile Admin Endpoints (new)
-- `GET /api/mobile/admin-summary?period=30d` — **aggregator for Android + /m-admin**: overview counts, full monitor snapshot, billing stats, lists (hubs, route, news, backup), content, flags, health — admin role required, no-store
-- `GET /api/mobile/auth` — check session + role for mobile app
-- `POST /api/mobile/auth` — login via email/password → access_token + refresh_token + user (admin only)
-
-### Other Endpoints
-- `GET /api/admin/monitor` — protected admin-only server, DB, Docker, scheduler and deployment snapshot
-- `GET /api/admin/monitor/update` — manual update status (admin) + public `/api/status` for topbar `System Update`
-- `GET /api/admin/billing/stats?period=30d` — billing telemetry + live counters (pilots, systems, tonnage)
-- `GET /api/map/carriers` — fleet carriers for the galaxy map layer (public markers, no cargo/finance)
-- `GET /api/leaderboard` — Player stats
-- `GET /api/atlas/search` — System search
-- `GET /api/news` — Site news
-- `GET /api/notifications` — User notifications
-- `POST /api/push/subscribe` — Push subscription
-- `POST /api/eddn` — EDDN ingestion
-- `POST /api/ravencolonial/sync` — Raven sync
-- `POST /api/logs/upload` — token-authenticated uploader deliveries and construction snapshots
-- `POST /api/journal/import` — authenticated browser/CAPI Journal import
-- `POST /api/translate` — Translate content
-- `POST /api/cron/translate` — Cron translation job
+Если в `.env.production` задан свой `JOBS_ENABLED`, новые задачи (`powerplay-sync`, `factions-sync`) нужно
+дописать в него вручную.
 
 ## Spansh: все системы галактики
 
-Полная таблица всех известных систем (`galaxy_systems`, ~2×10⁸ строк —
-вся исследованная галактика) загружается
-ночным дампом Spansh. Она ускоряет поиск в Атласе (опорные координаты и
-звёздные кандидаты берутся из локальной БД) и подпитывает экспериментальный
-слой «Все системы ⚗» на 3D-карте (фильтр классов, карточка по клику).
-Страница системы открывается и для систем без стройки, если они есть в каталоге.
+Полная таблица всех известных систем (`galaxy_systems`, ~2×10⁸ строк — вся исследованная галактика)
+загружается ночным дампом Spansh. Она ускоряет поиск в Атласе (опорные координаты и звёздные кандидаты
+берутся из локальной БД) и подпитывает экспериментальный слой «Все системы ⚗» на 3D-карте (фильтр классов,
+карточка по клику). Страница системы открывается и для систем без стройки, если они есть в каталоге.
 
-Импорт запускается **из самого приложения** — production-образ не содержит
-`scripts/`: Админка → вкладка «Каталог систем» (`/admin?tab=galaxy`),
-`POST /api/admin/galaxy` (сессия админа) или `POST /api/cron/galaxy-import`
-(`CRON_SECRET`). Запрос только стартует фоновую загрузку и сразу отвечает;
+Импорт запускается **из самого приложения** — production-образ не содержит `scripts/`: Админка → вкладка
+«Каталог систем» (`/admin?tab=galaxy`), `POST /api/admin/galaxy` (сессия админа) или
+`POST /api/cron/galaxy-import` (`CRON_SECRET`). Запрос только стартует фоновую загрузку и сразу отвечает;
 прогресс виден в `GET /api/galaxy/stats`, прерванный импорт продолжается.
 
-Полный дамп (`systems.json.gz`, 5.9 ГиБ) нужен **один раз**: дальше импорт
-сам берёт дельту Spansh, перекрывающую отставание каталога
-(`systems_1week.json.gz` ~21 МиБ на суточном цикле, `systems_1month.json.gz`
-~88 МиБ после месяца простоя). Холодный старт ускоряют параллельные Range-соединения
-(`GALAXY_DOWNLOAD_SEGMENTS`, по умолчанию 4) и режим шардов
-(`GALAXY_IMPORT_MODE=shards`): архив распаковывается в gzip-TSV файлы, после
-чего перезапуск импорта стоит O(1), а не повторного разбора 6 ГиБ.
+Полный дамп (`systems.json.gz`, 5.9 ГиБ) нужен **один раз**: дальше импорт сам берёт дельту Spansh,
+перекрывающую отставание каталога (`systems_1week.json.gz` ~21 МиБ на суточном цикле,
+`systems_1month.json.gz` ~88 МиБ после месяца простоя). Холодный старт ускоряют параллельные
+Range-соединения (`GALAXY_DOWNLOAD_SEGMENTS`, по умолчанию 4), запись через `COPY` по прямому Postgres
+([GALAXY-IMPORT-SPEED.md](GALAXY-IMPORT-SPEED.md)) и режим шардов (`GALAXY_IMPORT_MODE=shards`): архив
+распаковывается в gzip-TSV файлы, после чего перезапуск импорта стоит O(1), а не повторного разбора 6 ГиБ.
 
-Архивы и шарды лежат на отдельном диске сервера (`GALAXY_DATA_HOST_DIR`,
-по умолчанию `/mnt/sdb/ed-ring-colony/spansh` → `/app/data/spansh`): предыдущий
-дамп удаляется перед загрузкой нового, а архив — после успешного импорта, так
-что ~12 ГиБ пика не превращаются в бесконечный рост. Перенос со старого
-volume и первичная настройка диска: `sudo bash deploy/migrate-galaxy-dump.sh`
-(скрипт сам находит, куда смонтирован `/dev/sdb1`, и печатает строку для
-`.env.production`).
+Архивы и шарды лежат на отдельном диске сервера (`GALAXY_DATA_HOST_DIR`, по умолчанию
+`/mnt/sdb/ed-ring-colony/spansh` → `/app/data/spansh`; там же — архив фракций `factions/`): предыдущий дамп
+удаляется перед загрузкой нового, а архив — после успешного импорта, так что ~12 ГиБ пика не превращаются в
+бесконечный рост. Перенос со старого volume и первичная настройка диска:
+`sudo bash deploy/migrate-galaxy-dump.sh` (скрипт сам находит, куда смонтирован `/dev/sdb1`, и печатает
+строку для `.env.production`).
 
 ```bash
 npm run spansh:import                 # CLI: полный дамп → БД
@@ -486,24 +426,16 @@ npm run spansh:import -- --unpack     # распаковать архив в ш�
 npm run spansh:selftest               # офлайн-проверка конвейера (без БД и сети)
 ```
 
-Подробности, альтернативы загрузки и диагностика (почему карта не показывает
-все системы): [SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
+Подробности, альтернативы загрузки и диагностика (почему карта не показывает все системы):
+[SPANSH-IMPORT.md](./SPANSH-IMPORT.md).
 
 ## Galnet Sync
 
 Новости Galnet забираются с официального JSON:API Frontier
-(`https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article`), складываются
-в таблицу `galnet_news` и автоматически переводятся через
-Yandex Cloud Translate API v2 на ru/en/de/it/ko/zh/ja.
+(`https://cms.zaonce.net/en-GB/jsonapi/node/galnet_article`), складываются в таблицу `galnet_news` и
+автоматически переводятся через Yandex Cloud Translate API v2 на ru/en/de/it/ko/zh/ja. Расписание —
+задачи `galnet-sync` (06:20 UTC) и `translate` (каждые 6 часов) из таблицы выше.
 
-Расписание на своём сервере (`scripts/server-jobs.mjs`, Docker-сервис `jobs`):
-
-| Задача | Расписание | Что делает |
-|--------|------------|------------|
-| `galnet-sync` | раз в сутки, 06:20 UTC | синхронизация ленты + догон переводов |
-| `translate` | раз в 6 часов, на 40-й минуте | очередь переводов (`news`, `galnet_news`) |
-
-Scheduler вызывает защищённые API внутри Docker-сети с `CRON_SECRET`.
 Для ручной диагностики остался CLI, работающий с БД напрямую:
 
 ```bash
@@ -513,18 +445,17 @@ node scripts/galnet-sync.mjs --translate-only # только очередь пе
 node scripts/galnet-sync.mjs --no-translate   # только синхронизация
 ```
 
-Нужные серверные переменные для CLI: `NEXT_PUBLIC_SUPABASE_URL`,
-`SUPABASE_SERVICE_ROLE_KEY`, `YANDEX_TRANSLATE_API_KEY`
-(опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
+Нужные серверные переменные для CLI: `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+`YANDEX_TRANSLATE_API_KEY` (опционально `YANDEX_TRANSLATE_FOLDER_ID`, `YANDEX_TRANSLATE_IAM_TOKEN`).
 
 ### Если переводы не появляются
 
-Перевод выполняет контейнер `web` (по запросу планировщика `jobs`), поэтому
-ключ Yandex должен быть в окружении именно сервиса `web`. Порядок проверки:
+Перевод выполняет контейнер `web` (по запросу планировщика `jobs`), поэтому ключ Yandex должен быть в
+окружении именно сервиса `web`. Порядок проверки:
 
 ```bash
-# 1. Ключ виден внутри web? (после deploy/selfhost/upgrade.py env_file не используется —
-#    ключ должен быть в `environment` сервиса web в docker-compose.yml)
+# 1. Ключ виден внутри web? (в стандартном docker-compose.yml web читает env_file .env.production;
+#    установки, переведённые deploy/selfhost/upgrade.py, держат ключи в environment сервиса web)
 docker compose exec web sh -c 'env | grep -c YANDEX_TRANSLATE'
 
 # 2. Что говорит планировщик: event:"skipped"/"warning" = нет ключа, event:"failure" = ошибка API
@@ -538,72 +469,60 @@ curl -s -X POST -H "Authorization: Bearer $CRON_SECRET" \
 docker compose exec web node scripts/galnet-sync.mjs --translate-only
 ```
 
-Типичные причины: ключ был только в `.env.production` и потерялся при обновлении
-(теперь `upgrade.py` переносит его из работающего контейнера); для API-ключа
-сервисного аккаунта нужна роль `ai.translate.user`; исчерпана квота символов
-(429 — статьи остаются `failed` и будут повторно взяты следующим запуском —
-свежие статьи обрабатываются первыми).
+Типичные причины: ключ потерялся при обновлении (`upgrade.py` переносит его из работающего контейнера);
+для API-ключа сервисного аккаунта нужна роль `ai.translate.user`; исчерпана квота символов (429 — статьи
+остаются `failed` и будут повторно взяты следующим запуском — свежие статьи обрабатываются первыми).
+Ключи `.env.production` можно посмотреть и поменять в Админка → Мониторинг → «API-ключи сайта».
 
-Тесты парсера и синхронизации (сеть не нужна):
+## Colonial Helper 2.16.0
 
-```bash
-npm test
-```
+В репозитории находится Windows/Python-клиент `uploader/colonial_helper.py` для загрузки данных Elite
+Dangerous на ED Ring Colony. Что он умеет и как собирается — [uploader/README.md](uploader/README.md),
+журнал версий — [uploader/CHANGES.md](uploader/CHANGES.md). Последние версии:
 
-## Colonial Helper 2.13.2
+* **2.16.0** — состояние минорных фракций посещённых систем → `POST /api/factions/sync` ([FACTIONS.md](FACTIONS.md));
+* **2.15.0** — закреплённый блок оверлея всегда пропускает мышь (Ctrl+F12 — закрепить/открепить все),
+  любой блок можно отвязать от игры и вынести на другой монитор;
+* **2.14.0** — учёт авианосцев на сайте (`POST /api/carriers/sync`, оверлей читает `GET /api/carriers/mine`),
+  исправленная отправка груза в Raven Colonial ([FLEET-CARRIERS.md](FLEET-CARRIERS.md));
+* **2.13.x** — обновление пакетом кода через сервер проекта, подпись ключом, которому доверяют клиенты,
+  единый дизайн восьми HUD-блоков, CAPI после верного входа через Epic/Steam.
 
-В репозитории находится Windows/Python-клиент `uploader/colonial_helper.py`
-для загрузки данных Elite Dangerous на ED Ring Colony. Он передаёт Архитектору
-расширенные сканы тел и snapshots стройки, использует тот же API-токен, что и
-доставка, и повторяет неудачную отправку сканов вместо их потери. Двойная
-сверка прогресса выполняется параллельно с Raven Colonial.
-
-Обновления Helper полностью обслуживает собственный сервер: администратор
-загружает базовый EXE, сервер собирает ZIP, считает SHA-256, подписывает
-манифест Ed25519, публикует версию и умеет откатывать релиз. Восемь HUD-оверлеев
-используют единый строгий дизайн с секциями, метриками и графитово-оранжевой
-палитрой; настройки размеров, расположения и закрепления сохранены. С 2.15.0
-закреплённый блок всегда пропускает мышь в игру (Ctrl+F12 — закрепить/открепить
-все), а любой блок можно отвязать от игры и вынести на другой монитор.
+Обновления Helper полностью обслуживает собственный сервер: администратор загружает базовый EXE, сервер
+собирает ZIP, считает SHA-256, подписывает манифест Ed25519, публикует версию и умеет откатывать релиз.
+**Изменения в `uploader/` сами по себе не доходят до пилотов — пакет нужно опубликовать в Админка →
+Обновления Helper.**
 
 ### Какие данные принимает сайт
 
-- персональные доставки для leaderboard: прямые
-  `ColonisationContribution`, `CargoDepot`, доставка на Fleet Carrier и
-  подтверждённые уменьшения корабельного Cargo;
-- общие события `ColonisationConstructionDepot`: состояние стройки,
-  требования ресурсов, прогресс, construction ID, MarketID, система и время;
-- повторные доставки не дублируются благодаря `source_hash`, а события
-  стройки — отпечатку состояния (`source_hash` по системе, рынку, конструкции,
-  прогрессу и ресурсам): неизменившееся состояние, которое журнал пишет каждые
-  несколько секунд, не добавляет строку.
+- персональные доставки для leaderboard: прямые `ColonisationContribution`, `CargoDepot`, доставка на Fleet
+  Carrier и подтверждённые уменьшения корабельного Cargo (`POST /api/logs/upload`);
+- общие события `ColonisationConstructionDepot`: состояние стройки, требования ресурсов, прогресс,
+  construction ID, MarketID, система и время — в `colonisation_sites` и `construction_depot_snapshots`;
+- сканы тел (`system_scans`), сводку пилота (`pilot_stats`), события авианосцев (`/api/carriers/sync`),
+  станции и рынки (`/api/stations/report`), фракции (`/api/factions/sync`);
+- повторные доставки не дублируются благодаря `source_hash` (одинаковому у сайта и Helper'а), а события
+  стройки — отпечатку состояния: неизменившееся состояние, которое журнал пишет каждые несколько секунд,
+  не добавляет строку.
 
-Каждая доставка несёт объяснение своего происхождения, поэтому досье может
-делить «весь груз» и «груз на стройплощадки» без догадок (`source`,
-`is_construction`, `market_id` — миграция
-`supabase/migrations/20260917000000_deliveries_transport_scope.sql`).
-`is_construction` выставляет парсер журнала: `ColonisationContribution` и
-`CargoDepot` — всегда стройка, `cargo_delta` — только если игрок стоял у рынка,
-про который журнал показывал `ColonisationConstructionDepot`, а отгрузка на
-авианосец, грузовые миссии, Powerplay и Search-and-Rescue — просто перевозка.
-Исторические строки имеют `is_construction IS NULL` и считаются стройкой,
-иначе старые профили обнулились бы. Если колонки ещё не применены, сервер
-откатывается к базовому набору полей и загрузка продолжается.
+Каждая доставка несёт объяснение своего происхождения, поэтому досье может делить «весь груз» и «груз на
+стройплощадки» без догадок (`source`, `is_construction`, `market_id` — миграция
+`supabase/migrations/20260917000000_deliveries_transport_scope.sql`). `is_construction` выставляет парсер
+журнала: `ColonisationContribution` и `CargoDepot` — всегда стройка, `cargo_delta` — только если игрок стоял
+у рынка, про который журнал показывал `ColonisationConstructionDepot`, а отгрузка на авианосец, грузовые
+миссии, Powerplay и Search-and-Rescue — просто перевозка. Исторические строки имеют
+`is_construction IS NULL` и считаются стройкой, иначе старые профили обнулились бы.
 
-Браузерная загрузка (`/account` → `POST /api/logs/import`) и десктопный
-uploader отправляют один и тот же набор данных: помимо доставок это snapshots
-строек, сканы тел (`system_scans`) и сводка пилота (`pilot_stats`). Разбор
-делается одним проходом по журналу — `lib/journalParser.ts` считает доставки и
-одновременно кормит событиями `lib/journalTelemetry.ts`.
+Браузерная загрузка (личный кабинет `/account` → `POST /api/logs/import`) и десктопный uploader отправляют
+один и тот же набор данных. Разбор делается одним проходом по журналу: `lib/journalParser.ts` считает
+доставки и одновременно кормит событиями `lib/journalTelemetry.ts`, а кабинет тем же проходом собирает
+события авианосцев (`lib/fleetCarrierCollector.ts` → `/api/carriers/sync`) и фракций
+(`lib/bgsJournal.ts` → `/api/factions/sync`).
 
-`MarketBuy` с Fleet Carrier уменьшает его запас и не считается доставкой на
-проект. Обычные продажи на станции не загружаются как construction delivery.
-Ключи Raven Colonial, EDSM и Inara хранятся только локально у пользователя.
-
-Для Journal reconciliation uploader хранит только локальные byte offsets:
-`.colonial_helper_journal_offsets.json`. Сырые журналы на сайт не передаются;
-передаются только необходимые структурированные данные. При первичной загрузке
-progress bar показывает процент по байтам, файлы, объём и текущий журнал.
+`MarketBuy` с Fleet Carrier уменьшает его запас и не считается доставкой на проект. Обычные продажи на
+станции не загружаются как construction delivery. Ключи Raven Colonial, EDSM и Inara хранятся только
+локально у пользователя. Сырые журналы на сайт не передаются; uploader хранит только локальные byte
+offsets (`.colonial_helper_journal_offsets.json`).
 
 ## Deployment
 
@@ -623,66 +542,61 @@ docker compose --env-file .env.production --profile monitoring build web jobs mo
 docker compose --env-file .env.production --profile monitoring up -d web jobs monitor-agent
 ```
 
-Перед первым запуском `jobs` отключите старые Actions/cron, сохранив задания
-резервного копирования. Подробности и Supabase Auth override —
-[POST-MIGRATION.md](POST-MIGRATION.md). Vercel git deployment отключён в
-`vercel.json`. Для нового сервера см. `SELFHOST.md`.
+Новый сервер — [SELFHOST.md](SELFHOST.md) (всё на одной машине, `deploy/selfhost/install.sh`),
+[UBUNTU20-INSTALL.md](UBUNTU20-INSTALL.md) или [SERVER-SETUP.md](SERVER-SETUP.md) (облачный Supabase).
+Переход с Vercel и роль каждого файла в `deploy/` — [DEPLOY.md](DEPLOY.md).
 
 ### Операционный мониторинг
 
-В **Админка → Мониторинг** доступны статус сайта, Supabase/БД, Docker-сервисов,
-планировщика и версия развёрнутого проекта. Включение — одна команда
-`bash deploy/start-monitoring.sh` (или `npm run monitoring:up`): она сама
-генерирует и вставляет отдельный `MONITOR_AGENT_TOKEN`, поднимает
-Compose-профиль `monitoring` (сервис `monitor-agent`) и проверяет связку
-web → agent; порт агента не публикуется. Полная безопасная настройка, режимы
-скрипта и команда обновления: [MONITORING.md](MONITORING.md).
+В **Админка → Мониторинг** доступны статус сайта, Supabase/БД, Docker-сервисов, планировщика и версия
+развёрнутого проекта. Включение — одна команда `bash deploy/start-monitoring.sh` (или
+`npm run monitoring:up`): она сама генерирует и вставляет отдельный `MONITOR_AGENT_TOKEN`, поднимает
+Compose-профиль `monitoring` (сервис `monitor-agent`) и проверяет связку web → agent; порт агента не
+публикуется. Полная безопасная настройка, режимы скрипта и команда обновления: [MONITORING.md](MONITORING.md).
 
 Дополнительно панель показывает:
 
-- **место на диске** — вес базы на диске (`pg_database_size`), разбивка по
-  таблицам (данные / индексы / TOAST) и свободное место на разделе;
-- **контент и переводы** — последняя синхронизация Galnet, сколько статей ждут
-  перевода, и кнопки «Синхронизировать Galnet сейчас» / «Добить переводы» —
-  то, что раньше делал только крон;
-- **обновление проекта** — ревизия в ветке, число новых коммитов и
-  неприменённых миграций, кнопка «Обновить сейчас» с прогрессом по стадиям и
-  журналом, кнопка «Остановить», а перед запуском — флажки «с тестами»,
-  «с бэкапом БД» и «с миграциями» плюс отдельная кнопка «Применить только
-  миграции» (без пересборки). Включение: `sudo bash
-  deploy/start-update-agent.sh` (или `npm run update:enable`) — подробности в
-  [MONITORING.md](MONITORING.md).
+- **место на диске** — вес базы на диске (`pg_database_size`), разбивка по таблицам (данные / индексы /
+  TOAST) и свободное место на разделе;
+- **контент и переводы** — последняя синхронизация Galnet, сколько статей ждут перевода, и кнопки
+  «Синхронизировать Galnet сейчас» / «Добить переводы»;
+- **обновление проекта** — ревизия в ветке, число новых коммитов и неприменённых миграций, кнопка «Обновить
+  сейчас» с прогрессом по стадиям и журналом, кнопка «Остановить», а перед запуском — флажки «с тестами»,
+  «с бэкапом БД» и «с миграциями» плюс отдельная кнопка «Применить только миграции» (без пересборки).
+  Включение: `sudo bash deploy/start-update-agent.sh` (или `npm run update:enable`);
+- **API-ключи сайта** — `.env.production` в маскировке, правка и «Применить» (пересоздание `web`).
 
-На время такой пересборки вся витрина показывает `System Update` с анимированными
-часиками и процентом вместо `System Online`: посетитель видит, что идёт плановое
-обновление, а не падение сервиса. Данные для этого даёт публичный
-`GET /api/status` — только стадия и процент, без путей, ревизий и журнала.
+На время такой пересборки вся витрина показывает `System Update` с анимированными часиками и процентом вместо
+`System Online`: посетитель видит, что идёт плановое обновление, а не падение сервиса. Данные для этого даёт
+публичный `GET /api/status` — только стадия и процент, без путей, ревизий и журнала.
 
-### Мобильный мониторинг (новое)
+### Мобильный мониторинг
 
-- **Веб-версия `/m-admin`** — PWA-ready мобильная админка, полностью адаптированная под телефон, в стиле HUD сайта. 9 вкладок по всем пунктам админки: Обзор, Монитор, Биллинг, Системы, Контент, Юзеры, Поддержка, Бэкапы, Auth. Автообновление каждые 20с, bottom nav, карточки вместо таблиц. Открывается по `/m-admin`, требует роль admin. В `/admin` есть ссылка 📱 Мобильная админка.
-- **Android-приложение `android-app/`** — нативное Kotlin + Jetpack Compose, повторяет все пункты админки. Логин по email/password через `POST /api/mobile/auth` → Bearer JWT, токен в EncryptedSharedPreferences, агрегатор `GET /api/mobile/admin-summary?period=30d`. Сборка: `cd android-app && ./gradlew assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`. Документация: `MOBILE-ADMIN.md`, `android-app/README.md`, `QUICKSTART.md`.
+- **Веб-версия `/m-admin`** — PWA-ready мобильная админка в стиле HUD сайта, 9 вкладок: Обзор, Монитор,
+  Биллинг, Системы, Контент, Юзеры, Поддержка, Бэкапы, Auth. Автообновление каждые 20 с, bottom nav,
+  карточки вместо таблиц; требует роль admin.
+- **Android-приложение `android-app/`** — Kotlin + Jetpack Compose, логин через `POST /api/mobile/auth` →
+  Bearer JWT в EncryptedSharedPreferences, агрегатор `GET /api/mobile/admin-summary?period=30d`. Сборка
+  `cd android-app && ./gradlew assembleDebug` сейчас падает (см. [android-app/README.md](android-app/README.md)).
 
 Подробности: [MOBILE-ADMIN.md](MOBILE-ADMIN.md) и [MONITORING.md](MONITORING.md).
 
+## Приём платежей Т-Банка
+
+Разовая оплата кредитов, товаров и периода подписки через страницу банка; без автосписаний. Настройка
+терминала, тестирование, требования к чекам и порядок разбора сбоев: **[TBANK-SETUP.md](TBANK-SETUP.md)**.
+Провайдер выключен по умолчанию.
+
 ## Design System
 
-See [DESIGN.md](DESIGN.md) for:
-- Color palette
-- Typography
-- Component specifications
-- Layout rules
-- Animation guidelines
+See [DESIGN.md](DESIGN.md): палитра из 9 цветов, типографика, компоненты, иконки, анимации, адаптив и
+мобильная админка.
 
 ## Architecture
 
-See [CONTEXT.md](CONTEXT.md) for:
-- Tech stack details
-- Database schema
-- API route documentation
-- Component hierarchy
-- State management patterns
-- External integrations
+See [CONTEXT.md](CONTEXT.md): стек, маршрутизация и аутентификация, таблицы БД, полный список API,
+компоненты, интеграции (EDSM, EDDN, Spansh, Raven Colonial, Frontier CAPI, Inara, Yandex), фоновые задачи,
+переменные окружения и типовые приёмы.
 
 ## License
 
@@ -691,12 +605,13 @@ MIT
 ## Credits
 
 - Elite Dangerous by Frontier Developments
-- EDSM for system data
+- EDSM for system, PowerPlay and minor-faction data
 - EDDN for real-time data
-- Spansh for route planning
+- Spansh for the galaxy catalog and route planning
 - Raven Colonial for colonial data
 - EDCD / coriolis-data for ship and module statistics (ship builder)
-- INARA for engineer unlock requirements
+- INARA for engineer unlock requirements and Community Goals
+- OpenNGC for nebula shapes
 - Yandex Translate for i18n
 
 ---

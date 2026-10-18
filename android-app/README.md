@@ -2,6 +2,22 @@
 
 Нативное Android-приложение для мониторинга сайта **ED Ring Colony**, полностью повторяющее пункты админ-панели, с адаптацией под мобильные устройства и сохранением фирменного стиля сайта.
 
+## Известная проблема (на 18.10.2026)
+
+**Приложение сейчас не собирается.** Коммит `505d5d4` (#139, усиление
+безопасности) заменил в `data/network/RetrofitClient.kt` функцию
+`create(baseUrl, tokenManager)` на `getApiService(tokenManager)` +
+`invalidate()`, а `MainActivity.kt` (строки ~54, ~61, ~109) по-прежнему вызывает
+`RetrofitClient.create(...)` — Kotlin остановит сборку с «Unresolved reference:
+create». Исправление: после `tokenManager.setBaseUrl(baseUrl)` вызывать
+`RetrofitClient.invalidate()` и `RetrofitClient.getApiService(tokenManager)`.
+До исправления пользуйтесь веб-версией `/m-admin` (она работает).
+
+Ещё одно следствие того же коммита: в манифесте `usesCleartextTraffic="false"`,
+поэтому адреса `http://10.0.2.2:3000` / `http://192.168.x.x:3000` для локальной
+разработки не откроются — нужен HTTPS (туннель) или отдельный debug-манифест с
+разрешённым cleartext.
+
 ## Фирменный стиль (DESIGN.md)
 - **Цвета**: `--bg #1e2022`, `--panel #2a2d30`, `--line #3a3d40`, `--text #eeeeee`, `--muted #9ca3af`, `--orange #e67e22`, `--cyan #3498db`, `--green #2ecc71`, `--red #e74c3c`
 - **Типографика**: `ui-monospace` для лейблов/статов, `Segoe UI` для контента, `letter-spacing 2px`, `uppercase`
@@ -58,7 +74,7 @@
 В `data/local/TokenManager.kt` или `local.properties`:
 ```properties
 api.base.url=https://your-domain.com
-# для эмулятора с локальным dev:
+# для эмулятора с локальным dev (нужен cleartext — см. «Известная проблема»):
 # api.base.url=http://10.0.2.2:3000
 ```
 
