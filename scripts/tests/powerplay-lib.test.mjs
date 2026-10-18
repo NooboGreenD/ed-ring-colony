@@ -46,7 +46,28 @@ import {
   soloPower,
   togglePowerVisible,
   togglePowerplayState,
+  POWERPLAY_ACTIVE_POWERS,
+  isAllegianceSolo,
+  powerplayFilterPowers,
+  soloAllegiance,
 } from '../../src/lib/powerplay.ts';
+import {
+  POWERPLAY_LOG_LIMIT,
+  POWERPLAY_SYNC_STAGES,
+  computePowerplayPercent,
+  createPowerplayProgress,
+  finishPowerplayProgress,
+  finishPowerplayStage,
+  formatPowerplayBytes,
+  formatPowerplayDuration,
+  publicPowerplayProgress,
+  pushPowerplayLog,
+  sanitizePowerplayLog,
+  sanitizePowerplayProgress,
+  sanitizePublicPowerplayProgress,
+  startPowerplayStage,
+  updatePowerplayStage,
+} from '../../src/lib/powerplayProgress.ts';
 
 /* ── Дамп EDSM ─────────────────────────────────────────────────────────── */
 
@@ -288,4 +309,115 @@ test('подписи: расстояния, даты по UTC и возраст 
   assert.equal(powerplayAge(now - 30 * 3600_000, now), 'вчера');
   assert.equal(powerplayAge(now - 5 * 86_400_000, now), '5 дн. назад');
   assert.equal(powerplayAge(null, now), 'дата наблюдения неизвестна');
+});
+
+
+/* ── Фильтр по державам: все державы и фракции ─────────────────────────── */
+
+test('фильтр по державам: двенадцать держав до загрузки, встреченные в данных — в конец, фракции', () => {
+  const powers = powerplayFilterPowers([]);
+  assert.equal(powers.length, 12, 'все державы PowerPlay 2.0');
+  assert.equal(POWERPLAY_ACTIVE_POWERS.length, 12);
+  assert.ok(!powers.includes('Zachary Hudson'), 'наследие PowerPlay 1.0 — только если встретится в данных');
+  assert.deepEqual(powerplayFilterPowers(['Jerome Archer', 'New Power']).slice(-1), ['New Power'], 'новая держава не теряется');
+  assert.equal(powerplayFilterPowers(['Jerome Archer']).length, 12, 'известные не дублируются');
+
+  const empire = soloAllegiance(DEFAULT_POWERPLAY_FILTER, 'Empire', powers);
+  const shown = powers.filter((power) => isPowerVisible(empire, power));
+  assert.deepEqual(shown.sort(), ['A. Lavigny-Duval', 'Aisling Duval', 'Denton Patreus', 'Zemina Torval']);
+  assert.equal(isAllegianceSolo(empire, 'Empire', powers), true);
+  assert.equal(isAllegianceSolo(empire, 'Federation', powers), false);
+  assert.equal(isAllegianceSolo(DEFAULT_POWERPLAY_FILTER, 'Empire', powers), false, 'все показаны — ни одна фракция не «только»');
+  const fed = soloAllegiance(DEFAULT_POWERPLAY_FILTER, 'Federation', powers);
+  assert.deepEqual(powers.filter((power) => isPowerVisible(fed, power)).sort(), ['Felicia Winters', 'Jerome Archer']);
+});
+
+/* ── Ход импорта: этапы, проценты, журнал ──────────────────────────────── */
+
+test('ход импорта: проценты по весам этапов, 304 — сразу 100 %, ошибка оставляет этап с ошибкой', () => {
+  assert.equal(POWERPLAY_SYNC_STAGES.reduce((sum, stage) => sum + stage.weight, 0), 100, 'веса этапов — ровно сто');
+  const at = '2026-10-18T10:00:00.000Z';
+  const progress = createPowerplayProgress({ id: 'run-a', trigger: 'admin', force: true, now: at });
+  assert.equal(progress.percent, 0);
+  assert.equal(progress.phase, 'running');
+  assert.deepEqual(progress.stages.map((stage) => stage.status), ['pending', 'pending', 'pending', 'pending', 'pending', 'pending']);
+
+  startPowerplayStage(progress, 'request', { now: at });
+  finishPowerplayStage(progress, 'request', { now: at });
+  assert.equal(progress.percent, 4);
+  startPowerplayStage(progress, 'download', { total: 1000, detail: 'начало', now: at });
+  updatePowerplayStage(progress, 'download', { done: 500, detail: '500 из 1000' });
+  assert.equal(progress.percent, 22, 'половина скачивания: 4 + 36/2');
+  assert.equal(progress.message, 'Скачивание дампа: 500 из 1000');
+  assert.equal(progress.stage, 'download');
+
+  // Дамп не менялся: остальные этапы «не нужны», итог — 100 %.
+  const notModified = createPowerplayProgress({ id: 'run-b', now: at });
+  startPowerplayStage(notModified, 'request', { now: at });
+  finishPowerplayStage(notModified, 'request', { now: at });
+  finishPowerplayProgress(notModified, 'not_modified', { message: 'без изменений', now: at });
+  assert.equal(notModified.percent, 100);
+  assert.deepEqual(notModified.stages.map((stage) => stage.status), ['done', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped']);
+
+  // Ошибка посреди записи: этап с ошибкой, процент — сколько успели.
+  startPowerplayStage(progress, 'write', { total: 100, now: at });
+  updatePowerplayStage(progress, 'write', { done: 40 });
+  finishPowerplayProgress(progress, 'error', { message: 'сбой', result: { error: 'сбой' }, now: at });
+  const write = progress.stages.find((stage) => stage.id === 'write');
+  assert.equal(write.status, 'error');
+  assert.equal(progress.stages.find((stage) => stage.id === 'finish').status, 'pending', 'до завершения не дошли');
+  assert.ok(progress.percent > 0 && progress.percent < 100);
+  assert.equal(progress.percent, computePowerplayPercent(progress));
+  assert.equal(publicPowerplayProgress(progress), null, 'закончившийся прогон во вкладку не отдаётся');
+});
+
+test('журнал импорта: обрезка по длине и количеству, разбор сохранённого хода и журнала', () => {
+  const log = [];
+  for (let i = 0; i < POWERPLAY_LOG_LIMIT + 15; i++) pushPowerplayLog(log, 'info', `строка ${i}`, { now: '2026-10-18T10:00:00.000Z' });
+  assert.equal(log.length, POWERPLAY_LOG_LIMIT);
+  assert.equal(log[0].text, 'строка 15', 'старые строки уходят сверху');
+  const long = pushPowerplayLog(log, 'error', 'x'.repeat(1000));
+  assert.equal(long.text.length, 400);
+
+  assert.deepEqual(sanitizePowerplayLog([{ at: '2026-10-18T10:00:00Z', level: 'nope', text: 'ok' }, { at: 'bad', text: 'x' }, null, 'str']), [
+    { at: '2026-10-18T10:00:00Z', level: 'info', text: 'ok' },
+  ]);
+  assert.deepEqual(sanitizePowerplayLog('junk'), []);
+
+  const running = createPowerplayProgress({ id: 'run-c', trigger: 'cron', now: '2026-10-18T10:00:00.000Z' });
+  startPowerplayStage(running, 'write', { total: 10, detail: 'пачка 1 из 5' });
+  updatePowerplayStage(running, 'write', { done: 2 });
+  const restored = sanitizePowerplayProgress(JSON.parse(JSON.stringify(running)));
+  assert.equal(restored.trigger, 'cron');
+  assert.equal(restored.stage, 'write');
+  assert.equal(restored.percent, running.percent);
+  assert.equal(restored.stages.length, POWERPLAY_SYNC_STAGES.length);
+  assert.equal(sanitizePowerplayProgress({ id: 'x' }), null, 'без времени старта — не ход импорта');
+  assert.equal(sanitizePowerplayProgress(null), null);
+  const hostile = sanitizePowerplayProgress({ id: 'h', startedAt: '2026-10-18T10:00:00Z', phase: 'evil', trigger: 'root', stages: [{ id: 'write', status: 'boom', done: -5 }] });
+  assert.equal(hostile.phase, 'error');
+  assert.equal(hostile.trigger, 'manual');
+  assert.equal(hostile.stages.find((stage) => stage.id === 'write').status, 'pending');
+  assert.equal(hostile.stages.find((stage) => stage.id === 'write').done, 0);
+
+  const pub = publicPowerplayProgress(running);
+  assert.deepEqual(Object.keys(pub).sort(), ['message', 'percent', 'stage', 'stageLabel', 'startedAt'], 'наружу — без триггера и журнала');
+  assert.equal(pub.stageLabel, 'Запись в базу');
+  assert.equal(sanitizePublicPowerplayProgress({ stage: 'write', percent: 250, message: 'm' }).percent, 100);
+  assert.equal(sanitizePublicPowerplayProgress('x'), null);
+
+  // В ответе API слоя ход импорта переживает разбор в браузере.
+  const decoded = decodePowerplayLayer({ status: 'empty', powers: [], systems: [], meta: { refreshing: true, progress: pub } });
+  assert.equal(decoded.meta.progress.stage, 'write');
+  assert.equal(decoded.meta.refreshing, true);
+  assert.equal(decodePowerplayLayer({ status: 'empty', systems: [] }).meta.progress, null);
+});
+
+test('подписи хода импорта: байты и длительность', () => {
+  assert.equal(formatPowerplayBytes(0), '0 Б');
+  assert.equal(formatPowerplayBytes(512), '512 Б');
+  assert.equal(formatPowerplayBytes(3_774_873), '3,6 МБ');
+  assert.equal(formatPowerplayDuration(12_400), '12,4 с');
+  assert.equal(formatPowerplayDuration(125_000), '2 мин 05 с');
+  assert.equal(formatPowerplayDuration(-1), '—');
 });

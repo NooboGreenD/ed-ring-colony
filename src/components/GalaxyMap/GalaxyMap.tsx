@@ -34,7 +34,7 @@ import type { FocusTarget } from './GalaxyScene';
 import { CarrierSystemCard } from './CarrierSystemCard';
 import { PowerplaySystemCard } from './PowerplaySystemCard';
 import { PowerplayGlyph } from './PowerplayGlyph';
-import { powerplayInfluenceAt, type PowerplaySystem } from '@/lib/powerplay';
+import { POWERPLAY_STATE_LABEL, powerInfo, powerplayInfluenceAt, type PowerplaySystem } from '@/lib/powerplay';
 import {
   POINTS_BYTES_PER_POINT,
   POINTS_HEADER_SIZE,
@@ -192,6 +192,8 @@ export interface GalaxyMapPowerplay {
   status?: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
   /** «Показать целиком»: новый `id` — новый подлёт камеры к центру набора. */
   overviewRequest?: { id: number; view: { x: number; y: number; z: number; radius: number } } | null;
+  /** Клик по системе-ссылке в карточке (зоны влияния): открыть её или подвести камеру. */
+  onShowSystem?: (ref: { id64?: string | null; name: string }) => void;
 }
 
 const NO_POWERPLAY_SYSTEMS: PowerplaySystem[] = [];
@@ -699,6 +701,30 @@ export default function GalaxyMap({
     if (system) setFocusTarget(eliteToThreeCentered(system));
   }, [clearNonPowerplaySelection]);
 
+  // Наведение на систему слоя PowerPlay: подсказка у курсора (имя, держава,
+  // состояние) — так видно, что точку можно выбрать кликом. Состояние меняется,
+  // только когда под курсором другая система; за мышью подсказка ездит через
+  // style напрямую — без перерисовки всей карты на каждый кадр.
+  const [powerplayHover, setPowerplayHover] = useState<PowerplaySystem | null>(null);
+  const powerplayHoverRef = useRef<PowerplaySystem | null>(null);
+  const powerplayHoverAt = useRef({ x: 0, y: 0 });
+  const powerplayTipRef = useRef<HTMLDivElement | null>(null);
+  const handleHoverPowerplay = useCallback((system: PowerplaySystem | null, at: { x: number; y: number } | null) => {
+    if (at) {
+      powerplayHoverAt.current = at;
+      const tip = powerplayTipRef.current;
+      if (tip) {
+        tip.style.left = `${at.x + 14}px`;
+        tip.style.top = `${at.y + 14}px`;
+      }
+    }
+    const next = system && at ? system : null;
+    if (powerplayHoverRef.current !== next) {
+      powerplayHoverRef.current = next;
+      setPowerplayHover(next);
+    }
+  }, []);
+
   const toggleNebulaKind = useCallback((kind: NebulaKind) => {
     setNebulaKinds((current) =>
       current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
@@ -790,6 +816,8 @@ export default function GalaxyMap({
 
   const selected = selectedHub || selectedRouteSystem || selectedAtlasCandidate || selectedPilot;
   const powerplayVisible = Boolean(powerplay?.visible);
+  // Слой выключили или фильтр убрал систему под курсором — подсказка не залипает.
+  const hoveredPowerplay = powerplayHover && powerplayVisible && powerplay?.systems.includes(powerplayHover) ? powerplayHover : null;
   const powerplaySystems = powerplayVisible && powerplay ? powerplay.systems : NO_POWERPLAY_SYSTEMS;
   const selectedPowerplay = powerplayVisible ? powerplay?.selected ?? null : null;
   const powerplayAllSystems = powerplay?.allSystems ?? NO_POWERPLAY_SYSTEMS;
@@ -1160,7 +1188,21 @@ export default function GalaxyMap({
           influence={selectedPowerplayInfluence}
           onClose={() => powerplay?.onSelect(null)}
           onFocus={(system) => setFocusTarget(eliteToThreeCentered(system))}
+          onShowSystem={powerplay?.onShowSystem}
         />
+      )}
+
+      {hoveredPowerplay && (
+        <div
+          ref={powerplayTipRef}
+          className="powerplay-hover-tip"
+          data-powerplay-hover={hoveredPowerplay.name}
+          style={{ left: powerplayHoverAt.current.x + 14, top: powerplayHoverAt.current.y + 14 }}
+        >
+          <strong style={{ color: powerInfo(hoveredPowerplay.power).color }}>{hoveredPowerplay.name}</strong>
+          <span>{powerInfo(hoveredPowerplay.power).label} · {POWERPLAY_STATE_LABEL[hoveredPowerplay.state].toLowerCase()}</span>
+          <em>щёлкните — карточка системы</em>
+        </div>
       )}
 
       {selectedCarrierGroup && !galaxyPick && (
@@ -1254,6 +1296,7 @@ export default function GalaxyMap({
             showPowerplay={powerplayVisible}
             selectedPowerplay={selectedPowerplay}
             onPickPowerplay={handleSelectPowerplay}
+            onHoverPowerplay={handleHoverPowerplay}
             showRegionLabels={showRegionLabels}
             showRegionBoundaries={showRegionBoundaries}
             showNebulae={showNebulae}

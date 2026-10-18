@@ -16,8 +16,10 @@ import {
   type PowerplayLayerMeta,
   type PowerplayRow,
 } from './powerplay.ts';
+import { publicPowerplayProgress } from './powerplayProgress.ts';
 import {
   ensurePowerplayFresh,
+  getPowerplayLiveRun,
   powerplayLayerGeneration,
   readPowerplaySyncState,
   type PowerplaySyncOptions,
@@ -106,6 +108,7 @@ function publicError(error: string | null): string | null {
   if (/abort|timeout|timed out/i.test(error)) return 'Источник не ответил вовремя';
   if (/fetch failed|ENOTFOUND|ECONNRE|EAI_AGAIN|network/i.test(error)) return 'Нет связи с источником данных';
   if (/подозрительно мал|сбой источника|не похож/i.test(error)) return 'Свежий дамп источника выглядит неполным — импорт отложен';
+  if (/останов/i.test(error)) return 'Последнее обновление остановлено вручную';
   return 'Не удалось обновить данные';
 }
 
@@ -115,6 +118,8 @@ export interface PowerplayLayerResult {
   status: 'ready' | 'empty';
   refreshing: boolean;
   count: number;
+  /** Размер тела в байтах (до сжатия nginx) — для полосы загрузки в браузере. */
+  bytes: number;
 }
 
 export async function loadPowerplayLayer(
@@ -145,11 +150,13 @@ export async function loadPowerplayLayer(
     newestObservation: cached.newest,
     refreshing: freshness.refreshing,
     lastError: state.status === 'error' ? publicError(state.error) : null,
+    // Вкладка Atlas показывает по нему «сервер загружает данные: этап, %».
+    progress: freshness.refreshing ? publicPowerplayProgress(getPowerplayLiveRun()?.progress) : null,
   };
   const version = state.run_id ?? 'none';
   const metaJson = JSON.stringify(meta);
   const body = `{"status":${JSON.stringify(status)},"version":${JSON.stringify(version)},"meta":${metaJson},`
     + `"powers":${cached.powersJson},"states":${cached.statesJson},"systems":${cached.systemsJson}}`;
   const etag = `"pp-${createHash('sha1').update(`${cached.key}|${metaJson}`).digest('hex').slice(0, 20)}"`;
-  return { body, etag, status, refreshing: freshness.refreshing, count: cached.count };
+  return { body, etag, status, refreshing: freshness.refreshing, count: cached.count, bytes: Buffer.byteLength(body) };
 }

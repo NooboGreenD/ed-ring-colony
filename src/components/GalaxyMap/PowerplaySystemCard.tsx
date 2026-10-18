@@ -37,11 +37,13 @@ export interface PowerplaySystemCardProps {
   influence: PowerplayInfluence[];
   onClose: () => void;
   onFocus?: (system: PowerplaySystem) => void;
+  /** Клик по системе в «зонах влияния»: открыть её карточку (или подвести камеру). */
+  onShowSystem?: (ref: { id64?: string | null; name: string }) => void;
   /** Для тестов: «сейчас». */
   now?: number;
 }
 
-export function PowerplaySystemCard({ system, influence, onClose, onFocus, now = Date.now() }: PowerplaySystemCardProps) {
+export function PowerplaySystemCard({ system, influence, onClose, onFocus, onShowSystem, now = Date.now() }: PowerplaySystemCardProps) {
   const info = powerInfo(system.power);
   const color = info.color;
   const shown = influence.slice(0, INFLUENCE_SHOWN);
@@ -118,7 +120,19 @@ export function PowerplaySystemCard({ system, influence, onClose, onFocus, now =
                     <span style={{ color: own ? TEXT : other.color, fontWeight: 600 }}>{other.label}</span>
                     {own ? <span style={{ color: DIM }}> · своя держава</span> : null}
                     <br />
-                    {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()} {item.nearest.name}, {formatLy(item.nearest.distance)}
+                    {POWERPLAY_STATE_LABEL[item.nearest.state].toLowerCase()}{' '}
+                    {onShowSystem ? (
+                      <button
+                        type="button"
+                        className="powerplay-system-link"
+                        data-powerplay-link={item.nearest.name}
+                        title="Открыть эту систему"
+                        onClick={() => onShowSystem({ id64: item.nearest.id64, name: item.nearest.name })}
+                      >
+                        {item.nearest.name}
+                      </button>
+                    ) : item.nearest.name}
+                    , {formatLy(item.nearest.distance)}
                     {item.sources > 1 ? <span style={{ color: DIM }}> · зон: {item.sources}</span> : null}
                   </span>
                 </li>

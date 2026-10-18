@@ -732,8 +732,14 @@ edrc_compose_switch() {
       return 0
     fi
     if [ "$attempt" -gt "$retries" ]; then break; fi
-    if grep -qaiE 'already in use|Error when allocating new name|Error while Stopping|Conflict' "$log" 2>/dev/null; then
-      printf '⚠ переключение сорвалось конфликтом имени контейнера (попытка %s) — разбираю и повторяю\n' "$attempt"
+    # «No such container: <id>» и «removal of container … is already in
+    # progress» — та же гонка пересоздания с другой стороны (docker/compose
+    # #11151): compose запомнил контейнер, который к моменту stop/remove/
+    # inspect уже снят или снимается. Прод-инцидент: повтор после конфликта
+    # имени упал именно так («Container src-jobs-1 … No such container:
+    # 203cbc46…»), и обновление оборвалось, хотя следующий `up` проходит чисто.
+    if grep -qaiE 'already in use|Error when allocating new name|Error while Stopping|Conflict|No such container|is already in progress' "$log" 2>/dev/null; then
+      printf '⚠ переключение сорвалось гонкой пересоздания контейнеров (попытка %s) — разбираю и повторяю\n' "$attempt"
       edrc_resolve_name_conflicts "$log" || true
       edrc_remove_stale_containers --force || true
       sleep "${UPDATE_SWITCH_RETRY_DELAY:-5}" || true

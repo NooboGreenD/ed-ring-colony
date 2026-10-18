@@ -2,18 +2,18 @@
 import { useI18n } from '@/lib/i18n/I18nContext';
 import {
   IconAnchor, IconCoins, IconDatabase, IconGear, IconGlobe, IconHeadphones, IconHomeSystem,
-  IconJournal, IconLock, IconMessage, IconPackage, IconRoute, IconSatellite, IconUsers,
+  IconJournal, IconLock, IconMessage, IconPackage, IconPower, IconRoute, IconSatellite, IconUsers,
 } from '@/components/Icons';
 import styles from './AdminShell.module.css';
 
-export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'backup', 'helper', 'outfitting'] as const;
+export const ADMIN_TABS = ['content', 'manage', 'route', 'forum', 'news', 'hubs', 'sync', 'comments', 'support', 'billing', 'monitor', 'auth', 'galaxy', 'powerplay', 'backup', 'helper', 'outfitting'] as const;
 export type AdminTab = typeof ADMIN_TABS[number];
-export const ADMIN_ONLY_TABS: AdminTab[] = ['outfitting', 'monitor', 'auth', 'galaxy', 'backup', 'helper'];
+export const ADMIN_ONLY_TABS: AdminTab[] = ['outfitting', 'monitor', 'auth', 'galaxy', 'powerplay', 'backup', 'helper'];
 export function isAdminTab(tab: string | null): tab is AdminTab {
   return !!tab && (ADMIN_TABS as readonly string[]).includes(tab);
 }
 
-/** Two-level navigation replaces the unstructured wall of sixteen buttons. */
+/** Two-level navigation replaces the unstructured wall of buttons. */
 export default function AdminNavigation({ tab, role, onSelect }: { tab: AdminTab; role: string; onSelect: (tab: AdminTab) => void }) {
   const { t } = useI18n();
   const groups = [
@@ -33,6 +33,7 @@ export default function AdminNavigation({ tab, role, onSelect }: { tab: AdminTab
       { id: 'route', label: t('admin.route'), icon: IconRoute },
       { id: 'sync', label: 'RavenColonial', icon: IconSatellite },
       { id: 'galaxy', label: 'Каталог систем', icon: IconGlobe },
+      { id: 'powerplay', label: 'PowerPlay', icon: IconPower },
     ] },
     { id: 'system', label: 'Система и сервисы', icon: IconGear, items: [
       { id: 'billing', label: t('admin.billing'), icon: IconCoins },

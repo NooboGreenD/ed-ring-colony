@@ -18,6 +18,7 @@ import { MarkdownRenderer } from "@/lib/markdown";
 import RavenSyncTab from "@/components/Admin/RavenSyncTab";
 import AuthProvidersTab from "@/components/Admin/AuthProvidersTab";
 import GalaxyCatalogTab from "@/components/Admin/GalaxyCatalogTab";
+import PowerplayAdminTab from "@/components/Admin/PowerplayAdminTab";
 import BackupTab from "@/components/Admin/BackupTab";
 import {
   IconTrash,
@@ -836,6 +837,7 @@ export default function AdminPage() {
       {tab === 'billing' && <BillingDashboard currentUser={me} />}
       {tab === 'monitor' && role === 'admin' && <ServerMonitorTab />}
       {tab === 'galaxy' && role === 'admin' && <GalaxyCatalogTab />}
+      {tab === 'powerplay' && role === 'admin' && <PowerplayAdminTab />}
       {tab === 'backup' && role === 'admin' && <BackupTab />}
       {tab === 'auth' && role === 'admin' && <AuthProvidersTab />}
       {tab === 'helper' && role === 'admin' && <HelperUpdatesTab />}

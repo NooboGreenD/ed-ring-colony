@@ -22,7 +22,15 @@ function asRoutePoint(landmark: Landmark, index: number): RouteSystem {
   };
 }
 
-function LandmarkSprite({ landmark, index, onSelect }: { landmark: Landmark; index: number; onSelect?: LandmarkSelect }) {
+/**
+ * Цель клика — в экранных единицах (`sizeAttenuation: false`): ≈ 25–30 px при
+ * любом масштабе. Само свечение — 120 св. лет поперёк, и раньше кликабельным
+ * было именно оно: квадрат вокруг Sol перехватывал клики по системам «пузыря»
+ * (слой PowerPlay, каталог «Все системы») — `MapClickLayer` считал его маркером.
+ */
+const LANDMARK_HIT_SCALE = 0.032;
+
+function LandmarkSprite({ landmark, index, onSelect, interactive }: { landmark: Landmark; index: number; onSelect?: LandmarkSelect; interactive: boolean }) {
   const pos = useMemo(() => eliteToThreeCentered(landmark), [landmark]);
   const routePoint = useMemo(() => asRoutePoint(landmark, index), [landmark, index]);
 
@@ -37,10 +45,13 @@ function LandmarkSprite({ landmark, index, onSelect }: { landmark: Landmark; ind
   }, [landmark.color]);
 
   const material = useMemo(() => new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending }), [texture]);
+  const hitMaterial = useMemo(() => new THREE.SpriteMaterial({ transparent: true, opacity: 0, depthWrite: false, depthTest: false, sizeAttenuation: false }), []);
   const select = (event: any) => { event.stopPropagation(); onSelect?.(routePoint); };
 
   return <group position={[pos.x, pos.y, pos.z]}>
-    <sprite material={material} scale={[120, 120, 1]} onClick={select} />
+    {/* Свечение — только картинка. */}
+    <sprite material={material} scale={[120, 120, 1]} raycast={() => null} />
+    {interactive && onSelect && <sprite material={hitMaterial} scale={[LANDMARK_HIT_SCALE, LANDMARK_HIT_SCALE, 1]} onClick={select} />}
     <Html position={[0, 90, 0]} distanceFactor={800} zIndexRange={[8, 7]} style={{ pointerEvents: "none" }} center>
       <div style={{ color: landmark.color, fontFamily: '"Courier New", monospace', fontSize: "18px", fontWeight: "bold", textShadow: `0 0 6px ${landmark.color}`, whiteSpace: "nowrap", textAlign: "center", letterSpacing: "1px", transform: "translateX(-50%)" }}>
         {landmark.name}
@@ -49,6 +60,10 @@ function LandmarkSprite({ landmark, index, onSelect }: { landmark: Landmark; ind
   </group>;
 }
 
-export function LandmarkMarkers({ onSelect }: { onSelect?: LandmarkSelect }) {
-  return <group>{LANDMARKS.map((landmark, index) => <LandmarkSprite key={landmark.name} landmark={landmark} index={index} onSelect={onSelect} />)}</group>;
+/**
+ * `interactive={false}` — ориентиры не перехватывают клики: так делает слой
+ * PowerPlay, где Sol — сама система державы со своей карточкой.
+ */
+export function LandmarkMarkers({ onSelect, interactive = true }: { onSelect?: LandmarkSelect; interactive?: boolean }) {
+  return <group>{LANDMARKS.map((landmark, index) => <LandmarkSprite key={landmark.name} landmark={landmark} index={index} onSelect={onSelect} interactive={interactive} />)}</group>;
 }

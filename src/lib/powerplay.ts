@@ -16,6 +16,10 @@
  * Слой показывает три первых: у них есть `ControllingPower`.
  */
 
+import { sanitizePublicPowerplayProgress, type PowerplayPublicProgress } from './powerplayProgress.ts';
+
+export type { PowerplayPublicProgress } from './powerplayProgress.ts';
+
 export const POWERPLAY_STATES = ['Stronghold', 'Fortified', 'Exploited'] as const;
 export type PowerplayState = (typeof POWERPLAY_STATES)[number];
 
@@ -101,6 +105,9 @@ export const POWERPLAY_POWERS: readonly PowerInfo[] = [
   // Наследие PowerPlay 1.0: в свежих данных не встречается, но старый дамп не должен красить его серым.
   { name: 'Zachary Hudson', label: 'Zachary Hudson', allegiance: 'Federation', color: '#c2410c' },
 ];
+
+/** Державы PowerPlay 2.0 — их фильтр вкладки показывает всегда, даже пока данные грузятся. */
+export const POWERPLAY_ACTIVE_POWERS: readonly PowerInfo[] = POWERPLAY_POWERS.filter((power) => power.name !== 'Zachary Hudson');
 
 const POWER_BY_KEY = new Map<string, PowerInfo>();
 for (const power of POWERPLAY_POWERS) {
@@ -222,6 +229,8 @@ export interface PowerplayLayerMeta {
   refreshing: boolean;
   /** Последняя ошибка обновления, понятная пользователю. */
   lastError: string | null;
+  /** Ход идущего на сервере импорта: этап и процент (иначе null). */
+  progress: PowerplayPublicProgress | null;
 }
 
 export interface PowerplayLayerResponse {
@@ -317,6 +326,7 @@ export const EMPTY_POWERPLAY_META: PowerplayLayerMeta = {
   newestObservation: null,
   refreshing: false,
   lastError: null,
+  progress: null,
 };
 
 /** Разбор ответа API в браузере: битые кортежи пропускаются, а не роняют слой. */
@@ -349,7 +359,13 @@ export function decodePowerplayLayer(payload: unknown): PowerplayLayerData {
       });
     }
   }
-  const meta = { ...EMPTY_POWERPLAY_META, ...(body.meta && typeof body.meta === 'object' ? body.meta : {}) };
+  const rawMeta = (body.meta && typeof body.meta === 'object' ? body.meta : {}) as Partial<PowerplayLayerMeta>;
+  const meta: PowerplayLayerMeta = {
+    ...EMPTY_POWERPLAY_META,
+    ...rawMeta,
+    refreshing: rawMeta.refreshing === true,
+    progress: sanitizePublicPowerplayProgress(rawMeta.progress),
+  };
   const present = new Set(systems.map((system) => system.power));
   return {
     status: body.status === 'ready' && systems.length > 0 ? 'ready' : 'empty',
@@ -402,6 +418,36 @@ export function showAllPowers(filter: PowerplayFilter): PowerplayFilter {
 
 export function hideAllPowers(filter: PowerplayFilter, allPowers: string[]): PowerplayFilter {
   return { ...filter, hiddenPowers: [...allPowers] };
+}
+
+/** Только державы одной фракции (Империя, Федерация, Альянс, независимые). */
+export function soloAllegiance(filter: PowerplayFilter, allegiance: PowerAllegiance, allPowers: string[]): PowerplayFilter {
+  return { ...filter, hiddenPowers: allPowers.filter((power) => powerInfo(power).allegiance !== allegiance) };
+}
+
+/** Фильтр показывает ровно эту фракцию — подсветить её кнопку. */
+export function isAllegianceSolo(filter: PowerplayFilter, allegiance: PowerAllegiance, allPowers: string[]): boolean {
+  const own = allPowers.filter((power) => powerInfo(power).allegiance === allegiance);
+  if (!own.length) return false;
+  const hidden = new Set(filter.hiddenPowers);
+  return own.every((power) => !hidden.has(power)) && allPowers.every((power) => powerInfo(power).allegiance === allegiance || hidden.has(power));
+}
+
+/**
+ * Державы для фильтра: все двенадцать держав PowerPlay 2.0 — даже пока данные
+ * не загрузились (галочки работают сразу и запоминаются), — плюс те, что
+ * встретились в данных (новая держава или наследие PowerPlay 1.0).
+ */
+export function powerplayFilterPowers(dataPowers: string[] = []): string[] {
+  const out: string[] = POWERPLAY_ACTIVE_POWERS.map((power) => power.name);
+  const seen = new Set(out);
+  for (const power of dataPowers) {
+    if (!seen.has(power)) {
+      seen.add(power);
+      out.push(power);
+    }
+  }
+  return out;
 }
 
 export function togglePowerplayState(filter: PowerplayFilter, state: PowerplayState): PowerplayFilter {

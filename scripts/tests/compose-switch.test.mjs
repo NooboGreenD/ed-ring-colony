@@ -78,6 +78,13 @@ function setup() {
     '      echo \'Error response from daemon: Error when allocating new name: Conflict. The container name "/src-web-1" is already in use by container "548bf7698162af9667a96bc19ccbd4af2da8f44adecdc9e541dbf2424ad44850". You have to remove (or rename) that container to be able to reuse that name.\'',
     '      exit 1',
     '    fi',
+    '    if [ "$attempt" -lt "$(( ${STUB_CONFLICTS:-0} + ${STUB_GONE:-0} ))" ]; then',
+    '      echo " Container src-web-1 Recreated"',
+    '      echo " Container src-jobs-1 Recreate"',
+    '      echo " Container src-jobs-1 Error response from daemon: No such container: 203cbc46a9e0fd8d45a100439fa87310b6b4f2f3926c5fb75527630082d3161e"',
+    '      echo "Error response from daemon: No such container: 203cbc46a9e0fd8d45a100439fa87310b6b4f2f3926c5fb75527630082d3161e"',
+    '      exit 1',
+    '    fi',
     '    exit 0;;',
     'esac',
     'exit 0',
@@ -215,4 +222,21 @@ test('отчёт о диске ищет место, которого «нет н
   // head, и каждый `| head -n N` печатал бы заголовок вместо усечения.
   assert.doesNotMatch(report, /^head\(\)/m);
   assert.match(report, /^section\(\)/m);
+});
+
+test('гонка пересоздания: после конфликта имени «No such container» тоже повторяется, а не обрывает обновление', { skip }, () => {
+  // Прод-инцидент: первая попытка — конфликт имени «<id>_src-web-1», вторая —
+  // «Container src-jobs-1 … No such container: 203cbc46…» (контейнер, который
+  // compose запомнил в начале up, к моменту пересоздания уже снят). Третья
+  // попытка проходит чисто — раньше до неё дело не доходило.
+  const ctx = setup();
+  const res = ctx.run('edrc_compose_switch docker compose -- web jobs monitor-agent', { STUB_CONFLICTS: '1', STUB_GONE: '1' });
+  assert.equal(res.status, 0, res.stdout + res.stderr);
+  assert.equal((ctx.log().match(/up -d --no-build web jobs monitor-agent/g) || []).length, 3, 'конфликт → «No such container» → удача');
+  assert.equal((res.stdout.match(/гонкой пересоздания контейнеров/g) || []).length, 2);
+
+  const solo = setup();
+  const only = solo.run('edrc_compose_switch docker compose -- web jobs', { STUB_GONE: '1' });
+  assert.equal(only.status, 0, 'и без конфликта перед ней');
+  assert.equal((solo.log().match(/up -d --no-build web jobs/g) || []).length, 2);
 });
