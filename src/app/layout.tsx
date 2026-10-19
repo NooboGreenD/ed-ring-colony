@@ -1,5 +1,6 @@
 import './globals.css';
 import '@/styles/forum-extra.css';
+import '@/styles/mobile-shell.css';
 import Link from 'next/link';
 import SiteStatusBar from '@/components/SiteStatusBar';
 import NotificationBell from '@/components/NotificationBell';
@@ -10,6 +11,8 @@ import MobileNav from '@/components/MobileNav';
 import HudSkinProvider from '@/components/Cosmetics/HudSkinProvider';
 import { I18nProvider } from '@/lib/i18n/I18nContext';
 import { Toaster } from '@/components/ui/Toaster';
+
+export const viewport = { width: 'device-width', initialScale: 1, viewportFit: 'cover' };
 
 export const metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://edringcolony.ru'),
@@ -68,7 +71,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           <div style={{ display: 'flex' }}>
             <Sidebar />
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+            <div className="site-content" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <main className="main-with-sidebar">{children}</main>
               <Footer />
             </div>

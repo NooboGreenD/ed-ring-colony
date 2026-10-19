@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import Link from "next/link";
 import { authFetch } from "@/lib/supabaseClient";
 import type { BillingTransaction, EquippedCosmetics, UserBalance, UserInventoryItem, UserSubscription, BillingPlan } from "@/types/billing";
@@ -58,8 +58,10 @@ export default function AccountPremiumPanel() {
     load();
   }, [load]);
 
+  const equipLock = useRef(false);
   const toggleEquip = async (inv: UserInventoryItem) => {
-    if (!inv.item) return;
+    if (!inv.item || equipLock.current) return;
+    equipLock.current = true;
     setBusy(inv.item_id);
     try {
       const res = await authFetch("/api/shop/equip", {
@@ -76,6 +78,7 @@ export default function AccountPremiumPanel() {
     } catch (e: any) {
       setError(e.message);
     } finally {
+      equipLock.current = false;
       setBusy(null);
     }
   };
@@ -95,7 +98,7 @@ export default function AccountPremiumPanel() {
       {error && <div style={{ padding: "10px 14px", border: "1px solid #e74c3c", color: "#e74c3c", background: "rgba(231,76,60,0.1)", fontSize: 13 }}>{error}</div>}
 
       {/* Status cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))", gap: 14 }}>
         <div className="card" style={{ margin: 0, padding: "14px 18px" }}>
           <div style={{ fontSize: 11, color: "var(--muted)", letterSpacing: 1, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}><IconCoins size={12} color="#e67e22" /> Баланс кредитов</div>
           <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "ui-monospace, monospace", color: "var(--orange)", margin: "6px 0 2px" }}>{(balance?.credits || 0).toLocaleString("ru-RU")}</div>
@@ -157,7 +160,7 @@ export default function AccountPremiumPanel() {
             Пока ничего не куплено. <Link href="/premium-shop" style={{ color: "var(--orange)" }}>Открыть премиум-магазин →</Link>
           </p>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 10 }}>
             {inventory.map((inv) => {
               const it = inv.item;
               if (!it) return null;
@@ -179,7 +182,7 @@ export default function AccountPremiumPanel() {
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 10, color: "var(--muted)" }}>Куплено {new Date(inv.purchased_at).toLocaleDateString("ru-RU")}</span>
-                    <button type="button" onClick={() => toggleEquip(inv)} disabled={busy === inv.item_id} className={inv.is_equipped ? "btn btn-cyan" : "btn btn-orange"} style={{ fontSize: 10, padding: "3px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <button type="button" onClick={() => toggleEquip(inv)} disabled={busy !== null} className={inv.is_equipped ? "btn btn-cyan" : "btn btn-orange"} style={{ fontSize: 10, padding: "3px 10px", display: "inline-flex", alignItems: "center", gap: 4 }}>
                       {inv.is_equipped ? <><IconX size={10} /> Снять</> : <><IconCheck size={10} /> Надеть</>}
                     </button>
                   </div>

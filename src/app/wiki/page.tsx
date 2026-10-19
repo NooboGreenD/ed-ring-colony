@@ -48,7 +48,7 @@ export default async function WikiPage() {
   const { count: totalCategories } = await supabase.from('wiki_categories').select('*', { count: 'exact', head: true });
 
   return (
-    <main style={{ padding: '24px 28px', maxWidth: 1400, margin: '0 auto' }}>
+    <main className="wiki-page" style={{ padding: '24px 28px', maxWidth: 1400, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ marginBottom: 24, display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
         <h1 style={{ margin: 0, fontSize: 22, letterSpacing: 4, textTransform: 'uppercase', color: 'var(--orange)', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -63,12 +63,12 @@ export default async function WikiPage() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 24 }}>
+      <div className="wiki-layout" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 24 }}>
         {/* Main */}
         <div>
           {/* Categories */}
           <h2 style={{ fontSize: 16, color: 'var(--orange)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 16 }}>КАТЕГОРИИ</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 16, marginBottom: 32 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 260px), 1fr))', gap: 16, marginBottom: 32 }}>
             {(categories || []).map((cat: any) => (
               <Link key={cat.id} href={`/wiki/category/${cat.slug}`} style={{ textDecoration: 'none' }}>
                 <div className="card" style={{ padding: 20, transition: 'background 0.2s' }}>
@@ -86,7 +86,7 @@ export default async function WikiPage() {
           {featured && featured.length > 0 && (
             <div style={{ marginBottom: 32 }}>
               <h2 style={{ fontSize: 16, color: 'var(--orange)', letterSpacing: '2px', textTransform: 'uppercase', marginBottom: 16 }}>ИЗБРАННЫЕ СТАТЬИ</h2>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 280px), 1fr))', gap: 16 }}>
                 {featured.map((a: any) => (
                   <Link key={a.id} href={`/wiki/${a.slug}`} style={{ textDecoration: 'none' }}>
                     <div className="card" style={{ padding: 20 }}>

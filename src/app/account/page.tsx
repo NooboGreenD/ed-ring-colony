@@ -782,8 +782,8 @@ export default function AccountPage() {
   };
 
   return (
-    <div className="card" style={{ width: "100%" }}>
-      <div style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 24 }}>
+    <div className="card account-page" style={{ width: "100%" }}>
+      <div className="account-profile-heading" style={{ display: "flex", gap: 18, alignItems: "center", flexWrap: "wrap", marginBottom: 24 }}>
         <CosmeticAvatar avatarUrl={avatarFromUser(user, profile)} cmdrName={nickFromUser(user, profile)} frameId={cosmetics?.frame?.id} framePreview={cosmetics?.frame?.preview} size={72} />
         <div>
           <div className="kicker" style={{ display: "flex", alignItems: "center", gap: 8 }}>

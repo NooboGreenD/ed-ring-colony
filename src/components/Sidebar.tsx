@@ -274,18 +274,39 @@ export default function Sidebar() {
     });
   }, [pathname]);
 
+  useEffect(() => {
+    const openMenu = () => setOpen(true);
+    window.addEventListener('navigation:open', openMenu);
+    const media = window.matchMedia('(min-width: 1025px)');
+    const resized = () => { if (media.matches) setOpen(false); };
+    media.addEventListener('change', resized);
+    return () => { window.removeEventListener('navigation:open', openMenu); media.removeEventListener('change', resized); };
+  }, []);
+
   // Мобильное меню: Escape, блокировка прокрутки и фокус внутри панели.
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Tab') {
+        const elements = [...(drawerRef.current?.querySelectorAll<HTMLElement>('a[href], button, input, select, [tabindex="0"]') || [])].filter(el => !el.hasAttribute('disabled'));
+        const first = elements[0], last = elements[elements.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === drawerRef.current)) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }
     };
+    const opener = document.activeElement as HTMLElement | null;
+    const background = [...document.querySelectorAll<HTMLElement>('.topbar, .site-content, .mobile-nav, .sidebar')];
+    const previousInert = background.map(el => el.inert);
+    background.forEach(el => { el.inert = true; });
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     window.addEventListener('keydown', onKeyDown);
     drawerRef.current?.focus();
     return () => {
       document.body.style.overflow = previousOverflow;
+      background.forEach((el, i) => { el.inert = previousInert[i]; });
+      opener?.focus();
       window.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
@@ -299,6 +320,7 @@ export default function Sidebar() {
       const isShortcut = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k';
       if (isShortcut) {
         event.preventDefault();
+        if (window.matchMedia('(min-width: 1025px)').matches) { desktopSearchRef.current?.focus(); return; }
         setOpen(true);
         window.requestAnimationFrame(() => {
           (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
@@ -307,6 +329,7 @@ export default function Sidebar() {
       }
       if (event.key === '/' && !typing) {
         event.preventDefault();
+        if (window.matchMedia('(min-width: 1025px)').matches) { desktopSearchRef.current?.focus(); return; }
         setOpen(true);
         window.requestAnimationFrame(() => {
           (drawerSearchRef.current ?? desktopSearchRef.current)?.focus();
@@ -407,7 +430,10 @@ export default function Sidebar() {
         aria-modal={open}
         aria-label={t('nav.menu')}
         tabIndex={-1}
+        inert={!open}
+        aria-hidden={!open}
       >
+        <div className="mobile-menu-heading"><span>{t('nav.menu')}</span><button type="button" className="btn" onClick={closeDrawer} aria-label={t('nav.closeMenu')}>×</button></div>
         {searchField(drawerSearchRef)}
         <nav className="sidebar-nav">
           <NavContent

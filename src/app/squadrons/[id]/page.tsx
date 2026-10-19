@@ -441,7 +441,7 @@ export default function SquadronPage() {
 
           <div style={{ border: "1px solid var(--line)", background: "var(--bg)", padding: 14, marginBottom: 16 }}>
             <h4 style={{ margin: "0 0 10px", color: "var(--text)" }}>Оформление страницы</h4>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 14 }}>
               <div>
                 <label style={labelStyle}>Логотип (до 2 МБ)</label>
                 {form.logo_url && <img src={form.logo_url} alt="Логотип" style={{ width: 92, height: 92, objectFit: "contain", display: "block", marginBottom: 8, background: "#111", border: "1px solid var(--line)" }} />}
@@ -468,7 +468,7 @@ export default function SquadronPage() {
             {brandingBusy && <div style={{ color: "var(--cyan)", fontSize: 12, marginTop: 8 }}>Загрузка изображения…</div>}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 240px), 1fr))", gap: 12 }}>
             {/* Название */}
             <div style={{ gridColumn: "1 / -1" }}>
               <label style={labelStyle}>Название эскадрильи {nameChangeBlocked && <span style={{ color: "#e74c3c", fontSize: 11 }}>(изменено {daysUntilNameChange()} дн. назад, подождите ещё {daysUntilNameChange()} дн.)</span>}</label>
@@ -984,7 +984,7 @@ function SquadronProjectsTab({ squadronId, projects, canManage, onUpdate, setMsg
 
       {projects.length === 0 && <p style={{ color: "var(--muted)", fontFamily: "ui-monospace, monospace", letterSpacing: 1 }}>Проектов пока нет.</p>}
 
-      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))" }}>
         {projects.map((p: any) => (
           <Link key={p.id} href={`/projects/${p.id}`} style={{ textDecoration: "none" }}>
             <div className="card" style={{

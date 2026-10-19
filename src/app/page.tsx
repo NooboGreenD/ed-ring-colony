@@ -42,7 +42,7 @@ export default function Home() {
         <Starfield />
         <div className="corner tl" />
         <div className="corner br" />
-        <div style={{ position: 'relative', zIndex: 1 }}>
+        <div className="hero-copy" style={{ position: 'relative', zIndex: 1 }}>
           <div className="kicker">{kicker}</div>
           <h1>
             {title1}

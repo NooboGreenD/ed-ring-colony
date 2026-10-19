@@ -12,7 +12,7 @@ export const revalidate = 0;
 async function handle(ids: string[]) {
   const clean = Array.from(new Set(ids.map((s) => String(s).trim()).filter(Boolean))).slice(0, 200);
   const cosmetics = await billingRepo.getPublicCosmetics(clean);
-  return NextResponse.json({ success: true, cosmetics }, { headers: { 'Cache-Control': 'private, max-age=15' } });
+  return NextResponse.json({ success: true, cosmetics }, { headers: { 'Cache-Control': 'private, no-store' } });
 }
 
 export async function GET(req: Request) {

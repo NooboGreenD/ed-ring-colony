@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useI18n } from '@/lib/i18n/I18nContext';
-import { IconAtlas, IconHomeSystem, IconPlane, IconProjects, IconWiki } from '@/components/Icons';
+import { IconAtlas, IconHomeSystem, IconPlane, IconProjects } from '@/components/Icons';
 import type { TranslationKey } from '@/lib/i18n/types';
 
 /**
@@ -17,7 +17,6 @@ const MOBILE_ITEMS: { href: string; translation: TranslationKey; icon: React.Rea
   { href: '/squadrons', translation: 'nav.squadrons', icon: <IconPlane size={20} /> },
   { href: '/projects', translation: 'nav.projects', icon: <IconProjects size={20} /> },
   { href: '/atlas', translation: 'nav.atlas', icon: <IconAtlas size={20} /> },
-  { href: '/wiki', translation: 'nav.wiki', icon: <IconWiki size={20} /> },
 ];
 
 export default function MobileNav() {
@@ -34,12 +33,16 @@ export default function MobileNav() {
             href={item.href}
             className={`mobile-nav-item${isActive ? ' active' : ''}`}
             aria-current={isActive ? 'page' : undefined}
+            aria-label={t(item.translation)}
           >
             {item.icon}
-            {t(item.translation)}
+            <span className="mobile-nav-label">{t(item.href === '/squadrons' ? 'nav.squadronsShort' : item.translation)}</span>
           </Link>
         );
       })}
+      <button type="button" className="mobile-nav-item" aria-controls="sidebar-drawer" onClick={() => window.dispatchEvent(new Event('navigation:open'))}>
+        <span aria-hidden="true" className="mobile-menu-icon">☰</span>{t('nav.menu')}
+      </button>
     </nav>
   );
 }

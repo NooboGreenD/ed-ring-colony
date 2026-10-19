@@ -112,6 +112,7 @@ async function renderAtlas(ui, options = {}) {
     pretendToBeVisual: true,
     url: options.url ?? 'http://localhost/atlas',
   });
+  dom.window.matchMedia = query => ({ media: query, matches: false, addEventListener() {}, removeEventListener() {} });
   const previous = {
     nav: globalThis.__nav,
     window: global.window,
